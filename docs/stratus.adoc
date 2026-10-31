@@ -388,6 +388,52 @@ A session lists every Trusted Domain the tenancy holds, not only those its own f
 * *A found domain answers reads and `domain adopt` only.* `plan`, `verify`, `build`, `teardown` and `protect` are refused by name with "adopt <name> first": adoption is where the session takes responsibility for acting on a domain, and the name-typed confirmation of a teardown was designed for a domain the session knows. The one exception is a found domain with nothing left of it but its tag (GONE): `plan`, `verify` and `build` are refused as pointless, and `domain teardown <name>` is taken without an adoption, since there is nothing a lock would keep; it writes the record (unprotected, adopted from the tenancy), asks for the name typed back, and removes the tag's carriers (<<writes>>, teardown). The controller offers it as REMOVE WHAT IS LEFT.
 * *The tree lists what the host keeps.* `domains/<name>/` under the tenancy still stands for the folders on the host; a found domain has no folder until it is adopted. Listing found domains in the tree is a later slice.
 
+[[foundations]]
+=== D16. Foundations, then what is built into them; the script is the truth (settled 2026-10-31)
+
+Settled with the operator 2026-10-31, from the need to bring `cube.chrisproject.org` back (NERC unreachable since 2026-10-28) as a VM in the tenancy. The store was built once by hand and torn down the same afternoon (<<howto-store-vm.adoc#,howto-store-vm.adoc>>): it is to exist only as code, and that run is the specification the verbs below are written from.
+
+*Foundation first, then build into it, everywhere.* stratus is the general surface over a tenancy, and ChRIS is one layer on top of what it builds. A foundation is a thing with no application on it: an *OpenShift* cluster, a *VM*, later OKD (a second installer driver, the same cluster kind), OKE (plain Kubernetes, managed) or SLURM, each only once it is real (the rule <<one-backend-many-clouds>> keeps for clouds). *ChRIS* is a layer that targets a foundation. A *Trusted Domain* is a recipe, OpenShift and then ChRIS on it, as `tenant.mise` already plays it: not a fourth kind of machine. The dashboard shows them as OPENSHIFT, VM, CHRIS and TRUSTED DOMAIN; CHRIS with no foundation in the tenancy says "first build a VM or OpenShift".
+
+*The rename.* "Domain" has meant the bare cluster in the verbs (`domain new`, `domains/`, the tag `mise-domain`). Under this split the word belongs to the composite: the bare cluster's verbs become `cluster`, and `domain` means the Trusted Domain recipe. Done first, as its own change; the sections above keep the word `domain` where they describe those verbs as first built, and read as `cluster`. The folder is `clusters/`, the tag `mise-cluster`. The cluster build stops at `verify` once the ChRIS layer's `chris deploy` exists: `chris-deploy`, `chris-seed` and `smoke` move there with it.
+
+*The script is the truth.* One `.mise` script, in git, states what should exist, in words every cloud understands, and runs unchanged on any cloud a driver exists for, as a CUBE workflow is one spec for every substrate. The store's:
+
+[source]
+----
+net new chrisproject-services --cidr 10.20.0.0/16
+vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04
+vm build store
+chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org
+----
+
+This amends D14's "the manifest is the procedure, never the shape" for concrete scripts: a concrete script is the shape, and the `spec.yaml` its `new` lines write on the host is the record of it, never edited by hand. A procedure script (`tenant.mise`, `@param NAME`) is still only a procedure. The store's script lives with the name it serves, in `FNNDSC/chrisproject.org`; the engine stays in mise.
+
+[cols="1,4",options="header"]
+|===
+| Decision | What it means
+
+| `new` declares | `vm new` and `net new` on something that exists compare: the same values print `store: unchanged`, different ones update the record and print the change (`memory 8 → 16`). They build nothing; `build` plans and asks, and refuses a change that destroys data unless it is named. The one verb where replayable code outranks POSIX's refusal; its help says so.
+| Only portable words | The script names `--vcpu`, `--memory`, `--disk`, `--data`, `--os`. The driver chooses the family (the cheapest that fits; OCI: E5.Flex), the image (the newest of that OS, pinned in the record; a later play says "newer image available" and never rebuilds silently) and the zone (the first with room). A cloud-specific override never enters a script; if one is needed it is a tenancy setting of the driver.
+| The network is declared | `net new <name> --cidr` is its own line and VMs join it with `--net`: the address range collides with VPNs and peering, and the network outlives any one VM. `--open 80,443` is the portable form of a security group; the subnet, gateway and route are the driver's.
+| The network carries the place | `net new chrisproject-services` is, on OCI, a compartment of that name with the VCN in it (on Azure a resource group, on AWS a tag). Every VM on the network lives in its place. A compartment of that name that already exists, empty, is adopted, not recreated.
+| Shell access | The script says nothing about shells: the build needs none. `net new` builds the cloud's managed bastion (OCI Bastion; it bills on Azure, and the plan says so), admitting only the mise bastion's public address, read at build time. `vm shell <name>`, under the `shell` tier, opens a session and the tunnel in the console's pty, so typed in ARGUS's console it lands in the VM in the browser; `--print` gives the `ssh` line instead. `--open 22 --from <cidr>` opens direct SSH, declared in the script where git and the plan show it. No port 22 to the internet otherwise.
+| ChRIS goes on after the build | `chris deploy` reaches the VM over the bastion path, copies the compose file and its environment, and starts it. Not cloud-init: instance user data is readable by anyone who can read the compartment's instances. The same verb serves a VM another script built.
+| Secrets | The internal ones (Django, Postgres, pfcon) are generated by the first deploy and kept in the record's `auth/` on the host (mode 600, refused over `/vfs`), reused by every replay and rebuild, so a rebuilt VM opens the old database. The admin password is asked once by a typed question ("admin password for chris (empty: generate one)") or given by `--admin-password-file`, and kept the same way. CUBE makes the `chris` superuser itself after each migration from `CHRIS_SUPERUSER_PASSWORD`. A generated password is shown once; setting it where it is used (a GitHub secret) stays the operator's act.
+| The compute resource | `--compute` names the pfcon's resource (default: the VM's name), registered through `POST /chris-admin/api/v1/computeresources/`; the deploy then checks that `/api/v1/` shows `chris` the `admin` link, the test `FNNDSC/upload-chris-plugin` makes first. The store's is `NERC` because every plugin workflow uploads with `compute_names: NERC`.
+| Name and certificate | Every public VM has a reserved address, so a rebuild never moves DNS. `chris deploy --host` writes the A record when the zone is in the tenancy. When it is not, it prints the registrar's instructions, naming the registrar from the zone's name servers and the record to remove (`cube.chrisproject.org` is a CNAME to NERC's router at GoDaddy), then asks public resolvers each minute for up to an hour; seen, Caddy obtains the certificate and the deploy checks `https://<host>/api/v1/`; unseen, it stops at "waiting on DNS" and a replay resumes there.
+| What the store holds | The script ends at a working, empty store. Its first contents come from rerunning plugin upload jobs, the path every plugin uses. A backfill from another CUBE is ChRIS work, a verb of the ChRIS session (`plugin add --from <cube>`), not the substrate's.
+| Backups | `--data-backup daily` is the cloud's native volume backup (OCI: a policy, daily, seven kept, incremental); `vm restore <name> --from <date>` swaps in a volume made from one. A database dump to a bucket needs a credential on the VM and is its own design.
+| Teardown | A VM is born protected (`vm protect <name> off`). `vm teardown <name>` removes the instance and its boot disk and keeps the data volume, its backups and the reserved address, so replaying the script brings the store back with its data and name; the plan shows what is kept and what it costs. `--all` takes those too, asking for the name typed back. `net teardown` refuses while anything stands on the network, kept volumes included, and lists them.
+| As code underneath | One Resource Manager stack per lifetime, from Terraform modules inside the OCI driver, never seen in a script: the network's (compartment, VCN, subnet, gateway, route, security list, bastion); a VM's data (volume, backup policy, reserved address); a VM's machine (instance, boot disk, security group, attachment, address assignment). A default teardown is a destroy job on the machine stack, `--all` on both. Each carries `mise-service=<name>`, so a fresh mise bastion finds them, as <<found>> finds domains. The plan, the alteration refusal and the drift count are D6's.
+|===
+
+*ChRIS profiles.* A ChRIS on a VM is the all-in-one CUBE, from CUBE's own `docker-compose.yml` (6.11.0 has no pman; pfcon runs in-network beside it), never a half CUBE: it always has a compute. A profile is data, one file naming its services and its floor (vCPU, GiB, disk), so a new profile is a file, not code: `minimal` is CUBE, its workers, Postgres, dragonfly, nats and pfcon; `complete` adds Orthanc, pfdcm and oxidicom. Variants take suffixes (`complete-keycloak`, `complete-ldap`). `chris deploy` refuses a target below the profile's floor and says by how much. No profile carries the ChRIS UI: the UI is porter and ARGUS. On a cluster ChRIS goes on with the Helm chart and the OpenShift values as an overlay; to the ChRIS layer there are two kinds of target, a host with Docker and a Kubernetes.
+
+*The VM pane* is a controller in trek's pattern, as <<controller>> is for clusters: SIZE with sliders scaled to what the cloud sells (vCPU in the family's steps, memory within its range per core, disk from its minimum), the cost per hour and per month loud in the header; NETWORK (the name, the zone and whether it is the tenancy's, the open ports); BUILD; TEARDOWN. Every control lowers to the script's lines. Verbs come first; the mockup is grilled while they are built, and the panes follow once the lines are real.
+
+*Order:* the rename; `net`, tried in a scratch compartment; `vm` (`new`, `plan`, `build`, `shell`, `protect`, `teardown`, `restore`); `chris deploy --profile minimal` with the DNS wait; the store's script played for real, done when the upload jobs of pl-shexec, pl-freesurfer and pl-dymap pass against `cube.chrisproject.org`; the panes; then `blt.chrisproject.org` on `complete` with a 1 TiB data volume, the proof it repeats. Each is live-verified and merged on the operator's word.
+
 [[order]]
 == Order of work
 
@@ -412,6 +458,7 @@ Each step is one change or a short series, released on its own; nothing changes 
 . *Data writes.* Bucket objects and a domain's DNS records through the core file verbs.
 . *The tag sweep,* designed on its own when it is reached: everything carrying a domain's tag that its first teardown does not reach. It is first run live in a scratch compartment, never against a domain.
 . *The handoff* to the domain session, and the TD brand on it.
+. *Foundations and the ChRIS layer* (<<foundations>>): the rename, `net`, `vm`, `chris deploy`, the store as a script, the panes, blt.
 
 [[tests]]
 == Test strategy

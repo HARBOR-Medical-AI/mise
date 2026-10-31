@@ -1,6 +1,7 @@
 # Active project handoff: stratus (epic #1056)
 
-- Last updated: 2026-10-23
+- Last updated: 2026-10-31 (the foundations bullet below; the rest as of 2026-10-23)
+- Foundations and the ChRIS layer (2026-10-31): grilled with the operator and written as [stratus.adoc D16](stratus.adoc#foundations): OPENSHIFT, VM and CHRIS as layers, TRUSTED DOMAIN as the recipe, `domain` renamed `cluster`, the store's `.mise` script as the truth. The store was built by hand once and torn down ([howto-store-vm.adoc](howto-store-vm.adoc)); the empty compartment `chrisproject-services` is kept. The FNNDSC org secrets `CHRISPROJECT_USERNAME` (`chris`) and `CHRISPROJECT_PASSWORD` were reset 2026-10-31; the password is `~/.config/chrisproject/store/chris-password` on pangea. Next: slice 1, the rename. Branch names never start `agent/`.
 - Last verified against `main`: the Version Packages merge #1213, 2026-10-22
 - Working branches: `agent/size-zone` (#1234: the DNS zone, OCI's not-found waits, claims at paint, STOPPED), and `agent/chris-steps` stacked on it (the ChRIS steps); retarget the second to `main` before tidying the first
 - Epic status: comment posted on #1056, 2026-10-22 (follow-up 4 closed)

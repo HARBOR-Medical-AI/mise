@@ -1,0 +1,282 @@
+= The ChRIS store VM, by hand
+:toc: left
+:toclevels: 2
+:sectnums:
+:icons: font
+
+`cube.chrisproject.org` is the public ChRIS store: every FNNDSC plugin's tag build registers the plugin there through `FNNDSC/upload-chris-plugin`. This document records building it by hand once on one VM in the FNNDSC Oracle tenancy, every command in the order it was run. It is the specification for stratus's VM foundation and its ChRIS layer (<<stratus.adoc#,stratus.adoc>>): what the steps must do, and what they are checked against.
+
+The store is a VM foundation with ChRIS's `minimal` profile on it: CUBE and pfcon from CUBE's own `docker-compose.yml`, no PACS services and no ChRIS UI (the UI is porter and ARGUS).
+
+== What the plugin workflows expect
+
+`FNNDSC/upload-chris-plugin` (`action.yml`):
+
+* `chris_url` defaults to `https://cube.chrisproject.org/api/v1/`; the plugin repositories do not change it.
+* It authenticates with HTTP basic auth as `secrets.CHRISPROJECT_USERNAME` and `secrets.CHRISPROJECT_PASSWORD`, reads `collection_links.admin` from the API root, and fails when it is `null`: the user must be a CUBE admin.
+* It posts the plugin's `chris_plugin_info` JSON as `fname` and `compute_names=NERC` to the admin URL, so a compute resource named `NERC` must exist.
+
+== The admin credential
+
+The admin user is `chris`. Its password is generated on the operator's workstation and kept there, never in a repository; the two FNNDSC organisation secrets carry it to the workflows. GitHub secrets are write-only, so a lost password is replaced, not recovered.
+
+[source,bash]
+----
+d=~/.config/chrisproject/store
+mkdir -p "$d" && chmod 700 ~/.config/chrisproject "$d"
+(umask 077; python3 -c 'import secrets,string; a=string.ascii_letters+string.digits; print("".join(secrets.choice(a) for _ in range(40)), end="")' > "$d/chris-password")
+----
+
+Letters and digits only: the action places the password inside single quotes in a shell line, so a quote or a colon would break it.
+
+[source,bash]
+----
+gh secret set CHRISPROJECT_USERNAME --org FNNDSC --visibility all --body chris
+gh secret set CHRISPROJECT_PASSWORD --org FNNDSC --visibility all < ~/.config/chrisproject/store/chris-password
+gh secret list --org FNNDSC | grep CHRISPROJECT
+----
+
+Set 2026-10-31. Visibility `all` is what the secrets had before; every repository in the organisation can use them.
+
+== Decisions
+
+[cols="1,3",options="header"]
+|===
+| Item | Choice
+
+| Compartment | `chrisproject-services` under the tenancy root, its own VCN 10.20.0.0/16 and a public subnet; freeform tag `mise-service=store`. Never `harbor-oci`.
+| Shape | `VM.Standard.E5.Flex`, 2 vCPU (1 OCPU), 8 GiB.
+| Disks | A 50 GB balanced boot volume, and a separate 50 GB balanced data volume for Postgres and CUBE's files, so a rebuilt VM keeps the data.
+| OS | Ubuntu 26.04 LTS (`resolute`), Oracle's platform image; Docker CE from Docker's apt repository.
+| ChRIS | The `minimal` profile: CUBE 6.11.0 and pfcon from CUBE's own `docker-compose.yml` (no pman, no PACS services, no ChRIS UI).
+| Shell access | The OCI Bastion service: a short-lived SSH session per visit, no port 22 open to the internet. Not the mise bastion, which is the host the commands run from.
+| TLS | Caddy, Let's Encrypt over HTTP-01, after the DNS record points at the VM.
+| Contents | The upload jobs of pl-shexec, pl-freesurfer and pl-dymap rerun first; then a backfill from ekanite's plugin list.
+|===
+
+== Before building: what the tenancy has
+
+Everything here reads and costs nothing. The tenancy OCID is read from the `DEFAULT` profile.
+
+[source,bash]
+----
+export SUPPRESS_LABEL_WARNING=True
+T=$(awk -F= '/^\[DEFAULT\]/{f=1} f&&/^tenancy/{gsub(/ /,"",$2);print $2;exit}' ~/.oci/config)
+----
+
+=== Spend so far
+
+The subscription APIs refuse this plan (`InvalidPlanType`, "This plan not falls under PAYG category"), so the commitment's balance is the commitment less what the Usage API reports.
+
+[source,bash]
+----
+oci usage-api usage-summary request-summarized-usages --tenant-id "$T" \
+  --time-usage-started 2026-08-01T00:00:00Z --time-usage-ended 2026-11-01T00:00:00Z \
+  --granularity MONTHLY --query-type COST
+oci usage-api usage-summary request-summarized-usages --tenant-id "$T" \
+  --time-usage-started 2026-10-24T00:00:00Z --time-usage-ended 2026-10-31T00:00:00Z \
+  --granularity DAILY --query-type COST
+----
+
+Read 2026-10-31: $389.18 in all, every dollar of it in October; $15.72 a day since 2026-10-26 (harbor alone; its list rate is about $17). Against the $10,000 commitment, about $9,610 remains.
+
+=== Room for the VM
+
+[source,bash]
+----
+for ad in $(oci iam availability-domain list --compartment-id "$T" --query 'data[].name' --raw-output | tr -d '[]",'); do
+  printf '%s ' "$ad"
+  oci limits resource-availability get --service-name compute --limit-name standard-e5-core-count \
+    --compartment-id "$T" --availability-domain "$ad" --query 'data.available' --raw-output
+done
+----
+
+Read 2026-10-31: 4625 E5 cores free in each of `disG:US-ASHBURN-AD-1` to `-3`.
+
+=== The image and Docker
+
+[source,bash]
+----
+oci compute image list --compartment-id "$T" --operating-system "Canonical Ubuntu" \
+  --shape VM.Standard.E5.Flex --all \
+  --query 'data[].{n:"display-name",v:"operating-system-version"}' --output table
+curl -s https://download.docker.com/linux/ubuntu/dists/resolute/pool/stable/amd64/ | grep -o 'docker-ce_[^"<]*deb' | sort -u | tail -1
+----
+
+Read 2026-10-31: `Canonical-Ubuntu-26.04-2026.10.27-0` is the newest image for E5; Docker's `resolute` repository carries `docker-ce` 29.9.2.
+
+=== The CUBE release
+
+[source,bash]
+----
+gh api repos/FNNDSC/ChRIS_ultron_backEnd/releases --jq '.[0:3][] | .tag_name+" prerelease="+(.prerelease|tostring)'
+gh api 'repos/FNNDSC/ChRIS_ultron_backEnd/contents/docker-compose.yml?ref=v6.11.0' --jq .content | base64 -d | grep -E '^  [a-z_-]+:$'
+----
+
+Read 2026-10-31: v6.11.0 is the latest release (v7.0.0 is at alpha 2). Its compose already has no pman: `chris`, `worker-mains`, `worker-periodic`, `celery-scheduler`, `db`, `dragonflydb`, `pfcon`, `nats`, `lldap`, and the PACS trio `orthanc`, `pfdcm`, `oxidicom`.
+
+=== The backfill source
+
+[source,bash]
+----
+curl -s -H 'Accept: application/json' 'http://ekanite.tch.harvard.edu:32223/api/v1/plugins/?limit=1'
+----
+
+Read 2026-10-31: 282 plugins, listed without logging in.
+
+== The hand run, 2026-10-31
+
+Run once by hand on the operator's word, then torn down the same afternoon: the store is to exist only as code (a `.mise` script over stratus's `vm` and `chris` verbs), and this run is the specification those verbs are written from. Each resource's OCID was kept in `~/.config/chrisproject/store/ids.env` as it was made.
+
+=== Compartment and network
+
+[source,bash]
+----
+C=$(oci iam compartment create --compartment-id "$T" --name chrisproject-services \
+  --description "Long-lived chrisproject.org services: the ChRIS store VM and its kin" \
+  --wait-for-state ACTIVE --query data.id --raw-output)
+V=$(oci network vcn create --compartment-id "$C" --cidr-blocks '["10.20.0.0/16"]' \
+  --display-name chrisproject-services --dns-label chrisproject \
+  --wait-for-state AVAILABLE --query data.id --raw-output)
+G=$(oci network internet-gateway create --compartment-id "$C" --vcn-id "$V" --is-enabled true \
+  --display-name igw --wait-for-state AVAILABLE --query data.id --raw-output)
+RT=$(oci network vcn get --vcn-id "$V" --query 'data."default-route-table-id"' --raw-output)
+SL=$(oci network vcn get --vcn-id "$V" --query 'data."default-security-list-id"' --raw-output)
+oci network route-table update --rt-id "$RT" --force \
+  --route-rules "[{\"destination\":\"0.0.0.0/0\",\"destinationType\":\"CIDR_BLOCK\",\"networkEntityId\":\"$G\"}]"
+----
+
+The compartment and the VCN are shared by every service in the compartment, so they carry no service tag; what belongs to one service carries `mise-service=<name>`.
+
+A new VCN's default security list admits SSH from anywhere. It is narrowed to the VCN, where the OCI Bastion's endpoint sits; web traffic is admitted by a network security group on the instance only.
+
+[source,bash]
+----
+oci network security-list update --security-list-id "$SL" --force --ingress-security-rules '[
+ {"protocol":"6","source":"10.20.0.0/16","sourceType":"CIDR_BLOCK","tcpOptions":{"destinationPortRange":{"min":22,"max":22}}},
+ {"protocol":"1","source":"0.0.0.0/0","sourceType":"CIDR_BLOCK","icmpOptions":{"type":3,"code":4}},
+ {"protocol":"1","source":"10.20.0.0/16","sourceType":"CIDR_BLOCK","icmpOptions":{"type":3}}]'
+N=$(oci network nsg create --compartment-id "$C" --vcn-id "$V" --display-name web \
+  --wait-for-state AVAILABLE --query data.id --raw-output)
+oci network nsg rules add --nsg-id "$N" --security-rules '[
+ {"direction":"INGRESS","protocol":"6","source":"0.0.0.0/0","sourceType":"CIDR_BLOCK","tcpOptions":{"destinationPortRange":{"min":80,"max":80}}},
+ {"direction":"INGRESS","protocol":"6","source":"0.0.0.0/0","sourceType":"CIDR_BLOCK","tcpOptions":{"destinationPortRange":{"min":443,"max":443}}}]'
+S=$(oci network subnet create --compartment-id "$C" --vcn-id "$V" --cidr-block 10.20.0.0/24 \
+  --display-name public --dns-label public --prohibit-public-ip-on-vnic false \
+  --wait-for-state AVAILABLE --query data.id --raw-output)
+----
+
+=== Shell access, address and key
+
+The OCI Bastion admits sessions only from the mise bastion's public address (here `134.174.21.21/32`); sessions are port forwards, so the instance needs no Bastion agent plugin. Neither the Bastion service nor a reserved public IP has a line in Oracle's price list.
+
+[source,bash]
+----
+ssh-keygen -q -t ed25519 -N '' -C cube-store -f ~/.config/chrisproject/store/ssh/id_ed25519
+B=$(oci bastion bastion create --bastion-type STANDARD --compartment-id "$C" --target-subnet-id "$S" \
+  --name chrisprojectservices --client-cidr-list '["134.174.21.21/32"]' --max-session-ttl 10800 \
+  --wait-for-state SUCCEEDED --query 'data.resources[0].identifier' --raw-output)
+P=$(oci network public-ip create --compartment-id "$C" --lifetime RESERVED --display-name cube-store \
+  --freeform-tags '{"mise-service":"store"}' --query data.id --raw-output)
+----
+
+=== The instance and its data volume
+
+Ubuntu's image on OCI ships an iptables policy that rejects everything but SSH, so cloud-init opens 80 and 443 there as well as installing Docker:
+
+[source,yaml]
+----
+#cloud-config
+package_update: true
+packages: [ca-certificates, curl]
+runcmd:
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu resolute stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  - usermod -aG docker ubuntu
+  - iptables -I INPUT 5 -p tcp --dport 80 -m state --state NEW -j ACCEPT
+  - iptables -I INPUT 5 -p tcp --dport 443 -m state --state NEW -j ACCEPT
+  - netfilter-persistent save
+  - touch /var/lib/cloud/store-ready
+----
+
+[source,bash]
+----
+IMG=$(oci compute image list --compartment-id "$T" --display-name Canonical-Ubuntu-26.04-2026.10.27-0 --query 'data[0].id' --raw-output)
+I=$(oci compute instance launch --availability-domain disG:US-ASHBURN-AD-1 --compartment-id "$C" \
+  --shape VM.Standard.E5.Flex --shape-config '{"ocpus":1,"memoryInGBs":8}' \
+  --image-id "$IMG" --boot-volume-size-in-gbs 50 \
+  --subnet-id "$S" --nsg-ids "[\"$N\"]" --assign-public-ip false --hostname-label cube-store \
+  --display-name cube-store --freeform-tags '{"mise-service":"store"}' \
+  --metadata "{\"ssh_authorized_keys\":\"$(cat ~/.config/chrisproject/store/ssh/id_ed25519.pub)\"}" \
+  --user-data-file cloud-init.yaml --wait-for-state RUNNING --query data.id --raw-output)
+VNIC=$(oci compute vnic-attachment list --compartment-id "$C" --instance-id "$I" --query 'data[0]."vnic-id"' --raw-output)
+PIP=$(oci network private-ip list --vnic-id "$VNIC" --query 'data[0].id' --raw-output)
+oci network public-ip update --public-ip-id "$P" --private-ip-id "$PIP" --wait-for-state ASSIGNED
+D=$(oci bv volume create --availability-domain disG:US-ASHBURN-AD-1 --compartment-id "$C" --size-in-gbs 50 \
+  --vpus-per-gb 10 --display-name cube-store-data --freeform-tags '{"mise-service":"store"}' \
+  --wait-for-state AVAILABLE --query data.id --raw-output)
+oci compute volume-attachment attach --type paravirtualized --instance-id "$I" --volume-id "$D" \
+  --device /dev/oracleoci/oraclevdb --wait-for-state ATTACHED
+----
+
+Billing ran from the launch (18:37 UTC) to the termination (18:53 UTC). The reserved address was `129.153.134.108`; the instance's private address `10.20.0.137`.
+
+=== A shell, through the OCI Bastion
+
+[source,bash]
+----
+SESS=$(oci bastion session create-port-forwarding --bastion-id "$B" --display-name store-$(date +%s) \
+  --key-type PUB --ssh-public-key-file ~/.config/chrisproject/store/ssh/id_ed25519.pub \
+  --target-private-ip 10.20.0.137 --target-port 22 --session-ttl 10800 \
+  --wait-for-state SUCCEEDED --query 'data.resources[0].identifier' --raw-output)
+ssh -i ~/.config/chrisproject/store/ssh/id_ed25519 -f -N -L 2222:10.20.0.137:22 -p 22 \
+  "$SESS@host.bastion.us-ashburn-1.oci.oraclecloud.com"
+ssh -p 2222 -i ~/.config/chrisproject/store/ssh/id_ed25519 ubuntu@127.0.0.1
+----
+
+Found on the instance: cloud-init's marker present, Docker 29.9.2, 80 and 443 accepted in `INPUT` ahead of the final `REJECT`, the data volume at `/dev/oracleoci/oraclevdb` (`sdb`).
+
+=== The data volume, and Docker on it
+
+[source,bash]
+----
+sudo mkfs.ext4 -q -L store-data /dev/oracleoci/oraclevdb
+sudo mkdir -p /srv/store
+echo "LABEL=store-data /srv/store ext4 defaults,_netdev,nofail 0 2" | sudo tee -a /etc/fstab
+sudo systemctl daemon-reload && sudo mount /srv/store
+sudo systemctl stop docker docker.socket
+echo '{"data-root": "/srv/store/docker"}' | sudo tee /etc/docker/daemon.json
+sudo systemctl start docker
+----
+
+=== What CUBE 6.11.0 needs in production
+
+Read from the release's source (`chris_backend/config/settings/production.py`, `core/apps.py`, `plugins/admin.py`, `config/urls.py`):
+
+* `DJANGO_SETTINGS_MODULE=config.settings.production`; the image's command is `uvicorn` on port 8000; migrations are a separate `python manage.py migrate --noinput`.
+* Required without defaults: `DJANGO_SECRET_KEY`, `CHRIS_SUPERUSER_PASSWORD`, `DJANGO_ALLOWED_HOSTS`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_CONN_POOL`, `STORAGE_ENV` (`fslink` with `MEDIA_ROOT`), `CHRIS_STORE_URL`, `NATS_ADDRESS`, `PFDCM_ADDRESS`, `CELERY_BROKER_URL` (dragonfly speaks the Redis protocol), `DJANGO_SECURE_PROXY_SSL_HEADER`, `DJANGO_USE_X_FORWARDED_HOST`, `AUTH_LDAP`, `DISABLE_USER_ACCOUNT_CREATION`; CORS by `DJANGO_CORS_ALLOW_ALL_ORIGINS`.
+* The `chris` superuser is made by CUBE itself after every migration, its password set from `CHRIS_SUPERUSER_PASSWORD` (`core/apps.py`, `setup_chris`). The store's admin is therefore `CHRIS_SUPERUSER_PASSWORD` = the organisation secret's value; no `createsuperuser`.
+* A compute resource is created through `POST /chris-admin/api/v1/computeresources/` by the superuser; the plugin upload names it in `compute_names` and refuses a name that does not exist.
+* Images: `ghcr.io/fnndsc/cube:6.11.0`, `ghcr.io/fnndsc/pfcon:6.0.7`.
+
+=== Teardown
+
+[source,bash]
+----
+oci compute instance terminate --instance-id "$I" --preserve-boot-volume false --force
+# poll until TERMINATED: the attached data volume is detached with it
+oci bv volume delete --volume-id "$D" --force
+oci network public-ip delete --public-ip-id "$P" --force
+oci bastion bastion delete --bastion-id "$B" --force
+oci network subnet delete --subnet-id "$S" --force --wait-for-state TERMINATED   # retried until the Bastion's endpoint has left it
+oci network nsg delete --nsg-id "$N" --force --wait-for-state TERMINATED
+oci network route-table update --rt-id "$RT" --route-rules '[]' --force
+oci network internet-gateway delete --ig-id "$G" --force --wait-for-state TERMINATED
+oci network vcn delete --vcn-id "$V" --force --wait-for-state TERMINATED
+----
+
+`--wait-for-state` together with `--query` on `instance terminate` printed the CLI's usage text and did nothing; the bare call worked. Resource Search lags a deletion by minutes (the VCN still listed `AVAILABLE` after `vcn get` no longer found it); the private DNS view, resolver and reverse zone it lists belong to the VCN and go with it. The compartment was kept, empty.
