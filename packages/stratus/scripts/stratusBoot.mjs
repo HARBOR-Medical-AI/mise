@@ -20,7 +20,7 @@ process.env.CORE_BOOT_LOADS = join(scratch, 'chris-loads.txt');
 register(new URL('./stratusBoot.hook.mjs', import.meta.url));
 
 const { engine_create } = await import('@fnndsc/brasa/core');
-const { stratusBackend_make, FakeDriver, fakeCloud_sample, DomainStore } = await import('../dist/index.js');
+const { stratusBackend_make, FakeDriver, fakeCloud_sample, ClusterStore } = await import('../dist/index.js');
 
 const cloud = fakeCloud_sample('fnndsc');
 // A second compartment named like the first, so the duplicate rule is exercised.
@@ -28,19 +28,19 @@ const twin = { ...cloud.containers[2], id: 'ocid1.compartment.oc1..twin00', desc
 const made = stratusBackend_make({
   driver: new FakeDriver({ ...cloud, containers: [...cloud.containers, twin] }),
   configDir: join(scratch, 'config'),
-  store: new DomainStore(join(scratch, 'domains')),
+  store: new ClusterStore(join(scratch, 'clusters')),
 });
 const engine = await engine_create(made.backend);
 engine.sink_install({ data_write: () => undefined, err_write: () => undefined, progress_write: () => undefined });
 
 /** Each line, the status it answers with, and what its output holds (and must not). */
 const CHECKS = [
-  { line: 'pwd', ok: true, has: ['/net/oci/fnndsc/domains'] },
+  { line: 'pwd', ok: true, has: ['/net/oci/fnndsc/clusters'] },
   { line: 'ls /', ok: true, has: ['net'] },
   { line: 'ls /net', ok: true, has: ['oci'] },
   { line: 'ls /net/oci', ok: true, has: ['fnndsc'] },
   { line: 'cd /net/oci/fnndsc', ok: true },
-  { line: 'ls', ok: true, has: ['harbor-oci', 'sandbox~andbox', 'sandbox~twin00', 'regions', 'domains', 'info.json'], hasNot: ['scratch-a'] },
+  { line: 'ls', ok: true, has: ['harbor-oci', 'sandbox~andbox', 'sandbox~twin00', 'regions', 'clusters', 'info.json'], hasNot: ['scratch-a'] },
   { line: 'ls -l', ok: true, has: ['harbor-oci', 'active'] },
   { line: 'cat info.json', ok: true, has: ['"name": "fnndsc"'] },
   { line: 'cat harbor-oci/info.json', ok: true, has: ['"name": "harbor-oci"'] },
@@ -49,7 +49,7 @@ const CHECKS = [
   { line: 'cd sandbox~andbox/scratch-a', ok: true },
   { line: 'pwd', ok: true, has: ['/net/oci/fnndsc/sandbox~andbox/scratch-a'] },
   { line: 'cd ~', ok: true },
-  { line: 'pwd', ok: true, has: ['/net/oci/fnndsc/domains'] },
+  { line: 'pwd', ok: true, has: ['/net/oci/fnndsc/clusters'] },
   { line: 'ls ../regions', ok: true, has: ['us-ashburn-1'] },
   { line: 'ls ../regions/us-ashburn-1', ok: true, has: ['zones', 'limits', 'shapes', 'prices'] },
   { line: 'ls ../regions/us-ashburn-1/zones', ok: true, has: ['Uocm:US-ASHBURN-AD-1', 'Uocm:US-ASHBURN-AD-3'] },
@@ -68,10 +68,10 @@ const CHECKS = [
   { line: 'ls ../regions/eu-nowhere-1', ok: false, has: ['No such file or directory'] },
   { line: 'cat ../regions', ok: false, has: ['Is a directory'] },
   { line: 'touch ../regions/x', ok: false },
-  { line: 'domain new trial --base-domain fake.example --workers 2x8/32', ok: true, has: ['spec written', 'workers 2 × 8 vCPU 32 GiB'] },
+  { line: 'cluster new trial --base-domain fake.example --workers 2x8/32', ok: true, has: ['spec written', 'workers 2 × 8 vCPU 32 GiB'] },
   { line: 'ls ~/trial', ok: true, has: ['spec.yaml', 'state.json', 'steps', 'auth'] },
-  { line: 'domain plan trial', ok: true, has: ['8 of 9238 cores', 'an hour', 'needs the tasks tier'] },
-  { line: 'domain build trial', ok: false, has: ['build steps are not written yet'] },
+  { line: 'cluster plan trial', ok: true, has: ['8 of 9238 cores', 'an hour', 'needs the tasks tier'] },
+  { line: 'cluster build trial', ok: false, has: ['build steps are not written yet'] },
   { line: 'kill trial-build', ok: false, has: ['no such task'] },
   { line: 'ls /proc/steps', ok: true },
   { line: 'ls /usr/bin', ok: true, has: ['ls', 'cat'], hasNot: ['feed', 'plugin', 'pacs'] },

@@ -96,7 +96,7 @@ export class FakeKube implements KubeApi {
  * The fake world's reach for `verify`: a healthy cluster of the given nodes,
  * the fake build's load-balancer addresses in DNS, a console that answers.
  *
- * @param nodes_of - The nodes of a domain's cluster, from its kubeconfig's text.
+ * @param nodes_of - The nodes of a cluster, from its kubeconfig's text.
  * @returns The reach.
  */
 export function fakeVerifyReach(nodes_of: (kubeconfig: string) => FakeNode[]): VerifyReach {

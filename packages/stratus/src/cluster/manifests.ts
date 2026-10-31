@@ -4,7 +4,7 @@
  * (docs/stratus.adoc, D14).
  *
  * They are files of the package, read once from beside `dist/`, and shown in
- * the session's home (`~/tenant.mise`, beside the domains), so `play` finds
+ * the session's home (`~/tenant.mise`, beside the clusters), so `play` finds
  * one there as a ChRIS session finds a manifest in its home.
  *
  * @module
@@ -38,7 +38,7 @@ export function shippedManifests_read(folder: URL = new URL('../../manifests/', 
     try {
       read.push({ name, text: readFileSync(new URL(name, folder), 'utf8') });
     } catch {
-      // A package without its manifests still builds and reads domains.
+      // A package without its manifests still builds and reads clusters.
     }
   }
   return read;

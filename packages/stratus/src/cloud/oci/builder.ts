@@ -3,13 +3,13 @@
  *
  * The stack is Oracle's own `oci-openshift` `create-cluster` release zip,
  * pinned by its digest, uploaded as a Resource Manager stack. A plan is a plan
- * job read back as JSON; adopting a domain `harbor-oci` built is a stack with
- * that domain's variables and an import-state job carrying its Terraform
+ * job read back as JSON; adopting a cluster `harbor-oci` built is a stack with
+ * that cluster's variables and an import-state job carrying its Terraform
  * state. Every wait polls the job and streams its log to the step's; a stop
  * asks Resource Manager to cancel the job without forcing it, and waits for
  * Terraform to finish its current operation.
  *
- * A new domain's build, as `harbor-oci` proved it: preflight reads the
+ * A new cluster's build, as `harbor-oci` proved it: preflight reads the
  * credential, the compartment, the attribution tag, the room per availability
  * domain, the load balancers free, the zone's delegation and the SSH key; the
  * discovery image is copied through this host into a private bucket and
@@ -21,16 +21,16 @@
  * @module
  */
 import { createHash } from 'node:crypto';
-import type { DomainSpec } from '../../domain/spec.js';
+import type { ClusterSpec } from '../../cluster/spec.js';
 import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, PreflightCheck, TeardownRequest } from '../builder.js';
 import { Readable } from 'node:stream';
 import { planRows_read } from './planRead.js';
 import type { OciBuildApi } from './buildApi.js';
 import { notFound } from './errors.js';
 import { familyShape_resolve, stackSpec_derive, stackVariables_build } from './stackVars.js';
-import { DOMAIN_TAG } from '../../domain/state.js';
+import { CLUSTER_TAG } from '../../cluster/state.js';
 import type { CloudDriver } from '../driver.js';
-import { specFit_read } from '../../domain/sizing.js';
+import { specFit_read } from '../../cluster/sizing.js';
 import type { RmApi, RmJobRecord, RmOperation, RmStackRecord } from './rmApi.js';
 
 /** The stack release stratus builds with: Oracle's zip of `create-cluster`, pinned. */
@@ -40,8 +40,8 @@ export const STACK_RELEASE = {
   sha256: 'a4c8a52dcc4ffc030e90b94e90553cc9294fbb87ed66fb6ac6fae2c573b14c8b',
 } as const;
 
-/** The freeform tag a domain's stack carries, so a fresh bastion finds it (D4). */
-export { DOMAIN_TAG };
+/** The freeform tag a cluster's stack carries, so a fresh bastion finds it (D4). */
+export { CLUSTER_TAG };
 
 /** The job states that will not change again. */
 const JOB_OVER: ReadonlyArray<string> = ['SUCCEEDED', 'FAILED', 'CANCELED'];
@@ -72,7 +72,7 @@ export interface OciBuilderOptions {
   readonly linkDays?: number;
 }
 
-/** The bucket the discovery images live in, one object per domain. */
+/** The bucket the discovery images live in, one object per cluster. */
 export const ISO_BUCKET: string = 'stratus-iso';
 
 /**
@@ -131,8 +131,8 @@ function poll_wait(ms: number, signal: AbortSignal): Promise<void> {
 /** The tag namespace the stack attributes what it makes with: one per tenancy. */
 export const TAG_NAMESPACE: string = 'openshift-tags';
 
-/** The compartment every built domain's own compartment sits in, under the tenancy root. */
-export const DOMAINS_COMPARTMENT: string = 'domains';
+/** The compartment every built cluster's own compartment sits in, under the tenancy root. */
+export const CLUSTERS_COMPARTMENT: string = 'clusters';
 
 /** OCI's build half, over Resource Manager. */
 export class OciBuilder implements CloudBuilder {
@@ -203,41 +203,41 @@ export class OciBuilder implements CloudBuilder {
   }
 
   /**
-   * Adopts a domain `harbor-oci` built: a stack of the pinned release with its
-   * variables, tagged with the domain's name, and its Terraform state imported.
+   * Adopts a cluster `harbor-oci` built: a stack of the pinned release with its
+   * variables, tagged with the cluster's name, and its Terraform state imported.
    *
-   * @param request - The domain, where the stack goes, its variables and its state.
+   * @param request - The cluster, where the stack goes, its variables and its state.
    * @param call - The step's log and stop.
    * @returns The stack's id.
    */
-  async stack_describe(stackId: string, region: string): Promise<{ state: string; compartmentId: string; baseDomain: string | null; spec: DomainSpec | null }> {
+  async stack_describe(stackId: string, region: string): Promise<{ state: string; compartmentId: string; baseDomain: string | null; spec: ClusterSpec | null }> {
     const stack: RmStackRecord = await this.options.rm(region).stack_get(stackId);
     const read = stackSpec_derive(stack.variables);
     return { state: stack.state.toLowerCase(), compartmentId: stack.compartmentId, baseDomain: read.baseDomain, spec: read.spec };
   }
 
-  async stack_adopt(request: { domain: string; region: string; compartmentId: string; variables: Record<string, string>; state: Buffer; stackVersion: string }, call: BuildCall): Promise<string> {
+  async stack_adopt(request: { cluster: string; region: string; compartmentId: string; variables: Record<string, string>; state: Buffer; stackVersion: string }, call: BuildCall): Promise<string> {
     // The state was written by that release's Terraform; another release would plan changes that are not there.
-    if (request.stackVersion !== STACK_RELEASE.version) throw new Error(`the domain was built with oci-openshift ${request.stackVersion || '(unpinned)'}; stratus builds with ${STACK_RELEASE.version}`);
+    if (request.stackVersion !== STACK_RELEASE.version) throw new Error(`the cluster was built with oci-openshift ${request.stackVersion || '(unpinned)'}; stratus builds with ${STACK_RELEASE.version}`);
     const rm: RmApi = this.options.rm(request.region);
-    // A stack already tagged with the domain is the one an earlier adoption made: its state is in, nothing to repeat.
-    const found = (await rm.stacks_tagged(request.compartmentId, DOMAIN_TAG)).filter((stack): boolean => stack.tagValue === request.domain && stack.state === 'ACTIVE');
-    if (found.length > 1) throw new Error(`${found.length} stacks in ${request.compartmentId} are tagged ${DOMAIN_TAG}=${request.domain}: ${found.map((stack) => stack.id).join(', ')}`);
+    // A stack already tagged with the cluster is the one an earlier adoption made: its state is in, nothing to repeat.
+    const found = (await rm.stacks_tagged(request.compartmentId, CLUSTER_TAG)).filter((stack): boolean => stack.tagValue === request.cluster && stack.state === 'ACTIVE');
+    if (found.length > 1) throw new Error(`${found.length} stacks in ${request.compartmentId} are tagged ${CLUSTER_TAG}=${request.cluster}: ${found.map((stack) => stack.id).join(', ')}`);
     if (found.length === 1) {
-      call.log(`stack ${found[0]!.id} is already tagged ${DOMAIN_TAG}=${request.domain}: taken as this domain's, its state already in`);
+      call.log(`stack ${found[0]!.id} is already tagged ${CLUSTER_TAG}=${request.cluster}: taken as this cluster's, its state already in`);
       return found[0]!.id;
     }
     const zip: Buffer = await this.zip_get();
     const stack = await rm.stack_create({
       compartmentId: request.compartmentId,
-      displayName: `${request.domain} · a Trusted Domain`,
-      description: `The ${request.domain} domain's infrastructure, oci-openshift ${STACK_RELEASE.version}, adopted from harbor-oci by stratus.`,
+      displayName: `${request.cluster} · an OpenShift cluster`,
+      description: `The ${request.cluster} cluster's infrastructure, oci-openshift ${STACK_RELEASE.version}, adopted from harbor-oci by stratus.`,
       zipBase64: zip.toString('base64'),
       variables: request.variables,
-      tags: { [DOMAIN_TAG]: request.domain },
+      tags: { [CLUSTER_TAG]: request.cluster },
     });
     call.log(`stack ${stack.id} made in ${request.compartmentId}`);
-    await this.job_run(rm, stack.id, { kind: 'import', stateBase64: request.state.toString('base64') }, `${request.domain}: import the state harbor-oci kept`, call);
+    await this.job_run(rm, stack.id, { kind: 'import', stateBase64: request.state.toString('base64') }, `${request.cluster}: import the state harbor-oci kept`, call);
     return stack.id;
   }
 
@@ -258,23 +258,23 @@ export class OciBuilder implements CloudBuilder {
   }
 
   /**
-   * The domain's compartment, `domains/<name>` under the tenancy root.
+   * The cluster's compartment, `clusters/<name>` under the tenancy root.
    * Compartments are free; making one is still a change to the tenancy, so
-   * it runs in the build (the `tasks` tier), never at `domain new`.
+   * it runs in the build (the `tasks` tier), never at `cluster new`.
    *
-   * @param request - The domain, and the region its calls go through.
+   * @param request - The cluster, and the region its calls go through.
    * @param call - The step's log and stop.
    * @returns The compartment's id, and whether this call made it.
    */
-  async compartment_ensure(request: { domain: string; region: string }, call: BuildCall): Promise<{ id: string; made: boolean }> {
+  async compartment_ensure(request: { cluster: string; region: string }, call: BuildCall): Promise<{ id: string; made: boolean }> {
     const api: OciBuildApi = this.api_resolve(request.region);
     const tenancy = await api.tenancy_get();
-    const parent = await api.compartmentChild_ensure(tenancy.id, DOMAINS_COMPARTMENT, 'The Trusted Domains stratus builds, one compartment each', { 'mise-role': 'domains' });
-    call.log(parent.made ? `made the compartment ${DOMAINS_COMPARTMENT} under ${tenancy.name}` : `${DOMAINS_COMPARTMENT} is there`);
+    const parent = await api.compartmentChild_ensure(tenancy.id, CLUSTERS_COMPARTMENT, 'The OpenShift clusters stratus builds, one compartment each', { 'mise-role': 'clusters' });
+    call.log(parent.made ? `made the compartment ${CLUSTERS_COMPARTMENT} under ${tenancy.name}` : `${CLUSTERS_COMPARTMENT} is there`);
     await this.compartment_awaitActive(api, parent.id, call);
     // A compartment just made may answer not found for a while, even after it reads ACTIVE.
-    const own = await this.notFound_outwait(() => api.compartmentChild_ensure(parent.id, request.domain, `The Trusted Domain ${request.domain}`, { 'mise-domain': request.domain }), `${DOMAINS_COMPARTMENT} is not yet usable`, call);
-    call.log(own.made ? `made the compartment ${DOMAINS_COMPARTMENT}/${request.domain}` : `${DOMAINS_COMPARTMENT}/${request.domain} is there`);
+    const own = await this.notFound_outwait(() => api.compartmentChild_ensure(parent.id, request.cluster, `The OpenShift cluster ${request.cluster}`, { 'mise-cluster': request.cluster }), `${CLUSTERS_COMPARTMENT} is not yet usable`, call);
+    call.log(own.made ? `made the compartment ${CLUSTERS_COMPARTMENT}/${request.cluster}` : `${CLUSTERS_COMPARTMENT}/${request.cluster} is there`);
     await this.compartment_awaitActive(api, own.id, call);
     return own;
   }
@@ -319,7 +319,7 @@ export class OciBuilder implements CloudBuilder {
     }
   }
 
-  async preflight(request: { domain: string; spec: DomainSpec; region: string; baseDomain: string; compartmentId: string }, call: BuildCall): Promise<PreflightCheck[]> {
+  async preflight(request: { cluster: string; spec: ClusterSpec; region: string; baseDomain: string; compartmentId: string }, call: BuildCall): Promise<PreflightCheck[]> {
     const api: OciBuildApi = this.api_resolve(request.region);
     const checks: PreflightCheck[] = [];
     const check = async (name: string, run: () => Promise<{ ok: boolean; note: string }>): Promise<void> => {
@@ -330,7 +330,7 @@ export class OciBuilder implements CloudBuilder {
     };
     await check('credential', async () => { const tenancy = await api.tenancy_get(); return { ok: true, note: `the key answers for ${tenancy.name}` }; });
     await check('compartment', async () => {
-      if (request.compartmentId === '') return { ok: false, note: 'none chosen: domain new --compartment <ocid>' };
+      if (request.compartmentId === '') return { ok: false, note: 'none chosen: cluster new --compartment <ocid>' };
       const state: string = await api.compartmentState_get(request.compartmentId);
       return { ok: state.toUpperCase() === 'ACTIVE', note: state.toLowerCase() };
     });
@@ -346,7 +346,7 @@ export class OciBuilder implements CloudBuilder {
     });
     await check('room', async () => {
       if (this.options.driver === undefined) return { ok: false, note: 'no driver to read the limits with' };
-      const fits = await specFit_read(this.options.driver, request.region, request.domain, request.spec);
+      const fits = await specFit_read(this.options.driver, request.region, request.cluster, request.spec);
       const short = fits.filter((fit): boolean => fit.fits !== true);
       return { ok: short.length === 0, note: short.length === 0 ? `fits all ${fits.length} availability domains` : `does not fit, or not said, in ${short.map((fit) => fit.zone).join(', ')}` };
     });
@@ -369,10 +369,10 @@ export class OciBuilder implements CloudBuilder {
     return checks;
   }
 
-  async iso_store(request: { domain: string; url: string; region: string; compartmentId: string }, call: BuildCall): Promise<{ object: string; expires: string; link: string; linkId: string }> {
+  async iso_store(request: { cluster: string; url: string; region: string; compartmentId: string }, call: BuildCall): Promise<{ object: string; expires: string; link: string; linkId: string }> {
     const api: OciBuildApi = this.api_resolve(request.region);
     const bucket: string = this.options.bucket ?? ISO_BUCKET;
-    const object: string = `${request.domain}-discovery.iso`;
+    const object: string = `${request.cluster}-discovery.iso`;
     await api.bucket_ensure(bucket, request.compartmentId);
     // A bucket just made may refuse an object as not found for a while; the image is a stream, so each try fetches it again.
     await this.notFound_outwait(async (): Promise<void> => {
@@ -386,7 +386,7 @@ export class OciBuilder implements CloudBuilder {
     return { object, expires: expires.toISOString(), link: link.url, linkId: link.id };
   }
 
-  async infra_plan(request: { domain: string; spec: DomainSpec; region: string; isoObject: string; stackRef?: string; compartmentId?: string; baseDomain?: string; isoLink?: string }, call: BuildCall): Promise<InfraPlan> {
+  async infra_plan(request: { cluster: string; spec: ClusterSpec; region: string; isoObject: string; stackRef?: string; compartmentId?: string; baseDomain?: string; isoLink?: string }, call: BuildCall): Promise<InfraPlan> {
     const rm: RmApi = this.options.rm(request.region);
     let stackRef: string | undefined = request.stackRef;
     let made: string | undefined;
@@ -398,31 +398,31 @@ export class OciBuilder implements CloudBuilder {
       const tenancyId: string = (await api.tenancy_get()).id;
       const tagHome: string | null = await api.tagNamespaceCompartment_find(TAG_NAMESPACE);
       const variables: Record<string, string> = stackVariables_build({
-        domain: request.domain, spec: request.spec, tenancyId, compartmentId: request.compartmentId, region: request.region,
+        cluster: request.cluster, spec: request.spec, tenancyId, compartmentId: request.compartmentId, region: request.region,
         ...(tagHome !== null ? { tagNamespaceCompartmentId: tagHome } : {}),
         baseDomain: request.baseDomain, isoLink: request.isoLink, sshPublicKey: sshPublicKey.trim(),
       });
       const stack = await rm.stack_create({
         compartmentId: request.compartmentId,
-        displayName: `${request.domain} · a Trusted Domain`,
-        description: `The ${request.domain} domain's infrastructure, oci-openshift ${STACK_RELEASE.version}, built by stratus.`,
+        displayName: `${request.cluster} · an OpenShift cluster`,
+        description: `The ${request.cluster} cluster's infrastructure, oci-openshift ${STACK_RELEASE.version}, built by stratus.`,
         zipBase64: (await this.zip_get()).toString('base64'),
         variables,
-        tags: { [DOMAIN_TAG]: request.domain },
+        tags: { [CLUSTER_TAG]: request.cluster },
       });
       call.log(`stack ${stack.id} made in ${request.compartmentId}`);
       stackRef = stack.id;
       made = stack.id;
     }
-    const job: RmJobRecord = await this.job_run(rm, stackRef, { kind: 'plan' }, `${request.domain}: plan`, call);
+    const job: RmJobRecord = await this.job_run(rm, stackRef, { kind: 'plan' }, `${request.cluster}: plan`, call);
     return { ref: job.id, rows: planRows_read(await rm.jobPlan_read(job.id)), ...(made !== undefined ? { stackRef: made } : {}) };
   }
 
-  async infra_apply(request: { domain: string; plan: InfraPlan; region: string; stackRef?: string }, call: BuildCall): Promise<InfraOutputs> {
+  async infra_apply(request: { cluster: string; plan: InfraPlan; region: string; stackRef?: string }, call: BuildCall): Promise<InfraOutputs> {
     const stackRef: string | undefined = request.stackRef ?? request.plan.stackRef;
     if (stackRef === undefined) throw new Error('no stack to apply in');
     const rm: RmApi = this.options.rm(request.region);
-    const job: RmJobRecord = await this.job_run(rm, stackRef, { kind: 'apply', planJobId: request.plan.ref }, `${request.domain}: apply`, call);
+    const job: RmJobRecord = await this.job_run(rm, stackRef, { kind: 'apply', planJobId: request.plan.ref }, `${request.cluster}: apply`, call);
     const outputs: Record<string, string> = await rm.jobOutputs_read(job.id);
     const need = (key: string): string => {
       const value: string | undefined = outputs[key];
@@ -438,11 +438,11 @@ export class OciBuilder implements CloudBuilder {
     };
   }
 
-  async dns_upsert(request: { domain: string; baseDomain: string; outputs: InfraOutputs; compartmentId: string; region: string }, call: BuildCall): Promise<string[]> {
+  async dns_upsert(request: { cluster: string; baseDomain: string; outputs: InfraOutputs; compartmentId: string; region: string }, call: BuildCall): Promise<string[]> {
     const api: OciBuildApi = this.api_resolve(request.region);
-    const cluster: string = `${request.domain}.${request.baseDomain}`;
+    const cluster: string = `${request.cluster}.${request.baseDomain}`;
     const records: Array<[string, string]> = [[`api.${cluster}`, request.outputs.apiIp], [`api-int.${cluster}`, request.outputs.apiIntIp], [`*.apps.${cluster}`, request.outputs.appsIp]];
-    // The zone is shared and lives where it was made, not in the domain's own compartment.
+    // The zone is shared and lives where it was made, not in the cluster's own compartment.
     const zoneHome: string = (await api.zoneCompartment_find(request.baseDomain)) ?? request.compartmentId;
     for (const [name, address] of records) {
       await api.record_upsert(request.baseDomain, name, address, zoneHome);
@@ -459,10 +459,10 @@ export class OciBuilder implements CloudBuilder {
     const api: OciBuildApi = this.api_resolve(request.region);
     const gone: string[] = [];
     if (request.stackRef !== undefined && request.stackEmpty !== true) {
-      await this.job_run(this.options.rm(request.region), request.stackRef, { kind: 'destroy' }, `${request.domain}: destroy`, call);
+      await this.job_run(this.options.rm(request.region), request.stackRef, { kind: 'destroy' }, `${request.cluster}: destroy`, call);
       gone.push(`the stack's resources (${request.stackRef})`);
     }
-    const cluster: string = `${request.domain}.${request.baseDomain}`;
+    const cluster: string = `${request.cluster}.${request.baseDomain}`;
     if (request.baseDomain === '') {
       call.log('no zone known for it: no records looked for');
     } else {
@@ -485,35 +485,35 @@ export class OciBuilder implements CloudBuilder {
     }
     if (request.volumeIds.length > 0) gone.push(`${request.volumeIds.length} volumes the cluster made`);
     // Block volumes the cluster could not name (no kubeconfig here, or made
-    // after it was read): what is left in the domain's compartment carrying
+    // after it was read): what is left in the cluster's compartment carrying
     // the attribution tag namespace is the cluster's, the compartment being
-    // the domain's own.
+    // the cluster's own.
     const left = (await api.volumes_list(request.compartmentId)).filter((volume): boolean => !request.volumeIds.includes(volume.id) && Object.keys(volume.tags).some((key: string): boolean => key.startsWith(`${TAG_NAMESPACE}.`)));
     for (const volume of left) {
       await api.volume_delete(volume.id);
       call.log(`volume ${volume.name} (${volume.id}) removed: left in the compartment with the attribution tag`);
     }
     if (left.length > 0) gone.push(`${left.length} volumes left in the compartment with the attribution tag`);
-    // The stack carried the domain's tag: left, the domain would be found again.
+    // The stack carried the cluster's tag: left, the cluster would be found again.
     if (request.stackRef !== undefined) {
       await this.options.rm(request.region).stack_delete(request.stackRef);
       gone.push('the stack itself');
     }
-    // The compartment: `domains/<name>` is stratus's own, and the image bucket
-    // in it went with the domain; another's (harbor-oci's) keeps itself and
+    // The compartment: `clusters/<name>` is stratus's own, and the image bucket
+    // in it went with the cluster; another's (harbor-oci's) keeps itself and
     // everything in it, and only loses the tag.
     const compartment = await api.compartment_describe(request.compartmentId);
-    if (compartment.name === request.domain && compartment.parentName === DOMAINS_COMPARTMENT) {
+    if (compartment.name === request.cluster && compartment.parentName === CLUSTERS_COMPARTMENT) {
       if (await api.bucket_remove(bucket, request.compartmentId)) gone.push(`the image bucket ${bucket}`);
       try {
         await api.compartment_delete(request.compartmentId);
-        gone.push(`the compartment ${DOMAINS_COMPARTMENT}/${request.domain}`);
+        gone.push(`the compartment ${CLUSTERS_COMPARTMENT}/${request.cluster}`);
       } catch (error: unknown) {
-        call.log(`the compartment ${DOMAINS_COMPARTMENT}/${request.domain} stays: ${error instanceof Error ? error.message : String(error)}`);
+        call.log(`the compartment ${CLUSTERS_COMPARTMENT}/${request.cluster} stays: ${error instanceof Error ? error.message : String(error)}`);
       }
-    } else if (compartment.tags[DOMAIN_TAG] === request.domain) {
-      await api.compartment_tagRemove(request.compartmentId, DOMAIN_TAG);
-      gone.push(`the tag ${DOMAIN_TAG}=${request.domain} off the compartment ${compartment.name}`);
+    } else if (compartment.tags[CLUSTER_TAG] === request.cluster) {
+      await api.compartment_tagRemove(request.compartmentId, CLUSTER_TAG);
+      gone.push(`the tag ${CLUSTER_TAG}=${request.cluster} off the compartment ${compartment.name}`);
     }
     return gone;
   }

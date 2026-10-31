@@ -25,7 +25,7 @@ export const STRATUS_ITEM_KINDS: ReadonlyArray<ItemKindLook> = [
   { type: 'limit', mark: 'L', container: true },
   { type: 'shape', mark: 's', container: true },
   { type: 'price', mark: '$', container: true },
-  { type: 'domain', mark: 'D', container: true, sizeColumn: state_column },
+  { type: 'cluster', mark: 'D', container: true, sizeColumn: state_column },
   { type: 'kind', mark: 'k', container: true, sizeColumn: count_column },
   { type: 'instance', mark: 'i', container: true, sizeColumn: state_column },
   { type: 'network', mark: 'n', container: true, sizeColumn: state_column },
@@ -86,7 +86,7 @@ export function stratusName_colorize(name: string, type: string, status?: string
   }
   if (CONTAINER_TYPES.includes(type) || type === 'dir' || type === 'kind') return chalk.blue(name);
   if (type === 'region' || type === 'zone') return chalk.cyan(name);
-  if (type === 'domain') return chalk.magenta(name);
+  if (type === 'cluster') return chalk.magenta(name);
   if (type === 'shape' || type === 'price' || type === 'limit' || type === 'service') return chalk.white(name);
   return name;
 }

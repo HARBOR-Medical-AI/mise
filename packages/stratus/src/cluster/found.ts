@@ -1,6 +1,6 @@
 /**
- * @file A Trusted Domain found in the tenancy by its tag, read from the cloud
- * alone (docs/stratus.adoc, D15): the tenancy is the truth about its domains,
+ * @file A cluster found in the tenancy by its tag, read from the cloud
+ * alone (docs/stratus.adoc, D15): the tenancy is the truth about its clusters,
  * and what the cloud says of one is shown before anyone adopts it. Its
  * address and spec come from its stack's variables, its condition from what
  * lives in its compartment and what its stack still holds. Adoption is where
@@ -9,23 +9,23 @@
  * @module
  */
 import type { CloudBuilder } from '../cloud/builder.js';
-import type { CloudDriver, FoundDomain, ResourceCounts } from '../cloud/driver.js';
-import type { HarborDomain, StepState } from '../domains/harborOci.js';
-import type { DomainSpec } from './spec.js';
-import { DOMAIN_TAG, type DomainRecord } from './state.js';
+import type { CloudDriver, FoundCluster, ResourceCounts } from '../cloud/driver.js';
+import type { HarborCluster, StepState } from '../checkout/harborOci.js';
+import type { ClusterSpec } from './spec.js';
+import { CLUSTER_TAG, type ClusterRecord } from './state.js';
 import { BUILD_STEPS, FIRST_BILLING_STEP } from './steps.js';
 
-/** Where a found domain stands, from the cloud: machines live, something of its stack stands, or nothing is left but its tag. */
+/** Where a found cluster stands, from the cloud: machines live, something of its stack stands, or nothing is left but its tag. */
 export type FoundCondition = 'UP' | 'STOPPED' | 'GONE';
 
-/** What the cloud says of a found domain, beside what carries its tag. */
+/** What the cloud says of a found cluster, beside what carries its tag. */
 export interface FoundRead {
-  readonly stack: FoundDomain['stack'];
+  readonly stack: FoundCluster['stack'];
   readonly compartmentId: string | null;
   /** The zone its stack's variables name, else the tenancy's only zone, else null. */
   readonly baseDomain: string | null;
   /** The spec its stack's variables say, or null when the stack said no sizes or there is none. */
-  readonly spec: DomainSpec | null;
+  readonly spec: ClusterSpec | null;
   /** Its compartment's live resources, or null when not counted. */
   readonly resources: ResourceCounts | null;
   /** How many resources its stack's state holds, when asked (nothing live), or null. */
@@ -34,14 +34,14 @@ export interface FoundRead {
 }
 
 /**
- * A found domain as the verbs read one, before the cloud is asked anything
+ * A found cluster as the verbs read one, before the cloud is asked anything
  * more: no spec, no steps, no secrets; its compartment the tagged one, else
  * the stack's.
  *
  * @param found - What the search found.
- * @returns The domain.
+ * @returns The cluster.
  */
-export function foundDomain_make(found: FoundDomain): HarborDomain {
+export function foundCluster_make(found: FoundCluster): HarborCluster {
   const compartmentId: string | null = found.compartmentId ?? found.stack?.compartmentId ?? null;
   return {
     name: found.name,
@@ -58,7 +58,7 @@ export function foundDomain_make(found: FoundDomain): HarborDomain {
 }
 
 /**
- * A found domain's steps, as far as the cloud attests them: its compartment
+ * A found cluster's steps, as far as the cloud attests them: its compartment
  * when one carries the tag, the apply when machines live. The rest is
  * unknown while it is up (the host keeps no record; adopting and verifying
  * tells), and not done when nothing of it is left.
@@ -78,27 +78,27 @@ export function foundSteps_derive(read: FoundRead): StepState[] {
 }
 
 /**
- * Reads a found domain from the cloud: its stack's variables for the zone
+ * Reads a found cluster from the cloud: its stack's variables for the zone
  * and the spec, its compartment's live resources, and when nothing lives
  * there, whether its stack still holds anything.
  *
  * @param found - What the search found.
  * @param driver - The cloud's read half.
  * @param builder - Its build half, which reads stacks, or null.
- * @returns The domain, described.
+ * @returns The cluster, described.
  */
-export async function foundDomain_describe(found: FoundDomain, driver: CloudDriver, builder: CloudBuilder | null): Promise<HarborDomain> {
-  const bare: HarborDomain = foundDomain_make(found);
+export async function foundCluster_describe(found: FoundCluster, driver: CloudDriver, builder: CloudBuilder | null): Promise<HarborCluster> {
+  const bare: HarborCluster = foundCluster_make(found);
   const compartmentId: string | null = bare.settings['OCI_COMPARTMENT_OCID'] ?? null;
   let baseDomain: string | null = null;
-  let spec: DomainSpec | null = null;
+  let spec: ClusterSpec | null = null;
   if (found.stack !== null && builder?.stack_describe !== undefined) {
     try {
       const described = await builder.stack_describe(found.stack.id, found.region);
       baseDomain = described.baseDomain;
       spec = described.spec;
     } catch {
-      // A stack that cannot be read leaves the address and spec unknown; the domain is still shown.
+      // A stack that cannot be read leaves the address and spec unknown; the cluster is still shown.
     }
   }
   if (baseDomain === null && builder?.zones_list !== undefined) {
@@ -130,24 +130,24 @@ export async function foundDomain_describe(found: FoundDomain, driver: CloudDriv
 }
 
 /**
- * The record a session keeps of a found domain when it takes it on: by
- * `domain adopt`, or by the teardown of one with nothing left but its tag.
+ * The record a session keeps of a found cluster when it takes it on: by
+ * `cluster adopt`, or by the teardown of one with nothing left but its tag.
  * The compartment step is done when one carries the tag, the apply when
  * machines live; the rest the host never saw.
  *
- * @param domain - The found domain, described.
+ * @param cluster - The found cluster, described.
  * @param now - The clock.
  * @param protect - Whether it is born protected (adoption) or not (a teardown of what is left).
  * @returns The record.
  */
-export function foundRecord_make(domain: HarborDomain, now: string, protect: boolean): DomainRecord {
-  const read: HarborDomain['found'] = domain.found;
+export function foundRecord_make(cluster: HarborCluster, now: string, protect: boolean): ClusterRecord {
+  const read: HarborCluster['found'] = cluster.found;
   const compartmentId: string | null = read?.compartmentId ?? read?.stack?.compartmentId ?? null;
   const instances: number = read?.resources?.instances ?? 0;
-  const steps: DomainRecord['steps'] = { compartment: { state: 'done', ended: now, note: compartmentId === null ? 'no compartment tagged' : `found ${compartmentId}` } };
+  const steps: ClusterRecord['steps'] = { compartment: { state: 'done', ended: now, note: compartmentId === null ? 'no compartment tagged' : `found ${compartmentId}` } };
   if (instances > 0) steps[FIRST_BILLING_STEP] = { state: 'done', ended: now, note: `${instances} instance${instances === 1 ? '' : 's'} live in its compartment` };
   return {
-    name: domain.name, created: now, region: domain.settings['OCI_REGION'] ?? '', baseDomain: read?.baseDomain ?? '', steps,
+    name: cluster.name, created: now, region: cluster.settings['OCI_REGION'] ?? '', baseDomain: read?.baseDomain ?? '', steps,
     ids: read?.stack !== null && read?.stack !== undefined ? { stackRef: read.stack.id } : {},
     ...(compartmentId !== null ? { compartmentId } : {}),
     adopted: { from: 'the tenancy', at: now },
@@ -156,16 +156,16 @@ export function foundRecord_make(domain: HarborDomain, now: string, protect: boo
 }
 
 /**
- * The domains the tenancy holds that a session keeps nothing of, each read
+ * The clusters the tenancy holds that a session keeps nothing of, each read
  * from the cloud.
  *
  * @param driver - The cloud's read half.
  * @param builder - Its build half, or null.
  * @param region - The session's region.
  * @param kept - The names the session keeps, which stand in for found ones.
- * @returns The found domains, sorted by name.
+ * @returns The found clusters, sorted by name.
  */
-export async function foundDomains_describe(driver: CloudDriver, builder: CloudBuilder | null, region: string, kept: ReadonlyArray<string>): Promise<HarborDomain[]> {
-  const found: FoundDomain[] = await driver.domains_find(DOMAIN_TAG, region);
-  return Promise.all(found.filter((entry: FoundDomain): boolean => !kept.includes(entry.name)).map((entry: FoundDomain): Promise<HarborDomain> => foundDomain_describe(entry, driver, builder)));
+export async function foundClusters_describe(driver: CloudDriver, builder: CloudBuilder | null, region: string, kept: ReadonlyArray<string>): Promise<HarborCluster[]> {
+  const found: FoundCluster[] = await driver.clusters_find(CLUSTER_TAG, region);
+  return Promise.all(found.filter((entry: FoundCluster): boolean => !kept.includes(entry.name)).map((entry: FoundCluster): Promise<HarborCluster> => foundCluster_describe(entry, driver, builder)));
 }

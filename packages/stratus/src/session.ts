@@ -4,7 +4,7 @@
  * The identity is the cloud user at the tenancy (`rudolph@fnndsc`), the
  * berth a daemon advertises; disconnected, it is `disconnected@<cloud>`, so
  * two disconnected substrate daemons never share a name with each other or
- * with a ChRIS one. Home is the tenancy's `domains/`. The working directory
+ * with a ChRIS one. Home is the tenancy's `clusters/`. The working directory
  * is kept per identity under the user's configuration directory, so a
  * restarted daemon stands where it stood. The region is the session's
  * (docs/stratus.adoc, D4 and D8).
@@ -109,7 +109,7 @@ export class StratusSession implements BackendSession {
   }
 
   async home_get(): Promise<string> {
-    return this.cloudIdentity === null ? this.mount : `${this.tenancyPath}/domains`;
+    return this.cloudIdentity === null ? this.mount : `${this.tenancyPath}/clusters`;
   }
 
   async cwd_load(): Promise<string | null> {

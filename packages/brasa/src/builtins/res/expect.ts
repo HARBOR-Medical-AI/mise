@@ -4,7 +4,7 @@
  * A workflow that only acts is a demonstration. `expect` is what makes one a
  * TEST: it states a claim about the session — what a path holds, and,
  * through the subjects a backend registers, how many things are gathered,
- * what a run's status is, whether a domain verifies — and refuses, non-zero,
+ * what a run's status is, whether a cluster verifies — and refuses, non-zero,
  * when the claim does not hold. Because it is a verb rather than a
  * harness, a workflow asserts wherever it is played: in CI, at an operator's
  * console, or in someone else's browser after they were handed the file.

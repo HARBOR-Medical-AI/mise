@@ -1,7 +1,7 @@
 /**
  * @file The Kubernetes API over HTTPS with a kubeconfig's CA and client
  * certificate. The wire only; what is asked and what the answers mean are in
- * `domain/verify.ts`, tested over recorded answers.
+ * `cluster/verify.ts`, tested over recorded answers.
  *
  * @module
  */

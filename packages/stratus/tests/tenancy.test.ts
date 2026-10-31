@@ -46,9 +46,9 @@ describe('the tenancy tree', () => {
     expect(await listed(tree, '/net/oci/')).toHaveLength(1);
   });
 
-  it('lists a tenancy as its compartments, kind folders, regions, domains and info.json; duplicates and reserved names wear the suffix', async () => {
+  it('lists a tenancy as its compartments, kind folders, regions, clusters and info.json; duplicates and reserved names wear the suffix', async () => {
     const items = await listed(tree, T);
-    expect(names(items)).toEqual(['harbor-oci', 'regions~region', 'sandbox~andbox', 'sandbox~twin00', ...KINDS, 'regions', 'domains', 'info.json']);
+    expect(names(items)).toEqual(['harbor-oci', 'regions~region', 'sandbox~andbox', 'sandbox~twin00', ...KINDS, 'regions', 'clusters', 'info.json']);
     const harbor = items[0];
     expect(harbor).toMatchObject({ type: 'compartment', owner: 'rudolph', status: 'active', title: 'Trusted Domain builds', tags: ['openshift-tags.openshift-resource=harbor'], date: '2026-08-27T12:00:00.000Z' });
     expect(items.find((item) => item.name === 'info.json')).toMatchObject({ type: 'file' });
@@ -99,9 +99,9 @@ describe('the tenancy tree', () => {
     expect(await tree.read(`${R}/prices/VM.Standard.A2.Flex/vcpuHour`)).toEqual({ ok: true, value: '0.007\n' });
   });
 
-  it('lists domains empty, and refuses what is not there with the shell\'s words', async () => {
-    expect(await listed(tree, `${T}/domains`)).toEqual([]);
-    for (const missing of ['/net/aws', `${T}/nothing`, `${T}/domains/x`, `${T}/regions/eu-nowhere-1`, `${R}/elsewhere`, `${R}/zones/none`, `${R}/limits/nosuch`, `${R}/limits/compute/nosuch`, `${R}/limits/compute/standard-e5-core-count/nozone`, `${R}/shapes/none`, `${R}/prices/none`, `${R}/shapes/VM.Standard.E5.Flex/nofield`, `${R}/shapes/VM.Standard.E5.Flex/family/deeper`, `${T}/info.json/x`, `${T}/harbor-oci/info.json/x`, '/net/oci/other-tenancy']) {
+  it('lists clusters empty, and refuses what is not there with the shell\'s words', async () => {
+    expect(await listed(tree, `${T}/clusters`)).toEqual([]);
+    for (const missing of ['/net/aws', `${T}/nothing`, `${T}/clusters/x`, `${T}/regions/eu-nowhere-1`, `${R}/elsewhere`, `${R}/zones/none`, `${R}/limits/nosuch`, `${R}/limits/compute/nosuch`, `${R}/limits/compute/standard-e5-core-count/nozone`, `${R}/shapes/none`, `${R}/prices/none`, `${R}/shapes/VM.Standard.E5.Flex/nofield`, `${R}/shapes/VM.Standard.E5.Flex/family/deeper`, `${T}/info.json/x`, `${T}/harbor-oci/info.json/x`, '/net/oci/other-tenancy']) {
       errorStack.stack_clear();
       expect((await tree.list(missing)).ok).toBe(false);
       expect(errorStack_getAllOfType('error').join('\n')).toContain('No such file or directory');

@@ -359,7 +359,7 @@ export class ProcessHost implements SessionHost {
   private async boot_run(record: SessionRecord, launch: SessionLaunch): Promise<Berth> {
     const dirs: SessionDirs = this.dirs_build(record.identity);
     for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    // A stratus session keeps its domains and its home beside its other
+    // A stratus session keeps its clusters and its home beside its other
     // directories: never porter's own, which every session it starts shares.
     const own: Record<string, string> = {};
     if (launch.kind === 'stratus') {

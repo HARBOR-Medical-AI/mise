@@ -2,9 +2,9 @@
  * @file `capacity`: how much of each limit a shape family draws on is free,
  * per zone, in the session's region (docs/stratus.adoc, D7).
  *
- * The families are the ones named, else the ones the daemon's domains'
+ * The families are the ones named, else the ones the daemon's clusters'
  * specs name (`family:`), else every family the region offers, so a session
- * with no domains still reads its room. For each, the region's shapes of that family say
+ * with no clusters still reads its room. For each, the region's shapes of that family say
  * which limits they draw on; each limit is read at every zone it is kept in,
  * with what is used and left when the cloud says. The answer carries the
  * `stratus.capacity` model the CAPACITY tile draws.
@@ -21,12 +21,12 @@ import { envelope_error, envelope_ok, STRATUS_CAPACITY_MODEL_KIND, type Capacity
 import type { CommandHelp } from '@fnndsc/brasa/core';
 import type { CloudAvailability, CloudDriver, CloudLimit, CloudShape } from '../cloud/driver.js';
 import { AnswerCache } from '../cache.js';
-import type { HarborDomain } from '../domains/harborOci.js';
-import type { DomainTree } from '../vfs/domains.js';
+import type { HarborCluster } from '../checkout/harborOci.js';
+import type { ClusterTree } from '../vfs/clusters.js';
 
 /** What `capacity` reads from the session. */
 export interface CapacityCommandContext {
-  readonly domains: DomainTree;
+  readonly clusters: ClusterTree;
   readonly driver: CloudDriver;
   /** The session's region, or null when not connected. */
   readonly region: () => string | null;
@@ -109,7 +109,7 @@ function row_line(row: CapacityRow, limitWidth: number, zoneWidth: number): stri
  * Runs `capacity`.
  *
  * @param context - The session.
- * @param args - Families, or none for the domains' own.
+ * @param args - Families, or none for the clusters' own.
  * @returns The envelope, with the `stratus.capacity` model.
  */
 export async function capacity_run(context: CapacityCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
@@ -117,8 +117,8 @@ export async function capacity_run(context: CapacityCommandContext, args: Readon
   if (region === null) return envelope_error('', undefined, 'capacity: not connected\n');
   const named: string[] = args.length > 0
     ? [...args]
-    : [...new Set(context.domains.domains_read().map((domain: HarborDomain): string | null => specFamily_parse(domain.spec)).filter((family: string | null): family is string => family !== null))];
-  // No family named and no spec naming one: every family the region offers, so a session with no domains still reads its room.
+    : [...new Set(context.clusters.clusters_read().map((cluster: HarborCluster): string | null => specFamily_parse(cluster.spec)).filter((family: string | null): family is string => family !== null))];
+  // No family named and no spec naming one: every family the region offers, so a session with no clusters still reads its room.
   const cache: AnswerCache = context.cache ?? new AnswerCache(0);
   const families: string[] = named.length > 0 ? named : [...new Set((await cache.answer_get(`capacity/${region}/shapes`, (): Promise<CloudShape[]> => context.driver.shapes_list(region))).map((shape: CloudShape): string => shape.family))].sort();
   if (families.length === 0) return envelope_error('', undefined, `capacity: ${region} offers no shape family\n`);
@@ -136,6 +136,6 @@ export const CAPACITY_HELP: CommandHelp = {
   usage: 'capacity [<family>…]',
   summary: 'What the region has free for a shape family, per zone',
   category: 'Resources',
-  description: 'For each shape family named (or, with none, each family a domain\'s spec names), the limits its shapes draw on in the session\'s region, at every zone they are kept in: what is permitted and, when the cloud says, how much is free. The same facts are under regions/<region>/limits.',
+  description: 'For each shape family named (or, with none, each family a cluster\'s spec names), the limits its shapes draw on in the session\'s region, at every zone they are kept in: what is permitted and, when the cloud says, how much is free. The same facts are under regions/<region>/limits.',
   examples: ['capacity', 'capacity E5 A1'],
 };

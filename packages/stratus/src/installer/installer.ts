@@ -12,7 +12,7 @@
  * @module
  */
 
-/** The installer's handles on a domain's cluster. */
+/** The installer's handles on a cluster. */
 export interface InstallerIds {
   readonly clusterId: string;
   /** The discovery image's environment, which the hosts register with. */

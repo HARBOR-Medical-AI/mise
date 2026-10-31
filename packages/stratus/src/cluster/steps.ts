@@ -1,15 +1,15 @@
 /**
- * @file A domain's build steps, written once over the three drivers
+ * @file A cluster's build steps, written once over the three drivers
  * (docs/stratus.adoc, D3): their names and order, what each asks of the
- * cloud's builder and of the installer, and the run that takes a domain from
+ * cloud's builder and of the installer, and the run that takes a cluster from
  * its first step not done to where it was asked to stop.
  *
- * A run is one of the core runner's jobs (`/proc/steps/<domain>-build`): it
+ * A run is one of the core runner's jobs (`/proc/steps/<cluster>-build`): it
  * outlives the command that started it and every surface. It stops on its
  * own before the first step that bills until the operator has accepted the
- * cost, which only the foreground `domain build` asks; and before a step
+ * cost, which only the foreground `cluster build` asks; and before a step
  * this session does not have yet. Every step records what later ones need in
- * the domain's state, so a run picked up after a restart starts from the
+ * the cluster's state, so a run picked up after a restart starts from the
  * first step not done and repeats nothing the cloud already holds.
  *
  * The order and the waits are `harbor-oci`'s, proven live once: the hosts
@@ -19,12 +19,12 @@
  */
 import { join } from 'node:path';
 import type { JobContext, JobRun } from '@fnndsc/brasa/core';
-import { CHRIS_RELEASE, CHRIS_WAITS, chrisWork_cluster, hostRun_spawn, type ChrisCall, type ChrisWaits, type ChrisWork, type HostRun } from '../cluster/chris.js';
+import { CHRIS_RELEASE, CHRIS_WAITS, chrisWork_cluster, hostRun_spawn, type ChrisCall, type ChrisWaits, type ChrisWork, type HostRun } from '../kube/chris.js';
 import type { VerifyReach } from '../commands/verify.js';
 import { planCounts_alter, plan_count, planCounts_words, type BuildCall, type CloudBuilder, type InfraOutputs, type InfraPlan, type PreflightCheck } from '../cloud/builder.js';
 import type { Installer, InstallerHost, InstallerIds, InstallStatus, PlatformManifest } from '../installer/installer.js';
-import { specNodes_build, type DomainSpec, type SpecNode } from './spec.js';
-import type { DomainRecord, DomainStore, StepRecord } from './state.js';
+import { specNodes_build, type ClusterSpec, type SpecNode } from './spec.js';
+import type { ClusterRecord, ClusterStore, StepRecord } from './state.js';
 import { verify_run, verifyChecks_keep, type VerifyCheck } from './verify.js';
 
 /** The build's steps, in order: the machine, then ChRIS on it. */
@@ -44,7 +44,7 @@ export const STEPS_SOURCE: string = 'steps';
 
 /** What the steps run over. */
 export interface BuildDeps {
-  readonly store: DomainStore;
+  readonly store: ClusterStore;
   readonly builder: CloudBuilder;
   readonly installer: Installer;
   /** How many availability domains the region has. */
@@ -79,29 +79,29 @@ export const BUILD_WAITS: Pick<BuildDeps, 'pollMs' | 'hostsWaitMs' | 'installWai
 /**
  * A run's job id.
  *
- * @param domain - The domain.
- * @returns `<domain>-build`.
+ * @param cluster - The cluster.
+ * @returns `<cluster>-build`.
  */
-export function buildJob_id(domain: string): string {
-  return `${domain}-build`;
+export function buildJob_id(cluster: string): string {
+  return `${cluster}-build`;
 }
 
 /**
  * The first step not done.
  *
- * @param record - The domain's state.
+ * @param record - The cluster's state.
  * @returns The step, or null when every step is done.
  */
-export function stepNext_find(record: DomainRecord): string | null {
+export function stepNext_find(record: ClusterRecord): string | null {
   return BUILD_STEPS.find((step: string): boolean => record.steps[step]?.state !== 'done') ?? null;
 }
 
 /** What a step is handed. */
 interface StepCall extends BuildCall {
   readonly name: string;
-  readonly spec: DomainSpec;
+  readonly spec: ClusterSpec;
   readonly deps: BuildDeps;
-  readonly record: () => DomainRecord;
+  readonly record: () => ClusterRecord;
   readonly remember: (ids: Record<string, string>) => void;
   readonly progress: JobContext['progress_set'];
 }
@@ -123,13 +123,13 @@ function poll_wait(ms: number, signal: AbortSignal): Promise<void> {
 /**
  * An id a later step needs, or why it is missing.
  *
- * @param record - The domain's state.
+ * @param record - The cluster's state.
  * @param key - The id.
  * @param step - The step that records it.
  * @returns The id.
  * @throws Error - When it was never recorded.
  */
-function id_need(record: DomainRecord, key: string, step: string): string {
+function id_need(record: ClusterRecord, key: string, step: string): string {
   const value: string | undefined = record.ids[key];
   if (value === undefined) throw new Error(`no ${key} recorded: ${step} has not been done`);
   return value;
@@ -138,10 +138,10 @@ function id_need(record: DomainRecord, key: string, step: string): string {
 /**
  * The installer's ids, or why they are missing.
  *
- * @param record - The domain's state.
+ * @param record - The cluster's state.
  * @returns The ids.
  */
-function ids_need(record: DomainRecord): InstallerIds {
+function ids_need(record: ClusterRecord): InstallerIds {
   return { clusterId: id_need(record, 'clusterId', 'cluster'), infraEnvId: id_need(record, 'infraEnvId', 'cluster') };
 }
 
@@ -186,22 +186,22 @@ function chrisCall_build(call: StepCall): ChrisCall {
 /** Each step's work. */
 const STEP_WORK: Readonly<Record<string, (call: StepCall) => Promise<string>>> = {
   compartment: async (call: StepCall): Promise<string> => {
-    const record: DomainRecord = call.record();
+    const record: ClusterRecord = call.record();
     if (record.compartmentId !== undefined) return `in ${record.compartmentId}`;
-    if (call.deps.builder.compartment_ensure === undefined) throw new Error('this cloud cannot make a compartment: domain new --compartment <id> names one');
-    const own = await call.deps.builder.compartment_ensure({ domain: call.name, region: record.region }, call);
-    call.deps.store.record_update(call.name, (current: DomainRecord): void => { current.compartmentId = own.id; });
-    return `${own.made ? 'made' : 'found'} domains/${call.name}: ${own.id}`;
+    if (call.deps.builder.compartment_ensure === undefined) throw new Error('this cloud cannot make a compartment: cluster new --compartment <id> names one');
+    const own = await call.deps.builder.compartment_ensure({ cluster: call.name, region: record.region }, call);
+    call.deps.store.record_update(call.name, (current: ClusterRecord): void => { current.compartmentId = own.id; });
+    return `${own.made ? 'made' : 'found'} clusters/${call.name}: ${own.id}`;
   },
   preflight: async (call: StepCall): Promise<string> => {
-    const record: DomainRecord = call.record();
-    const checks: PreflightCheck[] = await call.deps.builder.preflight({ domain: call.name, spec: call.spec, region: record.region, baseDomain: record.baseDomain, compartmentId: record.compartmentId ?? '' }, call);
+    const record: ClusterRecord = call.record();
+    const checks: PreflightCheck[] = await call.deps.builder.preflight({ cluster: call.name, spec: call.spec, region: record.region, baseDomain: record.baseDomain, compartmentId: record.compartmentId ?? '' }, call);
     const failed: PreflightCheck[] = checks.filter((check: PreflightCheck): boolean => !check.ok);
     if (failed.length > 0) throw new Error(`preflight: ${failed.map((check: PreflightCheck): string => `${check.name}: ${check.note}`).join('; ')}`);
     return `${checks.length} checks pass`;
   },
   cluster: async (call: StepCall): Promise<string> => {
-    const record: DomainRecord = call.record();
+    const record: ClusterRecord = call.record();
     if (record.ids['clusterId'] !== undefined) return `already made: ${record.ids['clusterId']}`;
     const made = await call.deps.installer.cluster_create({ name: call.name, baseDomain: record.baseDomain, version: call.deps.version, controlPlaneCount: call.spec.controlPlane.count });
     call.remember({ clusterId: made.clusterId, infraEnvId: made.infraEnvId });
@@ -209,18 +209,18 @@ const STEP_WORK: Readonly<Record<string, (call: StepCall) => Promise<string>>> =
     return `cluster ${made.clusterId}`;
   },
   iso: async (call: StepCall): Promise<string> => {
-    const record: DomainRecord = call.record();
+    const record: ClusterRecord = call.record();
     const image = await call.deps.installer.isoUrl_get(ids_need(record));
-    const stored = await call.deps.builder.iso_store({ domain: call.name, url: image.url, region: record.region, compartmentId: record.compartmentId ?? '' }, call);
+    const stored = await call.deps.builder.iso_store({ cluster: call.name, url: image.url, region: record.region, compartmentId: record.compartmentId ?? '' }, call);
     call.remember({ isoObject: stored.object, isoExpires: stored.expires, isoLinkId: stored.linkId });
     // The link opens the image to anyone holding it: a secret, kept on the host.
     call.deps.store.secret_write(call.name, 'iso-link', stored.link);
     return `${stored.object}, linked until ${stored.expires.slice(0, 10)}`;
   },
   'infra-plan': async (call: StepCall): Promise<string> => {
-    const record: DomainRecord = call.record();
+    const record: ClusterRecord = call.record();
     const plan: InfraPlan = await call.deps.builder.infra_plan({
-      domain: call.name, spec: call.spec, region: record.region, isoObject: id_need(record, 'isoObject', 'iso'),
+      cluster: call.name, spec: call.spec, region: record.region, isoObject: id_need(record, 'isoObject', 'iso'),
       baseDomain: record.baseDomain, isoLink: call.deps.store.secret_read(call.name, 'iso-link') ?? '',
       ...(record.compartmentId !== undefined ? { compartmentId: record.compartmentId } : {}),
       ...(record.ids['stackRef'] !== undefined ? { stackRef: record.ids['stackRef'] } : {}),
@@ -232,21 +232,21 @@ const STEP_WORK: Readonly<Record<string, (call: StepCall) => Promise<string>>> =
     return planCounts_words(counts);
   },
   'infra-apply': async (call: StepCall): Promise<string> => {
-    const record: DomainRecord = call.record();
+    const record: ClusterRecord = call.record();
     if (record.ids['appliedAt'] !== undefined) return `already applied: ${record.ids['stackRef'] ?? ''}`;
     const text: string | null = call.deps.store.file_read(call.name, 'plan.json');
     if (text === null) throw new Error('no plan recorded: infra-plan has not been done');
     const plan: InfraPlan = JSON.parse(text) as InfraPlan;
-    const outputs: InfraOutputs = await call.deps.builder.infra_apply({ domain: call.name, plan, region: record.region, ...(record.ids['stackRef'] !== undefined ? { stackRef: record.ids['stackRef'] } : {}) }, call);
+    const outputs: InfraOutputs = await call.deps.builder.infra_apply({ cluster: call.name, plan, region: record.region, ...(record.ids['stackRef'] !== undefined ? { stackRef: record.ids['stackRef'] } : {}) }, call);
     call.remember({ stackRef: outputs.stackRef, apiIp: outputs.apiIp, apiIntIp: outputs.apiIntIp, appsIp: outputs.appsIp, appliedAt: new Date().toISOString() });
-    // The manifests the stack made, for the manifests step, kept with the domain.
+    // The manifests the stack made, for the manifests step, kept with the cluster.
     call.deps.store.file_write(call.name, 'manifests.json', `${JSON.stringify(outputs.manifests, null, 2)}\n`);
     return `${plan_count(plan).create} created; billing since ${new Date().toISOString().slice(0, 16)}`;
   },
   dns: async (call: StepCall): Promise<string> => {
-    const record: DomainRecord = call.record();
+    const record: ClusterRecord = call.record();
     const outputs: InfraOutputs = { stackRef: id_need(record, 'stackRef', 'infra-apply'), apiIp: id_need(record, 'apiIp', 'infra-apply'), apiIntIp: id_need(record, 'apiIntIp', 'infra-apply'), appsIp: id_need(record, 'appsIp', 'infra-apply'), manifests: [] };
-    const names: string[] = await call.deps.builder.dns_upsert({ domain: call.name, baseDomain: record.baseDomain, outputs, compartmentId: record.compartmentId ?? '', region: record.region }, call);
+    const names: string[] = await call.deps.builder.dns_upsert({ cluster: call.name, baseDomain: record.baseDomain, outputs, compartmentId: record.compartmentId ?? '', region: record.region }, call);
     return `${names.length} records`;
   },
   manifests: async (call: StepCall): Promise<string> => {
@@ -281,7 +281,7 @@ const STEP_WORK: Readonly<Record<string, (call: StepCall) => Promise<string>>> =
     return 'stopped while waiting for hosts';
   },
   run: async (call: StepCall): Promise<string> => {
-    const record: DomainRecord = call.record();
+    const record: ClusterRecord = call.record();
     const ids: InstallerIds = ids_need(record);
     const deadline: number = Date.now() + call.deps.installWaitMs;
     let last: number = -1;
@@ -310,13 +310,13 @@ const STEP_WORK: Readonly<Record<string, (call: StepCall) => Promise<string>>> =
   verify: async (call: StepCall): Promise<string> => {
     if (call.deps.reach === undefined) throw new Error('this session cannot reach a cluster');
     const reach: VerifyReach = call.deps.reach;
-    const record: DomainRecord = call.record();
+    const record: ClusterRecord = call.record();
     const kube = reach.kube_make(kubeconfig_need(call));
     const shape: string | null = call.deps.shape_find === undefined ? null : await call.deps.shape_find(record.region, call.spec.family).catch((): null => null);
     const deadline: number = Date.now() + (call.deps.verifyWaitMs ?? VERIFY_WAIT_MS);
     while (!call.signal.aborted) {
       const checks: VerifyCheck[] = await verify_run({
-        kube, resolve: reach.resolve, https_status: reach.https_status, domain: call.name, baseDomain: record.baseDomain, shape,
+        kube, resolve: reach.resolve, https_status: reach.https_status, cluster: call.name, baseDomain: record.baseDomain, shape,
         expectedNodes: call.spec.controlPlane.count + call.spec.workers.count,
         addresses: { api: record.ids['apiIp'], apiInt: record.ids['apiIntIp'], apps: record.ids['appsIp'] },
         // The build runs under the tasks tier, so the volume probe may write.
@@ -345,38 +345,38 @@ const STEP_WORK: Readonly<Record<string, (call: StepCall) => Promise<string>>> =
 /**
  * Records a step's state.
  *
- * @param store - The domains.
- * @param name - The domain.
+ * @param store - The clusters.
+ * @param name - The cluster.
  * @param step - The step.
  * @param change - What changed.
  */
-function step_record(store: DomainStore, name: string, step: string, change: StepRecord): void {
-  store.record_update(name, (record: DomainRecord): void => { record.steps[step] = { ...record.steps[step], ...change }; });
+function step_record(store: ClusterStore, name: string, step: string, change: StepRecord): void {
+  store.record_update(name, (record: ClusterRecord): void => { record.steps[step] = { ...record.steps[step], ...change }; });
 }
 
 /**
- * The run that builds a domain from its first step not done.
+ * The run that builds a cluster from its first step not done.
  *
- * @param name - The domain.
+ * @param name - The cluster.
  * @param through - The last step to run; absent, as far as this session's steps go.
  * @param deps - What the steps run over.
  * @returns The job's work.
  */
 export function buildRun_make(name: string, through: string | undefined, deps: BuildDeps): JobRun {
   return async (context: JobContext): Promise<void> => {
-    const spec: DomainSpec | null = deps.store.spec_read(name)?.spec ?? null;
+    const spec: ClusterSpec | null = deps.store.spec_read(name)?.spec ?? null;
     if (spec === null) throw new Error(`${name}: its spec.yaml does not read`);
     if (deps.store.record_read(name)?.adopted !== undefined) throw new Error(`${name} was adopted: building on it is refused until it is allowed by name`);
-    if (deps.store.record_read(name)?.gone !== undefined) throw new Error(`${name} was torn down: domain new makes another`);
+    if (deps.store.record_read(name)?.gone !== undefined) throw new Error(`${name} was torn down: cluster new makes another`);
     for (;;) {
       if (context.signal.aborted) return;
-      const record: DomainRecord | null = deps.store.record_read(name);
-      if (record === null) throw new Error(`${name}: no such domain`);
+      const record: ClusterRecord | null = deps.store.record_read(name);
+      if (record === null) throw new Error(`${name}: no such cluster`);
       const step: string | null = stepNext_find(record);
       if (step === null) { context.log_write('every step is done'); return; }
       if (!STEPS_WRITTEN.includes(step)) { context.log_write(`stopping before ${step}: not a step this session has yet`); context.data_set('stoppedBefore', step); return; }
       if (step === FIRST_BILLING_STEP && record.billingAccepted === undefined) {
-        context.log_write(`stopping before ${step}: it starts billing, and waits on the operator's answer (domain build ${name})`);
+        context.log_write(`stopping before ${step}: it starts billing, and waits on the operator's answer (cluster build ${name})`);
         context.data_set('stoppedBefore', step);
         return;
       }
@@ -387,8 +387,8 @@ export function buildRun_make(name: string, through: string | undefined, deps: B
         name, spec, deps,
         log: (line: string): void => context.log_write(`${step}: ${line}`),
         signal: context.signal,
-        record: (): DomainRecord => deps.store.record_read(name) as DomainRecord,
-        remember: (ids: Record<string, string>): void => { deps.store.record_update(name, (current: DomainRecord): void => { Object.assign(current.ids, ids); }); },
+        record: (): ClusterRecord => deps.store.record_read(name) as ClusterRecord,
+        remember: (ids: Record<string, string>): void => { deps.store.record_update(name, (current: ClusterRecord): void => { Object.assign(current.ids, ids); }); },
         progress: (progress): void => context.progress_set(progress),
       };
       let note: string;
@@ -405,29 +405,29 @@ export function buildRun_make(name: string, through: string | undefined, deps: B
       }
       step_record(deps.store, name, step, { state: 'done', ended: new Date().toISOString(), note });
       context.log_write(`${step}: done · ${note}`);
-      if (step === through) { context.data_set('stoppedBefore', stepNext_find(deps.store.record_read(name) as DomainRecord) ?? ''); return; }
+      if (step === through) { context.data_set('stoppedBefore', stepNext_find(deps.store.record_read(name) as ClusterRecord) ?? ''); return; }
     }
   };
 }
 
 /**
- * The run that plans a domain against its stack and records the plan:
- * an adopted domain's, or a built one's re-plan. It applies nothing.
+ * The run that plans a cluster against its stack and records the plan:
+ * an adopted cluster's, or a built one's re-plan. It applies nothing.
  *
- * @param name - The domain.
+ * @param name - The cluster.
  * @param builder - The cloud's build half.
- * @param store - The domains.
+ * @param store - The clusters.
  * @returns The job's work.
  */
-export function planRun_make(name: string, builder: CloudBuilder, store: DomainStore): JobRun {
+export function planRun_make(name: string, builder: CloudBuilder, store: ClusterStore): JobRun {
   return async (context: JobContext): Promise<void> => {
-    const record: DomainRecord | null = store.record_read(name);
-    const spec: DomainSpec | null = store.spec_read(name)?.spec ?? null;
-    if (record === null || spec === null) throw new Error(`${name}: no such domain, or its spec.yaml does not read`);
+    const record: ClusterRecord | null = store.record_read(name);
+    const spec: ClusterSpec | null = store.spec_read(name)?.spec ?? null;
+    if (record === null || spec === null) throw new Error(`${name}: no such cluster, or its spec.yaml does not read`);
     const stackRef: string | undefined = record.ids['stackRef'];
     if (stackRef === undefined) throw new Error(`${name}: no stack yet`);
     const plan: InfraPlan = await builder.infra_plan(
-      { domain: name, spec, region: record.region, isoObject: record.ids['isoObject'] ?? '', stackRef },
+      { cluster: name, spec, region: record.region, isoObject: record.ids['isoObject'] ?? '', stackRef },
       { log: (line: string): void => context.log_write(line), signal: context.signal },
     );
     if (context.signal.aborted) return;

@@ -1,7 +1,7 @@
 /**
- * @file A Trusted Domain as a `harbor-oci` checkout leaves it on the host.
+ * @file A cluster as a `harbor-oci` checkout leaves it on the host.
  *
- * The first domain stratus reads is the one `harbor-oci` built
+ * The first cluster stratus reads is the one `harbor-oci` built
  * (docs/stratus.adoc, "What exists"): its `spec.yaml`, its settings
  * (`config.env` under `config.local.env`), its state document
  * (`state/harbor.json`), the Terraform state in the staged stack, and the
@@ -19,12 +19,12 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { DomainSpec } from '../domain/spec.js';
+import type { ClusterSpec } from '../cluster/spec.js';
 
 /** The build's steps, in the order `just install` runs them. */
 export const HARBOR_STEPS: ReadonlyArray<string> = ['preflight', 'cluster', 'iso', 'infra-plan', 'infra-apply', 'dns', 'manifests', 'hosts', 'run', 'postinstall', 'verify'];
 
-/** The settings a domain shows; every other key (credentials among them) stays on the host. */
+/** The settings a cluster shows; every other key (credentials among them) stays on the host. */
 const SHOWN_SETTINGS: ReadonlyArray<string> = ['CLUSTER_NAME', 'BASE_DOMAIN', 'OCI_REGION', 'OCI_COMPARTMENT_OCID', 'OCP_VERSION', 'OCI_STACK_VERSION'];
 
 /** The fields of `state/harbor.json` that are secrets. */
@@ -41,15 +41,15 @@ export interface StepState {
   readonly evidence: string;
 }
 
-/** A secret the domain holds on the host. */
-export interface DomainSecret {
+/** A secret the cluster holds on the host. */
+export interface ClusterSecret {
   readonly name: string;
   /** Where it is on the host; the only thing about it a surface is told. */
   readonly hostPath: string;
 }
 
-/** A domain read from a `harbor-oci` checkout. */
-export interface HarborDomain {
+/** A cluster read from a `harbor-oci` checkout. */
+export interface HarborCluster {
   readonly name: string;
   /** The checkout. */
   readonly root: string;
@@ -62,17 +62,17 @@ export interface HarborDomain {
   /** Every step, in build order. */
   readonly steps: ReadonlyArray<StepState>;
   /** The credential files in `state/auth/`. */
-  readonly secrets: ReadonlyArray<DomainSecret>;
+  readonly secrets: ReadonlyArray<ClusterSecret>;
   /** The cluster's DNS name, `<CLUSTER_NAME>.<BASE_DOMAIN>`, or null. */
   readonly cluster: string | null;
   /** Where it comes from: a `harbor-oci` checkout read, built by this daemon, or found in the tenancy by its tag and not adopted (absent: a checkout). */
   readonly origin?: 'checkout' | 'built' | 'found';
-  /** For one found in the tenancy: what carries its tag, and what the cloud says of it (`domain/found.ts`). */
+  /** For one found in the tenancy: what carries its tag, and what the cloud says of it (`cluster/found.ts`). */
   readonly found?: {
     readonly stack: { readonly id: string; readonly state: string; readonly compartmentId: string } | null;
     readonly compartmentId: string | null;
     readonly baseDomain: string | null;
-    readonly spec: DomainSpec | null;
+    readonly spec: ClusterSpec | null;
     readonly resources: Readonly<Record<string, number>> | null;
     readonly stackResources: number | null;
     /** Machines live (UP), something of its stack stands (STOPPED), or nothing is left but its tag (GONE). */
@@ -80,8 +80,8 @@ export interface HarborDomain {
   };
 }
 
-/** Where a domain is read from: its name and its checkout. */
-export interface DomainSource {
+/** Where a cluster is read from: its name and its checkout. */
+export interface ClusterSource {
   readonly name: string;
   readonly root: string;
 }
@@ -113,7 +113,7 @@ function text_read(path: string): string | null {
   return existsSync(path) ? readFileSync(path, 'utf-8') : null;
 }
 
-/** The shown settings: `config.env`, then `config.local.env` over it, only the keys a domain shows. */
+/** The shown settings: `config.env`, then `config.local.env` over it, only the keys a cluster shows. */
 function settings_read(root: string): Record<string, string> {
   const merged: Record<string, string> = {
     ...envFile_parse(text_read(join(root, 'config.env')) ?? ''),
@@ -181,20 +181,20 @@ export function steps_read(root: string, state: Readonly<Record<string, unknown>
 }
 
 /** The credential files in `state/auth/`, by name and host path. */
-function secrets_read(root: string): DomainSecret[] {
+function secrets_read(root: string): ClusterSecret[] {
   const auth: string = join(root, 'state', 'auth');
   if (!existsSync(auth) || !statSync(auth).isDirectory()) return [];
-  return readdirSync(auth).sort().map((name: string): DomainSecret => ({ name, hostPath: join(auth, name) }));
+  return readdirSync(auth).sort().map((name: string): ClusterSecret => ({ name, hostPath: join(auth, name) }));
 }
 
 /**
- * Reads a domain from its checkout.
+ * Reads a cluster from its checkout.
  *
- * @param source - The domain's name and checkout.
+ * @param source - The cluster's name and checkout.
  * @param now - The clock, for the ISO link's expiry.
- * @returns The domain.
+ * @returns The cluster.
  */
-export function harborDomain_read(source: DomainSource, now: Date = new Date()): HarborDomain {
+export function harborCluster_read(source: ClusterSource, now: Date = new Date()): HarborCluster {
   const settings: Record<string, string> = settings_read(source.root);
   const state: Record<string, unknown> | null = state_read(source.root);
   const cluster: string | null = settings['CLUSTER_NAME'] !== undefined && settings['BASE_DOMAIN'] !== undefined ? `${settings['CLUSTER_NAME']}.${settings['BASE_DOMAIN']}` : null;
@@ -211,12 +211,12 @@ export function harborDomain_read(source: DomainSource, now: Date = new Date()):
 }
 
 /**
- * The step a domain last finished, in build order; null when none is done.
+ * The step a cluster last finished, in build order; null when none is done.
  *
- * @param domain - The domain.
+ * @param cluster - The cluster.
  * @returns The step.
  */
-export function lastDone_find(domain: HarborDomain): StepState | null {
-  const done: StepState[] = domain.steps.filter((step: StepState): boolean => step.state === 'done');
+export function lastDone_find(cluster: HarborCluster): StepState | null {
+  const done: StepState[] = cluster.steps.filter((step: StepState): boolean => step.state === 'done');
   return done.length > 0 ? (done[done.length - 1] as StepState) : null;
 }

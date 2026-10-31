@@ -157,12 +157,12 @@ describe('serverMessage_parse', () => {
 
   it('carries a backend\'s prompt segments and refuses a tone it does not know', (): void => {
     const context = {
-      user: 'rudolph', uri: 'fnndsc', cwd: '/net/oci/fnndsc/domains', pacsserver: null,
+      user: 'rudolph', uri: 'fnndsc', cwd: '/net/oci/fnndsc/clusters', pacsserver: null,
       physicalMode: false, lastExitCode: 0, lastCommandDurationMs: 0,
     };
     const segments = [
       { key: 'cloud', label: 'cloud', value: 'OCI', tone: 'leader' },
-      { key: 'cwd', label: 'working directory', value: '/net/oci/fnndsc/domains', tone: 'path' },
+      { key: 'cwd', label: 'working directory', value: '/net/oci/fnndsc/clusters', tone: 'path' },
     ];
     const parsed = serverMessage_parse({ type: 'promptline', context: { ...context, segments } });
     expect(parsed.ok).toBe(true);

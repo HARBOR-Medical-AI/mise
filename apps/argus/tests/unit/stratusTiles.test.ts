@@ -2,18 +2,18 @@
  * @jest-environment jsdom
  */
 /**
- * @file The stratus composition's tiles: DOMAINS from `domain status`, the
- * lead with a domain gone wrong in red, and CAPACITY from `capacity`,
+ * @file The stratus composition's tiles: CLUSTERS from `cluster status`, the
+ * lead with a cluster gone wrong in red, and CAPACITY from `capacity`,
  * teaching the line that names a family when there is none.
  */
 import { describe, it, expect } from '@jest/globals';
 import { limitShort_format, money_text, stratusTiles_make, zoneShort_format, type StratusTileHooks } from '../../src/compositions/stratus/tiles.js';
 import type { ExecuteOutcome } from '../../src/calypso/client.js';
 
-const DOMAINS = {
-  domains: [
-    { name: 'harbor', path: '/net/oci/t/domains/harbor', cluster: 'harbor.oci.example.org', lastDone: '09-run', steps: [{ folder: '03-iso', state: 'expired' }, { folder: '09-run', state: 'done' }], resources: { instances: 3 }, cost: { hourly: 0.6213, soFar: 210, currency: 'USD' } },
-    { name: 'lab', path: '/net/oci/t/domains/lab', cluster: null, lastDone: null, steps: [{ folder: '01-preflight', state: 'unknown' }], resources: null },
+const CLUSTERS = {
+  clusters: [
+    { name: 'harbor', path: '/net/oci/t/clusters/harbor', cluster: 'harbor.oci.example.org', lastDone: '09-run', steps: [{ folder: '03-iso', state: 'expired' }, { folder: '09-run', state: 'done' }], resources: { instances: 3 }, cost: { hourly: 0.6213, soFar: 210, currency: 'USD' } },
+    { name: 'lab', path: '/net/oci/t/clusters/lab', cluster: null, lastDone: null, steps: [{ folder: '01-preflight', state: 'unknown' }], resources: null },
   ],
 };
 const CAPACITY = {
@@ -29,13 +29,13 @@ const CAPACITY = {
 function hooks_make(answers: Record<string, unknown>, seen: string[], named: string[][] = []): StratusTileHooks {
   return {
     ask: async (line: string): Promise<ExecuteOutcome> => {
-      const kind: string = line.startsWith('domain') ? 'stratus.domains' : 'stratus.capacity';
+      const kind: string = line.startsWith('cluster') ? 'stratus.clusters' : 'stratus.capacity';
       const data: unknown = answers[line];
       return (data === undefined
         ? { envelopes: [{ status: 'error', rendered: '', renderedErr: `${line}: refused\n` }] }
         : { envelopes: [{ status: 'ok', rendered: '', model: { kind, data } }] }) as unknown as ExecuteOutcome;
     },
-    domain_open: (name: string): void => { seen.push(`domain ${name}`); },
+    cluster_open: (name: string): void => { seen.push(`cluster ${name}`); },
     home_open: (): void => { seen.push('home'); },
     line_run: (line: string): void => { seen.push(`run ${line}`); },
     capacity_open: (family: string): void => { seen.push(`capacity:${family}`); },
@@ -44,37 +44,37 @@ function hooks_make(answers: Record<string, unknown>, seen: string[], named: str
 }
 
 describe('the stratus tiles', () => {
-  it('a domain found in the tenancy and not adopted reads its condition in place of a last step, and one with nothing left reads GONE and is counted apart', async () => {
-    const found = { domains: [
-      { name: 'harbor', path: '/net/oci/t/domains/harbor', cluster: 'harbor.oci.example.org', lastDone: null, steps: [], resources: null, origin: 'found', condition: 'UP' },
-      { name: 'quay', path: '/net/oci/t/domains/quay', cluster: null, lastDone: null, steps: [], resources: null, origin: 'found', condition: 'GONE' },
+  it('a cluster found in the tenancy and not adopted reads its condition in place of a last step, and one with nothing left reads GONE and is counted apart', async () => {
+    const found = { clusters: [
+      { name: 'harbor', path: '/net/oci/t/clusters/harbor', cluster: 'harbor.oci.example.org', lastDone: null, steps: [], resources: null, origin: 'found', condition: 'UP' },
+      { name: 'quay', path: '/net/oci/t/clusters/quay', cluster: null, lastDone: null, steps: [], resources: null, origin: 'found', condition: 'GONE' },
     ] };
-    const tiles = await stratusTiles_make(hooks_make({ 'domain status': found, capacity: CAPACITY }, [], []))();
+    const tiles = await stratusTiles_make(hooks_make({ 'cluster status': found, capacity: CAPACITY }, [], []))();
     expect(tiles.lead!.tile.rows.map((r) => r.text)).toEqual(['harbor  UP · NOT ADOPTED  harbor.oci.example.org', 'quay  GONE']);
-    expect(tiles.lead!.tile.figures.map((f) => f.text)).toEqual(['1 TRUSTED DOMAIN', '1 GONE']);
+    expect(tiles.lead!.tile.figures.map((f) => f.text)).toEqual(['1 CLUSTER', '1 GONE']);
   });
 
-  it('lead with DOMAINS: each domain\'s last step and cluster, red where a step went wrong, opening its folder', async () => {
+  it('lead with CLUSTERS: each cluster\'s last step and cluster, red where a step went wrong, opening its folder', async () => {
     const seen: string[] = [];
     const named: string[][] = [];
-    const tiles = await stratusTiles_make(hooks_make({ 'domain status': DOMAINS, capacity: CAPACITY }, seen, named))();
-    // The paint tells the language the domains, so `domain harbor` opens the controller before it has read them.
+    const tiles = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, seen, named))();
+    // The paint tells the language the clusters, so `cluster harbor` opens the controller before it has read them.
     expect(named).toEqual([['harbor', 'lab']]);
-    const domains = tiles.lead!.tile;
+    const clusters = tiles.lead!.tile;
     expect(tiles.lead!.weight).toBe(2);
-    expect(domains.name).toBe('TRUSTED DOMAINS');
-    expect(domains.figures.map((f) => [f.text, f.errored ?? false])).toEqual([['2 TRUSTED DOMAINS', false], ['1 NEEDS A LOOK', true], ['$0.62/H', false]]);
-    expect(domains.rows.map((r) => [r.text, r.errored])).toEqual([['harbor  09-run  $0.62/h  harbor.oci.example.org', true], ['lab  NOTHING DONE', false]]);
+    expect(clusters.name).toBe('OPENSHIFT');
+    expect(clusters.figures.map((f) => [f.text, f.errored ?? false])).toEqual([['2 CLUSTERS', false], ['1 NEEDS A LOOK', true], ['$0.62/H', false]]);
+    expect(clusters.rows.map((r) => [r.text, r.errored])).toEqual([['harbor  09-run  $0.62/h  harbor.oci.example.org', true], ['lab  NOTHING DONE', false]]);
     expect(money_text(1, 'EUR')).toBe('EUR 1.00');
-    domains.rows[0]!.open!();
-    domains.enter();
-    expect(seen).toEqual(['domain harbor', 'domain ']);
-    expect(tiles.about?.['files']?.text).toContain('Trusted Domains');
+    clusters.rows[0]!.open!();
+    clusters.enter();
+    expect(seen).toEqual(['cluster harbor', 'cluster ']);
+    expect(tiles.about?.['files']?.text).toContain('the clusters this session knows');
   });
 
   it('place CAPACITY after FILES: per zone, free of permitted, red where nothing is free', async () => {
     const seen: string[] = [];
-    const tiles = await stratusTiles_make(hooks_make({ 'domain status': DOMAINS, capacity: CAPACITY }, seen))();
+    const tiles = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, seen))();
     const capacity = tiles.afterFiles[0]!;
     expect(capacity.figures).toEqual([{ text: 'US-ASHBURN-1' }]);
     expect(capacity.rows.map((r) => [r.text, r.errored])).toEqual([
@@ -88,9 +88,9 @@ describe('the stratus tiles', () => {
     expect(seen).toEqual(['capacity:E5', 'capacity:']);
   });
 
-  it('say NONE with no domains, and open the pane with nothing read', async () => {
+  it('say NONE with no clusters, and open the pane with nothing read', async () => {
     const seen: string[] = [];
-    const tiles = await stratusTiles_make(hooks_make({ 'domain status': { domains: [] } }, seen))();
+    const tiles = await stratusTiles_make(hooks_make({ 'cluster status': { clusters: [] } }, seen))();
     expect(tiles.lead!.tile.figures).toEqual([{ text: 'NONE' }]);
     const capacity = tiles.afterFiles[0]!;
     expect(capacity.figures).toEqual([{ text: 'NOT READ' }]);
@@ -100,12 +100,12 @@ describe('the stratus tiles', () => {
     expect(refused.lead!.weight).toBe(0);
   });
 
-  it('paints DOMAINS without waiting on a slow capacity, and paints again when it lands', async () => {
+  it('paints CLUSTERS without waiting on a slow capacity, and paints again when it lands', async () => {
     const seen: string[] = [];
     let capacity_answer: (answer: ExecuteOutcome) => void = (): void => {};
     const slow: Promise<ExecuteOutcome> = new Promise<ExecuteOutcome>((resolve: (answer: ExecuteOutcome) => void): void => { capacity_answer = resolve; });
     const asked: string[] = [];
-    const base: StratusTileHooks = hooks_make({ 'domain status': DOMAINS, capacity: CAPACITY }, seen);
+    const base: StratusTileHooks = hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, seen);
     const hooks: StratusTileHooks = {
       ...base,
       ask: (line: string): Promise<ExecuteOutcome> => { asked.push(line); return line === 'capacity' ? slow : base.ask(line); },
@@ -114,7 +114,7 @@ describe('the stratus tiles', () => {
     };
     const source = stratusTiles_make(hooks);
     const first = await source();
-    expect(first.lead!.tile.figures[0]).toEqual({ text: '2 TRUSTED DOMAINS' });
+    expect(first.lead!.tile.figures[0]).toEqual({ text: '2 CLUSTERS' });
     expect(first.afterFiles[0]!.figures).toEqual([{ text: 'READING' }]);
     expect(seen).toEqual([]);
     // A second paint while the first capacity is on its way asks for no second one.

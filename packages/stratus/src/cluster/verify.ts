@@ -1,5 +1,5 @@
 /**
- * @file `verify`: a domain's cluster is healthy and does what ChRIS needs,
+ * @file `verify`: a cluster is healthy and does what ChRIS needs,
  * by `harbor-oci`'s ten checks, through the Kubernetes API and DNS rather
  * than `oc` and `dig` (docs/stratus.adoc, D3, D7).
  *
@@ -12,8 +12,8 @@
  * @module
  */
 import type { VerifyCheckModel } from '@fnndsc/menu';
-import type { KubeApi } from '../cluster/kube.js';
-import type { DomainRecord, DomainStore } from './state.js';
+import type { KubeApi } from '../kube/kube.js';
+import type { ClusterRecord, ClusterStore } from './state.js';
 
 /** The file `verify` keeps its checks in, beside `plan.json`. */
 export const VERIFY_FILE: string = 'verify.json';
@@ -57,7 +57,7 @@ export interface VerifyContext {
   /** The status a URL answers with, trusting a CA. */
   readonly https_status: (url: string, ca: string | null) => Promise<number>;
   /** The cluster's name and DNS zone. */
-  readonly domain: string;
+  readonly cluster: string;
   readonly baseDomain: string;
   /** The shape every node should be, or null when not known. */
   readonly shape: string | null;
@@ -212,7 +212,7 @@ const CHECKS: ReadonlyArray<{ name: string; how: 'reads' | 'writes'; run: (conte
   {
     name: 'DNS', how: 'reads',
     run: async (context) => {
-      const cluster: string = `${context.domain}.${context.baseDomain}`;
+      const cluster: string = `${context.cluster}.${context.baseDomain}`;
       const wanted: Array<[string, string, string | undefined]> = [
         [`api.${cluster}`, `api.${cluster}`, context.addresses.api],
         [`api-int.${cluster}`, `api-int.${cluster}`, context.addresses.apiInt],
@@ -232,7 +232,7 @@ const CHECKS: ReadonlyArray<{ name: string; how: 'reads' | 'writes'; run: (conte
     run: async (context) => {
       const secret = await context.kube.json_get('/api/v1/namespaces/openshift-ingress-operator/secrets/router-ca') as { data?: Record<string, string> };
       const ca: string | null = secret.data?.['tls.crt'] === undefined ? null : Buffer.from(secret.data['tls.crt'], 'base64').toString('utf-8');
-      const url: string = `https://console-openshift-console.apps.${context.domain}.${context.baseDomain}/`;
+      const url: string = `https://console-openshift-console.apps.${context.cluster}.${context.baseDomain}/`;
       const status: number = await context.https_status(url, ca);
       return { ok: status === 200, detail: `${url} HTTP ${status}` };
     },
@@ -317,18 +317,18 @@ export function verifySummary_render(checks: ReadonlyArray<VerifyCheck>): string
 }
 
 /**
- * Keeps a verify as the domain's verify step and in `verify.json`, so `domain status` and the tiles show it.
+ * Keeps a verify as the cluster's verify step and in `verify.json`, so `cluster status` and the tiles show it.
  *
- * @param store - The domains.
- * @param name - The domain.
+ * @param store - The clusters.
+ * @param name - The cluster.
  * @param checks - The checks.
  * @returns The summary.
  */
-export function verifyChecks_keep(store: DomainStore, name: string, checks: ReadonlyArray<VerifyCheck>): string {
+export function verifyChecks_keep(store: ClusterStore, name: string, checks: ReadonlyArray<VerifyCheck>): string {
   const summary: string = verifySummary_render(checks);
   const at: string = new Date().toISOString();
   const failed: boolean = checks.some((check: VerifyCheck): boolean => check.ok === false);
-  store.record_update(name, (current: DomainRecord): void => {
+  store.record_update(name, (current: ClusterRecord): void => {
     current.steps['verify'] = { state: failed ? 'failed' : 'done', ended: at, note: summary };
   });
   const kept: VerifyKept = { at, checks: checks.map((check: VerifyCheck) => ({ name: check.name, ok: check.ok, detail: check.detail, how: check.how })) };

@@ -19,7 +19,7 @@ export type CloudEntry = 'read' | 'manage';
 
 /** The two ways in, as the question explains them. */
 const ENTRY_LINES: ReadonlyArray<string> = [
-  'read     look only: the tenancy, its Trusted Domains, their cost; nothing outside this host changes',
+  'read     look only: the tenancy, what is built in it, its cost; nothing outside this host changes',
   'manage   act as well: build, tear down and spend, each after its own lock and the name typed back',
 ];
 

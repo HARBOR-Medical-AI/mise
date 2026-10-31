@@ -1,17 +1,17 @@
 /**
- * @file The substrate's models: what a stratus session's `domain status`
+ * @file The substrate's models: what a stratus session's `cluster status`
  * and `capacity` answer beneath their rendered text, so a surface lays
- * them out (docs/stratus.adoc, D11: the DOMAINS and CAPACITY tiles).
+ * them out (docs/stratus.adoc, D11: the CLUSTERS and CAPACITY tiles).
  *
  * @module
  */
 import { z } from 'zod';
 
-/** The model kind `domain status` carries. */
-export const STRATUS_DOMAINS_MODEL_KIND = 'stratus.domains' as const;
+/** The model kind `cluster status` carries. */
+export const STRATUS_CLUSTERS_MODEL_KIND = 'stratus.clusters' as const;
 
 /** One build step, where it stands. */
-export const domainStepSchema = z.object({
+export const clusterStepSchema = z.object({
   /** Its folder, numbered in build order (`05-infra-apply`). */
   folder: z.string(),
   /** `done`, `not done`, `running`, `failed`, `expired`, or `unknown`. */
@@ -26,11 +26,11 @@ export const domainStepSchema = z.object({
 });
 
 /**
- * Where a domain stands, in one word: the TD controller's CONDITION
+ * Where a cluster stands, in one word: the TD controller's CONDITION
  * (docs/stratus.adoc, D13). Billing is not a condition; it is said apart.
  * STOPPED is a build left part way: steps done, none running, not up.
  */
-export const DOMAIN_CONDITIONS = ['SIZING', 'STOPPED', 'ASKING', 'BUILDING', 'UP', 'SERVING', 'FAILED', 'GONE'] as const;
+export const CLUSTER_CONDITIONS = ['SIZING', 'STOPPED', 'ASKING', 'BUILDING', 'UP', 'SERVING', 'FAILED', 'GONE'] as const;
 
 /** One pool of nodes in a spec. */
 export const nodePoolSchema = z.object({
@@ -41,8 +41,8 @@ export const nodePoolSchema = z.object({
   bootTier: z.string(),
 });
 
-/** A domain's spec: the cluster and the ChRIS on it. */
-export const domainSpecSchema = z.object({
+/** A cluster's spec: the cluster and the ChRIS on it. */
+export const clusterSpecSchema = z.object({
   family: z.string(),
   controlPlane: nodePoolSchema,
   workers: nodePoolSchema,
@@ -71,7 +71,7 @@ export const planSummarySchema = z.object({
   at: z.string().nullable(),
 });
 
-/** One of `domain verify`'s checks. */
+/** One of `cluster verify`'s checks. */
 export const verifyCheckSchema = z.object({
   name: z.string(),
   /** True passed, false failed, null not run. */
@@ -81,67 +81,67 @@ export const verifyCheckSchema = z.object({
   how: z.string(),
 });
 
-/** One Trusted Domain. */
-export const domainSummarySchema = z.object({
+/** One OpenShift cluster. */
+export const clusterSummarySchema = z.object({
   name: z.string(),
-  /** Its folder in the session (`/net/oci/fnndsc/domains/harbor`). */
+  /** Its folder in the session (`/net/oci/fnndsc/clusters/harbor`). */
   path: z.string(),
   /** The cluster's DNS name, or null when its settings do not say. */
   cluster: z.string().nullable(),
   /** The last step done, or null when none is. */
   lastDone: z.string().nullable(),
-  steps: z.array(domainStepSchema),
+  steps: z.array(clusterStepSchema),
   /** Its compartment's live resources by kind, or null when not counted. */
   resources: z.record(z.string(), z.number()).nullable(),
   /** What it costs at list price, an hour and so far, or null when not priced; absent from an older daemon. */
   cost: z.object({ hourly: z.number(), soFar: z.number(), currency: z.string() }).nullable().optional(),
   // What the TD controller draws, beyond the tile's glance; each absent from an older daemon.
   /** Where it stands in one word. */
-  condition: z.enum(DOMAIN_CONDITIONS).optional(),
+  condition: z.enum(CLUSTER_CONDITIONS).optional(),
   /** Whether money runs: its machines are made and not torn down. */
   billing: z.boolean().optional(),
   /** `built` here, `adopted` (built elsewhere, planned against only), `checkout` (read from a harbor-oci checkout), or `found` (in the tenancy by its tag, not adopted: reads only). */
   origin: z.enum(['built', 'adopted', 'checkout', 'found']).optional(),
-  /** Whether teardown is refused until `domain protect <name> off`. */
+  /** Whether teardown is refused until `cluster protect <name> off`. */
   protected: z.boolean().optional(),
-  /** The verbs refused for this domain, by name, with why. */
+  /** The verbs refused for this cluster, by name, with why. */
   refused: z.record(z.string(), z.string()).optional(),
   region: z.string().nullable().optional(),
   compartment: z.string().nullable().optional(),
   /** When its teardown removed what it built, or null. */
   gone: z.string().nullable().optional(),
-  spec: domainSpecSchema.nullable().optional(),
-  /** The first step not done, or null when every step is, or when the domain is not built on here (adopted, torn down, read from a checkout). */
+  spec: clusterSpecSchema.nullable().optional(),
+  /** The first step not done, or null when every step is, or when the cluster is not built on here (adopted, torn down, read from a checkout). */
   next: z.string().nullable().optional(),
   /** The step from which billing starts. */
   billingStep: z.string().optional(),
   /** The build's task while it runs (`/proc/steps/<name>-build`), with the step running and since when. */
   running: z.object({ job: z.string(), step: z.string().nullable(), since: z.string().nullable() }).nullable().optional(),
   plan: planSummarySchema.nullable().optional(),
-  /** The last `domain verify`, check by check. */
+  /** The last `cluster verify`, check by check. */
   verify: z.object({ at: z.string().nullable(), checks: z.array(verifyCheckSchema) }).nullable().optional(),
   /** The question the engine has put and waits on, or null. */
   asking: z.string().nullable().optional(),
 });
 
-/** What `domain status` answers. */
-export const domainsModelSchema = z.object({
-  domains: z.array(domainSummarySchema),
+/** What `cluster status` answers. */
+export const clustersModelSchema = z.object({
+  clusters: z.array(clusterSummarySchema),
 });
 
 /**
- * The event a build shows its domain by, on every change and before every
- * question it asks: one domain's summary as the host knows it without asking
- * the cloud, so `resources` is null and `cost` absent (the last `domain
- * status` holds them). A surface that missed events reads `domain status`.
+ * The event a build shows its cluster by, on every change and before every
+ * question it asks: one cluster's summary as the host knows it without asking
+ * the cloud, so `resources` is null and `cost` absent (the last `cluster
+ * status` holds them). A surface that missed events reads `cluster status`.
  */
-export const STRATUS_DOMAIN_STATE_EVENT = 'stratus.domain.state' as const;
+export const STRATUS_CLUSTER_STATE_EVENT = 'stratus.cluster.state' as const;
 
-/** The model kind `domain size` carries. */
-export const STRATUS_DOMAIN_SIZE_MODEL_KIND = 'stratus.domain.size' as const;
+/** The model kind `cluster size` carries. */
+export const STRATUS_CLUSTER_SIZE_MODEL_KIND = 'stratus.cluster.size' as const;
 
-/** What `domain size` answers: what a spec is sized against, so a surface redraws fit and cost as its levers move. */
-export const domainSizeModelSchema = z.object({
+/** What `cluster size` answers: what a spec is sized against, so a surface redraws fit and cost as its levers move. */
+export const clusterSizeModelSchema = z.object({
   region: z.string(),
   /** The family sized for. */
   family: z.string(),
@@ -158,9 +158,9 @@ export const domainSizeModelSchema = z.object({
   price: z.object({ vcpuHour: z.number(), gibHour: z.number(), currency: z.string() }).nullable(),
   /** Storage and load balancing, or null when not priced. */
   services: z.object({ volumeGibMonth: z.number(), vpuGibMonth: z.number(), balancerHour: z.number(), balancerMbpsHour: z.number() }).nullable(),
-  /** The spec a new domain starts from. */
-  start: domainSpecSchema,
-  /** The DNS zone a new domain's names live under unless another is named: the session's, else the tenancy's only one; null when there is none to default to. */
+  /** The spec a new cluster starts from. */
+  start: clusterSpecSchema,
+  /** The DNS zone a new cluster's names live under unless another is named: the session's, else the tenancy's only one; null when there is none to default to. */
   baseDomain: z.string().nullable(),
   /** The DNS zones the tenancy holds, by name; absent when the cloud cannot say. */
   dnsZones: z.array(z.string()).optional(),
@@ -190,13 +190,13 @@ export const capacityModelSchema = z.object({
   rows: z.array(capacityRowSchema),
 });
 
-export type DomainStep = z.infer<typeof domainStepSchema>;
-export type DomainCondition = typeof DOMAIN_CONDITIONS[number];
-export type DomainSpecModel = z.infer<typeof domainSpecSchema>;
+export type ClusterStep = z.infer<typeof clusterStepSchema>;
+export type ClusterCondition = typeof CLUSTER_CONDITIONS[number];
+export type ClusterSpecModel = z.infer<typeof clusterSpecSchema>;
 export type PlanSummary = z.infer<typeof planSummarySchema>;
 export type VerifyCheckModel = z.infer<typeof verifyCheckSchema>;
-export type DomainSizeModel = z.infer<typeof domainSizeModelSchema>;
-export type DomainSummary = z.infer<typeof domainSummarySchema>;
-export type DomainsModel = z.infer<typeof domainsModelSchema>;
+export type ClusterSizeModel = z.infer<typeof clusterSizeModelSchema>;
+export type ClusterSummary = z.infer<typeof clusterSummarySchema>;
+export type ClustersModel = z.infer<typeof clustersModelSchema>;
 export type CapacityRow = z.infer<typeof capacityRowSchema>;
 export type CapacityModel = z.infer<typeof capacityModelSchema>;

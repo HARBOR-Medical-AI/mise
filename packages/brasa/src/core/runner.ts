@@ -77,7 +77,7 @@ export interface JobContext {
 export type JobRun = (context: JobContext) => Promise<void>;
 
 /**
- * One kind of job a backend runs (stratus: a domain's build steps).
+ * One kind of job a backend runs (stratus: a cluster's build steps).
  *
  * @property id - Its name, and its folder: `/proc/<id>`.
  * @property label - What an operator reads it as.

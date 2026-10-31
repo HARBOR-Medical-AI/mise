@@ -1,5 +1,5 @@
 /**
- * @file What a domain costs: machines, volumes and load balancers at list
+ * @file What a cluster costs: machines, volumes and load balancers at list
  * price, an hour and since each was made; the price list's storage and
  * balancer parts; `spend`.
  */
@@ -7,10 +7,10 @@ import { describe, it, expect } from '@jest/globals';
 import type { CloudInstance, CloudLoadBalancer, CloudVolume, ServicePrices } from '../src/cloud/driver.js';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { ociServicePrices_read, servicePrices_map, SERVICE_PARTS } from '../src/cloud/oci/prices.js';
-import { balancer_hourly, HOURS_PER_MONTH, instance_hourly, money_words, spend_line, spend_read, volume_hourly } from '../src/domain/spend.js';
-import { DomainTree } from '../src/vfs/domains.js';
+import { balancer_hourly, HOURS_PER_MONTH, instance_hourly, money_words, spend_line, spend_read, volume_hourly } from '../src/cluster/spend.js';
+import { ClusterTree } from '../src/vfs/clusters.js';
 import { spend_run, SPEND_HELP } from '../src/commands/spend.js';
-import type { DomainCommandContext } from '../src/commands/domain.js';
+import type { ClusterCommandContext } from '../src/commands/cluster.js';
 import { harborCheckout_make } from './support/harborCheckout.js';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
@@ -70,12 +70,12 @@ describe('the price list\'s storage and balancer parts', () => {
 });
 
 describe('spend', () => {
-  const context_of = (sources: Array<{ name: string; root: string }>): DomainCommandContext => {
-    const domains: DomainTree = new DomainTree({ sources, owner: (): string => 'r', now: (): Date => NOW });
-    return { domains, driver: new FakeDriver(fakeCloud_sample()), region: (): string => 'us-ashburn-1', domainsPath: (): string => '/d' };
+  const context_of = (sources: Array<{ name: string; root: string }>): ClusterCommandContext => {
+    const clusters: ClusterTree = new ClusterTree({ sources, owner: (): string => 'r', now: (): Date => NOW });
+    return { clusters, driver: new FakeDriver(fakeCloud_sample()), region: (): string => 'us-ashburn-1', clustersPath: (): string => '/d' };
   };
 
-  it('prints each resource and the domain\'s total, and says it is an estimate', async () => {
+  it('prints each resource and the cluster\'s total, and says it is an estimate', async () => {
     const answer = await spend_run(context_of([{ name: 'harbor', root: harborCheckout_make() }]), []);
     const text: string = plain(answer.rendered);
     expect(text).toContain('compute         node-0');
@@ -85,10 +85,10 @@ describe('spend', () => {
     expect(SPEND_HELP.category).toBe('Resources');
   });
 
-  it('refuses an unknown domain or option, and says when there is nothing to price', async () => {
+  it('refuses an unknown cluster or option, and says when there is nothing to price', async () => {
     const context = context_of([{ name: 'harbor', root: harborCheckout_make() }]);
-    expect((await spend_run(context, ['nope'])).renderedErr).toBe('spend: nope: no such domain\n');
+    expect((await spend_run(context, ['nope'])).renderedErr).toBe('spend: nope: no such cluster\n');
     expect((await spend_run(context, ['-x'])).renderedErr).toBe('spend: -x: unknown option\n');
-    expect((await spend_run(context_of([]), [])).rendered).toBe('no domains\n');
+    expect((await spend_run(context_of([]), [])).rendered).toBe('no clusters\n');
   });
 });

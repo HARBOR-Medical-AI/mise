@@ -3,15 +3,15 @@
  * session's answers (docs/stratus.adoc, D13), and the lines its controls
  * send. Pure of DOM.
  *
- * A domain is what `domain status` answers for it, and the
- * `stratus.domain.state` events a build shows between those reads; an event
+ * A cluster is what `cluster status` answers for it, and the
+ * `stratus.cluster.state` events a build shows between those reads; an event
  * carries no live counts and no cost, so those stay from the last read. SIZE
- * redraws fit and cost from what `domain size` read once: presentation only,
- * the engine checks again when COMMIT sends `domain new`.
+ * redraws fit and cost from what `cluster size` read once: presentation only,
+ * the engine checks again when COMMIT sends `cluster new`.
  *
  * @module
  */
-import type { DomainSizeModel, DomainSpecModel, DomainSummary } from '@fnndsc/menu';
+import type { ClusterSizeModel, ClusterSpecModel, ClusterSummary } from '@fnndsc/menu';
 
 /** The views the gutter offers, in its order. */
 export type ControllerView = 'overview' | 'size' | 'build' | 'cluster' | 'chris' | 'teardown';
@@ -28,19 +28,19 @@ export const HOURS_PER_MONTH: number = 730;
 /** Volume performance units per GiB, by the spec's tier names. */
 const TIER_VPUS: Readonly<Record<string, number>> = { balanced: 10, higher: 20, ultra: 30 };
 
-/** The load balancers a domain makes (api-int, api, apps), each at its minimum bandwidth. */
+/** The load balancers a cluster makes (api-int, api, apps), each at its minimum bandwidth. */
 const BALANCERS: number = 3;
 const BALANCER_MBPS: number = 10;
 
 /**
- * A domain after an event: the event's fields over what was known, keeping
+ * A cluster after an event: the event's fields over what was known, keeping
  * the live counts and the cost an event does not carry.
  *
- * @param known - The domain as last drawn, if it was.
+ * @param known - The cluster as last drawn, if it was.
  * @param shown - The event's summary.
- * @returns The merged domain.
+ * @returns The merged cluster.
  */
-export function summary_merge(known: DomainSummary | undefined, shown: DomainSummary): DomainSummary {
+export function summary_merge(known: ClusterSummary | undefined, shown: ClusterSummary): ClusterSummary {
   if (known === undefined) return shown;
   return {
     ...known,
@@ -78,26 +78,26 @@ export function duration_text(ms: number): string {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
-/** What a domain is, in the badge beside its name. */
-export function classBadge_render(domain: DomainSummary): string {
-  if (domain.origin === 'found') return domain.condition === 'GONE' ? 'FOUND · NOTHING LEFT' : 'FOUND · NOT ADOPTED';
-  if (domain.origin === 'adopted') return 'ADOPTED · PLANS ONLY';
-  if (domain.origin === 'checkout') return 'CHECKOUT · READ ONLY';
-  if (domain.gone !== null && domain.gone !== undefined) return 'TORN DOWN';
+/** What a cluster is, in the badge beside its name. */
+export function classBadge_render(cluster: ClusterSummary): string {
+  if (cluster.origin === 'found') return cluster.condition === 'GONE' ? 'FOUND · NOTHING LEFT' : 'FOUND · NOT ADOPTED';
+  if (cluster.origin === 'adopted') return 'ADOPTED · PLANS ONLY';
+  if (cluster.origin === 'checkout') return 'CHECKOUT · READ ONLY';
+  if (cluster.gone !== null && cluster.gone !== undefined) return 'TORN DOWN';
   return 'BUILT HERE';
 }
 
 /**
- * The line under CONDITION: whether money runs, and why the domain is as it is.
+ * The line under CONDITION: whether money runs, and why the cluster is as it is.
  *
- * @param domain - The domain.
+ * @param cluster - The cluster.
  * @returns The line, and whether it says billing (drawn orange).
  */
-export function conditionWhy_derive(domain: DomainSummary): { text: string; billing: boolean } {
-  const billing: boolean = domain.billing === true;
-  const why: string = domain.origin === 'adopted' ? 'ADOPTED' : domain.origin === 'checkout' ? 'READ FROM A CHECKOUT'
-    : domain.condition === 'GONE' ? 'TORN DOWN' : domain.condition === 'SIZING' ? 'NOTHING BUILT'
-    : domain.condition === 'STOPPED' ? (!billing && domain.next === domain.billingStep ? 'PLANNED' : 'NOT FINISHED') : domain.condition ?? '';
+export function conditionWhy_derive(cluster: ClusterSummary): { text: string; billing: boolean } {
+  const billing: boolean = cluster.billing === true;
+  const why: string = cluster.origin === 'adopted' ? 'ADOPTED' : cluster.origin === 'checkout' ? 'READ FROM A CHECKOUT'
+    : cluster.condition === 'GONE' ? 'TORN DOWN' : cluster.condition === 'SIZING' ? 'NOTHING BUILT'
+    : cluster.condition === 'STOPPED' ? (!billing && cluster.next === cluster.billingStep ? 'PLANNED' : 'NOT FINISHED') : cluster.condition ?? '';
   return billing ? { text: `BILLING · ${why}`, billing } : { text: `${why} · NOTHING BILLED`, billing };
 }
 
@@ -119,22 +119,22 @@ export interface StepLook {
 /**
  * Each step, as the grid and the strip draw it.
  *
- * @param domain - The domain.
+ * @param cluster - The cluster.
  * @returns The steps in build order.
  */
-export function stepLooks_build(domain: DomainSummary): StepLook[] {
-  return domain.steps.map((step, index: number): StepLook => {
+export function stepLooks_build(cluster: ClusterSummary): StepLook[] {
+  return cluster.steps.map((step, index: number): StepLook => {
     const name: string = step.name ?? step.folder.replace(/^\d+-/, '');
     const n: string = String(index + 1).padStart(2, '0');
     const note: string = noteShort_format(step.evidence ?? '');
-    const billFrom: boolean = name === domain.billingStep;
+    const billFrom: boolean = name === cluster.billingStep;
     const look = (word: string, tone: StepLook['tone']): StepLook => ({ n, name, word, tone, note, billFrom });
     if (step.state === 'done') return look('DONE', 'done');
     if (step.state === 'running') return look('RUNNING', 'running');
     if (step.state === 'failed') return look('FAILED', 'failed');
     if (step.state === 'expired') return look('EXPIRED', 'expired');
     if (step.state === 'unknown') return look('UNKNOWN', 'unknown');
-    if (name === domain.next) return domain.asking !== null && domain.asking !== undefined ? look('ASKING', 'asking') : look('NEXT', 'next');
+    if (name === cluster.next) return cluster.asking !== null && cluster.asking !== undefined ? look('ASKING', 'asking') : look('NEXT', 'next');
     return look('NOT DONE', 'later');
   });
 }
@@ -153,8 +153,8 @@ export function noteShort_format(evidence: string): string {
 }
 
 /** How many steps are done, of how many. */
-export function stepsDone_count(domain: DomainSummary): { done: number; total: number } {
-  return { done: domain.steps.filter((step): boolean => step.state === 'done').length, total: domain.steps.length };
+export function stepsDone_count(cluster: ClusterSummary): { done: number; total: number } {
+  return { done: cluster.steps.filter((step): boolean => step.state === 'done').length, total: cluster.steps.length };
 }
 
 /** One row of SINCE LAST COMMAND. */
@@ -164,24 +164,24 @@ export interface SinceRow {
 }
 
 /**
- * What changed between two reads of a domain, as SINCE LAST COMMAND says it.
+ * What changed between two reads of a cluster, as SINCE LAST COMMAND says it.
  *
- * @param before - The domain when the last command was sent, or null.
- * @param after - The domain now.
+ * @param before - The cluster when the last command was sent, or null.
+ * @param after - The cluster now.
  * @returns At most three rows; one saying nothing changed when nothing did.
  */
-export function since_build(before: DomainSummary | null, after: DomainSummary): SinceRow[] {
+export function since_build(before: ClusterSummary | null, after: ClusterSummary): SinceRow[] {
   if (before === null) return [{ label: '', text: 'FIRST READ' }];
   const rows: SinceRow[] = [];
   if (before.condition !== after.condition) rows.push({ label: 'CONDITION', text: `${before.condition ?? '?'} → ${after.condition ?? '?'}` });
   const stepsBefore: Map<string, string> = new Map(before.steps.map((step): [string, string] => [step.name ?? step.folder, step.state]));
   const moved = after.steps.filter((step): boolean => stepsBefore.get(step.name ?? step.folder) !== step.state);
   for (const step of moved.slice(-2)) rows.push({ label: (step.name ?? step.folder).toUpperCase(), text: `${(stepsBefore.get(step.name ?? step.folder) ?? 'NONE').toUpperCase()} → ${step.state.toUpperCase()}` });
-  const verify = (domain: DomainSummary): string | null => domain.verify === null || domain.verify === undefined ? null : verifyWords_render(domain.verify.checks);
+  const verify = (cluster: ClusterSummary): string | null => cluster.verify === null || cluster.verify === undefined ? null : verifyWords_render(cluster.verify.checks);
   if (verify(before) !== verify(after)) rows.push({ label: 'VERIFY', text: verify(after) ?? 'NOT RUN' });
-  const plan = (domain: DomainSummary): string | null => domain.plan === null || domain.plan === undefined ? null : planWords_render(domain.plan);
+  const plan = (cluster: ClusterSummary): string | null => cluster.plan === null || cluster.plan === undefined ? null : planWords_render(cluster.plan);
   if (plan(before) !== plan(after)) rows.push({ label: 'PLAN', text: plan(after) ?? 'NONE' });
-  const hourly = (domain: DomainSummary): string | null => domain.cost === null || domain.cost === undefined ? null : money_text(domain.cost.hourly, domain.cost.currency);
+  const hourly = (cluster: ClusterSummary): string | null => cluster.cost === null || cluster.cost === undefined ? null : money_text(cluster.cost.hourly, cluster.cost.currency);
   if (hourly(before) !== hourly(after) && hourly(before) !== null && hourly(after) !== null) rows.push({ label: 'PER HOUR', text: `${hourly(before)} → ${hourly(after)}` });
   if (before.protected !== after.protected) rows.push({ label: 'LOCK', text: after.protected === false ? 'OFF' : 'ON' });
   return rows.length === 0 ? [{ label: '', text: 'NO CHANGE' }] : rows.slice(0, 3);
@@ -206,7 +206,7 @@ export function verifyWords_render(checks: ReadonlyArray<{ ok: boolean | null }>
  * @param plan - The plan.
  * @returns `52 + · 0 ~ · 0 −`, `0 + · 6 ~ TAG DRIFT · 0 −`.
  */
-export function planWords_render(plan: NonNullable<DomainSummary['plan']>): string {
+export function planWords_render(plan: NonNullable<ClusterSummary['plan']>): string {
   const real: number = plan.change + plan.replace;
   const change: string = real > 0 || plan.drift === 0 ? `${real} ~` : '';
   const drift: string = plan.drift > 0 ? `${plan.drift} ~ TAG DRIFT` : '';
@@ -245,12 +245,12 @@ export interface ZoneFitLook {
  * the zones, each needing its cores and memory (stratus's `specFit_read`, as
  * presentation).
  *
- * @param size - What `domain size` read.
+ * @param size - What `cluster size` read.
  * @param spec - The spec as the levers stand.
- * @param name - The domain's name, for the machines'.
+ * @param name - The cluster's name, for the machines'.
  * @returns One per zone.
  */
-export function sizeFit_compute(size: DomainSizeModel, spec: DomainSpecModel, name: string): ZoneFitLook[] {
+export function sizeFit_compute(size: ClusterSizeModel, spec: ClusterSpecModel, name: string): ZoneFitLook[] {
   const count: number = Math.max(size.zones.length, 1);
   const placed: Array<{ name: string; vcpu: number; ramGib: number; zone: number }> = [];
   for (let i: number = 0; i < spec.controlPlane.count; i++) placed.push({ name: `${name}-cp-${i}`, vcpu: spec.controlPlane.vcpu, ramGib: spec.controlPlane.ramGib, zone: i % count });
@@ -282,11 +282,11 @@ export interface CostRow {
  * What a spec would cost an hour at list price, by what bills: compute,
  * memory, boot volumes, ChRIS's volumes, the load balancers.
  *
- * @param size - What `domain size` read.
+ * @param size - What `cluster size` read.
  * @param spec - The spec as the levers stand.
  * @returns The rows, the total (null when nothing is priced), the currency.
  */
-export function sizeCost_compute(size: DomainSizeModel, spec: DomainSpecModel): { rows: CostRow[]; hourly: number | null; currency: string } {
+export function sizeCost_compute(size: ClusterSizeModel, spec: ClusterSpecModel): { rows: CostRow[]; hourly: number | null; currency: string } {
   const vcpu: number = spec.controlPlane.count * spec.controlPlane.vcpu + spec.workers.count * spec.workers.vcpu;
   const gib: number = spec.controlPlane.count * spec.controlPlane.ramGib + spec.workers.count * spec.workers.ramGib;
   const volumeHour = (sizeGib: number, tier: string): number | null => size.services === null ? null
@@ -307,19 +307,19 @@ export function sizeCost_compute(size: DomainSizeModel, spec: DomainSpecModel): 
 }
 
 /**
- * The line COMMIT sends: `domain new` with each option that differs from
- * the spec a new domain starts from.
+ * The line COMMIT sends: `cluster new` with each option that differs from
+ * the spec a new cluster starts from.
  *
- * @param name - The new domain's name.
+ * @param name - The new cluster's name.
  * @param spec - The spec as the levers stand.
- * @param start - The spec a new domain starts from.
+ * @param start - The spec a new cluster starts from.
  * @param zone - The DNS zone to name, when it is not the session's default.
  * @returns The line.
  */
-export function newLine_build(name: string, spec: DomainSpecModel, start: DomainSpecModel, zone: string | null = null): string {
-  const words: string[] = ['domain', 'new', name];
+export function newLine_build(name: string, spec: ClusterSpecModel, start: ClusterSpecModel, zone: string | null = null): string {
+  const words: string[] = ['cluster', 'new', name];
   if (zone !== null) words.push('--base-domain', zone);
-  const pool = (one: DomainSpecModel['controlPlane']): string => `${one.count}x${one.vcpu}/${one.ramGib}`;
+  const pool = (one: ClusterSpecModel['controlPlane']): string => `${one.count}x${one.vcpu}/${one.ramGib}`;
   if (spec.family !== start.family) words.push('--family', spec.family);
   if (pool(spec.controlPlane) !== pool(start.controlPlane)) words.push('--plane', pool(spec.controlPlane));
   if (pool(spec.workers) !== pool(start.workers)) words.push('--workers', pool(spec.workers));
@@ -335,40 +335,40 @@ export function newLine_build(name: string, spec: DomainSpecModel, start: Domain
  * @param spec - The spec.
  * @returns The copy.
  */
-export function spec_copy(spec: DomainSpecModel): DomainSpecModel {
+export function spec_copy(spec: ClusterSpecModel): ClusterSpecModel {
   return { family: spec.family, controlPlane: { ...spec.controlPlane }, workers: { ...spec.workers }, chris: { ...spec.chris } };
 }
 
-/** A domain's name is a DNS label: lower-case letters, digits and hyphens, at most 54 (stratus's `DOMAIN_NAME`). */
-export const DOMAIN_NAME: RegExp = /^[a-z]([a-z0-9-]{0,52}[a-z0-9])?$/;
+/** A cluster's name is a DNS label: lower-case letters, digits and hyphens, at most 54 (stratus's `CLUSTER_NAME`). */
+export const CLUSTER_NAME: RegExp = /^[a-z]([a-z0-9-]{0,52}[a-z0-9])?$/;
 
 /**
- * Whether a name may be a new domain's, and why not.
+ * Whether a name may be a new cluster's, and why not.
  *
  * @param name - The name typed.
- * @param known - The domains there are.
+ * @param known - The clusters there are.
  * @returns Null when it may; else why not.
  */
 export function nameRefusal_derive(name: string, known: ReadonlyArray<string>): string | null {
   if (name === '') return 'NAME IT FIRST';
-  if (!DOMAIN_NAME.test(name)) return 'A DNS LABEL: a-z, 0-9 AND -, A LETTER FIRST';
+  if (!CLUSTER_NAME.test(name)) return 'A DNS LABEL: a-z, 0-9 AND -, A LETTER FIRST';
   if (known.includes(name)) return `${name.toUpperCase()} IS TAKEN`;
   return null;
 }
 
 /** The lines each control sends, by what it does. */
 export const LINES = {
-  status: (name: string): string => `domain ${name}`,
-  adopt: (name: string): string => `domain adopt ${name}`,
-  plan: (name: string): string => `domain plan ${name}`,
-  verify: (name: string): string => `domain verify ${name}`,
+  status: (name: string): string => `cluster ${name}`,
+  adopt: (name: string): string => `cluster adopt ${name}`,
+  plan: (name: string): string => `cluster plan ${name}`,
+  verify: (name: string): string => `cluster verify ${name}`,
   spend: (name: string): string => `spend ${name}`,
-  build: (name: string): string => `domain build ${name}`,
+  build: (name: string): string => `cluster build ${name}`,
   kill: (job: string): string => `kill ${job}`,
-  follow: (name: string): string => `domain build ${name}`,
-  protect: (name: string, on: boolean): string => `domain protect ${name} ${on ? 'on' : 'off'}`,
-  teardown: (name: string): string => `domain teardown ${name}`,
-  size: (family?: string): string => family === undefined ? 'domain size' : `domain size --family ${family}`,
+  follow: (name: string): string => `cluster build ${name}`,
+  protect: (name: string, on: boolean): string => `cluster protect ${name} ${on ? 'on' : 'off'}`,
+  teardown: (name: string): string => `cluster teardown ${name}`,
+  size: (family?: string): string => family === undefined ? 'cluster size' : `cluster size --family ${family}`,
   tenant: (name: string): string => `play ~/tenant.mise --param NAME=${name}`,
 } as const;
 
@@ -383,15 +383,15 @@ export function askForm_derive(message: string): 'yes-no' | 'typed' {
 }
 
 /**
- * Which domain a line opens the controller on, when it is the controller's.
+ * Which cluster a line opens the controller on, when it is the controller's.
  *
  * @param line - The line as typed.
- * @param names - The domains there are.
- * @returns `''` for bare `domain` (the controller on the first domain, or NEW), a name for `domain <name>`, null for any other line.
+ * @param names - The clusters there are.
+ * @returns `''` for bare `cluster` (the controller on the first cluster, or NEW), a name for `cluster <name>`, null for any other line.
  */
 export function controllerLine_parse(line: string, names: ReadonlyArray<string>): string | null {
   const words: string[] = line.trim().split(/\s+/);
-  if (words[0] !== 'domain') return null;
+  if (words[0] !== 'cluster') return null;
   if (words.length === 1) return '';
   if (words.length === 2 && names.includes(words[1] as string)) return words[1] as string;
   return null;

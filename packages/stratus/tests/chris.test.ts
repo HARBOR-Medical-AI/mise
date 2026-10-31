@@ -1,5 +1,5 @@
 /**
- * @file ChRIS on a domain's cluster: deploy (mirror, project, pin, helm,
+ * @file ChRIS on a cluster: deploy (mirror, project, pin, helm,
  * rollouts), seed (secret, job, summary) and smoke (uv, then the journey)
  * over a scripted cluster and host, and the 429 a settling API answers.
  */
@@ -7,10 +7,10 @@ import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { KubeError, type KubeApi } from '../src/cluster/kube.js';
-import { busyWait_parse } from '../src/cluster/kubeHttp.js';
-import { CHRIS_RELEASE, CHRIS_VALUES, chrisomaticConfig_render, smokeVerdict_words, chrisWork_cluster, helmInstall_args, rollout_done, TEST_PASSWORD_FILE, type ChrisCall, type HostResult, type HostRunOptions } from '../src/cluster/chris.js';
-import { SPEC_DEFAULT } from '../src/domain/spec.js';
+import { KubeError, type KubeApi } from '../src/kube/kube.js';
+import { busyWait_parse } from '../src/kube/kubeHttp.js';
+import { CHRIS_RELEASE, CHRIS_VALUES, chrisomaticConfig_render, smokeVerdict_words, chrisWork_cluster, helmInstall_args, rollout_done, TEST_PASSWORD_FILE, type ChrisCall, type HostResult, type HostRunOptions } from '../src/kube/chris.js';
+import { SPEC_DEFAULT } from '../src/cluster/spec.js';
 
 /** A cluster that answers from a table of paths, keeping what is made and deleted. */
 class ScriptedKube implements KubeApi {

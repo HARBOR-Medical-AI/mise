@@ -46,7 +46,7 @@ describe('promptBar_render', () => {
         { key: 'tenancy', label: 'tenancy', value: 'fnndsc', tone: 'place' },
         { key: 'region', label: 'region', value: 'us-ashburn-1', tone: 'place' },
         { key: 'user', label: 'user', value: 'rudolph', tone: 'identity' },
-        { key: 'domain', label: 'domain', value: 'harbor', tone: 'work' },
+        { key: 'cluster', label: 'cluster', value: 'harbor', tone: 'work' },
         { key: 'cwd', label: 'working directory', value: '/net/oci/fnndsc/domains/harbor', tone: 'path' },
         { key: 'step', label: 'step', value: 'infra-apply 3/9', tone: 'note' },
       ],

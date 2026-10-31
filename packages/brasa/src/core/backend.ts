@@ -110,7 +110,7 @@ export interface ExpectAsk {
 /**
  * Something `expect` can make claims about. The core answers `path` (`exists`,
  * `count`); a backend registers its own world (ChRIS: `gather`, `feed`, `run`,
- * and `tags` on `path`; stratus: `domain`). Two subjects of one name are one
+ * and `tags` on `path`; stratus: `cluster`). Two subjects of one name are one
  * subject whose properties are both of theirs: each answers its own.
  */
 export interface ExpectSubject {
