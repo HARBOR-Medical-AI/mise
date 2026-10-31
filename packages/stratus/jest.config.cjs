@@ -19,7 +19,7 @@ module.exports = {
     '!<rootDir>/src/cloud/oci/api.ts',
     '!<rootDir>/src/cloud/oci/resourceApi.ts',
     '!<rootDir>/src/cloud/oci/rmApi.ts',
-    '!<rootDir>/src/cluster/kubeHttp.ts',
+    '!<rootDir>/src/kube/kubeHttp.ts',
   ],
   coveragePathIgnorePatterns: ['/node_modules/', '/dist/'],
   coverageProvider: 'babel',

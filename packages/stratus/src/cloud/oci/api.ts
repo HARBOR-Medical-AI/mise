@@ -204,7 +204,7 @@ export function ociApi_make(options: OciApiOptions = {}): OciApi {
     },
     async availabilityDomains_list(region: string, tenancyId: string): Promise<string[]> {
       const answer: identity.responses.ListAvailabilityDomainsResponse = await identityClient_resolve(region).listAvailabilityDomains({ compartmentId: tenancyId });
-      return answer.items.map((domain: identity.models.AvailabilityDomain): string => domain.name ?? '').filter((name: string): boolean => name !== '').sort();
+      return answer.items.map((cluster: identity.models.AvailabilityDomain): string => cluster.name ?? '').filter((name: string): boolean => name !== '').sort();
     },
     async limitServices_list(region: string, tenancyId: string): Promise<string[]> {
       const client: limits.LimitsClient = limitsClient_resolve(region);

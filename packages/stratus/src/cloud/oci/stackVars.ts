@@ -1,5 +1,5 @@
 /**
- * @file A new domain's stack variables: the spec in OCI's units, and the
+ * @file A new cluster's stack variables: the spec in OCI's units, and the
  * choices `harbor-oci` made for every build (its `tfvars_build`). Every value
  * is a string, as Resource Manager takes them.
  *
@@ -12,7 +12,7 @@
  *
  * @module
  */
-import { SPEC_DEFAULT, type DomainSpec, type NodePool } from '../../domain/spec.js';
+import { SPEC_DEFAULT, type ClusterSpec, type NodePool } from '../../cluster/spec.js';
 import { SHAPE_TERMS } from './prices.js';
 
 /** Volume performance units per GB for each tier, as `harbor-oci` sets them. */
@@ -60,11 +60,11 @@ function pool_variables(prefix: string, pool: NodePool, family: string): Record<
 
 /** What a new stack's variables are made from. */
 export interface StackVarsRequest {
-  readonly domain: string;
-  readonly spec: DomainSpec;
+  readonly cluster: string;
+  readonly spec: ClusterSpec;
   readonly tenancyId: string;
   readonly compartmentId: string;
-  /** Where the `openshift-tags` namespace lives: a tenancy-wide name, so wherever the first domain made it. */
+  /** Where the `openshift-tags` namespace lives: a tenancy-wide name, so wherever the first cluster made it. */
   readonly tagNamespaceCompartmentId?: string;
   readonly region: string;
   readonly baseDomain: string;
@@ -74,9 +74,9 @@ export interface StackVarsRequest {
 }
 
 /**
- * A new domain's stack variables.
+ * A new cluster's stack variables.
  *
- * @param request - The domain, its spec, where it goes, the image and the key.
+ * @param request - The cluster, its spec, where it goes, the image and the key.
  * @returns The variables, each a string.
  */
 export function stackVariables_build(request: StackVarsRequest): Record<string, string> {
@@ -85,7 +85,7 @@ export function stackVariables_build(request: StackVarsRequest): Record<string, 
     compartment_ocid: request.compartmentId,
     tag_namespace_compartment_ocid_resource_tagging: request.tagNamespaceCompartmentId ?? request.compartmentId,
     region: request.region,
-    cluster_name: request.domain,
+    cluster_name: request.cluster,
     zone_dns: request.baseDomain,
     installation_method: 'Assisted',
     openshift_image_source_uri: request.isoLink,
@@ -122,14 +122,14 @@ function pool_derive(variables: Readonly<Record<string, string>>, prefix: string
 }
 
 /**
- * What a stack's variables say of the domain they build: the zone its names
+ * What a stack's variables say of the cluster they build: the zone its names
  * live under and the spec, as far as the variables carry it (ChRIS's sizes
  * are not in the stack; they start from the default).
  *
  * @param variables - The stack's variables, as Resource Manager holds them.
  * @returns The zone and the spec, each null when the variables do not say.
  */
-export function stackSpec_derive(variables: Readonly<Record<string, string>>): { spec: DomainSpec | null; baseDomain: string | null } {
+export function stackSpec_derive(variables: Readonly<Record<string, string>>): { spec: ClusterSpec | null; baseDomain: string | null } {
   const baseDomain: string | null = variables['zone_dns'] ?? null;
   const plane = pool_derive(variables, 'control_plane');
   if (plane === null) return { spec: null, baseDomain };

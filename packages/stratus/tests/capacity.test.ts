@@ -5,13 +5,13 @@
 import { describe, it, expect } from '@jest/globals';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { capacity_run, capacityRows_read, specFamily_parse, CAPACITY_HELP } from '../src/commands/capacity.js';
-import { DomainTree } from '../src/vfs/domains.js';
+import { ClusterTree } from '../src/vfs/clusters.js';
 import { harborCheckout_make } from './support/harborCheckout.js';
 import { AnswerCache } from '../src/cache.js';
 
 const plain = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, '');
 const context_make = (roots: Record<string, string>, region: string | null = 'us-ashburn-1') => ({
-  domains: new DomainTree({ sources: Object.entries(roots).map(([name, root]) => ({ name, root })), owner: (): string => 'rudolph', now: (): Date => new Date('2026-10-21T12:00:00Z') }),
+  clusters: new ClusterTree({ sources: Object.entries(roots).map(([name, root]) => ({ name, root })), owner: (): string => 'rudolph', now: (): Date => new Date('2026-10-21T12:00:00Z') }),
   driver: new FakeDriver(fakeCloud_sample()),
   region: (): string | null => region,
 });
@@ -50,7 +50,7 @@ describe('capacity', () => {
     expect(driver.calls['limitAvailability_get']).toBe(12);
   });
 
-  it('takes the families the domains\' specs name, and answers lines with the model', async () => {
+  it('takes the families the clusters\' specs name, and answers lines with the model', async () => {
     const answer = await capacity_run(context_make({ harbor: harborCheckout_make() }), []);
     const lines = plain(answer.rendered).split('\n');
     expect(lines[0]).toBe('capacity in us-ashburn-1');

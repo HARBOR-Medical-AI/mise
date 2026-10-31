@@ -3392,9 +3392,9 @@ try {
       alone.marks.runs && alone.marks.pacs && alone.marks.index && alone.tiles.includes('ANALYSES'), JSON.stringify(alone));
   } else {
     // The frame's five tiles stand in order; a composition of its own
-    // (stratus: TRUSTED DOMAINS, CAPACITY) adds tiles of its own among them.
+    // (stratus: OPENSHIFT, CAPACITY) adds tiles of its own among them.
     const frameTiles = ['FILES', 'PANES', 'KEYS', "WHAT'S NEW", 'CONSOLE'];
-    const ownTiles = alone.composition === 'stratus' ? ['TRUSTED DOMAINS', 'CAPACITY'] : [];
+    const ownTiles = alone.composition === 'stratus' ? ['OPENSHIFT', 'CAPACITY'] : [];
     check('a session with no ChRIS composition has the frame\'s five tiles and its own, no RUNS, PACS, GATHER or index instrument',
       JSON.stringify(alone.tiles.filter((name) => !ownTiles.includes(name))) === JSON.stringify(frameTiles) && !alone.marks.runs && !alone.marks.pacs && !alone.marks.gather && !alone.marks.index, JSON.stringify(alone));
     check('a frame-alone session keeps its header brand and console drawer on stage at the dashboard',
@@ -3404,8 +3404,8 @@ try {
   }
 
   if (await stage('stratus-tiles')) {
-  // The stratus composition's tiles (compositions/stratus/tiles.ts): TRUSTED DOMAINS
-  // leads with the domains `domain status` names, CAPACITY follows FILES
+  // The stratus composition's tiles (compositions/stratus/tiles.ts): OPENSHIFT
+  // leads with the clusters `cluster status` names, CAPACITY follows FILES
   // with what `capacity` reads. Under any other composition neither stands.
   const tiles = await evalIn(`
     await console_idle();
@@ -3418,34 +3418,34 @@ try {
     return { composition: document.body.dataset.composition ?? null, named };`);
   const names = tiles.named.map((t) => t.name);
   if (tiles.composition === 'stratus') {
-    const domains = tiles.named.find((t) => t.name === 'TRUSTED DOMAINS');
+    const clusters = tiles.named.find((t) => t.name === 'OPENSHIFT');
     const capacity = tiles.named.find((t) => t.name === 'CAPACITY');
-    check('under stratus the dashboard leads with TRUSTED DOMAINS and puts CAPACITY after FILES',
-      names[0] === 'TRUSTED DOMAINS' && names.indexOf('CAPACITY') === names.indexOf('FILES') + 1, JSON.stringify(names));
-    check('TRUSTED DOMAINS counts its domains and lists a row for each; CAPACITY names a region or teaches the line',
-      domains !== undefined && /TRUSTED DOMAIN|NONE/.test(domains.figures[0] ?? '') && capacity !== undefined && capacity.rows > 0, JSON.stringify({ domains, capacity }));
+    check('under stratus the dashboard leads with OPENSHIFT and puts CAPACITY after FILES',
+      names[0] === 'OPENSHIFT' && names.indexOf('CAPACITY') === names.indexOf('FILES') + 1, JSON.stringify(names));
+    check('OPENSHIFT counts its clusters and lists a row for each; CAPACITY names a region or teaches the line',
+      clusters !== undefined && /CLUSTER|NONE/.test(clusters.figures[0] ?? '') && capacity !== undefined && capacity.rows > 0, JSON.stringify({ clusters, capacity }));
   } else {
-    check('under any other composition neither TRUSTED DOMAINS nor CAPACITY stands', !names.includes('TRUSTED DOMAINS') && !names.includes('CAPACITY'), JSON.stringify(names));
+    check('under any other composition neither OPENSHIFT nor CAPACITY stands', !names.includes('OPENSHIFT') && !names.includes('CAPACITY'), JSON.stringify(names));
   }
   }
 
   if (await stage('td-controller')) {
   // The TD controller (features/controller/, docs/stratus.adoc D13): under
-  // stratus, `domain` takes the screen with its views, its domains' pills and
+  // stratus, `cluster` takes the screen with its views, its clusters' pills and
   // its condition in the tab's title, and Esc gives the page back. A screen
   // narrower than the controller's least refuses by name and the console says
-  // so. Under any other composition `domain` is the session's own.
+  // so. Under any other composition `cluster` is the session's own.
   const td = await evalIn(`
     await console_idle();
     if (document.body.dataset.composition !== 'stratus') return { composition: document.body.dataset.composition ?? null };
     const titleBefore = document.title;
     const input = console_input();
-    input.value = 'domain'; input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    input.value = 'cluster'; input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     for (let i = 0; i < 40 && document.body.dataset.takeover !== 'controller' && !/needs a screen/.test(console_text()); i++) await sleep(250);
     const opened = document.body.dataset.takeover === 'controller';
     if (!opened) {
-      for (let i = 0; i < 40 && !/no domains|domain status prints|built here|checkout|adopted/.test(console_text()); i++) await sleep(250);
-      return { composition: 'stratus', opened, narrow: innerWidth < 1250, said: (console_text().match(/domain: the TD controller needs[^\\n]*/) ?? [''])[0], text: /no domains|built here|checkout|adopted/.test(console_text()) };
+      for (let i = 0; i < 40 && !/no clusters|cluster status prints|built here|checkout|adopted/.test(console_text()); i++) await sleep(250);
+      return { composition: 'stratus', opened, narrow: innerWidth < 1250, said: (console_text().match(/cluster: the controller needs[^\\n]*/) ?? [''])[0], text: /no clusters|built here|checkout|adopted/.test(console_text()) };
     }
     for (let i = 0; i < 60 && (window.__argusController?.heard().reads ?? 0) === 0; i++) await sleep(250);
     const views = [];
@@ -3453,17 +3453,17 @@ try {
       document.querySelector('.tdc-view-' + view)?.click(); await sleep(300);
       views.push({ view: window.__argusController?.view() ?? null, sections: document.querySelectorAll('.tdc-body > section, .tdc-body > div').length });
     }
-    const pills = [...document.querySelectorAll('.tdc-domain')].map((pill) => pill.textContent);
+    const pills = [...document.querySelectorAll('.tdc-cluster')].map((pill) => pill.textContent);
     const hidden = [...document.body.children].filter((node) => node.id !== 'td-controller' && getComputedStyle(node).visibility !== 'hidden' && node.offsetParent !== null).length;
     const title = document.title;
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await sleep(400);
     return { composition: 'stratus', opened, views, pills, hidden, title, titleBack: document.title === titleBefore, after: document.body.dataset.takeover ?? null, left: document.getElementById('td-controller') !== null };`);
   if (td.composition !== 'stratus') {
-    check('under any other composition domain opens no controller', true, JSON.stringify(td));
+    check('under any other composition cluster opens no controller', true, JSON.stringify(td));
   } else if (!td.opened) {
     check('a screen narrower than the controller\'s least refuses by name, and the line runs as text', td.narrow && /needs a screen at least 1250 px wide/.test(td.said) && td.text, JSON.stringify(td));
   } else {
-    check('domain takes the screen as the TD controller: six views, a pill per domain and NEW, the condition in the title, the page hidden behind it',
+    check('cluster takes the screen as the controller: six views, a pill per cluster and NEW, the condition in the title, the page hidden behind it',
       JSON.stringify(td.views.map((v) => v.view)) === JSON.stringify(['overview', 'size', 'build', 'cluster', 'chris', 'teardown']) && td.views.every((v) => v.sections > 0)
         && td.pills.at(-1) === '+ NEW' && / · /.test(td.title) && td.hidden === 0, JSON.stringify(td));
     check('Esc gives the controller\'s screen back: no takeover, no controller, the tab\'s title as it was', td.after === null && !td.left && td.titleBack, JSON.stringify(td));

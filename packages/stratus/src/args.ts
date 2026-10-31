@@ -18,8 +18,8 @@ export interface StratusArgs {
   readonly sshKey?: string;
   readonly fake: boolean;
   readonly help: boolean;
-  /** `--domain <name>=<checkout>`, as many as given. */
-  readonly domains: ReadonlyArray<{ readonly name: string; readonly root: string }>;
+  /** `--cluster <name>=<checkout>`, as many as given. */
+  readonly clusters: ReadonlyArray<{ readonly name: string; readonly root: string }>;
 }
 
 /** The value after a `--flag VALUE` or `--flag=VALUE`, or undefined. */
@@ -35,9 +35,9 @@ function flagValue_get(argv: ReadonlyArray<string>, flag: string): string | unde
  * `~` meaning the home directory.
  *
  * @param given - The word.
- * @returns The domain, or null when the word is not one.
+ * @returns The cluster, or null when the word is not one.
  */
-export function domainArg_parse(given: string): { name: string; root: string } | null {
+export function clusterArg_parse(given: string): { name: string; root: string } | null {
   const equals: number = given.indexOf('=');
   if (equals <= 0 || equals === given.length - 1) return null;
   const name: string = given.slice(0, equals);
@@ -55,25 +55,25 @@ export function domainArg_parse(given: string): { name: string; root: string } |
  * @returns The arguments, or the refusal.
  */
 export function stratusArgs_parse(argv: ReadonlyArray<string>): { args: StratusArgs } | { error: string } {
-  const known: ReadonlyArray<string> = ['--profile', '--config', '--region', '--fake', '--help', '-h', '--host-control', '--expose-host-control', '--domain', '--redhat-account', '--ssh-key'];
+  const known: ReadonlyArray<string> = ['--profile', '--config', '--region', '--fake', '--help', '-h', '--host-control', '--expose-host-control', '--cluster', '--redhat-account', '--ssh-key'];
   const valued: ReadonlyArray<string> = ['--profile', '--config', '--region', '--host-control', '--redhat-account', '--ssh-key'];
-  const domains: Array<{ name: string; root: string }> = [];
+  const clusters: Array<{ name: string; root: string }> = [];
   for (let i = 0; i < argv.length; i++) {
     const word: string = argv[i];
-    if (word === '--domain') {
+    if (word === '--cluster') {
       const given: string | undefined = argv[i + 1];
-      const domain: { name: string; root: string } | null = given === undefined ? null : domainArg_parse(given);
-      if (domain === null) return { error: `--domain takes <name>=<harbor-oci checkout>, not '${given ?? ''}'` };
-      domains.push(domain);
+      const cluster: { name: string; root: string } | null = given === undefined ? null : clusterArg_parse(given);
+      if (cluster === null) return { error: `--cluster takes <name>=<harbor-oci checkout>, not '${given ?? ''}'` };
+      clusters.push(cluster);
       i++;
       continue;
     }
     const name: string = word.includes('=') ? word.slice(0, word.indexOf('=')) : word;
     if (!known.includes(name)) return { error: `unknown option '${word}' (stratus --help)` };
-    if (name === '--domain') {
-      const domain: { name: string; root: string } | null = domainArg_parse(word.slice('--domain='.length));
-      if (domain === null) return { error: `--domain takes <name>=<harbor-oci checkout>, not '${word.slice('--domain='.length)}'` };
-      domains.push(domain);
+    if (name === '--cluster') {
+      const cluster: { name: string; root: string } | null = clusterArg_parse(word.slice('--cluster='.length));
+      if (cluster === null) return { error: `--cluster takes <name>=<harbor-oci checkout>, not '${word.slice('--cluster='.length)}'` };
+      clusters.push(cluster);
       continue;
     }
     if (valued.includes(name) && !word.includes('=') && name !== '--host-control') i++;
@@ -89,7 +89,7 @@ export function stratusArgs_parse(argv: ReadonlyArray<string>): { args: StratusA
       sshKey: flagValue_get(argv, '--ssh-key'),
       fake: argv.includes('--fake'),
       help: argv.includes('--help') || argv.includes('-h'),
-      domains,
+      clusters,
     },
   };
 }

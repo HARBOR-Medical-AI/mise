@@ -2,9 +2,9 @@
 # (docs/stratus.adoc, D14). Origin: harbor-oci chris/values-openshift.yaml,
 # itself FNNDSC/miniChRIS-OKD chris/values-okd.yaml at 6124dfe.
 #
-# Host-agnostic on purpose: what belongs to one domain is set by the
+# Host-agnostic on purpose: what belongs to one cluster is set by the
 # chris-deploy step at install time:
-#   route.host                        cube.apps.<cluster domain>
+#   route.host                        cube.apps.<cluster cluster>
 #   pfcon.nodeSelector                kubernetes.io/hostname=<the pinned node>
 #   pfcon.pman.extraEnv.NODE_SELECTOR (the same node: the volume is ReadWriteOnce)
 #   pfcon.storage.size, postgresql.primary.persistence.size,

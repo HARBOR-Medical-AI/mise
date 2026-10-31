@@ -8,7 +8,7 @@
  *
  * @module
  */
-import type { CloudResource, FoundDomain, ResourceCounts, ResourceKind } from '../driver.js';
+import type { CloudResource, FoundCluster, ResourceCounts, ResourceKind } from '../driver.js';
 import type { OciResourceRecord, OciSearchRecord } from './resourceApi.js';
 import { ociTags_flatten } from './driver.js';
 
@@ -62,9 +62,9 @@ export function searchQuery_format(compartmentId: string): string {
 /**
  * The search for every carrier of a tag across the tenancy: the stacks and
  * the compartments, which are what a build or an adoption tags with the
- * domain's name.
+ * cluster's name.
  *
- * @param tagKey - The freeform tag's key (`mise-domain`).
+ * @param tagKey - The freeform tag's key (`mise-cluster`).
  * @returns The structured query.
  */
 export function tagQuery_format(tagKey: string): string {
@@ -75,17 +75,17 @@ export function tagQuery_format(tagKey: string): string {
 const GONE_CARRIER: RegExp = /^(deleted|deleting|terminated|terminating)$/i;
 
 /**
- * The tag's carriers folded into domains: one per tag value, its stack and
+ * The tag's carriers folded into clusters: one per tag value, its stack and
  * its compartment when each carries the tag, sorted by name; a carrier that
- * is gone is left out, and a name with no carrier left is not a domain.
+ * is gone is left out, and a name with no carrier left is not a cluster.
  *
  * @param hits - The search's hits.
  * @param tagKey - The tag's key.
  * @param region - The region searched.
- * @returns The domains found.
+ * @returns The clusters found.
  */
-export function foundDomains_fold(hits: ReadonlyArray<OciSearchRecord>, tagKey: string, region: string): FoundDomain[] {
-  const byName: Map<string, { stack: FoundDomain['stack']; compartmentId: string | null }> = new Map();
+export function foundClusters_fold(hits: ReadonlyArray<OciSearchRecord>, tagKey: string, region: string): FoundCluster[] {
+  const byName: Map<string, { stack: FoundCluster['stack']; compartmentId: string | null }> = new Map();
   for (const hit of hits) {
     const name: string | undefined = hit.freeformTags[tagKey];
     if (name === undefined || name === '' || GONE_CARRIER.test(hit.lifecycleState)) continue;
@@ -96,7 +96,7 @@ export function foundDomains_fold(hits: ReadonlyArray<OciSearchRecord>, tagKey: 
   }
   return [...byName.entries()]
     .sort(([a], [b]): number => a.localeCompare(b))
-    .map(([name, entry]): FoundDomain => ({ name, stack: entry.stack, compartmentId: entry.compartmentId, region }));
+    .map(([name, entry]): FoundCluster => ({ name, stack: entry.stack, compartmentId: entry.compartmentId, region }));
 }
 
 /**

@@ -1,6 +1,6 @@
 /**
  * @file The manifests stratus ships: `tenant.mise` read from the package,
- * shown in the home beside the domains, and readable as a file there, so
+ * shown in the home beside the clusters, and readable as a file there, so
  * `play ~/tenant.mise` finds it.
  */
 import { describe, it, expect } from '@jest/globals';
@@ -9,10 +9,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { VFSItem } from '@fnndsc/fond';
-import { shippedManifests_read, TENANT_MANIFEST, type ShippedManifest } from '../src/domain/manifests.js';
-import { DomainTree } from '../src/vfs/domains.js';
+import { shippedManifests_read, TENANT_MANIFEST, type ShippedManifest } from '../src/cluster/manifests.js';
+import { ClusterTree } from '../src/vfs/clusters.js';
 import type { ResourceNode } from '../src/vfs/resources.js';
-import { BUILD_STEPS } from '../src/domain/steps.js';
+import { BUILD_STEPS } from '../src/cluster/steps.js';
 
 describe('the manifests stratus ships', () => {
   it('reads tenant.mise from the package: one parameter, the procedure, and what it answers', () => {
@@ -24,13 +24,13 @@ describe('the manifests stratus ships', () => {
     expect(directives).toContain('@answers      TENANT');
     const lines: string[] = text.split('\n').map((line: string): string => line.trim()).filter((line: string): boolean => line !== '' && !line.startsWith('#') && !line.startsWith('@'));
     // The size is the spec's: the procedure never writes one.
-    expect(lines.some((line: string): boolean => line.startsWith('domain new'))).toBe(false);
-    expect(lines).toContain('domain build ${NAME}');
-    expect(lines.at(-1)).toBe('TENANT=$(domain ${NAME})');
-    // Every claim is one the domain subject reads, of a step the build has.
+    expect(lines.some((line: string): boolean => line.startsWith('cluster new'))).toBe(false);
+    expect(lines).toContain('cluster build ${NAME}');
+    expect(lines.at(-1)).toBe('TENANT=$(cluster ${NAME})');
+    // Every claim is one the cluster subject reads, of a step the build has.
     for (const claim of lines.filter((line: string): boolean => line.startsWith('expect '))) {
       const [, subject, target, property, ...rest] = claim.split(/\s+/);
-      expect([subject, target]).toEqual(['domain', '${NAME}']);
+      expect([subject, target]).toEqual(['cluster', '${NAME}']);
       expect(['step', 'verify', 'class', 'cost']).toContain(property);
       if (property === 'step') expect(BUILD_STEPS).toContain(rest[0]);
     }
@@ -47,8 +47,8 @@ describe('the manifests stratus ships', () => {
     }
   });
 
-  it('shows a manifest in the home beside the domains, as a file to read', async () => {
-    const tree: DomainTree = new DomainTree({ sources: [], owner: (): string => 'rudolph', now: (): Date => new Date('2026-10-23T12:00:00Z'), manifests: [{ name: TENANT_MANIFEST, text: '@param NAME\n' }] });
+  it('shows a manifest in the home beside the clusters, as a file to read', async () => {
+    const tree: ClusterTree = new ClusterTree({ sources: [], owner: (): string => 'rudolph', now: (): Date => new Date('2026-10-23T12:00:00Z'), manifests: [{ name: TENANT_MANIFEST, text: '@param NAME\n' }] });
     const home: ResourceNode = tree.node_resolve([]);
     expect(home.kind).toBe('listing');
     const items: VFSItem[] = home.kind === 'listing' ? await home.list() : [];

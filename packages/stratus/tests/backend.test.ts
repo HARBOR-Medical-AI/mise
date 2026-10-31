@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { stratusBackend_make } from '../src/backend.js';
-import { DomainStore } from '../src/domain/state.js';
+import { ClusterStore } from '../src/cluster/state.js';
 import { STRATUS_ITEM_KINDS, stratusName_colorize, CONTAINER_TYPES, stateTone_paint } from '../src/vfs/look.js';
 import { commandHolds_get, envelopeHandler_get } from '@fnndsc/brasa/core';
 import { harborCheckout_make } from './support/harborCheckout.js';
@@ -15,7 +15,7 @@ import { harborCheckout_make } from './support/harborCheckout.js';
 describe('stratusBackend_make', () => {
   it('is the stratus backend over the driver, with the tenancy mounted and the look installed', async () => {
     const configDir = mkdtempSync(path.join(tmpdir(), 'stratus-backend-'));
-    const made = stratusBackend_make({ driver: new FakeDriver(fakeCloud_sample()), configDir, cacheLifeMs: 1000, store: new DomainStore(path.join(configDir, 'domains')) });
+    const made = stratusBackend_make({ driver: new FakeDriver(fakeCloud_sample()), configDir, cacheLifeMs: 1000, store: new ClusterStore(path.join(configDir, 'clusters')) });
     expect(made.backend.id).toBe('stratus');
     expect(made.backend.vfs?.structural).toEqual(['/', '/net', '/net/oci']);
     expect(made.backend.completion?.rootWords).toEqual(['net']);
@@ -28,18 +28,18 @@ describe('stratusBackend_make', () => {
     expect(tenancy.ok && tenancy.value.map((item) => item.name)).toContain('harbor-oci');
     // Once the tenancy is known, it and its fixed folders are entered without asking.
     expect(made.backend.vfs?.structural).toEqual([
-      '/', '/net', '/net/oci', '/net/oci/fnndsc', '/net/oci/fnndsc/regions', '/net/oci/fnndsc/domains',
+      '/', '/net', '/net/oci', '/net/oci/fnndsc', '/net/oci/fnndsc/regions', '/net/oci/fnndsc/clusters',
       ...['instances', 'networks', 'loadbalancers', 'volumes', 'buckets', 'dns'].map((kind) => `/net/oci/fnndsc/${kind}`),
     ]);
   });
 
   it('prompts with the user, the tenancy, the working directory or home, and the last command', async () => {
     const configDir = mkdtempSync(path.join(tmpdir(), 'stratus-backend-'));
-    const made = stratusBackend_make({ driver: new FakeDriver(fakeCloud_sample()), configDir, store: new DomainStore(path.join(configDir, 'domains')) });
+    const made = stratusBackend_make({ driver: new FakeDriver(fakeCloud_sample()), configDir, store: new ClusterStore(path.join(configDir, 'clusters')) });
     await made.backend.session.init();
     expect(await made.backend.prompt!()).toEqual({
-      user: 'rudolph', uri: 'fnndsc', cwd: '/net/oci/fnndsc/domains', pacsserver: null, physicalMode: false, lastExitCode: 0, lastCommandDurationMs: 0,
-      segments: expect.arrayContaining([expect.objectContaining({ key: 'cloud', value: 'OCI', tone: 'leader' }), expect.objectContaining({ key: 'cwd', value: '/net/oci/fnndsc/domains' })]),
+      user: 'rudolph', uri: 'fnndsc', cwd: '/net/oci/fnndsc/clusters', pacsserver: null, physicalMode: false, lastExitCode: 0, lastCommandDurationMs: 0,
+      segments: expect.arrayContaining([expect.objectContaining({ key: 'cloud', value: 'OCI', tone: 'leader' }), expect.objectContaining({ key: 'cwd', value: '/net/oci/fnndsc/clusters' })]),
     });
     await made.backend.session.cwd_save('/net/oci/fnndsc/harbor-oci');
     expect(await made.backend.prompt!({ lastExitCode: 1, lastCommandDurationMs: 42 })).toMatchObject({ cwd: '/net/oci/fnndsc/harbor-oci', lastExitCode: 1, lastCommandDurationMs: 42 });
@@ -49,35 +49,35 @@ describe('stratusBackend_make', () => {
     const broken = new (class extends FakeDriver {
       override async identity_get(): Promise<never> { throw new Error('no key'); }
     })(fakeCloud_sample());
-    const made = stratusBackend_make({ driver: broken, configDir: mkdtempSync(path.join(tmpdir(), 'stratus-backend-')), store: new DomainStore(mkdtempSync(path.join(tmpdir(), 'stratus-domains-'))) });
+    const made = stratusBackend_make({ driver: broken, configDir: mkdtempSync(path.join(tmpdir(), 'stratus-backend-')), store: new ClusterStore(mkdtempSync(path.join(tmpdir(), 'stratus-clusters-'))) });
     await made.backend.session.init();
     expect(await made.backend.prompt!()).toMatchObject({ user: 'disconnected', uri: '', cwd: '/net/oci', segments: [{ key: 'cloud', value: 'OCI ✗', tone: 'alert' }, { key: 'cwd', value: '/net/oci' }] });
   });
 });
 
-describe('the backend\'s domains', () => {
-  it('shows the daemon\'s domains under the tenancy and registers domain', async () => {
+describe('the backend\'s clusters', () => {
+  it('shows the daemon\'s clusters under the tenancy and registers cluster', async () => {
     const root = harborCheckout_make();
-    const made = stratusBackend_make({ driver: new FakeDriver(fakeCloud_sample()), configDir: mkdtempSync(path.join(tmpdir(), 'stratus-backend-')), domains: [{ name: 'harbor', root }], store: new DomainStore(mkdtempSync(path.join(tmpdir(), 'stratus-domains-'))) });
+    const made = stratusBackend_make({ driver: new FakeDriver(fakeCloud_sample()), configDir: mkdtempSync(path.join(tmpdir(), 'stratus-backend-')), clusters: [{ name: 'harbor', root }], store: new ClusterStore(mkdtempSync(path.join(tmpdir(), 'stratus-clusters-'))) });
     await made.backend.session.init();
-    const listing = await made.backend.vfs!.dispatcher.list('/net/oci/fnndsc/domains');
+    const listing = await made.backend.vfs!.dispatcher.list('/net/oci/fnndsc/clusters');
     expect(listing.ok && listing.value.map((item) => [item.name, item.owner])).toEqual([['harbor', 'rudolph'], ['tenant.mise', 'rudolph']]);
     // The shipped manifest reads as a file, so `play ~/tenant.mise` finds it; the tree refuses a write.
-    expect((await made.backend.files!.read('/net/oci/fnndsc/domains/tenant.mise')).toString()).toContain('@param        NAME');
-    await expect(made.backend.files!.read('/net/oci/fnndsc/domains/nothing.mise')).rejects.toThrow('cannot read');
-    await expect(made.backend.files!.write('/net/oci/fnndsc/domains/x', Buffer.from(''))).rejects.toThrow('read-only');
-    expect(made.domains.domain_read('harbor')?.cluster).toBe('harbor.oci.chrisproject.org');
-    const answer = await envelopeHandler_get('domain')!(['status']);
+    expect((await made.backend.files!.read('/net/oci/fnndsc/clusters/tenant.mise')).toString()).toContain('@param        NAME');
+    await expect(made.backend.files!.read('/net/oci/fnndsc/clusters/nothing.mise')).rejects.toThrow('cannot read');
+    await expect(made.backend.files!.write('/net/oci/fnndsc/clusters/x', Buffer.from(''))).rejects.toThrow('read-only');
+    expect(made.clusters.cluster_read('harbor')?.cluster).toBe('harbor.oci.chrisproject.org');
+    const answer = await envelopeHandler_get('cluster')!(['status']);
     expect(answer.rendered).toContain('harbor.oci.chrisproject.org');
-    // The reads run beside any other line; `domain` writes and holds the session.
+    // The reads run beside any other line; `cluster` writes and holds the session.
     expect(commandHolds_get('capacity')).toEqual([]);
     expect(commandHolds_get('spend')).toEqual([]);
-    expect(commandHolds_get('domain')).toBeNull();
+    expect(commandHolds_get('cluster')).toBeNull();
   });
 });
 
 describe('the stratus look', () => {
-  it('marks containers, regions, zones, domains as containers and colours by state first', () => {
+  it('marks containers, regions, zones, clusters as containers and colours by state first', () => {
     for (const type of CONTAINER_TYPES) expect(STRATUS_ITEM_KINDS.find((kind) => kind.type === type)).toMatchObject({ mark: 'c', container: true });
     expect(STRATUS_ITEM_KINDS.find((kind) => kind.type === 'shape')).toMatchObject({ container: true });
     const sizeColumn = STRATUS_ITEM_KINDS.find((kind) => kind.type === 'compartment')!.sizeColumn!;
@@ -97,7 +97,7 @@ describe('the stratus look', () => {
     expect(stratusName_colorize('instances', 'kind').replace(/\x1b\[[0-9;]*m/g, '')).toBe('instances');
     expect(sizeColumn({ name: 'a', type: 'compartment', size: 0, owner: 'o', date: '' })).toBeNull();
     const plain = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, '');
-    for (const [type, status] of [['compartment', 'active'], ['instance', 'stopped'], ['instance', 'PROVISIONING'], ['instance', 'failed'], ['compartment', undefined], ['region', undefined], ['domain', undefined], ['shape', undefined], ['file', undefined], ['instance', 'odd']] as const) {
+    for (const [type, status] of [['compartment', 'active'], ['instance', 'stopped'], ['instance', 'PROVISIONING'], ['instance', 'failed'], ['compartment', undefined], ['region', undefined], ['cluster', undefined], ['shape', undefined], ['file', undefined], ['instance', 'odd']] as const) {
       expect(plain(stratusName_colorize('x', type, status))).toBe('x');
     }
   });

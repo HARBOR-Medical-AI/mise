@@ -1,21 +1,21 @@
 /**
  * @file `verify`: the kubeconfig read, the ten checks over a fake cluster
- * (healthy and not), the probe only under the tier, and `domain verify`.
+ * (healthy and not), the probe only under the tier, and `cluster verify`.
  */
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HeadlessSurface, surface_set, type CommandEnvelope } from '@fnndsc/brasa/core';
-import { kubeconfig_read, KubeError, type KubeApi } from '../src/cluster/kube.js';
-import { FakeKube, fakeVerifyReach, type FakeNode } from '../src/cluster/fakeKube.js';
-import { cpuQuantity_parse, verify_run, type VerifyContext } from '../src/domain/verify.js';
+import { kubeconfig_read, KubeError, type KubeApi } from '../src/kube/kube.js';
+import { FakeKube, fakeVerifyReach, type FakeNode } from '../src/kube/fakeKube.js';
+import { cpuQuantity_parse, verify_run, type VerifyContext } from '../src/cluster/verify.js';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
-import { DomainStore } from '../src/domain/state.js';
-import { SPEC_DEFAULT } from '../src/domain/spec.js';
-import { DomainTree } from '../src/vfs/domains.js';
-import { domain_run, type DomainCommandContext } from '../src/commands/domain.js';
-import { checkout_read } from '../src/domain/adopt.js';
+import { ClusterStore } from '../src/cluster/state.js';
+import { SPEC_DEFAULT } from '../src/cluster/spec.js';
+import { ClusterTree } from '../src/vfs/clusters.js';
+import { cluster_run, type ClusterCommandContext } from '../src/commands/cluster.js';
+import { checkout_read } from '../src/cluster/adopt.js';
 import { harborCheckout_make } from './support/harborCheckout.js';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
@@ -25,7 +25,7 @@ const NODES: FakeNode[] = [0, 1, 2].map((n: number): FakeNode => ({ name: `harbo
 function context_of(kube: KubeApi, probe: boolean, extra: Partial<VerifyContext> = {}): VerifyContext {
   const reach = fakeVerifyReach((): FakeNode[] => NODES);
   return {
-    kube, resolve: reach.resolve, https_status: reach.https_status, domain: 'harbor', baseDomain: 'oci.example.org', shape: 'VM.Standard.E5.Flex', expectedNodes: 3,
+    kube, resolve: reach.resolve, https_status: reach.https_status, cluster: 'harbor', baseDomain: 'oci.example.org', shape: 'VM.Standard.E5.Flex', expectedNodes: 3,
     addresses: { api: '10.0.0.10', apiInt: '10.0.0.11', apps: '10.0.0.12' }, probe, probeTimeoutMs: 1000, pollMs: 0, ...extra,
   };
 }
@@ -84,27 +84,27 @@ describe('the ten checks', () => {
   });
 });
 
-describe('domain verify', () => {
+describe('cluster verify', () => {
   let root: string;
-  let store: DomainStore;
-  let context: DomainCommandContext;
+  let store: ClusterStore;
+  let context: ClusterCommandContext;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'stratus-verify-'));
-    store = new DomainStore(join(root, 'domains'));
-    const domains: DomainTree = new DomainTree({ sources: [{ name: 'checkout', root: harborCheckout_make() }], owner: (): string => 'r', now: (): Date => new Date(), store });
+    store = new ClusterStore(join(root, 'clusters'));
+    const clusters: ClusterTree = new ClusterTree({ sources: [{ name: 'checkout', root: harborCheckout_make() }], owner: (): string => 'r', now: (): Date => new Date(), store });
     const driver: FakeDriver = new FakeDriver(fakeCloud_sample());
     const verifyReach = fakeVerifyReach((): FakeNode[] => NODES);
-    context = { domains, driver, region: (): string => 'us-ashburn-1', domainsPath: (): string => '/d', build: { domains, store, driver, region: (): string => 'us-ashburn-1', deps: null, builder: null, baseDomain: 'oci.example.org', verifyReach } };
+    context = { clusters, driver, region: (): string => 'us-ashburn-1', clustersPath: (): string => '/d', build: { clusters, store, driver, region: (): string => 'us-ashburn-1', deps: null, builder: null, baseDomain: 'oci.example.org', verifyReach } };
     store.create({ name: 'harbor', created: 'now', region: 'us-ashburn-1', baseDomain: 'oci.example.org', steps: {}, ids: { apiIp: '10.0.0.10', apiIntIp: '10.0.0.11', appsIp: '10.0.0.12' } }, SPEC_DEFAULT);
     surface_set(new HeadlessSurface());
   });
   afterEach(() => { surface_set(new HeadlessSurface()); rmSync(root, { recursive: true, force: true }); });
 
   it('runs the checks through the kubeconfig on the host and keeps the result as the verify step', async () => {
-    expect((await domain_run(context, ['verify', 'harbor'])).renderedErr).toBe('domain verify: harbor: no kubeconfig yet: its cluster is not installed\n');
+    expect((await cluster_run(context, ['verify', 'harbor'])).renderedErr).toBe('cluster verify: harbor: no kubeconfig yet: its cluster is not installed\n');
     store.secret_write('harbor', 'kubeconfig', 'clusters:\n- name: h\n  cluster: {server: "https://api"}\n');
-    const verified: CommandEnvelope = await domain_run(context, ['verify']);
+    const verified: CommandEnvelope = await cluster_run(context, ['verify']);
     expect(verified.status).toBe('ok');
     expect(plain(verified.rendered)).toContain('✓ API              /readyz ok');
     expect(plain(verified.rendered)).toContain('· block volume');
@@ -113,21 +113,21 @@ describe('domain verify', () => {
     const granted: HeadlessSurface = new HeadlessSurface();
     (granted.capabilities as { tasks?: boolean }).tasks = true;
     surface_set(granted);
-    expect(plain((await domain_run(context, ['verify', 'harbor'])).rendered)).toContain('verify: 10 of 10 pass');
+    expect(plain((await cluster_run(context, ['verify', 'harbor'])).rendered)).toContain('verify: 10 of 10 pass');
   });
 
   it('fails when a check fails, and refuses what it cannot verify', async () => {
     store.secret_write('harbor', 'kubeconfig', 'clusters:\n- name: h\n  cluster: {server: "https://api"}\n');
-    const sick: DomainCommandContext = { ...context, build: { ...context.build!, verifyReach: { ...context.build!.verifyReach!, https_status: async () => 500 } } };
-    const failed: CommandEnvelope = await domain_run(sick, ['verify', 'harbor']);
+    const sick: ClusterCommandContext = { ...context, build: { ...context.build!, verifyReach: { ...context.build!.verifyReach!, https_status: async () => 500 } } };
+    const failed: CommandEnvelope = await cluster_run(sick, ['verify', 'harbor']);
     expect(failed.status).toBe('error');
     expect(plain(failed.rendered)).toContain('verify: 8 of 10 pass, 1 fail');
     expect(store.record_read('harbor')?.steps['verify']?.state).toBe('failed');
-    expect((await domain_run(context, ['verify', 'checkout'])).renderedErr).toContain('read from a harbor-oci checkout; domain adopt checkout --from');
-    expect((await domain_run(context, ['verify', 'nope'])).renderedErr).toBe('domain verify: nope: no such domain\n');
-    expect((await domain_run(context, ['verify', '-x'])).renderedErr).toBe('domain verify: usage: domain verify [<name>]\n');
+    expect((await cluster_run(context, ['verify', 'checkout'])).renderedErr).toContain('read from a harbor-oci checkout; cluster adopt checkout --from');
+    expect((await cluster_run(context, ['verify', 'nope'])).renderedErr).toBe('cluster verify: nope: no such cluster\n');
+    expect((await cluster_run(context, ['verify', '-x'])).renderedErr).toBe('cluster verify: usage: cluster verify [<name>]\n');
     store.create({ name: 'other', created: 'now', region: 'r', baseDomain: 'b', steps: {}, ids: {} }, SPEC_DEFAULT);
-    expect((await domain_run(context, ['verify'])).renderedErr).toBe('domain verify: which domain? (harbor, other)\n');
+    expect((await cluster_run(context, ['verify'])).renderedErr).toBe('cluster verify: which cluster? (harbor, other)\n');
   });
 
   it('adoption keeps the load balancers\' addresses from the state\'s outputs', () => {

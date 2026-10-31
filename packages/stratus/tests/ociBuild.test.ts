@@ -1,5 +1,5 @@
 /**
- * @file A new domain's build and teardown over OCI, against recorded
+ * @file A new cluster's build and teardown over OCI, against recorded
  * answers: preflight's checks, the image's bucket and link, a new stack's
  * variables and plan, the apply's outputs, the records, and the teardown in
  * its order; and the teardown verb.
@@ -17,14 +17,14 @@ import { OciBuilder } from '../src/cloud/oci/builder.js';
 import { familyShape_resolve, stackVariables_build } from '../src/cloud/oci/stackVars.js';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder, FakeInstaller } from '../src/cloud/fake/builder.js';
-import { FakeKube, fakeVerifyReach } from '../src/cluster/fakeKube.js';
-import type { KubeApi } from '../src/cluster/kube.js';
-import { SPEC_DEFAULT, specOptions_apply, type DomainSpec } from '../src/domain/spec.js';
-import { DomainStore, type DomainRecord } from '../src/domain/state.js';
-import { STEPS_SOURCE, type BuildDeps } from '../src/domain/steps.js';
-import { clusterVolumes_read } from '../src/domain/teardown.js';
-import { DomainTree } from '../src/vfs/domains.js';
-import { domain_run, type DomainCommandContext } from '../src/commands/domain.js';
+import { FakeKube, fakeVerifyReach } from '../src/kube/fakeKube.js';
+import type { KubeApi } from '../src/kube/kube.js';
+import { SPEC_DEFAULT, specOptions_apply, type ClusterSpec } from '../src/cluster/spec.js';
+import { ClusterStore, type ClusterRecord } from '../src/cluster/state.js';
+import { STEPS_SOURCE, type BuildDeps } from '../src/cluster/steps.js';
+import { clusterVolumes_read } from '../src/cluster/teardown.js';
+import { ClusterTree } from '../src/vfs/clusters.js';
+import { cluster_run, type ClusterCommandContext } from '../src/commands/cluster.js';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 
@@ -103,16 +103,16 @@ class OkRm implements RmApi {
 
 describe('a new stack\'s variables', () => {
   it('are the spec in OCI units and harbor-oci\'s choices, every value a string', () => {
-    const variables = stackVariables_build({ domain: 'trial', spec: SPEC_DEFAULT, tenancyId: 't', compartmentId: 'c', region: 'r', baseDomain: 'b.org', isoLink: 'https://iso', sshPublicKey: 'ssh-ed25519 k' });
+    const variables = stackVariables_build({ cluster: 'trial', spec: SPEC_DEFAULT, tenancyId: 't', compartmentId: 'c', region: 'r', baseDomain: 'b.org', isoLink: 'https://iso', sshPublicKey: 'ssh-ed25519 k' });
     expect(variables).toMatchObject({
       cluster_name: 'trial', zone_dns: 'b.org', installation_method: 'Assisted', openshift_image_source_uri: 'https://iso',
       control_plane_count: '3', control_plane_shape: 'VM.Standard.E5.Flex', control_plane_ocpu: '4', control_plane_memory: '24', control_plane_boot_size: '200', control_plane_boot_volume_vpus_per_gb: '100',
       compute_count: '0', create_public_dns: 'false', create_private_dns: 'false', tag_namespace_compartment_ocid_resource_tagging: 'c', oci_driver_version: 'v1.34.0',
     });
-    const workers: DomainSpec = (specOptions_apply(SPEC_DEFAULT, new Map([['--workers', '2x8/32']])) as { spec: DomainSpec }).spec;
-    expect(stackVariables_build({ domain: 't', spec: workers, tenancyId: 't', compartmentId: 'c', region: 'r', baseDomain: 'b', isoLink: 'i', sshPublicKey: 'k' })).toMatchObject({ compute_count: '2', compute_ocpu: '4', compute_boot_volume_vpus_per_gb: '10' });
-    expect(() => stackVariables_build({ domain: 't', spec: { ...SPEC_DEFAULT, controlPlane: { ...SPEC_DEFAULT.controlPlane, vcpu: 7 } }, tenancyId: 't', compartmentId: 'c', region: 'r', baseDomain: 'b', isoLink: 'i', sshPublicKey: 'k' })).toThrow('7 vCPU is not whole OCPUs');
-    expect(() => stackVariables_build({ domain: 't', spec: { ...SPEC_DEFAULT, controlPlane: { ...SPEC_DEFAULT.controlPlane, bootTier: 'gold' } }, tenancyId: 't', compartmentId: 'c', region: 'r', baseDomain: 'b', isoLink: 'i', sshPublicKey: 'k' })).toThrow('boot tier gold');
+    const workers: ClusterSpec = (specOptions_apply(SPEC_DEFAULT, new Map([['--workers', '2x8/32']])) as { spec: ClusterSpec }).spec;
+    expect(stackVariables_build({ cluster: 't', spec: workers, tenancyId: 't', compartmentId: 'c', region: 'r', baseDomain: 'b', isoLink: 'i', sshPublicKey: 'k' })).toMatchObject({ compute_count: '2', compute_ocpu: '4', compute_boot_volume_vpus_per_gb: '10' });
+    expect(() => stackVariables_build({ cluster: 't', spec: { ...SPEC_DEFAULT, controlPlane: { ...SPEC_DEFAULT.controlPlane, vcpu: 7 } }, tenancyId: 't', compartmentId: 'c', region: 'r', baseDomain: 'b', isoLink: 'i', sshPublicKey: 'k' })).toThrow('7 vCPU is not whole OCPUs');
+    expect(() => stackVariables_build({ cluster: 't', spec: { ...SPEC_DEFAULT, controlPlane: { ...SPEC_DEFAULT.controlPlane, bootTier: 'gold' } }, tenancyId: 't', compartmentId: 'c', region: 'r', baseDomain: 'b', isoLink: 'i', sshPublicKey: 'k' })).toThrow('boot tier gold');
     expect(() => familyShape_resolve('Z9')).toThrow('no flexible shape known');
     expect(familyShape_resolve('A1')).toEqual({ shape: 'VM.Standard.A1.Flex', vcpuPerOcpu: 1 });
   });
@@ -138,14 +138,14 @@ describe('the OCI builder\'s build and teardown', () => {
     builder = builder_make();
   });
 
-  it("makes the domain's compartment under domains, once, tagged with its name", async () => {
-    const made = await builder.compartment_ensure({ domain: 'quay', region: 'r' }, call());
+  it("makes the cluster's compartment under clusters, once, tagged with its name", async () => {
+    const made = await builder.compartment_ensure({ cluster: 'quay', region: 'r' }, call());
     expect(made).toEqual({ id: 'ocid1.compartment.oc1..quay', made: true });
     expect(api.calls).toEqual([
-      'compartment domains under ocid1.tenancy.t {"mise-role":"domains"}',
-      'compartment quay under ocid1.compartment.oc1..domains {"mise-domain":"quay"}',
+      'compartment clusters under ocid1.tenancy.t {"mise-role":"clusters"}',
+      'compartment quay under ocid1.compartment.oc1..clusters {"mise-cluster":"quay"}',
     ]);
-    expect(await builder.compartment_ensure({ domain: 'quay', region: 'r' }, call())).toEqual({ id: 'ocid1.compartment.oc1..quay', made: false });
+    expect(await builder.compartment_ensure({ cluster: 'quay', region: 'r' }, call())).toEqual({ id: 'ocid1.compartment.oc1..quay', made: false });
     expect(api.calls).toHaveLength(2);
   });
 
@@ -162,29 +162,29 @@ describe('the OCI builder\'s build and teardown', () => {
       if (id === 'ocid1.compartment.oc1..quay' && unseen-- > 0) throw Object.assign(new Error('Authorization failed or requested resource not found.'), { statusCode: 404 });
       return await state(id);
     };
-    expect(await builder.compartment_ensure({ domain: 'quay', region: 'r' }, call())).toEqual({ id: 'ocid1.compartment.oc1..quay', made: true });
-    expect(logged.filter((line: string): boolean => line === 'domains is not yet usable; waiting')).toHaveLength(2);
+    expect(await builder.compartment_ensure({ cluster: 'quay', region: 'r' }, call())).toEqual({ id: 'ocid1.compartment.oc1..quay', made: true });
+    expect(logged.filter((line: string): boolean => line === 'clusters is not yet usable; waiting')).toHaveLength(2);
     expect(logged.filter((line: string): boolean => line === 'ocid1.compartment.oc1..quay is not yet found; waiting')).toHaveLength(2);
     refusals = Infinity;
     api.children.clear();
     const impatient: OciBuilder = builder_make(0);
-    await expect(impatient.compartment_ensure({ domain: 'quay', region: 'r' }, call())).rejects.toThrow('not found');
+    await expect(impatient.compartment_ensure({ cluster: 'quay', region: 'r' }, call())).rejects.toThrow('not found');
   });
 
   it('preflight checks what harbor-oci checked, each on its own', async () => {
-    const checks = await builder.preflight({ domain: 'trial', spec: SPEC_DEFAULT, region: 'us-ashburn-1', baseDomain: 'b.org', compartmentId: 'c' }, call());
+    const checks = await builder.preflight({ cluster: 'trial', spec: SPEC_DEFAULT, region: 'us-ashburn-1', baseDomain: 'b.org', compartmentId: 'c' }, call());
     expect(checks.map((check) => `${check.name}:${check.ok}`)).toEqual(['credential:true', 'compartment:true', 'attribution tag:true', 'spec:true', 'room:false', 'load balancers:true', 'zone:true', 'SSH key:true']);
     expect(checks.find((check) => check.name === 'room')?.note).toContain('not said');
     api.compartment = 'DELETED'; api.tagged = false; api.lbFree = 2; api.served = ['ns9'];
-    const workers: DomainSpec = (specOptions_apply(SPEC_DEFAULT, new Map([['--workers', '2x8/32']])) as { spec: DomainSpec }).spec;
-    const bad = Object.fromEntries((await builder.preflight({ domain: 'trial', spec: workers, region: 'us-ashburn-1', baseDomain: 'b.org', compartmentId: 'c' }, call())).map((check) => [check.name, check]));
+    const workers: ClusterSpec = (specOptions_apply(SPEC_DEFAULT, new Map([['--workers', '2x8/32']])) as { spec: ClusterSpec }).spec;
+    const bad = Object.fromEntries((await builder.preflight({ cluster: 'trial', spec: workers, region: 'us-ashburn-1', baseDomain: 'b.org', compartmentId: 'c' }, call())).map((check) => [check.name, check]));
     expect(bad['compartment']).toMatchObject({ ok: false, note: 'deleted' });
     expect(bad['attribution tag']?.ok).toBe(false);
     expect(bad['spec']?.note).toContain('workers are not proven on OCI yet');
     expect(bad['load balancers']).toMatchObject({ ok: false, note: '3 needed, 2 free' });
     expect(bad['zone']?.note).toBe('b.org: OCI serves ns9, the world asks ns1.p68.dns.oraclecloud.net ns2.p68.dns.oraclecloud.net');
-    const none = Object.fromEntries((await builder.preflight({ domain: 'trial', spec: SPEC_DEFAULT, region: 'us-ashburn-1', baseDomain: 'b.org', compartmentId: '' }, call())).map((check) => [check.name, check]));
-    expect(none['compartment']?.note).toBe('none chosen: domain new --compartment <ocid>');
+    const none = Object.fromEntries((await builder.preflight({ cluster: 'trial', spec: SPEC_DEFAULT, region: 'us-ashburn-1', baseDomain: 'b.org', compartmentId: '' }, call())).map((check) => [check.name, check]));
+    expect(none['compartment']?.note).toBe('none chosen: cluster new --compartment <ocid>');
   });
 
   it('copies the image again while a bucket just made answers not found', async () => {
@@ -194,62 +194,62 @@ describe('the OCI builder\'s build and teardown', () => {
       if (refusals-- > 0) throw Object.assign(new Error("Either the bucket named 'stratus-iso' does not exist"), { statusCode: 404 });
       await put(bucket, object, body, length);
     };
-    await builder.iso_store({ domain: 'trial', url: 'https://img', region: 'r', compartmentId: 'c' }, call());
+    await builder.iso_store({ cluster: 'trial', url: 'https://img', region: 'r', compartmentId: 'c' }, call());
     expect(api.calls).toEqual(['bucket stratus-iso', 'put stratus-iso/trial-discovery.iso 3', 'link stratus-iso/trial-discovery.iso']);
     expect(logged.filter((line: string): boolean => line.startsWith('copying the discovery image'))).toHaveLength(2);
     expect(logged).toContain('stratus-iso is not yet usable; waiting');
   });
 
   it('copies the image into a private bucket and links it, makes a stack from the spec, plans, applies and writes the records', async () => {
-    const stored = await builder.iso_store({ domain: 'trial', url: 'https://img', region: 'r', compartmentId: 'c' }, call());
+    const stored = await builder.iso_store({ cluster: 'trial', url: 'https://img', region: 'r', compartmentId: 'c' }, call());
     expect(stored).toMatchObject({ object: 'trial-discovery.iso', link: 'https://objectstorage/p/SECRET/o/x.iso', linkId: 'par-1' });
     expect(api.calls).toEqual(['bucket stratus-iso', 'put stratus-iso/trial-discovery.iso 3', 'link stratus-iso/trial-discovery.iso']);
-    const plan = await builder.infra_plan({ domain: 'trial', spec: SPEC_DEFAULT, region: 'r', isoObject: 'trial-discovery.iso', compartmentId: 'c', baseDomain: 'b.org', isoLink: stored.link }, call());
+    const plan = await builder.infra_plan({ cluster: 'trial', spec: SPEC_DEFAULT, region: 'r', isoObject: 'trial-discovery.iso', compartmentId: 'c', baseDomain: 'b.org', isoLink: stored.link }, call());
     expect(plan).toMatchObject({ ref: 'job-plan', stackRef: 'stack-1', rows: [{ action: 'create', kind: 'instances' }] });
     expect(rm.variables).toMatchObject({ cluster_name: 'trial', openshift_image_source_uri: 'https://objectstorage/p/SECRET/o/x.iso', tenancy_ocid: 'ocid1.tenancy.t', public_ssh_key: 'ssh-ed25519 k' });
-    const outputs = await builder.infra_apply({ domain: 'trial', plan, region: 'r' }, call());
+    const outputs = await builder.infra_apply({ cluster: 'trial', plan, region: 'r' }, call());
     expect(outputs).toEqual({ stackRef: 'stack-1', apiIp: '129.0.0.1', apiIntIp: '10.0.0.2', appsIp: '129.0.0.3', manifests: [{ name: 'oci-dynamic-custom-manifest.yml', content: 'kind: List\n' }] });
-    expect(rm.calls).toEqual(['stack {"mise-domain":"trial"}', 'plan stack-1', 'apply stack-1 from job-plan']);
-    expect(await builder.dns_upsert({ domain: 'trial', baseDomain: 'b.org', outputs, compartmentId: 'c', region: 'r' }, call())).toEqual(['api.trial.b.org', 'api-int.trial.b.org', '*.apps.trial.b.org']);
-    // The records go in the zone where it lives (harbor-oci's), not the domain's own compartment.
+    expect(rm.calls).toEqual(['stack {"mise-cluster":"trial"}', 'plan stack-1', 'apply stack-1 from job-plan']);
+    expect(await builder.dns_upsert({ cluster: 'trial', baseDomain: 'b.org', outputs, compartmentId: 'c', region: 'r' }, call())).toEqual(['api.trial.b.org', 'api-int.trial.b.org', '*.apps.trial.b.org']);
+    // The records go in the zone where it lives (harbor-oci's), not the cluster's own compartment.
     const zone: string = '(ocid1.compartment.oc1..harbor-oci)';
     expect(api.calls.slice(-3)).toEqual([`A api.trial.b.org 129.0.0.1 in b.org ${zone}`, `A api-int.trial.b.org 10.0.0.2 in b.org ${zone}`, `A *.apps.trial.b.org 129.0.0.3 in b.org ${zone}`]);
     // The stack attributes with the tenancy's one tag namespace, where it lives.
     expect(rm.variables['tag_namespace_compartment_ocid_resource_tagging']).toBe('ocid1.compartment.oc1..harbor-oci');
     delete rm.outputs['dynamic_custom_manifest'];
-    await expect(builder.infra_apply({ domain: 'trial', plan, region: 'r' }, call())).rejects.toThrow('the apply left no dynamic_custom_manifest');
-    await expect(builder.infra_apply({ domain: 'trial', plan: { ref: 'p', rows: [] }, region: 'r' }, call())).rejects.toThrow('no stack to apply in');
+    await expect(builder.infra_apply({ cluster: 'trial', plan, region: 'r' }, call())).rejects.toThrow('the apply left no dynamic_custom_manifest');
+    await expect(builder.infra_apply({ cluster: 'trial', plan: { ref: 'p', rows: [] }, region: 'r' }, call())).rejects.toThrow('no stack to apply in');
   });
 
-  it('tears down in its order: the stack, the records, the image, the cluster\'s volumes, then the stack itself and the domain\'s own compartment with its bucket', async () => {
+  it('tears down in its order: the stack, the records, the image, the cluster\'s volumes, then the stack itself and the cluster\'s own compartment with its bucket', async () => {
     expect(await builder.stackResources_count({ region: 'r', stackRef: 'stack-1' })).toBe(79);
-    api.described['c'] = { name: 'trial', parentName: 'domains', tags: { 'mise-domain': 'trial' } };
+    api.described['c'] = { name: 'trial', parentName: 'clusters', tags: { 'mise-cluster': 'trial' } };
     api.buckets['stratus-iso'] = 'c';
     // A volume the cluster never named, left in the compartment with the attribution tag; one without the tag is not the cluster's.
     api.volumes['c'] = [{ id: 'vol-2', name: 'csi-left', tags: { 'openshift-tags.openshift-resource': 'openshift-resource-infra' } }, { id: 'vol-3', name: 'someone-elses', tags: {} }];
-    const gone = await builder.teardown_run({ domain: 'trial', region: 'r', compartmentId: 'c', baseDomain: 'b.org', stackRef: 'stack-1', isoObject: 'trial-discovery.iso', isoLinkId: 'par-1', volumeIds: ['vol-1'] }, call());
+    const gone = await builder.teardown_run({ cluster: 'trial', region: 'r', compartmentId: 'c', baseDomain: 'b.org', stackRef: 'stack-1', isoObject: 'trial-discovery.iso', isoLinkId: 'par-1', volumeIds: ['vol-1'] }, call());
     expect(rm.calls).toEqual(['destroy stack-1', 'delete stack-1']);
     expect(api.calls).toEqual(['unrecord api.trial.b.org', 'unrecord api-int.trial.b.org', 'unrecord *.apps.trial.b.org', 'unlink par-1', 'delete stratus-iso/trial-discovery.iso', 'volume vol-1', 'volume vol-2', 'delete bucket stratus-iso', 'delete compartment c']);
-    expect(gone).toEqual(["the stack's resources (stack-1)", '3 DNS records', 'the image trial-discovery.iso and its link', '1 volumes the cluster made', '1 volumes left in the compartment with the attribution tag', 'the stack itself', 'the image bucket stratus-iso', 'the compartment domains/trial']);
+    expect(gone).toEqual(["the stack's resources (stack-1)", '3 DNS records', 'the image trial-discovery.iso and its link', '1 volumes the cluster made', '1 volumes left in the compartment with the attribution tag', 'the stack itself', 'the image bucket stratus-iso', 'the compartment clusters/trial']);
   });
 
   it('runs no destroy job for a stack an earlier pass emptied, does the rest again, and leaves a compartment that is not its own with only the tag gone', async () => {
     // harbor-oci's compartment: the zone and the tag namespace live there, so it keeps itself.
-    api.described['c'] = { name: 'harbor-oci', parentName: null, tags: { 'mise-domain': 'trial', 'other': 'x' } };
-    const gone = await builder.teardown_run({ domain: 'trial', region: 'r', compartmentId: 'c', baseDomain: 'b.org', stackRef: 'stack-1', volumeIds: [], stackEmpty: true }, call());
+    api.described['c'] = { name: 'harbor-oci', parentName: null, tags: { 'mise-cluster': 'trial', 'other': 'x' } };
+    const gone = await builder.teardown_run({ cluster: 'trial', region: 'r', compartmentId: 'c', baseDomain: 'b.org', stackRef: 'stack-1', volumeIds: [], stackEmpty: true }, call());
     expect(rm.calls).toEqual(['delete stack-1']);
-    expect(api.calls).toEqual(['unrecord api.trial.b.org', 'unrecord api-int.trial.b.org', 'unrecord *.apps.trial.b.org', 'untag c mise-domain']);
-    expect(gone).toEqual(['3 DNS records', 'the stack itself', 'the tag mise-domain=trial off the compartment harbor-oci']);
+    expect(api.calls).toEqual(['unrecord api.trial.b.org', 'unrecord api-int.trial.b.org', 'unrecord *.apps.trial.b.org', 'untag c mise-cluster']);
+    expect(gone).toEqual(['3 DNS records', 'the stack itself', 'the tag mise-cluster=trial off the compartment harbor-oci']);
   });
 
   it('leaves a compartment of its own that still holds something, saying so, and looks for no records without a zone', async () => {
-    api.described['c'] = { name: 'trial', parentName: 'domains', tags: { 'mise-domain': 'trial' } };
+    api.described['c'] = { name: 'trial', parentName: 'clusters', tags: { 'mise-cluster': 'trial' } };
     api.compartmentFull = true;
     const logged: string[] = [];
-    const gone = await builder.teardown_run({ domain: 'trial', region: 'r', compartmentId: 'c', baseDomain: '', volumeIds: [] }, { log: (line: string): void => { logged.push(line); }, signal: new AbortController().signal });
+    const gone = await builder.teardown_run({ cluster: 'trial', region: 'r', compartmentId: 'c', baseDomain: '', volumeIds: [] }, { log: (line: string): void => { logged.push(line); }, signal: new AbortController().signal });
     expect(api.calls).toEqual([]);
     expect(gone).toEqual([]);
-    expect(logged).toEqual(['no zone known for it: no records looked for', 'the compartment domains/trial stays: CompartmentNotEmpty']);
+    expect(logged).toEqual(['no zone known for it: no records looked for', 'the compartment clusters/trial stays: CompartmentNotEmpty']);
   });
 
   it('reads the cluster\'s own block volumes from its PersistentVolumes', async () => {
@@ -262,24 +262,24 @@ describe('the OCI builder\'s build and teardown', () => {
   });
 });
 
-describe('domain teardown', () => {
+describe('cluster teardown', () => {
   let root: string;
-  let store: DomainStore;
-  let context: DomainCommandContext;
+  let store: ClusterStore;
+  let context: ClusterCommandContext;
   let surface: HeadlessSurface & { answer: string };
   let installer: FakeInstaller;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'stratus-teardown-'));
-    store = new DomainStore(join(root, 'domains'));
+    store = new ClusterStore(join(root, 'clusters'));
     const world: FakeBuildWorld = new FakeBuildWorld(0);
     const builder: FakeCloudBuilder = new FakeCloudBuilder(world);
     installer = new FakeInstaller(world);
     const deps: BuildDeps = { store, builder, installer, zones: 3, version: '4.22', pollMs: 0, hostsWaitMs: 1000, installWaitMs: 1000 };
-    const domains: DomainTree = new DomainTree({ sources: [], owner: (): string => 'r', now: (): Date => new Date(), store });
+    const clusters: ClusterTree = new ClusterTree({ sources: [], owner: (): string => 'r', now: (): Date => new Date(), store });
     const driver: FakeDriver = new FakeDriver(fakeCloud_sample());
     const verifyReach = { ...fakeVerifyReach(() => []), kube_make: (): KubeApi => ({ ...new FakeKube({ nodes: [] }), json_get: async () => ({ items: [{ spec: { csi: { driver: 'blockvolume.csi.oraclecloud.com', volumeHandle: 'v1' } } }] }) }) as KubeApi };
-    context = { domains, driver, region: (): string => 'r', domainsPath: (): string => '/d', build: { domains, store, driver, region: (): string => 'r', deps, builder, baseDomain: 'b', verifyReach } };
+    context = { clusters, driver, region: (): string => 'r', clustersPath: (): string => '/d', build: { clusters, store, driver, region: (): string => 'r', deps, builder, baseDomain: 'b', verifyReach } };
     surface = Object.assign(new HeadlessSurface(), { answer: 'trial' });
     (surface.capabilities as { tasks?: boolean }).tasks = true;
     surface.prompt = async (_request: PromptRequest): Promise<string> => surface.answer;
@@ -295,65 +295,65 @@ describe('domain teardown', () => {
   it("asks for the installer's account when a build will need it and none is kept, and keeps it on the host", async () => {
     const { fileAccount_make } = await import('../src/installer/account.js');
     const account = fileAccount_make(join(root, 'ocm', 'service-account.env'));
-    const asking: DomainCommandContext = { ...context, build: { ...context.build!, account } };
+    const asking: ClusterCommandContext = { ...context, build: { ...context.build!, account } };
     store.create({ name: 'fresh', created: 'now', region: 'r', baseDomain: 'b', steps: {}, ids: {}, protected: true }, SPEC_DEFAULT);
     surface.answer = 'client-1';
-    await domain_run(asking, ['build', 'fresh', '--through', 'compartment']);
+    await cluster_run(asking, ['build', 'fresh', '--through', 'compartment']);
     expect(account.present()).toBe(false);
-    await domain_run(asking, ['build', 'fresh', '--through', 'cluster']);
+    await cluster_run(asking, ['build', 'fresh', '--through', 'cluster']);
     expect(account.present()).toBe(true);
     expect(store.record_read('fresh')?.compartmentId).toBe('ocid1.compartment.oc1..fake-fresh');
   });
 
-  it('refuses a protected domain by name, and lifting it is a line of its own', async () => {
-    store.record_update('trial', (record: DomainRecord): void => { record.protected = true; });
-    expect((await domain_run(context, ['teardown', 'trial'])).renderedErr).toBe('domain teardown: trial: Operation not permitted: protected (domain protect trial off lifts it, as its own line)\n');
-    expect(plain((await domain_run(context, ['protect', 'trial'])).rendered)).toBe('trial: protected (teardown refused)\n');
-    expect(plain((await domain_run(context, ['protect', 'trial', 'off'])).rendered)).toBe('trial: no longer protected; domain teardown trial will ask for its name\n');
+  it('refuses a protected cluster by name, and lifting it is a line of its own', async () => {
+    store.record_update('trial', (record: ClusterRecord): void => { record.protected = true; });
+    expect((await cluster_run(context, ['teardown', 'trial'])).renderedErr).toBe('cluster teardown: trial: Operation not permitted: protected (cluster protect trial off lifts it, as its own line)\n');
+    expect(plain((await cluster_run(context, ['protect', 'trial'])).rendered)).toBe('trial: protected (teardown refused)\n');
+    expect(plain((await cluster_run(context, ['protect', 'trial', 'off'])).rendered)).toBe('trial: no longer protected; cluster teardown trial will ask for its name\n');
     expect(store.record_read('trial')?.protected).toBe(false);
-    expect((await domain_run(context, ['protect', 'trial', 'maybe'])).renderedErr).toBe('domain protect: usage: domain protect <name> [on|off]\n');
-    expect((await domain_run(context, ['protect', 'ghost', 'on'])).renderedErr).toBe('domain protect: ghost: no such domain kept here\n');
+    expect((await cluster_run(context, ['protect', 'trial', 'maybe'])).renderedErr).toBe('cluster protect: usage: cluster protect <name> [on|off]\n');
+    expect((await cluster_run(context, ['protect', 'ghost', 'on'])).renderedErr).toBe('cluster protect: ghost: no such cluster kept here\n');
   });
 
   it('shows what goes, asks for the name, and removes it; a wrong name removes nothing', async () => {
     surface.answer = 'tria';
-    expect(plain((await domain_run(context, ['teardown', 'trial'])).rendered)).toBe("not torn down: 'tria' is not trial\n");
+    expect(plain((await cluster_run(context, ['teardown', 'trial'])).rendered)).toBe("not torn down: 'tria' is not trial\n");
     expect(store.record_read('trial')?.gone).toBeUndefined();
     surface.answer = 'trial';
-    expect(plain((await domain_run(context, ['teardown', 'trial'])).rendered)).toBe('trial: torn down\n');
-    expect((store.record_read('trial') as DomainRecord).gone).toBeDefined();
+    expect(plain((await cluster_run(context, ['teardown', 'trial'])).rendered)).toBe('trial: torn down\n');
+    expect((store.record_read('trial') as ClusterRecord).gone).toBeDefined();
     expect(installer.deleted).toEqual(['cluster-trial']);
-    expect(plain((await domain_run(context, ['teardown', 'trial'])).rendered)).toContain('already torn down');
-    expect(plain((await domain_run(context, ['status', 'trial'])).rendered)).toContain('torn down');
-    expect((await domain_run(context, ['build', 'trial'])).renderedErr).toContain('was torn down');
+    expect(plain((await cluster_run(context, ['teardown', 'trial'])).rendered)).toContain('already torn down');
+    expect(plain((await cluster_run(context, ['status', 'trial'])).rendered)).toContain('torn down');
+    expect((await cluster_run(context, ['build', 'trial'])).renderedErr).toContain('was torn down');
   });
 
   it('refuses what it must not tear down, and when it cannot read the cluster\'s volumes', async () => {
-    // An adopted domain is guarded by its lock alone, as a built one is; lifted, it is torn down.
+    // An adopted cluster is guarded by its lock alone, as a built one is; lifted, it is torn down.
     store.create({ name: 'harbor', created: 'now', region: 'r', baseDomain: 'b', steps: {}, ids: {}, adopted: { from: '/x', at: 'now' } }, SPEC_DEFAULT);
-    expect((await domain_run(context, ['teardown', 'harbor'])).renderedErr).toBe('domain teardown: harbor: Operation not permitted: protected (domain protect harbor off lifts it, as its own line)\n');
-    await domain_run(context, ['protect', 'harbor', 'off']);
+    expect((await cluster_run(context, ['teardown', 'harbor'])).renderedErr).toBe('cluster teardown: harbor: Operation not permitted: protected (cluster protect harbor off lifts it, as its own line)\n');
+    await cluster_run(context, ['protect', 'harbor', 'off']);
     surface.answer = 'harbor';
-    expect(plain((await domain_run(context, ['teardown', 'harbor'])).rendered)).toBe('harbor: torn down\n');
+    expect(plain((await cluster_run(context, ['teardown', 'harbor'])).rendered)).toBe('harbor: torn down\n');
     expect(store.record_read('harbor')?.gone).toBeDefined();
     surface.answer = 'trial';
-    expect((await domain_run(context, ['teardown', 'nope'])).renderedErr).toBe('domain teardown: nope: no such domain\n');
-    expect((await domain_run(context, ['teardown'])).renderedErr).toBe('domain teardown: usage: domain teardown <name>\n');
-    const blind: DomainCommandContext = { ...context, build: { ...context.build!, verifyReach: { ...context.build!.verifyReach!, kube_make: (): KubeApi => ({ ...new FakeKube({ nodes: [] }), json_get: async () => { throw new Error('unreachable'); } }) as KubeApi } } };
-    expect((await domain_run(blind, ['teardown', 'trial'])).renderedErr).toBe("domain teardown: trial: cannot read the cluster's volumes (unreachable): refusing, they would be left billing\n");
+    expect((await cluster_run(context, ['teardown', 'nope'])).renderedErr).toBe('cluster teardown: nope: no such cluster\n');
+    expect((await cluster_run(context, ['teardown'])).renderedErr).toBe('cluster teardown: usage: cluster teardown <name>\n');
+    const blind: ClusterCommandContext = { ...context, build: { ...context.build!, verifyReach: { ...context.build!.verifyReach!, kube_make: (): KubeApi => ({ ...new FakeKube({ nodes: [] }), json_get: async () => { throw new Error('unreachable'); } }) as KubeApi } } };
+    expect((await cluster_run(blind, ['teardown', 'trial'])).renderedErr).toBe("cluster teardown: trial: cannot read the cluster's volumes (unreachable): refusing, they would be left billing\n");
     // Once an earlier pass emptied the stack the cluster is gone with it:
     // the teardown runs again without asking it, and finishes.
     const builderUsed = context.build!.builder!;
     const counted = jest.spyOn(builderUsed, 'stackResources_count').mockResolvedValue(0);
-    const resumed = await domain_run(blind, ['teardown', 'trial']);
+    const resumed = await cluster_run(blind, ['teardown', 'trial']);
     expect(plain(resumed.rendered)).toBe('trial: torn down\n');
-    expect((store.record_read('trial') as DomainRecord).gone).toBeDefined();
+    expect((store.record_read('trial') as ClusterRecord).gone).toBeDefined();
     counted.mockRestore();
-    store.record_update('trial', (current: DomainRecord): void => { delete current.gone; });
+    store.record_update('trial', (current: ClusterRecord): void => { delete current.gone; });
     const untiered: HeadlessSurface = new HeadlessSurface();
     surface_set(untiered);
-    expect((await domain_run(context, ['teardown', 'trial'])).renderedErr).toContain('tearing down needs the tasks tier');
-    const noBuilder: DomainCommandContext = { ...context, build: { ...context.build!, builder: null } };
-    expect((await domain_run(noBuilder, ['teardown', 'trial'])).renderedErr).toBe('domain teardown: this cloud cannot tear a domain down yet\n');
+    expect((await cluster_run(context, ['teardown', 'trial'])).renderedErr).toContain('tearing down needs the tasks tier');
+    const noBuilder: ClusterCommandContext = { ...context, build: { ...context.build!, builder: null } };
+    expect((await cluster_run(noBuilder, ['teardown', 'trial'])).renderedErr).toBe('cluster teardown: this cloud cannot tear a cluster down yet\n');
   });
 });

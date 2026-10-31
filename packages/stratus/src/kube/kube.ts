@@ -1,5 +1,5 @@
 /**
- * @file The Kubernetes driver's beginning: a domain's cluster reached with its
+ * @file The Kubernetes driver's beginning: a cluster reached with its
  * kubeconfig, over the Kubernetes API (docs/stratus.adoc, D3, D4). The same on
  * every cloud. What `verify` needs is here; the tree's `cluster/` comes with
  * step 5.

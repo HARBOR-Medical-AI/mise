@@ -33,11 +33,11 @@ export const TILE_ABOUT: Readonly<Record<string, TileAbout>> = {
     tail: 'Replay its history, or fly in to any one analysis to see its steps.',
   },
   // The stratus composition's (compositions/stratus/tiles.ts); approved by the operator 2026-10-22.
-  domains: {
-    text: 'The Trusted Domains in this tenancy, found by their tag: each one\'s condition or last finished build step, its address and what it costs per hour. One with a step gone wrong shows in red; one torn down reads GONE until what is left of it is removed. Opening the tile, or a Trusted Domain on it, opens the TD controller: its condition, spec, steps and cost, and the lines that build, verify and tear it down.',
+  clusters: {
+    text: 'The OpenShift clusters in this tenancy, found by their tag: each one\'s condition or last finished build step, its address and what it costs per hour. One with a step gone wrong shows in red; one torn down reads GONE until what is left of it is removed. Opening the tile, or a cluster on it, opens the controller: its condition, spec, steps and cost, and the lines that build, verify and tear it down.',
   },
   capacity: {
-    text: 'What this region has free for the machine families your domains use, zone by zone: the cores and memory a new domain or a bigger one could take.',
+    text: 'What this region has free for the machine families your clusters use, zone by zone: the cores and memory a new cluster or a bigger one could take.',
   },
   analyses: {
     text: 'Your analyses, newest first. Open one to follow it, read its logs and browse its results.',
@@ -51,7 +51,7 @@ export const TILE_ABOUT: Readonly<Record<string, TileAbout>> = {
   },
   // The ChRIS composition's door into the person's cloud session (compositions/chris/tiles.ts); the question it asks is the one `stratus oci` asks.
   cloud: {
-    text: 'Your cloud session: the tenancy and its Trusted Domains. Entering asks which way in:',
+    text: 'Your cloud session: the tenancy and what is built in it. Entering asks which way in:',
     list: [
       'READ: look only; nothing outside this host changes',
       'MANAGE: build, tear down and spend, each after its own lock and the name typed back',

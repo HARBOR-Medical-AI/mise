@@ -1,21 +1,21 @@
 /**
- * @file The stratus composition's dashboard tiles: DOMAINS (each Trusted
- * Domain, its last step, a step gone wrong in red; a row opens the TD
+ * @file The stratus composition's dashboard tiles: OPENSHIFT (each
+ * cluster, its last step, a step gone wrong in red; a row opens the TD
  * controller on it) and CAPACITY (what the
- * region has free for the shape families the domains' specs name)
+ * region has free for the shape families the clusters' specs name)
  * (docs/stratus.adoc, D11).
  *
  * Each is asked of the session at paint time, from the commands a terminal
- * runs too: `domain status` and `capacity`, through their models. `capacity`
+ * runs too: `cluster status` and `capacity`, through their models. `capacity`
  * walks the region limit by limit the first time, so a paint waits for it
- * only a moment: DOMAINS is painted with CAPACITY reading, and the dashboard
+ * only a moment: OPENSHIFT is painted with CAPACITY reading, and the dashboard
  * is painted again when the answer lands.
  *
  * @module
  */
 import {
-  capacityModelSchema, domainsModelSchema, STRATUS_CAPACITY_MODEL_KIND, STRATUS_DOMAINS_MODEL_KIND,
-  type CapacityModel, type CapacityRow, type DomainSummary, type DomainsModel,
+  capacityModelSchema, clustersModelSchema, STRATUS_CAPACITY_MODEL_KIND, STRATUS_CLUSTERS_MODEL_KIND,
+  type CapacityModel, type CapacityRow, type ClusterSummary, type ClustersModel,
 } from '@fnndsc/menu';
 import type { ExecuteOutcome } from '../../calypso/client.js';
 import { TILE_ABOUT } from '../../features/launcher/about.js';
@@ -26,15 +26,15 @@ import type { TileContribution } from '../../app/dashboardTiles.js';
 export interface StratusTileHooks {
   /** Asks the session a line, quietly. */
   ask: (line: string) => Promise<ExecuteOutcome>;
-  /** Opens the TD controller on a domain: the line `domain <name>`. */
-  domain_open: (name: string) => void;
+  /** Opens the TD controller on a cluster: the line `cluster <name>`. */
+  cluster_open: (name: string) => void;
   /** Opens home. */
   home_open: () => void;
   /** Runs a line in the console, where its answer is read whole. */
   line_run: (line: string) => void;
   /** Opens the CAPACITY pane on a family, or on every family the region offers when none is named. */
   capacity_open: (family: string) => void;
-  /** Told the domains each paint finds, so the language claims `domain <name>` before the controller has read them. */
+  /** Told the clusters each paint finds, so the language claims `cluster <name>` before the controller has read them. */
   names_seen?: (names: string[]) => void;
   /** Paints the dashboard again: called once a `capacity` a paint did not wait for has answered. */
   repaint?: () => void;
@@ -140,42 +140,42 @@ export function stratusTiles_make(hooks: StratusTileHooks): () => Promise<TileCo
     return asked;
   };
   return async (): Promise<TileContribution> => {
-    const [domainsAnswer, capacityAnswer]: [ExecuteOutcome, ExecuteOutcome | null] = await Promise.all([
-      hooks.ask('domain status'),
+    const [clustersAnswer, capacityAnswer]: [ExecuteOutcome, ExecuteOutcome | null] = await Promise.all([
+      hooks.ask('cluster status'),
       answer_awaitFor(capacity_ask(), hooks.capacityGraceMs ?? CAPACITY_GRACE_MS),
     ]);
     const capacityReading: boolean = capacityAnswer === null;
     if (capacityReading) repaintOwed = true;
-    const domainsModel: DomainsModel | null = model_extract(domainsAnswer, STRATUS_DOMAINS_MODEL_KIND, (data) => domainsModelSchema.safeParse(data));
-    const domains: DomainSummary[] = domainsModel?.domains ?? [];
-    if (domainsModel !== null) hooks.names_seen?.(domains.map((domain: DomainSummary): string => domain.name));
-    const wrong = (domain: DomainSummary): boolean => domain.steps.some((step): boolean => WRONG_STATES.includes(step.state));
-    const wrongCount: number = domains.filter(wrong).length;
-    // What the domains cost an hour together, at list price, when the daemon priced them.
-    const priced: DomainSummary[] = domains.filter((domain: DomainSummary): boolean => domain.cost !== undefined && domain.cost !== null);
-    const hourly: number = priced.reduce((sum: number, domain: DomainSummary): number => sum + (domain.cost?.hourly ?? 0), 0);
-    // One with nothing left of it but its tag is counted apart: it is not a Trusted Domain anyone can use.
-    const goneCount: number = domains.filter((domain: DomainSummary): boolean => domain.condition === 'GONE').length;
-    const standing: number = domains.length - goneCount;
-    const domainsTile: LauncherTile = {
-      key: 'domains', name: 'TRUSTED DOMAINS', hue: '--october-sunset', numeral: '',
+    const clustersModel: ClustersModel | null = model_extract(clustersAnswer, STRATUS_CLUSTERS_MODEL_KIND, (data) => clustersModelSchema.safeParse(data));
+    const clusters: ClusterSummary[] = clustersModel?.clusters ?? [];
+    if (clustersModel !== null) hooks.names_seen?.(clusters.map((cluster: ClusterSummary): string => cluster.name));
+    const wrong = (cluster: ClusterSummary): boolean => cluster.steps.some((step): boolean => WRONG_STATES.includes(step.state));
+    const wrongCount: number = clusters.filter(wrong).length;
+    // What the clusters cost an hour together, at list price, when the daemon priced them.
+    const priced: ClusterSummary[] = clusters.filter((cluster: ClusterSummary): boolean => cluster.cost !== undefined && cluster.cost !== null);
+    const hourly: number = priced.reduce((sum: number, cluster: ClusterSummary): number => sum + (cluster.cost?.hourly ?? 0), 0);
+    // One with nothing left of it but its tag is counted apart: it is not a cluster anyone can use.
+    const goneCount: number = clusters.filter((cluster: ClusterSummary): boolean => cluster.condition === 'GONE').length;
+    const standing: number = clusters.length - goneCount;
+    const clustersTile: LauncherTile = {
+      key: 'clusters', name: 'OPENSHIFT', hue: '--october-sunset', numeral: '',
       figures: [
-        { text: standing === 0 ? 'NONE' : `${standing} TRUSTED DOMAIN${standing === 1 ? '' : 'S'}` },
+        { text: standing === 0 ? 'NONE' : `${standing} CLUSTER${standing === 1 ? '' : 'S'}` },
         ...(goneCount > 0 ? [{ text: `${goneCount} GONE` }] : []),
         ...(wrongCount > 0 ? [{ text: `${wrongCount} NEED${wrongCount === 1 ? 'S' : ''} A LOOK`, errored: true }] : []),
         ...(priced.length > 0 ? [{ text: `${money_text(hourly, priced[0]?.cost?.currency ?? 'USD')}/H` }] : []),
       ],
-      rows: domains.slice(0, 6).map((domain: DomainSummary): LauncherRow => ({
+      rows: clusters.slice(0, 6).map((cluster: ClusterSummary): LauncherRow => ({
         // The rate before the cluster's long name, so a narrow tile cuts the name, not the money.
-        text: `${domain.name}  ${domain.condition === 'GONE' ? 'GONE' : domain.origin === 'found' ? `${domain.condition ?? 'FOUND'} · NOT ADOPTED` : domain.lastDone ?? 'NOTHING DONE'}${domain.cost !== undefined && domain.cost !== null ? `  ${money_text(domain.cost.hourly, domain.cost.currency)}/h` : ''}  ${domain.cluster ?? ''}`.trimEnd(),
-        errored: wrong(domain),
-        // A row is that domain's line: the TD controller opens on it (docs/stratus.adoc, D13).
-        open: (): void => hooks.domain_open(domain.name),
+        text: `${cluster.name}  ${cluster.condition === 'GONE' ? 'GONE' : cluster.origin === 'found' ? `${cluster.condition ?? 'FOUND'} · NOT ADOPTED` : cluster.lastDone ?? 'NOTHING DONE'}${cluster.cost !== undefined && cluster.cost !== null ? `  ${money_text(cluster.cost.hourly, cluster.cost.currency)}/h` : ''}  ${cluster.cluster ?? ''}`.trimEnd(),
+        errored: wrong(cluster),
+        // A row is that cluster's line: the TD controller opens on it (docs/stratus.adoc, D13).
+        open: (): void => hooks.cluster_open(cluster.name),
       })),
       verb: 'OPEN THE CONTROLLER',
-      about: TILE_ABOUT['domains'],
-      // The tile is the TD controller's door: `domain`, on the domain the controller chooses (docs/stratus.adoc, D13).
-      enter: (): void => hooks.domain_open(''),
+      about: TILE_ABOUT['clusters'],
+      // The tile is the TD controller's door: `cluster`, on the cluster the controller chooses (docs/stratus.adoc, D13).
+      enter: (): void => hooks.cluster_open(''),
     };
 
     const capacity: CapacityModel | null = capacityAnswer === null ? null : model_extract(capacityAnswer, STRATUS_CAPACITY_MODEL_KIND, (data) => capacityModelSchema.safeParse(data));
@@ -197,10 +197,10 @@ export function stratusTiles_make(hooks: StratusTileHooks): () => Promise<TileCo
       enter: (): void => hooks.capacity_open(''),
     };
     return {
-      lead: { tile: domainsTile, weight: domains.length },
+      lead: { tile: clustersTile, weight: clusters.length },
       afterFiles: [capacityTile],
       afterPanes: [],
-      about: { files: { text: 'Your home: the Trusted Domains this session knows, each a folder of its spec, settings, state and steps.' } },
+      about: { files: { text: 'Your home: the clusters this session knows, each a folder of its spec, settings, state and steps.' } },
     };
   };
 }

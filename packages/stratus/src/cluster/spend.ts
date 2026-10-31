@@ -1,5 +1,5 @@
 /**
- * @file What a domain costs: each live resource in its compartment priced at
+ * @file What a cluster costs: each live resource in its compartment priced at
  * list price, an hour, and what that has come to since each was made
  * (docs/stratus.adoc, D7). `harbor-oci`'s `burn`, read through the driver.
  *

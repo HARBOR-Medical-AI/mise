@@ -248,12 +248,12 @@ export interface CloudRecord {
 export type ResourceCounts = Readonly<Partial<Record<ResourceKind, number>>>;
 
 /**
- * A Trusted Domain the tenancy holds, found by the tag its build or its
- * adoption put on its stack and its compartment (`mise-domain=<name>`): what
- * a session lists before it keeps anything of the domain itself.
+ * A cluster the tenancy holds, found by the tag its build or its
+ * adoption put on its stack and its compartment (`mise-cluster=<name>`): what
+ * a session lists before it keeps anything of the cluster itself.
  */
-export interface FoundDomain {
-  /** The tag's value: the domain's name. */
+export interface FoundCluster {
+  /** The tag's value: the cluster's name. */
   readonly name: string;
   /** The stack carrying the tag, or null when only a compartment does. */
   readonly stack: { readonly id: string; readonly state: string; readonly compartmentId: string } | null;
@@ -318,6 +318,6 @@ export interface CloudDriver {
   records_list(zoneId: string, region: string): Promise<CloudRecord[]>;
   /** How many of each kind a container holds in a region, in one search; live resources only. */
   resources_search(containerId: string, region: string): Promise<ResourceCounts>;
-  /** The domains the tenancy holds, by the tag on their stacks and compartments, in one search across every container: one per name, sorted; a deleted carrier is left out. */
-  domains_find(tagKey: string, region: string): Promise<FoundDomain[]>;
+  /** The clusters the tenancy holds, by the tag on their stacks and compartments, in one search across every container: one per name, sorted; a deleted carrier is left out. */
+  clusters_find(tagKey: string, region: string): Promise<FoundCluster[]>;
 }

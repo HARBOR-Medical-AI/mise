@@ -1,10 +1,10 @@
 # A tenant: a Trusted Domain built from its written spec to a verified
 # cluster with ChRIS on it, smoked (docs/stratus.adoc, D14).
 #
-# The size is the spec's, written before this plays by `domain new` (or the
+# The size is the spec's, written before this plays by `cluster new` (or the
 # controller's SIZE and COMMIT, which send that line and then this play).
 # This file is the procedure, never the shape: spec.yaml stays the truth of
-# what a domain is.
+# what a cluster is.
 #
 # The build asks before the first step that bills. A NO there, or Ctrl-C,
 # leaves the build where it stands, and the play stops at the claim that the
@@ -15,13 +15,13 @@
 @param        NAME
 @answers      TENANT
 
-# Only a domain built here is built on; an adopted one is planned against.
-expect domain ${NAME} class eq built
-domain build ${NAME}
-expect domain ${NAME} step smoke eq done
+# Only a cluster built here is built on; an adopted one is planned against.
+expect cluster ${NAME} class eq built
+cluster build ${NAME}
+expect cluster ${NAME} step smoke eq done
 
 # The build's verify step ran the ten checks against the cluster through its
 # kubeconfig, which stays on the host, until the new cluster settled.
-expect domain ${NAME} verify eq 10
+expect cluster ${NAME} verify eq 10
 
-TENANT=$(domain ${NAME})
+TENANT=$(cluster ${NAME})

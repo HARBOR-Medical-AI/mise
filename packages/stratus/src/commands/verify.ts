@@ -1,8 +1,8 @@
 /**
- * @file `domain verify [<name>]`: the ten checks against a domain's cluster
+ * @file `cluster verify [<name>]`: the ten checks against a cluster
  * (docs/stratus.adoc, D7), through its kubeconfig on the host, which never
- * leaves it. The result is kept as the domain's verify step, so `domain
- * status` and the DOMAINS tile show it.
+ * leaves it. The result is kept as the cluster's verify step, so `cluster
+ * status` and the CLUSTERS tile show it.
  *
  * @module
  */
@@ -11,12 +11,12 @@ import { readFileSync } from 'node:fs';
 import chalk from 'chalk';
 import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
 import { commandCancellation_enable, commandCancellation_signalGet, surface_get } from '@fnndsc/brasa/core';
-import { kubeconfig_read, type KubeApi } from '../cluster/kube.js';
-import { httpsStatus_get, kubeApi_make } from '../cluster/kubeHttp.js';
-import type { HarborDomain } from '../domains/harborOci.js';
-import type { DomainRecord } from '../domain/state.js';
-import { familyShape_find } from '../domain/sizing.js';
-import { verify_run, verifyChecks_keep, type VerifyCheck } from '../domain/verify.js';
+import { kubeconfig_read, type KubeApi } from '../kube/kube.js';
+import { httpsStatus_get, kubeApi_make } from '../kube/kubeHttp.js';
+import type { HarborCluster } from '../checkout/harborOci.js';
+import type { ClusterRecord } from '../cluster/state.js';
+import { familyShape_find } from '../cluster/sizing.js';
+import { verify_run, verifyChecks_keep, type VerifyCheck } from '../cluster/verify.js';
 import type { BuildCommandContext } from './build.js';
 
 /** The resolver `verify` asks, as `harbor-oci` did: one outside the tenancy. */
@@ -60,24 +60,24 @@ function check_line(check: VerifyCheck): string {
 }
 
 /**
- * `domain verify [<name>]`.
+ * `cluster verify [<name>]`.
  *
  * @param context - The session.
  * @param reach - How the checks reach the cluster.
  * @param args - The words after `verify`.
  * @returns The envelope: failed when a check failed.
  */
-export async function domainVerify_run(context: BuildCommandContext, reach: VerifyReach, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  if (args.length > 1 || args.some((word: string): boolean => word.startsWith('-'))) return envelope_error('', undefined, 'domain verify: usage: domain verify [<name>]\n');
+export async function clusterVerify_run(context: BuildCommandContext, reach: VerifyReach, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  if (args.length > 1 || args.some((word: string): boolean => word.startsWith('-'))) return envelope_error('', undefined, 'cluster verify: usage: cluster verify [<name>]\n');
   const kept: string[] = context.store.names_list();
   const name: string | undefined = args[0] ?? (kept.length === 1 ? kept[0] : undefined);
-  if (name === undefined) return envelope_error('', undefined, `domain verify: which domain? (${kept.join(', ') || 'none kept here'})\n`);
-  const domain: HarborDomain | null = context.domains.domain_read(name);
-  if (domain === null) return envelope_error('', undefined, `domain verify: ${name}: no such domain\n`);
-  const record: DomainRecord | null = context.store.record_read(name);
-  if (domain.origin !== 'built' || record === null) return envelope_error('', undefined, `domain verify: ${name}: read from a harbor-oci checkout; domain adopt ${name} --from ${domain.root} keeps it here first\n`);
-  const kubeconfig = domain.secrets.find((secret): boolean => secret.name === 'kubeconfig');
-  if (kubeconfig === undefined) return envelope_error('', undefined, `domain verify: ${name}: no kubeconfig yet: its cluster is not installed\n`);
+  if (name === undefined) return envelope_error('', undefined, `cluster verify: which cluster? (${kept.join(', ') || 'none kept here'})\n`);
+  const cluster: HarborCluster | null = context.clusters.cluster_read(name);
+  if (cluster === null) return envelope_error('', undefined, `cluster verify: ${name}: no such cluster\n`);
+  const record: ClusterRecord | null = context.store.record_read(name);
+  if (cluster.origin !== 'built' || record === null) return envelope_error('', undefined, `cluster verify: ${name}: read from a harbor-oci checkout; cluster adopt ${name} --from ${cluster.root} keeps it here first\n`);
+  const kubeconfig = cluster.secrets.find((secret): boolean => secret.name === 'kubeconfig');
+  if (kubeconfig === undefined) return envelope_error('', undefined, `cluster verify: ${name}: no kubeconfig yet: its cluster is not installed\n`);
   const spec = context.store.spec_read(name)?.spec ?? null;
   const shapes = context.region() === null ? [] : await context.driver.shapes_list(record.region).catch(() => []);
   commandCancellation_enable();
@@ -85,7 +85,7 @@ export async function domainVerify_run(context: BuildCommandContext, reach: Veri
     kube: reach.kube_make(readFileSync(kubeconfig.hostPath, 'utf-8')),
     resolve: reach.resolve,
     https_status: reach.https_status,
-    domain: name,
+    cluster: name,
     baseDomain: record.baseDomain,
     shape: spec === null ? null : familyShape_find(shapes, spec.family)?.name ?? null,
     expectedNodes: spec === null ? 0 : spec.controlPlane.count + spec.workers.count,

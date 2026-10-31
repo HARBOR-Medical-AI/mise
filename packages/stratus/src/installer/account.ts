@@ -3,7 +3,7 @@
  * service account, which the Assisted Installer's token is asked with.
  *
  * A build needs it from its `cluster` step on. When the file is missing,
- * `domain build` asks for it (a typed question: the id in the open, the
+ * `cluster build` asks for it (a typed question: the id in the open, the
  * secret hidden) and keeps it here, mode 600; it is never sent back to a
  * surface (docs/stratus.adoc, D14).
  *

@@ -9,10 +9,10 @@
  */
 import type {
   CloudAvailability, CloudBucket, CloudContainer, CloudDnsZone, CloudDriver, CloudIdentity, CloudInstance, CloudLimit, CloudLink, CloudLoadBalancer,
-  CloudNetwork, CloudObject, CloudPrice, ServicePrices, CloudRecord, CloudResource, CloudSecurityGroup, CloudShape, CloudSubnet, CloudVolume, CloudZone, FoundDomain, ResourceCounts, ResourceKind,
+  CloudNetwork, CloudObject, CloudPrice, ServicePrices, CloudRecord, CloudResource, CloudSecurityGroup, CloudShape, CloudSubnet, CloudVolume, CloudZone, FoundCluster, ResourceCounts, ResourceKind,
 } from '../driver.js';
 
-/** A Resource Manager stack in the fake cloud, as far as finding a domain by its tag needs it. */
+/** A Resource Manager stack in the fake cloud, as far as finding a cluster by its tag needs it. */
 export interface FakeStack {
   readonly id: string;
   readonly displayName: string;
@@ -212,9 +212,9 @@ export class FakeDriver implements CloudDriver {
     return [...(this.cloudData.records[zoneId] ?? [])];
   }
 
-  async domains_find(tagKey: string, region: string): Promise<FoundDomain[]> {
-    this.call_count('domains_find');
-    const byName: Map<string, { stack: FoundDomain['stack']; compartmentId: string | null }> = new Map();
+  async clusters_find(tagKey: string, region: string): Promise<FoundCluster[]> {
+    this.call_count('clusters_find');
+    const byName: Map<string, { stack: FoundCluster['stack']; compartmentId: string | null }> = new Map();
     for (const container of this.cloudData.containers) {
       const name: string | undefined = container.tags[tagKey];
       if (name === undefined || container.state !== 'active') continue;
@@ -227,7 +227,7 @@ export class FakeDriver implements CloudDriver {
     }
     return [...byName.entries()]
       .sort(([a]: [string, unknown], [b]: [string, unknown]): number => a.localeCompare(b))
-      .map(([name, entry]): FoundDomain => ({ name, stack: entry.stack, compartmentId: entry.compartmentId, region }));
+      .map(([name, entry]): FoundCluster => ({ name, stack: entry.stack, compartmentId: entry.compartmentId, region }));
   }
 
   async resources_search(containerId: string, region: string): Promise<ResourceCounts> {
@@ -298,7 +298,7 @@ export function fakeCloud_sample(tenancy: string = 'fnndsc'): FakeCloud {
 }
 
 /**
- * The resources of a small Trusted Domain in one compartment: three nodes, a
+ * The resources of a small cluster in one compartment: three nodes, a
  * network with subnets and security groups, two load balancers, their
  * volumes, a bucket holding an image, and a DNS zone.
  *

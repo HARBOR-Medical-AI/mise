@@ -60,7 +60,7 @@ import { chrisDicom_make, type ChrisDicom } from '../compositions/chris/dicom.js
 import { chrisStage_make, type ChrisStage } from '../compositions/chris/stage.js';
 import { chrisTiles_make } from '../compositions/chris/tiles.js';
 import { stratusTiles_make } from '../compositions/stratus/tiles.js';
-import { domainClaims_set, stratusLanguage, type StratusLangHost } from '../compositions/stratus/lang.js';
+import { clusterClaims_set, stratusLanguage, type StratusLangHost } from '../compositions/stratus/lang.js';
 import { chrisSignals_make, type ChrisSignals } from '../compositions/chris/signals.js';
 import { ViewerPanel } from '../features/view/panel.js';
 import { ImagePanel, type SeriesChoice } from '../features/image/panel.js';
@@ -980,7 +980,7 @@ async function surface_start(token: string): Promise<void> {
   // The composition's words in the language (compositions/chris/lang.ts):
   // installed before any pane's chrome reads the chords.
   if (chris) language_extend(chrisLanguage((): ChrisLangHost => argusHost));
-  // `domain` takes the screen as the TD controller (compositions/stratus/lang.ts).
+  // `cluster` takes the screen as the controller (compositions/stratus/lang.ts).
   if (backend === 'stratus') language_extend(stratusLanguage((): StratusLangHost => ({ ...argusHost, controller_open: (name: string): Promise<string> => tdController.open(name) })));
 
   // The subject bus: pane linkage as hub-and-spoke subjects. Every regard
@@ -1704,14 +1704,14 @@ async function surface_start(token: string): Promise<void> {
       // CLOUD runs the console's own line, so the door asks the same question pressed or typed.
       cloud_enter: door_isPresent(window.location.search) ? (): void => { element_require('gutter-console').click(); terminal.line_run('stratus oci'); } : null,
     }) }),
-    // DOMAINS and CAPACITY: the stratus composition's tiles (compositions/stratus/tiles.ts).
+    // OPENSHIFT and CAPACITY: the stratus composition's tiles (compositions/stratus/tiles.ts).
     ...(backend !== 'stratus' ? {} : { contribution: stratusTiles_make({
       ask: (line: string): Promise<ExecuteOutcome> => client.line_execute(line, { silent: true, observe: false }),
-      domain_open: (name: string): void => { void tdController.open(name); },
+      cluster_open: (name: string): void => { void tdController.open(name); },
       home_open: (): void => { dagShown = false; home_apply(); layout.focus_set('files'); },
       line_run: (line: string): void => { element_require('gutter-console').click(); terminal.line_run(line); },
       capacity_open: (family: string): void => { capacityPane.open(family); },
-      names_seen: (names: string[]): void => domainNames_seen(names),
+      names_seen: (names: string[]): void => clusterNames_seen(names),
       repaint: (): void => launcherPanel.render(),
     }) }),
   });
@@ -1967,12 +1967,12 @@ async function surface_start(token: string): Promise<void> {
   const gamesPane: GamesPaneModule = gamesPane_wire(context, paneHooks);
   // trek takes the screen: a program over ARGUS, given back when the game ends.
   const trekBridge: TrekBridgeModule = trekBridge_wire(context);
-  // `domain` in a stratus session takes the screen as the TD controller, given back on LEAVE (app/tdController.ts).
-  // The domains each read finds (the controller's, or the DOMAINS tile's paint) are claimed, so `domain <name>` opens on one; the daemon is told the claims again.
-  function domainNames_seen(names: string[]): void {
-    if (domainClaims_set(names)) context.client.claims_send(claims_list());
+  // `cluster` in a stratus session takes the screen as the controller, given back on LEAVE (app/tdController.ts).
+  // The clusters each read finds (the controller's, or the OPENSHIFT tile's paint) are claimed, so `cluster <name>` opens on one; the daemon is told the claims again.
+  function clusterNames_seen(names: string[]): void {
+    if (clusterClaims_set(names)) context.client.claims_send(claims_list());
   }
-  const tdController: TdControllerModule = tdController_wire(context, (names: string[]): void => domainNames_seen(names));
+  const tdController: TdControllerModule = tdController_wire(context, (names: string[]): void => clusterNames_seen(names));
   const notesPane: NotesPaneModule = notesPane_wire(context, { ...paneHooks, ask: (line: string): Promise<ExecuteOutcome> => client.line_execute(line, { silent: true }) });
   // CAPACITY: what the region has free, as a pane (app/capacityPane.ts, #1284).
   const capacityPane: CapacityPaneModule = capacityPane_wire(context, { ...paneHooks, ask: (line: string): Promise<ExecuteOutcome> => client.line_execute(line, { silent: true }) });

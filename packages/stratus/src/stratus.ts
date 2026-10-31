@@ -32,23 +32,23 @@ import { AssistedInstaller, serviceAccount_read } from './installer/assisted.js'
 import { promises as dnsPromises } from 'node:dns';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { fakeChrisWork, fakeVerifyReach } from './cluster/fakeKube.js';
+import { fakeChrisWork, fakeVerifyReach } from './kube/fakeKube.js';
 import { rmApi_make } from './cloud/oci/rmApi.js';
 
 const USAGE: string = [
   'stratus: a mise session over the cloud substrate a Trusted Domain runs on.',
   '',
   'Usage: stratus [--profile NAME] [--config FILE] [--region REGION]',
-  '               [--domain NAME=CHECKOUT]… [--redhat-account FILE] [--ssh-key FILE]',
+  '               [--cluster NAME=CHECKOUT]… [--redhat-account FILE] [--ssh-key FILE]',
   '               [--host-control[=shell,files,pipes,tasks]] [--expose-host-control]',
   '       stratus --fake',
   '',
   '  --profile NAME   the ~/.oci/config profile (DEFAULT)',
   '  --config FILE    the OCI configuration file (~/.oci/config)',
   '  --region REGION  the region the session works in (the profile\'s)',
-  '  --domain NAME=CHECKOUT',
-  '                   a Trusted Domain built by the harbor-oci checkout at CHECKOUT,',
-  '                   shown under ~ (domains/NAME); repeat for each',
+  '  --cluster NAME=CHECKOUT',
+  '                   a cluster built by the harbor-oci checkout at CHECKOUT,',
+  '                   shown under ~ (clusters/NAME); repeat for each',
   '  --host-control=tasks',
   '                   let the session start jobs that change the cloud and bill;',
   '                   never granted by a bare --host-control',
@@ -120,7 +120,7 @@ async function stratus_start(): Promise<void> {
   const made: StratusBackend = stratusBackend_make({
     driver,
     region: parsed.args.region,
-    domains: parsed.args.domains,
+    clusters: parsed.args.clusters,
     ...(parsed.args.fake
       ? {
         builder: new FakeCloudBuilder(world), installer: new FakeInstaller(world), baseDomain: 'fake.example', waits: { pollMs: tickMs, hostsWaitMs: tickMs * 60, installWaitMs: tickMs * 120, verifyWaitMs: tickMs * 30, chrisWaits: { pollMs: 0, mirrorReactMs: 0, mirrorWaitMs: 0, rolloutWaitMs: 0, seedWaitMs: 0 } },

@@ -13,12 +13,12 @@ describe('StratusSession', () => {
   beforeEach(() => { configDir = mkdtempSync(path.join(tmpdir(), 'stratus-session-')); });
   afterEach(() => { rmSync(configDir, { recursive: true, force: true }); });
 
-  it('is the cloud user at the tenancy, at home in domains/, in the credential\'s region', async () => {
+  it('is the cloud user at the tenancy, at home in clusters/, in the credential\'s region', async () => {
     const session = new StratusSession({ driver: new FakeDriver(fakeCloud_sample()), configDir });
     await session.init();
     expect(await session.identity_get()).toEqual({ user: 'rudolph', where: 'fnndsc', connected: true });
     expect(await session.user_get()).toBe('rudolph');
-    expect(await session.home_get()).toBe('/net/oci/fnndsc/domains');
+    expect(await session.home_get()).toBe('/net/oci/fnndsc/clusters');
     expect(session.mount).toBe('/net/oci');
     expect(session.tenancyPath).toBe('/net/oci/fnndsc');
     expect(session.cloud).toBe('oci');

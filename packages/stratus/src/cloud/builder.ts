@@ -1,5 +1,5 @@
 /**
- * @file The cloud driver's build half: what a domain's steps ask of a cloud
+ * @file The cloud driver's build half: what a cluster's steps ask of a cloud
  * (docs/stratus.adoc, D3). The read half is `driver.ts`; a cloud that cannot
  * build yet has a driver and no builder, and the build verbs say so.
  *
@@ -9,7 +9,7 @@
  *
  * @module
  */
-import type { DomainSpec } from '../domain/spec.js';
+import type { ClusterSpec } from '../cluster/spec.js';
 import type { PlatformManifest } from '../installer/installer.js';
 
 /** One check the build makes before it starts. */
@@ -118,9 +118,9 @@ export interface InfraOutputs {
   manifests: PlatformManifest[];
 }
 
-/** What a domain's teardown removes, beside its stack. */
+/** What a cluster's teardown removes, beside its stack. */
 export interface TeardownRequest {
-  readonly domain: string;
+  readonly cluster: string;
   readonly region: string;
   readonly compartmentId: string;
   readonly baseDomain: string;
@@ -139,37 +139,37 @@ export interface TeardownRequest {
 export interface CloudBuilder {
   /** Its id (`oci`, `fake`). */
   readonly id: string;
-  /** The DNS zones the tenancy holds, by name: where a new domain's names may live. */
+  /** The DNS zones the tenancy holds, by name: where a new cluster's names may live. */
   zones_list?(region: string): Promise<string[]>;
   /**
-   * The domain's own compartment, `domains/<name>` under the tenancy, tagged
-   * `mise-domain=<name>`, made with its `domains` parent when either is
+   * The cluster's own compartment, `clusters/<name>` under the tenancy, tagged
+   * `mise-cluster=<name>`, made with its `clusters` parent when either is
    * missing and waited on until it is active. Answers the compartment's id,
    * and whether this call made it.
    */
-  compartment_ensure?(request: { domain: string; region: string }, call: BuildCall): Promise<{ id: string; made: boolean }>;
-  /** Checks the tenancy can take the domain: keys, limits, the tag namespace, the zone. */
-  preflight(request: { domain: string; spec: DomainSpec; region: string; baseDomain: string; compartmentId: string }, call: BuildCall): Promise<PreflightCheck[]>;
+  compartment_ensure?(request: { cluster: string; region: string }, call: BuildCall): Promise<{ id: string; made: boolean }>;
+  /** Checks the tenancy can take the cluster: keys, limits, the tag namespace, the zone. */
+  preflight(request: { cluster: string; spec: ClusterSpec; region: string; baseDomain: string; compartmentId: string }, call: BuildCall): Promise<PreflightCheck[]>;
   /** Puts the discovery image where the machines boot from: its object, a link to it (a secret) and the link's end. */
-  iso_store(request: { domain: string; url: string; region: string; compartmentId: string }, call: BuildCall): Promise<{ object: string; expires: string; link: string; linkId: string }>;
-  /** Plans the infrastructure: against the domain's stack when it has one (adopted, or a re-plan), else in a new one. */
-  infra_plan(request: { domain: string; spec: DomainSpec; region: string; isoObject: string; stackRef?: string; compartmentId?: string; baseDomain?: string; isoLink?: string }, call: BuildCall): Promise<InfraPlan>;
+  iso_store(request: { cluster: string; url: string; region: string; compartmentId: string }, call: BuildCall): Promise<{ object: string; expires: string; link: string; linkId: string }>;
+  /** Plans the infrastructure: against the cluster's stack when it has one (adopted, or a re-plan), else in a new one. */
+  infra_plan(request: { cluster: string; spec: ClusterSpec; region: string; isoObject: string; stackRef?: string; compartmentId?: string; baseDomain?: string; isoLink?: string }, call: BuildCall): Promise<InfraPlan>;
   /** Applies a plan. Billing starts here. */
-  infra_apply(request: { domain: string; plan: InfraPlan; region: string; stackRef?: string }, call: BuildCall): Promise<InfraOutputs>;
+  infra_apply(request: { cluster: string; plan: InfraPlan; region: string; stackRef?: string }, call: BuildCall): Promise<InfraOutputs>;
   /** Writes the cluster's records in its zone. */
-  dns_upsert(request: { domain: string; baseDomain: string; outputs: InfraOutputs; compartmentId: string; region: string }, call: BuildCall): Promise<string[]>;
+  dns_upsert(request: { cluster: string; baseDomain: string; outputs: InfraOutputs; compartmentId: string; region: string }, call: BuildCall): Promise<string[]>;
   /** Takes in infrastructure built elsewhere: a stack with its variables and its Terraform state; returns the stack's handle. */
   /** How many resources a stack's state holds: what a destroy job removes. */
   stackResources_count?(request: { region: string; stackRef: string }): Promise<number>;
   /**
-   * Removes what a domain built: the stack's resources (a destroy job), then
+   * Removes what a cluster built: the stack's resources (a destroy job), then
    * its records, image, link and volumes; then the stack itself, any block
    * volume still in its compartment carrying the attribution tag, and the
-   * compartment with its image bucket when stratus made it (`domains/<name>`),
-   * else the domain's tag off the compartment. Returns what went, a line each.
+   * compartment with its image bucket when stratus made it (`clusters/<name>`),
+   * else the cluster's tag off the compartment. Returns what went, a line each.
    */
   teardown_run?(request: TeardownRequest, call: BuildCall): Promise<string[]>;
-  stack_adopt?(request: { domain: string; region: string; compartmentId: string; variables: Record<string, string>; state: Buffer; stackVersion: string }, call: BuildCall): Promise<string>;
-  /** A stack found in the tenancy, read back: its state, its compartment, and the zone and spec its variables say; absent, a found domain adopts without a spec. */
-  stack_describe?(stackId: string, region: string): Promise<{ state: string; compartmentId: string; baseDomain: string | null; spec: DomainSpec | null }>;
+  stack_adopt?(request: { cluster: string; region: string; compartmentId: string; variables: Record<string, string>; state: Buffer; stackVersion: string }, call: BuildCall): Promise<string>;
+  /** A stack found in the tenancy, read back: its state, its compartment, and the zone and spec its variables say; absent, a found cluster adopts without a spec. */
+  stack_describe?(stackId: string, region: string): Promise<{ state: string; compartmentId: string; baseDomain: string | null; spec: ClusterSpec | null }>;
 }

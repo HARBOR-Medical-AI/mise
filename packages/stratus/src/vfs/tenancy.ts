@@ -4,7 +4,7 @@
  * A fond provider over the cloud driver. Under the mount: the tenancy by its
  * display name; inside it, its containers (compartments) nesting as the cloud
  * nests them, `regions/` with each region's zones, limits, shapes and prices,
- * and `domains/`. Every container level, the tenancy's included, also holds
+ * and `clusters/`. Every container level, the tenancy's included, also holds
  * the resource kind folders for the session's region (`resources.ts`). A container lists its children and `info.json`; a fact
  * (a limit, a shape, a price) is a folder of field files, as `/proc` does it:
  * a field is a file when a shell line wants it, and `info.json` holds the
@@ -14,7 +14,7 @@
  * name refuses as ambiguous (`names.ts`). Kind folders and `info.json` are
  * reserved, so a container with such a name wears the suffix too. Every
  * answer is kept for a short life (`cache.ts`). The mount is read-only: the
- * substrate changes through `domain` (D6).
+ * substrate changes through `cluster` (D6).
  *
  * @module
  */
@@ -23,17 +23,17 @@ import type { CloudAvailability, CloudContainer, CloudDriver, CloudIdentity, Clo
 import { AnswerCache } from '../cache.js';
 import { ambiguity_words, idSuffix_extract, segment_resolve, segments_assign, type Segment, type SegmentMatch } from '../names.js';
 import { KIND_FOLDERS, kindFolder_is, ResourceTree, type ResourceNode } from './resources.js';
-import { DomainTree } from './domains.js';
+import { ClusterTree } from './clusters.js';
 
 /** The folders a tenancy level reserves beside its containers. */
-export const TENANCY_RESERVED: ReadonlyArray<string> = ['regions', 'domains', 'info.json', ...KIND_FOLDERS];
+export const TENANCY_RESERVED: ReadonlyArray<string> = ['regions', 'clusters', 'info.json', ...KIND_FOLDERS];
 /** The folders a container level reserves beside its children. */
 export const CONTAINER_RESERVED: ReadonlyArray<string> = ['info.json', ...KIND_FOLDERS];
 /** What a region holds. */
 const REGION_FOLDERS: ReadonlyArray<string> = ['zones', 'limits', 'shapes', 'prices'];
 
 /** The words a refusal of a write uses. */
-export const READ_ONLY_REASON: string = 'the substrate is read-only here: a domain changes through domain';
+export const READ_ONLY_REASON: string = 'the substrate is read-only here: a cluster changes through cluster';
 
 /** A file in a folder of fields. */
 interface Field {
@@ -73,8 +73,8 @@ export interface TenancyProviderOptions {
   readonly now?: () => string;
   /** The session's region, whose resources the kind folders list; the credential's home region when absent or null. */
   readonly region?: () => string | null;
-  /** The domains the daemon was given; `domains/` lists empty without them. */
-  readonly domains?: DomainTree;
+  /** The clusters the daemon was given; `clusters/` lists empty without them. */
+  readonly clusters?: ClusterTree;
 }
 
 /** The tenancy as a tree under `/net/<cloud>`. */
@@ -85,7 +85,7 @@ export class TenancyProvider implements VFSProvider {
   private readonly now: () => string;
   private readonly region: () => string | null;
   private readonly resources: ResourceTree;
-  private readonly domains: DomainTree | null;
+  private readonly clusters: ClusterTree | null;
 
   constructor(options: TenancyProviderOptions) {
     this.driver = options.driver;
@@ -94,7 +94,7 @@ export class TenancyProvider implements VFSProvider {
     this.now = options.now ?? ((): string => new Date().toISOString());
     this.region = options.region ?? ((): null => null);
     this.resources = new ResourceTree({ driver: this.driver, cache: this.cache, now: this.now });
-    this.domains = options.domains ?? null;
+    this.clusters = options.clusters ?? null;
   }
 
   /** The region the kind folders list. */
@@ -204,9 +204,9 @@ export class TenancyProvider implements VFSProvider {
     if (tenancy !== identity.tenancy) return { kind: 'missing' };
     if (rest.length === 0) return { kind: 'tenancy', identity, root };
     if (rest[0] === 'regions') return this.regionNode_resolve(rest.slice(1));
-    if (rest[0] === 'domains') {
-      if (this.domains === null) return rest.length === 1 ? { kind: 'listing', list: async (): Promise<VFSItem[]> => [] } : { kind: 'missing' };
-      return this.domains.node_resolve(rest.slice(1));
+    if (rest[0] === 'clusters') {
+      if (this.clusters === null) return rest.length === 1 ? { kind: 'listing', list: async (): Promise<VFSItem[]> => [] } : { kind: 'missing' };
+      return this.clusters.node_resolve(rest.slice(1));
     }
     if (rest[0] === 'info.json') return rest.length === 1 ? { kind: 'file', text: json_text(root.raw) } : { kind: 'missing' };
     if (kindFolder_is(rest[0])) return this.resourceNode_resolve(identity, root, rest);
@@ -354,7 +354,7 @@ export class TenancyProvider implements VFSProvider {
         }
       }
       case 'tenancy':
-        return Ok(await this.containerLevel_list(node.identity, node.root, TENANCY_RESERVED, ['regions', 'domains']));
+        return Ok(await this.containerLevel_list(node.identity, node.root, TENANCY_RESERVED, ['regions', 'clusters']));
       case 'container':
         return Ok(await this.containerLevel_list(node.identity, node.container, CONTAINER_RESERVED, []));
       case 'regions':

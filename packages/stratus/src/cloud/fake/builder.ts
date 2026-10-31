@@ -6,8 +6,8 @@
  *
  * @module
  */
-import type { DomainSpec } from '../../domain/spec.js';
-import { specNodes_build, type SpecNode } from '../../domain/spec.js';
+import type { ClusterSpec } from '../../cluster/spec.js';
+import { specNodes_build, type SpecNode } from '../../cluster/spec.js';
 import type { Installer, InstallerCredentials, InstallerHost, InstallerIds, InstallStatus, PlatformManifest } from '../../installer/installer.js';
 import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, PlanRow, PreflightCheck, TeardownRequest } from '../builder.js';
 
@@ -30,12 +30,12 @@ interface FakeCluster {
  */
 export class FakeBuildWorld {
   private readonly clusters: Map<string, FakeCluster> = new Map();
-  /** The compartments made, by domain. */
+  /** The compartments made, by cluster. */
   readonly compartments: Map<string, string> = new Map();
   /** The DNS zones the tenancy holds. */
   readonly zones: string[] = ['fake.example'];
   /** The stacks the tenancy holds, by id, as `stack_describe` reads them back; a test seeds them. */
-  readonly stacks: Map<string, { state: string; compartmentId: string; baseDomain: string | null; spec: DomainSpec | null }> = new Map();
+  readonly stacks: Map<string, { state: string; compartmentId: string; baseDomain: string | null; spec: ClusterSpec | null }> = new Map();
   /** How many resources each stack's state holds; a stack not named holds 17. */
   readonly stackResources: Map<string, number> = new Map();
   /** What the teardowns removed, a line each, for a test to read. */
@@ -75,13 +75,13 @@ export class FakeBuildWorld {
   }
 
   /**
-   * Boots a domain's machines: each registers with the installer a few ticks apart.
+   * Boots a cluster's machines: each registers with the installer a few ticks apart.
    *
-   * @param domain - The domain.
+   * @param name - The cluster's name.
    * @param nodes - Its machines.
    */
-  machines_boot(domain: string, nodes: ReadonlyArray<SpecNode>): void {
-    const cluster: FakeCluster = this.cluster_resolve(domain);
+  machines_boot(name: string, nodes: ReadonlyArray<SpecNode>): void {
+    const cluster: FakeCluster = this.cluster_resolve(name);
     const now: number = Date.now();
     cluster.pending = nodes.map((node: SpecNode, index: number): { host: InstallerHost; at: number } => ({
       host: { id: `host-${node.name}`, name: node.name, zone: FAKE_ZONES[node.zoneIndex] ?? 'AD-1', role: 'auto', registered: '', ready: true },
@@ -92,11 +92,11 @@ export class FakeBuildWorld {
   /**
    * The hosts registered by now.
    *
-   * @param domain - The domain.
+   * @param name - The cluster's name.
    * @returns The hosts.
    */
-  hosts_now(domain: string): InstallerHost[] {
-    const cluster: FakeCluster = this.cluster_resolve(domain);
+  hosts_now(name: string): InstallerHost[] {
+    const cluster: FakeCluster = this.cluster_resolve(name);
     const now: number = Date.now();
     for (const entry of cluster.pending.filter((p): boolean => p.at <= now)) {
       cluster.hosts.push({ ...entry.host, registered: new Date(entry.at).toISOString() });
@@ -116,21 +116,21 @@ export class FakeCloudBuilder implements CloudBuilder {
     return [...this.world.zones];
   }
 
-  async compartment_ensure(request: { domain: string; region: string }, call: BuildCall): Promise<{ id: string; made: boolean }> {
+  async compartment_ensure(request: { cluster: string; region: string }, call: BuildCall): Promise<{ id: string; made: boolean }> {
     await this.world.tick(1, call.signal);
-    const kept: string | undefined = this.world.compartments.get(request.domain);
+    const kept: string | undefined = this.world.compartments.get(request.cluster);
     if (kept !== undefined) return { id: kept, made: false };
-    const id: string = `ocid1.compartment.oc1..fake-${request.domain}`;
-    this.world.compartments.set(request.domain, id);
-    call.log(`made the compartment domains/${request.domain}`);
+    const id: string = `ocid1.compartment.oc1..fake-${request.cluster}`;
+    this.world.compartments.set(request.cluster, id);
+    call.log(`made the compartment clusters/${request.cluster}`);
     return { id, made: true };
   }
 
-  async preflight(request: { domain: string; spec: DomainSpec; region: string; baseDomain: string; compartmentId: string }, call: BuildCall): Promise<PreflightCheck[]> {
+  async preflight(request: { cluster: string; spec: ClusterSpec; region: string; baseDomain: string; compartmentId: string }, call: BuildCall): Promise<PreflightCheck[]> {
     await this.world.tick(1, call.signal);
     const checks: PreflightCheck[] = [
       { name: 'credential', ok: true, note: 'the fake key answers' },
-      { name: 'tag namespace', ok: true, note: 'mise-domain exists' },
+      { name: 'tag namespace', ok: true, note: 'mise-cluster exists' },
       { name: 'load balancers', ok: true, note: '3 needed, 7 free' },
       { name: 'zone', ok: true, note: `${request.baseDomain} answers` },
     ];
@@ -138,37 +138,37 @@ export class FakeCloudBuilder implements CloudBuilder {
     return checks;
   }
 
-  async iso_store(request: { domain: string; url: string; region: string; compartmentId: string }, call: BuildCall): Promise<{ object: string; expires: string; link: string; linkId: string }> {
+  async iso_store(request: { cluster: string; url: string; region: string; compartmentId: string }, call: BuildCall): Promise<{ object: string; expires: string; link: string; linkId: string }> {
     await this.world.tick(2, call.signal);
-    const object: string = `${request.domain}-discovery.iso`;
+    const object: string = `${request.cluster}-discovery.iso`;
     call.log(`stored ${object} in stratus-iso, linked for 7 days`);
     return { object, expires: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(), link: `https://objectstorage.example/p/fake/${object}`, linkId: this.world.id_next('link') };
   }
 
-  async infra_plan(request: { domain: string; spec: DomainSpec; region: string; isoObject: string; stackRef?: string; compartmentId?: string; baseDomain?: string; isoLink?: string }, call: BuildCall): Promise<InfraPlan> {
+  async infra_plan(request: { cluster: string; spec: ClusterSpec; region: string; isoObject: string; stackRef?: string; compartmentId?: string; baseDomain?: string; isoLink?: string }, call: BuildCall): Promise<InfraPlan> {
     await this.world.tick(3, call.signal);
     if (request.stackRef !== undefined) {
       // A built stack re-planned: nothing to make, OCI's own tags to strip.
-      const drift: PlanRow[] = specNodes_build(request.domain, request.spec, FAKE_ZONES.length).map((node: SpecNode): PlanRow => ({ action: 'change', kind: 'instances', name: node.name, drift: true }));
+      const drift: PlanRow[] = specNodes_build(request.cluster, request.spec, FAKE_ZONES.length).map((node: SpecNode): PlanRow => ({ action: 'change', kind: 'instances', name: node.name, drift: true }));
       call.log(`plan job done: 0 to create, ${drift.length} to change, 0 to destroy`);
       return { ref: this.world.id_next('plan'), rows: drift };
     }
-    const nodes: SpecNode[] = specNodes_build(request.domain, request.spec, FAKE_ZONES.length);
+    const nodes: SpecNode[] = specNodes_build(request.cluster, request.spec, FAKE_ZONES.length);
     const create = (kind: string, name: string): PlanRow => ({ action: 'create', kind, name });
     const rows: PlanRow[] = [
       ...nodes.map((node: SpecNode): PlanRow => create('instances', node.name)),
       ...nodes.map((node: SpecNode): PlanRow => create('volumes', `${node.name}-boot`)),
-      create('loadbalancers', `${request.domain}-api`), create('loadbalancers', `${request.domain}-api-int`), create('loadbalancers', `${request.domain}-apps`),
-      create('networks', `${request.domain}-vcn`),
+      create('loadbalancers', `${request.cluster}-api`), create('loadbalancers', `${request.cluster}-api-int`), create('loadbalancers', `${request.cluster}-apps`),
+      create('networks', `${request.cluster}-vcn`),
       create('subnets', 'private'), create('subnets', 'private-ocp'), create('subnets', 'public'),
       create('securitygroups', 'cluster-lb'), create('securitygroups', 'cluster-controlplane'), create('securitygroups', 'cluster-compute'),
-      create('image', `${request.domain}-discovery`),
+      create('image', `${request.cluster}-discovery`),
     ];
     call.log(`plan job done: ${rows.length} to create, 0 to change, 0 to destroy`);
     return { ref: this.world.id_next('plan'), rows, stackRef: this.world.id_next('stack') };
   }
 
-  async infra_apply(request: { domain: string; plan: InfraPlan; region: string; stackRef?: string }, call: BuildCall): Promise<InfraOutputs> {
+  async infra_apply(request: { cluster: string; plan: InfraPlan; region: string; stackRef?: string }, call: BuildCall): Promise<InfraOutputs> {
     for (let i: number = 0; i < 4 && call.signal.aborted !== true; i++) {
       await this.world.tick(1, call.signal);
       call.log(`apply job: ${Math.round(((i + 1) / 4) * request.plan.rows.length)} of ${request.plan.rows.length} created`);
@@ -176,16 +176,16 @@ export class FakeCloudBuilder implements CloudBuilder {
     const nodes: SpecNode[] = request.plan.rows
       .filter((row: PlanRow): boolean => row.kind === 'instances')
       .map((row: PlanRow, index: number): SpecNode => ({ name: row.name, role: row.name.includes('-cp-') ? 'plane' : 'worker', vcpu: 0, ramGib: 0, zoneIndex: index % FAKE_ZONES.length }));
-    this.world.machines_boot(request.domain, nodes);
+    this.world.machines_boot(request.cluster, nodes);
     return {
       apiIp: '10.0.0.10', apiIntIp: '10.0.0.11', appsIp: '10.0.0.12', stackRef: request.stackRef ?? request.plan.stackRef ?? this.world.id_next('stack'),
       manifests: [{ name: 'oci-dynamic-custom-manifest.yml', content: '# the fake cloud controller and CSI driver\n' }],
     };
   }
 
-  async dns_upsert(request: { domain: string; baseDomain: string; outputs: InfraOutputs; compartmentId: string; region: string }, call: BuildCall): Promise<string[]> {
+  async dns_upsert(request: { cluster: string; baseDomain: string; outputs: InfraOutputs; compartmentId: string; region: string }, call: BuildCall): Promise<string[]> {
     await this.world.tick(1, call.signal);
-    const names: string[] = [`api.${request.domain}.${request.baseDomain}`, `api-int.${request.domain}.${request.baseDomain}`, `*.apps.${request.domain}.${request.baseDomain}`];
+    const names: string[] = [`api.${request.cluster}.${request.baseDomain}`, `api-int.${request.cluster}.${request.baseDomain}`, `*.apps.${request.cluster}.${request.baseDomain}`];
     call.log(`upserted ${names.join(', ')}`);
     return names;
   }
@@ -206,24 +206,24 @@ export class FakeCloudBuilder implements CloudBuilder {
       this.world.stackResources.set(request.stackRef, 0);
       gone.push('the stack itself');
     }
-    if (this.world.compartments.get(request.domain) === request.compartmentId) {
-      this.world.compartments.delete(request.domain);
-      gone.push(`the compartment domains/${request.domain}`);
+    if (this.world.compartments.get(request.cluster) === request.compartmentId) {
+      this.world.compartments.delete(request.cluster);
+      gone.push(`the compartment clusters/${request.cluster}`);
     }
     for (const line of gone) call.log(`removed ${line}`);
     this.world.removed.push(...gone);
     return gone;
   }
 
-  async stack_describe(stackId: string, _region: string): Promise<{ state: string; compartmentId: string; baseDomain: string | null; spec: DomainSpec | null }> {
+  async stack_describe(stackId: string, _region: string): Promise<{ state: string; compartmentId: string; baseDomain: string | null; spec: ClusterSpec | null }> {
     const kept = this.world.stacks.get(stackId);
     if (kept === undefined) throw new Error(`${stackId}: no such stack`);
     return { ...kept };
   }
 
-  async stack_adopt(request: { domain: string; region: string; compartmentId: string; variables: Record<string, string>; state: Buffer; stackVersion: string }, call: BuildCall): Promise<string> {
+  async stack_adopt(request: { cluster: string; region: string; compartmentId: string; variables: Record<string, string>; state: Buffer; stackVersion: string }, call: BuildCall): Promise<string> {
     await this.world.tick(2, call.signal);
-    call.log(`stack made for ${request.domain} with ${Object.keys(request.variables).length} variables; ${request.state.length} bytes of state imported`);
+    call.log(`stack made for ${request.cluster} with ${Object.keys(request.variables).length} variables; ${request.state.length} bytes of state imported`);
     return this.world.id_next('stack');
   }
 }

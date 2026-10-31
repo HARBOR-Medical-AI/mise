@@ -8,7 +8,7 @@
  * the stage: one block per family under the listing façade's caps, a row
  * per limit and zone, the free figure red when nothing is left. The pane
  * writes nothing of its own: the rows are the session's, and the bar names
- * the region they were read in. A family's pill on the DOMAINS tile and the
+ * the region they were read in. A family's pill on the OPENSHIFT tile and the
  * CAPACITY tile's rows open it on that family; `capacity pane [<family>]`
  * types the same (#1284).
  *

@@ -1,5 +1,5 @@
 /**
- * @file A domain's spec: the cluster and the ChRIS on it, in neutral units
+ * @file A cluster's spec: the cluster and the ChRIS on it, in neutral units
  * (vCPU and GiB), as `harbor-oci`'s `spec.yaml` holds them (docs/stratus.adoc,
  * "Three layers, three tools, one spec").
  *
@@ -27,16 +27,16 @@ export interface ChrisSizing {
   queueGib: number;
 }
 
-/** A domain's spec. */
-export interface DomainSpec {
+/** A cluster's spec. */
+export interface ClusterSpec {
   family: string;
   controlPlane: NodePool;
   workers: NodePool;
   chris: ChrisSizing;
 }
 
-/** The spec a new domain starts from: `harbor-oci`'s compact cluster. */
-export const SPEC_DEFAULT: DomainSpec = {
+/** The spec a new cluster starts from: `harbor-oci`'s compact cluster. */
+export const SPEC_DEFAULT: ClusterSpec = {
   family: 'E5',
   controlPlane: { count: 3, vcpu: 8, ramGib: 24, bootGib: 200, bootTier: 'ultra' },
   workers: { count: 0, vcpu: 8, ramGib: 32, bootGib: 120, bootTier: 'balanced' },
@@ -56,7 +56,7 @@ const SECTIONS: Readonly<Record<string, ReadonlyArray<string>>> = {
  * @param spec - The spec.
  * @returns The copy.
  */
-export function spec_copy(spec: DomainSpec): DomainSpec {
+export function spec_copy(spec: ClusterSpec): ClusterSpec {
   return { family: spec.family, controlPlane: { ...spec.controlPlane }, workers: { ...spec.workers }, chris: { ...spec.chris } };
 }
 
@@ -69,7 +69,7 @@ export function spec_copy(spec: DomainSpec): DomainSpec {
  * @param key - The field.
  * @param value - Its value.
  */
-function specField_set(spec: DomainSpec, section: string, key: string, value: number | string): void {
+function specField_set(spec: ClusterSpec, section: string, key: string, value: number | string): void {
   if (section === 'chris') {
     const chris: ChrisSizing = spec.chris;
     if (key === 'dataGib' || key === 'databaseGib' || key === 'queueGib') chris[key] = Number(value);
@@ -86,7 +86,7 @@ function specField_set(spec: DomainSpec, section: string, key: string, value: nu
  * @param spec - The spec.
  * @returns The file's text.
  */
-export function specYaml_render(spec: DomainSpec): string {
+export function specYaml_render(spec: ClusterSpec): string {
   const pool = (name: string, p: NodePool, note: string): string[] => [
     `${name}:`,
     `  count: ${p.count}${note}`,
@@ -97,8 +97,8 @@ export function specYaml_render(spec: DomainSpec): string {
     '',
   ];
   return [
-    '# A Trusted Domain\'s spec: the cluster and the ChRIS on it, in vCPU and GiB.',
-    '# Written by `domain new`; harbor-oci reads the same shape.',
+    '# An OpenShift cluster\'s spec: the cluster and the ChRIS on it, in vCPU and GiB.',
+    '# Written by `cluster new`; harbor-oci reads the same shape.',
     '',
     `family: ${spec.family}`,
     '',
@@ -118,8 +118,8 @@ export function specYaml_render(spec: DomainSpec): string {
  * @param text - The file's text.
  * @returns The spec, or the line it could not read.
  */
-export function specYaml_parse(text: string): { spec: DomainSpec } | { error: string } {
-  const spec: DomainSpec = spec_copy(SPEC_DEFAULT);
+export function specYaml_parse(text: string): { spec: ClusterSpec } | { error: string } {
+  const spec: ClusterSpec = spec_copy(SPEC_DEFAULT);
   let section: string | null = null;
   const lines: string[] = text.split('\n');
   for (let index: number = 0; index < lines.length; index++) {
@@ -156,14 +156,14 @@ export function poolArg_parse(text: string): { count: number; vcpu: number; ramG
 }
 
 /**
- * Applies `domain new`'s sizing options to a spec.
+ * Applies `cluster new`'s sizing options to a spec.
  *
  * @param base - The spec to start from.
  * @param options - `--family`, `--plane`, `--workers`, `--data`, `--database`, `--queue`, by name.
  * @returns The spec, or what could not be read.
  */
-export function specOptions_apply(base: DomainSpec, options: ReadonlyMap<string, string>): { spec: DomainSpec } | { error: string } {
-  const spec: DomainSpec = spec_copy(base);
+export function specOptions_apply(base: ClusterSpec, options: ReadonlyMap<string, string>): { spec: ClusterSpec } | { error: string } {
+  const spec: ClusterSpec = spec_copy(base);
   for (const [name, value] of options) {
     if (name === '--family') { spec.family = value; continue; }
     if (name === '--plane' || name === '--workers') {
@@ -195,15 +195,15 @@ export interface SpecNode {
 /**
  * The nodes a spec asks for, placed one per zone in turn.
  *
- * @param domain - The domain's name, for the nodes' names.
+ * @param cluster - The cluster's name, for the nodes' names.
  * @param spec - The spec.
  * @param zones - How many zones the region has.
  * @returns The nodes.
  */
-export function specNodes_build(domain: string, spec: DomainSpec, zones: number): SpecNode[] {
+export function specNodes_build(cluster: string, spec: ClusterSpec, zones: number): SpecNode[] {
   const nodes: SpecNode[] = [];
   const count: number = Math.max(zones, 1);
-  for (let i: number = 0; i < spec.controlPlane.count; i++) nodes.push({ name: `${domain}-cp-${i}`, role: 'plane', vcpu: spec.controlPlane.vcpu, ramGib: spec.controlPlane.ramGib, zoneIndex: i % count });
-  for (let i: number = 0; i < spec.workers.count; i++) nodes.push({ name: `${domain}-w-${i}`, role: 'worker', vcpu: spec.workers.vcpu, ramGib: spec.workers.ramGib, zoneIndex: i % count });
+  for (let i: number = 0; i < spec.controlPlane.count; i++) nodes.push({ name: `${cluster}-cp-${i}`, role: 'plane', vcpu: spec.controlPlane.vcpu, ramGib: spec.controlPlane.ramGib, zoneIndex: i % count });
+  for (let i: number = 0; i < spec.workers.count; i++) nodes.push({ name: `${cluster}-w-${i}`, role: 'worker', vcpu: spec.workers.vcpu, ramGib: spec.workers.ramGib, zoneIndex: i % count });
   return nodes;
 }

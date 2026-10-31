@@ -1,12 +1,12 @@
 /**
- * @file ChRIS on a domain's cluster: the build's `chris-deploy`, `chris-seed`
+ * @file ChRIS on a cluster: the build's `chris-deploy`, `chris-seed`
  * and `smoke` steps (docs/stratus.adoc, D14), as `harbor-oci` proved them
  * on harbor, over the Kubernetes API where it used `oc`.
  *
  * Two things run on the host, as they did for `harbor-oci`: `helm`, which
  * renders and installs the fnndsc/chris chart, and `uv`, which installs
- * miniChRIS-OKD's `chris_smoke` journey into a virtualenv beside the domain
- * and runs it unchanged. Both read the domain's kubeconfig or passwords from
+ * miniChRIS-OKD's `chris_smoke` journey into a virtualenv beside the cluster
+ * and runs it unchanged. Both read the cluster's kubeconfig or passwords from
  * the host; nothing secret leaves it.
  *
  * Every pod that mounts the shared storebase volume, and every plugin job,
@@ -22,8 +22,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { KubeError, type KubeApi } from './kube.js';
-import { cpuFree_read } from '../domain/verify.js';
-import type { DomainSpec } from '../domain/spec.js';
+import { cpuFree_read } from '../cluster/verify.js';
+import type { ClusterSpec } from '../cluster/spec.js';
 
 /** What is installed, and as whom the smoke journey logs in; `harbor-oci`'s pins. */
 export interface ChrisRelease {
@@ -36,7 +36,7 @@ export interface ChrisRelease {
   readonly smokeSource: string;
 }
 
-/** The release every domain gets. */
+/** The release every cluster gets. */
 export const CHRIS_RELEASE: ChrisRelease = {
   namespace: 'chris',
   release: 'chris',
@@ -66,10 +66,10 @@ const PFCON_NAME: string = 'innetwork';
 const DEPLOYMENTS: ReadonlyArray<string> = ['heart', 'server', 'worker-mains', 'worker-periodic', 'pfcon'];
 const STATEFULSETS: ReadonlyArray<string> = ['postgresql', 'rabbitmq', 'nats'];
 
-/** The test user's password, under the domain's `auth/`. */
+/** The test user's password, under the cluster's `auth/`. */
 export const TEST_PASSWORD_FILE: string = 'chris-test-password';
 
-/** The router's CA, under the domain's `auth/`, for the smoke journey's HTTPS. */
+/** The router's CA, under the cluster's `auth/`, for the smoke journey's HTTPS. */
 export const ROUTER_CA_FILE: string = 'router-ca.crt';
 
 /** What a host command answered. */
@@ -113,11 +113,11 @@ export interface ChrisCall {
   readonly host: HostRun;
   /** The kubeconfig's path on the host, for `helm`. */
   readonly kubeconfigPath: string;
-  /** The domain's folder, where the smoke virtualenv lives. */
+  /** The cluster's folder, where the smoke virtualenv lives. */
   readonly folder: string;
   /** The CUBE's public host (`cube.apps.<cluster>`). */
   readonly cubeHost: string;
-  readonly spec: DomainSpec;
+  readonly spec: ClusterSpec;
   readonly release: ChrisRelease;
   readonly waits: ChrisWaits;
   readonly secret_read: (file: string) => string | null;
@@ -294,7 +294,7 @@ async function pinNode_choose(call: ChrisCall): Promise<string> {
 
 /**
  * The `helm upgrade --install` arguments: the pinned chart, the OpenShift
- * values, the domain's host, node and the spec's sizes.
+ * values, the cluster's host, node and the spec's sizes.
  *
  * @param call - The step.
  * @param node - The pinned node.

@@ -70,7 +70,7 @@ function wireSegments_build(wire: ReadonlyArray<PromptSegment>, parts: PromptBar
     tenancy: parts.glyphs.cube,
     region: parts.glyphs.globe,
     user: parts.glyphs.user,
-    domain: parts.glyphs.sitemap,
+    cluster: parts.glyphs.sitemap,
     cwd: parts.glyphs.folder,
   };
   const tones: Readonly<Record<PromptSegmentTone, SegmentColor>> = {

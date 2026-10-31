@@ -1,11 +1,11 @@
 /**
- * @file The TD controller, as the host wires it: the screen `domain` takes
+ * @file The TD controller, as the host wires it: the screen `cluster` takes
  * in a stratus session, given back on LEAVE (docs/stratus.adoc, D13).
  *
- * `domain` (or `domain <name>`) typed at either console, or a row pressed on
- * the DOMAINS tile, opens the controller over ARGUS. It reads `domain
+ * `cluster` (or `cluster <name>`) typed at either console, or a row pressed on
+ * the CLUSTERS tile, opens the controller over ARGUS. It reads `cluster
  * status` when it opens and after each line it sends, and takes the
- * `stratus.domain.state` events a build shows between; while it is up, the
+ * `stratus.cluster.state` events a build shows between; while it is up, the
  * lines it runs print to its log and the session's questions stand on its
  * strip. A build is not a game: leaving never stops one, and opening again
  * finds it by its task. Under about 1250 px the controller does not take the
@@ -14,8 +14,8 @@
  * A module of the host, shaped as the trek bridge's.
  */
 import {
-  domainSizeModelSchema, domainsModelSchema, domainSummarySchema, STRATUS_DOMAIN_SIZE_MODEL_KIND, STRATUS_DOMAIN_STATE_EVENT, STRATUS_DOMAINS_MODEL_KIND,
-  type DomainSizeModel, type DomainSummary,
+  clusterSizeModelSchema, clustersModelSchema, clusterSummarySchema, STRATUS_CLUSTER_SIZE_MODEL_KIND, STRATUS_CLUSTER_STATE_EVENT, STRATUS_CLUSTERS_MODEL_KIND,
+  type ClusterSizeModel, type ClusterSummary,
 } from '@fnndsc/menu';
 import type { ExecuteOutcome, SurfaceAsk } from '../calypso/client.js';
 import { TdController } from '../features/controller/screen.js';
@@ -27,7 +27,7 @@ export const CONTROLLER_MIN_WIDTH: number = 1250;
 
 /** The controller verbs a wired host has. */
 export interface TdControllerModule {
-  /** Opens the controller on a domain (`''` for the first); answers what happened, for the console (on a narrow screen, the line's own answer as text). */
+  /** Opens the controller on a cluster (`''` for the first); answers what happened, for the console (on a narrow screen, the line's own answer as text). */
   open: (name: string) => Promise<string>;
   /** Whether the controller is on the screen. */
   active_is: () => boolean;
@@ -39,7 +39,7 @@ export interface TdControllerModule {
   output_take: (chunk: string) => void;
   /** A typed event from the session. */
   event_take: (kind: string, data: unknown) => void;
-  /** The domains last read, for the console's `domain <name>`. */
+  /** The clusters last read, for the console's `cluster <name>`. */
   names_get: () => string[];
 }
 
@@ -64,7 +64,7 @@ function model_extract<T>(answer: ExecuteOutcome, kind: string, parse: (data: un
  * Wires the controller to a host.
  *
  * @param context - The client, read when needed.
- * @param names_seen - Told the domains each read finds, so the language can claim `domain <name>`.
+ * @param names_seen - Told the clusters each read finds, so the language can claim `cluster <name>`.
  * @returns The controller verbs.
  */
 export function tdController_wire(context: Pick<HostContext, 'client'>, names_seen: (names: string[]) => void): TdControllerModule {
@@ -76,30 +76,30 @@ export function tdController_wire(context: Pick<HostContext, 'client'>, names_se
   const heard: { events: number; reads: number; lastError: string | null } = { events: 0, reads: 0, lastError: null };
   (window as unknown as { __argusController?: unknown }).__argusController = {
     view: (): string | null => controller?.view_get() ?? null,
-    domain: (): DomainSummary | null => controller?.domain_get() ?? null,
+    cluster: (): ClusterSummary | null => controller?.cluster_get() ?? null,
     asking: (): boolean => controller?.asking_is() ?? false,
     heard: (): typeof heard => ({ ...heard }),
   };
 
   const status_read = async (): Promise<void> => {
     try {
-      const answer: ExecuteOutcome = await context.client.line_execute('domain status', { silent: true, observe: false });
-      const model = model_extract(answer, STRATUS_DOMAINS_MODEL_KIND, (data: unknown) => domainsModelSchema.safeParse(data));
+      const answer: ExecuteOutcome = await context.client.line_execute('cluster status', { silent: true, observe: false });
+      const model = model_extract(answer, STRATUS_CLUSTERS_MODEL_KIND, (data: unknown) => clustersModelSchema.safeParse(data));
       heard.reads++;
       if (model === null) return;
-      names = model.domains.map((domain: DomainSummary): string => domain.name);
+      names = model.clusters.map((cluster: ClusterSummary): string => cluster.name);
       names_seen(names);
-      controller?.domains_take(model.domains);
+      controller?.clusters_take(model.clusters);
       controller?.since_refresh();
     } catch (error: unknown) {
       heard.lastError = error instanceof Error ? error.message : String(error);
     }
   };
 
-  const size_read = async (family?: string): Promise<DomainSizeModel | null> => {
+  const size_read = async (family?: string): Promise<ClusterSizeModel | null> => {
     try {
-      const answer: ExecuteOutcome = await context.client.line_execute(family === undefined ? 'domain size' : `domain size --family ${family}`, { silent: true, observe: false });
-      return model_extract(answer, STRATUS_DOMAIN_SIZE_MODEL_KIND, (data: unknown) => domainSizeModelSchema.safeParse(data));
+      const answer: ExecuteOutcome = await context.client.line_execute(family === undefined ? 'cluster size' : `cluster size --family ${family}`, { silent: true, observe: false });
+      return model_extract(answer, STRATUS_CLUSTER_SIZE_MODEL_KIND, (data: unknown) => clusterSizeModelSchema.safeParse(data));
     } catch {
       return null;
     }
@@ -126,17 +126,17 @@ export function tdController_wire(context: Pick<HostContext, 'client'>, names_se
   const open = async (name: string): Promise<string> => {
     if (window.innerWidth < CONTROLLER_MIN_WIDTH) {
       // The controller does not take a narrow screen; the line runs as text, as in chell.
-      const said: string = `domain: the TD controller needs a screen at least ${CONTROLLER_MIN_WIDTH} px wide; this one is ${window.innerWidth}, so the line runs as text`;
+      const said: string = `cluster: the controller needs a screen at least ${CONTROLLER_MIN_WIDTH} px wide; this one is ${window.innerWidth}, so the line runs as text`;
       try {
-        const answer: ExecuteOutcome = await context.client.line_execute(name === '' ? 'domain status' : `domain ${name}`, { silent: true, observe: false });
+        const answer: ExecuteOutcome = await context.client.line_execute(name === '' ? 'cluster status' : `cluster ${name}`, { silent: true, observe: false });
         return [said, ...answer.envelopes.map((envelope) => `${envelope.rendered ?? ''}${envelope.renderedErr ?? ''}`.trimEnd())].join('\n');
       } catch (error: unknown) {
         return `${said}\n${error instanceof Error ? error.message : String(error)}`;
       }
     }
     if (controller !== null) {
-      controller.domain_choose(name);
-      return `domain: the controller is up${name === '' ? '' : `, on ${name}`}`;
+      controller.cluster_choose(name);
+      return `cluster: the controller is up${name === '' ? '' : `, on ${name}`}`;
     }
     titleBefore = document.title;
     const opened: TdController = new TdController({
@@ -162,8 +162,8 @@ export function tdController_wire(context: Pick<HostContext, 'client'>, names_se
     document.body.dataset['takeover'] = 'controller';
     synthVoice.preload();
     synthVoice.cue_play('open');
-    void status_read().then((): void => opened.domain_choose(name));
-    return `domain: the TD controller takes the screen${name === '' ? '' : ` on ${name}`} (Esc or LEAVE gives it back)`;
+    void status_read().then((): void => opened.cluster_choose(name));
+    return `cluster: the TD controller takes the screen${name === '' ? '' : ` on ${name}`} (Esc or LEAVE gives it back)`;
   };
 
   return {
@@ -173,11 +173,11 @@ export function tdController_wire(context: Pick<HostContext, 'client'>, names_se
     ask: (request: SurfaceAsk): Promise<string | null> => controller === null ? Promise.resolve(null) : controller.ask_take(request.message, request.kind),
     output_take: (chunk: string): void => { controller?.output_take(chunk); },
     event_take: (kind: string, data: unknown): void => {
-      if (kind !== STRATUS_DOMAIN_STATE_EVENT || controller === null) return;
+      if (kind !== STRATUS_CLUSTER_STATE_EVENT || controller === null) return;
       heard.events++;
-      const parsed = domainSummarySchema.safeParse(data);
+      const parsed = clusterSummarySchema.safeParse(data);
       if (!parsed.success) { heard.lastError = parsed.error.message; return; }
-      controller.domain_take(parsed.data);
+      controller.cluster_take(parsed.data);
     },
     names_get: (): string[] => [...names],
   };

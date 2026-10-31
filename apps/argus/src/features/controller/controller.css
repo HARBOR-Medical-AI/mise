@@ -1,4 +1,4 @@
-/* The TD controller: the screen `domain` takes in a stratus session
+/* The TD controller: the screen `cluster` takes in a stratus session
  * (features/controller/screen.ts, docs/stratus.adoc D13), drawn in the
  * ARGUS frame (features/takeover/frame.ts, lcars/takeover.css): the gutter,
  * the elbows, the bands and the strips are the page's own; this sheet is the
@@ -11,8 +11,8 @@
 body[data-takeover='controller'] { overflow: hidden; }
 body[data-takeover='controller'] > *:not(#td-controller) { visibility: hidden; }
 
-/* the domains' pills, in the gutter's seat */
-.tdc-domain.tdc-billing { box-shadow: inset 0 -4px 0 var(--tdc-bill); }
+/* the clusters' pills, in the gutter's seat */
+.tdc-cluster.tdc-billing { box-shadow: inset 0 -4px 0 var(--tdc-bill); }
 
 /* the header */
 .tdc-header { display: grid; grid-template-columns: 15rem repeat(4, minmax(0, 1fr)); gap: 1.4rem; padding: 0.2rem 0 0.4rem; align-items: start; }

@@ -124,7 +124,7 @@ export class AssistedInstaller implements Installer {
   async cluster_create(request: { name: string; baseDomain: string; version: string; controlPlaneCount: number }): Promise<InstallerIds> {
     const existing = JSON.parse(await this.call('GET', `${ASSISTED_API}/clusters`, [200])) as Array<{ id: string; name: string; base_dns_domain: string }>;
     if (existing.some((cluster): boolean => cluster.name === request.name && cluster.base_dns_domain === request.baseDomain)) {
-      throw new Error(`a cluster ${request.name}.${request.baseDomain} already exists at Red Hat that this domain did not record`);
+      throw new Error(`a cluster ${request.name}.${request.baseDomain} already exists at Red Hat that this cluster did not record`);
     }
     const pullSecret: string = await this.pullSecret_get();
     const sshPublicKey: string = this.options.sshPublicKey().trim();
