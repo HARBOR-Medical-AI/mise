@@ -22,7 +22,8 @@
  */
 import { createHash } from 'node:crypto';
 import type { ClusterSpec } from '../../cluster/spec.js';
-import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, PreflightCheck, TeardownRequest } from '../builder.js';
+import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, ModulePlanRequest, PlaceAnswer, PreflightCheck, StackModule, TeardownRequest } from '../builder.js';
+import { netModule_digest, netModule_zip, netVariables_build } from './modules/net.js';
 import { Readable } from 'node:stream';
 import { planRows_read } from './planRead.js';
 import type { OciBuildApi } from './buildApi.js';
@@ -42,6 +43,15 @@ export const STACK_RELEASE = {
 
 /** The freeform tag a cluster's stack carries, so a fresh bastion finds it (D4). */
 export { CLUSTER_TAG };
+
+/** The modules stratus keeps as Terraform of its own, each its stack's zip and how its stack is called. */
+const MODULES: Readonly<Record<StackModule, { zip: () => Buffer; digest: () => string; called: string; description: (owner: string) => string; variables: (request: ModulePlanRequest) => Record<string, string> }>> = {
+  net: {
+    zip: netModule_zip, digest: netModule_digest, called: 'a network',
+    description: (owner: string): string => `The network ${owner}: its VCN, gateway, subnet and bastion.`,
+    variables: (request: ModulePlanRequest): Record<string, string> => netVariables_build({ name: request.owner.name, cidr: request.inputs['cidr'] ?? '', region: request.region, compartmentId: request.placeId, clientCidr: request.inputs['clientCidr'] ?? '' }),
+  },
+};
 
 /** The job states that will not change again. */
 const JOB_OVER: ReadonlyArray<string> = ['SUCCEEDED', 'FAILED', 'CANCELED'];
@@ -515,6 +525,105 @@ export class OciBuilder implements CloudBuilder {
       await api.compartment_tagRemove(request.compartmentId, CLUSTER_TAG);
       gone.push(`the tag ${CLUSTER_TAG}=${request.cluster} off the compartment ${compartment.name}`);
     }
+    return gone;
+  }
+
+  /**
+   * A network's compartment, named as the network, under the tenancy's root.
+   * Made with the network's tag when there is none; one that is there is
+   * answered with whether it carries the tag, and whether it may be adopted
+   * (it must hold nothing) is the caller's to ask.
+   *
+   * @param request - The name, the region, the tag.
+   * @param call - The step's log and stop.
+   * @returns The compartment.
+   */
+  async place_ensure(request: { name: string; region: string; tag: string }, call: BuildCall): Promise<PlaceAnswer> {
+    const api: OciBuildApi = this.api_resolve(request.region);
+    const tenancy = await api.tenancy_get();
+    const place = await api.compartmentChild_ensure(tenancy.id, request.name, `The network ${request.name} and what stands on it, built by stratus`, { [request.tag]: request.name });
+    call.log(place.made ? `made the compartment ${request.name} under ${tenancy.name}` : `the compartment ${request.name} is there`);
+    await this.compartment_awaitActive(api, place.id, call);
+    const tagged: boolean = place.made || (await api.compartment_describe(place.id)).tags[request.tag] === request.name;
+    return { id: place.id, made: place.made, tagged };
+  }
+
+  async place_tag(request: { placeId: string; region: string; tag: string; name: string }, call: BuildCall): Promise<void> {
+    await this.api_resolve(request.region).compartment_tagSet(request.placeId, request.tag, request.name);
+    call.log(`compartment ${request.placeId} adopted: tagged ${request.tag}=${request.name}`);
+  }
+
+  async place_release(request: { placeId: string; region: string; tag: string; made: boolean }, call: BuildCall): Promise<string> {
+    const api: OciBuildApi = this.api_resolve(request.region);
+    if (!request.made) {
+      await api.compartment_tagRemove(request.placeId, request.tag);
+      return `the compartment ${request.placeId} stays (adopted, not made): its ${request.tag} tag is off`;
+    }
+    try {
+      await api.compartment_delete(request.placeId);
+    } catch (error: unknown) {
+      call.log(`the compartment ${request.placeId} stays: ${error instanceof Error ? error.message : String(error)}`);
+      return `the compartment ${request.placeId} stays: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    return `the compartment ${request.placeId}: removal asked (OCI takes it away in its own time)`;
+  }
+
+  /**
+   * Plans a module's stack. A stack already tagged for the owner in the
+   * place is the one an earlier plan made, and is reused: the module's zip
+   * and variables are set on it again, so a newer release of the module
+   * shows as the plan's changes.
+   *
+   * @param request - The module, its owner, the place, its variables.
+   * @param call - The step's log and stop.
+   * @returns The plan, with its stack.
+   */
+  async modulePlan_run(request: ModulePlanRequest, call: BuildCall): Promise<InfraPlan> {
+    const rm: RmApi = this.options.rm(request.region);
+    const module = MODULES[request.module];
+    const zipBase64: string = module.zip().toString('base64');
+    const variables: Record<string, string> = module.variables(request);
+    let stackRef: string | undefined = request.stackRef;
+    if (stackRef === undefined) {
+      const found = (await rm.stacks_tagged(request.placeId, request.owner.tag)).filter((stack): boolean => stack.tagValue === request.owner.name && stack.state === 'ACTIVE');
+      if (found.length > 1) throw new Error(`${found.length} stacks in ${request.placeId} are tagged ${request.owner.tag}=${request.owner.name}: ${found.map((stack) => stack.id).join(', ')}`);
+      stackRef = found[0]?.id;
+      if (stackRef !== undefined) call.log(`stack ${stackRef} is already tagged ${request.owner.tag}=${request.owner.name}: planned again`);
+    }
+    if (stackRef === undefined) {
+      const stack = await rm.stack_create({
+        compartmentId: request.placeId,
+        displayName: `${request.owner.name} · ${module.called}`,
+        description: `${module.description(request.owner.name)} Built by stratus, module ${request.module} ${module.digest()}.`,
+        zipBase64,
+        variables,
+        tags: { [request.owner.tag]: request.owner.name },
+      });
+      stackRef = stack.id;
+      call.log(`stack ${stackRef} made in ${request.placeId}`);
+    } else {
+      await rm.stack_update(stackRef, { zipBase64, variables });
+    }
+    const job: RmJobRecord = await this.job_run(rm, stackRef, { kind: 'plan' }, `${request.owner.name}: plan`, call);
+    return { ref: job.id, rows: planRows_read(await rm.jobPlan_read(job.id)), stackRef };
+  }
+
+  async moduleApply_run(request: { region: string; stackRef: string; plan: InfraPlan; label: string }, call: BuildCall): Promise<Record<string, string>> {
+    const rm: RmApi = this.options.rm(request.region);
+    const job: RmJobRecord = await this.job_run(rm, request.stackRef, { kind: 'apply', planJobId: request.plan.ref }, `${request.label}: apply`, call);
+    return await rm.jobOutputs_read(job.id);
+  }
+
+  async moduleDestroy_run(request: { region: string; stackRef: string; label: string }, call: BuildCall): Promise<string[]> {
+    const rm: RmApi = this.options.rm(request.region);
+    const held: number = await rm.stackResources_count(request.stackRef);
+    const gone: string[] = [];
+    if (held > 0) {
+      await this.job_run(rm, request.stackRef, { kind: 'destroy' }, `${request.label}: destroy`, call);
+      gone.push(`${held} resources the stack held`);
+    }
+    await rm.stack_delete(request.stackRef);
+    gone.push(`the stack ${request.stackRef}`);
     return gone;
   }
 }

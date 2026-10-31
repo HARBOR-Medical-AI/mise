@@ -66,6 +66,8 @@ export interface OciBuildApi {
   compartment_describe(compartmentId: string): Promise<{ name: string; parentName: string | null; tags: Record<string, string> }>;
   /** Takes one freeform tag off a compartment; one not carried is no error. */
   compartment_tagRemove(compartmentId: string, key: string): Promise<void>;
+  /** Puts one freeform tag on a compartment, keeping the others. */
+  compartment_tagSet(compartmentId: string, key: string, value: string): Promise<void>;
   /** Removes a compartment, which must hold nothing; the cloud refuses one that does. */
   compartment_delete(compartmentId: string): Promise<void>;
   /** Removes a bucket of a name and what it holds (objects, links), when it is in the compartment given; answers whether it was there. */
@@ -234,6 +236,13 @@ export function ociBuildApi_make(options: OciBuildApiOptions): OciBuildApi {
       const tags: Record<string, string> = { ...(compartment.freeformTags ?? {}) };
       if (!(key in tags)) return;
       delete tags[key];
+      await ident.updateCompartment({ compartmentId, updateCompartmentDetails: { freeformTags: tags } });
+    },
+    async compartment_tagSet(compartmentId, key, value) {
+      const compartment = (await ident.getCompartment({ compartmentId })).compartment;
+      const tags: Record<string, string> = { ...(compartment.freeformTags ?? {}) };
+      if (tags[key] === value) return;
+      tags[key] = value;
       await ident.updateCompartment({ compartmentId, updateCompartmentDetails: { freeformTags: tags } });
     },
     async compartment_delete(compartmentId) {

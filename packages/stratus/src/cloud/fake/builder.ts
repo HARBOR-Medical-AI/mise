@@ -9,7 +9,10 @@
 import type { ClusterSpec } from '../../cluster/spec.js';
 import { specNodes_build, type SpecNode } from '../../cluster/spec.js';
 import type { Installer, InstallerCredentials, InstallerHost, InstallerIds, InstallStatus, PlatformManifest } from '../../installer/installer.js';
-import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, PlanRow, PreflightCheck, TeardownRequest } from '../builder.js';
+import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, ModulePlanRequest, PlaceAnswer, PlanRow, PreflightCheck, TeardownRequest } from '../builder.js';
+
+/** What the fake network module makes, by kind, as the OCI module does. */
+const NET_KINDS: ReadonlyArray<string> = ['networks', 'gateways', 'routetables', 'securitylists', 'subnets', 'bastions'];
 
 /** The zones the fake region has, as the fake driver names them. */
 const FAKE_ZONES: ReadonlyArray<string> = ['AD-1', 'AD-2', 'AD-3'];
@@ -40,6 +43,10 @@ export class FakeBuildWorld {
   readonly stackResources: Map<string, number> = new Map();
   /** What the teardowns removed, a line each, for a test to read. */
   readonly removed: string[] = [];
+  /** The places under the tenancy's root, by name: their id, their tags and how many things stand in them that no module stack made. A test seeds one to adopt. */
+  readonly places: Map<string, { id: string; tags: Record<string, string>; others: number }> = new Map();
+  /** The module stacks, by id: whose, in which place, the variables last planned and applied. */
+  readonly moduleStacks: Map<string, { owner: string; tag: string; placeId: string; planned: Record<string, string>; applied: Record<string, string> | null }> = new Map();
   private serial: number = 0;
 
   constructor(readonly tickMs: number = 0) {}
@@ -124,6 +131,78 @@ export class FakeCloudBuilder implements CloudBuilder {
     this.world.compartments.set(request.cluster, id);
     call.log(`made the compartment clusters/${request.cluster}`);
     return { id, made: true };
+  }
+
+  async place_ensure(request: { name: string; region: string; tag: string }, call: BuildCall): Promise<PlaceAnswer> {
+    await this.world.tick(1, call.signal);
+    const kept = this.world.places.get(request.name);
+    if (kept !== undefined) {
+      call.log(`the compartment ${request.name} is there`);
+      return { id: kept.id, made: false, tagged: kept.tags[request.tag] === request.name };
+    }
+    const id: string = `ocid1.compartment.oc1..fake-${request.name}`;
+    this.world.places.set(request.name, { id, tags: { [request.tag]: request.name }, others: 0 });
+    call.log(`made the compartment ${request.name}`);
+    return { id, made: true, tagged: true };
+  }
+
+  async place_tag(request: { placeId: string; region: string; tag: string; name: string }, call: BuildCall): Promise<void> {
+    const place = [...this.world.places.values()].find((entry): boolean => entry.id === request.placeId);
+    if (place === undefined) throw new Error(`${request.placeId}: no such compartment`);
+    place.tags[request.tag] = request.name;
+    call.log(`compartment ${request.placeId} adopted: tagged ${request.tag}=${request.name}`);
+  }
+
+  async place_release(request: { placeId: string; region: string; tag: string; made: boolean }, _call: BuildCall): Promise<string> {
+    const entry = [...this.world.places.entries()].find(([, place]): boolean => place.id === request.placeId);
+    if (entry === undefined) return `the compartment ${request.placeId} was gone already`;
+    if (!request.made) {
+      delete entry[1].tags[request.tag];
+      this.world.removed.push(`untag ${entry[0]}`);
+      return `the compartment ${request.placeId} stays (adopted, not made): its ${request.tag} tag is off`;
+    }
+    this.world.places.delete(entry[0]);
+    this.world.removed.push(`compartment ${entry[0]}`);
+    return `the compartment ${request.placeId}: removal asked (OCI takes it away in its own time)`;
+  }
+
+  async modulePlan_run(request: ModulePlanRequest, call: BuildCall): Promise<InfraPlan> {
+    await this.world.tick(2, call.signal);
+    let stackRef: string | undefined = request.stackRef
+      ?? [...this.world.moduleStacks.entries()].find(([, stack]): boolean => stack.placeId === request.placeId && stack.owner === request.owner.name && stack.tag === request.owner.tag)?.[0];
+    if (stackRef === undefined) {
+      stackRef = `fake-stack-${request.module}-${request.owner.name}`;
+      this.world.moduleStacks.set(stackRef, { owner: request.owner.name, tag: request.owner.tag, placeId: request.placeId, planned: {}, applied: null });
+      call.log(`stack ${stackRef} made in ${request.placeId}`);
+    }
+    const stack = this.world.moduleStacks.get(stackRef);
+    if (stack === undefined) throw new Error(`${stackRef}: no such stack`);
+    stack.planned = { ...request.inputs };
+    const rows: PlanRow[] = stack.applied === null
+      ? NET_KINDS.map((kind: string): PlanRow => ({ action: 'create', kind, name: `${request.owner.name}-${kind}` }))
+      : Object.keys(stack.planned).filter((key: string): boolean => stack.planned[key] !== stack.applied?.[key]).map((key: string): PlanRow => ({ action: 'change', kind: 'networks', name: `${request.owner.name} ${key}` }));
+    call.log(`plan: ${rows.length} changes`);
+    return { ref: `fake-plan-${stackRef}`, rows, stackRef };
+  }
+
+  async moduleApply_run(request: { region: string; stackRef: string; plan: InfraPlan; label: string }, call: BuildCall): Promise<Record<string, string>> {
+    await this.world.tick(3, call.signal);
+    const stack = this.world.moduleStacks.get(request.stackRef);
+    if (stack === undefined) throw new Error(`${request.stackRef}: no such stack`);
+    stack.applied = { ...stack.planned };
+    call.log(`apply: ${request.plan.rows.length} changes made`);
+    return { vcn_id: `ocid1.vcn.oc1..fake-${stack.owner}`, subnet_id: `ocid1.subnet.oc1..fake-${stack.owner}`, bastion_id: `ocid1.bastion.oc1..fake-${stack.owner}` };
+  }
+
+  async moduleDestroy_run(request: { region: string; stackRef: string; label: string }, call: BuildCall): Promise<string[]> {
+    await this.world.tick(2, call.signal);
+    const stack = this.world.moduleStacks.get(request.stackRef);
+    const gone: string[] = [];
+    if (stack?.applied !== null && stack !== undefined) gone.push(`${NET_KINDS.length} resources the stack held`);
+    this.world.moduleStacks.delete(request.stackRef);
+    this.world.removed.push(`stack ${request.stackRef}`);
+    gone.push(`the stack ${request.stackRef}`);
+    return gone;
   }
 
   async preflight(request: { cluster: string; spec: ClusterSpec; region: string; baseDomain: string; compartmentId: string }, call: BuildCall): Promise<PreflightCheck[]> {

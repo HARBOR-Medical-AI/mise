@@ -212,7 +212,7 @@ async function cost_read(context: BuildCommandContext, region: string, spec: Clu
  *
  * @returns True when granted.
  */
-function tasks_granted(): boolean {
+export function tasks_granted(): boolean {
   return surface_get().capabilities.tasks === true;
 }
 
