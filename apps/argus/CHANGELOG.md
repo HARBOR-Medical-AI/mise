@@ -1,5 +1,16 @@
 # @fnndsc/argus
 
+## 0.45.0
+
+### Minor Changes
+
+- f6790b6: Under stratus the first tile is OPENSHIFT, and `cluster` opens the controller. The tile counts CLUSTERS, and `domain` no longer opens anything.
+
+### Patch Changes
+
+- Updated dependencies [f6790b6]
+  - @fnndsc/menu@0.32.0
+
 ## 0.44.0
 
 ### Minor Changes
