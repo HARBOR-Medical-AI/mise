@@ -1,6 +1,6 @@
 {
   "name": "@fnndsc/argus",
-  "version": "0.44.0",
+  "version": "0.45.0",
   "description": "ARGUS: the LCARS web surface for mise — a browser console over a calypso session",
   "type": "module",
   "scripts": {
@@ -31,7 +31,7 @@
     "@cornerstonejs/metadata": "^5.8.2",
     "@cornerstonejs/tools": "^5.8.2",
     "@cornerstonejs/utils": "^5.8.2",
-    "@fnndsc/menu": "^0.31.1",
+    "@fnndsc/menu": "^0.32.0",
     "@kitware/vtk.js": "^36.4.1",
     "@lezer/highlight": "^1.2.5",
     "@niivue/niivue": "^0.69.0",

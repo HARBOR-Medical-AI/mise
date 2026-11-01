@@ -1,6 +1,6 @@
 {
   "name": "@fnndsc/menu",
-  "version": "0.31.1",
+  "version": "0.32.0",
   "description": "The mise wire contract: envelope, session protocol, and result-model schemas that surfaces and the kernel both speak",
   "repository": {
     "type": "git",

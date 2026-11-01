@@ -1,5 +1,22 @@
 # @fnndsc/stratus
 
+## 0.7.0
+
+### Minor Changes
+
+- da946ab: ChRIS goes on a built VM with `chris deploy <vm> --profile minimal`. Over the network's bastion, as a task, it writes CUBE 6.11.0's production compose (CUBE under uvicorn, its workers and scheduler, Postgres, Dragonfly, NATS, pfcon 5.3.1 in-network running plugins through the VM's Docker, Caddy in front) to the data volume, starts it, waits for CUBE, registers the compute resource (`--compute`, default the VM's name) and checks `chris` sees the admin API. The internal secrets are generated once and kept on this host; the admin password is asked once (empty: generated and shown once) or read from `--admin-password-file`. A VM below the profile's floor is refused and told by how much. With `--host`, it waits for public DNS to give the name the VM's address and for the certificate, and a replay resumes there. `chris status` says what is deployed where.
+- f6790b6: The OpenShift cluster's verbs are `cluster` now, freeing `domain` for the Trusted Domain recipe. They are `cluster new`, `plan`, `build`, `status`, `verify`, `adopt`, `teardown`, `protect`, `size` and `attach` (docs/stratus.adoc, D16). The tenancy's folder is `clusters/`, the tag that finds a cluster in the tenancy is `mise-cluster=<name>`, the expect subject is `cluster`, the launcher's checkout flag is `--cluster NAME=CHECKOUT`, and the state event is `stratus.cluster.state`. A daemon starting where the old `stratus/domains/` folder stands and `stratus/clusters/` does not moves it once. The Kubernetes driver's folder is `src/kube/`. Clusters built before this carry `mise-domain`; retag their stacks and compartments to `mise-cluster` so the session finds them.
+- 68e0136: Networks for VMs are declared, built and torn down with `net`. `net new <name> --cidr <range>` declares a network and builds nothing; on one already declared it prints `unchanged` or the change. `net build` plans as a task, says the counts and asks, then applies; a plan that touches what exists is refused unless `--allow-alter`. On OCI a network is a compartment of its name (an empty one is adopted), a VCN, an internet gateway, the default route and security list (SSH only from inside), one public subnet and an OCI Bastion admitting only this host's public address, all from a Terraform module stratus keeps, run in Resource Manager and tagged `mise-net=<name>`. `net teardown` refuses while anything stands in the compartment, then asks for the name typed back.
+- 8183f6c: A ChRIS's name is pointed at its VM at GoDaddy by `chris deploy --host`, asked first. When public DNS does not yet give the name the VM's address and the zone's name servers are GoDaddy's, it reads the name's records through GoDaddy's v3 API with the token kept in `~/.config/stratus/godaddy`, says what it would change (`remove CNAME cube → …, add A cube → <address> (TTL 600)`) and asks; on yes it makes the change, then waits for public DNS and the certificate as before. Without the token, or for a zone kept elsewhere, it says where to point the name by hand.
+- b227791: VMs are declared, built, reached and torn down with `vm`. `vm new <name> --net <network> --vcpu --memory --disk --data --os [--open 80,443] [--data-backup daily]` declares a VM in portable words and builds nothing; on one already declared it prints `unchanged` or the change. `vm build` plans its two stacks as tasks (its data: the volume, daily backups and a reserved address; its machine: the instance, boot disk, a security group and the volume's attachment), says the counts and the cost an hour and a month and asks, applies both and points the address at the machine. On OCI the machine is an E5.Flex from the newest image of the OS, pinned at the first build; cloud-init puts Docker's data on the volume at `/srv/data`. `vm shell` opens a session on the network's OCI Bastion for the VM's own key and prints the SSH line. A VM is born protected (`vm protect <name> off`); `vm teardown` removes the machine and keeps the data and address, `--all` takes those too on the name typed back.
+
+### Patch Changes
+
+- Updated dependencies [f6790b6]
+  - @fnndsc/menu@0.32.0
+  - @fnndsc/brasa@0.51.2
+  - @fnndsc/calypso@0.28.3
+
 ## 0.6.1
 
 ### Patch Changes
