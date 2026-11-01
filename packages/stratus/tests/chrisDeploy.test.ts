@@ -17,6 +17,8 @@ import { CHRIS_PROFILES, floor_short } from '../src/chris/profiles.js';
 import { caddyfile_render, compose_render, cubeEnv_render, type ChrisSecrets } from '../src/chris/compose.js';
 import { curlQuote } from '../src/chris/deploy.js';
 import { secrets_read } from '../src/chris/secrets.js';
+import { goDaddy_make, host_split, point_plan, type Registrar, type RegistrarRecord } from '../src/chris/registrar.js';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { sshArgs_build, type RemoteAnswer, type VmRemote } from '../src/vm/remote.js';
 import { VmStore } from '../src/vm/state.js';
 import { NetStore } from '../src/net/state.js';
@@ -105,7 +107,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const driver = { resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => [], servicePrices_get: async (): Promise<ServicePrices | null> => null } as unknown as CloudDriver;
     vm = new FakeVm();
     resolved = [];
-    context = { vms, nets, builder, resolve: async (): Promise<string[]> => resolved, status_get: async (): Promise<number | null> => 200, remote_open: async (): Promise<VmRemote> => vm, tickMs: 0 };
+    context = { vms, nets, builder, resolve: async (): Promise<string[]> => resolved, nameservers_get: async (): Promise<string[]> => ['ns37.domaincontrol.com', 'ns38.domaincontrol.com'], registrar: null, status_get: async (): Promise<number | null> => 200, remote_open: async (): Promise<VmRemote> => vm, tickMs: 0 };
     vmContext = { store: vms, nets, driver, builder, region: (): string => 'us-ashburn-1' };
     surface = Object.assign(new HeadlessSurface(), { answers: [] as string[], asked: [] as string[] });
     (surface.capabilities as { tasks?: boolean }).tasks = true;
@@ -167,8 +169,69 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(vms.record_read('store')?.chris?.dns).toBe('seen');
   });
 
+  it('with a host and a registrar it holds a token for, shows the change, asks, and points the name', async () => {
+    const records: RegistrarRecord[] = [{ id: 'r-1', type: 'CNAME', name: 'cube', data: 'router-default.apps.example.org.', ttl: 3600 }];
+    const calls: string[] = [];
+    const registrar: Registrar = {
+      id: 'GoDaddy',
+      serves: (servers: ReadonlyArray<string>): boolean => servers.every((server: string): boolean => server.endsWith('.domaincontrol.com')),
+      records_list: async (): Promise<RegistrarRecord[]> => records,
+      record_delete: async (zone: string, id: string): Promise<void> => { calls.push(`delete ${zone} ${id}`); },
+      record_create: async (zone: string, record: { name: string; type: string; data: string; ttl: number }): Promise<void> => { calls.push(`create ${zone} ${record.type} ${record.name} ${record.data} ${record.ttl}`); resolved = [record.data]; },
+    };
+    context = { ...context, registrar };
+    surface.answers = ['a-typed-password', 'n'];
+    const declined = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org']);
+    expect(surface.asked[1]).toBe('chris deploy: at GoDaddy, in example.org: remove CNAME cube → router-default.apps.example.org., add A cube → 203.0.113.10 (TTL 600)? [y/N]');
+    expect(calls).toEqual([]);
+    expect(declined.renderedErr).toContain('example.org at GoDaddy not changed');
+    surface.answers = ['y'];
+    const done = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org']);
+    expect(calls).toEqual(['delete example.org r-1', 'create example.org A cube 203.0.113.10 600']);
+    expect(plain(done.rendered)).toContain('cube.example.org points at 203.0.113.10 at GoDaddy (resolvers may keep the old answer up to 3600 s)');
+    expect(vms.record_read('store')?.chris?.dns).toBe('seen');
+  });
+
   it('needs the tasks tier', async () => {
     surface_set(new HeadlessSurface());
     expect((await chris_run(context, ['deploy', 'store', '--profile', 'minimal'])).renderedErr).toContain('needs the tasks tier');
   });
 });
+
+describe('a registrar', () => {
+  it('splits a host into its zone and name, and plans what pointing it takes', () => {
+    expect(host_split('cube.chrisproject.org')).toEqual({ zone: 'chrisproject.org', name: 'cube' });
+    expect(host_split('chrisproject.org')).toEqual({ zone: 'chrisproject.org', name: '@' });
+    const cname: RegistrarRecord = { id: 'c', type: 'CNAME', name: 'cube', data: 'x.', ttl: 3600 };
+    const right: RegistrarRecord = { id: 'a', type: 'A', name: 'cube', data: '1.2.3.4', ttl: 600 };
+    expect(point_plan([cname], '1.2.3.4')).toEqual({ remove: [cname], create: true });
+    expect(point_plan([right], '1.2.3.4')).toEqual({ remove: [], create: false });
+    expect(point_plan([{ ...right, data: '9.9.9.9' }], '1.2.3.4').create).toBe(true);
+  });
+
+  it('speaks GoDaddy\'s v3 API with the token kept on the host, and is absent without one', async () => {
+    const root: string = mkdtempSync(join(tmpdir(), 'stratus-godaddy-'));
+    expect(goDaddy_make(join(root, 'none'))).toBeNull();
+    mkdirSync(join(root, 'stratus'));
+    writeFileSync(join(root, 'stratus', 'godaddy'), 'tok-123\n', { mode: 0o600 });
+    const asked: string[] = [];
+    const fetcher = (async (url: string, init: RequestInit): Promise<Response> => {
+      asked.push(`${init.method} ${url} ${(init.headers as Record<string, string>)['Authorization']} ${init.body ?? ''}`);
+      if (init.method === 'GET') return new Response(JSON.stringify({ items: [{ recordId: 'r-1', type: 'CNAME', name: 'cube', data: 'x.', ttl: 3600 }, { recordId: 'r-2', type: 'A', name: 'cube1', data: '5.5.5.5', ttl: 600 }] }), { status: 200 });
+      return new Response(init.method === 'POST' ? '{}' : null, { status: init.method === 'POST' ? 201 : 204 });
+    }) as unknown as typeof fetch;
+    const registrar = goDaddy_make(join(root, 'stratus', 'godaddy'), fetcher);
+    expect(registrar?.serves(['ns37.domaincontrol.com', 'ns38.domaincontrol.com.'])).toBe(true);
+    expect(registrar?.serves(['ns1.p201.dns.oraclecloud.net'])).toBe(false);
+    expect(await registrar?.records_list('chrisproject.org', 'cube')).toEqual([{ id: 'r-1', type: 'CNAME', name: 'cube', data: 'x.', ttl: 3600 }]);
+    await registrar?.record_delete('chrisproject.org', 'r-1');
+    await registrar?.record_create('chrisproject.org', { name: 'cube', type: 'A', data: '1.2.3.4', ttl: 600 });
+    expect(asked).toEqual([
+      'GET https://api.godaddy.com/v3/domains/zones/chrisproject.org/dns-records?name=cube&pageSize=100 Bearer tok-123 ',
+      'DELETE https://api.godaddy.com/v3/domains/zones/chrisproject.org/dns-records/r-1 Bearer tok-123 ',
+      'POST https://api.godaddy.com/v3/domains/zones/chrisproject.org/dns-records Bearer tok-123 {"name":"cube","type":"A","data":"1.2.3.4","ttl":600}',
+    ]);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+

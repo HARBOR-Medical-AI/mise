@@ -43,3 +43,22 @@ export async function urlStatus_get(url: string): Promise<number | null> {
     return null;
   }
 }
+
+/**
+ * A zone's name servers, from the public resolvers.
+ *
+ * @param zone - The zone.
+ * @returns The name servers, none when the zone does not answer.
+ */
+export async function publicNameservers_get(zone: string): Promise<string[]> {
+  for (const server of PUBLIC_RESOLVERS) {
+    const resolver = new dns.Resolver({ timeout: 5000, tries: 1 });
+    resolver.setServers([server]);
+    try {
+      return (await resolver.resolveNs(zone)).sort();
+    } catch {
+      // the next resolver
+    }
+  }
+  return [];
+}
