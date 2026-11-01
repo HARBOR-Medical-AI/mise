@@ -366,7 +366,7 @@ async function vmShell_run(context: VmCommandContext, args: ReadonlyArray<string
   const key = context.store.key_ensure(name);
   try {
     const session = await open({ region: record.region, bastionId, privateIp, publicKey: key.publicKey, ttlSeconds: SESSION_TTL_SECONDS, label: name }, { log: (): void => undefined, signal: new AbortController().signal });
-    return envelope_ok(`${sshLine_build(session, key.privatePath, privateIp)}\n${chalk.gray(`(the session lasts three hours; run the line with ! here or in a terminal on this host)`)}\n`);
+    return envelope_ok(`${sshLine_build(session, key.privatePath, privateIp)}\n${chalk.gray(`(the session lasts three hours; the bastion may refuse the key for its first half minute; run the line with ! here or in a terminal on this host)`)}\n`);
   } catch (error: unknown) {
     return envelope_error('', undefined, `vm shell: ${name}: ${error instanceof Error ? error.message : String(error)}\n`);
   }

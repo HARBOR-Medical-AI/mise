@@ -11,6 +11,7 @@
  *
  * @module
  */
+import * as path from 'path';
 import type { JobContext, JobRun } from '@fnndsc/brasa/core';
 import type { CloudDriver, CloudPrice, ServicePrices } from '../cloud/driver.js';
 import { plan_count, planCounts_words, type BuildCall, type CloudBuilder, type InfraPlan, type StackModule } from '../cloud/builder.js';
@@ -187,6 +188,8 @@ export function vmApplyRun_make(name: string, part: VmPart, deps: VmDeps): JobRu
     const publicIpId: string | undefined = record.dataOutputs?.['public_ip_id'];
     const privateIpId: string | undefined = outputs['private_ip_id'];
     if (publicIpId !== undefined && privateIpId !== undefined) await builder.address_point({ region: record.region, publicIpId, privateIpId }, call);
+    // A new machine has a new host key: the old one, kept for the old machine, would refuse it.
+    deps.store.file_remove(name, path.join('ssh', 'known_hosts'));
     deps.store.record_update(name, (current: VmRecord): void => {
       current.machineOutputs = outputs;
       if (current.image === undefined && outputs['image_id'] !== undefined) current.image = outputs['image_id'];

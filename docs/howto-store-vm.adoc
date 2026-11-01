@@ -330,3 +330,35 @@ curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$(cat ~/.config/stratus/goda
 ----
 
 The read answered 200 with 38 records: the apex on GitHub Pages (four A, four AAAA), `oci` delegated to OCI DNS (`ns1` to `ns4.p201.dns.oraclecloud.net`), and `cube`, `blt` and about twenty other names still CNAMEs to NERC's `router-default.apps.shift.nerc.mghpcc.org.` (TTL 3600). A record is changed with `PUT .../dns-records/{recordId}` and removed with `DELETE` on the same path (the spec: `https://developer.godaddy.com/openapi/domains-v3.json`).
+
+== The VM, as code: `vm`, 2026-11-01
+
+The hand run's instance, volume, reserved address, security group and cloud-init are `vm` lines now (stratus.adoc, D16): two Resource Manager stacks per VM, its data (volume, backups, address) and its machine (instance, boot disk, security group, attachment). The first live run built a scratch network and a VM of the store's size by playing a script, checked it, tore the machine down and rebuilt it over the kept data, then took everything away. The daemon was the private one of the network's run, started with `--host-control=shell,tasks`.
+
+[source]
+----
+# vm-try.mise
+net new vm-try --cidr 10.98.0.0/16
+net build vm-try
+vm new vm-try --net vm-try --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --os ubuntu-26.04
+vm build vm-try
+----
+
+[source]
+----
+play vm-try.mise                 # y at each question
+vm shell vm-try                  # prints the ssh line through the bastion
+vm build vm-try                  # again: nothing to do
+vm protect vm-try off
+vm teardown vm-try               # the machine; the data and address stay
+vm build vm-try                  # the machine again, over the kept data
+vm teardown vm-try --all         # the name typed back
+net teardown vm-try
+----
+
+* `play` ran the four lines in 7 min 22 s (2026-11-01, 19:01 to 19:08 UTC). The network as before (6 resources). The data stack: 2 resources, the volume and the reserved address `129.153.33.80`. The machine stack: 5 resources, the security group, its two rules, the instance (image `Canonical-Ubuntu-26.04`, newest, pinned) and the attachment. The question showed the cost: $0.052 an hour, $37.83 a month, the data alone $0.003 an hour.
+* On the VM, through `vm shell`'s line: cloud-init's marker at 19:09, `/dev/sdb` (50 GB, label `data`) mounted at `/srv/data`, Docker 29.9.2 with `data-root /srv/data/docker`, 80 and 443 accepted ahead of the image's `REJECT`, 2 vCPU, 7.7 GiB, Ubuntu 26.04.1. From outside, 80 and 443 were reached and refused (nothing listening), 22 silent.
+* The first ssh through a session that had just turned `ACTIVE` was refused (`Permission denied (publickey)` at the bastion); thirty seconds later it was admitted.
+* The second `vm build` planned nothing on either stack.
+* A marker written to `/srv/data`, then `vm teardown` (machine only, 5 destroyed), then `vm build` (data 0, machine 5 to create): the same address, a new private address, and the marker read back; cloud-init found the volume formatted and only mounted it.
+* `vm teardown --all` destroyed both stacks, `net teardown` the network and asked the compartment's removal. Read back: both instances `TERMINATED`, the volume `TERMINATED`, no reserved address, the compartment `DELETING`. The VM billed about twenty minutes in all.

@@ -155,6 +155,7 @@ describe('vm, over the fake cloud', () => {
     expect(world.moduleStacks.get('fake-stack-vmMachine-store')?.applied).toMatchObject({ volumeId: 'ocid1.volume.oc1..fake-store', subnetId: 'ocid1.subnet.oc1..fake-scratch', availabilityDomain: 'fake:AD-1', image: 'ocid1.image.oc1..fake-ubuntu' });
     const key: string = join(store.folder_derive('store'), 'ssh', 'id_ed25519');
     expect(statSync(key).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(store.folder_derive('store'), 'ssh', 'known_hosts'))).toBe(false);
     expect(world.moduleStacks.get('fake-stack-vmMachine-store')?.applied?.['sshPublicKey']).toMatch(/^ssh-ed25519 \S+ stratus-store$/);
     surface.asked = [];
     expect(plain((await vm_run(context, ['build', 'store'])).rendered)).toBe('store: built, and the plan reads nothing to do\n');
