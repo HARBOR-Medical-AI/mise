@@ -280,3 +280,41 @@ oci network vcn delete --vcn-id "$V" --force --wait-for-state TERMINATED
 ----
 
 `--wait-for-state` together with `--query` on `instance terminate` printed the CLI's usage text and did nothing; the bare call worked. Resource Search lags a deletion by minutes (the VCN still listed `AVAILABLE` after `vcn get` no longer found it); the private DNS view, resolver and reverse zone it lists belong to the VCN and go with it. The compartment was kept, empty.
+
+== The network, as code: `net`, 2026-10-31
+
+The hand run's compartment, VCN, gateway, route, security list, subnet and Bastion are one `net` line now (stratus.adoc, D16), built by stratus's own Terraform module in Resource Manager. Its first live run was a scratch network, in a compartment of its own under the tenancy's root, made and removed by the run; nothing went in `harbor-oci`. Nothing a network is made of is in Oracle's price list: $0 an hour, $0 a month.
+
+=== A private stratus daemon with the tasks tier
+
+Run from the branch's build, never the operator's daemon. `HOME` is the real one, for `~/.oci/config`; the state, the berth and the rest are a scratch folder's, so the network's record never reaches `~/.local/state/stratus/`.
+
+[source,bash]
+----
+S=<scratch>/stratus-net; mkdir -p $S/{tmp,run,config,cache,state}
+npm run build -w @fnndsc/stratus
+env TMPDIR=$S/tmp XDG_RUNTIME_DIR=$S/run XDG_CONFIG_HOME=$S/config XDG_CACHE_HOME=$S/cache XDG_STATE_HOME=$S/state \
+  node packages/stratus/dist/stratus.js --host-control=tasks </dev/null >$S/daemon.log 2>&1 & echo $! > $S/pid
+# attach with the same variables:
+env TMPDIR=$S/tmp XDG_RUNTIME_DIR=$S/run XDG_CONFIG_HOME=$S/config XDG_CACHE_HOME=$S/cache XDG_STATE_HOME=$S/state \
+  node packages/chell/dist/index.js --remote <identity>
+----
+
+=== The lines
+
+[source]
+----
+net new scratch-net --cidr 10.99.0.0/16
+net plan scratch-net
+net build scratch-net          # y at the question
+net build scratch-net          # again: the plan reads nothing to do
+net teardown scratch-net       # the name typed back
+----
+
+* `net new` declared it (`scratch-net: declared, 10.99.0.0/16 in us-ashburn-1`); `net plan` listed the six things it is made of and the cost line, with no plan made.
+* The first `net build` made the compartment `scratch-net` under the root, tagged `mise-net=scratch-net`, read this host's address from `checkip.amazonaws.com` (`134.174.21.21/32`), made the stack `scratch-net · a network`, planned 6 to create, asked, and applied: the VCN, gateway, default route table and security list in under a second each, the subnet in 4 s, the Bastion in 1 min 4 s. About two minutes in all, the two Resource Manager jobs' queueing included.
+* The second `net build` planned `0 to create, 0 to change, 0 to destroy` and stopped there: `ignore_changes = [defined_tags]` holds off the `Oracle-Tags` drift the cluster stacks show.
+* Read back with `oci iam compartment get` and `oci bastion bastion get`: both `ACTIVE`, both tagged `mise-net=scratch-net`, the Bastion's allow list `134.174.21.21/32` alone.
+* `net teardown` ran a destroy job (6 destroyed; the Bastion took 53 s, and the subnet waited for it), deleted the stack, and asked the compartment's removal; `oci iam compartment get` then read `DELETING`. The spec stays in the state folder, so `net build scratch-net` would build it again.
+
+The daemon was stopped by its pid (`kill $(cat $S/pid)`).
