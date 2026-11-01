@@ -61,6 +61,7 @@
     "@fnndsc/menu": "^0.31.1",
     "chalk": "^4.1.2",
     "js-yaml": "^4.1.0",
+    "oci-bastion": "2.144.0",
     "oci-common": "2.144.0",
     "oci-core": "2.144.0",
     "oci-dns": "2.144.0",

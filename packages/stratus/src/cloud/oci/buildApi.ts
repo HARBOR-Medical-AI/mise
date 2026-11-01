@@ -8,6 +8,7 @@
  * @module
  */
 import type { Readable } from 'node:stream';
+import * as bastion from 'oci-bastion';
 import * as common from 'oci-common';
 import * as core from 'oci-core';
 import * as dns from 'oci-dns';
@@ -70,6 +71,12 @@ export interface OciBuildApi {
   compartment_tagSet(compartmentId: string, key: string, value: string): Promise<void>;
   /** Removes a compartment, which must hold nothing; the cloud refuses one that does. */
   compartment_delete(compartmentId: string): Promise<void>;
+  /** Points a reserved public address at a private one. */
+  publicIp_assign(publicIpId: string, privateIpId: string): Promise<void>;
+  /** Asks a bastion for a port-forwarding session to a private address's port, admitting one public key. */
+  bastionSession_create(request: { bastionId: string; privateIp: string; port: number; publicKey: string; ttlSeconds: number; name: string }): Promise<string>;
+  /** A session's state (`CREATING`, `ACTIVE`, `FAILED`, …). */
+  bastionSession_state(sessionId: string): Promise<string>;
   /** Removes a bucket of a name and what it holds (objects, links), when it is in the compartment given; answers whether it was there. */
   bucket_remove(bucket: string, compartmentId: string): Promise<boolean>;
 }
@@ -96,6 +103,8 @@ export function ociBuildApi_make(options: OciBuildApiOptions): OciBuildApi {
   const dnsClient: dns.DnsClient = regional(new dns.DnsClient({ authenticationDetailsProvider: provider }));
   const store: objectstorage.ObjectStorageClient = regional(new objectstorage.ObjectStorageClient({ authenticationDetailsProvider: provider }));
   const blocks: core.BlockstorageClient = regional(new core.BlockstorageClient({ authenticationDetailsProvider: provider }));
+  const network: core.VirtualNetworkClient = regional(new core.VirtualNetworkClient({ authenticationDetailsProvider: provider }));
+  const bastions: bastion.BastionClient = regional(new bastion.BastionClient({ authenticationDetailsProvider: provider }));
   const tenancyId: string = provider.getTenantId();
   let namespace: string | null = null;
   // The root and every active compartment beneath it: where a shared thing
@@ -201,6 +210,25 @@ export function ociBuildApi_make(options: OciBuildApiOptions): OciBuildApi {
     },
     async record_upsert(zone, name, address, compartmentId) {
       await dnsClient.updateRRSet({ zoneNameOrId: zone, domain: name, rtype: 'A', compartmentId, updateRRSetDetails: { items: [{ domain: name, rtype: 'A', rdata: address, ttl: 300 }] } });
+    },
+    async publicIp_assign(publicIpId, privateIpId) {
+      await network.updatePublicIp({ publicIpId, updatePublicIpDetails: { privateIpId } });
+    },
+    async bastionSession_create(request) {
+      const made = await bastions.createSession({
+        createSessionDetails: {
+          bastionId: request.bastionId,
+          displayName: request.name,
+          keyType: bastion.models.CreateSessionDetails.KeyType.Pub,
+          keyDetails: { publicKeyContent: request.publicKey },
+          targetResourceDetails: { sessionType: 'PORT_FORWARDING', targetResourcePrivateIpAddress: request.privateIp, targetResourcePort: request.port } as bastion.models.CreatePortForwardingSessionTargetResourceDetails,
+          sessionTtlInSeconds: request.ttlSeconds,
+        },
+      });
+      return made.session.id;
+    },
+    async bastionSession_state(sessionId) {
+      return String((await bastions.getSession({ sessionId })).session.lifecycleState);
     },
     async volume_delete(volumeId) {
       try {

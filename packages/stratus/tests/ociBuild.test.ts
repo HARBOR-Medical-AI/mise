@@ -76,6 +76,9 @@ class RecordedApi implements OciBuildApi {
   /** The buckets by compartment, for `bucket_remove`. */
   buckets: Record<string, string> = {};
   async bucket_remove(bucket: string, compartmentId: string) { if (this.buckets[bucket] !== compartmentId) return false; this.calls.push(`delete bucket ${bucket}`); return true; }
+  async publicIp_assign(publicIpId: string, privateIpId: string) { this.calls.push(`point ${publicIpId} at ${privateIpId}`); }
+  async bastionSession_create(request: { bastionId: string; privateIp: string }) { this.calls.push(`session ${request.bastionId} to ${request.privateIp}`); return 'session-1'; }
+  async bastionSession_state(_sessionId: string) { return 'ACTIVE'; }
 }
 
 /** Resource Manager, answering every job with success. */

@@ -128,6 +128,7 @@ function placeApi_make(calls: string[], kept: { id: string; tags: Record<string,
     zoneCompartment_find: refuse, zoneNames_list: refuse, tagNamespaceCompartment_find: refuse, tag_exists: refuse, limitFree_get: refuse, zoneNameservers_get: refuse,
     bucket_ensure: refuse, object_put: refuse, object_delete: refuse, link_create: refuse, link_delete: refuse, record_upsert: refuse, record_delete: refuse,
     volume_delete: refuse, volumes_list: refuse, bucket_remove: refuse,
+    publicIp_assign: refuse, bastionSession_create: refuse, bastionSession_state: refuse,
   };
 }
 
@@ -151,9 +152,12 @@ describe('the OCI builder\'s network calls', () => {
     expect(rm.calls).toEqual(['tagged mise-net', 'create in c-1 "scratch · a network" {"mise-net":"scratch"} 10.40.0.0/24 zip true', 'plan stack-net', 'apply stack-net from job-plan']);
   });
 
-  it('plans again in the stack an earlier plan made, its variables set again', async () => {
+  it('plans again in the stack an earlier plan made for the same module, its variables set again', async () => {
     const rm: RecordedRm = new RecordedRm();
-    rm.tagged = [{ id: 'stack-old', displayName: 's', state: 'ACTIVE', compartmentId: 'c-1', variables: {}, tagValue: 'scratch' }];
+    rm.tagged = [
+      { id: 'stack-old', displayName: 'scratch · a network', state: 'ACTIVE', compartmentId: 'c-1', variables: {}, tagValue: 'scratch' },
+      { id: 'stack-other', displayName: 'scratch · its data', state: 'ACTIVE', compartmentId: 'c-1', variables: {}, tagValue: 'scratch' },
+    ];
     await new OciBuilder({ rm: () => rm, pollMs: 0 }).modulePlan_run({ module: 'net', owner: { tag: NET_TAG, name: 'scratch' }, region: 'r', placeId: 'c-1', inputs: { cidr: '10.40.0.0/16', clientCidr: '5.6.7.8/32' } }, call);
     expect(rm.calls).toEqual(['tagged mise-net', 'update stack-old 5.6.7.8/32', 'plan stack-old']);
   });

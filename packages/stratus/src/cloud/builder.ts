@@ -135,8 +135,8 @@ export interface TeardownRequest {
   readonly stackEmpty?: boolean;
 }
 
-/** A Terraform module the driver keeps, each made into a stack of its own (docs/stratus.adoc, D16): `net` is a network's. */
-export type StackModule = 'net';
+/** A Terraform module the driver keeps, each made into a stack of its own (docs/stratus.adoc, D16): `net` is a network's; a VM has two, its data's (kept by a default teardown) and its machine's. */
+export type StackModule = 'net' | 'vmData' | 'vmMachine';
 
 /**
  * A module's stack, planned: made in the place when it has no stack yet,
@@ -172,6 +172,30 @@ export interface PlaceAnswer {
   readonly tagged: boolean;
 }
 
+/**
+ * A shell session asked of a network's managed bastion: a port forward to a
+ * VM's SSH, admitting one public key, for a while.
+ *
+ * @property bastionId - The bastion.
+ * @property privateIp - The VM's address inside the network.
+ * @property publicKey - The key the session admits (OpenSSH's line).
+ * @property ttlSeconds - How long it lasts.
+ */
+export interface ShellSessionRequest {
+  readonly region: string;
+  readonly bastionId: string;
+  readonly privateIp: string;
+  readonly publicKey: string;
+  readonly ttlSeconds: number;
+  readonly label: string;
+}
+
+/** A session opened: SSH reaches the VM as `<sessionId>@<host>` forwarding to its port 22. */
+export interface ShellSession {
+  readonly sessionId: string;
+  readonly host: string;
+}
+
 /** A cloud's build half. */
 export interface CloudBuilder {
   /**
@@ -190,6 +214,12 @@ export interface CloudBuilder {
   moduleApply_run?(request: { region: string; stackRef: string; plan: InfraPlan; label: string }, call: BuildCall): Promise<Record<string, string>>;
   /** Destroys what a module's stack holds, then the stack. Returns what went, a line each. */
   moduleDestroy_run?(request: { region: string; stackRef: string; label: string }, call: BuildCall): Promise<string[]>;
+  /** The shape a VM is made of (D16: the driver chooses the family), for its price. */
+  readonly vmShape?: string;
+  /** Points a reserved public address at a machine's private one. */
+  address_point?(request: { region: string; publicIpId: string; privateIpId: string }, call: BuildCall): Promise<void>;
+  /** Opens a shell session on a network's managed bastion, waited on until it admits. */
+  shellSession_open?(request: ShellSessionRequest, call: BuildCall): Promise<ShellSession>;
   /** Its id (`oci`, `fake`). */
   readonly id: string;
   /** The DNS zones the tenancy holds, by name: where a new cluster's names may live. */

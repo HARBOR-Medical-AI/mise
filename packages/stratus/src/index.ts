@@ -16,6 +16,7 @@ export { StratusSession, configDir_default, type StratusSessionOptions } from '.
 export { stratusBackend_make, type StratusBackend, type StratusBackendOptions } from './backend.js';
 export { ClusterStore, clustersRoot_derive, clustersRoot_settle, CLUSTER_NAME, type ClusterRecord, type StepRecord, type BuiltStepState } from './cluster/state.js';
 export { NetStore, netsRoot_derive, NET_NAME, NET_TAG, type NetRecord } from './net/state.js';
+export { VmStore, vmsRoot_derive, VM_NAME, VM_TAG, type VmRecord } from './vm/state.js';
 export { SPEC_DEFAULT, specYaml_parse, specYaml_render, specOptions_apply, specNodes_build, type ClusterSpec, type NodePool, type ChrisSizing, type SpecNode } from './cluster/spec.js';
 export { BUILD_STEPS, STEPS_WRITTEN, FIRST_BILLING_STEP, STEPS_SOURCE, BUILD_WAITS, buildRun_make, buildJob_id, stepNext_find, type BuildDeps } from './cluster/steps.js';
 export { plan_count, planCounts_alter, planCounts_words, type PlanCounts, type CloudBuilder, type InfraPlan, type PlanRow, type PreflightCheck, type InfraOutputs, type BuildCall } from './cloud/builder.js';
