@@ -135,8 +135,61 @@ export interface TeardownRequest {
   readonly stackEmpty?: boolean;
 }
 
+/** A Terraform module the driver keeps, each made into a stack of its own (docs/stratus.adoc, D16): `net` is a network's. */
+export type StackModule = 'net';
+
+/**
+ * A module's stack, planned: made in the place when it has no stack yet,
+ * its variables set again when it has one.
+ *
+ * @property module - Which module.
+ * @property owner - What the stack belongs to, as the tag it carries (`mise-net=<name>`).
+ * @property region - Where its calls go.
+ * @property placeId - The place it is made in (OCI: a compartment).
+ * @property inputs - What the module is given, in neutral words (`net`: `cidr`, `clientCidr`); the driver lowers them to its own.
+ * @property stackRef - Its stack, when one was made already.
+ */
+export interface ModulePlanRequest {
+  readonly module: StackModule;
+  readonly owner: { readonly tag: string; readonly name: string };
+  readonly region: string;
+  readonly placeId: string;
+  readonly inputs: Readonly<Record<string, string>>;
+  readonly stackRef?: string;
+}
+
+/**
+ * A place stratus keeps a network in, under the tenancy's root (OCI: a
+ * compartment named as the network).
+ *
+ * @property id - Its id.
+ * @property made - Whether this call made it.
+ * @property tagged - Whether it carries the owner's tag already: made by stratus, or adopted before.
+ */
+export interface PlaceAnswer {
+  readonly id: string;
+  readonly made: boolean;
+  readonly tagged: boolean;
+}
+
 /** A cloud's build half. */
 export interface CloudBuilder {
+  /**
+   * A place of a name under the tenancy's root, made with the owner's tag
+   * when there is none and waited on until it is usable. One that is there
+   * is answered as it is; whether it may be adopted is the caller's to ask.
+   */
+  place_ensure?(request: { name: string; region: string; tag: string }, call: BuildCall): Promise<PlaceAnswer>;
+  /** Puts the owner's tag on a place adopted. */
+  place_tag?(request: { placeId: string; region: string; tag: string; name: string }, call: BuildCall): Promise<void>;
+  /** Removes a place stratus made, or takes the owner's tag off one it adopted. Returns what was done, in a line. */
+  place_release?(request: { placeId: string; region: string; tag: string; made: boolean }, call: BuildCall): Promise<string>;
+  /** Plans a module's stack; the plan's `stackRef` is the stack, made or found. */
+  modulePlan_run?(request: ModulePlanRequest, call: BuildCall): Promise<InfraPlan>;
+  /** Applies a module's plan; answers the stack's outputs. */
+  moduleApply_run?(request: { region: string; stackRef: string; plan: InfraPlan; label: string }, call: BuildCall): Promise<Record<string, string>>;
+  /** Destroys what a module's stack holds, then the stack. Returns what went, a line each. */
+  moduleDestroy_run?(request: { region: string; stackRef: string; label: string }, call: BuildCall): Promise<string[]>;
   /** Its id (`oci`, `fake`). */
   readonly id: string;
   /** The DNS zones the tenancy holds, by name: where a new cluster's names may live. */

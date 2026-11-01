@@ -28,6 +28,7 @@ import { clusterProtect_run } from './protect.js';
 import { clusterSize_run } from './size.js';
 import { clusterSummary_read } from '../cluster/readout.js';
 import type { AnswerCache } from '../cache.js';
+import { NET_HELP, net_run, type NetCommandContext } from './net.js';
 
 /** What `cluster` reads from the session. */
 export interface ClusterCommandContext {
@@ -41,6 +42,8 @@ export interface ClusterCommandContext {
   readonly build?: BuildCommandContext;
   /** Where `capacity` keeps the limits it read; absent, every ask reads the cloud. */
   readonly cache?: AnswerCache;
+  /** What `net` runs over; absent, the session has no `net`. */
+  readonly net?: NetCommandContext;
 }
 
 /** The order the counted kinds are said in. */
@@ -201,7 +204,7 @@ export const CLUSTER_HELP: CommandHelp = {
 };
 
 /**
- * The stratus backend's commands: `cluster` and `capacity`.
+ * The stratus backend's commands: `cluster`, `capacity`, `spend` and, when the session has networks, `net`.
  *
  * @param context - The session.
  * @returns The group to register as the backend's.
@@ -212,8 +215,9 @@ export function stratusCommands_make(context: ClusterCommandContext): CommandGro
       cluster: (args: string[]): Promise<CommandEnvelope> => cluster_run(context, args),
       capacity: (args: string[]): Promise<CommandEnvelope> => capacity_run(context, args),
       spend: (args: string[]): Promise<CommandEnvelope> => spend_run(context, args),
+      ...(context.net !== undefined ? { net: (args: string[]): Promise<CommandEnvelope> => net_run(context.net as NetCommandContext, args) } : {}),
     },
-    help: { cluster: CLUSTER_HELP, capacity: CAPACITY_HELP, spend: SPEND_HELP },
+    help: { cluster: CLUSTER_HELP, capacity: CAPACITY_HELP, spend: SPEND_HELP, ...(context.net !== undefined ? { net: NET_HELP } : {}) },
     // `capacity` and `spend` read the cloud and change nothing of the session,
     // so they run beside any other line; `cluster` writes a cluster's folder
     // and so, unnamed here, holds the whole session.
