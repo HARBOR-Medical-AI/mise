@@ -318,3 +318,15 @@ net teardown scratch-net       # the name typed back
 * `net teardown` ran a destroy job (6 destroyed; the Bastion took 53 s, and the subnet waited for it), deleted the stack, and asked the compartment's removal; `oci iam compartment get` then read `DELETING`. The spec stays in the state folder, so `net build scratch-net` would build it again.
 
 The daemon was stopped by its pid (`kill $(cat $S/pid)`).
+
+== The registrar, by API: GoDaddy, 2026-11-01
+
+`chrisproject.org` is held at GoDaddy. Its records are read and written through GoDaddy's Domains v3 API with a Personal Access Token (developer.godaddy.com, Tokens, Create Personal Access Token), scoped to `domains.dns:update` and `domains.domain:read`, nothing that renews, transfers or bills. The Classic API key's `sso-key` header is for v1 and v2 only. The token is one line in `~/.config/stratus/godaddy`, mode 600, never printed.
+
+[source,bash]
+----
+curl -sS -H @<(printf 'Authorization: Bearer %s\n' "$(cat ~/.config/stratus/godaddy)") \
+  'https://api.godaddy.com/v3/domains/zones/chrisproject.org/dns-records?pageSize=100'
+----
+
+The read answered 200 with 38 records: the apex on GitHub Pages (four A, four AAAA), `oci` delegated to OCI DNS (`ns1` to `ns4.p201.dns.oraclecloud.net`), and `cube`, `blt` and about twenty other names still CNAMEs to NERC's `router-default.apps.shift.nerc.mghpcc.org.` (TTL 3600). A record is changed with `PUT .../dns-records/{recordId}` and removed with `DELETE` on the same path (the spec: `https://developer.godaddy.com/openapi/domains-v3.json`).
