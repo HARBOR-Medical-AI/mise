@@ -261,7 +261,7 @@ Read from the release's source (`chris_backend/config/settings/production.py`, `
 * Required without defaults: `DJANGO_SECRET_KEY`, `CHRIS_SUPERUSER_PASSWORD`, `DJANGO_ALLOWED_HOSTS`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_CONN_POOL`, `STORAGE_ENV` (`fslink` with `MEDIA_ROOT`), `CHRIS_STORE_URL`, `NATS_ADDRESS`, `PFDCM_ADDRESS`, `CELERY_BROKER_URL` (dragonfly speaks the Redis protocol), `DJANGO_SECURE_PROXY_SSL_HEADER`, `DJANGO_USE_X_FORWARDED_HOST`, `AUTH_LDAP`, `DISABLE_USER_ACCOUNT_CREATION`; CORS by `DJANGO_CORS_ALLOW_ALL_ORIGINS`.
 * The `chris` superuser is made by CUBE itself after every migration, its password set from `CHRIS_SUPERUSER_PASSWORD` (`core/apps.py`, `setup_chris`). The store's admin is therefore `CHRIS_SUPERUSER_PASSWORD` = the organisation secret's value; no `createsuperuser`.
 * A compute resource is created through `POST /chris-admin/api/v1/computeresources/` by the superuser; the plugin upload names it in `compute_names` and refuses a name that does not exist.
-* Images: `ghcr.io/fnndsc/cube:6.11.0`, `ghcr.io/fnndsc/pfcon:6.0.7`.
+* Images: `ghcr.io/fnndsc/cube:6.11.0` with `ghcr.io/fnndsc/pfcon:5.3.1`. Not pfcon 6: CUBE 6.11.0 (2026-03-25) ships `python-pfconclient` 3.3.0, which asks pfcon for `/api/v1/jobs/`, and pfcon 6.0.0 (2026-03-26) renamed that to `pluginjobs/`. pfcon 5.3.1 has its own Docker manager, so neither needs pman.
 
 === Teardown
 
@@ -362,3 +362,26 @@ net teardown vm-try
 * The second `vm build` planned nothing on either stack.
 * A marker written to `/srv/data`, then `vm teardown` (machine only, 5 destroyed), then `vm build` (data 0, machine 5 to create): the same address, a new private address, and the marker read back; cloud-init found the volume formatted and only mounted it.
 * `vm teardown --all` destroyed both stacks, `net teardown` the network and asked the compartment's removal. Read back: both instances `TERMINATED`, the volume `TERMINATED`, no reserved address, the compartment `DELETING`. The VM billed about twenty minutes in all.
+
+== ChRIS, as code: `chris deploy`, 2026-11-01
+
+The last line of the store's script, `chris deploy`, played on a scratch VM of the store's size without a host: the all-in-one CUBE over the bastion path, then a login from outside and a plugin upload as the plugin workflows do it, then everything taken away. The daemon was a fresh private one with `--host-control=shell,tasks`.
+
+[source]
+----
+# chris-try.mise
+net new chris-try --cidr 10.97.0.0/16
+net build chris-try
+vm new chris-try --net chris-try --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --os ubuntu-26.04
+vm build chris-try
+chris deploy chris-try --profile minimal --compute NERC
+----
+
+* `play chris-try.mise`, `y` at the two builds and an empty admin password (generated, shown once, kept in the VM's `auth/chris.json`, mode 600). The network and the VM as before, the VM up at 19:54 UTC.
+* The first deploy wrote the compose file and its environment to `/srv/data/chris`, started the eleven services, and CUBE answered after its migrations; registering the compute was refused: `{"compute_url":["Enter a valid URL."]}`. Django's URL field refuses a one-label host (`http://pfcon:5005/`); pfcon now also answers to `pfcon.local` in the compose network, as CUBE's own compose gives it `pfcon.remote`.
+* The second was refused by CUBE asking pfcon `GET /api/v1/jobs/`: 404 from pfcon 6.0.7. The pin is now pfcon 5.3.1 (above).
+* The third, replaying only the deploy line: CUBE answered 20 s after the containers started, `NERC` registered (in-network), `chris` saw the admin API, and `http://129.80.133.219/api/v1/` answered 200 from pangea.
+* From pangea, with the kept password and never printing it: `POST /api/v1/auth-token/` as `chris` answered 200 with a token (a wrong password: 400); with the token, `/api/v1/` named `user` `users/1/` and the `admin` link, and `/api/v1/computeresources/` listed `NERC`, in-network.
+* As the upload jobs do: `docker run --rm ghcr.io/fnndsc/pl-shexec:2.2.0 chris_plugin_info --dock-image ghcr.io/fnndsc/pl-shexec:2.2.0 shexec` for the descriptor, then `POST /chris-admin/api/v1/` with `fname` (the descriptor) and `compute_names=NERC`: 201, and `pl-shexec 2.2.0` listed under `/api/v1/plugins/`.
+* `vm protect chris-try off`, `vm teardown chris-try --all`, `net teardown chris-try`: 5, 2 and 6 destroyed; read back, the instance and volume `TERMINATED`, no reserved address, the compartment `DELETING`. The VM billed about twelve minutes.
+
