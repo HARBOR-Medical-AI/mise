@@ -30,6 +30,7 @@ import { clusterSummary_read } from '../cluster/readout.js';
 import type { AnswerCache } from '../cache.js';
 import { NET_HELP, net_run, type NetCommandContext } from './net.js';
 import { VM_HELP, vm_run, type VmCommandContext } from './vm.js';
+import { CHRIS_HELP, chris_run, type ChrisCommandContext } from './chris.js';
 
 /** What `cluster` reads from the session. */
 export interface ClusterCommandContext {
@@ -47,6 +48,8 @@ export interface ClusterCommandContext {
   readonly net?: NetCommandContext;
   /** What `vm` runs over; absent, the session has no `vm`. */
   readonly vm?: VmCommandContext;
+  /** What `chris` runs over; absent, the session has no `chris`. */
+  readonly chris?: ChrisCommandContext;
 }
 
 /** The order the counted kinds are said in. */
@@ -207,7 +210,7 @@ export const CLUSTER_HELP: CommandHelp = {
 };
 
 /**
- * The stratus backend's commands: `cluster`, `capacity`, `spend` and, when the session has networks and VMs, `net` and `vm`.
+ * The stratus backend's commands: `cluster`, `capacity`, `spend` and, when the session has networks and VMs, `net`, `vm` and `chris`.
  *
  * @param context - The session.
  * @returns The group to register as the backend's.
@@ -220,8 +223,9 @@ export function stratusCommands_make(context: ClusterCommandContext): CommandGro
       spend: (args: string[]): Promise<CommandEnvelope> => spend_run(context, args),
       ...(context.net !== undefined ? { net: (args: string[]): Promise<CommandEnvelope> => net_run(context.net as NetCommandContext, args) } : {}),
       ...(context.vm !== undefined ? { vm: (args: string[]): Promise<CommandEnvelope> => vm_run(context.vm as VmCommandContext, args) } : {}),
+      ...(context.chris !== undefined ? { chris: (args: string[]): Promise<CommandEnvelope> => chris_run(context.chris as ChrisCommandContext, args) } : {}),
     },
-    help: { cluster: CLUSTER_HELP, capacity: CAPACITY_HELP, spend: SPEND_HELP, ...(context.net !== undefined ? { net: NET_HELP } : {}), ...(context.vm !== undefined ? { vm: VM_HELP } : {}) },
+    help: { cluster: CLUSTER_HELP, capacity: CAPACITY_HELP, spend: SPEND_HELP, ...(context.net !== undefined ? { net: NET_HELP } : {}), ...(context.vm !== undefined ? { vm: VM_HELP } : {}), ...(context.chris !== undefined ? { chris: CHRIS_HELP } : {}) },
     // `capacity` and `spend` read the cloud and change nothing of the session,
     // so they run beside any other line; `cluster` writes a cluster's folder
     // and so, unnamed here, holds the whole session.

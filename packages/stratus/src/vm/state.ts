@@ -31,6 +31,8 @@ export interface VmRecord extends KeptRecord {
   machineStackRef?: string;
   machineOutputs?: Record<string, string>;
   built?: string;
+  /** The ChRIS deployed on it (`chris deploy`). */
+  chris?: { profile: string; compute: string; host: string | null; url: string; deployed: string; dns?: 'waiting' | 'seen' };
   /** The machine went (a default teardown); the data stays. */
   machineGone?: string;
   /** Everything went (`--all`). */
