@@ -15,7 +15,7 @@
 import * as fs from 'fs';
 import chalk from 'chalk';
 import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
-import { repl_questionHidden, type CommandHelp } from '@fnndsc/brasa/core';
+import { repl_confirm, repl_questionHidden, type CommandHelp } from '@fnndsc/brasa/core';
 import type { CloudBuilder } from '../cloud/builder.js';
 import type { NetStore } from '../net/state.js';
 import type { VmSpec } from '../vm/spec.js';
@@ -25,6 +25,7 @@ import type { BuildCall } from '../cloud/builder.js';
 import { CHRIS_PROFILES, floor_short, type ChrisProfile } from '../chris/profiles.js';
 import { secret_make, secrets_ensure, secrets_read } from '../chris/secrets.js';
 import { CHRIS_JOBS, chrisDeployRun_make, type DeployDeps } from '../chris/deploy.js';
+import { host_split, point_plan, pointPlan_words, POINT_TTL, type Registrar } from '../chris/registrar.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 
 /** What `chris` reads from the session. */
@@ -33,6 +34,10 @@ export interface ChrisCommandContext {
   readonly nets: NetStore;
   readonly builder: CloudBuilder | null;
   readonly resolve: (host: string) => Promise<string[]>;
+  /** A zone's name servers, as public DNS gives them. */
+  readonly nameservers_get: (zone: string) => Promise<string[]>;
+  /** The registrar whose API this host holds a token for, or null. */
+  readonly registrar: Registrar | null;
   readonly status_get: (url: string) => Promise<number | null>;
   /** Reaches a VM; through its bastion when absent. */
   readonly remote_open?: (name: string, call: BuildCall) => Promise<VmRemote>;
@@ -82,6 +87,37 @@ async function adminPassword_get(file: string | undefined): Promise<{ password: 
 }
 
 /**
+ * Points a host at the VM's address where its zone is kept, asking first: at
+ * the registrar, when this host holds its token and the zone's name servers
+ * are its; otherwise says what to change by hand. The deploy waits for
+ * public DNS either way.
+ *
+ * @param context - The session.
+ * @param host - The name.
+ * @param address - The VM's address.
+ * @returns What was done, in a line, or why it failed.
+ */
+async function dns_point(context: ChrisCommandContext, host: string, address: string): Promise<{ line: string } | { error: string }> {
+  if ((await context.resolve(host)).includes(address)) return { line: `${host} already resolves to ${address}` };
+  const { zone, name } = host_split(host);
+  const servers: string[] = await context.nameservers_get(zone);
+  const registrar: Registrar | null = context.registrar !== null && context.registrar.serves(servers) ? context.registrar : null;
+  if (registrar === null) return { line: `${host} does not resolve to ${address}: point it there where ${zone} is kept (name servers ${servers.join(', ') || 'unknown'}); the deploy waits for public DNS` };
+  try {
+    const plan = point_plan(await registrar.records_list(zone, name), address);
+    if (plan.remove.length === 0 && !plan.create) return { line: `${host} points at ${address} at ${registrar.id}; public DNS has not caught up yet` };
+    const yes: boolean = await repl_confirm(`chris deploy: at ${registrar.id}, in ${zone}: ${pointPlan_words(plan, name, address)}? [y/N]`);
+    if (!yes) return { line: `${zone} at ${registrar.id} not changed; the deploy waits for public DNS to give ${host} ${address}` };
+    for (const record of plan.remove) await registrar.record_delete(zone, record.id);
+    if (plan.create) await registrar.record_create(zone, { name, type: 'A', data: address, ttl: POINT_TTL });
+    const longest: number = Math.max(0, ...plan.remove.map((record): number => record.ttl));
+    return { line: `${host} points at ${address} at ${registrar.id}${longest > 0 ? ` (resolvers may keep the old answer up to ${longest} s)` : ''}` };
+  } catch (error: unknown) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
  * `chris deploy <vm> --profile <profile> …`.
  *
  * @param context - The session.
@@ -119,11 +155,18 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   if (secrets === null) return envelope_error('', undefined, `chris deploy: ${name}: its secrets were not kept\n`);
   const deps: DeployDeps = { store: context.vms, nets: context.nets, builder: context.builder, resolve: context.resolve, status_get: context.status_get, ...(context.remote_open !== undefined ? { remote_open: context.remote_open } : {}), ...(context.tickMs !== undefined ? { tickMs: context.tickMs } : {}) };
   const compute: string = read.options.get('--compute') ?? name;
+  let pointed: string = '';
+  const address: string | undefined = record.dataOutputs?.['public_ip'];
+  if (host !== null && address !== undefined) {
+    const point = await dns_point(context, host, address);
+    if ('error' in point) return envelope_error('', undefined, `chris deploy: pointing ${host}: ${point.error}\n`);
+    pointed = `${point.line}\n`;
+  }
   const shown: string = generated !== null ? `${chalk.yellow(`the admin password for chris, generated, shown this once: ${generated}`)}\n` : '';
   const ran = await job_runFollowed(CHRIS_JOBS.deploy(name), `deploy ChRIS on ${name}`, chrisDeployRun_make({ vm: name, profile, compute, host, secrets }, deps));
-  if ('error' in ran) return envelope_error('', undefined, `${shown}chris deploy: ${ran.error}\n`);
+  if ('error' in ran) return envelope_error('', undefined, `${shown}${pointed}chris deploy: ${ran.error}\n`);
   const done: VmRecord | null = context.vms.record_read(name);
-  return envelope_ok(`${shown}${name}: ChRIS ${profile.name} at ${done?.chris?.url ?? '?'}, compute ${compute}; the admin is chris (its password is kept on this host, never shown again)\n`);
+  return envelope_ok(`${shown}${pointed}${name}: ChRIS ${profile.name} at ${done?.chris?.url ?? '?'}, compute ${compute}; the admin is chris (its password is kept on this host, never shown again)\n`);
 }
 
 /**
