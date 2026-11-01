@@ -1,0 +1,5 @@
+---
+"@fnndsc/stratus": minor
+---
+
+VMs are declared, built, reached and torn down with `vm`. `vm new <name> --net <network> --vcpu --memory --disk --data --os [--open 80,443] [--data-backup daily]` declares a VM in portable words and builds nothing; on one already declared it prints `unchanged` or the change. `vm build` plans its two stacks as tasks (its data: the volume, daily backups and a reserved address; its machine: the instance, boot disk, a security group and the volume's attachment), says the counts and the cost an hour and a month and asks, applies both and points the address at the machine. On OCI the machine is an E5.Flex from the newest image of the OS, pinned at the first build; cloud-init puts Docker's data on the volume at `/srv/data`. `vm shell` opens a session on the network's OCI Bastion for the VM's own key and prints the SSH line. A VM is born protected (`vm protect <name> off`); `vm teardown` removes the machine and keeps the data and address, `--all` takes those too on the name typed back.

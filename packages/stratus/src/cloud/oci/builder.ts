@@ -22,8 +22,9 @@
  */
 import { createHash } from 'node:crypto';
 import type { ClusterSpec } from '../../cluster/spec.js';
-import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, ModulePlanRequest, PlaceAnswer, PreflightCheck, StackModule, TeardownRequest } from '../builder.js';
+import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, ModulePlanRequest, PlaceAnswer, PreflightCheck, ShellSession, ShellSessionRequest, StackModule, TeardownRequest } from '../builder.js';
 import { netModule_digest, netModule_zip, netVariables_build } from './modules/net.js';
+import { VM_SHAPE, vmDataVariables_build, vmMachineVariables_build, vmModule_digest, vmModule_zip } from './modules/vm.js';
 import { Readable } from 'node:stream';
 import { planRows_read } from './planRead.js';
 import type { OciBuildApi } from './buildApi.js';
@@ -50,6 +51,16 @@ const MODULES: Readonly<Record<StackModule, { zip: () => Buffer; digest: () => s
     zip: netModule_zip, digest: netModule_digest, called: 'a network',
     description: (owner: string): string => `The network ${owner}: its VCN, gateway, subnet and bastion.`,
     variables: (request: ModulePlanRequest): Record<string, string> => netVariables_build({ name: request.owner.name, cidr: request.inputs['cidr'] ?? '', region: request.region, compartmentId: request.placeId, clientCidr: request.inputs['clientCidr'] ?? '' }),
+  },
+  vmData: {
+    zip: (): Buffer => vmModule_zip('data'), digest: (): string => vmModule_digest('data'), called: 'its data',
+    description: (owner: string): string => `The VM ${owner}'s data: its volume, backups and reserved address, kept when the machine goes.`,
+    variables: (request: ModulePlanRequest): Record<string, string> => vmDataVariables_build({ name: request.owner.name, region: request.region, compartmentId: request.placeId, data: request.inputs['data'] ?? '', backup: request.inputs['dataBackup'] ?? 'none' }),
+  },
+  vmMachine: {
+    zip: (): Buffer => vmModule_zip('machine'), digest: (): string => vmModule_digest('machine'), called: 'its machine',
+    description: (owner: string): string => `The VM ${owner}'s machine: its instance, boot disk, security group and the data volume's attachment.`,
+    variables: (request: ModulePlanRequest): Record<string, string> => vmMachineVariables_build({ name: request.owner.name, region: request.region, compartmentId: request.placeId, inputs: request.inputs }),
   },
 };
 
@@ -585,7 +596,7 @@ export class OciBuilder implements CloudBuilder {
     const variables: Record<string, string> = module.variables(request);
     let stackRef: string | undefined = request.stackRef;
     if (stackRef === undefined) {
-      const found = (await rm.stacks_tagged(request.placeId, request.owner.tag)).filter((stack): boolean => stack.tagValue === request.owner.name && stack.state === 'ACTIVE');
+      const found = (await rm.stacks_tagged(request.placeId, request.owner.tag)).filter((stack): boolean => stack.tagValue === request.owner.name && stack.state === 'ACTIVE' && stack.displayName.endsWith(`· ${module.called}`));
       if (found.length > 1) throw new Error(`${found.length} stacks in ${request.placeId} are tagged ${request.owner.tag}=${request.owner.name}: ${found.map((stack) => stack.id).join(', ')}`);
       stackRef = found[0]?.id;
       if (stackRef !== undefined) call.log(`stack ${stackRef} is already tagged ${request.owner.tag}=${request.owner.name}: planned again`);
@@ -625,5 +636,36 @@ export class OciBuilder implements CloudBuilder {
     await rm.stack_delete(request.stackRef);
     gone.push(`the stack ${request.stackRef}`);
     return gone;
+  }
+
+  readonly vmShape: string = VM_SHAPE;
+
+  async address_point(request: { region: string; publicIpId: string; privateIpId: string }, call: BuildCall): Promise<void> {
+    await this.api_resolve(request.region).publicIp_assign(request.publicIpId, request.privateIpId);
+    call.log(`the reserved address ${request.publicIpId} points at ${request.privateIpId}`);
+  }
+
+  /**
+   * Opens a port-forwarding session on the network's OCI Bastion to the VM's
+   * SSH and waits until it admits; a session takes about a minute.
+   *
+   * @param request - The bastion, the VM's address, the key, how long.
+   * @param call - The step's log and stop.
+   * @returns The session and the bastion's SSH host.
+   * @throws Error - When the session fails or is not active in five minutes.
+   */
+  async shellSession_open(request: ShellSessionRequest, call: BuildCall): Promise<ShellSession> {
+    const api: OciBuildApi = this.api_resolve(request.region);
+    const sessionId: string = await api.bastionSession_create({ bastionId: request.bastionId, privateIp: request.privateIp, port: 22, publicKey: request.publicKey, ttlSeconds: request.ttlSeconds, name: `${request.label}-${Date.now()}` });
+    call.log(`bastion session ${sessionId} asked`);
+    const until: number = Date.now() + 5 * 60_000;
+    for (;;) {
+      const state: string = await api.bastionSession_state(sessionId);
+      if (state === 'ACTIVE') break;
+      if (state === 'FAILED' || state === 'DELETED' || state === 'DELETING') throw new Error(`bastion session ${sessionId}: ${state}`);
+      if (Date.now() > until) throw new Error(`bastion session ${sessionId}: still ${state} after five minutes`);
+      await poll_wait(this.options.pollMs ?? 5000, call.signal);
+    }
+    return { sessionId, host: `host.bastion.${request.region}.oci.oraclecloud.com` };
   }
 }

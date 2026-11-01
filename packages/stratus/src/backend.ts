@@ -35,6 +35,7 @@ import { ClusterStore, clustersRoot_derive, clustersRoot_settle } from './cluste
 import { clusterExpectSubject_make } from './cluster/expect.js';
 import { BUILD_WAITS, buildRun_make, STEPS_SOURCE, type BuildDeps } from './cluster/steps.js';
 import { NetStore, netsRoot_derive } from './net/state.js';
+import { VmStore, vmsRoot_derive } from './vm/state.js';
 import { clientCidr_read } from './net/address.js';
 
 /** How the backend is made. */
@@ -53,6 +54,8 @@ export interface StratusBackendOptions {
   readonly store?: ClusterStore;
   /** Where the networks this daemon builds are kept; `$XDG_STATE_HOME/stratus/nets` when absent. */
   readonly nets?: NetStore;
+  /** Where the VMs this daemon builds are kept; `$XDG_STATE_HOME/stratus/vms` when absent. */
+  readonly vms?: VmStore;
   /** This host's public address as a /32, for a network's bastion; asked of an address echo when absent. */
   readonly clientCidr_read?: () => Promise<string>;
   /** The cloud's build half; absent, this cloud cannot build, adopt or plan, and the verbs say so. With no installer beside it, it adopts and plans but does not build. */
@@ -79,6 +82,7 @@ export interface StratusBackend {
   readonly clusters: ClusterTree;
   readonly store: ClusterStore;
   readonly nets: NetStore;
+  readonly vms: VmStore;
 }
 
 /**
@@ -124,10 +128,12 @@ export function stratusBackend_make(options: StratusBackendOptions): StratusBack
   const tenancy: TenancyProvider = new TenancyProvider({ driver: options.driver, cache: new AnswerCache(options.cacheLifeMs), region: (): string | null => session.region, clusters });
   const region = (): string | null => session.region;
   const nets: NetStore = options.nets ?? new NetStore(netsRoot_derive());
+  const vms: VmStore = options.vms ?? new VmStore(vmsRoot_derive());
   commands_register(stratusCommands_make({
     clusters, driver: options.driver, region, clustersPath: (): string => `${session.tenancyPath}/clusters`,
     cache: new AnswerCache(CAPACITY_CACHE_LIFE_MS),
     net: { store: nets, driver: options.driver, builder: options.builder ?? null, region, clientCidr_read: options.clientCidr_read ?? ((): Promise<string> => clientCidr_read()) },
+    vm: { store: vms, nets, driver: options.driver, builder: options.builder ?? null, region },
     build: { clusters, store, driver: options.driver, region, deps, clustersPath: (): string => `${session.tenancyPath}/clusters`, builder: options.builder ?? null, baseDomain: options.baseDomain ?? null, ...(options.account !== undefined ? { account: options.account } : {}), ...(options.verifyReach !== undefined ? { verifyReach: options.verifyReach } : {}) },
   }), 'backend');
   const dispatcher: VFSDispatcher = new VFSDispatcher();
@@ -180,5 +186,5 @@ export function stratusBackend_make(options: StratusBackendOptions): StratusBack
       };
     },
   };
-  return { backend, session, tenancy, clusters, store, nets };
+  return { backend, session, tenancy, clusters, store, nets, vms };
 }

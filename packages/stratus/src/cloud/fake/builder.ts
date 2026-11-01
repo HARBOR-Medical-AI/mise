@@ -9,10 +9,17 @@
 import type { ClusterSpec } from '../../cluster/spec.js';
 import { specNodes_build, type SpecNode } from '../../cluster/spec.js';
 import type { Installer, InstallerCredentials, InstallerHost, InstallerIds, InstallStatus, PlatformManifest } from '../../installer/installer.js';
-import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, ModulePlanRequest, PlaceAnswer, PlanRow, PreflightCheck, TeardownRequest } from '../builder.js';
+import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, ModulePlanRequest, PlaceAnswer, PlanRow, PreflightCheck, ShellSession, ShellSessionRequest, StackModule, TeardownRequest } from '../builder.js';
 
 /** What the fake network module makes, by kind, as the OCI module does. */
 const NET_KINDS: ReadonlyArray<string> = ['networks', 'gateways', 'routetables', 'securitylists', 'subnets', 'bastions'];
+
+/** What each module's stack makes, by kind, and what its apply leaves. */
+const FAKE_MODULES: Readonly<Record<StackModule, { kinds: ReadonlyArray<string>; outputs: (owner: string) => Record<string, string> }>> = {
+  net: { kinds: NET_KINDS, outputs: (owner: string): Record<string, string> => ({ vcn_id: `ocid1.vcn.oc1..fake-${owner}`, subnet_id: `ocid1.subnet.oc1..fake-${owner}`, bastion_id: `ocid1.bastion.oc1..fake-${owner}` }) },
+  vmData: { kinds: ['volumes', 'backuppolicies', 'addresses'], outputs: (owner: string): Record<string, string> => ({ volume_id: `ocid1.volume.oc1..fake-${owner}`, availability_domain: 'fake:AD-1', public_ip_id: `ocid1.publicip.oc1..fake-${owner}`, public_ip: '203.0.113.10' }) },
+  vmMachine: { kinds: ['securitygroups', 'instances', 'attachments'], outputs: (owner: string): Record<string, string> => ({ instance_id: `ocid1.instance.oc1..fake-${owner}`, image_id: 'ocid1.image.oc1..fake-ubuntu', private_ip: '10.40.0.10', private_ip_id: `ocid1.privateip.oc1..fake-${owner}` }) },
+};
 
 /** The zones the fake region has, as the fake driver names them. */
 const FAKE_ZONES: ReadonlyArray<string> = ['AD-1', 'AD-2', 'AD-3'];
@@ -46,7 +53,11 @@ export class FakeBuildWorld {
   /** The places under the tenancy's root, by name: their id, their tags and how many things stand in them that no module stack made. A test seeds one to adopt. */
   readonly places: Map<string, { id: string; tags: Record<string, string>; others: number }> = new Map();
   /** The module stacks, by id: whose, in which place, the variables last planned and applied. */
-  readonly moduleStacks: Map<string, { owner: string; tag: string; placeId: string; planned: Record<string, string>; applied: Record<string, string> | null }> = new Map();
+  readonly moduleStacks: Map<string, { module: StackModule; owner: string; tag: string; placeId: string; planned: Record<string, string>; applied: Record<string, string> | null }> = new Map();
+  /** The reserved addresses pointed at a machine: the address's id to the private address's. */
+  readonly addressPoints: Map<string, string> = new Map();
+  /** The shell sessions opened, newest last. */
+  readonly sessions: Array<{ bastionId: string; privateIp: string }> = [];
   private serial: number = 0;
 
   constructor(readonly tickMs: number = 0) {}
@@ -169,18 +180,18 @@ export class FakeCloudBuilder implements CloudBuilder {
   async modulePlan_run(request: ModulePlanRequest, call: BuildCall): Promise<InfraPlan> {
     await this.world.tick(2, call.signal);
     let stackRef: string | undefined = request.stackRef
-      ?? [...this.world.moduleStacks.entries()].find(([, stack]): boolean => stack.placeId === request.placeId && stack.owner === request.owner.name && stack.tag === request.owner.tag)?.[0];
+      ?? [...this.world.moduleStacks.entries()].find(([, stack]): boolean => stack.module === request.module && stack.placeId === request.placeId && stack.owner === request.owner.name && stack.tag === request.owner.tag)?.[0];
     if (stackRef === undefined) {
       stackRef = `fake-stack-${request.module}-${request.owner.name}`;
-      this.world.moduleStacks.set(stackRef, { owner: request.owner.name, tag: request.owner.tag, placeId: request.placeId, planned: {}, applied: null });
+      this.world.moduleStacks.set(stackRef, { module: request.module, owner: request.owner.name, tag: request.owner.tag, placeId: request.placeId, planned: {}, applied: null });
       call.log(`stack ${stackRef} made in ${request.placeId}`);
     }
     const stack = this.world.moduleStacks.get(stackRef);
     if (stack === undefined) throw new Error(`${stackRef}: no such stack`);
     stack.planned = { ...request.inputs };
     const rows: PlanRow[] = stack.applied === null
-      ? NET_KINDS.map((kind: string): PlanRow => ({ action: 'create', kind, name: `${request.owner.name}-${kind}` }))
-      : Object.keys(stack.planned).filter((key: string): boolean => stack.planned[key] !== stack.applied?.[key]).map((key: string): PlanRow => ({ action: 'change', kind: 'networks', name: `${request.owner.name} ${key}` }));
+      ? FAKE_MODULES[request.module].kinds.map((kind: string): PlanRow => ({ action: 'create', kind, name: `${request.owner.name}-${kind}` }))
+      : Object.keys(stack.planned).filter((key: string): boolean => stack.planned[key] !== stack.applied?.[key]).map((key: string): PlanRow => ({ action: 'change', kind: FAKE_MODULES[request.module].kinds[0] as string, name: `${request.owner.name} ${key}` }));
     call.log(`plan: ${rows.length} changes`);
     return { ref: `fake-plan-${stackRef}`, rows, stackRef };
   }
@@ -189,20 +200,36 @@ export class FakeCloudBuilder implements CloudBuilder {
     await this.world.tick(3, call.signal);
     const stack = this.world.moduleStacks.get(request.stackRef);
     if (stack === undefined) throw new Error(`${request.stackRef}: no such stack`);
-    stack.applied = { ...stack.planned };
+    const outputs: Record<string, string> = FAKE_MODULES[stack.module].outputs(stack.owner);
+    // An empty image asks for the newest; what was made from is what a later plan pins.
+    stack.applied = { ...stack.planned, ...(stack.planned['image'] === '' ? { image: outputs['image_id'] ?? '' } : {}) };
     call.log(`apply: ${request.plan.rows.length} changes made`);
-    return { vcn_id: `ocid1.vcn.oc1..fake-${stack.owner}`, subnet_id: `ocid1.subnet.oc1..fake-${stack.owner}`, bastion_id: `ocid1.bastion.oc1..fake-${stack.owner}` };
+    return outputs;
   }
 
   async moduleDestroy_run(request: { region: string; stackRef: string; label: string }, call: BuildCall): Promise<string[]> {
     await this.world.tick(2, call.signal);
     const stack = this.world.moduleStacks.get(request.stackRef);
     const gone: string[] = [];
-    if (stack?.applied !== null && stack !== undefined) gone.push(`${NET_KINDS.length} resources the stack held`);
+    if (stack?.applied !== null && stack !== undefined) gone.push(`${FAKE_MODULES[stack.module].kinds.length} resources the stack held`);
     this.world.moduleStacks.delete(request.stackRef);
     this.world.removed.push(`stack ${request.stackRef}`);
     gone.push(`the stack ${request.stackRef}`);
     return gone;
+  }
+
+  readonly vmShape: string = 'VM.Standard.E5.Flex';
+
+  async address_point(request: { region: string; publicIpId: string; privateIpId: string }, call: BuildCall): Promise<void> {
+    await this.world.tick(1, call.signal);
+    this.world.addressPoints.set(request.publicIpId, request.privateIpId);
+    call.log(`address ${request.publicIpId} → ${request.privateIpId}`);
+  }
+
+  async shellSession_open(request: ShellSessionRequest, call: BuildCall): Promise<ShellSession> {
+    await this.world.tick(1, call.signal);
+    this.world.sessions.push({ bastionId: request.bastionId, privateIp: request.privateIp });
+    return { sessionId: `ocid1.bastionsession.oc1..fake-${this.world.sessions.length}`, host: `host.bastion.${request.region}.fake.example` };
   }
 
   async preflight(request: { cluster: string; spec: ClusterSpec; region: string; baseDomain: string; compartmentId: string }, call: BuildCall): Promise<PreflightCheck[]> {
