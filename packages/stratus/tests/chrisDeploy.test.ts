@@ -67,6 +67,7 @@ describe('a ChRIS profile and what it renders', () => {
     expect(compose.services['chris']?.['ports']).toEqual(['127.0.0.1:8000:8000']);
     expect(compose.services['pfcon']?.['labels']).toEqual({ 'org.chrisproject.role': 'pfcon' });
     expect(compose.services['pfcon']?.['volumes']).toEqual(['files:/var/local/storeBase', '/var/run/docker.sock:/var/run/docker.sock']);
+    expect(compose.services['pfcon']?.['networks']).toEqual({ default: { aliases: ['pfcon.local'] } });
     expect(compose.services['caddy']?.['ports']).toEqual(['80:80', '443:443']);
     expect(JSON.stringify(compose).includes('rabbitmq') || JSON.stringify(compose).includes('pman')).toBe(false);
   });

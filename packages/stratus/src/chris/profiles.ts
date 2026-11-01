@@ -12,7 +12,8 @@
 /** The images a profile runs, pinned. */
 export const CHRIS_IMAGES = {
   cube: 'ghcr.io/fnndsc/cube:6.11.0',
-  pfcon: 'ghcr.io/fnndsc/pfcon:6.0.7',
+  // 5.3.1, not 6: CUBE 6.11.0's pfcon client asks /api/v1/jobs/, which pfcon 6 renamed.
+  pfcon: 'ghcr.io/fnndsc/pfcon:5.3.1',
   postgres: 'docker.io/library/postgres:17',
   dragonfly: 'docker.dragonflydb.io/dragonflydb/dragonfly:v1.37.0',
   nats: 'docker.io/library/nats:2.10.20-alpine3.20',

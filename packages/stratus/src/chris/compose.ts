@@ -41,6 +41,13 @@ export const CHRIS_DIR: string = '/srv/data/chris';
 /** The compose project's name: the containers, volumes and network carry it. */
 export const CHRIS_PROJECT: string = 'chris';
 
+/**
+ * pfcon's name inside the compose network. CUBE stores the compute's URL in
+ * a Django URL field, which refuses a one-label host (`http://pfcon:5005/`),
+ * so pfcon also answers to a name with a dot, as CUBE's own compose does.
+ */
+export const PFCON_HOST: string = 'pfcon.local';
+
 /** The user pfcon reaches its compute as. */
 export const PFCON_USER: string = 'pfcon';
 
@@ -168,6 +175,7 @@ export function compose_render(profile: ChrisProfile): string {
       env_file: ['pfcon.env'],
       volumes: ['files:/var/local/storeBase', '/var/run/docker.sock:/var/run/docker.sock'],
       labels: { 'org.chrisproject.role': 'pfcon' },
+      networks: { default: { aliases: [PFCON_HOST] } },
       userns_mode: 'host',
       restart: 'unless-stopped',
       depends_on: { 'files-fix': { condition: 'service_completed_successfully' } },

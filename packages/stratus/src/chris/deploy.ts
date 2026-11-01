@@ -19,7 +19,7 @@ import type { NetStore } from '../net/state.js';
 import { pause, vmRemote_open, type RemoteAnswer, type VmRemote } from '../vm/remote.js';
 import { vm_read } from '../vm/build.js';
 import type { VmRecord, VmStore } from '../vm/state.js';
-import { apiUrl_derive, caddyfile_render, CHRIS_DIR, compose_render, cubeEnv_render, PFCON_USER, pfconEnv_render, type ChrisSecrets, type ChrisTarget } from './compose.js';
+import { apiUrl_derive, caddyfile_render, CHRIS_DIR, compose_render, cubeEnv_render, PFCON_HOST, PFCON_USER, pfconEnv_render, type ChrisSecrets, type ChrisTarget } from './compose.js';
 import type { ChrisProfile } from './profiles.js';
 
 /** What a deploy is asked for. */
@@ -161,7 +161,7 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
     } else {
       const made = await cube_ask(remote, request.secrets, 'chris-admin/api/v1/computeresources/', {
         name: request.compute,
-        compute_url: 'http://pfcon:5005/api/v1/',
+        compute_url: `http://${PFCON_HOST}:5005/api/v1/`,
         compute_user: PFCON_USER,
         compute_password: request.secrets.pfconPassword,
         compute_innetwork: true,
