@@ -385,3 +385,21 @@ chris deploy chris-try --profile minimal --compute NERC
 * As the upload jobs do: `docker run --rm ghcr.io/fnndsc/pl-shexec:2.2.0 chris_plugin_info --dock-image ghcr.io/fnndsc/pl-shexec:2.2.0 shexec` for the descriptor, then `POST /chris-admin/api/v1/` with `fname` (the descriptor) and `compute_names=NERC`: 201, and `pl-shexec 2.2.0` listed under `/api/v1/plugins/`.
 * `vm protect chris-try off`, `vm teardown chris-try --all`, `net teardown chris-try`: 5, 2 and 6 destroyed; read back, the instance and volume `TERMINATED`, no reserved address, the compartment `DELETING`. The VM billed about twelve minutes.
 
+
+== The store, played: `store.mise`, 2026-11-01
+
+The store's script, `infra/store.mise` in FNNDSC/chrisproject.org, played once on the operator's word for the build and the DNS change. The daemon was a private one (`--host-control=shell,tasks`), its runtime and cache in a scratch folder, its state and configuration the operator's own (`~/.local/state/stratus/{nets,vms}`, the GoDaddy token in `~/.config/stratus/godaddy`), so the store's records, its SSH key and its secrets (`vms/store/auth/chris.json`) stay on pangea for every later play.
+
+[source]
+----
+net new chrisproject-services --cidr 10.20.0.0/16
+net build chrisproject-services
+vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04
+vm build store
+chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org --admin-password-file ${HOME}/.config/chrisproject/store/chris-password
+----
+
+* `play infra/store.mise`, 21:14 to 21:25 UTC, three questions answered yes. The empty compartment `chrisproject-services` was adopted (tagged `mise-net=chrisproject-services`); the network's 6 resources; the store's data stack 4 (volume, the daily backup policy and its assignment, the reserved address `129.158.63.113`), its machine 5; at $0.052 an hour, $37.83 a month.
+* The deploy asked: `at GoDaddy, in chrisproject.org: remove CNAME cube → router-default.apps.shift.nerc.mghpcc.org., add A cube → 129.158.63.113 (TTL 600)? [y/N]`. Yes. CUBE answered 90 s after the images were pulled, `NERC` registered, `chris` saw the admin API; the public resolvers already gave the new address, and Caddy's certificate came at once.
+* Read back from pangea: Let's Encrypt (`YE2`) for `cube.chrisproject.org` until 2027-01-30, HTTP answered with a 308 to HTTPS, the org secret's password logged in as `chris` (`users/1/`, the `admin` link), `NERC` in-network under `/api/v1/computeresources/`.
+* The daemon was stopped by its pid; the store runs without it.
