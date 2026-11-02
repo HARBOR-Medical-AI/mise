@@ -62,18 +62,23 @@ function shell_render(shell: GreeterShell): string {
 <style>
   :root { color-scheme: dark; --frame: #1d7bb9; --lit: #66ccff; --dim: #5a8ca8; --ink: #dff; --bad: #ff9c9c; }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #000; color: var(--ink); font-family: "Share Tech Mono", ui-monospace, monospace; }
-  main { display: grid; gap: 1rem; width: min(64rem, 94vw); padding: 1.4rem 1.6rem 1.6rem; border-left: 0.6rem solid var(--frame); border-radius: 0 1.6rem 1.6rem 0; background: #05121c; }
-  header { display: flex; align-items: baseline; gap: 1rem; }
+  /* The card's width holds its padding and frame, so a phone's 94vw is the whole of it and the page never scrolls sideways. */
+  main { box-sizing: border-box; display: grid; gap: 1rem; width: min(64rem, 94vw); padding: 1.4rem 1.6rem 1.6rem; border-left: 0.6rem solid var(--frame); border-radius: 0 1.6rem 1.6rem 0; background: #05121c; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem 1rem; }
   h1 { margin: 0; font-size: 1.1rem; letter-spacing: 0.12em; color: var(--lit); }
   .cube { font-size: 0.75rem; color: var(--dim); overflow-wrap: anywhere; }
-  #brain { margin: 0; font-size: 0.62rem; line-height: 1.05; white-space: pre; overflow-x: auto; color: #9cf; }
+  /* The brain never scrolls: clip is no scroll container (auto on one axis would make the other auto too, and a
+     frame a few pixels taller than its box on some screen grew a bar), and the face is sized to the card. */
+  #brain { margin: 0; font-size: clamp(0.4rem, 1.1vw, 0.62rem); line-height: 1.05; white-space: pre; overflow-x: clip; overflow-y: visible; color: #9cf; }
   form { display: grid; gap: 0.8rem; width: min(22rem, 100%); }
   label { display: grid; gap: 0.25rem; font-size: 0.75rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--dim); }
   input { padding: 0.5rem 0.7rem; border: 1px solid var(--frame); border-radius: 0.6rem; background: #000; color: var(--ink); font: inherit; }
   button, a.pill { padding: 0.45rem 1.2rem; border: 0; border-radius: 1rem; background: var(--lit); color: #000; font: inherit; font-weight: bold; letter-spacing: 0.1em; cursor: pointer; justify-self: start; text-decoration: none; }
   button:hover, a.pill:hover { filter: brightness(1.2); }
   .reason { margin: 0; padding: 0.4rem 0.7rem; border-radius: 0.6rem; background: #3a0a0a; color: var(--bad); font-size: 0.85rem; }
-  #rows { margin: 0; font-size: 0.8rem; line-height: 1.35; white-space: pre-wrap; min-height: 6rem; max-height: 40vh; overflow-y: auto; }
+  /* The boot rows scroll (the boot writes more than the box holds, and the newest line is kept in view) without a bar. */
+  #rows { margin: 0; font-size: 0.8rem; line-height: 1.35; white-space: pre-wrap; min-height: 6rem; max-height: 40vh; overflow-y: auto; scrollbar-width: none; }
+  #rows::-webkit-scrollbar { display: none; }
   #state { font-size: 0.75rem; letter-spacing: 0.15em; text-transform: uppercase; color: var(--dim); }
   #state.ready { color: #33cc66; }
   #state.failed { color: var(--bad); }
