@@ -1,5 +1,24 @@
 # @fnndsc/brasa
 
+## 0.52.0
+
+### Minor Changes
+
+- 05ed375: Where every line of a script stands, without running one: `play <manifest> --status`.
+
+  Each line is expanded as a dry run expands it, then the verb it begins with says, from what the backend keeps and never from the cloud, one of four states: not yet (with what is missing), ready, done (the line replays to unchanged or nothing to do), or changed (with what changed under it). One row per line, a count at the end, and a `manifest.status` model a surface colours its rail from (docs/stratus.adoc, D17). A backend answers for its verbs through `Backend.lineStatuses`; a verb that keeps nothing reads as a dash.
+
+### Patch Changes
+
+- ecc91e9: The model a script's standing travels as is named from menu, where its schema now lives.
+
+  `play --status` takes its model kind from menu's `MANIFEST_STATUS_MODEL_KIND`; the kind string is unchanged.
+
+- Updated dependencies [ecc91e9]
+  - @fnndsc/menu@0.33.0
+  - @fnndsc/chili@3.8.3
+  - @fnndsc/cumin@3.29.6
+
 ## 0.51.2
 
 ### Patch Changes

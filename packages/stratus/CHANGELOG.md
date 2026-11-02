@@ -1,5 +1,38 @@
 # @fnndsc/stratus
 
+## 0.8.0
+
+### Minor Changes
+
+- 05ed375: A script's `net`, `vm` and `chris` lines say where they stand to `play --status`, from the kept records alone.
+
+  `net new` and `vm new` read done when the line matches what is declared and changed with the difference; `net build` and `vm build` read not yet until what they stand on is declared and built, done once built, and changed when the spec was declared again since (every record now carries `declared`); `chris deploy` reads not yet until the VM is built, changed when the profile, compute, host or porter differ from what was deployed or the VM moved under it, ready while a host waits on DNS, done once deployed; `chris user add` reads not yet without a ChRIS and ready otherwise (CUBE is asked only when it runs). `vm cost` and `chris status` read as a dash: they keep nothing.
+
+- 6f3df8a: Scripts live in a library mounted at `/scripts`: git repositories named by `scripts add`, cloned on this host.
+
+  `scripts add <name> <repo> [--folder <folder>]` names a repository of scripts (the whole of it, or one folder) and clones it under stratus's state; `scripts` lists the sources with each clone's head; `scripts pull [<name>]` brings a clone up to date, fast-forward only, cloning again one that is gone; `scripts remove <name>` forgets a source and removes its clone. Each source is read at `/scripts/<name>/`, read-only and without its `.git`, so `ls`, `cat`, `play /scripts/<name>/<file>.mise` and `play --status` name one path the script screen (D17) reads too; `/scripts/mine/` is this host's own folder, written to, where a step's edits land as working copies. The sources are kept in `scripts.json` beside the session's configuration.
+
+- 7943b0e: What a VM would cost is a question of its own: `vm cost`, in `vm new`'s words, declaring nothing.
+
+  `vm cost <name>` with `vm new`'s options says what that VM bills at list price, an hour and a month, and what its data alone keeps billing after a teardown. On a declared VM the options given change its spec for the answer and the difference is said (`vm cost store --memory 16`: `$0.052 → $0.068 an hour, … (+$11.68 a month)`); on a name not declared they are the whole spec, and `--net` is not needed, the price being the session's region's. Bare, `vm cost` prices every declared VM. Nothing is declared or saved.
+
+- dde6635: What the cloud sells a VM is one question, `vm limits`, answered in the spec's own words.
+
+  `vm limits` reads the shape VMs are built from in the session's region and says, in `vm new`'s words, what it allows: vCPUs from the least to the most in the cloud's steps (OCI sells E5.Flex by the OCPU, two vCPUs at a time), memory in GiB and per vCPU where the cloud bounds it, the disks' floors and ceilings. A slider in the script screen (D17) takes its ends and steps from this answer and never from a page; the per-vCPU memory range comes to `CloudShape` as `memoryPerVcpuGib`.
+
+- ecc91e9: A VM's cost and the shape's limits travel as models under their text, so a surface prices a step as its levers move.
+
+  `vm cost` answers `stratus.vm.cost`: a row per VM priced with its spec, its rate (the machine and the data apart), whether it is declared, what the line changed and the declared rate before the change. `vm limits` answers `stratus.vm.limits`: the shape's ends and steps in the spec's words (docs/stratus.adoc, D17).
+
+### Patch Changes
+
+- Updated dependencies [05ed375]
+- Updated dependencies [ecc91e9]
+- Updated dependencies [ecc91e9]
+  - @fnndsc/brasa@0.52.0
+  - @fnndsc/menu@0.33.0
+  - @fnndsc/calypso@0.28.4
+
 ## 0.7.0
 
 ### Minor Changes
