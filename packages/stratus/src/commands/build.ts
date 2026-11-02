@@ -28,7 +28,7 @@ import type { VerifyReach } from './verify.js';
 import type { HarborCluster } from '../checkout/harborOci.js';
 import type { ClusterTree } from '../vfs/clusters.js';
 import { CLUSTER_NAME, CLUSTER_TAG, type ClusterRecord, type ClusterStore } from '../cluster/state.js';
-import { SPEC_DEFAULT, specOptions_apply, type ClusterSpec } from '../cluster/spec.js';
+import { clusterSpec_diff, SPEC_DEFAULT, specOptions_apply, specYaml_render, type ClusterSpec } from '../cluster/spec.js';
 import { cost_words, familyShape_find, specCost_compute, specFit_read, type SpecCost, type ZoneFit } from '../cluster/sizing.js';
 import { clusterSummary_read } from '../cluster/readout.js';
 import { BUILD_STEPS, buildJob_id, buildRun_make, FIRST_BILLING_STEP, planRun_make, stepNext_find, STEPS_SOURCE, STEPS_WRITTEN, type BuildDeps } from '../cluster/steps.js';
@@ -70,7 +70,18 @@ export function clusterState_show(context: BuildCommandContext, name: string, as
 }
 
 /** The options `cluster new` takes, each with a value. */
-const NEW_OPTIONS: ReadonlyArray<string> = ['--family', '--plane', '--workers', '--data', '--database', '--queue', '--base-domain', '--compartment'];
+/** The options `cluster new` takes: the sizing ones, then the zone and the compartment, which are the cluster's for life. */
+export const NEW_OPTIONS: ReadonlyArray<string> = ['--family', '--plane', '--workers', '--data', '--database', '--queue', '--base-domain', '--compartment'];
+
+/**
+ * The sizing options alone, for a spec: the zone and the compartment are not sizes.
+ *
+ * @param options - `cluster new`'s options.
+ * @returns Those that size.
+ */
+export function sizingOptions_pick(options: ReadonlyMap<string, string>): Map<string, string> {
+  return new Map([...options].filter(([option]: [string, string]): boolean => option !== '--base-domain' && option !== '--compartment'));
+}
 
 /**
  * Reads `--name value` and `--name=value` pairs.
@@ -147,7 +158,9 @@ export async function clusterNew_run(context: BuildCommandContext, args: Readonl
   const [name, ...extra] = read.rest;
   if (name === undefined || extra.length > 0) return envelope_error('', undefined, 'cluster new: usage: cluster new <name> [--family E5] [--plane 3x8/24] [--workers 2x8/32] [--data GiB] [--base-domain zone] [--compartment ocid]\n');
   if (!CLUSTER_NAME.test(name)) return envelope_error('', undefined, `cluster new: ${name}: a cluster's name is a DNS label: lower-case letters, digits and '-', starting with a letter, at most 54\n`);
-  if (context.clusters.cluster_read(name) !== null) return envelope_error('', undefined, `cluster new: ${name}: File exists\n`);
+  const kept: ClusterRecord | null = context.store.record_read(name);
+  if (kept !== null) return clusterNew_replay(context, kept, read.options);
+  if (context.clusters.cluster_read(name) !== null) return envelope_error('', undefined, `cluster new: ${name}: File exists (read from a checkout; cluster adopt ${name} keeps it here)\n`);
   const region: string | null = context.region();
   if (region === null) return envelope_error('', undefined, 'cluster new: not connected\n');
   // The zone is found where it lives (D14): named, it must be one the tenancy holds; unnamed, the tenancy's only one.
@@ -159,7 +172,7 @@ export async function clusterNew_run(context: BuildCommandContext, args: Readonl
     const why: string = zones.length === 0 ? 'the tenancy holds no DNS zone to find' : `the tenancy holds ${zones.length}: ${zones.join(', ')}`;
     return envelope_error('', undefined, `cluster new: --base-domain <zone> is needed: the DNS zone the cluster's names live under (${why})\n`);
   }
-  const sized = specOptions_apply(SPEC_DEFAULT, new Map([...read.options].filter(([option]: [string, string]): boolean => option !== '--base-domain' && option !== '--compartment')));
+  const sized = specOptions_apply(SPEC_DEFAULT, sizingOptions_pick(read.options));
   const compartmentId: string | undefined = read.options.get('--compartment');
   if ('error' in sized) return envelope_error('', undefined, `cluster new: ${sized.error}\n`);
   const record: ClusterRecord = { name, created: new Date().toISOString(), region, baseDomain, steps: {}, ids: {}, protected: true, ...(compartmentId !== undefined ? { compartmentId } : {}) };
@@ -170,6 +183,38 @@ export async function clusterNew_run(context: BuildCommandContext, args: Readonl
     chalk.gray(`Nothing is made in the tenancy until cluster build ${name}; cluster plan ${name} says what it takes and costs.`),
   ];
   return envelope_ok(`${lines.join('\n')}\n`);
+}
+
+/**
+ * `cluster new` on a cluster already kept: compares the spec asked with the
+ * one kept, as `vm new` does (a script replays), the kept spec as the base so
+ * an option left out keeps its value. A change rewrites the spec and marks it
+ * declared, so the build has a change to plan. The zone and the compartment
+ * are the cluster's for life: naming another is refused, since that would be
+ * another cluster.
+ *
+ * @param context - The session.
+ * @param kept - The cluster's state.
+ * @param options - The line's options.
+ * @returns `unchanged`, or the changes.
+ */
+function clusterNew_replay(context: BuildCommandContext, kept: ClusterRecord, options: ReadonlyMap<string, string>): CommandEnvelope {
+  const name: string = kept.name;
+  const zone: string | undefined = options.get('--base-domain');
+  if (zone !== undefined && zone !== kept.baseDomain) return envelope_error('', undefined, `cluster new: ${name}: its names live under ${kept.baseDomain}; --base-domain ${zone} would be another cluster\n`);
+  const compartment: string | undefined = options.get('--compartment');
+  if (compartment !== undefined && compartment !== kept.compartmentId) return envelope_error('', undefined, `cluster new: ${name}: it lives in ${kept.compartmentId ?? 'a compartment of its own'}; --compartment ${compartment} would be another cluster\n`);
+  const keptSpec: ClusterSpec = context.store.spec_read(name)?.spec ?? SPEC_DEFAULT;
+  const sized = specOptions_apply(keptSpec, sizingOptions_pick(options));
+  if ('error' in sized) return envelope_error('', undefined, `cluster new: ${sized.error}\n`);
+  const changes: string[] = clusterSpec_diff(keptSpec, sized.spec);
+  if (changes.length === 0) return envelope_ok(`${name}: unchanged\n`);
+  context.store.file_write(name, 'spec.yaml', specYaml_render(sized.spec));
+  context.store.record_update(name, (current: ClusterRecord): void => { current.declared = new Date().toISOString(); });
+  const note: string = kept.adopted !== undefined
+    ? chalk.gray(`; adopted from ${kept.adopted.from}: building on it is refused until it is allowed by name`)
+    : kept.steps[FIRST_BILLING_STEP]?.state === 'done' ? chalk.gray(`; built: cluster build ${name} plans the change and asks`) : '';
+  return envelope_ok(`${name}: ${changes.join(', ')}${note}\n`);
 }
 
 /**

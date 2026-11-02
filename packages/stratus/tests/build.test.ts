@@ -24,6 +24,10 @@ import { FakeKube, fakeChrisWork, fakeVerifyReach } from '../src/kube/fakeKube.j
 import type { KubeApi } from '../src/kube/kube.js';
 import { cluster_run, type ClusterCommandContext } from '../src/commands/cluster.js';
 import { options_read, spec_line, type BuildCommandContext } from '../src/commands/build.js';
+import { lineStatusProviders_make } from '../src/commands/lineStatus.js';
+import { NetStore } from '../src/net/state.js';
+import { VmStore } from '../src/vm/state.js';
+import type { LineStatusProvider } from '@fnndsc/brasa/core';
 import { STRATUS_CLUSTER_SIZE_MODEL_KIND, STRATUS_CLUSTER_STATE_EVENT, type ClusterSizeModel, type ClusterSummary, type ClustersModel } from '@fnndsc/menu';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
@@ -245,7 +249,16 @@ describe('building a cluster over the fakes', () => {
     const made: CommandEnvelope = await cluster_run(context, ['new', 'trial', '--workers', '2x8/32', '--data=100']);
     expect(plain(made.rendered)).toContain('trial  trial.fake.example  spec written');
     expect(plain(made.rendered)).toContain('workers 2 × 8 vCPU 32 GiB · ChRIS data 100 GiB');
-    expect((await cluster_run(context, ['new', 'trial'])).renderedErr).toBe('cluster new: trial: File exists\n');
+    // A kept cluster declared again compares, as a script replays: unchanged, or the change written and said.
+    expect(plain((await cluster_run(context, ['new', 'trial'])).rendered)).toBe('trial: unchanged\n');
+    expect(plain((await cluster_run(context, ['new', 'trial', '--workers', '2x8/32', '--data', '100'])).rendered)).toBe('trial: unchanged\n');
+    expect(store.record_read('trial')?.declared).toBeUndefined();
+    expect(plain((await cluster_run(context, ['new', 'trial', '--data', '200', '--plane', '3x8/32'])).rendered)).toBe('trial: plane 3x8/24 → 3x8/32, data 100 → 200 GiB\n');
+    expect(store.spec_read('trial')?.spec?.chris.dataGib).toBe(200);
+    expect(store.spec_read('trial')?.spec?.workers.count).toBe(2);
+    expect(store.record_read('trial')?.declared).toMatch(/^2026|^20\d\d/);
+    expect((await cluster_run(context, ['new', 'trial', '--base-domain', 'other.example'])).renderedErr).toBe('cluster new: trial: its names live under fake.example; --base-domain other.example would be another cluster\n');
+    expect((await cluster_run(context, ['new', 'trial', '--compartment', 'ocid1.compartment.oc1..other'])).renderedErr).toBe('cluster new: trial: it lives in a compartment of its own; --compartment ocid1.compartment.oc1..other would be another cluster\n');
     expect((await cluster_run(context, ['new', 'Trial'])).renderedErr).toContain("a cluster's name is a DNS label");
     expect((await cluster_run(context, ['new'])).renderedErr).toContain('usage: cluster new <name>');
     expect((await cluster_run(context, ['new', 'x', '--colour', 'red'])).renderedErr).toContain('--colour: unknown option');
@@ -257,6 +270,40 @@ describe('building a cluster over the fakes', () => {
     expect((await cluster_run(offline, ['new', 'y'])).renderedErr).toBe('cluster new: not connected\n');
     expect(options_read(['a', '--x=1'], ['--x'])).toEqual({ options: new Map([['--x', '1']]), rest: ['a'] });
     expect(spec_line(SPEC_DEFAULT)).toBe('E5 · plane 3 × 8 vCPU 24 GiB · workers 0 (compact) · ChRIS data 20 GiB');
+  });
+
+  it('reads where a cluster script\'s lines stand, from the record alone: new, plan, build, verify', async () => {
+    const providers: Map<string, LineStatusProvider> = new Map(lineStatusProviders_make({ nets: new NetStore(join(root, 'nets')), vms: new VmStore(join(root, 'vms')), clusters: store, runner: (): JobRunner => runner }).map((provider: LineStatusProvider): [string, LineStatusProvider] => [provider.verb, provider]));
+    const read = async (line: string): Promise<string> => { const answer = await (providers.get('cluster') as LineStatusProvider).read(line.split(' ')); return answer === null ? '—' : `${answer.state}${answer.detail === '' ? '' : ` (${answer.detail})`}${answer.running === undefined ? '' : ` [${answer.running}]`}`; };
+    expect(await read('cluster status')).toBe('—');
+    expect(await read('cluster new trial --data 100')).toBe('ready');
+    expect(await read('cluster plan trial')).toBe('not yet (trial: not declared (cluster new trial))');
+    expect(await read('cluster build trial')).toBe('not yet (trial: not declared (cluster new trial))');
+    expect(await read('cluster verify trial')).toBe('not yet (trial: not declared (cluster new trial))');
+    await cluster_run(context, ['new', 'trial', '--data', '100']);
+    expect(await read('cluster new trial --data 100')).toBe('done (unchanged)');
+    expect(await read('cluster new trial')).toBe('done (unchanged)');
+    expect(await read('cluster new trial --data 200')).toBe('changed (data 100 → 200 GiB)');
+    expect(await read('cluster new trial --base-domain other.example')).toBe('ready (--base-domain other.example: its names live under fake.example; the line is refused)');
+    expect(await read('cluster plan trial')).toBe('ready');
+    expect(await read('cluster build trial')).toBe('ready (next: compartment)');
+    expect(await read('cluster verify trial')).toBe('not yet (trial: not installed (cluster build trial))');
+    // Built through the install in the fake cloud: plan done, build done, verify ready; then declared again, each has a change.
+    surface.answers = ['y'];
+    await cluster_run(context, ['build', 'trial', '--through', 'run']);
+    expect(await read('cluster plan trial')).toMatch(/^done \(planned \d{4}-\d\d-\d\d\)$/);
+    expect(await read('cluster build trial')).toBe('ready (next: postinstall)');
+    expect(await read('cluster verify trial')).toBe('ready');
+    await cluster_run(context, ['build', 'trial']);
+    expect(await read('cluster build trial')).toBe('done (every step done)');
+    expect(await read('cluster verify trial')).toMatch(/^done \(/);
+    await cluster_run(context, ['new', 'trial', '--data', '200']);
+    expect(await read('cluster plan trial')).toBe('changed (declared again since it was planned)');
+    expect(await read('cluster build trial')).toBe('changed (declared again since it was built; the build plans and asks)');
+    expect(await read('cluster verify trial')).toBe('changed (declared again since it was verified)');
+    // An adopted cluster reads done through what its checkout did, and its build is refused by name.
+    store.record_update('trial', (record: ClusterRecord): void => { record.adopted = { from: '/co', at: 'now' }; delete record.declared; delete record.steps['smoke']; });
+    expect(await read('cluster build trial')).toBe('ready (adopted from /co: building on it is refused until it is allowed by name)');
   });
 
   it('cluster new and cluster size find the zone where it lives: the tenancy\'s only one, else one named', async () => {

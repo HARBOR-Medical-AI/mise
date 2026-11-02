@@ -186,7 +186,7 @@ export function stratusBackend_make(options: StratusBackendOptions): StratusBack
     // What a tenant's manifest can claim about its cluster (`expect cluster …`).
     expectSubjects: [clusterExpectSubject_make({ store, driver: options.driver, now: (): Date => new Date() })],
     // Where a script's lines stand, for `play --status` (D17), from the kept records alone.
-    lineStatuses: lineStatusProviders_make({ nets, vms }),
+    lineStatuses: lineStatusProviders_make({ nets, vms, clusters: store }),
     prompt: async (last?: PromptLastCommand): Promise<PromptContext> => {
       const cwd: string = session.cwd_get() ?? (await session.home_get());
       return {

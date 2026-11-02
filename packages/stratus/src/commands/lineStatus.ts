@@ -17,19 +17,23 @@ import { taskState_isOver } from '@fnndsc/menu';
 import { CHRIS_JOBS } from '../chris/deploy.js';
 import { CHRIS_PROFILES } from '../chris/profiles.js';
 import { USER_JOBS } from '../chris/users.js';
-import { STEPS_SOURCE } from '../cluster/steps.js';
+import { clusterSpec_diff, specOptions_apply, type ClusterSpec } from '../cluster/spec.js';
+import type { ClusterRecord, ClusterStore, StepRecord } from '../cluster/state.js';
+import { buildJob_id, FIRST_BILLING_STEP, stepNext_find, STEPS_SOURCE } from '../cluster/steps.js';
 import { NET_JOBS } from '../net/build.js';
 import { cidr_read, netSpec_diff, type NetSpec } from '../net/spec.js';
 import type { NetRecord, NetStore } from '../net/state.js';
 import { VM_JOBS } from '../vm/build.js';
 import { vmSpec_diff, vmSpec_read } from '../vm/spec.js';
 import type { VmRecord, VmStore } from '../vm/state.js';
-import { options_read } from './build.js';
+import { NEW_OPTIONS, options_read, sizingOptions_pick } from './build.js';
 
 /** What the providers read. */
 export interface LineStatusDeps {
   readonly nets: NetStore;
   readonly vms: VmStore;
+  /** The clusters kept here; absent, a `cluster` line has no state to read. */
+  readonly clusters?: ClusterStore;
   /** The session's runner, for the step running now; the installed one when absent. */
   readonly runner?: () => JobRunner | null;
 }
@@ -197,6 +201,63 @@ function chrisDeploy_read(deps: LineStatusDeps, words: ReadonlyArray<string>, th
 }
 
 /**
+ * `cluster new <name> …`, `cluster plan <name>`, `cluster build <name>` and
+ * `cluster verify <name>`, from the kept record: a spec declared again after
+ * a plan, a build or a verify leaves that line changed; an adopted cluster's
+ * build reads done through what its checkout did.
+ *
+ * @param deps - The stores.
+ * @param words - The line's words.
+ * @returns Its standing, or null for a verb with no state (`cluster status`).
+ */
+async function cluster_read(deps: LineStatusDeps, words: ReadonlyArray<string>): Promise<LineStatus | null> {
+  const [, verb, name] = words;
+  if (name === undefined || deps.clusters === undefined) return null;
+  const store: ClusterStore = deps.clusters;
+  const record: ClusterRecord | null = store.record_read(name);
+  const keptSpec: ClusterSpec | null = store.spec_read(name)?.spec ?? null;
+  const notDeclared: LineStatus = { state: 'not yet', detail: `${name}: not declared (cluster new ${name})` };
+  // Declared again after a step ended: that step has a change to plan.
+  const since = (step: StepRecord | undefined): boolean => record?.declared !== undefined && (step?.ended === undefined || record.declared > step.ended);
+  if (verb === 'new') {
+    const read = options_parse(words, 3, NEW_OPTIONS);
+    if (read === null) return { state: 'ready', detail: '' };
+    if (record === null || keptSpec === null) return { state: 'ready', detail: '' };
+    const zone: string | undefined = read.options.get('--base-domain');
+    if (zone !== undefined && zone !== record.baseDomain) return { state: 'ready', detail: `--base-domain ${zone}: its names live under ${record.baseDomain}; the line is refused` };
+    const compartment: string | undefined = read.options.get('--compartment');
+    if (compartment !== undefined && compartment !== record.compartmentId) return { state: 'ready', detail: `--compartment ${compartment}: it lives in ${record.compartmentId ?? 'a compartment of its own'}; the line is refused` };
+    const sized = specOptions_apply(keptSpec, sizingOptions_pick(read.options));
+    if ('error' in sized) return { state: 'ready', detail: sized.error };
+    const changes: string[] = clusterSpec_diff(keptSpec, sized.spec);
+    return changes.length === 0 ? { state: 'done', detail: 'unchanged' } : { state: 'changed', detail: changes.join(', ') };
+  }
+  if (verb === 'plan') {
+    if (record === null) return notDeclared;
+    const running: string | undefined = running_find(deps, [`${name}-plan`]);
+    const planned: StepRecord | undefined = record.steps['infra-plan'];
+    if (store.file_read(name, 'plan.json') === null) return running_add({ state: 'ready', detail: '' }, running);
+    return running_add(since(planned) ? { state: 'changed', detail: 'declared again since it was planned' } : { state: 'done', detail: `planned${planned?.ended !== undefined ? ` ${planned.ended.slice(0, 10)}` : ''}` }, running);
+  }
+  if (verb === 'build') {
+    if (record === null) return notDeclared;
+    const running: string | undefined = running_find(deps, [buildJob_id(name)]);
+    const next: string | null = stepNext_find(record);
+    if (next === null) return running_add(since(record.steps['run']) ? { state: 'changed', detail: 'declared again since it was built; the build plans and asks' } : { state: 'done', detail: 'every step done' }, running);
+    if (record.adopted !== undefined) return running_add({ state: 'ready', detail: `adopted from ${record.adopted.from}: building on it is refused until it is allowed by name` }, running);
+    return running_add({ state: 'ready', detail: `next: ${next}${next === FIRST_BILLING_STEP ? ' (bills; asks first)' : ''}` }, running);
+  }
+  if (verb === 'verify') {
+    if (record === null) return notDeclared;
+    if (record.steps['run']?.state !== 'done') return { state: 'not yet', detail: `${name}: not installed (cluster build ${name})` };
+    const verified: StepRecord | undefined = record.steps['verify'];
+    if (verified?.state === 'done') return since(verified) ? { state: 'changed', detail: 'declared again since it was verified' } : { state: 'done', detail: verified.note ?? '' };
+    return { state: 'ready', detail: verified?.state === 'failed' ? `last verify failed: ${verified.note ?? ''}` : '' };
+  }
+  return null;
+}
+
+/**
  * The providers `play --status` asks for stratus's verbs.
  *
  * @param deps - The stores.
@@ -207,5 +268,6 @@ export function lineStatusProviders_make(deps: LineStatusDeps): LineStatusProvid
     { verb: 'net', read: (words: ReadonlyArray<string>): Promise<LineStatus | null> => net_read(deps, words) },
     { verb: 'vm', read: (words: ReadonlyArray<string>): Promise<LineStatus | null> => vm_read(deps, words) },
     { verb: 'chris', read: (words: ReadonlyArray<string>): Promise<LineStatus | null> => chris_read(deps, words) },
+    { verb: 'cluster', read: (words: ReadonlyArray<string>): Promise<LineStatus | null> => cluster_read(deps, words) },
   ];
 }

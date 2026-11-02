@@ -50,6 +50,8 @@ export interface ClusterRecord {
   ids: Record<string, string>;
   billingAccepted?: string;
   compartmentId?: string;
+  /** When its spec was last declared again (`cluster new` on a kept cluster); after a build, the build has a change to plan. */
+  declared?: string;
   adopted?: { from: string; at: string };
   gone?: string;
   protected?: boolean;
