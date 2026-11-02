@@ -1,5 +1,13 @@
 # @fnndsc/chili
 
+## 3.8.3
+
+### Patch Changes
+
+- Updated dependencies [ecc91e9]
+  - @fnndsc/menu@0.33.0
+  - @fnndsc/cumin@3.29.6
+
 ## 3.8.2
 
 ### Patch Changes
