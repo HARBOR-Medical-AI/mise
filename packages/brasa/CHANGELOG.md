@@ -1,5 +1,18 @@
 # @fnndsc/brasa
 
+## 0.52.1
+
+### Patch Changes
+
+- 7eaf6d6: A script's status says, after a line's state, the task running it now and the `wait` that follows it.
+
+  `play --status` carries the task's path in its model as `running` (docs/stratus.adoc, D17).
+
+  A follow of a task asked to stop before it began (a STOP between a question's answer and the job's start) ends at once instead of running to the task's end.
+
+- Updated dependencies [7eaf6d6]
+  - @fnndsc/menu@0.33.1
+
 ## 0.52.0
 
 ### Minor Changes
