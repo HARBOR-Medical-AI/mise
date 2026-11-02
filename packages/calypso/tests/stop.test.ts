@@ -137,6 +137,7 @@ describe('a line whose surface left, and a command waiting aside', () => {
   let asideAborted: unknown[];
   let followKey: string | undefined;
   let release: (() => void) | null;
+  let releaseHold: (() => void) | null;
   const sockets: WebSocket[] = [];
 
   beforeEach(async () => {
@@ -144,10 +145,13 @@ describe('a line whose surface left, and a command waiting aside', () => {
     aborted = 0;
     asideAborted = [];
     release = null;
+    releaseHold = null;
     const engine: HostedEngine = {
       line_execute: async (line: string, options?: { id?: string }): Promise<CommandEnvelope[]> => {
         ran.push(line);
         if (line === 'hang') return new Promise(() => undefined);
+        // `hold` keeps the lane until released, as a long line does.
+        if (line === 'hold') { await new Promise<void>((resolve) => { releaseHold = resolve; }); return [{ status: 'ok', rendered: 'engine: hold' }]; }
         if (line === 'follow') followKey = options?.id;
         // `follow` waits aside on a task until released or stopped, as `domain build` does.
         if (line === 'follow') {
@@ -202,6 +206,25 @@ describe('a line whose surface left, and a command waiting aside', () => {
     a.ws.send(JSON.stringify({ type: 'stop' }));
     const ended = await a.next((m) => m.type === 'result' && m.id === 'f');
     expect(asideAborted).toEqual([followKey]);
+    expect(JSON.stringify(ended)).toContain('follow: ended');
+  }, 10000);
+
+  it('a STOP reaches a command whose task ended while it waits for its turn again behind another\'s line', async () => {
+    const a = await client_attach(port(), {}); sockets.push(a.ws);
+    const b = await client_attach(port(), {}); sockets.push(b.ws);
+    a.ws.send(JSON.stringify({ type: 'execute', id: 'f', line: 'follow' }));
+    await new Promise((r) => setTimeout(r, 100));
+    // Another surface's line takes the lane while the follow waits aside; then the task ends and the follow queues behind it.
+    b.ws.send(JSON.stringify({ type: 'execute', id: 'h', line: 'hold' }));
+    await new Promise((r) => setTimeout(r, 100));
+    release?.();
+    await new Promise((r) => setTimeout(r, 100));
+    a.ws.send(JSON.stringify({ type: 'stop' }));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(asideAborted).toEqual([followKey]);
+    expect(aborted).toBe(0);
+    releaseHold?.();
+    const ended = await a.next((m) => m.type === 'result' && m.id === 'f');
     expect(JSON.stringify(ended)).toContain('follow: ended');
   }, 10000);
 });

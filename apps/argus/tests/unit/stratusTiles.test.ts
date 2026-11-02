@@ -62,6 +62,13 @@ describe('the stratus tiles', () => {
     scripts.rows[0]!.open!();
     scripts.enter();
     expect(seen).toEqual(['scripts open /scripts/chrisproject/store.mise', 'scripts open ']);
+    // A script with a step running says so in place of its counts, and the tile says a step runs.
+    const building = await stratusTiles_make(hooks_make({
+      ...answers,
+      'play /scripts/chrisproject/store.mise --status': { manifest: 'store', lines: [{ number: 1, text: 'net new n --cidr 10.0.0.0/16', state: 'done', detail: '' }, { number: 2, text: 'vm build s', state: 'ready', detail: '', running: '/proc/steps/vm-s-apply-machine' }] },
+    }, []))();
+    expect(building.afterFiles[0]!.figures.map((f) => f.text)).toEqual(['2 SCRIPTS', 'A STEP RUNS']);
+    expect(building.afterFiles[0]!.rows[0]!.text).toBe('store  CHRISPROJECT  RUNNING · VM BUILD');
     // With no library answer the tile still stands, empty.
     const none = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, []))();
     expect(none.afterFiles[0]!.figures).toEqual([{ text: 'NONE' }]);

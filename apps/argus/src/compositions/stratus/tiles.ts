@@ -19,7 +19,7 @@ import {
   capacityModelSchema, clustersModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, STRATUS_CAPACITY_MODEL_KIND, STRATUS_CLUSTERS_MODEL_KIND,
   type CapacityModel, type CapacityRow, type ClusterSummary, type ClustersModel, type ManifestStatusModel,
 } from '@fnndsc/menu';
-import { counts_words, lines_build, scriptName_derive, states_count } from '../../features/script/model.js';
+import { counts_words, lines_build, runningStep_find, scriptName_derive, states_count, steps_build } from '../../features/script/model.js';
 import type { ExecuteOutcome } from '../../calypso/client.js';
 import { TILE_ABOUT } from '../../features/launcher/about.js';
 import type { LauncherRow, LauncherTile } from '../../features/launcher/panel.js';
@@ -125,6 +125,8 @@ interface ScriptSeen {
   readonly path: string;
   readonly source: string;
   readonly standing: string;
+  /** The step running now (`VM BUILD`), or null. */
+  readonly running: string | null;
 }
 
 /**
@@ -155,13 +157,19 @@ async function scripts_read(ask: (line: string) => Promise<ExecuteOutcome>): Pro
     for (const name of scripts) {
       const path: string = `/scripts/${folder}/${name}`;
       let standing: string = 'NOT READ';
+      let running: string | null = null;
       try {
         const status: ManifestStatusModel | null = model_extract(await ask(`play ${path} --status`), MANIFEST_STATUS_MODEL_KIND, (data) => manifestStatusModelSchema.safeParse(data));
-        if (status !== null) standing = counts_words(states_count(lines_build(status.lines.map((line): string => line.text).join('\n'), status.lines)));
+        if (status !== null) {
+          const lines = lines_build(status.lines.map((line): string => line.text).join('\n'), status.lines);
+          running = runningStep_find(steps_build(lines))?.label ?? null;
+          // A script with a step running says so in place of its counts: the run is what matters to a glance.
+          standing = running === null ? counts_words(states_count(lines)) : `RUNNING · ${running}`;
+        }
       } catch {
         // The tile shows the script and says its standing was not read.
       }
-      seen.push({ path, source: folder, standing });
+      seen.push({ path, source: folder, standing, running });
     }
   }
   return seen;
@@ -234,7 +242,11 @@ export function stratusTiles_make(hooks: StratusTileHooks): () => Promise<TileCo
     // SCRIPTS: the library, each script with where its lines stand; the tile is the script screen's door (docs/stratus.adoc, D17).
     const scriptsTile: LauncherTile = {
       key: 'scripts', name: 'SCRIPTS', hue: '--harvestgold', numeral: '',
-      figures: [{ text: scripts.length === 0 ? 'NONE' : `${scripts.length} SCRIPT${scripts.length === 1 ? '' : 'S'}` }, ...(scripts.some((script: ScriptSeen): boolean => /CHANGED/.test(script.standing)) ? [{ text: 'CHANGED UNDER A BUILD', errored: true }] : [])],
+      figures: [
+        { text: scripts.length === 0 ? 'NONE' : `${scripts.length} SCRIPT${scripts.length === 1 ? '' : 'S'}` },
+        ...(scripts.some((script: ScriptSeen): boolean => script.running !== null) ? [{ text: 'A STEP RUNS' }] : []),
+        ...(scripts.some((script: ScriptSeen): boolean => /CHANGED/.test(script.standing)) ? [{ text: 'CHANGED UNDER A BUILD', errored: true }] : []),
+      ],
       rows: scripts.slice(0, 6).map((script: ScriptSeen): LauncherRow => ({
         text: `${scriptName_derive(script.path)}  ${script.source.toUpperCase()}  ${script.standing}`,
         errored: /CHANGED/.test(script.standing),

@@ -114,6 +114,8 @@ jest.unstable_mockModule('../src/builtins/res/gather.store.js', () => ({
 const { builtin_play, manifest_parse, line_expand, playArgs_parse } = await import('../src/builtins/res/play.js');
 // The session's files: the manifest is read through the backend, as CFS is.
 const statusAsked: string[][] = [];
+/** The task running `vm build store` now, when the fake backend says one does. */
+let runningStore: string | null = null;
 (await import('../src/core/backend.js')).backend_install({
   id: 'chris',
   session: {} as never,
@@ -128,6 +130,7 @@ const statusAsked: string[][] = [];
       statusAsked.push([...words]);
       if (words[1] === 'cost') return null;
       if (words[2] !== 'store') return { state: 'not yet' as const, detail: `${words[2]}: not declared` };
+      if (words[1] === 'build' && runningStore !== null) return { state: 'ready' as const, detail: '', running: runningStore };
       return words[1] === 'new' ? { state: 'done' as const, detail: 'unchanged' } : { state: 'ready' as const, detail: '' };
     },
   }],
@@ -168,6 +171,21 @@ describe('play --status reads each line against what is kept, running none', () 
     expect((result.model as { kind: string; data: { lines: Array<{ number: number; state: string | null }> } }).kind).toBe('manifest.status');
     expect((result.model as { data: { lines: Array<{ number: number; state: string | null }> } }).data.lines.map((line): string => `${line.number}:${line.state}`)).toEqual(['1:done', '2:ready', '3:null', '4:not yet', '5:null']);
     expect(mockSetCwd).not.toHaveBeenCalled();
+  });
+
+  it('names the task running a line now after its state, and carries it in the model', async () => {
+    stored = 'vm new store --vcpu 2\nvm build store\n';
+    runningStore = '/proc/steps/vm-store-apply-machine';
+    try {
+      const result = await builtin_play(['f.mise', '--status']);
+      expect(result.status).toBe('ok');
+      const plain = output.map((line: string): string => line.replace(/\x1b\[[0-9;]*m/g, ''));
+      expect(plain[1]).toBe('ready   ▸ vm build store  ▶ running: /proc/steps/vm-store-apply-machine (wait /proc/steps/vm-store-apply-machine follows it)');
+      const lines = (result.model as { data: { lines: Array<{ number: number; running?: string }> } }).data.lines;
+      expect(lines.map((line): string | undefined => line.running)).toEqual([undefined, '/proc/steps/vm-store-apply-machine']);
+    } finally {
+      runningStore = null;
+    }
   });
 });
 

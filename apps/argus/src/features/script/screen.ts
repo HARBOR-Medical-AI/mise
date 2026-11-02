@@ -20,15 +20,15 @@
  */
 import {
   manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, vmCostModelSchema, vmLimitsModelSchema,
-  type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel,
+  type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel,
 } from '@fnndsc/menu';
 import { HOURS_PER_MONTH } from '../controller/model.js';
 import { saveLine_compose } from '../edit/line.js';
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
   askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
-  script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, steps_build, userLine_build, vmLevers_read, vmSliders_build, workingCopy_derive,
-  type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts,
+  runningStep_find, script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, stepKind_isTask, steps_build, userLine_build, vmLevers_read, vmSliders_build,
+  workingCopy_derive, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts,
 } from './model.js';
 
 /** An answer the session gave a quiet line: what the screen reads of it. */
@@ -183,6 +183,8 @@ export class ScriptScreen {
   private costTimer: ReturnType<typeof setTimeout> | null = null;
   /** The line running, and since when. */
   private busy: { line: string; step: string | null; since: number } | null = null;
+  /** The standing read again a moment after a task-starting line was sent, so the seat wears the run while the line still holds the lane. */
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private ask: OpenAsk | null = null;
   private partial: string = '';
   /** What each step's lines printed, for its body. */
@@ -257,6 +259,8 @@ export class ScriptScreen {
     this.ticker = null;
     if (this.costTimer !== null) clearTimeout(this.costTimer);
     this.costTimer = null;
+    if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
     this.ask?.answer(null);
     this.ask = null;
   }
@@ -281,11 +285,27 @@ export class ScriptScreen {
     this.edited = false;
     this.stepLogs.clear();
     await this.script_read();
-    const first: ScriptStep | undefined = this.steps.find((step: ScriptStep): boolean => step.state === 'changed' || step.state === 'ready') ?? this.steps[0];
+    // The rail opens on the step running now, else on the first that needs the operator.
+    const first: ScriptStep | undefined = runningStep_find(this.steps) ?? this.steps.find((step: ScriptStep): boolean => step.state === 'changed' || step.state === 'ready') ?? this.steps[0];
     this.view = first?.key ?? LIBRARY_VIEW;
     this.draw();
     void this.standing_read();
     if (this.steps.some((step: ScriptStep): boolean => step.kind === 'vm new')) void this.limits_need();
+    this.running_follow();
+  }
+
+  /** A task of the session ended (heard on the ambient channel): the standing is read again, so a seat that ran reads what it is now. */
+  public taskEnded_take(): void {
+    if (this.path === '' || this.busy !== null) return;
+    void this.standings_refresh().then((): void => this.draw());
+  }
+
+  /** Whether the line running is a task's follow: `wait`, or a step whose task the standing names. */
+  public following_is(): boolean {
+    if (this.busy === null) return false;
+    if (this.busy.line.startsWith('wait ')) return true;
+    const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.busy?.step);
+    return step !== undefined && step.running !== null;
   }
 
   /** The script open, or `''`. */
@@ -370,7 +390,7 @@ export class ScriptScreen {
    * @param path - The script.
    * @returns The model, or null when the session did not answer it.
    */
-  private async status_read(path: string): Promise<{ lines: Array<{ number: number; text: string; state: LineState | null; detail: string }> } | null> {
+  private async status_read(path: string): Promise<{ lines: LineStandingModel[] } | null> {
     try {
       const answer: QuietAnswer = await this.hooks.ask(`play ${path} --status`);
       return model_extract(answer, MANIFEST_STATUS_MODEL_KIND, (data: unknown) => manifestStatusModelSchema.safeParse(data));
@@ -389,6 +409,32 @@ export class ScriptScreen {
     this.lines = fresh;
     this.steps = steps_build(this.lines);
     void this.standing_read();
+  }
+
+  /**
+   * Follows the step whose task runs now with the session's own `wait`: its
+   * log lands under the step as a RUN's would. Asked when a script opens and
+   * by FOLLOW, never after a line ends, so a follow the operator stopped
+   * stays stopped until they ask again.
+   */
+  private running_follow(): void {
+    const step: ScriptStep | undefined = runningStep_find(this.steps);
+    if (step === undefined || step.running === null || this.busy !== null) return;
+    void this.line_send(`wait ${step.running}`, step.key);
+  }
+
+  /**
+   * Reads the standing again a moment after a task-starting line was sent,
+   * while it still holds the lane, so the seat wears the run.
+   *
+   * @param line - The line sent.
+   */
+  private refresh_schedule(line: string): void {
+    if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout((): void => {
+      this.refreshTimer = null;
+      if (this.busy?.line === line) void this.standings_refresh();
+    }, 3_000);
   }
 
   private async library_read(): Promise<void> {
@@ -486,6 +532,8 @@ export class ScriptScreen {
     this.log_add(`stratus> ${line}`, 'sent');
     if (step !== null) this.stepLogs.set(step, []);
     this.draw();
+    const kind: ScriptStep['kind'] | undefined = this.steps.find((each: ScriptStep): boolean => each.key === step)?.kind;
+    if (kind !== undefined && stepKind_isTask(kind) && !line.startsWith('wait ')) this.refresh_schedule(line);
     let failed: boolean = false;
     try {
       await this.hooks.run(line);
@@ -549,10 +597,12 @@ export class ScriptScreen {
       const seat: HTMLButtonElement | undefined = this.frame.views.get(step.key);
       if (seat === undefined) continue;
       seat.dataset['state'] = step.state ?? 'none';
-      seat.classList.toggle('ss-seat-running', this.busy !== null && this.busy.step === step.key);
+      // The seat runs when its task does, followed or not, and while a line of its own holds the lane.
+      const running: boolean = step.running !== null || (this.busy !== null && this.busy.step === step.key);
+      seat.classList.toggle('ss-seat-running', running);
       seat.querySelector('.ss-seat-mark')?.remove();
-      const mark: HTMLElement = el('span', 'ss-seat-mark', step.state === null ? '' : STATE_MARKS[step.state]);
-      mark.setAttribute('aria-label', step.state ?? '');
+      const mark: HTMLElement = el('span', 'ss-seat-mark', running ? '▶' : step.state === null ? '' : STATE_MARKS[step.state]);
+      mark.setAttribute('aria-label', running ? 'running' : step.state ?? '');
       seat.append(mark);
     }
     // The seat under the brand: the script's name and source, as the controller shows its clusters.
@@ -569,7 +619,8 @@ export class ScriptScreen {
     const header: HTMLElement = this.parts.header;
     header.replaceChildren();
     const counts: StateCounts = states_count(this.lines);
-    const standingWord: string = this.path === '' ? 'LIBRARY' : this.busy !== null ? 'RUNNING' : counts.changed > 0 ? 'CHANGED' : counts.notYet > 0 ? 'NOT YET' : counts.ready > 0 ? 'READY' : counts.total > 0 ? 'DONE' : 'READING';
+    const runningStep: ScriptStep | undefined = runningStep_find(this.steps);
+    const standingWord: string = this.path === '' ? 'LIBRARY' : this.busy !== null || runningStep !== undefined ? 'RUNNING' : counts.changed > 0 ? 'CHANGED' : counts.notYet > 0 ? 'NOT YET' : counts.ready > 0 ? 'READY' : counts.total > 0 ? 'DONE' : 'READING';
     const condition: HTMLElement = el('section', 'tdc-head-condition');
     const pill: HTMLElement = el('div', 'tdc-condition');
     pill.dataset['condition'] = standingWord;
@@ -587,12 +638,33 @@ export class ScriptScreen {
     const stepShown: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
     if (stepShown?.kind === 'vm new') costRows.push([this.stepCost?.declared === true ? 'THIS STEP' : 'WOULD ADD', stepRate === null ? '…' : rate_words(stepRate, HOURS_PER_MONTH)]);
     header.append(this.headSection_make('COST · LIST PRICE', costRows, 0));
-    const running: Array<[string, string]> = this.busy === null ? [['LINE', 'nothing'], ['FOR', '—']] : [['LINE', this.busy.line], ['FOR', duration_words(Date.now() - this.busy.since)]];
-    header.append(this.headSection_make('RUNNING', running));
+    // The lane: the line it holds, or the task running unfollowed, which FOLLOW follows again; following is stopped, the task never.
+    const running: Array<[string, string]> = this.busy !== null
+      ? [['LINE', this.busy.line], ['FOR', duration_words(Date.now() - this.busy.since)]]
+      : runningStep !== undefined
+        ? [['TASK', runningStep.running ?? ''], ['FOR', 'not followed']]
+        : [['LINE', 'nothing'], ['FOR', '—']];
+    const lanePills: HTMLElement[] = [];
+    // While a question stands, the strip's STOP is the answer; the follow's stop waits for the line to go on.
+    if (this.busy !== null && this.ask === null && this.following_is()) {
+      const stop: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'STOP FOLLOWING');
+      stop.type = 'button';
+      stop.title = 'Ctrl-C at the console: the lane is freed, the task goes on';
+      stop.addEventListener('click', (): void => { this.hooks.voice.pill('STOP FOLLOWING'); this.log_add('^C (stops following, not the task)', 'note'); this.hooks.stop(); });
+      lanePills.push(stop);
+    } else if (this.busy === null && runningStep !== undefined && runningStep.running !== null) {
+      const path: string = runningStep.running;
+      const follow: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain', 'FOLLOW');
+      follow.type = 'button';
+      follow.title = `sends: wait ${path}`;
+      follow.addEventListener('click', (): void => { this.hooks.voice.pill('FOLLOW'); this.running_follow(); });
+      lanePills.push(follow);
+    }
+    header.append(this.headSection_make('RUNNING', running, -1, lanePills));
     header.append(this.headSection_make('STANDING', [['DONE', String(counts.done)], ['READY', String(counts.ready)], ['CHANGED', String(counts.changed)], ['NOT YET', String(counts.notYet)]]));
   }
 
-  private headSection_make(title: string, rows: ReadonlyArray<[string, string]>, billingRow: number = -1): HTMLElement {
+  private headSection_make(title: string, rows: ReadonlyArray<[string, string]>, billingRow: number = -1, pills: ReadonlyArray<HTMLElement> = []): HTMLElement {
     const section: HTMLElement = el('section', 'tdc-head-section');
     section.setAttribute('aria-label', title);
     section.append(el('span', 'tdc-head-title', title));
@@ -601,6 +673,11 @@ export class ScriptScreen {
       grid.append(el('span', `tdc-head-label${index === billingRow ? ' tdc-head-label-bill' : ''}`, label), el('span', 'tdc-head-value', value));
     });
     section.append(grid);
+    if (pills.length > 0) {
+      const commands: HTMLElement = el('div', 'tdc-commands ss-head-commands');
+      commands.append(...pills);
+      section.append(commands);
+    }
     return section;
   }
 
@@ -610,18 +687,65 @@ export class ScriptScreen {
     if (this.view === LIBRARY_VIEW) {
       body.dataset['view'] = 'library';
       body.append(...this.library_make());
+      this.errand_place();
       return;
     }
     const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
     if (step === undefined) {
       body.dataset['view'] = 'library';
       body.append(this.empty_make('NO STEP', 'Open a script from the LIBRARY; its lines become the rail.'));
+      this.errand_place();
       return;
     }
     body.dataset['view'] = 'step';
     body.append(...this.step_make(step));
     const log: HTMLElement | null = body.querySelector('.tdc-steplog');
     if (log !== null) log.scrollTop = log.scrollHeight;
+    this.errand_place();
+  }
+
+  /** A hidden word asked stands as an errand bar across the top of the body, whichever view shows; the strip is for words seen. */
+  private errand_place(): void {
+    if (this.ask === null || this.ask.kind !== 'secret') return;
+    this.parts.body.prepend(this.errand_make(this.ask));
+  }
+
+  /**
+   * The errand's own bar, as a `path` ask borrows it beside a pane: the
+   * question as its caption, one field, the verb that commits. The field is
+   * hidden and emptied as it is read; the step never shows or keeps the word.
+   *
+   * @param ask - The hidden word asked.
+   * @returns The bar.
+   */
+  private errand_make(ask: OpenAsk): HTMLElement {
+    const bar: HTMLElement = el('div', 'errand-bar ss-errand');
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', 'A hidden word is asked');
+    const caption: HTMLElement = el('span', 'errand-caption', ask.message.trim());
+    const field: HTMLInputElement = el('input', 'errand-path ss-errand-input');
+    field.id = 'ss-errand-input';
+    field.type = 'password';
+    field.autocomplete = 'new-password';
+    field.spellcheck = false;
+    field.setAttribute('aria-label', 'The hidden word');
+    const commit: HTMLButtonElement = el('button', 'pacs-capsule errand-commit', 'SEND');
+    commit.type = 'button';
+    const stop: HTMLButtonElement = el('button', 'pacs-capsule ss-errand-stop', 'STOP');
+    stop.type = 'button';
+    const answer = (): void => {
+      const value: string = field.value;
+      field.value = '';
+      this.hooks.voice.pill('SEND');
+      this.log_add('(hidden)', 'answer');
+      ask.answer(value);
+    };
+    commit.addEventListener('click', answer);
+    field.addEventListener('keydown', (event: KeyboardEvent): void => { if (event.key === 'Enter') answer(); });
+    stop.addEventListener('click', (): void => { field.value = ''; this.hooks.voice.pill('STOP'); this.log_add('(declined)', 'answer'); ask.answer(''); });
+    bar.append(caption, field, commit, stop);
+    queueMicrotask((): void => field.focus());
+    return bar;
   }
 
   private empty_make(title: string, text: string): HTMLElement {
@@ -741,6 +865,11 @@ export class ScriptScreen {
     };
     side.append(el('p', 'tdc-prose', step.state === null ? 'No verb reads this line\'s state; it runs when sent.' : words[step.state]));
     if (step.lines.length === 1 && (step.lines[0]?.detail ?? '') !== '') side.append(this.pairs_make([['SAID', step.lines[0]?.detail ?? '']]));
+    if (step.running !== null) {
+      const note: HTMLElement = el('div', 'tdc-note ss-note-running');
+      note.append(el('span', 'tdc-note-title', 'RUNNING NOW'), this.pairs_make([['TASK', step.running]]), el('span', 'tdc-prose', 'The line runs as a task of the session: LEAVE and STOP FOLLOWING free the lane and the task goes on; the screen follows it again when the script opens, and FOLLOW in the header follows it now.'));
+      side.append(note);
+    }
     if (this.edited) {
       const note: HTMLElement = el('div', 'tdc-note tdc-note-bill');
       note.append(el('span', 'tdc-note-title', 'EDITED · NOT SAVED'), el('span', 'tdc-prose', `A form changed a line. RUN sends the line as shown; SAVE writes the whole script to ${workingCopy_derive(this.path)} and opens it from there.`));
@@ -1063,7 +1192,7 @@ export class ScriptScreen {
     add.addEventListener('click', (): void => {
       this.hooks.voice.pill('ADD');
       const number: number = (this.lines.at(-1)?.number ?? 0) + 1;
-      const added: ScriptLine = { number, text: line, state: 'ready', detail: '' };
+      const added: ScriptLine = { number, text: line, state: 'ready', detail: '', running: null };
       this.lines.push(added);
       this.steps = steps_build(this.lines);
       this.edited = true;
@@ -1083,8 +1212,9 @@ export class ScriptScreen {
   private strip_draw(): void {
     const strip: HTMLElement = this.parts.strip;
     strip.replaceChildren();
-    strip.hidden = this.ask === null;
-    if (this.ask === null) return;
+    // A hidden word is asked on the errand bar (body_draw), never on the strip.
+    strip.hidden = this.ask === null || this.ask.kind === 'secret';
+    if (this.ask === null || this.ask.kind === 'secret') return;
     const ask: OpenAsk = this.ask;
     const form = askForm_derive(ask.message);
     const destroying: boolean = /teardown|destroy|remove/i.test(ask.message) || form === 'name';

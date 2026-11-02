@@ -1485,15 +1485,17 @@ export class CalypsoDaemon {
     // What the line holds is given up while it waits, and its slot stays
     // its own: the engine keeps its per-line state (its exit code, a pipe's
     // untaken input, its cancellation) per line, so nothing is handed over.
-    // A line waiting aside on a task stays the operator's to stop.
+    // A line waiting aside on a task stays the operator's to stop, and
+    // stays so while it waits for its turn again behind another's line: a
+    // STOP in that moment would otherwise find nothing of theirs running.
     mine.asideStoppable = stoppable && !mine.instrument;
     this.lane.release(mine.hold);
     mine.hold = null;
     try {
       return await answered;
     } finally {
-      mine.asideStoppable = false;
       mine.hold = await this.lane.acquire(mine.want);
+      mine.asideStoppable = false;
     }
   }
 

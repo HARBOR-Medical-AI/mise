@@ -8,8 +8,8 @@ import { describe, it, expect } from '@jest/globals';
 import type { VmLimitsModel } from '@fnndsc/menu';
 import {
   askForm_derive, costLine_derive, counts_words, duration_words, line_parse, line_render, lineOption_get, lineOption_set, lines_build, memoryRange_derive,
-  rate_words, rates_sum, scriptName_derive, scriptSource_derive, stepKind_derive, stepLabel_derive, steps_build, states_count, userLine_build, vmLevers_read, vmSliders_build,
-  words_split, workingCopy_derive, script_render,
+  rate_words, rates_sum, runningStep_find, scriptName_derive, scriptSource_derive, stepKind_derive, stepKind_isTask, stepLabel_derive, steps_build, states_count, userLine_build,
+  vmLevers_read, vmSliders_build, words_split, workingCopy_derive, script_render,
 } from '../../src/features/script/model.js';
 
 const STORE: string = [
@@ -73,6 +73,16 @@ describe('the script screen model', () => {
     expect(script_render(lines).split('\n').length).toBe(7);
     // No standings: every line stands unread.
     expect(lines_build(STORE, []).every((line) => line.state === null)).toBe(true);
+    // A line whose task runs now carries the task; its step does; no other does.
+    expect(lines.every((line) => line.running === null)).toBe(true);
+    expect(runningStep_find(steps)).toBeUndefined();
+    const building = lines_build(STORE, standings.map((standing, index) => index === 2 ? { ...standing, running: '/proc/steps/vm-store-apply-machine' } : standing));
+    expect(building[2]?.running).toBe('/proc/steps/vm-store-apply-machine');
+    const buildingSteps = steps_build(building);
+    expect(buildingSteps.map((step) => step.running)).toEqual([null, null, '/proc/steps/vm-store-apply-machine', null, null]);
+    expect(runningStep_find(buildingSteps)?.key).toBe('line-3');
+    // The steps whose lines run as tasks, whose run the screen follows rather than holds.
+    expect((['net new', 'net build', 'vm new', 'vm build', 'chris deploy', 'users', 'other'] as const).filter(stepKind_isTask)).toEqual(['net build', 'vm build', 'chris deploy', 'users']);
   });
 
   it('scales the sliders to what the shape sells and bounds the memory by the vCPUs', () => {

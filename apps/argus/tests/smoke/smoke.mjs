@@ -3528,6 +3528,55 @@ try {
       ss.logged.includes('stratus> net new smoke-net --cidr 10.50.0.0/16') && ss.ran && ss.afterRun === 'done', JSON.stringify({ before: ss.before, ran: ss.ran, after: ss.afterRun, logged: ss.logged }));
     check('Esc gives the script screen back: no takeover, no screen, the tab\'s title as it was', ss.after === null && !ss.left && ss.titleBack, JSON.stringify(ss));
   }
+  if (ss.composition === 'stratus' && ss.opened) {
+    // A step that runs as a task is followed, never held (D17): a one-line script `net build <net>` over a
+    // network declared for this run. RUN asks on the strip and CONTINUE answers; the task runs under
+    // /proc/steps/ and the seat wears ▶ while the lane follows it; STOP FOLLOWING is the console's Ctrl-C (the
+    // lane is freed, the task goes on, FOLLOW is offered). The fake's build may end before any of that is seen,
+    // in which case the proof is the seat reading done once the lane is free.
+    const sb = await evalIn(`
+      await console_idle();
+      const input = console_input();
+      const type = (line) => { input.value = line; input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); };
+      const say = async (line, ms = 1500) => { type(line); await sleep(ms); await console_settled(); };
+      const settle = async (want, tries = 60) => { for (let i = 0; i < tries; i++) { if (want()) return true; await sleep(250); } return want(); };
+      const pill = (name) => [...document.querySelectorAll('#script-screen button')].find((b) => b.textContent.trim() === name);
+      // A network of this run's own: a second build of one already built reads nothing to do and asks nothing.
+      const net = 'smoke-' + String(Date.now() % 100000);
+      await say('net new ' + net + ' --cidr 10.51.0.0/16', 2000);
+      await console_idle();
+      await say("touch --withContents 'net build " + net + "' /scripts/mine/smoke-build.mise", 2500);
+      await console_idle();
+      type('scripts open /scripts/mine/smoke-build.mise');
+      const opened = await settle(() => document.body.dataset.takeover === 'script' && (window.__argusScript?.steps() ?? []).length > 0, 80);
+      if (!opened) return { opened };
+      await sleep(500);
+      const stateBefore = window.__argusScript.steps()[0]?.state ?? null;
+      document.querySelector('.ss-run')?.click();
+      // The plan runs as a task first (the fake's clock may be slow); then the question.
+      const asked = await settle(() => window.__argusScript.asking() && document.querySelector('.tdc-strip')?.hidden === false, 400);
+      const question = document.querySelector('.tdc-strip-text')?.textContent ?? null;
+      pill('CONTINUE')?.click();
+      const seat = () => document.querySelector('.takeover-gutter button[data-view="line-1"] .ss-seat-mark')?.textContent ?? null;
+      const free = () => document.getElementById('script-screen')?.dataset.busy === 'no';
+      const seenRunning = await settle(() => seat() === '▶' && pill('STOP FOLLOWING') !== undefined, 80);
+      let stopFreed = null, followOffered = null, logged = [];
+      if (seenRunning) {
+        pill('STOP FOLLOWING')?.click();
+        stopFreed = await settle(() => free(), 60);
+        await sleep(800);
+        followOffered = pill('FOLLOW') !== undefined || window.__argusScript.steps()[0]?.state === 'done';
+        logged = [...document.querySelectorAll('.tdc-log-sent, .tdc-log-note')].map((l) => l.textContent);
+      }
+      // The task's end reaches the screen on the ambient channel, which reads the standing again: the seat reads done with nothing pressed.
+      const ended = await settle(() => free() && seat() !== '▶' && window.__argusScript.steps()[0]?.state === 'done', 480);
+      const stateAfter = window.__argusScript.steps()[0]?.state ?? null;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await sleep(400);
+      return { opened, stateBefore, asked, question, seenRunning, stopFreed, followOffered, logged, ended, stateAfter, after: document.body.dataset.takeover ?? null };`);
+    check('RUN on a build asks on the strip as the console would, and CONTINUE answers it', sb.opened && sb.asked && /\[y\/N\]/.test(sb.question ?? ''), JSON.stringify(sb));
+    check('a running build is a task followed, never held: the seat wears ▶, STOP FOLLOWING frees the lane while the task goes on, and its end heard on the ambient channel reads the seat done (or the fake ended it before it could be seen)',
+      sb.ended && sb.stateAfter === 'done' && (!sb.seenRunning || (sb.stopFreed === true && sb.followOffered === true)), JSON.stringify(sb));
+  }
   }
 
   if (await stage('feed-one-view')) {

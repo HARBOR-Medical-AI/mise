@@ -26,6 +26,11 @@ body[data-takeover='script'] > *:not(#script-screen) { visibility: hidden; }
 /* the body: the library in two columns, a step in three */
 .ss-body[data-view='library'] { grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr); }
 .ss-body[data-view='step'] { grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr) minmax(0, 0.9fr); }
+/* a hidden word asked: the errand's own bar (argus.css) across the top of the body, whichever view shows */
+.ss-body > .errand-bar { grid-column: 1 / -1; margin-bottom: 0; }
+.ss-errand-stop { background-color: var(--honey); }
+.ss-head-commands { margin-top: 0.4rem; }
+.ss-note-running { border-color: var(--butter); }
 .ss-col-form { gap: 0.8rem; }
 
 /* a line: its state, the line as it will run, what the status said */

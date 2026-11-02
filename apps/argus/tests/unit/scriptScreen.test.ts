@@ -21,6 +21,9 @@ const STORE_TEXT: string = [
 
 const LIMITS = { shape: 'VM.Standard.E5.Flex', family: 'E5', vcpu: { min: 2, max: 252, step: 2 }, memory: { min: 1, max: 2098, perVcpu: { min: 0.5, max: 32 } }, disk: { min: 50, max: 32768 }, data: { min: 50, max: 32768 } };
 
+/** The task running a line now, by line number, as `play --status` would carry it. */
+let runningAt: Record<number, string> = {};
+
 /** The session's answers to the screen's quiet lines, as a fake stratus would give them. */
 function answer_make(line: string, states: string[]): QuietAnswer {
   const envelope = (model: { kind: string; data: unknown }, rendered: string = ''): QuietAnswer => ({ envelopes: [{ rendered, model, status: 'ok' }] });
@@ -29,7 +32,7 @@ function answer_make(line: string, states: string[]): QuietAnswer {
   if (line === 'ls /scripts/mine') return envelope({ kind: 'fs.listing', data: [{ path: '/scripts/mine', items: [] }] });
   if (line.startsWith('cat ')) return { envelopes: [{ rendered: `${STORE_TEXT}\n`, status: 'ok' }] };
   if (line.startsWith('play ') && line.endsWith('--status')) {
-    const lines = STORE_TEXT.split('\n').map((text: string, index: number) => ({ number: index + 1, text, state: states[index] ?? null, detail: states[index] === 'done' ? 'unchanged' : '' }));
+    const lines = STORE_TEXT.split('\n').map((text: string, index: number) => ({ number: index + 1, text, state: states[index] ?? null, detail: states[index] === 'done' ? 'unchanged' : '', ...(runningAt[index + 1] === undefined ? {} : { running: runningAt[index + 1] }) }));
     return envelope({ kind: 'manifest.status', data: { manifest: 'store', lines } });
   }
   if (line === 'vm limits') return envelope({ kind: 'stratus.vm.limits', data: LIMITS });
@@ -43,12 +46,16 @@ function answer_make(line: string, states: string[]): QuietAnswer {
   return { envelopes: [{ rendered: '', status: 'ok' }] };
 }
 
-/** A screen over hooks that record the lines sent and asked. */
-function screen_make(states: string[] = ['done', 'done', 'done', 'done', 'ready']): { screen: ScriptScreen; sent: string[]; asked: string[]; hooks: ScriptHooks; answers: Array<(value: string | null) => void> } {
+/** A screen over hooks that record the lines sent and asked; with `held`, a sent line holds the lane until `release` is called. */
+function screen_make(states: string[] = ['done', 'done', 'done', 'done', 'ready'], held: boolean = false): { screen: ScriptScreen; sent: string[]; asked: string[]; hooks: ScriptHooks; release: () => void } {
   const sent: string[] = [];
   const asked: string[] = [];
+  let releases: Array<() => void> = [];
   const hooks: ScriptHooks = {
-    run: async (line: string): Promise<void> => { sent.push(line); },
+    run: (line: string): Promise<void> => {
+      sent.push(line);
+      return held ? new Promise((resolve: () => void): void => { releases.push(resolve); }) : Promise.resolve();
+    },
     ask: async (line: string): Promise<QuietAnswer> => { asked.push(line); return answer_make(line, states); },
     stop: (): void => { sent.push('<stop>'); },
     leave: (): void => { sent.push('<leave>'); },
@@ -56,7 +63,7 @@ function screen_make(states: string[] = ['done', 'done', 'done', 'done', 'ready'
   };
   const screen: ScriptScreen = new ScriptScreen(hooks);
   document.body.append(screen.root);
-  return { screen, sent, asked, hooks, answers: [] };
+  return { screen, sent, asked, hooks, release: (): void => { const pending: Array<() => void> = releases; releases = []; for (const resolve of pending) resolve(); } };
 }
 
 const button_named = (root: HTMLElement, text: string): HTMLButtonElement | undefined =>
@@ -154,15 +161,66 @@ describe('the script screen', () => {
     button_named(strip as HTMLElement, 'CONTINUE')?.click();
     expect(await answered).toBe('y');
     expect(screen.asking_is()).toBe(false);
+    // A hidden word goes through the errand's own bar across the body, not the strip; the field is emptied as it is read.
     const secret: Promise<string | null> = screen.ask_take('password for rudolph (empty: generate one): ', 'secret');
-    const input: HTMLInputElement | null = screen.root.querySelector('#ss-strip-input');
+    expect(strip?.hidden).toBe(true);
+    const bar: HTMLElement | null = screen.root.querySelector('.ss-body > .errand-bar');
+    expect(bar?.querySelector('.errand-caption')?.textContent).toBe('password for rudolph (empty: generate one):');
+    const input: HTMLInputElement | null = screen.root.querySelector('#ss-errand-input');
     expect(input?.type).toBe('password');
+    expect(input?.classList.contains('errand-path')).toBe(true);
     input!.value = 'hunter2';
     input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
     expect(await secret).toBe('hunter2');
+    expect(input?.value).toBe('');
+    expect(screen.root.querySelector('.ss-body > .errand-bar')).toBeNull();
     expect([...screen.root.querySelectorAll('.tdc-log-answer')].map((row) => row.textContent)).toEqual(['y', '(hidden)']);
     screen.dispose();
     screen.root.remove();
+  });
+
+  it('a step whose task runs is followed with wait: the rail opens on it, STOP FOLLOWING stops the follow and not the task, FOLLOW follows it again', async () => {
+    runningAt = { 3: '/proc/steps/vm-store-apply-machine' };
+    try {
+      const { screen, sent, asked, release } = screen_make(['done', 'done', 'ready', 'not yet', 'not yet'], true);
+      await screen.open('/scripts/chrisproject/store.mise');
+      await settle();
+      // The rail opens on the running step, the seat runs, and the session's own `wait` follows the task under the step.
+      expect(screen.view_get()).toBe('line-3');
+      expect(sent).toEqual(['wait /proc/steps/vm-store-apply-machine']);
+      expect(screen.running_is()).toBe(true);
+      expect(screen.following_is()).toBe(true);
+      expect(screen.root.querySelector('.takeover-gutter button[data-view="line-3"]')?.classList.contains('ss-seat-running')).toBe(true);
+      expect(screen.root.querySelector('.takeover-gutter button[data-view="line-3"] .ss-seat-mark')?.textContent).toBe('▶');
+      expect(screen.root.querySelector('.tdc-condition-name')?.textContent).toBe('RUNNING');
+      expect(screen.root.querySelector('.ss-note-running')?.textContent).toContain('/proc/steps/vm-store-apply-machine');
+      // STOP FOLLOWING is the console's Ctrl-C: the stop is sent, the task is not touched.
+      button_named(screen.root, 'STOP FOLLOWING')?.click();
+      expect(sent).toEqual(['wait /proc/steps/vm-store-apply-machine', '<stop>']);
+      release();
+      await settle();
+      // The lane is free, the task still runs: the header offers FOLLOW and does not follow unasked.
+      expect(screen.running_is()).toBe(false);
+      expect(sent.length).toBe(2);
+      expect(screen.root.querySelector('.ss-header')?.textContent).toContain('not followed');
+      button_named(screen.root, 'FOLLOW')?.click();
+      await settle();
+      expect(sent[2]).toBe('wait /proc/steps/vm-store-apply-machine');
+      release();
+      await settle();
+      // The task's end, heard on the ambient channel, reads the standing again; the seat then reads what it is.
+      runningAt = {};
+      asked.length = 0;
+      screen.taskEnded_take();
+      await settle();
+      expect(asked).toContain('play /scripts/chrisproject/store.mise --status');
+      expect(screen.root.querySelector('.takeover-gutter button[data-view="line-3"] .ss-seat-mark')?.textContent).toBe('▸');
+      expect(button_named(screen.root, 'FOLLOW')).toBeUndefined();
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      runningAt = {};
+    }
   });
 
   it('USERS gathers the user lines; ADD is held until a login and an address stand, then appends the line and sends it', async () => {

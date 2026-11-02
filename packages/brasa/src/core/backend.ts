@@ -282,6 +282,8 @@ export interface LineStatus {
   readonly state: LineState;
   /** Why, in a few words: what is missing, or what changed. */
   readonly detail: string;
+  /** The task running this line now, as it is mounted (`/proc/steps/vm-store-apply-machine`); absent when none does. */
+  readonly running?: string;
 }
 
 /** A backend's reading of one verb's lines, from what it keeps and never from the cloud. */

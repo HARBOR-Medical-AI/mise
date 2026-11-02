@@ -51,6 +51,8 @@ export interface LineStanding {
   /** Not yet, ready, done or changed; null when no verb reads it. */
   readonly state: LineState | null;
   readonly detail: string;
+  /** The task running this line now (`/proc/steps/<id>`); absent when none does. */
+  readonly running?: string;
 }
 
 /** A manifest may play a manifest; a manifest may not play itself forever. */
@@ -392,14 +394,16 @@ async function manifestStatus_read(manifest: Manifest, name: string, values: Map
       if (provider !== undefined) {
         try {
           const read = await provider.read(words);
-          if (read !== null) standing = { ...standing, state: read.state, detail: read.detail };
+          if (read !== null) standing = { ...standing, state: read.state, detail: read.detail, ...(read.running === undefined ? {} : { running: read.running }) };
         } catch (error: unknown) {
           standing = { ...standing, detail: error instanceof Error ? error.message : String(error) };
         }
       }
       standings.push(standing);
       const pad: string = ' '.repeat(Math.max(1, 8 - (standing.state ?? '—').length));
-      sink_dataLine(`${state_show(standing.state)}${pad}${chalk.cyan(`▸ ${text}`)}${standing.detail !== '' ? chalk.gray(`  ${standing.detail}`) : ''}`);
+      // A line whose task runs now says so after its state: the state is what the records hold, the run is what is happening to them.
+      const running: string = standing.running === undefined ? '' : chalk.yellow(`  ▶ running: ${standing.running} (wait ${standing.running} follows it)`);
+      sink_dataLine(`${state_show(standing.state)}${pad}${chalk.cyan(`▸ ${text}`)}${standing.detail !== '' ? chalk.gray(`  ${standing.detail}`) : ''}${running}`);
     }
   });
   const counted = (state: LineState): number => standings.filter((standing: LineStanding): boolean => standing.state === state).length;
