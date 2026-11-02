@@ -274,6 +274,24 @@ export interface ElevationCredentials {
   password: string;
 }
 
+/** Where a manifest's line stands against what is kept, without running it. */
+export type LineState = 'not yet' | 'ready' | 'done' | 'changed';
+
+/** What `play --status` says of one line. */
+export interface LineStatus {
+  readonly state: LineState;
+  /** Why, in a few words: what is missing, or what changed. */
+  readonly detail: string;
+}
+
+/** A backend's reading of one verb's lines, from what it keeps and never from the cloud. */
+export interface LineStatusProvider {
+  /** The verb the line begins with (`vm`). */
+  readonly verb: string;
+  /** Reads a line's words after expansion; null when the line has no state to read (`vm cost`). */
+  readonly read: (words: ReadonlyArray<string>) => Promise<LineStatus | null>;
+}
+
 /** One backend, as the core sees it. */
 export interface Backend {
   /** Stable id naming the backend. */
@@ -292,6 +310,8 @@ export interface Backend {
   readonly verbTakes?: ReadonlyArray<VerbTakes>;
   /** What `expect` can make claims about in this backend's world, beside the core's `path`. */
   readonly expectSubjects?: ReadonlyArray<ExpectSubject>;
+  /** How `play --status` reads a line of this backend's verbs against what it keeps. */
+  readonly lineStatuses?: ReadonlyArray<LineStatusProvider>;
   /** What it does with words the registry does not answer. */
   readonly fallback?: BackendFallback;
   /** Runs one command with administrator rights (`sudo`); absent, `sudo` is refused. */

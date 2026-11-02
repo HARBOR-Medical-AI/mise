@@ -27,6 +27,8 @@ import { net_run } from '../src/commands/net.js';
 import { vm_run, type VmCommandContext } from '../src/commands/vm.js';
 import { chris_run, type ChrisCommandContext } from '../src/commands/chris.js';
 import { CUBE_PYTHON_LINE, userAnswer_parse } from '../src/chris/users.js';
+import { lineStatusProviders_make } from '../src/commands/lineStatus.js';
+import type { LineStatusProvider } from '@fnndsc/brasa/core';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 const SECRETS: ChrisSecrets = { djangoKey: 'dk', postgresPassword: 'pg', pfconSecretKey: 'ps', pfconPassword: 'pp', adminPassword: 'admin-pass' };
@@ -303,6 +305,40 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const waiting = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org']);
     expect(waiting.renderedErr).toContain('waiting on DNS: porter.example.org does not resolve to 203.0.113.10 yet (chris deploy again resumes here)');
     expect(vms.record_read('store')?.chris?.dns).toBe('waiting');
+  });
+
+  it('reads where each line of a script stands, from the records alone: not yet, ready, done, changed', async () => {
+    const providers: Map<string, LineStatusProvider> = new Map(lineStatusProviders_make({ nets: context.nets, vms }).map((provider: LineStatusProvider): [string, LineStatusProvider] => [provider.verb, provider]));
+    const read = async (line: string): Promise<string> => { const answer = await (providers.get(line.split(' ')[0] as string) as LineStatusProvider).read(line.split(' ')); return answer === null ? '—' : `${answer.state}${answer.detail === '' ? '' : ` (${answer.detail})`}`; };
+    // The fixture built the network scratch and the VM store already.
+    expect(await read('net new scratch --cidr 10.40.0.0/16')).toBe('done (unchanged)');
+    expect(await read('net new scratch --cidr 10.50.0.0/16')).toBe('changed (cidr 10.40.0.0/16 → 10.50.0.0/16)');
+    expect(await read('net new other --cidr 10.60.0.0/16')).toBe('ready');
+    expect(await read('net build other')).toBe('not yet (other: not declared (net new other))');
+    expect(await read('net build scratch')).toMatch(/^done \(built \d{4}-\d\d-\d\d\)$/);
+    expect(await read('vm new store --net scratch --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
+    expect(await read('vm new blt --net nowhere --vcpu 2 --memory 8 --disk 50 --data 50 --os ubuntu-26.04')).toBe('not yet (the network nowhere is not declared (net new nowhere))');
+    expect(await read('vm build blt')).toBe('not yet (blt: not declared (vm new blt))');
+    expect(await read('vm build store')).toMatch(/^done \(built /);
+    expect(await read('vm cost store --memory 16')).toBe('—');
+    expect(await read('chris deploy store --profile minimal --compute NERC')).toBe('ready');
+    expect(await read('chris deploy store --profile huge')).toBe('ready (--profile huge: one of minimal)');
+    expect(await read('chris user add jorge --email j@example.org')).toBe('not yet (no ChRIS deployed (chris deploy))');
+    surface.answers = ['admin-password'];
+    await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--compute', 'NERC']);
+    expect(await read('chris deploy store --profile minimal --compute NERC')).toMatch(/^done \(deployed /);
+    expect(await read('chris deploy store --profile minimal --compute NERC --host cube.example.org')).toBe('changed (host none → cube.example.org)');
+    expect(await read('chris deploy store --profile minimal')).toBe('changed (compute NERC → store)');
+    expect(await read('chris user add jorge --email j@example.org')).toBe('ready (asks CUBE when it runs; a name already there is left as it is)');
+    expect(await read('chris user add jorge --email j@example.org --on blt')).toBe('not yet (no ChRIS on blt (chris deploy blt))');
+    // The spec moves under what was built: the build and the deploy have a change to plan.
+    await vm_run(vmContext, ['new', 'store', '--memory', '16']);
+    expect(await read('vm new store --net scratch --open 80,443 --vcpu 2 --memory 16 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
+    expect(await read('vm build store')).toBe('changed (declared again since it was built; the build plans and asks)');
+    expect(await read('chris deploy store --profile minimal --compute NERC')).toBe('changed (the VM was declared again since the deploy)');
+    // With a host whose DNS has not caught up, the deploy is ready to resume.
+    vms.record_update('store', (record): void => { if (record.chris !== undefined) { record.chris.host = 'cube.example.org'; record.chris.dns = 'waiting'; } delete record.declared; });
+    expect(await read('chris deploy store --profile minimal --compute NERC --host cube.example.org')).toBe('ready (waiting on DNS for cube.example.org; a replay resumes there)');
   });
 
   it('needs the tasks tier', async () => {

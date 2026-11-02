@@ -113,6 +113,7 @@ jest.unstable_mockModule('../src/builtins/res/gather.store.js', () => ({
 
 const { builtin_play, manifest_parse, line_expand, playArgs_parse } = await import('../src/builtins/res/play.js');
 // The session's files: the manifest is read through the backend, as CFS is.
+const statusAsked: string[][] = [];
 (await import('../src/core/backend.js')).backend_install({
   id: 'chris',
   session: {} as never,
@@ -120,6 +121,16 @@ const { builtin_play, manifest_parse, line_expand, playArgs_parse } = await impo
     read: async (): Promise<Buffer> => { if (missing) throw new Error('no such file'); return Buffer.from(stored); },
     write: async (): Promise<void> => undefined,
   },
+  // A status reads each line's verb against what the backend keeps: here `vm` keeps one VM, `store`, declared and not built.
+  lineStatuses: [{
+    verb: 'vm',
+    read: async (words: ReadonlyArray<string>) => {
+      statusAsked.push([...words]);
+      if (words[1] === 'cost') return null;
+      if (words[2] !== 'store') return { state: 'not yet' as const, detail: `${words[2]}: not declared` };
+      return words[1] === 'new' ? { state: 'done' as const, detail: 'unchanged' } : { state: 'ready' as const, detail: '' };
+    },
+  }],
 });
 
 beforeEach(() => {
@@ -135,6 +146,29 @@ beforeEach(() => {
   cwd = '/home/chris/uploads';
   mockSetCwd.mockClear();
   process.exitCode = 0;
+});
+
+describe('play --status reads each line against what is kept, running none', () => {
+  it('says not yet, ready, done or a dash per line, expanded first, and counts them', async () => {
+    stored = 'vm new store --vcpu 2\nvm build store\nvm cost store --memory 16\nvm build ${WHICH}\nls /\n';
+    statusAsked.length = 0;
+    const result = await builtin_play(['f.mise', '--status', '--param', 'WHICH=blt']);
+    expect(result.status).toBe('ok');
+    expect(ran).toEqual([]);
+    expect(statusAsked.map((words: string[]): string => words.join(' '))).toEqual(['vm new store --vcpu 2', 'vm build store', 'vm cost store --memory 16', 'vm build blt']);
+    const plain = output.map((line: string): string => line.replace(/\x1b\[[0-9;]*m/g, ''));
+    expect(plain).toEqual([
+      'done    ▸ vm new store --vcpu 2  unchanged',
+      'ready   ▸ vm build store',
+      '—       ▸ vm cost store --memory 16',
+      'not yet ▸ vm build blt  blt: not declared',
+      '—       ▸ ls /',
+    ]);
+    expect(result.rendered.replace(/\x1b\[[0-9;]*m/g, '')).toBe('play: f.mise: 1 done, 1 ready, 0 changed, 1 not yet, of 5 lines\n');
+    expect((result.model as { kind: string; data: { lines: Array<{ number: number; state: string | null }> } }).kind).toBe('manifest.status');
+    expect((result.model as { data: { lines: Array<{ number: number; state: string | null }> } }).data.lines.map((line): string => `${line.number}:${line.state}`)).toEqual(['1:done', '2:ready', '3:null', '4:not yet', '5:null']);
+    expect(mockSetCwd).not.toHaveBeenCalled();
+  });
 });
 
 describe('a play gives back the working directory it began in (#1264)', () => {

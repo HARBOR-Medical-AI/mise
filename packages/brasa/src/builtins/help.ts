@@ -568,9 +568,9 @@ export const helpText: Record<string, CommandHelp> = {
   },
   play: {
     category: 'Workflows',
-    usage: 'play <manifest> [--param NAME=value]... [--pace <duration>] [--dry-run]',
+    usage: 'play <manifest> [--param NAME=value]... [--pace <duration>] [--dry-run] [--status]',
     summary: 'Run a manifest: the lines an operator could have typed',
-    description: 'Plays a manifest (a script is one): its lines run in order in a scope of their own, each shown as it runs, and the first refused line stops it, non-zero. When it ends, however it ends, the session is back in the directory the play began in, so a manifest that cds into a feed does not leave every surface there. The manifest is read from the session\'s filesystem first and from the engine\'s disk second. See docs/manifest.adoc.',
+    description: 'Plays a manifest (a script is one): its lines run in order in a scope of their own, each shown as it runs, and the first refused line stops it, non-zero. When it ends, however it ends, the session is back in the directory the play began in, so a manifest that cds into a feed does not leave every surface there. The manifest is read from the session\'s filesystem first and from the engine\'s disk second. --status runs nothing: each line is expanded as a dry run expands it and its verb says, from what the backend keeps and never from the cloud, where it stands (not yet, with what is missing; ready; done; changed, with what changed), one row per line and a count at the end; a verb that keeps nothing reads as a dash. See docs/manifest.adoc.',
     options: [
       'OPTIONS:',
       '  --param NAME=value   Supply a parameter the manifest declares (repeatable)',
