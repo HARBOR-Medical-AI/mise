@@ -182,6 +182,24 @@ export function specOptions_apply(base: ClusterSpec, options: ReadonlyMap<string
   return { spec };
 }
 
+/**
+ * What changed between two specs, in `cluster new`'s own words.
+ *
+ * @param before - The spec kept.
+ * @param after - The spec declared now.
+ * @returns One phrase per change (`plane 3x8/24 → 3x8/32`); none when equal.
+ */
+export function clusterSpec_diff(before: ClusterSpec, after: ClusterSpec): string[] {
+  const changes: string[] = [];
+  if (before.family !== after.family) changes.push(`family ${before.family} → ${after.family}`);
+  const pool_words = (pool: NodePool): string => `${pool.count}x${pool.vcpu}/${pool.ramGib}`;
+  if (pool_words(before.controlPlane) !== pool_words(after.controlPlane)) changes.push(`plane ${pool_words(before.controlPlane)} → ${pool_words(after.controlPlane)}`);
+  if (pool_words(before.workers) !== pool_words(after.workers)) changes.push(`workers ${pool_words(before.workers)} → ${pool_words(after.workers)}`);
+  const sizes: ReadonlyArray<[keyof ChrisSizing, string]> = [['dataGib', 'data'], ['databaseGib', 'database'], ['queueGib', 'queue']];
+  for (const [key, label] of sizes) if (before.chris[key] !== after.chris[key]) changes.push(`${label} ${before.chris[key]} → ${after.chris[key]} GiB`);
+  return changes;
+}
+
 /** One node a spec asks for. */
 export interface SpecNode {
   name: string;
