@@ -70,7 +70,7 @@ const CHECKS = [
   { line: 'touch ../regions/x', ok: false },
   { line: 'cluster new trial --base-domain fake.example --workers 2x8/32', ok: true, has: ['spec written', 'workers 2 × 8 vCPU 32 GiB'] },
   { line: 'ls ~/trial', ok: true, has: ['spec.yaml', 'state.json', 'steps', 'auth'] },
-  { line: 'cluster plan trial', ok: true, has: ['8 of 9238 cores', 'an hour', 'needs the tasks tier'] },
+  { line: 'cluster plan trial', ok: true, has: ['8 of 9238 cores', 'an hour', 'entered as READ, so nothing outside this host changes'] },
   { line: 'cluster build trial', ok: false, has: ['build steps are not written yet'] },
   { line: 'kill trial-build', ok: false, has: ['no such task'] },
   { line: 'ls /proc/steps', ok: true },
