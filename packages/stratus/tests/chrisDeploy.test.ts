@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as yaml from 'js-yaml';
-import { BufferSink, HeadlessSurface, JobRunner, runner_install, sink_set, surface_set, type PromptRequest } from '@fnndsc/brasa/core';
+import { BufferSink, HeadlessSurface, JobRunner, runner_get, runner_install, sink_set, surface_set, type JobContext, type PromptRequest } from '@fnndsc/brasa/core';
 import type { CloudDriver, CloudPrice, ResourceCounts, ServicePrices } from '../src/cloud/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
 import { CHRIS_PROFILES, floor_short } from '../src/chris/profiles.js';
@@ -28,6 +28,8 @@ import { vm_run, type VmCommandContext } from '../src/commands/vm.js';
 import { chris_run, type ChrisCommandContext } from '../src/commands/chris.js';
 import { CUBE_PYTHON_LINE, userAnswer_parse } from '../src/chris/users.js';
 import { lineStatusProviders_make } from '../src/commands/lineStatus.js';
+import { VM_JOBS } from '../src/vm/build.js';
+import { USER_JOBS } from '../src/chris/users.js';
 import type { LineStatusProvider } from '@fnndsc/brasa/core';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
@@ -339,6 +341,31 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     // With a host whose DNS has not caught up, the deploy is ready to resume.
     vms.record_update('store', (record): void => { if (record.chris !== undefined) { record.chris.host = 'cube.example.org'; record.chris.dns = 'waiting'; } delete record.declared; });
     expect(await read('chris deploy store --profile minimal --compute NERC --host cube.example.org')).toBe('ready (waiting on DNS for cube.example.org; a replay resumes there)');
+  });
+
+  it('names the task running a line now beside its state, and only that line\'s', async () => {
+    const providers: Map<string, LineStatusProvider> = new Map(lineStatusProviders_make({ nets: context.nets, vms }).map((provider: LineStatusProvider): [string, LineStatusProvider] => [provider.verb, provider]));
+    const running = async (line: string): Promise<string | undefined> => (await (providers.get(line.split(' ')[0] as string) as LineStatusProvider).read(line.split(' ')))?.running;
+    const runner: JobRunner = runner_get() as JobRunner;
+    // A job that goes on until it is told to stop, as a cloud apply does.
+    const held = (ctx: JobContext): Promise<void> => new Promise((resolve: () => void): void => { if (ctx.signal.aborted) resolve(); ctx.signal.addEventListener('abort', (): void => resolve()); });
+    expect(await running('vm build store')).toBeUndefined();
+    runner.job_start(STEPS_SOURCE, VM_JOBS.apply('store', 'machine'), 'apply store machine', held);
+    expect(await running('vm build store')).toBe('/proc/steps/vm-store-apply-machine');
+    expect(await running('vm build blt')).toBeUndefined();
+    expect(await running('net build scratch')).toBeUndefined();
+    expect(await running('chris deploy store --profile minimal')).toBeUndefined();
+    runner.job_stop(STEPS_SOURCE, VM_JOBS.apply('store', 'machine'));
+    await new Promise((resolve: (value: unknown) => void): void => { setTimeout(resolve, 20); });
+    expect(await running('vm build store')).toBeUndefined();
+    // One add job serves a VM's user lines; the job's label says whose, so only that user's line runs.
+    surface.answers = ['admin-password'];
+    await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--compute', 'NERC']);
+    runner.job_start(STEPS_SOURCE, USER_JOBS.add('store'), 'add jorge to the ChRIS on store', held);
+    expect(await running('chris user add jorge --email j@example.org')).toBe('/proc/steps/chris-store-user-add');
+    expect(await running('chris user add maria --email m@example.org')).toBeUndefined();
+    runner.job_stop(STEPS_SOURCE, USER_JOBS.add('store'));
+    await new Promise((resolve: (value: unknown) => void): void => { setTimeout(resolve, 20); });
   });
 
   it('needs the tasks tier', async () => {

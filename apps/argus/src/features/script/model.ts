@@ -23,6 +23,8 @@ export interface ScriptLine {
   /** Its state, or null when no verb reads it (`echo`). */
   readonly state: LineState | null;
   readonly detail: string;
+  /** The task running this line now (`/proc/steps/<id>`), or null: the state is what the records hold, the run is what is happening to them. */
+  readonly running: string | null;
 }
 
 /** The kinds of step the screen draws a body for. */
@@ -39,6 +41,8 @@ export interface ScriptStep {
   readonly lines: ScriptLine[];
   /** The state the seat wears: the lines' together. */
   readonly state: LineState | null;
+  /** The task running one of its lines now, or null. */
+  readonly running: string | null;
 }
 
 /** A line taken apart: its verb words, its subject and its options. */
@@ -234,15 +238,36 @@ export function steps_build(lines: ReadonlyArray<ScriptLine>): ScriptStep[] {
     if (kind === 'users') {
       if (users === null) {
         users = [line];
-        steps.push({ key: 'users', label: 'USERS', kind, lines: users, state: null });
+        steps.push({ key: 'users', label: 'USERS', kind, lines: users, state: null, running: null });
       } else {
         users.push(line);
       }
       continue;
     }
-    steps.push({ key: `line-${line.number}`, label: stepLabel_derive(line.text), kind, lines: [line], state: line.state });
+    steps.push({ key: `line-${line.number}`, label: stepLabel_derive(line.text), kind, lines: [line], state: line.state, running: line.running });
   }
-  return steps.map((step: ScriptStep): ScriptStep => ({ ...step, state: stepState_derive(step.lines) }));
+  return steps.map((step: ScriptStep): ScriptStep => ({ ...step, state: stepState_derive(step.lines), running: step.lines.find((line: ScriptLine): boolean => line.running !== null)?.running ?? null }));
+}
+
+/**
+ * The step whose line runs now, when one does.
+ *
+ * @param steps - The steps.
+ * @returns The first step with a running task, or undefined.
+ */
+export function runningStep_find(steps: ReadonlyArray<ScriptStep>): ScriptStep | undefined {
+  return steps.find((step: ScriptStep): boolean => step.running !== null);
+}
+
+/**
+ * Whether a step's line runs as a task (a build, a deploy, a user add): its
+ * run outlives the screen, so the screen follows it instead of holding it.
+ *
+ * @param kind - The step's kind.
+ * @returns True for the kinds that start a task.
+ */
+export function stepKind_isTask(kind: StepKind): boolean {
+  return kind === 'net build' || kind === 'vm build' || kind === 'chris deploy' || kind === 'users';
 }
 
 /**
@@ -259,7 +284,7 @@ export function lines_build(text: string, standings: ReadonlyArray<LineStandingM
   const played: string[] = text.split('\n').map((line: string): string => line.trim()).filter((line: string): boolean => line !== '' && !line.startsWith('#'));
   return played.map((line: string, index: number): ScriptLine => {
     const standing: LineStandingModel | undefined = standings[index];
-    return { number: index + 1, text: line, state: standing?.state ?? null, detail: standing?.detail ?? '' };
+    return { number: index + 1, text: line, state: standing?.state ?? null, detail: standing?.detail ?? '', running: standing?.running ?? null };
   });
 }
 

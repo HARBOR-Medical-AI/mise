@@ -2494,6 +2494,8 @@ async function surface_start(token: string): Promise<void> {
         if (envelope.model?.kind === 'tasks.job' || envelope.model?.kind === 'joblet.waiting') {
           const text: string = envelope.rendered.trim();
           if (text !== '') terminal.line_note(text);
+          // A step's task ending is what the script screen's seats wait on.
+          if (envelope.model.kind === 'tasks.job') scriptScreen.task_ended();
           return;
         }
         if (envelope.model?.kind === 'fs.listing') {

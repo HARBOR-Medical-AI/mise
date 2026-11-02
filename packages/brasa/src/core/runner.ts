@@ -412,6 +412,8 @@ export class JobRunner {
     if (entry === undefined) return Promise.resolve(undefined);
     for (const line of entry.tail) onLine(line);
     if (taskState_isOver(entry.record.state)) return Promise.resolve({ ...entry.record });
+    // A follow asked to stop before it began (a STOP between a question's answer and the job's start) ends at once.
+    if (signal?.aborted === true) return Promise.resolve({ ...entry.record });
     return new Promise((resolve: (record: JobRecord) => void): void => {
       const line_hear = (line: string): void => onLine(line);
       const finish = (): void => {

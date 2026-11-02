@@ -31,6 +31,8 @@ export interface ScriptScreenModule {
   ask: (request: SurfaceAsk) => Promise<string | null>;
   /** A live output chunk, while one of the screen's lines runs. */
   output_take: (chunk: string) => void;
+  /** A task of the session ended: the screen, when up, reads its script's standing again. */
+  task_ended: () => void;
 }
 
 /**
@@ -52,6 +54,8 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client'>): ScriptS
 
   const close = (): void => {
     if (screen === null) return;
+    // A step that runs as a task goes on without the screen: leaving stops following it, never the task.
+    if (screen.following_is()) context.client.stop_send();
     screen.dispose();
     screen.root.remove();
     screen = null;
@@ -113,5 +117,6 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client'>): ScriptS
     running_is: (): boolean => screen !== null && lineRunning,
     ask: (request: SurfaceAsk): Promise<string | null> => screen === null ? Promise.resolve(null) : screen.ask_take(request.message, request.kind),
     output_take: (chunk: string): void => { screen?.output_take(chunk); },
+    task_ended: (): void => { screen?.taskEnded_take(); },
   };
 }

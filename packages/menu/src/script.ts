@@ -24,6 +24,8 @@ export const lineStandingSchema = z.object({
   /** Its state; null when no verb reads it. */
   state: z.enum(LINE_STATES).nullable(),
   detail: z.string(),
+  /** The task running this line now, as it is mounted (`/proc/steps/<id>`); absent when none does. */
+  running: z.string().optional(),
 });
 
 /** What `play --status` answers: the manifest's name and a row per line. */

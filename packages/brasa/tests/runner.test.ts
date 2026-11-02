@@ -111,6 +111,11 @@ describe('the runner', () => {
     const letGo: Promise<JobRecord | undefined> = runner.job_follow('steps', 'b', () => {}, controller.signal);
     controller.abort();
     expect((await letGo)?.state).toBe('running');
+    // A follow asked to stop before it began ends at once, the job untouched.
+    const already: AbortController = new AbortController();
+    already.abort();
+    const never: Promise<JobRecord | undefined> = runner.job_follow('steps', 'b', () => {}, already.signal);
+    expect((await Promise.race([never, new Promise<string>((resolve) => { setTimeout(() => resolve('late'), 200); })]) as JobRecord)?.state).toBe('running');
     second.release();
     expect(await runner.job_follow('steps', 'nope', () => {})).toBeUndefined();
   });
