@@ -54,7 +54,7 @@ export interface OciShapeRecord {
   readonly gpus: number;
   readonly isFlexible: boolean;
   readonly ocpuOptions: { readonly min: number; readonly max: number } | null;
-  readonly memoryOptions: { readonly minInGBs: number; readonly maxInGBs: number } | null;
+  readonly memoryOptions: { readonly minInGBs: number; readonly maxInGBs: number; readonly minPerOcpuInGBs?: number; readonly maxPerOcpuInGBs?: number } | null;
   readonly quotaNames: ReadonlyArray<string>;
   readonly raw: unknown;
 }
@@ -252,7 +252,7 @@ export function ociApi_make(options: OciApiOptions = {}): OciApi {
         gpus: shape.gpus ?? 0,
         isFlexible: shape.isFlexible ?? false,
         ocpuOptions: shape.ocpuOptions !== undefined ? { min: shape.ocpuOptions.min ?? 0, max: shape.ocpuOptions.max ?? 0 } : null,
-        memoryOptions: shape.memoryOptions !== undefined ? { minInGBs: shape.memoryOptions.minInGBs ?? 0, maxInGBs: shape.memoryOptions.maxInGBs ?? 0 } : null,
+        memoryOptions: shape.memoryOptions !== undefined ? { minInGBs: shape.memoryOptions.minInGBs ?? 0, maxInGBs: shape.memoryOptions.maxInGBs ?? 0, ...(shape.memoryOptions.minPerOcpuInGBs !== undefined ? { minPerOcpuInGBs: shape.memoryOptions.minPerOcpuInGBs } : {}), ...(shape.memoryOptions.maxPerOcpuInGBs !== undefined ? { maxPerOcpuInGBs: shape.memoryOptions.maxPerOcpuInGBs } : {}) } : null,
         quotaNames: shape.quotaNames ?? [],
         raw: shape,
       }));

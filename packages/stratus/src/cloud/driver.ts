@@ -89,6 +89,8 @@ export interface CloudShape {
   readonly cores: { readonly min: number; readonly max: number };
   /** Memory in GiB a fixed shape has, or the range a flexible one allows. */
   readonly memoryGib: { readonly min: number; readonly max: number };
+  /** Memory a flexible shape allows per vCPU, when the cloud bounds it (OCI: per OCPU, halved). */
+  readonly memoryPerVcpuGib?: { readonly min: number; readonly max: number };
   /** The processor, in the cloud's words. */
   readonly processor: string;
   /** GPUs, when the shape has them. */

@@ -11,10 +11,11 @@ import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BufferSink, HeadlessSurface, JobRunner, runner_install, sink_set, surface_set, type PromptRequest } from '@fnndsc/brasa/core';
-import type { CloudDriver, CloudPrice, ResourceCounts, ServicePrices } from '../src/cloud/driver.js';
+import type { CloudDriver, CloudPrice, CloudShape, ResourceCounts, ServicePrices } from '../src/cloud/driver.js';
+import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
 import { vmCloudInit_render, vmMachineVariables_build, vmModule_zip, vmOs_lower } from '../src/cloud/oci/modules/vm.js';
-import { ports_read, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, type VmSpec } from '../src/vm/spec.js';
+import { ports_read, vmLimits_derive, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, type VmSpec } from '../src/vm/spec.js';
 import { VmStore } from '../src/vm/state.js';
 import { vmCost_estimate } from '../src/vm/build.js';
 import { NetStore } from '../src/net/state.js';
@@ -112,7 +113,7 @@ describe('vm, over the fake cloud', () => {
     store = new VmStore(join(root, 'vms'));
     nets = new NetStore(join(root, 'nets'));
     world = new FakeBuildWorld(0);
-    const driver = { resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => PRICES, servicePrices_get: async (): Promise<ServicePrices> => SERVICE } as unknown as CloudDriver;
+    const driver = { resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => PRICES, servicePrices_get: async (): Promise<ServicePrices> => SERVICE, shapes_list: async (): Promise<CloudShape[]> => (await new FakeDriver(fakeCloud_sample()).shapes_list('us-ashburn-1')) } as unknown as CloudDriver;
     const builder: FakeCloudBuilder = new FakeCloudBuilder(world);
     netContext = { store: nets, driver, builder, region: (): string => 'us-ashburn-1', clientCidr_read: async (): Promise<string> => '134.174.21.21/32' };
     context = { store, nets, driver, builder, region: (): string => 'us-ashburn-1' };
@@ -150,6 +151,14 @@ describe('vm, over the fake cloud', () => {
     expect(store.spec_read('store')).toMatchObject({ spec: { memory: 8 } });
     expect(plain((await vm_run(context, ['cost'])).rendered)).toBe('store: 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups): $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month)\n');
     expect((await vm_run(context, ['cost', '--memory', '16'])).renderedErr).toContain('vm cost: usage:');
+  });
+
+  it('says what the shape sells, in the spec\'s words, from the cloud', async () => {
+    expect(plain((await vm_run(context, ['limits'])).rendered)).toBe('shape   VM.Standard.E5.Flex (E5)\nvcpu    2 to 94, in steps of 2\nmemory  1 to 1049 GiB, 0.5 to 32 GiB per vCPU\ndisk    50 to 32768 GB\ndata    50 to 32768 GB, backups daily or none\n');
+    expect((await vm_run(context, ['limits', 'store'])).renderedErr).toContain('usage: vm limits');
+    const limits = vmLimits_derive({ name: 'VM.Standard.E5.Flex', family: 'E5', vcpuPerCore: 2, cores: { min: 2, max: 188 }, memoryGib: { min: 1, max: 1536 }, memoryPerVcpuGib: { min: 0.5, max: 32 } });
+    expect(limits.vcpu).toEqual({ min: 2, max: 188, step: 2 });
+    expect(vmLimits_derive({ name: 'x', family: 'X', vcpuPerCore: 1, cores: { min: 1, max: 8 }, memoryGib: { min: 1, max: 64 } }).memory.perVcpu).toBeNull();
   });
 
   it('refuses to build on a network that is not built', async () => {
@@ -230,6 +239,6 @@ describe('vm, over the fake cloud', () => {
   });
 
   it('refuses a verb it does not have, by name', async () => {
-    expect((await vm_run(context, ['restart', 'store'])).renderedErr).toBe('vm: restart: not a verb (vm status, new, cost, plan, build, shell, protect, teardown)\n');
+    expect((await vm_run(context, ['restart', 'store'])).renderedErr).toBe('vm: restart: not a verb (vm status, new, cost, limits, plan, build, shell, protect, teardown)\n');
   });
 });

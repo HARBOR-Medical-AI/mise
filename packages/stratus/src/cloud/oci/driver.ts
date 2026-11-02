@@ -88,6 +88,10 @@ export function shape_convert(record: OciShapeRecord): CloudShape {
   const memoryGib: { min: number; max: number } = record.isFlexible && record.memoryOptions !== null
     ? { min: record.memoryOptions.minInGBs, max: record.memoryOptions.maxInGBs }
     : { min: record.memoryInGBs ?? 0, max: record.memoryInGBs ?? 0 };
+  const perOcpu = record.memoryOptions;
+  const memoryPerVcpuGib: { min: number; max: number } | undefined = record.isFlexible && perOcpu !== null && perOcpu.minPerOcpuInGBs !== undefined && perOcpu.maxPerOcpuInGBs !== undefined
+    ? { min: perOcpu.minPerOcpuInGBs / terms.vcpuPerOcpu, max: perOcpu.maxPerOcpuInGBs / terms.vcpuPerOcpu }
+    : undefined;
   return {
     name: record.shape,
     family: terms.family,
@@ -95,6 +99,7 @@ export function shape_convert(record: OciShapeRecord): CloudShape {
     vcpuPerCore: terms.vcpuPerOcpu,
     cores,
     memoryGib,
+    ...(memoryPerVcpuGib !== undefined ? { memoryPerVcpuGib } : {}),
     processor: record.processorDescription,
     gpus: record.gpus,
     quotaNames: record.quotaNames,
