@@ -450,3 +450,19 @@ chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org
 * Read back from pangea: Let's Encrypt (`YE1`) for `porter.chrisproject.org` until 2027-01-31, HTTP 308 to HTTPS; `rudolph` logged in through the door, the session booted `ready`, `/s/<key>/` served ARGUS (200); the store still lists pl-dymap 2.1.2, pl-freesurfer 1.0.4, pl-shexec 2.5.0.
 
 *Memory.* The store stays at 2 vCPU and 8 GiB: CUBE's stack takes a few GiB, and each person signed in through porter adds a session of a few hundred MB. When that outgrows it, raise `--memory` on the script's `vm new` line (to 16 GiB: about $0.016 an hour more, $12 a month, at OCI's list price for E5) and play the script again; `vm build` rebuilds the machine over the same data volume and address, so CUBE's database, its files and porter's sessions are kept.
+
+== What a VM would cost: `vm cost`, 2026-11-02
+
+`vm cost` takes `vm new`'s words and declares nothing. Read against OCI's list prices from a private daemon with the operator's state (no build, no change):
+
+[source]
+----
+vm cost
+store: 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups): $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month)
+vm cost store --memory 16
+store, memory 8 → 16: $0.052 → $0.068 an hour, $37.83 → $49.51 a month (+$11.68 a month); nothing declared (vm new store with the same options declares it)
+vm cost store --vcpu 4
+store, vcpu 2 → 4: $0.052 → $0.082 an hour, $37.83 → $59.73 a month (+$21.90 a month); nothing declared (vm new store with the same options declares it)
+vm cost blt --vcpu 4 --memory 16 --disk 50 --data 1024 --data-backup daily --os ubuntu-26.04
+blt (not declared): 4 vCPU · 16 GiB · disk 50 GB · data 1024 GB (daily backups): $0.155 an hour, $112.80 a month (the data alone, kept after a teardown: $0.060 an hour, $43.52 a month)
+----

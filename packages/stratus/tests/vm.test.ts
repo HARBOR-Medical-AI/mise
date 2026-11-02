@@ -137,6 +137,21 @@ describe('vm, over the fake cloud', () => {
     expect((await vm_run(context, ['new', 'Store', ...STORE_LINE])).renderedErr).toContain('a VM\'s name is a hostname');
   });
 
+  it('costs a VM without declaring it: the same words as vm new, a change on a declared one with its difference', async () => {
+    expect(plain((await vm_run(context, ['cost'])).rendered)).toContain('no VM declared');
+    const lone = await vm_run(context, ['cost', 'blt', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--data-backup', 'daily', '--os', 'ubuntu-26.04']);
+    expect(plain(lone.rendered)).toBe('blt (not declared): 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups): $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month)\n');
+    expect(store.names_list()).toEqual([]);
+    expect((await vm_run(context, ['cost', 'blt', '--vcpu', '2'])).renderedErr).toContain('--memory is needed');
+    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+    expect(plain((await vm_run(context, ['cost', 'store'])).rendered)).toBe('store: 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups): $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month)\n');
+    const bigger: string = plain((await vm_run(context, ['cost', 'store', '--memory', '16'])).rendered);
+    expect(bigger).toMatch(/^store, memory 8 → 16: \$0\.052 → \$0\.\d{3} an hour, \$37\.83 → \$\d+\.\d{2} a month \(\+\$\d+\.\d{2} a month\); nothing declared/);
+    expect(store.spec_read('store')).toMatchObject({ spec: { memory: 8 } });
+    expect(plain((await vm_run(context, ['cost'])).rendered)).toBe('store: 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups): $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month)\n');
+    expect((await vm_run(context, ['cost', '--memory', '16'])).renderedErr).toContain('vm cost: usage:');
+  });
+
   it('refuses to build on a network that is not built', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE, '--net', 'elsewhere']);
     expect((await vm_run(context, ['build', 'store'])).renderedErr).toContain('the network elsewhere is not declared');
@@ -215,6 +230,6 @@ describe('vm, over the fake cloud', () => {
   });
 
   it('refuses a verb it does not have, by name', async () => {
-    expect((await vm_run(context, ['restart', 'store'])).renderedErr).toBe('vm: restart: not a verb (vm status, new, plan, build, shell, protect, teardown)\n');
+    expect((await vm_run(context, ['restart', 'store'])).renderedErr).toBe('vm: restart: not a verb (vm status, new, cost, plan, build, shell, protect, teardown)\n');
   });
 });

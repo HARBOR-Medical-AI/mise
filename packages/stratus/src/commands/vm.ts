@@ -27,6 +27,7 @@ import { VM_OPTIONS, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, type VmSpec } fr
 import { VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
 import { cost_words, planFile_derive, VM_JOBS, vmApplyRun_make, vmCost_estimate, vmNet_read, vmPlanRun_make, vmTeardownRun_make, type VmCost, type VmDeps, type VmPart } from '../vm/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
+import { HOURS_PER_MONTH } from '../cluster/spend.js';
 
 /** What `vm` reads from the session. */
 export interface VmCommandContext {
@@ -140,6 +141,9 @@ function vmStatus_run(context: VmCommandContext, names: ReadonlyArray<string>): 
   return envelope_ok(`${blocks.join('\n\n')}\n`);
 }
 
+/** `vm cost`'s usage. */
+const VM_COST_USAGE: string = 'vm cost [<name> [--vcpu <n>] [--memory <GiB>] [--disk <GB>] [--data <GB>] [--data-backup daily|none] [--os <os>] [--net <network>] [--open <ports>]]';
+
 /**
  * `vm new <name> …`: declares; on one declared, compares.
  *
@@ -193,6 +197,75 @@ async function cost_read(context: VmCommandContext, spec: VmSpec): Promise<VmCos
 function cost_line(cost: VmCost | null): string {
   if (cost === null) return 'not priced (the cloud gave no list price for its shape or storage)';
   return `${cost_words(cost.machineHour + cost.dataHour, cost.currency)} (the data alone, kept after a teardown: ${cost_words(cost.dataHour, cost.currency)})`;
+}
+
+/**
+ * What a spec bills, in words: the machine's size and the data's.
+ *
+ * @param spec - The spec.
+ * @returns `2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups)`.
+ */
+function size_line(spec: VmSpec): string {
+  return `${spec.vcpu} vCPU · ${spec.memory} GiB · disk ${spec.disk} GB · data ${spec.data} GB${spec.dataBackup === 'daily' ? ' (daily backups)' : ''}`;
+}
+
+/**
+ * A change in cost, from one spec's to another's.
+ *
+ * @param before - The cost declared.
+ * @param after - The cost with the change.
+ * @returns `$0.052 → $0.068 an hour, $37.83 → $49.51 a month (+$11.68 a month)`.
+ */
+function costChange_line(before: VmCost, after: VmCost): string {
+  const symbol: string = after.currency === 'USD' ? '$' : `${after.currency} `;
+  const hourA: number = before.machineHour + before.dataHour;
+  const hourB: number = after.machineHour + after.dataHour;
+  const monthA: number = hourA * HOURS_PER_MONTH;
+  const monthB: number = hourB * HOURS_PER_MONTH;
+  const delta: number = monthB - monthA;
+  return `${symbol}${hourA.toFixed(3)} → ${symbol}${hourB.toFixed(3)} an hour, ${symbol}${monthA.toFixed(2)} → ${symbol}${monthB.toFixed(2)} a month (${delta < 0 ? '-' : '+'}${symbol}${Math.abs(delta).toFixed(2)} a month)`;
+}
+
+/**
+ * `vm cost [<name> …]`: what a VM bills at list price, declaring nothing. The
+ * words are `vm new`'s: on a declared VM the options given change its spec
+ * for the answer and the difference is said; on a name not declared they are
+ * the whole spec, `--net` not needed (the price is the session's region's).
+ * Bare, every declared VM.
+ *
+ * @param context - The session.
+ * @param args - The words after `cost`.
+ * @returns The envelope.
+ */
+async function vmCost_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  const read = options_read(args, VM_OPTIONS);
+  if ('error' in read) return envelope_error('', undefined, `vm cost: ${read.error} (${VM_OPTIONS.join(', ')})\n`);
+  const [name, ...extra] = read.rest;
+  if (extra.length > 0 || (name === undefined && read.options.size > 0)) return envelope_error('', undefined, `vm cost: usage: ${VM_COST_USAGE}\n`);
+  if (name === undefined) {
+    const names: string[] = context.store.names_list();
+    if (names.length === 0) return envelope_ok('no VM declared: vm cost <name> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> prices one without declaring it\n');
+    const lines: string[] = [];
+    for (const each of names) {
+      const kept = context.store.spec_read(each);
+      lines.push(kept === null || 'error' in kept ? `${chalk.bold(each)}: ${chalk.yellow('its spec cannot be read')}` : `${chalk.bold(each)}: ${size_line(kept.spec)}: ${cost_line(await cost_read(context, kept.spec))}`);
+    }
+    return envelope_ok(`${lines.join('\n')}\n`);
+  }
+  const before = context.store.spec_read(name);
+  const keptSpec: VmSpec | null = before !== null && 'spec' in before ? before.spec : null;
+  const options: Map<string, string> = new Map(read.options);
+  // The network only places a VM; its price is the session's region's.
+  if (keptSpec === null && !options.has('--net')) options.set('--net', '-');
+  const spec = vmSpec_read(options, keptSpec);
+  if ('error' in spec) return envelope_error('', undefined, `vm cost: ${spec.error}\n`);
+  const after: VmCost | null = await cost_read(context, spec.spec);
+  if (keptSpec === null) return envelope_ok(`${name} (not declared): ${size_line(spec.spec)}: ${cost_line(after)}\n`);
+  const changes: string[] = vmSpec_diff(keptSpec, spec.spec);
+  if (changes.length === 0) return envelope_ok(`${name}: ${size_line(spec.spec)}: ${cost_line(after)}\n`);
+  const was: VmCost | null = await cost_read(context, keptSpec);
+  const priced: string = was === null || after === null ? cost_line(after) : costChange_line(was, after);
+  return envelope_ok(`${name}, ${changes.join(', ')}: ${priced}; nothing declared (vm new ${name} with the same options declares it)\n`);
 }
 
 /**
@@ -433,6 +506,7 @@ export async function vm_run(context: VmCommandContext, args: ReadonlyArray<stri
   switch (verb) {
     case 'status': return vmStatus_run(context, rest);
     case 'new': return vmNew_run(context, rest);
+    case 'cost': return await vmCost_run(context, rest);
     case 'plan': return await vmPlan_run(context, rest);
     case 'build': return await vmBuild_run(context, rest);
     case 'shell': return await vmShell_run(context, rest);
@@ -440,15 +514,15 @@ export async function vm_run(context: VmCommandContext, args: ReadonlyArray<stri
     case 'teardown': return await vmTeardown_run(context, rest);
     default:
       if (rest.length === 0 && context.store.names_list().includes(verb)) return vmStatus_run(context, [verb]);
-      return envelope_error('', undefined, `vm: ${verb}: not a verb (vm status, new, plan, build, shell, protect, teardown)\n`);
+      return envelope_error('', undefined, `vm: ${verb}: not a verb (vm status, new, cost, plan, build, shell, protect, teardown)\n`);
   }
 }
 
 /** `vm`'s help. */
 export const VM_HELP: CommandHelp = {
-  usage: 'vm [status [<name>…]] | vm <name> | vm new <name> --net <network> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> [--open <ports>] [--data-backup daily|none] | vm plan [<name>] | vm build [<name>] [--allow-alter] | vm shell [<name>] | vm protect <name> on|off | vm teardown <name> [--all]',
+  usage: 'vm [status [<name>…]] | vm <name> | vm new <name> --net <network> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> [--open <ports>] [--data-backup daily|none] | vm cost [<name> [<vm new\'s options>]] | vm plan [<name>] | vm build [<name>] [--allow-alter] | vm shell [<name>] | vm protect <name> on|off | vm teardown <name> [--all]',
   summary: 'Declare, build, reach and tear down VMs on a network',
   category: 'Resources',
-  description: 'vm new declares a VM and builds nothing; on a VM already declared it compares, printing unchanged or the change (a script is the truth), and an option not given keeps its value. A VM stands on a built network (--net) and is named in portable words only: vCPUs, memory in GiB, a boot disk and a data volume in GB (50 at least), the operating system (ubuntu-26.04), the ports open to the internet (--open 80,443; SSH goes through the network\'s bastion) and daily backups of its data. The driver chooses the rest: on OCI an E5.Flex (two vCPUs to an OCPU), the newest image of the OS (pinned at the first build), the first availability domain. A VM is two stacks: its data (the volume, its backups, a reserved address) and its machine (the instance, its boot disk, a security group, the volume\'s attachment); cloud-init formats the volume once, mounts it at /srv/data and puts Docker\'s data there. vm plan says the size, the network and the cost. vm build plans as tasks (/proc/steps/vm-<name>-plan-data, -machine), says the counts and the cost and asks, applies the data and the machine and points the address at it; a plan that touches what exists is refused unless --allow-alter. vm shell (shell tier) opens a three-hour session on the network\'s bastion for the VM\'s own key and prints the ssh line. A VM is born protected: vm protect <name> off lets teardown run. vm teardown removes the machine and keeps the data, backups and address, so the next build brings it back with its data and name; --all takes those too, asking for the name typed back.',
-  examples: ['vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04', 'vm plan store', 'vm build store', 'vm shell store', 'vm protect store off', 'vm teardown store'],
+  description: 'vm new declares a VM and builds nothing; on a VM already declared it compares, printing unchanged or the change (a script is the truth), and an option not given keeps its value. A VM stands on a built network (--net) and is named in portable words only: vCPUs, memory in GiB, a boot disk and a data volume in GB (50 at least), the operating system (ubuntu-26.04), the ports open to the internet (--open 80,443; SSH goes through the network\'s bastion) and daily backups of its data. The driver chooses the rest: on OCI an E5.Flex (two vCPUs to an OCPU), the newest image of the OS (pinned at the first build), the first availability domain. A VM is two stacks: its data (the volume, its backups, a reserved address) and its machine (the instance, its boot disk, a security group, the volume\'s attachment); cloud-init formats the volume once, mounts it at /srv/data and puts Docker\'s data there. vm cost says what a VM bills at list price, an hour and a month, and what its data alone keeps billing after a teardown; it declares and saves nothing. Its words are vm new\'s: on a declared VM the options given change its spec for the answer and the difference is said (vm cost store --memory 16); on a name not declared they are the whole spec, without --net (the price is the session\'s region\'s); bare, every declared VM. vm plan says the size, the network and the cost. vm build plans as tasks (/proc/steps/vm-<name>-plan-data, -machine), says the counts and the cost and asks, applies the data and the machine and points the address at it; a plan that touches what exists is refused unless --allow-alter. vm shell (shell tier) opens a three-hour session on the network\'s bastion for the VM\'s own key and prints the ssh line. A VM is born protected: vm protect <name> off lets teardown run. vm teardown removes the machine and keeps the data, backups and address, so the next build brings it back with its data and name; --all takes those too, asking for the name typed back.',
+  examples: ['vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04', 'vm cost store --memory 16', 'vm cost blt --vcpu 4 --memory 16 --disk 50 --data 1024 --data-backup daily --os ubuntu-26.04', 'vm plan store', 'vm build store', 'vm shell store', 'vm protect store off', 'vm teardown store'],
 };
