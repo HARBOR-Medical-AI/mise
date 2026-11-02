@@ -524,3 +524,11 @@ chrisproject: at a1c8045 2026-11-01 infra: infrastructure as mise scripts
 ----
 
 The status rows are those of the section before, read now through the mount: the console and the script screen name one path.
+
+== The script screen: `scripts` in ARGUS, 2026-11-02
+
+The web analog of this document (docs/stratus.adoc, D17). In a stratus session in ARGUS, `scripts` takes the display over the library, and `scripts open /scripts/chrisproject/store.mise` (or OPEN on the library, or a row on the SCRIPTS tile) over the store's script: its lines become the rail, NET NEW, NET BUILD, VM NEW, VM BUILD, CHRIS DEPLOY and USERS, each seat wearing the state `play --status` read for it. On pangea against the live store the first five read done and USERS ready, as the console's `play --status` said in the section before.
+
+A step's body is its line as a form: the CIDR on NET NEW; on VM NEW the sliders, whose ends come from `vm limits` (2 to 64 vCPUs shown of the 252 the shape sells, memory bounded per vCPU), with the price re-asked of `vm cost` as they move and shown beside what the declared VMs bill now; on CHRIS DEPLOY the profile, compute, host, porter and password file. RUN sends the line as shown, and the console's output lands under it. VM BUILD carries PROTECT ON and OFF and TEARDOWN, the machine or `--all` on a redder pill. USERS lists the `chris user add` lines and ADD appends the next; the password is asked hidden on the strip when the line runs. An edit is EDITED · NOT SAVED until SAVE writes the whole script to `/scripts/mine/store.mise` as the editor saves, and the screen opens it from there; the clone under `/scripts/chrisproject/` is never written. Every pill is a line the console takes too, so this document stays the specification of the screen.
+
+Tried live 2026-11-02 from a private daemon over the operator's state, reads only: the library listed `store` from `chrisproject` as 5 DONE · 1 READY, the rail opened on USERS, and moving VM NEW's memory to 16 GiB re-asked `vm cost store … --memory 16` and showed `memory 8 → 16` with the declared rate beside it. Nothing was run.

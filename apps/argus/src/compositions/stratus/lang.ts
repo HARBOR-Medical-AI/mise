@@ -1,12 +1,14 @@
 /**
  * @file The stratus composition's words in the ARGUS language: `cluster`
- * opens the TD controller (docs/stratus.adoc, D13).
+ * opens the TD controller (docs/stratus.adoc, D13), `scripts` the script
+ * screen (D17).
  *
- * `cluster` is the session's command too. The surface claims only bare
+ * Both are the session's commands too. The surface claims only bare
  * `cluster` and `cluster <name>` for a cluster the session has, the lines the
- * controller opens on; every other `cluster` line (`cluster status`, `cluster
- * plan quay`, `cluster build quay`) reaches the session as it always did, and
- * in chell the same lines play as text.
+ * controller opens on, and bare `scripts` and `scripts open <path>`, the
+ * lines the script screen opens on; every other line of either (`cluster
+ * status`, `cluster build quay`, `scripts add`, `scripts pull`) reaches the
+ * session as it always did, and in chell the same lines play as text.
  *
  * @module
  */
@@ -16,7 +18,16 @@ import type { ArgusHost, LanguageExtension } from '../../console/argusLang.js';
 export interface StratusHostVerbs {
   /** Opens the TD controller on a cluster (`''` for the first); answers what happened. */
   controller_open(name: string): Promise<string>;
+  /** Opens the script screen on the library (`''`) or a script; answers what happened. */
+  script_open(path: string): Promise<string>;
 }
+
+/**
+ * The words of `scripts` the surface claims: bare (the library takes the
+ * screen) and `open <path>` (a script does); `add`, `pull` and `remove` stay
+ * the session's (docs/stratus.adoc, D17).
+ */
+export const SCRIPTS_CLAIMS: ReadonlySet<string> = new Set<string>(['', 'open']);
 
 /** The host the stratus words reach. */
 export type StratusLangHost = ArgusHost & StratusHostVerbs;
@@ -50,15 +61,22 @@ export function clusterClaims_set(names: ReadonlyArray<string>): boolean {
  */
 export function stratusLanguage(host: () => StratusLangHost): LanguageExtension {
   return {
-    subjects: { cluster: CLUSTER_CLAIMS },
+    subjects: { cluster: CLUSTER_CLAIMS, scripts: SCRIPTS_CLAIMS },
     views: {},
     claims: {},
     listings: {},
     chords: [],
-    lines: [{ after: 'view', line: 'cluster [<name>]             (the TD controller takes the screen; every other cluster line is the session\'s)' }],
+    lines: [
+      { after: 'view', line: 'cluster [<name>]             (the TD controller takes the screen; every other cluster line is the session\'s)' },
+      { after: 'view', line: 'scripts [open <path>]        (the script screen takes the screen: the library, or one script; add, pull and remove are the session\'s)' },
+    ],
     run: (_argus: ArgusHost, sentence: { subject: string; words: string[] }): Promise<string> | undefined => {
-      if (sentence.subject !== 'cluster') return undefined;
-      return host().controller_open(sentence.words[0] ?? '');
+      if (sentence.subject === 'cluster') return host().controller_open(sentence.words[0] ?? '');
+      if (sentence.subject === 'scripts') {
+        if (sentence.words[0] === 'open') return host().script_open(sentence.words[1] ?? '');
+        return host().script_open('');
+      }
+      return undefined;
     },
   };
 }

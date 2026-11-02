@@ -1,0 +1,62 @@
+/* The script screen: the takeover over a .mise script in a stratus session
+ * (features/script/screen.ts, docs/stratus.adoc D17), drawn in the ARGUS
+ * frame (features/takeover/frame.ts) and wearing the TD controller's classes
+ * (controller.css): the two are one family of screens. This sheet holds only
+ * what the script screen adds: the seats' state marks, a line's box, the
+ * library's rows and the user lines. */
+body[data-takeover='script'] { overflow: hidden; }
+body[data-takeover='script'] > *:not(#script-screen) { visibility: hidden; }
+
+/* the rail: a seat per line, each wearing its state */
+.script-screen .takeover-gutter button[data-state] { position: relative; }
+.script-screen .takeover-gutter button[data-state='not yet'] { opacity: 0.55; }
+.script-screen .takeover-gutter button[data-state='changed']:not(.takeover-view-on) { background-color: var(--tdc-bill); }
+.script-screen .takeover-gutter button.ss-seat-running:not(.takeover-view-on) { background-color: var(--butter); }
+.ss-seat-mark { position: absolute; top: 0.35rem; left: 0.6rem; font-size: 0.9rem; font-weight: 700; letter-spacing: 0; color: #000; opacity: 0.8; }
+.ss-seat-source { font-size: 0.6rem; letter-spacing: 0.12em; color: #000; opacity: 0.8; text-align: right; }
+
+/* the header's condition in the script's words */
+.script-screen .tdc-condition[data-condition='READY'] { background: var(--harvestgold); }
+.script-screen .tdc-condition[data-condition='DONE'] { background: var(--harvestgold); }
+.script-screen .tdc-condition[data-condition='CHANGED'] { background: var(--tdc-bill); }
+.script-screen .tdc-condition[data-condition='NOT YET'] { background: var(--honey); }
+.script-screen .tdc-condition[data-condition='RUNNING'] { background: var(--butter); }
+.script-screen .tdc-condition[data-condition='LIBRARY'], .script-screen .tdc-condition[data-condition='READING'] { background: var(--honey); }
+
+/* the body: the library in two columns, a step in three */
+.ss-body[data-view='library'] { grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr); }
+.ss-body[data-view='step'] { grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr) minmax(0, 0.9fr); }
+.ss-col-form { gap: 0.8rem; }
+
+/* a line: its state, the line as it will run, what the status said */
+.ss-line { display: flex; flex-direction: column; gap: 0.3rem; border-left: 0.5rem solid var(--october-sunset); padding: 0.2rem 0 0.4rem 0.9rem; }
+.ss-line-state { font-size: 0.7rem; letter-spacing: 0.15em; color: var(--orange); }
+.ss-line-ready { border-color: var(--harvestgold); }
+.ss-line-ready .ss-line-state { color: var(--harvestgold); }
+.ss-line-done { border-color: var(--harvestgold); }
+.ss-line-done .ss-line-state { color: var(--butter); }
+.ss-line-changed { border-color: var(--tdc-bill); }
+.ss-line-changed .ss-line-state { color: var(--tdc-bill); }
+.ss-line-not-yet { border-color: var(--october-sunset); }
+.ss-line-text { display: block; font-size: 0.95rem; color: var(--butter); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ss-line-detail { font-size: 0.75rem; }
+
+/* the library's rows: name, source, standing, OPEN */
+.ss-scripts { display: grid; grid-template-columns: minmax(0, 1fr) 8rem minmax(0, 1.4fr) auto; gap: 0.5rem 0.9rem; align-items: center; }
+.ss-script { display: contents; }
+.ss-script-name { font-size: 1.1rem; letter-spacing: 0.08em; color: var(--butter); }
+.ss-script-open .ss-script-name { color: var(--harvestgold); }
+.ss-script-source { font-size: 0.7rem; letter-spacing: 0.12em; color: var(--orange); }
+.ss-script-standing { font-family: var(--face-data); font-size: 0.8rem; color: var(--honey); }
+
+/* the users: each line a row with RUN; the form under them */
+.ss-users { display: flex; flex-direction: column; gap: 0.6rem; }
+.ss-users .tdc-commands { margin-top: 0.1rem; }
+.ss-user-form { margin-top: 0.4rem; gap: 0.5rem; }
+.ss-user-line { font-size: 0.75rem; color: var(--orange); overflow-wrap: anywhere; }
+
+/* the cost column on VM NEW */
+.ss-cost { display: flex; flex-direction: column; gap: 0.6rem; }
+
+/* TEARDOWN · ALL is the redder pill: the data goes too */
+.ss-pill-redder { box-shadow: inset 0 0 0 2px #000, inset 0 0 0 4px var(--tdc-destroy); }

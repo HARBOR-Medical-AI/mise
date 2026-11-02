@@ -34,14 +34,14 @@ import { semicolons_parse } from '../../lib/semicolonParser.js';
 import { VARIABLE_NAME, assignment_parse, variable_get, variableScope_run, type Assignment, type Variable } from '../../core/variables.js';
 import { shellWords_referencesExpand, shellWords_tokenize, type ReferenceExpansion, type ReferenceValue, type ShellWord } from '../../lib/parser.js';
 import { errorStack, type Result } from '@fnndsc/fond';
-import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { CommandEnvelope, envelope_ok, envelope_error, MANIFEST_STATUS_MODEL_KIND } from '@fnndsc/menu';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 /** The model kind under which a played manifest's outcome travels. */
 export const PLAY_MODEL_KIND: string = 'manifest.played';
 
 /** The model `play --status` answers with: one row per line. */
-export const PLAY_STATUS_KIND: string = 'manifest.status';
+export const PLAY_STATUS_KIND: string = MANIFEST_STATUS_MODEL_KIND;
 
 /** One line's standing, as `play --status` reads it. */
 export interface LineStanding {

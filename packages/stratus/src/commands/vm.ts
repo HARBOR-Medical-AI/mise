@@ -18,7 +18,7 @@
  */
 import * as path from 'path';
 import chalk from 'chalk';
-import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
+import { envelope_error, envelope_ok, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, type CommandEnvelope, type VmCostRow } from '@fnndsc/menu';
 import { repl_confirm, repl_question, surface_get, type CommandHelp } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_alter, planCounts_words, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import type { CloudDriver } from '../cloud/driver.js';
@@ -247,11 +247,15 @@ async function vmCost_run(context: VmCommandContext, args: ReadonlyArray<string>
     const names: string[] = context.store.names_list();
     if (names.length === 0) return envelope_ok('no VM declared: vm cost <name> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> prices one without declaring it\n');
     const lines: string[] = [];
+    const rows: VmCostRow[] = [];
     for (const each of names) {
       const kept = context.store.spec_read(each);
-      lines.push(kept === null || 'error' in kept ? `${chalk.bold(each)}: ${chalk.yellow('its spec cannot be read')}` : `${chalk.bold(each)}: ${size_line(kept.spec)}: ${cost_line(await cost_read(context, kept.spec))}`);
+      if (kept === null || 'error' in kept) { lines.push(`${chalk.bold(each)}: ${chalk.yellow('its spec cannot be read')}`); continue; }
+      const cost: VmCost | null = await cost_read(context, kept.spec);
+      lines.push(`${chalk.bold(each)}: ${size_line(kept.spec)}: ${cost_line(cost)}`);
+      rows.push({ name: each, declared: true, spec: kept.spec, cost, changes: [], before: null });
     }
-    return envelope_ok(`${lines.join('\n')}\n`);
+    return envelope_ok(`${lines.join('\n')}\n`, { kind: STRATUS_VM_COST_MODEL_KIND, data: { vms: rows } });
   }
   const before = context.store.spec_read(name);
   const keptSpec: VmSpec | null = before !== null && 'spec' in before ? before.spec : null;
@@ -261,12 +265,13 @@ async function vmCost_run(context: VmCommandContext, args: ReadonlyArray<string>
   const spec = vmSpec_read(options, keptSpec);
   if ('error' in spec) return envelope_error('', undefined, `vm cost: ${spec.error}\n`);
   const after: VmCost | null = await cost_read(context, spec.spec);
-  if (keptSpec === null) return envelope_ok(`${name} (not declared): ${size_line(spec.spec)}: ${cost_line(after)}\n`);
+  const row = (changes: string[], was: VmCost | null): { kind: string; data: { vms: VmCostRow[] } } => ({ kind: STRATUS_VM_COST_MODEL_KIND, data: { vms: [{ name, declared: keptSpec !== null, spec: spec.spec, cost: after, changes, before: was }] } });
+  if (keptSpec === null) return envelope_ok(`${name} (not declared): ${size_line(spec.spec)}: ${cost_line(after)}\n`, row([], null));
   const changes: string[] = vmSpec_diff(keptSpec, spec.spec);
-  if (changes.length === 0) return envelope_ok(`${name}: ${size_line(spec.spec)}: ${cost_line(after)}\n`);
+  if (changes.length === 0) return envelope_ok(`${name}: ${size_line(spec.spec)}: ${cost_line(after)}\n`, row([], null));
   const was: VmCost | null = await cost_read(context, keptSpec);
   const priced: string = was === null || after === null ? cost_line(after) : costChange_line(was, after);
-  return envelope_ok(`${name}, ${changes.join(', ')}: ${priced}; nothing declared (vm new ${name} with the same options declares it)\n`);
+  return envelope_ok(`${name}, ${changes.join(', ')}: ${priced}; nothing declared (vm new ${name} with the same options declares it)\n`, row(changes, was));
 }
 
 /**
@@ -291,7 +296,8 @@ async function vmLimits_run(context: VmCommandContext, args: ReadonlyArray<strin
   }
   const shape: CloudShape | undefined = shapes.find((each: CloudShape): boolean => each.name === shapeName);
   if (shape === undefined) return envelope_error('', undefined, `vm limits: ${region} does not offer ${shapeName}\n`);
-  return envelope_ok(`${vmLimits_lines(vmLimits_derive(shape)).join('\n')}\n`);
+  const limits = vmLimits_derive(shape);
+  return envelope_ok(`${vmLimits_lines(limits).join('\n')}\n`, { kind: STRATUS_VM_LIMITS_MODEL_KIND, data: limits });
 }
 
 /**

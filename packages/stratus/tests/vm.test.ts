@@ -142,12 +142,17 @@ describe('vm, over the fake cloud', () => {
     expect(plain((await vm_run(context, ['cost'])).rendered)).toContain('no VM declared');
     const lone = await vm_run(context, ['cost', 'blt', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--data-backup', 'daily', '--os', 'ubuntu-26.04']);
     expect(plain(lone.rendered)).toBe('blt (not declared): 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups): $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month)\n');
+    // The model under the text: a surface prices a step from it as its levers move.
+    expect(lone.model).toMatchObject({ kind: 'stratus.vm.cost', data: { vms: [{ name: 'blt', declared: false, spec: { vcpu: 2, memory: 8, data: 50 }, changes: [], before: null }] } });
+    expect((lone.model?.data as { vms: Array<{ cost: { currency: string } }> }).vms[0]?.cost.currency).toBe('USD');
     expect(store.names_list()).toEqual([]);
     expect((await vm_run(context, ['cost', 'blt', '--vcpu', '2'])).renderedErr).toContain('--memory is needed');
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
     expect(plain((await vm_run(context, ['cost', 'store'])).rendered)).toBe('store: 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups): $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month)\n');
     const bigger: string = plain((await vm_run(context, ['cost', 'store', '--memory', '16'])).rendered);
     expect(bigger).toMatch(/^store, memory 8 → 16: \$0\.052 → \$0\.\d{3} an hour, \$37\.83 → \$\d+\.\d{2} a month \(\+\$\d+\.\d{2} a month\); nothing declared/);
+    expect((await vm_run(context, ['cost', 'store', '--memory', '16'])).model).toMatchObject({ kind: 'stratus.vm.cost', data: { vms: [{ name: 'store', declared: true, spec: { memory: 16 }, changes: ['memory 8 → 16'], before: { currency: 'USD' } }] } });
+    expect((await vm_run(context, ['cost'])).model).toMatchObject({ data: { vms: [{ name: 'store', declared: true, changes: [] }] } });
     expect(store.spec_read('store')).toMatchObject({ spec: { memory: 8 } });
     expect(plain((await vm_run(context, ['cost'])).rendered)).toBe('store: 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups): $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month)\n');
     expect((await vm_run(context, ['cost', '--memory', '16'])).renderedErr).toContain('vm cost: usage:');
@@ -156,6 +161,7 @@ describe('vm, over the fake cloud', () => {
   it('says what the shape sells, in the spec\'s words, from the cloud', async () => {
     expect(plain((await vm_run(context, ['limits'])).rendered)).toBe('shape   VM.Standard.E5.Flex (E5)\nvcpu    2 to 94, in steps of 2\nmemory  1 to 1049 GiB, 0.5 to 32 GiB per vCPU\ndisk    50 to 32768 GB\ndata    50 to 32768 GB, backups daily or none\n');
     expect((await vm_run(context, ['limits', 'store'])).renderedErr).toContain('usage: vm limits');
+    expect((await vm_run(context, ['limits'])).model).toEqual({ kind: 'stratus.vm.limits', data: { shape: 'VM.Standard.E5.Flex', family: 'E5', vcpu: { min: 2, max: 94, step: 2 }, memory: { min: 1, max: 1049, perVcpu: { min: 0.5, max: 32 } }, disk: { min: 50, max: 32768 }, data: { min: 50, max: 32768 } } });
     const limits = vmLimits_derive({ name: 'VM.Standard.E5.Flex', family: 'E5', vcpuPerCore: 2, cores: { min: 2, max: 188 }, memoryGib: { min: 1, max: 1536 }, memoryPerVcpuGib: { min: 0.5, max: 32 } });
     expect(limits.vcpu).toEqual({ min: 2, max: 188, step: 2 });
     expect(vmLimits_derive({ name: 'x', family: 'X', vcpuPerCore: 1, cores: { min: 1, max: 8 }, memoryGib: { min: 1, max: 64 } }).memory.perVcpu).toBeNull();

@@ -36,6 +36,9 @@ export const TILE_ABOUT: Readonly<Record<string, TileAbout>> = {
   clusters: {
     text: 'The OpenShift clusters in this tenancy, found by their tag: each one\'s condition or last finished build step, its address and what it costs per hour. One with a step gone wrong shows in red; one torn down reads GONE until what is left of it is removed. Opening the tile, or a cluster on it, opens the controller: its condition, spec, steps and cost, and the lines that build, verify and tear it down.',
   },
+  scripts: {
+    text: 'The library of scripts: each .mise file in a git source mounted at /scripts/, with where its lines stand (done, ready, changed, not yet) as play --status reads them from this host\'s records. Opening the tile opens the library on the script screen; a row opens that script, its lines as the rail, each a form over its line with RUN.',
+  },
   capacity: {
     text: 'What this region has free for the machine families your clusters use, zone by zone: the cores and memory a new cluster or a bigger one could take.',
   },

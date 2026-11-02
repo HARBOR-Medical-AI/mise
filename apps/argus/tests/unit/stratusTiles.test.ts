@@ -29,13 +29,14 @@ const CAPACITY = {
 function hooks_make(answers: Record<string, unknown>, seen: string[], named: string[][] = []): StratusTileHooks {
   return {
     ask: async (line: string): Promise<ExecuteOutcome> => {
-      const kind: string = line.startsWith('cluster') ? 'stratus.clusters' : 'stratus.capacity';
+      const kind: string = line.startsWith('cluster') ? 'stratus.clusters' : line.startsWith('ls') ? 'fs.listing' : line.startsWith('play') ? 'manifest.status' : 'stratus.capacity';
       const data: unknown = answers[line];
       return (data === undefined
         ? { envelopes: [{ status: 'error', rendered: '', renderedErr: `${line}: refused\n` }] }
         : { envelopes: [{ status: 'ok', rendered: '', model: { kind, data } }] }) as unknown as ExecuteOutcome;
     },
     cluster_open: (name: string): void => { seen.push(`cluster ${name}`); },
+    script_open: (path: string): void => { seen.push(`scripts open ${path}`); },
     home_open: (): void => { seen.push('home'); },
     line_run: (line: string): void => { seen.push(`run ${line}`); },
     capacity_open: (family: string): void => { seen.push(`capacity:${family}`); },
@@ -44,6 +45,28 @@ function hooks_make(answers: Record<string, unknown>, seen: string[], named: str
 }
 
 describe('the stratus tiles', () => {
+  it('SCRIPTS stands between the frame\'s FILES and CAPACITY: each script in the library with where its lines stand, a row opening the script screen on it', async () => {
+    const seen: string[] = [];
+    const answers: Record<string, unknown> = {
+      'cluster status': CLUSTERS, capacity: CAPACITY,
+      'ls /scripts': [{ path: '/scripts', items: [{ name: 'chrisproject', type: 'source', status: 'cloned' }, { name: 'mine', type: 'dir' }] }],
+      'ls /scripts/chrisproject': [{ path: '/scripts/chrisproject', items: [{ name: 'store.mise', type: 'script' }, { name: 'README.md', type: 'file' }] }],
+      'ls /scripts/mine': [{ path: '/scripts/mine', items: [{ name: 'try.mise', type: 'script' }] }],
+      'play /scripts/chrisproject/store.mise --status': { manifest: 'store', lines: [{ number: 1, text: 'net new n --cidr 10.0.0.0/16', state: 'done', detail: '' }, { number: 2, text: 'vm build s', state: 'changed', detail: '' }] },
+    };
+    const tiles = await stratusTiles_make(hooks_make(answers, seen))();
+    const scripts = tiles.afterFiles[0]!;
+    expect(scripts.name).toBe('SCRIPTS');
+    expect(scripts.figures.map((f) => f.text)).toEqual(['2 SCRIPTS', 'CHANGED UNDER A BUILD']);
+    expect(scripts.rows.map((r) => [r.text, r.errored])).toEqual([['store  CHRISPROJECT  1 DONE · 1 CHANGED', true], ['try  MINE  NOT READ', false]]);
+    scripts.rows[0]!.open!();
+    scripts.enter();
+    expect(seen).toEqual(['scripts open /scripts/chrisproject/store.mise', 'scripts open ']);
+    // With no library answer the tile still stands, empty.
+    const none = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, []))();
+    expect(none.afterFiles[0]!.figures).toEqual([{ text: 'NONE' }]);
+  });
+
   it('a cluster found in the tenancy and not adopted reads its condition in place of a last step, and one with nothing left reads GONE and is counted apart', async () => {
     const found = { clusters: [
       { name: 'harbor', path: '/net/oci/t/clusters/harbor', cluster: 'harbor.oci.example.org', lastDone: null, steps: [], resources: null, origin: 'found', condition: 'UP' },
@@ -75,7 +98,7 @@ describe('the stratus tiles', () => {
   it('place CAPACITY after FILES: per zone, free of permitted, red where nothing is free', async () => {
     const seen: string[] = [];
     const tiles = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, seen))();
-    const capacity = tiles.afterFiles[0]!;
+    const capacity = tiles.afterFiles[1]!;
     expect(capacity.figures).toEqual([{ text: 'US-ASHBURN-1' }]);
     expect(capacity.rows.map((r) => [r.text, r.errored])).toEqual([
       ['E5  US-ASHBURN-AD-1  core  4625 / 4629 FREE', false],
@@ -92,7 +115,7 @@ describe('the stratus tiles', () => {
     const seen: string[] = [];
     const tiles = await stratusTiles_make(hooks_make({ 'cluster status': { clusters: [] } }, seen))();
     expect(tiles.lead!.tile.figures).toEqual([{ text: 'NONE' }]);
-    const capacity = tiles.afterFiles[0]!;
+    const capacity = tiles.afterFiles[1]!;
     expect(capacity.figures).toEqual([{ text: 'NOT READ' }]);
     capacity.rows[0]!.open!();
     expect(seen).toEqual(['capacity:']);
@@ -115,7 +138,7 @@ describe('the stratus tiles', () => {
     const source = stratusTiles_make(hooks);
     const first = await source();
     expect(first.lead!.tile.figures[0]).toEqual({ text: '2 CLUSTERS' });
-    expect(first.afterFiles[0]!.figures).toEqual([{ text: 'READING' }]);
+    expect(first.afterFiles[1]!.figures).toEqual([{ text: 'READING' }]);
     expect(seen).toEqual([]);
     // A second paint while the first capacity is on its way asks for no second one.
     await source();
@@ -126,7 +149,7 @@ describe('the stratus tiles', () => {
     // The repaint's ask answers at once, and the tile reads the region.
     const painted = await source();
     expect(asked.filter((line: string): boolean => line === 'capacity')).toHaveLength(2);
-    expect(painted.afterFiles[0]!.figures).toEqual([{ text: 'US-ASHBURN-1' }]);
+    expect(painted.afterFiles[1]!.figures).toEqual([{ text: 'US-ASHBURN-1' }]);
   });
 
   it('shortens zones and limits to what a tile has room for', () => {
