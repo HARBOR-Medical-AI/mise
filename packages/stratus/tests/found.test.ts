@@ -144,6 +144,20 @@ describe('a session over a tenancy holding a cluster it keeps nothing of', () =>
   });
   afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
+  it('a cluster torn down here with nothing of it left in the tenancy is history: listed nowhere, named in a last line', async () => {
+    store.create({ name: 'quay', created: '2026-10-23T19:35:52.019Z', region: 'us-ashburn-1', baseDomain: 'oci.example.org', steps: {}, ids: {}, gone: '2026-10-25T04:45:08.764Z' }, SPEC_DEFAULT);
+    // A tenancy with nothing of it left: no stack, no compartment carries its tag.
+    const bare: ClusterCommandContext = context_make(new FakeDriver(cloud_make()));
+    (bare.driver as unknown as { clusters_find: () => Promise<FoundCluster[]> }).clusters_find = async (): Promise<FoundCluster[]> => [];
+    const answer = await cluster_run(bare, []);
+    expect(answer.model?.data).toEqual({ clusters: [] });
+    expect(answer.rendered.replace(ANSI, '')).toContain('torn down and gone: quay (the record stays in ');
+    // Its tag's carriers still standing, it is found and listed as GONE until they are removed (D15).
+    world.stacks.set(QUAY_STACK, { state: 'active', compartmentId: QUAY_COMPARTMENT, baseDomain: 'oci.example.org', spec: SPEC_DEFAULT });
+    const found = await cluster_run(context, []);
+    expect((found.model?.data as { clusters: Array<{ name: string }> }).clusters.map((cluster) => cluster.name)).toEqual(['quay']);
+  });
+
   it('cluster status lists it as found, not adopted, PARTLY BUILT while nothing lives in its compartment and its stack holds something, with what the cloud says of it', async () => {
     world.stacks.set(QUAY_STACK, { state: 'active', compartmentId: QUAY_COMPARTMENT, baseDomain: 'oci.example.org', spec: SPEC_DEFAULT });
     const answer = await cluster_run(context, []);
@@ -157,8 +171,8 @@ describe('a session over a tenancy holding a cluster it keeps nothing of', () =>
     expect(model.clusters[0]?.spec).toEqual(SPEC_DEFAULT);
     expect(model.clusters[0]?.steps).toHaveLength(15);
     expect(model.clusters[0]?.refused?.['build']).toBe('found in the tenancy, not adopted: cluster adopt quay first');
-    // In a READ session the adoption itself is held by the door's answer; the particular reasons stand for the rest.
-    expect(model.clusters[0]?.refused?.['adopt']).toBe('entered as READ; MANAGE asks your password once');
+    // The session's mode is never a refusal here: READ asks the password on the surface, which draws it.
+    expect(model.clusters[0]?.refused?.['adopt']).toBeUndefined();
     expect((await cluster_run(context, ['quay'])).rendered).toBe(answer.rendered);
   });
 
@@ -180,8 +194,7 @@ describe('a session over a tenancy holding a cluster it keeps nothing of', () =>
     const model = status.model?.data as { clusters: Array<{ condition?: string; billing?: boolean; refused?: Record<string, string> }> };
     expect(model.clusters[0]?.condition).toBe('GONE');
     expect(model.clusters[0]?.billing).toBe(false);
-    // The build verbs are refused for what it is; the teardown and an adoption, in this READ session, by the door's answer.
-    expect(model.clusters[0]?.refused).toEqual({ plan: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', verify: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', build: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', teardown: 'entered as READ; MANAGE asks your password once', adopt: 'entered as READ; MANAGE asks your password once' });
+    expect(model.clusters[0]?.refused).toEqual({ plan: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', verify: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', build: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that' });
     expect((await cluster_run(context, ['plan', 'quay'])).renderedErr).toBe('cluster plan: quay: nothing of it is left in the tenancy but its tag: cluster teardown quay removes that\n');
     // Without the tasks tier nothing changes.
     const surface: HeadlessSurface & { answer: string } = Object.assign(new HeadlessSurface(), { answer: 'quay' });

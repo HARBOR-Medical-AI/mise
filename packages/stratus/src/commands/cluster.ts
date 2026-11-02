@@ -183,12 +183,20 @@ export async function cluster_run(context: ClusterCommandContext, args: Readonly
     }
     return build(context.build, rest);
   }
-  const found = await foundClusters_read(context, kept);
-  const all: HarborCluster[] = [...kept, ...found.clusters];
+  // A cluster torn down here is the tenancy's to list again: found by what still carries its tag, it stands as found
+  // (GONE until that is removed, D15); with nothing of it left it is history, not a cluster: its record stays on disk,
+  // it is listed nowhere, and the status says so in a line at the end.
+  const torn = (cluster: HarborCluster): boolean => (cluster.state as { gone?: unknown } | null)?.gone !== undefined;
+  const standing: HarborCluster[] = kept.filter((cluster: HarborCluster): boolean => !torn(cluster));
+  const found = await foundClusters_read(context, standing);
+  const foundNames: Set<string> = new Set(found.clusters.map((cluster: HarborCluster): string => cluster.name));
+  const history: HarborCluster[] = kept.filter((cluster: HarborCluster): boolean => torn(cluster) && !foundNames.has(cluster.name));
+  const all: HarborCluster[] = [...standing, ...found.clusters];
+  const historyLine: string = history.length === 0 ? '' : `\n${chalk.gray(`torn down and gone: ${history.map((cluster: HarborCluster): string => cluster.name).join(', ')} (the record stays in ${history.map((cluster: HarborCluster): string => cluster.root).join(', ')})`)}`;
   // `cluster <name>` is that cluster's status: the line the TD controller opens on, and the same line as text in chell.
   if (verb !== 'status' && rest.length === 0 && all.some((cluster: HarborCluster): boolean => cluster.name === verb)) return cluster_run(context, ['status', verb]);
   if (verb !== 'status') return envelope_error('', undefined, `cluster: ${verb}: not a verb this session has yet (cluster status, new, size, plan, build, adopt, verify, protect, teardown)\n`);
-  if (all.length === 0) return envelope_ok(`no clusters${found.unsearched === null ? ' here or in the tenancy' : ` here (the tenancy was not searched: ${found.unsearched})`}: cluster new <name> makes one; stratus --cluster <name>=<harbor-oci checkout> reads one\n`, { kind: STRATUS_CLUSTERS_MODEL_KIND, data: { clusters: [] } });
+  if (all.length === 0) return envelope_ok(`no clusters${found.unsearched === null ? ' here or in the tenancy' : ` here (the tenancy was not searched: ${found.unsearched})`}: cluster new <name> makes one; stratus --cluster <name>=<harbor-oci checkout> reads one${historyLine}\n`, { kind: STRATUS_CLUSTERS_MODEL_KIND, data: { clusters: [] } });
   const chosen: HarborCluster[] = rest.length === 0 ? all : all.filter((cluster: HarborCluster): boolean => rest.includes(cluster.name));
   const missing: string[] = rest.filter((name: string): boolean => !all.some((cluster: HarborCluster): boolean => cluster.name === name));
   if (missing.length > 0) return envelope_error('', undefined, `cluster: ${missing.join(', ')}: no such cluster (${all.map((cluster: HarborCluster): string => cluster.name).join(', ')})\n`);
@@ -200,7 +208,7 @@ export async function cluster_run(context: ClusterCommandContext, args: Readonly
     model.clusters.push(read.summary);
   }
   if (found.unsearched !== null && rest.length === 0) blocks.push(chalk.gray(`the tenancy was not searched for clusters: ${found.unsearched}`));
-  return envelope_ok(`${blocks.join('\n\n')}\n`, { kind: STRATUS_CLUSTERS_MODEL_KIND, data: model });
+  return envelope_ok(`${blocks.join('\n\n')}${historyLine}\n`, { kind: STRATUS_CLUSTERS_MODEL_KIND, data: model });
 }
 
 /** `cluster`'s help. */
