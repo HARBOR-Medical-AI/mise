@@ -26,7 +26,7 @@ import { recorderMuted_run } from '../../session/recorder.js';
 import { session } from '../../session/index.js';
 import { sink_dataLine, sink_errLine } from '../../core/sink.js';
 import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
-import { backendInstalled_get } from '../../core/backend.js';
+import { backendInstalled_get, type LineState, type LineStatusProvider } from '../../core/backend.js';
 import { exitCode_read, exitCode_set } from '../../core/handlerRun.js';
 import { reference_changedBy, reference_isReserved, reference_resolve, unresolvedStands_run, type LinesPassed } from '../../core/expansion.js';
 import { pipes_parse } from '../../core/preprocess.js';
@@ -39,6 +39,19 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 /** The model kind under which a played manifest's outcome travels. */
 export const PLAY_MODEL_KIND: string = 'manifest.played';
+
+/** The model `play --status` answers with: one row per line. */
+export const PLAY_STATUS_KIND: string = 'manifest.status';
+
+/** One line's standing, as `play --status` reads it. */
+export interface LineStanding {
+  readonly number: number;
+  /** The line as it would run, its references filled. */
+  readonly text: string;
+  /** Not yet, ready, done or changed; null when no verb reads it. */
+  readonly state: LineState | null;
+  readonly detail: string;
+}
 
 /** A manifest may play a manifest; a manifest may not play itself forever. */
 const NESTING_MAX: number = 2;
@@ -271,6 +284,8 @@ interface PlayArgs {
   params: Map<string, string>;
   paceMs: number;
   dryRun: boolean;
+  /** Read each line against what is kept, running none. */
+  status: boolean;
   parseError: string | null;
 }
 
@@ -289,6 +304,7 @@ export function playArgs_parse(args: string[]): PlayArgs {
   let manifest: string | null = null;
   let paceMs: number = 0;
   let dryRun: boolean = false;
+  let status: boolean = false;
   let parseError: string | null = null;
 
   for (let index = 0; index < args.length; index++) {
@@ -316,6 +332,8 @@ export function playArgs_parse(args: string[]): PlayArgs {
       index++;
     } else if (token === '--dry-run') {
       dryRun = true;
+    } else if (token === '--status') {
+      status = true;
     } else if (token === '--step') {
       // A keypress needs a terminal, and the daemon has none. Refusing by
       // name beats pausing forever on a surface that cannot answer.
@@ -332,7 +350,61 @@ export function playArgs_parse(args: string[]): PlayArgs {
     }
   }
 
-  return { manifest, params, paceMs, dryRun, parseError };
+  return { manifest, params, paceMs, dryRun, status, parseError };
+}
+
+/** The word a state is shown as, and its colour. */
+function state_show(state: LineState | null): string {
+  switch (state) {
+    case 'done': return chalk.green('done');
+    case 'ready': return chalk.cyan('ready');
+    case 'changed': return chalk.yellow('changed');
+    case 'not yet': return chalk.gray('not yet');
+    default: return chalk.gray('—');
+  }
+}
+
+/**
+ * Reads where every line of a manifest stands, running none: each line is
+ * expanded as a dry run expands it, then its verb's provider on the backend
+ * says not yet, ready, done or changed from what it keeps. A verb without a
+ * provider has no state to read.
+ *
+ * @param manifest - The manifest, read.
+ * @param name - What it was asked as, for the summary.
+ * @param values - Its parameters.
+ * @returns The envelope: one row per line, and the model for a surface.
+ */
+async function manifestStatus_read(manifest: Manifest, name: string, values: Map<string, string>): Promise<CommandEnvelope> {
+  const providers: Map<string, LineStatusProvider> = new Map((backendInstalled_get()?.lineStatuses ?? []).map((provider: LineStatusProvider): [string, LineStatusProvider] => [provider.verb, provider]));
+  const standings: LineStanding[] = [];
+  const verbs: Set<string> = new Set();
+  const assigned: Set<string> = new Set();
+  let count: number = 0;
+  await variableScope_run(values, async (): Promise<void> => {
+    for (const line of manifest.lines) {
+      const text: string = await line_preview(line.text, { count, verbs, assigned });
+      linePassed_note(line.text, verbs, assigned);
+      count += 1;
+      const words: string[] = shellWords_tokenize(text).map((word: ShellWord): string => word.value);
+      const provider: LineStatusProvider | undefined = words[0] === undefined ? undefined : providers.get(words[0]);
+      let standing: LineStanding = { number: line.number, text, state: null, detail: '' };
+      if (provider !== undefined) {
+        try {
+          const read = await provider.read(words);
+          if (read !== null) standing = { ...standing, state: read.state, detail: read.detail };
+        } catch (error: unknown) {
+          standing = { ...standing, detail: error instanceof Error ? error.message : String(error) };
+        }
+      }
+      standings.push(standing);
+      const pad: string = ' '.repeat(Math.max(1, 8 - (standing.state ?? '—').length));
+      sink_dataLine(`${state_show(standing.state)}${pad}${chalk.cyan(`▸ ${text}`)}${standing.detail !== '' ? chalk.gray(`  ${standing.detail}`) : ''}`);
+    }
+  });
+  const counted = (state: LineState): number => standings.filter((standing: LineStanding): boolean => standing.state === state).length;
+  const summary: string = `play: ${name}: ${counted('done')} done, ${counted('ready')} ready, ${counted('changed')} changed, ${counted('not yet')} not yet, of ${manifest.lines.length} lines`;
+  return envelope_ok(`${summary}\n`, { kind: PLAY_STATUS_KIND, data: { manifest: name, lines: standings } });
 }
 
 /**
@@ -349,7 +421,7 @@ export async function builtin_play(args: string[]): Promise<CommandEnvelope> {
   }
   if (parsed.manifest === null) {
     exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red('Usage: play <manifest> [--param NAME=value]... [--pace <duration>] [--dry-run]')}\n`);
+    return envelope_error('', undefined, `${chalk.red('Usage: play <manifest> [--param NAME=value]... [--pace <duration>] [--dry-run] [--status]')}\n`);
   }
   if (depth_get() >= NESTING_MAX) {
     exitCode_set(1);
@@ -404,6 +476,10 @@ export async function builtin_play(args: string[]): Promise<CommandEnvelope> {
 
   if (manifest.name !== null) sink_dataLine(chalk.bold(manifest.name));
   if (manifest.description !== null) sink_dataLine(chalk.gray(manifest.description));
+
+  // A status reads every line against what is kept and runs none: the
+  // script screen colours its rail from this, and chell reads it as text.
+  if (parsed.status) return await manifestStatus_read(manifest, parsed.manifest, values);
 
   const started: number = Date.now();
   if (parsed.paceMs > 0) commandCancellation_enable();

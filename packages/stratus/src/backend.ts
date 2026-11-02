@@ -36,6 +36,7 @@ import { clusterExpectSubject_make } from './cluster/expect.js';
 import { BUILD_WAITS, buildRun_make, STEPS_SOURCE, type BuildDeps } from './cluster/steps.js';
 import { NetStore, netsRoot_derive } from './net/state.js';
 import { VmStore, vmsRoot_derive } from './vm/state.js';
+import { lineStatusProviders_make } from './commands/lineStatus.js';
 import { publicAddresses_resolve, publicNameservers_get, urlStatus_get } from './chris/outside.js';
 import { goDaddy_make } from './chris/registrar.js';
 import { clientCidr_read } from './net/address.js';
@@ -175,6 +176,8 @@ export function stratusBackend_make(options: StratusBackendOptions): StratusBack
     listingLook: stratusListingLook,
     // What a tenant's manifest can claim about its cluster (`expect cluster …`).
     expectSubjects: [clusterExpectSubject_make({ store, driver: options.driver, now: (): Date => new Date() })],
+    // Where a script's lines stand, for `play --status` (D17), from the kept records alone.
+    lineStatuses: lineStatusProviders_make({ nets, vms }),
     prompt: async (last?: PromptLastCommand): Promise<PromptContext> => {
       const cwd: string = session.cwd_get() ?? (await session.home_get());
       return {

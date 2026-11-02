@@ -151,12 +151,14 @@ expect feed status eq finishedSuccessfully --within 20m
 
 [source]
 ----
-play <manifest> [--param K=V]… [--pace <duration>] [--step] [--dry-run]
+play <manifest> [--param K=V]… [--pace <duration>] [--step] [--dry-run] [--status]
 ----
 
 `play` reads the file through the VFS and runs its lines in order against the current session. Nothing is special about the execution: each line goes through the same path a typed line goes through, so every attached surface renders each step as it lands.
 
 A play gives back the working directory it began in when it ends: the last line, a refused line that stopped it, a `--pace` stop, an interrupt. The session is shared by every surface attached to it, so a manifest that does `cd ${FEED.path}` to run a pipeline from that node must not leave them all standing inside the feed. Within the play the `cd` holds as usual. A `--dry-run` runs no line and moves nothing (#1264).
+
+`--status` runs no line either: each is expanded as a dry run expands it, and the verb it begins with says, from what the backend keeps and never from the cloud, where it stands. Four states: *not yet* (what it stands on is missing, and the line that would supply it), *ready*, *done* (the line replays to unchanged or nothing to do), *changed* (what it built moved under it, so a replay plans and asks). One row per line, a count at the end, and a `manifest.status` model a surface reads; a verb that keeps nothing reads as a dash. stratus answers for `net`, `vm` and `chris` (docs/stratus.adoc, D17).
 
 `--pace` puts a delay between lines, for watching. `--dry-run` expands parameters and variables and prints the lines it would run without running them — the manifest's `--help`; a reference an earlier line WOULD have set or changed stands as written, since nothing has run to give it a value: a variable the manifest assigns, `${gather}` past a `gather` or `pull`, `${cwd}` past a `cd`, an `@` index or `${listing}` past any line. The session could answer those from what it held before the play, and that answer would name the wrong things. A capture `NAME=$(…)` is shown around the command it holds, as the session reads it. `@answers` is shown as written. `--step` is refused by name: a keypress needs a terminal and a daemon has none, so at a surface the answer is `--pace`.
 

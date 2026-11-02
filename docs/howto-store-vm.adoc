@@ -482,3 +482,21 @@ data    50 to 32768 GB, backups daily or none
 ----
 
 OCI sells E5.Flex by the OCPU (two vCPUs) and bounds memory per OCPU (1 to 64 GB), which the verb halves to the spec's per-vCPU words.
+
+== Where the script stands: `play --status`, 2026-11-02
+
+The script screen's rail (D17) wears each line's state, read from the kept records and never from the cloud, by one verb every surface shares. Read live against the store's script, now in HARBOR-Medical-AI/infra, from a private daemon with the operator's state (nothing run, nothing changed; the password files' paths elided here):
+
+[source]
+----
+play /home/rudolph/src/infra/chrisproject/store.mise --status
+done    ▸ net new chrisproject-services --cidr 10.20.0.0/16  unchanged
+done    ▸ net build chrisproject-services  built 2026-11-01
+done    ▸ vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04  unchanged
+done    ▸ vm build store  built 2026-11-01
+done    ▸ chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org --porter porter.chrisproject.org --admin-password-file …  deployed 2026-11-02
+ready   ▸ chris user add rudolph --email rudolph.pienaar@childrens.harvard.edu --password-file … --on store  asks CUBE when it runs; a name already there is left as it is
+play: /home/rudolph/src/infra/chrisproject/store.mise: 5 done, 1 ready, 0 changed, 0 not yet, of 6 lines
+----
+
+A user line reads ready, never done: the accounts live in CUBE, which only a run asks; the line is replay-safe, so ready is what it is.

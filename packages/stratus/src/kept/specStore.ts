@@ -16,6 +16,8 @@ export interface KeptRecord {
   created: string;
   /** The region it is built in: the session's when it was declared. */
   region: string;
+  /** When its spec was last declared; after `built`, the build has a change to plan. */
+  declared?: string;
 }
 
 /** How a spec is written and read. */
@@ -74,9 +76,10 @@ export class SpecStore<Spec, Record extends KeptRecord> {
     const folder: string = this.folder_derive(name);
     fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
     file_writeAtomic(path.join(folder, 'spec.yaml'), this.codec.render(name, spec));
+    const now: string = new Date().toISOString();
     const kept: Record | null = this.record_read(name);
-    if (kept !== null) return kept;
-    const record = { name, created: new Date().toISOString(), region } as Record;
+    if (kept !== null) return this.record_update(name, (current: Record): void => { current.declared = now; });
+    const record = { name, created: now, region, declared: now } as Record;
     this.record_write(record);
     return record;
   }
