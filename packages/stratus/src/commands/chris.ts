@@ -2,12 +2,14 @@
  * @file `chris`: the ChRIS layer on a built VM (docs/stratus.adoc, D16).
  *
  * `chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>]
- * [--admin-password-file <file>]` puts the all-in-one CUBE on the VM over
+ * [--porter <name>] [--admin-password-file <file>]` puts the all-in-one CUBE on the VM over
  * the bastion path, as a task: refused below the profile's floor; the
  * internal secrets generated once and kept on this host; the admin password
  * asked once (empty: generated and shown once) or read from a file; the
  * compute resource (default: the VM's name) registered. With `--host`, it
- * waits for public DNS and the certificate, and a replay resumes there.
+ * waits for public DNS and the certificate, and a replay resumes there. With
+ * `--porter`, porter (the door to mise: chell, calypso, ARGUS) runs beside
+ * it under its own name, logging in to this CUBE.
  * `chris status [<vm>]` says what is deployed where. `chris user add <name>
  * --email <address> [--password-file <file>] [--on <vm>]` makes an account
  * on a ChRIS this stratus deployed, on the VM itself (CUBE's API makes none
@@ -27,7 +29,7 @@ import type { VmRecord, VmStore } from '../vm/state.js';
 import type { VmRemote } from '../vm/remote.js';
 import type { BuildCall } from '../cloud/builder.js';
 import { CHRIS_PROFILES, floor_short, type ChrisProfile } from '../chris/profiles.js';
-import { secret_make, secrets_ensure, secrets_read } from '../chris/secrets.js';
+import { porterSecret_ensure, secret_make, secrets_ensure, secrets_read } from '../chris/secrets.js';
 import { CHRIS_JOBS, chrisDeployRun_make, type DeployDeps } from '../chris/deploy.js';
 import { host_split, point_plan, pointPlan_words, POINT_TTL, type Registrar } from '../chris/registrar.js';
 import { chrisUserAddRun_make, EMAIL, USER_JOBS, USER_NAME, type UserAddResult, type UserAnswer } from '../chris/users.js';
@@ -50,7 +52,10 @@ export interface ChrisCommandContext {
 }
 
 /** The options `chris deploy` reads, each a value. */
-const DEPLOY_OPTIONS: ReadonlyArray<string> = ['--profile', '--compute', '--host', '--admin-password-file'];
+const DEPLOY_OPTIONS: ReadonlyArray<string> = ['--profile', '--compute', '--host', '--porter', '--admin-password-file'];
+
+/** `chris deploy`'s usage. */
+const DEPLOY_USAGE: string = 'chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--admin-password-file <file>]';
 
 /** The options `chris user add` reads, each a value. */
 const USER_OPTIONS: ReadonlyArray<string> = ['--email', '--password-file', '--on'];
@@ -73,7 +78,7 @@ function chrisStatus_run(context: ChrisCommandContext, names: ReadonlyArray<stri
   if (records.length === 0) return envelope_ok('no ChRIS deployed: chris deploy <vm> --profile minimal puts one on a built VM\n');
   const lines: string[] = records.map((record: VmRecord): string => record.chris === undefined
     ? `${chalk.bold(record.name)}  ${chalk.gray('no ChRIS')}`
-    : `${chalk.bold(record.name)}  ${chalk.cyan(record.chris.profile)}  ${record.chris.url}  compute ${record.chris.compute}${record.chris.dns === 'waiting' ? chalk.yellow('  waiting on DNS') : ''}${chalk.gray(`  deployed ${record.chris.deployed}`)}`);
+    : `${chalk.bold(record.name)}  ${chalk.cyan(record.chris.profile)}  ${record.chris.url}  compute ${record.chris.compute}${record.chris.porter !== undefined ? `  porter https://${record.chris.porter}/` : ''}${record.chris.dns === 'waiting' ? chalk.yellow('  waiting on DNS') : ''}${chalk.gray(`  deployed ${record.chris.deployed}`)}`);
   return envelope_ok(`${lines.join('\n')}\n`);
 }
 
@@ -224,12 +229,16 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   const read = options_read(args, DEPLOY_OPTIONS);
   if ('error' in read) return envelope_error('', undefined, `chris deploy: ${read.error} (${DEPLOY_OPTIONS.join(', ')})\n`);
   const [name, ...extra] = read.rest;
-  if (name === undefined || extra.length > 0) return envelope_error('', undefined, 'chris deploy: usage: chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--admin-password-file <file>]\n');
+  if (name === undefined || extra.length > 0) return envelope_error('', undefined, `chris deploy: usage: ${DEPLOY_USAGE}\n`);
   const profileName: string | undefined = read.options.get('--profile');
   const profile: ChrisProfile | undefined = profileName === undefined ? undefined : CHRIS_PROFILES[profileName];
   if (profile === undefined) return envelope_error('', undefined, `chris deploy: --profile ${profileName ?? '<profile>'}: one of ${Object.keys(CHRIS_PROFILES).join(', ')}\n`);
   const host: string | null = read.options.get('--host') ?? null;
   if (host !== null && !HOST_NAME.test(host)) return envelope_error('', undefined, `chris deploy: --host ${host}: not a host name\n`);
+  const porter: string | null = read.options.get('--porter') ?? null;
+  if (porter !== null && !HOST_NAME.test(porter)) return envelope_error('', undefined, `chris deploy: --porter ${porter}: not a host name\n`);
+  if (porter !== null && host === null) return envelope_error('', undefined, `chris deploy: --porter ${porter} needs --host: porter's sessions reach CUBE by its name, both over HTTPS\n`);
+  if (porter !== null && porter === host) return envelope_error('', undefined, `chris deploy: --porter ${porter}: porter needs a name of its own, not CUBE's\n`);
   const record: VmRecord | null = context.vms.record_read(name);
   const spec = context.vms.spec_read(name);
   if (record === null || spec === null || 'error' in spec) return envelope_error('', undefined, `chris deploy: ${name}: no such VM (vm new declares one)\n`);
@@ -247,22 +256,26 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
     if (admin.generated) generated = admin.password;
     secrets_ensure(context.vms, name, admin.password);
   }
-  const secrets = secrets_read(context.vms, name);
-  if (secrets === null) return envelope_error('', undefined, `chris deploy: ${name}: its secrets were not kept\n`);
+  const kept = secrets_read(context.vms, name);
+  if (kept === null) return envelope_error('', undefined, `chris deploy: ${name}: its secrets were not kept\n`);
+  const secrets = porter !== null ? porterSecret_ensure(context.vms, name, kept) : kept;
   const deps: DeployDeps = { store: context.vms, nets: context.nets, builder: context.builder, resolve: context.resolve, status_get: context.status_get, ...(context.remote_open !== undefined ? { remote_open: context.remote_open } : {}), ...(context.tickMs !== undefined ? { tickMs: context.tickMs } : {}) };
   const compute: string = read.options.get('--compute') ?? name;
   let pointed: string = '';
   const address: string | undefined = record.dataOutputs?.['public_ip'];
   if (host !== null && address !== undefined) {
-    const point = await dns_point(context, host, address);
-    if ('error' in point) return envelope_error('', undefined, `chris deploy: pointing ${host}: ${point.error}\n`);
-    pointed = `${point.line}\n`;
+    for (const each of [host, ...(porter !== null ? [porter] : [])]) {
+      const point = await dns_point(context, each, address);
+      if ('error' in point) return envelope_error('', undefined, `${pointed}chris deploy: pointing ${each}: ${point.error}\n`);
+      pointed += `${point.line}\n`;
+    }
   }
   const shown: string = generated !== null ? `${chalk.yellow(`the admin password for chris, generated, shown this once: ${generated}`)}\n` : '';
-  const ran = await job_runFollowed(CHRIS_JOBS.deploy(name), `deploy ChRIS on ${name}`, chrisDeployRun_make({ vm: name, profile, compute, host, secrets }, deps));
+  const ran = await job_runFollowed(CHRIS_JOBS.deploy(name), `deploy ChRIS on ${name}`, chrisDeployRun_make({ vm: name, profile, compute, host, porter, secrets }, deps));
   if ('error' in ran) return envelope_error('', undefined, `${shown}${pointed}chris deploy: ${ran.error}\n`);
   const done: VmRecord | null = context.vms.record_read(name);
-  return envelope_ok(`${shown}${pointed}${name}: ChRIS ${profile.name} at ${done?.chris?.url ?? '?'}, compute ${compute}; the admin is chris (its password is kept on this host, never shown again)\n`);
+  const door: string = porter !== null ? `; porter at https://${porter}/` : '';
+  return envelope_ok(`${shown}${pointed}${name}: ChRIS ${profile.name} at ${done?.chris?.url ?? '?'}, compute ${compute}${door}; the admin is chris (its password is kept on this host, never shown again)\n`);
 }
 
 /**
@@ -284,9 +297,9 @@ export async function chris_run(context: ChrisCommandContext, args: ReadonlyArra
 
 /** `chris`'s help. */
 export const CHRIS_HELP: CommandHelp = {
-  usage: 'chris [status [<vm>…]] | chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--admin-password-file <file>] | chris user add <name> --email <address> [--password-file <file>] [--on <vm>]',
+  usage: 'chris [status [<vm>…]] | chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--admin-password-file <file>] | chris user add <name> --email <address> [--password-file <file>] [--on <vm>]',
   summary: 'Put ChRIS on a built VM, and add its users',
   category: 'Resources',
-  description: 'chris deploy puts the all-in-one CUBE on a built VM, over the network\'s bastion and never through cloud-init, as a task (/proc/steps/chris-<vm>-deploy). A profile is data: minimal is CUBE 6.11.0 (production, uvicorn), its workers and scheduler, Postgres, Dragonfly, NATS and pfcon 5.3.1 in-network beside it running plugins through the VM\'s Docker, behind Caddy; a VM below its floor (2 vCPU, 4 GiB, 50 GB data) is refused and told by how much. Everything lands on the data volume (/srv/data/chris), so a rebuilt machine opens the old database. The internal secrets are generated by the first deploy and kept on this host; the admin password for chris is asked once (empty: generated and shown once) or read from --admin-password-file. The compute resource (--compute, default the VM\'s name) is registered, and the deploy checks chris sees the admin API, as plugin uploads need. Without --host, ChRIS answers over plain HTTP on the VM\'s address; with --host, Caddy obtains the certificate once public DNS gives the name the VM\'s address, which the deploy waits for (an hour at most; a replay resumes). No profile carries the ChRIS UI. chris user add makes an account on a ChRIS this stratus deployed: the one --on names, or the only one (more than one and no --on is refused). Every deploy turns CUBE\'s own sign-up off, so the account is made on the VM, in the CUBE container, with CUBE\'s user model (its groups and home folders as a sign-up gives them). --email is needed; the password is asked (empty: generated and shown once) or read from --password-file, given on stdin, and never kept. A name already there with the same email is left as it is, so a script replays; with another email it is refused.',
-  examples: ['chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org', 'chris deploy vm-try --profile minimal', 'chris status', 'chris user add jorge --email jorge@example.org --on store'],
+  description: 'chris deploy puts the all-in-one CUBE on a built VM, over the network\'s bastion and never through cloud-init, as a task (/proc/steps/chris-<vm>-deploy). A profile is data: minimal is CUBE 6.11.0 (production, uvicorn), its workers and scheduler, Postgres, Dragonfly, NATS and pfcon 5.3.1 in-network beside it running plugins through the VM\'s Docker, behind Caddy; a VM below its floor (2 vCPU, 4 GiB, 50 GB data) is refused and told by how much. Everything lands on the data volume (/srv/data/chris), so a rebuilt machine opens the old database. The internal secrets are generated by the first deploy and kept on this host; the admin password for chris is asked once (empty: generated and shown once) or read from --admin-password-file. The compute resource (--compute, default the VM\'s name) is registered, and the deploy checks chris sees the admin API, as plugin uploads need. Without --host, ChRIS answers over plain HTTP on the VM\'s address; with --host, Caddy obtains the certificate once public DNS gives the name the VM\'s address, which the deploy waits for (an hour at most; a replay resumes). No profile carries the ChRIS UI: --porter <name> (with --host) adds porter, the door to mise (chell, calypso and ARGUS), beside any profile, built on the VM from its pinned npm release, its sessions logging in to this CUBE by its name; Caddy obtains porter\'s certificate too, the registrar is asked for its name as for the host\'s, and porter\'s session folders are kept on the data volume. chris user add makes an account on a ChRIS this stratus deployed: the one --on names, or the only one (more than one and no --on is refused). Every deploy turns CUBE\'s own sign-up off, so the account is made on the VM, in the CUBE container, with CUBE\'s user model (its groups and home folders as a sign-up gives them). --email is needed; the password is asked (empty: generated and shown once) or read from --password-file, given on stdin, and never kept. A name already there with the same email is left as it is, so a script replays; with another email it is refused.',
+  examples: ['chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org --porter porter.chrisproject.org', 'chris deploy vm-try --profile minimal', 'chris status', 'chris user add jorge --email jorge@example.org --on store'],
 };

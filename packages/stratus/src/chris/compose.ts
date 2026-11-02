@@ -9,13 +9,20 @@
  * serves plain HTTP on the address. CUBE also answers on 127.0.0.1:8000 for
  * the deploy's own checks, never outside.
  *
+ * With a porter, the door to mise (porter, its chell, calypso and ARGUS) runs
+ * beside them, built on the VM from the pinned npm release, its session
+ * folders in a volume; Caddy serves its name too, and answers to CUBE's name
+ * inside the network, so porter's sessions reach CUBE by its public name
+ * without leaving the VM.
+ *
  * Every file lands in `/srv/data/chris/` on the VM, on the data volume, so a
- * rebuilt machine finds them with the database and the files.
+ * rebuilt machine finds them with the database and the files; Docker's own
+ * folder is on the data volume too, and the named volumes with it.
  *
  * @module
  */
 import * as yaml from 'js-yaml';
-import { CHRIS_IMAGES, type ChrisProfile } from './profiles.js';
+import { CHRIS_IMAGES, PORTER_VERSION, type ChrisProfile } from './profiles.js';
 
 /** What a deploy keeps secret, generated once and reused by every replay. */
 export interface ChrisSecrets {
@@ -25,6 +32,8 @@ export interface ChrisSecrets {
   pfconPassword: string;
   /** The `chris` superuser's password. */
   adminPassword: string;
+  /** Signs porter's cookies; made by the first deploy with a porter. */
+  porterSecret?: string;
 }
 
 /** What a deploy is told. */
@@ -33,6 +42,8 @@ export interface ChrisTarget {
   readonly host: string | null;
   /** The VM's public address. */
   readonly address: string;
+  /** The name porter answers to (`porter.chrisproject.org`), or null for no porter; needs a host. */
+  readonly porter?: string | null;
 }
 
 /** Where everything lands on the VM. */
@@ -50,6 +61,12 @@ export const PFCON_HOST: string = 'pfcon.local';
 
 /** The user pfcon reaches its compute as. */
 export const PFCON_USER: string = 'pfcon';
+
+/** Where porter keeps its session folders, in the container (a volume). */
+export const PORTER_STATE: string = '/var/lib/porter/sessions';
+
+/** The port porter answers on, inside the network. */
+export const PORTER_PORT: number = 4180;
 
 /**
  * The URL CUBE answers on, as clients reach it.
@@ -120,23 +137,59 @@ export function pfconEnv_render(secrets: ChrisSecrets): string {
 }
 
 /**
- * Caddy's file: the host with its certificate, or plain HTTP on any address.
+ * porter's environment: the one CUBE it serves, by its public name, and the
+ * secret that signs its cookies.
  *
- * @param target - The host or the address.
+ * @param target - The host.
+ * @param secrets - The secrets, with porter's.
+ * @returns `porter.env`.
+ * @throws Error - When the target has no host or the secrets no porter secret.
+ */
+export function porterEnv_render(target: ChrisTarget, secrets: ChrisSecrets): string {
+  if (target.host === null || secrets.porterSecret === undefined) throw new Error('porter needs the host CUBE answers to and its own secret');
+  const pairs: Array<[string, string]> = [
+    ['PORTER_CUBE_URL', apiUrl_derive(target)],
+    ['PORTER_STATE_DIR', PORTER_STATE],
+    ['PORTER_HOST', '0.0.0.0'],
+    ['PORTER_PORT', String(PORTER_PORT)],
+    ['PORTER_SECRET', secrets.porterSecret],
+  ];
+  return `${pairs.map(([key, value]): string => `${key}=${value}`).join('\n')}\n`;
+}
+
+/**
+ * Caddy's file: the host with its certificate, or plain HTTP on any address;
+ * porter's name beside it when there is one.
+ *
+ * @param target - The host or the address, and porter's name.
  * @returns `Caddyfile`.
  */
 export function caddyfile_render(target: ChrisTarget): string {
   const site: string = target.host !== null ? target.host : ':80';
-  return `${site} {\n\treverse_proxy chris:8000\n}\n`;
+  const porter: string = target.porter !== undefined && target.porter !== null ? `\n${target.porter} {\n\treverse_proxy porter:${PORTER_PORT}\n}\n` : '';
+  return `${site} {\n\treverse_proxy chris:8000\n}\n${porter}`;
 }
+
+/** porter's image, built on the VM: Node, then the pinned release from npm. */
+const PORTER_DOCKERFILE: string = [
+  `FROM ${CHRIS_IMAGES.node}`,
+  `RUN npm install -g @fnndsc/porter@${PORTER_VERSION} && npm cache clean --force`,
+  `RUN install -d -o node -g node -m 0750 ${PORTER_STATE}`,
+  'USER node',
+  'WORKDIR /home/node',
+  'CMD ["porter"]',
+  '',
+].join('\n');
 
 /**
  * The compose file for a profile.
  *
  * @param profile - The profile.
+ * @param target - The host and porter's name; porter runs when it has one.
  * @returns `compose.yml`.
  */
-export function compose_render(profile: ChrisProfile): string {
+export function compose_render(profile: ChrisProfile, target: ChrisTarget | null = null): string {
+  const porter: boolean = target !== null && target.host !== null && target.porter !== undefined && target.porter !== null;
   const cube = (command: string[] | null, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
     image: CHRIS_IMAGES.cube,
     ...(command !== null ? { command } : {}),
@@ -184,14 +237,25 @@ export function compose_render(profile: ChrisProfile): string {
       image: CHRIS_IMAGES.caddy,
       ports: ['80:80', '443:443'],
       volumes: ['./Caddyfile:/etc/caddy/Caddyfile:ro', 'caddy-data:/data', 'caddy-config:/config'],
+      ...(porter ? { networks: { default: { aliases: [target?.host as string] } } } : {}),
       restart: 'unless-stopped',
       depends_on: { chris: { condition: 'service_started' } },
     },
+    porter: {
+      build: { context: '.', dockerfile_inline: PORTER_DOCKERFILE },
+      image: `stratus/porter:${PORTER_VERSION}`,
+      env_file: ['porter.env'],
+      volumes: ['porter:/var/lib/porter'],
+      restart: 'unless-stopped',
+      depends_on: { caddy: { condition: 'service_started' } },
+    },
   };
-  const services: Record<string, unknown> = Object.fromEntries(profile.services.map((name: string): [string, unknown] => {
+  const names: string[] = [...profile.services, ...(porter ? ['porter'] : [])];
+  const services: Record<string, unknown> = Object.fromEntries(names.map((name: string): [string, unknown] => {
     const service: unknown = all[name];
     if (service === undefined) throw new Error(`the profile ${profile.name} names ${name}, which no service is`);
     return [name, service];
   }));
-  return `# ChRIS, profile ${profile.name}: written by stratus's chris deploy; replay the script to change it.\n${yaml.dump({ name: CHRIS_PROJECT, services, volumes: { files: null, db: null, 'caddy-data': null, 'caddy-config': null } }, { lineWidth: -1, noRefs: true })}`;
+  const volumes: Record<string, null> = { files: null, db: null, 'caddy-data': null, 'caddy-config': null, ...(porter ? { porter: null } : {}) };
+  return `# ChRIS, profile ${profile.name}${porter ? ', with porter' : ''}: written by stratus's chris deploy; replay the script to change it.\n${yaml.dump({ name: CHRIS_PROJECT, services, volumes }, { lineWidth: -1, noRefs: true })}`;
 }

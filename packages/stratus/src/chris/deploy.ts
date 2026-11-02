@@ -6,7 +6,8 @@
  * compose file and its environment to the data volume, starts it, waits for
  * CUBE, registers the compute resource the plugin uploads name, and checks
  * that `chris` sees the admin API. With a host, it then waits for public
- * DNS to show the VM's address and for the certificate.
+ * DNS to show the VM's address and for the certificate; with a porter, for
+ * porter's name and its certificate too.
  *
  * Every line CUBE is asked goes from the VM itself to 127.0.0.1:8000, the
  * admin password in curl's configuration on stdin, never on a command line.
@@ -19,7 +20,7 @@ import type { NetStore } from '../net/state.js';
 import { pause, vmRemote_open, type RemoteAnswer, type VmRemote } from '../vm/remote.js';
 import { vm_read } from '../vm/build.js';
 import type { VmRecord, VmStore } from '../vm/state.js';
-import { apiUrl_derive, caddyfile_render, CHRIS_DIR, compose_render, cubeEnv_render, PFCON_HOST, PFCON_USER, pfconEnv_render, type ChrisSecrets, type ChrisTarget } from './compose.js';
+import { apiUrl_derive, caddyfile_render, CHRIS_DIR, compose_render, cubeEnv_render, PFCON_HOST, PFCON_USER, pfconEnv_render, porterEnv_render, type ChrisSecrets, type ChrisTarget } from './compose.js';
 import type { ChrisProfile } from './profiles.js';
 
 /** What a deploy is asked for. */
@@ -29,6 +30,8 @@ export interface DeployRequest {
   /** The compute resource's name, as plugin uploads name it. */
   readonly compute: string;
   readonly host: string | null;
+  /** The name porter answers to, or null for no porter; needs a host. */
+  readonly porter: string | null;
   readonly secrets: ChrisSecrets;
 }
 
@@ -125,7 +128,7 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
     const { record } = vm_read(deps.store, request.vm);
     const address: string | undefined = record.dataOutputs?.['public_ip'];
     if (address === undefined) throw new Error(`${request.vm}: it has no public address`);
-    const target: ChrisTarget = { host: request.host, address };
+    const target: ChrisTarget = { host: request.host, address, porter: request.porter };
     const remote: VmRemote = await (deps.remote_open ?? ((name: string, inner: BuildCall): Promise<VmRemote> => vmRemote_open(name, { store: deps.store, nets: deps.nets, builder: deps.builder }, inner)))(request.vm, call);
 
     context.log_write('waiting for the VM\'s cloud-init (Docker, the data volume)');
@@ -133,16 +136,17 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
 
     await run_must(remote, `sudo install -d -o ubuntu -g ubuntu -m 0750 ${CHRIS_DIR}`, `making ${CHRIS_DIR}`);
     const files: Array<[string, string, string]> = [
-      ['compose.yml', compose_render(request.profile), '0644'],
+      ['compose.yml', compose_render(request.profile, target), '0644'],
       ['cube.env', cubeEnv_render(target, request.secrets), '0600'],
       ['pfcon.env', pfconEnv_render(request.secrets), '0600'],
       ['Caddyfile', caddyfile_render(target), '0644'],
+      ...(request.porter !== null ? [['porter.env', porterEnv_render(target, request.secrets), '0600'] as [string, string, string]] : []),
     ];
     for (const [file, text, mode] of files) await run_must(remote, `umask 077 && cat > ${CHRIS_DIR}/${file}.new && chmod ${mode} ${CHRIS_DIR}/${file}.new && mv ${CHRIS_DIR}/${file}.new ${CHRIS_DIR}/${file}`, `writing ${file}`, text);
     context.log_write(`wrote ${files.map(([file]): string => file).join(', ')} to ${CHRIS_DIR}`);
 
-    context.log_write('pulling the images and starting the services');
-    await run_must(remote, `cd ${CHRIS_DIR} && docker compose pull -q && docker compose up -d --remove-orphans`, 'docker compose up');
+    context.log_write(request.porter !== null ? 'pulling the images, building porter\'s, and starting the services' : 'pulling the images and starting the services');
+    await run_must(remote, `cd ${CHRIS_DIR} && docker compose pull -q --ignore-buildable && docker compose up -d --build --remove-orphans`, 'docker compose up');
 
     context.log_write('waiting for CUBE (migrations first)');
     const up: boolean = await until(async (): Promise<boolean> => {
@@ -176,7 +180,7 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
 
     const url: string = apiUrl_derive(target);
     deps.store.record_update(request.vm, (current: VmRecord): void => {
-      current.chris = { profile: request.profile.name, compute: request.compute, host: request.host, url, deployed: new Date().toISOString(), ...(request.host !== null ? { dns: 'waiting' } : {}) };
+      current.chris = { profile: request.profile.name, compute: request.compute, host: request.host, url, deployed: new Date().toISOString(), ...(request.host !== null ? { dns: 'waiting' } : {}), ...(request.porter !== null ? { porter: request.porter } : {}) };
     });
     if (request.host === null) {
       const outside: number | null = await deps.status_get(url);
@@ -190,7 +194,15 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
     context.log_write(`${request.host} resolves to ${address}; waiting for Caddy's certificate`);
     const secure: boolean = await until(async (): Promise<boolean> => { const status: number | null = await deps.status_get(url); return status === 200 || status === 401; }, 30, tick, context.signal);
     if (!secure) throw new Error(`${url} does not answer over HTTPS yet: Caddy may still be asking for the certificate (chris deploy again resumes here)`);
-    deps.store.record_update(request.vm, (current: VmRecord): void => { if (current.chris !== undefined) current.chris.dns = 'seen'; });
     context.log_write(`${url} answers over HTTPS`);
+    if (request.porter !== null) {
+      const porter: string = request.porter;
+      const door: string = `https://${porter}/login`;
+      context.log_write(`waiting for public DNS to give ${porter} the address ${address}, then for porter's certificate`);
+      if (!await until(async (): Promise<boolean> => (await deps.resolve(porter)).includes(address), 60, tick * 6, context.signal)) throw new Error(`waiting on DNS: ${porter} does not resolve to ${address} yet (chris deploy again resumes here)`);
+      if (!await until(async (): Promise<boolean> => await deps.status_get(door) === 200, 30, tick, context.signal)) throw new Error(`${door} does not answer over HTTPS yet: Caddy may still be asking for the certificate, or porter still starting (chris deploy again resumes here)`);
+      context.log_write(`${door} answers over HTTPS: porter's door`);
+    }
+    deps.store.record_update(request.vm, (current: VmRecord): void => { if (current.chris !== undefined) current.chris.dns = 'seen'; });
   };
 }
