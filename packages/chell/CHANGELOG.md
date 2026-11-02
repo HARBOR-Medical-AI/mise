@@ -1,5 +1,18 @@
 # @fnndsc/chell
 
+## 5.19.11
+
+### Patch Changes
+
+- Updated dependencies [7eaf6d6]
+- Updated dependencies [7eaf6d6]
+- Updated dependencies [7eaf6d6]
+- Updated dependencies [7eaf6d6]
+  - @fnndsc/argus@0.47.0
+  - @fnndsc/brasa@0.52.1
+  - @fnndsc/calypso@0.28.5
+  - @fnndsc/menu@0.33.1
+
 ## 5.19.10
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @fnndsc/menu
 
+## 0.33.1
+
+### Patch Changes
+
+- 7eaf6d6: A line's standing may name the task running it now, beside its state.
+
+  `running` is the task's path (`/proc/steps/vm-store-apply-machine`), carried by `play --status` (docs/stratus.adoc, D17).
+
 ## 0.33.0
 
 ### Minor Changes

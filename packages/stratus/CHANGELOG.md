@@ -1,5 +1,20 @@
 # @fnndsc/stratus
 
+## 0.8.1
+
+### Patch Changes
+
+- 7eaf6d6: A script's status names the task running a line now, so a surface can follow a build instead of holding it.
+
+  `play --status` reads it for a `net build`, `vm build` or `chris deploy` whose job runs under `/proc/steps/`, and for a `chris user add` whose add job names its user (docs/stratus.adoc, D17).
+
+- Updated dependencies [7eaf6d6]
+- Updated dependencies [7eaf6d6]
+- Updated dependencies [7eaf6d6]
+  - @fnndsc/brasa@0.52.1
+  - @fnndsc/calypso@0.28.5
+  - @fnndsc/menu@0.33.1
+
 ## 0.8.0
 
 ### Minor Changes
