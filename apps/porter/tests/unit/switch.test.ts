@@ -33,11 +33,12 @@ class SwitchHost implements SessionHost {
 
 let host: SwitchHost;
 let door: PorterApp;
+let config: PorterConfig;
 let stateDir: string;
 
 beforeEach(async () => {
   stateDir = mkdtempSync(join(tmpdir(), 'porter-switch-'));
-  const config: PorterConfig = {
+  config = {
     cubeUrl: 'https://cube.example.org/api/v1/', stateDir, host: '127.0.0.1', port: 0, chellEntry: '/opt/chell/dist/index.js',
     secret: 'a-secret-of-at-least-twenty-characters', secretGenerated: false, cookieHours: 24, idleHours: 24, soundsDir: null,
     tokenDays: 30, tokensFile: join(stateDir, 'tokens.json'),
@@ -79,6 +80,23 @@ describe('POST /switch', () => {
     // The door the session can be raised at: the person's CUBE and name, so a READ session asks their password once (D14).
     expect(host.begun).toEqual([{ identity: STRATUS, configPath: new CredentialStore(stateDir).ociConfig_find(OWNER), spend: false, replace: false, door: { cubeUrl: 'https://cube.example.org/api/v1/', user: 'rudolph' } }]);
     expect(String(reply.headers['set-cookie'])).toContain(reply.json().key);
+  });
+
+  it('restarts a stratus session left up on an older release, on the tier it had, instead of joining it', async () => {
+    creds_file();
+    const newer: PorterApp = await porterApp_build({ installed: { stratus: '0.10.1', calypso: '0.29.0' }, config, host, mint: async () => ({ token: 'T' }) });
+    const reply = await newer.app.inject({ method: 'POST', url: '/login', payload: { username: 'rudolph', password: 'p' }, headers: { accept: 'application/json' } });
+    const cookie: string = (String(reply.headers['set-cookie']).split(';')[0]) ?? '';
+    host.up.set(STRATUS, { identity: 'u@t', url: 'ws://127.0.0.1:5555', token: 'S', versions: { stratus: '0.10.0', calypso: '0.29.0' } });
+    host.armed.set(STRATUS, false);
+    const switched = await newer.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie } });
+    expect(switched.json()).toMatchObject({ state: 'starting' });
+    expect(host.begun.at(-1)).toMatchObject({ identity: STRATUS, spend: false, replace: true, door: { user: 'rudolph' } });
+    // On the release it ships, the session is joined.
+    host.up.set(STRATUS, { identity: 'u@t', url: 'ws://127.0.0.1:5555', token: 'S', versions: { stratus: '0.10.1', calypso: '0.29.0' } });
+    const joined = await newer.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie } });
+    expect(joined.json()).toMatchObject({ state: 'attached' });
+    await newer.app.close();
   });
 
   it('joins a session up on the tier asked, restarts one on the other, and goes back to ChRIS', async () => {

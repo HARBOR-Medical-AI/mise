@@ -621,6 +621,16 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // is ended and started again. One whose tier this porter never knew (it
     // was adopted) is joined read-only and restarted only when spending is asked.
     if (found !== null && (armed === spend || (armed === null && !spend))) {
+      // As at the door: a switch never lands on a kernel older than this porter ships. A stratus
+      // daemon left up across a release is ended and started again on the tier it had; its jobs
+      // go on (the runner resumes them) and its state is kept.
+      const behind: string[] = berth_behind(found, installed);
+      if (behind.length > 0) {
+        options.log?.(`restarting ${user}'s stratus session for the new release (${behind.join(', ')})`);
+        registry.pending_note(session, user);
+        host.stratus_begin(session, configPath, armed ?? spend, true, { cubeUrl: config.cubeUrl, user });
+        return { key: to, mount: `/s/${to}/`, greet: `/greet/${to}`, state: 'starting' };
+      }
       registry.note(session, user, found);
       return { key: to, mount: `/s/${to}/`, state: 'attached' };
     }

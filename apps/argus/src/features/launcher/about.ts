@@ -57,12 +57,12 @@ export const TILE_ABOUT: Readonly<Record<string, TileAbout>> = {
   },
   // The ChRIS composition's door into the person's cloud session (compositions/chris/tiles.ts); the question it asks is the one `stratus oci` asks.
   cloud: {
-    text: 'Your cloud session: the tenancy and what is built in it. Entering asks which way in:',
+    text: 'Your cloud session: the tenancy and what is built in it. You enter as READ, looking only; nothing outside this host changes until a line would act:',
     list: [
-      'READ: look only; nothing outside this host changes',
-      'MANAGE: build, tear down and spend, each after its own lock and the name typed back',
+      'a build, a teardown, a deploy or a user added asks your password once, checked at the door you logged in by',
+      'the session is then MANAGE until you leave it, each act still after its own lock and the name typed back',
     ],
-    tail: 'Which it is stays fixed for that session; enter again to change it.',
+    tail: 'MODE READ or MANAGE shows on the strip and beside CONDITION on every cloud screen.',
   },
   panes: {
     text: 'Saved workspaces: return to a piece of work as you left it.',
