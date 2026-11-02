@@ -26,6 +26,7 @@ import { STEPS_SOURCE } from '../src/cluster/steps.js';
 import { net_run } from '../src/commands/net.js';
 import { vm_run, type VmCommandContext } from '../src/commands/vm.js';
 import { chris_run, type ChrisCommandContext } from '../src/commands/chris.js';
+import { CUBE_PYTHON_LINE, userAnswer_parse } from '../src/chris/users.js';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 const SECRETS: ChrisSecrets = { djangoKey: 'dk', postgresPassword: 'pg', pfconSecretKey: 'ps', pfconPassword: 'pp', adminPassword: 'admin-pass' };
@@ -36,8 +37,22 @@ class FakeVm implements VmRemote {
   lines: string[] = [];
   files: Map<string, string> = new Map();
   computes: string[] = [];
+  /** CUBE's accounts, by name: their emails. */
+  users: Map<string, string> = new Map([['chris', 'dev@babymri.org']]);
+  /** Each account made, as CUBE was given it. */
+  made: Array<{ username: string; email: string; password: string }> = [];
   async run(line: string, input?: string): Promise<RemoteAnswer> {
     this.lines.push(line);
+    if (line === CUBE_PYTHON_LINE) {
+      const ask = JSON.parse(Buffer.from((/b64decode\('([^']+)'\)/.exec(input ?? '') as RegExpMatchArray)[1] as string, 'base64').toString('utf-8')) as { username: string; email: string; password: string };
+      const same: string | undefined = this.users.get(ask.username);
+      const other: string | undefined = [...this.users.entries()].find(([name, email]): boolean => email === ask.email && name !== ask.username)?.[0];
+      if (same !== undefined) return { code: 0, stdout: `stratus-user exists ${JSON.stringify(same)}\n`, stderr: '' };
+      if (other !== undefined) return { code: 0, stdout: `stratus-user email-taken ${JSON.stringify(other)}\n`, stderr: '' };
+      this.users.set(ask.username, ask.email);
+      this.made.push(ask);
+      return { code: 0, stdout: 'stratus-user added\n', stderr: '' };
+    }
     const written: RegExpMatchArray | null = /cat > (\S+)\.new/.exec(line);
     if (written !== null) this.files.set(written[1] as string, input ?? '');
     if (line.includes('-o /dev/null')) return { code: 0, stdout: '200', stderr: '' };
@@ -190,6 +205,66 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(calls).toEqual(['delete example.org r-1', 'create example.org A cube 203.0.113.10 600']);
     expect(plain(done.rendered)).toContain('cube.example.org points at 203.0.113.10 at GoDaddy (resolvers may keep the old answer up to 3600 s)');
     expect(vms.record_read('store')?.chris?.dns).toBe('seen');
+  });
+
+  it('adds a user on the only ChRIS: the password asked, given on stdin, never kept; a replay leaves it as it is', async () => {
+    expect((await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org'])).renderedErr).toContain('no ChRIS deployed');
+    surface.answers = ['admin-password'];
+    await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
+    surface.asked = [];
+    surface.answers = ['jorge-password'];
+    const added = await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org']);
+    expect(added.renderedErr ?? '').toBe('');
+    expect(surface.asked).toEqual(['jorge\'s password (empty: generate one):']);
+    expect(plain(added.rendered)).toBe('store: jorge added at http://203.0.113.10/api/v1/ (jorge@example.org)\n');
+    expect(vm.made).toEqual([{ username: 'jorge', email: 'jorge@example.org', password: 'jorge-password' }]);
+    expect(vm.lines.some((line: string): boolean => line.includes('jorge-password'))).toBe(false);
+    expect(JSON.stringify(vms.record_read('store'))).not.toContain('jorge-password');
+    surface.answers = ['jorge-password'];
+    expect(plain((await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org'])).rendered)).toBe('store: jorge is there already (jorge@example.org); left as it is\n');
+    surface.answers = ['jorge-password'];
+    expect((await chris_run(context, ['user', 'add', 'jorge', '--email', 'other@example.org'])).renderedErr).toContain('store: jorge already exists, with jorge@example.org; left as it is');
+    surface.answers = ['sandip-password'];
+    expect((await chris_run(context, ['user', 'add', 'sandip', '--email', 'jorge@example.org'])).renderedErr).toContain('jorge@example.org is jorge\'s already');
+    expect(vm.made).toHaveLength(1);
+  });
+
+  it('generates a password when none is typed, shows it once, and reads one from a file', async () => {
+    surface.answers = ['admin-password'];
+    await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
+    surface.answers = [''];
+    const generated = await chris_run(context, ['user', 'add', 'sandip', '--email', 'sandip@example.org']);
+    expect(plain(generated.rendered)).toContain(`the password for sandip, generated, shown this once: ${vm.made[0]?.password}`);
+    expect(vm.made[0]?.password.length).toBeGreaterThanOrEqual(32);
+    const file: string = join(root, 'josh-password');
+    writeFileSync(file, 'from-a-file-1\n', { mode: 0o600 });
+    surface.asked = [];
+    await chris_run(context, ['user', 'add', 'joshua', '--email', 'josh@example.org', '--password-file', file, '--on', 'store']);
+    expect(surface.asked).toEqual([]);
+    expect(vm.made[1]).toEqual({ username: 'joshua', email: 'josh@example.org', password: 'from-a-file-1' });
+    writeFileSync(file, 'short\n');
+    expect((await chris_run(context, ['user', 'add', 'joshua2', '--email', 'josh2@example.org', '--password-file', file])).renderedErr).toContain('shorter than eight characters');
+  });
+
+  it('refuses without an email, a bad name, a VM with no ChRIS, and more than one ChRIS without --on', async () => {
+    surface.answers = ['admin-password'];
+    await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
+    expect((await chris_run(context, ['user', 'add', 'jorge'])).renderedErr).toContain('jorge: --email <address> is needed');
+    expect((await chris_run(context, ['user', 'add', 'jo', '--email', 'jo@example.org'])).renderedErr).toContain('jo: a user name is 4 to 32');
+    expect((await chris_run(context, ['user', 'add', 'jorge', '--email', 'not-an-address'])).renderedErr).toContain('not an email address');
+    expect((await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org', '--on', 'nowhere'])).renderedErr).toContain('--on nowhere: no such VM');
+    expect((await chris_run(context, ['user'])).renderedErr).toContain('chris user add <name> --email <address>');
+    await vm_run(vmContext, ['new', 'blt', '--net', 'scratch', '--open', '80,443', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--os', 'ubuntu-26.04']);
+    expect((await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org', '--on', 'blt'])).renderedErr).toContain('--on blt: no ChRIS deployed there');
+    vms.record_update('blt', (record): void => { record.chris = { profile: 'complete', compute: 'blt', host: null, url: 'http://203.0.113.11/api/v1/', deployed: 'now' }; });
+    expect((await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org'])).renderedErr).toContain('stratus runs 2 ChRIS (blt, store); say which with --on');
+    expect(vm.made).toEqual([]);
+  });
+
+  it('reads CUBE\'s answer line among whatever else the container prints', () => {
+    expect(userAnswer_parse('warning: x\nstratus-user exists "a@b.org"\n')).toEqual({ kind: 'exists', email: 'a@b.org' });
+    expect(userAnswer_parse('stratus-user email-taken "jorge"\n')).toEqual({ kind: 'emailTaken', username: 'jorge' });
+    expect(userAnswer_parse('Traceback (most recent call last):\n')).toBeNull();
   });
 
   it('needs the tasks tier', async () => {

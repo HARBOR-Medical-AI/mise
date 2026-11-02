@@ -8,7 +8,11 @@
  * asked once (empty: generated and shown once) or read from a file; the
  * compute resource (default: the VM's name) registered. With `--host`, it
  * waits for public DNS and the certificate, and a replay resumes there.
- * `chris status [<vm>]` says what is deployed where.
+ * `chris status [<vm>]` says what is deployed where. `chris user add <name>
+ * --email <address> [--password-file <file>] [--on <vm>]` makes an account
+ * on a ChRIS this stratus deployed, on the VM itself (CUBE's API makes none
+ * once sign-up is off); the password asked (empty: generated and shown once)
+ * or read from a file, and never kept.
  *
  * @module
  */
@@ -26,6 +30,7 @@ import { CHRIS_PROFILES, floor_short, type ChrisProfile } from '../chris/profile
 import { secret_make, secrets_ensure, secrets_read } from '../chris/secrets.js';
 import { CHRIS_JOBS, chrisDeployRun_make, type DeployDeps } from '../chris/deploy.js';
 import { host_split, point_plan, pointPlan_words, POINT_TTL, type Registrar } from '../chris/registrar.js';
+import { chrisUserAddRun_make, EMAIL, USER_JOBS, USER_NAME, type UserAddResult, type UserAnswer } from '../chris/users.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 
 /** What `chris` reads from the session. */
@@ -46,6 +51,12 @@ export interface ChrisCommandContext {
 
 /** The options `chris deploy` reads, each a value. */
 const DEPLOY_OPTIONS: ReadonlyArray<string> = ['--profile', '--compute', '--host', '--admin-password-file'];
+
+/** The options `chris user add` reads, each a value. */
+const USER_OPTIONS: ReadonlyArray<string> = ['--email', '--password-file', '--on'];
+
+/** `chris user add`'s usage. */
+const USER_USAGE: string = 'chris user add <name> --email <address> [--password-file <file>] [--on <vm>]';
 
 /** A host name: labels of letters, digits and hyphens. */
 const HOST_NAME: RegExp = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -84,6 +95,91 @@ async function adminPassword_get(file: string | undefined): Promise<{ password: 
   const typed: string = (await repl_questionHidden('admin password for chris (empty: generate one):')).trim();
   if (typed === '') return { password: secret_make(), generated: true };
   return typed.length >= 8 ? { password: typed, generated: false } : { error: 'the admin password is eight characters at least' };
+}
+
+/**
+ * A new account's password: the file's, the operator's typed one, or a new one.
+ *
+ * @param username - Whose, for the question.
+ * @param file - `--password-file`, when given.
+ * @returns The password and whether it was generated, or why not.
+ */
+async function userPassword_get(username: string, file: string | undefined): Promise<{ password: string; generated: boolean } | { error: string }> {
+  const fits = (password: string): string | null => password.length < 8 ? 'shorter than eight characters' : password.length > 100 ? 'longer than a hundred characters' : null;
+  if (file !== undefined) {
+    try {
+      const password: string = fs.readFileSync(file, 'utf-8').trim();
+      const wrong: string | null = fits(password);
+      return wrong === null ? { password, generated: false } : { error: `--password-file ${file}: ${wrong}` };
+    } catch (error: unknown) {
+      return { error: `--password-file ${file}: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  const typed: string = (await repl_questionHidden(`${username}'s password (empty: generate one):`)).trim();
+  if (typed === '') return { password: secret_make(), generated: true };
+  const wrong: string | null = fits(typed);
+  return wrong === null ? { password: typed, generated: false } : { error: `the password is ${wrong}` };
+}
+
+/**
+ * The ChRIS a user verb acts on: the one `--on` names, or the only one this
+ * stratus deployed.
+ *
+ * @param context - The session.
+ * @param on - `--on`, when given.
+ * @returns The VM and its ChRIS's URL, or why not.
+ */
+function chrisTarget_pick(context: ChrisCommandContext, on: string | undefined): { vm: string; url: string } | { error: string } {
+  if (on !== undefined) {
+    const record: VmRecord | null = context.vms.record_read(on);
+    if (record === null) return { error: `--on ${on}: no such VM` };
+    if (record.chris === undefined) return { error: `--on ${on}: no ChRIS deployed there (chris deploy ${on} --profile minimal)` };
+    return { vm: on, url: record.chris.url };
+  }
+  const deployed: VmRecord[] = context.vms.names_list().map((name: string): VmRecord | null => context.vms.record_read(name)).filter((record): record is VmRecord => record !== null && record.chris !== undefined);
+  const [only] = deployed;
+  if (only === undefined || only.chris === undefined) return { error: 'no ChRIS deployed (chris deploy <vm> --profile minimal)' };
+  if (deployed.length > 1) return { error: `stratus runs ${deployed.length} ChRIS (${deployed.map((record: VmRecord): string => record.name).join(', ')}); say which with --on` };
+  return { vm: only.name, url: only.chris.url };
+}
+
+/**
+ * `chris user add <name> --email <address> …`.
+ *
+ * @param context - The session.
+ * @param args - The words after `user`.
+ * @returns The envelope.
+ */
+async function chrisUser_run(context: ChrisCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  const [verb, ...rest] = args;
+  if (verb !== 'add') return envelope_error('', undefined, `chris user: ${verb === undefined ? 'usage' : `${verb}: not a verb`}: ${USER_USAGE}\n`);
+  const read = options_read(rest, USER_OPTIONS);
+  if ('error' in read) return envelope_error('', undefined, `chris user add: ${read.error} (${USER_OPTIONS.join(', ')})\n`);
+  const [username, ...extra] = read.rest;
+  if (username === undefined || extra.length > 0) return envelope_error('', undefined, `chris user add: usage: ${USER_USAGE}\n`);
+  if (!USER_NAME.test(username)) return envelope_error('', undefined, `chris user add: ${username}: a user name is 4 to 32 letters, digits or . @ + - _\n`);
+  const email: string | undefined = read.options.get('--email');
+  if (email === undefined) return envelope_error('', undefined, `chris user add: ${username}: --email <address> is needed (CUBE makes no account without one)\n`);
+  if (!EMAIL.test(email)) return envelope_error('', undefined, `chris user add: --email ${email}: not an email address\n`);
+  const target = chrisTarget_pick(context, read.options.get('--on'));
+  if ('error' in target) return envelope_error('', undefined, `chris user add: ${target.error}\n`);
+  if (!tasks_granted()) return envelope_error('', undefined, 'chris user add: needs the tasks tier (stratus --host-control tasks)\n');
+  if (context.builder === null) return envelope_error('', undefined, 'chris user add: this cloud builds nothing yet\n');
+  const password = await userPassword_get(username, read.options.get('--password-file'));
+  if ('error' in password) return envelope_error('', undefined, `chris user add: ${password.error}\n`);
+  const deps: DeployDeps = { store: context.vms, nets: context.nets, builder: context.builder, resolve: context.resolve, status_get: context.status_get, ...(context.remote_open !== undefined ? { remote_open: context.remote_open } : {}) };
+  const result: UserAddResult = {};
+  const ran = await job_runFollowed(USER_JOBS.add(target.vm), `add ${username} to the ChRIS on ${target.vm}`, chrisUserAddRun_make(target.vm, { username, email, password: password.password }, deps, result));
+  if ('error' in ran) return envelope_error('', undefined, `chris user add: ${ran.error}\n`);
+  const answer: UserAnswer | undefined = result.answer;
+  if (answer?.kind === 'exists') {
+    return answer.email === email
+      ? envelope_ok(`${target.vm}: ${username} is there already (${email}); left as it is\n`)
+      : envelope_error('', undefined, `chris user add: ${target.vm}: ${username} already exists, with ${answer.email}; left as it is\n`);
+  }
+  if (answer?.kind === 'emailTaken') return envelope_error('', undefined, `chris user add: ${target.vm}: ${email} is ${answer.username}'s already\n`);
+  const shown: string = password.generated ? `${chalk.yellow(`the password for ${username}, generated, shown this once: ${password.password}`)}\n` : '';
+  return envelope_ok(`${shown}${target.vm}: ${username} added at ${target.url} (${email})\n`);
 }
 
 /**
@@ -181,15 +277,16 @@ export async function chris_run(context: ChrisCommandContext, args: ReadonlyArra
   switch (verb) {
     case 'status': return chrisStatus_run(context, rest);
     case 'deploy': return await chrisDeploy_run(context, rest);
-    default: return envelope_error('', undefined, `chris: ${verb}: not a verb (chris status, deploy)\n`);
+    case 'user': return await chrisUser_run(context, rest);
+    default: return envelope_error('', undefined, `chris: ${verb}: not a verb (chris status, deploy, user)\n`);
   }
 }
 
 /** `chris`'s help. */
 export const CHRIS_HELP: CommandHelp = {
-  usage: 'chris [status [<vm>…]] | chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--admin-password-file <file>]',
-  summary: 'Put ChRIS on a built VM',
+  usage: 'chris [status [<vm>…]] | chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--admin-password-file <file>] | chris user add <name> --email <address> [--password-file <file>] [--on <vm>]',
+  summary: 'Put ChRIS on a built VM, and add its users',
   category: 'Resources',
-  description: 'chris deploy puts the all-in-one CUBE on a built VM, over the network\'s bastion and never through cloud-init, as a task (/proc/steps/chris-<vm>-deploy). A profile is data: minimal is CUBE 6.11.0 (production, uvicorn), its workers and scheduler, Postgres, Dragonfly, NATS and pfcon 5.3.1 in-network beside it running plugins through the VM\'s Docker, behind Caddy; a VM below its floor (2 vCPU, 4 GiB, 50 GB data) is refused and told by how much. Everything lands on the data volume (/srv/data/chris), so a rebuilt machine opens the old database. The internal secrets are generated by the first deploy and kept on this host; the admin password for chris is asked once (empty: generated and shown once) or read from --admin-password-file. The compute resource (--compute, default the VM\'s name) is registered, and the deploy checks chris sees the admin API, as plugin uploads need. Without --host, ChRIS answers over plain HTTP on the VM\'s address; with --host, Caddy obtains the certificate once public DNS gives the name the VM\'s address, which the deploy waits for (an hour at most; a replay resumes). No profile carries the ChRIS UI.',
-  examples: ['chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org', 'chris deploy vm-try --profile minimal', 'chris status'],
+  description: 'chris deploy puts the all-in-one CUBE on a built VM, over the network\'s bastion and never through cloud-init, as a task (/proc/steps/chris-<vm>-deploy). A profile is data: minimal is CUBE 6.11.0 (production, uvicorn), its workers and scheduler, Postgres, Dragonfly, NATS and pfcon 5.3.1 in-network beside it running plugins through the VM\'s Docker, behind Caddy; a VM below its floor (2 vCPU, 4 GiB, 50 GB data) is refused and told by how much. Everything lands on the data volume (/srv/data/chris), so a rebuilt machine opens the old database. The internal secrets are generated by the first deploy and kept on this host; the admin password for chris is asked once (empty: generated and shown once) or read from --admin-password-file. The compute resource (--compute, default the VM\'s name) is registered, and the deploy checks chris sees the admin API, as plugin uploads need. Without --host, ChRIS answers over plain HTTP on the VM\'s address; with --host, Caddy obtains the certificate once public DNS gives the name the VM\'s address, which the deploy waits for (an hour at most; a replay resumes). No profile carries the ChRIS UI. chris user add makes an account on a ChRIS this stratus deployed: the one --on names, or the only one (more than one and no --on is refused). Every deploy turns CUBE\'s own sign-up off, so the account is made on the VM, in the CUBE container, with CUBE\'s user model (its groups and home folders as a sign-up gives them). --email is needed; the password is asked (empty: generated and shown once) or read from --password-file, given on stdin, and never kept. A name already there with the same email is left as it is, so a script replays; with another email it is refused.',
+  examples: ['chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org', 'chris deploy vm-try --profile minimal', 'chris status', 'chris user add jorge --email jorge@example.org --on store'],
 };

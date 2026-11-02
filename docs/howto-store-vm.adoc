@@ -404,3 +404,30 @@ chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org
 * Read back from pangea: Let's Encrypt (`YE2`) for `cube.chrisproject.org` until 2027-01-30, HTTP answered with a 308 to HTTPS, the org secret's password logged in as `chris` (`users/1/`, the `admin` link), `NERC` in-network under `/api/v1/computeresources/`.
 * The daemon was stopped by its pid; the store runs without it.
 * The plugin upload jobs, rerun on the operator's word against the new store (each one's last release run, `gh run rerun`): pl-shexec v2.5.0, pl-freesurfer v1.0.4, pl-dymap v2.1.2. Each image job passed and registered its plugin with `compute_names: NERC`; `https://cube.chrisproject.org/api/v1/plugins/` lists all three, from `ghcr.io/fnndsc/`. pl-shexec's run ended red only at its PyPI step, which refuses a version it already holds (`400 File already exists ('shexec-2.5.0-py3-none-any.whl')`): a rerun of a release republishes nothing new to PyPI.
+
+== A ChRIS's users: `chris user add`, 2026-11-02
+
+Every deploy sets `DISABLE_USER_ACCOUNT_CREATION=true`, so no stranger can make an account on a public ChRIS. CUBE 6.11.0 then takes no POST at `/api/v1/users/` from anyone, its admin included (`UserCreate.http_method_names` is `['get']`), so the stratus that deployed a ChRIS makes its accounts on the VM: over the bastion path, in the CUBE container, with CUBE's own `UserProxy`, which gives a new account the groups `all_users` and `pacs_users` and its folders under `home/<name>` as a sign-up would. The program and the password go to the container's Python on stdin:
+
+[source,sh]
+----
+cd /srv/data/chris && docker compose exec -T chris python -c 'import django, sys; django.setup(); exec(sys.stdin.read())'
+----
+
+The password is made on pangea and kept there, mode 600, never printed:
+
+[source,sh]
+----
+umask 077; openssl rand -base64 24 > ~/.config/chrisproject/store/rudolph-password
+----
+
+Then, at the private daemon's prompt (the store is the only ChRIS this stratus runs, so no `--on`):
+
+[source]
+----
+chris user add rudolph --email rudolph.pienaar@childrens.harvard.edu --password-file ${HOME}/.config/chrisproject/store/rudolph-password
+----
+
+* 00:54:33 to 00:54:56 UTC: the bastion session asked, ssh admitted on the second try, `store: rudolph added at https://cube.chrisproject.org/api/v1/ (rudolph.pienaar@childrens.harvard.edu)`.
+* Read back from pangea: the kept password logs in as `rudolph` (`/api/v1/auth-token/`, a token; a wrong password 400), not staff, in `all_users` and `pacs_users`, `home/rudolph` there.
+* The same line again: `store: rudolph is there already (rudolph.pienaar@childrens.harvard.edu); left as it is`, so a script that adds its users replays.
