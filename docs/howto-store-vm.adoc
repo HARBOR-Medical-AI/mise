@@ -431,3 +431,22 @@ chris user add rudolph --email rudolph.pienaar@childrens.harvard.edu --password-
 * 00:54:33 to 00:54:56 UTC: the bastion session asked, ssh admitted on the second try, `store: rudolph added at https://cube.chrisproject.org/api/v1/ (rudolph.pienaar@childrens.harvard.edu)`.
 * Read back from pangea: the kept password logs in as `rudolph` (`/api/v1/auth-token/`, a token; a wrong password 400), not staff, in `all_users` and `pacs_users`, `home/rudolph` there.
 * The same line again: `store: rudolph is there already (rudolph.pienaar@childrens.harvard.edu); left as it is`, so a script that adds its users replays.
+
+== porter beside the store: `chris deploy --porter`, 2026-11-02
+
+The UI is porter and ARGUS, never a ChRIS profile, so `chris deploy --porter <name>` puts porter beside whatever profile it deploys: one more compose service, its image built on the VM (`node:24.11.1-bookworm`, then `npm install -g @fnndsc/porter@0.9.2`; the full Node image, since calypso's `node-pty` builds from source on Linux), its session folders in the `porter` volume (Docker's folder is on the data volume, so the sessions outlive a machine rebuild). Caddy serves porter's name with its own certificate and carries CUBE's name as a network alias, so porter's sessions log in to `https://cube.chrisproject.org/api/v1/` without leaving the VM. porter's cookie secret is made by the first deploy with a porter and kept in `auth/chris.json` beside the others.
+
+The image was built and run on pangea first, against the live store: `node-pty` built and spawned, `/login` answered, and `rudolph` logged in, booted (the greeter's `/boot/<key>` stream ends `ready`) and got the ARGUS page (200).
+
+The store's script gains `--porter` on its deploy line:
+
+[source]
+----
+chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org --porter porter.chrisproject.org --admin-password-file ${HOME}/.config/chrisproject/store/chris-password
+----
+
+* Played on the operator's word, 01:23 to 01:26 UTC, from a private daemon with the operator's state. One question: `at GoDaddy, in chrisproject.org: add A porter → 129.158.63.113 (TTL 600)? [y/N]`. Yes.
+* The images pulled and porter's built in about two minutes; CUBE back a second after; `NERC` found registered; both names resolved at once; `https://porter.chrisproject.org/login` answered over HTTPS five seconds later.
+* Read back from pangea: Let's Encrypt (`YE1`) for `porter.chrisproject.org` until 2027-01-31, HTTP 308 to HTTPS; `rudolph` logged in through the door, the session booted `ready`, `/s/<key>/` served ARGUS (200); the store still lists pl-dymap 2.1.2, pl-freesurfer 1.0.4, pl-shexec 2.5.0.
+
+*Memory.* The store stays at 2 vCPU and 8 GiB: CUBE's stack takes a few GiB, and each person signed in through porter adds a session of a few hundred MB. When that outgrows it, raise `--memory` on the script's `vm new` line (to 16 GiB: about $0.016 an hour more, $12 a month, at OCI's list price for E5) and play the script again; `vm build` rebuilds the machine over the same data volume and address, so CUBE's database, its files and porter's sessions are kept.

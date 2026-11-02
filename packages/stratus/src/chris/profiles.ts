@@ -4,7 +4,8 @@
  * one: it always has a compute (pfcon, in-network, running plugins through
  * the host's Docker). It names its services and its floor; a target below
  * the floor is refused and told by how much. No profile carries the ChRIS
- * UI: the UI is porter and ARGUS.
+ * UI: the UI is porter and ARGUS, which `chris deploy --porter` adds beside
+ * any profile.
  *
  * @module
  */
@@ -19,7 +20,12 @@ export const CHRIS_IMAGES = {
   nats: 'docker.io/library/nats:2.10.20-alpine3.20',
   caddy: 'docker.io/library/caddy:2.10',
   alpine: 'docker.io/library/alpine:3.22',
+  // The full image, not slim: calypso's node-pty builds from source on Linux.
+  node: 'docker.io/library/node:24.11.1-bookworm',
 } as const;
+
+/** The porter a deploy with `--porter` installs, pinned, with the chell, calypso and ARGUS it brings. */
+export const PORTER_VERSION: string = '0.9.2';
 
 /** A profile: its services and the least it runs on. */
 export interface ChrisProfile {

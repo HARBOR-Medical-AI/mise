@@ -158,7 +158,8 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(statSync(join(vms.folder_derive('store'), 'auth', 'chris.json')).mode & 0o777).toBe(0o600);
     expect([...vm.files.keys()]).toEqual(['/srv/data/chris/compose.yml', '/srv/data/chris/cube.env', '/srv/data/chris/pfcon.env', '/srv/data/chris/Caddyfile']);
     expect(vm.files.get('/srv/data/chris/cube.env')).toContain(`CHRIS_SUPERUSER_PASSWORD=${secrets?.adminPassword}\n`);
-    expect(vm.lines).toContain('cd /srv/data/chris && docker compose pull -q && docker compose up -d --remove-orphans');
+    expect(vm.lines).toContain('cd /srv/data/chris && docker compose pull -q --ignore-buildable && docker compose up -d --build --remove-orphans');
+    expect(vm.files.get('/srv/data/chris/compose.yml')).not.toContain('porter');
     expect(vm.computes).toEqual(['NERC']);
     expect(vm.lines.some((line: string): boolean => line.includes(secrets?.adminPassword ?? '?'))).toBe(false);
     expect(vms.record_read('store')?.chris).toMatchObject({ profile: 'minimal', compute: 'NERC', host: null, url: 'http://203.0.113.10/api/v1/' });
@@ -265,6 +266,43 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(userAnswer_parse('warning: x\nstratus-user exists "a@b.org"\n')).toEqual({ kind: 'exists', email: 'a@b.org' });
     expect(userAnswer_parse('stratus-user email-taken "jorge"\n')).toEqual({ kind: 'emailTaken', username: 'jorge' });
     expect(userAnswer_parse('Traceback (most recent call last):\n')).toBeNull();
+  });
+
+  it('with --porter, runs porter beside CUBE under its own name, its secret kept, both names pointed and waited for', async () => {
+    expect((await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--porter', 'porter.example.org'])).renderedErr).toContain('--porter porter.example.org needs --host');
+    expect((await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'cube.example.org'])).renderedErr).toContain('porter needs a name of its own');
+    surface.answers = ['admin-password'];
+    resolved = ['203.0.113.10'];
+    const asked: string[] = [];
+    context = { ...context, status_get: async (url: string): Promise<number | null> => { asked.push(url); return 200; } };
+    const deployed = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org']);
+    expect(deployed.renderedErr ?? '').toBe('');
+    expect(plain(deployed.rendered)).toContain('porter.example.org already resolves to 203.0.113.10');
+    expect(plain(deployed.rendered)).toContain('store: ChRIS minimal at https://cube.example.org/api/v1/, compute store; porter at https://porter.example.org/');
+    expect(asked).toContain('https://porter.example.org/login');
+    const secrets: ChrisSecrets | null = secrets_read(vms, 'store');
+    expect(secrets?.porterSecret?.length).toBeGreaterThanOrEqual(32);
+    const compose = yaml.load(vm.files.get('/srv/data/chris/compose.yml') ?? '') as { services: Record<string, Record<string, unknown>>; volumes: Record<string, unknown> };
+    expect(compose.services['porter']?.['image']).toBe('stratus/porter:0.9.2');
+    expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@0.9.2');
+    expect(compose.services['porter']?.['volumes']).toEqual(['porter:/var/lib/porter']);
+    expect(compose.services['caddy']?.['networks']).toEqual({ default: { aliases: ['cube.example.org'] } });
+    expect(Object.keys(compose.volumes)).toContain('porter');
+    expect(vm.files.get('/srv/data/chris/Caddyfile')).toBe('cube.example.org {\n\treverse_proxy chris:8000\n}\n\nporter.example.org {\n\treverse_proxy porter:4180\n}\n');
+    expect(vm.files.get('/srv/data/chris/porter.env')).toBe(`PORTER_CUBE_URL=https://cube.example.org/api/v1/\nPORTER_STATE_DIR=/var/lib/porter/sessions\nPORTER_HOST=0.0.0.0\nPORTER_PORT=4180\nPORTER_SECRET=${secrets?.porterSecret}\n`);
+    expect(vm.lines.some((line: string): boolean => line.includes(secrets?.porterSecret ?? '?'))).toBe(false);
+    expect(vms.record_read('store')?.chris).toMatchObject({ porter: 'porter.example.org', dns: 'seen' });
+    expect(plain((await chris_run(context, ['status'])).rendered)).toContain('porter https://porter.example.org/');
+    await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org']);
+    expect(secrets_read(vms, 'store')).toEqual(secrets);
+  });
+
+  it('with --porter and a name not yet seen, says it waits on porter\'s DNS', async () => {
+    surface.answers = ['admin-password'];
+    context = { ...context, resolve: async (host: string): Promise<string[]> => host === 'cube.example.org' ? ['203.0.113.10'] : [] };
+    const waiting = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org']);
+    expect(waiting.renderedErr).toContain('waiting on DNS: porter.example.org does not resolve to 203.0.113.10 yet (chris deploy again resumes here)');
+    expect(vms.record_read('store')?.chris?.dns).toBe('waiting');
   });
 
   it('needs the tasks tier', async () => {

@@ -57,8 +57,35 @@ export function secrets_ensure(store: VmStore, name: string, adminPassword: stri
   const kept: ChrisSecrets | null = secrets_read(store, name);
   if (kept !== null) return kept;
   const secrets: ChrisSecrets = { djangoKey: secret_make(), postgresPassword: secret_make(), pfconSecretKey: secret_make(), pfconPassword: secret_make(), adminPassword };
+  secrets_write(store, name, secrets);
+  return secrets;
+}
+
+/**
+ * The secrets with porter's: those kept, porter's made and kept beside them
+ * the first time a deploy has a porter.
+ *
+ * @param store - The VMs.
+ * @param name - The VM.
+ * @param kept - The secrets kept.
+ * @returns The secrets, with porter's.
+ */
+export function porterSecret_ensure(store: VmStore, name: string, kept: ChrisSecrets): ChrisSecrets {
+  if (kept.porterSecret !== undefined) return kept;
+  const secrets: ChrisSecrets = { ...kept, porterSecret: secret_make() };
+  secrets_write(store, name, secrets);
+  return secrets;
+}
+
+/**
+ * Keeps a VM's secrets, mode 600.
+ *
+ * @param store - The VMs.
+ * @param name - The VM.
+ * @param secrets - The secrets.
+ */
+function secrets_write(store: VmStore, name: string, secrets: ChrisSecrets): void {
   const file: string = secretsFile_derive(store, name);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, `${JSON.stringify(secrets, null, 2)}\n`, { mode: 0o600 });
-  return secrets;
 }
