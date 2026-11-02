@@ -17,7 +17,7 @@ describe('stratusBackend_make', () => {
     const configDir = mkdtempSync(path.join(tmpdir(), 'stratus-backend-'));
     const made = stratusBackend_make({ driver: new FakeDriver(fakeCloud_sample()), configDir, cacheLifeMs: 1000, store: new ClusterStore(path.join(configDir, 'clusters')) });
     expect(made.backend.id).toBe('stratus');
-    expect(made.backend.vfs?.structural).toEqual(['/', '/net', '/net/oci']);
+    expect(made.backend.vfs?.structural).toEqual(['/', '/net', '/net/oci', '/scripts']);
     expect(made.backend.completion?.rootWords).toEqual(['net']);
     expect(made.backend.listingLook?.kinds.find((kind) => kind.type === 'compartment')).toMatchObject({ container: true });
     const net = await made.backend.vfs!.dispatcher.list('/net');
@@ -28,7 +28,7 @@ describe('stratusBackend_make', () => {
     expect(tenancy.ok && tenancy.value.map((item) => item.name)).toContain('harbor-oci');
     // Once the tenancy is known, it and its fixed folders are entered without asking.
     expect(made.backend.vfs?.structural).toEqual([
-      '/', '/net', '/net/oci', '/net/oci/fnndsc', '/net/oci/fnndsc/regions', '/net/oci/fnndsc/clusters',
+      '/', '/net', '/net/oci', '/scripts', '/net/oci/fnndsc', '/net/oci/fnndsc/regions', '/net/oci/fnndsc/clusters',
       ...['instances', 'networks', 'loadbalancers', 'volumes', 'buckets', 'dns'].map((kind) => `/net/oci/fnndsc/${kind}`),
     ]);
   });

@@ -15,7 +15,7 @@ import { VFSDispatcher, type VfsOutcome } from '@fnndsc/fond';
 import type { PromptContext } from '@fnndsc/menu';
 import type { CloudDriver } from './cloud/driver.js';
 import { AnswerCache } from './cache.js';
-import { StratusSession } from './session.js';
+import { StratusSession, configDir_default } from './session.js';
 import { READ_ONLY_REASON, TenancyProvider } from './vfs/tenancy.js';
 import { KIND_FOLDERS } from './vfs/resources.js';
 import { ClusterTree } from './vfs/clusters.js';
@@ -37,6 +37,8 @@ import { BUILD_WAITS, buildRun_make, STEPS_SOURCE, type BuildDeps } from './clus
 import { NetStore, netsRoot_derive } from './net/state.js';
 import { VmStore, vmsRoot_derive } from './vm/state.js';
 import { lineStatusProviders_make } from './commands/lineStatus.js';
+import { ScriptLibrary } from './scripts/library.js';
+import { ScriptsProvider, SCRIPTS_PREFIX } from './vfs/scripts.js';
 import { publicAddresses_resolve, publicNameservers_get, urlStatus_get } from './chris/outside.js';
 import { goDaddy_make } from './chris/registrar.js';
 import { clientCidr_read } from './net/address.js';
@@ -59,6 +61,8 @@ export interface StratusBackendOptions {
   readonly nets?: NetStore;
   /** Where the VMs this daemon builds are kept; `$XDG_STATE_HOME/stratus/vms` when absent. */
   readonly vms?: VmStore;
+  /** The library of scripts; one over the configuration directory when absent. */
+  readonly library?: ScriptLibrary;
   /** This host's public address as a /32, for a network's bastion; asked of an address echo when absent. */
   readonly clientCidr_read?: () => Promise<string>;
   /** The cloud's build half; absent, this cloud cannot build, adopt or plan, and the verbs say so. With no installer beside it, it adopts and plans but does not build. */
@@ -96,7 +100,7 @@ export interface StratusBackend {
  * @returns The structural paths.
  */
 export function structuralPaths_list(session: StratusSession): string[] {
-  const paths: string[] = ['/', '/net', session.mount];
+  const paths: string[] = ['/', '/net', session.mount, SCRIPTS_PREFIX];
   if (session.identity === null) return paths;
   const tenancy: string = session.tenancyPath;
   return [...paths, tenancy, `${tenancy}/regions`, `${tenancy}/clusters`, ...KIND_FOLDERS.map((kind: string): string => `${tenancy}/${kind}`)];
@@ -132,16 +136,20 @@ export function stratusBackend_make(options: StratusBackendOptions): StratusBack
   const region = (): string | null => session.region;
   const nets: NetStore = options.nets ?? new NetStore(netsRoot_derive());
   const vms: VmStore = options.vms ?? new VmStore(vmsRoot_derive());
+  const library: ScriptLibrary = options.library ?? new ScriptLibrary(options.configDir ?? configDir_default());
   commands_register(stratusCommands_make({
     clusters, driver: options.driver, region, clustersPath: (): string => `${session.tenancyPath}/clusters`,
     cache: new AnswerCache(CAPACITY_CACHE_LIFE_MS),
     net: { store: nets, driver: options.driver, builder: options.builder ?? null, region, clientCidr_read: options.clientCidr_read ?? ((): Promise<string> => clientCidr_read()) },
     vm: { store: vms, nets, driver: options.driver, builder: options.builder ?? null, region },
     chris: { vms, nets, builder: options.builder ?? null, resolve: publicAddresses_resolve, nameservers_get: publicNameservers_get, registrar: goDaddy_make(), status_get: urlStatus_get },
+    scripts: { library },
     build: { clusters, store, driver: options.driver, region, deps, clustersPath: (): string => `${session.tenancyPath}/clusters`, builder: options.builder ?? null, baseDomain: options.baseDomain ?? null, ...(options.account !== undefined ? { account: options.account } : {}), ...(options.verifyReach !== undefined ? { verifyReach: options.verifyReach } : {}) },
   }), 'backend');
   const dispatcher: VFSDispatcher = new VFSDispatcher();
   dispatcher.provider_register(tenancy);
+  // The library of scripts, beside the tenancy: `play` and the script screen read one path.
+  dispatcher.provider_register(new ScriptsProvider(library, (): string => session.identity?.user ?? 'disconnected'));
   const backend: Backend = {
     id: 'stratus',
     session,
@@ -153,15 +161,16 @@ export function stratusBackend_make(options: StratusBackendOptions): StratusBack
         return structuralPaths_list(session);
       },
     },
-    // One file's bytes for `play` and a surface; the tree is read-only, so a write is refused.
+    // One file's bytes for `play` and a surface; the tree is read-only but for /scripts/mine, so a write elsewhere is refused.
     files: {
       read: async (path: string): Promise<Buffer> => {
         const bytes: VfsOutcome<Buffer> = await dispatcher.readBinary(path);
         if (!bytes.ok) throw new FileReadRefusal(path, bytes.errno === 'ENOENT' ? 404 : 403, bytes.reason ?? bytes.errno);
         return bytes.value;
       },
-      write: async (path: string): Promise<void> => {
-        throw new Error(`cannot write ${path}: ${READ_ONLY_REASON}`);
+      write: async (path: string, bytes: Buffer): Promise<void> => {
+        const written: VfsOutcome = await dispatcher.write(path, bytes);
+        if (!written.ok) throw new Error(`cannot write ${path}: ${written.reason ?? (written.errno === 'EROFS' ? READ_ONLY_REASON : written.errno)}`);
       },
     },
     completion: { rootWords: ['net'] },
