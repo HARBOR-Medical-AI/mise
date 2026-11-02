@@ -1,5 +1,20 @@
 # @fnndsc/calypso
 
+## 0.29.0
+
+### Minor Changes
+
+- fa14453: A surface can raise its session from READ to MANAGE with the person's password, checked at its door.
+
+  `elevate` on the wire carries the password once; the daemon checks it at the CUBE named in `CALYPSO_ELEVATION_URL` for `CALYPSO_ELEVATION_USER` and grants the `tasks` tier to that surface alone, for as long as it is attached, a terminal's lines acting as its owning browser's. The attach says whether a door stands (`elevation`); a daemon started without one refuses by name (docs/stratus.adoc, D14).
+
+### Patch Changes
+
+- Updated dependencies [fa14453]
+  - @fnndsc/menu@0.34.0
+  - @fnndsc/brasa@0.52.2
+  - @fnndsc/cumin@3.29.7
+
 ## 0.28.5
 
 ### Patch Changes

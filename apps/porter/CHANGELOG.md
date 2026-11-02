@@ -1,5 +1,22 @@
 # @fnndsc/porter
 
+## 0.9.6
+
+### Patch Changes
+
+- fa14453: A stratus session porter starts is given its door, so a READ session can be raised with the person's password.
+
+  The daemon reads it from `CALYPSO_ELEVATION_URL` and `CALYPSO_ELEVATION_USER`; `/switch` enters READ unless `spend` is asked (docs/stratus.adoc, D14).
+
+- Updated dependencies [fa14453]
+- Updated dependencies [fa14453]
+- Updated dependencies [1e3f235]
+  - @fnndsc/calypso@0.29.0
+  - @fnndsc/menu@0.34.0
+  - @fnndsc/stratus@0.10.0
+  - @fnndsc/chell@5.19.12
+  - @fnndsc/cumin@3.29.7
+
 ## 0.9.5
 
 ### Patch Changes

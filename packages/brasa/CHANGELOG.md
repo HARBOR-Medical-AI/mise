@@ -1,5 +1,14 @@
 # @fnndsc/brasa
 
+## 0.52.2
+
+### Patch Changes
+
+- Updated dependencies [fa14453]
+  - @fnndsc/menu@0.34.0
+  - @fnndsc/chili@3.8.4
+  - @fnndsc/cumin@3.29.7
+
 ## 0.52.1
 
 ### Patch Changes
