@@ -26,6 +26,8 @@ export const STRATUS_ITEM_KINDS: ReadonlyArray<ItemKindLook> = [
   { type: 'shape', mark: 's', container: true },
   { type: 'price', mark: '$', container: true },
   { type: 'cluster', mark: 'D', container: true, sizeColumn: state_column },
+  { type: 'source', mark: 'S', container: true },
+  { type: 'script', mark: 'm' },
   { type: 'kind', mark: 'k', container: true, sizeColumn: count_column },
   { type: 'instance', mark: 'i', container: true, sizeColumn: state_column },
   { type: 'network', mark: 'n', container: true, sizeColumn: state_column },

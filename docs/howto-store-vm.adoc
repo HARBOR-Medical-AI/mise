@@ -500,3 +500,27 @@ play: /home/rudolph/src/infra/chrisproject/store.mise: 5 done, 1 ready, 0 change
 ----
 
 A user line reads ready, never done: the accounts live in CUBE, which only a run asks; the line is replay-safe, so ready is what it is.
+
+== The library, mounted: `scripts` and `/scripts`, 2026-11-02
+
+The library's sources are git repositories named by `scripts add` and cloned under stratus's state (`~/.local/state/stratus/scripts/<name>`), the sources kept in `~/.config/mise/stratus/scripts.json`. Each is mounted read-only at `/scripts/<name>/`; `/scripts/mine/` is this host's own, written to. Live, from a private daemon with the operator's state (the clone over ssh as `git@github.com`):
+
+[source]
+----
+scripts add chrisproject git@github.com:HARBOR-Medical-AI/infra.git --folder chrisproject
+chrisproject: git@github.com:HARBOR-Medical-AI/infra.git (chrisproject) cloned to /home/rudolph/.local/state/stratus/scripts/chrisproject; its scripts are at /scripts/chrisproject/
+scripts
+chrisproject  git@github.com:HARBOR-Medical-AI/infra.git  chrisproject  a1c8045 2026-11-01 infra: infrastructure as mise scripts
+mine  this host's own scripts
+ls -l /scripts
+S rudolph.pienaar@childrens.harvard.edu 1        2026-11-02 03:52:36 chrisproject/    git@github.com:HARBOR-Medical-AI/infra.git chrisproject
+d rudolph.pienaar@childrens.harvard.edu 0        2026-11-02 03:52:38 mine/            this host's own scripts
+ls -l /scripts/chrisproject
+m rudolph.pienaar@childrens.harvard.edu 967      2026-11-02 03:52:36 store.mise
+play /scripts/chrisproject/store.mise --status
+play: /scripts/chrisproject/store.mise: 5 done, 1 ready, 0 changed, 0 not yet, of 6 lines
+scripts pull
+chrisproject: at a1c8045 2026-11-01 infra: infrastructure as mise scripts
+----
+
+The status rows are those of the section before, read now through the mount: the console and the script screen name one path.
