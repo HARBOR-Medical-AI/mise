@@ -466,3 +466,19 @@ store, vcpu 2 → 4: $0.052 → $0.082 an hour, $37.83 → $59.73 a month (+$21.
 vm cost blt --vcpu 4 --memory 16 --disk 50 --data 1024 --data-backup daily --os ubuntu-26.04
 blt (not declared): 4 vCPU · 16 GiB · disk 50 GB · data 1024 GB (daily backups): $0.155 an hour, $112.80 a month (the data alone, kept after a teardown: $0.060 an hour, $43.52 a month)
 ----
+
+== What the cloud sells: `vm limits`, 2026-11-02
+
+The script screen's sliders (D17) take their ends and steps from the cloud, never from a page, through one verb. Read live in `us-ashburn-1` from a private daemon with the operator's state (nothing built, nothing changed):
+
+[source]
+----
+vm limits
+shape   VM.Standard.E5.Flex (E5)
+vcpu    2 to 252, in steps of 2
+memory  1 to 2098 GiB, 0.5 to 32 GiB per vCPU
+disk    50 to 32768 GB
+data    50 to 32768 GB, backups daily or none
+----
+
+OCI sells E5.Flex by the OCPU (two vCPUs) and bounds memory per OCPU (1 to 64 GB), which the verb halves to the spec's per-vCPU words.

@@ -259,7 +259,7 @@ export function fakeCloud_sample(tenancy: string = 'fnndsc'): FakeCloud {
   const limit = (service: string, name: string, value: number, zone?: string): CloudLimit =>
     zone === undefined ? { service, name, scope: 'region', value } : { service, name, scope: 'zone', zone, value };
   const shape = (name: string, family: string, processor: string): CloudShape => ({
-    name, family, flexible: true, vcpuPerCore: 2, cores: { min: 1, max: 94 }, memoryGib: { min: 1, max: 1049 }, processor, gpus: 0,
+    name, family, flexible: true, vcpuPerCore: 2, cores: { min: 1, max: 94 }, memoryGib: { min: 1, max: 1049 }, memoryPerVcpuGib: { min: 0.5, max: 32 }, processor, gpus: 0,
     quotaNames: [`standard-${family.toLowerCase()}-core-count`, `standard-${family.toLowerCase()}-memory-count`],
     limitService: 'compute',
     raw: { shape: name, processorDescription: processor, isFlexible: true },

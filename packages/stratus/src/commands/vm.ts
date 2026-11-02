@@ -23,7 +23,8 @@ import { repl_confirm, repl_question, surface_get, type CommandHelp } from '@fnn
 import { plan_count, planCounts_alter, planCounts_words, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import type { CloudDriver } from '../cloud/driver.js';
 import type { NetStore } from '../net/state.js';
-import { VM_OPTIONS, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, type VmSpec } from '../vm/spec.js';
+import { VM_OPTIONS, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, type VmSpec } from '../vm/spec.js';
+import type { CloudShape } from '../cloud/driver.js';
 import { VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
 import { cost_words, planFile_derive, VM_JOBS, vmApplyRun_make, vmCost_estimate, vmNet_read, vmPlanRun_make, vmTeardownRun_make, type VmCost, type VmDeps, type VmPart } from '../vm/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
@@ -269,6 +270,31 @@ async function vmCost_run(context: VmCommandContext, args: ReadonlyArray<string>
 }
 
 /**
+ * `vm limits`: what the shape VMs are built from sells, in the spec's words,
+ * so a slider's ends and steps come from the cloud and never from a page.
+ *
+ * @param context - The session.
+ * @param args - The words after `limits`; none are taken.
+ * @returns The envelope.
+ */
+async function vmLimits_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  if (args.length > 0) return envelope_error('', undefined, 'vm limits: usage: vm limits\n');
+  const region: string | null = context.region();
+  if (region === null) return envelope_error('', undefined, 'vm limits: not connected: the limits are the session\'s region\'s\n');
+  const shapeName: string | undefined = context.builder?.vmShape;
+  if (shapeName === undefined) return envelope_error('', undefined, 'vm limits: this cloud builds no VMs yet\n');
+  let shapes: CloudShape[];
+  try {
+    shapes = await context.driver.shapes_list(region);
+  } catch (error: unknown) {
+    return envelope_error('', undefined, `vm limits: asking ${region} for its shapes: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+  const shape: CloudShape | undefined = shapes.find((each: CloudShape): boolean => each.name === shapeName);
+  if (shape === undefined) return envelope_error('', undefined, `vm limits: ${region} does not offer ${shapeName}\n`);
+  return envelope_ok(`${vmLimits_lines(vmLimits_derive(shape)).join('\n')}\n`);
+}
+
+/**
  * `vm plan [<name>]`.
  *
  * @param context - The session.
@@ -507,6 +533,7 @@ export async function vm_run(context: VmCommandContext, args: ReadonlyArray<stri
     case 'status': return vmStatus_run(context, rest);
     case 'new': return vmNew_run(context, rest);
     case 'cost': return await vmCost_run(context, rest);
+    case 'limits': return await vmLimits_run(context, rest);
     case 'plan': return await vmPlan_run(context, rest);
     case 'build': return await vmBuild_run(context, rest);
     case 'shell': return await vmShell_run(context, rest);
@@ -514,15 +541,15 @@ export async function vm_run(context: VmCommandContext, args: ReadonlyArray<stri
     case 'teardown': return await vmTeardown_run(context, rest);
     default:
       if (rest.length === 0 && context.store.names_list().includes(verb)) return vmStatus_run(context, [verb]);
-      return envelope_error('', undefined, `vm: ${verb}: not a verb (vm status, new, cost, plan, build, shell, protect, teardown)\n`);
+      return envelope_error('', undefined, `vm: ${verb}: not a verb (vm status, new, cost, limits, plan, build, shell, protect, teardown)\n`);
   }
 }
 
 /** `vm`'s help. */
 export const VM_HELP: CommandHelp = {
-  usage: 'vm [status [<name>…]] | vm <name> | vm new <name> --net <network> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> [--open <ports>] [--data-backup daily|none] | vm cost [<name> [<vm new\'s options>]] | vm plan [<name>] | vm build [<name>] [--allow-alter] | vm shell [<name>] | vm protect <name> on|off | vm teardown <name> [--all]',
+  usage: 'vm [status [<name>…]] | vm <name> | vm new <name> --net <network> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> [--open <ports>] [--data-backup daily|none] | vm cost [<name> [<vm new\'s options>]] | vm limits | vm plan [<name>] | vm build [<name>] [--allow-alter] | vm shell [<name>] | vm protect <name> on|off | vm teardown <name> [--all]',
   summary: 'Declare, build, reach and tear down VMs on a network',
   category: 'Resources',
-  description: 'vm new declares a VM and builds nothing; on a VM already declared it compares, printing unchanged or the change (a script is the truth), and an option not given keeps its value. A VM stands on a built network (--net) and is named in portable words only: vCPUs, memory in GiB, a boot disk and a data volume in GB (50 at least), the operating system (ubuntu-26.04), the ports open to the internet (--open 80,443; SSH goes through the network\'s bastion) and daily backups of its data. The driver chooses the rest: on OCI an E5.Flex (two vCPUs to an OCPU), the newest image of the OS (pinned at the first build), the first availability domain. A VM is two stacks: its data (the volume, its backups, a reserved address) and its machine (the instance, its boot disk, a security group, the volume\'s attachment); cloud-init formats the volume once, mounts it at /srv/data and puts Docker\'s data there. vm cost says what a VM bills at list price, an hour and a month, and what its data alone keeps billing after a teardown; it declares and saves nothing. Its words are vm new\'s: on a declared VM the options given change its spec for the answer and the difference is said (vm cost store --memory 16); on a name not declared they are the whole spec, without --net (the price is the session\'s region\'s); bare, every declared VM. vm plan says the size, the network and the cost. vm build plans as tasks (/proc/steps/vm-<name>-plan-data, -machine), says the counts and the cost and asks, applies the data and the machine and points the address at it; a plan that touches what exists is refused unless --allow-alter. vm shell (shell tier) opens a three-hour session on the network\'s bastion for the VM\'s own key and prints the ssh line. A VM is born protected: vm protect <name> off lets teardown run. vm teardown removes the machine and keeps the data, backups and address, so the next build brings it back with its data and name; --all takes those too, asking for the name typed back.',
-  examples: ['vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04', 'vm cost store --memory 16', 'vm cost blt --vcpu 4 --memory 16 --disk 50 --data 1024 --data-backup daily --os ubuntu-26.04', 'vm plan store', 'vm build store', 'vm shell store', 'vm protect store off', 'vm teardown store'],
+  description: 'vm new declares a VM and builds nothing; on a VM already declared it compares, printing unchanged or the change (a script is the truth), and an option not given keeps its value. A VM stands on a built network (--net) and is named in portable words only: vCPUs, memory in GiB, a boot disk and a data volume in GB (50 at least), the operating system (ubuntu-26.04), the ports open to the internet (--open 80,443; SSH goes through the network\'s bastion) and daily backups of its data. The driver chooses the rest: on OCI an E5.Flex (two vCPUs to an OCPU), the newest image of the OS (pinned at the first build), the first availability domain. A VM is two stacks: its data (the volume, its backups, a reserved address) and its machine (the instance, its boot disk, a security group, the volume\'s attachment); cloud-init formats the volume once, mounts it at /srv/data and puts Docker\'s data there. vm cost says what a VM bills at list price, an hour and a month, and what its data alone keeps billing after a teardown; it declares and saves nothing. Its words are vm new\'s: on a declared VM the options given change its spec for the answer and the difference is said (vm cost store --memory 16); on a name not declared they are the whole spec, without --net (the price is the session\'s region\'s); bare, every declared VM. vm limits says what the shape VMs are built from sells, in the same words: vCPUs from the least to the most in the cloud\'s steps, memory in GiB and per vCPU, the disks\' floors and ceilings; a slider takes its ends from it. vm plan says the size, the network and the cost. vm build plans as tasks (/proc/steps/vm-<name>-plan-data, -machine), says the counts and the cost and asks, applies the data and the machine and points the address at it; a plan that touches what exists is refused unless --allow-alter. vm shell (shell tier) opens a three-hour session on the network\'s bastion for the VM\'s own key and prints the ssh line. A VM is born protected: vm protect <name> off lets teardown run. vm teardown removes the machine and keeps the data, backups and address, so the next build brings it back with its data and name; --all takes those too, asking for the name typed back.',
+  examples: ['vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04', 'vm cost store --memory 16', 'vm cost blt --vcpu 4 --memory 16 --disk 50 --data 1024 --data-backup daily --os ubuntu-26.04', 'vm limits', 'vm plan store', 'vm build store', 'vm shell store', 'vm protect store off', 'vm teardown store'],
 };

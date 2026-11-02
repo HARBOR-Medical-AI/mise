@@ -32,6 +32,60 @@ export interface VmSpec {
 /** The smallest disk and data volume any cloud stratus drives will make, GB. */
 export const VM_DISK_FLOOR: number = 50;
 
+/** The most a disk or a data volume is, in GB (OCI's block volume ceiling). */
+export const VM_DISK_CEILING: number = 32768;
+
+/** What a shape sells, in the spec's words: the ends and steps the sliders take. */
+export interface VmLimits {
+  /** The shape (`VM.Standard.E5.Flex`) and its family (`E5`). */
+  readonly shape: string;
+  readonly family: string;
+  /** vCPUs: from the least to the most, in steps of the cloud's core unit. */
+  readonly vcpu: { readonly min: number; readonly max: number; readonly step: number };
+  /** Memory in GiB: the shape's range, and per vCPU when the cloud bounds it. */
+  readonly memory: { readonly min: number; readonly max: number; readonly perVcpu: { readonly min: number; readonly max: number } | null };
+  /** The boot disk and the data volume, in GB. */
+  readonly disk: { readonly min: number; readonly max: number };
+  readonly data: { readonly min: number; readonly max: number };
+}
+
+/**
+ * The limits a shape gives a VM's spec.
+ *
+ * @param shape - The shape the builder uses for VMs.
+ * @returns The ends and steps.
+ */
+export function vmLimits_derive(shape: { name: string; family: string; vcpuPerCore: number; cores: { min: number; max: number }; memoryGib: { min: number; max: number }; memoryPerVcpuGib?: { min: number; max: number } }): VmLimits {
+  const step: number = Math.max(1, shape.vcpuPerCore);
+  const min: number = Math.max(step, Math.ceil(shape.cores.min / step) * step);
+  const max: number = Math.max(min, Math.floor(shape.cores.max / step) * step);
+  return {
+    shape: shape.name,
+    family: shape.family,
+    vcpu: { min, max, step },
+    memory: { min: shape.memoryGib.min, max: shape.memoryGib.max, perVcpu: shape.memoryPerVcpuGib ?? null },
+    disk: { min: VM_DISK_FLOOR, max: VM_DISK_CEILING },
+    data: { min: VM_DISK_FLOOR, max: VM_DISK_CEILING },
+  };
+}
+
+/**
+ * The limits as lines.
+ *
+ * @param limits - The limits.
+ * @returns One line per word of the spec.
+ */
+export function vmLimits_lines(limits: VmLimits): string[] {
+  const per: string = limits.memory.perVcpu === null ? '' : `, ${limits.memory.perVcpu.min} to ${limits.memory.perVcpu.max} GiB per vCPU`;
+  return [
+    `shape   ${limits.shape} (${limits.family})`,
+    `vcpu    ${limits.vcpu.min} to ${limits.vcpu.max}, in steps of ${limits.vcpu.step}`,
+    `memory  ${limits.memory.min} to ${limits.memory.max} GiB${per}`,
+    `disk    ${limits.disk.min} to ${limits.disk.max} GB`,
+    `data    ${limits.data.min} to ${limits.data.max} GB, backups daily or none`,
+  ];
+}
+
 /** An operating system's word. */
 const OS_WORD: RegExp = /^[a-z]+-[0-9][0-9.]*$/;
 
@@ -82,7 +136,7 @@ export function vmSpec_read(options: ReadonlyMap<string, string>, kept: VmSpec |
   const given = (word: string): string | undefined => options.get(word);
   const net: string | undefined = given('--net') ?? kept?.net;
   if (net === undefined) return { error: '--net <network> is needed (net new declares one)' };
-  const numbers: Array<[keyof VmSpec, string, number, number]> = [['vcpu', '--vcpu', 1, 128], ['memory', '--memory', 1, 1024], ['disk', '--disk', VM_DISK_FLOOR, 32768], ['data', '--data', VM_DISK_FLOOR, 32768]];
+  const numbers: Array<[keyof VmSpec, string, number, number]> = [['vcpu', '--vcpu', 1, 128], ['memory', '--memory', 1, 1024], ['disk', '--disk', VM_DISK_FLOOR, VM_DISK_CEILING], ['data', '--data', VM_DISK_FLOOR, VM_DISK_CEILING]];
   const values: Partial<Record<keyof VmSpec, number>> = {};
   for (const [key, word, least, most] of numbers) {
     const text: string | undefined = given(word);
