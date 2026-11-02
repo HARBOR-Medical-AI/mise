@@ -25,7 +25,7 @@ export interface ChrisTileHooks {
   /** What the PACS pane last asked, or empty. */
   pacs_query: () => string;
   pacs_open: () => void;
-  /** Enters cloud management through the porter this page came by (it runs `stratus oci`, which asks READ or MANAGE); null when it came by none. */
+  /** Enters the cloud session through the porter this page came by (it runs `stratus oci`, which enters as READ); null when it came by none. */
   cloud_enter: (() => void) | null;
 }
 
@@ -100,10 +100,10 @@ export function chrisTiles_make(hooks: ChrisTileHooks): () => Promise<TileContri
       key: 'cloud', name: 'CLOUD', hue: '--daybreak', numeral: '',
       figures: [{ text: 'OCI' }],
       rows: [
-        { text: 'entered as READ · look only', open: hooks.cloud_enter },
-        { text: 'MANAGE · asks your password when a line would act', open: hooks.cloud_enter },
+        { text: 'enter as READ · look only', open: hooks.cloud_enter },
+        { text: 'a line that would act asks your password · MANAGE then', open: hooks.cloud_enter },
       ],
-      verb: 'ENTER CLOUD MANAGEMENT',
+      verb: 'ENTER YOUR CLOUD SESSION',
       about: TILE_ABOUT['cloud'],
       enter: hooks.cloud_enter,
     };
