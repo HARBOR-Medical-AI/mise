@@ -34,7 +34,7 @@ const SIZE: ClusterSizeModel = {
 };
 
 /** A controller over hooks that record the lines sent. */
-function controller_make(size: ClusterSizeModel = SIZE): { controller: TdController; sent: string[]; cues: string[]; hooks: ControllerHooks } {
+function controller_make(size: ClusterSizeModel = SIZE, manage: boolean | null = true): { controller: TdController; sent: string[]; cues: string[]; hooks: ControllerHooks } {
   const sent: string[] = [];
   const cues: string[] = [];
   const hooks: ControllerHooks = {
@@ -42,6 +42,7 @@ function controller_make(size: ClusterSizeModel = SIZE): { controller: TdControl
     size_read: async (): Promise<ClusterSizeModel> => size,
     stop: (): void => { sent.push('<stop>'); },
     leave: (): void => { sent.push('<leave>'); },
+    manage_is: (): boolean | null => manage,
     voice: { pill: (): void => undefined, cue: (name: string): void => { cues.push(name); } },
   };
   const controller: TdController = new TdController(hooks);
@@ -75,6 +76,32 @@ describe('the TD controller screen', () => {
     expect(controller.cluster_get()?.name).toBe('quay');
     controller.dispose();
     controller.root.remove();
+  });
+
+  it('entered as READ, the header says so and BUILD, ADOPT and TEAR DOWN are held with the door as their reason; PLAN and VERIFY stand', async () => {
+    const { controller } = controller_make(SIZE, false);
+    controller.clusters_take([cluster_make('quay', { protected: false, refused: {} })]);
+    controller.cluster_choose('quay');
+    expect(controller.root.querySelector('.tdc-chip-tier')?.textContent).toBe('READ · NOTHING OUTSIDE THIS HOST CHANGES');
+    const build: HTMLButtonElement | undefined = button_named(controller.root, 'BUILD · REFUSED');
+    expect(build?.disabled).toBe(true);
+    expect(build?.title).toContain('refused: entered as READ');
+    expect(button_named(controller.root, 'PLAN')?.disabled).toBe(false);
+    expect(button_named(controller.root, 'VERIFY')?.disabled).toBe(false);
+    controller.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
+    expect(button_named(controller.root, 'TEAR DOWN · REFUSED')?.title).toContain('MANAGE is chosen at the door');
+    // A found cluster's ADOPT is held the same way, by the kernel's reason when it carries one.
+    controller.clusters_take([cluster_make('harbor', { origin: 'found', condition: 'UP', billing: true, protected: true, refused: { adopt: 'entered as READ; MANAGE is chosen at the door' } })]);
+    controller.cluster_choose('harbor');
+    controller.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="overview"]')?.click();
+    expect(button_named(controller.root, 'ADOPT · REFUSED')?.title).toBe('refused: entered as READ; MANAGE is chosen at the door');
+    // With MANAGE, the chip says so and nothing is held by the door.
+    const { controller: managed } = controller_make(SIZE, true);
+    managed.clusters_take([cluster_make('quay', { protected: false, refused: {} })]);
+    managed.cluster_choose('quay');
+    expect(managed.root.querySelector('.tdc-chip-tier')?.textContent).toBe('MANAGE');
+    expect(button_named(managed.root, 'BUILD')?.disabled).toBe(false);
+    controller.dispose(); controller.root.remove(); managed.dispose(); managed.root.remove();
   });
 
   it('redraws from an event, keeping the cost a read gave', () => {

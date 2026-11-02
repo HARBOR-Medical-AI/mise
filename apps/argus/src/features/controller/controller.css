@@ -30,6 +30,9 @@ body[data-takeover='controller'] > *:not(#td-controller) { visibility: hidden; }
 .tdc-chips { display: flex; gap: 0.3rem; justify-content: center; flex-wrap: wrap; }
 .tdc-chip { display: inline-flex; align-items: center; gap: 0.25rem; background: color-mix(in srgb, var(--harvestgold) 22%, transparent); color: var(--honey); border-radius: 0.7rem; padding: 0.05rem 0.55rem; font-size: 0.65rem; letter-spacing: 0.04em; white-space: nowrap; }
 .tdc-chip-class { background: var(--october-sunset); color: var(--butter); }
+/* the door's answer (D14): READ holds every control that would act; MANAGE lets them run after their own questions */
+.tdc-chip-tier-read { background: var(--honey); color: #000; }
+.tdc-chip-tier-manage { background: var(--tdc-bill); color: #000; }
 .tdc-lock-on { background: var(--butter); color: #000; }
 .tdc-lock-off { background: var(--tdc-destroy); color: #000; }
 .tdc-head-section { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }

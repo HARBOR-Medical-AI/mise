@@ -247,7 +247,7 @@ const CHECKS: ReadonlyArray<{ name: string; how: 'reads' | 'writes'; run: (conte
   {
     name: 'block volume', how: 'writes',
     run: async (context) => {
-      if (!context.probe) return { ok: null, detail: `not run: it makes a 50 GiB ${STORAGE_CLASS} claim and a pod, which needs the tasks tier` };
+      if (!context.probe) return { ok: null, detail: `not run: it makes a 50 GiB ${STORAGE_CLASS} claim and a pod, which needs MANAGE at the door` };
       const ns: string = `/api/v1/namespaces/${PROBE_NAMESPACE}`;
       await context.kube.delete(ns).catch((): void => undefined);
       await context.kube.json_post('/api/v1/namespaces', { apiVersion: 'v1', kind: 'Namespace', metadata: { name: PROBE_NAMESPACE } });
@@ -313,7 +313,7 @@ export function verifySummary_render(checks: ReadonlyArray<VerifyCheck>): string
   const passed: number = ran.filter((check: VerifyCheck): boolean => check.ok === true).length;
   const failed: number = ran.length - passed;
   const skipped: number = checks.length - ran.length;
-  return `${passed} of ${checks.length} pass${failed > 0 ? `, ${failed} fail` : ''}${skipped > 0 ? `, ${skipped} not run (needs the tasks tier)` : ''}`;
+  return `${passed} of ${checks.length} pass${failed > 0 ? `, ${failed} fail` : ''}${skipped > 0 ? `, ${skipped} not run (needs MANAGE at the door)` : ''}`;
 }
 
 /**

@@ -329,7 +329,7 @@ describe('building a cluster over the fakes', () => {
     expect(plan).toContain('fit, E5 per availability domain (us-ashburn-1):');
     expect(plan).toContain('$0.50 an hour');
     expect(plan).toContain('steps next: compartment');
-    expect(plan).toContain('the infrastructure plan needs the tasks tier');
+    expect(plan).toContain('the infrastructure plan: entered as READ, so nothing outside this host changes');
     surface_set(surface);
     expect(plain((await cluster_run(context, ['plan'])).rendered)).toContain('cluster build trial --through infra-plan makes it');
     store.file_write('trial', 'plan.json', JSON.stringify({ ref: 'p', rows: [{ action: 'create', kind: 'i', name: 'a' }, { action: 'change', kind: 'i', name: 'b', drift: true }] }));

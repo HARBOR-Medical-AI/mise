@@ -47,7 +47,7 @@ function answer_make(line: string, states: string[]): QuietAnswer {
 }
 
 /** A screen over hooks that record the lines sent and asked; with `held`, a sent line holds the lane until `release` is called. */
-function screen_make(states: string[] = ['done', 'done', 'done', 'done', 'ready'], held: boolean = false): { screen: ScriptScreen; sent: string[]; asked: string[]; hooks: ScriptHooks; release: () => void } {
+function screen_make(states: string[] = ['done', 'done', 'done', 'done', 'ready'], held: boolean = false, manage: boolean | null = true): { screen: ScriptScreen; sent: string[]; asked: string[]; hooks: ScriptHooks; release: () => void } {
   const sent: string[] = [];
   const asked: string[] = [];
   let releases: Array<() => void> = [];
@@ -59,6 +59,7 @@ function screen_make(states: string[] = ['done', 'done', 'done', 'done', 'ready'
     ask: async (line: string): Promise<QuietAnswer> => { asked.push(line); return answer_make(line, states); },
     stop: (): void => { sent.push('<stop>'); },
     leave: (): void => { sent.push('<leave>'); },
+    manage_is: (): boolean | null => manage,
     voice: { pill: (): void => undefined, cue: (): void => undefined },
   };
   const screen: ScriptScreen = new ScriptScreen(hooks);
@@ -177,6 +178,42 @@ describe('the script screen', () => {
     expect([...screen.root.querySelectorAll('.tdc-log-answer')].map((row) => row.textContent)).toEqual(['y', '(hidden)']);
     screen.dispose();
     screen.root.remove();
+  });
+
+  it('entered as READ, the header says so and every control that would act is held with the door as its reason; a line that only declares still runs', async () => {
+    const { screen, sent } = screen_make(['done', 'done', 'ready', 'not yet', 'not yet'], false, false);
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    expect(screen.root.querySelector('.tdc-chip-tier')?.textContent).toBe('READ · NOTHING OUTSIDE THIS HOST CHANGES');
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
+    await settle();
+    const run: HTMLButtonElement | undefined = button_named(screen.root, 'RUN · REFUSED');
+    expect(run?.disabled).toBe(true);
+    expect(run?.title).toContain('entered as READ');
+    expect(run?.title).toContain('MANAGE is chosen at the door');
+    expect(button_named(screen.root, 'TEARDOWN · REFUSED')?.disabled).toBe(true);
+    expect(button_named(screen.root, 'TEARDOWN · ALL · REFUSED')?.disabled).toBe(true);
+    // PROTECT writes the record on this host: not held.
+    expect(button_named(screen.root, 'PROTECT · OFF')?.disabled).toBe(false);
+    // NET NEW declares and builds nothing: RUN stands and sends.
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    button_named(screen.root, 'RUN')?.click();
+    await settle();
+    expect(sent).toEqual(['net new chrisproject-services --cidr 10.20.0.0/16']);
+    // USERS: ADD is held by the door, not by the form.
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="users"]')?.click();
+    await settle();
+    expect(button_named(screen.root, 'ADD · REFUSED')?.disabled).toBe(true);
+    // With MANAGE the chip says so and nothing is held by the door.
+    const { screen: managed } = screen_make(['done', 'done', 'ready', 'not yet', 'not yet'], false, true);
+    await managed.open('/scripts/chrisproject/store.mise');
+    await settle();
+    expect(managed.root.querySelector('.tdc-chip-tier')?.textContent).toBe('MANAGE');
+    managed.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
+    await settle();
+    expect(button_named(managed.root, 'RUN')?.disabled).toBe(false);
+    screen.dispose(); screen.root.remove(); managed.dispose(); managed.root.remove();
   });
 
   it('a step whose task runs is followed with wait: the rail opens on it, STOP FOLLOWING stops the follow and not the task, FOLLOW follows it again', async () => {

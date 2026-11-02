@@ -22,6 +22,7 @@ import { cidr_read, NET_RESOURCES, netSpec_diff, subnet_derive, type NetSpec } f
 import { NET_NAME, type NetRecord, type NetStore } from '../net/state.js';
 import { NET_JOBS, netApplyRun_make, netPlanRun_make, netTeardownRun_make, standing_words, type NetDeps } from '../net/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
+import { TIER_REFUSAL } from '../tier.js';
 
 /** What `net` reads from the session. */
 export interface NetCommandContext {
@@ -187,7 +188,7 @@ async function netPlan_run(context: NetCommandContext, args: ReadonlyArray<strin
   }
   const kept = planKept_read(context, name);
   if (kept !== null) lines.push(`plan  ${planCounts_words(kept.counts)}${planCounts_alter(kept.counts) ? chalk.red(' · an apply would touch what exists: refused unless --allow-alter') : ''}`);
-  else if (record.stackRef !== undefined && !tasks_granted()) lines.push(chalk.gray('plan  planning again needs the tasks tier (stratus --host-control tasks)'));
+  else if (record.stackRef !== undefined && !tasks_granted()) lines.push(chalk.gray(`plan  planning again: ${TIER_REFUSAL}`));
   else if (record.stackRef === undefined) lines.push(chalk.gray(`plan  not made yet: net build ${name} makes it and asks before it changes anything`));
   return envelope_ok(`${lines.join('\n')}\n`);
 }
@@ -207,7 +208,7 @@ async function netBuild_run(context: NetCommandContext, args: ReadonlyArray<stri
   if (words.length > 1) return envelope_error('', undefined, 'net build: usage: net build [<name>] [--allow-alter]\n');
   const need = net_need(context, words[0], 'build');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
-  if (!tasks_granted()) return envelope_error('', undefined, 'net build: needs the tasks tier (stratus --host-control tasks): without it, nothing outside this host changes\n');
+  if (!tasks_granted()) return envelope_error('', undefined, `net build: ${TIER_REFUSAL}\n`);
   const deps = deps_make(context);
   if ('error' in deps) return envelope_error('', undefined, `net build: ${deps.error}\n`);
   const name: string = need.name;
@@ -241,7 +242,7 @@ async function netTeardown_run(context: NetCommandContext, args: ReadonlyArray<s
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   const { name, record } = need;
   if (record.placeId === undefined && record.stackRef === undefined) return envelope_ok(`${name}: nothing of it is built\n`);
-  if (!tasks_granted()) return envelope_error('', undefined, 'net teardown: needs the tasks tier (stratus --host-control tasks)\n');
+  if (!tasks_granted()) return envelope_error('', undefined, `net teardown: ${TIER_REFUSAL}\n`);
   const deps = deps_make(context);
   if ('error' in deps) return envelope_error('', undefined, `net teardown: ${deps.error}\n`);
   if (record.placeId !== undefined) {

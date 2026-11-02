@@ -157,6 +157,8 @@ describe('a session over a tenancy holding a cluster it keeps nothing of', () =>
     expect(model.clusters[0]?.spec).toEqual(SPEC_DEFAULT);
     expect(model.clusters[0]?.steps).toHaveLength(15);
     expect(model.clusters[0]?.refused?.['build']).toBe('found in the tenancy, not adopted: cluster adopt quay first');
+    // In a READ session the adoption itself is held by the door's answer; the particular reasons stand for the rest.
+    expect(model.clusters[0]?.refused?.['adopt']).toBe('entered as READ; MANAGE is chosen at the door');
     expect((await cluster_run(context, ['quay'])).rendered).toBe(answer.rendered);
   });
 
@@ -178,14 +180,15 @@ describe('a session over a tenancy holding a cluster it keeps nothing of', () =>
     const model = status.model?.data as { clusters: Array<{ condition?: string; billing?: boolean; refused?: Record<string, string> }> };
     expect(model.clusters[0]?.condition).toBe('GONE');
     expect(model.clusters[0]?.billing).toBe(false);
-    expect(model.clusters[0]?.refused).toEqual({ plan: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', verify: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', build: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that' });
+    // The build verbs are refused for what it is; the teardown and an adoption, in this READ session, by the door's answer.
+    expect(model.clusters[0]?.refused).toEqual({ plan: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', verify: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', build: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', teardown: 'entered as READ; MANAGE is chosen at the door', adopt: 'entered as READ; MANAGE is chosen at the door' });
     expect((await cluster_run(context, ['plan', 'quay'])).renderedErr).toBe('cluster plan: quay: nothing of it is left in the tenancy but its tag: cluster teardown quay removes that\n');
     // Without the tasks tier nothing changes.
     const surface: HeadlessSurface & { answer: string } = Object.assign(new HeadlessSurface(), { answer: 'quay' });
     surface.prompt = async (): Promise<string> => surface.answer;
     surface_set(surface);
     sink_set(new BufferSink());
-    expect((await cluster_run(context, ['teardown', 'quay'])).renderedErr).toBe('cluster teardown: quay: Operation not permitted: tearing down needs the tasks tier\n');
+    expect((await cluster_run(context, ['teardown', 'quay'])).renderedErr).toBe('cluster teardown: quay: Operation not permitted: entered as READ, so nothing outside this host changes; MANAGE is chosen at the door (porter asks it; in chell, stratus oci manage), so enter again\n');
     expect(store.record_read('quay')).toBeNull();
     (surface.capabilities as { tasks?: boolean }).tasks = true;
     runner_install(new JobRunner(join(root, 'jobs'), [{ id: STEPS_SOURCE, label: 'steps' }]));

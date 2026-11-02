@@ -67,7 +67,7 @@ function model_extract<T>(answer: ExecuteOutcome, kind: string, parse: (data: un
  * @param names_seen - Told the clusters each read finds, so the language can claim `cluster <name>`.
  * @returns The controller verbs.
  */
-export function tdController_wire(context: Pick<HostContext, 'client'>, names_seen: (names: string[]) => void): TdControllerModule {
+export function tdController_wire(context: Pick<HostContext, 'client' | 'manage_is'>, names_seen: (names: string[]) => void): TdControllerModule {
   let controller: TdController | null = null;
   let lineRunning: boolean = false;
   let names: string[] = [];
@@ -155,6 +155,7 @@ export function tdController_wire(context: Pick<HostContext, 'client'>, names_se
       size_read,
       stop: (): void => context.client.stop_send(),
       leave: close,
+      manage_is: (): boolean | null => context.manage_is(),
       voice: { pill: (label: string): void => synthVoice.pill_play(label), cue: (cue: string): void => synthVoice.cue_play(cue) },
     });
     controller = opened;

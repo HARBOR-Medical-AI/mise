@@ -33,4 +33,6 @@ export interface HostContext {
   readonly terminal: ArgusTerminal;
   /** The session's wire; made last, so read when needed. */
   readonly client: ArgusClient;
+  /** The answer at the cloud door: true for MANAGE, false for READ, null when the session has no such door (docs/stratus.adoc, D14). */
+  manage_is: () => boolean | null;
 }

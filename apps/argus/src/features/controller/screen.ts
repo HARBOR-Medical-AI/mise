@@ -19,6 +19,7 @@
  * @module
  */
 import type { ClusterSizeModel, ClusterSpecModel, ClusterSummary, PromptKind } from '@fnndsc/menu';
+import { line_acts, READ_HELD, tierChip_make } from '../takeover/tier.js';
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
   askForm_derive, CHRIS_STEPS, classBadge_render, conditionWhy_derive, CONTROLLER_VIEWS, duration_text, HOURS_PER_MONTH, LINES, money_text, nameRefusal_derive,
@@ -36,6 +37,8 @@ export interface ControllerHooks {
   stop: () => void;
   /** Gives the screen back. */
   leave: () => void;
+  /** The answer at the cloud door: MANAGE (true), READ (false), or null when there is no door. */
+  manage_is: () => boolean | null;
   /** How the screen is heard. */
   voice: { pill: (label: string) => void; cue: (name: string) => void };
 }
@@ -419,6 +422,8 @@ export class TdController {
     } else {
       chips.append(el('span', 'tdc-chip', 'NO SPEC YET'));
     }
+    const tier: HTMLElement | null = tierChip_make(this.hooks.manage_is());
+    if (tier !== null) chips.append(tier);
     section.append(pill, whyLine, chips);
     return section;
   }
@@ -553,7 +558,9 @@ export class TdController {
    * @param refused - Why it is refused, if it is.
    * @returns The pill, and the line it sends beneath.
    */
-  private linePill_make(label: string, line: string, tone: 'plain' | 'bill' | 'destroy' | 'quiet' = 'plain', refused?: string): HTMLButtonElement {
+  private linePill_make(label: string, line: string, tone: 'plain' | 'bill' | 'destroy' | 'quiet' = 'plain', refusedFor?: string): HTMLButtonElement {
+    // A line that would act is held in a READ session, the door's answer as its reason, unless a more particular one stands.
+    const refused: string | undefined = refusedFor ?? (line_acts(line) && this.hooks.manage_is() === false ? READ_HELD : undefined);
     const pill: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone}`, refused === undefined ? label : `${label} · REFUSED`);
     pill.type = 'button';
     pill.title = refused === undefined ? `sends: ${line}` : `refused: ${refused}`;
@@ -589,7 +596,7 @@ export class TdController {
     } else if (cluster.origin === 'found') {
       // Found in the tenancy by its tag and read from the cloud: address, spec and condition shown; acting on it waits on ADOPT (docs/stratus.adoc, D15).
       note.append(el('span', 'tdc-prose', 'Found in the tenancy by its tag. What is shown is what the cloud says of it: its address and spec from its stack, its condition from what lives in its compartment. ADOPT keeps it here, which is what PLAN, VERIFY, BUILD and TEAR DOWN wait on; its kubeconfig and CUBE token are then copied by hand.'));
-      note.append(this.linePill_make('ADOPT', LINES.adopt(cluster.name)));
+      note.append(this.linePill_make('ADOPT', LINES.adopt(cluster.name), 'plain', cluster.refused?.['adopt']));
     } else if (cluster.origin === 'checkout') {
       note.append(el('span', 'tdc-prose', 'Read from a harbor-oci checkout. Adopting it keeps it here: cluster adopt <name> --from <checkout>.'));
     } else if (cluster.gone !== null && cluster.gone !== undefined) {

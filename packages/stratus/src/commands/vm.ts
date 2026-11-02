@@ -29,6 +29,7 @@ import { VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
 import { cost_words, planFile_derive, VM_JOBS, vmApplyRun_make, vmCost_estimate, vmNet_read, vmPlanRun_make, vmTeardownRun_make, type VmCost, type VmDeps, type VmPart } from '../vm/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 import { HOURS_PER_MONTH } from '../cluster/spend.js';
+import { TIER_REFUSAL } from '../tier.js';
 
 /** What `vm` reads from the session. */
 export interface VmCommandContext {
@@ -381,7 +382,7 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   if (words.length > 1) return envelope_error('', undefined, 'vm build: usage: vm build [<name>] [--allow-alter]\n');
   const need = vm_need(context, words[0], 'build');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
-  if (!tasks_granted()) return envelope_error('', undefined, 'vm build: needs the tasks tier (stratus --host-control tasks): without it, nothing outside this host changes\n');
+  if (!tasks_granted()) return envelope_error('', undefined, `vm build: ${TIER_REFUSAL}\n`);
   const deps = deps_make(context);
   if ('error' in deps) return envelope_error('', undefined, `vm build: ${deps.error}\n`);
   const { name, spec } = need;
@@ -509,7 +510,7 @@ async function vmTeardown_run(context: VmCommandContext, args: ReadonlyArray<str
   const { name, record, spec } = need;
   if (record.machineStackRef === undefined && (!all || record.dataStackRef === undefined)) return envelope_ok(`${name}: nothing of it ${all ? 'is built' : 'but its kept data is built (vm teardown --all takes that)'}\n`);
   if (record.protected === true) return envelope_error('', undefined, `vm teardown: ${name}: protected (vm protect ${name} off)\n`);
-  if (!tasks_granted()) return envelope_error('', undefined, 'vm teardown: needs the tasks tier (stratus --host-control tasks)\n');
+  if (!tasks_granted()) return envelope_error('', undefined, `vm teardown: ${TIER_REFUSAL}\n`);
   const deps = deps_make(context);
   if ('error' in deps) return envelope_error('', undefined, `vm teardown: ${deps.error}\n`);
   const cost: VmCost | null = await cost_read(context, spec);

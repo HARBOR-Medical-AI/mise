@@ -51,7 +51,7 @@ describe('the ten checks', () => {
   it('pass nine on a healthy cluster, and leave the probe to the tier', async () => {
     const checks = await verify_run(context_of(new FakeKube({ nodes: NODES }), false));
     expect(checks.map((check) => `${check.name}:${check.ok}`)).toEqual(['API:true', 'cluster version:true', 'nodes:true', 'OCI CCM:true', 'operators:true', 'storage class:true', 'DNS:true', 'console:true', 'CPU headroom:true', 'block volume:null']);
-    expect(checks[9]).toMatchObject({ how: 'writes', detail: expect.stringContaining('needs the tasks tier') });
+    expect(checks[9]).toMatchObject({ how: 'writes', detail: expect.stringContaining('needs MANAGE at the door') });
     expect(checks[8]?.detail).toBe('unrequested cores: 4.5 / 4.5 / 4.5 (a plugin job asks 2)');
     expect(cpuQuantity_parse('250m')).toBe(0.25);
   });
@@ -108,8 +108,8 @@ describe('cluster verify', () => {
     expect(verified.status).toBe('ok');
     expect(plain(verified.rendered)).toContain('✓ API              /readyz ok');
     expect(plain(verified.rendered)).toContain('· block volume');
-    expect(plain(verified.rendered)).toContain('verify: 9 of 10 pass, 1 not run (needs the tasks tier)');
-    expect(store.record_read('harbor')?.steps['verify']).toMatchObject({ state: 'done', note: '9 of 10 pass, 1 not run (needs the tasks tier)' });
+    expect(plain(verified.rendered)).toContain('verify: 9 of 10 pass, 1 not run (needs MANAGE at the door)');
+    expect(store.record_read('harbor')?.steps['verify']).toMatchObject({ state: 'done', note: '9 of 10 pass, 1 not run (needs MANAGE at the door)' });
     const granted: HeadlessSurface = new HeadlessSurface();
     (granted.capabilities as { tasks?: boolean }).tasks = true;
     surface_set(granted);

@@ -355,7 +355,7 @@ describe('cluster teardown', () => {
     store.record_update('trial', (current: ClusterRecord): void => { delete current.gone; });
     const untiered: HeadlessSurface = new HeadlessSurface();
     surface_set(untiered);
-    expect((await cluster_run(context, ['teardown', 'trial'])).renderedErr).toContain('tearing down needs the tasks tier');
+    expect((await cluster_run(context, ['teardown', 'trial'])).renderedErr).toContain('Operation not permitted: entered as READ, so nothing outside this host changes');
     const noBuilder: ClusterCommandContext = { ...context, build: { ...context.build!, builder: null } };
     expect((await cluster_run(noBuilder, ['teardown', 'trial'])).renderedErr).toBe('cluster teardown: this cloud cannot tear a cluster down yet\n');
   });

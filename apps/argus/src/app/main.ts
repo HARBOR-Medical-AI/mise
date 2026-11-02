@@ -1004,6 +1004,8 @@ async function surface_start(token: string): Promise<void> {
    * dormant groups, the terminal and the client are made further down; a
    * module reads them when it is called, never at wiring.
    */
+  /** The cloud door's answer, known once the session is attached; null outside a stratus session. */
+  let manageTier: boolean | null = null;
   const context: HostContext = {
     get layout(): LayoutManager { return layout; },
     panels,
@@ -1013,6 +1015,7 @@ async function surface_start(token: string): Promise<void> {
     sound: sound_play,
     get terminal(): ArgusTerminal { return terminal; },
     get client(): ArgusClient { return client; },
+    manage_is: (): boolean | null => manageTier,
   };
 
   /** Builds the byte route for a path, from where this page was served. */
@@ -2562,6 +2565,8 @@ async function surface_start(token: string): Promise<void> {
   });
 
   statusBar.attach_show(attached.attach);
+  // The door's answer, for the stratus takeovers: MANAGE is the daemon's `tasks` tier, fixed when the session was entered (D14).
+  manageTier = backend === 'stratus' ? (attached.attach.hostControl ?? []).includes('tasks') : null;
   daemonStale = attached.attach.stale === true;
   buildWatch.attach_take(attached.attach);
   restart.attach_take(attached.attach);

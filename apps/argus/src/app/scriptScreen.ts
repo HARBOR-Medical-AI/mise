@@ -41,7 +41,7 @@ export interface ScriptScreenModule {
  * @param context - The client, read when needed.
  * @returns The screen's verbs.
  */
-export function scriptScreen_wire(context: Pick<HostContext, 'client'>): ScriptScreenModule {
+export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_is'>): ScriptScreenModule {
   let screen: ScriptScreen | null = null;
   let lineRunning: boolean = false;
   let titleBefore: string = document.title;
@@ -100,6 +100,7 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client'>): ScriptS
       ask: (line: string): Promise<ExecuteOutcome> => context.client.line_execute(line, { silent: true, observe: false }),
       stop: (): void => context.client.stop_send(),
       leave: close,
+      manage_is: (): boolean | null => context.manage_is(),
       voice: { pill: (label: string): void => synthVoice.pill_play(label), cue: (cue: string): void => synthVoice.cue_play(cue) },
     });
     screen = opened;
