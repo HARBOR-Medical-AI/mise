@@ -12,11 +12,11 @@
 /** What READ means, said once: the half every refusal starts with. */
 export const READ_WORDS: string = 'entered as READ, so nothing outside this host changes';
 
-/** Where MANAGE is chosen: at the door (porter asks it; in chell, `stratus oci manage`), by entering again. */
-export const MANAGE_WORDS: string = 'MANAGE is chosen at the door (porter asks it; in chell, stratus oci manage), so enter again';
+/** How MANAGE is had: the person's password, asked once, by `stratus oci manage` or the held control pressed again. */
+export const MANAGE_WORDS: string = 'MANAGE asks your password once (stratus oci manage, or the control pressed again), then this session acts';
 
 /** The whole refusal a verb that would act gives in a READ session. */
 export const TIER_REFUSAL: string = `${READ_WORDS}; ${MANAGE_WORDS}`;
 
 /** The short form a readout carries beside a held verb. */
-export const TIER_HELD: string = 'entered as READ; MANAGE is chosen at the door';
+export const TIER_HELD: string = 'entered as READ; MANAGE asks your password once';

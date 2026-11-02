@@ -16,7 +16,7 @@ import { CLUSTER_TAG, type ClusterRecord } from './state.js';
 import { BUILD_STEPS, FIRST_BILLING_STEP } from './steps.js';
 
 /** Where a found cluster stands, from the cloud: machines live, something of its stack stands, or nothing is left but its tag. */
-export type FoundCondition = 'UP' | 'STOPPED' | 'GONE';
+export type FoundCondition = 'UP' | 'PARTLY BUILT' | 'GONE';
 
 /** What the cloud says of a found cluster, beside what carries its tag. */
 export interface FoundRead {
@@ -53,7 +53,7 @@ export function foundCluster_make(found: FoundCluster): HarborCluster {
     secrets: [],
     cluster: null,
     origin: 'found',
-    found: { stack: found.stack, compartmentId: found.compartmentId, baseDomain: null, spec: null, resources: null, stackResources: null, condition: 'STOPPED' },
+    found: { stack: found.stack, compartmentId: found.compartmentId, baseDomain: null, spec: null, resources: null, stackResources: null, condition: 'PARTLY BUILT' },
   };
 }
 
@@ -118,7 +118,7 @@ export async function foundCluster_describe(found: FoundCluster, driver: CloudDr
   if (instances === 0 && found.stack !== null && builder?.stackResources_count !== undefined) {
     try { stackResources = await builder.stackResources_count({ region: found.region, stackRef: found.stack.id }); } catch { stackResources = null; }
   }
-  const condition: FoundCondition = instances > 0 ? 'UP' : found.stack === null || stackResources === 0 ? 'GONE' : 'STOPPED';
+  const condition: FoundCondition = instances > 0 ? 'UP' : found.stack === null || stackResources === 0 ? 'GONE' : 'PARTLY BUILT';
   const read: FoundRead = { stack: found.stack, compartmentId, baseDomain, spec, resources, stackResources, condition };
   return {
     ...bare,

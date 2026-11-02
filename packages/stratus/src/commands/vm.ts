@@ -18,7 +18,7 @@
  */
 import * as path from 'path';
 import chalk from 'chalk';
-import { envelope_error, envelope_ok, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, type CommandEnvelope, type VmCostRow } from '@fnndsc/menu';
+import { envelope_error, envelope_ok, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow } from '@fnndsc/menu';
 import { repl_confirm, repl_question, surface_get, type CommandHelp } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_alter, planCounts_words, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import type { CloudDriver } from '../cloud/driver.js';
@@ -62,7 +62,7 @@ function deps_make(context: VmCommandContext): VmDeps | { error: string } {
  * @param record - Its state.
  * @returns `declared`, `data only`, `built` or `gone`.
  */
-function vmState_word(record: VmRecord): string {
+function vmState_word(record: VmRecord): VmState {
   if (record.built !== undefined) return 'built';
   if (record.gone !== undefined) return 'gone';
   if (record.dataOutputs !== undefined) return record.machineGone !== undefined ? 'data kept' : 'data only';
@@ -136,11 +136,28 @@ function vmStatus_run(context: VmCommandContext, names: ReadonlyArray<string>): 
   if (kept.length === 0) return envelope_ok('no VMs: vm new <name> --net <network> --vcpu … declares one\n');
   const missing: string[] = names.filter((name: string): boolean => !kept.includes(name));
   if (missing.length > 0) return envelope_error('', undefined, `vm: ${missing.join(', ')}: no such VM (${kept.join(', ')})\n`);
-  const blocks: string[] = (names.length === 0 ? kept : [...names]).map((name: string): string => {
+  const shown: string[] = names.length === 0 ? kept : [...names];
+  const blocks: string[] = shown.map((name: string): string => {
     const read = context.store.spec_read(name);
     return vmStatus_lines(context.store.record_read(name) as VmRecord, read !== null && 'spec' in read ? read.spec : null).join('\n');
   });
-  return envelope_ok(`${blocks.join('\n\n')}\n`);
+  // The same rows as a model, for a surface's tile (docs/stratus.adoc, D17): from the records alone.
+  const rows: VmStatusRow[] = shown.map((name: string): VmStatusRow => {
+    const record: VmRecord = context.store.record_read(name) as VmRecord;
+    const read = context.store.spec_read(name);
+    return {
+      name,
+      state: vmState_word(record),
+      region: record.region,
+      spec: read !== null && 'spec' in read ? read.spec : null,
+      address: record.dataOutputs?.['public_ip'] ?? null,
+      inside: record.machineOutputs?.['private_ip'] ?? null,
+      protected: record.protected === true,
+      built: record.built ?? null,
+      chris: record.chris === undefined ? null : { profile: record.chris.profile, compute: record.chris.compute, host: record.chris.host, url: record.chris.url, porter: record.chris.porter ?? null },
+    };
+  });
+  return envelope_ok(`${blocks.join('\n\n')}\n`, { kind: STRATUS_VM_STATUS_MODEL_KIND, data: { vms: rows } });
 }
 
 /** `vm cost`'s usage. */

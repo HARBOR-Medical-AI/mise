@@ -10,7 +10,26 @@
  */
 
 /** Why a control that acts is held in a READ session. */
-export const READ_HELD: string = 'entered as READ, so nothing outside this host changes; MANAGE is chosen at the door (porter asks it), so enter again';
+export const READ_HELD: string = 'entered as READ, so nothing outside this host changes; MANAGE asks your password once (press again, or stratus oci manage)';
+
+/** Why a control that acts asks first in a READ session that can be raised. */
+export const READ_ASKS: string = 'asks your password first: this session becomes MANAGE, then the line is sent';
+
+/** How a control that would act is drawn in a READ session: asked for the password first, or held when the session cannot be raised. */
+export type ReadHold = 'asks' | 'held' | null;
+
+/**
+ * Whether a control is to be held or to ask first.
+ *
+ * @param line - The line it sends.
+ * @param manage - The door's answer (null: no door).
+ * @param canElevate - Whether the session can be raised with a password.
+ * @returns `asks`, `held`, or null when the control stands.
+ */
+export function readHold_derive(line: string, manage: boolean | null, canElevate: boolean): ReadHold {
+  if (manage !== false || !line_acts(line)) return null;
+  return canElevate ? 'asks' : 'held';
+}
 
 /** The lines that act outside this host: a build, a teardown, an adoption, a deploy, a user added. */
 const ACTING_LINE: RegExp = /^(cluster (build|adopt|teardown)|net (build|teardown)|vm (build|teardown)|chris (deploy|user add)|play )\b/;
@@ -26,16 +45,24 @@ export function line_acts(line: string): boolean {
 }
 
 /**
- * The chip a takeover's header wears for the door's answer.
+ * The MODE pill a takeover's header wears beside CONDITION: the door's answer,
+ * in the register of a state that governs the whole screen.
  *
  * @param manage - True for MANAGE, false for READ, null when the session has no cloud door (not a stratus session, or not known yet).
- * @returns The chip, or null when there is none to wear.
+ * @returns The pill, or null when there is none to wear.
  */
-export function tierChip_make(manage: boolean | null): HTMLElement | null {
+export function modePill_make(manage: boolean | null): HTMLElement | null {
   if (manage === null) return null;
-  const chip: HTMLElement = document.createElement('span');
-  chip.className = `tdc-chip tdc-chip-tier tdc-chip-tier-${manage ? 'manage' : 'read'}`;
-  chip.textContent = manage ? 'MANAGE' : 'READ · NOTHING OUTSIDE THIS HOST CHANGES';
-  chip.title = manage ? 'Entered as MANAGE: a build, a teardown or a deploy may run, each after its own question.' : READ_HELD;
-  return chip;
+  const pill: HTMLElement = document.createElement('div');
+  pill.className = 'tdc-condition tdc-mode';
+  pill.dataset['condition'] = manage ? 'MANAGE' : 'READ';
+  const label: HTMLElement = document.createElement('span');
+  label.className = 'tdc-condition-label';
+  label.textContent = 'MODE';
+  const name: HTMLElement = document.createElement('span');
+  name.className = 'tdc-condition-name';
+  name.textContent = manage ? 'MANAGE' : 'READ';
+  pill.append(label, name);
+  pill.title = manage ? 'Entered as MANAGE: a build, a teardown or a deploy may run, each after its own question.' : READ_HELD;
+  return pill;
 }

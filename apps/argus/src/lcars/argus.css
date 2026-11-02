@@ -611,6 +611,18 @@ label {
   border-radius: 0.6rem;
 }
 
+/* The MODE readout of a cloud session (D14): READ holds what would act, MANAGE lets it run after its own question. */
+.lamp-mode { padding: 0 0.5rem; border-radius: 0.6rem; }
+#status-strip .lamp-mode[data-mode='READ'] { background: var(--honey); color: #000; }
+#status-strip .lamp-mode[data-mode='MANAGE'] { background: var(--pumpkin-pie); color: #000; }
+
+/* The MANAGE sheet stands over a takeover too, which hides every other child of the body. */
+body[data-takeover] > .share-sheet#cloud-elevate-sheet { visibility: visible; }
+
+/* The password field on the MANAGE sheet: hidden, emptied as it is read. */
+.cloud-elevate .cloud-password { display: block; width: 100%; margin: 0.6rem 0; background: black; border: 1px solid var(--pumpkin-pie); border-radius: 0.4rem; color: var(--daybreak); font-family: 'Share Tech Mono', monospace; font-size: 0.9rem; padding: 0.3rem 0.6rem; outline: none; }
+.cloud-elevate .cloud-password:focus { border-color: var(--harvestgold); }
+
 #status-strip .lamp-host {
   color: #000;
 }

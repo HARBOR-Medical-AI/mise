@@ -107,6 +107,8 @@ export {
   terminalResizeMessageSchema,
   terminalCloseMessageSchema,
   terminalOpenedMessageSchema,
+  elevateMessageSchema,
+  elevatedMessageSchema,
   terminalDataMessageSchema,
   terminalExitMessageSchema,
   surfaceLineResultMessageSchema,
@@ -335,6 +337,10 @@ export {
   MANIFEST_STATUS_MODEL_KIND,
   STRATUS_VM_LIMITS_MODEL_KIND,
   STRATUS_VM_COST_MODEL_KIND,
+  STRATUS_VM_STATUS_MODEL_KIND,
+  VM_STATES,
+  vmStatusRowSchema,
+  vmStatusModelSchema,
   LINE_STATES,
   lineStandingSchema,
   manifestStatusModelSchema,
@@ -352,5 +358,8 @@ export {
   type VmCostRate,
   type VmCostRow,
   type VmCostModel,
+  type VmState,
+  type VmStatusRow,
+  type VmStatusModel,
 } from './script.js';
 export { SERIES_FOLDER_PATTERN, PACS_TREE_ROOT, seriesFolder_is } from './seriesFolder.js';

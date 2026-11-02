@@ -92,6 +92,8 @@ export interface AttachInfo {
   session: string;
   /** The daemon's declared host-control tiers (empty or absent when off). */
   hostControl?: string[];
+  /** Whether this session can be raised to MANAGE with the person's password (`elevate`). */
+  elevation?: boolean;
   protocolVersion: number;
   stack?: StackInfo;
   /** Whether the daemon's own code on disk has moved on; absent from older daemons. */
@@ -254,6 +256,8 @@ export class ArgusClient {
   private readonly token: string;
   private readonly pending: Map<string, PendingExecute> = new Map();
   private readonly pendingCompletions: Map<string, PendingComplete> = new Map();
+  /** The surface's one elevation on its way, answered by `elevated`. */
+  private elevatePending: ((answer: { granted: boolean; reason?: string }) => void) | null = null;
   /** Requests whose live output must not reach the transcript. */
   private readonly silentIds: Set<string> = new Set();
   private nextId: number = 0;
@@ -335,6 +339,7 @@ export class ArgusClient {
             protocolVersion: message.protocolVersion,
             ...(message.stack !== undefined ? { stack: message.stack } : {}),
             ...(message.hostControl !== undefined ? { hostControl: message.hostControl } : {}),
+            ...(message.elevation !== undefined ? { elevation: message.elevation } : {}),
             ...(message.stale !== undefined ? { stale: message.stale } : {}),
             ...(message.terminals !== undefined ? { terminals: message.terminals } : {}),
             ...(message.surface !== undefined ? { surface: message.surface } : {}),
@@ -509,6 +514,32 @@ export class ArgusClient {
   }
 
   /**
+   * Asks the daemon to raise this surface to MANAGE with the person's
+   * password, checked at the door the session was started with (D14). The
+   * password crosses once and is kept nowhere.
+   *
+   * @param password - What the person typed.
+   * @returns Whether it was granted, and why not when it was not.
+   */
+  /**
+   * The daemon's answer to `elevate`, handed to the one ask on its way.
+   *
+   * @param message - Granted, or why not.
+   */
+  private elevated_handle(message: { granted: boolean; reason?: string }): void {
+    const waiting = this.elevatePending;
+    this.elevatePending = null;
+    waiting?.({ granted: message.granted, ...(message.reason === undefined ? {} : { reason: message.reason }) });
+  }
+
+  public elevate(password: string): Promise<{ granted: boolean; reason?: string }> {
+    return new Promise((resolve: (answer: { granted: boolean; reason?: string }) => void): void => {
+      this.elevatePending = resolve;
+      this.socket.send(JSON.stringify({ type: 'elevate', password }));
+    });
+  }
+
+  /**
    * Shares the operator's regard with the session: the daemon keeps the
    * truth and rebroadcasts to every surface.
    *
@@ -612,6 +643,7 @@ export class ArgusClient {
         break;
       }
       case 'stale': this.handlers.stale_receive?.(message.stale); break;
+      case 'elevated': this.elevated_handle(message); break;
       case 'surfaceLine': this.surfaceLine_handle(message.lineId, message.line, message.terminal); break;
       case 'terminalOpened': case 'terminalData': case 'terminalExit': this.terminalMessage_handle(message); break;
       case 'closing': this.handlers.closing_receive?.(message.cause); break;

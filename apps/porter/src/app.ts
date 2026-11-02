@@ -625,7 +625,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       return { key: to, mount: `/s/${to}/`, state: 'attached' };
     }
     registry.pending_note(session, user);
-    host.stratus_begin(session, configPath, spend, found !== null);
+    host.stratus_begin(session, configPath, spend, found !== null, { cubeUrl: config.cubeUrl, user });
     options.log?.(`starting ${user}'s stratus session${spend ? ' with the tasks tier' : ', read-only'}`);
     return { key: to, mount: `/s/${to}/`, greet: `/greet/${to}`, state: 'starting' };
   });

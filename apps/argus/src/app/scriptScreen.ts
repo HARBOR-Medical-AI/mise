@@ -33,6 +33,8 @@ export interface ScriptScreenModule {
   output_take: (chunk: string) => void;
   /** A task of the session ended: the screen, when up, reads its script's standing again. */
   task_ended: () => void;
+  /** The door's answer changed (the session was raised): the screen, when up, draws it. */
+  mode_refresh: () => void;
 }
 
 /**
@@ -41,7 +43,7 @@ export interface ScriptScreenModule {
  * @param context - The client, read when needed.
  * @returns The screen's verbs.
  */
-export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_is'>): ScriptScreenModule {
+export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_is' | 'elevation_is' | 'elevate_ask'>): ScriptScreenModule {
   let screen: ScriptScreen | null = null;
   let lineRunning: boolean = false;
   let titleBefore: string = document.title;
@@ -101,6 +103,7 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
       stop: (): void => context.client.stop_send(),
       leave: close,
       manage_is: (): boolean | null => context.manage_is(),
+      elevate_ask: context.elevation_is() ? (line: string): Promise<boolean> => context.elevate_ask(line) : null,
       voice: { pill: (label: string): void => synthVoice.pill_play(label), cue: (cue: string): void => synthVoice.cue_play(cue) },
     });
     screen = opened;
@@ -119,5 +122,6 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
     ask: (request: SurfaceAsk): Promise<string | null> => screen === null ? Promise.resolve(null) : screen.ask_take(request.message, request.kind),
     output_take: (chunk: string): void => { screen?.output_take(chunk); },
     task_ended: (): void => { screen?.taskEnded_take(); },
+    mode_refresh: (): void => { screen?.mode_refresh(); },
   };
 }

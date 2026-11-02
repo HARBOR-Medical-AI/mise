@@ -37,6 +37,8 @@ export interface TdControllerModule {
   ask: (request: SurfaceAsk) => Promise<string | null>;
   /** A live output chunk, while one of the controller's lines runs. */
   output_take: (chunk: string) => void;
+  /** The door's answer changed (the session was raised): the controller, when up, draws it. */
+  mode_refresh: () => void;
   /** A typed event from the session. */
   event_take: (kind: string, data: unknown) => void;
   /** The clusters last read, for the console's `cluster <name>`. */
@@ -67,7 +69,7 @@ function model_extract<T>(answer: ExecuteOutcome, kind: string, parse: (data: un
  * @param names_seen - Told the clusters each read finds, so the language can claim `cluster <name>`.
  * @returns The controller verbs.
  */
-export function tdController_wire(context: Pick<HostContext, 'client' | 'manage_is'>, names_seen: (names: string[]) => void): TdControllerModule {
+export function tdController_wire(context: Pick<HostContext, 'client' | 'manage_is' | 'elevation_is' | 'elevate_ask'>, names_seen: (names: string[]) => void): TdControllerModule {
   let controller: TdController | null = null;
   let lineRunning: boolean = false;
   let names: string[] = [];
@@ -156,6 +158,7 @@ export function tdController_wire(context: Pick<HostContext, 'client' | 'manage_
       stop: (): void => context.client.stop_send(),
       leave: close,
       manage_is: (): boolean | null => context.manage_is(),
+      elevate_ask: context.elevation_is() ? (line: string): Promise<boolean> => context.elevate_ask(line) : null,
       voice: { pill: (label: string): void => synthVoice.pill_play(label), cue: (cue: string): void => synthVoice.cue_play(cue) },
     });
     controller = opened;
@@ -173,6 +176,7 @@ export function tdController_wire(context: Pick<HostContext, 'client' | 'manage_
     running_is: (): boolean => controller !== null && lineRunning,
     ask: (request: SurfaceAsk): Promise<string | null> => controller === null ? Promise.resolve(null) : controller.ask_take(request.message, request.kind),
     output_take: (chunk: string): void => { controller?.output_take(chunk); },
+    mode_refresh: (): void => { controller?.mode_refresh(); },
     event_take: (kind: string, data: unknown): void => {
       if (kind !== STRATUS_CLUSTER_STATE_EVENT || controller === null) return;
       heard.events++;

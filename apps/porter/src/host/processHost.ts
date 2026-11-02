@@ -82,7 +82,13 @@ export interface ProcessHostOptions {
  */
 export type SessionLaunch =
   | { kind: 'chris'; user: string; cubeUrl: string; token: string | null }
-  | { kind: 'stratus'; configPath: string; spend: boolean };
+  | { kind: 'stratus'; configPath: string; spend: boolean; door?: ElevationDoorInfo };
+
+/** The door a stratus session can be raised at: the person's CUBE, where their password is checked (D14). */
+export interface ElevationDoorInfo {
+  cubeUrl: string;
+  user: string;
+}
 
 interface SessionRecord {
   identity: string;
@@ -321,10 +327,10 @@ export class ProcessHost implements SessionHost {
   }
 
   /** @inheritdoc */
-  public stratus_begin(identity: string, configPath: string, spend: boolean, replace: boolean): void {
+  public stratus_begin(identity: string, configPath: string, spend: boolean, replace: boolean, door?: ElevationDoorInfo): void {
     const existing: SessionRecord | undefined = this.sessions.get(identity);
     if (existing?.starting) return;
-    const launch: SessionLaunch = { kind: 'stratus', configPath, spend };
+    const launch: SessionLaunch = { kind: 'stratus', configPath, spend, ...(door === undefined ? {} : { door }) };
     // A session already up is ended first: the tier is chosen when a daemon
     // starts, never changed under it.
     if (replace) {
@@ -370,6 +376,11 @@ export class ProcessHost implements SessionHost {
       // The daemon's berth names its cloud identity; this names the session's,
       // so a porter restarted adopts it under the key its cookie holds.
       writeFileSync(join(root, 'identity'), `${record.identity}\n`, { encoding: 'utf-8', mode: 0o600 });
+      // The door the session can be raised at: a READ session asks the person's password once and is MANAGE after (D14).
+      if (launch.door !== undefined) {
+        own['CALYPSO_ELEVATION_URL'] = launch.door.cubeUrl;
+        own['CALYPSO_ELEVATION_USER'] = launch.door.user;
+      }
     }
     const env: NodeJS.ProcessEnv = {
       ...process.env,

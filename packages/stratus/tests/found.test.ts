@@ -78,7 +78,7 @@ describe('finding clusters by their tag', () => {
     expect(cluster.steps).toEqual([]);
     expect(cluster.settings['OCI_COMPARTMENT_OCID']).toBe('ocid1.compartment.oc1..other');
     expect(cluster.root).toBe(QUAY_STACK);
-    expect(cluster.found?.condition).toBe('STOPPED');
+    expect(cluster.found?.condition).toBe('PARTLY BUILT');
   });
 
   it('described from the cloud, a found cluster has its address and spec from its stack, and its condition from what lives and what the stack holds', async () => {
@@ -87,11 +87,11 @@ describe('finding clusters by their tag', () => {
     const spec: ClusterSpec = { ...SPEC_DEFAULT, workers: { count: 2, vcpu: 8, ramGib: 32, bootGib: 120, bootTier: 'balanced' } };
     world.stacks.set(QUAY_STACK, { state: 'active', compartmentId: QUAY_COMPARTMENT, baseDomain: 'oci.example.org', spec });
     const found: FoundCluster = { name: 'quay', stack: { id: QUAY_STACK, state: 'active', compartmentId: QUAY_COMPARTMENT }, compartmentId: QUAY_COMPARTMENT, region: REGION };
-    // Nothing lives, the stack still holds 17 resources: STOPPED, half built.
+    // Nothing lives, the stack still holds 17 resources: PARTLY BUILT, half built.
     const stopped = await foundCluster_describe(found, new FakeDriver(cloud_make()), builder);
     expect(stopped.cluster).toBe('quay.oci.example.org');
     expect(stopped.settings['BASE_DOMAIN']).toBe('oci.example.org');
-    expect(stopped.found).toMatchObject({ baseDomain: 'oci.example.org', spec, stackResources: 17, condition: 'STOPPED' });
+    expect(stopped.found).toMatchObject({ baseDomain: 'oci.example.org', spec, stackResources: 17, condition: 'PARTLY BUILT' });
     expect(stopped.steps.map((step) => [step.name, step.state])).toEqual([['compartment', 'done'], ...['preflight', 'cluster', 'iso', 'infra-plan', 'infra-apply', 'dns', 'manifests', 'hosts', 'run', 'postinstall', 'verify', 'chris-deploy', 'chris-seed', 'smoke'].map((name) => [name, 'unknown'])]);
     // The stack emptied by an earlier teardown: GONE, every step not done.
     world.stackResources.set(QUAY_STACK, 0);
@@ -110,7 +110,7 @@ describe('finding clusters by their tag', () => {
     // A stack that cannot be read, or no builder at all, still shows the cluster.
     const unread = await foundCluster_describe(found, new FakeDriver(cloud_make()), null);
     expect(unread.cluster).toBeNull();
-    expect(unread.found?.condition).toBe('STOPPED');
+    expect(unread.found?.condition).toBe('PARTLY BUILT');
   });
 
   it('a stack\'s variables read back into the spec and zone they were built from', () => {
@@ -144,7 +144,7 @@ describe('a session over a tenancy holding a cluster it keeps nothing of', () =>
   });
   afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
-  it('cluster status lists it as found, not adopted, STOPPED while nothing lives in its compartment and its stack holds something, with what the cloud says of it', async () => {
+  it('cluster status lists it as found, not adopted, PARTLY BUILT while nothing lives in its compartment and its stack holds something, with what the cloud says of it', async () => {
     world.stacks.set(QUAY_STACK, { state: 'active', compartmentId: QUAY_COMPARTMENT, baseDomain: 'oci.example.org', spec: SPEC_DEFAULT });
     const answer = await cluster_run(context, []);
     const text: string = answer.rendered.replace(ANSI, '');
@@ -153,12 +153,12 @@ describe('a session over a tenancy holding a cluster it keeps nothing of', () =>
     expect(text).toMatch(/01-compartment\s+done\s+found ocid1\.compartment\.oc1\.\.quay/);
     expect(text).toContain('the cloud does not say; adopt it and verify to know');
     const model = answer.model?.data as { clusters: Array<{ name: string; origin?: string; condition?: string; cluster?: string | null; spec?: unknown; refused?: Record<string, string>; steps: unknown[] }> };
-    expect(model.clusters.map((cluster) => [cluster.name, cluster.origin, cluster.condition, cluster.cluster])).toEqual([['quay', 'found', 'STOPPED', 'quay.oci.example.org']]);
+    expect(model.clusters.map((cluster) => [cluster.name, cluster.origin, cluster.condition, cluster.cluster])).toEqual([['quay', 'found', 'PARTLY BUILT', 'quay.oci.example.org']]);
     expect(model.clusters[0]?.spec).toEqual(SPEC_DEFAULT);
     expect(model.clusters[0]?.steps).toHaveLength(15);
     expect(model.clusters[0]?.refused?.['build']).toBe('found in the tenancy, not adopted: cluster adopt quay first');
     // In a READ session the adoption itself is held by the door's answer; the particular reasons stand for the rest.
-    expect(model.clusters[0]?.refused?.['adopt']).toBe('entered as READ; MANAGE is chosen at the door');
+    expect(model.clusters[0]?.refused?.['adopt']).toBe('entered as READ; MANAGE asks your password once');
     expect((await cluster_run(context, ['quay'])).rendered).toBe(answer.rendered);
   });
 
@@ -181,14 +181,14 @@ describe('a session over a tenancy holding a cluster it keeps nothing of', () =>
     expect(model.clusters[0]?.condition).toBe('GONE');
     expect(model.clusters[0]?.billing).toBe(false);
     // The build verbs are refused for what it is; the teardown and an adoption, in this READ session, by the door's answer.
-    expect(model.clusters[0]?.refused).toEqual({ plan: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', verify: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', build: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', teardown: 'entered as READ; MANAGE is chosen at the door', adopt: 'entered as READ; MANAGE is chosen at the door' });
+    expect(model.clusters[0]?.refused).toEqual({ plan: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', verify: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', build: 'nothing of it is left in the tenancy but its tag: cluster teardown quay removes that', teardown: 'entered as READ; MANAGE asks your password once', adopt: 'entered as READ; MANAGE asks your password once' });
     expect((await cluster_run(context, ['plan', 'quay'])).renderedErr).toBe('cluster plan: quay: nothing of it is left in the tenancy but its tag: cluster teardown quay removes that\n');
     // Without the tasks tier nothing changes.
     const surface: HeadlessSurface & { answer: string } = Object.assign(new HeadlessSurface(), { answer: 'quay' });
     surface.prompt = async (): Promise<string> => surface.answer;
     surface_set(surface);
     sink_set(new BufferSink());
-    expect((await cluster_run(context, ['teardown', 'quay'])).renderedErr).toBe('cluster teardown: quay: Operation not permitted: entered as READ, so nothing outside this host changes; MANAGE is chosen at the door (porter asks it; in chell, stratus oci manage), so enter again\n');
+    expect((await cluster_run(context, ['teardown', 'quay'])).renderedErr).toBe('cluster teardown: quay: Operation not permitted: entered as READ, so nothing outside this host changes; MANAGE asks your password once (stratus oci manage, or the control pressed again), then this session acts\n');
     expect(store.record_read('quay')).toBeNull();
     (surface.capabilities as { tasks?: boolean }).tasks = true;
     runner_install(new JobRunner(join(root, 'jobs'), [{ id: STEPS_SOURCE, label: 'steps' }]));

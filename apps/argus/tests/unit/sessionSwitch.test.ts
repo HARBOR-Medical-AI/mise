@@ -12,7 +12,7 @@ import { session_switch } from '../../src/app/sessionSwitch.js';
 
 /** A host that records each switch it is asked for. */
 function host_make(asked: Array<{ to: string; spend: boolean }>): ArgusHost {
-  return { session_switch: async (to: 'stratus' | 'chris', spend: boolean): Promise<string> => { asked.push({ to, spend }); return `to ${to}`; } } as unknown as ArgusHost;
+  return { session_switch: async (to: 'stratus' | 'chris', spend: boolean): Promise<string> => { asked.push({ to, spend }); return `to ${to}`; }, manage_is: (): boolean | null => null } as unknown as ArgusHost;
 }
 
 /** The sheet standing, if one is. */
@@ -26,41 +26,27 @@ function pill_press(label: string): void {
 }
 
 describe('the stratus and chris verbs', () => {
-  it('answers the door in words: read, or manage', async () => {
+  it('enters the cloud session as READ unless manage is said; chris goes back', async () => {
     const asked: Array<{ to: string; spend: boolean }> = [];
+    expect(await argusLine_run(host_make(asked), 'stratus oci')).toBe('to stratus');
     expect(await argusLine_run(host_make(asked), 'stratus oci read')).toBe('to stratus');
     expect(await argusLine_run(host_make(asked), 'stratus oci manage')).toBe('to stratus');
     expect(await argusLine_run(host_make(asked), 'chris')).toBe('to chris');
-    expect(asked).toEqual([{ to: 'stratus', spend: false }, { to: 'stratus', spend: true }, { to: 'chris', spend: false }]);
+    expect(asked).toEqual([{ to: 'stratus', spend: false }, { to: 'stratus', spend: false }, { to: 'stratus', spend: true }, { to: 'chris', spend: false }]);
     expect(sheet()).toBeNull();
   });
 
-  it('asks at the door when nothing is said, and follows the pill pressed', async () => {
-    const asked: Array<{ to: string; spend: boolean }> = [];
-    const first: Promise<string> = argusLine_run(host_make(asked), 'stratus oci');
-    expect(sheet()?.textContent).toContain('CLOUD MANAGEMENT · OCI');
-    expect(sheet()?.textContent).toContain('manage   act as well');
-    pill_press('MANAGE');
-    expect(await first).toBe('to stratus');
-    expect(sheet()).toBeNull();
-    const second: Promise<string> = argusLine_run(host_make(asked), 'stratus oci');
-    pill_press('READ');
-    expect(await second).toBe('to stratus');
-    const third: Promise<string> = argusLine_run(host_make(asked), 'stratus oci');
-    pill_press('NOT NOW');
-    expect(await third).toBe('stratus oci: not now; nothing changed');
-    expect(asked).toEqual([{ to: 'stratus', spend: true }, { to: 'stratus', spend: false }]);
-  });
-
-  it('takes the answer from the keyboard: its first letter, or Escape for not now', async () => {
-    const asked: Array<{ to: string; spend: boolean }> = [];
-    const first: Promise<string> = argusLine_run(host_make(asked), 'stratus oci');
-    sheet()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'm', bubbles: true }));
-    expect(await first).toBe('to stratus');
-    const second: Promise<string> = argusLine_run(host_make(asked), 'stratus oci');
-    sheet()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    expect(await second).toContain('not now');
-    expect(asked).toEqual([{ to: 'stratus', spend: true }]);
+  it('in the cloud session, says the mode; manage asks the password once and raises it', async () => {
+    const raised: string[] = [];
+    let granted: boolean = false;
+    const host = (mode: boolean | null): ArgusHost => ({ ...host_make([]), manage_is: (): boolean | null => mode, elevate_ask: async (line: string): Promise<boolean> => { raised.push(line); return granted; } } as unknown as ArgusHost);
+    expect(await argusLine_run(host(false), 'stratus oci')).toBe('stratus oci: this is your cloud session, MODE READ (stratus oci manage asks your password once)');
+    expect(await argusLine_run(host(false), 'stratus oci manage')).toBe('stratus oci manage: not raised; MODE READ');
+    granted = true;
+    expect(await argusLine_run(host(false), 'stratus oci manage')).toBe('stratus oci: MODE MANAGE');
+    expect(raised).toEqual(['stratus oci manage', 'stratus oci manage']);
+    expect(await argusLine_run(host(true), 'stratus oci manage')).toBe('stratus oci: MODE MANAGE already');
+    expect(await argusLine_run(host(true), 'stratus oci')).toBe('stratus oci: this is your cloud session, MODE MANAGE');
   });
 
   it('refuses another cloud, an unknown word, two words, and words after chris, by name', async () => {

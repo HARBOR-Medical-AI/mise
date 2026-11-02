@@ -16,7 +16,7 @@ import { runner_get, surface_get, type JobRecord } from '@fnndsc/brasa/core';
 import { plan_count, type InfraPlan, type PlanRow } from '../cloud/builder.js';
 import { lastDone_find, type HarborCluster, type StepState } from '../checkout/harborOci.js';
 import type { ClusterRecord, ClusterStore } from './state.js';
-import { buildJob_id, FIRST_BILLING_STEP, stepNext_find, STEPS_SOURCE } from './steps.js';
+import { BUILD_STEPS, buildJob_id, FIRST_BILLING_STEP, stepNext_find, STEPS_SOURCE } from './steps.js';
 
 import { VERIFY_FILE, type VerifyKept } from './verify.js';
 import { TIER_HELD } from '../tier.js';
@@ -49,13 +49,14 @@ function stepState_read(cluster: HarborCluster, name: string): string {
 export function condition_derive(cluster: HarborCluster, record: ClusterRecord | null, running: boolean, asking: boolean): ClusterCondition {
   if (record?.gone !== undefined) return 'GONE';
   // A found cluster keeps no steps here: the cloud said whether its machines live, its stack stands, or nothing is left.
-  if (cluster.origin === 'found') return cluster.found?.condition ?? 'STOPPED';
+  if (cluster.origin === 'found') return cluster.found?.condition ?? 'PARTLY BUILT';
   if (asking) return 'ASKING';
   if (running || cluster.steps.some((step: StepState): boolean => step.state === 'running')) return 'BUILDING';
   if (cluster.steps.some((step: StepState): boolean => step.state === 'failed')) return 'FAILED';
   if (stepState_read(cluster, 'smoke') === 'done') return 'SERVING';
   if (stepState_read(cluster, 'run') === 'done') return 'UP';
-  if (cluster.steps.some((step: StepState): boolean => step.state === 'done')) return 'STOPPED';
+  // The build halted between steps: before anything bills (PLANNED) or after (PARTLY BUILT); the word is the build's, never the machines'.
+  if (cluster.steps.some((step: StepState): boolean => step.state === 'done')) return record !== null && stepNext_find(record) !== null && BUILD_STEPS.indexOf(stepNext_find(record) as string) <= BUILD_STEPS.indexOf(FIRST_BILLING_STEP) ? 'PLANNED' : 'PARTLY BUILT';
   return 'SIZING';
 }
 

@@ -24,6 +24,7 @@
  *
  * @module
  */
+import type { ElevationDoor } from './elevation.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -100,6 +101,8 @@ interface Surface {
     claims: SurfaceClaim[];
     /** The terminal it draws, when it is a terminal's chell. */
     terminal?: string;
+    /** Raised to MANAGE with the person's password (`elevate`): its lines may start tasks, as the daemon's own `tasks` tier would let them. */
+    tasksGranted: boolean;
   };
 }
 
@@ -224,6 +227,8 @@ export interface DaemonOptions {
   webRoot?: string;
   /** The host-control tiers this daemon declares (empty or absent when off). */
   hostControl?: string[];
+  /** The door a surface can be raised at with the person's password (`elevate`); absent, a session stays as it was started. */
+  elevation?: ElevationDoor;
   /**
    * Reads the daemon's own code on disk again; called on each attach, so a
    * surface arriving after an upgrade learns at once. The host answers
@@ -283,6 +288,7 @@ export class CalypsoDaemon {
   private terminals: Terminals | null = null;
   private readonly codeCheck: (() => void) | undefined;
   private readonly hostControl: string[];
+  private readonly elevation: ElevationDoor | undefined;
   /** The one session all surfaces share; returned in each attach ack. */
   private readonly sessionId: string = randomBytes(8).toString('hex');
   private readonly surfaces: Set<Surface> = new Set<Surface>();
@@ -376,6 +382,7 @@ export class CalypsoDaemon {
     this.backend = options.backend;
     this.webRoot = options.webRoot;
     this.hostControl = options.hostControl ?? [];
+    this.elevation = options.elevation;
     this.codeCheck = options.codeCheck;
   }
 
@@ -866,6 +873,8 @@ export class CalypsoDaemon {
         this.cancel_run(attached, value);
       } else if (value.type === 'stop') {
         this.stop_run(attached, value);
+      } else if (value.type === 'elevate') {
+        void this.elevate_run(attached, value);
       } else if (value.type === 'complete') {
         void this.complete_run(socket, value);
       } else if (value.type === 'promptAnswer') {
@@ -1107,6 +1116,34 @@ export class CalypsoDaemon {
   }
 
   /**
+   * Raises a surface to MANAGE: its password checked at the door, the
+   * `tasks` tier is granted to it (and so to the terminals it owns, whose
+   * lines act as its own) for as long as it is attached. A daemon started
+   * with no door says so; a wrong password is refused by name.
+   *
+   * @param origin - The surface asking.
+   * @param message - Its password.
+   */
+  private async elevate_run(origin: Surface, message: { password: string }): Promise<void> {
+    if (this.elevation === undefined) {
+      this.send(origin.socket, { type: 'elevated', granted: false, reason: 'this session cannot be raised: it was started without a door to ask (its tier is the one it was started with)' });
+      return;
+    }
+    const owner: Surface = this.stopper_resolve(origin);
+    if (owner.capabilities.tasksGranted) {
+      this.send(origin.socket, { type: 'elevated', granted: true });
+      return;
+    }
+    const right: boolean = await this.elevation.verify(message.password).catch((): boolean => false);
+    if (!right) {
+      this.send(origin.socket, { type: 'elevated', granted: false, reason: `not ${this.elevation.user}'s password; nothing changed` });
+      return;
+    }
+    owner.capabilities.tasksGranted = true;
+    this.send(origin.socket, { type: 'elevated', granted: true });
+  }
+
+  /**
    * Who may stop a surface's command: the surface itself, or, for a
    * terminal's chell, the browser that owns the terminal.
    *
@@ -1169,6 +1206,7 @@ export class CalypsoDaemon {
         color: attach.value.capabilities?.color ?? false,
         claims: attach.value.capabilities?.claims ?? [],
         ...(attach.value.capabilities?.terminal !== undefined ? { terminal: attach.value.capabilities.terminal } : {}),
+        tasksGranted: false,
       },
     };
     this.surfaces.add(surface);
@@ -1184,6 +1222,8 @@ export class CalypsoDaemon {
       // Declared state, present from the first frame: a surface's lamp and a
       // remote shell's banner read it, never infer it.
       hostControl: this.hostControl,
+      // Whether this session can be raised to MANAGE with the person's password.
+      elevation: this.elevation !== undefined,
       // Whether this process still runs the code on its disk; a surface
       // says CALYPSO DAEMON OUT OF DATE only on this, never on its own
       // build alone (an ARGUS-only release changes no daemon code).
@@ -1719,11 +1759,13 @@ export class CalypsoDaemon {
     }));
   }
 
-  public capabilities_current(): { fileDelivery: boolean; localFilesystem: boolean; color: boolean; pipeSegments: boolean } | null {
+  public capabilities_current(): { fileDelivery: boolean; localFilesystem: boolean; color: boolean; pipeSegments: boolean; tasks: boolean } | null {
     const origin: Surface | null = this.surfaceActing();
     return origin ? {
       fileDelivery: origin.capabilities.fileDelivery,
       localFilesystem: origin.capabilities.localFilesystem,
+      // Raised with the person's password: a terminal's lines act as its owning browser's.
+      tasks: origin.capabilities.tasksGranted,
       // A surface that runs shell commands (a chell) runs pipe segments too.
       pipeSegments: origin.capabilities.shellCommands,
       color: this.currentOrigin?.capabilities.color ?? origin.capabilities.color,

@@ -18,8 +18,9 @@
 import {
   capacityModelSchema, clustersModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, STRATUS_CAPACITY_MODEL_KIND, STRATUS_CLUSTERS_MODEL_KIND,
   type CapacityModel, type CapacityRow, type ClusterSummary, type ClustersModel, type ManifestStatusModel,
+  STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema, type VmCostModel, type VmCostRate, type VmCostRow, type VmStatusModel, type VmStatusRow,
 } from '@fnndsc/menu';
-import { counts_words, lines_build, runningStep_find, scriptName_derive, states_count, steps_build } from '../../features/script/model.js';
+import { counts_words, lines_build, runningStep_find, scriptName_derive, states_count, steps_build, rates_sum } from '../../features/script/model.js';
 import type { ExecuteOutcome } from '../../calypso/client.js';
 import { TILE_ABOUT } from '../../features/launcher/about.js';
 import type { LauncherRow, LauncherTile } from '../../features/launcher/panel.js';
@@ -127,6 +128,43 @@ interface ScriptSeen {
   readonly standing: string;
   /** The step running now (`VM BUILD`), or null. */
   readonly running: string | null;
+  /** Its lines as they would run, so a VM finds the script that declares it. */
+  readonly lines: ReadonlyArray<string>;
+}
+
+/** One VM as the tile reads it: `vm status` with `vm cost` beside it. */
+interface VmSeen {
+  readonly row: VmStatusRow;
+  readonly rate: VmCostRate | null;
+}
+
+/**
+ * The VMs kept here, with what each bills: `vm status` and `vm cost`, both
+ * read from the host's records and the price list. Nothing when the session
+ * does not answer.
+ *
+ * @param ask - Asks the session quietly.
+ * @returns The VMs, in the store's order.
+ */
+async function vms_read(ask: (line: string) => Promise<ExecuteOutcome>): Promise<VmSeen[]> {
+  let status: VmStatusModel | null = null;
+  let cost: VmCostModel | null = null;
+  try { status = model_extract(await ask('vm status'), STRATUS_VM_STATUS_MODEL_KIND, (data) => vmStatusModelSchema.safeParse(data)); } catch { return []; }
+  if (status === null) return [];
+  try { cost = model_extract(await ask('vm cost'), STRATUS_VM_COST_MODEL_KIND, (data) => vmCostModelSchema.safeParse(data)); } catch { cost = null; }
+  return status.vms.map((row: VmStatusRow): VmSeen => ({ row, rate: cost?.vms.find((each: VmCostRow): boolean => each.name === row.name)?.cost ?? null }));
+}
+
+/**
+ * The script in the library that declares a VM: the first whose lines carry `vm new <name>`.
+ *
+ * @param scripts - The library as read.
+ * @param name - The VM.
+ * @returns Its path, or null when no script declares it.
+ */
+export function vmScript_find(scripts: ReadonlyArray<ScriptSeen>, name: string): string | null {
+  const declares: RegExp = new RegExp(`^vm new ${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`);
+  return scripts.find((script: ScriptSeen): boolean => script.lines.some((line: string): boolean => declares.test(line)))?.path ?? null;
 }
 
 /**
@@ -158,10 +196,12 @@ async function scripts_read(ask: (line: string) => Promise<ExecuteOutcome>): Pro
       const path: string = `/scripts/${folder}/${name}`;
       let standing: string = 'NOT READ';
       let running: string | null = null;
+      let texts: string[] = [];
       try {
         const status: ManifestStatusModel | null = model_extract(await ask(`play ${path} --status`), MANIFEST_STATUS_MODEL_KIND, (data) => manifestStatusModelSchema.safeParse(data));
         if (status !== null) {
-          const lines = lines_build(status.lines.map((line): string => line.text).join('\n'), status.lines);
+          texts = status.lines.map((line): string => line.text);
+          const lines = lines_build(texts.join('\n'), status.lines);
           running = runningStep_find(steps_build(lines))?.label ?? null;
           // A script with a step running says so in place of its counts: the run is what matters to a glance.
           standing = running === null ? counts_words(states_count(lines)) : `RUNNING · ${running}`;
@@ -169,7 +209,7 @@ async function scripts_read(ask: (line: string) => Promise<ExecuteOutcome>): Pro
       } catch {
         // The tile shows the script and says its standing was not read.
       }
-      seen.push({ path, source: folder, standing, running });
+      seen.push({ path, source: folder, standing, running, lines: texts });
     }
   }
   return seen;
@@ -200,10 +240,11 @@ export function stratusTiles_make(hooks: StratusTileHooks): () => Promise<TileCo
     return asked;
   };
   return async (): Promise<TileContribution> => {
-    const [clustersAnswer, capacityAnswer, scripts]: [ExecuteOutcome, ExecuteOutcome | null, ScriptSeen[]] = await Promise.all([
+    const [clustersAnswer, capacityAnswer, scripts, vms]: [ExecuteOutcome, ExecuteOutcome | null, ScriptSeen[], VmSeen[]] = await Promise.all([
       hooks.ask('cluster status'),
       answer_awaitFor(capacity_ask(), hooks.capacityGraceMs ?? CAPACITY_GRACE_MS),
       scripts_read(hooks.ask),
+      vms_read(hooks.ask),
     ]);
     const capacityReading: boolean = capacityAnswer === null;
     if (capacityReading) repaintOwed = true;
@@ -237,6 +278,33 @@ export function stratusTiles_make(hooks: StratusTileHooks): () => Promise<TileCo
       about: TILE_ABOUT['clusters'],
       // The tile is the TD controller's door: `cluster`, on the cluster the controller chooses (docs/stratus.adoc, D13).
       enter: (): void => hooks.cluster_open(''),
+    };
+
+    // VIRTUAL MACHINES: what `vm status` keeps, each with the ChRIS on it or its address and what it bills; a row opens the
+    // script that declares the VM, its VM BUILD seat the way in (docs/stratus.adoc, D16 and D17).
+    const billed: VmSeen[] = vms.filter((vm: VmSeen): boolean => vm.rate !== null && vm.row.state !== 'gone' && vm.row.state !== 'declared');
+    const vmHourly: VmCostRate | null = rates_sum(billed.map((vm: VmSeen): VmCostRate | null => vm.rate));
+    const vmsTile: LauncherTile = {
+      key: 'vms', name: 'VIRTUAL MACHINES', hue: '--daybreak', numeral: '',
+      figures: [
+        { text: vms.length === 0 ? 'NONE' : `${vms.length} VM${vms.length === 1 ? '' : 'S'}` },
+        ...(vms.some((vm: VmSeen): boolean => vm.row.state === 'built') ? [{ text: `${vms.filter((vm: VmSeen): boolean => vm.row.state === 'built').length} BUILT` }] : []),
+        ...(vmHourly !== null ? [{ text: `${money_text(vmHourly.machineHour + vmHourly.dataHour, vmHourly.currency)}/H` }] : []),
+      ],
+      rows: vms.slice(0, 6).map((vm: VmSeen): LauncherRow => {
+        const where: string = vm.row.chris?.host ?? vm.row.address ?? (vm.row.spec === null ? '' : `${vm.row.spec.vcpu} vCPU · ${vm.row.spec.memory} GiB`);
+        const rate: string = vm.rate === null ? '' : `  ${money_text(vm.rate.machineHour + vm.rate.dataHour, vm.rate.currency)}/h`;
+        const script: string | null = vmScript_find(scripts, vm.row.name);
+        return {
+          text: `${vm.row.name}  ${vm.row.state.toUpperCase()}  ${where}${rate}`.trimEnd(),
+          errored: false,
+          // A row is its VM's line in its script: the script screen opens there; with none declaring it, on the library.
+          open: (): void => hooks.script_open(script ?? ''),
+        };
+      }),
+      verb: 'OPEN ITS SCRIPT',
+      about: TILE_ABOUT['vms'],
+      enter: (): void => hooks.script_open(vmScript_find(scripts, vms[0]?.row.name ?? '') ?? ''),
     };
 
     // SCRIPTS: the library, each script with where its lines stand; the tile is the script screen's door (docs/stratus.adoc, D17).
@@ -277,7 +345,7 @@ export function stratusTiles_make(hooks: StratusTileHooks): () => Promise<TileCo
     };
     return {
       lead: { tile: clustersTile, weight: clusters.length },
-      afterFiles: [scriptsTile, capacityTile],
+      afterFiles: [vmsTile, scriptsTile, capacityTile],
       afterPanes: [],
       about: { files: { text: 'Your home: the clusters this session knows, each a folder of its spec, settings, state and steps.' } },
     };

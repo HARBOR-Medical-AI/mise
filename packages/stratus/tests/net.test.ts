@@ -266,7 +266,7 @@ describe('net, over the fake cloud', () => {
   it('needs the tasks tier to build or tear down', async () => {
     await net_run(context, ['new', 'scratch', '--cidr', '10.40.0.0/16']);
     surface_set(new HeadlessSurface());
-    expect((await net_run(context, ['build', 'scratch'])).renderedErr).toContain('entered as READ, so nothing outside this host changes; MANAGE is chosen at the door');
+    expect((await net_run(context, ['build', 'scratch'])).renderedErr).toContain('entered as READ, so nothing outside this host changes; MANAGE asks your password once');
     expect(plain((await net_run(context, ['plan', 'scratch'])).rendered)).toContain('not made yet: net build scratch makes it');
   });
 

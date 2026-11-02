@@ -17,6 +17,7 @@
  *
  * @module
  */
+import { password_ask } from './cloudDoor.js';
 import { more_wire } from '../features/roster/more.js';
 import { type SessionNotes, feedListModelSchema, FEED_LIST_MODEL_KIND, feedDagModelSchema, dicomSeriesModelSchema, dicomTagsModelSchema, imageViewModelSchema, DICOM_MODEL_KINDS, IMAGE_MODEL_KINDS, type DicomSeriesModel, type DicomTagsModel, DAG_MODEL_KINDS, type PromptContext, type WireEnvelope, type WatchState, type FeedDagModel, type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry } from '@fnndsc/menu';
 import { type SceneNode } from '../scene/chrisSpace.js';
@@ -1006,6 +1007,27 @@ async function surface_start(token: string): Promise<void> {
    */
   /** The cloud door's answer, known once the session is attached; null outside a stratus session. */
   let manageTier: boolean | null = null;
+  /** Whether the daemon was given a door to check a password at, so a READ session can be raised. */
+  let elevationOffered: boolean = false;
+  /**
+   * Raises this session to MANAGE for a line that would act: the person's
+   * password asked once on a sheet, checked by the daemon at the door they
+   * logged in by, and every stratus screen redrawn with the answer (D14).
+   */
+  const elevate_ask = async (line: string): Promise<boolean> => {
+    if (manageTier === true) return true;
+    if (!elevationOffered) { terminal.line_note(`${line}: entered as READ, and this session cannot be raised: it was started without a door to ask`); return false; }
+    const password: string | null = await password_ask(line, null);
+    if (password === null) return false;
+    const answer: { granted: boolean; reason?: string } = await client.elevate(password);
+    if (!answer.granted) { terminal.line_note(`MANAGE refused: ${answer.reason ?? 'the door said no'}`); return false; }
+    manageTier = true;
+    statusBar.mode_show(true);
+    tdController.mode_refresh();
+    scriptScreen.mode_refresh();
+    terminal.line_note('MODE MANAGE: this session may build, tear down and spend, each after its own question, until you leave it');
+    return true;
+  };
   const context: HostContext = {
     get layout(): LayoutManager { return layout; },
     panels,
@@ -1016,6 +1038,8 @@ async function surface_start(token: string): Promise<void> {
     get terminal(): ArgusTerminal { return terminal; },
     get client(): ArgusClient { return client; },
     manage_is: (): boolean | null => manageTier,
+    elevation_is: (): boolean => elevationOffered,
+    elevate_ask,
   };
 
   /** Builds the byte route for a path, from where this page was served. */
@@ -2129,6 +2153,8 @@ async function surface_start(token: string): Promise<void> {
     capacity_open: capacityPane.open,
     launcher_enter,
     // `trek` on the command line (either console): the bridge takes the screen and gives it back when the game ends.
+    manage_is: (): boolean | null => manageTier,
+    elevate_ask,
     trek_open: (line: string): string => {
       if (trekBridge.active_is()) return 'trek: the bridge is already up';
       void trekBridge.open(line);
@@ -2567,6 +2593,8 @@ async function surface_start(token: string): Promise<void> {
   statusBar.attach_show(attached.attach);
   // The door's answer, for the stratus takeovers: MANAGE is the daemon's `tasks` tier, fixed when the session was entered (D14).
   manageTier = backend === 'stratus' ? (attached.attach.hostControl ?? []).includes('tasks') : null;
+  elevationOffered = attached.attach.elevation === true;
+  statusBar.mode_show(manageTier);
   daemonStale = attached.attach.stale === true;
   buildWatch.attach_take(attached.attach);
   restart.attach_take(attached.attach);

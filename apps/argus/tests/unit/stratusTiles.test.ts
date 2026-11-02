@@ -7,7 +7,7 @@
  * teaching the line that names a family when there is none.
  */
 import { describe, it, expect } from '@jest/globals';
-import { limitShort_format, money_text, stratusTiles_make, zoneShort_format, type StratusTileHooks } from '../../src/compositions/stratus/tiles.js';
+import { limitShort_format, money_text, stratusTiles_make, vmScript_find, zoneShort_format, type StratusTileHooks } from '../../src/compositions/stratus/tiles.js';
 import type { ExecuteOutcome } from '../../src/calypso/client.js';
 
 const CLUSTERS = {
@@ -29,7 +29,7 @@ const CAPACITY = {
 function hooks_make(answers: Record<string, unknown>, seen: string[], named: string[][] = []): StratusTileHooks {
   return {
     ask: async (line: string): Promise<ExecuteOutcome> => {
-      const kind: string = line.startsWith('cluster') ? 'stratus.clusters' : line.startsWith('ls') ? 'fs.listing' : line.startsWith('play') ? 'manifest.status' : 'stratus.capacity';
+      const kind: string = line.startsWith('cluster') ? 'stratus.clusters' : line.startsWith('ls') ? 'fs.listing' : line.startsWith('play') ? 'manifest.status' : line === 'vm status' ? 'stratus.vm.status' : line === 'vm cost' ? 'stratus.vm.cost' : 'stratus.capacity';
       const data: unknown = answers[line];
       return (data === undefined
         ? { envelopes: [{ status: 'error', rendered: '', renderedErr: `${line}: refused\n` }] }
@@ -44,7 +44,40 @@ function hooks_make(answers: Record<string, unknown>, seen: string[], named: str
   };
 }
 
+const VM_STATUS = { vms: [
+  { name: 'store', state: 'built', region: 'us-ashburn-1', spec: { net: 'n', open: [80, 443], vcpu: 2, memory: 8, disk: 50, data: 50, dataBackup: 'daily', os: 'ubuntu-26.04' }, address: '203.0.113.10', inside: '10.20.0.5', protected: true, built: '2026-11-01T00:00:00Z', chris: { profile: 'minimal', compute: 'NERC', host: 'cube.chrisproject.org', url: 'https://cube.chrisproject.org/api/v1/', porter: 'porter.chrisproject.org' } },
+  { name: 'blt', state: 'declared', region: 'us-ashburn-1', spec: { net: 'n', open: [], vcpu: 4, memory: 16, disk: 50, data: 1024, dataBackup: 'daily', os: 'ubuntu-26.04' }, address: null, inside: null, protected: true, built: null, chris: null },
+] };
+const VM_COST = { vms: [
+  { name: 'store', declared: true, spec: VM_STATUS.vms[0]!.spec, cost: { machineHour: 0.049, dataHour: 0.003, currency: 'USD' }, changes: [], before: null },
+  { name: 'blt', declared: true, spec: VM_STATUS.vms[1]!.spec, cost: { machineHour: 0.1, dataHour: 0.05, currency: 'USD' }, changes: [], before: null },
+] };
+
 describe('the stratus tiles', () => {
+  it('VIRTUAL MACHINES follows FILES: each VM kept here with its state, the ChRIS on it or its size, and what it bills; a row opens the script that declares it', async () => {
+    const seen: string[] = [];
+    const answers: Record<string, unknown> = {
+      'cluster status': CLUSTERS, capacity: CAPACITY, 'vm status': VM_STATUS, 'vm cost': VM_COST,
+      'ls /scripts': [{ path: '/scripts', items: [{ name: 'chrisproject', type: 'source', status: 'cloned' }] }],
+      'ls /scripts/chrisproject': [{ path: '/scripts/chrisproject', items: [{ name: 'store.mise', type: 'script' }] }],
+      'play /scripts/chrisproject/store.mise --status': { manifest: 'store', lines: [{ number: 1, text: 'net new n --cidr 10.0.0.0/16', state: 'done', detail: '' }, { number: 2, text: 'vm new store --net n --vcpu 2 --memory 8 --disk 50 --data 50 --os ubuntu-26.04', state: 'done', detail: '' }, { number: 3, text: 'vm build store', state: 'done', detail: '' }] },
+    };
+    const tiles = await stratusTiles_make(hooks_make(answers, seen))();
+    const vms = tiles.afterFiles[0]!;
+    expect(vms.name).toBe('VIRTUAL MACHINES');
+    // The bill counts what stands in the cloud: the built store, not the declared blt.
+    expect(vms.figures.map((f) => f.text)).toEqual(['2 VMS', '1 BUILT', '$0.05/H']);
+    expect(vms.rows.map((r) => r.text)).toEqual(['store  BUILT  cube.chrisproject.org  $0.05/h', 'blt  DECLARED  4 vCPU · 16 GiB  $0.15/h']);
+    vms.rows[0]!.open!();
+    vms.rows[1]!.open!();
+    vms.enter();
+    expect(seen).toEqual(['scripts open /scripts/chrisproject/store.mise', 'scripts open ', 'scripts open /scripts/chrisproject/store.mise']);
+    expect(vmScript_find([{ path: '/s/a.mise', source: 's', standing: '', running: null, lines: ['vm new storex --net n'] }], 'store')).toBeNull();
+    // With no VM answer the tile still stands, empty.
+    const none = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, []))();
+    expect(none.afterFiles[0]!.figures).toEqual([{ text: 'NONE' }]);
+  });
+
   it('SCRIPTS stands between the frame\'s FILES and CAPACITY: each script in the library with where its lines stand, a row opening the script screen on it', async () => {
     const seen: string[] = [];
     const answers: Record<string, unknown> = {
@@ -55,7 +88,7 @@ describe('the stratus tiles', () => {
       'play /scripts/chrisproject/store.mise --status': { manifest: 'store', lines: [{ number: 1, text: 'net new n --cidr 10.0.0.0/16', state: 'done', detail: '' }, { number: 2, text: 'vm build s', state: 'changed', detail: '' }] },
     };
     const tiles = await stratusTiles_make(hooks_make(answers, seen))();
-    const scripts = tiles.afterFiles[0]!;
+    const scripts = tiles.afterFiles[1]!;
     expect(scripts.name).toBe('SCRIPTS');
     expect(scripts.figures.map((f) => f.text)).toEqual(['2 SCRIPTS', 'CHANGED UNDER A BUILD']);
     expect(scripts.rows.map((r) => [r.text, r.errored])).toEqual([['store  CHRISPROJECT  1 DONE · 1 CHANGED', true], ['try  MINE  NOT READ', false]]);
@@ -67,11 +100,11 @@ describe('the stratus tiles', () => {
       ...answers,
       'play /scripts/chrisproject/store.mise --status': { manifest: 'store', lines: [{ number: 1, text: 'net new n --cidr 10.0.0.0/16', state: 'done', detail: '' }, { number: 2, text: 'vm build s', state: 'ready', detail: '', running: '/proc/steps/vm-s-apply-machine' }] },
     }, []))();
-    expect(building.afterFiles[0]!.figures.map((f) => f.text)).toEqual(['2 SCRIPTS', 'A STEP RUNS']);
-    expect(building.afterFiles[0]!.rows[0]!.text).toBe('store  CHRISPROJECT  RUNNING · VM BUILD');
+    expect(building.afterFiles[1]!.figures.map((f) => f.text)).toEqual(['2 SCRIPTS', 'A STEP RUNS']);
+    expect(building.afterFiles[1]!.rows[0]!.text).toBe('store  CHRISPROJECT  RUNNING · VM BUILD');
     // With no library answer the tile still stands, empty.
     const none = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, []))();
-    expect(none.afterFiles[0]!.figures).toEqual([{ text: 'NONE' }]);
+    expect(none.afterFiles[1]!.figures).toEqual([{ text: 'NONE' }]);
   });
 
   it('a cluster found in the tenancy and not adopted reads its condition in place of a last step, and one with nothing left reads GONE and is counted apart', async () => {
@@ -105,7 +138,7 @@ describe('the stratus tiles', () => {
   it('place CAPACITY after FILES: per zone, free of permitted, red where nothing is free', async () => {
     const seen: string[] = [];
     const tiles = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, seen))();
-    const capacity = tiles.afterFiles[1]!;
+    const capacity = tiles.afterFiles[2]!;
     expect(capacity.figures).toEqual([{ text: 'US-ASHBURN-1' }]);
     expect(capacity.rows.map((r) => [r.text, r.errored])).toEqual([
       ['E5  US-ASHBURN-AD-1  core  4625 / 4629 FREE', false],
@@ -122,7 +155,7 @@ describe('the stratus tiles', () => {
     const seen: string[] = [];
     const tiles = await stratusTiles_make(hooks_make({ 'cluster status': { clusters: [] } }, seen))();
     expect(tiles.lead!.tile.figures).toEqual([{ text: 'NONE' }]);
-    const capacity = tiles.afterFiles[1]!;
+    const capacity = tiles.afterFiles[2]!;
     expect(capacity.figures).toEqual([{ text: 'NOT READ' }]);
     capacity.rows[0]!.open!();
     expect(seen).toEqual(['capacity:']);
@@ -145,7 +178,7 @@ describe('the stratus tiles', () => {
     const source = stratusTiles_make(hooks);
     const first = await source();
     expect(first.lead!.tile.figures[0]).toEqual({ text: '2 CLUSTERS' });
-    expect(first.afterFiles[1]!.figures).toEqual([{ text: 'READING' }]);
+    expect(first.afterFiles[2]!.figures).toEqual([{ text: 'READING' }]);
     expect(seen).toEqual([]);
     // A second paint while the first capacity is on its way asks for no second one.
     await source();
@@ -156,7 +189,7 @@ describe('the stratus tiles', () => {
     // The repaint's ask answers at once, and the tile reads the region.
     const painted = await source();
     expect(asked.filter((line: string): boolean => line === 'capacity')).toHaveLength(2);
-    expect(painted.afterFiles[1]!.figures).toEqual([{ text: 'US-ASHBURN-1' }]);
+    expect(painted.afterFiles[2]!.figures).toEqual([{ text: 'US-ASHBURN-1' }]);
   });
 
   it('shortens zones and limits to what a tile has room for', () => {
