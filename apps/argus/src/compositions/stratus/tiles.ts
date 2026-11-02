@@ -34,6 +34,8 @@ export interface StratusTileHooks {
   cluster_open: (name: string) => void;
   /** Opens the script screen on the library (`''`) or a script: the lines `scripts` and `scripts open <path>`. */
   script_open: (path: string) => void;
+  /** Opens the VM controller on a machine, or on a new one (`''`): the lines `vm <name>` and `vm`. */
+  vm_open: (name: string) => void;
   /** Opens home. */
   home_open: () => void;
   /** Runs a line in the console, where its answer is read whole. */
@@ -42,6 +44,8 @@ export interface StratusTileHooks {
   capacity_open: (family: string) => void;
   /** Told the clusters each paint finds, so the language claims `cluster <name>` before the controller has read them. */
   names_seen?: (names: string[]) => void;
+  /** Told the VMs each paint finds, so the language claims `vm <name>` before the controller has read them. */
+  vmNames_seen?: (names: string[]) => void;
   /** Paints the dashboard again: called once a `capacity` a paint did not wait for has answered. */
   repaint?: () => void;
   /** How long a paint waits for `capacity`; {@link CAPACITY_GRACE_MS} when absent. */
@@ -251,6 +255,7 @@ export function stratusTiles_make(hooks: StratusTileHooks): () => Promise<TileCo
     const clustersModel: ClustersModel | null = model_extract(clustersAnswer, STRATUS_CLUSTERS_MODEL_KIND, (data) => clustersModelSchema.safeParse(data));
     const clusters: ClusterSummary[] = clustersModel?.clusters ?? [];
     if (clustersModel !== null) hooks.names_seen?.(clusters.map((cluster: ClusterSummary): string => cluster.name));
+    hooks.vmNames_seen?.(vms.map((vm: VmSeen): string => vm.row.name));
     const wrong = (cluster: ClusterSummary): boolean => cluster.steps.some((step): boolean => WRONG_STATES.includes(step.state));
     const wrongCount: number = clusters.filter(wrong).length;
     // What the clusters cost an hour together, at list price, when the daemon priced them.
@@ -294,17 +299,17 @@ export function stratusTiles_make(hooks: StratusTileHooks): () => Promise<TileCo
       rows: vms.slice(0, 6).map((vm: VmSeen): LauncherRow => {
         const where: string = vm.row.chris?.host ?? vm.row.address ?? (vm.row.spec === null ? '' : `${vm.row.spec.vcpu} vCPU · ${vm.row.spec.memory} GiB`);
         const rate: string = vm.rate === null ? '' : `  ${money_text(vm.rate.machineHour + vm.rate.dataHour, vm.rate.currency)}/h`;
-        const script: string | null = vmScript_find(scripts, vm.row.name);
         return {
           text: `${vm.row.name}  ${vm.row.state.toUpperCase()}  ${where}${rate}`.trimEnd(),
           errored: false,
-          // A row is its VM's line in its script: the script screen opens there; with none declaring it, on the library.
-          open: (): void => hooks.script_open(script ?? ''),
+          // A row is its machine's line: the VM controller opens on it (docs/stratus.adoc, D17 revised).
+          open: (): void => hooks.vm_open(vm.row.name),
         };
       }),
-      verb: 'OPEN ITS SCRIPT',
+      verb: 'OPEN THE VM CONTROLLER',
       about: TILE_ABOUT['vms'],
-      enter: (): void => hooks.script_open(vmScript_find(scripts, vms[0]?.row.name ?? '') ?? ''),
+      // The tile is the controller's door: `vm`, on a new machine.
+      enter: (): void => hooks.vm_open(''),
     };
 
     // SCRIPTS: the library, each script with where its lines stand; the tile is the script screen's door (docs/stratus.adoc, D17).

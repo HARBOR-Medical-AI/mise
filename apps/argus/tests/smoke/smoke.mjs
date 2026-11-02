@@ -3431,6 +3431,48 @@ try {
   }
   }
 
+  if (await stage('vm-controller')) {
+  // The VM controller (features/vm/, docs/stratus.adoc D17 revised): under
+  // stratus, `vm` takes the screen on a new machine; named and committed,
+  // its script is written under /scripts/mine/ and the line declares it; the
+  // machine then stands in the gutter and `vm <name>` opens on it with SIZE,
+  // BUILD, CHRIS, USERS and TEARDOWN; Esc gives the page back.
+  const vc = await evalIn(`
+    await console_idle();
+    if (document.body.dataset.composition !== 'stratus') return { composition: document.body.dataset.composition ?? null };
+    const titleBefore = document.title;
+    const input = console_input();
+    const type = (line) => { input.value = line; input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); };
+    const settle = async (want, tries = 60) => { for (let i = 0; i < tries; i++) { if (want()) return true; await sleep(250); } return want(); };
+    type('vm');
+    const opened = await settle(() => document.body.dataset.takeover === 'vm' || /needs a display/.test(console_text()), 40);
+    if (document.body.dataset.takeover !== 'vm') return { composition: 'stratus', opened: false, narrow: innerWidth < 1250, said: (console_text().match(/vm: the controller needs[^\\n]*/) ?? [''])[0] };
+    await settle(() => window.__argusVm?.view() === 'new', 40);
+    const name = 'smoke' + String(Date.now() % 100000);
+    const field = document.querySelector('#vm-new-name'); field.value = name; field.dispatchEvent(new Event('input'));
+    const net = document.querySelector('#vm-new-net'); net.value = 'smoke-net'; net.dispatchEvent(new Event('input'));
+    await sleep(200);
+    [...document.querySelectorAll('#vm-controller button')].find((b) => b.textContent.trim() === 'COMMIT')?.click();
+    const declared = await settle(() => window.__argusVm?.vm() === name && document.getElementById('vm-controller')?.dataset.busy === 'no' && (window.__argusVm?.vms() ?? []).includes(name), 120);
+    const logged = [...document.querySelectorAll('.tdc-log-sent')].map((l) => l.textContent);
+    const steps = (window.__argusVm?.steps() ?? []).map((s) => s.label);
+    const pills = [...document.querySelectorAll('#vm-controller .takeover-seat .tdc-cluster')].map((p) => p.textContent);
+    const condition = document.querySelector('#vm-controller .tdc-condition-name')?.textContent ?? null;
+    const hidden = [...document.body.children].filter((node) => node.id !== 'vm-controller' && getComputedStyle(node).visibility !== 'hidden' && node.offsetParent !== null).length;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await sleep(400);
+    return { composition: 'stratus', opened: true, name, declared, logged, steps, pills, condition, hidden, titleBack: document.title === titleBefore, after: document.body.dataset.takeover ?? null };`);
+  if (vc.composition !== 'stratus') {
+    check('under any other composition vm opens no controller', true, JSON.stringify(vc));
+  } else if (!vc.opened) {
+    check('a display narrower than the VM controller\'s least refuses by name, and the line runs as text', vc.narrow && /needs a display at least 1250 px wide/.test(vc.said), JSON.stringify(vc));
+  } else {
+    check('vm takes the screen on a new machine; COMMIT writes its script under mine and declares it; the machine then stands in the gutter with its five seats, the page hidden behind it',
+      vc.declared && vc.logged.some((l) => l.startsWith('stratus> touch --withContents=')) && vc.logged.some((l) => l.startsWith('stratus> vm new ' + vc.name))
+        && JSON.stringify(vc.steps) === JSON.stringify(['SIZE', 'BUILD', 'CHRIS', 'USERS', 'TEARDOWN']) && vc.pills.includes(vc.name.toUpperCase()) && vc.pills.at(-1) === '+ NEW' && vc.condition === 'DECLARED' && vc.hidden === 0, JSON.stringify(vc));
+    check('Esc gives the VM controller back: no takeover, the tab\'s title as it was', vc.after === null && vc.titleBack, JSON.stringify(vc));
+  }
+  }
+
   if (await stage('td-controller')) {
   // The TD controller (features/controller/, docs/stratus.adoc D13): under
   // stratus, `cluster` takes the screen with its views, its clusters' pills and

@@ -37,6 +37,8 @@ function hooks_make(answers: Record<string, unknown>, seen: string[], named: str
     },
     cluster_open: (name: string): void => { seen.push(`cluster ${name}`); },
     script_open: (path: string): void => { seen.push(`scripts open ${path}`); },
+    vm_open: (name: string): void => { seen.push(`vm ${name}`); },
+    vmNames_seen: (names: string[]): void => { named.push(['vm', ...names]); },
     home_open: (): void => { seen.push('home'); },
     line_run: (line: string): void => { seen.push(`run ${line}`); },
     capacity_open: (family: string): void => { seen.push(`capacity:${family}`); },
@@ -54,15 +56,16 @@ const VM_COST = { vms: [
 ] };
 
 describe('the stratus tiles', () => {
-  it('VIRTUAL MACHINES follows FILES: each VM kept here with its state, the ChRIS on it or its size, and what it bills; a row opens the script that declares it', async () => {
+  it('VIRTUAL MACHINES follows FILES: each VM kept here with its state, the ChRIS on it or its size, and what it bills; a row opens the VM controller on it', async () => {
     const seen: string[] = [];
+    const named: string[][] = [];
     const answers: Record<string, unknown> = {
       'cluster status': CLUSTERS, capacity: CAPACITY, 'vm status': VM_STATUS, 'vm cost': VM_COST,
       'ls /scripts': [{ path: '/scripts', items: [{ name: 'chrisproject', type: 'source', status: 'cloned' }] }],
       'ls /scripts/chrisproject': [{ path: '/scripts/chrisproject', items: [{ name: 'store.mise', type: 'script' }] }],
       'play /scripts/chrisproject/store.mise --status': { manifest: 'store', lines: [{ number: 1, text: 'net new n --cidr 10.0.0.0/16', state: 'done', detail: '' }, { number: 2, text: 'vm new store --net n --vcpu 2 --memory 8 --disk 50 --data 50 --os ubuntu-26.04', state: 'done', detail: '' }, { number: 3, text: 'vm build store', state: 'done', detail: '' }] },
     };
-    const tiles = await stratusTiles_make(hooks_make(answers, seen))();
+    const tiles = await stratusTiles_make(hooks_make(answers, seen, named))();
     const vms = tiles.afterFiles[0]!;
     expect(vms.name).toBe('VIRTUAL MACHINES');
     // The bill counts what stands in the cloud: the built store, not the declared blt.
@@ -71,7 +74,8 @@ describe('the stratus tiles', () => {
     vms.rows[0]!.open!();
     vms.rows[1]!.open!();
     vms.enter();
-    expect(seen).toEqual(['scripts open /scripts/chrisproject/store.mise', 'scripts open ', 'scripts open /scripts/chrisproject/store.mise']);
+    expect(seen).toEqual(['vm store', 'vm blt', 'vm ']);
+    expect(named).toContainEqual(['vm', 'store', 'blt']);
     expect(vmScript_find([{ path: '/s/a.mise', source: 's', standing: '', running: null, lines: ['vm new storex --net n'] }], 'store')).toBeNull();
     // With no VM answer the tile still stands, empty.
     const none = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, []))();
@@ -122,7 +126,7 @@ describe('the stratus tiles', () => {
     const named: string[][] = [];
     const tiles = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, seen, named))();
     // The paint tells the language the clusters, so `cluster harbor` opens the controller before it has read them.
-    expect(named).toEqual([['harbor', 'lab']]);
+    expect(named.filter((names: string[]): boolean => names[0] !== 'vm')).toEqual([['harbor', 'lab']]);
     const clusters = tiles.lead!.tile;
     expect(tiles.lead!.weight).toBe(2);
     expect(clusters.name).toBe('OPENSHIFT');
