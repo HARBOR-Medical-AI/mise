@@ -848,10 +848,13 @@ export class TdController {
       guard.append(box);
       return [goes, guard];
     }
+    // In a READ session the teardown asks the password before anything, where the session can be raised; where it cannot, the pill says so.
+    const hold: ReadHold = readHold_derive(LINES.teardown(cluster.name), this.hooks.manage_is(), this.hooks.elevate_ask !== null);
+    const askFirst: string = hold === 'asks' ? ' This session is READ: TEAR DOWN asks your password first, then the engine asks for the name.' : hold === 'held' ? ` This session is READ and cannot be raised here: ${READ_HELD}.` : '';
     const lock: HTMLElement = el('div', `tdc-note ${cluster.protected !== false ? 'tdc-note-locked' : 'tdc-note-refused'}`);
-    lock.append(el('span', 'tdc-note-title', cluster.protected !== false ? 'PROTECTED' : 'UNLOCKED'), el('span', 'tdc-prose', cluster.protected !== false
+    lock.append(el('span', 'tdc-note-title', cluster.protected !== false ? 'PROTECTED' : 'UNLOCKED'), el('span', 'tdc-prose', (cluster.protected !== false
       ? 'A cluster is born protected. Lifting the lock is a line of its own, so no single slip or replayed line removes a tenant.'
-      : 'The lock is off. TEAR DOWN sends the line; the engine lists what goes and asks for the name typed back.'));
+      : 'The lock is off. TEAR DOWN sends the line; the engine lists what goes and asks for the name typed back.') + askFirst));
     const commands: HTMLElement = el('div', 'tdc-commands');
     if (cluster.protected !== false) commands.append(this.linePill_make('LIFT THE LOCK', LINES.protect(cluster.name, false), 'quiet'));
     else commands.append(this.linePill_make('LOCK AGAIN', LINES.protect(cluster.name, true), 'quiet'), el('span', 'tdc-flex'), this.linePill_make('TEAR DOWN', LINES.teardown(cluster.name), 'destroy', cluster.refused?.['teardown']));
