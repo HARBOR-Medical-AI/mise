@@ -71,6 +71,8 @@ export interface TakeoverFrame {
   log: HTMLElement;
   /** Lights one view's seat; the elbow follows the first seat's colour. */
   view_mark: (key: string) => void;
+  /** Replaces the views, for a screen whose views come from data (a script's lines); LEAVE stays. */
+  views_set: (views: ReadonlyArray<TakeoverView>) => void;
 }
 
 /** The page's seats, in the gutter's order; a screen with more views takes the next hue. */
@@ -162,16 +164,22 @@ export function takeoverFrame_build(spec: TakeoverSpec, onView: (key: string) =>
   gutter.setAttribute('aria-label', spec.labels.views);
   const seats: HTMLElement = el('div', '');
   const views: Map<string, HTMLButtonElement> = new Map();
-  spec.views.forEach((view: TakeoverView, index: number): void => {
-    const seatClass: string = SEATS[index] ?? 'panel-view';
-    const button: HTMLButtonElement = el('button', `${seatClass}${view.destroy === true ? ' takeover-view-destroy' : ''}`, view.label);
-    button.type = 'button';
-    button.dataset['view'] = view.key;
-    button.addEventListener('click', (): void => onView(view.key));
-    views.set(view.key, button);
-    seats.append(button);
-  });
-  seats.append(el('div', 'panel-spacer'));
+  let shown: ReadonlyArray<TakeoverView> = spec.views;
+  const seats_fill = (): void => {
+    seats.replaceChildren();
+    views.clear();
+    shown.forEach((view: TakeoverView, index: number): void => {
+      const seatClass: string = SEATS[index] ?? 'panel-view';
+      const button: HTMLButtonElement = el('button', `${seatClass}${view.destroy === true ? ' takeover-view-destroy' : ''}`, view.label);
+      button.type = 'button';
+      button.dataset['view'] = view.key;
+      button.addEventListener('click', (): void => onView(view.key));
+      views.set(view.key, button);
+      seats.append(button);
+    });
+    seats.append(el('div', 'panel-spacer'));
+  };
+  seats_fill();
   const leaveSeat: HTMLElement = el('div', '');
   const leave: HTMLButtonElement = el('button', `panel-7${spec.leave.destroy === true ? ' takeover-view-destroy' : ''}`, spec.leave.label);
   leave.type = 'button';
@@ -207,8 +215,13 @@ export function takeoverFrame_build(spec: TakeoverSpec, onView: (key: string) =>
       button.classList.toggle('takeover-view-on', on);
       button.setAttribute('aria-current', on ? 'page' : 'false');
     }
-    root.dataset['firstLit'] = key === spec.views[0]?.key ? 'true' : 'false';
+    root.dataset['firstLit'] = key === shown[0]?.key ? 'true' : 'false';
   };
 
-  return { root, seat, face, views, leave, stageTitle: over.title, stageNote: over.note, body, aside, logTitle: logStrip.title, logNote: logStrip.note, log, view_mark };
+  const views_set = (next: ReadonlyArray<TakeoverView>): void => {
+    shown = next;
+    seats_fill();
+  };
+
+  return { root, seat, face, views, leave, stageTitle: over.title, stageNote: over.note, body, aside, logTitle: logStrip.title, logNote: logStrip.note, log, view_mark, views_set };
 }

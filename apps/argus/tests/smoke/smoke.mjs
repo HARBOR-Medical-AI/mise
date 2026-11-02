@@ -3394,7 +3394,7 @@ try {
     // The frame's five tiles stand in order; a composition of its own
     // (stratus: OPENSHIFT, CAPACITY) adds tiles of its own among them.
     const frameTiles = ['FILES', 'PANES', 'KEYS', "WHAT'S NEW", 'CONSOLE'];
-    const ownTiles = alone.composition === 'stratus' ? ['OPENSHIFT', 'CAPACITY'] : [];
+    const ownTiles = alone.composition === 'stratus' ? ['OPENSHIFT', 'SCRIPTS', 'CAPACITY'] : [];
     check('a session with no ChRIS composition has the frame\'s five tiles and its own, no RUNS, PACS, GATHER or index instrument',
       JSON.stringify(alone.tiles.filter((name) => !ownTiles.includes(name))) === JSON.stringify(frameTiles) && !alone.marks.runs && !alone.marks.pacs && !alone.marks.gather && !alone.marks.index, JSON.stringify(alone));
     check('a frame-alone session keeps its header brand and console drawer on stage at the dashboard',
@@ -3405,8 +3405,9 @@ try {
 
   if (await stage('stratus-tiles')) {
   // The stratus composition's tiles (compositions/stratus/tiles.ts): OPENSHIFT
-  // leads with the clusters `cluster status` names, CAPACITY follows FILES
-  // with what `capacity` reads. Under any other composition neither stands.
+  // leads with the clusters `cluster status` names, SCRIPTS follows FILES with
+  // the library's scripts, CAPACITY follows it with what `capacity` reads.
+  // Under any other composition none of them stands.
   const tiles = await evalIn(`
     await console_idle();
     document.getElementById('gutter-dashboard')?.click();
@@ -3420,12 +3421,12 @@ try {
   if (tiles.composition === 'stratus') {
     const clusters = tiles.named.find((t) => t.name === 'OPENSHIFT');
     const capacity = tiles.named.find((t) => t.name === 'CAPACITY');
-    check('under stratus the dashboard leads with OPENSHIFT and puts CAPACITY after FILES',
-      names[0] === 'OPENSHIFT' && names.indexOf('CAPACITY') === names.indexOf('FILES') + 1, JSON.stringify(names));
+    check('under stratus the dashboard leads with OPENSHIFT and puts SCRIPTS, then CAPACITY, after FILES',
+      names[0] === 'OPENSHIFT' && names.indexOf('SCRIPTS') === names.indexOf('FILES') + 1 && names.indexOf('CAPACITY') === names.indexOf('SCRIPTS') + 1, JSON.stringify(names));
     check('OPENSHIFT counts its clusters and lists a row for each; CAPACITY names a region or teaches the line',
       clusters !== undefined && /CLUSTER|NONE/.test(clusters.figures[0] ?? '') && capacity !== undefined && capacity.rows > 0, JSON.stringify({ clusters, capacity }));
   } else {
-    check('under any other composition neither OPENSHIFT nor CAPACITY stands', !names.includes('OPENSHIFT') && !names.includes('CAPACITY'), JSON.stringify(names));
+    check('under any other composition neither OPENSHIFT, SCRIPTS nor CAPACITY stands', !names.includes('OPENSHIFT') && !names.includes('SCRIPTS') && !names.includes('CAPACITY'), JSON.stringify(names));
   }
   }
 
@@ -3467,6 +3468,65 @@ try {
       JSON.stringify(td.views.map((v) => v.view)) === JSON.stringify(['overview', 'size', 'build', 'cluster', 'chris', 'teardown']) && td.views.every((v) => v.sections > 0)
         && td.pills.at(-1) === '+ NEW' && / · /.test(td.title) && td.hidden === 0, JSON.stringify(td));
     check('Esc gives the controller\'s screen back: no takeover, no controller, the tab\'s title as it was', td.after === null && !td.left && td.titleBack, JSON.stringify(td));
+  }
+  }
+
+  if (await stage('script-screen')) {
+  // The script screen (features/script/, docs/stratus.adoc D17): under
+  // stratus, a script written to /scripts/mine/ opens on the rail with a seat
+  // per line wearing the state `play --status` read for it, each step's body
+  // a form over its line, the library listing the script, and Esc gives the
+  // page back. Under any other composition `scripts` is the session's own.
+  const ss = await evalIn(`
+    await console_idle();
+    if (document.body.dataset.composition !== 'stratus') return { composition: document.body.dataset.composition ?? null };
+    const titleBefore = document.title;
+    const input = console_input();
+    const type = (line) => { input.value = line; input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); };
+    const say = async (line, ms = 1500) => { type(line); await sleep(ms); await console_settled(); };
+    const settle = async (want, tries = 60) => { for (let i = 0; i < tries; i++) { if (want()) return true; await sleep(250); } return want(); };
+    // A one-line script under mine (a console line carries no newline: a terminal takes it as Enter), so
+    // the proof is the live one: RUN on its step declares the network in the fake cloud, and the seat that
+    // read ready reads done once the status is read again. The many-line rail is the unit tests' to prove.
+    await say("touch --withContents 'net new smoke-net --cidr 10.50.0.0/16' /scripts/mine/smoke.mise", 2500);
+    const written = /Wrote file: \\/scripts\\/mine\\/smoke\\.mise/.test(console_text());
+    await console_idle();
+    type('scripts open /scripts/mine/smoke.mise');
+    for (let i = 0; i < 40 && document.body.dataset.takeover !== 'script' && !/needs a display/.test(console_text()); i++) await sleep(250);
+    const opened = document.body.dataset.takeover === 'script';
+    if (!opened) return { composition: 'stratus', opened, written, narrow: innerWidth < 1250, said: (console_text().match(/scripts: the screen needs[^\\n]*/) ?? [''])[0] };
+    for (let i = 0; i < 60 && !((window.__argusScript?.steps() ?? []).length > 0); i++) await sleep(250);
+    const steps = window.__argusScript.steps();
+    const seats = [...document.querySelectorAll('.takeover-gutter button[data-view]')].map((b) => [b.dataset.view, b.dataset.state ?? null]);
+    const bodies = [];
+    for (const step of steps) {
+      document.querySelector('.takeover-gutter button[data-view="' + step.key + '"]')?.click(); await sleep(300);
+      bodies.push({ view: window.__argusScript.view(), sections: document.querySelectorAll('.ss-body > section').length, line: document.querySelector('.ss-line-text')?.textContent ?? null });
+    }
+    // RUN sends the line as shown; the standing is read again after it and the seat wears what it says.
+    const before = steps[0]?.state ?? null;
+    document.querySelector('.ss-run')?.click();
+    const ran = await settle(() => document.body.dataset.busy === undefined && document.getElementById('script-screen')?.dataset.busy === 'no' && /declared|unchanged/.test([...document.querySelectorAll('.tdc-steplog-line')].map((l) => l.textContent).join('\\n')), 80);
+    const after = window.__argusScript.steps()[0]?.state ?? null;
+    const logged = [...document.querySelectorAll('.tdc-log-sent')].map((l) => l.textContent);
+    document.querySelector('.takeover-gutter button[data-view="library"]')?.click();
+    for (let i = 0; i < 40 && document.querySelectorAll('.ss-script-name').length === 0; i++) await sleep(250);
+    const library = [...document.querySelectorAll('.ss-script-name')].map((n) => n.textContent);
+    const hidden = [...document.body.children].filter((node) => node.id !== 'script-screen' && getComputedStyle(node).visibility !== 'hidden' && node.offsetParent !== null).length;
+    const title = document.title;
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await sleep(400);
+    return { composition: 'stratus', opened, written, steps, seats, bodies, before, ran, afterRun: after, logged, library, hidden, title, titleBack: document.title === titleBefore, after: document.body.dataset.takeover ?? null, left: document.getElementById('script-screen') !== null };`);
+  if (ss.composition !== 'stratus') {
+    check('under any other composition scripts opens no screen', true, JSON.stringify(ss));
+  } else if (!ss.opened) {
+    check('a display narrower than the script screen\'s least refuses by name, and the line runs as text', ss.narrow && /needs a display at least 1250 px wide/.test(ss.said), JSON.stringify(ss));
+  } else {
+    check('scripts open takes the screen over the script: its line a seat wearing the state play --status read, its body a form over the line, the library listing the script, the page hidden behind it',
+      ss.written && ss.seats.length === 2 && ss.seats[0][0] === 'library' && ss.seats[1][0] === 'line-1' && ['ready', 'done'].includes(ss.seats[1][1])
+        && ss.bodies.length === 1 && ss.bodies[0].sections === 3 && ss.bodies[0].line === 'net new smoke-net --cidr 10.50.0.0/16' && ss.library.includes('smoke') && ss.hidden === 0 && / · smoke$/.test(ss.title), JSON.stringify(ss));
+    check('RUN sends the step\'s line as the operator could have typed it, its output lands under the step, and the seat reads done once the standing is read again',
+      ss.logged.includes('stratus> net new smoke-net --cidr 10.50.0.0/16') && ss.ran && ss.afterRun === 'done', JSON.stringify({ before: ss.before, ran: ss.ran, after: ss.afterRun, logged: ss.logged }));
+    check('Esc gives the script screen back: no takeover, no screen, the tab\'s title as it was', ss.after === null && !ss.left && ss.titleBack, JSON.stringify(ss));
   }
   }
 

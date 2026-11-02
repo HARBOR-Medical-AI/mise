@@ -457,6 +457,8 @@ Settled with the operator 2026-11-02, after the store stood from `infra/store.mi
 
 *Order:* the `infra` repository and the move; then the kernel's side in stratus, each tried in chell (library sources and `/scripts/`, `play --status`, `vm limits`); then the takeover in ARGUS (the library view, the rail, the header, the step bodies for `net`, `vm`, `chris deploy` and USERS, the tile), proven on `store.mise` against the live store; then the cluster verbs' bodies when a cluster script is next. Its laws and a row for the takeover land in `apps/argus/docs/aegis.adoc` with the screen.
 
+Built 2026-11-02, the kernel's verbs the same morning (#1331 `vm limits`, #1332 `play --status`, #1333 the library) and the screen after them (`apps/argus/src/features/script/`, `app/scriptScreen.ts`, the SCRIPTS tile; aegis.adoc's row of that day and its law a-step-is-its-line): `scripts` opens the library and `scripts open <path>` a script, every seat its line with the state `play --status` read; `vm cost` and `vm limits` carry models under their text so the sliders and the price come from the cloud. Three things the design names wait: a step that runs long as a task under `/proc/steps/` (today the screen follows its line in the lane, and leaving keeps the line running but drops its output), hidden input through the errand pane (today the strip takes it as a password field, which the page never keeps), and the cluster verbs' bodies, which come with the first cluster script.
+
 [[order]]
 == Order of work
 

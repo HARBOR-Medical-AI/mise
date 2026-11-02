@@ -331,4 +331,26 @@ export {
   type CapacityRow,
   type CapacityModel,
 } from './substrate.js';
+export {
+  MANIFEST_STATUS_MODEL_KIND,
+  STRATUS_VM_LIMITS_MODEL_KIND,
+  STRATUS_VM_COST_MODEL_KIND,
+  LINE_STATES,
+  lineStandingSchema,
+  manifestStatusModelSchema,
+  limitRangeSchema,
+  vmLimitsModelSchema,
+  vmSpecModelSchema,
+  vmCostRateSchema,
+  vmCostRowSchema,
+  vmCostModelSchema,
+  type LineState,
+  type LineStandingModel,
+  type ManifestStatusModel,
+  type VmLimitsModel,
+  type VmSpecModel,
+  type VmCostRate,
+  type VmCostRow,
+  type VmCostModel,
+} from './script.js';
 export { SERIES_FOLDER_PATTERN, PACS_TREE_ROOT, seriesFolder_is } from './seriesFolder.js';
