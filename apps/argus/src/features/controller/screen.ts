@@ -19,6 +19,7 @@
  * @module
  */
 import type { ClusterSizeModel, ClusterSpecModel, ClusterSummary, PromptKind } from '@fnndsc/menu';
+import { modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } from '../takeover/tier.js';
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
   askForm_derive, CHRIS_STEPS, classBadge_render, conditionWhy_derive, CONTROLLER_VIEWS, duration_text, HOURS_PER_MONTH, LINES, money_text, nameRefusal_derive,
@@ -36,6 +37,10 @@ export interface ControllerHooks {
   stop: () => void;
   /** Gives the screen back. */
   leave: () => void;
+  /** The answer at the cloud door: MANAGE (true), READ (false), or null when there is no door. */
+  manage_is: () => boolean | null;
+  /** Asks the person's password and raises a READ session for a line that would act; null when the session cannot be raised. */
+  elevate_ask: ((line: string) => Promise<boolean>) | null;
   /** How the screen is heard. */
   voice: { pill: (label: string) => void; cue: (name: string) => void };
 }
@@ -204,6 +209,11 @@ export class TdController {
    *
    * @param clusters - The clusters.
    */
+  /** The door's answer changed (the session was raised): drawn again with it. */
+  public mode_refresh(): void {
+    this.draw();
+  }
+
   public clusters_take(clusters: ReadonlyArray<ClusterSummary>): void {
     const was: ClusterSummary | null = this.cluster_get();
     this.clusters.clear();
@@ -419,7 +429,8 @@ export class TdController {
     } else {
       chips.append(el('span', 'tdc-chip', 'NO SPEC YET'));
     }
-    section.append(pill, whyLine, chips);
+    const mode: HTMLElement | null = modePill_make(this.hooks.manage_is());
+    section.append(pill, ...(mode === null ? [] : [mode]), whyLine, chips);
     return section;
   }
 
@@ -553,13 +564,32 @@ export class TdController {
    * @param refused - Why it is refused, if it is.
    * @returns The pill, and the line it sends beneath.
    */
-  private linePill_make(label: string, line: string, tone: 'plain' | 'bill' | 'destroy' | 'quiet' = 'plain', refused?: string): HTMLButtonElement {
-    const pill: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone}`, refused === undefined ? label : `${label} · REFUSED`);
+  private linePill_make(label: string, line: string, tone: 'plain' | 'bill' | 'destroy' | 'quiet' = 'plain', refusedFor?: string): HTMLButtonElement {
+    // A line that would act, in a READ session: asked for the password first when the session can be raised, held when it cannot;
+    // a more particular reason (adopted, protected, found) stands over both.
+    const hold: ReadHold = readHold_derive(line, this.hooks.manage_is(), this.hooks.elevate_ask !== null);
+    const refused: string | undefined = refusedFor ?? (hold === 'held' ? READ_HELD : undefined);
+    const asks: boolean = refused === undefined && hold === 'asks';
+    const pill: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone}${asks ? ' tdc-pill-asks' : ''}`, refused === undefined ? label : `${label} · REFUSED`);
     pill.type = 'button';
-    pill.title = refused === undefined ? `sends: ${line}` : `refused: ${refused}`;
+    pill.title = refused !== undefined ? `refused: ${refused}` : asks ? `${READ_ASKS}: ${line}` : `sends: ${line}`;
     pill.disabled = refused !== undefined || this.busy !== null;
-    pill.addEventListener('click', (): void => { this.hooks.voice.pill(label); void this.line_send(line); });
+    pill.addEventListener('click', (): void => { this.hooks.voice.pill(label); void this.line_sendRaised(line); });
     return pill;
+  }
+
+  /**
+   * Sends a line, raising a READ session first when the line would act: the
+   * password asked once, and the line sent only once the session is MANAGE.
+   *
+   * @param line - The line.
+   */
+  private async line_sendRaised(line: string): Promise<void> {
+    if (readHold_derive(line, this.hooks.manage_is(), this.hooks.elevate_ask !== null) === 'asks' && this.hooks.elevate_ask !== null) {
+      const raised: boolean = await this.hooks.elevate_ask(line);
+      if (!raised) return;
+    }
+    await this.line_send(line);
   }
 
   private spec_make(spec: ClusterSpecModel | null | undefined, found: boolean = false): HTMLElement[] {
@@ -589,7 +619,7 @@ export class TdController {
     } else if (cluster.origin === 'found') {
       // Found in the tenancy by its tag and read from the cloud: address, spec and condition shown; acting on it waits on ADOPT (docs/stratus.adoc, D15).
       note.append(el('span', 'tdc-prose', 'Found in the tenancy by its tag. What is shown is what the cloud says of it: its address and spec from its stack, its condition from what lives in its compartment. ADOPT keeps it here, which is what PLAN, VERIFY, BUILD and TEAR DOWN wait on; its kubeconfig and CUBE token are then copied by hand.'));
-      note.append(this.linePill_make('ADOPT', LINES.adopt(cluster.name)));
+      note.append(this.linePill_make('ADOPT', LINES.adopt(cluster.name), 'plain', cluster.refused?.['adopt']));
     } else if (cluster.origin === 'checkout') {
       note.append(el('span', 'tdc-prose', 'Read from a harbor-oci checkout. Adopting it keeps it here: cluster adopt <name> --from <checkout>.'));
     } else if (cluster.gone !== null && cluster.gone !== undefined) {

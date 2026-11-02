@@ -112,7 +112,7 @@ export class StatusBar {
    * @param root - The document to query the status fields from.
    * @throws {Error} When a required status element is missing from the page.
    */
-  constructor(root: Document) {
+  constructor(private readonly root: Document) {
     this.fields = {
       identity: element_require(root, 'status-identity'),
       jobs: element_require(root, 'status-jobs'),
@@ -174,6 +174,20 @@ export class StatusBar {
   public hostControl_show(tiers: string[]): void {
     this.fields.host.textContent = tiers.length > 0 ? `HOST ${tiers.join(' ')}` : '';
     this.fields.host.title = hostTiers_title(tiers);
+  }
+
+  /**
+   * The MODE readout: READ or MANAGE for a cloud session (D14); nothing for
+   * a session with no such door. A page without the readout shows nothing.
+   *
+   * @param manage - True for MANAGE, false for READ, null for no door.
+   */
+  public mode_show(manage: boolean | null): void {
+    const field: HTMLElement | null = this.root.querySelector<HTMLElement>('#status-mode');
+    if (field === null) return;
+    field.textContent = manage === null ? '' : `MODE ${manage ? 'MANAGE' : 'READ'}`;
+    if (manage === null) delete field.dataset['mode']; else field.dataset['mode'] = manage ? 'MANAGE' : 'READ';
+    field.title = manage === null ? '' : manage ? 'Entered as MANAGE: a build, a teardown or a deploy may run, each after its own question.' : 'Entered as READ: nothing outside this host changes; the first line that would act asks your password once.';
   }
 
   /**

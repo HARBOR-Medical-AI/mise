@@ -19,7 +19,7 @@ const STRATUS: string = `stratus:oci@${OWNER}`;
 class SwitchHost implements SessionHost {
   public up: Map<string, Berth> = new Map();
   public armed: Map<string, boolean> = new Map();
-  public begun: Array<{ identity: string; configPath: string; spend: boolean; replace: boolean }> = [];
+  public begun: Array<{ identity: string; configPath: string; spend: boolean; replace: boolean; door?: { cubeUrl: string; user: string } }> = [];
   async sessions_adopt(): Promise<Array<{ identity: string; berth: Berth; alive: boolean }>> { return []; }
   async find(identity: string): Promise<Berth | null> { return this.up.get(identity) ?? null; }
   async spawn(identity: string): Promise<Berth> { const berth: Berth = { identity, url: 'ws://127.0.0.1:4444', token: 'A' }; this.up.set(identity, berth); return berth; }
@@ -27,7 +27,7 @@ class SwitchHost implements SessionHost {
   boot_follow(_identity: string, _listener: BootListener): { report: BootReport; release: () => void } | null { return null; }
   async evict(): Promise<boolean> { return true; }
   restart_begin(): void { /* not asked */ }
-  stratus_begin(identity: string, configPath: string, spend: boolean, replace: boolean): void { this.begun.push({ identity, configPath, spend, replace }); }
+  stratus_begin(identity: string, configPath: string, spend: boolean, replace: boolean, door?: { cubeUrl: string; user: string }): void { this.begun.push({ identity, configPath, spend, replace, ...(door === undefined ? {} : { door }) }); }
   stratus_armed(identity: string): boolean | null { return this.armed.get(identity) ?? null; }
 }
 
@@ -76,7 +76,8 @@ describe('POST /switch', () => {
     const cookie: string = await login();
     const reply = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie } });
     expect(reply.json()).toMatchObject({ state: 'starting', greet: expect.stringMatching(/^\/greet\//) });
-    expect(host.begun).toEqual([{ identity: STRATUS, configPath: new CredentialStore(stateDir).ociConfig_find(OWNER), spend: false, replace: false }]);
+    // The door the session can be raised at: the person's CUBE and name, so a READ session asks their password once (D14).
+    expect(host.begun).toEqual([{ identity: STRATUS, configPath: new CredentialStore(stateDir).ociConfig_find(OWNER), spend: false, replace: false, door: { cubeUrl: 'https://cube.example.org/api/v1/', user: 'rudolph' } }]);
     expect(String(reply.headers['set-cookie'])).toContain(reply.json().key);
   });
 

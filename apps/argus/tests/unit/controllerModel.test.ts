@@ -71,9 +71,9 @@ describe('the TD controller model', () => {
     expect(conditionWhy_derive(cluster_make())).toEqual({ text: 'NOTHING BUILT · NOTHING BILLED', billing: false });
     expect(conditionWhy_derive(cluster_make({ origin: 'adopted', billing: true, condition: 'UP' }))).toEqual({ text: 'BILLING · ADOPTED', billing: true });
     expect(conditionWhy_derive(cluster_make({ billing: true, condition: 'BUILDING' }))).toEqual({ text: 'BILLING · BUILDING', billing: true });
-    expect(conditionWhy_derive(cluster_make({ condition: 'STOPPED', next: 'infra-apply', billingStep: 'infra-apply' }))).toEqual({ text: 'PLANNED · NOTHING BILLED', billing: false });
-    expect(conditionWhy_derive(cluster_make({ condition: 'STOPPED', next: 'iso', billingStep: 'infra-apply' }))).toEqual({ text: 'NOT FINISHED · NOTHING BILLED', billing: false });
-    expect(conditionWhy_derive(cluster_make({ condition: 'STOPPED', billing: true, next: 'dns', billingStep: 'infra-apply' }))).toEqual({ text: 'BILLING · NOT FINISHED', billing: true });
+    expect(conditionWhy_derive(cluster_make({ condition: 'PLANNED', next: 'infra-apply', billingStep: 'infra-apply' }))).toEqual({ text: 'PLANNED, NOTHING MADE · NOTHING BILLED', billing: false });
+    expect(conditionWhy_derive(cluster_make({ condition: 'PARTLY BUILT', next: 'iso', billingStep: 'infra-apply' }))).toEqual({ text: 'NOT FINISHED · NOTHING BILLED', billing: false });
+    expect(conditionWhy_derive(cluster_make({ condition: 'PARTLY BUILT', billing: true, next: 'dns', billingStep: 'infra-apply' }))).toEqual({ text: 'BILLING · NOT FINISHED', billing: true });
   });
 
   it('says what changed since the last command, at most three rows', () => {

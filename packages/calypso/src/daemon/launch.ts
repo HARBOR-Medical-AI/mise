@@ -11,6 +11,7 @@
  *
  * @module
  */
+import { elevation_read, type ElevationDoor } from './elevation.js';
 import * as path from 'node:path';
 import chalk from 'chalk';
 import { CalypsoDaemon, type PromptLastCommand } from './server.js';
@@ -112,7 +113,7 @@ export function daemonSurface_create(daemon: CalypsoDaemon, policy: HostControlP
         localFilesystem: attached?.localFilesystem ?? false,
         // Long jobs that change things beyond this host, and bill: only the
         // operator who started the daemon grants them, never a surface.
-        tasks: policy.tiers.has('tasks'),
+        tasks: policy.tiers.has('tasks') || (attached?.tasks ?? false),
       };
     },
     peers: (): SurfacePeer[] => daemon.surfaces_list(),
@@ -264,6 +265,7 @@ export async function daemon_launch(
   // The daemon's own code, fingerprinted now: read again on a slow clock and
   // on every attach, and the answer pushed when it flips.
   let codeWatch: CodeWatch | null = null;
+  const elevation: ElevationDoor | null = elevation_read(process.env);
   const daemon: CalypsoDaemon = new CalypsoDaemon({
     engine,
     token,
@@ -281,8 +283,11 @@ export async function daemon_launch(
     // The stack the session is made of: ChRIS's packages only for a ChRIS session.
     stack: { ...versions_selectForBackend(versions_get(), backend.id), build: buildHash_get(), ...(surfaceBuild !== null ? { surface: surfaceBuild } : {}) },
     hostControl: hostControl_tiers(hostControl),
+    // The door this session can be raised at with the person's password, when its host named one (D14).
+    ...(elevation !== null ? { elevation } : {}),
     codeCheck: (): void => { void codeWatch?.check().catch((): void => undefined); },
   });
+  if (elevation !== null) console.log(chalk.gray(`    MANAGE by password: ${elevation.user} may raise a surface of this session with their ChRIS password`));
   codeWatch = await codeWatch_start((stale: boolean): void => daemon.stale_set(stale)).catch((): null => null);
   // The engine takes its sink and its surface through its own seam: output
   // relays to the attached surfaces, and prompts, pipes, the shell and edits

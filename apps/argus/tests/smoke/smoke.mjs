@@ -3394,7 +3394,7 @@ try {
     // The frame's five tiles stand in order; a composition of its own
     // (stratus: OPENSHIFT, CAPACITY) adds tiles of its own among them.
     const frameTiles = ['FILES', 'PANES', 'KEYS', "WHAT'S NEW", 'CONSOLE'];
-    const ownTiles = alone.composition === 'stratus' ? ['OPENSHIFT', 'SCRIPTS', 'CAPACITY'] : [];
+    const ownTiles = alone.composition === 'stratus' ? ['OPENSHIFT', 'VIRTUAL MACHINES', 'SCRIPTS', 'CAPACITY'] : [];
     check('a session with no ChRIS composition has the frame\'s five tiles and its own, no RUNS, PACS, GATHER or index instrument',
       JSON.stringify(alone.tiles.filter((name) => !ownTiles.includes(name))) === JSON.stringify(frameTiles) && !alone.marks.runs && !alone.marks.pacs && !alone.marks.gather && !alone.marks.index, JSON.stringify(alone));
     check('a frame-alone session keeps its header brand and console drawer on stage at the dashboard',
@@ -3421,8 +3421,9 @@ try {
   if (tiles.composition === 'stratus') {
     const clusters = tiles.named.find((t) => t.name === 'OPENSHIFT');
     const capacity = tiles.named.find((t) => t.name === 'CAPACITY');
-    check('under stratus the dashboard leads with OPENSHIFT and puts SCRIPTS, then CAPACITY, after FILES',
-      names[0] === 'OPENSHIFT' && names.indexOf('SCRIPTS') === names.indexOf('FILES') + 1 && names.indexOf('CAPACITY') === names.indexOf('SCRIPTS') + 1, JSON.stringify(names));
+    // OPENSHIFT leads when it has clusters to lead with; with none (the fake, fresh) FILES leads and OPENSHIFT follows it.
+    check('under stratus the dashboard has OPENSHIFT at its head and puts VIRTUAL MACHINES, SCRIPTS, then CAPACITY, after FILES',
+      names.indexOf('OPENSHIFT') <= 1 && names.indexOf('VIRTUAL MACHINES') === names.indexOf('FILES') + 1 && names.indexOf('SCRIPTS') === names.indexOf('VIRTUAL MACHINES') + 1 && names.indexOf('CAPACITY') === names.indexOf('SCRIPTS') + 1, JSON.stringify(names));
     check('OPENSHIFT counts its clusters and lists a row for each; CAPACITY names a region or teaches the line',
       clusters !== undefined && /CLUSTER|NONE/.test(clusters.figures[0] ?? '') && capacity !== undefined && capacity.rows > 0, JSON.stringify({ clusters, capacity }));
   } else {

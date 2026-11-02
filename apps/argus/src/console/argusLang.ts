@@ -20,7 +20,7 @@
  */
 import { side_is, side_findByFocusWord, splitSelector_format, type Side } from '../app/sides.js';
 import { viewScript_compose, viewSheet_ask } from '../app/shareView.js';
-import { cloudEntry_ask, type CloudEntry } from '../app/cloudDoor.js';
+import type { CloudEntry } from '../app/cloudDoor.js';
 
 /** What the language needs from its host (assembled in main.ts). */
 export interface ArgusHost {
@@ -70,6 +70,10 @@ export interface ArgusHost {
   trek_open(line: string): string;
   /** Asks the door to switch this page to another of the person's sessions, and goes there; `spend` is the cloud session entered to manage. */
   session_switch(to: 'stratus' | 'chris', spend: boolean): Promise<string>;
+  /** The cloud door's answer for this session (D14): MANAGE, READ, or null when this is not a cloud session. */
+  manage_is(): boolean | null;
+  /** Raises a READ session to MANAGE with the person's password, asked once; true when it is MANAGE after. */
+  elevate_ask(line: string): Promise<boolean>;
   /** Who this session belongs to, as the prompt names them; null before the first prompt. */
   identity_get(): string | null;
   /** The serialized desktop of the current composition. */
@@ -386,7 +390,7 @@ const FRAME_TAIL_LINES: ReadonlyArray<string> = [
   'back                        (contextual back — exactly Esc)',
   'desktop save|load|show|list|delete [name] · load <ChRIS file> · clear · share',
   'attach [--reveal]           (how to reach THIS session from a terminal or another browser)',
-  'stratus oci [read|manage]   (through a porter: your cloud session, on your filed credentials; bare, it asks which)',
+  'stratus oci [manage]        (through a porter: your cloud session, entered as READ; manage asks your password once, there or here)',
   'chris                       (through a porter: back to your ChRIS session)',
   'argus verbs                 (this table; the long form is docs/argus-lang.adoc)',
   'argus keys                  (the prefix chords: one key, one drawer verb)',
@@ -529,12 +533,15 @@ export async function argusLine_run(host: ArgusHost, line: string): Promise<stri
     const rest: string[] = words.slice(1).map((word: string): string => word.toLowerCase());
     if (rest.length > 1) return 'stratus oci: takes one word, read or manage';
     const said: string | undefined = rest[0];
-    if (said !== undefined && said !== 'read' && said !== 'manage') return `stratus oci: ${said}: unknown word (read looks only; manage may build, tear down and spend; bare, it asks which)`;
-    // The question stands at the door, as trek's settings do: asked unless
-    // answered in words. Which it is gets fixed when porter starts the
-    // session, so this is the one place it is chosen (app/cloudDoor.ts).
-    const entry: CloudEntry | null = said !== undefined ? said : await cloudEntry_ask(cloud);
-    if (entry === null) return 'stratus oci: not now; nothing changed';
+    if (said !== undefined && said !== 'read' && said !== 'manage') return `stratus oci: ${said}: unknown word (read looks only; manage may build, tear down and spend, after your password)`;
+    // In the cloud session already: `manage` asks the password once and raises it; the rest says where it stands (D14).
+    const mode: boolean | null = host.manage_is();
+    if (mode !== null) {
+      if (said === 'manage') return mode ? 'stratus oci: MODE MANAGE already' : (await host.elevate_ask('stratus oci manage')) ? 'stratus oci: MODE MANAGE' : 'stratus oci manage: not raised; MODE READ';
+      return `stratus oci: this is your cloud session, MODE ${mode ? 'MANAGE' : 'READ'}${mode ? '' : ' (stratus oci manage asks your password once)'}`;
+    }
+    // Entered as READ: the first line that would act asks the password. `manage` enters MANAGE from the start, for a play nobody attends.
+    const entry: CloudEntry = said === 'manage' ? 'manage' : 'read';
     return await host.session_switch('stratus', entry === 'manage');
   }
 

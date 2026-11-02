@@ -69,6 +69,33 @@ export const vmSpecModelSchema = z.object({
   os: z.string(),
 });
 
+/** The model kind `vm status` carries. */
+export const STRATUS_VM_STATUS_MODEL_KIND = 'stratus.vm.status' as const;
+
+/** The states a kept VM stands in, as `vm status` words them. */
+export const VM_STATES = ['declared', 'data only', 'data kept', 'built', 'gone'] as const;
+
+/** One VM as `vm status` reads it from the host's records (never the cloud). */
+export const vmStatusRowSchema = z.object({
+  name: z.string(),
+  state: z.enum(VM_STATES),
+  region: z.string(),
+  /** Its spec, or null when spec.yaml does not read. */
+  spec: vmSpecModelSchema.nullable(),
+  /** Its reserved public address, kept by a default teardown; null before the data stack applies. */
+  address: z.string().nullable(),
+  /** The machine's private address, null without a machine. */
+  inside: z.string().nullable(),
+  protected: z.boolean(),
+  /** When its machine was last built, ISO 8601; null when it stands without one. */
+  built: z.string().nullable(),
+  /** The ChRIS deployed on it, or null. */
+  chris: z.object({ profile: z.string(), compute: z.string(), host: z.string().nullable(), url: z.string(), porter: z.string().nullable() }).nullable(),
+});
+
+/** What `vm status` answers: a row per VM kept here. */
+export const vmStatusModelSchema = z.object({ vms: z.array(vmStatusRowSchema) });
+
 /** What a spec bills an hour at list price: the machine and the data apart, since a default teardown keeps the data. */
 export const vmCostRateSchema = z.object({
   machineHour: z.number(),
@@ -104,3 +131,6 @@ export type VmSpecModel = z.infer<typeof vmSpecModelSchema>;
 export type VmCostRate = z.infer<typeof vmCostRateSchema>;
 export type VmCostRow = z.infer<typeof vmCostRowSchema>;
 export type VmCostModel = z.infer<typeof vmCostModelSchema>;
+export type VmState = (typeof VM_STATES)[number];
+export type VmStatusRow = z.infer<typeof vmStatusRowSchema>;
+export type VmStatusModel = z.infer<typeof vmStatusModelSchema>;

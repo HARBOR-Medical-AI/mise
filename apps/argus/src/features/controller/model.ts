@@ -97,7 +97,7 @@ export function conditionWhy_derive(cluster: ClusterSummary): { text: string; bi
   const billing: boolean = cluster.billing === true;
   const why: string = cluster.origin === 'adopted' ? 'ADOPTED' : cluster.origin === 'checkout' ? 'READ FROM A CHECKOUT'
     : cluster.condition === 'GONE' ? 'TORN DOWN' : cluster.condition === 'SIZING' ? 'NOTHING BUILT'
-    : cluster.condition === 'STOPPED' ? (!billing && cluster.next === cluster.billingStep ? 'PLANNED' : 'NOT FINISHED') : cluster.condition ?? '';
+    : cluster.condition === 'PLANNED' ? 'PLANNED, NOTHING MADE' : cluster.condition === 'PARTLY BUILT' ? 'NOT FINISHED' : cluster.condition ?? '';
   return billing ? { text: `BILLING · ${why}`, billing } : { text: `${why} · NOTHING BILLED`, billing };
 }
 

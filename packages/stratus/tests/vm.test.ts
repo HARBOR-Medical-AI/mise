@@ -133,6 +133,8 @@ describe('vm, over the fake cloud', () => {
   it('declares protected, says unchanged on the same line, and the change on a different one', async () => {
     expect(plain((await vm_run(context, ['new', 'store', ...STORE_LINE])).rendered)).toBe('store: declared, 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups) · ubuntu-26.04 · open 80,443 · on scratch, in us-ashburn-1; protected; vm build store builds it\n');
     expect(plain((await vm_run(context, ['new', 'store', ...STORE_LINE])).rendered)).toBe('store: unchanged\n');
+    // The status carries the same rows as a model, for a surface's tile, from the records alone.
+    expect((await vm_run(context, ['status'])).model).toMatchObject({ kind: 'stratus.vm.status', data: { vms: [{ name: 'store', state: 'declared', region: 'us-ashburn-1', spec: { vcpu: 2, memory: 8, net: 'scratch' }, address: null, inside: null, protected: true, built: null, chris: null }] } });
     expect(plain((await vm_run(context, ['new', 'store', '--memory', '16'])).rendered)).toBe('store: memory 8 → 16\n');
     expect(store.record_read('store')?.protected).toBe(true);
     expect((await vm_run(context, ['new', 'Store', ...STORE_LINE])).renderedErr).toContain('a VM\'s name is a hostname');

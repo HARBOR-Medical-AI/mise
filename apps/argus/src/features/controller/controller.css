@@ -23,13 +23,17 @@ body[data-takeover='controller'] > *:not(#td-controller) { visibility: hidden; }
 .tdc-condition[data-condition='FAILED'] { background: var(--tdc-destroy); }
 .tdc-condition[data-condition='GONE'] { background: var(--october-sunset); }
 .tdc-condition[data-condition='SIZING'] { background: var(--honey); }
-.tdc-condition[data-condition='STOPPED'] { background: var(--honey); }
+.tdc-condition[data-condition='PLANNED'], .tdc-condition[data-condition='PARTLY BUILT'] { background: var(--honey); }
 .tdc-condition-label { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.2em; }
 .tdc-condition-name { font-size: 2rem; font-weight: 700; letter-spacing: 0.22em; line-height: 1; }
 .tdc-condition-why { font-size: 0.75rem; letter-spacing: 0.06em; text-align: center; color: var(--honey); }
 .tdc-chips { display: flex; gap: 0.3rem; justify-content: center; flex-wrap: wrap; }
 .tdc-chip { display: inline-flex; align-items: center; gap: 0.25rem; background: color-mix(in srgb, var(--harvestgold) 22%, transparent); color: var(--honey); border-radius: 0.7rem; padding: 0.05rem 0.55rem; font-size: 0.65rem; letter-spacing: 0.04em; white-space: nowrap; }
 .tdc-chip-class { background: var(--october-sunset); color: var(--butter); }
+/* the door's answer (D14) as a second pill under CONDITION: READ holds every control that would act; MANAGE lets them run after their own questions */
+.tdc-mode { margin-top: 0.35rem; }
+.tdc-condition[data-condition='READ'] { background: var(--honey); }
+.tdc-condition[data-condition='MANAGE'] { background: var(--tdc-bill); }
 .tdc-lock-on { background: var(--butter); color: #000; }
 .tdc-lock-off { background: var(--tdc-destroy); color: #000; }
 .tdc-head-section { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
@@ -210,3 +214,5 @@ body[data-takeover='controller'] > *:not(#td-controller) { visibility: hidden; }
 .tdc-prompt-input { flex: 1 1 0; min-width: 0; background: transparent; border: none; color: var(--butter); font-family: var(--face-data); font-size: 0.85rem; }
 .tdc-prompt-input:focus { outline: none; }
 .tdc-prompt-input:disabled { opacity: 0.5; }
+/* A control that would act, in a READ session that can be raised: it asks the person's password first (D14). */
+.tdc-pill-asks { outline: 2px dashed var(--honey); outline-offset: 2px; }

@@ -309,7 +309,7 @@ describe('a stratus session', () => {
 
   it('starts stratus on the person\'s config, read-only unless asked, in a home and state of its own', async () => {
     const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn, alive: async (): Promise<boolean> => alive, bootTimeoutMs: 2_000, pollMs: 20 });
-    host.stratus_begin(STRATUS, '/creds/oci/config', false, false);
+    host.stratus_begin(STRATUS, '/creds/oci/config', false, false, { cubeUrl: 'https://cube.example.org/api/v1/', user: 'rudolph' });
     // The daemon names its berth by its cloud identity; the one in the session's directory is the session's.
     const runtime: string = host.dirs_build(STRATUS).runtime;
     mkdirSync(join(runtime, 'calypso'), { recursive: true });
@@ -319,6 +319,9 @@ describe('a stratus session', () => {
     expect(spawnCalls[0]?.args).toEqual(['/opt/stratus/dist/stratus.js', '--config', '/creds/oci/config']);
     expect(spawnCalls[0]?.env['XDG_STATE_HOME']).toMatch(/\/state$/);
     expect(spawnCalls[0]?.env['HOME']).toMatch(/\/home$/);
+    // The door, for a READ session to be raised at with the person's password (D14).
+    expect(spawnCalls[0]?.env['CALYPSO_ELEVATION_URL']).toBe('https://cube.example.org/api/v1/');
+    expect(spawnCalls[0]?.env['CALYPSO_ELEVATION_USER']).toBe('rudolph');
     expect(host.stratus_armed(STRATUS)).toBe(false);
     // A porter restarted adopts it under the session's identity, not the cloud's.
     const again: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (): Promise<boolean> => true });

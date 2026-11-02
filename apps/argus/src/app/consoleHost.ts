@@ -35,6 +35,10 @@ export interface ConsoleHostHooks {
   launcher_enter: () => void;
   /** Opens the trek bridge with a `trek` line; answers what happened. */
   trek_open: (line: string) => string;
+  /** The cloud door's answer for this session (D14): MANAGE, READ, or null with no door. */
+  manage_is: () => boolean | null;
+  /** Raises a READ session with the person's password, for a line that would act. */
+  elevate_ask: (line: string) => Promise<boolean>;
   /** The session's identity, as the prompt last named it. */
   identity_get: () => string | null;
   /** Zooms the console to the whole stage and back. */
@@ -260,6 +264,8 @@ export function argusHost_build(context: Pick<HostContext, 'layout' | 'panels' |
     consoleZoom_toggle: hooks.consoleZoom_toggle,
     launcher_enter: hooks.launcher_enter,
     trek_open: hooks.trek_open,
+    manage_is: hooks.manage_is,
+    elevate_ask: hooks.elevate_ask,
     // The door's, not the session's: the page asks the porter it came through.
     session_switch: session_switch,
     stage_keep: hooks.stage_keep,

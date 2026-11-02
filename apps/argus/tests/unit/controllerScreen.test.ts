@@ -34,7 +34,7 @@ const SIZE: ClusterSizeModel = {
 };
 
 /** A controller over hooks that record the lines sent. */
-function controller_make(size: ClusterSizeModel = SIZE): { controller: TdController; sent: string[]; cues: string[]; hooks: ControllerHooks } {
+function controller_make(size: ClusterSizeModel = SIZE, manage: boolean | null = true, elevate: ((line: string) => Promise<boolean>) | null = null): { controller: TdController; sent: string[]; cues: string[]; hooks: ControllerHooks } {
   const sent: string[] = [];
   const cues: string[] = [];
   const hooks: ControllerHooks = {
@@ -42,6 +42,8 @@ function controller_make(size: ClusterSizeModel = SIZE): { controller: TdControl
     size_read: async (): Promise<ClusterSizeModel> => size,
     stop: (): void => { sent.push('<stop>'); },
     leave: (): void => { sent.push('<leave>'); },
+    manage_is: (): boolean | null => manage,
+    elevate_ask: elevate,
     voice: { pill: (): void => undefined, cue: (name: string): void => { cues.push(name); } },
   };
   const controller: TdController = new TdController(hooks);
@@ -73,6 +75,49 @@ describe('the TD controller screen', () => {
     await flush();
     expect(sent.at(-1)).toBe('cluster quay');
     expect(controller.cluster_get()?.name).toBe('quay');
+    controller.dispose();
+    controller.root.remove();
+  });
+
+  it('entered as READ, the header says so and BUILD, ADOPT and TEAR DOWN are held with the door as their reason; PLAN and VERIFY stand', async () => {
+    const { controller } = controller_make(SIZE, false);
+    controller.clusters_take([cluster_make('quay', { protected: false, refused: {} })]);
+    controller.cluster_choose('quay');
+    expect(controller.root.querySelector('.tdc-mode .tdc-condition-name')?.textContent).toBe('READ');
+    const build: HTMLButtonElement | undefined = button_named(controller.root, 'BUILD · REFUSED');
+    expect(build?.disabled).toBe(true);
+    expect(build?.title).toContain('refused: entered as READ');
+    expect(button_named(controller.root, 'PLAN')?.disabled).toBe(false);
+    expect(button_named(controller.root, 'VERIFY')?.disabled).toBe(false);
+    controller.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
+    expect(button_named(controller.root, 'TEAR DOWN · REFUSED')?.title).toContain('MANAGE asks your password');
+    // A found cluster's ADOPT is held the same way, by the kernel's reason when it carries one.
+    controller.clusters_take([cluster_make('harbor', { origin: 'found', condition: 'UP', billing: true, protected: true, refused: { adopt: 'entered as READ; MANAGE asks your password once' } })]);
+    controller.cluster_choose('harbor');
+    controller.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="overview"]')?.click();
+    expect(button_named(controller.root, 'ADOPT · REFUSED')?.title).toBe('refused: entered as READ; MANAGE asks your password once');
+    // With MANAGE, the chip says so and nothing is held by the door.
+    const { controller: managed } = controller_make(SIZE, true);
+    managed.clusters_take([cluster_make('quay', { protected: false, refused: {} })]);
+    managed.cluster_choose('quay');
+    expect(managed.root.querySelector('.tdc-mode .tdc-condition-name')?.textContent).toBe('MANAGE');
+    expect([...managed.root.querySelectorAll<HTMLButtonElement>('.tdc-pill')].find((pill: HTMLButtonElement): boolean => pill.textContent === 'BUILD')?.disabled).toBe(false);
+    controller.dispose(); controller.root.remove(); managed.dispose(); managed.root.remove();
+  });
+
+  it('entered as READ with a door, BUILD asks the password first and sends only once MANAGE', async () => {
+    const raised: string[] = [];
+    const { controller, sent } = controller_make(SIZE, false, async (line: string): Promise<boolean> => { raised.push(line); return true; });
+    controller.clusters_take([cluster_make('quay', { protected: false, refused: {} })]);
+    controller.cluster_choose('quay');
+    // The pill, not the gutter's BUILD seat.
+    const build: HTMLButtonElement | undefined = [...controller.root.querySelectorAll<HTMLButtonElement>('.tdc-pill')].find((pill: HTMLButtonElement): boolean => pill.textContent === 'BUILD');
+    expect(build?.disabled).toBe(false);
+    expect(build?.classList.contains('tdc-pill-asks')).toBe(true);
+    build?.click();
+    await flush();
+    expect(raised).toEqual(['cluster build quay']);
+    expect(sent).toEqual(['cluster build quay']);
     controller.dispose();
     controller.root.remove();
   });

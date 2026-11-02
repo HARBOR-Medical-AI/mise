@@ -102,6 +102,17 @@ export const stopMessageSchema = z.object({
   type: z.literal('stop'),
 });
 
+/**
+ * A surface asks to raise its session from READ to MANAGE with the person's
+ * password: the daemon checks it at the door it was given and grants the
+ * `tasks` tier to that surface alone, for as long as it is attached
+ * (docs/stratus.adoc, D14).
+ */
+export const elevateMessageSchema = z.object({
+  type: z.literal('elevate'),
+  password: z.string(),
+});
+
 /** Request completion candidates for a partial line, correlated by `id`. */
 export const completeRequestSchema = z.object({
   type: z.literal('complete'),
@@ -324,6 +335,13 @@ export const staleMessageSchema = z.object({
   stale: z.boolean(),
 });
 
+/** The daemon's answer to `elevate`: granted, or why not (a wrong password; a session with no door to ask). */
+export const elevatedMessageSchema = z.object({
+  type: z.literal('elevated'),
+  granted: z.boolean(),
+  reason: z.string().optional(),
+});
+
 /** Why a daemon is going away, as it tells its surfaces before it does. */
 export const CLOSING_CAUSES = ['restart', 'end', 'stop'] as const;
 
@@ -409,6 +427,7 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
   executeMessageSchema,
   cancelMessageSchema,
   stopMessageSchema,
+  elevateMessageSchema,
   completeRequestSchema,
   promptAnswerMessageSchema,
   promptErrorMessageSchema,
@@ -472,6 +491,8 @@ export const attachedMessageSchema = z.object({
   hostControl: z.array(z.string()).optional(),
   /** Whether the daemon's own code on disk has moved on since it started; absent from older daemons. */
   stale: z.boolean().optional(),
+  /** Whether this session can be raised to MANAGE with the person's password (`elevate`); absent from daemons without a door. */
+  elevation: z.boolean().optional(),
   /** Whether the daemon offers terminals (`terminalOpen`); absent from older daemons, which do not. */
   terminals: z.boolean().optional(),
 });
@@ -959,6 +980,7 @@ export const consoleNoteMessageSchema = z.object({
 /** Any message the daemon may send to a surface. */
 export const serverMessageSchema = z.discriminatedUnion('type', [
   attachedMessageSchema,
+  elevatedMessageSchema,
   resultMessageSchema,
   completeReplySchema,
   outputMessageSchema,

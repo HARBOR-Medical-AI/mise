@@ -75,8 +75,8 @@ export interface HarborCluster {
     readonly spec: ClusterSpec | null;
     readonly resources: Readonly<Record<string, number>> | null;
     readonly stackResources: number | null;
-    /** Machines live (UP), something of its stack stands (STOPPED), or nothing is left but its tag (GONE). */
-    readonly condition: 'UP' | 'STOPPED' | 'GONE';
+    /** Machines live (UP), something of its stack stands (PARTLY BUILT), or nothing is left but its tag (GONE). */
+    readonly condition: 'UP' | 'PARTLY BUILT' | 'GONE';
   };
 }
 

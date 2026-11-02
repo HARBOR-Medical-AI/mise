@@ -18,7 +18,7 @@
  */
 import * as path from 'path';
 import chalk from 'chalk';
-import { envelope_error, envelope_ok, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, type CommandEnvelope, type VmCostRow } from '@fnndsc/menu';
+import { envelope_error, envelope_ok, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow } from '@fnndsc/menu';
 import { repl_confirm, repl_question, surface_get, type CommandHelp } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_alter, planCounts_words, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import type { CloudDriver } from '../cloud/driver.js';
@@ -29,6 +29,7 @@ import { VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
 import { cost_words, planFile_derive, VM_JOBS, vmApplyRun_make, vmCost_estimate, vmNet_read, vmPlanRun_make, vmTeardownRun_make, type VmCost, type VmDeps, type VmPart } from '../vm/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 import { HOURS_PER_MONTH } from '../cluster/spend.js';
+import { TIER_REFUSAL } from '../tier.js';
 
 /** What `vm` reads from the session. */
 export interface VmCommandContext {
@@ -61,7 +62,7 @@ function deps_make(context: VmCommandContext): VmDeps | { error: string } {
  * @param record - Its state.
  * @returns `declared`, `data only`, `built` or `gone`.
  */
-function vmState_word(record: VmRecord): string {
+function vmState_word(record: VmRecord): VmState {
   if (record.built !== undefined) return 'built';
   if (record.gone !== undefined) return 'gone';
   if (record.dataOutputs !== undefined) return record.machineGone !== undefined ? 'data kept' : 'data only';
@@ -135,11 +136,28 @@ function vmStatus_run(context: VmCommandContext, names: ReadonlyArray<string>): 
   if (kept.length === 0) return envelope_ok('no VMs: vm new <name> --net <network> --vcpu … declares one\n');
   const missing: string[] = names.filter((name: string): boolean => !kept.includes(name));
   if (missing.length > 0) return envelope_error('', undefined, `vm: ${missing.join(', ')}: no such VM (${kept.join(', ')})\n`);
-  const blocks: string[] = (names.length === 0 ? kept : [...names]).map((name: string): string => {
+  const shown: string[] = names.length === 0 ? kept : [...names];
+  const blocks: string[] = shown.map((name: string): string => {
     const read = context.store.spec_read(name);
     return vmStatus_lines(context.store.record_read(name) as VmRecord, read !== null && 'spec' in read ? read.spec : null).join('\n');
   });
-  return envelope_ok(`${blocks.join('\n\n')}\n`);
+  // The same rows as a model, for a surface's tile (docs/stratus.adoc, D17): from the records alone.
+  const rows: VmStatusRow[] = shown.map((name: string): VmStatusRow => {
+    const record: VmRecord = context.store.record_read(name) as VmRecord;
+    const read = context.store.spec_read(name);
+    return {
+      name,
+      state: vmState_word(record),
+      region: record.region,
+      spec: read !== null && 'spec' in read ? read.spec : null,
+      address: record.dataOutputs?.['public_ip'] ?? null,
+      inside: record.machineOutputs?.['private_ip'] ?? null,
+      protected: record.protected === true,
+      built: record.built ?? null,
+      chris: record.chris === undefined ? null : { profile: record.chris.profile, compute: record.chris.compute, host: record.chris.host, url: record.chris.url, porter: record.chris.porter ?? null },
+    };
+  });
+  return envelope_ok(`${blocks.join('\n\n')}\n`, { kind: STRATUS_VM_STATUS_MODEL_KIND, data: { vms: rows } });
 }
 
 /** `vm cost`'s usage. */
@@ -381,7 +399,7 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   if (words.length > 1) return envelope_error('', undefined, 'vm build: usage: vm build [<name>] [--allow-alter]\n');
   const need = vm_need(context, words[0], 'build');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
-  if (!tasks_granted()) return envelope_error('', undefined, 'vm build: needs the tasks tier (stratus --host-control tasks): without it, nothing outside this host changes\n');
+  if (!tasks_granted()) return envelope_error('', undefined, `vm build: ${TIER_REFUSAL}\n`);
   const deps = deps_make(context);
   if ('error' in deps) return envelope_error('', undefined, `vm build: ${deps.error}\n`);
   const { name, spec } = need;
@@ -509,7 +527,7 @@ async function vmTeardown_run(context: VmCommandContext, args: ReadonlyArray<str
   const { name, record, spec } = need;
   if (record.machineStackRef === undefined && (!all || record.dataStackRef === undefined)) return envelope_ok(`${name}: nothing of it ${all ? 'is built' : 'but its kept data is built (vm teardown --all takes that)'}\n`);
   if (record.protected === true) return envelope_error('', undefined, `vm teardown: ${name}: protected (vm protect ${name} off)\n`);
-  if (!tasks_granted()) return envelope_error('', undefined, 'vm teardown: needs the tasks tier (stratus --host-control tasks)\n');
+  if (!tasks_granted()) return envelope_error('', undefined, `vm teardown: ${TIER_REFUSAL}\n`);
   const deps = deps_make(context);
   if ('error' in deps) return envelope_error('', undefined, `vm teardown: ${deps.error}\n`);
   const cost: VmCost | null = await cost_read(context, spec);

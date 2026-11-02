@@ -370,7 +370,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
 
   it('needs the tasks tier', async () => {
     surface_set(new HeadlessSurface());
-    expect((await chris_run(context, ['deploy', 'store', '--profile', 'minimal'])).renderedErr).toContain('needs the tasks tier');
+    expect((await chris_run(context, ['deploy', 'store', '--profile', 'minimal'])).renderedErr).toContain('entered as READ, so nothing outside this host changes');
   });
 });
 

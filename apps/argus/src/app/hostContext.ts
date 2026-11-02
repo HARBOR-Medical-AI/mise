@@ -33,4 +33,10 @@ export interface HostContext {
   readonly terminal: ArgusTerminal;
   /** The session's wire; made last, so read when needed. */
   readonly client: ArgusClient;
+  /** The answer at the cloud door: true for MANAGE, false for READ, null when the session has no such door (docs/stratus.adoc, D14). */
+  manage_is: () => boolean | null;
+  /** Whether a READ session can be raised to MANAGE with the person's password (the daemon was given a door). */
+  elevation_is: () => boolean;
+  /** Asks the person's password for a line that would act and raises the session; true once MANAGE. */
+  elevate_ask: (line: string) => Promise<boolean>;
 }

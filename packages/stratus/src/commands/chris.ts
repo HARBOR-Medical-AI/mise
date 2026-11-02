@@ -34,6 +34,7 @@ import { CHRIS_JOBS, chrisDeployRun_make, type DeployDeps } from '../chris/deplo
 import { host_split, point_plan, pointPlan_words, POINT_TTL, type Registrar } from '../chris/registrar.js';
 import { chrisUserAddRun_make, EMAIL, USER_JOBS, USER_NAME, type UserAddResult, type UserAnswer } from '../chris/users.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
+import { TIER_REFUSAL } from '../tier.js';
 
 /** What `chris` reads from the session. */
 export interface ChrisCommandContext {
@@ -168,7 +169,7 @@ async function chrisUser_run(context: ChrisCommandContext, args: ReadonlyArray<s
   if (!EMAIL.test(email)) return envelope_error('', undefined, `chris user add: --email ${email}: not an email address\n`);
   const target = chrisTarget_pick(context, read.options.get('--on'));
   if ('error' in target) return envelope_error('', undefined, `chris user add: ${target.error}\n`);
-  if (!tasks_granted()) return envelope_error('', undefined, 'chris user add: needs the tasks tier (stratus --host-control tasks)\n');
+  if (!tasks_granted()) return envelope_error('', undefined, `chris user add: ${TIER_REFUSAL}\n`);
   if (context.builder === null) return envelope_error('', undefined, 'chris user add: this cloud builds nothing yet\n');
   const password = await userPassword_get(username, read.options.get('--password-file'));
   if ('error' in password) return envelope_error('', undefined, `chris user add: ${password.error}\n`);
@@ -247,7 +248,7 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   const short: string[] = floor_short(profile, vmSpec);
   if (short.length > 0) return envelope_error('', undefined, `chris deploy: ${name} is below the ${profile.name} profile's floor: ${short.join('; ')}\n`);
   if (!vmSpec.open.includes(80) || (host !== null && !vmSpec.open.includes(443))) return envelope_error('', undefined, `chris deploy: ${name} does not open ${host !== null ? '80 and 443' : '80'} (vm new ${name} --open 80,443, then vm build ${name})\n`);
-  if (!tasks_granted()) return envelope_error('', undefined, 'chris deploy: needs the tasks tier (stratus --host-control tasks)\n');
+  if (!tasks_granted()) return envelope_error('', undefined, `chris deploy: ${TIER_REFUSAL}\n`);
   if (context.builder === null) return envelope_error('', undefined, 'chris deploy: this cloud builds nothing yet\n');
   let generated: string | null = null;
   if (secrets_read(context.vms, name) === null) {

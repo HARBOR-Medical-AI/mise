@@ -329,7 +329,7 @@ describe('building a cluster over the fakes', () => {
     expect(plan).toContain('fit, E5 per availability domain (us-ashburn-1):');
     expect(plan).toContain('$0.50 an hour');
     expect(plan).toContain('steps next: compartment');
-    expect(plan).toContain('the infrastructure plan needs the tasks tier');
+    expect(plan).toContain('the infrastructure plan: entered as READ, so nothing outside this host changes');
     surface_set(surface);
     expect(plain((await cluster_run(context, ['plan'])).rendered)).toContain('cluster build trial --through infra-plan makes it');
     store.file_write('trial', 'plan.json', JSON.stringify({ ref: 'p', rows: [{ action: 'create', kind: 'i', name: 'a' }, { action: 'change', kind: 'i', name: 'b', drift: true }] }));
@@ -368,7 +368,7 @@ describe('building a cluster over the fakes', () => {
     expect(asking?.data.asking).toContain('infra-apply creates 17 resources');
     expect(asking?.data.path).toBe('/net/oci/fnndsc/clusters/trial');
     const last: ClusterSummary = (shown.at(-1) as { data: ClusterSummary }).data;
-    expect(last.condition).toBe('STOPPED');
+    expect(last.condition).toBe('PLANNED');
     expect(last.asking).toBeNull();
     expect(last.next).toBe('infra-apply');
     expect(last.steps.find((step) => step.name === 'infra-plan')).toMatchObject({ state: 'done', started: expect.any(String), ended: expect.any(String) });
@@ -456,7 +456,7 @@ describe('the controller readout', () => {
   it('says where a cluster stands in one word', () => {
     expect(condition_derive(cluster_with({ run: 'not done' }), record_of(), false, false)).toBe('SIZING');
     expect(condition_derive(cluster_with({ run: 'done' }), record_of(), false, false)).toBe('UP');
-    expect(condition_derive(cluster_with({ 'infra-plan': 'done', run: 'not done' }), record_of(), false, false)).toBe('STOPPED');
+    expect(condition_derive(cluster_with({ 'infra-plan': 'done', run: 'not done' }), record_of(), false, false)).toBe('PLANNED');
     expect(condition_derive(cluster_with({ run: 'done', smoke: 'done' }), record_of(), false, false)).toBe('SERVING');
     expect(condition_derive(cluster_with({ run: 'failed' }), record_of(), false, false)).toBe('FAILED');
     expect(condition_derive(cluster_with({ run: 'running' }), record_of(), false, false)).toBe('BUILDING');

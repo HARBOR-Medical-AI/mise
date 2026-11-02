@@ -12,13 +12,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { taskState_isOver, type ClusterCondition, type ClusterSummary, type PlanSummary, type VerifyCheckModel } from '@fnndsc/menu';
-import { runner_get, type JobRecord } from '@fnndsc/brasa/core';
+import { runner_get, surface_get, type JobRecord } from '@fnndsc/brasa/core';
 import { plan_count, type InfraPlan, type PlanRow } from '../cloud/builder.js';
 import { lastDone_find, type HarborCluster, type StepState } from '../checkout/harborOci.js';
 import type { ClusterRecord, ClusterStore } from './state.js';
-import { buildJob_id, FIRST_BILLING_STEP, stepNext_find, STEPS_SOURCE } from './steps.js';
+import { BUILD_STEPS, buildJob_id, FIRST_BILLING_STEP, stepNext_find, STEPS_SOURCE } from './steps.js';
 
 import { VERIFY_FILE, type VerifyKept } from './verify.js';
+import { TIER_HELD } from '../tier.js';
 
 export { VERIFY_FILE, type VerifyKept };
 
@@ -48,13 +49,14 @@ function stepState_read(cluster: HarborCluster, name: string): string {
 export function condition_derive(cluster: HarborCluster, record: ClusterRecord | null, running: boolean, asking: boolean): ClusterCondition {
   if (record?.gone !== undefined) return 'GONE';
   // A found cluster keeps no steps here: the cloud said whether its machines live, its stack stands, or nothing is left.
-  if (cluster.origin === 'found') return cluster.found?.condition ?? 'STOPPED';
+  if (cluster.origin === 'found') return cluster.found?.condition ?? 'PARTLY BUILT';
   if (asking) return 'ASKING';
   if (running || cluster.steps.some((step: StepState): boolean => step.state === 'running')) return 'BUILDING';
   if (cluster.steps.some((step: StepState): boolean => step.state === 'failed')) return 'FAILED';
   if (stepState_read(cluster, 'smoke') === 'done') return 'SERVING';
   if (stepState_read(cluster, 'run') === 'done') return 'UP';
-  if (cluster.steps.some((step: StepState): boolean => step.state === 'done')) return 'STOPPED';
+  // The build halted between steps: before anything bills (PLANNED) or after (PARTLY BUILT); the word is the build's, never the machines'.
+  if (cluster.steps.some((step: StepState): boolean => step.state === 'done')) return record !== null && stepNext_find(record) !== null && BUILD_STEPS.indexOf(stepNext_find(record) as string) <= BUILD_STEPS.indexOf(FIRST_BILLING_STEP) ? 'PLANNED' : 'PARTLY BUILT';
   return 'SIZING';
 }
 
@@ -65,7 +67,20 @@ export function condition_derive(cluster: HarborCluster, record: ClusterRecord |
  * @param record - Its state on the host, or null.
  * @returns By verb.
  */
-export function refusals_derive(cluster: HarborCluster, record: ClusterRecord | null): Record<string, string> {
+export function refusals_derive(cluster: HarborCluster, record: ClusterRecord | null, manage: boolean = true): Record<string, string> {
+  // In a READ session the verbs that act are held by the door's answer; a more particular reason, when one stands, says that instead.
+  const read: Record<string, string> = manage ? {} : { build: TIER_HELD, teardown: TIER_HELD, adopt: TIER_HELD };
+  return { ...read, ...refusals_particular(cluster, record) };
+}
+
+/**
+ * Why each of a cluster's verbs is refused for what the cluster is, apart from the session's tier.
+ *
+ * @param cluster - The cluster.
+ * @param record - Its record, or null.
+ * @returns The verbs refused, each with its reason.
+ */
+function refusals_particular(cluster: HarborCluster, record: ClusterRecord | null): Record<string, string> {
   if (cluster.origin === 'found') {
     // Nothing left but its tag: there is nothing to plan, verify or build on, and teardown removes the tag's carriers.
     if (cluster.found?.condition === 'GONE') {
@@ -146,7 +161,7 @@ export function clusterReadout_build(cluster: HarborCluster, store: ClusterStore
     billing: cluster.origin === 'found' ? cluster.found?.condition === 'UP' : record?.gone === undefined && applied,
     origin: cluster.origin === 'found' ? 'found' : cluster.origin !== 'built' || record === null ? 'checkout' : record.adopted !== undefined ? 'adopted' : 'built',
     protected: record?.protected !== false,
-    refused: refusals_derive(cluster, record),
+    refused: refusals_derive(cluster, record, surface_get().capabilities.tasks === true),
     region: record?.region ?? cluster.settings['OCI_REGION'] ?? null,
     compartment: record?.compartmentId ?? cluster.settings['OCI_COMPARTMENT_OCID'] ?? null,
     gone: record?.gone ?? null,

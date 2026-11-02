@@ -28,7 +28,7 @@ describe('the ChRIS tiles', () => {
     const cloud: LauncherTile = withDoor.afterPanes[1] as LauncherTile;
     expect(cloud.name).toBe('CLOUD');
     expect(cloud.verb).toBe('ENTER CLOUD MANAGEMENT');
-    expect(cloud.rows.map((row): string => row.text)).toEqual(['READ · look only', 'MANAGE · build, tear down, spend']);
+    expect(cloud.rows.map((row): string => row.text)).toEqual(['entered as READ · look only', 'MANAGE · asks your password when a line would act']);
     cloud.enter();
     cloud.rows[1]?.open?.();
     expect(entered).toEqual(['cloud', 'cloud']);

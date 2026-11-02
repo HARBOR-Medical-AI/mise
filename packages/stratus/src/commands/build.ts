@@ -32,6 +32,7 @@ import { clusterSpec_diff, SPEC_DEFAULT, specOptions_apply, specYaml_render, typ
 import { cost_words, familyShape_find, specCost_compute, specFit_read, type SpecCost, type ZoneFit } from '../cluster/sizing.js';
 import { clusterSummary_read } from '../cluster/readout.js';
 import { BUILD_STEPS, buildJob_id, buildRun_make, FIRST_BILLING_STEP, planRun_make, stepNext_find, STEPS_SOURCE, STEPS_WRITTEN, type BuildDeps } from '../cluster/steps.js';
+import { TIER_REFUSAL } from '../tier.js';
 
 /** What the build verbs read from the session. */
 export interface BuildCommandContext {
@@ -296,7 +297,7 @@ export async function clusterPlan_run(context: BuildCommandContext, args: Readon
     lines.push(`plan  ${planCounts_words(counts)}${planCounts_alter(counts) ? chalk.red(' · an apply would touch what exists: refused unless allowed by name') : ''}`);
     if (record.adopted !== undefined) lines.push(chalk.gray(`      adopted from ${record.adopted.from}: planned against, never built on`));
   } else if (!tasks_granted() && record.adopted === undefined) {
-    lines.push(chalk.gray('plan  the infrastructure plan needs the tasks tier (stratus --host-control tasks): without it, nothing outside this host changes'));
+    lines.push(chalk.gray(`plan  the infrastructure plan: ${TIER_REFUSAL}`));
   } else {
     lines.push(chalk.gray(`plan  not made yet: cluster build ${cluster.name} --through infra-plan makes it, and nothing it makes bills`));
   }

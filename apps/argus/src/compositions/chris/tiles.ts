@@ -94,14 +94,14 @@ export function chrisTiles_make(hooks: ChrisTileHooks): () => Promise<TileContri
       enter: (): void => hooks.pacs_open(),
     };
     // The door into the person's cloud session, where there is a porter to
-    // ask: the tile runs the console's own line, so the question it asks
-    // (READ or MANAGE) is the same one, pressed or typed.
+    // ask: the tile runs the console's own line, which enters as READ; the
+    // first line that would act asks the password (D14).
     const cloud: LauncherTile | null = hooks.cloud_enter === null ? null : {
       key: 'cloud', name: 'CLOUD', hue: '--daybreak', numeral: '',
       figures: [{ text: 'OCI' }],
       rows: [
-        { text: 'READ · look only', open: hooks.cloud_enter },
-        { text: 'MANAGE · build, tear down, spend', open: hooks.cloud_enter },
+        { text: 'entered as READ · look only', open: hooks.cloud_enter },
+        { text: 'MANAGE · asks your password when a line would act', open: hooks.cloud_enter },
       ],
       verb: 'ENTER CLOUD MANAGEMENT',
       about: TILE_ABOUT['cloud'],

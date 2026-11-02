@@ -24,6 +24,7 @@ import {
 } from '@fnndsc/menu';
 import { HOURS_PER_MONTH } from '../controller/model.js';
 import { saveLine_compose } from '../edit/line.js';
+import { modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } from '../takeover/tier.js';
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
   askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
@@ -46,6 +47,10 @@ export interface ScriptHooks {
   stop: () => void;
   /** Gives the screen back. */
   leave: () => void;
+  /** The answer at the cloud door: MANAGE (true), READ (false), or null when there is no door. */
+  manage_is: () => boolean | null;
+  /** Asks the person's password and raises a READ session for a line that would act; null when the session cannot be raised. */
+  elevate_ask: ((line: string) => Promise<boolean>) | null;
   /** How the screen is heard. */
   voice: { pill: (label: string) => void; cue: (name: string) => void };
 }
@@ -292,6 +297,11 @@ export class ScriptScreen {
     void this.standing_read();
     if (this.steps.some((step: ScriptStep): boolean => step.kind === 'vm new')) void this.limits_need();
     this.running_follow();
+  }
+
+  /** The door's answer changed (the session was raised): drawn again with it. */
+  public mode_refresh(): void {
+    this.draw();
   }
 
   /** A task of the session ended (heard on the ambient channel): the standing is read again, so a seat that ran reads what it is now. */
@@ -625,7 +635,8 @@ export class ScriptScreen {
     const pill: HTMLElement = el('div', 'tdc-condition');
     pill.dataset['condition'] = standingWord;
     pill.append(el('span', 'tdc-condition-label', 'THE SCRIPT'), el('span', 'tdc-condition-name', standingWord));
-    condition.append(pill, el('div', 'tdc-condition-why', this.path === '' ? `${this.scripts.length} SCRIPT${this.scripts.length === 1 ? '' : 'S'} · ${this.sources.length} SOURCE${this.sources.length === 1 ? '' : 'S'}` : counts_words(counts)));
+    const mode: HTMLElement | null = modePill_make(this.hooks.manage_is());
+    condition.append(pill, ...(mode === null ? [] : [mode]), el('div', 'tdc-condition-why', this.path === '' ? `${this.scripts.length} SCRIPT${this.scripts.length === 1 ? '' : 'S'} · ${this.sources.length} SOURCE${this.sources.length === 1 ? '' : 'S'}` : counts_words(counts)));
     const chips: HTMLElement = el('div', 'tdc-chips');
     if (this.path !== '') chips.append(el('span', 'tdc-chip', this.edited ? 'EDITED · NOT SAVED' : scriptSource_derive(this.path) === 'mine' ? 'WORKING COPY' : 'FROM GIT · READ-ONLY'));
     condition.append(chips);
@@ -780,12 +791,34 @@ export class ScriptScreen {
    * @returns The pill.
    */
   private linePill_make(label: string, line: string, step: string | null, tone: 'plain' | 'bill' | 'destroy' | 'quiet' = 'plain'): HTMLButtonElement {
-    const pill: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone}`, label);
+    // A line that would act, in a READ session: asked for the password first when the session can be raised, held when it cannot.
+    const hold: ReadHold = this.hold_derive(line);
+    const pill: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone}${hold === 'asks' ? ' tdc-pill-asks' : ''}`, hold === 'held' ? `${label} · REFUSED` : label);
     pill.type = 'button';
-    pill.title = `sends: ${line}`;
-    pill.disabled = this.busy !== null || this.ask !== null;
-    pill.addEventListener('click', (): void => { this.hooks.voice.pill(label); void this.line_send(line, step); });
+    pill.title = hold === 'held' ? `refused: ${READ_HELD}` : hold === 'asks' ? `${READ_ASKS}: ${line}` : `sends: ${line}`;
+    pill.disabled = hold === 'held' || this.busy !== null || this.ask !== null;
+    pill.addEventListener('click', (): void => { this.hooks.voice.pill(label); void this.line_sendRaised(line, step); });
     return pill;
+  }
+
+  /** How a line that would act is drawn in this session: asked, held, or standing. */
+  private hold_derive(line: string): ReadHold {
+    return readHold_derive(line, this.hooks.manage_is(), this.hooks.elevate_ask !== null);
+  }
+
+  /**
+   * Sends a line, raising a READ session first when the line would act: the
+   * password asked once, and the line sent only once the session is MANAGE.
+   *
+   * @param line - The line.
+   * @param step - The step whose body shows the output.
+   */
+  private async line_sendRaised(line: string, step: string | null): Promise<void> {
+    if (this.hold_derive(line) === 'asks' && this.hooks.elevate_ask !== null) {
+      const raised: boolean = await this.hooks.elevate_ask(line);
+      if (!raised) return;
+    }
+    await this.line_send(line, step);
   }
 
   // ---------------------------------------------------------------- library
@@ -937,12 +970,13 @@ export class ScriptScreen {
   private runRow_make(step: ScriptStep, line: ScriptLine, tone: 'plain' | 'bill' = 'plain', extra: HTMLElement[] = []): HTMLElement {
     const commands: HTMLElement = el('div', 'tdc-commands');
     // The line is read when pressed, so an edit after the pill was drawn is what runs.
-    const run: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone} ss-run`, 'RUN');
+    const hold: ReadHold = this.hold_derive(line.text);
+    const run: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone} ss-run${hold === 'asks' ? ' tdc-pill-asks' : ''}`, hold === 'held' ? 'RUN · REFUSED' : 'RUN');
     run.type = 'button';
     run.dataset['line'] = String(line.number);
-    run.title = `sends: ${line.text}`;
-    run.disabled = this.busy !== null || this.ask !== null;
-    run.addEventListener('click', (): void => { this.hooks.voice.pill('RUN'); void this.line_send(line.text, step.key); });
+    run.title = hold === 'held' ? `refused: ${READ_HELD}` : hold === 'asks' ? `${READ_ASKS}: ${line.text}` : `sends: ${line.text}`;
+    run.disabled = hold === 'held' || this.busy !== null || this.ask !== null;
+    run.addEventListener('click', (): void => { this.hooks.voice.pill('RUN'); void this.line_sendRaised(line.text, step.key); });
     commands.append(run, ...extra);
     return commands;
   }
@@ -1185,19 +1219,28 @@ export class ScriptScreen {
     const { name, email, passwordFile } = this.userForm;
     const refusal: string | null = name === '' ? 'NAME' : !/^[a-z][a-z0-9_-]{1,31}$/.test(name) ? 'NAME IS A LOGIN' : email === '' ? 'EMAIL' : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? 'EMAIL IS AN ADDRESS' : step.lines.some((line: ScriptLine): boolean => line_parse(line.text).subject === name) ? 'ALREADY A LINE' : null;
     const line: string = userLine_build(name || '<name>', email || '<email>', passwordFile, on);
-    const add: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain', refusal === null ? 'ADD' : `ADD · ${refusal}`);
+    // The door's hold comes before the form's: in a READ session that cannot be raised ADD is refused whatever the form holds; one that can asks first.
+    const doorHold: ReadHold = this.hold_derive('chris user add');
+    const heldByDoor: boolean = doorHold === 'held';
+    const add: HTMLButtonElement = el('button', `tdc-pill tdc-pill-plain${doorHold === 'asks' && refusal === null ? ' tdc-pill-asks' : ''}`, heldByDoor ? 'ADD · REFUSED' : refusal === null ? 'ADD' : `ADD · ${refusal}`);
+    if (heldByDoor) add.title = `refused: ${READ_HELD}`;
+    else if (doorHold === 'asks' && refusal === null) add.title = `${READ_ASKS}: the user line`;
     add.type = 'button';
     add.title = `appends and sends: ${line}`;
-    add.disabled = refusal !== null || this.busy !== null;
+    add.disabled = heldByDoor || refusal !== null || this.busy !== null;
     add.addEventListener('click', (): void => {
       this.hooks.voice.pill('ADD');
-      const number: number = (this.lines.at(-1)?.number ?? 0) + 1;
-      const added: ScriptLine = { number, text: line, state: 'ready', detail: '', running: null };
-      this.lines.push(added);
-      this.steps = steps_build(this.lines);
-      this.edited = true;
-      this.userForm = { name: '', email: '', passwordFile: '' };
-      void this.line_send(line, 'users');
+      void (async (): Promise<void> => {
+        // A READ session that can be raised asks the password first; the line is appended only once it may run.
+        if (this.hold_derive(line) === 'asks' && this.hooks.elevate_ask !== null && !(await this.hooks.elevate_ask(line))) return;
+        const number: number = (this.lines.at(-1)?.number ?? 0) + 1;
+        const added: ScriptLine = { number, text: line, state: 'ready', detail: '', running: null };
+        this.lines.push(added);
+        this.steps = steps_build(this.lines);
+        this.edited = true;
+        this.userForm = { name: '', email: '', passwordFile: '' };
+        await this.line_send(line, 'users');
+      })();
     });
     commands.append(add, el('span', 'tdc-mono ss-user-line', line));
   }

@@ -15,6 +15,7 @@ import type { ClusterRecord } from '../cluster/state.js';
 import { clusterVolumes_read, teardownRun_make } from '../cluster/teardown.js';
 import { job_runFollowed, type BuildCommandContext } from './build.js';
 import { verifyReach_default } from './verify.js';
+import { TIER_REFUSAL } from '../tier.js';
 
 /**
  * `cluster teardown <name>`.
@@ -44,7 +45,7 @@ export async function clusterTeardown_run(context: BuildCommandContext, args: Re
     }
     if (found === undefined) return envelope_error('', undefined, `cluster teardown: ${name}: no such cluster\n`);
     if (found.found?.condition !== 'GONE') return envelope_error('', undefined, `cluster teardown: ${name}: found in the tenancy, not adopted: cluster adopt ${name} first\n`);
-    if (surface_get().capabilities.tasks !== true) return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: tearing down needs the tasks tier\n`);
+    if (surface_get().capabilities.tasks !== true) return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: ${TIER_REFUSAL}\n`);
     context.store.create(foundRecord_make(found, new Date().toISOString(), false), found.found.spec ?? SPEC_DEFAULT);
     cluster = context.clusters.cluster_read(name);
     record = context.store.record_read(name);
@@ -53,7 +54,7 @@ export async function clusterTeardown_run(context: BuildCommandContext, args: Re
   if (cluster.origin !== 'built') return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: read from a harbor-oci checkout, not built here\n`);
   if (record.gone !== undefined) return envelope_ok(`${name}: already torn down (${record.gone.slice(0, 16)})\n`);
   if (record.protected !== false) return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: protected (cluster protect ${name} off lifts it, as its own line)\n`);
-  if (surface_get().capabilities.tasks !== true) return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: tearing down needs the tasks tier\n`);
+  if (surface_get().capabilities.tasks !== true) return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: ${TIER_REFUSAL}\n`);
   const stackRef: string | undefined = record.ids['stackRef'];
   const inStack: number | null = stackRef !== undefined && builder.stackResources_count !== undefined ? await builder.stackResources_count({ region: record.region, stackRef }) : null;
   // A teardown that stopped part way runs again: an empty stack means an

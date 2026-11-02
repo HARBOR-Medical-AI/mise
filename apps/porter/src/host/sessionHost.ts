@@ -165,7 +165,7 @@ export interface SessionHost {
    * @param spend - Whether it may change the cloud and bill (the tasks tier).
    * @param replace - Whether a daemon up for it is ended first (to change its tier).
    */
-  stratus_begin(identity: string, configPath: string, spend: boolean, replace: boolean): void;
+  stratus_begin(identity: string, configPath: string, spend: boolean, replace: boolean, door?: { cubeUrl: string; user: string }): void;
   /**
    * Whether a stratus session this porter started has the tasks tier.
    *
