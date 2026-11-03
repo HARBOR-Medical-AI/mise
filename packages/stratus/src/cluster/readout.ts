@@ -16,7 +16,7 @@ import { runner_get, type JobRecord } from '@fnndsc/brasa/core';
 import { plan_count, type InfraPlan, type PlanRow } from '../cloud/builder.js';
 import { lastDone_find, type HarborCluster, type StepState } from '../checkout/harborOci.js';
 import type { ClusterRecord, ClusterStore } from './state.js';
-import { BUILD_STEPS, buildJob_id, FIRST_BILLING_STEP, stepNext_find, STEPS_SOURCE } from './steps.js';
+import { BUILD_STEPS, buildJob_id, FIRST_BILLING_STEP, stepNext_find, STEPS_SOURCE, teardownJob_id } from './steps.js';
 
 import { VERIFY_FILE, type VerifyKept } from './verify.js';
 
@@ -36,21 +36,37 @@ function stepState_read(cluster: HarborCluster, name: string): string {
   return cluster.steps.find((step: StepState): boolean => step.name === name)?.state ?? 'not done';
 }
 
+/** The task running on a cluster: its build, or its teardown. */
+export type ClusterRun = 'build' | 'teardown';
+
+/**
+ * Which task a job is, when it still runs.
+ *
+ * @param job - The cluster's build or teardown job, when one was ever started.
+ * @returns The task, or null when none runs.
+ */
+export function clusterRun_derive(job: JobRecord | undefined): ClusterRun | null {
+  if (job === undefined || taskState_isOver(job.state)) return null;
+  return job.id.endsWith('-teardown') ? 'teardown' : 'build';
+}
+
 /**
  * Where a cluster stands in one word.
  *
  * @param cluster - The cluster.
  * @param record - Its state on the host, or null for one read from a checkout.
- * @param running - Whether its build is running.
+ * @param running - The task running on it (its build, or its teardown), or null.
  * @param asking - Whether the engine waits on a question about it.
  * @returns The condition.
  */
-export function condition_derive(cluster: HarborCluster, record: ClusterRecord | null, running: boolean, asking: boolean): ClusterCondition {
+export function condition_derive(cluster: HarborCluster, record: ClusterRecord | null, running: ClusterRun | null, asking: boolean): ClusterCondition {
+  // A teardown under way is said before anything else: the record says gone only once it ends.
+  if (running === 'teardown') return 'TEARING DOWN';
   if (record?.gone !== undefined) return 'GONE';
   // A found cluster keeps no steps here: the cloud said whether its machines live, its stack stands, or nothing is left.
   if (cluster.origin === 'found') return cluster.found?.condition ?? 'PARTLY BUILT';
   if (asking) return 'ASKING';
-  if (running || cluster.steps.some((step: StepState): boolean => step.state === 'running')) return 'BUILDING';
+  if (running === 'build' || cluster.steps.some((step: StepState): boolean => step.state === 'running')) return 'BUILDING';
   if (cluster.steps.some((step: StepState): boolean => step.state === 'failed')) return 'FAILED';
   if (stepState_read(cluster, 'smoke') === 'done') return 'SERVING';
   if (stepState_read(cluster, 'run') === 'done') return 'UP';
@@ -130,14 +146,15 @@ function fileTime_read(store: ClusterStore, name: string, file: string): string 
  *
  * @param cluster - The cluster.
  * @param store - The clusters this daemon keeps, or null when it keeps none.
- * @param job - The build's task, when one was ever started.
+ * @param job - The build's or the teardown's task, when one was ever started.
  * @param asking - The question the engine waits on about it, or null.
  * @returns The readout.
  */
 export function clusterReadout_build(cluster: HarborCluster, store: ClusterStore | null, job: JobRecord | undefined, asking: string | null = null): ClusterReadout {
   const record: ClusterRecord | null = store?.record_read(cluster.name) ?? null;
-  const running: boolean = job !== undefined && !taskState_isOver(job.state);
-  const runningStep: string | null = cluster.steps.find((step: StepState): boolean => step.state === 'running')?.name ?? null;
+  const running: ClusterRun | null = clusterRun_derive(job);
+  // A teardown is one step of its own; a build names the step it is in.
+  const runningStep: string | null = running === 'teardown' ? 'teardown' : cluster.steps.find((step: StepState): boolean => step.state === 'running')?.name ?? null;
   const planText: string | null = store?.file_read(cluster.name, 'plan.json') ?? null;
   const verifyText: string | null = store?.file_read(cluster.name, VERIFY_FILE) ?? null;
   const verify: VerifyKept | null = verifyText === null ? null : JSON.parse(verifyText) as VerifyKept;
@@ -155,7 +172,7 @@ export function clusterReadout_build(cluster: HarborCluster, store: ClusterStore
     spec: store?.spec_read(cluster.name)?.spec ?? cluster.found?.spec ?? null,
     next: record === null || record.adopted !== undefined || record.gone !== undefined ? null : stepNext_find(record),
     billingStep: FIRST_BILLING_STEP,
-    running: running ? { job: (job as JobRecord).id, step: runningStep, since: record?.steps[runningStep ?? '']?.started ?? (job as JobRecord).started } : null,
+    running: running !== null ? { job: (job as JobRecord).id, step: runningStep, since: record?.steps[runningStep ?? '']?.started ?? (job as JobRecord).started } : null,
     plan: planText === null || store === null ? null : planSummary_build(JSON.parse(planText) as InfraPlan, fileTime_read(store, cluster.name, 'plan.json')),
     verify: verify === null ? null : { at: verify.at, checks: verify.checks },
     asking,
@@ -191,7 +208,6 @@ export function summarySteps_map(cluster: HarborCluster, record: ClusterRecord |
  * @returns The summary.
  */
 export function clusterSummary_read(store: ClusterStore | null, clustersPath: string, cluster: HarborCluster, asking: string | null = null): ClusterSummary {
-  const job: JobRecord | undefined = runner_get()?.job_get(STEPS_SOURCE, buildJob_id(cluster.name));
   return {
     name: cluster.name,
     path: `${clustersPath}/${cluster.name}`,
@@ -199,6 +215,20 @@ export function clusterSummary_read(store: ClusterStore | null, clustersPath: st
     lastDone: lastDone_find(cluster)?.folder ?? null,
     steps: summarySteps_map(cluster, store?.record_read(cluster.name) ?? null),
     resources: null,
-    ...clusterReadout_build(cluster, store, job, asking),
+    ...clusterReadout_build(cluster, store, clusterJob_find(cluster.name), asking),
   };
+}
+
+/**
+ * The task on a cluster: its teardown while that runs, else its build (running or as it ended).
+ *
+ * @param name - The cluster.
+ * @returns The job, or undefined when none was ever started.
+ */
+export function clusterJob_find(name: string): JobRecord | undefined {
+  const runner = runner_get();
+  if (runner === null) return undefined;
+  const teardown: JobRecord | undefined = runner.job_get(STEPS_SOURCE, teardownJob_id(name));
+  if (teardown !== undefined && !taskState_isOver(teardown.state)) return teardown;
+  return runner.job_get(STEPS_SOURCE, buildJob_id(name));
 }

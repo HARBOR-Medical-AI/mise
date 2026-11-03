@@ -87,6 +87,16 @@ export function buildJob_id(cluster: string): string {
 }
 
 /**
+ * A teardown's job id.
+ *
+ * @param cluster - The cluster.
+ * @returns `<cluster>-teardown`.
+ */
+export function teardownJob_id(cluster: string): string {
+  return `${cluster}-teardown`;
+}
+
+/**
  * The first step not done.
  *
  * @param record - The cluster's state.

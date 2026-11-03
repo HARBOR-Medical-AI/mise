@@ -12,8 +12,9 @@ import type { HarborCluster } from '../checkout/harborOci.js';
 import { foundClusters_describe, foundRecord_make } from '../cluster/found.js';
 import { SPEC_DEFAULT } from '../cluster/spec.js';
 import type { ClusterRecord } from '../cluster/state.js';
+import { teardownJob_id } from '../cluster/steps.js';
 import { clusterVolumes_read, teardownRun_make } from '../cluster/teardown.js';
-import { job_runFollowed, type BuildCommandContext } from './build.js';
+import { clusterState_show, job_runFollowed, type BuildCommandContext } from './build.js';
 import { verifyReach_default } from './verify.js';
 import { TIER_REFUSAL } from '../tier.js';
 
@@ -92,7 +93,10 @@ export async function clusterTeardown_run(context: BuildCommandContext, args: Re
   for (const line of lines) sink_dataLine(line);
   const answer: string = (await repl_question(`Destroy what ${name} built? Its data goes with it; billing stops. Type the cluster's name to go on:`)).trim();
   if (answer !== name) return envelope_ok(`${chalk.gray(`not torn down: '${answer}' is not ${name}`)}\n`);
-  const ran = await job_runFollowed(`${name}-teardown`, `teardown ${name}`, teardownRun_make(context.store, builder, context.deps?.installer ?? null, name, volumeIds, stackEmpty));
+  // The cluster's state is shown as the task starts (TEARING DOWN, with the task to follow) and as it ends (GONE), so a
+  // surface watching redraws without asking; the task's own lines stream to whoever follows.
+  const ran = await job_runFollowed(teardownJob_id(name), `teardown ${name}`, teardownRun_make(context.store, builder, context.deps?.installer ?? null, name, volumeIds, stackEmpty), (): void => clusterState_show(context, name));
+  clusterState_show(context, name);
   if ('error' in ran) return envelope_error('', undefined, `cluster teardown: ${ran.error}\n`);
   return envelope_ok(`${name}: torn down\n`);
 }

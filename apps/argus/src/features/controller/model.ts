@@ -96,7 +96,7 @@ export function classBadge_render(cluster: ClusterSummary): string {
 export function conditionWhy_derive(cluster: ClusterSummary): { text: string; billing: boolean } {
   const billing: boolean = cluster.billing === true;
   const why: string = cluster.origin === 'adopted' ? 'ADOPTED' : cluster.origin === 'checkout' ? 'READ FROM A CHECKOUT'
-    : cluster.condition === 'GONE' ? 'TORN DOWN' : cluster.condition === 'SIZING' ? 'NOTHING BUILT'
+    : cluster.condition === 'GONE' ? 'TORN DOWN' : cluster.condition === 'TEARING DOWN' ? 'BEING TORN DOWN' : cluster.condition === 'SIZING' ? 'NOTHING BUILT'
     : cluster.condition === 'PLANNED' ? 'PLANNED, NOTHING MADE' : cluster.condition === 'PARTLY BUILT' ? 'NOT FINISHED' : cluster.condition ?? '';
   return billing ? { text: `BILLING · ${why}`, billing } : { text: `${why} · NOTHING BILLED`, billing };
 }
@@ -366,6 +366,8 @@ export const LINES = {
   build: (name: string): string => `cluster build ${name}`,
   kill: (job: string): string => `kill ${job}`,
   follow: (name: string): string => `cluster build ${name}`,
+  /** Follows a task by its job id (a teardown, whose own line would ask again). */
+  wait: (job: string): string => `wait ${job}`,
   protect: (name: string, on: boolean): string => `cluster protect ${name} ${on ? 'on' : 'off'}`,
   teardown: (name: string): string => `cluster teardown ${name}`,
   size: (family?: string): string => family === undefined ? 'cluster size' : `cluster size --family ${family}`,

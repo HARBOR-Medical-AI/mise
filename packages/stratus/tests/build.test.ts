@@ -17,7 +17,7 @@ import { SPEC_DEFAULT, specOptions_apply, type ClusterSpec } from '../src/cluste
 import { buildJob_id, buildRun_make, stepNext_find, STEPS_SOURCE, type BuildDeps } from '../src/cluster/steps.js';
 import { cost_words, familyShape_find, specCost_compute, specFit_read } from '../src/cluster/sizing.js';
 import { builtCluster_read } from '../src/cluster/view.js';
-import { condition_derive, clusterReadout_build, planSummary_build, refusals_derive } from '../src/cluster/readout.js';
+import { condition_derive, clusterReadout_build, clusterRun_derive, planSummary_build, refusals_derive } from '../src/cluster/readout.js';
 import type { HarborCluster } from '../src/checkout/harborOci.js';
 import { ClusterTree } from '../src/vfs/clusters.js';
 import { FakeKube, fakeChrisWork, fakeVerifyReach } from '../src/kube/fakeKube.js';
@@ -454,16 +454,28 @@ describe('the controller readout', () => {
   const record_of = (extra: Partial<ClusterRecord> = {}): ClusterRecord => ({ name: 'd', created: '', region: 'r', baseDomain: 'example', steps: {}, ids: {}, ...extra });
 
   it('says where a cluster stands in one word', () => {
-    expect(condition_derive(cluster_with({ run: 'not done' }), record_of(), false, false)).toBe('SIZING');
-    expect(condition_derive(cluster_with({ run: 'done' }), record_of(), false, false)).toBe('UP');
-    expect(condition_derive(cluster_with({ 'infra-plan': 'done', run: 'not done' }), record_of(), false, false)).toBe('PLANNED');
-    expect(condition_derive(cluster_with({ run: 'done', smoke: 'done' }), record_of(), false, false)).toBe('SERVING');
-    expect(condition_derive(cluster_with({ run: 'failed' }), record_of(), false, false)).toBe('FAILED');
-    expect(condition_derive(cluster_with({ run: 'running' }), record_of(), false, false)).toBe('BUILDING');
-    expect(condition_derive(cluster_with({ run: 'failed' }), record_of(), true, false)).toBe('BUILDING');
-    expect(condition_derive(cluster_with({ run: 'done' }), record_of(), true, true)).toBe('ASKING');
-    expect(condition_derive(cluster_with({ run: 'done' }), record_of({ gone: 'x' }), false, true)).toBe('GONE');
-    expect(condition_derive(cluster_with({ run: 'done' }, 'checkout'), null, false, false)).toBe('UP');
+    expect(condition_derive(cluster_with({ run: 'not done' }), record_of(), null, false)).toBe('SIZING');
+    expect(condition_derive(cluster_with({ run: 'done' }), record_of(), null, false)).toBe('UP');
+    expect(condition_derive(cluster_with({ 'infra-plan': 'done', run: 'not done' }), record_of(), null, false)).toBe('PLANNED');
+    expect(condition_derive(cluster_with({ run: 'done', smoke: 'done' }), record_of(), null, false)).toBe('SERVING');
+    expect(condition_derive(cluster_with({ run: 'failed' }), record_of(), null, false)).toBe('FAILED');
+    expect(condition_derive(cluster_with({ run: 'running' }), record_of(), null, false)).toBe('BUILDING');
+    expect(condition_derive(cluster_with({ run: 'failed' }), record_of(), 'build', false)).toBe('BUILDING');
+    expect(condition_derive(cluster_with({ run: 'done' }), record_of(), 'build', true)).toBe('ASKING');
+    expect(condition_derive(cluster_with({ run: 'done' }), record_of({ gone: 'x' }), null, true)).toBe('GONE');
+    expect(condition_derive(cluster_with({ run: 'done' }, 'checkout'), null, null, false)).toBe('UP');
+    // A teardown under way is said before the steps, the question or the lock; gone only once it ends.
+    expect(condition_derive(cluster_with({ run: 'done', smoke: 'done' }), record_of(), 'teardown', true)).toBe('TEARING DOWN');
+  });
+
+  it('reads the teardown as the running task, one step of its own', () => {
+    const store = { record_read: (): ClusterRecord => record_of(), file_read: (): null => null, spec_read: (): null => null, folder_derive: (): string => '/nowhere' } as unknown as ClusterStore;
+    const job = { id: 'd-teardown', source: 'steps', label: 'teardown d', state: 'running', started: '2026-11-03T14:54:55.990Z', data: {} } as unknown as JobRecord;
+    const readout = clusterReadout_build(cluster_with({ run: 'done', smoke: 'done' }), store, job);
+    expect(readout.condition).toBe('TEARING DOWN');
+    expect(readout.running).toEqual({ job: 'd-teardown', step: 'teardown', since: '2026-11-03T14:54:55.990Z' });
+    expect(clusterRun_derive({ ...job, state: 'done' } as JobRecord)).toBeNull();
+    expect(clusterRun_derive({ ...job, id: 'd-build' } as JobRecord)).toBe('build');
   });
 
   it('names what is refused on each kind of cluster', () => {
