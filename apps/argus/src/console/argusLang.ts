@@ -20,7 +20,9 @@
  */
 import { side_is, side_findByFocusWord, splitSelector_format, type Side } from '../app/sides.js';
 import { viewScript_compose, viewSheet_ask } from '../app/shareView.js';
-import type { CloudEntry } from '../app/cloudDoor.js';
+
+/** How a stratus session is entered: looking only, or able to act (docs/stratus.adoc, D14). */
+export type CloudEntry = 'read' | 'manage';
 
 /** What the language needs from its host (assembled in main.ts). */
 export interface ArgusHost {

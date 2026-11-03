@@ -17,7 +17,6 @@
  *
  * @module
  */
-import { password_ask } from './cloudDoor.js';
 import { more_wire } from '../features/roster/more.js';
 import { type SessionNotes, feedListModelSchema, FEED_LIST_MODEL_KIND, feedDagModelSchema, dicomSeriesModelSchema, dicomTagsModelSchema, imageViewModelSchema, DICOM_MODEL_KINDS, IMAGE_MODEL_KINDS, type DicomSeriesModel, type DicomTagsModel, DAG_MODEL_KINDS, type PromptContext, type WireEnvelope, type WatchState, type FeedDagModel, type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry } from '@fnndsc/menu';
 import { type SceneNode } from '../scene/chrisSpace.js';
@@ -1012,13 +1011,20 @@ async function surface_start(token: string): Promise<void> {
   let elevationOffered: boolean = false;
   /**
    * Raises this session to MANAGE for a line that would act: the person's
-   * password asked once on a sheet, checked by the daemon at the door they
-   * logged in by, and every stratus screen redrawn with the answer (D14).
+   * password asked once, in the frame, where the line was pressed (the
+   * takeover's strip, or the console's own input line), checked by the
+   * daemon at the door they logged in by, and every stratus screen redrawn
+   * with the answer (D14). Nothing floats over the surface.
    */
   const elevate_ask = async (line: string): Promise<boolean> => {
     if (manageTier === true) return true;
     if (!elevationOffered) { terminal.line_note(`${line}: entered as READ, and this session cannot be raised: it was started without a door to ask`); return false; }
-    const password: string | null = await password_ask(line, null);
+    const message: string = `MANAGE · your password, for: ${line} · this session was entered as READ; your password, checked at the door you logged in by, makes it MANAGE until you leave it (it crosses once, kept nowhere); NO, or nothing, keeps READ`;
+    const password: string | null = tdController.active_is() ? await tdController.ask({ message, kind: 'secret' })
+      : vmController.active_is() ? await vmController.ask({ message, kind: 'secret' })
+        : scriptScreen.active_is() ? await scriptScreen.ask({ message, kind: 'secret' })
+          : await terminal.ask_open({ message, kind: 'secret', focus: true });
+    if (password === '') return false;
     if (password === null) return false;
     const answer: { granted: boolean; reason?: string } = await client.elevate(password);
     if (!answer.granted) { terminal.line_note(`MANAGE refused: ${answer.reason ?? 'the door said no'}`); return false; }

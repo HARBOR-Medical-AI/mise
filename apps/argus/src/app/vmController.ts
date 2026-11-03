@@ -60,7 +60,6 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
 
   window.addEventListener('keydown', (event: KeyboardEvent): void => {
     if (screen === null || event.key !== 'Escape') return;
-    if (document.querySelector('.cloud-elevate') !== null) return;
     event.stopImmediatePropagation();
     event.preventDefault();
     close();

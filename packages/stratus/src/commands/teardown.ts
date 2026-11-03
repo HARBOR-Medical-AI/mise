@@ -31,22 +31,29 @@ export async function clusterTeardown_run(context: BuildCommandContext, args: Re
   let record: ClusterRecord | null = context.store.record_read(name);
   const builder = context.builder;
   if (builder === null || builder.teardown_run === undefined) return envelope_error('', undefined, 'cluster teardown: this cloud cannot tear a cluster down yet\n');
-  if (cluster === null || record === null) {
-    // A cluster the session keeps nothing of: found in the tenancy with nothing
-    // left of it but its tag, its leftovers go without an adoption first
-    // (docs/stratus.adoc, D15). Anything else of it is adopted first.
+  const torn: string | undefined = record?.gone;
+  if (cluster === null || record === null || torn !== undefined) {
+    // A cluster the session keeps nothing of, or one torn down here whose tag
+    // the tenancy still carries (an earlier pass left its stack, bucket or
+    // compartment): found with nothing left of it but its tag, its leftovers
+    // go without an adoption first (docs/stratus.adoc, D15). Anything else of
+    // it is adopted first.
+    const alreadyGone = (): CommandEnvelope => envelope_ok(`${name}: already torn down (${(torn ?? '').slice(0, 16)}); nothing of it is left in the tenancy\n`);
     const region: string | null = context.region();
-    if (region === null) return envelope_error('', undefined, `cluster teardown: ${name}: no such cluster\n`);
+    if (region === null) return torn !== undefined ? alreadyGone() : envelope_error('', undefined, `cluster teardown: ${name}: no such cluster\n`);
     let found: HarborCluster | undefined;
     try {
-      found = (await foundClusters_describe(context.driver, builder, region, context.store.names_list())).find((entry: HarborCluster): boolean => entry.name === name);
+      found = (await foundClusters_describe(context.driver, builder, region, context.store.names_list().filter((kept: string): boolean => kept !== name))).find((entry: HarborCluster): boolean => entry.name === name);
     } catch (error: unknown) {
       return envelope_error('', undefined, `cluster teardown: ${name}: the tenancy was not searched: ${error instanceof Error ? error.message : String(error)}\n`);
     }
-    if (found === undefined) return envelope_error('', undefined, `cluster teardown: ${name}: no such cluster\n`);
+    if (found === undefined) return torn !== undefined ? alreadyGone() : envelope_error('', undefined, `cluster teardown: ${name}: no such cluster\n`);
     if (found.found?.condition !== 'GONE') return envelope_error('', undefined, `cluster teardown: ${name}: found in the tenancy, not adopted: cluster adopt ${name} first\n`);
     if (surface_get().capabilities.tasks !== true) return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: ${TIER_REFUSAL}\n`);
-    context.store.create(foundRecord_make(found, new Date().toISOString(), false), found.found.spec ?? SPEC_DEFAULT);
+    // The record now carries only what the tenancy still holds (its stack, its compartment): what an earlier pass removed is not asked for again.
+    const leftover: ClusterRecord = foundRecord_make(found, new Date().toISOString(), false);
+    if (record === null) context.store.create(leftover, found.found.spec ?? SPEC_DEFAULT);
+    else context.store.record_write({ ...leftover, created: record.created, ...(record.adopted !== undefined ? { adopted: record.adopted } : {}) });
     cluster = context.clusters.cluster_read(name);
     record = context.store.record_read(name);
     if (cluster === null || record === null) return envelope_error('', undefined, `cluster teardown: ${name}: could not be kept here\n`);

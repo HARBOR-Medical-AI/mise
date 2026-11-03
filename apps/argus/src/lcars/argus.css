@@ -616,12 +616,6 @@ label {
 #status-strip .lamp-mode[data-mode='READ'] { background: var(--honey); color: #000; }
 #status-strip .lamp-mode[data-mode='MANAGE'] { background: var(--pumpkin-pie); color: #000; }
 
-/* The MANAGE sheet stands over a takeover too, which hides every other child of the body. */
-body[data-takeover] > .share-sheet#cloud-elevate-sheet { visibility: visible; }
-
-/* The password field on the MANAGE sheet: hidden, emptied as it is read. */
-.cloud-elevate .cloud-password { display: block; width: 100%; margin: 0.6rem 0; background: black; border: 1px solid var(--pumpkin-pie); border-radius: 0.4rem; color: var(--daybreak); font-family: 'Share Tech Mono', monospace; font-size: 0.9rem; padding: 0.3rem 0.6rem; outline: none; }
-.cloud-elevate .cloud-password:focus { border-color: var(--harvestgold); }
 
 #status-strip .lamp-host {
   color: #000;
@@ -7763,16 +7757,6 @@ body:not([data-composition="stratus"]) [data-composition="stratus"] {
 
 .view-refused {
   color: var(--mars);
-}
-
-/* The cloud door's question (app/cloudDoor.ts): the two ways in, wrapped so neither is cut. */
-.cloud-ask {
-  width: min(58rem, calc(100vw - 2rem));
-}
-
-.cloud-ask .share-script {
-  white-space: pre-wrap;
-  user-select: none;
 }
 
 .view-run:disabled {
