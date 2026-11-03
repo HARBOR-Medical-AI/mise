@@ -25,25 +25,29 @@ export async function pluginInstanceFields_get(): Promise<string[] | null> {
 }
 
 /**
- * The feeds one pipeline run's jobs are in, asked of CUBE by the workflow:
- * its instances walked page by page, their feed ids once each. A search
- * scoped to a run reads those feeds and no other (#1364).
+ * One pipeline run's jobs, asked of CUBE by the workflow: its instances
+ * walked page by page, their ids and the feeds they are in (once each). A
+ * search scoped to a run reads those feeds and no other, and knows which
+ * of their jobs are the run's (#1364).
  *
  * @param workflowId - The workflow CUBE made for the run.
- * @returns The feed ids, in the order CUBE listed the jobs; none when not connected or the run is unknown.
+ * @returns The feed ids and the job ids, in the order CUBE listed the jobs; none when not connected or the run is unknown.
  */
-export async function workflowFeedIDs_get(workflowId: number): Promise<number[]> {
+export async function workflowJobs_get(workflowId: number): Promise<{ feeds: number[]; jobs: number[] }> {
   const client = await chrisConnection.client_get();
-  if (!client) return [];
+  if (!client) return { feeds: [], jobs: [] };
   const feeds: number[] = [];
+  const jobs: number[] = [];
   const limit: number = 100;
   for (let offset: number = 0; ; offset += limit) {
     const page = await pluginInstancesPage_get(client, { workflow_id: workflowId, limit, offset });
     for (const row of page.data) {
       const feedID: number = Number((row as { feed_id?: unknown }).feed_id);
       if (Number.isFinite(feedID) && !feeds.includes(feedID)) feeds.push(feedID);
+      const jobID: number = Number((row as { id?: unknown }).id);
+      if (Number.isFinite(jobID) && !jobs.includes(jobID)) jobs.push(jobID);
     }
     if (page.data.length < limit) break;
   }
-  return feeds;
+  return { feeds, jobs };
 }

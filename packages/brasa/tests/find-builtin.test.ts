@@ -5,11 +5,11 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { cuminMock_install } from './support/cuminMock.js';
 
-/** The feeds CUBE names for a workflow asked by id: run 51177's jobs are in feed_5 alone. */
-const mockWorkflowFeeds = jest.fn(async (workflowId: number): Promise<number[]> => (workflowId === 51177 ? [5] : []));
+/** What CUBE names for a workflow asked by id: run 51177's one job, pl-dylld_11, in feed_5 alone. */
+const mockWorkflowJobs = jest.fn(async (workflowId: number): Promise<{ feeds: number[]; jobs: number[] }> => (workflowId === 51177 ? { feeds: [5], jobs: [11] } : { feeds: [], jobs: [] }));
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
   context_getSingle: jest.fn(async () => ({ user: 'chris', folder: '/home/chris' })),
-  workflowFeedIDs_get: mockWorkflowFeeds,
+  workflowJobs_get: mockWorkflowJobs,
 }));
 cuminMock_install(() => ({
   envelope_ok: (rendered: string) => ({ status: 'ok', rendered }),
@@ -21,6 +21,10 @@ jest.unstable_mockModule('../src/session/index.js', () => ({ session: { getCWD: 
 /** The tree: what each folder lists. */
 const TREE: Record<string, Array<{ name: string; type: string; date?: string; status?: string }>> = {
   '/proc/jobs': [{ name: 'feed_5', type: 'job' }, { name: 'feed_6', type: 'job' }],
+  // feed_5 as its listing gives it (a run asked by id walks the feed, indexed or not).
+  '/proc/jobs/feed_5': [{ name: 'status', type: 'file' }, { name: 'pl-dircopy_10', type: 'job', status: 'finishedSuccessfully' }],
+  '/proc/jobs/feed_5/pl-dircopy_10': [{ name: 'status', type: 'file' }, { name: 'pl-dylld_11', type: 'job', status: 'finishedWithError' }],
+  '/proc/jobs/feed_5/pl-dircopy_10/pl-dylld_11': [{ name: 'status', type: 'file' }],
   '/proc/jobs/feed_6': [{ name: 'pl-dylld_12', type: 'job', status: 'started' }],
   '/proc/jobs/feed_6/pl-dylld_12': [{ name: 'status', type: 'file' }],
   '/home/chris': [{ name: 'a.nii', type: 'file', date: '2026-10-01T00:00:00Z' }, { name: 'feeds', type: 'dir' }, { name: 'link1', type: 'link' }],
@@ -131,14 +135,16 @@ describe('find', () => {
     expect((await builtin_find(['/proc/jobs', '-pipeline', ''])).rendered).toBe('/proc/jobs/feed_5/pl-dircopy_10\n');   // run directly
   });
 
-  it('-workflow by id reads the run\'s feeds alone: a feed not indexed is not walked for it (#1364)', async () => {
+  it('-workflow by id reads the run\'s feeds alone, each judged by the run\'s own jobs, index or no index (#1364)', async () => {
     listed.length = 0;
     const result = await builtin_find(['/proc/jobs', '-workflow', '51177', '-plugin', 'pl-dylld']);
-    expect(mockWorkflowFeeds).toHaveBeenCalledWith(51177);
+    expect(mockWorkflowJobs).toHaveBeenCalledWith(51177);
     expect(result.rendered).toBe('/proc/jobs/feed_5/pl-dircopy_10/pl-dylld_11\n');
-    // feed_6, unanswered by the index, is outside the run: never listed, and nothing left unjudged.
-    expect(listed).not.toContain('/proc/jobs/feed_6');
+    // The run's feed is walked as its listing gives it; /proc/jobs itself and feed_6 are never listed, nothing is left unjudged.
+    expect(listed).toEqual(['/proc/jobs/feed_5', '/proc/jobs/feed_5/pl-dircopy_10', '/proc/jobs/feed_5/pl-dircopy_10/pl-dylld_11']);
     expect(result.renderedErr).toBeUndefined();
+    // A job in the run's feed but not of the run (pl-dircopy_10 rooted it) is not the run's.
+    expect((await builtin_find(['/proc/jobs', '-workflow', '51177'])).rendered).toBe('/proc/jobs/feed_5/pl-dircopy_10/pl-dylld_11\n');
     // A pattern is not an id: every feed is still read.
     listed.length = 0;
     await builtin_find(['/proc/jobs', '-workflow', '5*']);

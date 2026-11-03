@@ -26,7 +26,7 @@ import { vfs, type VfsListing } from '../../lib/vfs/vfs.js';
 import { vfsDispatcher_get } from '../../core/filesystem.js';
 import { spinner } from '../../lib/spinner.js';
 import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
-import { errorStack, type Result, type VFSSubtree, type VFSSubtreeEntry } from '@fnndsc/fond';
+import { errorStack, type Result, type VFSSubtree } from '@fnndsc/fond';
 import { envelope_error, type CommandEnvelope, type ListingItem } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
 
@@ -283,7 +283,7 @@ export async function builtin_find(args: string[]): Promise<CommandEnvelope> {
   // Jobs a -pipeline or -workflow test could not judge: their run is not known yet.
   let unjudged: number = 0;
   const visit = (node: FindNode): void => {
-    if (query.asksRuns && node.plugin !== undefined && node.pipeline === undefined) unjudged++;
+    if (query.asksRuns && node.plugin !== undefined && node.pipeline === undefined && node.workflow === undefined) unjudged++;
     if (node.depth < query.mindepth) return;
     const before: number = out.length;
     const matched: boolean = find_evaluate(query.expr, node, out);
@@ -306,7 +306,7 @@ export async function builtin_find(args: string[]): Promise<CommandEnvelope> {
       visit({ shown: shownRoot, name: path.posix.basename(resolved) || resolved, type: rootType, date: entry.date || undefined, depth: 0 });
       if (rootType !== 'd') continue;
       // Depth first, in listing order: an entry, then everything beneath it.
-      const walk = async (real: string, shown: string, depth: number): Promise<boolean> => {
+      const walk = async (real: string, shown: string, depth: number, judge: (node: FindNode) => FindNode = (node: FindNode): FindNode => node): Promise<boolean> => {
         if (signal?.aborted) return false;
         if (depth >= query.maxdepth) return true;
         const listed: Result<VfsListing> = await vfs.listing_get(real);
@@ -318,7 +318,7 @@ export async function builtin_find(args: string[]): Promise<CommandEnvelope> {
           return true;
         }
         for (const item of listed.value.items) {
-          const node: FindNode = {
+          const node: FindNode = judge({
             shown: shown === '/' ? `/${item.name}` : `${shown}/${item.name}`,
             name: item.name,
             type: itemType_derive(item),
@@ -326,24 +326,38 @@ export async function builtin_find(args: string[]): Promise<CommandEnvelope> {
             depth: depth + 1,
             status: typeof item.status === 'string' ? item.status : undefined,
             plugin: pluginName_parse(item),
-          };
+          });
           visit(node);
-          if (node.type === 'd' && !(await walk(path.posix.join(real, item.name), node.shown, node.depth))) return false;
+          if (node.type === 'd' && !(await walk(path.posix.join(real, item.name), node.shown, node.depth, judge))) return false;
         }
         return true;
       };
       // A mount that holds the subtree answers it whole (/proc/jobs, from
       // its cache); only what it leaves unanswered is walked.
-      let held: VFSSubtree | null = await vfsDispatcher_get().subtree(resolved).catch((): null => null);
-      // One pipeline run asked for by id under /proc/jobs: CUBE names the feeds its jobs are in, and only those are
-      // read; every other feed, indexed or not, is left alone (#1364: a cold session indexed them all first).
-      if (held !== null && query.workflowId !== null && resolved === '/proc/jobs') {
+      // One pipeline run asked for by id under /proc/jobs: CUBE names the run's jobs and the feeds they are in, and
+      // only those feeds are read, each resolving alone, whether or not the index is built; every other feed is left
+      // alone (#1364: a cold session indexed them all first, minutes before the first line). Each job walked is
+      // judged by the run's own list, so the test needs no index either.
+      if (query.workflowId !== null && resolved === '/proc/jobs') {
         // Read when asked, not at load: find's other walks owe salsa nothing.
-        const { workflowFeedIDs_get } = await import('@fnndsc/salsa');
-        const feeds: Set<string> = new Set((await workflowFeedIDs_get(query.workflowId)).map((id: number): string => `feed_${id}`));
-        const inScope = (rel: string): boolean => feeds.has(rel.split('/')[0] ?? '');
-        held = { entries: held.entries.filter((entry: VFSSubtreeEntry): boolean => inScope(entry.rel)), unanswered: held.unanswered.filter(inScope) };
+        const { workflowJobs_get } = await import('@fnndsc/salsa');
+        const run: { feeds: number[]; jobs: number[] } = await workflowJobs_get(query.workflowId);
+        const jobs: Set<number> = new Set(run.jobs);
+        const judge = (node: FindNode): FindNode => {
+          if (node.plugin === undefined) return node;
+          const id: number = Number(/_(\d+)$/.exec(node.name)?.[1] ?? NaN);
+          return { ...node, workflow: jobs.has(id) ? String(query.workflowId) : '' };
+        };
+        let stopped: boolean = false;
+        for (const feedId of run.feeds) {
+          const rel: string = `feed_${feedId}`;
+          visit({ shown: shownRoot === '/' ? `/${rel}` : `${shownRoot}/${rel}`, name: rel, type: 'd', depth: 1 });
+          if (!(await walk(path.posix.join(resolved, rel), shownRoot === '/' ? `/${rel}` : `${shownRoot}/${rel}`, 1, judge))) { stopped = true; break; }
+        }
+        if (stopped) { failures += `find: stopped (Ctrl-C) after ${folders} folders; ${found} found so far\n`; break; }
+        continue;
       }
+      const held: VFSSubtree | null = await vfsDispatcher_get().subtree(resolved).catch((): null => null);
       if (held !== null) {
         const join = (base: string, rel: string): string => (base === '/' ? `/${rel}` : `${base}/${rel}`);
         for (const entry of held.entries) {

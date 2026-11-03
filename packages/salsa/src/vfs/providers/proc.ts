@@ -628,7 +628,9 @@ function outputPath_normalize(value: unknown): string | null {
  * @param remainder - The path below `data`, '' for the link itself.
  * @returns The absolute CFS path, or Err when the job has no output space.
  */
-async function dataTarget_resolve(instanceID: number, remainder: string): Promise<Result<string>> {
+async function dataTarget_resolve(instanceID: number, remainder: string, feedID: number | null = null): Promise<Result<string>> {
+  // A fresh session knows no job until its feed's topology is read: read it, as a listing of the node would.
+  if (feedID !== null && procCache_get().instance_get(instanceID) === undefined) await feedInstances_ensureLoaded(feedID);
   const outputPath: string | null = await instanceOutputPath_ensure(instanceID);
   if (!outputPath) {
     errorStack.stack_push('error', `No CFS output path is available for job ${instanceID}`);
@@ -715,12 +717,9 @@ export class ProcVfsProvider implements VFSProvider {
       errorStack.stack_push('error', `Not a /proc job data link: ${pathStr}`);
       return Err();
     }
-
-    const outputPath: string | null = await instanceOutputPath_ensure(instanceID);
-    if (outputPath) return Ok(outputPath);
-
-    errorStack.stack_push('error', `No CFS output path is available for job ${instanceID}`);
-    return Err();
+    // The link's target: the job's output, its feed read first when this session has not (#1364: `download` of
+    // the link on a fresh session found no job and said the file could not be opened).
+    return dataTarget_resolve(instanceID, '', feedID);
   }
 
   /**
@@ -831,7 +830,7 @@ export class ProcVfsProvider implements VFSProvider {
     // target: resolve and delegate, so `ls .../data` (and deeper) shows the
     // target's real contents instead of silently re-listing the instance.
     if (instanceID !== null && virtualFile === 'data' && dataRemainder !== null) {
-      const target: Result<string> = await dataTarget_resolve(instanceID, dataRemainder);
+      const target: Result<string> = await dataTarget_resolve(instanceID, dataRemainder, feedID);
       if (!target.ok) return Err();
       const { vfsDispatcher } = await import('../dispatcher.js');
       return vfsDispatcher.list(target.value, _options);
@@ -932,9 +931,9 @@ export class ProcVfsProvider implements VFSProvider {
   private async bytes_read(pathStr: string): Promise<Result<Buffer>> {
     await cacheFor_ensure(pathStr);
     const clean: string = pathStr.replace(/\/$/, '');
-    const { instanceID, virtualFile, dataRemainder } = procPath_parse(clean);
+    const { feedID, instanceID, virtualFile, dataRemainder } = procPath_parse(clean);
     if (instanceID !== null && virtualFile === 'data' && dataRemainder !== null && dataRemainder !== '') {
-      const target: Result<string> = await dataTarget_resolve(instanceID, dataRemainder);
+      const target: Result<string> = await dataTarget_resolve(instanceID, dataRemainder, feedID);
       if (!target.ok) return Err();
       // The target is a CFS file, and the dispatcher's default provider is
       // the HOST filesystem — handing it back there refused every byte a
@@ -960,7 +959,7 @@ export class ProcVfsProvider implements VFSProvider {
 
     // A file under the `data` link is the CFS target's file.
     if (instanceID !== null && virtualFile === 'data' && dataRemainder !== null && dataRemainder !== '') {
-      const target: Result<string> = await dataTarget_resolve(instanceID, dataRemainder);
+      const target: Result<string> = await dataTarget_resolve(instanceID, dataRemainder, feedID);
       if (!target.ok) return Err();
       const { fileContent_get } = await import('../../files/index.js');
       return fileContent_get(target.value);
