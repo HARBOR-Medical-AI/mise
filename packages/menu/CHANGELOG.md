@@ -1,5 +1,13 @@
 # @fnndsc/menu
 
+## 0.34.1
+
+### Patch Changes
+
+- bf7b94d: A cluster has the condition TEARING DOWN while its teardown runs.
+
+  CLUSTER_CONDITIONS gains TEARING DOWN between SERVING and FAILED: the teardown's task under way, GONE once it ends.
+
 ## 0.34.0
 
 ### Minor Changes
