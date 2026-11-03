@@ -45,6 +45,8 @@ body[data-takeover='controller'] > *:not(#td-controller) { visibility: hidden; }
 .tdc-since { display: grid; grid-template-columns: 5.6rem minmax(0, 1fr); gap: 0.3rem 0.5rem; font-size: 0.8rem; }
 .tdc-since-label { color: var(--orange); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tdc-since-value { color: var(--butter); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tdc-since-reading, .tdc-reading { color: var(--honey); animation: tdc-reading-pulse 1.2s ease-in-out infinite; }
+@keyframes tdc-reading-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 
 /* the body: three columns on most views, two on CLUSTER and TEARDOWN */
 .tdc-body { min-height: 0; display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.4fr) minmax(0, 0.8fr); gap: 1.6rem; padding: 1rem 0.6rem 0.6rem 1.6rem; overflow: hidden; }

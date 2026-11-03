@@ -10,7 +10,7 @@
  */
 
 /** Why a control that acts is held in a READ session. */
-export const READ_HELD: string = 'entered as READ, so nothing outside this host changes; MANAGE asks your password once (press again, or stratus oci manage)';
+export const READ_HELD: string = 'entered as READ, so nothing outside this host changes; this daemon has no door to check a password at, so pressing again asks nothing: say stratus oci manage in the console, or enter through porter';
 
 /** Why a control that acts asks first in a READ session that can be raised. */
 export const READ_ASKS: string = 'asks your password first: this session becomes MANAGE, then the line is sent';
