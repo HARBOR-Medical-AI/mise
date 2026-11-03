@@ -53,4 +53,21 @@ describe('the takeover frame', () => {
     expect(frame.gutter_restore()).toBe(false);
     frame.root.remove();
   });
+
+  it('rolls the head away on a press on the brand block, and brings it back by the strip, the brand, or header_restore', () => {
+    const { frame } = frame_make();
+    const brand: HTMLButtonElement | null = frame.root.querySelector<HTMLButtonElement>('.takeover-brand');
+    brand?.click();
+    expect(frame.root.dataset['header']).toBe('away');
+    expect(frame.headerAway_is()).toBe(true);
+    frame.root.querySelector<HTMLElement>('.takeover-header-restore')?.click();
+    expect(frame.headerAway_is()).toBe(false);
+    brand?.click();
+    brand?.click();
+    expect(frame.headerAway_is()).toBe(false);
+    brand?.click();
+    expect(frame.header_restore()).toBe(true);
+    expect(frame.header_restore()).toBe(false);
+    frame.root.remove();
+  });
 });

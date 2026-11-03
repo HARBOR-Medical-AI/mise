@@ -123,7 +123,7 @@ export function tdController_wire(context: Pick<HostContext, 'client' | 'manage_
     event.stopImmediatePropagation();
     event.preventDefault();
     // One layer at a time: a gutter sent away comes back first; the next Esc gives the screen back.
-    if (controller.gutter_restore()) return;
+    if (controller.frame_restore()) return;
     close();
   }, true);
 
