@@ -157,6 +157,18 @@ describe('building a cluster over the fakes', () => {
     expect(clusterReadout_build(context.clusters.cluster_read('trial') as HarborCluster, store, second).condition).toBe('GONE');
   });
 
+  it('lands a step an earlier pass did without keeping it (an empty stack read before steps were kept)', async () => {
+    record_new('trial');
+    store.record_update('trial', (record: ClusterRecord): void => { record.billingAccepted = 'now'; });
+    await runner.job_start(STEPS_SOURCE, buildJob_id('trial'), 'build trial', buildRun_make('trial', undefined, deps)).finished;
+    const job: JobRecord = await runner.job_start(STEPS_SOURCE, teardownJob_id('trial'), 'teardown trial', teardownRun_make(store, deps.builder, deps.installer, 'trial', [], new Set(['destroy']))).finished;
+    expect(job.state).toBe('done');
+    const record: ClusterRecord = store.record_read('trial') as ClusterRecord;
+    expect(record.teardown?.steps['destroy']).toMatchObject({ state: 'done', note: 'done by an earlier pass' });
+    expect(record.teardown?.steps['destroy']?.ended).toBeDefined();
+    expect(record.gone).toBeDefined();
+  });
+
   it('runs to the first billing step, then from it once accepted, to the end of the steps it has', async () => {
     record_new('trial');
     const first: JobRecord = await runner.job_start(STEPS_SOURCE, buildJob_id('trial'), 'build trial', buildRun_make('trial', undefined, deps)).finished;
