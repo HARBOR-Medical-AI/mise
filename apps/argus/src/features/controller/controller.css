@@ -20,6 +20,9 @@ body[data-takeover='controller'] > *:not(#td-controller) { visibility: hidden; }
 .tdc-condition { border-radius: 2rem; padding: 0.45rem 0; display: flex; flex-direction: column; align-items: center; color: #000; background: var(--harvestgold); }
 .tdc-condition[data-condition='ASKING'] { background: var(--tdc-bill); }
 .tdc-condition[data-condition='BUILDING'] { background: var(--butter); }
+.tdc-condition[data-condition='TEARING DOWN'] { background: var(--october-sunset); }
+/* two words must still fit the pill */
+.tdc-condition[data-condition='TEARING DOWN'] .tdc-condition-name, .tdc-condition[data-condition='PARTLY BUILT'] .tdc-condition-name { font-size: 1.35rem; letter-spacing: 0.16em; }
 .tdc-condition[data-condition='FAILED'] { background: var(--tdc-destroy); }
 .tdc-condition[data-condition='GONE'] { background: var(--october-sunset); }
 .tdc-condition[data-condition='SIZING'] { background: var(--honey); }
@@ -130,6 +133,8 @@ body[data-takeover='controller'] > *:not(#td-controller) { visibility: hidden; }
 .tdc-plan-n { color: var(--butter); text-align: right; font-family: var(--face-data); }
 .tdc-plan-names { color: var(--orange); font-family: var(--face-data); font-size: 0.72rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tdc-steplog { display: flex; flex-direction: column; gap: 0.15rem; font-family: var(--face-data); font-size: 0.75rem; color: var(--honey); overflow: auto; min-height: 0; flex: 1 1 0; }
+/* under a RUNNING box (the TEARDOWN seat) the log takes the column's rest, never nothing */
+.tdc-col-middle > .tdc-col-steplog { flex: 1 1 0; min-height: 10rem; }
 .tdc-steplog-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* CLUSTER */

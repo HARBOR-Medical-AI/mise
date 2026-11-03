@@ -136,6 +136,43 @@ describe('the TD controller screen', () => {
     controller.root.remove();
   });
 
+  it('shows the teardown running on its seat, feeds its log, and says torn down when it ends', async () => {
+    const { controller, sent, cues } = controller_make();
+    controller.clusters_take([cluster_make('quay', { condition: 'UP', protected: false, refused: {} })]);
+    controller.cluster_choose('quay');
+    controller.view_show('teardown');
+    // The teardown's task arrives by an event: the condition, the RUNNING box with its clock and KILL, and FOLLOW by the job id.
+    controller.cluster_take({ ...cluster_make('quay', { condition: 'TEARING DOWN', protected: false, refused: {}, running: { job: 'quay-teardown', step: 'teardown', since: '2026-11-03T14:54:55.990Z' } }), cost: undefined });
+    expect(controller.root.querySelector('.tdc-condition-name')?.textContent).toBe('TEARING DOWN');
+    expect(controller.root.querySelector('.tdc-condition-why')?.textContent).toContain('BEING TORN DOWN');
+    const body: HTMLElement = controller.root.querySelector('.tdc-body') as HTMLElement;
+    expect(body.querySelector('.tdc-running .tdc-section-title, .tdc-running h3, .tdc-running')?.textContent).toContain('RUNNING · TEARDOWN');
+    expect(body.querySelector('.tdc-running-clock')?.textContent).toMatch(/^14:54 · /);
+    expect(button_named(body, 'KILL')).toBeDefined();
+    expect(button_named(body, 'TEAR DOWN')).toBeUndefined();
+    button_named(body, 'FOLLOW')?.click();
+    await flush();
+    expect(sent.at(-1)).toBe('wait quay-teardown');
+    // The line on the lane feeds THE STEP'S LOG on this seat too.
+    const line: Promise<void> = controller.line_send('cluster teardown quay');
+    controller.output_take('14:54:56 Resource Manager destroy job ocid1.ormjob\n');
+    expect([...body.querySelectorAll('.tdc-steplog-line')].map((one: Element): string => one.textContent ?? '')).toEqual(['14:54:56 Resource Manager destroy job ocid1.ormjob']);
+    await line;
+    // It ends: GONE, said in the log with a cue, and the seat says TORN DOWN with when.
+    controller.cluster_take({ ...cluster_make('quay', { condition: 'GONE', gone: '2026-11-03T15:20:00.000Z', refused: { build: 'torn down', teardown: 'already torn down' } }), cost: undefined });
+    expect(cues).toContain('ack');
+    expect([...controller.root.querySelectorAll('.tdc-log-note')].map((one: Element): string => one.textContent ?? '')).toContain('quay: torn down; nothing of it bills');
+    expect(controller.root.querySelector('.tdc-body .tdc-note-title')?.textContent).toBe('TORN DOWN');
+    expect(controller.root.querySelector('.tdc-body .tdc-note .tdc-prose')?.textContent).toContain('2026-11-03 15:20');
+    // The read after the line no longer lists it (history, not a cluster): the seat keeps it GONE until another is chosen.
+    controller.clusters_take([]);
+    expect(controller.cluster_get()?.name).toBe('quay');
+    expect(controller.root.querySelector('.tdc-condition-name')?.textContent).toBe('GONE');
+    expect(controller.root.querySelector('.tdc-body .tdc-note-title')?.textContent).toBe('TORN DOWN');
+    controller.dispose();
+    controller.root.remove();
+  });
+
   it('answers the billing question by a pill and the teardown question by the name typed back', async () => {
     const { controller } = controller_make();
     controller.clusters_take([cluster_make('quay', { protected: false, refused: {} })]);

@@ -168,9 +168,10 @@ export function rmApi_make(options: RmApiOptions): RmApi {
       await client.cancelJob({ jobId, isForced: false });
     },
     async jobLog_read(jobId) {
-      const lines: string[] = [];
-      for await (const entry of client.getAllJobLogs({ jobId })) lines.push(entry.message ?? '');
-      return lines;
+      // The log as one text, not paged: the paged read answers `invalid pagination token` a few thousand lines in (a
+      // 79-resource destroy), on every poll, so nothing of the job was ever passed on.
+      const text: string = await stream_text((await client.getJobLogsContent({ jobId })).value);
+      return text.split('\n').filter((line: string): boolean => line !== '');
     },
     async jobPlan_read(jobId) {
       const response = await client.getJobTfPlan({ jobId, tfPlanFormat: resourcemanager.requests.GetJobTfPlanRequest.TfPlanFormat.Json });

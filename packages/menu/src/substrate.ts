@@ -29,8 +29,9 @@ export const clusterStepSchema = z.object({
  * Where a cluster stands, in one word: the TD controller's CONDITION
  * (docs/stratus.adoc, D13). Billing is not a condition; it is said apart.
  * STOPPED is a build left part way: steps done, none running, not up.
+ * TEARING DOWN is the teardown's task under way; GONE once it ends.
  */
-export const CLUSTER_CONDITIONS = ['SIZING', 'PLANNED', 'PARTLY BUILT', 'ASKING', 'BUILDING', 'UP', 'SERVING', 'FAILED', 'GONE'] as const;
+export const CLUSTER_CONDITIONS = ['SIZING', 'PLANNED', 'PARTLY BUILT', 'ASKING', 'BUILDING', 'UP', 'SERVING', 'TEARING DOWN', 'FAILED', 'GONE'] as const;
 
 /** One pool of nodes in a spec. */
 export const nodePoolSchema = z.object({

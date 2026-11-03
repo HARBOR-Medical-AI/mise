@@ -195,7 +195,13 @@ export class TdController {
     this.frame.log.append(foot);
     this.parts = { pills, header, views, body, strip, log, input, promptLabel };
     // The header's clock: time in the running step, and the cost so far, move between reads.
-    this.ticker = setInterval((): void => { if (this.cluster_get()?.running) this.header_draw(); }, 15_000);
+    this.ticker = setInterval((): void => {
+      const running = this.cluster_get()?.running;
+      if (running === null || running === undefined) return;
+      this.header_draw();
+      const clock: HTMLElement | null = this.parts.body.querySelector('.tdc-running-clock');
+      if (clock !== null) clock.textContent = this.sinceClock_text(running.since);
+    }, 15_000);
     this.draw();
   }
 
@@ -222,6 +228,9 @@ export class TdController {
     const was: ClusterSummary | null = this.cluster_get();
     this.clusters.clear();
     for (const cluster of clusters) this.clusters.set(cluster.name, cluster);
+    // A cluster torn down from here drops out of the read once nothing of it is left: its seat keeps it, GONE, so the
+    // word that ended the task stands until another cluster is chosen or the controller is left.
+    if (was !== null && was.condition === 'GONE' && !this.clusters.has(was.name)) this.clusters.set(was.name, was);
     if (this.current !== NEW_KEY && !this.clusters.has(this.current)) this.current = clusters[0]?.name ?? NEW_KEY;
     this.cues_play(was, this.cluster_get());
     this.draw();
@@ -308,13 +317,13 @@ export class TdController {
    */
   public async line_send(line: string): Promise<void> {
     if (this.busy !== null) {
-      this.log_add(`the lane is held by: ${this.busy} (STOP FOLLOWING frees it; the build goes on)`, 'note');
+      this.log_add(`the lane is held by: ${this.busy} (STOP FOLLOWING frees it; the task goes on)`, 'note');
       return;
     }
     this.before = this.cluster_get();
     this.busy = line;
     this.log_add(`stratus> ${line}`, 'sent');
-    if (/^(cluster (build|plan)|play) /.test(line)) { this.stepLog = []; this.stepLogLine = line; }
+    if (/^(cluster (build|plan|teardown)|play|wait) /.test(line)) { this.stepLog = []; this.stepLogLine = line; }
     this.draw();
     try {
       await this.hooks.run(line);
@@ -715,25 +724,7 @@ export class TdController {
   private build_make(cluster: ClusterSummary): HTMLElement[] {
     const middle: HTMLElement = el('div', 'tdc-col-middle');
     const running = cluster.running;
-    if (running !== null && running !== undefined) {
-      const now: HTMLElement = this.section_make(`RUNNING · ${(running.step ?? 'between steps').toUpperCase()}`, 'tdc-running', `/proc/steps/${running.job}`);
-      now.append(this.pairs_make([['SINCE', running.since === null ? '?' : `${running.since.slice(11, 16)} · ${duration_text(Date.now() - Date.parse(running.since))}`], ['THE TASK', 'goes on with every surface closed, and after a daemon restart']]));
-      const controls: HTMLElement = el('div', 'tdc-commands');
-      const following: boolean = this.busy !== null && this.busy.startsWith(`cluster build ${cluster.name}`);
-      const kill: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-destroy', 'KILL');
-      kill.type = 'button';
-      kill.title = `stops following, then sends: ${LINES.kill(running.job)}`;
-      kill.addEventListener('click', (): void => { this.hooks.voice.pill('KILL'); void this.kill_send(running.job); });
-      const follow: HTMLButtonElement = following ? el('button', 'tdc-pill tdc-pill-quiet', 'STOP FOLLOWING') : this.linePill_make('FOLLOW', LINES.follow(cluster.name), 'quiet');
-      if (following) {
-        follow.type = 'button';
-        follow.title = 'Ctrl-C: stops following; the build goes on';
-        follow.addEventListener('click', (): void => { this.hooks.voice.pill('STOP FOLLOWING'); this.hooks.stop(); });
-      }
-      controls.append(kill, el('span', 'tdc-commands-label', 'ASKS THE STEP TO STOP · NEVER FORCES'), el('span', 'tdc-flex'), follow);
-      now.append(controls);
-      middle.append(now);
-    }
+    if (running !== null && running !== undefined) middle.append(this.running_make(cluster, running));
     const plan: HTMLElement = this.section_make('THE PLAN', 'tdc-plan', cluster.plan?.at ? `MADE ${cluster.plan.at.slice(0, 16).replace('T', ' ')}` : undefined);
     if (cluster.plan === null || cluster.plan === undefined) {
       plan.append(el('p', 'tdc-prose', cluster.origin === 'adopted' ? 'No plan kept here. PLAN, under the tasks tier, plans against the adopted state; an apply is refused.' : 'No plan yet. BUILD makes it at infra-plan, and nothing it makes bills.'));
@@ -758,13 +749,70 @@ export class TdController {
     plan.append(commands);
     middle.append(plan);
 
+    return [this.strip_make(cluster), middle, this.stepLog_make(running ?? null)];
+  }
+
+  /**
+   * The task running on a cluster (its build, or its teardown): the step, since when, and KILL and FOLLOW on it.
+   *
+   * @param cluster - The cluster.
+   * @param running - Its task.
+   * @returns The section.
+   */
+  private running_make(cluster: ClusterSummary, running: NonNullable<ClusterSummary['running']>): HTMLElement {
+    const teardown: boolean = running.job.endsWith('-teardown');
+    const now: HTMLElement = this.section_make(`RUNNING · ${(running.step ?? 'between steps').toUpperCase()}`, 'tdc-running', `/proc/steps/${running.job}`);
+    now.append(this.pairs_make([['SINCE', this.sinceClock_text(running.since)], ['THE TASK', `goes on with every surface closed, and after a daemon restart${teardown ? '; what goes is listed beside, in that order, and the cluster is GONE when it ends' : ''}`]]));
+    // The clock moves between reads (the ticker rewrites it).
+    now.querySelector('.tdc-pair-value')?.classList.add('tdc-running-clock');
+    const controls: HTMLElement = el('div', 'tdc-commands');
+    const following: boolean = this.following_is(cluster.name);
+    const kill: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-destroy', 'KILL');
+    kill.type = 'button';
+    kill.title = `stops following, then sends: ${LINES.kill(running.job)}`;
+    kill.addEventListener('click', (): void => { this.hooks.voice.pill('KILL'); void this.kill_send(running.job); });
+    // A build is followed by its own line again; a teardown's line would ask again, so its task is waited on by id.
+    const follow: HTMLButtonElement = following ? el('button', 'tdc-pill tdc-pill-quiet', 'STOP FOLLOWING') : this.linePill_make('FOLLOW', teardown ? LINES.wait(running.job) : LINES.follow(cluster.name), 'quiet');
+    if (following) {
+      follow.type = 'button';
+      follow.title = 'Ctrl-C: stops following; the task goes on';
+      follow.addEventListener('click', (): void => { this.hooks.voice.pill('STOP FOLLOWING'); this.hooks.stop(); });
+    }
+    controls.append(kill, el('span', 'tdc-commands-label', 'ASKS THE TASK TO STOP · NEVER FORCES'), el('span', 'tdc-flex'), follow);
+    now.append(controls);
+    return now;
+  }
+
+  /**
+   * THE STEP'S LOG: the lines of the build, plan or teardown followed from here.
+   *
+   * @param running - The task running, or null.
+   * @returns The section.
+   */
+  private stepLog_make(running: ClusterSummary['running'] | null): HTMLElement {
     const logBox: HTMLElement = this.section_make('THE STEP\'S LOG', 'tdc-col-steplog', this.stepLogLine ?? (running ? `/proc/steps/${running.job}/log` : undefined));
     const lines: HTMLElement = el('div', 'tdc-steplog');
     const shown: string[] = this.stepLog.slice(-60);
     if (shown.length === 0) lines.append(el('span', 'tdc-quiet', running ? `following shows it here (FOLLOW, or: cat /proc/steps/${running.job}/log)` : 'nothing run from here yet'));
     for (const one of shown) lines.append(el('span', 'tdc-steplog-line', one));
     logBox.append(lines);
-    return [this.strip_make(cluster), middle, logBox];
+    return logBox;
+  }
+
+  /** Whether the line on the lane follows this cluster's task (its build, its teardown, or a wait on either). */
+  private following_is(name: string): boolean {
+    if (this.busy === null) return false;
+    return this.busy.startsWith(LINES.build(name)) || this.busy.startsWith(LINES.teardown(name)) || this.busy === LINES.wait(`${name}-teardown`) || this.busy === LINES.wait(`${name}-build`);
+  }
+
+  /**
+   * SINCE, as the clock reads it: the hour the task started and how long it has run.
+   *
+   * @param since - When it started, or null.
+   * @returns The text.
+   */
+  private sinceClock_text(since: string | null): string {
+    return since === null ? '?' : `${since.slice(11, 16)} · ${duration_text(Date.now() - Date.parse(since))}`;
   }
 
   private cluster_make(cluster: ClusterSummary): HTMLElement[] {
@@ -829,7 +877,10 @@ export class TdController {
 
   private teardown_make(cluster: ClusterSummary): HTMLElement[] {
     const gone: boolean = cluster.origin === 'found' && cluster.condition === 'GONE';
-    const goes: HTMLElement = this.section_make(gone ? 'WHAT IS LEFT · AND GOES' : 'WHAT GOES · IN THIS ORDER', 'tdc-col-wide', 'ONLY WHAT THIS TRUSTED DOMAIN MADE');
+    const running = cluster.running;
+    const tearing: boolean = running !== null && running !== undefined && running.job.endsWith('-teardown');
+    const torn: boolean = !gone && cluster.condition === 'GONE';
+    const goes: HTMLElement = this.section_make(gone ? 'WHAT IS LEFT · AND GOES' : tearing ? 'WHAT GOES · NOW, IN THIS ORDER' : torn ? 'WHAT WENT · IN THIS ORDER' : 'WHAT GOES · IN THIS ORDER', 'tdc-col-wide', 'ONLY WHAT THIS TRUSTED DOMAIN MADE');
     const rows: Array<[string, string]> = gone ? [
       ['the stack itself', 'emptied by an earlier teardown; it carried the tag, so the cluster was found again'],
       ['its compartment and the image bucket', 'when stratus made them (clusters/<name>); another\'s keeps itself and loses the tag'],
@@ -846,7 +897,20 @@ export class TdController {
     for (const [what, how] of rows) list.append(el('span', 'tdc-destroy-mark', '−'), el('span', 'tdc-teardown-what', what), el('span', 'tdc-teardown-how', how));
     goes.append(list, el('p', 'tdc-prose tdc-quiet', 'Nothing else is touched: the zone, the tag namespace and what other clusters made stay. The engine counts the stack and the volumes when the line runs, and asks for the name typed back.'));
 
+    if (tearing && running !== null && running !== undefined) {
+      // The teardown runs: the task's clock, its log and KILL stand where the guard stood, until the cluster is GONE.
+      const side: HTMLElement = el('div', 'tdc-col-middle');
+      side.append(this.running_make(cluster, running), this.stepLog_make(running));
+      return [goes, side];
+    }
     const guard: HTMLElement = this.section_make('THE GUARD', 'tdc-col-side');
+    if (torn) {
+      // Torn down from here: said as such, with when; the line is refused by name and no lock stands.
+      const box: HTMLElement = el('div', 'tdc-note tdc-note-found');
+      box.append(el('span', 'tdc-note-title', 'TORN DOWN'), el('span', 'tdc-prose', `${cluster.name} was torn down ${cluster.gone === null || cluster.gone === undefined ? '' : `${cluster.gone.slice(0, 16).replace('T', ' ')} `}and nothing of it bills. A build brings it back.`));
+      guard.append(box);
+      return [goes, guard];
+    }
     const refused: string | undefined = cluster.refused?.['teardown'];
     const protectedOnly: boolean = refused !== undefined && refused.startsWith('protected');
     if (refused !== undefined && !protectedOnly) {
@@ -1137,7 +1201,7 @@ export class TdController {
     this.parts.log.scrollTop = this.parts.log.scrollHeight;
     if (kind === 'out' && this.stepLogLine !== null && this.busy === this.stepLogLine) {
       this.stepLog.push(text);
-      if (this.view === 'build') {
+      if (this.view === 'build' || this.view === 'teardown') {
         const box: HTMLElement | null = this.parts.body.querySelector('.tdc-steplog');
         if (box !== null) {
           box.querySelector('.tdc-quiet')?.remove();
@@ -1161,6 +1225,8 @@ export class TdController {
   private cues_play(was: ClusterSummary | null, now: ClusterSummary | null): void {
     if (was === null || now === null || was.name !== now.name) return;
     if (was.condition !== 'FAILED' && now.condition === 'FAILED') { this.hooks.voice.cue('redalert'); return; }
+    // The teardown ended: said in the log, not only by the word changing.
+    if (was.condition !== 'GONE' && now.condition === 'GONE') { this.hooks.voice.cue('ack'); this.log_add(`${now.name}: torn down; nothing of it bills`, 'note'); return; }
     const doneBefore: number = stepsDone_count(was).done;
     if (stepsDone_count(now).done > doneBefore) this.hooks.voice.cue('ack');
   }

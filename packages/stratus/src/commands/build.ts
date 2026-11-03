@@ -324,9 +324,10 @@ async function run_follow(runner: JobRunner, id: string, shown?: () => void): Pr
  * @param id - Its id in the build steps' source.
  * @param label - What it is called.
  * @param run - Its work.
+ * @param started - Called once the job has started, before it is followed (a state shown with the task in it).
  * @returns Its record at the end, or why it did not start or end.
  */
-export async function job_runFollowed(id: string, label: string, run: Parameters<JobRunner['job_start']>[3]): Promise<{ record: JobRecord } | { error: string }> {
+export async function job_runFollowed(id: string, label: string, run: Parameters<JobRunner['job_start']>[3], started?: () => void): Promise<{ record: JobRecord } | { error: string }> {
   const runner: JobRunner | null = runner_get();
   if (runner === null) return { error: 'this session runs no tasks' };
   try {
@@ -334,6 +335,7 @@ export async function job_runFollowed(id: string, label: string, run: Parameters
   } catch (error: unknown) {
     return { error: error instanceof JobRefusal ? error.message : String(error) };
   }
+  started?.();
   sink_dataLine(chalk.gray(`following /proc/${STEPS_SOURCE}/${id}; Ctrl-C stops following, not the task (wait ${id} follows it again)`));
   const ended: JobRecord | undefined = await run_follow(runner, id);
   if (ended === undefined) return { error: `/proc/${STEPS_SOURCE}/${id}: gone` };
