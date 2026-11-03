@@ -26,7 +26,7 @@ import { vfs, type VfsListing } from '../../lib/vfs/vfs.js';
 import { vfsDispatcher_get } from '../../core/filesystem.js';
 import { spinner } from '../../lib/spinner.js';
 import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
-import { errorStack, type Result, type VFSSubtree } from '@fnndsc/fond';
+import { errorStack, type Result, type VFSSubtree, type VFSSubtreeEntry } from '@fnndsc/fond';
 import { envelope_error, type CommandEnvelope, type ListingItem } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
 
@@ -69,6 +69,8 @@ export interface FindQuery {
   acts: boolean;
   /** Whether a test asks which pipeline run made a job (`-pipeline`, `-workflow`). */
   asksRuns: boolean;
+  /** One pipeline run asked for by id (`-workflow N`, no pattern): `/proc/jobs` is searched for its feeds alone. */
+  workflowId: number | null;
 }
 
 /** How long a walk runs before it says how far it has got. */
@@ -121,6 +123,7 @@ export function find_parse(args: string[]): FindQuery | string {
   let mindepth: number = 0;
   let acts: boolean = false;
   let asksRuns: boolean = false;
+  let workflowId: number | null = null;
 
   const argument = (predicate: string): string => {
     const value: string | undefined = words[++at];
@@ -162,9 +165,11 @@ export function find_parse(args: string[]): FindQuery | string {
         break;
       }
       case '-pipeline': case '-workflow': {
-        const re: RegExp = pattern_convertToRegExp(argument(word), true);
+        const wanted: string = argument(word);
+        const re: RegExp = pattern_convertToRegExp(wanted, true);
         const field: 'pipeline' | 'workflow' = word === '-pipeline' ? 'pipeline' : 'workflow';
         asksRuns = true;
+        if (field === 'workflow' && /^\d+$/.test(wanted) && workflowId === null) workflowId = Number(wanted);
         expr = { kind: 'test', test: (node: FindNode): boolean => node[field] !== undefined && re.test(node[field] as string) };
         break;
       }
@@ -213,7 +218,7 @@ export function find_parse(args: string[]): FindQuery | string {
   try {
     const expr: FindExpr = words.length === 0 ? { kind: 'test', test: (): boolean => true } : or();
     if (at < words.length) return `find: unexpected '${words[at]}'`;
-    return { starts, expr, maxdepth, mindepth, acts, asksRuns };
+    return { starts, expr, maxdepth, mindepth, acts, asksRuns, workflowId };
   } catch (error: unknown) {
     return error instanceof Error ? error.message : String(error);
   }
@@ -329,7 +334,16 @@ export async function builtin_find(args: string[]): Promise<CommandEnvelope> {
       };
       // A mount that holds the subtree answers it whole (/proc/jobs, from
       // its cache); only what it leaves unanswered is walked.
-      const held: VFSSubtree | null = await vfsDispatcher_get().subtree(resolved).catch((): null => null);
+      let held: VFSSubtree | null = await vfsDispatcher_get().subtree(resolved).catch((): null => null);
+      // One pipeline run asked for by id under /proc/jobs: CUBE names the feeds its jobs are in, and only those are
+      // read; every other feed, indexed or not, is left alone (#1364: a cold session indexed them all first).
+      if (held !== null && query.workflowId !== null && resolved === '/proc/jobs') {
+        // Read when asked, not at load: find's other walks owe salsa nothing.
+        const { workflowFeedIDs_get } = await import('@fnndsc/salsa');
+        const feeds: Set<string> = new Set((await workflowFeedIDs_get(query.workflowId)).map((id: number): string => `feed_${id}`));
+        const inScope = (rel: string): boolean => feeds.has(rel.split('/')[0] ?? '');
+        held = { entries: held.entries.filter((entry: VFSSubtreeEntry): boolean => inScope(entry.rel)), unanswered: held.unanswered.filter(inScope) };
+      }
       if (held !== null) {
         const join = (base: string, rel: string): string => (base === '/' ? `/${rel}` : `${base}/${rel}`);
         for (const entry of held.entries) {

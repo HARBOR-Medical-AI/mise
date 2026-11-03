@@ -314,6 +314,32 @@ async function cache_ensure(): Promise<void> {
 }
 
 /**
+ * Ensures what one path needs. `/proc/jobs` itself needs the whole index. A
+ * path naming one feed needs that feed alone: its row is read and kept while
+ * the index builds on behind, so a fresh session's `ls /proc/jobs/feed_N` (or
+ * a `cd` into its `data`) answers in that feed's time, not every feed's
+ * (#1364: minutes before the first line, with the index warming).
+ *
+ * @param pathStr - The path asked for.
+ */
+async function cacheFor_ensure(pathStr: string): Promise<void> {
+  const cache: ProcCache = procCache_get();
+  if (cache.built) return;
+  const { feedID } = procPath_parse(pathStr.replace(/\/$/, ''));
+  if (feedID === null) {
+    await cache_ensure();
+    return;
+  }
+  // The index lands behind the prompt; this read does not wait for it.
+  procCache_build().catch((): void => { /* named on the error stack by the build */ });
+  if (cache.feed_get(feedID) !== undefined) return;
+  const client = await chrisConnection.client_get();
+  if (!client) return;
+  const row: FeedRow | null = await feedRow_fetch(client, feedID);
+  if (row !== null) cache.feed_add(procFeed_create(row.feed));
+}
+
+/**
  * Loads instance topology for a single feed.
  * Uses in-flight map to prevent duplicate API calls.
  */
@@ -682,7 +708,7 @@ export class ProcVfsProvider implements VFSProvider {
    * @returns The authoritative CFS output path, or an error when absent.
    */
   async linkTarget_resolve(pathStr: string): Promise<Result<string>> {
-    await cache_ensure();
+    await cacheFor_ensure(pathStr);
     const clean: string = pathStr.replace(/\/$/, '');
     const { feedID, instanceID, virtualFile } = procPath_parse(clean);
     if (feedID === null || instanceID === null || virtualFile !== 'data') {
@@ -776,7 +802,7 @@ export class ProcVfsProvider implements VFSProvider {
     pathStr: string,
     _options?: { sort?: 'name' | 'size' | 'date' | 'owner'; reverse?: boolean }
   ): Promise<Result<VFSItem[]>> {
-    await cache_ensure();
+    await cacheFor_ensure(pathStr);
     const cache: ProcCache = procCache_get();
     const clean: string = pathStr.replace(/\/$/, '');
 
@@ -904,7 +930,7 @@ export class ProcVfsProvider implements VFSProvider {
    * @returns The file's bytes.
    */
   private async bytes_read(pathStr: string): Promise<Result<Buffer>> {
-    await cache_ensure();
+    await cacheFor_ensure(pathStr);
     const clean: string = pathStr.replace(/\/$/, '');
     const { instanceID, virtualFile, dataRemainder } = procPath_parse(clean);
     if (instanceID !== null && virtualFile === 'data' && dataRemainder !== null && dataRemainder !== '') {
@@ -927,7 +953,7 @@ export class ProcVfsProvider implements VFSProvider {
   }
 
   private async text_read(pathStr: string): Promise<Result<string>> {
-    await cache_ensure();
+    await cacheFor_ensure(pathStr);
     const cache: ProcCache = procCache_get();
     const clean: string = pathStr.replace(/\/$/, '');
     const { feedID, instanceID, virtualFile, dataRemainder } = procPath_parse(clean);

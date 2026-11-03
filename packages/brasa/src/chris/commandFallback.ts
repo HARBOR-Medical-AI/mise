@@ -18,6 +18,7 @@ import { envelope_deliver, sink_get } from '../core/sink.js';
 import { exitCode_read, handler_runDirect } from '../core/handlerRun.js';
 import { binExecutableMatches_get, binPluginHighest_find, type BinExecutableMatches, type BinPluginHighest } from './binExecutables.js';
 import { builtin_pipeline } from '../builtins/res/pipeline.js';
+import type { PipelineScheduled } from '../api/models.js';
 import { builtin_executePlugin } from '../builtins/pluginExecute.js';
 import { pluginExecutable_handle } from '../builtins/executable.js';
 import { pipelineExecutableHelp_render, pluginExecutableHelp_render } from '../builtins/help.js';
@@ -37,9 +38,9 @@ import { OperandRefusal, operands_read, stage_lines, stage_make, stageMade_lines
  *
  * @param name - The pipeline's `/bin` name, for the refusal lines.
  * @param args - The words after it.
- * @returns The words to run with (`--previous` set), or null after a refusal was said.
+ * @returns The words to run with (`--previous` set) and whether a feed was rooted, or null after a refusal was said.
  */
-async function pipelineOperand_place(name: string, args: string[]): Promise<string[] | null> {
+async function pipelineOperand_place(name: string, args: string[]): Promise<{ words: string[]; rooted: boolean } | null> {
   let operands: BinOperands;
   try {
     operands = await operands_read(args);
@@ -48,7 +49,15 @@ async function pipelineOperand_place(name: string, args: string[]): Promise<stri
     sink_get().err_write(chalk.red(`${name}: ${error.message}\n`));
     return null;
   }
-  if (operands.directory === null && operands.subjects.length === 0) return args;
+  if (operands.directory === null && operands.subjects.length === 0) {
+    // No operand: the working directory is the input, as it is for a plugin run from /bin. Inside a feed node the
+    // run goes on from that node (`pipeline run` reads it); outside one, pl-dircopy roots a new feed on it first,
+    // as the directory operand would (#1364).
+    if (operands.rest.some((word: string): boolean => word.split('=')[0] === '--previous')) return { words: args, rooted: false };
+    const cwd: string = await path_resolve('.');
+    if (path_isInFeed(cwd)) return { words: args, rooted: false };
+    operands = { ...operands, directory: cwd, typed: [cwd] };
+  }
   if (operands.rest.some((word: string): boolean => word.split('=')[0] === '--previous')) {
     sink_get().err_write(chalk.red(`${name}: the operand and --previous say the input twice\n`));
     return null;
@@ -59,7 +68,7 @@ async function pipelineOperand_place(name: string, args: string[]): Promise<stri
       sink_get().err_write(chalk.red(`${name}: ${operands.typed[0]} is in a feed but not at a node (…/feeds/feed_N/pl-x_ID)\n`));
       return null;
     }
-    return ['--previous', String(here), ...operands.rest];
+    return { words: ['--previous', String(here), ...operands.rest], rooted: false };
   }
   let stage: Stage | null = null;
   let root: string = operands.directory ?? '';
@@ -87,7 +96,7 @@ async function pipelineOperand_place(name: string, args: string[]): Promise<stri
   if (stage !== null) {
     for (const line of stageMade_lines(stage, `/home/${feed.owner_username}/feeds/feed_${feed.id}/pl-dircopy_${rootInstanceID}/data`)) sink_get().data_write(chalk.cyan(`${line}\n`));
   }
-  return ['--previous', String(rootInstanceID), ...operands.rest];
+  return { words: ['--previous', String(rootInstanceID), ...operands.rest], rooted: true };
 }
 
 /**
@@ -123,8 +132,11 @@ async function pipelineExecutable_handle(name: string, args: string[]): Promise<
     envelope = await builtin_pipeline(['source', name]);
   } else {
     // The operand says where the run starts (#1303); refused, nothing runs.
-    const placed: string[] | null = await pipelineOperand_place(name, args);
-    envelope = placed === null ? { status: 'error', rendered: '' } : await builtin_pipeline(['run', name, ...placed]);
+    const placed: { words: string[]; rooted: boolean } | null = await pipelineOperand_place(name, args);
+    envelope = placed === null ? { status: 'error', rendered: '' } : await builtin_pipeline(['run', name, ...placed.words]);
+    // The model says when the run rooted a feed first: the fallback rooted it, so the fallback says so (the kind is
+    // `pipeline.scheduled`, PIPELINE_SCHEDULED_KIND; named here so a test's stub of the pipeline module need not carry it).
+    if (placed?.rooted === true && envelope.model?.kind === 'pipeline.scheduled') (envelope.model.data as PipelineScheduled).newFeed = true;
   }
   const result: CommandEnvelope = envelope ?? { status: 'ok', rendered: '' };
   const exitCodeAfter: number = exitCode_read();

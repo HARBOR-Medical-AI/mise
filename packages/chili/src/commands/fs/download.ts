@@ -397,23 +397,39 @@ export async function files_downloadWithProgress(
  * Builds concrete host-local transfer plans for multiple exact CFS sources.
  *
  * A directory source retains its basename below the local destination, while
- * an individual file is placed directly in that destination.
+ * an individual file is placed directly in that destination. Two sources
+ * with one basename (a run's nodes each write `data`) each land under their
+ * parent's name as well, so neither silently takes the other's place, and the
+ * notice channel says so (#1364).
  *
  * @param sources - Exact CFS source paths.
  * @param localDirectory - Host-local directory receiving the matches.
+ * @param options - Download options, for the notice.
  * @returns The CFS-file and directory plans needed for the transfer.
  */
 async function downloadPlans_create(
   sources: readonly string[],
   localDirectory: string,
+  options: DownloadOptions = {},
 ): Promise<DownloadBatchPlan> {
   const plan: DownloadBatchPlan = { directories: [], files: [] };
+  const resolved: string[] = [];
+  for (const source of sources) resolved.push(await path_resolveChrisFs(source, {}));
+  const names: string[] = resolved.map((one: string): string => path.basename(one));
+  const shared: Set<string> = new Set(names.filter((name: string, index: number): boolean => names.indexOf(name) !== index));
+  const localName = (resolvedChris: string): string => {
+    const base: string = path.basename(resolvedChris);
+    return shared.has(base) ? path.join(path.basename(path.dirname(resolvedChris)), base) : base;
+  };
+  if (shared.size > 0) {
+    const told: string = resolved.filter((one: string): boolean => shared.has(path.basename(one))).map(localName).join(', ');
+    downloadNotice_emit(options, `${[...shared].map((name: string): string => `'${name}'`).join(', ')} named more than once: each lands under its parent's name (${told})`, 'status');
+  }
 
-  for (const source of sources) {
-    const resolvedChris: string = await path_resolveChrisFs(source, {});
+  for (const resolvedChris of resolved) {
     const isDirectory: boolean = await files_path_isDirectory(resolvedChris);
     if (isDirectory) {
-      const targetDirectory: string = path.join(localDirectory, path.basename(resolvedChris));
+      const targetDirectory: string = path.join(localDirectory, localName(resolvedChris));
       plan.directories.push(targetDirectory);
       const items: FsItem[] = await files_listRecursive(resolvedChris);
       for (const item of items) {
@@ -430,7 +446,7 @@ async function downloadPlans_create(
 
     plan.files.push({
       remotePath: resolvedChris,
-      localPath: path.join(localDirectory, path.basename(resolvedChris)),
+      localPath: path.join(localDirectory, localName(resolvedChris)),
     });
   }
 
@@ -515,7 +531,7 @@ export async function files_downloadManyWithProgress(
     label: 'Scanning CFS files to download',
     status: 'running',
   });
-  const plans: DownloadBatchPlan = await downloadPlans_create(sources, localDirectory);
+  const plans: DownloadBatchPlan = await downloadPlans_create(sources, localDirectory, options);
   await downloadDestination_prepare(localDirectory, plans.files, options);
   for (const directory of plans.directories) {
     await directory_ensureExists(directory);

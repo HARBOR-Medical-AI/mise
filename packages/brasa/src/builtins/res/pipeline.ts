@@ -272,6 +272,7 @@ export const PIPELINE_SCHEDULED_KIND: string = 'pipeline.scheduled';
  * @param feedId - The feed its nodes joined.
  * @param instanceIds - The nodes, in the order CUBE scheduled them.
  * @param settlement - How the wait ended, or null when the line did not wait.
+ * @param newFeed - Whether the run rooted a new feed first.
  * @returns The model.
  */
 export function pipelineScheduled_make(
@@ -280,6 +281,7 @@ export function pipelineScheduled_make(
   feedId: number,
   instanceIds: ReadonlyArray<number>,
   settlement: RunSettlement | null,
+  newFeed: boolean = false,
 ): PipelineScheduled {
   const cache = procCache_get();
   const instances: PipelineNode[] = instanceIds.map((instanceId: number): PipelineNode => {
@@ -295,7 +297,11 @@ export function pipelineScheduled_make(
     .map((instanceId: number): number | null | undefined => cache.instance_get(instanceId)?.parentID)
     .filter((parent: number | null | undefined): parent is number => typeof parent === 'number'));
   const leaves: number[] = instanceIds.filter((instanceId: number): boolean => !parents.has(instanceId));
-  return { pipelineName, workflowId, feedId, newFeed: false, instances, leaves };
+  // Where the work ends, as paths: a play downloads a leaf's output without reaching through every node.
+  const leafPaths: string[] = leaves
+    .map((instanceId: number): string | null => cache.instance_get(instanceId)?.outputPath ?? null)
+    .filter((outputPath: string | null): outputPath is string => outputPath !== null);
+  return { pipelineName, workflowId, feedId, newFeed, instances, leaves, leafPaths };
 }
 
 /**

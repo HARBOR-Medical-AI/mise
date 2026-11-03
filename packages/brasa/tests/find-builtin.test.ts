@@ -5,8 +5,11 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { cuminMock_install } from './support/cuminMock.js';
 
+/** The feeds CUBE names for a workflow asked by id: run 51177's jobs are in feed_5 alone. */
+const mockWorkflowFeeds = jest.fn(async (workflowId: number): Promise<number[]> => (workflowId === 51177 ? [5] : []));
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
   context_getSingle: jest.fn(async () => ({ user: 'chris', folder: '/home/chris' })),
+  workflowFeedIDs_get: mockWorkflowFeeds,
 }));
 cuminMock_install(() => ({
   envelope_ok: (rendered: string) => ({ status: 'ok', rendered }),
@@ -126,6 +129,20 @@ describe('find', () => {
     expect(result.status).toBe('ok');
     expect((await builtin_find(['/proc/jobs', '-workflow', '51177'])).rendered).toBe('/proc/jobs/feed_5/pl-dircopy_10/pl-dylld_11\n');
     expect((await builtin_find(['/proc/jobs', '-pipeline', ''])).rendered).toBe('/proc/jobs/feed_5/pl-dircopy_10\n');   // run directly
+  });
+
+  it('-workflow by id reads the run\'s feeds alone: a feed not indexed is not walked for it (#1364)', async () => {
+    listed.length = 0;
+    const result = await builtin_find(['/proc/jobs', '-workflow', '51177', '-plugin', 'pl-dylld']);
+    expect(mockWorkflowFeeds).toHaveBeenCalledWith(51177);
+    expect(result.rendered).toBe('/proc/jobs/feed_5/pl-dircopy_10/pl-dylld_11\n');
+    // feed_6, unanswered by the index, is outside the run: never listed, and nothing left unjudged.
+    expect(listed).not.toContain('/proc/jobs/feed_6');
+    expect(result.renderedErr).toBeUndefined();
+    // A pattern is not an id: every feed is still read.
+    listed.length = 0;
+    await builtin_find(['/proc/jobs', '-workflow', '5*']);
+    expect(listed).toContain('/proc/jobs/feed_6');
   });
 
   it('matches shell patterns: * crosses /, ? one character, [..] a class, \\ escapes', () => {
