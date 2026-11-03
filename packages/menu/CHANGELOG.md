@@ -1,5 +1,13 @@
 # @fnndsc/menu
 
+## 0.34.2
+
+### Patch Changes
+
+- 4089a9b: A cluster carries its teardown's steps, and reads PARTLY TORN when a teardown stopped part way.
+
+  The summary gains `teardown` (when it started, and each of destroy, dns, image, volumes, stack, compartment and installer where it stands: not done, running, done, skipped or failed) and the condition PARTLY TORN.
+
 ## 0.34.1
 
 ### Patch Changes
