@@ -120,8 +120,6 @@ export function tdController_wire(context: Pick<HostContext, 'client' | 'manage_
   // Esc gives the screen back, ahead of every other Esc listener; a question on the strip is declined first.
   window.addEventListener('keydown', (event: KeyboardEvent): void => {
     if (controller === null || event.key !== 'Escape') return;
-    // The password sheet over the controller takes Escape itself (NOT NOW); the controller stays.
-    if (document.querySelector('.cloud-elevate') !== null) return;
     event.stopImmediatePropagation();
     event.preventDefault();
     close();
