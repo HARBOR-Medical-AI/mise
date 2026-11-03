@@ -71,6 +71,8 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
     if (screen === null || event.key !== 'Escape') return;
     event.stopImmediatePropagation();
     event.preventDefault();
+    // One layer at a time: a gutter sent away comes back first; the next Esc gives the screen back.
+    if (screen.gutter_restore()) return;
     close();
   }, true);
 

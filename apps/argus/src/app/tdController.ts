@@ -122,6 +122,8 @@ export function tdController_wire(context: Pick<HostContext, 'client' | 'manage_
     if (controller === null || event.key !== 'Escape') return;
     event.stopImmediatePropagation();
     event.preventDefault();
+    // One layer at a time: a gutter sent away comes back first; the next Esc gives the screen back.
+    if (controller.gutter_restore()) return;
     close();
   }, true);
 
