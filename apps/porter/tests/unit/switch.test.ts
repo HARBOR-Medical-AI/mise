@@ -99,6 +99,25 @@ describe('POST /switch', () => {
     await newer.app.close();
   });
 
+  it('restarts a stratus session from the browser with the door it was entered by, so it can still be raised', async () => {
+    creds_file();
+    const built: PorterApp = await porterApp_build({ installed: { stratus: '0.10.1', calypso: '0.29.0' }, config, host, mint: async () => ({ token: 'T' }) });
+    const reply = await built.app.inject({ method: 'POST', url: '/login', payload: { username: 'rudolph', password: 'p' }, headers: { accept: 'application/json' } });
+    const cookie: string = (String(reply.headers['set-cookie']).split(';')[0]) ?? '';
+    host.up.set(STRATUS, { identity: 'u@t', url: 'ws://127.0.0.1:5555', token: 'S', versions: { stratus: '0.10.1', calypso: '0.29.0' } });
+    host.armed.set(STRATUS, false);
+    const joined = await built.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie } });
+    expect(joined.json()).toMatchObject({ state: 'attached' });
+    const stratusCookie: string = (String(joined.headers['set-cookie']).split(';')[0]) || cookie;
+    const before: number = host.begun.length;
+    const restarted = await built.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: stratusCookie } });
+    expect(restarted.json()).toMatchObject({ state: 'restarting' });
+    expect(host.begun).toHaveLength(before + 1);
+    // The door the login named goes with the restart; without it the session is READ with no way up.
+    expect(host.begun.at(-1)).toMatchObject({ identity: STRATUS, spend: false, replace: true, door: { user: 'rudolph' } });
+    await built.app.close();
+  });
+
   it('joins a session up on the tier asked, restarts one on the other, and goes back to ChRIS', async () => {
     creds_file();
     const cookie: string = await login();
