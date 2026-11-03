@@ -572,10 +572,11 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // rather than proxying to a daemon on its way out.
     registry.pending_note(entry.identity, entry.user);
     if (identity_isStratus(entry.identity)) {
-      // A stratus session restarts on its owner's credentials, on the tier it had.
+      // A stratus session restarts on its owner's credentials, on the tier it had, with the same door to be raised at
+      // (a restart without the door left the session READ with no way up: TEAR DOWN · REFUSED, 2026-11-03).
       const configPath: string | null = creds.ociConfig_find(owner_extract(entry.identity));
       if (configPath === null) return wantsJson ? reply.code(404).send({ error: 'no OCI credentials are filed for this session any more' }) : reply.redirect('/login', 303);
-      host.stratus_begin(entry.identity, configPath, host.stratus_armed(entry.identity) === true, true);
+      host.stratus_begin(entry.identity, configPath, host.stratus_armed(entry.identity) === true, true, { cubeUrl: config.cubeUrl, user: entry.user });
       options.log?.(`restarting ${entry.user}'s stratus session, asked from their browser`);
       return wantsJson ? { key, greet: `/greet/${key}`, state: 'restarting' } : reply.redirect(`/greet/${key}`, 303);
     }
