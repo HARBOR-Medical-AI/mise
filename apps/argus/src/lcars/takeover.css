@@ -115,3 +115,31 @@
 .takeover-body > * { flex: 1 1 0; min-height: 0; }
 .takeover-aside { flex: none; }
 .takeover-log { flex: 0 0 var(--takeover-log); min-height: 0; display: flex; flex-direction: column; padding: 0.4rem 0.6rem 0 1.6rem; }
+/* The gutter glides off stage left under the operator's own dismissal, as the
+ * page's does (argus.css, body[data-gutter='away'] .left-frame): a press on
+ * the view already shown sends it away, the negative margin hands its width
+ * to the stage, and the head's elbow stays. The restore strip, the page's
+ * #gutter-restore on this frame, or Esc, brings it back. */
+.takeover[data-gutter='away'] .takeover-gutter {
+  translate: calc(-100% - 20px) 0;
+  margin-right: calc(-1 * var(--lfw));
+}
+.takeover-gutter-restore { display: none; }
+.takeover[data-gutter='away'] .takeover-gutter-restore {
+  display: block;
+  position: fixed;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 12px;
+  z-index: 1000;
+  border-radius: 0 6px 6px 0;
+  background-color: var(--october-sunset);
+  cursor: pointer;
+  animation: beckon 3.5s ease-in-out infinite;
+}
+.takeover-gutter-restore:hover {
+  animation: none;
+  background-color: var(--harvestgold);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--harvestgold) 60%, transparent);
+}

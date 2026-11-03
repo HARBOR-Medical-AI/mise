@@ -73,6 +73,10 @@ export interface TakeoverFrame {
   view_mark: (key: string) => void;
   /** Replaces the views, for a screen whose views come from data (a script's lines); LEAVE stays. */
   views_set: (views: ReadonlyArray<TakeoverView>) => void;
+  /** Whether the gutter is off stage (a press on the view already shown sent it away). */
+  gutterAway_is: () => boolean;
+  /** Brings the gutter back when it is away; true when it was. */
+  gutter_restore: () => boolean;
 }
 
 /** The page's seats, in the gutter's order; a screen with more views takes the next hue. */
@@ -162,6 +166,17 @@ export function takeoverFrame_build(spec: TakeoverSpec, onView: (key: string) =>
   // The body row: the views on the gutter, LEAVE closing it, the stage beside.
   const gutter: HTMLElement = el('nav', 'takeover-gutter');
   gutter.setAttribute('aria-label', spec.labels.views);
+  // The gutter's restore strip: the page's #gutter-restore, on this frame; the only pointer target left once the
+  // gutter has carried its seats away.
+  const restore: HTMLElement = el('div', 'takeover-gutter-restore');
+  restore.setAttribute('role', 'button');
+  restore.setAttribute('tabindex', '0');
+  restore.title = 'restore gutter';
+  const gutterAway_set = (away: boolean): void => {
+    if (away) root.dataset['gutter'] = 'away';
+    else delete root.dataset['gutter'];
+  };
+  restore.addEventListener('click', (): void => gutterAway_set(false));
   const seats: HTMLElement = el('div', '');
   const views: Map<string, HTMLButtonElement> = new Map();
   let shown: ReadonlyArray<TakeoverView> = spec.views;
@@ -173,7 +188,16 @@ export function takeoverFrame_build(spec: TakeoverSpec, onView: (key: string) =>
       const button: HTMLButtonElement = el('button', `${seatClass}${view.destroy === true ? ' takeover-view-destroy' : ''}`, view.label);
       button.type = 'button';
       button.dataset['view'] = view.key;
-      button.addEventListener('click', (): void => onView(view.key));
+      // As the page's gutter: a press on the view ALREADY shown sends the gutter off stage left, handing its width to
+      // the stage; a press that would navigate stays deterministic. The restore strip, or Esc, brings it back.
+      button.addEventListener('click', (): void => {
+        if (button.getAttribute('aria-current') === 'page') {
+          gutterAway_set(true);
+          return;
+        }
+        gutterAway_set(false);
+        onView(view.key);
+      });
       views.set(view.key, button);
       seats.append(button);
     });
@@ -204,7 +228,7 @@ export function takeoverFrame_build(spec: TakeoverSpec, onView: (key: string) =>
   main.append(band_make(6, ''), stage);
   const wrap: HTMLElement = el('div', 'takeover-wrap');
   wrap.append(gutter, main);
-  root.append(top, wrap);
+  root.append(top, wrap, restore);
 
   // The chosen view's seat is lit, as LANG is when it is live. The first seat
   // carries the body's elbow, so the band's first block and the fillet take
@@ -223,5 +247,12 @@ export function takeoverFrame_build(spec: TakeoverSpec, onView: (key: string) =>
     seats_fill();
   };
 
-  return { root, seat, face, views, leave, stageTitle: over.title, stageNote: over.note, body, aside, logTitle: logStrip.title, logNote: logStrip.note, log, view_mark, views_set };
+  const gutterAway_is = (): boolean => root.dataset['gutter'] === 'away';
+  const gutter_restore = (): boolean => {
+    if (!gutterAway_is()) return false;
+    gutterAway_set(false);
+    return true;
+  };
+
+  return { root, seat, face, views, leave, stageTitle: over.title, stageNote: over.note, body, aside, logTitle: logStrip.title, logNote: logStrip.note, log, view_mark, views_set, gutterAway_is, gutter_restore };
 }
