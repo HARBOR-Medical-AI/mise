@@ -815,40 +815,56 @@ function landing_set(on: boolean): void {
   }
 }
 
-/** The localStorage key remembering the theme. */
-const LCARS_STORAGE_KEY: string = 'argus-theme';
-/** The key the choice was remembered under before the attribute was renamed. */
+/**
+ * The session a theme is kept for: a ChRIS session and a stratus session
+ * each keep their own choice in this browser, so neither leaks into the
+ * other. ChRIS starts in MEDICAL (sickbay); the cloud starts in LOWER DECKS.
+ */
+type ThemeSession = 'chris' | 'stratus';
+
+/** The localStorage key remembering the theme, by session. */
+const LCARS_STORAGE_KEYS: Readonly<Record<ThemeSession, string>> = { chris: 'argus-theme', stratus: 'argus-theme-stratus' };
+/** The key a ChRIS choice was remembered under before the attribute was renamed. */
 const LCARS_STORAGE_KEY_FORMER: string = 'argus-lcars';
 
-/** The scheme a browser that has never chosen one starts in. */
-const LCARS_DEFAULT_KEY: string = 'medical';
+/** The scheme a browser that has never chosen one starts in, by session. */
+const LCARS_DEFAULT_KEYS: Readonly<Record<ThemeSession, string>> = { chris: 'medical', stratus: 'lower-decks' };
 
 /** Scheme keys that were renamed, so a remembered choice survives. */
 const LCARS_RENAMED: Readonly<Record<string, string>> = { sickbay: 'medical' };
 
+/** The theme pill, once wired: told which session the page runs over, once that is known. */
+interface ThemePill {
+  /** Paints the theme this session keeps (its own remembered choice, else its own default). */
+  session_set(session: ThemeSession): void;
+}
+
 /**
  * Wires the theme pill: each press advances to the next theme. The theme
  * is one declaration (`data-theme` on the root element); the palettes and
- * the ornament live in CSS. The choice persists per browser.
+ * the ornament live in CSS. The choice persists per browser and per session:
+ * the page boots as a ChRIS session and is told otherwise once the backend
+ * has answered.
+ *
+ * @returns The pill, to be told the session.
  */
-function themePill_wire(): void {
+function themePill_wire(): ThemePill {
   const pill: HTMLElement = element_require('theme-pill');
-  const fallback: number = Math.max(
-    LCARS_SCHEMES.findIndex((scheme): boolean => scheme.key === LCARS_DEFAULT_KEY),
-    0,
-  );
-  let index: number = fallback;
-  try {
-    const saved: string | null =
-      window.localStorage.getItem(LCARS_STORAGE_KEY) ?? window.localStorage.getItem(LCARS_STORAGE_KEY_FORMER);
-    // A remembered scheme survives its own renaming; a browser that never
-    // chose gets the default rather than whichever scheme is listed first.
-    const wanted: string | null = saved === null ? null : (LCARS_RENAMED[saved] ?? saved);
-    const found: number = LCARS_SCHEMES.findIndex((scheme): boolean => scheme.key === wanted);
-    index = found >= 0 ? found : fallback;
-  } catch {
-    index = fallback;
-  }
+  let session: ThemeSession = 'chris';
+  let index: number = 0;
+  const index_read = (): number => {
+    const fallback: number = Math.max(LCARS_SCHEMES.findIndex((scheme): boolean => scheme.key === LCARS_DEFAULT_KEYS[session]), 0);
+    try {
+      const saved: string | null = window.localStorage.getItem(LCARS_STORAGE_KEYS[session]) ?? (session === 'chris' ? window.localStorage.getItem(LCARS_STORAGE_KEY_FORMER) : null);
+      // A remembered scheme survives its own renaming; a browser that never
+      // chose gets the session's default rather than whichever scheme is listed first.
+      const wanted: string | null = saved === null ? null : (LCARS_RENAMED[saved] ?? saved);
+      const found: number = LCARS_SCHEMES.findIndex((scheme): boolean => scheme.key === wanted);
+      return found >= 0 ? found : fallback;
+    } catch {
+      return fallback;
+    }
+  };
   // The scheme lives on the root element: the theme's derived variables
   // (--panel-4-color and kin) are resolved where they are defined — :root —
   // so a body-level override would leave them holding the original palette.
@@ -862,18 +878,30 @@ function themePill_wire(): void {
     }
     pill.textContent = scheme.label;
   };
+  index = index_read();
   paint();
   pill.addEventListener('click', (): void => {
     index = (index + 1) % LCARS_SCHEMES.length;
     paint();
     try {
-      window.localStorage.setItem(LCARS_STORAGE_KEY, LCARS_SCHEMES[index]?.key ?? 'lower-decks');
+      window.localStorage.setItem(LCARS_STORAGE_KEYS[session], LCARS_SCHEMES[index]?.key ?? 'lower-decks');
     } catch {
       // A browser without storage still gets the session-long choice.
     }
     sound_play('audio2');
   });
+  return {
+    session_set: (wanted: ThemeSession): void => {
+      if (wanted === session) return;
+      session = wanted;
+      index = index_read();
+      paint();
+    },
+  };
 }
+
+/** The theme pill, wired at page boot; told the session once the backend has answered. */
+let themePill: ThemePill | null = null;
 
 /**
  * Fills the about face: the mise stack and its versions, this bundle's
@@ -962,6 +990,8 @@ async function surface_start(token: string): Promise<void> {
   // markup (its gutter domains, its header band and instrument) stands only
   // under that composition.
   document.body.dataset['composition'] = backend;
+  // The theme follows the session: the cloud's own look and its own remembered choice, never ChRIS's.
+  themePill?.session_set(backend === 'stratus' ? 'stratus' : 'chris');
   const statusBar: StatusBar = new StatusBar(document);
   // The composition's share of the session's signals: the index instrument,
   // and RUNS, the universe and PACS (compositions/chris/signals.ts).
@@ -2737,7 +2767,7 @@ function page_boot(): void {
   headerBand_wire();
   headMenuPill_wire();
   audioPill_wire();
-  themePill_wire();
+  themePill = themePill_wire();
   doorPill_wire();
   const params: URLSearchParams = new URLSearchParams(window.location.search);
   const urlToken: string | null = params.get('token');
