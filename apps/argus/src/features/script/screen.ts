@@ -80,6 +80,31 @@ interface LibrarySource {
 /** The library's view key on the rail. */
 export const LIBRARY_VIEW: string = 'library';
 
+/** What a screen built on this one sets over its frame: the VM controller wears its own brand, banner and strips. */
+export interface ScreenLook {
+  id: string;
+  className: string;
+  brand: { name: string; sub: string; mark: boolean };
+  banner: string;
+  stage: { title: string; note: string };
+  log: { title: string; note: string };
+  labels: { views: string; log: string };
+  /** The `aria-label` of the seat under the brand. */
+  seatLabel: string;
+}
+
+/** The script screen's own look. */
+const SCRIPT_LOOK: ScreenLook = {
+  id: 'script-screen',
+  className: 'td-controller script-screen',
+  brand: { name: 'STRATUS', sub: 'SCRIPT · OCI', mark: true },
+  banner: 'STRATUS • SCRIPT',
+  stage: { title: 'THE LIBRARY', note: 'SCRIPTS' },
+  log: { title: 'SCRIPT LOG', note: 'THE SESSION\'S LINES · TYPE BELOW' },
+  labels: { views: 'Steps', log: 'Script log' },
+  seatLabel: 'The script',
+};
+
 /** How many log lines are kept. */
 const LOG_LIMIT: number = 400;
 
@@ -166,60 +191,60 @@ function text_extract(answer: QuietAnswer): string {
 export class ScriptScreen {
   /** The screen's root, appended to the body by the host while it is up. */
   public readonly root: HTMLElement;
-  private readonly frame: TakeoverFrame;
+  protected readonly frame: TakeoverFrame;
   /** The script open, or `''` for the library alone. */
-  private path: string = '';
-  private lines: ScriptLine[] = [];
-  private steps: ScriptStep[] = [];
-  private view: string = LIBRARY_VIEW;
+  protected path: string = '';
+  protected lines: ScriptLine[] = [];
+  protected steps: ScriptStep[] = [];
+  protected view: string = LIBRARY_VIEW;
   /** Whether a form changed a line since the file was read. */
-  private edited: boolean = false;
-  private scripts: LibraryScript[] = [];
-  private sources: LibrarySource[] = [];
-  private libraryRead: boolean = false;
-  private limits: VmLimitsModel | null = null;
-  private limitsAsked: boolean = false;
+  protected edited: boolean = false;
+  protected scripts: LibraryScript[] = [];
+  protected sources: LibrarySource[] = [];
+  protected libraryRead: boolean = false;
+  protected limits: VmLimitsModel | null = null;
+  protected limitsAsked: boolean = false;
   /** What the declared VMs bill together, from `vm cost` bare. */
-  private standing: VmCostRate | null = null;
+  protected standing: VmCostRate | null = null;
   /** The VM NEW step's own price as its levers move. */
-  private stepCost: VmCostRow | null = null;
+  protected stepCost: VmCostRow | null = null;
   /** Why the last `vm cost` for the step did not answer, or null. */
-  private stepCostRefused: string | null = null;
-  private costTimer: ReturnType<typeof setTimeout> | null = null;
+  protected stepCostRefused: string | null = null;
+  protected costTimer: ReturnType<typeof setTimeout> | null = null;
   /** The line running, and since when. */
-  private busy: { line: string; step: string | null; since: number } | null = null;
+  protected busy: { line: string; step: string | null; since: number } | null = null;
   /** The standing read again a moment after a task-starting line was sent, so the seat wears the run while the line still holds the lane. */
-  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
-  private ask: OpenAsk | null = null;
-  private partial: string = '';
+  protected refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  protected ask: OpenAsk | null = null;
+  protected partial: string = '';
   /** What each step's lines printed, for its body. */
-  private readonly stepLogs: Map<string, string[]> = new Map();
+  protected readonly stepLogs: Map<string, string[]> = new Map();
   /** The USERS form's words, kept across redraws. */
-  private userForm: { name: string; email: string; passwordFile: string } = { name: '', email: '', passwordFile: '' };
-  private readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
-  private ticker: ReturnType<typeof setInterval> | null = null;
+  protected userForm: { name: string; email: string; passwordFile: string } = { name: '', email: '', passwordFile: '' };
+  protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
+  protected ticker: ReturnType<typeof setInterval> | null = null;
 
   /**
    * Builds the screen.
    *
    * @param hooks - The host's verbs.
    */
-  constructor(private readonly hooks: ScriptHooks) {
+  constructor(protected readonly hooks: ScriptHooks, look: ScreenLook = SCRIPT_LOOK) {
     this.frame = takeoverFrame_build({
-      id: 'script-screen',
-      className: 'td-controller script-screen',
-      brand: { name: 'STRATUS', sub: 'SCRIPT · OCI', mark: true },
-      banner: 'STRATUS • SCRIPT',
-      views: [{ key: LIBRARY_VIEW, label: 'LIBRARY' }],
+      id: look.id,
+      className: look.className,
+      brand: look.brand,
+      banner: look.banner,
+      views: look === SCRIPT_LOOK ? [{ key: LIBRARY_VIEW, label: 'LIBRARY' }] : [],
       leave: { label: 'LEAVE' },
-      stage: { title: 'THE LIBRARY', note: 'SCRIPTS' },
-      log: { title: 'SCRIPT LOG', note: 'THE SESSION\'S LINES · TYPE BELOW' },
-      labels: { views: 'Steps', log: 'Script log' },
+      stage: look.stage,
+      log: look.log,
+      labels: look.labels,
     }, (key: string): void => this.view_press(key), (): void => { this.hooks.voice.pill('LEAVE'); this.hooks.leave(); });
     this.root = this.frame.root;
     this.root.setAttribute('role', 'application');
-    this.root.setAttribute('aria-label', 'Script screen');
-    this.frame.seat.setAttribute('aria-label', 'The script');
+    this.root.setAttribute('aria-label', look === SCRIPT_LOOK ? 'Script screen' : look.brand.sub);
+    this.frame.seat.setAttribute('aria-label', look.seatLabel);
 
     const header: HTMLElement = el('header', 'tdc-header ss-header');
     this.frame.face.append(header);
@@ -382,7 +407,7 @@ export class ScriptScreen {
 
   // ---------------------------------------------------------------- reading
 
-  private async script_read(): Promise<void> {
+  protected async script_read(): Promise<void> {
     let text: string = '';
     try {
       text = text_extract(await this.hooks.ask(`cat ${this.path}`));
@@ -391,7 +416,33 @@ export class ScriptScreen {
     }
     const standings = await this.status_read(this.path);
     this.lines = lines_build(text, standings?.lines ?? []);
-    this.steps = steps_build(this.lines);
+    this.steps = this.steps_derive(this.lines);
+  }
+
+  /**
+   * The rail's steps from the lines: one per line, the user lines gathered.
+   * A screen keyed by one machine narrows them to its lines and names them its way.
+   *
+   * @param lines - The script's lines.
+   * @returns The steps.
+   */
+  protected steps_derive(lines: ReadonlyArray<ScriptLine>): ScriptStep[] {
+    return steps_build(lines);
+  }
+
+  /** Whether VM BUILD's body carries the lock and the undoing (a screen with a TEARDOWN seat of its own says no). */
+  protected undoing_shown(): boolean {
+    return true;
+  }
+
+  /** A model from a quiet answer, for a screen built on this one. */
+  protected model_take<T>(answer: QuietAnswer, kind: string, parse: (data: unknown) => { success: boolean; data?: T }): T | null {
+    return model_extract(answer, kind, parse);
+  }
+
+  /** The listings in a quiet answer, for a screen built on this one. */
+  protected listings_take(answer: QuietAnswer): Listed[] {
+    return listings_extract(answer);
   }
 
   /**
@@ -400,7 +451,7 @@ export class ScriptScreen {
    * @param path - The script.
    * @returns The model, or null when the session did not answer it.
    */
-  private async status_read(path: string): Promise<{ lines: LineStandingModel[] } | null> {
+  protected async status_read(path: string): Promise<{ lines: LineStandingModel[] } | null> {
     try {
       const answer: QuietAnswer = await this.hooks.ask(`play ${path} --status`);
       return model_extract(answer, MANIFEST_STATUS_MODEL_KIND, (data: unknown) => manifestStatusModelSchema.safeParse(data));
@@ -411,13 +462,13 @@ export class ScriptScreen {
   }
 
   /** Reads the script's standing again, after a line ran. */
-  private async standings_refresh(): Promise<void> {
+  protected async standings_refresh(): Promise<void> {
     if (this.path === '') return;
     const standings = await this.status_read(this.path);
     if (standings === null) return;
     const fresh: ScriptLine[] = lines_build(script_render(this.lines), standings.lines);
     this.lines = fresh;
-    this.steps = steps_build(this.lines);
+    this.steps = this.steps_derive(this.lines);
     void this.standing_read();
   }
 
@@ -427,7 +478,7 @@ export class ScriptScreen {
    * by FOLLOW, never after a line ends, so a follow the operator stopped
    * stays stopped until they ask again.
    */
-  private running_follow(): void {
+  protected running_follow(): void {
     const step: ScriptStep | undefined = runningStep_find(this.steps);
     if (step === undefined || step.running === null || this.busy !== null) return;
     void this.line_send(`wait ${step.running}`, step.key);
@@ -439,7 +490,7 @@ export class ScriptScreen {
    *
    * @param line - The line sent.
    */
-  private refresh_schedule(line: string): void {
+  protected refresh_schedule(line: string): void {
     if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
     this.refreshTimer = setTimeout((): void => {
       this.refreshTimer = null;
@@ -447,7 +498,7 @@ export class ScriptScreen {
     }, 3_000);
   }
 
-  private async library_read(): Promise<void> {
+  protected async library_read(): Promise<void> {
     const sources: LibrarySource[] = [];
     const scripts: LibraryScript[] = [];
     try {
@@ -479,7 +530,7 @@ export class ScriptScreen {
     }
   }
 
-  private async limits_need(): Promise<void> {
+  protected async limits_need(): Promise<void> {
     if (this.limitsAsked) return;
     this.limitsAsked = true;
     try {
@@ -491,7 +542,7 @@ export class ScriptScreen {
   }
 
   /** What stands now: every declared VM's rate, from `vm cost` bare. */
-  private async standing_read(): Promise<void> {
+  protected async standing_read(): Promise<void> {
     try {
       const model = model_extract(await this.hooks.ask('vm cost'), STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
       this.standing = model === null ? null : rates_sum(model.vms.map((row: VmCostRow): VmCostRate | null => row.cost));
@@ -506,7 +557,7 @@ export class ScriptScreen {
    *
    * @param line - The `vm new` line.
    */
-  private stepCost_ask(line: string): void {
+  protected stepCost_ask(line: string): void {
     if (this.costTimer !== null) clearTimeout(this.costTimer);
     this.costTimer = setTimeout((): void => {
       this.costTimer = null;
@@ -562,7 +613,7 @@ export class ScriptScreen {
   }
 
   /** Writes the working copy under `/scripts/mine/`, as the editor saves: a line, echoed and run. */
-  private async save_send(): Promise<void> {
+  protected async save_send(): Promise<void> {
     const copy: string = workingCopy_derive(this.path);
     await this.line_send(saveLine_compose(copy, script_render(this.lines)), null);
     this.path = copy;
@@ -574,7 +625,7 @@ export class ScriptScreen {
 
   // ---------------------------------------------------------------- drawing
 
-  private view_press(key: string): void {
+  protected view_press(key: string): void {
     const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === key);
     this.hooks.voice.pill(key === LIBRARY_VIEW ? 'LIBRARY' : step?.label ?? key);
     this.view = key;
@@ -583,12 +634,17 @@ export class ScriptScreen {
     this.draw();
   }
 
-  private draw(): void {
+  /** The stage strip's title: the script's name; a screen keyed by a machine names the machine. */
+  protected stageTitle_get(): string {
+    return this.path === '' ? 'THE LIBRARY' : scriptName_derive(this.path).toUpperCase();
+  }
+
+  protected draw(): void {
     this.rail_draw();
     this.header_draw();
     this.frame.view_mark(this.view);
     const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
-    this.frame.stageTitle.textContent = this.path === '' ? 'THE LIBRARY' : scriptName_derive(this.path).toUpperCase();
+    this.frame.stageTitle.textContent = this.stageTitle_get();
     this.frame.stageNote.textContent = step === undefined ? (this.view === LIBRARY_VIEW ? 'SCRIPTS' : '') : `${step.label}${step.state === null ? '' : ` · ${step.state.toUpperCase()}`}`;
     this.body_draw();
     this.strip_draw();
@@ -599,7 +655,7 @@ export class ScriptScreen {
   }
 
   /** The rail: LIBRARY, then a seat per step wearing its state. */
-  private rail_draw(): void {
+  protected rail_draw(): void {
     const views: TakeoverView[] = [{ key: LIBRARY_VIEW, label: 'LIBRARY' }, ...this.steps.map((step: ScriptStep): TakeoverView => ({ key: step.key, label: step.label }))];
     const shown: string[] = [...this.frame.views.keys()];
     if (shown.length !== views.length || views.some((view: TakeoverView, index: number): boolean => shown[index] !== view.key)) this.frame.views_set(views);
@@ -625,7 +681,7 @@ export class ScriptScreen {
     }
   }
 
-  private header_draw(): void {
+  protected header_draw(): void {
     const header: HTMLElement = this.parts.header;
     header.replaceChildren();
     const counts: StateCounts = states_count(this.lines);
@@ -643,12 +699,24 @@ export class ScriptScreen {
     header.append(condition);
 
     header.append(this.headSection_make('SCRIPT', this.path === '' ? [['LIBRARY', '/scripts'], ['MINE', '/scripts/mine']] : [['NAME', scriptName_derive(this.path)], ['SOURCE', scriptSource_derive(this.path) || '—'], ['PATH', this.path]]));
+    header.append(this.costSection_make());
+    header.append(this.runningSection_make());
+    header.append(this.headSection_make('STANDING', [['DONE', String(counts.done)], ['READY', String(counts.ready)], ['CHANGED', String(counts.changed)], ['NOT YET', String(counts.notYet)]]));
+  }
+
+  /** The cost section: what stands now, and what the VM NEW step shown would add. */
+  protected costSection_make(): HTMLElement {
     const standing: string = this.standing === null ? 'NOT PRICED' : rate_words(this.standing, HOURS_PER_MONTH);
     const stepRate: VmCostRate | null = this.stepCost?.cost ?? null;
     const costRows: Array<[string, string]> = [['STANDS NOW', standing]];
     const stepShown: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
     if (stepShown?.kind === 'vm new') costRows.push([this.stepCost?.declared === true ? 'THIS STEP' : 'WOULD ADD', stepRate === null ? '…' : rate_words(stepRate, HOURS_PER_MONTH)]);
-    header.append(this.headSection_make('COST · LIST PRICE', costRows, 0));
+    return this.headSection_make('COST · LIST PRICE', costRows, 0);
+  }
+
+  /** The running section: the line the lane holds, or the task running unfollowed, with STOP FOLLOWING or FOLLOW. */
+  protected runningSection_make(): HTMLElement {
+    const runningStep: ScriptStep | undefined = runningStep_find(this.steps);
     // The lane: the line it holds, or the task running unfollowed, which FOLLOW follows again; following is stopped, the task never.
     const running: Array<[string, string]> = this.busy !== null
       ? [['LINE', this.busy.line], ['FOR', duration_words(Date.now() - this.busy.since)]]
@@ -671,11 +739,10 @@ export class ScriptScreen {
       follow.addEventListener('click', (): void => { this.hooks.voice.pill('FOLLOW'); this.running_follow(); });
       lanePills.push(follow);
     }
-    header.append(this.headSection_make('RUNNING', running, -1, lanePills));
-    header.append(this.headSection_make('STANDING', [['DONE', String(counts.done)], ['READY', String(counts.ready)], ['CHANGED', String(counts.changed)], ['NOT YET', String(counts.notYet)]]));
+    return this.headSection_make('RUNNING', running, -1, lanePills);
   }
 
-  private headSection_make(title: string, rows: ReadonlyArray<[string, string]>, billingRow: number = -1, pills: ReadonlyArray<HTMLElement> = []): HTMLElement {
+  protected headSection_make(title: string, rows: ReadonlyArray<[string, string]>, billingRow: number = -1, pills: ReadonlyArray<HTMLElement> = []): HTMLElement {
     const section: HTMLElement = el('section', 'tdc-head-section');
     section.setAttribute('aria-label', title);
     section.append(el('span', 'tdc-head-title', title));
@@ -692,7 +759,7 @@ export class ScriptScreen {
     return section;
   }
 
-  private body_draw(): void {
+  protected body_draw(): void {
     const body: HTMLElement = this.parts.body;
     body.replaceChildren();
     if (this.view === LIBRARY_VIEW) {
@@ -716,7 +783,7 @@ export class ScriptScreen {
   }
 
   /** A hidden word asked stands as an errand bar across the top of the body, whichever view shows; the strip is for words seen. */
-  private errand_place(): void {
+  protected errand_place(): void {
     if (this.ask === null || this.ask.kind !== 'secret') return;
     this.parts.body.prepend(this.errand_make(this.ask));
   }
@@ -729,7 +796,7 @@ export class ScriptScreen {
    * @param ask - The hidden word asked.
    * @returns The bar.
    */
-  private errand_make(ask: OpenAsk): HTMLElement {
+  protected errand_make(ask: OpenAsk): HTMLElement {
     const bar: HTMLElement = el('div', 'errand-bar ss-errand');
     bar.setAttribute('role', 'group');
     bar.setAttribute('aria-label', 'A hidden word is asked');
@@ -759,13 +826,13 @@ export class ScriptScreen {
     return bar;
   }
 
-  private empty_make(title: string, text: string): HTMLElement {
+  protected empty_make(title: string, text: string): HTMLElement {
     const box: HTMLElement = el('section', 'tdc-empty');
     box.append(el('span', 'tdc-section-title', title), el('p', 'tdc-prose', text));
     return box;
   }
 
-  private section_make(title: string, className: string = '', aside?: string): HTMLElement {
+  protected section_make(title: string, className: string = '', aside?: string): HTMLElement {
     const section: HTMLElement = el('section', `tdc-section ${className}`.trim());
     section.setAttribute('aria-label', title);
     const head: HTMLElement = el('div', 'tdc-section-head');
@@ -775,7 +842,7 @@ export class ScriptScreen {
     return section;
   }
 
-  private pairs_make(rows: ReadonlyArray<[string, string]>): HTMLElement {
+  protected pairs_make(rows: ReadonlyArray<[string, string]>): HTMLElement {
     const grid: HTMLElement = el('div', 'tdc-pairs');
     for (const [label, value] of rows) grid.append(el('span', 'tdc-pair-label', label), el('span', 'tdc-pair-value', value));
     return grid;
@@ -790,7 +857,7 @@ export class ScriptScreen {
    * @param tone - How it is drawn.
    * @returns The pill.
    */
-  private linePill_make(label: string, line: string, step: string | null, tone: 'plain' | 'bill' | 'destroy' | 'quiet' = 'plain'): HTMLButtonElement {
+  protected linePill_make(label: string, line: string, step: string | null, tone: 'plain' | 'bill' | 'destroy' | 'quiet' = 'plain'): HTMLButtonElement {
     // A line that would act, in a READ session: asked for the password first when the session can be raised, held when it cannot.
     const hold: ReadHold = this.hold_derive(line);
     const pill: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone}${hold === 'asks' ? ' tdc-pill-asks' : ''}`, hold === 'held' ? `${label} · REFUSED` : label);
@@ -802,7 +869,7 @@ export class ScriptScreen {
   }
 
   /** How a line that would act is drawn in this session: asked, held, or standing. */
-  private hold_derive(line: string): ReadHold {
+  protected hold_derive(line: string): ReadHold {
     return readHold_derive(line, this.hooks.manage_is(), this.hooks.elevate_ask !== null);
   }
 
@@ -813,7 +880,7 @@ export class ScriptScreen {
    * @param line - The line.
    * @param step - The step whose body shows the output.
    */
-  private async line_sendRaised(line: string, step: string | null): Promise<void> {
+  protected async line_sendRaised(line: string, step: string | null): Promise<void> {
     if (this.hold_derive(line) === 'asks' && this.hooks.elevate_ask !== null) {
       const raised: boolean = await this.hooks.elevate_ask(line);
       if (!raised) return;
@@ -823,7 +890,7 @@ export class ScriptScreen {
 
   // ---------------------------------------------------------------- library
 
-  private library_make(): HTMLElement[] {
+  protected library_make(): HTMLElement[] {
     const scripts: HTMLElement = this.section_make('SCRIPTS', 'ss-col-wide', `${this.scripts.length} IN THE LIBRARY`);
     if (!this.libraryRead) {
       scripts.append(el('p', 'tdc-prose tdc-quiet', 'reading the library: ls /scripts'));
@@ -862,7 +929,7 @@ export class ScriptScreen {
 
   // ---------------------------------------------------------------- steps
 
-  private step_make(step: ScriptStep): HTMLElement[] {
+  protected step_make(step: ScriptStep): HTMLElement[] {
     const form: HTMLElement = this.section_make(`THE LINE · ${step.label}`, 'ss-col-form', step.lines.length === 1 ? `LINE ${step.lines[0]?.number ?? ''}` : `${step.lines.length} LINES`);
     const bodies: Record<ScriptStep['kind'], () => HTMLElement[]> = {
       'net new': (): HTMLElement[] => this.netNew_make(step),
@@ -880,7 +947,7 @@ export class ScriptScreen {
   }
 
   /** The line as it will run, and its state. */
-  private lineBox_make(line: ScriptLine): HTMLElement {
+  protected lineBox_make(line: ScriptLine): HTMLElement {
     const box: HTMLElement = el('div', `ss-line ss-line-${(line.state ?? 'none').replace(' ', '-')}`);
     box.append(el('span', 'ss-line-state', line.state === null ? '—' : `${STATE_MARKS[line.state]} ${line.state.toUpperCase()}`), el('code', 'tdc-mono ss-line-text', line.text));
     if (line.detail !== '') box.append(el('span', 'tdc-prose tdc-quiet ss-line-detail', line.detail));
@@ -888,7 +955,7 @@ export class ScriptScreen {
   }
 
   /** The step's state and what it says, as a side column. */
-  private state_make(step: ScriptStep): HTMLElement {
+  protected state_make(step: ScriptStep): HTMLElement {
     const side: HTMLElement = this.section_make('WHERE IT STANDS', 'ss-col-side');
     const words: Readonly<Record<LineState, string>> = {
       'not yet': 'What this line stands on is not built yet: the step before it runs first.',
@@ -919,7 +986,7 @@ export class ScriptScreen {
     return side;
   }
 
-  private stepLog_make(step: ScriptStep): HTMLElement {
+  protected stepLog_make(step: ScriptStep): HTMLElement {
     const box: HTMLElement = this.section_make('THE STEP\'S OUTPUT', 'tdc-col-steplog', this.busy?.step === step.key ? this.busy.line : undefined);
     const lines: HTMLElement = el('div', 'tdc-steplog');
     const shown: string[] = (this.stepLogs.get(step.key) ?? []).slice(-80);
@@ -938,7 +1005,7 @@ export class ScriptScreen {
    * @param placeholder - A hint.
    * @returns The row.
    */
-  private optionField_make(line: ScriptLine, word: string, label: string, placeholder: string): HTMLElement {
+  protected optionField_make(line: ScriptLine, word: string, label: string, placeholder: string): HTMLElement {
     const row: HTMLElement = el('div', 'tdc-name-row');
     const field: HTMLElement = el('label', 'tdc-pair-label', label);
     const input: HTMLInputElement = el('input', 'tdc-name-input');
@@ -959,7 +1026,7 @@ export class ScriptScreen {
   }
 
   /** Redraws the line's box and the header after an edit, without losing the field's focus. */
-  private lineShown_redraw(line: ScriptLine): void {
+  protected lineShown_redraw(line: ScriptLine): void {
     const text: HTMLElement | null = this.parts.body.querySelector(`.ss-line[data-line='${line.number}'] .ss-line-text`);
     if (text !== null) text.textContent = line.text;
     const run: HTMLButtonElement | null = this.parts.body.querySelector(`.ss-run[data-line='${line.number}']`);
@@ -967,7 +1034,7 @@ export class ScriptScreen {
     this.header_draw();
   }
 
-  private runRow_make(step: ScriptStep, line: ScriptLine, tone: 'plain' | 'bill' = 'plain', extra: HTMLElement[] = []): HTMLElement {
+  protected runRow_make(step: ScriptStep, line: ScriptLine, tone: 'plain' | 'bill' = 'plain', extra: HTMLElement[] = []): HTMLElement {
     const commands: HTMLElement = el('div', 'tdc-commands');
     // The line is read when pressed, so an edit after the pill was drawn is what runs.
     const hold: ReadHold = this.hold_derive(line.text);
@@ -981,13 +1048,13 @@ export class ScriptScreen {
     return commands;
   }
 
-  private lineBoxNumbered_make(line: ScriptLine): HTMLElement {
+  protected lineBoxNumbered_make(line: ScriptLine): HTMLElement {
     const box: HTMLElement = this.lineBox_make(line);
     box.dataset['line'] = String(line.number);
     return box;
   }
 
-  private netNew_make(step: ScriptStep): HTMLElement[] {
+  protected netNew_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
     const parts = line_parse(line.text);
     return [
@@ -999,7 +1066,7 @@ export class ScriptScreen {
     ];
   }
 
-  private netBuild_make(step: ScriptStep): HTMLElement[] {
+  protected netBuild_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
     const name: string = line_parse(line.text).subject ?? '';
     const teardown: HTMLButtonElement = this.linePill_make('TEARDOWN', `net teardown ${name}`, step.key, 'destroy');
@@ -1012,7 +1079,7 @@ export class ScriptScreen {
     ];
   }
 
-  private vmNew_make(step: ScriptStep): HTMLElement[] {
+  protected vmNew_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
     const name: string = line_parse(line.text).subject ?? '';
     const nodes: HTMLElement[] = [this.lineBoxNumbered_make(line), this.runRow_make(step, line), this.pairs_make([['VM', name], ['NETWORK', lineOption_get(line.text, '--net') ?? '—']])];
@@ -1040,7 +1107,7 @@ export class ScriptScreen {
     return nodes;
   }
 
-  private slider_make(line: ScriptLine, spec: SliderSpec, limits: VmLimitsModel): HTMLElement {
+  protected slider_make(line: ScriptLine, spec: SliderSpec, limits: VmLimitsModel): HTMLElement {
     const row: HTMLElement = el('div', 'tdc-slider');
     const label: HTMLElement = el('label', 'tdc-slider-label', spec.label);
     const input: HTMLInputElement = el('input', 'tdc-slider-input');
@@ -1081,7 +1148,7 @@ export class ScriptScreen {
   }
 
   /** VM NEW's side column: the price as the levers stand. */
-  private cost_make(step: ScriptStep): HTMLElement {
+  protected cost_make(step: ScriptStep): HTMLElement {
     const side: HTMLElement = this.section_make('COST · AS SIZED', 'ss-col-side tdc-col-cost', 'FROM THE PRICE LIST · vm cost');
     const box: HTMLElement = el('div', 'ss-cost');
     side.append(box);
@@ -1090,13 +1157,13 @@ export class ScriptScreen {
     return side;
   }
 
-  private cost_redraw(): void {
+  protected cost_redraw(): void {
     const box: HTMLElement | null = this.parts.body.querySelector('.ss-cost');
     const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
     if (box !== null && step !== undefined) this.cost_fill(box, step);
   }
 
-  private cost_fill(box: HTMLElement, step: ScriptStep): void {
+  protected cost_fill(box: HTMLElement, step: ScriptStep): void {
     box.replaceChildren();
     const row: VmCostRow | null = this.stepCost;
     if (row === null) {
@@ -1119,11 +1186,12 @@ export class ScriptScreen {
     box.append(el('p', 'tdc-prose tdc-quiet', 'The data volume is kept by a default teardown, so its share is said apart. List price; nothing here bills until VM BUILD applies.'));
   }
 
-  private vmBuild_make(step: ScriptStep): HTMLElement[] {
+  protected vmBuild_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
     const name: string = line_parse(line.text).subject ?? '';
     const protect: HTMLElement = el('div', 'tdc-commands');
     protect.append(el('span', 'tdc-commands-label', 'THE LOCK'), this.linePill_make('PROTECT · ON', `vm protect ${name} on`, step.key, 'quiet'), this.linePill_make('PROTECT · OFF', `vm protect ${name} off`, step.key, 'quiet'));
+    const undoing: boolean = this.undoing_shown();
     const teardown: HTMLElement = el('div', 'tdc-commands');
     const machine: HTMLButtonElement = this.linePill_make('TEARDOWN', `vm teardown ${name}`, step.key, 'destroy');
     machine.title = `sends: vm teardown ${name} (the machine; the data, its backups and the address stay)`;
@@ -1136,12 +1204,11 @@ export class ScriptScreen {
       this.runRow_make(step, line, 'bill'),
       this.pairs_make([['VM', name], ['BUILDS', 'the data volume, its backups and the address, then the machine; asks before the apply with the cost'], ['OVER', 'kept data, when the machine alone was torn down']]),
       el('p', 'tdc-prose tdc-quiet', 'A VM is born protected: teardown refuses until PROTECT · OFF, a line of its own. A teardown returns this step to ready.'),
-      protect,
-      teardown,
+      ...(undoing ? [protect, teardown] : []),
     ];
   }
 
-  private chrisDeploy_make(step: ScriptStep): HTMLElement[] {
+  protected chrisDeploy_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
     const name: string = line_parse(line.text).subject ?? '';
     const profiles: HTMLElement = el('div', 'tdc-families');
@@ -1167,7 +1234,7 @@ export class ScriptScreen {
     ];
   }
 
-  private users_make(step: ScriptStep): HTMLElement[] {
+  protected users_make(step: ScriptStep): HTMLElement[] {
     const nodes: HTMLElement[] = [];
     const list: HTMLElement = el('div', 'ss-users');
     for (const line of step.lines) {
@@ -1207,14 +1274,14 @@ export class ScriptScreen {
     return nodes;
   }
 
-  private userAdd_redraw(step: ScriptStep): void {
+  protected userAdd_redraw(step: ScriptStep): void {
     const commands: HTMLElement | null = this.parts.body.querySelector('.ss-user-add');
     if (commands === null) return;
     const on: string = step.lines.map((line: ScriptLine): string | null => lineOption_get(line.text, '--on')).find((value): value is string => value !== null) ?? '';
     this.userAdd_fill(commands, step, on);
   }
 
-  private userAdd_fill(commands: HTMLElement, step: ScriptStep, on: string): void {
+  protected userAdd_fill(commands: HTMLElement, step: ScriptStep, on: string): void {
     commands.replaceChildren();
     const { name, email, passwordFile } = this.userForm;
     const refusal: string | null = name === '' ? 'NAME' : !/^[a-z][a-z0-9_-]{1,31}$/.test(name) ? 'NAME IS A LOGIN' : email === '' ? 'EMAIL' : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? 'EMAIL IS AN ADDRESS' : step.lines.some((line: ScriptLine): boolean => line_parse(line.text).subject === name) ? 'ALREADY A LINE' : null;
@@ -1236,7 +1303,7 @@ export class ScriptScreen {
         const number: number = (this.lines.at(-1)?.number ?? 0) + 1;
         const added: ScriptLine = { number, text: line, state: 'ready', detail: '', running: null };
         this.lines.push(added);
-        this.steps = steps_build(this.lines);
+        this.steps = this.steps_derive(this.lines);
         this.edited = true;
         this.userForm = { name: '', email: '', passwordFile: '' };
         await this.line_send(line, 'users');
@@ -1245,14 +1312,14 @@ export class ScriptScreen {
     commands.append(add, el('span', 'tdc-mono ss-user-line', line));
   }
 
-  private other_make(step: ScriptStep): HTMLElement[] {
+  protected other_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
     return [this.lineBoxNumbered_make(line), this.runRow_make(step, line), el('p', 'tdc-prose tdc-quiet', 'The screen has no form for this verb: the line runs as written.')];
   }
 
   // -------------------------------------------------------------- the strip
 
-  private strip_draw(): void {
+  protected strip_draw(): void {
     const strip: HTMLElement = this.parts.strip;
     strip.replaceChildren();
     // A hidden word is asked on the errand bar (body_draw), never on the strip.
@@ -1306,7 +1373,7 @@ export class ScriptScreen {
 
   // ---------------------------------------------------------------- the log
 
-  private log_add(text: string, kind: 'sent' | 'out' | 'ask' | 'answer' | 'note'): void {
+  protected log_add(text: string, kind: 'sent' | 'out' | 'ask' | 'answer' | 'note'): void {
     const row: HTMLElement = el('span', `tdc-log-line tdc-log-${kind}`, text);
     this.parts.log.append(row);
     while (this.parts.log.childElementCount > LOG_LIMIT) this.parts.log.firstElementChild?.remove();

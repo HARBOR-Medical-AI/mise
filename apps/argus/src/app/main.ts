@@ -61,7 +61,7 @@ import { chrisDicom_make, type ChrisDicom } from '../compositions/chris/dicom.js
 import { chrisStage_make, type ChrisStage } from '../compositions/chris/stage.js';
 import { chrisTiles_make } from '../compositions/chris/tiles.js';
 import { stratusTiles_make } from '../compositions/stratus/tiles.js';
-import { clusterClaims_set, stratusLanguage, type StratusLangHost } from '../compositions/stratus/lang.js';
+import { clusterClaims_set, stratusLanguage, vmClaims_set, type StratusLangHost } from '../compositions/stratus/lang.js';
 import { chrisSignals_make, type ChrisSignals } from '../compositions/chris/signals.js';
 import { ViewerPanel } from '../features/view/panel.js';
 import { ImagePanel, type SeriesChoice } from '../features/image/panel.js';
@@ -107,6 +107,7 @@ import { gamesPane_wire, type GamesPaneModule } from './gamesPane.js';
 import { trekBridge_wire, type TrekBridgeModule } from './trekBridge.js';
 import { tdController_wire, type TdControllerModule } from './tdController.js';
 import { scriptScreen_wire, type ScriptScreenModule } from './scriptScreen.js';
+import { vmController_wire, type VmControllerModule } from './vmController.js';
 import { synthVoice } from '../lcars/synth.js';
 import { notesPane_wire, type NotesPaneModule } from './notesPane.js';
 import { capacityPane_wire, type CapacityPaneModule } from './capacityPane.js';
@@ -984,7 +985,7 @@ async function surface_start(token: string): Promise<void> {
   // installed before any pane's chrome reads the chords.
   if (chris) language_extend(chrisLanguage((): ChrisLangHost => argusHost));
   // `cluster` takes the screen as the controller (compositions/stratus/lang.ts).
-  if (backend === 'stratus') language_extend(stratusLanguage((): StratusLangHost => ({ ...argusHost, controller_open: (name: string): Promise<string> => tdController.open(name), script_open: (path: string): Promise<string> => scriptScreen.open(path) })));
+  if (backend === 'stratus') language_extend(stratusLanguage((): StratusLangHost => ({ ...argusHost, controller_open: (name: string): Promise<string> => tdController.open(name), script_open: (path: string): Promise<string> => scriptScreen.open(path), vm_open: (name: string): Promise<string> => vmController.open(name) })));
 
   // The subject bus: pane linkage as hub-and-spoke subjects. Every regard
   // write also flows to the daemon as session truth (the two-layer model).
@@ -1025,6 +1026,7 @@ async function surface_start(token: string): Promise<void> {
     statusBar.mode_show(true);
     tdController.mode_refresh();
     scriptScreen.mode_refresh();
+    vmController.mode_refresh();
     terminal.line_note('MODE MANAGE: this session may build, tear down and spend, each after its own question, until you leave it');
     return true;
   };
@@ -1738,10 +1740,12 @@ async function surface_start(token: string): Promise<void> {
       ask: (line: string): Promise<ExecuteOutcome> => client.line_execute(line, { silent: true, observe: false }),
       cluster_open: (name: string): void => { void tdController.open(name); },
       script_open: (path: string): void => { void scriptScreen.open(path); },
+      vm_open: (name: string): void => { void vmController.open(name); },
       home_open: (): void => { dagShown = false; home_apply(); layout.focus_set('files'); },
       line_run: (line: string): void => { element_require('gutter-console').click(); terminal.line_run(line); },
       capacity_open: (family: string): void => { capacityPane.open(family); },
       names_seen: (names: string[]): void => clusterNames_seen(names),
+      vmNames_seen: (names: string[]): void => vmNames_seen(names),
       repaint: (): void => launcherPanel.render(),
     }) }),
   });
@@ -2005,6 +2009,12 @@ async function surface_start(token: string): Promise<void> {
   const tdController: TdControllerModule = tdController_wire(context, (names: string[]): void => clusterNames_seen(names));
   // `scripts` in a stratus session takes the screen as the script screen, over the library or one script (app/scriptScreen.ts, D17).
   const scriptScreen: ScriptScreenModule = scriptScreen_wire(context);
+  // `vm` in a stratus session takes the screen as the VM controller, over one machine or a new one (app/vmController.ts, D17 revised).
+  // The machines each open finds are claimed, so `vm <name>` opens on one; the daemon is told the claims again.
+  function vmNames_seen(names: string[]): void {
+    if (vmClaims_set(names)) context.client.claims_send(claims_list());
+  }
+  const vmController: VmControllerModule = vmController_wire(context, (names: string[]): void => vmNames_seen(names));
   const notesPane: NotesPaneModule = notesPane_wire(context, { ...paneHooks, ask: (line: string): Promise<ExecuteOutcome> => client.line_execute(line, { silent: true }) });
   // CAPACITY: what the region has free, as a pane (app/capacityPane.ts, #1284).
   const capacityPane: CapacityPaneModule = capacityPane_wire(context, { ...paneHooks, ask: (line: string): Promise<ExecuteOutcome> => client.line_execute(line, { silent: true }) });
@@ -2263,7 +2273,7 @@ async function surface_start(token: string): Promise<void> {
       const line: string = paletteInput.value.trim();
       if (line.length === 0) { palette_close(); return; }
       void argusLine_run(argusHost, line).then((result: string | null): void => {
-        if (result !== null && (trekBridge.active_is() || tdController.active_is() || scriptScreen.active_is())) {
+        if (result !== null && (trekBridge.active_is() || tdController.active_is() || scriptScreen.active_is() || vmController.active_is())) {
           // The sentence gave the screen to a program (trek's bridge): the command line
           // stands down, or its Esc would take the one meant for the bridge.
           terminal.output_write('data', `: ${line}\n${result}\n`);
@@ -2403,6 +2413,7 @@ async function surface_start(token: string): Promise<void> {
         if (channel === 'data' && trekBridge.active_is()) trekBridge.output_take(chunk);
         if (channel !== 'status' && tdController.running_is()) tdController.output_take(chunk);
         if (channel !== 'status' && scriptScreen.running_is()) scriptScreen.output_take(chunk);
+        if (channel !== 'status' && vmController.running_is()) vmController.output_take(chunk);
       },
       event_receive: (_id: string, kind: string, data: unknown): void => {
         if (trekBridge.active_is()) trekBridge.event_take(kind, data);
@@ -2433,6 +2444,7 @@ async function surface_start(token: string): Promise<void> {
         if (tdController.running_is()) return tdController.ask(request);
         // The script screen's own lines ask on its strip too: a build's question with the cost, a user's hidden password.
         if (scriptScreen.running_is()) return scriptScreen.ask(request);
+        if (vmController.running_is()) return vmController.ask(request);
         if (request.kind !== 'path') {
           // A question a PRESSED VERB provoked stands on the pane that was
           // pressed: `rm -i` asks before it removes, and the operator is
@@ -2524,7 +2536,7 @@ async function surface_start(token: string): Promise<void> {
           const text: string = envelope.rendered.trim();
           if (text !== '') terminal.line_note(text);
           // A step's task ending is what the script screen's seats wait on.
-          if (envelope.model.kind === 'tasks.job') scriptScreen.task_ended();
+          if (envelope.model.kind === 'tasks.job') { scriptScreen.task_ended(); vmController.task_ended(); }
           return;
         }
         if (envelope.model?.kind === 'fs.listing') {

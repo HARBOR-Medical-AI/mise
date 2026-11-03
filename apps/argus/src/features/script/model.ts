@@ -43,6 +43,8 @@ export interface ScriptStep {
   readonly state: LineState | null;
   /** The task running one of its lines now, or null. */
   readonly running: string | null;
+  /** A seat over a line the script does not hold yet (the VM controller's CHRIS before a deploy): RUN appends the line first. */
+  readonly template?: boolean;
 }
 
 /** A line taken apart: its verb words, its subject and its options. */

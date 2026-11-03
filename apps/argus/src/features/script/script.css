@@ -6,6 +6,12 @@
  * library's rows and the user lines. */
 body[data-takeover='script'] { overflow: hidden; }
 body[data-takeover='script'] > *:not(#script-screen) { visibility: hidden; }
+/* the VM controller (features/vm/screen.ts) is the script screen keyed by one machine: the same sheet, its own id */
+body[data-takeover='vm'] { overflow: hidden; }
+body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
+.vm-controller .takeover-seat { display: flex; flex-direction: column; gap: 0.3rem; }
+.vm-controller .takeover-seat .tdc-cluster[data-condition='BUILT'] { background: var(--harvestgold); }
+.vm-controller .takeover-seat .tdc-cluster[data-condition='GONE'] { opacity: 0.55; }
 
 /* the rail: a seat per line, each wearing its state */
 .script-screen .takeover-gutter button[data-state] { position: relative; }

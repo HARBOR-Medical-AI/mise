@@ -20,6 +20,8 @@ export interface StratusHostVerbs {
   controller_open(name: string): Promise<string>;
   /** Opens the script screen on the library (`''`) or a script; answers what happened. */
   script_open(path: string): Promise<string>;
+  /** Opens the VM controller on a machine (`''` for a new one); answers what happened. */
+  vm_open(name: string): Promise<string>;
 }
 
 /**
@@ -38,6 +40,27 @@ export type StratusLangHost = ArgusHost & StratusHostVerbs;
  * so a name added here is claimed at once.
  */
 export const CLUSTER_CLAIMS: Set<string> = new Set<string>(['']);
+
+/**
+ * The words of `vm` the surface claims: bare, and each machine's name as the
+ * session's reads find them; `vm status`, `new`, `build` and the rest stay
+ * the session's (docs/stratus.adoc, D17 revised).
+ */
+export const VM_CLAIMS: Set<string> = new Set<string>(['']);
+
+/**
+ * Claims the machines' names, so `vm <name>` opens the VM controller on one.
+ *
+ * @param names - The VMs the session has.
+ * @returns True when the claims changed (the daemon is told them again).
+ */
+export function vmClaims_set(names: ReadonlyArray<string>): boolean {
+  const next: Set<string> = new Set<string>(['', ...names]);
+  if (next.size === VM_CLAIMS.size && [...next].every((name: string): boolean => VM_CLAIMS.has(name))) return false;
+  VM_CLAIMS.clear();
+  for (const name of next) VM_CLAIMS.add(name);
+  return true;
+}
 
 /**
  * Claims the clusters' names, so `cluster <name>` opens the controller on one.
@@ -61,7 +84,7 @@ export function clusterClaims_set(names: ReadonlyArray<string>): boolean {
  */
 export function stratusLanguage(host: () => StratusLangHost): LanguageExtension {
   return {
-    subjects: { cluster: CLUSTER_CLAIMS, scripts: SCRIPTS_CLAIMS },
+    subjects: { cluster: CLUSTER_CLAIMS, scripts: SCRIPTS_CLAIMS, vm: VM_CLAIMS },
     views: {},
     claims: {},
     listings: {},
@@ -69,9 +92,11 @@ export function stratusLanguage(host: () => StratusLangHost): LanguageExtension 
     lines: [
       { after: 'view', line: 'cluster [<name>]             (the TD controller takes the screen; every other cluster line is the session\'s)' },
       { after: 'view', line: 'scripts [open <path>]        (the script screen takes the screen: the library, or one script; add, pull and remove are the session\'s)' },
+      { after: 'view', line: 'vm [<name>]                  (the VM controller takes the screen: a machine, or a new one; status, new, build and the rest are the session\'s)' },
     ],
     run: (_argus: ArgusHost, sentence: { subject: string; words: string[] }): Promise<string> | undefined => {
       if (sentence.subject === 'cluster') return host().controller_open(sentence.words[0] ?? '');
+      if (sentence.subject === 'vm') return host().vm_open(sentence.words[0] ?? '');
       if (sentence.subject === 'scripts') {
         if (sentence.words[0] === 'open') return host().script_open(sentence.words[1] ?? '');
         return host().script_open('');

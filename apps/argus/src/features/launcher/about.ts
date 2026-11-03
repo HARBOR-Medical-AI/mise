@@ -37,7 +37,7 @@ export const TILE_ABOUT: Readonly<Record<string, TileAbout>> = {
     text: 'The OpenShift clusters in this tenancy, found by their tag: each one\'s condition or last finished build step, its address and what it costs per hour. One with a step gone wrong shows in red; one torn down reads GONE until what is left of it is removed. Opening the tile, or a cluster on it, opens the controller: its condition, spec, steps and cost, and the lines that build, verify and tear it down.',
   },
   vms: {
-    text: 'The virtual machines this host keeps, as vm status reads them from its records: each one\'s state (declared, data only, built, gone), the ChRIS on it or its address, and what it bills an hour at list price. A row opens the script that declares the VM on the script screen, its VM BUILD seat the way in; the tile opens the library.',
+    text: 'The virtual machines this host keeps, as vm status reads them from its records: each one\'s state (declared, data only, built, gone), the ChRIS on it or its address, and what it bills an hour at list price. A row opens the VM controller on that machine: its size, build, ChRIS, users and teardown, each a line of its script; the tile opens the controller on a new machine, whose script it writes as you go.',
   },
   scripts: {
     text: 'The library of scripts: each .mise file in a git source mounted at /scripts/, with where its lines stand (done, ready, changed, not yet) as play --status reads them from this host\'s records. Opening the tile opens the library on the script screen; a row opens that script, its lines as the rail, each a form over its line with RUN.',
