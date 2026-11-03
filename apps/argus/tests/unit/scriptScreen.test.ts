@@ -191,7 +191,7 @@ describe('the script screen', () => {
     const run: HTMLButtonElement | undefined = button_named(screen.root, 'RUN · REFUSED');
     expect(run?.disabled).toBe(true);
     expect(run?.title).toContain('entered as READ');
-    expect(run?.title).toContain('MANAGE asks your password');
+    expect(run?.title).toContain('no door to check a password at');
     expect(button_named(screen.root, 'TEARDOWN · REFUSED')?.disabled).toBe(true);
     expect(button_named(screen.root, 'TEARDOWN · ALL · REFUSED')?.disabled).toBe(true);
     // PROTECT writes the record on this host: not held.

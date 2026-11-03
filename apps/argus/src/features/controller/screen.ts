@@ -31,6 +31,8 @@ import {
 export interface ControllerHooks {
   /** Runs an operator's line (it may ask); its output arrives through `output_take`; resolves when it ends. */
   run: (line: string) => Promise<void>;
+  /** Reads the clusters again after a line ran (the tenancy is searched, so seconds pass); the clusters arrive through `clusters_take`. */
+  refresh: () => Promise<void>;
   /** Reads `cluster size` quietly; null when it did not answer the model. */
   size_read: (family?: string) => Promise<ClusterSizeModel | null>;
   /** Stops following the running line (the build goes on as its task). */
@@ -99,6 +101,8 @@ export class TdController {
   /** The cluster as it stood when the last command was sent, for SINCE LAST COMMAND. */
   private before: ClusterSummary | null = null;
   private since: SinceRow[] = [{ label: '', text: 'FIRST READ' }];
+  /** The line whose clusters are being read again, while the read runs; the header and the seat say so. */
+  private reading: string | null = null;
   private size: ClusterSizeModel | null = null;
   private sizeAsked: boolean = false;
   private levers: ClusterSpecModel | null = null;
@@ -314,13 +318,25 @@ export class TdController {
     this.draw();
     try {
       await this.hooks.run(line);
+      if (this.partial !== '') { this.log_add(this.partial, 'out'); this.partial = ''; }
+      // The line is answered; the clusters are read again before the seat changes, and the wait is said, not hidden.
+      this.reading = line;
+      this.log_add('reading the clusters again (the tenancy is searched: seconds)', 'note');
+      this.draw();
+      await this.hooks.refresh();
     } finally {
       if (this.partial !== '') { this.log_add(this.partial, 'out'); this.partial = ''; }
       this.busy = null;
+      this.reading = null;
       const now: ClusterSummary | null = this.cluster_get();
       if (now !== null) this.since = since_build(this.before, now);
       this.draw();
     }
+  }
+
+  /** Whether the clusters are being read again after a line. */
+  public reading_is(): boolean {
+    return this.reading !== null;
   }
 
   /**
@@ -477,6 +493,7 @@ export class TdController {
     section.setAttribute('aria-label', 'Since the last command');
     section.append(el('span', 'tdc-head-title', 'SINCE LAST COMMAND'));
     const grid: HTMLElement = el('div', 'tdc-since');
+    if (this.reading !== null) grid.append(el('span', 'tdc-since-label', 'READING'), el('span', 'tdc-since-value tdc-since-reading', `the clusters again, after ${this.reading}`));
     for (const row of this.since) grid.append(el('span', 'tdc-since-label', row.label), el('span', 'tdc-since-value', row.text));
     section.append(grid);
     return section;
@@ -856,6 +873,7 @@ export class TdController {
       ? 'A cluster is born protected. Lifting the lock is a line of its own, so no single slip or replayed line removes a tenant.'
       : 'The lock is off. TEAR DOWN sends the line; the engine lists what goes and asks for the name typed back.') + askFirst));
     const commands: HTMLElement = el('div', 'tdc-commands');
+    if (this.reading !== null) commands.append(el('span', 'tdc-prose tdc-quiet tdc-reading', `READING AGAIN · the lock as the daemon now keeps it arrives when cluster status answers`));
     if (cluster.protected !== false) commands.append(this.linePill_make('LIFT THE LOCK', LINES.protect(cluster.name, false), 'quiet'));
     else commands.append(this.linePill_make('LOCK AGAIN', LINES.protect(cluster.name, true), 'quiet'), el('span', 'tdc-flex'), this.linePill_make('TEAR DOWN', LINES.teardown(cluster.name), 'destroy', cluster.refused?.['teardown']));
     lock.append(commands);

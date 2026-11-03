@@ -70,7 +70,9 @@ export function password_ask(line: string, user: string | null): Promise<string 
   document.body.appendChild(sheet);
   field.focus();
   return new Promise((resolve: (password: string | null) => void): void => {
-    const settle = (password: string | null): void => { field.value = ''; sheet.remove(); resolve(password); };
+    const onEscape = (event: KeyboardEvent): void => { if (event.key === 'Escape') { event.stopImmediatePropagation(); settle(null); } };
+    const settle = (password: string | null): void => { window.removeEventListener('keydown', onEscape, true); field.value = ''; sheet.remove(); resolve(password); };
+    window.addEventListener('keydown', onEscape, true);
     go.addEventListener('click', (): void => settle(field.value === '' ? null : field.value));
     cancel.addEventListener('click', (): void => settle(null));
     field.addEventListener('keydown', (event: KeyboardEvent): void => { if (event.key === 'Enter') settle(field.value === '' ? null : field.value); });

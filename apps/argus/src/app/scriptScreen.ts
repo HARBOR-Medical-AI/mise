@@ -69,6 +69,7 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
   // Esc gives the screen back, ahead of every other Esc listener; a question on the strip is declined first.
   window.addEventListener('keydown', (event: KeyboardEvent): void => {
     if (screen === null || event.key !== 'Escape') return;
+    if (document.querySelector('.cloud-elevate') !== null) return;
     event.stopImmediatePropagation();
     event.preventDefault();
     close();

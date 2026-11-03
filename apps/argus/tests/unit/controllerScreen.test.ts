@@ -39,6 +39,7 @@ function controller_make(size: ClusterSizeModel = SIZE, manage: boolean | null =
   const cues: string[] = [];
   const hooks: ControllerHooks = {
     run: async (line: string): Promise<void> => { sent.push(line); },
+    refresh: async (): Promise<void> => undefined,
     size_read: async (): Promise<ClusterSizeModel> => size,
     stop: (): void => { sent.push('<stop>'); },
     leave: (): void => { sent.push('<leave>'); },
@@ -90,7 +91,7 @@ describe('the TD controller screen', () => {
     expect(button_named(controller.root, 'PLAN')?.disabled).toBe(false);
     expect(button_named(controller.root, 'VERIFY')?.disabled).toBe(false);
     controller.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
-    expect(button_named(controller.root, 'TEAR DOWN · REFUSED')?.title).toContain('MANAGE asks your password');
+    expect(button_named(controller.root, 'TEAR DOWN · REFUSED')?.title).toContain('no door to check a password at');
     // A found cluster's ADOPT is held the same way, by the kernel's reason when it carries one.
     controller.clusters_take([cluster_make('harbor', { origin: 'found', condition: 'UP', billing: true, protected: true, refused: { adopt: 'entered as READ; MANAGE asks your password once' } })]);
     controller.cluster_choose('harbor');
