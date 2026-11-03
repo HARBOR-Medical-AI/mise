@@ -77,6 +77,10 @@ export interface TakeoverFrame {
   gutterAway_is: () => boolean;
   /** Brings the gutter back when it is away; true when it was. */
   gutter_restore: () => boolean;
+  /** Whether the head is off stage (a press on the brand block rolled it away). */
+  headerAway_is: () => boolean;
+  /** Brings the head back when it is away; true when it was. */
+  header_restore: () => boolean;
 }
 
 /** The page's seats, in the gutter's order; a screen with more views takes the next hue. */
@@ -147,6 +151,14 @@ export function takeoverFrame_build(spec: TakeoverSpec, onView: (key: string) =>
   const brand: HTMLButtonElement = el('button', 'panel-1 takeover-brand');
   brand.type = 'button';
   brand.setAttribute('aria-label', spec.brand.name);
+  brand.title = 'press to roll the head away; the strip at the top, or Esc, brings it back';
+  // As the page's first panel: a press on the brand block rolls the head off the top, the stage flowing up to fill
+  // it. The page's panel selects a face first and departs on the second press; the takeover's head has one face.
+  const headerAway_set = (away: boolean): void => {
+    if (away) root.dataset['header'] = 'away';
+    else delete root.dataset['header'];
+  };
+  brand.addEventListener('click', (): void => headerAway_set(!(root.dataset['header'] === 'away')));
   if (spec.brand.mark) {
     const mark: HTMLElement = el('span', 'brand-mark brand-mark-td');
     mark.setAttribute('aria-hidden', 'true');
@@ -177,6 +189,12 @@ export function takeoverFrame_build(spec: TakeoverSpec, onView: (key: string) =>
     else delete root.dataset['gutter'];
   };
   restore.addEventListener('click', (): void => gutterAway_set(false));
+  // The head's restore strip: the page's #header-restore, on this frame, along the top edge.
+  const headRestore: HTMLElement = el('div', 'takeover-header-restore');
+  headRestore.setAttribute('role', 'button');
+  headRestore.setAttribute('tabindex', '0');
+  headRestore.title = 'restore the head';
+  headRestore.addEventListener('click', (): void => headerAway_set(false));
   const seats: HTMLElement = el('div', '');
   const views: Map<string, HTMLButtonElement> = new Map();
   let shown: ReadonlyArray<TakeoverView> = spec.views;
@@ -228,7 +246,7 @@ export function takeoverFrame_build(spec: TakeoverSpec, onView: (key: string) =>
   main.append(band_make(6, ''), stage);
   const wrap: HTMLElement = el('div', 'takeover-wrap');
   wrap.append(gutter, main);
-  root.append(top, wrap, restore);
+  root.append(top, wrap, restore, headRestore);
 
   // The chosen view's seat is lit, as LANG is when it is live. The first seat
   // carries the body's elbow, so the band's first block and the fillet take
@@ -253,6 +271,12 @@ export function takeoverFrame_build(spec: TakeoverSpec, onView: (key: string) =>
     gutterAway_set(false);
     return true;
   };
+  const headerAway_is = (): boolean => root.dataset['header'] === 'away';
+  const header_restore = (): boolean => {
+    if (!headerAway_is()) return false;
+    headerAway_set(false);
+    return true;
+  };
 
-  return { root, seat, face, views, leave, stageTitle: over.title, stageNote: over.note, body, aside, logTitle: logStrip.title, logNote: logStrip.note, log, view_mark, views_set, gutterAway_is, gutter_restore };
+  return { root, seat, face, views, leave, stageTitle: over.title, stageNote: over.note, body, aside, logTitle: logStrip.title, logNote: logStrip.note, log, view_mark, views_set, gutterAway_is, gutter_restore, headerAway_is, header_restore };
 }

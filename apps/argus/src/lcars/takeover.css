@@ -143,3 +143,35 @@
   background-color: var(--harvestgold);
   box-shadow: 0 0 8px color-mix(in srgb, var(--harvestgold) 60%, transparent);
 }
+/* The head rolls off the top under a press on the brand block, as the page's
+ * header does on its first panel (argus.css, body[data-header='away'] .wrap):
+ * taken out of the flow and glided up by its own height, the stage flows up
+ * to fill the top exactly. The strip along the top edge, the page's
+ * #header-restore on this frame, or Esc, brings it back. */
+.takeover-top { transition: translate 0.45s cubic-bezier(0.22, 1, 0.36, 1); }
+.takeover[data-header='away'] .takeover-top {
+  position: absolute;
+  inset: 10px 0 auto 5px;
+  width: auto;
+  translate: 0 calc(-100% - 10px);
+}
+.takeover[data-header='away'] .takeover-wrap { margin-top: 12px; }
+.takeover-header-restore { display: none; }
+.takeover[data-header='away'] .takeover-header-restore {
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 20%;
+  right: 20%;
+  height: 12px;
+  z-index: 1000;
+  border-radius: 0 0 6px 6px;
+  background-color: var(--october-sunset);
+  cursor: pointer;
+  animation: beckon 3.5s ease-in-out infinite;
+}
+.takeover-header-restore:hover {
+  animation: none;
+  background-color: var(--harvestgold);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--harvestgold) 60%, transparent);
+}

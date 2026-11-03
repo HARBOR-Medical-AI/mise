@@ -283,9 +283,12 @@ export class ScriptScreen {
     this.draw();
   }
 
-  /** Brings the gutter back when a press on the view shown sent it away; true when it was away (Esc restores before it leaves). */
-  public gutter_restore(): boolean {
-    return this.frame.gutter_restore();
+  /**
+   * Brings back what a press sent away, one layer at a time: the gutter first, then the head; true when something
+   * came back (Esc restores before it leaves).
+   */
+  public frame_restore(): boolean {
+    return this.frame.gutter_restore() || this.frame.header_restore();
   }
 
   /** Stops the screen's clock; the host calls it on leaving. */
