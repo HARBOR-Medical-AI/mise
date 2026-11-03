@@ -9,7 +9,7 @@
 import type { ClusterSpec } from '../../cluster/spec.js';
 import { specNodes_build, type SpecNode } from '../../cluster/spec.js';
 import type { Installer, InstallerCredentials, InstallerHost, InstallerIds, InstallStatus, PlatformManifest } from '../../installer/installer.js';
-import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, ModulePlanRequest, PlaceAnswer, PlanRow, PreflightCheck, ShellSession, ShellSessionRequest, StackModule, TeardownRequest } from '../builder.js';
+import { teardownStep_run, type BuildCall, type CloudBuilder, type InfraOutputs, type InfraPlan, type ModulePlanRequest, type PlaceAnswer, type PlanRow, type PreflightCheck, type ShellSession, type ShellSessionRequest, type StackModule, type TeardownCall, type TeardownRequest, type TeardownStep } from '../builder.js';
 
 /** What the fake network module makes, by kind, as the OCI module does. */
 const NET_KINDS: ReadonlyArray<string> = ['networks', 'gateways', 'routetables', 'securitylists', 'subnets', 'bastions'];
@@ -300,23 +300,33 @@ export class FakeCloudBuilder implements CloudBuilder {
     return this.world.stackResources.get(request.stackRef) ?? 17;
   }
 
-  async teardown_run(request: TeardownRequest, call: BuildCall): Promise<string[]> {
-    await this.world.tick(4, call.signal);
+  async teardown_run(request: TeardownRequest, call: TeardownCall): Promise<string[]> {
     const gone: string[] = [];
-    if (request.stackRef !== undefined && request.stackEmpty !== true) gone.push(`the stack's resources (${request.stackRef})`);
-    if (request.baseDomain !== '') gone.push('3 DNS records');
-    if (request.isoObject !== undefined) gone.push(`the image ${request.isoObject} and its link`);
-    if (request.volumeIds.length > 0) gone.push(`${request.volumeIds.length} volumes the cluster made`);
-    if (request.stackRef !== undefined) {
+    // One tick a step, each kept on the record as the real cloud's are.
+    const step = async (name: TeardownStep, work: () => string | null): Promise<void> => {
+      const went: string | null = await teardownStep_run(call, name, async (): Promise<string | null> => {
+        await this.world.tick(1, call.signal);
+        return work();
+      });
+      if (went === null) return;
+      gone.push(went);
+      call.log(`removed ${went}`);
+    };
+    await step('destroy', (): string | null => request.stackRef === undefined ? null : `the stack's resources (${request.stackRef})`);
+    await step('dns', (): string | null => request.baseDomain === '' ? null : '3 DNS records');
+    await step('image', (): string | null => request.isoObject === undefined ? null : `the image ${request.isoObject} and its link`);
+    await step('volumes', (): string | null => request.volumeIds.length === 0 ? null : `${request.volumeIds.length} volumes the cluster made`);
+    await step('stack', (): string | null => {
+      if (request.stackRef === undefined) return null;
       this.world.stacks.delete(request.stackRef);
       this.world.stackResources.set(request.stackRef, 0);
-      gone.push('the stack itself');
-    }
-    if (this.world.compartments.get(request.cluster) === request.compartmentId) {
+      return 'the stack itself';
+    });
+    await step('compartment', (): string | null => {
+      if (this.world.compartments.get(request.cluster) !== request.compartmentId) return null;
       this.world.compartments.delete(request.cluster);
-      gone.push(`the compartment clusters/${request.cluster}`);
-    }
-    for (const line of gone) call.log(`removed ${line}`);
+      return `the compartment clusters/${request.cluster}`;
+    });
     this.world.removed.push(...gone);
     return gone;
   }

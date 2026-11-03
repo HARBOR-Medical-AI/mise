@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { taskState_isOver, type ClusterCondition, type ClusterSummary, type PlanSummary, type VerifyCheckModel } from '@fnndsc/menu';
 import { runner_get, type JobRecord } from '@fnndsc/brasa/core';
-import { plan_count, type InfraPlan, type PlanRow } from '../cloud/builder.js';
+import { plan_count, TEARDOWN_STEPS, type InfraPlan, type PlanRow, type TeardownStep } from '../cloud/builder.js';
 import { lastDone_find, type HarborCluster, type StepState } from '../checkout/harborOci.js';
 import type { ClusterRecord, ClusterStore } from './state.js';
 import { BUILD_STEPS, buildJob_id, FIRST_BILLING_STEP, stepNext_find, STEPS_SOURCE, teardownJob_id } from './steps.js';
@@ -23,7 +23,32 @@ import { VERIFY_FILE, type VerifyKept } from './verify.js';
 export { VERIFY_FILE, type VerifyKept };
 
 /** The parts of a summary the controller draws, beyond the tile's glance. */
-export type ClusterReadout = Required<Pick<ClusterSummary, 'condition' | 'billing' | 'origin' | 'protected' | 'refused' | 'region' | 'compartment' | 'gone' | 'spec' | 'next' | 'billingStep' | 'running' | 'plan' | 'verify' | 'asking'>>;
+export type ClusterReadout = Required<Pick<ClusterSummary, 'condition' | 'billing' | 'origin' | 'protected' | 'refused' | 'region' | 'compartment' | 'gone' | 'teardown' | 'spec' | 'next' | 'billingStep' | 'running' | 'plan' | 'verify' | 'asking'>>;
+
+/**
+ * Whether a teardown stopped part way: steps done, the record not yet gone, no task running.
+ *
+ * @param record - The cluster's record.
+ * @returns Whether it is partly torn.
+ */
+function partlyTorn_is(record: ClusterRecord | null): boolean {
+  return record !== null && record.gone === undefined && record.teardown !== undefined && Object.values(record.teardown.steps).some((step): boolean => step.state === 'done');
+}
+
+/**
+ * The teardown's steps for the model, in the order they run: each where it stands, or `not done`.
+ *
+ * @param record - The cluster's record.
+ * @returns The teardown, or null when none has started.
+ */
+export function teardownSummary_build(record: ClusterRecord | null): NonNullable<ClusterSummary['teardown']> | null {
+  if (record?.teardown === undefined) return null;
+  const kept = record.teardown.steps;
+  return {
+    started: record.teardown.started,
+    steps: TEARDOWN_STEPS.map((name: TeardownStep) => ({ name, state: kept[name]?.state ?? 'not done', started: kept[name]?.started ?? null, ended: kept[name]?.ended ?? null, note: kept[name]?.note ?? null })),
+  };
+}
 
 /**
  * A step's state, as kept or as read from a checkout.
@@ -63,6 +88,8 @@ export function condition_derive(cluster: HarborCluster, record: ClusterRecord |
   // A teardown under way is said before anything else: the record says gone only once it ends.
   if (running === 'teardown') return 'TEARING DOWN';
   if (record?.gone !== undefined) return 'GONE';
+  // A teardown that stopped with steps done: said as such, before the build's steps, which still read done.
+  if (partlyTorn_is(record)) return 'PARTLY TORN';
   // A found cluster keeps no steps here: the cloud said whether its machines live, its stack stands, or nothing is left.
   if (cluster.origin === 'found') return cluster.found?.condition ?? 'PARTLY BUILT';
   if (asking) return 'ASKING';
@@ -95,6 +122,11 @@ export function refusals_derive(cluster: HarborCluster, record: ClusterRecord | 
   }
   if (cluster.origin !== 'built' || record === null) return { build: 'read from a harbor-oci checkout, not built here', teardown: 'read from a harbor-oci checkout, not built here' };
   if (record.gone !== undefined) return { build: 'torn down', teardown: 'already torn down' };
+  if (partlyTorn_is(record)) {
+    // Nothing is built on or planned against what is half gone; the teardown finishes it (its lock still guards it).
+    const why: string = `torn down part way: cluster teardown ${cluster.name} finishes it`;
+    return record.protected !== false ? { build: why, plan: why, verify: why, teardown: `protected (cluster protect ${cluster.name} off lifts it)` } : { build: why, plan: why, verify: why };
+  }
   // An adopted cluster is never built on; it is torn down as a built one is, once its lock is lifted.
   const build: Record<string, string> = record.adopted !== undefined ? { build: `adopted from ${record.adopted.from}` } : {};
   return record.protected !== false ? { ...build, teardown: `protected (cluster protect ${cluster.name} off lifts it)` } : build;
@@ -162,13 +194,15 @@ export function clusterReadout_build(cluster: HarborCluster, store: ClusterStore
   return {
     condition: condition_derive(cluster, record, running, asking !== null),
     // A found cluster bills when its machines live; the host attests nothing else of it.
-    billing: cluster.origin === 'found' ? cluster.found?.condition === 'UP' : record?.gone === undefined && applied,
+    // Once the destroy step is done the machines are gone, whatever else of the teardown is left.
+    billing: cluster.origin === 'found' ? cluster.found?.condition === 'UP' : record?.gone === undefined && record?.teardown?.steps['destroy']?.state !== 'done' && applied,
     origin: cluster.origin === 'found' ? 'found' : cluster.origin !== 'built' || record === null ? 'checkout' : record.adopted !== undefined ? 'adopted' : 'built',
     protected: record?.protected !== false,
     refused: refusals_derive(cluster, record),
     region: record?.region ?? cluster.settings['OCI_REGION'] ?? null,
     compartment: record?.compartmentId ?? cluster.settings['OCI_COMPARTMENT_OCID'] ?? null,
     gone: record?.gone ?? null,
+    teardown: teardownSummary_build(record),
     spec: store?.spec_read(cluster.name)?.spec ?? cluster.found?.spec ?? null,
     next: record === null || record.adopted !== undefined || record.gone !== undefined ? null : stepNext_find(record),
     billingStep: FIRST_BILLING_STEP,

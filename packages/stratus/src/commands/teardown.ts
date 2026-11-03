@@ -11,7 +11,8 @@ import { repl_question, sink_dataLine, surface_get } from '@fnndsc/brasa/core';
 import type { HarborCluster } from '../checkout/harborOci.js';
 import { foundClusters_describe, foundRecord_make } from '../cluster/found.js';
 import { SPEC_DEFAULT } from '../cluster/spec.js';
-import type { ClusterRecord } from '../cluster/state.js';
+import { TEARDOWN_STEPS, type TeardownStep } from '../cloud/builder.js';
+import type { ClusterRecord, TeardownStepRecord } from '../cluster/state.js';
 import { teardownJob_id } from '../cluster/steps.js';
 import { clusterVolumes_read, teardownRun_make } from '../cluster/teardown.js';
 import { clusterState_show, job_runFollowed, type BuildCommandContext } from './build.js';
@@ -65,10 +66,14 @@ export async function clusterTeardown_run(context: BuildCommandContext, args: Re
   if (surface_get().capabilities.tasks !== true) return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: ${TIER_REFUSAL}\n`);
   const stackRef: string | undefined = record.ids['stackRef'];
   const inStack: number | null = stackRef !== undefined && builder.stackResources_count !== undefined ? await builder.stackResources_count({ region: record.region, stackRef }) : null;
-  // A teardown that stopped part way runs again: an empty stack means an
-  // earlier pass destroyed it, the cluster with it, and removed the
-  // volumes it had read, so there is no destroy job and no cluster to ask.
-  const stackEmpty: boolean = stackRef !== undefined && inStack === 0;
+  // A teardown that stopped part way runs again from the first step not done:
+  // the record keeps each step as it ended. An empty stack with no step kept
+  // (a teardown before steps were kept) means an earlier pass destroyed it,
+  // the cluster with it, so there is no destroy job and no cluster to ask.
+  const kept: Record<string, TeardownStepRecord> = record.teardown?.steps ?? {};
+  const done: Set<TeardownStep> = new Set(TEARDOWN_STEPS.filter((step: TeardownStep): boolean => kept[step]?.state === 'done' || kept[step]?.state === 'skipped'));
+  if (stackRef !== undefined && inStack === 0) done.add('destroy');
+  const stackEmpty: boolean = done.has('destroy');
   // The cluster names its own volumes; read before the destroy takes it away.
   let volumeIds: string[] = [];
   const kubeconfig = cluster.secrets.find((secret): boolean => secret.name === 'kubeconfig');
@@ -79,23 +84,27 @@ export async function clusterTeardown_run(context: BuildCommandContext, args: Re
       return envelope_error('', undefined, `cluster teardown: ${name}: cannot read the cluster's volumes (${error instanceof Error ? error.message : String(error)}): refusing, they would be left billing\n`);
     }
   }
+  // Each removal is a step; one an earlier pass finished is listed as such and not asked for again.
+  const mark = (step: TeardownStep): string => done.has(step) ? chalk.gray(`  (done ${kept[step]?.ended?.slice(11, 16) ?? 'by an earlier pass'})`) : '';
+  const resumes: boolean = record.teardown !== undefined && done.size > 0;
   const lines: string[] = [
-    `${chalk.bold(name)}  ${record.baseDomain === '' ? '(no zone known)' : `${name}.${record.baseDomain}`}  teardown${record.adopted !== undefined ? chalk.gray(`  (adopted from ${record.adopted.from})`) : ''}`,
-    `  ${chalk.red('−')} ${stackRef === undefined ? 'no stack: nothing was applied' : stackEmpty ? 'nothing in the stack: an earlier pass destroyed it' : `the stack's ${inStack ?? '?'} resources, by a destroy job`}`,
-    ...(record.baseDomain === '' ? [] : [`  ${chalk.red('−')} the DNS records api, api-int and *.apps`]),
-    ...(record.ids['isoObject'] !== undefined ? [`  ${chalk.red('−')} the image ${record.ids['isoObject']} and its link`] : []),
-    `  ${chalk.red('−')} ${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'} the cluster made for its claims${kubeconfig === undefined ? ' (no cluster to ask)' : stackEmpty ? ' (the cluster is gone; an earlier pass removed the ones it named)' : ''}, and any block volume left in its compartment with the attribution tag`,
-    ...(record.ids['clusterId'] !== undefined ? [`  ${chalk.red('−')} the installer's cluster and infra-env`] : []),
-    ...(stackRef !== undefined ? [`  ${chalk.red('−')} the stack itself`] : []),
-    `  ${chalk.red('−')} its compartment and the image bucket in it when stratus made them (clusters/${name}); another's keeps itself and loses the tag`,
+    `${chalk.bold(name)}  ${record.baseDomain === '' ? '(no zone known)' : `${name}.${record.baseDomain}`}  teardown${resumes ? chalk.gray(`  (stopped ${record.teardown?.started.slice(0, 16) ?? ''}; resumes at the first step not done)`) : ''}${record.adopted !== undefined ? chalk.gray(`  (adopted from ${record.adopted.from})`) : ''}`,
+    `  ${chalk.red('−')} ${stackRef === undefined ? 'no stack: nothing was applied' : stackEmpty ? 'nothing in the stack: an earlier pass destroyed it' : `the stack's ${inStack ?? '?'} resources, by a destroy job`}${mark('destroy')}`,
+    ...(record.baseDomain === '' ? [] : [`  ${chalk.red('−')} the DNS records api, api-int and *.apps${mark('dns')}`]),
+    ...(record.ids['isoObject'] !== undefined ? [`  ${chalk.red('−')} the image ${record.ids['isoObject']} and its link${mark('image')}`] : []),
+    `  ${chalk.red('−')} ${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'} the cluster made for its claims${kubeconfig === undefined ? ' (no cluster to ask)' : stackEmpty ? ' (the cluster is gone; an earlier pass removed the ones it named)' : ''}, and any block volume left in its compartment with the attribution tag${mark('volumes')}`,
+    ...(stackRef !== undefined ? [`  ${chalk.red('−')} the stack itself${mark('stack')}`] : []),
+    `  ${chalk.red('−')} its compartment and the image bucket in it when stratus made them (clusters/${name}); another's keeps itself and loses the tag${mark('compartment')}`,
+    ...(record.ids['clusterId'] !== undefined ? [`  ${chalk.red('−')} the installer's cluster and infra-env${mark('installer')}`] : []),
     chalk.gray('  Nothing else is touched: the zone, the tag namespace and what other clusters made stay.'),
   ];
   for (const line of lines) sink_dataLine(line);
   const answer: string = (await repl_question(`Destroy what ${name} built? Its data goes with it; billing stops. Type the cluster's name to go on:`)).trim();
   if (answer !== name) return envelope_ok(`${chalk.gray(`not torn down: '${answer}' is not ${name}`)}\n`);
-  // The cluster's state is shown as the task starts (TEARING DOWN, with the task to follow) and as it ends (GONE), so a
-  // surface watching redraws without asking; the task's own lines stream to whoever follows.
-  const ran = await job_runFollowed(teardownJob_id(name), `teardown ${name}`, teardownRun_make(context.store, builder, context.deps?.installer ?? null, name, volumeIds, stackEmpty), (): void => clusterState_show(context, name));
+  // The cluster's state is shown as the task starts (TEARING DOWN, with the task to follow), as each step begins and
+  // ends, and as it ends (GONE), so a surface watching redraws without asking; the task's own lines stream to whoever follows.
+  const shown = (): void => clusterState_show(context, name);
+  const ran = await job_runFollowed(teardownJob_id(name), `teardown ${name}`, teardownRun_make(context.store, builder, context.deps?.installer ?? null, name, volumeIds, done, shown), shown);
   clusterState_show(context, name);
   if ('error' in ran) return envelope_error('', undefined, `cluster teardown: ${ran.error}\n`);
   return envelope_ok(`${name}: torn down\n`);

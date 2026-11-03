@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { BufferSink, HeadlessSurface, JobRunner, runner_install, sink_set, surface_set, type PromptRequest } from '@fnndsc/brasa/core';
-import type { BuildCall } from '../src/cloud/builder.js';
+import type { BuildCall, TeardownCall, TeardownStep } from '../src/cloud/builder.js';
 import type { OciBuildApi, OciLink } from '../src/cloud/oci/buildApi.js';
 import type { RmApi, RmJobRecord, RmOperation } from '../src/cloud/oci/rmApi.js';
 import { OciBuilder } from '../src/cloud/oci/builder.js';
@@ -126,7 +126,11 @@ describe('the OCI builder\'s build and teardown', () => {
   let rm: OkRm;
   let builder: OciBuilder;
   let logged: string[];
-  const call = (): BuildCall => ({ log: (line: string): void => { logged.push(line); }, signal: new AbortController().signal });
+  const stepped: string[] = [];
+  const call = (done: ReadonlySet<TeardownStep> = new Set()): TeardownCall => ({
+    log: (line: string): void => { logged.push(line); }, signal: new AbortController().signal,
+    step: (name: TeardownStep, state: string, note?: string): void => { stepped.push(`${name}: ${state}${note === undefined ? '' : ` (${note})`}`); }, done,
+  });
   const builder_make = (visibleWaitMs?: number): OciBuilder => new OciBuilder({
     rm: () => rm, api: () => api, driver: new FakeDriver(fakeCloud_sample()), sshPublicKey: () => 'ssh-ed25519 k\n',
     nameservers_resolve: async () => ['ns2.p68.dns.oraclecloud.net.', 'ns1.p68.dns.oraclecloud.net.'],
@@ -138,6 +142,7 @@ describe('the OCI builder\'s build and teardown', () => {
     api = new RecordedApi();
     rm = new OkRm();
     logged = [];
+    stepped.length = 0;
     builder = builder_make();
   });
 
@@ -233,23 +238,30 @@ describe('the OCI builder\'s build and teardown', () => {
     const gone = await builder.teardown_run({ cluster: 'trial', region: 'r', compartmentId: 'c', baseDomain: 'b.org', stackRef: 'stack-1', isoObject: 'trial-discovery.iso', isoLinkId: 'par-1', volumeIds: ['vol-1'] }, call());
     expect(rm.calls).toEqual(['destroy stack-1', 'delete stack-1']);
     expect(api.calls).toEqual(['unrecord api.trial.b.org', 'unrecord api-int.trial.b.org', 'unrecord *.apps.trial.b.org', 'unlink par-1', 'delete stratus-iso/trial-discovery.iso', 'volume vol-1', 'volume vol-2', 'delete bucket stratus-iso', 'delete compartment c']);
-    expect(gone).toEqual(["the stack's resources (stack-1)", '3 DNS records', 'the image trial-discovery.iso and its link', '1 volumes the cluster made', '1 volumes left in the compartment with the attribution tag', 'the stack itself', 'the image bucket stratus-iso', 'the compartment clusters/trial']);
+    expect(gone).toEqual(["the stack's resources (stack-1)", '3 DNS records', 'the image trial-discovery.iso and its link', '1 volumes the cluster made; 1 volumes left in the compartment with the attribution tag', 'the stack itself', 'the image bucket stratus-iso; the compartment clusters/trial']);
+    // Each removal is a step, begun and ended on the call in the order they run.
+    expect(stepped.filter((one: string): boolean => one.endsWith(': running')).map((one: string): string => one.replace(': running', ''))).toEqual(['destroy', 'dns', 'image', 'volumes', 'stack', 'compartment']);
+    expect(stepped.filter((one: string): boolean => !one.endsWith(': running')).map((one: string): string => one.split(' ')[0])).toEqual(['destroy:', 'dns:', 'image:', 'volumes:', 'stack:', 'compartment:']);
+    expect(stepped).toContain('volumes: done (1 volumes the cluster made; 1 volumes left in the compartment with the attribution tag)');
   });
 
   it('runs no destroy job for a stack an earlier pass emptied, does the rest again, and leaves a compartment that is not its own with only the tag gone', async () => {
     // harbor-oci's compartment: the zone and the tag namespace live there, so it keeps itself.
     api.described['c'] = { name: 'harbor-oci', parentName: null, tags: { 'mise-cluster': 'trial', 'other': 'x' } };
-    const gone = await builder.teardown_run({ cluster: 'trial', region: 'r', compartmentId: 'c', baseDomain: 'b.org', stackRef: 'stack-1', volumeIds: [], stackEmpty: true }, call());
+    const gone = await builder.teardown_run({ cluster: 'trial', region: 'r', compartmentId: 'c', baseDomain: 'b.org', stackRef: 'stack-1', volumeIds: [] }, call(new Set(['destroy'])));
     expect(rm.calls).toEqual(['delete stack-1']);
     expect(api.calls).toEqual(['unrecord api.trial.b.org', 'unrecord api-int.trial.b.org', 'unrecord *.apps.trial.b.org', 'untag c mise-cluster']);
     expect(gone).toEqual(['3 DNS records', 'the stack itself', 'the tag mise-cluster=trial off the compartment harbor-oci']);
+    // The step an earlier pass finished is said done, never run; one with nothing to remove is skipped.
+    expect(stepped[0]).toBe('destroy: done (done by an earlier pass)');
+    expect(stepped).toContain('image: skipped (nothing of it to remove)');
   });
 
   it('leaves a compartment of its own that still holds something, saying so, and looks for no records without a zone', async () => {
     api.described['c'] = { name: 'trial', parentName: 'clusters', tags: { 'mise-cluster': 'trial' } };
     api.compartmentFull = true;
     const logged: string[] = [];
-    const gone = await builder.teardown_run({ cluster: 'trial', region: 'r', compartmentId: 'c', baseDomain: '', volumeIds: [] }, { log: (line: string): void => { logged.push(line); }, signal: new AbortController().signal });
+    const gone = await builder.teardown_run({ cluster: 'trial', region: 'r', compartmentId: 'c', baseDomain: '', volumeIds: [] }, { log: (line: string): void => { logged.push(line); }, signal: new AbortController().signal, step: (): void => undefined, done: new Set() });
     expect(api.calls).toEqual([]);
     expect(gone).toEqual([]);
     expect(logged).toEqual(['no zone known for it: no records looked for', 'the compartment clusters/trial stays: CompartmentNotEmpty']);

@@ -10,11 +10,12 @@ import { join } from 'node:path';
 import { BufferSink, HeadlessSurface, JobRunner, runner_install, sink_set, surface_set, type CommandEnvelope, type JobRecord, type PromptRequest } from '@fnndsc/brasa/core';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder, FakeInstaller } from '../src/cloud/fake/builder.js';
-import type { BuildCall, CloudBuilder, InfraPlan, PreflightCheck } from '../src/cloud/builder.js';
-import { planCounts_alter, plan_count, planCounts_words } from '../src/cloud/builder.js';
+import type { BuildCall, CloudBuilder, InfraPlan, PreflightCheck, TeardownStep } from '../src/cloud/builder.js';
+import { planCounts_alter, plan_count, planCounts_words, teardownStep_run } from '../src/cloud/builder.js';
+import { teardownRun_make } from '../src/cluster/teardown.js';
 import { ClusterStore, clustersRoot_derive, clustersRoot_settle, type ClusterRecord } from '../src/cluster/state.js';
 import { SPEC_DEFAULT, specOptions_apply, type ClusterSpec } from '../src/cluster/spec.js';
-import { buildJob_id, buildRun_make, stepNext_find, STEPS_SOURCE, type BuildDeps } from '../src/cluster/steps.js';
+import { buildJob_id, buildRun_make, stepNext_find, STEPS_SOURCE, teardownJob_id, type BuildDeps } from '../src/cluster/steps.js';
 import { cost_words, familyShape_find, specCost_compute, specFit_read } from '../src/cluster/sizing.js';
 import { builtCluster_read } from '../src/cluster/view.js';
 import { condition_derive, clusterReadout_build, clusterRun_derive, planSummary_build, refusals_derive } from '../src/cluster/readout.js';
@@ -115,6 +116,45 @@ describe('building a cluster over the fakes', () => {
     expect(store.spec_read('nope')).toBeNull();
     expect(() => store.record_update('nope', () => {})).toThrow('no such cluster');
     expect(new ClusterStore(join(root, 'none')).names_list()).toEqual([]);
+  });
+
+  it('tears down step by step on the record; stopped part way it reads PARTLY TORN, and the next pass resumes from the first step not done', async () => {
+    record_new('trial');
+    store.record_update('trial', (record: ClusterRecord): void => { record.billingAccepted = 'now'; });
+    await runner.job_start(STEPS_SOURCE, buildJob_id('trial'), 'build trial', buildRun_make('trial', undefined, deps)).finished;
+    const shown: string[] = [];
+    // The first pass: the destroy is done, then the cloud fails at the records.
+    const failing: CloudBuilder = {
+      id: deps.builder.id,
+      teardown_run: async (_request, call): Promise<string[]> => {
+        await teardownStep_run(call, 'destroy', async (): Promise<string | null> => 'the stack');
+        await teardownStep_run(call, 'dns', async (): Promise<string | null> => { throw new Error('zone unreachable'); });
+        return [];
+      },
+    } as unknown as CloudBuilder;
+    const first: JobRecord = await runner.job_start(STEPS_SOURCE, teardownJob_id('trial'), 'teardown trial', teardownRun_make(store, failing, null, 'trial', [], new Set(), (): void => { shown.push('shown'); })).finished;
+    expect(first.state).toBe('failed');
+    let record: ClusterRecord = store.record_read('trial') as ClusterRecord;
+    expect(record.gone).toBeUndefined();
+    expect(record.teardown?.steps['destroy']).toMatchObject({ state: 'done', note: 'the stack' });
+    expect(record.teardown?.steps['dns']).toMatchObject({ state: 'failed', note: 'zone unreachable' });
+    expect(shown.length).toBeGreaterThanOrEqual(5);
+    const partly = clusterReadout_build(context.clusters.cluster_read('trial') as HarborCluster, store, first);
+    expect(partly.condition).toBe('PARTLY TORN');
+    expect(partly.billing).toBe(false);
+    expect(partly.refused['build']).toBe('torn down part way: cluster teardown trial finishes it');
+    expect(partly.teardown?.steps.map((step): string => `${step.name}:${step.state}`)).toEqual(['destroy:done', 'dns:failed', 'image:not done', 'volumes:not done', 'stack:not done', 'compartment:not done', 'installer:not done']);
+    // The second pass passes over what is done and runs the rest to GONE.
+    const done: Set<TeardownStep> = new Set(['destroy']);
+    const second: JobRecord = await runner.job_start(STEPS_SOURCE, teardownJob_id('trial'), 'teardown trial', teardownRun_make(store, deps.builder, deps.installer, 'trial', [], done)).finished;
+    expect(second.state).toBe('done');
+    record = store.record_read('trial') as ClusterRecord;
+    expect(record.gone).toBeDefined();
+    // The step passed over keeps the earlier pass's words and time.
+    expect(record.teardown?.steps['destroy']).toMatchObject({ state: 'done', note: 'the stack' });
+    expect(record.teardown?.steps['dns']?.state).toBe('done');
+    expect(['done', 'skipped']).toContain(record.teardown?.steps['installer']?.state);
+    expect(clusterReadout_build(context.clusters.cluster_read('trial') as HarborCluster, store, second).condition).toBe('GONE');
   });
 
   it('runs to the first billing step, then from it once accepted, to the end of the steps it has', async () => {
