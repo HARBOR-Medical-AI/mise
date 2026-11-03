@@ -23,7 +23,7 @@ import { modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } f
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
   askForm_derive, CHRIS_STEPS, classBadge_render, conditionWhy_derive, CONTROLLER_VIEWS, duration_text, HOURS_PER_MONTH, LINES, money_text, nameRefusal_derive,
-  newLine_build, planWords_render, since_build, sizeCost_compute, spec_copy, sizeFit_compute, stepLooks_build, stepsDone_count, summary_merge, verifyWords_render, zoneShort_format,
+  newLine_build, planWords_render, since_build, sizeCost_compute, spec_copy, sizeFit_compute, stepLooks_build, stepsDone_count, summary_merge, teardownLooks_build, verifyWords_render, zoneShort_format,
   type ControllerView, type SinceRow, type StepLook, type ZoneFitLook,
 } from './model.js';
 
@@ -880,22 +880,29 @@ export class TdController {
     const running = cluster.running;
     const tearing: boolean = running !== null && running !== undefined && running.job.endsWith('-teardown');
     const torn: boolean = !gone && cluster.condition === 'GONE';
-    const goes: HTMLElement = this.section_make(gone ? 'WHAT IS LEFT · AND GOES' : tearing ? 'WHAT GOES · NOW, IN THIS ORDER' : torn ? 'WHAT WENT · IN THIS ORDER' : 'WHAT GOES · IN THIS ORDER', 'tdc-col-wide', 'ONLY WHAT THIS TRUSTED DOMAIN MADE');
-    const rows: Array<[string, string]> = gone ? [
-      ['the stack itself', 'emptied by an earlier teardown; it carried the tag, so the cluster was found again'],
-      ['its compartment and the image bucket', 'when stratus made them (clusters/<name>); another\'s keeps itself and loses the tag'],
-    ] : [
-      ['the stack\'s resources', 'a destroy job on the cluster\'s Resource Manager stack'],
-      ['the DNS records', 'api, api-int and *.apps in the zone'],
-      ['the image and its link', 'the discovery ISO and its pre-authenticated request'],
-      ['the cluster\'s volumes', 'the block volumes the CSI driver made for its claims, found through the cluster, and any left in the compartment with the attribution tag'],
-      ['the installer\'s records', 'the cluster and the infra-env at Red Hat'],
-      ['the stack itself', 'it carried the tag; left, the cluster would be found again'],
-      ['its compartment and the image bucket', 'when stratus made them (clusters/<name>); another\'s keeps itself and loses the tag'],
-    ];
-    const list: HTMLElement = el('div', 'tdc-teardown-rows');
-    for (const [what, how] of rows) list.append(el('span', 'tdc-destroy-mark', '−'), el('span', 'tdc-teardown-what', what), el('span', 'tdc-teardown-how', how));
-    goes.append(list, el('p', 'tdc-prose tdc-quiet', 'Nothing else is touched: the zone, the tag namespace and what other clusters made stay. The engine counts the stack and the volumes when the line runs, and asks for the name typed back.'));
+    const partly: boolean = cluster.condition === 'PARTLY TORN';
+    const goes: HTMLElement = this.section_make(gone ? 'WHAT IS LEFT · AND GOES' : tearing ? 'WHAT GOES · NOW, IN THIS ORDER' : torn ? 'WHAT WENT · IN THIS ORDER' : partly ? 'WHAT WENT, WHAT STANDS · IN THIS ORDER' : 'WHAT GOES · IN THIS ORDER', 'tdc-col-wide', 'ONLY WHAT THIS TRUSTED DOMAIN MADE');
+    if (gone) {
+      const list: HTMLElement = el('div', 'tdc-teardown-rows');
+      for (const [what, how] of [
+        ['the stack itself', 'emptied by an earlier teardown; it carried the tag, so the cluster was found again'],
+        ['its compartment and the image bucket', 'when stratus made them (clusters/<name>); another\'s keeps itself and loses the tag'],
+      ]) list.append(el('span', 'tdc-destroy-mark', '−'), el('span', 'tdc-teardown-what', what), el('span', 'tdc-teardown-how', how));
+      goes.append(list);
+    } else {
+      // Each removal is a step the kernel keeps on the record: a block each, in the order they run, STANDS until it
+      // goes, GOING while it does, GONE with the time once it has; the build strip's blocks, the teardown's words.
+      const strip: HTMLElement = el('div', 'tdc-teardown-strip');
+      for (const look of teardownLooks_build(cluster)) {
+        const row: HTMLElement = el('div', `tdc-strip-step tdc-teardown-step tdc-step-${look.tone}`);
+        row.setAttribute('aria-label', `${look.what}, ${look.word}`);
+        row.title = look.note ?? look.how;
+        row.append(el('span', 'tdc-strip-name', look.what), el('span', 'tdc-teardown-how', look.note ?? look.how), el('span', 'tdc-strip-word', look.at === null ? look.word : `${look.word} · ${look.at}`));
+        strip.append(row);
+      }
+      goes.append(strip);
+    }
+    goes.append(el('p', 'tdc-prose tdc-quiet', 'Nothing else is touched: the zone, the tag namespace and what other clusters made stay. The engine counts the stack and the volumes when the line runs, and asks for the name typed back.'));
 
     if (tearing && running !== null && running !== undefined) {
       // The teardown runs: the task's clock, its log and KILL stand where the guard stood, until the cluster is GONE.
@@ -913,6 +920,13 @@ export class TdController {
     }
     const refused: string | undefined = cluster.refused?.['teardown'];
     const protectedOnly: boolean = refused !== undefined && refused.startsWith('protected');
+    if (partly && (refused === undefined || protectedOnly)) {
+      // Stopped part way: what stands is on the left; TEAR DOWN resumes at the first step not done, the lock still its guard.
+      const box: HTMLElement = el('div', 'tdc-note tdc-note-refused');
+      const first: string = teardownLooks_build(cluster).find((look): boolean => look.tone === 'stands' || look.tone === 'failed')?.what ?? 'nothing';
+      box.append(el('span', 'tdc-note-title', 'STOPPED PART WAY'), el('span', 'tdc-prose', `The teardown started ${cluster.teardown?.started.slice(0, 16).replace('T', ' ') ?? ''} and stopped. What went is GONE on the left; TEAR DOWN resumes at ${first}, asking the name again${cluster.protected !== false ? '; the lock is on again, so LIFT THE LOCK first' : ''}.`));
+      guard.append(box);
+    }
     if (refused !== undefined && !protectedOnly) {
       const box: HTMLElement = el('div', 'tdc-note tdc-note-refused');
       box.append(el('span', 'tdc-note-title', 'REFUSED BY NAME'), el('span', 'tdc-mono', `cluster teardown: ${cluster.name}: Operation not permitted: ${refused}`));

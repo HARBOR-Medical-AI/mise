@@ -53,8 +53,25 @@ export interface ClusterRecord {
   /** When its spec was last declared again (`cluster new` on a kept cluster); after a build, the build has a change to plan. */
   declared?: string;
   adopted?: { from: string; at: string };
+  /** The teardown, once one has started: when, and each of its steps as it begins and ends (resumed from the first not done). */
+  teardown?: TeardownRecord;
   gone?: string;
   protected?: boolean;
+}
+
+/** One teardown step's history: `skipped` when there was nothing of it to remove. */
+export interface TeardownStepRecord {
+  state: 'running' | 'done' | 'skipped' | 'failed';
+  started?: string;
+  ended?: string;
+  /** What went, or why it failed, in a line. */
+  note?: string;
+}
+
+/** A teardown's history on the record. */
+export interface TeardownRecord {
+  started: string;
+  steps: Record<string, TeardownStepRecord>;
 }
 
 /**

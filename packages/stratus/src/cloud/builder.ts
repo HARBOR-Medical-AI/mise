@@ -131,8 +131,47 @@ export interface TeardownRequest {
   readonly isoLinkId?: string;
   /** Block volumes the cluster made that the stack never knew (its CSI claims). */
   readonly volumeIds: ReadonlyArray<string>;
-  /** The stack holds nothing now (an earlier pass destroyed it): no destroy job is run. */
-  readonly stackEmpty?: boolean;
+}
+
+/** The teardown's steps, in the order they run; each lands on the record as it begins and ends. The installer's is the kernel's, after the cloud's. */
+export const TEARDOWN_STEPS = ['destroy', 'dns', 'image', 'volumes', 'stack', 'compartment', 'installer'] as const;
+export type TeardownStep = typeof TEARDOWN_STEPS[number];
+
+/** What a teardown step is reported as: `skipped` when there was nothing of it to remove. */
+export type TeardownStepState = 'running' | 'done' | 'skipped' | 'failed';
+
+/** The note on a step passed over because an earlier pass finished it: the record keeps that pass's time and words. */
+export const EARLIER_PASS: string = 'done by an earlier pass';
+
+/** What a teardown is given beyond a build call: each step's beginning and end, and the steps an earlier pass finished. */
+export interface TeardownCall extends BuildCall {
+  readonly step: (name: TeardownStep, state: TeardownStepState, note?: string) => void;
+  readonly done: ReadonlySet<TeardownStep>;
+}
+
+/**
+ * Runs one step of a teardown: passed over when an earlier pass finished it,
+ * begun and ended on the call, failed with why when its work throws.
+ *
+ * @param call - The teardown's call.
+ * @param name - The step.
+ * @param work - Its work; answers what went, or null when there was nothing of it to remove.
+ * @returns What went, or null.
+ */
+export async function teardownStep_run(call: TeardownCall, name: TeardownStep, work: () => Promise<string | null>): Promise<string | null> {
+  if (call.done.has(name)) {
+    call.step(name, 'done', EARLIER_PASS);
+    return null;
+  }
+  call.step(name, 'running');
+  try {
+    const went: string | null = await work();
+    call.step(name, went === null ? 'skipped' : 'done', went ?? 'nothing of it to remove');
+    return went;
+  } catch (error: unknown) {
+    call.step(name, 'failed', error instanceof Error ? error.message : String(error));
+    throw error;
+  }
 }
 
 /** A Terraform module the driver keeps, each made into a stack of its own (docs/stratus.adoc, D16): `net` is a network's; a VM has two, its data's (kept by a default teardown) and its machine's. */
@@ -251,7 +290,7 @@ export interface CloudBuilder {
    * compartment with its image bucket when stratus made it (`clusters/<name>`),
    * else the cluster's tag off the compartment. Returns what went, a line each.
    */
-  teardown_run?(request: TeardownRequest, call: BuildCall): Promise<string[]>;
+  teardown_run?(request: TeardownRequest, call: TeardownCall): Promise<string[]>;
   stack_adopt?(request: { cluster: string; region: string; compartmentId: string; variables: Record<string, string>; state: Buffer; stackVersion: string }, call: BuildCall): Promise<string>;
   /** A stack found in the tenancy, read back: its state, its compartment, and the zone and spec its variables say; absent, a found cluster adopts without a spec. */
   stack_describe?(stackId: string, region: string): Promise<{ state: string; compartmentId: string; baseDomain: string | null; spec: ClusterSpec | null }>;

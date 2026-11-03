@@ -22,7 +22,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { ClusterSpec } from '../../cluster/spec.js';
-import type { BuildCall, CloudBuilder, InfraOutputs, InfraPlan, ModulePlanRequest, PlaceAnswer, PreflightCheck, ShellSession, ShellSessionRequest, StackModule, TeardownRequest } from '../builder.js';
+import { teardownStep_run, type BuildCall, type CloudBuilder, type InfraOutputs, type InfraPlan, type ModulePlanRequest, type PlaceAnswer, type PreflightCheck, type ShellSession, type ShellSessionRequest, type StackModule, type TeardownCall, type TeardownRequest } from '../builder.js';
 import { netModule_digest, netModule_zip, netVariables_build } from './modules/net.js';
 import { VM_SHAPE, vmDataVariables_build, vmMachineVariables_build, vmModule_digest, vmModule_zip } from './modules/vm.js';
 import { Readable } from 'node:stream';
@@ -476,66 +476,81 @@ export class OciBuilder implements CloudBuilder {
     return this.options.rm(request.region).stackResources_count(request.stackRef);
   }
 
-  async teardown_run(request: TeardownRequest, call: BuildCall): Promise<string[]> {
+  async teardown_run(request: TeardownRequest, call: TeardownCall): Promise<string[]> {
     const api: OciBuildApi = this.api_resolve(request.region);
     const gone: string[] = [];
-    if (request.stackRef !== undefined && request.stackEmpty !== true) {
+    const went = (what: string | null): void => { if (what !== null) gone.push(what); };
+    // Each removal is a step of the teardown, kept on the record as it begins and ends (TEARDOWN_STEPS, in this order).
+    went(await teardownStep_run(call, 'destroy', async (): Promise<string | null> => {
+      if (request.stackRef === undefined) return null;
       await this.job_run(this.options.rm(request.region), request.stackRef, { kind: 'destroy' }, `${request.cluster}: destroy`, call);
-      gone.push(`the stack's resources (${request.stackRef})`);
-    }
+      return `the stack's resources (${request.stackRef})`;
+    }));
     const cluster: string = `${request.cluster}.${request.baseDomain}`;
-    if (request.baseDomain === '') {
-      call.log('no zone known for it: no records looked for');
-    } else {
+    went(await teardownStep_run(call, 'dns', async (): Promise<string | null> => {
+      if (request.baseDomain === '') {
+        call.log('no zone known for it: no records looked for');
+        return null;
+      }
       const zoneHome: string = (await api.zoneCompartment_find(request.baseDomain)) ?? request.compartmentId;
       for (const name of [`api.${cluster}`, `api-int.${cluster}`, `*.apps.${cluster}`]) {
         await api.record_delete(request.baseDomain, name, zoneHome);
         call.log(`record ${name} removed`);
       }
-      gone.push('3 DNS records');
-    }
+      return '3 DNS records';
+    }));
     const bucket: string = this.options.bucket ?? ISO_BUCKET;
-    if (request.isoLinkId !== undefined) await api.link_delete(bucket, request.isoLinkId);
-    if (request.isoObject !== undefined) {
+    went(await teardownStep_run(call, 'image', async (): Promise<string | null> => {
+      if (request.isoLinkId !== undefined) await api.link_delete(bucket, request.isoLinkId);
+      if (request.isoObject === undefined) return null;
       await api.object_delete(bucket, request.isoObject);
-      gone.push(`the image ${request.isoObject} and its link`);
-    }
-    for (const volumeId of request.volumeIds) {
-      await api.volume_delete(volumeId);
-      call.log(`volume ${volumeId} removed`);
-    }
-    if (request.volumeIds.length > 0) gone.push(`${request.volumeIds.length} volumes the cluster made`);
-    // Block volumes the cluster could not name (no kubeconfig here, or made
-    // after it was read): what is left in the cluster's compartment carrying
-    // the attribution tag namespace is the cluster's, the compartment being
-    // the cluster's own.
-    const left = (await api.volumes_list(request.compartmentId)).filter((volume): boolean => !request.volumeIds.includes(volume.id) && Object.keys(volume.tags).some((key: string): boolean => key.startsWith(`${TAG_NAMESPACE}.`)));
-    for (const volume of left) {
-      await api.volume_delete(volume.id);
-      call.log(`volume ${volume.name} (${volume.id}) removed: left in the compartment with the attribution tag`);
-    }
-    if (left.length > 0) gone.push(`${left.length} volumes left in the compartment with the attribution tag`);
+      return `the image ${request.isoObject} and its link`;
+    }));
+    went(await teardownStep_run(call, 'volumes', async (): Promise<string | null> => {
+      for (const volumeId of request.volumeIds) {
+        await api.volume_delete(volumeId);
+        call.log(`volume ${volumeId} removed`);
+      }
+      // Block volumes the cluster could not name (no kubeconfig here, or made
+      // after it was read): what is left in the cluster's compartment carrying
+      // the attribution tag namespace is the cluster's, the compartment being
+      // the cluster's own.
+      const left = (await api.volumes_list(request.compartmentId)).filter((volume): boolean => !request.volumeIds.includes(volume.id) && Object.keys(volume.tags).some((key: string): boolean => key.startsWith(`${TAG_NAMESPACE}.`)));
+      for (const volume of left) {
+        await api.volume_delete(volume.id);
+        call.log(`volume ${volume.name} (${volume.id}) removed: left in the compartment with the attribution tag`);
+      }
+      const counted: string[] = [];
+      if (request.volumeIds.length > 0) counted.push(`${request.volumeIds.length} volumes the cluster made`);
+      if (left.length > 0) counted.push(`${left.length} volumes left in the compartment with the attribution tag`);
+      return counted.length === 0 ? null : counted.join('; ');
+    }));
     // The stack carried the cluster's tag: left, the cluster would be found again.
-    if (request.stackRef !== undefined) {
+    went(await teardownStep_run(call, 'stack', async (): Promise<string | null> => {
+      if (request.stackRef === undefined) return null;
       await this.options.rm(request.region).stack_delete(request.stackRef);
-      gone.push('the stack itself');
-    }
+      return 'the stack itself';
+    }));
     // The compartment: `clusters/<name>` is stratus's own, and the image bucket
     // in it went with the cluster; another's (harbor-oci's) keeps itself and
     // everything in it, and only loses the tag.
-    const compartment = await api.compartment_describe(request.compartmentId);
-    if (compartment.name === request.cluster && compartment.parentName === CLUSTERS_COMPARTMENT) {
-      if (await api.bucket_remove(bucket, request.compartmentId)) gone.push(`the image bucket ${bucket}`);
-      try {
-        await api.compartment_delete(request.compartmentId);
-        gone.push(`the compartment ${CLUSTERS_COMPARTMENT}/${request.cluster}`);
-      } catch (error: unknown) {
-        call.log(`the compartment ${CLUSTERS_COMPARTMENT}/${request.cluster} stays: ${error instanceof Error ? error.message : String(error)}`);
+    went(await teardownStep_run(call, 'compartment', async (): Promise<string | null> => {
+      const compartment = await api.compartment_describe(request.compartmentId);
+      if (compartment.name === request.cluster && compartment.parentName === CLUSTERS_COMPARTMENT) {
+        const removed: string[] = [];
+        if (await api.bucket_remove(bucket, request.compartmentId)) removed.push(`the image bucket ${bucket}`);
+        try {
+          await api.compartment_delete(request.compartmentId);
+          removed.push(`the compartment ${CLUSTERS_COMPARTMENT}/${request.cluster}`);
+        } catch (error: unknown) {
+          call.log(`the compartment ${CLUSTERS_COMPARTMENT}/${request.cluster} stays: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return removed.length === 0 ? null : removed.join('; ');
       }
-    } else if (compartment.tags[CLUSTER_TAG] === request.cluster) {
+      if (compartment.tags[CLUSTER_TAG] !== request.cluster) return null;
       await api.compartment_tagRemove(request.compartmentId, CLUSTER_TAG);
-      gone.push(`the tag ${CLUSTER_TAG}=${request.cluster} off the compartment ${compartment.name}`);
-    }
+      return `the tag ${CLUSTER_TAG}=${request.cluster} off the compartment ${compartment.name}`;
+    }));
     return gone;
   }
 

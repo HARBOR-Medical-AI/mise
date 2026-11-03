@@ -96,7 +96,7 @@ export function classBadge_render(cluster: ClusterSummary): string {
 export function conditionWhy_derive(cluster: ClusterSummary): { text: string; billing: boolean } {
   const billing: boolean = cluster.billing === true;
   const why: string = cluster.origin === 'adopted' ? 'ADOPTED' : cluster.origin === 'checkout' ? 'READ FROM A CHECKOUT'
-    : cluster.condition === 'GONE' ? 'TORN DOWN' : cluster.condition === 'TEARING DOWN' ? 'BEING TORN DOWN' : cluster.condition === 'SIZING' ? 'NOTHING BUILT'
+    : cluster.condition === 'GONE' ? 'TORN DOWN' : cluster.condition === 'TEARING DOWN' ? 'BEING TORN DOWN' : cluster.condition === 'PARTLY TORN' ? 'TEARDOWN STOPPED PART WAY · TEAR DOWN RESUMES IT' : cluster.condition === 'SIZING' ? 'NOTHING BUILT'
     : cluster.condition === 'PLANNED' ? 'PLANNED, NOTHING MADE' : cluster.condition === 'PARTLY BUILT' ? 'NOT FINISHED' : cluster.condition ?? '';
   return billing ? { text: `BILLING · ${why}`, billing } : { text: `${why} · NOTHING BILLED`, billing };
 }
@@ -136,6 +136,55 @@ export function stepLooks_build(cluster: ClusterSummary): StepLook[] {
     if (step.state === 'unknown') return look('UNKNOWN', 'unknown');
     if (name === cluster.next) return cluster.asking !== null && cluster.asking !== undefined ? look('ASKING', 'asking') : look('NEXT', 'next');
     return look('NOT DONE', 'later');
+  });
+}
+
+/** One teardown step as the TEARDOWN seat draws it: a block that reads STANDS until it goes, GONE once it has. */
+export interface TeardownLook {
+  /** The kernel's name for it (`destroy`, `dns`, …), in the order they run. */
+  name: string;
+  /** What goes, in the seat's words. */
+  what: string;
+  /** How it goes. */
+  how: string;
+  /** The word on the block. */
+  word: string;
+  tone: 'stands' | 'going' | 'gone' | 'skipped' | 'failed';
+  /** When it ended, `HH:MM`, or null. */
+  at: string | null;
+  /** What went, or why it failed, when the kernel said. */
+  note: string | null;
+}
+
+/** The teardown's removals, in the order the kernel takes them, with the seat's words for each. */
+export const TEARDOWN_WHAT: ReadonlyArray<[string, string, string]> = [
+  ['destroy', 'the stack\'s resources', 'a destroy job on the cluster\'s Resource Manager stack'],
+  ['dns', 'the DNS records', 'api, api-int and *.apps in the zone'],
+  ['image', 'the image and its link', 'the discovery ISO and its pre-authenticated request'],
+  ['volumes', 'the cluster\'s volumes', 'the block volumes the CSI driver made for its claims, found through the cluster, and any left in the compartment with the attribution tag'],
+  ['stack', 'the stack itself', 'it carried the tag; left, the cluster would be found again'],
+  ['compartment', 'its compartment and the image bucket', 'when stratus made them (clusters/<name>); another\'s keeps itself and loses the tag'],
+  ['installer', 'the installer\'s records', 'the cluster and the infra-env at Red Hat'],
+];
+
+/**
+ * Each teardown step as the seat draws it: from the kernel's record once a teardown has started, STANDS before.
+ *
+ * @param cluster - The cluster.
+ * @returns The steps in the order they run.
+ */
+export function teardownLooks_build(cluster: ClusterSummary): TeardownLook[] {
+  const kept: Map<string, { state: string; ended: string | null; note: string | null }> = new Map((cluster.teardown?.steps ?? []).map((step) => [step.name, step]));
+  return TEARDOWN_WHAT.map(([name, what, how]: [string, string, string]): TeardownLook => {
+    const step = kept.get(name);
+    const at: string | null = step?.ended?.slice(11, 16) ?? null;
+    const note: string | null = step?.note ?? null;
+    const look = (word: string, tone: TeardownLook['tone']): TeardownLook => ({ name, what, how, word, tone, at, note });
+    if (step === undefined || step.state === 'not done') return look('STANDS', 'stands');
+    if (step.state === 'running') return look('GOING', 'going');
+    if (step.state === 'done') return look('GONE', 'gone');
+    if (step.state === 'skipped') return look('NOTHING', 'skipped');
+    return look('FAILED', 'failed');
   });
 }
 

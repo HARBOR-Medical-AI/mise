@@ -21,8 +21,9 @@ body[data-takeover='controller'] > *:not(#td-controller) { visibility: hidden; }
 .tdc-condition[data-condition='ASKING'] { background: var(--tdc-bill); }
 .tdc-condition[data-condition='BUILDING'] { background: var(--butter); }
 .tdc-condition[data-condition='TEARING DOWN'] { background: var(--october-sunset); }
+.tdc-condition[data-condition='PARTLY TORN'] { background: var(--tdc-destroy); }
 /* two words must still fit the pill */
-.tdc-condition[data-condition='TEARING DOWN'] .tdc-condition-name, .tdc-condition[data-condition='PARTLY BUILT'] .tdc-condition-name { font-size: 1.35rem; letter-spacing: 0.16em; }
+.tdc-condition[data-condition='TEARING DOWN'] .tdc-condition-name, .tdc-condition[data-condition='PARTLY BUILT'] .tdc-condition-name, .tdc-condition[data-condition='PARTLY TORN'] .tdc-condition-name { font-size: 1.35rem; letter-spacing: 0.16em; }
 .tdc-condition[data-condition='FAILED'] { background: var(--tdc-destroy); }
 .tdc-condition[data-condition='GONE'] { background: var(--october-sunset); }
 .tdc-condition[data-condition='SIZING'] { background: var(--honey); }
@@ -157,6 +158,14 @@ body[data-takeover='controller'] > *:not(#td-controller) { visibility: hidden; }
 
 /* TEARDOWN */
 .tdc-teardown-rows { display: grid; grid-template-columns: 1.2rem 13rem minmax(0, 1fr); gap: 0.45rem 0.6rem; font-size: 0.9rem; }
+/* the teardown's steps: the build strip's blocks, one a removal, red while it stands, lit while it goes, gold once gone */
+.tdc-teardown-strip { display: flex; flex-direction: column; gap: 0.35rem; }
+.tdc-teardown-step { display: grid; grid-template-columns: 13rem minmax(0, 1fr) auto; align-items: baseline; }
+.tdc-teardown-step .tdc-teardown-how { color: inherit; opacity: 0.85; }
+.tdc-strip-step.tdc-step-stands { border-color: var(--tdc-destroy); color: var(--tdc-destroy); }
+.tdc-strip-step.tdc-step-going { background: var(--butter); border-color: var(--butter); color: #000; animation: tdc-reading-pulse 1.2s ease-in-out infinite; }
+.tdc-strip-step.tdc-step-gone { background: color-mix(in srgb, var(--harvestgold) 85%, transparent); border-color: var(--harvestgold); color: #000; }
+.tdc-strip-step.tdc-step-skipped { border-color: color-mix(in srgb, var(--honey) 50%, transparent); color: var(--honey); }
 .tdc-destroy-mark { color: var(--tdc-destroy); font-weight: 700; }
 .tdc-teardown-what { color: var(--butter); }
 .tdc-teardown-how { color: var(--honey); font-size: 0.8rem; }

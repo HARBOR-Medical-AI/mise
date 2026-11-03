@@ -274,7 +274,7 @@ export function stratusTiles_make(hooks: StratusTileHooks): () => Promise<TileCo
       ],
       rows: clusters.slice(0, 6).map((cluster: ClusterSummary): LauncherRow => ({
         // The rate before the cluster's long name, so a narrow tile cuts the name, not the money.
-        text: `${cluster.name}  ${cluster.condition === 'GONE' ? 'GONE' : cluster.condition === 'TEARING DOWN' ? 'TEARING DOWN' : cluster.origin === 'found' ? `${cluster.condition ?? 'FOUND'} · NOT ADOPTED` : cluster.lastDone ?? 'NOTHING DONE'}${cluster.cost !== undefined && cluster.cost !== null ? `  ${money_text(cluster.cost.hourly, cluster.cost.currency)}/h` : ''}  ${cluster.cluster ?? ''}`.trimEnd(),
+        text: `${cluster.name}  ${cluster.condition === 'GONE' ? 'GONE' : cluster.condition === 'TEARING DOWN' || cluster.condition === 'PARTLY TORN' ? cluster.condition : cluster.origin === 'found' ? `${cluster.condition ?? 'FOUND'} · NOT ADOPTED` : cluster.lastDone ?? 'NOTHING DONE'}${cluster.cost !== undefined && cluster.cost !== null ? `  ${money_text(cluster.cost.hourly, cluster.cost.currency)}/h` : ''}  ${cluster.cluster ?? ''}`.trimEnd(),
         errored: wrong(cluster),
         // A row is that cluster's line: the TD controller opens on it (docs/stratus.adoc, D13).
         open: (): void => hooks.cluster_open(cluster.name),

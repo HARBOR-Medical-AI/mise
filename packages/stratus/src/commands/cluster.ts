@@ -13,6 +13,8 @@ import chalk from 'chalk';
 import { envelope_error, envelope_ok, STRATUS_CLUSTERS_MODEL_KIND, type CommandEnvelope, type ClusterSummary, type ClustersModel } from '@fnndsc/menu';
 import type { CommandGroup, CommandHelp } from '@fnndsc/brasa/core';
 import type { CloudDriver, ResourceCounts } from '../cloud/driver.js';
+import { TEARDOWN_STEPS, type TeardownStep } from '../cloud/builder.js';
+import type { TeardownRecord } from '../cluster/state.js';
 import { foundCluster_make, foundClusters_describe } from '../cluster/found.js';
 import type { HarborCluster, StepState } from '../checkout/harborOci.js';
 import type { ClusterTree } from '../vfs/clusters.js';
@@ -129,6 +131,26 @@ async function foundClusters_read(context: ClusterCommandContext, kept: Readonly
  * @param cluster - The cluster.
  * @returns The lines and the summary.
  */
+/**
+ * The teardown's steps as lines, once one has started: each where it stands, in the order they run.
+ *
+ * @param cluster - The cluster.
+ * @param width - The build steps' folder width, matched.
+ * @returns The lines, none when no teardown has started.
+ */
+function teardownLines_make(cluster: HarborCluster, width: number): string[] {
+  const teardown: TeardownRecord | undefined = (cluster.state as { teardown?: TeardownRecord } | null)?.teardown;
+  if (teardown === undefined) return [];
+  return [
+    `  teardown ${chalk.gray(`started ${teardown.started.slice(0, 16).replace('T', ' ')}`)}`,
+    ...TEARDOWN_STEPS.map((name: TeardownStep): string => {
+      const step = teardown.steps[name];
+      const state: string = step?.state ?? 'not done';
+      return `  ${`− ${name}`.padEnd(width)}  ${stateTone_paint(state, state.padEnd(8))}  ${chalk.gray(step?.note ?? '')}`;
+    }),
+  ];
+}
+
 export async function clusterStatus_read(context: ClusterCommandContext, cluster: HarborCluster): Promise<{ lines: string[]; summary: ClusterSummary }> {
   const width: number = Math.max(0, ...cluster.steps.map((step: StepState): number => step.folder.length));
   const found = cluster.found;
@@ -145,6 +167,7 @@ export async function clusterStatus_read(context: ClusterCommandContext, cluster
       ? foundLine()
       : `${cluster.origin !== 'built' ? 'checkout   ' : (cluster.state as { adopted?: unknown } | null)?.adopted !== undefined ? 'adopted    ' : (cluster.state as { gone?: unknown } | null)?.gone !== undefined ? 'torn down  ' : 'built here '}  ${cluster.root}`,
     ...cluster.steps.map((step: StepState): string => `  ${step.folder.padEnd(width)}  ${stateTone_paint(step.state, step.state.padEnd(8))}  ${chalk.gray(step.evidence)}`),
+    ...teardownLines_make(cluster, width),
     compartment.line,
     cost.line,
   ];

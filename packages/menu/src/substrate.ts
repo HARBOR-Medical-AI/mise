@@ -29,9 +29,21 @@ export const clusterStepSchema = z.object({
  * Where a cluster stands, in one word: the TD controller's CONDITION
  * (docs/stratus.adoc, D13). Billing is not a condition; it is said apart.
  * STOPPED is a build left part way: steps done, none running, not up.
- * TEARING DOWN is the teardown's task under way; GONE once it ends.
+ * TEARING DOWN is the teardown's task under way; PARTLY TORN a teardown that
+ * stopped with steps done and steps not (it resumes); GONE once it ends.
  */
-export const CLUSTER_CONDITIONS = ['SIZING', 'PLANNED', 'PARTLY BUILT', 'ASKING', 'BUILDING', 'UP', 'SERVING', 'TEARING DOWN', 'FAILED', 'GONE'] as const;
+export const CLUSTER_CONDITIONS = ['SIZING', 'PLANNED', 'PARTLY BUILT', 'ASKING', 'BUILDING', 'UP', 'SERVING', 'TEARING DOWN', 'PARTLY TORN', 'FAILED', 'GONE'] as const;
+
+/** One teardown step, where it stands: `not done`, `running`, `done`, `skipped` (nothing of it to remove) or `failed`. */
+export const teardownStepSchema = z.object({
+  /** `destroy`, `dns`, `image`, `volumes`, `stack`, `compartment` or `installer`, in the order they run. */
+  name: z.string(),
+  state: z.string(),
+  started: z.string().nullable(),
+  ended: z.string().nullable(),
+  /** What went, or why it failed, in a line. */
+  note: z.string().nullable(),
+});
 
 /** One pool of nodes in a spec. */
 export const nodePoolSchema = z.object({
@@ -111,6 +123,8 @@ export const clusterSummarySchema = z.object({
   compartment: z.string().nullable().optional(),
   /** When its teardown removed what it built, or null. */
   gone: z.string().nullable().optional(),
+  /** The teardown, once one has started: when, and each of its steps where it stands; null when none has. */
+  teardown: z.object({ started: z.string(), steps: z.array(teardownStepSchema) }).nullable().optional(),
   spec: clusterSpecSchema.nullable().optional(),
   /** The first step not done, or null when every step is, or when the cluster is not built on here (adopted, torn down, read from a checkout). */
   next: z.string().nullable().optional(),
@@ -192,6 +206,7 @@ export const capacityModelSchema = z.object({
 });
 
 export type ClusterStep = z.infer<typeof clusterStepSchema>;
+export type TeardownStepModel = z.infer<typeof teardownStepSchema>;
 export type ClusterCondition = typeof CLUSTER_CONDITIONS[number];
 export type ClusterSpecModel = z.infer<typeof clusterSpecSchema>;
 export type PlanSummary = z.infer<typeof planSummarySchema>;
