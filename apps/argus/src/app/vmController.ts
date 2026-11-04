@@ -5,6 +5,7 @@
  * (docs/stratus.adoc, D17 revised). Shaped as the script screen's host.
  */
 import type { ExecuteOutcome, SurfaceAsk } from '../calypso/client.js';
+import { STRATUS_VM_STATE_EVENT, vmStatusRowSchema } from '@fnndsc/menu';
 import { VmScreen } from '../features/vm/screen.js';
 import { synthVoice } from '../lcars/synth.js';
 import type { HostContext } from './hostContext.js';
@@ -24,6 +25,8 @@ export interface VmControllerModule {
   output_take: (chunk: string) => void;
   /** A task of the session ended: the controller, when up, reads its script's standing again. */
   task_ended: () => void;
+  /** A session event: a VM's row, sent as its teardown's steps begin and end. */
+  event_take: (kind: string, data: unknown) => void;
   /** The door's answer changed (the session was raised): the controller, when up, draws it. */
   mode_refresh: () => void;
 }
@@ -114,6 +117,12 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     ask: (request: SurfaceAsk): Promise<string | null> => screen === null ? Promise.resolve(null) : screen.ask_take(request.message, request.kind),
     output_take: (chunk: string): void => { screen?.output_take(chunk); },
     task_ended: (): void => { screen?.taskEnded_take(); },
+    // A VM's teardown sends its row as each step begins and ends: the controller draws it without asking.
+    event_take: (kind: string, data: unknown): void => {
+      if (kind !== STRATUS_VM_STATE_EVENT || screen === null) return;
+      const parsed = vmStatusRowSchema.safeParse(data);
+      if (parsed.success) screen.row_take(parsed.data);
+    },
     mode_refresh: (): void => { screen?.mode_refresh(); },
   };
 }

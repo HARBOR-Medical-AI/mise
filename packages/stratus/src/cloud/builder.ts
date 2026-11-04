@@ -260,6 +260,8 @@ export interface CloudBuilder {
   moduleApply_run?(request: { region: string; stackRef: string; plan: InfraPlan; label: string }, call: BuildCall): Promise<Record<string, string>>;
   /** Destroys what a module's stack holds, then the stack. Returns what went, a line each. */
   moduleDestroy_run?(request: { region: string; stackRef: string; label: string }, call: BuildCall): Promise<string[]>;
+  /** Merges freeform tags onto a VM's instance: what was put on it (ChRIS's address), said where any session reading the tenancy finds it. */
+  instance_tag?(request: { region: string; instanceId: string; tags: Readonly<Record<string, string>> }, call: BuildCall): Promise<void>;
   /** The module stacks a place holds for one owner, read back from the cloud in the words a plan was given (the inputs), for a session that keeps no record of them (a VM found in the tenancy, taken over on its first act). */
   moduleStacks_read?(request: { region: string; placeId: string; tag: string; owner: string }): Promise<ModuleStackRead[]>;
   /** The shape a VM is made of (D16: the driver chooses the family), for its price. */

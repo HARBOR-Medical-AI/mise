@@ -54,6 +54,8 @@ export class FakeBuildWorld {
   readonly places: Map<string, { id: string; tags: Record<string, string>; others: number }> = new Map();
   /** The module stacks, by id: whose, in which place, the variables last planned and applied. */
   readonly moduleStacks: Map<string, { module: StackModule; owner: string; tag: string; placeId: string; planned: Record<string, string>; applied: Record<string, string> | null }> = new Map();
+  /** The freeform tags put on each instance, by id. */
+  readonly instanceTags: Map<string, Record<string, string>> = new Map();
   /** The reserved addresses pointed at a machine: the address's id to the private address's. */
   readonly addressPoints: Map<string, string> = new Map();
   /** The shell sessions opened, newest last. */
@@ -205,6 +207,11 @@ export class FakeCloudBuilder implements CloudBuilder {
     stack.applied = { ...stack.planned, ...(stack.planned['image'] === '' ? { image: outputs['image_id'] ?? '' } : {}) };
     call.log(`apply: ${request.plan.rows.length} changes made`);
     return outputs;
+  }
+
+  async instance_tag(request: { region: string; instanceId: string; tags: Readonly<Record<string, string>> }, call: BuildCall): Promise<void> {
+    this.world.instanceTags.set(request.instanceId, { ...(this.world.instanceTags.get(request.instanceId) ?? {}), ...request.tags });
+    call.log(`tagged ${request.instanceId}`);
   }
 
   async moduleStacks_read(request: { region: string; placeId: string; tag: string; owner: string }): Promise<ModuleStackRead[]> {

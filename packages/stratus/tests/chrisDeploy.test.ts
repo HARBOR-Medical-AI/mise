@@ -118,11 +118,14 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
   let vmContext: VmCommandContext;
   let surface: HeadlessSurface & { answers: string[]; asked: string[] };
 
+  let world: FakeBuildWorld;
+
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), 'stratus-chris-'));
     vms = new VmStore(join(root, 'vms'));
     const nets: NetStore = new NetStore(join(root, 'nets'));
-    const builder: FakeCloudBuilder = new FakeCloudBuilder(new FakeBuildWorld(0));
+    world = new FakeBuildWorld(0);
+    const builder: FakeCloudBuilder = new FakeCloudBuilder(world);
     const driver = { instances_find: async (): Promise<unknown[]> => [], clusters_find: async (): Promise<unknown[]> => [], resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => [], servicePrices_get: async (): Promise<ServicePrices | null> => null } as unknown as CloudDriver;
     vm = new FakeVm();
     resolved = [];
@@ -284,6 +287,9 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(plain(deployed.rendered)).toContain('porter.example.org already resolves to 203.0.113.10');
     expect(plain(deployed.rendered)).toContain('store: ChRIS minimal at https://cube.example.org/api/v1/, compute store; porter at https://porter.example.org/');
     expect(asked).toContain('https://porter.example.org/login');
+    // What runs here is said on the machine itself, for a session that reads the tenancy and keeps no record of it.
+    const instanceId: string = vms.record_read('store')?.machineOutputs?.['instance_id'] ?? '';
+    expect(world.instanceTags.get(instanceId)).toEqual({ 'mise-chris': 'https://cube.example.org/api/v1/', 'mise-porter': 'porter.example.org' });
     const secrets: ChrisSecrets | null = secrets_read(vms, 'store');
     expect(secrets?.porterSecret?.length).toBeGreaterThanOrEqual(32);
     const compose = yaml.load(vm.files.get('/srv/data/chris/compose.yml') ?? '') as { services: Record<string, Record<string, unknown>>; volumes: Record<string, unknown> };

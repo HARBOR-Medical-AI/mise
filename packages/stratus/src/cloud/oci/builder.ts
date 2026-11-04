@@ -640,6 +640,11 @@ export class OciBuilder implements CloudBuilder {
     return await rm.jobOutputs_read(job.id);
   }
 
+  async instance_tag(request: { region: string; instanceId: string; tags: Readonly<Record<string, string>> }, call: BuildCall): Promise<void> {
+    await this.api_resolve(request.region).instance_tagsMerge(request.instanceId, request.tags);
+    call.log(`tagged ${request.instanceId}: ${Object.entries(request.tags).map(([key, value]): string => `${key}=${value}`).join(', ')}`);
+  }
+
   async moduleStacks_read(request: { region: string; placeId: string; tag: string; owner: string }): Promise<ModuleStackRead[]> {
     // The stacks carrying the owner's tag in its place, each read whole for its variables, which are lowered back to
     // the words a plan was given: a VM's size in vCPUs, its OS as `<name>-<version>`, its backup word.

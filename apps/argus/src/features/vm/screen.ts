@@ -86,6 +86,19 @@ export class VmScreen extends ScriptScreen {
     return this.vm;
   }
 
+  /**
+   * A VM's row as its teardown sends it, step by step: replaced in the list
+   * and drawn, so the blocks go as the steps do without asking.
+   *
+   * @param row - The row.
+   */
+  public row_take(row: VmStatusRow): void {
+    const at: number = this.vms.findIndex((each: VmStatusRow): boolean => each.name === row.name);
+    if (at >= 0) this.vms[at] = row;
+    else this.vms.push(row);
+    this.draw();
+  }
+
   /** The machines the host keeps, by name, as last read. */
   public vms_get(): ReadonlyArray<string> {
     return this.vms.map((row: VmStatusRow): string => row.name);
@@ -132,8 +145,9 @@ export class VmScreen extends ScriptScreen {
       const row: VmStatusRow | undefined = this.vms.find((each: VmStatusRow): boolean => each.name === name);
       this.path = `/scripts/mine/${name}.mise`;
       this.lines = lines_build(row === undefined ? `${vmNewLine_compose(name, NET_DEFAULT)}\nvm build ${name}\n` : vmScript_synthesize(row), []);
+      // Read from its record, not edited: written at the first act, as the header's chip says.
       this.unsaved = true;
-      this.edited = true;
+      this.edited = false;
     }
     this.steps = this.steps_derive(this.lines);
     // A machine opens on what it is; a line running takes the seat it runs in.
@@ -332,7 +346,7 @@ export class VmScreen extends ScriptScreen {
       ['ADDRESS', row?.address ?? '—'],
       ['INSIDE', row?.inside ?? '—'],
     ]));
-    header.append(this.headSection_make('CHRIS', vmKeyless_is(row) && (row?.chris === null || row?.chris === undefined) ? [['DEPLOYED', 'not known here']] : row?.chris === null || row?.chris === undefined ? [['DEPLOYED', 'none']] : [['HOST', row.chris.host ?? '(by address)'], ['URL', row.chris.url], ['PORTER', row.chris.porter ?? '—']]));
+    header.append(this.headSection_make('CHRIS', row?.found?.chris != null ? [['URL', row.found.chris.url], ['PORTER', row.found.chris.porter ?? '—']] : vmKeyless_is(row) && (row?.chris === null || row?.chris === undefined) ? [['DEPLOYED', 'not said on the machine']] : row?.chris === null || row?.chris === undefined ? [['DEPLOYED', 'none']] : [['HOST', row.chris.host ?? '(by address)'], ['URL', row.chris.url], ['PORTER', row.chris.porter ?? '—']]));
     header.append(this.costSection_make());
     header.append(this.runningSection_make());
     header.append(this.headSection_make('SCRIPT', [['PATH', this.path === '' ? '—' : this.path], ['STANDING', counts_words(counts)]]));
@@ -377,7 +391,8 @@ export class VmScreen extends ScriptScreen {
     for (const row of this.vms) {
       const line: HTMLElement = el('div', 'ss-script vm-row');
       const size: string = row.spec !== null ? `${row.spec.vcpu} vCPU · ${row.spec.memory} GiB` : row.found?.vcpus != null ? `${row.found.vcpus} vCPU${row.found.memoryGib != null ? ` · ${row.found.memoryGib} GiB` : ''}` : '—';
-      const on: string = row.chris?.host ?? (row.chris !== null && row.chris !== undefined ? row.chris.url : vmKeyless_is(row) ? 'not known here' : '—');
+      const tagged: string | null = row.found?.chris != null ? row.found.chris.url.replace(/^https?:\/\//, '').replace(/\/api\/v1\/?$/, '') : null;
+      const on: string = row.chris?.host ?? (row.chris !== null && row.chris !== undefined ? row.chris.url : tagged !== null ? `CUBE at ${tagged}` : vmKeyless_is(row) ? 'what runs on it is not said' : 'nothing deployed');
       line.append(
         el('span', 'ss-script-name', row.name),
         el('span', 'ss-script-source', vmCondition_derive(row, false)),
@@ -427,7 +442,9 @@ export class VmScreen extends ScriptScreen {
       ['OPEN', row.spec !== null ? (row.spec.open.length === 0 ? 'none' : row.spec.open.join(', ')) : '—'],
       ['INSTANCE', row.found?.instanceId ?? '—'],
       ['BUILT', row.built?.slice(0, 16).replace('T', ' ') ?? '—'],
-      ['CHRIS', row.chris !== null && row.chris !== undefined ? `${row.chris.url}${row.chris.porter !== null ? ` · porter ${row.chris.porter}` : ''}` : vmKeyless_is(row) ? 'not known here (the session that built it keeps that)' : 'none deployed'],
+      ['CHRIS', row.chris !== null && row.chris !== undefined ? `${row.chris.url}${row.chris.porter !== null ? ` · porter ${row.chris.porter}` : ''}`
+        : row.found?.chris != null ? `${row.found.chris.url}${row.found.chris.porter !== null ? ` · porter ${row.found.chris.porter}` : ''} (as its instance's tag says)`
+          : vmKeyless_is(row) ? 'not said on the machine (deployed before deploys tagged it)' : 'none deployed'],
       ['LOCK', row.protected ? 'protected: teardown refuses until lifted' : 'unlocked'],
       ['KEPT', kept],
     ]));
@@ -495,11 +512,26 @@ export class VmScreen extends ScriptScreen {
   private teardown_make(): HTMLElement[] {
     const row: VmStatusRow | null = this.vmRow_get();
     const name: string = this.vm;
-    const goes: HTMLElement = this.section_make('WHAT GOES', 'ss-col-form', 'ONLY WHAT THIS MACHINE MADE');
-    goes.append(this.pairs_make([
-      ['TEARDOWN', 'the machine: its instance, boot disk and security group; the data volume, its backups and the address stay, so a build brings it back over its data'],
-      ['TEARDOWN · ALL', 'the data too: the volume, its backups and the reserved address; the engine asks for the name typed back'],
-    ]));
+    const goes: HTMLElement = this.section_make('WHAT GOES · IN THIS ORDER', 'ss-col-form', 'ONLY WHAT THIS MACHINE MADE');
+    // Each part is a step the kernel keeps on the record, a block each: red while it stands, lit while it goes, gold
+    // once gone; a default teardown keeps the data, said as STAYS. The cluster teardown's blocks, a machine's words.
+    const kept = new Map((row?.teardown?.steps ?? []).map((step) => [step.name, step]));
+    const strip: HTMLElement = el('div', 'tdc-teardown-strip');
+    for (const [part, what, how] of [
+      ['machine', 'the machine', 'its instance, boot disk and security group, and the data volume\'s attachment: TEARDOWN'],
+      ['data', 'its data', 'the volume, its backups and the reserved address: TEARDOWN · ALL only; a TEARDOWN keeps them so a build brings the machine back over them'],
+    ] as const) {
+      const step = kept.get(part);
+      const state: string = step?.state ?? 'not done';
+      const tone: string = state === 'running' ? 'going' : state === 'done' ? 'gone' : state === 'kept' ? 'skipped' : state === 'failed' ? 'failed' : 'stands';
+      const word: string = state === 'running' ? 'GOING' : state === 'done' ? 'GONE' : state === 'kept' ? 'STAYS' : state === 'failed' ? 'FAILED' : 'STANDS';
+      const block: HTMLElement = el('div', `tdc-strip-step tdc-teardown-step tdc-step-${tone}`);
+      block.setAttribute('aria-label', `${what}, ${word}`);
+      const at: string = step?.ended != null ? ` · ${step.ended.slice(11, 16)}` : '';
+      block.append(el('span', 'tdc-strip-name', what), el('span', 'tdc-teardown-how', step?.note ?? how), el('span', 'tdc-strip-word', `${word}${at}`));
+      strip.append(block);
+    }
+    goes.append(strip);
     const lock: HTMLElement = el('div', `tdc-note ${row === null || row.protected ? 'tdc-note-locked' : 'tdc-note-refused'}`);
     lock.append(el('span', 'tdc-note-title', row === null ? 'NOT KEPT HERE' : row.protected ? 'PROTECTED' : 'UNLOCKED'), el('span', 'tdc-prose', row === null
       ? 'The host keeps no record of this machine yet: declare and build it first.'

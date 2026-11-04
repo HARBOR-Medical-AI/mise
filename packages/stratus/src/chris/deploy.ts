@@ -16,6 +16,7 @@
  */
 import type { JobContext, JobRun } from '@fnndsc/brasa/core';
 import type { BuildCall, CloudBuilder } from '../cloud/builder.js';
+import { CHRIS_PORTER_TAG, CHRIS_URL_TAG } from '../vm/state.js';
 import type { NetStore } from '../net/state.js';
 import { pause, vmRemote_open, type RemoteAnswer, type VmRemote } from '../vm/remote.js';
 import { vm_read } from '../vm/build.js';
@@ -179,6 +180,16 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
     context.log_write('chris sees the admin API: plugin uploads can register');
 
     const url: string = apiUrl_derive(target);
+    // What runs here, said on the machine itself, so a session reading the tenancy (one that keeps no record of this
+    // VM) knows it is CUBE at this address; a tag that cannot be written is said, never the deploy's failure.
+    const instanceId: string | undefined = deps.store.record_read(request.vm)?.machineOutputs?.['instance_id'];
+    if (instanceId !== undefined && deps.builder.instance_tag !== undefined) {
+      try {
+        await deps.builder.instance_tag({ region: deps.store.record_read(request.vm)?.region ?? '', instanceId, tags: { [CHRIS_URL_TAG]: url, ...(request.porter !== null ? { [CHRIS_PORTER_TAG]: request.porter } : {}) } }, { log: (line: string): void => context.log_write(line), signal: context.signal });
+      } catch (error: unknown) {
+        context.log_write(`the instance was not tagged with what runs on it (${error instanceof Error ? error.message : String(error)}): a session reading the tenancy will not know it is ChRIS`);
+      }
+    }
     deps.store.record_update(request.vm, (current: VmRecord): void => {
       current.chris = { profile: request.profile.name, compute: request.compute, host: request.host, url, deployed: new Date().toISOString(), ...(request.host !== null ? { dns: 'waiting' } : {}), ...(request.porter !== null ? { porter: request.porter } : {}) };
     });
