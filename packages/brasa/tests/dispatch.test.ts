@@ -59,7 +59,9 @@ jest.unstable_mockModule('../src/core/filesystem.js', () => ({
     path_isVirtual: () => false,
   }),
 }));
-jest.unstable_mockModule('../src/core/paths.js', () => ({ path_resolve: async (input: string) => (input === '~' ? '/home/u' : input), path_resolveFrom: (input: string) => input }));
+/** Where the session stands, for a `/bin` run with no operand: a feed node unless a test moves it. */
+let cwdNow: string = '/home/u/feeds/feed_3/pl-dircopy_12/data';
+jest.unstable_mockModule('../src/core/paths.js', () => ({ path_resolve: async (input: string) => (input === '~' ? '/home/u' : input === '.' ? cwdNow : input), path_resolveFrom: (input: string) => input }));
 const mockFeedCreate = jest.fn();
 jest.unstable_mockModule('@fnndsc/salsa', () => ({ feed_create: mockFeedCreate }));
 
@@ -296,6 +298,31 @@ describe('command_dispatch', () => {
     await command_dispatch('myPipe', ['/home/u/uploads/subjects']);
     expect(mockFeedCreate).toHaveBeenCalledWith(['/home/u/uploads/subjects'], { title: 'subjects' });
     expect(mockPipeline).toHaveBeenLastCalledWith(['run', 'myPipe', '--previous', '40']);
+  });
+
+  it('runs a bare /bin pipeline from a plain folder by rooting a feed on it, as a plugin does; from a feed node, as before (#1364)', async () => {
+    mockDataGet.mockResolvedValue(Ok([{ name: 'myPipe', type: 'pipeline' }]));
+    const scheduled = { kind: 'pipeline.scheduled', data: { pipelineName: 'myPipe', workflowId: 1, feedId: 9, newFeed: false, instances: [], leaves: [], leafPaths: [] } };
+    mockPipeline.mockResolvedValue({ status: 'ok', rendered: '', model: scheduled });
+    mockFeedCreate.mockResolvedValue({ id: 9, name: 'try-1', owner_username: 'u', pluginInstance: { data: { id: 41 } } });
+    cwdNow = '/home/u/uploads/transcribe/try-1';
+    world[cwdNow] = 'dir';
+    const rooted = await command_dispatchEnvelope('myPipe', ['--compute', 'host']);
+    expect(mockFeedCreate).toHaveBeenLastCalledWith(['/home/u/uploads/transcribe/try-1'], { title: 'try-1' });
+    expect(mockPipeline).toHaveBeenLastCalledWith(['run', 'myPipe', '--previous', '41', '--compute', 'host']);
+    expect((rooted.model as { data: { newFeed: boolean } }).data.newFeed).toBe(true);
+    // Inside a feed node nothing is rooted: the run reads the node from where it stands.
+    cwdNow = '/home/u/feeds/feed_3/pl-dircopy_12/data';
+    mockFeedCreate.mockClear();
+    await command_dispatch('myPipe', []);
+    expect(mockFeedCreate).not.toHaveBeenCalled();
+    expect(mockPipeline).toHaveBeenLastCalledWith(['run', 'myPipe']);
+    // --previous typed says the input itself; nothing is rooted either.
+    cwdNow = '/home/u/uploads/transcribe/try-1';
+    await command_dispatch('myPipe', ['--previous', '5']);
+    expect(mockFeedCreate).not.toHaveBeenCalled();
+    expect(mockPipeline).toHaveBeenLastCalledWith(['run', 'myPipe', '--previous', '5']);
+    cwdNow = '/home/u/feeds/feed_3/pl-dircopy_12/data';
   });
 
   it('refuses a /bin pipeline operand beside --previous, and a missing path, running nothing', async () => {

@@ -17,6 +17,7 @@ import {
 import { sink_get } from '../../core/sink.js';
 import { shellArguments_pathnameExpanded } from '../../lib/parser.js';
 import { path_resolve } from '../utils.js';
+import { vfsDispatcher_get } from '../../core/filesystem.js';
 import { surface_get, type Surface } from '../../core/surface.js';
 import { repl_confirm } from '../../core/question.js';
 import { files_path_isDirectory, files_listRecursive, type FsItem } from '@fnndsc/salsa';
@@ -24,6 +25,26 @@ import { directory_archive, type ArchiveResult } from './archive.js';
 import { type FileDeliverResult, type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { errorStack } from '@fnndsc/fond';
 import { exitCode_set } from '../../core/handlerRun.js';
+
+/** A `/proc/jobs` path at or under a job's `data` link: the link, and what follows it. */
+const PROC_DATA_PATH: RegExp = /^(\/proc\/jobs\/feed_\d+(?:\/[^/]+_\d+)+\/data)(\/.*)?$/;
+
+/**
+ * A source as the transfer reads it: a CFS path. A `/proc/jobs/.../data`
+ * path, which `ls` and `cd` enter as the run's output, resolves through the
+ * same link to that output (#1364); anything else is the path as resolved.
+ *
+ * @param source - The source as typed.
+ * @returns The CFS path.
+ */
+async function source_resolve(source: string): Promise<string> {
+  const resolved: string = await path_resolve(source);
+  const link: RegExpMatchArray | null = resolved.match(PROC_DATA_PATH);
+  if (link === null) return resolved;
+  const target = await vfsDispatcher_get().linkTarget_resolve(link[1] as string);
+  if (!target.ok) return resolved;
+  return `${target.value}${link[2] ?? ''}`;
+}
 
 /**
  * Asks the issuing surface to confirm a local download overwrite or merge.
@@ -67,7 +88,7 @@ async function surfaceDownload_run(
       `${chalk.red('download: this surface cannot receive a file, and the engine will not write to its own host.')}\n`);
   }
 
-  const sources: string[] = await Promise.all(sourceArgs.map(path_resolve));
+  const sources: string[] = await Promise.all(sourceArgs.map(source_resolve));
 
   // A directory has no bytes to hand over, and what to do about that depends on
   // what the surface has. A shell — remote or not — owns a filesystem, so it
@@ -195,11 +216,12 @@ export async function builtin_download(args: string[]): Promise<CommandEnvelope>
       onProgress: (event: DownloadProgressEvent): void => sink_get().progress_write(event),
     };
     let summary: DownloadSummary;
-    if (!sourceWasExpanded) {
-      const targetRemote: string = await path_resolve(sourceArgs[0]);
+    if (!sourceWasExpanded && sourceArgs.length === 1) {
+      const targetRemote: string = await source_resolve(sourceArgs[0]);
       summary = await chefs_download_cmd(targetRemote, targetLocal, progress);
     } else {
-      const sources: string[] = await Promise.all(sourceArgs.map(path_resolve));
+      // Several sources, typed or expanded, go together into one directory.
+      const sources: string[] = await Promise.all(sourceArgs.map(source_resolve));
       summary = await chefs_downloadMany_cmd(sources, targetLocal, progress);
     }
 

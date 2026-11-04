@@ -474,6 +474,8 @@ ChELL creates a new feed automatically:
 1. Runs `pl-dircopy` on the current directory to stage data.
 2. Attaches your plugin to the dircopy instance.
 
+A pipeline run from `/bin` with no operand does the same: outside a feed, `pl-dircopy` roots a new feed on the current directory and the pipeline runs off that root (the scheduled answer says `newFeed`); inside a feed node, the pipeline runs off that node.
+
 [source,bash]
 ----
 cd /home/alice/uploads/SAG-anon

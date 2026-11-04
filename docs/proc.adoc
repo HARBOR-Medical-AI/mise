@@ -18,7 +18,7 @@ Every feed this identity can see, and under each its jobs as a tree (a job's chi
 
 === Finding runs
 
-`find` answers `/proc/jobs` whole from the session's job index, so a question about runs asks CUBE nothing: `-plugin` and `-status` test what a job ran and how it ended, `-pipeline` and `-workflow` which pipeline run made it (`-pipeline ''` is a direct run), beside `-name`, `-type`, `-newermt` and the depth bounds. A feed whose jobs are not indexed yet is walked as `ls` would walk it.
+`find` answers `/proc/jobs` whole from the session's job index, so a question about runs asks CUBE nothing: `-plugin` and `-status` test what a job ran and how it ended, `-pipeline` and `-workflow` which pipeline run made it (`-pipeline ''` is a direct run), beside `-name`, `-type`, `-newermt` and the depth bounds. A feed whose jobs are not indexed yet is walked as `ls` would walk it. `-workflow N` asked by id reads the run's feeds alone: CUBE names the feeds its jobs are in, and only those are read, indexed or not, so a fresh session answers in those feeds' time.
 
 The index keeps each job's `pipeline_name` and `workflow_id` from its CUBE row. Jobs restored from a checkpoint written before it kept them are read again once, feed by feed, behind the prompt; until a job's row is read, `-pipeline` and `-workflow` cannot judge it, and `find` says on stderr how many it left out (`find: N jobs not judged: ...`) rather than cutting them silently.
 

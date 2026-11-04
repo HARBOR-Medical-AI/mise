@@ -78,9 +78,10 @@ export interface PipelineNode {
  * @property pipelineName - The pipeline, by name.
  * @property workflowId - The workflow CUBE made for it.
  * @property feedId - The feed its nodes joined.
- * @property newFeed - Always false today: a pipeline runs off an existing node.
+ * @property newFeed - True when the run rooted a new feed first (a `/bin` run from outside a feed: pl-dircopy of the input, then the pipeline off it).
  * @property instances - Every node, in the order CUBE scheduled them.
  * @property leaves - The nodes no other node in it runs off: where the work ends.
+ * @property leafPaths - Where the leaves write, in the leaves' order, for the leaf whose output CUBE has named: the line `download ${RUN.leafPaths} <dir>` needs neither /proc nor find.
  */
 export interface PipelineScheduled {
   pipelineName: string;
@@ -89,6 +90,7 @@ export interface PipelineScheduled {
   newFeed: boolean;
   instances: PipelineNode[];
   leaves: number[];
+  leafPaths: string[];
 }
 
 /**

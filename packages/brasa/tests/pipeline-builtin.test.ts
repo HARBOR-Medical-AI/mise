@@ -224,6 +224,7 @@ describe('builtin_pipeline', () => {
           { instanceId: 3, pluginName: 'pl-c', outputPath: null, status: 'detached' },
         ],
         leaves: [2, 3],
+        leafPaths: ['/o/2'],
       },
     });
     mockInstanceGet.mockReset();

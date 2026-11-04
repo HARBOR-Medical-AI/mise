@@ -285,6 +285,28 @@ describe('fs structured progress producers', () => {
     ]));
   });
 
+  it('keeps two directory sources that share a name, each under its parent, and says so (#1364)', async () => {
+    const destination: string = path.join(tmpDir, 'downloads');
+    const notices: Array<{ message: string; channel: string }> = [];
+    (files_path_isDirectory as jest.Mock).mockResolvedValue(true);
+    (files_listRecursive as jest.Mock).mockImplementation(async (source: string) => [
+      { path: `${source}/out.txt`, type: 'file', size: 3 },
+    ]);
+    (fileContent_getBinaryStream as jest.Mock)
+      .mockResolvedValueOnce({ ok: true, value: { stream: Readable.from([Buffer.from('one')]), size: 3 } })
+      .mockResolvedValueOnce({ ok: true, value: { stream: Readable.from([Buffer.from('two')]), size: 3 } });
+
+    const summary = await files_downloadManyWithProgress([
+      '/feeds/feed_1/pl-ffmpeg_2/pl-whisper_3/data',
+      '/feeds/feed_1/pl-ffmpeg_2/data',
+    ], destination, { onNotice: (message: string, channel: 'status' | 'err') => { notices.push({ message, channel }); } });
+
+    expect(summary.transferredCount).toBe(2);
+    expect(await fs.promises.readFile(path.join(destination, 'pl-whisper_3', 'data', 'out.txt'), 'utf8')).toBe('one');
+    expect(await fs.promises.readFile(path.join(destination, 'pl-ffmpeg_2', 'data', 'out.txt'), 'utf8')).toBe('two');
+    expect(notices).toEqual([{ message: "'data' named more than once: each lands under its parent's name (pl-whisper_3/data, pl-ffmpeg_2/data)", channel: 'status' }]);
+  });
+
   it('routes aggregate download failures to the caller-owned notice channel', async () => {
     const destination: string = path.join(tmpDir, 'downloads');
     const notices: Array<{ message: string; channel: string }> = [];

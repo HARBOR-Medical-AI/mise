@@ -1518,3 +1518,60 @@ describe('NEW since the last visit', () => {
   });
 });
 
+
+describe('a cold cache answers one feed alone (#1364)', () => {
+  it('lists /proc/jobs/feed_N from its own row and topology while the index builds behind', async () => {
+    // The index walk takes as long as CUBE's feed list takes; the one feed is asked for by id and answers at once.
+    const indexSlow: Promise<{ data: unknown[]; totalCount: number }> = new Promise((resolve) => { setTimeout(() => resolve({ data: [], totalCount: 0 }), 1500); });
+    const client = {
+      getFeeds: jest.fn().mockImplementation(async (params: { id?: number }) =>
+        params.id === 7 ? { data: [{ id: 7, name: 'mine', owner_username: 'chris' }], totalCount: 1 } : indexSlow),
+      getPublicFeeds: jest.fn().mockResolvedValue({ data: [], totalCount: 0 }),
+      getPluginInstances: jest.fn().mockResolvedValue({ data: [
+        { id: 70, feed_id: 7, previous_id: null, plugin_name: 'pl-dircopy', status: 'finishedSuccessfully' },
+      ], totalCount: 1 }),
+      getPluginInstance: jest.fn(),
+    };
+    mockClientGet.mockResolvedValue(client);
+    expect(cache.built).toBe(false);
+    const started: number = Date.now();
+    const listed = await provider.list('/proc/jobs/feed_7');
+    expect(listed.ok).toBe(true);
+    expect(listed.ok ? listed.value.map((item) => item.name) : []).toEqual(['status', 'title', 'note', 'pl-dircopy_70']);
+    // Answered in the feed's time, not the index's: the index is still on its way.
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(cache.built).toBe(false);
+    expect(client.getFeeds).toHaveBeenCalledWith(expect.objectContaining({ id: 7, limit: 1 }), expect.anything());
+    await indexSlow;
+  });
+
+  it('still needs the whole index for /proc/jobs itself', async () => {
+    const client = pagingClient([{ id: 7, name: 'mine', owner_username: 'chris' }]);
+    (client as { getPublicFeeds?: unknown }).getPublicFeeds = jest.fn().mockResolvedValue({ data: [], totalCount: 0 });
+    mockClientGet.mockResolvedValue(client);
+    const listed = await provider.list('/proc/jobs');
+    expect(listed.ok).toBe(true);
+    expect(cache.built).toBe(true);
+  });
+});
+
+describe('a job\'s data link on a cold cache (#1364)', () => {
+  it('resolves through the feed read first: the job was unknown to the session until then', async () => {
+    const client = {
+      getFeeds: jest.fn().mockImplementation(async (params: { id?: number }) =>
+        ({ data: [{ id: 7, name: 'mine', owner_username: 'chris' }], totalCount: 1 })),
+      getPublicFeeds: jest.fn().mockResolvedValue({ data: [], totalCount: 0 }),
+      getPluginInstances: jest.fn().mockResolvedValue({ data: [
+        { id: 70, feed_id: 7, previous_id: null, plugin_name: 'pl-dircopy', status: 'finishedSuccessfully' },
+        { id: 71, feed_id: 7, previous_id: 70, plugin_name: 'pl-whisper', status: 'finishedSuccessfully' },
+      ], totalCount: 2 }),
+      getPluginInstance: jest.fn().mockResolvedValue({ data: { id: 71, output_path: 'home/chris/feeds/feed_7/pl-dircopy_70/pl-whisper_71/data' } }),
+    };
+    mockClientGet.mockResolvedValue(client);
+    expect(cache.instance_get(71)).toBeUndefined();
+    const target = await provider.linkTarget_resolve('/proc/jobs/feed_7/pl-dircopy_70/pl-whisper_71/data');
+    expect(target.ok).toBe(true);
+    expect(target.ok ? target.value : null).toBe('/home/chris/feeds/feed_7/pl-dircopy_70/pl-whisper_71/data');
+    expect(cache.instance_get(71)?.pluginName).toBe('pl-whisper');
+  });
+});
