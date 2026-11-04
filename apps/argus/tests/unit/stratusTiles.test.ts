@@ -9,6 +9,8 @@
 import { describe, it, expect } from '@jest/globals';
 import { limitShort_format, money_text, stratusTiles_make, vmScript_find, zoneShort_format, type StratusTileHooks } from '../../src/compositions/stratus/tiles.js';
 import type { ExecuteOutcome } from '../../src/calypso/client.js';
+import type { VmStatusRow } from '@fnndsc/menu';
+import { vmCondition_derive, vmScript_synthesize } from '../../src/features/vm/model.js';
 
 const CLUSTERS = {
   clusters: [
@@ -80,6 +82,19 @@ describe('the stratus tiles', () => {
     // With no VM answer the tile still stands, empty.
     const none = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY }, []))();
     expect(none.afterFiles[0]!.figures).toEqual([{ text: 'NONE' }]);
+  });
+
+  it('VIRTUAL MACHINES lists a VM the tenancy runs that this session keeps no record of, as found, with what the cloud says it is doing', async () => {
+    const found = { vms: [{
+      name: 'store', state: 'found', region: 'us-ashburn-1', spec: null, address: '129.158.63.113', inside: '10.20.0.234', protected: false, built: null, chris: null,
+      found: { state: 'running', instanceId: 'ocid1.instance.store', shape: 'VM.Standard.E5.Flex', vcpus: 2, memoryGib: 8, tagged: true },
+    }] };
+    const tiles = await stratusTiles_make(hooks_make({ 'cluster status': CLUSTERS, capacity: CAPACITY, 'vm status': found, 'vm cost': { vms: [] } }, []))();
+    const vms = tiles.afterFiles[0]!;
+    expect(vms.figures.map((f) => f.text)).toEqual(['1 VM']);
+    expect(vms.rows.map((r) => r.text)).toEqual(['store  FOUND · RUNNING  129.158.63.113']);
+    expect(vmCondition_derive(found.vms[0] as VmStatusRow, false)).toBe('FOUND · RUNNING');
+    expect(vmScript_synthesize(found.vms[0] as VmStatusRow)).toContain('--vcpu 2 --memory 8');
   });
 
   it('SCRIPTS stands between the frame\'s FILES and CAPACITY: each script in the library with where its lines stand, a row opening the script screen on it', async () => {

@@ -9,7 +9,7 @@
  */
 import type {
   CloudAvailability, CloudBucket, CloudContainer, CloudDnsZone, CloudDriver, CloudIdentity, CloudInstance, CloudLimit, CloudLink, CloudLoadBalancer,
-  CloudNetwork, CloudObject, CloudPrice, ServicePrices, CloudRecord, CloudResource, CloudSecurityGroup, CloudShape, CloudSubnet, CloudVolume, CloudZone, FoundCluster, ResourceCounts, ResourceKind,
+  CloudNetwork, CloudObject, CloudPrice, ServicePrices, CloudRecord, CloudResource, CloudSecurityGroup, CloudShape, CloudSubnet, CloudVolume, CloudZone, FoundCluster, FoundInstance, ResourceCounts, ResourceKind,
 } from '../driver.js';
 
 /** A Resource Manager stack in the fake cloud, as far as finding a cluster by its tag needs it. */
@@ -228,6 +228,16 @@ export class FakeDriver implements CloudDriver {
     return [...byName.entries()]
       .sort(([a]: [string, unknown], [b]: [string, unknown]): number => a.localeCompare(b))
       .map(([name, entry]): FoundCluster => ({ name, stack: entry.stack, compartmentId: entry.compartmentId, region }));
+  }
+
+  async instances_find(region: string): Promise<FoundInstance[]> {
+    this.call_count('instances_find');
+    const found: FoundInstance[] = [];
+    for (const entry of this.cloudData.resources) {
+      if (entry.kind !== 'instances' || entry.record.region !== region || entry.record.state === 'terminated') continue;
+      found.push({ ...entry.record, containerId: entry.containerId });
+    }
+    return found.sort((a: FoundInstance, b: FoundInstance): number => a.name.localeCompare(b.name));
   }
 
   async resources_search(containerId: string, region: string): Promise<ResourceCounts> {

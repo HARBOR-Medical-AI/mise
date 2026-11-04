@@ -15,7 +15,7 @@
  */
 import type {
   CloudAvailability, CloudBucket, CloudContainer, CloudDnsZone, CloudDriver, CloudIdentity, CloudInstance, CloudLimit, CloudLink, CloudLoadBalancer,
-  CloudNetwork, CloudObject, CloudPrice, ServicePrices, CloudRecord, CloudSecurityGroup, CloudShape, CloudSubnet, CloudVolume, CloudZone, FoundCluster, ResourceCounts,
+  CloudNetwork, CloudObject, CloudPrice, ServicePrices, CloudRecord, CloudSecurityGroup, CloudShape, CloudSubnet, CloudVolume, CloudZone, FoundCluster, FoundInstance, ResourceCounts,
 } from '../driver.js';
 import type { OciApi, OciCompartmentRecord, OciLimitValueRecord, OciShapeRecord, OciTenancyRecord } from './api.js';
 import type { OciAttachmentRecord, OciInstanceRecord, OciResourceRecord, OciVnicAttachmentRecord, OciVnicRecord, OciVolumeRecord } from './resourceApi.js';
@@ -295,5 +295,18 @@ export class OciDriver implements CloudDriver {
 
   async clusters_find(tagKey: string, region: string): Promise<FoundCluster[]> {
     return foundClusters_fold(await this.api.search_list(region, tagQuery_format(tagKey)), tagKey, region);
+  }
+
+  async instances_find(region: string): Promise<FoundInstance[]> {
+    // Resource Search says where every live instance is, across the tenancy; each compartment holding one is then
+    // read as `instances_list` reads it (shape, size, addresses), so a VM is seen whoever made it and wherever.
+    const hits = await this.api.search_list(region, "query instance resources where lifeCycleState != 'TERMINATED'");
+    const wanted: Set<string> = new Set(hits.map((hit): string => hit.identifier));
+    const containers: string[] = [...new Set(hits.map((hit): string => hit.compartmentId))];
+    const read: FoundInstance[][] = await Promise.all(containers.map(async (containerId: string): Promise<FoundInstance[]> =>
+      (await this.instances_list(containerId, region))
+        .filter((instance: CloudInstance): boolean => wanted.has(instance.id) && instance.state !== 'terminated')
+        .map((instance: CloudInstance): FoundInstance => ({ ...instance, containerId }))));
+    return byName_sort(read.flat());
   }
 }

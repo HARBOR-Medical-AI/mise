@@ -26,6 +26,7 @@ import type { NetStore } from '../net/state.js';
 import { VM_OPTIONS, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, type VmSpec } from '../vm/spec.js';
 import type { CloudShape } from '../cloud/driver.js';
 import { VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
+import { vmsFound_read, type FoundVm } from '../vm/found.js';
 import { cost_words, planFile_derive, VM_JOBS, vmApplyRun_make, vmCost_estimate, vmNet_read, vmPlanRun_make, vmTeardownRun_make, type VmCost, type VmDeps, type VmPart } from '../vm/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 import { HOURS_PER_MONTH } from '../cluster/spend.js';
@@ -125,24 +126,78 @@ function vmStatus_lines(record: VmRecord, spec: VmSpec | null): string[] {
 }
 
 /**
- * `vm status [<name>…]`.
+ * A VM the tenancy runs that this session keeps no record of, in lines.
+ *
+ * @param found - What the cloud says of it.
+ * @returns The lines.
+ */
+function vmFound_lines(found: FoundVm): string[] {
+  const instance = found.instance;
+  const state: string = instance === null ? 'data only' : instance.state;
+  const lines: string[] = [`${chalk.bold(found.name)}  ${chalk.magenta('found')} ${state}  ${chalk.gray(found.tagged ? 'built by stratus, not kept in this session' : 'made outside stratus')}`];
+  if (instance !== null) {
+    const size: string = instance.vcpus !== undefined ? ` · ${instance.vcpus} vCPU${instance.memoryGib !== undefined ? ` · ${instance.memoryGib} GiB` : ''}` : '';
+    lines.push(`  ${instance.shape}${size} · ${instance.zone}`);
+    const [inside, ...outside] = instance.ips;
+    if (outside.length > 0) lines.push(`  address  ${outside.join(', ')}`);
+    if (inside !== undefined) lines.push(`  inside   ${inside}, instance ${instance.id}`);
+  } else {
+    lines.push(chalk.gray('  its machine is gone; its data stack stands'));
+  }
+  return lines;
+}
+
+/**
+ * `vm status [<name>…]`: every VM the tenancy runs, and every VM this session
+ * keeps. The tenancy is the truth about what runs (docs/stratus.adoc, D16): a
+ * VM this session keeps no record of (built by another session, or made
+ * outside stratus) is listed as found, from the cloud; a kept VM is listed
+ * from its records, which say what was built and how.
  *
  * @param context - The session.
  * @param names - The VMs asked about; every one when none.
  * @returns The envelope.
  */
-function vmStatus_run(context: VmCommandContext, names: ReadonlyArray<string>): CommandEnvelope {
+async function vmStatus_run(context: VmCommandContext, names: ReadonlyArray<string>): Promise<CommandEnvelope> {
   const kept: string[] = context.store.names_list();
-  if (kept.length === 0) return envelope_ok('no VMs: vm new <name> --net <network> --vcpu … declares one\n');
-  const missing: string[] = names.filter((name: string): boolean => !kept.includes(name));
-  if (missing.length > 0) return envelope_error('', undefined, `vm: ${missing.join(', ')}: no such VM (${kept.join(', ')})\n`);
-  const shown: string[] = names.length === 0 ? kept : [...names];
+  const region: string | null = context.region();
+  let found: FoundVm[] = [];
+  let unsearched: string | null = region === null ? 'not connected' : null;
+  if (region !== null) {
+    try {
+      found = (await vmsFound_read(context.driver, region)).filter((vm: FoundVm): boolean => !kept.includes(vm.name));
+    } catch (error: unknown) {
+      unsearched = error instanceof Error ? error.message : String(error);
+    }
+  }
+  const unsearchedLine: string = unsearched === null ? '' : `${chalk.yellow(`the tenancy was not searched for VMs (${unsearched}): only those this session keeps are listed`)}\n`;
+  const all: string[] = [...kept, ...found.map((vm: FoundVm): string => vm.name)];
+  if (all.length === 0) return envelope_ok(`${unsearchedLine}no VMs${unsearched === null ? ' here or in the tenancy' : ''}: vm new <name> --net <network> --vcpu … declares one\n`, { kind: STRATUS_VM_STATUS_MODEL_KIND, data: { vms: [] } });
+  const missing: string[] = names.filter((name: string): boolean => !all.includes(name));
+  if (missing.length > 0) return envelope_error('', undefined, `vm: ${missing.join(', ')}: no such VM (${all.join(', ')})\n`);
+  const shown: string[] = names.length === 0 ? all : [...names];
+  const foundBy: Map<string, FoundVm> = new Map(found.map((vm: FoundVm): [string, FoundVm] => [vm.name, vm]));
   const blocks: string[] = shown.map((name: string): string => {
+    const seen: FoundVm | undefined = foundBy.get(name);
+    if (seen !== undefined) return vmFound_lines(seen).join('\n');
     const read = context.store.spec_read(name);
     return vmStatus_lines(context.store.record_read(name) as VmRecord, read !== null && 'spec' in read ? read.spec : null).join('\n');
   });
-  // The same rows as a model, for a surface's tile (docs/stratus.adoc, D17): from the records alone.
+  // The same rows as a model, for a surface's tile (docs/stratus.adoc, D17): a kept VM from its records, a found one from the cloud.
   const rows: VmStatusRow[] = shown.map((name: string): VmStatusRow => {
+    const seen: FoundVm | undefined = foundBy.get(name);
+    if (seen !== undefined) {
+      const instance = seen.instance;
+      const [inside, ...outside] = instance?.ips ?? [];
+      return {
+        name, state: 'found', region: instance?.region ?? region ?? '', spec: null,
+        address: outside[0] ?? null, inside: inside ?? null, protected: false, built: null, chris: null,
+        found: {
+          state: instance === null ? 'data only' : instance.state, instanceId: instance?.id ?? null, shape: instance?.shape ?? null,
+          vcpus: instance?.vcpus ?? null, memoryGib: instance?.memoryGib ?? null, tagged: seen.tagged,
+        },
+      };
+    }
     const record: VmRecord = context.store.record_read(name) as VmRecord;
     const read = context.store.spec_read(name);
     return {
@@ -157,7 +212,7 @@ function vmStatus_run(context: VmCommandContext, names: ReadonlyArray<string>): 
       chris: record.chris === undefined ? null : { profile: record.chris.profile, compute: record.chris.compute, host: record.chris.host, url: record.chris.url, porter: record.chris.porter ?? null },
     };
   });
-  return envelope_ok(`${blocks.join('\n\n')}\n`, { kind: STRATUS_VM_STATUS_MODEL_KIND, data: { vms: rows } });
+  return envelope_ok(`${unsearchedLine}${blocks.join('\n\n')}\n`, { kind: STRATUS_VM_STATUS_MODEL_KIND, data: { vms: rows } });
 }
 
 /** `vm cost`'s usage. */
@@ -170,7 +225,7 @@ const VM_COST_USAGE: string = 'vm cost [<name> [--vcpu <n>] [--memory <GiB>] [--
  * @param args - The words after `new`.
  * @returns The envelope.
  */
-function vmNew_run(context: VmCommandContext, args: ReadonlyArray<string>): CommandEnvelope {
+async function vmNew_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
   const read = options_read(args, VM_OPTIONS);
   if ('error' in read) return envelope_error('', undefined, `vm new: ${read.error} (${VM_OPTIONS.join(', ')})\n`);
   const [name, ...extra] = read.rest;
@@ -183,6 +238,17 @@ function vmNew_run(context: VmCommandContext, args: ReadonlyArray<string>): Comm
   const region: string | null = context.region();
   const kept: VmRecord | null = context.store.record_read(name);
   if (kept === null && region === null) return envelope_error('', undefined, 'vm new: not connected: the region a VM is built in is the session\'s\n');
+  // A name the tenancy already runs, kept by no record here (built by another session, or made outside stratus), is
+  // refused: declaring it here would build a second machine beside the first, under the same tag.
+  if (kept === null && region !== null) {
+    let running: FoundVm | undefined;
+    try {
+      running = (await vmsFound_read(context.driver, region)).find((vm: FoundVm): boolean => vm.name === name);
+    } catch (error: unknown) {
+      return envelope_error('', undefined, `vm new: ${name}: the tenancy was not searched (${error instanceof Error ? error.message : String(error)}): refusing, a VM by that name may already run\n`);
+    }
+    if (running !== undefined) return envelope_error('', undefined, `vm new: ${name}: Operation not permitted: the tenancy already runs a VM by that name (${running.tagged ? 'built by another stratus session' : 'made outside stratus'}); this session keeps no record of it, so it is read here (vm ${name}), never built over\n`);
+  }
   const changes: string[] = keptSpec !== null ? vmSpec_diff(keptSpec, spec.spec) : [];
   if (kept !== null && keptSpec !== null && changes.length === 0) return envelope_ok(`${name}: unchanged\n`);
   context.store.declare(name, spec.spec, kept?.region ?? (region as string));
@@ -555,7 +621,7 @@ export async function vm_run(context: VmCommandContext, args: ReadonlyArray<stri
   const [verb = 'status', ...rest] = args;
   switch (verb) {
     case 'status': return vmStatus_run(context, rest);
-    case 'new': return vmNew_run(context, rest);
+    case 'new': return await vmNew_run(context, rest);
     case 'cost': return await vmCost_run(context, rest);
     case 'limits': return await vmLimits_run(context, rest);
     case 'plan': return await vmPlan_run(context, rest);
@@ -565,7 +631,12 @@ export async function vm_run(context: VmCommandContext, args: ReadonlyArray<stri
     case 'teardown': return await vmTeardown_run(context, rest);
     default:
       if (rest.length === 0 && context.store.names_list().includes(verb)) return vmStatus_run(context, [verb]);
-      return envelope_error('', undefined, `vm: ${verb}: not a verb (vm status, new, cost, limits, plan, build, shell, protect, teardown)\n`);
+      // A VM the tenancy runs that this session keeps no record of is read by its name too.
+      if (rest.length === 0 && VM_NAME.test(verb)) {
+        const read: CommandEnvelope = await vmStatus_run(context, [verb]);
+        if (read.status === 'ok') return read;
+      }
+      return envelope_error('', undefined, `vm: ${verb}: not a verb (vm status, new, cost, limits, plan, build, shell, protect, teardown) nor a VM\n`);
   }
 }
 

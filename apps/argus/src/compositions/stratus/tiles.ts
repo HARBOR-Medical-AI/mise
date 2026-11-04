@@ -285,7 +285,7 @@ export function stratusTiles_make(hooks: StratusTileHooks): () => Promise<TileCo
       enter: (): void => hooks.cluster_open(''),
     };
 
-    // VIRTUAL MACHINES: what `vm status` keeps, each with the ChRIS on it or its address and what it bills; a row opens the
+    // VIRTUAL MACHINES: what `vm status` lists (the VMs the tenancy runs, and those this session keeps), each with the ChRIS on it or its address and what it bills; a row opens the
     // script that declares the VM, its VM BUILD seat the way in (docs/stratus.adoc, D16 and D17).
     const billed: VmSeen[] = vms.filter((vm: VmSeen): boolean => vm.rate !== null && vm.row.state !== 'gone' && vm.row.state !== 'declared');
     const vmHourly: VmCostRate | null = rates_sum(billed.map((vm: VmSeen): VmCostRate | null => vm.rate));
@@ -299,8 +299,10 @@ export function stratusTiles_make(hooks: StratusTileHooks): () => Promise<TileCo
       rows: vms.slice(0, 6).map((vm: VmSeen): LauncherRow => {
         const where: string = vm.row.chris?.host ?? vm.row.address ?? (vm.row.spec === null ? '' : `${vm.row.spec.vcpu} vCPU · ${vm.row.spec.memory} GiB`);
         const rate: string = vm.rate === null ? '' : `  ${money_text(vm.rate.machineHour + vm.rate.dataHour, vm.rate.currency)}/h`;
+        // A VM the tenancy runs that this session keeps no record of says so, and what the cloud says it is doing.
+        const state: string = vm.row.state === 'found' ? `FOUND · ${(vm.row.found?.state ?? 'unknown').toUpperCase()}` : vm.row.state.toUpperCase();
         return {
-          text: `${vm.row.name}  ${vm.row.state.toUpperCase()}  ${where}${rate}`.trimEnd(),
+          text: `${vm.row.name}  ${state}  ${where}${rate}`.trimEnd(),
           errored: false,
           // A row is its machine's line: the VM controller opens on it (docs/stratus.adoc, D17 revised).
           open: (): void => hooks.vm_open(vm.row.name),
