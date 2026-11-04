@@ -93,9 +93,37 @@ export interface RemoteDeps {
   readonly retryMs?: number;
 }
 
+/** How many times a line is tried when ssh itself fails to carry it. */
+const LINE_TRIES: number = 6;
+
+/**
+ * A remote whose every line is tried again when ssh itself failed to carry
+ * it: exit 255 with nothing printed, the line never run. A bastion session
+ * just made admits a first line and then, for a while, can refuse the next
+ * (seen on the store, 2026-11-04: a deploy failed at its second line).
+ *
+ * @param remote - The remote.
+ * @param call - The step's log and stop.
+ * @param retryMs - Between tries.
+ * @returns The remote, its lines retried.
+ */
+export function remoteRetried_make(remote: VmRemote, call: BuildCall, retryMs: number): VmRemote {
+  return {
+    run: async (line: string, input?: string): Promise<RemoteAnswer> => {
+      for (let tries: number = 1; ; tries += 1) {
+        const answer: RemoteAnswer = await remote.run(line, input);
+        if (answer.code !== 255 || answer.stdout !== '' || tries >= LINE_TRIES || call.signal.aborted) return answer;
+        call.log(`ssh through the bastion did not carry a line (${answer.stderr.trim().split('\n').at(-1) ?? 'exit 255'}); trying again`);
+        await pause(retryMs, call.signal);
+      }
+    },
+  };
+}
+
 /**
  * Opens a VM: a session on its network's bastion, then a first line tried
- * until it is admitted (three minutes at most).
+ * until it is admitted (three minutes at most); every line after is tried
+ * again when ssh itself fails to carry it.
  *
  * @param name - The VM.
  * @param deps - The VMs, the networks, the cloud.
@@ -123,5 +151,5 @@ export async function vmRemote_open(name: string, deps: RemoteDeps, call: BuildC
     await pause(deps.retryMs ?? 10_000, call.signal);
   }
   call.log(`reached ${name} at ${privateIp} through the bastion`);
-  return remote;
+  return remoteRetried_make(remote, call, deps.retryMs ?? 10_000);
 }
