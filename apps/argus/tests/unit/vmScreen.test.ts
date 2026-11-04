@@ -2,7 +2,10 @@
  * @jest-environment jsdom
  */
 /**
- * @file The VM controller: opened on a machine the library declares, its
+ * @file The VM controller: its door lists every machine the tenancy runs with
+ * + NEW, a found one among them; a machine opens on MACHINE, what it is; one
+ * this session can only see stands with MACHINE and TEARDOWN alone, and acts
+ * write no script. Opened on a machine the library declares, its
  * seats are that machine's lines in the controller's order with a TEARDOWN
  * seat of its own; the gutter wears a pill per machine and + NEW; a new
  * machine is named, committed (the script written, then declared) and
@@ -32,6 +35,8 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
   if (line === 'vm status') return envelope({ kind: 'stratus.vm.status', data: { vms: [
     { name: 'store', state: 'built', region: 'us-ashburn-1', spec: SPEC, address: '203.0.113.10', inside: '10.20.0.5', protected: false, built: '2026-11-01T00:00:00Z', chris: { profile: 'minimal', compute: 'NERC', host: 'cube.chrisproject.org', url: 'https://cube.chrisproject.org/api/v1/', porter: null } },
     { name: 'lone', state: 'declared', region: 'us-ashburn-1', spec: { ...SPEC, vcpu: 4 }, address: null, inside: null, protected: true, built: null, chris: null },
+    { name: 'web', state: 'found', region: 'us-ashburn-1', spec: null, address: '129.158.63.113', inside: '10.20.0.234', protected: true, built: null, chris: null,
+      found: { state: 'running', instanceId: 'ocid1.instance.web', shape: 'VM.Standard.E5.Flex', vcpus: 2, memoryGib: 8, tagged: true } },
   ] } });
   if (line === 'ls /scripts') return envelope({ kind: 'fs.listing', data: [{ path: '/scripts', items: [{ name: 'mine', type: 'dir' }, { name: 'chrisproject', type: 'source', status: 'cloned', title: 'git@github.com:HARBOR-Medical-AI/infra.git' }] }] });
   if (line === 'ls /scripts/mine') return envelope({ kind: 'fs.listing', data: [{ path: '/scripts/mine', items: mine.map((name: string) => ({ name, type: 'script' })) }] });
@@ -77,14 +82,19 @@ describe('the VM controller', () => {
     expect(asked).toContain('vm status');
     expect(screen.vm_get()).toBe('store');
     expect(screen.path_get()).toBe('/scripts/chrisproject/store.mise');
-    expect(screen.steps_get().map((step) => step.label)).toEqual(['SIZE', 'BUILD', 'CHRIS', 'USERS', 'TEARDOWN']);
-    expect([...screen.root.querySelectorAll('.takeover-seat .tdc-cluster')].map((pill) => pill.textContent)).toEqual(['STORE', 'LONE', '+ NEW']);
+    expect(screen.steps_get().map((step) => step.label)).toEqual(['MACHINE', 'SIZE', 'BUILD', 'CHRIS', 'USERS', 'TEARDOWN']);
+    expect([...screen.root.querySelectorAll('.takeover-seat .tdc-cluster')].map((pill) => pill.textContent)).toEqual(['STORE', 'LONE', 'WEB', '+ NEW']);
     expect(screen.root.querySelector('.tdc-condition-name')?.textContent).toBe('BUILT');
     expect(screen.root.querySelector('.ss-header')?.textContent).toContain('203.0.113.10');
     expect(screen.root.querySelector('.ss-header')?.textContent).toContain('cube.chrisproject.org');
     expect(document.title).toBe('BUILT · store');
-    // The rail opens on the first seat needing the operator: USERS (ready); BUILD carries no lock here, TEARDOWN does.
-    expect(screen.view_get()).toBe('users');
+    // A machine opens on what it is: its doing, size, addresses and the ChRIS on it.
+    expect(screen.view_get()).toBe('machine');
+    const facts: string = screen.root.querySelector('.tdc-body')?.textContent ?? '';
+    expect(facts).toContain('THE MACHINE');
+    expect(facts).toContain('2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups) · ubuntu-26.04');
+    expect(facts).toContain('https://cube.chrisproject.org/api/v1/');
+    expect(facts).toContain('built and kept in this session');
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-4"]')?.click();
     await settle();
     const body: HTMLElement = screen.root.querySelector('.tdc-body') as HTMLElement;
@@ -103,6 +113,17 @@ describe('the VM controller', () => {
     const { screen, sent } = screen_make();
     await screen.vm_open('');
     await settle();
+    // The door lists what is there, as a folder does; + NEW MACHINE opens the new one.
+    expect(screen.view_get()).toBe('machines');
+    expect([...screen.root.querySelectorAll('.takeover-gutter button')].map((seat) => seat.textContent?.trim())).toEqual(['MACHINES', 'NEW · SIZE', 'LEAVE']);
+    const listed: string[] = [...screen.root.querySelectorAll('.vm-row')].map((row) => row.textContent ?? '');
+    expect(listed).toHaveLength(3);
+    expect(listed[0]).toContain('BUILT');
+    expect(listed[0]).toContain('cube.chrisproject.org');
+    expect(listed[2]).toContain('FOUND · RUNNING');
+    expect(listed[2]).toContain('129.158.63.113 · 2 vCPU · 8 GiB · not known here');
+    button_named(screen.root, '+ NEW MACHINE')?.click();
+    await settle();
     expect(screen.view_get()).toBe('new');
     expect(screen.root.querySelector('.tdc-condition-name')?.textContent).toBe('NEW');
     const commit: HTMLButtonElement | undefined = button_named(screen.root, 'COMMIT · NAME IT');
@@ -113,7 +134,10 @@ describe('the VM controller', () => {
     expect(button_named(screen.root, 'COMMIT · NAME IS A HOSTNAME')?.disabled).toBe(true);
     name.value = 'store';
     name.dispatchEvent(new Event('input'));
-    expect(button_named(screen.root, 'COMMIT · ALREADY KEPT')?.disabled).toBe(true);
+    expect(button_named(screen.root, 'COMMIT · ALREADY IN THE TENANCY')?.disabled).toBe(true);
+    name.value = 'web';
+    name.dispatchEvent(new Event('input'));
+    expect(button_named(screen.root, 'COMMIT · ALREADY IN THE TENANCY')?.disabled).toBe(true);
     name.value = 'blt';
     name.dispatchEvent(new Event('input'));
     expect(screen.root.querySelector('.vm-new-line')?.textContent).toBe('vm new blt --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04');
@@ -133,7 +157,7 @@ describe('the VM controller', () => {
     await settle();
     expect(screen.path_get()).toBe('/scripts/mine/lone.mise');
     expect(screen.root.querySelector('.ss-header')?.textContent).toContain('SCRIPT NOT WRITTEN YET');
-    expect(screen.steps_get().map((step) => [step.label, step.state])).toEqual([['SIZE', null], ['BUILD', null], ['CHRIS', null], ['USERS', null], ['TEARDOWN', null]]);
+    expect(screen.steps_get().map((step) => [step.label, step.state])).toEqual([['MACHINE', null], ['SIZE', null], ['BUILD', null], ['CHRIS', null], ['USERS', null], ['TEARDOWN', null]]);
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="chris"]')?.click();
     await settle();
     expect(screen.root.querySelector('.ss-line-text')?.textContent).toBe('chris deploy lone --profile minimal --compute lone');
@@ -143,6 +167,28 @@ describe('the VM controller', () => {
     expect(sent[0]?.startsWith("touch --withContents='vm new lone --net chrisproject-services --open 80,443 --vcpu 4")).toBe(true);
     expect(sent[0]?.includes('vm build lone\nchris deploy lone --profile minimal --compute lone')).toBe(true);
     expect(sent[1]).toBe('chris deploy lone --profile minimal --compute lone');
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('a machine found in the tenancy: what it is, and only its teardown; lifting its lock writes no script (the kernel takes it over)', async () => {
+    const { screen, sent } = screen_make();
+    await screen.vm_open('web');
+    await settle();
+    expect(screen.steps_get().map((step) => step.label)).toEqual(['MACHINE', 'TEARDOWN']);
+    expect(screen.path_get()).toBe('');
+    expect(screen.root.querySelector('.tdc-condition-name')?.textContent).toBe('FOUND · RUNNING');
+    const facts: string = screen.root.querySelector('.tdc-body')?.textContent ?? '';
+    expect(facts).toContain('found: built by another stratus session; this session keeps no record of it');
+    expect(facts).toContain('VM.Standard.E5.Flex · 2 vCPU · 8 GiB');
+    expect(facts).toContain('not known here (the session that built it keeps that)');
+    expect(screen.root.querySelector('.ss-header')?.textContent).toContain('not known here');
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
+    await settle();
+    expect(screen.root.querySelector('.tdc-body .tdc-note-title')?.textContent).toBe('PROTECTED');
+    button_named(screen.root.querySelector('.tdc-body') as HTMLElement, 'PROTECT · OFF')?.click();
+    await settle(20);
+    expect(sent).toEqual(['vm protect web off']);
     screen.dispose();
     screen.root.remove();
   });

@@ -1,8 +1,12 @@
 /**
  * @file The VM controller: the script screen keyed by one virtual machine
- * (docs/stratus.adoc, D17 revised). The gutter carries a pill per VM the
- * host keeps and + NEW; the rail is that VM's lines as seats, SIZE, BUILD,
- * CHRIS, USERS, and TEARDOWN, which is no line but the VM's own undoing. The
+ * (docs/stratus.adoc, D17 revised). Its door is MACHINES: every VM the
+ * tenancy runs, as `ls` shows a folder, with + NEW (the operator, 2026-11-03).
+ * The gutter carries a pill per VM and + NEW; a machine opens on MACHINE, what
+ * it is and what is on it, then its lines as seats, SIZE, BUILD, CHRIS, USERS,
+ * and TEARDOWN, which is no line but the VM's own undoing. A VM this session
+ * can only see (found in the tenancy, or taken over from it, its SSH key kept
+ * by the session that built it) stands with MACHINE and TEARDOWN alone. The
  * header is the machine's facts. Underneath, the script stays the truth: a VM
  * opened from the library shows its script's lines; one the host keeps with
  * no script in the library gets its script synthesized from its record and
@@ -20,7 +24,7 @@ import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
 import { counts_words, line_parse, lines_build, runningStep_find, script_render, states_count, steps_build, type ScriptLine, type ScriptStep, type StateCounts } from '../script/model.js';
 import { ScriptScreen, type QuietAnswer, type ScriptHooks } from '../script/screen.js';
-import { NEW_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmCondition_derive, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
+import { FACTS_KEY, MACHINES_KEY, NEW_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
 
 /** The order the VM's seats stand in, whatever order the script's lines come. */
 const SEAT_ORDER: ReadonlyArray<string> = ['SIZE', 'BUILD', 'CHRIS', 'USERS', 'TEARDOWN'];
@@ -101,16 +105,24 @@ export class VmScreen extends ScriptScreen {
       this.lines = [];
       this.unsaved = false;
       this.edited = false;
-      this.newForm = { name: '', net: this.vms[0]?.spec?.net ?? NET_DEFAULT };
+      this.newForm = { name: '', net: this.vms.find((row: VmStatusRow): boolean => row.spec !== null)?.spec?.net ?? NET_DEFAULT };
       this.steps = this.steps_derive(this.lines);
-      this.view = NEW_KEY;
+      // The door shows what is there first, as a folder does; + NEW is beside it. With nothing there, the new one.
+      this.view = this.vms.length > 0 ? MACHINES_KEY : NEW_KEY;
       this.draw();
       void this.limits_need();
       void this.standing_read();
       return;
     }
-    const path: string | null = await this.vmScript_find(name);
-    if (path !== null) {
+    const opened: VmStatusRow | undefined = this.vms.find((each: VmStatusRow): boolean => each.name === name);
+    const path: string | null = vmKeyless_is(opened ?? null) ? null : await this.vmScript_find(name);
+    if (vmKeyless_is(opened ?? null)) {
+      // Seen, not built on from here: no script is made for it, so no act writes one that would declare it anew.
+      this.path = '';
+      this.lines = [];
+      this.unsaved = false;
+      this.edited = false;
+    } else if (path !== null) {
       this.path = path;
       this.unsaved = false;
       this.edited = false;
@@ -124,8 +136,8 @@ export class VmScreen extends ScriptScreen {
       this.edited = true;
     }
     this.steps = this.steps_derive(this.lines);
-    const first: ScriptStep | undefined = runningStep_find(this.steps) ?? this.steps.find((step: ScriptStep): boolean => step.state === 'changed' || step.state === 'ready') ?? this.steps[0];
-    this.view = first?.key ?? NEW_KEY;
+    // A machine opens on what it is; a line running takes the seat it runs in.
+    this.view = runningStep_find(this.steps)?.key ?? FACTS_KEY;
     this.draw();
     void this.limits_need();
     void this.standing_read();
@@ -187,9 +199,12 @@ export class VmScreen extends ScriptScreen {
   /** The VM's lines as its seats, SIZE, BUILD, CHRIS, USERS, in that order, then TEARDOWN; a seat whose line the script lacks stands over a template line. */
   protected override steps_derive(lines: ReadonlyArray<ScriptLine>): ScriptStep[] {
     if (this.vm === '') return [];
+    const facts: ScriptStep = { key: FACTS_KEY, label: 'MACHINE', kind: 'other', lines: [], state: null, running: null, template: true };
+    // A machine this session can only see: what it is, and its undoing; its size, build and ChRIS need its SSH key.
+    if (vmKeyless_is(this.vmRow_get())) return [facts, { key: TEARDOWN_KEY, label: 'TEARDOWN', kind: 'other', lines: [], state: null, running: null, template: true }];
     const mine: ScriptLine[] = vmLines_filter(lines, this.vm);
     const built: ScriptStep[] = steps_build(mine).map((step: ScriptStep): ScriptStep => ({ ...step, label: VM_SEAT_LABELS[step.kind] ?? step.label }));
-    const steps: ScriptStep[] = [];
+    const steps: ScriptStep[] = [facts];
     for (const label of SEAT_ORDER) {
       const found: ScriptStep | undefined = built.find((step: ScriptStep): boolean => step.label === label);
       if (found !== undefined) { steps.push(found); continue; }
@@ -208,7 +223,8 @@ export class VmScreen extends ScriptScreen {
 
   /** The stage strip names the machine; before it is named, the new one. */
   protected override stageTitle_get(): string {
-    return this.vm === '' ? 'A NEW MACHINE' : this.vm.toUpperCase();
+    if (this.vm === '') return this.view === MACHINES_KEY ? 'THE MACHINES' : 'A NEW MACHINE';
+    return this.vm.toUpperCase();
   }
 
   /** BUILD keeps RUN and the plan; the lock and the undoing are TEARDOWN's seat here. */
@@ -261,7 +277,10 @@ export class VmScreen extends ScriptScreen {
   /** The gutter: a pill per machine and + NEW; the rail: the VM's seats. */
   protected override rail_draw(): void {
     const views: TakeoverView[] = this.steps.map((step: ScriptStep): TakeoverView => ({ key: step.key, label: step.label }));
-    if (this.vm === '') views.unshift({ key: NEW_KEY, label: 'SIZE' });
+    if (this.vm === '') {
+      views.unshift({ key: NEW_KEY, label: 'NEW · SIZE' });
+      if (this.vms.length > 0) views.unshift({ key: MACHINES_KEY, label: 'MACHINES' });
+    }
     const shown: string[] = [...this.frame.views.keys()];
     if (shown.length !== views.length || views.some((view: TakeoverView, index: number): boolean => shown[index] !== view.key)) this.frame.views_set(views);
     for (const step of this.steps) {
@@ -278,6 +297,7 @@ export class VmScreen extends ScriptScreen {
       pill.type = 'button';
       const row: VmStatusRow | undefined = this.vms.find((each: VmStatusRow): boolean => each.name === name);
       pill.dataset['condition'] = row === undefined ? 'NEW' : row.state.toUpperCase();
+      if (row?.state === 'found') pill.title = `found in the tenancy: ${row.found?.state ?? ''}`;
       pill.setAttribute('aria-current', (name === NEW_KEY ? this.vm === '' : this.vm === name) ? 'true' : 'false');
       pill.disabled = this.busy !== null;
       pill.addEventListener('click', (): void => { this.hooks.voice.pill(pill.textContent ?? ''); void this.vm_open(name === NEW_KEY ? '' : name); });
@@ -293,29 +313,40 @@ export class VmScreen extends ScriptScreen {
     const counts: StateCounts = states_count(this.lines);
     const condition: HTMLElement = el('section', 'tdc-head-condition');
     const pill: HTMLElement = el('div', 'tdc-condition');
-    const word: string = vmCondition_derive(row, this.busy !== null);
+    // On the listing the header names the listing, not a machine.
+    const word: string = this.vm === '' && this.view === MACHINES_KEY ? 'MACHINES' : vmCondition_derive(row, this.busy !== null);
     pill.dataset['condition'] = word;
+    if (word.length > 9) pill.classList.add('tdc-condition-long');
     pill.append(el('span', 'tdc-condition-label', 'THE MACHINE'), el('span', 'tdc-condition-name', word));
     const mode: HTMLElement | null = modePill_make(this.hooks.manage_is());
-    condition.append(pill, ...(mode === null ? [] : [mode]), el('div', 'tdc-condition-why', this.vm === '' ? 'NAME IT ON SIZE' : counts_words(counts)));
+    const why: string = this.vm === '' ? (this.view === MACHINES_KEY ? `${this.vms.length} IN THE TENANCY · + NEW TO ADD ONE` : 'NAME IT ON SIZE') : vmKeyless_is(row) ? 'SEEN FROM THIS SESSION' : counts_words(counts);
+    condition.append(pill, ...(mode === null ? [] : [mode]), el('div', 'tdc-condition-why', why));
     const chips: HTMLElement = el('div', 'tdc-chips');
-    if (this.vm !== '') chips.append(el('span', 'tdc-chip', this.unsaved ? 'SCRIPT NOT WRITTEN YET' : this.edited ? 'EDITED · NOT SAVED' : this.path.startsWith('/scripts/mine/') ? 'WORKING COPY' : 'FROM GIT · READ-ONLY'));
+    if (this.vm !== '') chips.append(el('span', 'tdc-chip', vmKeyless_is(row) ? (row?.state === 'found' ? 'FOUND · NO RECORD HERE' : 'TAKEN OVER · NO SSH KEY HERE') : this.unsaved ? 'SCRIPT NOT WRITTEN YET' : this.edited ? 'EDITED · NOT SAVED' : this.path.startsWith('/scripts/mine/') ? 'WORKING COPY' : 'FROM GIT · READ-ONLY'));
     if (row !== null) chips.append(el('span', `tdc-chip tdc-lock${row.protected ? ' tdc-lock-on' : ' tdc-lock-off'}`, row.protected ? 'PROTECTED' : 'UNLOCKED'));
     condition.append(chips);
     header.append(condition);
     header.append(this.headSection_make('MACHINE', [
       ['NAME', this.vm === '' ? (this.newForm.name || '[NAME IT ON SIZE]') : this.vm],
-      ['STATE', row === null ? (this.vm === '' ? 'not declared' : 'not kept here') : row.state],
+      ['STATE', row === null ? (this.vm === '' ? (this.view === MACHINES_KEY ? `${this.vms.length} in the tenancy` : 'not declared') : 'not kept here') : row.state === 'found' ? `found · ${row.found?.state ?? '?'}` : row.state],
       ['ADDRESS', row?.address ?? '—'],
       ['INSIDE', row?.inside ?? '—'],
     ]));
-    header.append(this.headSection_make('CHRIS', row?.chris === null || row?.chris === undefined ? [['DEPLOYED', 'none']] : [['HOST', row.chris.host ?? '(by address)'], ['URL', row.chris.url], ['PORTER', row.chris.porter ?? '—']]));
+    header.append(this.headSection_make('CHRIS', vmKeyless_is(row) && (row?.chris === null || row?.chris === undefined) ? [['DEPLOYED', 'not known here']] : row?.chris === null || row?.chris === undefined ? [['DEPLOYED', 'none']] : [['HOST', row.chris.host ?? '(by address)'], ['URL', row.chris.url], ['PORTER', row.chris.porter ?? '—']]));
     header.append(this.costSection_make());
     header.append(this.runningSection_make());
     header.append(this.headSection_make('SCRIPT', [['PATH', this.path === '' ? '—' : this.path], ['STANDING', counts_words(counts)]]));
   }
 
   protected override body_draw(): void {
+    if (this.view === MACHINES_KEY || this.view === FACTS_KEY) {
+      const body: HTMLElement = this.parts.body;
+      body.replaceChildren();
+      body.dataset['view'] = 'step';
+      body.append(...(this.view === MACHINES_KEY ? this.machines_make() : this.facts_make()));
+      this.errand_place();
+      return;
+    }
     if (this.view === NEW_KEY) {
       const body: HTMLElement = this.parts.body;
       body.replaceChildren();
@@ -333,6 +364,78 @@ export class VmScreen extends ScriptScreen {
       return;
     }
     super.body_draw();
+  }
+
+  /**
+   * MACHINES: every VM the tenancy runs, one row each (what it is doing, its
+   * address, its size, what runs on it), each opening that machine, and + NEW.
+   * The library's rows, in the machine's words.
+   */
+  private machines_make(): HTMLElement[] {
+    const list: HTMLElement = this.section_make('MACHINES', 'ss-col-wide', `${this.vms.length} IN THE TENANCY`);
+    const rows: HTMLElement = el('div', 'ss-scripts');
+    for (const row of this.vms) {
+      const line: HTMLElement = el('div', 'ss-script vm-row');
+      const size: string = row.spec !== null ? `${row.spec.vcpu} vCPU · ${row.spec.memory} GiB` : row.found?.vcpus != null ? `${row.found.vcpus} vCPU${row.found.memoryGib != null ? ` · ${row.found.memoryGib} GiB` : ''}` : '—';
+      const on: string = row.chris?.host ?? (row.chris !== null && row.chris !== undefined ? row.chris.url : vmKeyless_is(row) ? 'not known here' : '—');
+      line.append(
+        el('span', 'ss-script-name', row.name),
+        el('span', 'ss-script-source', vmCondition_derive(row, false)),
+        el('span', 'ss-script-standing', `${row.address ?? 'no address'} · ${size} · ${on}`),
+      );
+      const open: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain', 'OPEN');
+      open.type = 'button';
+      open.title = `opens ${row.name}: what it is, then what can be done with it`;
+      open.disabled = this.busy !== null;
+      open.addEventListener('click', (): void => { this.hooks.voice.pill('OPEN'); void this.vm_open(row.name); });
+      line.append(open);
+      rows.append(line);
+    }
+    list.append(rows);
+    const commands: HTMLElement = el('div', 'tdc-commands');
+    const add: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain vm-new-open', '+ NEW MACHINE');
+    add.type = 'button';
+    add.disabled = this.busy !== null;
+    add.addEventListener('click', (): void => { this.view_press(NEW_KEY); });
+    commands.append(el('span', 'tdc-flex'), add);
+    list.append(commands, el('p', 'tdc-prose tdc-quiet', 'Every machine the tenancy runs outside a cluster, as vm status reads it from the cloud. One built in this session shows its state; one FOUND was built by another session, or outside stratus, and this session can see it and tear it down, not build on it.'));
+    const side: HTMLElement = this.section_make('WHAT A ROW OPENS', 'ss-col-side');
+    side.append(this.pairs_make([['MACHINE', 'what it is and what runs on it'], ['SIZE · BUILD · CHRIS · USERS', 'its lines, for a machine built in this session'], ['TEARDOWN', 'its undoing, behind its lock']]));
+    return [list, side];
+  }
+
+  /** MACHINE: what the opened machine is, where it stands, and what is on it; for one seen only, why it can only be seen. */
+  private facts_make(): HTMLElement[] {
+    const row: VmStatusRow | null = this.vmRow_get();
+    const facts: HTMLElement = this.section_make('THE MACHINE', 'ss-col-wide', row === null ? 'NOT KEPT HERE' : row.region.toUpperCase());
+    if (row === null) {
+      facts.append(el('p', 'tdc-prose', `The tenancy runs no machine called ${this.vm}, and this session keeps none: declare it on SIZE.`));
+      return [facts];
+    }
+    const size: string = row.spec !== null
+      ? `${row.spec.vcpu} vCPU · ${row.spec.memory} GiB · disk ${row.spec.disk} GB · data ${row.spec.data} GB${row.spec.dataBackup === 'daily' ? ' (daily backups)' : ''} · ${row.spec.os}`
+      : row.found !== null && row.found !== undefined ? `${row.found.shape ?? '?'}${row.found.vcpus != null ? ` · ${row.found.vcpus} vCPU` : ''}${row.found.memoryGib != null ? ` · ${row.found.memoryGib} GiB` : ''}` : '—';
+    const kept: string = row.state === 'found'
+      ? (row.found?.tagged === true ? 'found: built by another stratus session; this session keeps no record of it' : 'found: made outside stratus')
+      : row.takenFrom !== undefined && row.takenFrom !== null ? `taken over from the tenancy ${row.takenFrom.slice(0, 16).replace('T', ' ')}; its SSH key is kept by the session that built it` : 'built and kept in this session';
+    facts.append(this.pairs_make([
+      ['DOING', row.state === 'found' ? (row.found?.state ?? '?') : row.state],
+      ['SIZE', size],
+      ['ADDRESS', row.address ?? '—'],
+      ['INSIDE', row.inside ?? '—'],
+      ['NETWORK', row.spec?.net ?? '—'],
+      ['OPEN', row.spec !== null ? (row.spec.open.length === 0 ? 'none' : row.spec.open.join(', ')) : '—'],
+      ['INSTANCE', row.found?.instanceId ?? '—'],
+      ['BUILT', row.built?.slice(0, 16).replace('T', ' ') ?? '—'],
+      ['CHRIS', row.chris !== null && row.chris !== undefined ? `${row.chris.url}${row.chris.porter !== null ? ` · porter ${row.chris.porter}` : ''}` : vmKeyless_is(row) ? 'not known here (the session that built it keeps that)' : 'none deployed'],
+      ['LOCK', row.protected ? 'protected: teardown refuses until lifted' : 'unlocked'],
+      ['KEPT', kept],
+    ]));
+    const side: HTMLElement = this.section_make('WHAT CAN BE DONE', 'ss-col-side');
+    side.append(vmKeyless_is(row)
+      ? el('p', 'tdc-prose', 'Seen from this session: its size, build and ChRIS need the SSH key the session that built it keeps. TEARDOWN removes it, behind its lock and the name typed back; the first act takes its records over from the cloud.')
+      : this.pairs_make([['SIZE', 'its size and ports, as its vm new line'], ['BUILD', 'plans and applies what changed, asking first'], ['CHRIS', 'deploys ChRIS on it'], ['USERS', 'its ChRIS accounts'], ['TEARDOWN', 'its undoing, behind its lock']]));
+    return [facts, side];
   }
 
   /** SIZE for a machine not yet named: its name, its network, and the sliders over the line that will declare it. */
@@ -383,7 +486,7 @@ export class VmScreen extends ScriptScreen {
 
   private newCommit_redraw(commit: HTMLButtonElement): void {
     const name: string = this.newForm.name;
-    const refusal: string | null = name === '' ? 'NAME IT' : !vmName_valid(name) ? 'NAME IS A HOSTNAME' : this.vms.some((row: VmStatusRow): boolean => row.name === name) ? 'ALREADY KEPT' : this.newForm.net === '' ? 'NETWORK' : null;
+    const refusal: string | null = name === '' ? 'NAME IT' : !vmName_valid(name) ? 'NAME IS A HOSTNAME' : this.vms.some((row: VmStatusRow): boolean => row.name === name) ? 'ALREADY IN THE TENANCY' : this.newForm.net === '' ? 'NETWORK' : null;
     commit.textContent = refusal === null ? 'COMMIT' : `COMMIT · ${refusal}`;
     commit.disabled = refusal !== null || this.busy !== null;
   }

@@ -9,7 +9,7 @@
 import type { ClusterSpec } from '../../cluster/spec.js';
 import { specNodes_build, type SpecNode } from '../../cluster/spec.js';
 import type { Installer, InstallerCredentials, InstallerHost, InstallerIds, InstallStatus, PlatformManifest } from '../../installer/installer.js';
-import { teardownStep_run, type BuildCall, type CloudBuilder, type InfraOutputs, type InfraPlan, type ModulePlanRequest, type PlaceAnswer, type PlanRow, type PreflightCheck, type ShellSession, type ShellSessionRequest, type StackModule, type TeardownCall, type TeardownRequest, type TeardownStep } from '../builder.js';
+import { teardownStep_run, type BuildCall, type CloudBuilder, type InfraOutputs, type InfraPlan, type ModulePlanRequest, type ModuleStackRead, type PlaceAnswer, type PlanRow, type PreflightCheck, type ShellSession, type ShellSessionRequest, type StackModule, type TeardownCall, type TeardownRequest, type TeardownStep } from '../builder.js';
 
 /** What the fake network module makes, by kind, as the OCI module does. */
 const NET_KINDS: ReadonlyArray<string> = ['networks', 'gateways', 'routetables', 'securitylists', 'subnets', 'bastions'];
@@ -205,6 +205,12 @@ export class FakeCloudBuilder implements CloudBuilder {
     stack.applied = { ...stack.planned, ...(stack.planned['image'] === '' ? { image: outputs['image_id'] ?? '' } : {}) };
     call.log(`apply: ${request.plan.rows.length} changes made`);
     return outputs;
+  }
+
+  async moduleStacks_read(request: { region: string; placeId: string; tag: string; owner: string }): Promise<ModuleStackRead[]> {
+    return [...this.world.moduleStacks.entries()]
+      .filter(([, stack]): boolean => stack.placeId === request.placeId && stack.tag === request.tag && stack.owner === request.owner)
+      .map(([stackRef, stack]): ModuleStackRead => ({ module: stack.module, stackRef, inputs: { ...(stack.applied ?? stack.planned) } }));
   }
 
   async moduleDestroy_run(request: { region: string; stackRef: string; label: string }, call: BuildCall): Promise<string[]> {

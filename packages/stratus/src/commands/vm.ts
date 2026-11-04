@@ -19,14 +19,14 @@
 import * as path from 'path';
 import chalk from 'chalk';
 import { envelope_error, envelope_ok, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow } from '@fnndsc/menu';
-import { repl_confirm, repl_question, surface_get, type CommandHelp } from '@fnndsc/brasa/core';
+import { repl_confirm, repl_question, sink_dataLine, surface_get, type CommandHelp } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_alter, planCounts_words, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import type { CloudDriver } from '../cloud/driver.js';
 import type { NetStore } from '../net/state.js';
 import { VM_OPTIONS, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, type VmSpec } from '../vm/spec.js';
 import type { CloudShape } from '../cloud/driver.js';
 import { VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
-import { vmsFound_read, type FoundVm } from '../vm/found.js';
+import { vmsFound_read, vmTakeover_run, type FoundVm } from '../vm/found.js';
 import { cost_words, planFile_derive, VM_JOBS, vmApplyRun_make, vmCost_estimate, vmNet_read, vmPlanRun_make, vmTeardownRun_make, type VmCost, type VmDeps, type VmPart } from '../vm/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 import { HOURS_PER_MONTH } from '../cluster/spend.js';
@@ -102,6 +102,37 @@ function vm_need(context: VmCommandContext, name: string | undefined, verb: stri
   return { name, record, spec: read.spec };
 }
 
+/** What a verb says when its record lacks the SSH key the machine was built with. */
+const TAKEN_KEYLESS: string = 'taken over from the tenancy: its SSH key is kept by the session that built it, so this session cannot reach the machine, and a plan or build here would replace the machine to put a new key on it';
+
+/**
+ * A VM, read, or taken over from the tenancy on this first act when the
+ * tenancy runs it and this session keeps no record of it (built by another
+ * session): its records read back from its stacks, born protected here.
+ *
+ * @param context - The session.
+ * @param name - The VM; the only one kept when absent and there is one.
+ * @param verb - The verb asking, for its refusals.
+ * @returns Its name, record and spec, and the line saying it was taken over (empty when it was kept), or why not.
+ */
+async function vm_needOrTake(context: VmCommandContext, name: string | undefined, verb: string): Promise<{ name: string; record: VmRecord; spec: VmSpec; said: string } | { error: string }> {
+  const need = vm_need(context, name, verb);
+  if (!('error' in need)) return { ...need, said: '' };
+  const region: string | null = context.region();
+  if (name === undefined || region === null || context.store.record_read(name) !== null) return need;
+  let took: Awaited<ReturnType<typeof vmTakeover_run>>;
+  try {
+    took = await vmTakeover_run({ store: context.store, nets: context.nets, driver: context.driver, builder: context.builder, region }, name);
+  } catch (error: unknown) {
+    return { error: `vm ${verb}: ${name}: the tenancy was not read (${error instanceof Error ? error.message : String(error)})` };
+  }
+  if ('absent' in took) return need;
+  if ('error' in took) return { error: `vm ${verb}: ${took.error}` };
+  const again = vm_need(context, name, verb);
+  if ('error' in again) return again;
+  return { ...again, said: chalk.gray(`${name}: taken over from the tenancy (built by another session): its records read back from its stacks; protected here until lifted\n`) };
+}
+
 /**
  * One VM's lines.
  *
@@ -120,6 +151,7 @@ function vmStatus_lines(record: VmRecord, spec: VmSpec | null): string[] {
   if (record.dataOutputs?.['volume_id'] !== undefined) lines.push(`  data     ${record.dataOutputs['volume_id']}`);
   if (record.image !== undefined) lines.push(chalk.gray(`  image    ${record.image} (pinned)`));
   if (record.built !== undefined) lines.push(chalk.gray(`  built ${record.built}`));
+  if (record.takenFrom !== undefined) lines.push(chalk.gray(`  taken over from the tenancy ${record.takenFrom}: built by another session, which keeps its SSH key`));
   if (record.machineGone !== undefined && record.built === undefined) lines.push(chalk.gray(`  machine torn down ${record.machineGone}: vm build ${record.name} makes it again over the kept data`));
   if (record.gone !== undefined) lines.push(chalk.gray(`  torn down ${record.gone}: vm build ${record.name} builds it again, empty`));
   return lines;
@@ -191,7 +223,8 @@ async function vmStatus_run(context: VmCommandContext, names: ReadonlyArray<stri
       const [inside, ...outside] = instance?.ips ?? [];
       return {
         name, state: 'found', region: instance?.region ?? region ?? '', spec: null,
-        address: outside[0] ?? null, inside: inside ?? null, protected: false, built: null, chris: null,
+        // Found, it stands protected: acting on it takes it over born protected, and the lock is lifted as its own line.
+        address: outside[0] ?? null, inside: inside ?? null, protected: true, built: null, chris: null,
         found: {
           state: instance === null ? 'data only' : instance.state, instanceId: instance?.id ?? null, shape: instance?.shape ?? null,
           vcpus: instance?.vcpus ?? null, memoryGib: instance?.memoryGib ?? null, tagged: seen.tagged,
@@ -210,6 +243,7 @@ async function vmStatus_run(context: VmCommandContext, names: ReadonlyArray<stri
       protected: record.protected === true,
       built: record.built ?? null,
       chris: record.chris === undefined ? null : { profile: record.chris.profile, compute: record.chris.compute, host: record.chris.host, url: record.chris.url, porter: record.chris.porter ?? null },
+      takenFrom: record.takenFrom ?? null,
     };
   });
   return envelope_ok(`${unsearchedLine}${blocks.join('\n\n')}\n`, { kind: STRATUS_VM_STATUS_MODEL_KIND, data: { vms: rows } });
@@ -393,8 +427,9 @@ async function vmLimits_run(context: VmCommandContext, args: ReadonlyArray<strin
  */
 async function vmPlan_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
   if (args.length > 1 || args.some((word: string): boolean => word.startsWith('-'))) return envelope_error('', undefined, 'vm plan: usage: vm plan [<name>]\n');
-  const need = vm_need(context, args[0], 'plan');
+  const need = await vm_needOrTake(context, args[0], 'plan');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
+  if (need.record.takenFrom !== undefined) return envelope_error(need.said, undefined, `vm plan: ${need.name}: ${TAKEN_KEYLESS}\n`);
   const { record, spec } = need;
   const lines: string[] = vmStatus_lines(record, spec);
   lines.push(`cost  ${cost_line(await cost_read(context, spec))}`);
@@ -463,8 +498,9 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   const unknown: string | undefined = words.find((word: string): boolean => word.startsWith('-'));
   if (unknown !== undefined) return envelope_error('', undefined, `vm build: ${unknown}: unknown option (--allow-alter)\n`);
   if (words.length > 1) return envelope_error('', undefined, 'vm build: usage: vm build [<name>] [--allow-alter]\n');
-  const need = vm_need(context, words[0], 'build');
+  const need = await vm_needOrTake(context, words[0], 'build');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
+  if (need.record.takenFrom !== undefined) return envelope_error(need.said, undefined, `vm build: ${need.name}: ${TAKEN_KEYLESS}\n`);
   if (!tasks_granted()) return envelope_error('', undefined, `vm build: ${TIER_REFUSAL}\n`);
   const deps = deps_make(context);
   if ('error' in deps) return envelope_error('', undefined, `vm build: ${deps.error}\n`);
@@ -537,8 +573,9 @@ export function sshLine_build(session: { sessionId: string; host: string }, keyP
 async function vmShell_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
   const words: string[] = args.filter((word: string): boolean => word !== '--print');
   if (words.length > 1 || words.some((word: string): boolean => word.startsWith('-'))) return envelope_error('', undefined, 'vm shell: usage: vm shell [<name>] [--print]\n');
-  const need = vm_need(context, words[0], 'shell');
+  const need = await vm_needOrTake(context, words[0], 'shell');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
+  if (need.record.takenFrom !== undefined) return envelope_error(need.said, undefined, `vm shell: ${need.name}: ${TAKEN_KEYLESS}\n`);
   if (surface_get().capabilities.shellCommands !== true) return envelope_error('', undefined, 'vm shell: needs the shell tier (stratus --host-control shell)\n');
   const { name, record, spec } = need;
   const privateIp: string | undefined = record.machineOutputs?.['private_ip'];
@@ -568,13 +605,13 @@ async function vmShell_run(context: VmCommandContext, args: ReadonlyArray<string
  * @param args - The words after `protect`.
  * @returns The envelope.
  */
-function vmProtect_run(context: VmCommandContext, args: ReadonlyArray<string>): CommandEnvelope {
+async function vmProtect_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
   const [nameWord, setting, ...extra] = args;
   if (nameWord === undefined || (setting !== 'on' && setting !== 'off') || extra.length > 0) return envelope_error('', undefined, 'vm protect: usage: vm protect <name> on|off\n');
-  const need = vm_need(context, nameWord, 'protect');
+  const need = await vm_needOrTake(context, nameWord, 'protect');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   context.store.record_update(need.name, (current: VmRecord): void => { current.protected = setting === 'on'; });
-  return envelope_ok(`${need.name}: ${setting === 'on' ? 'protected: teardown refuses' : `unprotected: vm teardown ${need.name} may remove it`}\n`);
+  return envelope_ok(`${need.said}${need.name}: ${setting === 'on' ? 'protected: teardown refuses' : `unprotected: vm teardown ${need.name} may remove it`}\n`);
 }
 
 /**
@@ -588,9 +625,10 @@ async function vmTeardown_run(context: VmCommandContext, args: ReadonlyArray<str
   const all: boolean = args.includes('--all');
   const words: string[] = args.filter((word: string): boolean => word !== '--all');
   if (words.length !== 1 || (words[0] as string).startsWith('-')) return envelope_error('', undefined, 'vm teardown: usage: vm teardown <name> [--all]\n');
-  const need = vm_need(context, words[0], 'teardown');
+  const need = await vm_needOrTake(context, words[0], 'teardown');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   const { name, record, spec } = need;
+  if (need.said !== '') sink_dataLine(need.said.trimEnd());
   if (record.machineStackRef === undefined && (!all || record.dataStackRef === undefined)) return envelope_ok(`${name}: nothing of it ${all ? 'is built' : 'but its kept data is built (vm teardown --all takes that)'}\n`);
   if (record.protected === true) return envelope_error('', undefined, `vm teardown: ${name}: protected (vm protect ${name} off)\n`);
   if (!tasks_granted()) return envelope_error('', undefined, `vm teardown: ${TIER_REFUSAL}\n`);
@@ -627,7 +665,7 @@ export async function vm_run(context: VmCommandContext, args: ReadonlyArray<stri
     case 'plan': return await vmPlan_run(context, rest);
     case 'build': return await vmBuild_run(context, rest);
     case 'shell': return await vmShell_run(context, rest);
-    case 'protect': return vmProtect_run(context, rest);
+    case 'protect': return await vmProtect_run(context, rest);
     case 'teardown': return await vmTeardown_run(context, rest);
     default:
       if (rest.length === 0 && context.store.names_list().includes(verb)) return vmStatus_run(context, [verb]);

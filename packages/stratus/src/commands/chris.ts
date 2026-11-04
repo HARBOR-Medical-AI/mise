@@ -244,6 +244,8 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   const spec = context.vms.spec_read(name);
   if (record === null || spec === null || 'error' in spec) return envelope_error('', undefined, `chris deploy: ${name}: no such VM (vm new declares one)\n`);
   if (record.built === undefined) return envelope_error('', undefined, `chris deploy: ${name}: not built (vm build ${name})\n`);
+  // A VM taken over from the tenancy was built by another session, which holds the only SSH key that reaches it.
+  if (record.takenFrom !== undefined) return envelope_error('', undefined, `chris deploy: ${name}: taken over from the tenancy: its SSH key is kept by the session that built it, so this session cannot reach the machine\n`);
   const vmSpec: VmSpec = spec.spec;
   const short: string[] = floor_short(profile, vmSpec);
   if (short.length > 0) return envelope_error('', undefined, `chris deploy: ${name} is below the ${profile.name} profile's floor: ${short.join('; ')}\n`);

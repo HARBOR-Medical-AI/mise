@@ -90,6 +90,8 @@ export const vmStatusRowSchema = z.object({
     /** Whether it carries stratus's VM tag: built by a stratus session, not this one; else made outside stratus. */
     tagged: z.boolean(),
   }).nullable().optional(),
+  /** When this session took it over from the tenancy (built by another session, whose SSH key it still holds), or null; absent from an older daemon. */
+  takenFrom: z.string().nullable().optional(),
   region: z.string(),
   /** Its spec, or null when spec.yaml does not read. */
   spec: vmSpecModelSchema.nullable(),

@@ -188,6 +188,13 @@ export type StackModule = 'net' | 'vmData' | 'vmMachine';
  * @property inputs - What the module is given, in neutral words (`net`: `cidr`, `clientCidr`); the driver lowers them to its own.
  * @property stackRef - Its stack, when one was made already.
  */
+/** A module's stack read back from the cloud: which module, its handle, and the inputs it was last given. */
+export interface ModuleStackRead {
+  readonly module: StackModule;
+  readonly stackRef: string;
+  readonly inputs: Readonly<Record<string, string>>;
+}
+
 export interface ModulePlanRequest {
   readonly module: StackModule;
   readonly owner: { readonly tag: string; readonly name: string };
@@ -253,6 +260,8 @@ export interface CloudBuilder {
   moduleApply_run?(request: { region: string; stackRef: string; plan: InfraPlan; label: string }, call: BuildCall): Promise<Record<string, string>>;
   /** Destroys what a module's stack holds, then the stack. Returns what went, a line each. */
   moduleDestroy_run?(request: { region: string; stackRef: string; label: string }, call: BuildCall): Promise<string[]>;
+  /** The module stacks a place holds for one owner, read back from the cloud in the words a plan was given (the inputs), for a session that keeps no record of them (a VM found in the tenancy, taken over on its first act). */
+  moduleStacks_read?(request: { region: string; placeId: string; tag: string; owner: string }): Promise<ModuleStackRead[]>;
   /** The shape a VM is made of (D16: the driver chooses the family), for its price. */
   readonly vmShape?: string;
   /** Points a reserved public address at a machine's private one. */
