@@ -49,6 +49,8 @@ class FakeVm implements VmRemote {
   made: Array<{ username: string; email: string; password: string }> = [];
   /** Each account's password, as CUBE holds it: chris's set from cube.env each time the services start, as CUBE's migrations do. */
   passwords: Map<string, string> = new Map();
+  /** Whether the admin has its home. */
+  adminHome: boolean = false;
   /** Lines that fail, once each. */
   failing: Set<string> = new Set();
   async run(line: string, input?: string): Promise<RemoteAnswer> {
@@ -63,6 +65,11 @@ class FakeVm implements VmRemote {
     if (line.includes('curl -s -K -')) {
       const signed: string | undefined = /^user = "chris:(.*)"$/m.exec(input ?? '')?.[1];
       if (this.passwords.has('chris') && signed !== this.passwords.get('chris')) return { code: 0, stdout: '{}\n401', stderr: '' };
+    }
+    if (line === CUBE_PYTHON_LINE && (input ?? '').includes('home/chris/feeds')) {
+      const made: boolean = !this.adminHome;
+      this.adminHome = true;
+      return { code: 0, stdout: `stratus-home ${made ? 'home/chris/uploads, home/chris/feeds, home/chris/public, home/chris/shared' : 'there'}\n`, stderr: '' };
     }
     if (line === CUBE_PYTHON_LINE) {
       const ask = JSON.parse(Buffer.from((/b64decode\('([^']+)'\)/.exec(input ?? '') as RegExpMatchArray)[1] as string, 'base64').toString('utf-8')) as { username: string; email: string; password: string };
@@ -190,6 +197,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(vm.lines).toContain('cd /srv/data/chris && docker compose pull -q --ignore-buildable && docker compose up -d --build --remove-orphans');
     expect(vm.files.get('/srv/data/chris/compose.yml')).not.toContain('porter');
     expect(vm.computes).toEqual(['NERC']);
+    expect(vm.adminHome).toBe(true);
     expect(vm.lines.some((line: string): boolean => line.includes(secrets?.adminPassword ?? '?'))).toBe(false);
     expect(vms.record_read('store')?.chris).toMatchObject({ profile: 'minimal', compute: 'NERC', host: null, url: 'http://203.0.113.10/api/v1/' });
     surface.asked = [];

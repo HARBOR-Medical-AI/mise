@@ -24,6 +24,7 @@ import { vm_read } from '../vm/build.js';
 import type { VmRecord, VmStore } from '../vm/state.js';
 import { apiUrl_derive, caddyfile_render, CHRIS_DIR, compose_render, cubeEnv_render, PFCON_HOST, PFCON_USER, pfconEnv_render, porterEnv_render, type ChrisSecrets, type ChrisTarget } from './compose.js';
 import type { ChrisProfile } from './profiles.js';
+import { adminHomeProgram_render, CUBE_PYTHON_LINE, HOME_MARK } from './users.js';
 
 /** What a deploy is asked for. */
 export interface DeployRequest {
@@ -159,6 +160,13 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
       const ps: RemoteAnswer = await remote.run(`cd ${CHRIS_DIR} && docker compose ps -a --format '{{.Service}} {{.State}} {{.Status}}'`);
       throw new Error(`CUBE did not answer on 127.0.0.1:8000 in ten minutes; services: ${ps.stdout.trim().split('\n').join('; ')}`);
     }
+
+    // The admin's home, which CUBE's own superuser leaves out, so a session signed in as chris has its feeds.
+    const home: RemoteAnswer = await remote.run(CUBE_PYTHON_LINE, adminHomeProgram_render());
+    const homeLine: string | undefined = home.stdout.split('\n').find((line: string): boolean => line.startsWith(`${HOME_MARK} `));
+    if (home.code !== 0 || homeLine === undefined) throw new Error(`giving chris its home in CUBE: exit ${home.code}: ${(home.stderr || home.stdout).trim().split('\n').slice(-3).join(' / ')}`);
+    const homeMade: string = homeLine.slice(HOME_MARK.length + 1);
+    context.log_write(homeMade === 'there' ? 'chris has its home (/home/chris/feeds, uploads)' : `made chris's home: ${homeMade}`);
 
     const found = await cube_ask(remote, request.secrets, `api/v1/computeresources/search/?name=${encodeURIComponent(request.compute)}`);
     if (found.status !== 200) throw new Error(`asking CUBE for the compute resource ${request.compute}: HTTP ${found.status} (is the admin password the one CUBE was made with?)`);

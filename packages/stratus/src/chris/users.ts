@@ -93,6 +93,45 @@ export function userPasswdProgram_render(ask: { readonly username: string; reado
   ].join('\n');
 }
 
+/** What the admin-home program's answer line starts with. */
+export const HOME_MARK: string = 'stratus-home';
+
+/**
+ * The program that gives the admin, `chris`, the home a sign-up gives any
+ * account: CUBE makes `chris` with Django's bare `create_superuser` each
+ * time its migrations first run, which makes no home, so a session signed
+ * in as `chris` finds no `/home/chris/feeds`. The groups, `uploads/` and
+ * `feeds/` and the `public` and `shared` links are made as CUBE 6.11's
+ * `UserProxy.save` makes them; each one already there is left as it is, so
+ * every deploy runs it.
+ *
+ * @returns The Python program.
+ */
+export function adminHomeProgram_render(): string {
+  return [
+    'from django.contrib.auth.models import Group, User',
+    'from core.models import ChrisFolder, ChrisLinkFile',
+    'user = User.objects.get(username="chris")',
+    'made = []',
+    'for name in ("all_users", "pacs_users"):',
+    '    group = Group.objects.filter(name=name).first()',
+    '    if group is not None and not user.groups.filter(pk=group.pk).exists():',
+    '        user.groups.add(group)',
+    '        made.append("group " + name)',
+    'for path in ("home/chris/uploads", "home/chris/feeds"):',
+    '    (folder, new) = ChrisFolder.objects.get_or_create(path=path, owner=user)',
+    '    if new:',
+    '        made.append(path)',
+    'home = ChrisFolder.objects.get(path="home/chris")',
+    'for (pointed, name) in (("PUBLIC", "public"), ("SHARED", "shared")):',
+    '    if not ChrisLinkFile.objects.filter(fname="home/chris/" + name + ".chrislink").exists():',
+    '        ChrisLinkFile(path=pointed, owner=user, parent_folder=home).save(name=name)',
+    '        made.append("home/chris/" + name)',
+    `print("${HOME_MARK} " + (", ".join(made) if made else "there"))`,
+    '',
+  ].join('\n');
+}
+
 /**
  * The program's answer, from its output.
  *
