@@ -3,7 +3,8 @@
  * compose file and its environment, the secrets kept, and `chris deploy`
  * end to end over the fake cloud and a fake VM that answers its lines:
  * the files written, the compute registered once, the admin API seen, the
- * password generated and shown once, and the DNS wait with a host.
+ * password generated and shown once, and the DNS wait with a host; and
+ * `chris passwd`, the admin's kept on the host, in cube.env and in CUBE together.
  */
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
@@ -27,6 +28,7 @@ import { net_run } from '../src/commands/net.js';
 import { vm_run, type VmCommandContext } from '../src/commands/vm.js';
 import { chris_run, type ChrisCommandContext } from '../src/commands/chris.js';
 import { CUBE_PYTHON_LINE, userAnswer_parse } from '../src/chris/users.js';
+import { PASSWD_JOBS } from '../src/chris/passwd.js';
 import { lineStatusProviders_make } from '../src/commands/lineStatus.js';
 import { VM_JOBS } from '../src/vm/build.js';
 import { USER_JOBS } from '../src/chris/users.js';
@@ -45,10 +47,30 @@ class FakeVm implements VmRemote {
   users: Map<string, string> = new Map([['chris', 'dev@babymri.org']]);
   /** Each account made, as CUBE was given it. */
   made: Array<{ username: string; email: string; password: string }> = [];
+  /** Each account's password, as CUBE holds it: chris's set from cube.env each time the services start, as CUBE's migrations do. */
+  passwords: Map<string, string> = new Map();
+  /** Lines that fail, once each. */
+  failing: Set<string> = new Set();
   async run(line: string, input?: string): Promise<RemoteAnswer> {
     this.lines.push(line);
+    if (this.failing.delete(line)) return { code: 1, stdout: '', stderr: 'it failed' };
+    if (line.includes('docker compose up')) {
+      const env: string = this.files.get('/srv/data/chris/cube.env') ?? '';
+      const admin: string | undefined = /^CHRIS_SUPERUSER_PASSWORD=(.*)$/m.exec(env)?.[1];
+      if (admin !== undefined) this.passwords.set('chris', admin);
+      return { code: 0, stdout: '', stderr: '' };
+    }
+    if (line.includes('curl -s -K -')) {
+      const signed: string | undefined = /^user = "chris:(.*)"$/m.exec(input ?? '')?.[1];
+      if (this.passwords.has('chris') && signed !== this.passwords.get('chris')) return { code: 0, stdout: '{}\n401', stderr: '' };
+    }
     if (line === CUBE_PYTHON_LINE) {
       const ask = JSON.parse(Buffer.from((/b64decode\('([^']+)'\)/.exec(input ?? '') as RegExpMatchArray)[1] as string, 'base64').toString('utf-8')) as { username: string; email: string; password: string };
+      if ((input ?? '').includes('set_password')) {
+        if (!this.users.has(ask.username)) return { code: 0, stdout: 'stratus-user absent\n', stderr: '' };
+        this.passwords.set(ask.username, ask.password);
+        return { code: 0, stdout: 'stratus-user changed\n', stderr: '' };
+      }
       const same: string | undefined = this.users.get(ask.username);
       const other: string | undefined = [...this.users.entries()].find(([name, email]): boolean => email === ask.email && name !== ask.username)?.[0];
       if (same !== undefined) return { code: 0, stdout: `stratus-user exists ${JSON.stringify(same)}\n`, stderr: '' };
@@ -372,6 +394,76 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(await running('chris user add maria --email m@example.org')).toBeUndefined();
     runner.job_stop(STEPS_SOURCE, USER_JOBS.add('store'));
     await new Promise((resolve: (value: unknown) => void): void => { setTimeout(resolve, 20); });
+  });
+
+  it('changes the admin\'s password: asked first, typed twice, kept on the host, in cube.env and in CUBE, the services started again, signed in with, kept in the tenancy', async () => {
+    surface.answers = ['admin-password'];
+    await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
+    expect(vm.passwords.get('chris')).toBe('admin-password');
+    surface.asked = [];
+    vm.lines = [];
+    surface.answers = ['n'];
+    expect(plain((await chris_run(context, ['passwd'])).rendered)).toBe('store: chris\'s password not changed\n');
+    expect(surface.asked).toEqual(['chris passwd: chris on store: CUBE at http://203.0.113.10/api/v1/ starts again to take the new password, and is down for a minute or so. Continue? [y/N]']);
+    expect(vm.lines).toEqual([]);
+    surface.answers = ['y', 'a-new-password', 'not-the-same'];
+    expect((await chris_run(context, ['passwd'])).renderedErr).toContain('the two passwords typed differ; nothing changed');
+    surface.answers = ['y', 'short'];
+    expect((await chris_run(context, ['passwd'])).renderedErr).toContain('the password is shorter than eight characters');
+    expect(secrets_read(vms, 'store')?.adminPassword).toBe('admin-password');
+    expect(vm.lines).toEqual([]);
+    surface.asked = [];
+    surface.answers = ['y', 'a-new-password', 'a-new-password'];
+    const changed = await chris_run(context, ['passwd', 'chris', '--on', 'store']);
+    expect(changed.renderedErr ?? '').toBe('');
+    expect(surface.asked.slice(1)).toEqual(['chris\'s new password (empty: generate one):', 'chris\'s new password, again:']);
+    expect(plain(changed.rendered)).toBe('store: chris\'s password changed at http://203.0.113.10/api/v1/ (kept on this host and in the tenancy, never shown again)\n');
+    expect(secrets_read(vms, 'store')?.adminPassword).toBe('a-new-password');
+    expect(vm.files.get('/srv/data/chris/cube.env')).toContain('CHRIS_SUPERUSER_PASSWORD=a-new-password\n');
+    expect(vm.passwords.get('chris')).toBe('a-new-password');
+    expect(vm.lines).toContain('cd /srv/data/chris && docker compose up -d');
+    expect(vm.lines.some((line: string): boolean => line.includes('a-new-password'))).toBe(false);
+    expect([...world.kept.values()].some((content: string): boolean => content.includes('a-new-password'))).toBe(true);
+    surface.answers = ['y', ''];
+    const generated = await chris_run(context, ['passwd']);
+    const made: string = secrets_read(vms, 'store')?.adminPassword ?? '?';
+    expect(made.length).toBeGreaterThanOrEqual(32);
+    expect(plain(generated.rendered)).toContain(`the new password for chris, generated, shown this once: ${made}`);
+    expect(vm.passwords.get('chris')).toBe(made);
+  });
+
+  it('a change stopped part way is kept on the host and finishes when asked again with the same password', async () => {
+    surface.answers = ['admin-password'];
+    await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
+    vm.failing.add('cd /srv/data/chris && docker compose up -d');
+    surface.answers = ['y', 'a-new-password', 'a-new-password'];
+    const stopped = await chris_run(context, ['passwd']);
+    expect(stopped.renderedErr).toContain('chris passwd: chris-store-passwd: failed: docker compose up: exit 1: it failed (this host keeps the new password already: chris passwd again, with the same one, finishes it)');
+    expect(secrets_read(vms, 'store')?.adminPassword).toBe('a-new-password');
+    surface.answers = ['y', 'a-new-password', 'a-new-password'];
+    expect((await chris_run(context, ['passwd'])).renderedErr ?? '').toBe('');
+    expect(vm.passwords.get('chris')).toBe('a-new-password');
+  });
+
+  it('changes another account\'s password in CUBE alone, never kept, without starting CUBE again; refuses one not there', async () => {
+    surface.answers = ['admin-password'];
+    await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
+    surface.answers = ['jorge-password'];
+    await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org']);
+    surface.asked = [];
+    vm.lines = [];
+    surface.answers = ['jorge-new-password', 'jorge-new-password'];
+    const changed = await chris_run(context, ['passwd', 'jorge']);
+    expect(changed.renderedErr ?? '').toBe('');
+    expect(surface.asked).toEqual(['jorge\'s new password (empty: generate one):', 'jorge\'s new password, again:']);
+    expect(plain(changed.rendered)).toBe('store: jorge\'s password changed at http://203.0.113.10/api/v1/ (never kept)\n');
+    expect(vm.passwords.get('jorge')).toBe('jorge-new-password');
+    expect(vm.lines.some((line: string): boolean => line.includes('docker compose up'))).toBe(false);
+    expect(JSON.stringify(secrets_read(vms, 'store'))).not.toContain('jorge-new-password');
+    surface.answers = ['maria-password', 'maria-password'];
+    expect((await chris_run(context, ['passwd', 'maria'])).renderedErr).toContain('store: no account maria (chris user add maria --email <address>)');
+    expect((await chris_run(context, ['passwd', 'a,b'])).renderedErr).toContain('a user name is 4 to 32');
+    expect(PASSWD_JOBS.passwd('store')).toBe('chris-store-passwd');
   });
 
   it('needs the tasks tier', async () => {
