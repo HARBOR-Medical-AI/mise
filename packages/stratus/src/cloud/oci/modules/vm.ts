@@ -215,7 +215,7 @@ resource "oci_core_instance" "machine" {
     user_data           = var.user_data
   }
   lifecycle {
-    ignore_changes = [defined_tags, create_vnic_details[0].defined_tags, metadata["user_data"]]
+    ignore_changes = [defined_tags, create_vnic_details[0].defined_tags, metadata["user_data"], freeform_tags["mise-chris"], freeform_tags["mise-porter"]]
   }
 }
 
@@ -401,6 +401,6 @@ export function moduleInputs_raise(variables: Readonly<Record<string, string>>):
       },
     };
   }
-  if (variables['cidr'] !== undefined) return { module: 'net', inputs: { cidr: value('cidr') } };
+  if (variables['cidr'] !== undefined) return { module: 'net', inputs: { cidr: value('cidr'), clientCidr: value('client_cidr') } };
   return null;
 }

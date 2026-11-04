@@ -21,6 +21,33 @@ const FAKE_MODULES: Readonly<Record<StackModule, { kinds: ReadonlyArray<string>;
   vmMachine: { kinds: ['securitygroups', 'instances', 'attachments'], outputs: (owner: string): Record<string, string> => ({ instance_id: `ocid1.instance.oc1..fake-${owner}`, image_id: 'ocid1.image.oc1..fake-ubuntu', private_ip: '10.40.0.10', private_ip_id: `ocid1.privateip.oc1..fake-${owner}` }) },
 };
 
+/**
+ * The rows OCI's plan writes for one input changed on a stack applied: a
+ * VM's size is its instance's shape config and boot disk changed in place,
+ * its data's size its volume's, a port a security rule made or removed, its
+ * OS a machine replaced; anything else a change on the module's first kind.
+ *
+ * @param module - The module.
+ * @param owner - Whose stack.
+ * @param key - The input changed.
+ * @param before - Its value applied.
+ * @param after - Its value planned.
+ * @returns The rows.
+ */
+function fakeChange_rows(module: StackModule, owner: string, key: string, before: string | null, after: string | null): PlanRow[] {
+  const change = (type: string, kind: string, path: string, from: string | null, to: string | null): PlanRow =>
+    ({ action: 'change', kind, type, name: `${type}.${owner}`, changes: [{ path, before: from, after: to }] });
+  const half = (value: string | null): string | null => (value === null ? null : String(Number(value) / 2));
+  if (module === 'vmMachine' && key === 'vcpu') return [change('oci_core_instance', 'instances', 'shape_config.ocpus', half(before), half(after))];
+  if (module === 'vmMachine' && key === 'memory') return [change('oci_core_instance', 'instances', 'shape_config.memory_in_gbs', before, after)];
+  if (module === 'vmMachine' && key === 'disk') return [change('oci_core_instance', 'instances', 'source_details.boot_volume_size_in_gbs', before, after)];
+  if (module === 'vmData' && key === 'data') return [change('oci_core_volume', 'volumes', 'size_in_gbs', before, after)];
+  if (module === 'vmData' && key === 'dataBackup') return [{ action: after === 'daily' ? 'create' : 'destroy', kind: 'backuppolicies', type: 'oci_core_volume_backup_policy_assignment', name: `oci_core_volume_backup_policy_assignment.${owner}` }];
+  if (module === 'vmMachine' && key === 'open') return [{ action: 'create', kind: 'securitygroups', type: 'oci_core_network_security_group_security_rule', name: `oci_core_network_security_group_security_rule.${owner}` }];
+  if (module === 'vmMachine' && (key === 'os' || key === 'image')) return ['destroy', 'create'].map((action): PlanRow => ({ action: action as PlanRow['action'], kind: 'instances', type: 'oci_core_instance', name: `oci_core_instance.${owner}` }));
+  return [{ action: 'change', kind: FAKE_MODULES[module].kinds[0] as string, name: `${owner} ${key}` }];
+}
+
 /** The zones the fake region has, as the fake driver names them. */
 const FAKE_ZONES: ReadonlyArray<string> = ['AD-1', 'AD-2', 'AD-3'];
 
@@ -56,6 +83,8 @@ export class FakeBuildWorld {
   readonly moduleStacks: Map<string, { module: StackModule; owner: string; tag: string; placeId: string; planned: Record<string, string>; applied: Record<string, string> | null }> = new Map();
   /** The freeform tags put on each instance, by id. */
   readonly instanceTags: Map<string, Record<string, string>> = new Map();
+  /** What the tenancy keeps for stratus, by name (the vault's secrets); a name dropped is gone at once here. */
+  readonly kept: Map<string, string> = new Map();
   /** The reserved addresses pointed at a machine: the address's id to the private address's. */
   readonly addressPoints: Map<string, string> = new Map();
   /** The shell sessions opened, newest last. */
@@ -193,7 +222,8 @@ export class FakeCloudBuilder implements CloudBuilder {
     stack.planned = { ...request.inputs };
     const rows: PlanRow[] = stack.applied === null
       ? FAKE_MODULES[request.module].kinds.map((kind: string): PlanRow => ({ action: 'create', kind, name: `${request.owner.name}-${kind}` }))
-      : Object.keys(stack.planned).filter((key: string): boolean => stack.planned[key] !== stack.applied?.[key]).map((key: string): PlanRow => ({ action: 'change', kind: FAKE_MODULES[request.module].kinds[0] as string, name: `${request.owner.name} ${key}` }));
+      : Object.keys(stack.planned).filter((key: string): boolean => stack.planned[key] !== stack.applied?.[key])
+        .flatMap((key: string): PlanRow[] => fakeChange_rows(request.module, request.owner.name, key, stack.applied?.[key] ?? null, stack.planned[key] ?? null));
     call.log(`plan: ${rows.length} changes`);
     return { ref: `fake-plan-${stackRef}`, rows, stackRef };
   }
@@ -217,7 +247,23 @@ export class FakeCloudBuilder implements CloudBuilder {
   async moduleStacks_read(request: { region: string; placeId: string; tag: string; owner: string }): Promise<ModuleStackRead[]> {
     return [...this.world.moduleStacks.entries()]
       .filter(([, stack]): boolean => stack.placeId === request.placeId && stack.tag === request.tag && stack.owner === request.owner)
-      .map(([stackRef, stack]): ModuleStackRead => ({ module: stack.module, stackRef, inputs: { ...(stack.applied ?? stack.planned) } }));
+      .map(([stackRef, stack]): ModuleStackRead => ({ module: stack.module, stackRef, inputs: { ...(stack.applied ?? stack.planned) }, outputs: stack.applied === null ? {} : FAKE_MODULES[stack.module].outputs(stack.owner) }));
+  }
+
+  async keep_read(request: { region: string; name: string }): Promise<string | null> {
+    return this.world.kept.get(request.name) ?? null;
+  }
+
+  async keep_write(request: { region: string; name: string; content: string }, call: BuildCall): Promise<void> {
+    await this.world.tick(1, call.signal);
+    this.world.kept.set(request.name, request.content);
+    call.log(`kept in the tenancy: ${request.name}`);
+  }
+
+  async keep_drop(request: { region: string; name: string }, call: BuildCall): Promise<boolean> {
+    const had: boolean = this.world.kept.delete(request.name);
+    if (had) call.log(`dropped from the tenancy: ${request.name}`);
+    return had;
   }
 
   async moduleDestroy_run(request: { region: string; stackRef: string; label: string }, call: BuildCall): Promise<string[]> {

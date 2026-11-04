@@ -66,10 +66,13 @@
     "oci-core": "2.144.0",
     "oci-dns": "2.144.0",
     "oci-identity": "2.144.0",
+    "oci-keymanagement": "2.144.0",
     "oci-limits": "2.144.0",
     "oci-loadbalancer": "2.144.0",
     "oci-objectstorage": "2.144.0",
     "oci-resourcemanager": "2.144.0",
-    "oci-resourcesearch": "2.144.0"
+    "oci-resourcesearch": "2.144.0",
+    "oci-secrets": "2.144.0",
+    "oci-vault": "2.144.0"
   }
 }

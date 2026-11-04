@@ -34,6 +34,7 @@ import { CLUSTER_TAG } from '../../cluster/state.js';
 import type { CloudDriver } from '../driver.js';
 import { specFit_read } from '../../cluster/sizing.js';
 import type { RmApi, RmJobRecord, RmOperation, RmStackRecord } from './rmApi.js';
+import type { OciKeepApi } from './keepApi.js';
 
 /** The stack release stratus builds with: Oracle's zip of `create-cluster`, pinned. */
 export const STACK_RELEASE = {
@@ -79,6 +80,8 @@ export interface OciBuilderOptions {
   readonly visibleWaitMs?: number;
   /** The build's other OCI calls in a region; absent, only adoption and re-plans work. */
   readonly api?: (region: string) => OciBuildApi;
+  /** What the tenancy keeps for stratus (its vault) in a region; absent, nothing is kept in the tenancy. */
+  readonly keep?: (region: string) => OciKeepApi;
   /** The read driver, for the fit per availability domain. */
   readonly driver?: CloudDriver;
   /** The nodes' SSH public key, read on the host, or null when there is none. */
@@ -655,7 +658,7 @@ export class OciBuilder implements CloudBuilder {
     for (const summary of tagged) {
       const variables: Record<string, string> = (await rm.stack_get(summary.id)).variables;
       const inputs = moduleInputs_raise(variables);
-      if (inputs !== null) read.push({ module: inputs.module, stackRef: summary.id, inputs: inputs.inputs });
+      if (inputs !== null) read.push({ module: inputs.module, stackRef: summary.id, inputs: inputs.inputs, outputs: await rm.stackOutputs_read(summary.id) });
     }
     return read;
   }
@@ -671,6 +674,24 @@ export class OciBuilder implements CloudBuilder {
     await rm.stack_delete(request.stackRef);
     gone.push(`the stack ${request.stackRef}`);
     return gone;
+  }
+
+  async keep_read(request: { region: string; name: string }): Promise<string | null> {
+    if (this.options.keep === undefined) return null;
+    return await this.options.keep(request.region).secret_read(request.name);
+  }
+
+  async keep_write(request: { region: string; name: string; content: string }, call: BuildCall): Promise<void> {
+    if (this.options.keep === undefined) throw new Error('this builder keeps nothing in the tenancy');
+    await this.options.keep(request.region).secret_write(request.name, request.content, call.log);
+    call.log(`kept in the tenancy: the secret ${request.name}, in the tenancy's vault mise`);
+  }
+
+  async keep_drop(request: { region: string; name: string }, call: BuildCall): Promise<boolean> {
+    if (this.options.keep === undefined) return false;
+    const dropped: boolean = await this.options.keep(request.region).secret_drop(request.name);
+    if (dropped) call.log(`the secret ${request.name} is scheduled for deletion in a day`);
+    return dropped;
   }
 
   readonly vmShape: string = VM_SHAPE;

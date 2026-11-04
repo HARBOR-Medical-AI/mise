@@ -333,10 +333,10 @@ export class VmScreen extends ScriptScreen {
     if (word.length > 9) pill.classList.add('tdc-condition-long');
     pill.append(el('span', 'tdc-condition-label', 'THE MACHINE'), el('span', 'tdc-condition-name', word));
     const mode: HTMLElement | null = modePill_make(this.hooks.manage_is());
-    const why: string = this.vm === '' ? (this.view === MACHINES_KEY ? `${this.vms.length} IN THE TENANCY · + NEW TO ADD ONE` : 'NAME IT ON SIZE') : vmKeyless_is(row) ? 'SEEN FROM THIS SESSION' : counts_words(counts);
+    const why: string = this.vm === '' ? (this.view === MACHINES_KEY ? `${this.vms.length} IN THE TENANCY · + NEW TO ADD ONE` : 'NAME IT ON SIZE') : vmKeyless_is(row) ? (row?.state === 'found' ? 'READ FROM THE TENANCY' : 'NO SSH KEY IN THE TENANCY') : counts_words(counts);
     condition.append(pill, ...(mode === null ? [] : [mode]), el('div', 'tdc-condition-why', why));
     const chips: HTMLElement = el('div', 'tdc-chips');
-    if (this.vm !== '') chips.append(el('span', 'tdc-chip', vmKeyless_is(row) ? (row?.state === 'found' ? 'FOUND · NO RECORD HERE' : 'TAKEN OVER · NO SSH KEY HERE') : this.unsaved ? 'SCRIPT NOT WRITTEN YET' : this.edited ? 'EDITED · NOT SAVED' : this.path.startsWith('/scripts/mine/') ? 'WORKING COPY' : 'FROM GIT · READ-ONLY'));
+    if (this.vm !== '') chips.append(el('span', 'tdc-chip', vmKeyless_is(row) ? (row?.state === 'found' ? (row.found?.tagged === true ? 'FOUND · NOT READ' : 'MADE OUTSIDE STRATUS') : 'NO SSH KEY IN THE TENANCY') : this.unsaved ? 'SCRIPT NOT WRITTEN YET' : this.edited ? 'EDITED · NOT SAVED' : this.path.startsWith('/scripts/mine/') ? 'WORKING COPY' : 'FROM GIT · READ-ONLY'));
     if (row !== null) chips.append(el('span', `tdc-chip tdc-lock${row.protected ? ' tdc-lock-on' : ' tdc-lock-off'}`, row.protected ? 'PROTECTED' : 'UNLOCKED'));
     condition.append(chips);
     header.append(condition);
@@ -413,9 +413,9 @@ export class VmScreen extends ScriptScreen {
     add.disabled = this.busy !== null;
     add.addEventListener('click', (): void => { this.view_press(NEW_KEY); });
     commands.append(el('span', 'tdc-flex'), add);
-    list.append(commands, el('p', 'tdc-prose tdc-quiet', 'Every machine the tenancy runs outside a cluster, as vm status reads it from the cloud. One built in this session shows its state; one FOUND was built by another session, or outside stratus, and this session can see it and tear it down, not build on it.'));
+    list.append(commands, el('p', 'tdc-prose tdc-quiet', 'Every machine the tenancy runs outside a cluster, as vm status reads it from the cloud. One stratus built shows its state, whichever session or host built it: its records and its SSH key are read from the tenancy. One FOUND was made outside stratus: it is seen, never built on.'));
     const side: HTMLElement = this.section_make('WHAT A ROW OPENS', 'ss-col-side');
-    side.append(this.pairs_make([['MACHINE', 'what it is and what runs on it'], ['SIZE · BUILD · CHRIS · USERS', 'its lines, for a machine built in this session'], ['TEARDOWN', 'its undoing, behind its lock']]));
+    side.append(this.pairs_make([['MACHINE', 'what it is and what runs on it'], ['SIZE · BUILD · CHRIS · USERS', 'its lines: resize it, build what changed, its ChRIS'], ['TEARDOWN', 'its undoing, behind its lock']]));
     return [list, side];
   }
 
@@ -431,8 +431,9 @@ export class VmScreen extends ScriptScreen {
       ? `${row.spec.vcpu} vCPU · ${row.spec.memory} GiB · disk ${row.spec.disk} GB · data ${row.spec.data} GB${row.spec.dataBackup === 'daily' ? ' (daily backups)' : ''} · ${row.spec.os}`
       : row.found !== null && row.found !== undefined ? `${row.found.shape ?? '?'}${row.found.vcpus != null ? ` · ${row.found.vcpus} vCPU` : ''}${row.found.memoryGib != null ? ` · ${row.found.memoryGib} GiB` : ''}` : '—';
     const kept: string = row.state === 'found'
-      ? (row.found?.tagged === true ? 'found: built by another stratus session; this session keeps no record of it' : 'found: made outside stratus')
-      : row.takenFrom !== undefined && row.takenFrom !== null ? `taken over from the tenancy ${row.takenFrom.slice(0, 16).replace('T', ' ')}; its SSH key is kept by the session that built it` : 'built and kept in this session';
+      ? (row.found?.tagged === true ? 'found: built by stratus, and its stacks did not read into this host' : 'found: made outside stratus')
+      : row.keyless === true ? 'read from the tenancy, which keeps no SSH key for it (built before stratus kept keys there): vm keep, on the host that holds the key, keeps it'
+        : row.takenFrom !== undefined && row.takenFrom !== null ? `read from the tenancy ${row.takenFrom.slice(0, 16).replace('T', ' ')}: its stacks and the secrets its vault keeps` : 'its records and its SSH key held here';
     facts.append(this.pairs_make([
       ['DOING', row.state === 'found' ? (row.found?.state ?? '?') : row.state],
       ['SIZE', size],
@@ -450,8 +451,8 @@ export class VmScreen extends ScriptScreen {
     ]));
     const side: HTMLElement = this.section_make('WHAT CAN BE DONE', 'ss-col-side');
     side.append(vmKeyless_is(row)
-      ? el('p', 'tdc-prose', 'Seen from this session: its size, build and ChRIS need the SSH key the session that built it keeps. TEARDOWN removes it, behind its lock and the name typed back; the first act takes its records over from the cloud.')
-      : this.pairs_make([['SIZE', 'its size and ports, as its vm new line'], ['BUILD', 'plans and applies what changed, asking first'], ['CHRIS', 'deploys ChRIS on it'], ['USERS', 'its ChRIS accounts'], ['TEARDOWN', 'its undoing, behind its lock']]));
+      ? el('p', 'tdc-prose', row.state === 'found' && row.found?.tagged !== true ? 'Made outside stratus: seen here, acted on in the cloud\'s own console.' : 'Its size, build and ChRIS need its SSH key, which the tenancy does not keep. TEARDOWN removes it, behind its lock and the name typed back.')
+      : this.pairs_make([['SIZE', 'resize it: vCPUs, memory, its disks, its ports, as its vm new line'], ['BUILD', 'plans and applies what changed, asking first'], ['CHRIS', 'deploys ChRIS on it'], ['USERS', 'its ChRIS accounts'], ['TEARDOWN', 'its undoing, behind its lock']]));
     return [facts, side];
   }
 

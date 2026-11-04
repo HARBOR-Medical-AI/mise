@@ -101,6 +101,7 @@ class OkRm implements RmApi {
   outputs: Record<string, string> = { open_shift_api_lb_addr: '129.0.0.1', open_shift_api_int_lb_addr: '10.0.0.2', open_shift_apps_lb_addr: '129.0.0.3', dynamic_custom_manifest: 'kind: List\n' };
   async jobOutputs_read() { return this.outputs; }
   async stackResources_count() { return 79; }
+  async stackOutputs_read() { return {}; }
   async stack_delete(stackId: string) { this.calls.push(`delete ${stackId}`); }
 }
 

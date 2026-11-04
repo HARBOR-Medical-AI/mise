@@ -19,6 +19,7 @@ import type { BuildCall, CloudBuilder } from '../cloud/builder.js';
 import { CHRIS_PORTER_TAG, CHRIS_URL_TAG } from '../vm/state.js';
 import type { NetStore } from '../net/state.js';
 import { pause, vmRemote_open, type RemoteAnswer, type VmRemote } from '../vm/remote.js';
+import { vmKept_write } from '../vm/keep.js';
 import { vm_read } from '../vm/build.js';
 import type { VmRecord, VmStore } from '../vm/state.js';
 import { apiUrl_derive, caddyfile_render, CHRIS_DIR, compose_render, cubeEnv_render, PFCON_HOST, PFCON_USER, pfconEnv_render, porterEnv_render, type ChrisSecrets, type ChrisTarget } from './compose.js';
@@ -193,6 +194,7 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
     deps.store.record_update(request.vm, (current: VmRecord): void => {
       current.chris = { profile: request.profile.name, compute: request.compute, host: request.host, url, deployed: new Date().toISOString(), ...(request.host !== null ? { dns: 'waiting' } : {}), ...(request.porter !== null ? { porter: request.porter } : {}) };
     });
+    await kept_write(deps, request.vm, context);
     if (request.host === null) {
       const outside: number | null = await deps.status_get(url);
       context.log_write(`from here: ${url} answers ${outside ?? 'nothing'}`);
@@ -215,5 +217,25 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
       context.log_write(`${door} answers over HTTPS: porter's door`);
     }
     deps.store.record_update(request.vm, (current: VmRecord): void => { if (current.chris !== undefined) current.chris.dns = 'seen'; });
+    await kept_write(deps, request.vm, context);
   };
+}
+
+/**
+ * Keeps the deploy's record and passwords in the tenancy beside the VM's SSH
+ * key, so any session on any host manages this ChRIS; one the tenancy could
+ * not keep is said loudly, and the host's copy holds them till a replay keeps them.
+ *
+ * @param deps - The deploy's deps.
+ * @param vm - The VM.
+ * @param context - The job's log and stop.
+ */
+async function kept_write(deps: DeployDeps, vm: string, context: JobContext): Promise<void> {
+  if (deps.builder.keep_write === undefined) return;
+  try {
+    const kept: string | null = await vmKept_write(deps.builder, deps.store, vm, deps.store.record_read(vm)?.region ?? '', { log: (line: string): void => context.log_write(line), signal: context.signal });
+    if (kept !== null) context.log_write(`${vm}: ${kept} kept in the tenancy`);
+  } catch (error: unknown) {
+    context.log_write(`${vm}: NOT kept in the tenancy (${error instanceof Error ? error.message : String(error)}): only this host holds ChRIS's passwords until chris deploy ${vm} runs again`);
+  }
 }

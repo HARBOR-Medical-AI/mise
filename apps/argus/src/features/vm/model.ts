@@ -24,15 +24,16 @@ export const MACHINES_KEY: string = 'machines';
 export const FACTS_KEY: string = 'machine';
 
 /**
- * Whether this session can only see a VM, not build on it: found in the
- * tenancy with no record here, or taken over from it (its SSH key is kept by
- * the session that built it). Only its facts and its teardown stand for it.
+ * Whether a VM is read and never reached from here: found in the tenancy and
+ * not read into this host's cache (made outside stratus, or its stacks not
+ * read), or read from the tenancy, which keeps no SSH key for it (built
+ * before stratus kept keys there). Only its facts and its teardown stand for it.
  *
  * @param row - The VM as `vm status` reads it.
  * @returns True when its size, build and ChRIS cannot be acted on from here.
  */
 export function vmKeyless_is(row: VmStatusRow | null): boolean {
-  return row !== null && (row.state === 'found' || (row.takenFrom !== undefined && row.takenFrom !== null));
+  return row !== null && (row.state === 'found' || row.keyless === true);
 }
 
 /** The seat a machine not yet named starts on. */

@@ -100,8 +100,10 @@ export const vmStatusRowSchema = z.object({
     started: z.string(),
     steps: z.array(z.object({ name: z.string(), state: z.string(), started: z.string().nullable(), ended: z.string().nullable(), note: z.string().nullable() })),
   }).nullable().optional(),
-  /** When this session took it over from the tenancy (built by another session, whose SSH key it still holds), or null; absent from an older daemon. */
+  /** When this host's cache of it was read from the tenancy (built by a session that left no record here), or null; absent from an older daemon. */
   takenFrom: z.string().nullable().optional(),
+  /** Whether the tenancy keeps no SSH key for it and this host holds none either: it is read and torn down, never reached; absent from an older daemon. */
+  keyless: z.boolean().optional(),
   region: z.string(),
   /** Its spec, or null when spec.yaml does not read. */
   spec: vmSpecModelSchema.nullable(),

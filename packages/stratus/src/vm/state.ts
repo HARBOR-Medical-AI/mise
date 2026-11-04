@@ -33,8 +33,12 @@ export interface VmRecord extends KeptRecord {
   built?: string;
   /** The ChRIS deployed on it (`chris deploy`). */
   chris?: { profile: string; compute: string; host: string | null; url: string; deployed: string; dns?: 'waiting' | 'seen'; porter?: string };
-  /** When this session took it over from the tenancy, its records read back from its stacks: it was built by another session, whose SSH key it still holds. */
+  /** When this host's cache of it was read from the tenancy (its stacks, and the secrets its vault keeps): built by a session that left no record here. */
   takenFrom?: string;
+  /** The machine as this cache last saw it: a tenancy that answers otherwise (rebuilt or resized from another session) has the cache read again. */
+  seen?: { instanceId: string; vcpus: number; memoryGib: number };
+  /** The disks a build grew whose filesystems are not grown yet: the next build grows them. */
+  growOwed?: { boot: boolean; data: boolean };
   /** The last teardown, once one has started: when, and each step (`machine`, `data`) as it began and ended. */
   teardown?: { started: string; steps: Record<string, { state: 'running' | 'done' | 'kept' | 'failed'; started?: string; ended?: string; note?: string }> };
   /** The machine went (a default teardown); the data stays. */

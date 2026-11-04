@@ -7,7 +7,7 @@
  * teardown keeping the data or, with --all, taking it.
  */
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BufferSink, HeadlessSurface, JobRunner, runner_install, sink_set, surface_set, type PromptRequest } from '@fnndsc/brasa/core';
@@ -19,6 +19,10 @@ import { vmCloudInit_render, vmMachineVariables_build, vmModule_zip, vmOs_lower 
 import { ports_read, vmLimits_derive, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, type VmSpec } from '../src/vm/spec.js';
 import { VmStore, type VmRecord } from '../src/vm/state.js';
 import { vmCost_estimate } from '../src/vm/build.js';
+import { vmKept_write } from '../src/vm/keep.js';
+import { vmPlan_judge } from '../src/vm/resize.js';
+import { secrets_write } from '../src/chris/secrets.js';
+import type { CloudBuilder, InfraPlan, PlanRow } from '../src/cloud/builder.js';
 import { NetStore } from '../src/net/state.js';
 import { STEPS_SOURCE } from '../src/cluster/steps.js';
 import { net_run, type NetCommandContext } from '../src/commands/net.js';
@@ -100,6 +104,36 @@ describe('a VM\'s modules on OCI', () => {
   });
 });
 
+describe('a VM plan read for what it does to what stands', () => {
+  const plan = (rows: PlanRow[]): InfraPlan => ({ ref: 'p', rows });
+  it('passes a size changed in place, ports and backups; refuses a shrink, a replace, a detach and anything else', () => {
+    const resized = vmPlan_judge(plan([
+      { action: 'change', kind: 'instances', type: 'oci_core_instance', name: 'oci_core_instance.machine', changes: [{ path: 'shape_config.ocpus', before: '1', after: '2' }, { path: 'shape_config.memory_in_gbs', before: '8', after: '16' }, { path: 'source_details.boot_volume_size_in_gbs', before: '50', after: '80' }] },
+      { action: 'change', kind: 'volumes', type: 'oci_core_volume', name: 'oci_core_volume.data', changes: [{ path: 'size_in_gbs', before: '50', after: '100' }] },
+      { action: 'create', kind: 'securitygroups', type: 'oci_core_network_security_group_security_rule', name: 'r["8080"]' },
+      { action: 'destroy', kind: 'securitygroups', type: 'oci_core_network_security_group_security_rule', name: 'r["80"]' },
+      { action: 'destroy', kind: 'backuppolicies', type: 'oci_core_volume_backup_policy_assignment', name: 'b' },
+      { action: 'change', kind: 'instances', type: 'oci_core_instance', name: 'drifted', drift: true },
+    ]));
+    expect(resized).toEqual({ refused: [], reboot: true, bootGrow: [50, 80], dataGrow: [50, 100], words: ['2 → 4 vCPU', 'memory 8 → 16 GiB', 'boot disk 50 → 80 GB', 'data 50 → 100 GB', 'a port opened', 'a port closed', 'daily backups off'] });
+    const refused = vmPlan_judge(plan([
+      { action: 'change', kind: 'volumes', type: 'oci_core_volume', name: 'v', changes: [{ path: 'size_in_gbs', before: '100', after: '50' }] },
+      { action: 'destroy', kind: 'attachments', type: 'oci_core_volume_attachment', name: 'a' },
+      { action: 'change', kind: 'instances', type: 'oci_core_instance', name: 'm', changes: [{ path: 'display_name', before: 'a', after: 'b' }] },
+      { action: 'change', kind: 'instances', type: 'oci_core_instance', name: 'n' },
+      { action: 'destroy', kind: 'volumes', type: 'oci_core_volume', name: 'w' }, { action: 'create', kind: 'volumes', type: 'oci_core_volume', name: 'w' },
+    ]));
+    expect(refused.refused).toEqual([
+      'the data volume shrinks 100 → 50 GB (a volume only grows)',
+      'the data volume is detached from the machine',
+      'm: display_name changes (a → b)',
+      'n changes (the plan does not say how)',
+      'the data volume is replaced: a new, EMPTY volume',
+    ]);
+    expect(refused.reboot).toBe(false);
+  });
+});
+
 describe('vm, over the fake cloud', () => {
   let root: string;
   let store: VmStore;
@@ -118,8 +152,17 @@ describe('vm, over the fake cloud', () => {
     seen = { instances: [], stacks: [] };
     const driver = {
       // What the tenancy runs beside this session's records; none until a test puts some there.
-      instances_find: async (): Promise<FoundInstance[]> => seen.instances,
-      clusters_find: async (tagKey: string): Promise<FoundCluster[]> => seen.stacks.filter((one: FoundCluster & { tagKey: string }): boolean => one.tagKey === tagKey),
+      // The fake tenancy answers what the fake builder applied (a VM's machine an instance, its stacks and the
+      // networks' found by their tags), beside what a test puts there.
+      instances_find: async (): Promise<FoundInstance[]> => [...seen.instances, ...[...world.moduleStacks.values()]
+        .filter((stack) => stack.module === 'vmMachine' && stack.applied !== null && !seen.instances.some((one) => one.name === stack.owner))
+        .map((stack): FoundInstance => ({
+          name: stack.owner, id: `ocid1.instance.oc1..fake-${stack.owner}`, state: 'running', region: 'us-ashburn-1', created: '2026-11-01T21:22:15Z', tags: { 'mise-service': stack.owner, ...(world.instanceTags.get(`ocid1.instance.oc1..fake-${stack.owner}`) ?? {}) }, raw: {},
+          shape: 'VM.Standard.E5.Flex', zone: 'AD-1', ips: ['10.40.0.10', '203.0.113.10'], vcpus: Number(stack.applied?.['vcpu']), memoryGib: Number(stack.applied?.['memory']), containerId: stack.placeId,
+        }))],
+      clusters_find: async (tagKey: string): Promise<FoundCluster[]> => [...seen.stacks.filter((one: FoundCluster & { tagKey: string }): boolean => one.tagKey === tagKey), ...[...world.moduleStacks.entries()]
+        .filter(([, stack]) => stack.tag === tagKey && stack.applied !== null && (stack.module === 'net' || stack.module === 'vmData'))
+        .map(([id, stack]): FoundCluster => ({ name: stack.owner, stack: { id, state: 'active', compartmentId: stack.placeId }, compartmentId: stack.placeId, region: 'us-ashburn-1' }))],
       resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => PRICES, servicePrices_get: async (): Promise<ServicePrices> => SERVICE, shapes_list: async (): Promise<CloudShape[]> => (await new FakeDriver(fakeCloud_sample()).shapes_list('us-ashburn-1')) } as unknown as CloudDriver;
     const builder: FakeCloudBuilder = new FakeCloudBuilder(world);
     netContext = { store: nets, driver, builder, region: (): string => 'us-ashburn-1', clientCidr_read: async (): Promise<string> => '134.174.21.21/32' };
@@ -136,6 +179,13 @@ describe('vm, over the fake cloud', () => {
     surface.asked = [];
   });
   afterEach(() => { runner_install(null); surface_set(new HeadlessSurface()); rmSync(root, { recursive: true, force: true }); });
+
+  /** A ChRIS deployed on a VM, as a deploy leaves it: its record, its passwords, both kept in the tenancy. */
+  const chris_seed = async (name: string): Promise<void> => {
+    store.record_update(name, (current: VmRecord): void => { current.chris = { profile: 'minimal', compute: name, host: 'cube.example', url: 'https://cube.example/api/v1/', deployed: '2026-11-02T00:00:00Z' }; });
+    secrets_write(store, name, { djangoKey: 'd', postgresPassword: 'p', pfconSecretKey: 's', pfconPassword: 'f', adminPassword: 'pw' });
+    await vmKept_write(context.builder as CloudBuilder, store, name, 'us-ashburn-1', { log: (): void => undefined, signal: new AbortController().signal });
+  };
 
   it('declares protected, says unchanged on the same line, and the change on a different one', async () => {
     expect(plain((await vm_run(context, ['new', 'store', ...STORE_LINE])).rendered)).toBe('store: declared, 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups) · ubuntu-26.04 · open 80,443 · on scratch, in us-ashburn-1; protected; vm build store builds it\n');
@@ -209,12 +259,43 @@ describe('vm, over the fake cloud', () => {
     expect(world.moduleStacks.has('fake-stack-vmMachine-store')).toBe(false);
   });
 
-  it('refuses a change to what exists unless --allow-alter', async () => {
-    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+  it('resizes a VM that stands, in place: told it reboots, its filesystems grown after; a replace refused unless --allow-alter', async () => {
+    const lines: string[] = [];
+    const resizing: VmCommandContext = { ...context, remote_open: async () => ({ run: async (line: string) => { lines.push(line); return { code: 0, stdout: line.includes('/srv/data') ? '  100G\n' : '  80G\n', stderr: '' }; } }) };
+    await vm_run(resizing, ['new', 'store', ...STORE_LINE]);
     surface.answers = ['y'];
-    await vm_run(context, ['build', 'store']);
-    await vm_run(context, ['new', 'store', '--memory', '16']);
-    expect((await vm_run(context, ['build', 'store'])).renderedErr).toContain('the machine plan 0 to create, 1 to change, 0 to destroy: it touches what exists, refused unless vm build store --allow-alter');
+    await vm_run(resizing, ['build', 'store']);
+    await chris_seed('store');
+    // More memory and vCPUs reshape the machine, which the cloud reboots: said before the apply, with what runs on it.
+    await vm_run(resizing, ['new', 'store', '--vcpu', '4', '--memory', '16']);
+    surface.answers = ['y'];
+    const reshaped: CommandEnvelope = await vm_run(resizing, ['build', 'store']);
+    expect(reshaped.status).toBe('ok');
+    expect(surface.asked.at(-1)).toContain('vm build store: 2 → 4 vCPU, memory 8 → 16 GiB. store REBOOTS to take its new shape: it, and ChRIS at https://cube.example/api/v1/, is down for a few minutes.');
+    expect(store.record_read('store')?.seen).toMatchObject({ vcpus: 4, memoryGib: 16 });
+    expect(lines).toEqual([]);
+    // A disk and the data volume grow online, and their filesystems are grown after, so the space appears.
+    await vm_run(resizing, ['new', 'store', '--disk', '80', '--data', '100']);
+    surface.answers = ['y'];
+    const grown: CommandEnvelope = await vm_run(resizing, ['build', 'store']);
+    expect(grown.status).toBe('ok');
+    expect(surface.asked.at(-1)).toContain('data 50 → 100 GB, boot disk 50 → 80 GB. The filesystems grow after, online, so the space appears.');
+    expect(surface.asked.at(-1)).not.toContain('REBOOTS');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('growpart');
+    expect(lines[1]).toContain('resize2fs "$dev"');
+    expect(store.record_read('store')?.growOwed).toBeUndefined();
+    // A filesystem not grown is owed, and the next build grows it though the plan reads nothing to do.
+    const failing: VmCommandContext = { ...context, remote_open: async () => ({ run: async () => ({ code: 1, stdout: '', stderr: 'resize2fs: busy' }) }) };
+    await vm_run(failing, ['new', 'store', '--data', '120']);
+    surface.answers = ['y'];
+    expect((await vm_run(failing, ['build', 'store'])).renderedErr).toContain('vm build: store: the disks grew, their filesystems did not: vm-store-grow: failed: growing /srv/data: resize2fs: busy (vm build store grows them again)');
+    expect(store.record_read('store')?.growOwed).toEqual({ boot: false, data: true });
+    expect(plain((await vm_run(resizing, ['build', 'store'])).rendered)).toContain('store: the plan reads nothing to do; growing the filesystems a build left ungrown');
+    expect(store.record_read('store')?.growOwed).toBeUndefined();
+    // A shrink and a new OS (a new machine) are refused unless asked by name.
+    await vm_run(resizing, ['new', 'store', '--os', 'ubuntu-24.04']);
+    expect((await vm_run(resizing, ['build', 'store'])).renderedErr).toContain('vm build: store: the machine plan the machine is replaced: a new machine with a new host key (the data volume stays): refused unless vm build store --allow-alter');
   });
 
   it('opens a shell session on the network\'s bastion and gives the line, under the shell tier', async () => {
@@ -258,39 +339,55 @@ describe('vm, over the fake cloud', () => {
     expect(existsSync(join(store.folder_derive('store'), 'spec.yaml'))).toBe(true);
   });
 
-  it('takes a VM another session built over on the first act: records read back from its stacks, protected, then torn down; plan, build and shell refused, the key being elsewhere', async () => {
-    // Session A builds the store, then a second session, keeping nothing, finds it in the tenancy.
+  it('reads a VM another session built from the tenancy, whole: its stacks, its network, its SSH key and ChRIS from the vault; any host then resizes it', async () => {
+    // Session A builds the store and deploys ChRIS on it; a second host, keeping nothing, lists the tenancy.
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
     surface.answers = ['y'];
     await vm_run(context, ['build', 'store']);
+    await chris_seed('store');
     const built: VmRecord = store.record_read('store') as VmRecord;
-    const placeId: string = built.placeId as string;
-    seen.instances = [{
-      name: 'store', id: built.machineOutputs?.['instance_id'] ?? 'ocid1.instance.store', state: 'running', region: 'us-ashburn-1', created: '2026-11-01T21:22:15Z', tags: { 'mise-service': 'store' }, raw: {},
-      shape: 'VM.Standard.E5.Flex', zone: 'AD-1', ips: ['10.40.0.10', '203.0.113.10'], vcpus: 2, memoryGib: 8, containerId: placeId,
-    }];
-    seen.stacks = [{ tagKey: 'mise-net', name: 'scratch', stack: null, compartmentId: placeId, region: 'us-ashburn-1' }];
+    expect(JSON.parse(world.kept.get('mise-vm-store') ?? '{}')).toMatchObject({ vm: 'store', ssh: { publicKey: expect.stringContaining('stratus-store') }, chris: { record: { url: 'https://cube.example/api/v1/' }, secrets: { adminPassword: 'pw' } } });
     const other: VmStore = new VmStore(join(root, 'vms-other'));
-    const there: VmCommandContext = { ...context, store: other, nets: new NetStore(join(root, 'nets-other')) };
-    // Taken over on the first act, born protected; the lock is lifted as its own line.
-    const lifted: CommandEnvelope = await vm_run(there, ['protect', 'store', 'off']);
-    expect(plain(lifted.rendered)).toContain('store: taken over from the tenancy (built by another session)');
-    expect(plain(lifted.rendered)).toContain('store: unprotected: vm teardown store may remove it');
+    const otherNets: NetStore = new NetStore(join(root, 'nets-other'));
+    const there: VmCommandContext = { ...context, store: other, nets: otherNets, remote_open: async () => ({ run: async () => ({ code: 0, stdout: '100G\n', stderr: '' }) }) };
+    const status: CommandEnvelope = await vm_run(there, ['status']);
+    // Listed with its records, never as found: the cache filled from the tenancy.
+    expect(status.rendered).not.toContain('found');
+    expect((status.model as { data: { vms: Array<{ name: string; state: string; keyless?: boolean; chris: { url: string } | null }> } }).data.vms).toMatchObject([{ name: 'store', state: 'built', keyless: false, chris: { url: 'https://cube.example/api/v1/' } }]);
     expect(other.record_read('store')).toMatchObject({
-      takenFrom: expect.any(String), placeId, dataStackRef: 'fake-stack-vmData-store', machineStackRef: 'fake-stack-vmMachine-store',
-      machineOutputs: { instance_id: built.machineOutputs?.['instance_id'], private_ip: '10.40.0.10' }, dataOutputs: { public_ip: '203.0.113.10' },
+      takenFrom: expect.any(String), placeId: built.placeId, dataStackRef: 'fake-stack-vmData-store', machineStackRef: 'fake-stack-vmMachine-store', protected: true,
+      machineOutputs: built.machineOutputs, dataOutputs: built.dataOutputs, chris: { url: 'https://cube.example/api/v1/' }, image: built.image,
     });
-    const read = other.spec_read('store');
-    expect(read !== null && 'spec' in read ? read.spec : null).toMatchObject({ net: 'scratch', vcpu: 2, memory: 8 });
-    // What needs the machine's SSH key, which the building session keeps, is refused, saying why.
-    expect((await vm_run(there, ['build', 'store'])).renderedErr).toContain('vm build: store: taken over from the tenancy: its SSH key is kept by the session that built it');
-    expect((await vm_run(there, ['plan', 'store'])).renderedErr).toContain('vm plan: store: taken over from the tenancy');
-    // The teardown removes its machine as from the session that built it.
+    expect(otherNets.record_read('scratch')).toMatchObject({ placeId: built.placeId, outputs: { bastion_id: 'ocid1.bastion.oc1..fake-scratch' }, clientCidr: '134.174.21.21/32' });
+    expect(readFileSync(join(other.folder_derive('store'), 'ssh', 'id_ed25519'), 'utf-8')).toBe(readFileSync(join(store.folder_derive('store'), 'ssh', 'id_ed25519'), 'utf-8'));
+    expect(JSON.parse(readFileSync(join(other.folder_derive('store'), 'auth', 'chris.json'), 'utf-8'))).toMatchObject({ adminPassword: 'pw' });
+    // The second host resizes it as the first would; the first host's cache then reads the tenancy again.
+    await vm_run(there, ['new', 'store', '--memory', '16']);
     surface.answers = ['y'];
-    expect(plain((await vm_run(there, ['teardown', 'store'])).rendered)).toContain('store: its machine is gone');
-    expect(world.removed).toContain('stack fake-stack-vmMachine-store');
+    expect((await vm_run(there, ['build', 'store'])).status).toBe('ok');
+    expect(surface.asked.at(-1)).toContain('memory 8 → 16 GiB. store REBOOTS');
+    await vm_run(context, ['status']);
+    expect(store.spec_read('store')).toMatchObject({ spec: { memory: 16 } });
+    // Torn down whole from either host, the tenancy's keep goes with it, and the other host's cache says so.
+    await vm_run(there, ['protect', 'store', 'off']);
+    surface.answers = ['store'];
+    expect(plain((await vm_run(there, ['teardown', 'store', '--all'])).rendered)).toContain('store: torn down whole');
+    expect(world.kept.has('mise-vm-store')).toBe(false);
+    await vm_run(context, ['status']);
+    expect(store.record_read('store')).toMatchObject({ gone: expect.any(String) });
+    // A VM the tenancy keeps no key for (built before keys were kept) is read and torn down, never reached; vm keep, on the host that holds it, keeps it.
+    await vm_run(context, ['new', 'old', ...STORE_LINE]);
+    surface.answers = ['y'];
+    await vm_run(context, ['build', 'old']);
+    world.kept.delete('mise-vm-old');
+    const third: VmCommandContext = { ...context, store: new VmStore(join(root, 'vms-third')), nets: new NetStore(join(root, 'nets-third')) };
+    const keyless = ((await vm_run(third, ['status'])).model as { data: { vms: Array<{ name: string; keyless?: boolean }> } }).data.vms.find((one) => one.name === 'old');
+    expect(keyless?.keyless).toBe(true);
+    expect((await vm_run(third, ['build', 'old'])).renderedErr).toContain('vm build: old: the tenancy keeps no SSH key for it, and this host holds none');
+    expect(plain((await vm_run(context, ['keep', 'old'])).rendered)).toContain('old: its SSH key kept in the tenancy: any session holding its credentials reaches it');
+    expect(world.kept.has('mise-vm-old')).toBe(true);
     // A VM made outside stratus is read, never taken over.
-    seen.instances = [{ ...seen.instances[0]!, name: 'lab-box', id: 'ocid1.instance.lab', tags: {} }];
+    seen.instances = [{ name: 'lab-box', id: 'ocid1.instance.lab', state: 'running', region: 'us-ashburn-1', created: '', tags: {}, raw: {}, shape: 'VM.Standard.E5.Flex', zone: 'AD-1', ips: ['10.0.0.9'], vcpus: 2, memoryGib: 8, containerId: built.placeId as string }];
     expect((await vm_run(there, ['protect', 'lab-box', 'off'])).renderedErr).toContain('vm protect: lab-box: made outside stratus (no mise-service tag): stratus acts only on what it built');
   });
 
