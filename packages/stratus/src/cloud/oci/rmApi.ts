@@ -62,6 +62,8 @@ export interface RmApi {
   jobOutputs_read(jobId: string): Promise<Record<string, string>>;
   /** How many resources a stack's Terraform state holds. */
   stackResources_count(stackId: string): Promise<number>;
+  /** A stack's outputs, as its Terraform state holds them; empty when nothing was applied. */
+  stackOutputs_read(stackId: string): Promise<Record<string, string>>;
   /** Removes a stack; one already gone is no error. Its resources must be destroyed first. */
   stack_delete(stackId: string): Promise<void>;
 }
@@ -180,6 +182,14 @@ export function rmApi_make(options: RmApiOptions): RmApi {
     async stackResources_count(stackId) {
       const state = JSON.parse(await stream_text((await client.getStackTfState({ stackId })).value)) as { resources?: Array<{ mode?: string; instances?: unknown[] }> };
       return (state.resources ?? []).filter((resource): boolean => resource.mode !== 'data').reduce((sum: number, resource): number => sum + (resource.instances?.length ?? 1), 0);
+    },
+    async stackOutputs_read(stackId) {
+      const state = JSON.parse(await stream_text((await client.getStackTfState({ stackId })).value)) as { outputs?: Record<string, { value?: unknown }> };
+      const outputs: Record<string, string> = {};
+      for (const [name, output] of Object.entries(state.outputs ?? {})) {
+        if (output.value !== undefined && output.value !== null) outputs[name] = typeof output.value === 'string' ? output.value : JSON.stringify(output.value);
+      }
+      return outputs;
     },
     async stack_delete(stackId) {
       try {

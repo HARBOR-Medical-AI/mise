@@ -84,7 +84,7 @@ export function porterSecret_ensure(store: VmStore, name: string, kept: ChrisSec
  * @param name - The VM.
  * @param secrets - The secrets.
  */
-function secrets_write(store: VmStore, name: string, secrets: ChrisSecrets): void {
+export function secrets_write(store: VmStore, name: string, secrets: ChrisSecrets): void {
   const file: string = secretsFile_derive(store, name);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, `${JSON.stringify(secrets, null, 2)}\n`, { mode: 0o600 });

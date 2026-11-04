@@ -27,6 +27,10 @@ export interface PlanRow {
   name: string;
   /** A change the cloud makes to its own tags after an apply, not a real one. */
   drift?: boolean;
+  /** The cloud's own type of the resource (`oci_core_instance`), when the plan says it. */
+  type?: string;
+  /** A change's leaves, as paths into the resource (`shape_config.ocpus`), each before and after; absent when the plan does not say. */
+  changes?: ReadonlyArray<{ path: string; before: string | null; after: string | null }>;
 }
 
 /**
@@ -193,6 +197,8 @@ export interface ModuleStackRead {
   readonly module: StackModule;
   readonly stackRef: string;
   readonly inputs: Readonly<Record<string, string>>;
+  /** What its last apply left (its Terraform state's outputs); empty when nothing was applied. */
+  readonly outputs: Readonly<Record<string, string>>;
 }
 
 export interface ModulePlanRequest {
@@ -264,6 +270,17 @@ export interface CloudBuilder {
   instance_tag?(request: { region: string; instanceId: string; tags: Readonly<Record<string, string>> }, call: BuildCall): Promise<void>;
   /** The module stacks a place holds for one owner, read back from the cloud in the words a plan was given (the inputs), for a session that keeps no record of them (a VM found in the tenancy, taken over on its first act). */
   moduleStacks_read?(request: { region: string; placeId: string; tag: string; owner: string }): Promise<ModuleStackRead[]>;
+  /**
+   * What the tenancy keeps for stratus by name (docs/stratus.adoc, D16): a
+   * secret's content (a VM's SSH key and its ChRIS's passwords, as one JSON
+   * text), read back by any session on any host that holds the tenancy's
+   * credentials; null when none is kept. The host's copy is a cache of it.
+   */
+  keep_read?(request: { region: string; name: string }): Promise<string | null>;
+  /** Writes what the tenancy keeps by name: a new version of it, the keep made first when the tenancy has none. */
+  keep_write?(request: { region: string; name: string; content: string }, call: BuildCall): Promise<void>;
+  /** Drops what the tenancy keeps by name (OCI: scheduled for deletion a day on); answers whether it was kept. */
+  keep_drop?(request: { region: string; name: string }, call: BuildCall): Promise<boolean>;
   /** The shape a VM is made of (D16: the driver chooses the family), for its price. */
   readonly vmShape?: string;
   /** Points a reserved public address at a machine's private one. */

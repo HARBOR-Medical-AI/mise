@@ -46,11 +46,11 @@ describe('the plan read from Terraform\'s JSON', () => {
       ],
     });
     expect(rows).toEqual([
-      { action: 'change', kind: 'instances', name: 'oci_core_instance.cp[0]', drift: true },
-      { action: 'change', kind: 'instances', name: 'oci_core_instance.cp[1]' },
-      { action: 'destroy', kind: 'loadbalancers', name: 'oci_load_balancer_backend.b' },
-      { action: 'create', kind: 'loadbalancers', name: 'oci_load_balancer_backend.b' },
-      { action: 'create', kind: 'networks', name: 'oci_core_vcn.v' },
+      { action: 'change', kind: 'instances', type: 'oci_core_instance', name: 'oci_core_instance.cp[0]', drift: true },
+      { action: 'change', kind: 'instances', type: 'oci_core_instance', name: 'oci_core_instance.cp[1]', changes: [{ path: 'display_name', before: 'a', after: 'b' }] },
+      { action: 'destroy', kind: 'loadbalancers', type: 'oci_load_balancer_backend', name: 'oci_load_balancer_backend.b' },
+      { action: 'create', kind: 'loadbalancers', type: 'oci_load_balancer_backend', name: 'oci_load_balancer_backend.b' },
+      { action: 'create', kind: 'networks', type: 'oci_core_vcn', name: 'oci_core_vcn.v' },
     ]);
     expect(planRows_read(null)).toEqual([]);
     expect(terraformType_kind('oci_dns_rrset')).toBe('dns');
@@ -89,6 +89,7 @@ class RecordedRm implements RmApi {
   async jobPlan_read(): Promise<unknown> { return this.plan; }
   async jobOutputs_read(): Promise<Record<string, string>> { return {}; }
   async stackResources_count(): Promise<number> { return 0; }
+  async stackOutputs_read(): Promise<Record<string, string>> { return {}; }
   async stack_delete(stackId: string): Promise<void> { this.calls.push(`stack_delete ${stackId}`); }
 }
 
@@ -129,7 +130,7 @@ describe('the OCI builder over Resource Manager', () => {
   it('plans against a stack and reads the plan back; a new stack needs what it is made from', async () => {
     rm.plan = { resource_changes: [{ address: 'x', type: 'oci_core_instance', change: { actions: ['create'] } }] };
     const plan = await builder.infra_plan({ cluster: 'h', spec: SPEC_DEFAULT, region: 'r', isoObject: '', stackRef: 'ocid1.ormstack.1' }, call());
-    expect(plan).toEqual({ ref: 'job-plan', rows: [{ action: 'create', kind: 'instances', name: 'x' }] });
+    expect(plan).toEqual({ ref: 'job-plan', rows: [{ action: 'create', kind: 'instances', type: 'oci_core_instance', name: 'x' }] });
     await expect(builder.infra_plan({ cluster: 'h', spec: SPEC_DEFAULT, region: 'r', isoObject: '' }, call())).rejects.toThrow("a new stack needs the compartment, the zone and the image's link");
     await expect(builder.preflight({ cluster: 'h', spec: SPEC_DEFAULT, region: 'r', baseDomain: 'b', compartmentId: 'c' }, call())).rejects.toThrow('this builder adopts and re-plans only');
   });

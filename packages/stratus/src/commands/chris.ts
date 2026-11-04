@@ -29,6 +29,7 @@ import type { VmRecord, VmStore } from '../vm/state.js';
 import type { VmRemote } from '../vm/remote.js';
 import type { BuildCall } from '../cloud/builder.js';
 import { CHRIS_PROFILES, floor_short, type ChrisProfile } from '../chris/profiles.js';
+import { VM_KEYLESS, vmKeyless_is } from '../vm/keep.js';
 import { porterSecret_ensure, secret_make, secrets_ensure, secrets_read } from '../chris/secrets.js';
 import { CHRIS_JOBS, chrisDeployRun_make, type DeployDeps } from '../chris/deploy.js';
 import { host_split, point_plan, pointPlan_words, POINT_TTL, type Registrar } from '../chris/registrar.js';
@@ -244,8 +245,8 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   const spec = context.vms.spec_read(name);
   if (record === null || spec === null || 'error' in spec) return envelope_error('', undefined, `chris deploy: ${name}: no such VM (vm new declares one)\n`);
   if (record.built === undefined) return envelope_error('', undefined, `chris deploy: ${name}: not built (vm build ${name})\n`);
-  // A VM taken over from the tenancy was built by another session, which holds the only SSH key that reaches it.
-  if (record.takenFrom !== undefined) return envelope_error('', undefined, `chris deploy: ${name}: taken over from the tenancy: its SSH key is kept by the session that built it, so this session cannot reach the machine\n`);
+  // Reaching the machine needs its own SSH key: kept in the tenancy, read into this host's cache with the VM.
+  if (vmKeyless_is(context.vms, record)) return envelope_error('', undefined, `chris deploy: ${name}: ${VM_KEYLESS}\n`);
   const vmSpec: VmSpec = spec.spec;
   const short: string[] = floor_short(profile, vmSpec);
   if (short.length > 0) return envelope_error('', undefined, `chris deploy: ${name} is below the ${profile.name} profile's floor: ${short.join('; ')}\n`);

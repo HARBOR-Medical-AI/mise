@@ -19,6 +19,7 @@ import { HOURS_PER_MONTH } from '../cluster/spend.js';
 import type { NetRecord, NetStore } from '../net/state.js';
 import type { VmSpec } from './spec.js';
 import { VM_TAG, type VmRecord, type VmStore } from './state.js';
+import { vmKeepName_derive, vmKept_write } from './keep.js';
 
 /** What a VM's jobs run over. */
 export interface VmDeps {
@@ -178,6 +179,12 @@ export function vmApplyRun_make(name: string, part: VmPart, deps: VmDeps): JobRu
     const stackRef: string | undefined = part === 'data' ? record.dataStackRef : record.machineStackRef;
     if (planText === null || stackRef === undefined) throw new Error(`${name}: no ${part} plan to apply (vm build ${name} makes one)`);
     const plan: InfraPlan = JSON.parse(planText) as InfraPlan;
+    // The machine admits only the VM's own key: kept in the tenancy before the machine is made with it, so any
+    // session on any host reaches the machine, and a key that cannot be kept stops the build before it bills.
+    if (part === 'machine' && deps.builder.keep_write !== undefined) {
+      const kept: string | null = await vmKept_write(deps.builder, deps.store, name, record.region, call);
+      if (kept !== null) context.log_write(`${name}: ${kept} kept in the tenancy`);
+    }
     const outputs: Record<string, string> = await builder.moduleApply_run({ region: record.region, stackRef, plan, label: `${name} ${part}` }, call);
     deps.store.file_remove(name, planFile_derive(part));
     if (part === 'data') {
@@ -190,10 +197,12 @@ export function vmApplyRun_make(name: string, part: VmPart, deps: VmDeps): JobRu
     if (publicIpId !== undefined && privateIpId !== undefined) await builder.address_point({ region: record.region, publicIpId, privateIpId }, call);
     // A new machine has a new host key: the old one, kept for the old machine, would refuse it.
     deps.store.file_remove(name, path.join('ssh', 'known_hosts'));
+    const { spec } = vm_read(deps.store, name);
     deps.store.record_update(name, (current: VmRecord): void => {
       current.machineOutputs = outputs;
       if (current.image === undefined && outputs['image_id'] !== undefined) current.image = outputs['image_id'];
       current.built = new Date().toISOString();
+      current.seen = { instanceId: outputs['instance_id'] ?? '', vcpus: spec.vcpu, memoryGib: spec.memory };
       delete current.machineGone; delete current.gone;
     });
     context.log_write(`${name}: built (instance ${outputs['instance_id']}, ${outputs['private_ip']} inside, ${record.dataOutputs?.['public_ip']} outside)`);
@@ -254,6 +263,8 @@ export function vmTeardownRun_make(name: string, all: boolean, deps: VmDeps, sho
       current.gone = new Date().toISOString();
     });
     deps.store.file_remove(name, planFile_derive('data'));
+    // Nothing of it stands: what the tenancy kept of it goes too.
+    if (deps.builder.keep_drop !== undefined) await deps.builder.keep_drop({ region: record.region, name: vmKeepName_derive(name) }, call);
     shown();
   };
 }

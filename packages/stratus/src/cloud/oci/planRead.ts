@@ -21,7 +21,49 @@ interface ResourceChange {
   address?: string;
   type?: string;
   name?: string;
-  change?: { actions?: string[]; before?: Record<string, unknown> | null; after?: Record<string, unknown> | null };
+  change?: { actions?: string[]; before?: Record<string, unknown> | null; after?: Record<string, unknown> | null; after_unknown?: Record<string, unknown> | null };
+}
+
+/**
+ * A resource's values as leaves: a path each (a block, which Terraform writes
+ * as a list of one, is stepped into without its index), its value in a word.
+ *
+ * @param value - The value.
+ * @param prefix - The path so far.
+ * @param into - The leaves.
+ * @returns The leaves.
+ */
+function leaves_read(value: unknown, prefix: string = '', into: Map<string, string | null> = new Map()): Map<string, string | null> {
+  const step = (key: string): string => (prefix === '' ? key : `${prefix}.${key}`);
+  if (Array.isArray(value)) {
+    if (value.length === 1 && typeof value[0] === 'object' && value[0] !== null) return leaves_read(value[0], prefix, into);
+    into.set(prefix, JSON.stringify(value));
+    return into;
+  }
+  if (typeof value === 'object' && value !== null) {
+    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) leaves_read(inner, step(key), into);
+    return into;
+  }
+  into.set(prefix, value === null || value === undefined ? null : String(value));
+  return into;
+}
+
+/**
+ * What an update changes, leaf by leaf: OCI's own tags left out, and the
+ * leaves the plan only knows after the apply (computed) left out too.
+ *
+ * @param change - The resource's change.
+ * @returns The leaves that differ, before and after.
+ */
+export function update_leaves(change: ResourceChange['change']): Array<{ path: string; before: string | null; after: string | null }> {
+  const before: Map<string, string | null> = leaves_read(change?.before ?? {});
+  const after: Map<string, string | null> = leaves_read(change?.after ?? {});
+  const unknown: Map<string, string | null> = leaves_read(change?.after_unknown ?? {});
+  const paths: Set<string> = new Set([...before.keys(), ...after.keys()]);
+  return [...paths]
+    .filter((path: string): boolean => !path.startsWith('defined_tags') && unknown.get(path) !== 'true' && (before.get(path) ?? null) !== (after.get(path) ?? null))
+    .sort()
+    .map((path: string) => ({ path, before: before.get(path) ?? null, after: after.get(path) ?? null }));
 }
 
 /** The neutral kind a Terraform resource type is listed under. */
@@ -79,10 +121,12 @@ export function planRows_read(plan: unknown): PlanRow[] {
     const actions: string[] = change.change?.actions ?? [];
     const kind: string = terraformType_kind(change.type ?? '');
     const name: string = change.address ?? `${change.type ?? '?'}.${change.name ?? '?'}`;
-    if (actions.includes('delete')) rows.push({ action: 'destroy', kind, name });
-    if (actions.includes('create')) rows.push({ action: 'create', kind, name });
+    const type: { type?: string } = change.type !== undefined ? { type: change.type } : {};
+    if (actions.includes('delete')) rows.push({ action: 'destroy', kind, name, ...type });
+    if (actions.includes('create')) rows.push({ action: 'create', kind, name, ...type });
     if (actions.length === 1 && actions[0] === 'update') {
-      rows.push({ action: 'change', kind, name, ...(update_isDrift(change.change?.before, change.change?.after) ? { drift: true } : {}) });
+      const drift: boolean = update_isDrift(change.change?.before, change.change?.after);
+      rows.push({ action: 'change', kind, name, ...type, ...(drift ? { drift: true } : { changes: update_leaves(change.change) }) });
     }
   }
   return rows;

@@ -28,6 +28,7 @@ import { stratusArgs_parse, type StratusArgs } from './args.js';
 import { FakeBuildWorld, FakeCloudBuilder, FakeInstaller } from './cloud/fake/builder.js';
 import { OciBuilder } from './cloud/oci/builder.js';
 import { ociBuildApi_make } from './cloud/oci/buildApi.js';
+import { ociKeepApi_make } from './cloud/oci/keepApi.js';
 import { AssistedInstaller, serviceAccount_read } from './installer/assisted.js';
 import { promises as dnsPromises } from 'node:dns';
 import { homedir } from 'node:os';
@@ -86,6 +87,7 @@ function oci_buildParts(driver: CloudDriver, args: StratusArgs): Pick<StratusBac
     builder: new OciBuilder({
       rm: (region: string) => rmApi_make({ configFile: args.configFile, profile: args.profile, region }),
       api: (region: string) => ociBuildApi_make({ configFile: args.configFile, profile: args.profile, region }),
+      keep: (region: string) => ociKeepApi_make({ configFile: args.configFile, profile: args.profile, region }),
       driver,
       sshPublicKey,
       nameservers_resolve: (zone: string): Promise<string[]> => resolver.resolveNs(zone),

@@ -29,6 +29,9 @@ const STORE_TEXT: string = [
 const LIMITS = { shape: 'VM.Standard.E5.Flex', family: 'E5', vcpu: { min: 2, max: 252, step: 2 }, memory: { min: 1, max: 2098, perVcpu: { min: 0.5, max: 32 } }, disk: { min: 50, max: 32768 }, data: { min: 50, max: 32768 } };
 const SPEC = { net: 'chrisproject-services', open: [80, 443], vcpu: 2, memory: 8, disk: 50, data: 50, dataBackup: 'daily', os: 'ubuntu-26.04' };
 
+/** Rows a test adds to the session's VMs. */
+let ROWS_MORE: unknown[] = [];
+
 /** The session's answers: a library with store.mise, two machines kept (store from the script, lone from nothing). */
 function answer_make(line: string, mine: string[]): QuietAnswer {
   const envelope = (model: { kind: string; data: unknown }, rendered: string = ''): QuietAnswer => ({ envelopes: [{ rendered, model, status: 'ok' }] });
@@ -37,6 +40,7 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
     { name: 'lone', state: 'declared', region: 'us-ashburn-1', spec: { ...SPEC, vcpu: 4 }, address: null, inside: null, protected: true, built: null, chris: null },
     { name: 'web', state: 'found', region: 'us-ashburn-1', spec: null, address: '129.158.63.113', inside: '10.20.0.234', protected: true, built: null, chris: null,
       found: { state: 'running', instanceId: 'ocid1.instance.web', shape: 'VM.Standard.E5.Flex', vcpus: 2, memoryGib: 8, tagged: true, chris: { url: 'https://web.example.org/api/v1/', porter: null } } },
+    ...ROWS_MORE,
   ] } });
   if (line === 'ls /scripts') return envelope({ kind: 'fs.listing', data: [{ path: '/scripts', items: [{ name: 'mine', type: 'dir' }, { name: 'chrisproject', type: 'source', status: 'cloned', title: 'git@github.com:HARBOR-Medical-AI/infra.git' }] }] });
   if (line === 'ls /scripts/mine') return envelope({ kind: 'fs.listing', data: [{ path: '/scripts/mine', items: mine.map((name: string) => ({ name, type: 'script' })) }] });
@@ -94,7 +98,7 @@ describe('the VM controller', () => {
     expect(facts).toContain('THE MACHINE');
     expect(facts).toContain('2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups) · ubuntu-26.04');
     expect(facts).toContain('https://cube.chrisproject.org/api/v1/');
-    expect(facts).toContain('built and kept in this session');
+    expect(facts).toContain('its records and its SSH key held here');
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-4"]')?.click();
     await settle();
     const body: HTMLElement = screen.root.querySelector('.tdc-body') as HTMLElement;
@@ -195,6 +199,30 @@ describe('the VM controller', () => {
     screen.root.remove();
   });
 
+  it('a machine another host built is read from the tenancy whole: every seat, its size changed here; one whose key the tenancy does not keep has only its facts and teardown', async () => {
+    // Built by another host, read from the tenancy whole (its key kept there), and one the tenancy keeps no key for.
+    ROWS_MORE = [
+    { name: 'shared', state: 'built', region: 'us-ashburn-1', spec: SPEC, address: '203.0.113.11', inside: '10.20.0.6', protected: true, built: '2026-11-01T00:00:00Z', chris: null, takenFrom: '2026-11-04T10:00:00Z', keyless: false },
+    { name: 'old', state: 'built', region: 'us-ashburn-1', spec: SPEC, address: '203.0.113.12', inside: '10.20.0.7', protected: true, built: '2026-10-01T00:00:00Z', chris: null, takenFrom: '2026-11-04T10:00:00Z', keyless: true },
+    ];
+    const { screen } = screen_make();
+    await screen.vm_open('shared');
+    await settle();
+    expect(screen.steps_get().map((step) => step.label)).toEqual(['MACHINE', 'SIZE', 'BUILD', 'CHRIS', 'USERS', 'TEARDOWN']);
+    expect(screen.root.querySelector('.tdc-body')?.textContent).toContain('read from the tenancy 2026-11-04 10:00: its stacks and the secrets its vault keeps');
+    screen.dispose();
+    screen.root.remove();
+    const { screen: second } = screen_make();
+    await second.vm_open('old');
+    await settle();
+    expect(second.steps_get().map((step) => step.label)).toEqual(['MACHINE', 'TEARDOWN']);
+    expect(second.root.querySelector('.ss-header')?.textContent).toContain('NO SSH KEY IN THE TENANCY');
+    expect(second.root.querySelector('.tdc-body')?.textContent).toContain('vm keep, on the host that holds the key, keeps it');
+    second.dispose();
+    second.root.remove();
+    ROWS_MORE = [];
+  });
+
   it('a machine found in the tenancy: what it is, and only its teardown; lifting its lock writes no script (the kernel takes it over)', async () => {
     const { screen, sent } = screen_make();
     await screen.vm_open('web');
@@ -203,7 +231,7 @@ describe('the VM controller', () => {
     expect(screen.path_get()).toBe('');
     expect(screen.root.querySelector('.tdc-condition-name')?.textContent).toBe('FOUND · RUNNING');
     const facts: string = screen.root.querySelector('.tdc-body')?.textContent ?? '';
-    expect(facts).toContain('found: built by another stratus session; this session keeps no record of it');
+    expect(facts).toContain('found: built by stratus, and its stacks did not read into this host');
     expect(facts).toContain('VM.Standard.E5.Flex · 2 vCPU · 8 GiB');
     expect(facts).toContain('https://web.example.org/api/v1/ (as its instance\'s tag says)');
     expect(screen.root.querySelector('.ss-header')?.textContent).toContain('https://web.example.org/api/v1/');

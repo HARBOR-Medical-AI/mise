@@ -108,6 +108,7 @@ class RecordedRm implements RmApi {
   async jobPlan_read() { return { resource_changes: [{ address: 'oci_core_vcn.net', type: 'oci_core_vcn', change: { actions: ['create'] } }, { address: 'oci_bastion_bastion.shell', type: 'oci_bastion_bastion', change: { actions: ['create'] } }] }; }
   async jobOutputs_read() { return { vcn_id: 'ocid1.vcn.v', subnet_id: 'ocid1.subnet.s', bastion_id: 'ocid1.bastion.b' }; }
   async stackResources_count() { return this.held; }
+  async stackOutputs_read() { return {}; }
   async stack_delete(stackId: string) { this.calls.push(`delete ${stackId}`); }
 }
 
