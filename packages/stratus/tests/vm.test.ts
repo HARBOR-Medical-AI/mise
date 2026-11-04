@@ -11,7 +11,8 @@ import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BufferSink, HeadlessSurface, JobRunner, runner_install, sink_set, surface_set, type PromptRequest } from '@fnndsc/brasa/core';
-import type { CloudDriver, CloudPrice, CloudShape, ResourceCounts, ServicePrices } from '../src/cloud/driver.js';
+import type { CloudDriver, CloudPrice, CloudShape, FoundCluster, FoundInstance, ResourceCounts, ServicePrices } from '../src/cloud/driver.js';
+import type { CommandEnvelope } from '@fnndsc/menu';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
 import { vmCloudInit_render, vmMachineVariables_build, vmModule_zip, vmOs_lower } from '../src/cloud/oci/modules/vm.js';
@@ -107,13 +108,19 @@ describe('vm, over the fake cloud', () => {
   let context: VmCommandContext;
   let netContext: NetCommandContext;
   let surface: HeadlessSurface & { answers: string[]; asked: string[] };
+  let seen: { instances: FoundInstance[]; stacks: Array<FoundCluster & { tagKey: string }> };
 
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), 'stratus-vm-'));
     store = new VmStore(join(root, 'vms'));
     nets = new NetStore(join(root, 'nets'));
     world = new FakeBuildWorld(0);
-    const driver = { resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => PRICES, servicePrices_get: async (): Promise<ServicePrices> => SERVICE, shapes_list: async (): Promise<CloudShape[]> => (await new FakeDriver(fakeCloud_sample()).shapes_list('us-ashburn-1')) } as unknown as CloudDriver;
+    seen = { instances: [], stacks: [] };
+    const driver = {
+      // What the tenancy runs beside this session's records; none until a test puts some there.
+      instances_find: async (): Promise<FoundInstance[]> => seen.instances,
+      clusters_find: async (tagKey: string): Promise<FoundCluster[]> => seen.stacks.filter((one: FoundCluster & { tagKey: string }): boolean => one.tagKey === tagKey),
+      resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => PRICES, servicePrices_get: async (): Promise<ServicePrices> => SERVICE, shapes_list: async (): Promise<CloudShape[]> => (await new FakeDriver(fakeCloud_sample()).shapes_list('us-ashburn-1')) } as unknown as CloudDriver;
     const builder: FakeCloudBuilder = new FakeCloudBuilder(world);
     netContext = { store: nets, driver, builder, region: (): string => 'us-ashburn-1', clientCidr_read: async (): Promise<string> => '134.174.21.21/32' };
     context = { store, nets, driver, builder, region: (): string => 'us-ashburn-1' };
@@ -246,7 +253,37 @@ describe('vm, over the fake cloud', () => {
     expect(existsSync(join(store.folder_derive('store'), 'spec.yaml'))).toBe(true);
   });
 
+  it('lists the VMs the tenancy runs beside those kept here, and refuses to declare over one (the tenancy is the truth)', async () => {
+    const instance = (name: string, tags: Record<string, string>, state: string = 'running'): FoundInstance => ({
+      name, id: `ocid1.instance.${name}`, state, region: 'us-ashburn-1', created: '', tags, raw: {}, shape: 'VM.Standard.E5.Flex', zone: 'AD-1',
+      ips: ['10.20.0.234', '129.158.63.113'], vcpus: 2, memoryGib: 8, containerId: 'ocid1.compartment.services',
+    });
+    seen.instances = [
+      instance('store', { 'mise-service': 'store' }),
+      instance('lab-box', {}, 'stopped'),
+      // A cluster's node is the cluster's, never a VM.
+      instance('harbor-cp-1', { 'openshift-tags.openshift-resource': 'openshift-resource-infra' }),
+    ];
+    // A VM whose machine is gone and whose tagged data stack stands.
+    seen.stacks = [{ tagKey: 'mise-service', name: 'old', stack: { id: 'ocid1.ormstack.old', state: 'active', compartmentId: 'c' }, compartmentId: null, region: 'us-ashburn-1' }];
+    await vm_run(context, ['new', 'mine', '--net', 'scratch', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--os', 'ubuntu-26.04']);
+    const status: CommandEnvelope = await vm_run(context, ['status']);
+    expect(status.rendered).toContain('store  found running  built by stratus, not kept in this session');
+    expect(status.rendered).toContain('lab-box  found stopped  made outside stratus');
+    expect(status.rendered).toContain('old  found data only');
+    expect(status.rendered).toContain('address  129.158.63.113');
+    expect(status.rendered).not.toContain('harbor-cp-1');
+    const rows = (status.model as { data: { vms: Array<{ name: string; state: string; found?: { state: string; tagged: boolean } | null }> } }).data.vms;
+    expect(rows.map((row) => `${row.name}:${row.state}:${row.found?.state ?? ''}`)).toEqual(['mine:declared:', 'lab-box:found:stopped', 'old:found:data only', 'store:found:running']);
+    // A found VM is read by name, and a name the tenancy runs is never declared over.
+    expect((await vm_run(context, ['store'])).rendered).toContain('store  found running');
+    const over: CommandEnvelope = await vm_run(context, ['new', 'store', '--net', 'scratch', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--os', 'ubuntu-26.04']);
+    expect(over.status).toBe('error');
+    expect(over.renderedErr).toContain('the tenancy already runs a VM by that name (built by another stratus session)');
+    expect(store.record_read('store')).toBeNull();
+  });
+
   it('refuses a verb it does not have, by name', async () => {
-    expect((await vm_run(context, ['restart', 'store'])).renderedErr).toBe('vm: restart: not a verb (vm status, new, cost, limits, plan, build, shell, protect, teardown)\n');
+    expect((await vm_run(context, ['restart', 'store'])).renderedErr).toBe('vm: restart: not a verb (vm status, new, cost, limits, plan, build, shell, protect, teardown) nor a VM\n');
   });
 });

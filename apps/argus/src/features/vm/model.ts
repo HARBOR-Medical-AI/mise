@@ -80,7 +80,11 @@ export function vmNewLine_compose(name: string, net: string): string {
  */
 export function vmScript_synthesize(row: VmStatusRow): string {
   const spec = row.spec;
-  const declare: string = spec === null
+  // A VM found in the tenancy has no spec here: its size is the cloud's, the rest the defaults, to be read and edited.
+  const sized: string | null = spec === null && row.found?.vcpus != null && row.found.memoryGib != null
+    ? vmNewLine_compose(row.name, 'chrisproject-services').replace(/--vcpu \d+ --memory \d+/, `--vcpu ${row.found.vcpus} --memory ${row.found.memoryGib}`)
+    : null;
+  const declare: string = sized !== null ? sized : spec === null
     ? vmNewLine_compose(row.name, 'chrisproject-services')
     : `vm new ${row.name} --net ${spec.net}${spec.open.length > 0 ? ` --open ${spec.open.join(',')}` : ''} --vcpu ${spec.vcpu} --memory ${spec.memory} --disk ${spec.disk} --data ${spec.data} --data-backup ${spec.dataBackup} --os ${spec.os}`;
   const lines: string[] = [declare, `vm build ${row.name}`];
@@ -114,11 +118,13 @@ export function vmScript_complete(text: string, name: string): string {
  *
  * @param row - The VM as `vm status` reads it, or null for one not yet declared.
  * @param busy - Whether a line of its own runs now.
- * @returns NEW, DECLARED, DATA ONLY, DATA KEPT, BUILT, GONE, or RUNNING.
+ * @returns NEW, DECLARED, DATA ONLY, DATA KEPT, BUILT, GONE, FOUND · <the cloud's state>, or RUNNING.
  */
 export function vmCondition_derive(row: VmStatusRow | null, busy: boolean): string {
   if (busy) return 'RUNNING';
   if (row === null) return 'NEW';
+  // A VM the tenancy runs that this session keeps no record of: what the cloud says it is doing.
+  if (row.state === 'found') return `FOUND · ${(row.found?.state ?? 'unknown').toUpperCase()}`;
   return row.state.toUpperCase();
 }
 

@@ -123,7 +123,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     vms = new VmStore(join(root, 'vms'));
     const nets: NetStore = new NetStore(join(root, 'nets'));
     const builder: FakeCloudBuilder = new FakeCloudBuilder(new FakeBuildWorld(0));
-    const driver = { resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => [], servicePrices_get: async (): Promise<ServicePrices | null> => null } as unknown as CloudDriver;
+    const driver = { instances_find: async (): Promise<unknown[]> => [], clusters_find: async (): Promise<unknown[]> => [], resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => [], servicePrices_get: async (): Promise<ServicePrices | null> => null } as unknown as CloudDriver;
     vm = new FakeVm();
     resolved = [];
     context = { vms, nets, builder, resolve: async (): Promise<string[]> => resolved, nameservers_get: async (): Promise<string[]> => ['ns37.domaincontrol.com', 'ns38.domaincontrol.com'], registrar: null, status_get: async (): Promise<number | null> => 200, remote_open: async (): Promise<VmRemote> => vm, tickMs: 0 };

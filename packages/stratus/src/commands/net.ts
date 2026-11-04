@@ -20,6 +20,7 @@ import { plan_count, planCounts_alter, planCounts_words, type CloudBuilder, type
 import type { CloudDriver } from '../cloud/driver.js';
 import { cidr_read, NET_RESOURCES, netSpec_diff, subnet_derive, type NetSpec } from '../net/spec.js';
 import { NET_NAME, type NetRecord, type NetStore } from '../net/state.js';
+import { netsFound_read, type FoundNet } from '../vm/found.js';
 import { NET_JOBS, netApplyRun_make, netPlanRun_make, netTeardownRun_make, standing_words, type NetDeps } from '../net/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 import { TIER_REFUSAL } from '../tier.js';
@@ -111,16 +112,38 @@ function netStatus_lines(record: NetRecord, spec: NetSpec | null): string[] {
  * @param names - The networks asked about; every one when none.
  * @returns The envelope.
  */
-function netStatus_run(context: NetCommandContext, names: ReadonlyArray<string>): CommandEnvelope {
+async function netStatus_run(context: NetCommandContext, names: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  // The tenancy is the truth about which networks stand (docs/stratus.adoc, D16): one carrying stratus's tag that
+  // this session keeps no record of is listed as found, from the cloud.
   const kept: string[] = context.store.names_list();
-  if (kept.length === 0) return envelope_ok('no networks: net new <name> --cidr <range> declares one\n');
-  const missing: string[] = names.filter((name: string): boolean => !kept.includes(name));
-  if (missing.length > 0) return envelope_error('', undefined, `net: ${missing.join(', ')}: no such network (${kept.join(', ')})\n`);
-  const blocks: string[] = (names.length === 0 ? kept : [...names]).map((name: string): string => {
+  const region: string | null = context.region();
+  let found: FoundNet[] = [];
+  let unsearched: string | null = region === null ? 'not connected' : null;
+  if (region !== null) {
+    try {
+      found = (await netsFound_read(context.driver, region)).filter((net: FoundNet): boolean => !kept.includes(net.name));
+    } catch (error: unknown) {
+      unsearched = error instanceof Error ? error.message : String(error);
+    }
+  }
+  const unsearchedLine: string = unsearched === null ? '' : `${chalk.yellow(`the tenancy was not searched for networks (${unsearched}): only those this session keeps are listed`)}\n`;
+  const all: string[] = [...kept, ...found.map((net: FoundNet): string => net.name)];
+  if (all.length === 0) return envelope_ok(`${unsearchedLine}no networks${unsearched === null ? ' here or in the tenancy' : ''}: net new <name> --cidr <range> declares one\n`);
+  const missing: string[] = names.filter((name: string): boolean => !all.includes(name));
+  if (missing.length > 0) return envelope_error('', undefined, `net: ${missing.join(', ')}: no such network (${all.join(', ')})\n`);
+  const foundBy: Map<string, FoundNet> = new Map(found.map((net: FoundNet): [string, FoundNet] => [net.name, net]));
+  const blocks: string[] = (names.length === 0 ? all : [...names]).map((name: string): string => {
+    const seen: FoundNet | undefined = foundBy.get(name);
+    if (seen !== undefined) {
+      return [
+        `${chalk.bold(name)}  ${chalk.magenta('found')}  ${chalk.gray('built by stratus, not kept in this session')}`,
+        `  ${seen.stack !== null ? `stack ${seen.stack.id} (${seen.stack.state})` : 'no stack'}${seen.compartmentId !== null ? `, compartment ${seen.compartmentId}` : ''}`,
+      ].join('\n');
+    }
     const read = context.store.spec_read(name);
     return netStatus_lines(context.store.record_read(name) as NetRecord, read !== null && 'spec' in read ? read.spec : null).join('\n');
   });
-  return envelope_ok(`${blocks.join('\n\n')}\n`);
+  return envelope_ok(`${unsearchedLine}${blocks.join('\n\n')}\n`);
 }
 
 /**

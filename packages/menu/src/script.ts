@@ -72,13 +72,24 @@ export const vmSpecModelSchema = z.object({
 /** The model kind `vm status` carries. */
 export const STRATUS_VM_STATUS_MODEL_KIND = 'stratus.vm.status' as const;
 
-/** The states a kept VM stands in, as `vm status` words them. */
-export const VM_STATES = ['declared', 'data only', 'data kept', 'built', 'gone'] as const;
+/** The states a VM stands in, as `vm status` words them: a kept VM's, or `found` for one the tenancy runs that this session keeps no record of. */
+export const VM_STATES = ['declared', 'data only', 'data kept', 'built', 'gone', 'found'] as const;
 
-/** One VM as `vm status` reads it from the host's records (never the cloud). */
+/** One VM as `vm status` reads it: from the host's records, or found in the tenancy (state `found`, `found` set, no spec). */
 export const vmStatusRowSchema = z.object({
   name: z.string(),
   state: z.enum(VM_STATES),
+  /** What the tenancy says of a VM this session keeps no record of; absent on a kept one and from an older daemon. */
+  found: z.object({
+    /** The instance's lifecycle state, lower case (`running`, `stopped`), or `data only` when only its tagged data stack stands. */
+    state: z.string(),
+    instanceId: z.string().nullable(),
+    shape: z.string().nullable(),
+    vcpus: z.number().nullable(),
+    memoryGib: z.number().nullable(),
+    /** Whether it carries stratus's VM tag: built by a stratus session, not this one; else made outside stratus. */
+    tagged: z.boolean(),
+  }).nullable().optional(),
   region: z.string(),
   /** Its spec, or null when spec.yaml does not read. */
   spec: vmSpecModelSchema.nullable(),

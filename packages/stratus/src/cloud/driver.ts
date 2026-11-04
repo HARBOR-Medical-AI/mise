@@ -322,4 +322,11 @@ export interface CloudDriver {
   resources_search(containerId: string, region: string): Promise<ResourceCounts>;
   /** The clusters the tenancy holds, by the tag on their stacks and compartments, in one search across every container: one per name, sorted; a deleted carrier is left out. */
   clusters_find(tagKey: string, region: string): Promise<FoundCluster[]>;
+  /** Every instance the tenancy runs in a region, in every container, as the cloud lists it: one search for where they are, then each holding container read; a terminated one is left out. */
+  instances_find(region: string): Promise<FoundInstance[]>;
+}
+
+/** An instance found in the tenancy, with the container that holds it. */
+export interface FoundInstance extends CloudInstance {
+  readonly containerId: string;
 }
