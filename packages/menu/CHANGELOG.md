@@ -1,5 +1,21 @@
 # @fnndsc/menu
 
+## 0.35.0
+
+### Minor Changes
+
+- 2c02bd2: A VM's status row says when the tenancy keeps no SSH key for it (`keyless`). A surface then knows it can only read and tear that machine down.
+
+### Patch Changes
+
+- 28a2e89: A VM's row carries its teardown's steps and, for a found one, the ChRIS its instance names.
+
+  Adds `STRATUS_VM_STATE_EVENT`, the row's optional `teardown` and `found.chris`.
+
+- 274ef4c: A VM row says when the session took it over from the tenancy.
+
+  The row gains an optional `takenFrom`, the moment a VM built by another session was taken into this one's records.
+
 ## 0.34.3
 
 ### Patch Changes

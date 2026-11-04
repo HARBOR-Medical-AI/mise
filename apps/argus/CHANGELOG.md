@@ -1,5 +1,26 @@
 # @fnndsc/argus
 
+## 0.50.0
+
+### Minor Changes
+
+- 2c02bd2: The VM pane shows a machine built from any session or host whole, with every seat. Its records and key are read from the tenancy. Only one the tenancy keeps no key for, or one made outside stratus, is limited to its facts and teardown. SIZE says it resizes, and BUILD's question warns when the machine will reboot.
+
+### Patch Changes
+
+- 274ef4c: The VM controller opens on every machine the tenancy runs, with + NEW, and a machine opens on what it is.
+
+  `vm` and the tile's door land on MACHINES: one row per VM with what it is doing, its address, size and what runs on it, each opening that machine, and + NEW MACHINE beside them. A machine opens on MACHINE, its facts, before its lines. A VM this session can only see (found, or taken over, its SSH key kept by the session that built it) stands with MACHINE and TEARDOWN alone, and no act on it writes a script.
+
+- 28a2e89: A VM's TEARDOWN seat draws its steps as blocks that go and turn gold, and a found machine says what runs on it.
+
+  The machine's block lights while it goes and turns gold with the time once gone, the data's says STAYS on a default teardown; they move as the kernel's event comes, without asking. A found VM shows the ChRIS its instance's tag names, and SIZE no longer calls a script read from a machine's record edited.
+
+- Updated dependencies [2c02bd2]
+- Updated dependencies [28a2e89]
+- Updated dependencies [274ef4c]
+  - @fnndsc/menu@0.35.0
+
 ## 0.49.7
 
 ### Patch Changes
