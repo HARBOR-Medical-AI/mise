@@ -1,5 +1,30 @@
 # @fnndsc/stratus
 
+## 0.11.0
+
+### Minor Changes
+
+- 289c9f8: A password on a ChRIS stratus deployed can be changed, with `chris passwd [<user>] [--on <vm>]`. The admin's (`chris`, the default) changes on the host, in `cube.env` on the VM and in CUBE together: CUBE sets `chris`'s password from `cube.env` at every start, so a change made in CUBE alone does not last. The operator is asked first, since CUBE starts again and is down for a minute or so; the new password is typed twice (empty: generated and shown once), checked by signing in, and kept in the tenancy. A run stopped part way finishes when asked again with the same password. Any other account's password is set in CUBE alone and never kept.
+- 2c02bd2: Every session on every host now sees and manages the same VMs. The tenancy keeps each VM's SSH key and ChRIS passwords; a host's records are only a cache. A VM's secrets go into one vault per region in the tenancy (`mise`), written before its machine is built, after each `chris deploy`, and by the new `vm keep <name>` for a VM built before. `vm status` fills and corrects this host's cache from the tenancy, so a VM built from a terminal reads whole from a porter session, and one resized or torn down elsewhere is read again.
+- 2c02bd2: A VM that stands can be resized: `vm new` with new sizes, then `vm build`. More vCPUs or memory change the machine in place, and the question before the apply says it reboots and what goes down with it; a grown boot disk or data volume has its filesystem grown afterwards over the bastion, so the space appears. A shrink, a new OS or a replaced volume is still refused unless `--allow-alter`.
+
+### Patch Changes
+
+- 274ef4c: Acting on a VM another session built takes its records over from the cloud, so it can be unlocked and torn down here.
+
+  `vm protect` and `vm teardown` on a VM the tenancy runs that this session keeps no record of read its stacks back (its spec, its handles, its addresses) and keep it here, born protected, so the lock and the name typed back stay its guards. Plan, build, shell and `chris deploy` refuse it, since the session that built it keeps its SSH key. A VM made outside stratus is never taken over.
+
+- 28a2e89: A VM's teardown is watched step by step, and `chris deploy` says on the machine itself what it put there.
+
+  A VM teardown's two parts (the machine, then the data or its keeping) are steps on its record, each sent as the VM's row as it begins and ends, so a screen draws it going and gone. `chris deploy` tags the VM's instance with the CUBE API's address and porter's name, and a VM found in the tenancy reads them back, so a session that keeps no record of it still knows what runs on it.
+
+- Updated dependencies [2c02bd2]
+- Updated dependencies [28a2e89]
+- Updated dependencies [274ef4c]
+  - @fnndsc/menu@0.35.0
+  - @fnndsc/brasa@0.52.4
+  - @fnndsc/calypso@0.29.1
+
 ## 0.10.6
 
 ### Patch Changes
