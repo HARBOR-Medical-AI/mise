@@ -22,9 +22,9 @@
  */
 import { createHash } from 'node:crypto';
 import type { ClusterSpec } from '../../cluster/spec.js';
-import { teardownStep_run, type BuildCall, type CloudBuilder, type InfraOutputs, type InfraPlan, type ModulePlanRequest, type PlaceAnswer, type PreflightCheck, type ShellSession, type ShellSessionRequest, type StackModule, type TeardownCall, type TeardownRequest } from '../builder.js';
+import { teardownStep_run, type BuildCall, type CloudBuilder, type InfraOutputs, type InfraPlan, type ModulePlanRequest, type ModuleStackRead, type PlaceAnswer, type PreflightCheck, type ShellSession, type ShellSessionRequest, type StackModule, type TeardownCall, type TeardownRequest } from '../builder.js';
 import { netModule_digest, netModule_zip, netVariables_build } from './modules/net.js';
-import { VM_SHAPE, vmDataVariables_build, vmMachineVariables_build, vmModule_digest, vmModule_zip } from './modules/vm.js';
+import { moduleInputs_raise, VM_SHAPE, vmDataVariables_build, vmMachineVariables_build, vmModule_digest, vmModule_zip } from './modules/vm.js';
 import { Readable } from 'node:stream';
 import { planRows_read } from './planRead.js';
 import type { OciBuildApi } from './buildApi.js';
@@ -638,6 +638,26 @@ export class OciBuilder implements CloudBuilder {
     const rm: RmApi = this.options.rm(request.region);
     const job: RmJobRecord = await this.job_run(rm, request.stackRef, { kind: 'apply', planJobId: request.plan.ref }, `${request.label}: apply`, call);
     return await rm.jobOutputs_read(job.id);
+  }
+
+  async instance_tag(request: { region: string; instanceId: string; tags: Readonly<Record<string, string>> }, call: BuildCall): Promise<void> {
+    await this.api_resolve(request.region).instance_tagsMerge(request.instanceId, request.tags);
+    call.log(`tagged ${request.instanceId}: ${Object.entries(request.tags).map(([key, value]): string => `${key}=${value}`).join(', ')}`);
+  }
+
+  async moduleStacks_read(request: { region: string; placeId: string; tag: string; owner: string }): Promise<ModuleStackRead[]> {
+    // The stacks carrying the owner's tag in its place, each read whole for its variables, which are lowered back to
+    // the words a plan was given: a VM's size in vCPUs, its OS as `<name>-<version>`, its backup word.
+    const rm: RmApi = this.options.rm(request.region);
+    const tagged = (await rm.stacks_tagged(request.placeId, request.tag))
+      .filter((stack): boolean => stack.tagValue === request.owner && !/^(deleted|deleting)$/i.test(stack.state));
+    const read: ModuleStackRead[] = [];
+    for (const summary of tagged) {
+      const variables: Record<string, string> = (await rm.stack_get(summary.id)).variables;
+      const inputs = moduleInputs_raise(variables);
+      if (inputs !== null) read.push({ module: inputs.module, stackRef: summary.id, inputs: inputs.inputs });
+    }
+    return read;
   }
 
   async moduleDestroy_run(request: { region: string; stackRef: string; label: string }, call: BuildCall): Promise<string[]> {

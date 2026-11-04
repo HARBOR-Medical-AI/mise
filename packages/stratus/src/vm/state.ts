@@ -33,6 +33,10 @@ export interface VmRecord extends KeptRecord {
   built?: string;
   /** The ChRIS deployed on it (`chris deploy`). */
   chris?: { profile: string; compute: string; host: string | null; url: string; deployed: string; dns?: 'waiting' | 'seen'; porter?: string };
+  /** When this session took it over from the tenancy, its records read back from its stacks: it was built by another session, whose SSH key it still holds. */
+  takenFrom?: string;
+  /** The last teardown, once one has started: when, and each step (`machine`, `data`) as it began and ended. */
+  teardown?: { started: string; steps: Record<string, { state: 'running' | 'done' | 'kept' | 'failed'; started?: string; ended?: string; note?: string }> };
   /** The machine went (a default teardown); the data stays. */
   machineGone?: string;
   /** Everything went (`--all`). */
@@ -41,6 +45,10 @@ export interface VmRecord extends KeptRecord {
 
 /** The freeform tag a VM's stacks carry, so a fresh mise bastion finds them. */
 export const VM_TAG: string = 'mise-service';
+
+/** The freeform tags `chris deploy` puts on a VM's instance: the CUBE API's address, and porter's name when it runs one; read back by any session that finds the VM in the tenancy. */
+export const CHRIS_URL_TAG: string = 'mise-chris';
+export const CHRIS_PORTER_TAG: string = 'mise-porter';
 
 /** A VM's name: a hostname label. */
 export const VM_NAME: RegExp = /^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$/;

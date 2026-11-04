@@ -17,7 +17,7 @@ import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
 import { vmCloudInit_render, vmMachineVariables_build, vmModule_zip, vmOs_lower } from '../src/cloud/oci/modules/vm.js';
 import { ports_read, vmLimits_derive, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, type VmSpec } from '../src/vm/spec.js';
-import { VmStore } from '../src/vm/state.js';
+import { VmStore, type VmRecord } from '../src/vm/state.js';
 import { vmCost_estimate } from '../src/vm/build.js';
 import { NetStore } from '../src/net/state.js';
 import { STEPS_SOURCE } from '../src/cluster/steps.js';
@@ -239,6 +239,10 @@ describe('vm, over the fake cloud', () => {
     expect(plain((await vm_run(context, ['teardown', 'store'])).rendered)).toBe('store: its machine is gone; its data and address stay (vm build store makes the machine again over them)\n');
     expect(surface.asked.at(-1)).toContain('keep its data volume, backups and address 203.0.113.10 ($0.003 an hour, $2.13 a month)');
     expect(world.removed).toEqual(['stack fake-stack-vmMachine-store']);
+    // Each part is a step on the record, the state shown as each began and ended: the machine gone, the data kept.
+    expect(store.record_read('store')?.teardown?.steps).toMatchObject({ machine: { state: 'done', started: expect.any(String), ended: expect.any(String) }, data: { state: 'kept', note: expect.stringContaining('stay') } });
+    const row = ((await vm_run(context, ['status'])).model as { data: { vms: Array<{ name: string; teardown?: { steps: Array<{ name: string; state: string }> } | null }> } }).data.vms.find((one) => one.name === 'store');
+    expect(row?.teardown?.steps.map((one) => `${one.name}:${one.state}`)).toEqual(['machine:done', 'data:kept']);
     expect(plain((await vm_run(context, ['store'])).rendered)).toContain('store  data kept');
     surface.answers = ['y'];
     await vm_run(context, ['build', 'store']);
@@ -248,9 +252,46 @@ describe('vm, over the fake cloud', () => {
     surface.answers = ['store'];
     expect(plain((await vm_run(context, ['teardown', 'store', '--all'])).rendered)).toBe('store: torn down whole; its spec stays (vm build store builds it again, empty)\n');
     expect(world.removed.slice(-2)).toEqual(['stack fake-stack-vmMachine-store', 'stack fake-stack-vmData-store']);
+    expect(store.record_read('store')?.teardown?.steps['data']?.state).toBe('done');
     expect(store.record_read('store')).toMatchObject({ gone: expect.any(String) });
     expect(store.record_read('store')?.image).toBeUndefined();
     expect(existsSync(join(store.folder_derive('store'), 'spec.yaml'))).toBe(true);
+  });
+
+  it('takes a VM another session built over on the first act: records read back from its stacks, protected, then torn down; plan, build and shell refused, the key being elsewhere', async () => {
+    // Session A builds the store, then a second session, keeping nothing, finds it in the tenancy.
+    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+    surface.answers = ['y'];
+    await vm_run(context, ['build', 'store']);
+    const built: VmRecord = store.record_read('store') as VmRecord;
+    const placeId: string = built.placeId as string;
+    seen.instances = [{
+      name: 'store', id: built.machineOutputs?.['instance_id'] ?? 'ocid1.instance.store', state: 'running', region: 'us-ashburn-1', created: '2026-11-01T21:22:15Z', tags: { 'mise-service': 'store' }, raw: {},
+      shape: 'VM.Standard.E5.Flex', zone: 'AD-1', ips: ['10.40.0.10', '203.0.113.10'], vcpus: 2, memoryGib: 8, containerId: placeId,
+    }];
+    seen.stacks = [{ tagKey: 'mise-net', name: 'scratch', stack: null, compartmentId: placeId, region: 'us-ashburn-1' }];
+    const other: VmStore = new VmStore(join(root, 'vms-other'));
+    const there: VmCommandContext = { ...context, store: other, nets: new NetStore(join(root, 'nets-other')) };
+    // Taken over on the first act, born protected; the lock is lifted as its own line.
+    const lifted: CommandEnvelope = await vm_run(there, ['protect', 'store', 'off']);
+    expect(plain(lifted.rendered)).toContain('store: taken over from the tenancy (built by another session)');
+    expect(plain(lifted.rendered)).toContain('store: unprotected: vm teardown store may remove it');
+    expect(other.record_read('store')).toMatchObject({
+      takenFrom: expect.any(String), placeId, dataStackRef: 'fake-stack-vmData-store', machineStackRef: 'fake-stack-vmMachine-store',
+      machineOutputs: { instance_id: built.machineOutputs?.['instance_id'], private_ip: '10.40.0.10' }, dataOutputs: { public_ip: '203.0.113.10' },
+    });
+    const read = other.spec_read('store');
+    expect(read !== null && 'spec' in read ? read.spec : null).toMatchObject({ net: 'scratch', vcpu: 2, memory: 8 });
+    // What needs the machine's SSH key, which the building session keeps, is refused, saying why.
+    expect((await vm_run(there, ['build', 'store'])).renderedErr).toContain('vm build: store: taken over from the tenancy: its SSH key is kept by the session that built it');
+    expect((await vm_run(there, ['plan', 'store'])).renderedErr).toContain('vm plan: store: taken over from the tenancy');
+    // The teardown removes its machine as from the session that built it.
+    surface.answers = ['y'];
+    expect(plain((await vm_run(there, ['teardown', 'store'])).rendered)).toContain('store: its machine is gone');
+    expect(world.removed).toContain('stack fake-stack-vmMachine-store');
+    // A VM made outside stratus is read, never taken over.
+    seen.instances = [{ ...seen.instances[0]!, name: 'lab-box', id: 'ocid1.instance.lab', tags: {} }];
+    expect((await vm_run(there, ['protect', 'lab-box', 'off'])).renderedErr).toContain('vm protect: lab-box: made outside stratus (no mise-service tag): stratus acts only on what it built');
   });
 
   it('lists the VMs the tenancy runs beside those kept here, and refuses to declare over one (the tenancy is the truth)', async () => {
@@ -259,7 +300,7 @@ describe('vm, over the fake cloud', () => {
       ips: ['10.20.0.234', '129.158.63.113'], vcpus: 2, memoryGib: 8, containerId: 'ocid1.compartment.services',
     });
     seen.instances = [
-      instance('store', { 'mise-service': 'store' }),
+      instance('store', { 'mise-service': 'store', 'mise-chris': 'https://cube.chrisproject.org/api/v1/', 'mise-porter': 'porter.chrisproject.org' }),
       instance('lab-box', {}, 'stopped'),
       // A cluster's node is the cluster's, never a VM.
       instance('harbor-cp-1', { 'openshift-tags.openshift-resource': 'openshift-resource-infra' }),
@@ -272,6 +313,8 @@ describe('vm, over the fake cloud', () => {
     expect(status.rendered).toContain('lab-box  found stopped  made outside stratus');
     expect(status.rendered).toContain('old  found data only');
     expect(status.rendered).toContain('address  129.158.63.113');
+    expect(status.rendered).toContain('chris    https://cube.chrisproject.org/api/v1/, porter porter.chrisproject.org');
+    expect((status.model as { data: { vms: Array<{ name: string; found?: { chris?: { url: string; porter: string | null } | null } | null }> } }).data.vms.find((one) => one.name === 'store')?.found?.chris).toEqual({ url: 'https://cube.chrisproject.org/api/v1/', porter: 'porter.chrisproject.org' });
     expect(status.rendered).not.toContain('harbor-cp-1');
     const rows = (status.model as { data: { vms: Array<{ name: string; state: string; found?: { state: string; tagged: boolean } | null }> } }).data.vms;
     expect(rows.map((row) => `${row.name}:${row.state}:${row.found?.state ?? ''}`)).toEqual(['mine:declared:', 'lab-box:found:stopped', 'old:found:data only', 'store:found:running']);

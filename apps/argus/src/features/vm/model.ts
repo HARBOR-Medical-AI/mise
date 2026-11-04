@@ -17,6 +17,24 @@ export const VM_SEAT_LABELS: Readonly<Partial<Record<StepKind, string>>> = { 'vm
 /** The seat that is no line of the script: the undoing, drawn from the VM's own lines (`vm protect`, `vm teardown`). */
 export const TEARDOWN_KEY: string = 'teardown';
 
+/** The machines listing's view key: the controller's door, every VM the tenancy runs and + NEW. */
+export const MACHINES_KEY: string = 'machines';
+
+/** A machine's facts view key: what it is and what is on it, first when a machine is opened. */
+export const FACTS_KEY: string = 'machine';
+
+/**
+ * Whether this session can only see a VM, not build on it: found in the
+ * tenancy with no record here, or taken over from it (its SSH key is kept by
+ * the session that built it). Only its facts and its teardown stand for it.
+ *
+ * @param row - The VM as `vm status` reads it.
+ * @returns True when its size, build and ChRIS cannot be acted on from here.
+ */
+export function vmKeyless_is(row: VmStatusRow | null): boolean {
+  return row !== null && (row.state === 'found' || (row.takenFrom !== undefined && row.takenFrom !== null));
+}
+
 /** The seat a machine not yet named starts on. */
 export const NEW_KEY: string = 'new';
 

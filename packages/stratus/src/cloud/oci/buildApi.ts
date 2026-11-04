@@ -67,6 +67,8 @@ export interface OciBuildApi {
   compartment_describe(compartmentId: string): Promise<{ name: string; parentName: string | null; tags: Record<string, string> }>;
   /** Takes one freeform tag off a compartment; one not carried is no error. */
   compartment_tagRemove(compartmentId: string, key: string): Promise<void>;
+  /** Merges freeform tags onto an instance, keeping the others; nothing written when they are already so. */
+  instance_tagsMerge(instanceId: string, tags: Readonly<Record<string, string>>): Promise<void>;
   /** Puts one freeform tag on a compartment, keeping the others. */
   compartment_tagSet(compartmentId: string, key: string, value: string): Promise<void>;
   /** Removes a compartment, which must hold nothing; the cloud refuses one that does. */
@@ -105,6 +107,7 @@ export function ociBuildApi_make(options: OciBuildApiOptions): OciBuildApi {
   const blocks: core.BlockstorageClient = regional(new core.BlockstorageClient({ authenticationDetailsProvider: provider }));
   const network: core.VirtualNetworkClient = regional(new core.VirtualNetworkClient({ authenticationDetailsProvider: provider }));
   const bastions: bastion.BastionClient = regional(new bastion.BastionClient({ authenticationDetailsProvider: provider }));
+  const compute: core.ComputeClient = regional(new core.ComputeClient({ authenticationDetailsProvider: provider }));
   const tenancyId: string = provider.getTenantId();
   let namespace: string | null = null;
   // The root and every active compartment beneath it: where a shared thing
@@ -265,6 +268,12 @@ export function ociBuildApi_make(options: OciBuildApiOptions): OciBuildApi {
       if (!(key in tags)) return;
       delete tags[key];
       await ident.updateCompartment({ compartmentId, updateCompartmentDetails: { freeformTags: tags } });
+    },
+    async instance_tagsMerge(instanceId, tags) {
+      const instance = (await compute.getInstance({ instanceId })).instance;
+      const merged: Record<string, string> = { ...(instance.freeformTags ?? {}), ...tags };
+      if (Object.entries(tags).every(([key, value]): boolean => instance.freeformTags?.[key] === value)) return;
+      await compute.updateInstance({ instanceId, updateInstanceDetails: { freeformTags: merged } });
     },
     async compartment_tagSet(compartmentId, key, value) {
       const compartment = (await ident.getCompartment({ compartmentId })).compartment;

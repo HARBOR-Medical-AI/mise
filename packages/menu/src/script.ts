@@ -72,6 +72,9 @@ export const vmSpecModelSchema = z.object({
 /** The model kind `vm status` carries. */
 export const STRATUS_VM_STATUS_MODEL_KIND = 'stratus.vm.status' as const;
 
+/** The event a VM's teardown sends as each step begins and ends: its row, as `vm status` reads it. */
+export const STRATUS_VM_STATE_EVENT = 'stratus.vm.state' as const;
+
 /** The states a VM stands in, as `vm status` words them: a kept VM's, or `found` for one the tenancy runs that this session keeps no record of. */
 export const VM_STATES = ['declared', 'data only', 'data kept', 'built', 'gone', 'found'] as const;
 
@@ -89,7 +92,16 @@ export const vmStatusRowSchema = z.object({
     memoryGib: z.number().nullable(),
     /** Whether it carries stratus's VM tag: built by a stratus session, not this one; else made outside stratus. */
     tagged: z.boolean(),
+    /** What runs on it, as `chris deploy` tagged its instance: the CUBE API's address and porter's name; null when untagged. */
+    chris: z.object({ url: z.string(), porter: z.string().nullable() }).nullable().optional(),
   }).nullable().optional(),
+  /** Its last teardown, once one has started: when, and each step (`machine`, `data`) where it stands; absent from an older daemon. */
+  teardown: z.object({
+    started: z.string(),
+    steps: z.array(z.object({ name: z.string(), state: z.string(), started: z.string().nullable(), ended: z.string().nullable(), note: z.string().nullable() })),
+  }).nullable().optional(),
+  /** When this session took it over from the tenancy (built by another session, whose SSH key it still holds), or null; absent from an older daemon. */
+  takenFrom: z.string().nullable().optional(),
   region: z.string(),
   /** Its spec, or null when spec.yaml does not read. */
   spec: vmSpecModelSchema.nullable(),

@@ -22,6 +22,7 @@
  */
 import { createHash } from 'node:crypto';
 import { files_zip } from '../zip.js';
+import type { StackModule } from '../../builder.js';
 
 /** The family every VM is made in: AMD, flexible, the cheapest that fits a store (D16: the driver chooses). */
 export const VM_SHAPE: string = 'VM.Standard.E5.Flex';
@@ -375,4 +376,31 @@ export function vmMachineVariables_build(request: { name: string; region: string
     user_data: Buffer.from(vmCloudInit_render(ports)).toString('base64'),
     volume_id: input('volumeId'),
   };
+}
+
+/**
+ * A stack's variables raised back to the words its plan was given: the
+ * inverse of `vmDataVariables_build`, `vmMachineVariables_build` and the
+ * network's, for a stack read back from the cloud by a session that keeps no
+ * record of it.
+ *
+ * @param variables - The stack's variables, as Resource Manager keeps them.
+ * @returns The module and its inputs, or null when the variables are none of the three.
+ */
+export function moduleInputs_raise(variables: Readonly<Record<string, string>>): { module: StackModule; inputs: Record<string, string> } | null {
+  const value = (key: string): string => variables[key] ?? '';
+  if (variables['data_gb'] !== undefined) return { module: 'vmData', inputs: { data: value('data_gb'), dataBackup: value('backup') === '' ? 'none' : value('backup') } };
+  if (variables['ocpus'] !== undefined) {
+    const os: string | undefined = Object.entries(VM_OS_NAMES).find(([, name]: [string, string]): boolean => name === value('os_name'))?.[0];
+    return {
+      module: 'vmMachine',
+      inputs: {
+        vcpu: String(Number(value('ocpus')) * 2), memory: value('memory_gb'), disk: value('disk_gb'), open: value('open_ports'),
+        os: os === undefined ? '' : `${os}-${value('os_version')}`, image: value('image_id'), availabilityDomain: value('availability_domain'),
+        subnetId: value('subnet_id'), vcnId: value('vcn_id'), volumeId: value('volume_id'),
+      },
+    };
+  }
+  if (variables['cidr'] !== undefined) return { module: 'net', inputs: { cidr: value('cidr') } };
+  return null;
 }

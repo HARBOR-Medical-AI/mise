@@ -232,3 +232,4 @@ body[data-takeover='controller'] > *:not(#td-controller) { visibility: hidden; }
 .tdc-prompt-input:disabled { opacity: 0.5; }
 /* A control that would act, in a READ session that can be raised: it asks the person's password first (D14). */
 .tdc-pill-asks { outline: 2px dashed var(--honey); outline-offset: 2px; }
+.tdc-condition.tdc-condition-long .tdc-condition-name { font-size: 1.35rem; letter-spacing: 0.16em; }

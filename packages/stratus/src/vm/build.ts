@@ -208,28 +208,53 @@ export function vmApplyRun_make(name: string, part: VmPart, deps: VmDeps): JobRu
  * @param deps - What it runs over.
  * @returns The job's work.
  */
-export function vmTeardownRun_make(name: string, all: boolean, deps: VmDeps): JobRun {
+export function vmTeardownRun_make(name: string, all: boolean, deps: VmDeps, shown: () => void = (): void => undefined): JobRun {
   return async (context: JobContext): Promise<void> => {
     const builder = builder_check(deps.builder);
     const call: BuildCall = call_make(context);
     const { record } = vm_read(deps.store, name);
+    // Each part is a step on the record as it begins and ends (the machine, then the data or its keeping), the state
+    // shown after each, so a screen watching draws it going and gone; a default teardown says the data stays.
+    const now = (): string => new Date().toISOString();
+    deps.store.record_update(name, (current: VmRecord): void => { current.teardown = { started: now(), steps: {} }; });
+    const step = (part: 'machine' | 'data', state: 'running' | 'done' | 'kept' | 'failed', note?: string): void => {
+      deps.store.record_update(name, (current: VmRecord): void => {
+        const steps = current.teardown?.steps ?? {};
+        const was = steps[part];
+        steps[part] = { ...(was ?? {}), state, ...(state === 'running' ? { started: now() } : { ended: now() }), ...(note !== undefined ? { note } : {}) };
+        current.teardown = { started: current.teardown?.started ?? now(), steps };
+      });
+      shown();
+    };
+    const part_run = async (part: 'machine' | 'data', stackRef: string | undefined, label: string): Promise<void> => {
+      if (stackRef === undefined) { step(part, 'done', 'nothing of it stands'); return; }
+      step(part, 'running');
+      try {
+        const lines: string[] = await builder.moduleDestroy_run({ region: record.region, stackRef, label }, call);
+        for (const line of lines) context.log_write(`removed ${line}`);
+        step(part, 'done', lines.join('; ') || 'removed');
+      } catch (error: unknown) {
+        step(part, 'failed', error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+    };
+    await part_run('machine', record.machineStackRef, `${name} machine`);
     if (record.machineStackRef !== undefined) {
-      for (const line of await builder.moduleDestroy_run({ region: record.region, stackRef: record.machineStackRef, label: `${name} machine` }, call)) context.log_write(`removed ${line}`);
       deps.store.record_update(name, (current: VmRecord): void => {
         delete current.machineStackRef; delete current.machineOutputs; delete current.built;
         current.machineGone = new Date().toISOString();
       });
       deps.store.file_remove(name, planFile_derive('machine'));
     }
-    if (!all || context.signal.aborted) return;
-    if (record.dataStackRef !== undefined) {
-      for (const line of await builder.moduleDestroy_run({ region: record.region, stackRef: record.dataStackRef, label: `${name} data` }, call)) context.log_write(`removed ${line}`);
-    }
+    if (context.signal.aborted) return;
+    if (!all) { step('data', 'kept', 'kept: the data volume, its backups and the address stay'); return; }
+    await part_run('data', record.dataStackRef, `${name} data`);
     deps.store.record_update(name, (current: VmRecord): void => {
       delete current.dataStackRef; delete current.dataOutputs; delete current.image; delete current.placeId; delete current.machineGone;
       current.gone = new Date().toISOString();
     });
     deps.store.file_remove(name, planFile_derive('data'));
+    shown();
   };
 }
 
