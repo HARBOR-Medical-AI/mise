@@ -229,13 +229,16 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
  * @param deps - The deploy's deps.
  * @param vm - The VM.
  * @param context - The job's log and stop.
+ * @returns Whether the tenancy keeps them now.
  */
-export async function kept_write(deps: DeployDeps, vm: string, context: JobContext): Promise<void> {
-  if (deps.builder.keep_write === undefined) return;
+export async function kept_write(deps: DeployDeps, vm: string, context: JobContext): Promise<boolean> {
+  if (deps.builder.keep_write === undefined) return false;
   try {
     const kept: string | null = await vmKept_write(deps.builder, deps.store, vm, deps.store.record_read(vm)?.region ?? '', { log: (line: string): void => context.log_write(line), signal: context.signal });
     if (kept !== null) context.log_write(`${vm}: ${kept} kept in the tenancy`);
+    return kept !== null;
   } catch (error: unknown) {
-    context.log_write(`${vm}: NOT kept in the tenancy (${error instanceof Error ? error.message : String(error)}): only this host holds ChRIS's passwords until chris deploy ${vm} runs again`);
+    context.log_write(`${vm}: NOT kept in the tenancy (${error instanceof Error ? error.message : String(error)}): only this host holds ChRIS's passwords until vm keep ${vm} (or chris deploy ${vm}) runs again`);
+    return false;
   }
 }

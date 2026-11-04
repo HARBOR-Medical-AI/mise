@@ -108,6 +108,19 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
     return made;
   };
 
+  /** A call retried while the cloud answers it with a 5xx, as a vault or key just made does for a while. */
+  const settled_call = async <T>(call: () => Promise<T>): Promise<T> => {
+    for (let tries: number = 1; ; tries += 1) {
+      try {
+        return await call();
+      } catch (error: unknown) {
+        const status: number | undefined = (error as { statusCode?: number }).statusCode;
+        if (status === undefined || status < 500 || tries >= 12) throw error;
+        await pause(10_000);
+      }
+    }
+  };
+
   /** A secret of a name in the vault, in any state but deleted, or null. */
   const secret_find = async (vaultId: string, name: string): Promise<vault.models.SecretSummary | null> => {
     const all: vault.models.SecretSummary[] = (await secretsOf.listSecrets({ compartmentId: root, vaultId, name })).items;
@@ -146,7 +159,7 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
       const body: vault.models.Base64SecretContentDetails = { contentType: vault.models.Base64SecretContentDetails.contentType, content: Buffer.from(content, 'utf-8').toString('base64') };
       const kept: vault.models.SecretSummary | null = await secret_find(found.id, name);
       if (kept === null) {
-        const made = await secretsOf.createSecret({ createSecretDetails: { compartmentId: root, vaultId: found.id, keyId, secretName: name, freeformTags: KEEP_TAGS, secretContent: body } });
+        const made = await settled_call(() => secretsOf.createSecret({ createSecretDetails: { compartmentId: root, vaultId: found.id, keyId, secretName: name, freeformTags: KEEP_TAGS, secretContent: body } }));
         await secret_settle(made.secret.id);
         return;
       }
@@ -156,7 +169,7 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
       } else {
         await secret_settle(kept.id);
       }
-      await secretsOf.updateSecret({ secretId: kept.id, updateSecretDetails: { secretContent: body } });
+      await settled_call(() => secretsOf.updateSecret({ secretId: kept.id, updateSecretDetails: { secretContent: body } }));
       await secret_settle(kept.id);
     },
 

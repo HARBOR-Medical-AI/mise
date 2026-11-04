@@ -252,7 +252,7 @@ async function chrisPasswd_run(context: ChrisCommandContext, args: ReadonlyArray
     return envelope_error('', undefined, `${shown}chris passwd: ${ran.error}${again}\n`);
   }
   if (result.answer?.kind === 'absent') return envelope_error('', undefined, `chris passwd: ${target.vm}: no account ${username} (chris user add ${username} --email <address>)\n`);
-  const where: string = admin ? ' (kept on this host and in the tenancy, never shown again)' : ' (never kept)';
+  const where: string = !admin ? ' (never kept)' : result.kept === true ? ' (kept on this host and in the tenancy, never shown again)' : ` (kept on this host, never shown again; NOT in the tenancy: vm keep ${target.vm} keeps it there)`;
   return envelope_ok(`${shown}${target.vm}: ${username}'s password changed at ${target.url}${where}\n`);
 }
 

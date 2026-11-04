@@ -424,6 +424,11 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(vm.lines).toContain('cd /srv/data/chris && docker compose up -d');
     expect(vm.lines.some((line: string): boolean => line.includes('a-new-password'))).toBe(false);
     expect([...world.kept.values()].some((content: string): boolean => content.includes('a-new-password'))).toBe(true);
+    const keep = context.builder?.keep_write;
+    if (context.builder !== null) context.builder.keep_write = async (): Promise<void> => { throw new Error('Bad Gateway'); };
+    surface.answers = ['y', 'a-second-password', 'a-second-password'];
+    expect(plain((await chris_run(context, ['passwd'])).rendered)).toBe('store: chris\'s password changed at http://203.0.113.10/api/v1/ (kept on this host, never shown again; NOT in the tenancy: vm keep store keeps it there)\n');
+    if (context.builder !== null && keep !== undefined) context.builder.keep_write = keep;
     surface.answers = ['y', ''];
     const generated = await chris_run(context, ['passwd']);
     const made: string = secrets_read(vms, 'store')?.adminPassword ?? '?';

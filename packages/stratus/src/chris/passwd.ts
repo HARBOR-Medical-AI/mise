@@ -40,6 +40,8 @@ export interface PasswdAsk {
 /** Where the job leaves CUBE's answer for the command. */
 export interface PasswdResult {
   answer?: UserAnswer;
+  /** Whether the tenancy keeps the admin's new password. */
+  kept?: boolean;
 }
 
 /**
@@ -104,6 +106,6 @@ export function chrisPasswdRun_make(vm: string, ask: PasswdAsk, deps: DeployDeps
     const signed = await cube_ask(remote, secrets, 'api/v1/');
     if (signed.status !== 200) throw new Error(`${CHRIS_ADMIN} does not sign in with the new password (HTTP ${signed.status})`);
     context.log_write(`${CHRIS_ADMIN} signs in with the new password`);
-    await kept_write(deps, vm, context);
+    result.kept = await kept_write(deps, vm, context);
   };
 }
