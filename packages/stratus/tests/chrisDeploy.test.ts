@@ -20,7 +20,7 @@ import { curlQuote } from '../src/chris/deploy.js';
 import { secrets_read } from '../src/chris/secrets.js';
 import { goDaddy_make, host_split, point_plan, type Registrar, type RegistrarRecord } from '../src/chris/registrar.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { sshArgs_build, type RemoteAnswer, type VmRemote } from '../src/vm/remote.js';
+import { remoteRetried_make, sshArgs_build, type RemoteAnswer, type VmRemote } from '../src/vm/remote.js';
 import { VmStore } from '../src/vm/state.js';
 import { NetStore } from '../src/net/state.js';
 import { STEPS_SOURCE } from '../src/cluster/steps.js';
@@ -131,6 +131,18 @@ describe('a ChRIS profile and what it renders', () => {
     expect(caddyfile_render({ host: 'cube.example.org', address: '1.2.3.4' })).toBe('cube.example.org {\n\treverse_proxy chris:8000\n}\n');
     expect(caddyfile_render({ host: null, address: '1.2.3.4' }).startsWith(':80 {')).toBe(true);
     expect(curlQuote('a"b\\c')).toBe('"a\\"b\\\\c"');
+  });
+
+  it('tries a line again when ssh itself failed to carry it, never one the VM ran', async () => {
+    const answers: RemoteAnswer[] = [{ code: 255, stdout: '', stderr: 'Connection closed by UNKNOWN port 65535' }, { code: 0, stdout: 'ok', stderr: '' }, { code: 255, stdout: 'partial', stderr: '' }];
+    const ran: string[] = [];
+    const logged: string[] = [];
+    const remote: VmRemote = remoteRetried_make({ run: async (line: string): Promise<RemoteAnswer> => { ran.push(line); return answers.shift() ?? { code: 255, stdout: '', stderr: 'gone' }; } }, { log: (line: string): void => { logged.push(line); }, signal: new AbortController().signal }, 0);
+    expect(await remote.run('mkdir x')).toEqual({ code: 0, stdout: 'ok', stderr: '' });
+    expect(logged).toEqual(['ssh through the bastion did not carry a line (Connection closed by UNKNOWN port 65535); trying again']);
+    expect((await remote.run('make y')).stdout).toBe('partial');
+    expect((await remote.run('never')).stderr).toBe('gone');
+    expect(ran.filter((line: string): boolean => line === 'never')).toHaveLength(6);
   });
 
   it('reaches a VM through the bastion as its proxy, with the VM\'s own key', () => {
@@ -323,8 +335,8 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const secrets: ChrisSecrets | null = secrets_read(vms, 'store');
     expect(secrets?.porterSecret?.length).toBeGreaterThanOrEqual(32);
     const compose = yaml.load(vm.files.get('/srv/data/chris/compose.yml') ?? '') as { services: Record<string, Record<string, unknown>>; volumes: Record<string, unknown> };
-    expect(compose.services['porter']?.['image']).toBe('stratus/porter:0.9.2');
-    expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@0.9.2');
+    expect(compose.services['porter']?.['image']).toBe('stratus/porter:0.9.10');
+    expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@0.9.10');
     expect(compose.services['porter']?.['volumes']).toEqual(['porter:/var/lib/porter']);
     expect(compose.services['caddy']?.['networks']).toEqual({ default: { aliases: ['cube.example.org'] } });
     expect(Object.keys(compose.volumes)).toContain('porter');
