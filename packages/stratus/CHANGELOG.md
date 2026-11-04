@@ -1,5 +1,13 @@
 # @fnndsc/stratus
 
+## 0.11.1
+
+### Patch Changes
+
+- 012bbe7: A session signed in as the ChRIS admin, `chris`, no longer reports WARM-UP FAILED: FEEDS. CUBE makes `chris` with no home folder, so every `chris deploy` now gives it the home a sign-up gives any account (its groups, `/home/chris/uploads` and `/home/chris/feeds`, and the `public` and `shared` links), leaving any already there as they are.
+- 0c57bc8: A ChRIS deployed with `--porter` now runs porter 0.9.10, with the chell, calypso and ARGUS it brings, instead of 0.9.2.
+- 1a10768: A deploy no longer fails at its second step when the VM's bastion session is brand new. Every line sent to a VM is tried again (six tries, ten seconds apart) when ssh itself failed to carry it; a line the VM ran is never repeated.
+
 ## 0.11.0
 
 ### Minor Changes
