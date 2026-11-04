@@ -75,7 +75,7 @@ export function curlQuote(text: string): string {
  * @returns Its answer.
  * @throws Error - When it exits non-zero.
  */
-async function run_must(remote: VmRemote, line: string, what: string, input?: string): Promise<RemoteAnswer> {
+export async function run_must(remote: VmRemote, line: string, what: string, input?: string): Promise<RemoteAnswer> {
   const answer: RemoteAnswer = await remote.run(line, input);
   if (answer.code !== 0) throw new Error(`${what}: exit ${answer.code}: ${(answer.stderr || answer.stdout).trim().split('\n').slice(-3).join(' / ')}`);
   return answer;
@@ -90,7 +90,7 @@ async function run_must(remote: VmRemote, line: string, what: string, input?: st
  * @param json - A body to POST, when one is sent.
  * @returns The status and the body.
  */
-async function cube_ask(remote: VmRemote, secrets: ChrisSecrets, pathPart: string, json?: unknown): Promise<{ status: number; body: string }> {
+export async function cube_ask(remote: VmRemote, secrets: ChrisSecrets, pathPart: string, json?: unknown): Promise<{ status: number; body: string }> {
   const config: string[] = [`user = ${curlQuote(`chris:${secrets.adminPassword}`)}`, 'header = "Accept: application/json"'];
   if (json !== undefined) config.push(`json = ${curlQuote(JSON.stringify(json))}`);
   const answer: RemoteAnswer = await remote.run(`curl -s -K - -w '\\n%{http_code}' http://127.0.0.1:8000/${pathPart}`, `${config.join('\n')}\n`);
@@ -108,7 +108,7 @@ async function cube_ask(remote: VmRemote, secrets: ChrisSecrets, pathPart: strin
  * @param signal - Stops the wait.
  * @returns Whether it passed.
  */
-async function until(test: () => Promise<boolean>, tries: number, everyMs: number, signal: AbortSignal): Promise<boolean> {
+export async function until(test: () => Promise<boolean>, tries: number, everyMs: number, signal: AbortSignal): Promise<boolean> {
   for (let i: number = 0; i < tries && !signal.aborted; i++) {
     if (await test()) return true;
     await pause(everyMs, signal);
@@ -229,13 +229,16 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
  * @param deps - The deploy's deps.
  * @param vm - The VM.
  * @param context - The job's log and stop.
+ * @returns Whether the tenancy keeps them now.
  */
-async function kept_write(deps: DeployDeps, vm: string, context: JobContext): Promise<void> {
-  if (deps.builder.keep_write === undefined) return;
+export async function kept_write(deps: DeployDeps, vm: string, context: JobContext): Promise<boolean> {
+  if (deps.builder.keep_write === undefined) return false;
   try {
     const kept: string | null = await vmKept_write(deps.builder, deps.store, vm, deps.store.record_read(vm)?.region ?? '', { log: (line: string): void => context.log_write(line), signal: context.signal });
     if (kept !== null) context.log_write(`${vm}: ${kept} kept in the tenancy`);
+    return kept !== null;
   } catch (error: unknown) {
-    context.log_write(`${vm}: NOT kept in the tenancy (${error instanceof Error ? error.message : String(error)}): only this host holds ChRIS's passwords until chris deploy ${vm} runs again`);
+    context.log_write(`${vm}: NOT kept in the tenancy (${error instanceof Error ? error.message : String(error)}): only this host holds ChRIS's passwords until vm keep ${vm} (or chris deploy ${vm}) runs again`);
+    return false;
   }
 }

@@ -22,11 +22,13 @@ export interface UserAsk {
   readonly password: string;
 }
 
-/** What CUBE said: made, there already (with its email), or the email another's. */
+/** What CUBE said: made, there already (with its email), or the email another's; a password changed, or no such account. */
 export type UserAnswer =
   | { readonly kind: 'added' }
   | { readonly kind: 'exists'; readonly email: string }
-  | { readonly kind: 'emailTaken'; readonly username: string };
+  | { readonly kind: 'emailTaken'; readonly username: string }
+  | { readonly kind: 'changed' }
+  | { readonly kind: 'absent' };
 
 /** A user name CUBE takes: four to thirty-two of Django's letters, never a comma or a slash. */
 export const USER_NAME: RegExp = /^[A-Za-z0-9_.@+-]{4,32}$/;
@@ -68,6 +70,30 @@ export function userAddProgram_render(ask: UserAsk): string {
 }
 
 /**
+ * The program that sets an account's password, or says there is no such
+ * account: the ask carried as base64 of its JSON, as an add's is.
+ *
+ * @param ask - The account's name and its new password.
+ * @returns The Python program.
+ */
+export function userPasswdProgram_render(ask: { readonly username: string; readonly password: string }): string {
+  const carried: string = Buffer.from(JSON.stringify(ask), 'utf-8').toString('base64');
+  return [
+    'import base64, json',
+    'from django.contrib.auth.models import User',
+    `ask = json.loads(base64.b64decode('${carried}').decode('utf-8'))`,
+    'user = User.objects.filter(username=ask["username"]).first()',
+    'if user is None:',
+    `    print("${ANSWER_MARK} absent")`,
+    'else:',
+    '    user.set_password(ask["password"])',
+    '    user.save()',
+    `    print("${ANSWER_MARK} changed")`,
+    '',
+  ].join('\n');
+}
+
+/**
  * The program's answer, from its output.
  *
  * @param stdout - What the line printed.
@@ -81,6 +107,8 @@ export function userAnswer_parse(stdout: string): UserAnswer | null {
   if (kind === 'added') return { kind: 'added' };
   if (kind === 'exists') return { kind: 'exists', email: JSON.parse(value) as string };
   if (kind === 'email-taken') return { kind: 'emailTaken', username: JSON.parse(value) as string };
+  if (kind === 'changed') return { kind: 'changed' };
+  if (kind === 'absent') return { kind: 'absent' };
   return null;
 }
 
@@ -110,6 +138,6 @@ export function chrisUserAddRun_make(vm: string, ask: UserAsk, deps: DeployDeps,
     const parsed: UserAnswer | null = userAnswer_parse(answer.stdout);
     if (answer.code !== 0 || parsed === null) throw new Error(`CUBE on ${vm} did not make ${ask.username}: exit ${answer.code}: ${(answer.stderr || answer.stdout).trim().split('\n').slice(-3).join(' / ')}`);
     result.answer = parsed;
-    context.log_write(parsed.kind === 'added' ? `${ask.username} made` : `${ask.username} not made (${parsed.kind === 'exists' ? 'there already' : `the email is ${parsed.username}'s`})`);
+    context.log_write(parsed.kind === 'added' ? `${ask.username} made` : `${ask.username} not made (${parsed.kind === 'exists' ? 'there already' : parsed.kind === 'emailTaken' ? `the email is ${parsed.username}'s` : parsed.kind})`);
   };
 }
