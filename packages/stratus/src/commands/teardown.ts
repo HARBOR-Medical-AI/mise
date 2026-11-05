@@ -10,6 +10,7 @@ import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu'
 import { repl_question, sink_dataLine, surface_get } from '@fnndsc/brasa/core';
 import type { HarborCluster } from '../checkout/harborOci.js';
 import { foundClusters_describe, foundRecord_make } from '../cluster/found.js';
+import { clusterLock_refresh } from '../cluster/keep.js';
 import { SPEC_DEFAULT } from '../cluster/spec.js';
 import { TEARDOWN_STEPS, type TeardownStep } from '../cloud/builder.js';
 import type { ClusterRecord, TeardownStepRecord } from '../cluster/state.js';
@@ -62,7 +63,8 @@ export async function clusterTeardown_run(context: BuildCommandContext, args: Re
   }
   if (cluster.origin !== 'built') return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: read from a harbor-oci checkout, not built here\n`);
   if (record.gone !== undefined) return envelope_ok(`${name}: already torn down (${record.gone.slice(0, 16)})\n`);
-  if (record.protected !== false) return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: protected (cluster protect ${name} off lifts it, as its own line)\n`);
+  // The lock as the tenancy keeps it now: one set since on another host stops the teardown here.
+  if ((await clusterLock_refresh(builder, context.store, name)).protected !== false) return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: protected (cluster protect ${name} off lifts it, as its own line)\n`);
   if (surface_get().capabilities.tasks !== true) return envelope_error('', undefined, `cluster teardown: ${name}: Operation not permitted: ${TIER_REFUSAL}\n`);
   const stackRef: string | undefined = record.ids['stackRef'];
   const inStack: number | null = stackRef !== undefined && builder.stackResources_count !== undefined ? await builder.stackResources_count({ region: record.region, stackRef }) : null;

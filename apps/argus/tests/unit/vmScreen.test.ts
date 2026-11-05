@@ -42,7 +42,7 @@ let STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50,
 function answer_make(line: string, mine: string[]): QuietAnswer {
   const envelope = (model: { kind: string; data: unknown }, rendered: string = ''): QuietAnswer => ({ envelopes: [{ rendered, model, status: 'ok' }] });
   if (line === 'vm status') return envelope({ kind: 'stratus.vm.status', data: { vms: [
-    { name: 'store', state: 'built', region: 'us-ashburn-1', stands: STORE_RUNS, declared: '2026-11-01T00:00:00Z', declaredKept: true, spec: SPEC, address: '203.0.113.10', inside: '10.20.0.5', protected: false, built: '2026-11-01T00:00:00Z', chris: { profile: 'minimal', compute: 'NERC', host: 'cube.chrisproject.org', url: 'https://cube.chrisproject.org/api/v1/', porter: null } },
+    { name: 'store', state: 'built', region: 'us-ashburn-1', stands: STORE_RUNS, declared: '2026-11-01T00:00:00Z', declaredKept: true, spec: SPEC, address: '203.0.113.10', inside: '10.20.0.5', protected: false, lock: { at: '2026-11-05T14:02:00.000Z', kept: true }, built: '2026-11-01T00:00:00Z', chris: { profile: 'minimal', compute: 'NERC', host: 'cube.chrisproject.org', url: 'https://cube.chrisproject.org/api/v1/', porter: null } },
     { name: 'lone', state: 'declared', region: 'us-ashburn-1', spec: { ...SPEC, vcpu: 4 }, address: null, inside: null, protected: true, built: null, chris: null },
     { name: 'web', state: 'found', region: 'us-ashburn-1', spec: null, address: '129.158.63.113', inside: '10.20.0.234', protected: true, built: null, chris: null,
       found: { state: 'running', instanceId: 'ocid1.instance.web', shape: 'VM.Standard.E5.Flex', vcpus: 2, memoryGib: 8, tagged: true, chris: { url: 'https://web.example.org/api/v1/', porter: null } } },
@@ -216,6 +216,8 @@ describe('the VM controller', () => {
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
     await settle();
     expect(screen.root.querySelector('.tdc-note-title')?.textContent).toBe('UNLOCKED');
+    // Where the lock is kept and when it was set, read from the tenancy.
+    expect(screen.root.querySelector('.ss-lock-where')?.textContent).toBe('KEPT IN THE TENANCY · SET 2026-11-05 14:02 UTC');
     // What each undoing stops billing, and what keeps billing, beside the pills.
     await settle(8);
     const guard: string = screen.root.querySelector('.ss-col-side')?.textContent ?? '';

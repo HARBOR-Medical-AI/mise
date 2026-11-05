@@ -31,14 +31,19 @@ export function readHold_derive(line: string, manage: boolean | null, canElevate
   return canElevate ? 'asks' : 'held';
 }
 
-/** The lines that act outside this host: a build, a teardown, an adoption, a deploy, a user added. */
-const ACTING_LINE: RegExp = /^(cluster (build|adopt|teardown)|net (build|teardown)|vm (build|teardown)|chris (deploy|user add)|play )\b/;
+/**
+ * The lines that act outside this host: a build, a teardown, an adoption, a
+ * deploy, a user added, and what the tenancy keeps of a VM or a cluster (a
+ * VM's declaration, a lock), which a READ session would keep on this host
+ * alone (the operator, 2026-11-05: declaring and locking raise first).
+ */
+const ACTING_LINE: RegExp = /^(cluster (build|adopt|teardown|protect)|net (build|teardown)|vm (build|teardown|new|protect)|chris (deploy|user add)|play )\b/;
 
 /**
  * Whether a session line would act outside this host, and so needs MANAGE.
  *
  * @param line - The line a control sends.
- * @returns True for a build, a teardown, an adoption, a deploy, a user add, a play.
+ * @returns True for a build, a teardown, an adoption, a deploy, a user add, a play, a VM declared, a lock set.
  */
 export function line_acts(line: string): boolean {
   return ACTING_LINE.test(line.trim());
@@ -65,4 +70,16 @@ export function modePill_make(manage: boolean | null): HTMLElement | null {
   pill.append(label, name);
   pill.title = manage ? 'Entered as MANAGE: a build, a teardown or a deploy may run, each after its own question.' : READ_HELD;
   return pill;
+}
+
+/**
+ * Where a lock is kept and when it was set, in words, for the screens that draw it.
+ *
+ * @param lock - The lock's time and whether the tenancy holds it; absent from an older daemon.
+ * @returns `kept in the tenancy · set <time> UTC`, `this host only · set <time> UTC`, or null when not said.
+ */
+export function lockWhere_text(lock: { at: string; kept: boolean } | null | undefined): string | null {
+  if (lock === null || lock === undefined) return null;
+  const at: string = lock.at.slice(0, 16).replace('T', ' ');
+  return lock.kept ? `kept in the tenancy · set ${at} UTC` : `this host only · set ${at} UTC: a MANAGE session keeps it in the tenancy`;
 }

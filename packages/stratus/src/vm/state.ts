@@ -18,8 +18,12 @@ import { vmSpecYaml_parse, vmSpecYaml_render, type VmSpec } from './spec.js';
 
 /** What stratus knows of a VM it builds. */
 export interface VmRecord extends KeptRecord {
-  /** Born true; `vm protect <name> off` lifts it, and teardown refuses while it holds. */
+  /** Born true; `vm protect <name> off` lifts it, and teardown refuses while it holds. The tenancy keeps it (`kept/lock.ts`). */
   protected?: boolean;
+  /** When the lock was last set. */
+  protectedAt?: string;
+  /** The time of the lock the tenancy's vault last held, as last read. */
+  lockKept?: string;
   /** The place it stands in: its network's. */
   placeId?: string;
   /** The image pinned at the first build; a later plan never moves it silently. */
@@ -109,7 +113,7 @@ export class VmStore extends SpecStore<VmSpec, VmRecord> {
     const fresh: boolean = this.record_read(name) === null;
     const record: VmRecord = super.declare(name, spec, region);
     if (!fresh) return record;
-    return this.record_update(name, (current: VmRecord): void => { current.protected = true; });
+    return this.record_update(name, (current: VmRecord): void => { current.protected = true; current.protectedAt = current.created; });
   }
 
   /**

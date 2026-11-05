@@ -126,6 +126,8 @@ export const vmStatusRowSchema = z.object({
   /** The machine's private address, null without a machine. */
   inside: z.string().nullable(),
   protected: z.boolean(),
+  /** When the lock was set, and whether the tenancy holds it (false: this host only); absent from an older daemon. */
+  lock: z.object({ at: z.string(), kept: z.boolean() }).optional(),
   /** When its machine was last built, ISO 8601; null when it stands without one. */
   built: z.string().nullable(),
   /** The ChRIS deployed on it, or null. */

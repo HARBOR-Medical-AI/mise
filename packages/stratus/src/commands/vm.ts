@@ -31,7 +31,8 @@ import { VM_OPTIONS, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_di
 import type { CloudShape, CloudVolume } from '../cloud/driver.js';
 import { CHRIS_PORTER_TAG, CHRIS_URL_TAG, VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
 import { vmsFound_read, vmTakeover_run, type FoundVm } from '../vm/found.js';
-import { VM_KEYLESS, vmDeclared_adopt, vmKey_held, vmKeyless_is, vmKept_read, vmKept_write, type VmKept } from '../vm/keep.js';
+import { VM_KEYLESS, vmDeclared_adopt, vmKey_held, vmKeyless_is, vmKept_read, vmKept_write, vmLock_adopt, type VmKept } from '../vm/keep.js';
+import { lock_read, lock_where, lockKept_is } from '../kept/lock.js';
 import { cost_words, planFile_derive, VM_JOBS, vmApplyRun_make, vmCost_estimate, vmNet_read, vmPlanRun_make, vmTeardownRun_make, type VmCost, type VmDeps, type VmPart } from '../vm/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 import { VM_GROW_JOB, vmGrowRun_make, vmPlan_judge, type VmPlanJudged } from '../vm/resize.js';
@@ -161,7 +162,7 @@ function declaredKept_is(record: VmRecord): boolean {
 function vmStatus_lines(store: VmStore, record: VmRecord, spec: VmSpec | null): string[] {
   const state: string = vmState_word(record);
   const tone = state === 'built' ? chalk.cyan : state === 'gone' ? chalk.gray : chalk.yellow;
-  const guard: string = record.protected === true ? chalk.gray('  protected') : chalk.yellow('  unprotected');
+  const guard: string = `${record.protected === true ? chalk.gray('  protected') : chalk.yellow('  unprotected')} ${chalk.gray(lock_where(record, false))}`;
   const lines: string[] = [`${chalk.bold(record.name)}  ${tone(state)}${guard}  ${record.region}`];
   // What runs, read from the tenancy, beside what is declared: the two are said apart, never one for the other.
   const where: string = record.declared === undefined ? '' : record.built !== undefined && record.declared <= record.built ? chalk.gray('  (as built: the tenancy\'s stacks hold it)')
@@ -202,6 +203,7 @@ function vmRowKept_make(context: VmCommandContext, name: string): VmStatusRow {
     address: record.dataOutputs?.['public_ip'] ?? null,
     inside: record.machineOutputs?.['private_ip'] ?? null,
     protected: record.protected === true,
+    lock: { at: lock_read(record, false).at, kept: lockKept_is(record, false) },
     built: record.built ?? null,
     chris: record.chris === undefined ? null : { profile: record.chris.profile, compute: record.chris.compute, host: record.chris.host, url: record.chris.url, porter: record.chris.porter ?? null },
     takenFrom: record.takenFrom ?? null,
@@ -347,6 +349,7 @@ async function vmTruth_read(context: VmCommandContext, region: string, byName: R
     try {
       const kept: VmKept | null = await vmKept_read(context.builder, name, region);
       vmDeclared_adopt(context.store, name, kept);
+      vmLock_adopt(context.store, name, kept);
       context.store.record_update(name, (current: VmRecord): void => {
         if (kept?.declared === undefined) delete current.keptDeclared;
         else current.keptDeclared = kept.declared.at;
@@ -904,8 +907,50 @@ async function vmProtect_run(context: VmCommandContext, args: ReadonlyArray<stri
   if (nameWord === undefined || (setting !== 'on' && setting !== 'off') || extra.length > 0) return envelope_error('', undefined, 'vm protect: usage: vm protect <name> on|off\n');
   const need = await vm_needOrTake(context, nameWord, 'protect');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
-  context.store.record_update(need.name, (current: VmRecord): void => { current.protected = setting === 'on'; });
-  return envelope_ok(`${need.said}${need.name}: ${setting === 'on' ? 'protected: teardown refuses' : `unprotected: vm teardown ${need.name} may remove it`}\n`);
+  context.store.record_update(need.name, (current: VmRecord): void => { current.protected = setting === 'on'; current.protectedAt = new Date().toISOString(); });
+  const said: string = `${need.said}${need.name}: ${setting === 'on' ? 'protected: teardown refuses' : `unprotected: vm teardown ${need.name} may remove it`}\n`;
+  return envelope_ok(`${said}${await lock_keep(context, need.name)}`);
+}
+
+/**
+ * Keeps a VM's lock in the tenancy from a MANAGE session, so a lock set on
+ * one host holds on every host; below the tasks tier it stays on this host
+ * and the line says so.
+ *
+ * @param context - The session.
+ * @param name - The VM whose lock was just set.
+ * @returns A line saying where the lock is kept.
+ */
+async function lock_keep(context: VmCommandContext, name: string): Promise<string> {
+  const region: string = context.store.record_read(name)?.region ?? context.region() ?? '';
+  if (!tasks_granted() || context.builder?.keep_write === undefined) {
+    return `${chalk.yellow('kept on this host only: a session with the tasks tier keeps the lock in the tenancy (vm protect again)')}\n`;
+  }
+  try {
+    await vmKept_write(context.builder, context.store, name, region, { log: (): void => undefined, signal: new AbortController().signal });
+    return `${chalk.gray('kept in the tenancy: every session reads this lock')}\n`;
+  } catch (error: unknown) {
+    return `${chalk.yellow(`kept on this host only: the tenancy did not take it (${error instanceof Error ? error.message : String(error)})`)}\n`;
+  }
+}
+
+/**
+ * The lock as the tenancy keeps it now, read before a teardown acts on this
+ * host's: a lock set since on another host stops it here.
+ *
+ * @param context - The session.
+ * @param name - The VM.
+ * @returns Its record after the read; this host's as it was when the vault does not answer.
+ */
+async function lock_refresh(context: VmCommandContext, name: string): Promise<VmRecord> {
+  const record: VmRecord = context.store.record_read(name) as VmRecord;
+  if (context.builder?.keep_read === undefined) return record;
+  try {
+    vmLock_adopt(context.store, name, await vmKept_read(context.builder, name, record.region));
+  } catch {
+    // The vault did not answer: the lock stays as last read.
+  }
+  return context.store.record_read(name) as VmRecord;
 }
 
 /**
@@ -924,7 +969,7 @@ async function vmTeardown_run(context: VmCommandContext, args: ReadonlyArray<str
   const { name, record, spec } = need;
   if (need.said !== '') sink_dataLine(need.said.trimEnd());
   if (record.machineStackRef === undefined && (!all || record.dataStackRef === undefined)) return envelope_ok(`${name}: nothing of it ${all ? 'is built' : 'but its kept data is built (vm teardown --all takes that)'}\n`);
-  if (record.protected === true) return envelope_error('', undefined, `vm teardown: ${name}: protected (vm protect ${name} off)\n`);
+  if ((await lock_refresh(context, name)).protected === true) return envelope_error('', undefined, `vm teardown: ${name}: protected (vm protect ${name} off)\n`);
   if (!tasks_granted()) return envelope_error('', undefined, `vm teardown: ${TIER_REFUSAL}\n`);
   const deps = deps_make(context);
   if ('error' in deps) return envelope_error('', undefined, `vm teardown: ${deps.error}\n`);

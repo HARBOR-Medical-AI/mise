@@ -274,23 +274,23 @@ describe('the script screen', () => {
     screen.root.remove();
   });
 
-  it('entered as READ, the header says so and every control that would act is held with the door as its reason; a line that only declares still runs', async () => {
+  it('entered as READ, the header says so and every control that would act is held with the door as its reason; a VM declared or locked is held too; a network declared still runs', async () => {
     const { screen, sent } = screen_make(['done', 'done', 'ready', 'not yet', 'not yet'], false, false);
     await screen.open('/scripts/chrisproject/store.mise');
     await settle();
     expect(screen.root.querySelector('.tdc-mode .tdc-condition-name')?.textContent).toBe('READ');
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-2"]')?.click();
     await settle();
-    // VM NEW's BUILD would act: held; its DECLARE builds nothing and stands.
+    // VM NEW's BUILD would act: held. Its DECLARE and the lock are kept in the tenancy, which READ would keep on this host
+    // alone: held too (raised first where the session can be).
     const run: HTMLButtonElement | undefined = button_named(screen.root, 'BUILD · REFUSED');
     expect(run?.disabled).toBe(true);
     expect(run?.title).toContain('entered as READ');
     expect(run?.title).toContain('no door to check a password at');
-    expect(button_named(screen.root, 'DECLARE')?.disabled).toBe(false);
+    expect(button_named(screen.root, 'DECLARE · REFUSED')?.disabled).toBe(true);
     expect(button_named(screen.root, 'TEARDOWN · REFUSED')?.disabled).toBe(true);
     expect(button_named(screen.root, 'TEARDOWN · ALL · REFUSED')?.disabled).toBe(true);
-    // PROTECT writes the record on this host: not held.
-    expect(button_named(screen.root, 'PROTECT · OFF')?.disabled).toBe(false);
+    expect(button_named(screen.root, 'PROTECT · OFF · REFUSED')?.disabled).toBe(true);
     // NET NEW declares and builds nothing: DECLARE stands and sends.
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
     await settle();

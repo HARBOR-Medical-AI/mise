@@ -323,7 +323,7 @@ describe('vm, over the fake cloud', () => {
     surface.answers = ['y'];
     await vm_run(context, ['build', 'store']);
     expect((await vm_run(context, ['teardown', 'store'])).renderedErr).toBe('vm teardown: store: protected (vm protect store off)\n');
-    expect(plain((await vm_run(context, ['protect', 'store', 'off'])).rendered)).toBe('store: unprotected: vm teardown store may remove it\n');
+    expect(plain((await vm_run(context, ['protect', 'store', 'off'])).rendered)).toBe('store: unprotected: vm teardown store may remove it\nkept in the tenancy: every session reads this lock\n');
     surface.answers = ['y'];
     expect(plain((await vm_run(context, ['teardown', 'store'])).rendered)).toBe('store: its machine is gone; its data and address stay (vm build store makes the machine again over them)\n');
     expect(surface.asked.at(-1)).toContain('keep its data volume, backups and address 203.0.113.10 ($0.003 an hour, $2.13 a month)');
@@ -392,7 +392,7 @@ describe('vm, over the fake cloud', () => {
     const keyless = ((await vm_run(third, ['status'])).model as { data: { vms: Array<{ name: string; keyless?: boolean }> } }).data.vms.find((one) => one.name === 'old');
     expect(keyless?.keyless).toBe(true);
     expect((await vm_run(third, ['build', 'old'])).renderedErr).toContain('vm build: old: the tenancy keeps no SSH key for it, and this host holds none');
-    expect(plain((await vm_run(context, ['keep', 'old'])).rendered)).toContain('old: its SSH key and what was declared kept in the tenancy: any session holding its credentials reaches it');
+    expect(plain((await vm_run(context, ['keep', 'old'])).rendered)).toContain('old: its SSH key, what was declared and its lock kept in the tenancy: any session holding its credentials reaches it');
     expect(world.kept.has('mise-vm-old')).toBe(true);
     // A VM made outside stratus is read, never taken over.
     seen.instances = [{ name: 'lab-box', id: 'ocid1.instance.lab', state: 'running', region: 'us-ashburn-1', created: '', tags: {}, raw: {}, shape: 'VM.Standard.E5.Flex', zone: 'AD-1', ips: ['10.0.0.9'], vcpus: 2, memoryGib: 8, containerId: built.placeId as string }];
@@ -429,6 +429,35 @@ describe('vm, over the fake cloud', () => {
     const spec180: VmSpec = { ...SPEC, disk: 180 };
     expect(vmKept_merge({ vm: 'x', ssh: { privateKey: 'k', publicKey: 'p' }, declared: { spec: spec180, at: '2026-11-05' } }, { vm: 'x', declared: { spec: SPEC, at: '2026-11-04' } }))
       .toEqual({ vm: 'x', ssh: { privateKey: 'k', publicKey: 'p' }, declared: { spec: spec180, at: '2026-11-05' } });
+  });
+
+  it('keeps the lock in the tenancy: a lock set on one host holds on another, and stops its teardown there; at READ it stays here and says so', async () => {
+    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+    surface.answers = ['y'];
+    await vm_run(context, ['build', 'store']);
+    const there: VmCommandContext = { ...context, store: new VmStore(join(root, 'vms-there')), nets: new NetStore(join(root, 'nets-there')) };
+    await vm_run(there, ['status']);
+    // Lifted here, the vault keeps it with when; the other host reads it lifted on its next listing.
+    expect(plain((await vm_run(context, ['protect', 'store', 'off'])).rendered)).toContain('kept in the tenancy: every session reads this lock');
+    expect(JSON.parse(world.kept.get('mise-vm-store') as string).lock).toEqual({ protected: false, at: expect.any(String) });
+    const row = async (): Promise<{ protected: boolean; lock?: { at: string; kept: boolean } } | undefined> =>
+      ((await vm_run(there, ['status'])).model as { data: { vms: Array<{ name: string; protected: boolean; lock?: { at: string; kept: boolean } }> } }).data.vms.find((one) => one.name === 'store');
+    expect(await row()).toMatchObject({ protected: false, lock: { kept: true } });
+    expect(plain((await vm_run(there, ['store'])).rendered)).toMatch(/unprotected \(kept in the tenancy, set \d{4}-\d\d-\d\d \d\d:\d\d UTC\)/);
+    // Locked again here: the other host, still holding it lifted, is refused its teardown by the vault's newer lock.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await vm_run(context, ['protect', 'store', 'on']);
+    expect(there.store.record_read('store')?.protected).toBe(false);
+    expect((await vm_run(there, ['teardown', 'store'])).renderedErr).toBe('vm teardown: store: protected (vm protect store off)\n');
+    expect(there.store.record_read('store')?.protected).toBe(true);
+    // At READ the lock is this host's alone, and the line and the listing say so.
+    (surface.capabilities as { tasks?: boolean }).tasks = false;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(plain((await vm_run(there, ['protect', 'store', 'off'])).rendered)).toContain('kept on this host only: a session with the tasks tier keeps the lock in the tenancy');
+    expect(JSON.parse(world.kept.get('mise-vm-store') as string).lock.protected).toBe(true);
+    expect(await row()).toMatchObject({ protected: false, lock: { kept: false } });
+    (surface.capabilities as { tasks?: boolean }).tasks = true;
+    expect(vmKept_merge({ vm: 'x', lock: { protected: true, at: '2026-11-05' } }, { vm: 'x', lock: { protected: false, at: '2026-11-04' } })).toEqual({ vm: 'x', lock: { protected: true, at: '2026-11-05' } });
   });
 
   it('lists the VMs the tenancy runs beside those kept here, and refuses to declare over one (the tenancy is the truth)', async () => {

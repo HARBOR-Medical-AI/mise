@@ -27,6 +27,7 @@ import { clusterAdopt_run, clusterBuild_run, clusterNew_run, clusterPlan_run, ty
 import { clusterVerify_run, verifyReach_default } from './verify.js';
 import { clusterTeardown_run } from './teardown.js';
 import { clusterProtect_run } from './protect.js';
+import { clusterLock_refresh } from '../cluster/keep.js';
 import { clusterSize_run } from './size.js';
 import { clusterSummary_read } from '../cluster/readout.js';
 import type { AnswerCache } from '../cache.js';
@@ -156,6 +157,8 @@ export async function clusterStatus_read(context: ClusterCommandContext, cluster
   const found = cluster.found;
   // A cluster built here keeps its compartment in its record, a checkout in its settings: either is counted in the tenancy.
   const compartmentId: string | undefined = cluster.settings['OCI_COMPARTMENT_OCID'] ?? (cluster.state as { compartmentId?: string } | null)?.compartmentId;
+  // The lock as the tenancy keeps it (a lock set on another host holds here), read before the summary draws it.
+  if (cluster.origin === 'built' && context.build !== undefined && context.build.store.record_read(cluster.name) !== null) await clusterLock_refresh(context.build.builder, context.build.store, cluster.name);
   const [compartment, cost] = await Promise.all([compartment_count(context, compartmentId, found?.resources ?? null), clusterCost_read(context, cluster)]);
   const countedAt: string = new Date().toISOString();
   // A found cluster's line: what carries its tag, what the cloud makes of it, and the one line that moves it on.

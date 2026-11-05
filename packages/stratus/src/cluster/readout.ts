@@ -15,6 +15,7 @@ import { taskState_isOver, type ClusterCondition, type ClusterSummary, type Plan
 import { runner_get, type JobRecord } from '@fnndsc/brasa/core';
 import { plan_count, TEARDOWN_STEPS, type InfraPlan, type PlanRow, type TeardownStep } from '../cloud/builder.js';
 import { lastDone_find, type HarborCluster, type StepState } from '../checkout/harborOci.js';
+import { lock_read, lockKept_is } from '../kept/lock.js';
 import type { ClusterRecord, ClusterStore } from './state.js';
 import { BUILD_STEPS, buildJob_id, FIRST_BILLING_STEP, stepNext_find, STEPS_SOURCE, teardownJob_id } from './steps.js';
 
@@ -23,7 +24,7 @@ import { VERIFY_FILE, type VerifyKept } from './verify.js';
 export { VERIFY_FILE, type VerifyKept };
 
 /** The parts of a summary the controller draws, beyond the tile's glance. */
-export type ClusterReadout = Required<Pick<ClusterSummary, 'condition' | 'billing' | 'origin' | 'protected' | 'refused' | 'region' | 'compartment' | 'gone' | 'teardown' | 'spec' | 'next' | 'billingStep' | 'running' | 'plan' | 'verify' | 'asking'>>;
+export type ClusterReadout = Required<Pick<ClusterSummary, 'condition' | 'billing' | 'origin' | 'protected' | 'lock' | 'refused' | 'region' | 'compartment' | 'gone' | 'teardown' | 'spec' | 'next' | 'billingStep' | 'running' | 'plan' | 'verify' | 'asking'>>;
 
 /**
  * Whether a teardown stopped part way: steps done, the record not yet gone, no task running.
@@ -198,6 +199,7 @@ export function clusterReadout_build(cluster: HarborCluster, store: ClusterStore
     billing: cluster.origin === 'found' ? cluster.found?.condition === 'UP' : record?.gone === undefined && record?.teardown?.steps['destroy']?.state !== 'done' && applied,
     origin: cluster.origin === 'found' ? 'found' : cluster.origin !== 'built' || record === null ? 'checkout' : record.adopted !== undefined ? 'adopted' : 'built',
     protected: record?.protected !== false,
+    lock: record === null ? null : { at: lock_read(record, true).at, kept: lockKept_is(record, true) },
     refused: refusals_derive(cluster, record),
     region: record?.region ?? cluster.settings['OCI_REGION'] ?? null,
     compartment: record?.compartmentId ?? cluster.settings['OCI_COMPARTMENT_OCID'] ?? null,
