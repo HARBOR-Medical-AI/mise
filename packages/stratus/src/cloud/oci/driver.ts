@@ -18,7 +18,7 @@ import type {
   CloudNetwork, CloudObject, CloudPrice, ServicePrices, CloudRecord, CloudSecurityGroup, CloudShape, CloudSubnet, CloudVolume, CloudZone, FoundCluster, FoundInstance, ResourceCounts,
 } from '../driver.js';
 import type { OciApi, OciCompartmentRecord, OciLimitValueRecord, OciShapeRecord, OciTenancyRecord } from './api.js';
-import type { OciAttachmentRecord, OciInstanceRecord, OciResourceRecord, OciVnicAttachmentRecord, OciVnicRecord, OciVolumeRecord } from './resourceApi.js';
+import type { OciAttachmentRecord, OciInstanceRecord, OciResourceRecord, OciVcnRecord, OciVnicAttachmentRecord, OciVnicRecord, OciVolumeRecord } from './resourceApi.js';
 import { byName_sort, foundClusters_fold, resource_convert, searchHits_count, searchQuery_format, tagQuery_format } from './resourceMap.js';
 import { jsonFetch_default, ociPrices_read, ociServicePrices_read, PRICE_LIST_URL, shapeTerms_get, type JsonFetch } from './prices.js';
 import { VM_OS_NAMES } from './modules/vm.js';
@@ -271,7 +271,7 @@ export class OciDriver implements CloudDriver {
   }
 
   async networks_list(containerId: string, region: string): Promise<CloudNetwork[]> {
-    return byName_sort((await this.api.vcns_list(region, containerId)).map((record: OciResourceRecord): CloudNetwork => resource_convert(record, region)));
+    return byName_sort((await this.api.vcns_list(region, containerId)).map((record: OciVcnRecord): CloudNetwork => ({ ...resource_convert(record, region), cidrs: record.cidrBlocks })));
   }
 
   async subnets_list(containerId: string, region: string): Promise<CloudSubnet[]> {

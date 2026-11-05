@@ -64,6 +64,11 @@ export interface OciBackupPolicyRecord {
   readonly periods: ReadonlyArray<string>;
 }
 
+/** A VCN, with the address ranges it holds. */
+export interface OciVcnRecord extends OciResourceRecord {
+  readonly cidrBlocks: ReadonlyArray<string>;
+}
+
 /** A VNIC attached to an instance. */
 export interface OciVnicAttachmentRecord {
   readonly instanceId: string;
@@ -152,7 +157,7 @@ export interface OciResourceApi {
   image_get(region: string, imageId: string): Promise<OciImageRecord>;
   nsgIngress_list(region: string, nsgId: string): Promise<OciIngressRecord[]>;
   backupPolicy_read(region: string, volumeId: string): Promise<OciBackupPolicyRecord | null>;
-  vcns_list(region: string, compartmentId: string): Promise<OciResourceRecord[]>;
+  vcns_list(region: string, compartmentId: string): Promise<OciVcnRecord[]>;
   subnets_list(region: string, compartmentId: string): Promise<OciVcnMemberRecord[]>;
   nsgs_list(region: string, compartmentId: string): Promise<OciVcnMemberRecord[]>;
   loadBalancers_list(region: string, compartmentId: string): Promise<OciLoadBalancerRecord[]>;
@@ -333,12 +338,12 @@ export function ociResourceApi_make(provider: common.AuthenticationDetailsProvid
       const policy: core.responses.GetVolumeBackupPolicyResponse = await clients.storage(region).getVolumeBackupPolicy({ policyId });
       return { name: policy.volumeBackupPolicy.displayName, periods: policy.volumeBackupPolicy.schedules.map((schedule: core.models.VolumeBackupSchedule): string => String(schedule.period)) };
     },
-    async vcns_list(region: string, compartmentId: string): Promise<OciResourceRecord[]> {
+    async vcns_list(region: string, compartmentId: string): Promise<OciVcnRecord[]> {
       const items: core.models.Vcn[] = await pages_drain(async (page) => {
         const answer: core.responses.ListVcnsResponse = await clients.network(region).listVcns({ compartmentId, ...page_arg(page) });
         return { items: answer.items, next: answer.opcNextPage };
       });
-      return items.map(resourceRecord_convert);
+      return items.map((vcn: core.models.Vcn): OciVcnRecord => ({ ...resourceRecord_convert(vcn), cidrBlocks: vcn.cidrBlocks ?? (vcn.cidrBlock !== undefined ? [vcn.cidrBlock] : []) }));
     },
     async subnets_list(region: string, compartmentId: string): Promise<OciVcnMemberRecord[]> {
       const items: core.models.Subnet[] = await pages_drain(async (page) => {

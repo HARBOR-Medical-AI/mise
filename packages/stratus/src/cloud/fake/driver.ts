@@ -184,7 +184,13 @@ export class FakeDriver implements CloudDriver {
   }
 
   async networks_list(containerId: string, region: string): Promise<CloudNetwork[]> {
-    return this.resources_list<CloudNetwork>('networks', containerId, region);
+    const listed: CloudNetwork[] = this.resources_list<CloudNetwork>('networks', containerId, region);
+    // What the fake builder applied: a network's VCN, with the range it was applied with.
+    for (const stack of this.built?.moduleStacks.values() ?? []) {
+      if (stack.module !== 'net' || stack.applied === null || stack.placeId !== containerId) continue;
+      listed.push({ id: `ocid1.vcn.oc1..fake-${stack.owner}`, name: stack.owner, state: 'available', region, created: '2026-11-01T21:00:00Z', tags: {}, raw: {}, cidrs: [stack.applied['cidr'] ?? ''] });
+    }
+    return listed;
   }
 
   async subnets_list(containerId: string, region: string): Promise<CloudSubnet[]> {
@@ -320,6 +326,10 @@ export class FakeDriver implements CloudDriver {
       if (entry.containerId !== containerId || GONE_STATES.includes(entry.record.state)) continue;
       if (entry.kind !== 'dns' && entry.record.region !== region) continue;
       counts[entry.kind] = (counts[entry.kind] ?? 0) + 1;
+    }
+    // What the fake builder made in a cluster's compartment.
+    for (const [kind, count] of Object.entries(this.built?.held.get(containerId) ?? {})) {
+      if (count !== undefined && count > 0) counts[kind as ResourceKind] = (counts[kind as ResourceKind] ?? 0) + count;
     }
     return counts;
   }

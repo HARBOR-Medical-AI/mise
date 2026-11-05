@@ -191,7 +191,10 @@ export interface CloudBackups {
 }
 
 /** A private network: a VCN, a VPC. */
-export type CloudNetwork = CloudResource;
+export interface CloudNetwork extends CloudResource {
+  /** The address ranges it was made with, when the cloud says. */
+  readonly cidrs?: ReadonlyArray<string>;
+}
 
 /** A subnet, inside a network. */
 export interface CloudSubnet extends CloudResource {

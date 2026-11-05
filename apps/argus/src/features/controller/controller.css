@@ -99,6 +99,10 @@ body[data-takeover='controller'] > *:not(#td-controller) { visibility: hidden; }
 .tdc-step-name { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.03em; overflow-wrap: anywhere; line-height: 1.1; }
 .tdc-step-note { font-size: 0.52rem; line-height: 1.2; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .tdc-step-word { font-size: 0.55rem; font-weight: 700; letter-spacing: 0.1em; }
+/* what the tenancy holds of what the step makes, as counted; a step done of which it holds none is drawn as the disagreement it is */
+.tdc-step:has(.tdc-step-held) { grid-template-rows: auto auto 1fr auto auto; }
+.tdc-step-held { font-size: 0.5rem; letter-spacing: 0.08em; opacity: 0.85; }
+.tdc-step.tdc-step-unheld { border-color: var(--tdc-destroy); box-shadow: inset 0 0 0 2px var(--tdc-destroy); }
 .tdc-step.tdc-step-done { background: color-mix(in srgb, var(--harvestgold) 85%, transparent); border-color: var(--harvestgold); color: #000; }
 .tdc-step.tdc-step-running { background: var(--butter); border-color: var(--butter); color: #000; }
 .tdc-step.tdc-step-asking { background: var(--tdc-bill); border-color: var(--tdc-bill); color: #000; }

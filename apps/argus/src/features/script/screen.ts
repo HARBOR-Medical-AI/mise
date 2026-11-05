@@ -1549,7 +1549,15 @@ export class ScriptScreen {
     else if (row === null) side.append(el('p', 'tdc-prose', 'Nothing of it stands: neither this host nor the tenancy holds a network by that name.'));
     else side.append(this.pairs_make([
       ['STATE', row.state.toUpperCase()],
-      ['CIDR', row.builtCidr === null ? (row.cidr ?? '—') : row.cidr === null || row.cidr === row.builtCidr ? `${row.builtCidr} (as built)` : `${row.builtCidr} as built · ${row.cidr} declared`],
+      // The range it stands with is the VCN's, read from the tenancy; this host's record of the last build speaks only where the VCN was not read.
+      ['CIDR', ((): string => {
+        const stands = row.stands ?? null;
+        const runs: string | null = stands !== null ? stands.cidr : row.builtCidr;
+        const how: string = stands !== null ? 'the VCN, read from the tenancy' : 'as built, this host\'s record';
+        if (stands !== null && stands.cidr === null) return `the tenancy holds no VCN of it${row.cidr !== null ? ` · ${row.cidr} declared` : ''}`;
+        if (runs === null) return row.cidr ?? '—';
+        return row.cidr === null || row.cidr === runs ? `${runs} (${how})` : `${runs} (${how}) · ${row.cidr} declared`;
+      })()],
       ['STACK', row.stack === null ? 'none found in the tenancy' : `${row.stack.state.toUpperCase()} · ${row.stack.id}`],
       ['BASTION', row.bastion === null ? '—' : `${row.bastion}${row.admits !== null ? ` · admits ${row.admits}` : ''}`],
     ]));
