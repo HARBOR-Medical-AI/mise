@@ -5,7 +5,7 @@
  * @file The TD controller's screen: a pill per cluster and NEW, a pill that
  * sends its line, an event redrawing the condition and the title, the
  * engine's question answered on the strip by a pill or a typed name, the
- * lock and the refusals drawn, and COMMIT held until the name is a free DNS
+ * lock and the refusals drawn, and BUILD (a new cluster's one commit) held until the name is a free DNS
  * label.
  */
 import { describe, it, expect } from '@jest/globals';
@@ -138,9 +138,11 @@ describe('the TD controller screen', () => {
 
   it('shows the teardown running on its seat, feeds its log, and says torn down when it ends', async () => {
     const { controller, sent, cues } = controller_make();
-    controller.clusters_take([cluster_make('quay', { condition: 'UP', protected: false, refused: {} })]);
+    controller.clusters_take([cluster_make('quay', { condition: 'UP', protected: false, refused: {}, cost: { hourly: 0.61, soFar: 3, currency: 'USD' } })]);
     controller.cluster_choose('quay');
     controller.view_show('teardown');
+    // What a teardown stops billing stands beside its pills.
+    expect(controller.root.querySelector('.tdc-body')?.textContent).toContain('TEAR DOWN STOPS$445 A MONTH · $0.61 AN HOUR');
     // The teardown's task arrives by an event: the condition, the RUNNING box with its clock and KILL, and FOLLOW by the job id.
     const body: HTMLElement = controller.root.querySelector('.tdc-body') as HTMLElement;
     const blocks = (): string[] => [...body.querySelectorAll('.tdc-teardown-step')].map((block: Element): string => `${block.querySelector('.tdc-strip-word')?.textContent}[${[...block.classList].find((name: string): boolean => name.startsWith('tdc-step-'))}]`);
@@ -154,7 +156,13 @@ describe('the TD controller screen', () => {
     expect(blocks()).toEqual(['GONE · 15:06[tdc-step-gone]', 'GOING[tdc-step-going]', ...Array<string>(5).fill('STANDS[tdc-step-stands]')]);
     expect(body.querySelector('.tdc-running .tdc-section-title, .tdc-running h3, .tdc-running')?.textContent).toContain('RUNNING · TEARDOWN');
     expect(body.querySelector('.tdc-running-clock')?.textContent).toMatch(/^14:54 · /);
-    expect(button_named(body, 'KILL')).toBeDefined();
+    // KILL asks in place: the first press says what stopping part way leaves; KEEP IT RUNNING disarms it; the second press sends.
+    button_named(body, 'KILL')?.click();
+    expect(controller.root.querySelector('.tdc-running .tdc-note-title')?.textContent).toBe('KILL STOPS IT PART WAY');
+    expect(sent.some((line: string): boolean => line.startsWith('kill '))).toBe(false);
+    button_named(controller.root.querySelector('.tdc-body') as HTMLElement, 'KEEP IT RUNNING')?.click();
+    expect(button_named(controller.root.querySelector('.tdc-body') as HTMLElement, 'KILL')).toBeDefined();
+    expect(button_named(controller.root.querySelector('.tdc-body') as HTMLElement, 'KILL · NOW')).toBeUndefined();
     expect(button_named(body, 'TEAR DOWN')).toBeUndefined();
     button_named(body, 'FOLLOW')?.click();
     await flush();
@@ -259,7 +267,7 @@ describe('the TD controller screen', () => {
     controller.root.remove();
   });
 
-  it('holds COMMIT until the new name is a free DNS label, then writes the spec and plays the tenant', async () => {
+  it('holds BUILD until the new name is a free DNS label, then writes the spec and plays the tenant', async () => {
     const { controller, sent, hooks } = controller_make();
     controller.clusters_take([cluster_make('harbor')]);
     // The session's read after `cluster new`: the spec written, quay is kept.
@@ -271,12 +279,12 @@ describe('the TD controller screen', () => {
     button_named(controller.root, '+ NEW')?.click();
     await flush();
     expect(controller.view_get()).toBe('size');
-    const commit = (): HTMLButtonElement | undefined => [...controller.root.querySelectorAll('.tdc-commit button')].find((b) => (b.textContent ?? '').startsWith('COMMIT')) as HTMLButtonElement | undefined;
-    expect(commit()?.textContent).toBe('COMMIT · NAME IT FIRST');
+    const commit = (): HTMLButtonElement | undefined => [...controller.root.querySelectorAll('.tdc-commit button')].find((b) => (b.textContent ?? '').startsWith('BUILD')) as HTMLButtonElement | undefined;
+    expect(commit()?.textContent).toBe('BUILD · NAME IT FIRST');
     const name: HTMLInputElement = controller.root.querySelector('#tdc-new-name') as HTMLInputElement;
     name.value = 'harbor';
     name.dispatchEvent(new Event('input'));
-    expect(commit()?.textContent).toBe('COMMIT · HARBOR IS TAKEN');
+    expect(commit()?.textContent).toBe('BUILD · HARBOR IS TAKEN');
     name.value = 'quay';
     name.dispatchEvent(new Event('input'));
     expect(commit()?.disabled).toBe(false);
@@ -291,7 +299,7 @@ describe('the TD controller screen', () => {
     controller.root.remove();
   });
 
-  it('holds COMMIT until a zone is chosen when the tenancy holds several, and names the one chosen', async () => {
+  it('holds BUILD until a zone is chosen when the tenancy holds several, and names the one chosen', async () => {
     const { controller, sent } = controller_make({ ...SIZE, baseDomain: null, dnsZones: ['lab.example.org', 'oci.example.org'] });
     controller.clusters_take([cluster_make('harbor')]);
     button_named(controller.root, '+ NEW')?.click();
@@ -299,8 +307,8 @@ describe('the TD controller screen', () => {
     const name: HTMLInputElement = controller.root.querySelector('#tdc-new-name') as HTMLInputElement;
     name.value = 'quay';
     name.dispatchEvent(new Event('input'));
-    const commit = (): HTMLButtonElement | undefined => [...controller.root.querySelectorAll('.tdc-commit button')].find((b) => (b.textContent ?? '').startsWith('COMMIT')) as HTMLButtonElement | undefined;
-    expect(commit()?.textContent).toBe('COMMIT · NO ZONE');
+    const commit = (): HTMLButtonElement | undefined => [...controller.root.querySelectorAll('.tdc-commit button')].find((b) => (b.textContent ?? '').startsWith('BUILD')) as HTMLButtonElement | undefined;
+    expect(commit()?.textContent).toBe('BUILD · NO ZONE');
     expect(commit()?.disabled).toBe(true);
     button_named(controller.root, 'oci.example.org')?.click();
     expect(controller.root.querySelector('.tdc-commit-line')?.textContent).toBe('cluster new quay --base-domain oci.example.org');

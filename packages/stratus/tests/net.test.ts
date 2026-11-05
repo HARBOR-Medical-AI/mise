@@ -249,6 +249,12 @@ describe('net, over the fake cloud', () => {
     surface.answers = ['y'];
     expect((await net_run(context, ['build', 'scratch', '--allow-alter'])).renderedErr ?? '').toBe('');
     expect(store.record_read('scratch')?.clientCidr).toBe('5.6.7.8/32');
+    // The build keeps the CIDR it made; a new one on the built network says, as it is declared, what it would do.
+    expect(store.record_read('scratch')?.builtCidr).toBe('10.40.0.0/16');
+    expect(plain((await net_run(context, ['new', 'scratch', '--cidr', '10.41.0.0/16'])).rendered)).toBe('scratch: cidr 10.40.0.0/16 → 10.41.0.0/16; a new CIDR on a built network replaces its VCN and subnet, and every machine on them: net build refuses it unless --allow-alter\n');
+    // net status answers a model: what is declared, what the build made, and its stack as the tenancy answers it.
+    const status = await net_run(context, ['status', 'scratch']);
+    expect(status.model).toMatchObject({ kind: 'stratus.net.status', data: { nets: [{ name: 'scratch', state: 'built', cidr: '10.41.0.0/16', builtCidr: '10.40.0.0/16', admits: '5.6.7.8/32' }] } });
   });
 
   it('adopts an empty compartment of its name, and refuses one that holds anything', async () => {

@@ -312,7 +312,8 @@ describe('cluster teardown', () => {
     const { fileAccount_make } = await import('../src/installer/account.js');
     const account = fileAccount_make(join(root, 'ocm', 'service-account.env'));
     const asking: ClusterCommandContext = { ...context, build: { ...context.build!, account } };
-    store.create({ name: 'fresh', created: 'now', region: 'r', baseDomain: 'b', steps: {}, ids: {}, protected: true }, SPEC_DEFAULT);
+    // What the build makes was accepted already: this test is about the installer's account, asked hidden.
+    store.create({ name: 'fresh', created: 'now', region: 'r', baseDomain: 'b', steps: {}, ids: {}, protected: true, buildAccepted: 'now' }, SPEC_DEFAULT);
     surface.answer = 'client-1';
     await cluster_run(asking, ['build', 'fresh', '--through', 'compartment']);
     expect(account.present()).toBe(false);

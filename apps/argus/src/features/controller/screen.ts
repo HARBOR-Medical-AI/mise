@@ -103,6 +103,8 @@ export class TdController {
   private since: SinceRow[] = [{ label: '', text: 'FIRST READ' }];
   /** The line whose clusters are being read again, while the read runs; the header and the seat say so. */
   private reading: string | null = null;
+  /** The task whose KILL was pressed once: the second press stops it, KEEP IT RUNNING disarms it. */
+  private killArmed: string | null = null;
   private size: ClusterSizeModel | null = null;
   private sizeAsked: boolean = false;
   private levers: ClusterSpecModel | null = null;
@@ -719,7 +721,11 @@ export class TdController {
   private resources_make(cluster: ClusterSummary): HTMLElement {
     if (cluster.resources === null) return el('p', 'tdc-prose tdc-quiet', 'not counted');
     const rows: Array<[string, string]> = Object.entries(cluster.resources).filter(([, count]): boolean => count > 0).map(([kind, count]): [string, string] => [kind.toUpperCase(), String(count)]);
-    return rows.length === 0 ? el('p', 'tdc-prose', 'nothing live') : this.pairs_make(rows, 'tdc-pairs-narrow');
+    // What the tenancy holds in its compartment, counted from the cloud, with when (a-change-is-a-loop, clause 1).
+    const read: string = cluster.resourcesAt == null ? 'counted in the tenancy' : `counted in the tenancy ${cluster.resourcesAt.slice(11, 16)} UTC`;
+    const box: HTMLElement = el('div', '');
+    box.append(rows.length === 0 ? el('p', 'tdc-prose', 'nothing live') : this.pairs_make(rows, 'tdc-pairs-narrow'), el('p', 'tdc-prose tdc-quiet', read));
+    return box;
   }
 
   private strip_make(cluster: ClusterSummary): HTMLElement {
@@ -783,10 +789,28 @@ export class TdController {
     const controls: HTMLElement = el('div', 'tdc-commands');
     const following: boolean = this.following_is(cluster.name);
     // loop: td-kill
-    const kill: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-destroy', 'KILL');
+    const armed: boolean = this.killArmed === running.job;
+    const kill: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-destroy', armed ? 'KILL · NOW' : 'KILL');
     kill.type = 'button';
     kill.title = `stops following, then sends: ${LINES.kill(running.job)}`;
-    kill.addEventListener('click', (): void => { this.hooks.voice.pill('KILL'); void this.kill_send(running.job); });
+    // KILL asks in place before it sends (a-change-is-a-loop, clause 4): the first press says what stopping leaves, the second stops it.
+    kill.addEventListener('click', (): void => {
+      this.hooks.voice.pill(armed ? 'KILL' : 'KILL · NOW');
+      if (!armed) { this.killArmed = running.job; this.draw(); return; }
+      this.killArmed = null;
+      void this.kill_send(running.job);
+    });
+    if (armed) {
+      const stop: HTMLElement = el('div', 'tdc-note tdc-note-refused');
+      stop.append(el('span', 'tdc-note-title', 'KILL STOPS IT PART WAY'), el('span', 'tdc-prose', teardown
+        ? 'What it removed stays removed; what stands stays and still bills. TEAR DOWN resumes at the first step not done.'
+        : `${running.step ?? 'The step'} stops where it is; what it made stays and bills if it bills. BUILD · THROUGH RUN resumes at the first step not done.`));
+      const back: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'KEEP IT RUNNING');
+      back.type = 'button';
+      back.addEventListener('click', (): void => { this.hooks.voice.pill('KEEP IT RUNNING'); this.killArmed = null; this.draw(); });
+      stop.append(back);
+      now.append(stop);
+    }
     // A build is followed by its own line again; a teardown's line would ask again, so its task is waited on by id.
     // loop: td-follow
     const follow: HTMLButtonElement = following ? el('button', 'tdc-pill tdc-pill-quiet', 'STOP FOLLOWING') : this.linePill_make('FOLLOW', teardown ? LINES.wait(running.job) : LINES.follow(cluster.name), 'quiet');
@@ -977,6 +1001,10 @@ export class TdController {
     else commands.append(this.linePill_make('LOCK AGAIN', LINES.protect(cluster.name, true), 'quiet'), el('span', 'tdc-flex'), this.linePill_make('TEAR DOWN', LINES.teardown(cluster.name), 'destroy', cluster.refused?.['teardown']));
     lock.append(commands);
     guard.append(lock);
+    // What a teardown stops billing, beside the pills (a-change-is-a-loop, clause 2): the cluster's rate as spend reads it.
+    if (cluster.cost !== null && cluster.cost !== undefined && cluster.gone === null) {
+      guard.append(this.pairs_make([['TEAR DOWN STOPS', `${money_text(cluster.cost.hourly * HOURS_PER_MONTH, cluster.cost.currency, 0)} A MONTH · ${money_text(cluster.cost.hourly, cluster.cost.currency)} AN HOUR`], ['STILL BILLS', 'nothing it made: the zone, the tag namespace and what other clusters made are not its own']]));
+    }
     return [goes, guard];
   }
 
@@ -1148,15 +1176,15 @@ export class TdController {
     // The zone goes on the line only when it is not the one the session would take.
     const line: string = newLine_build(this.newName || '<name>', this.levers, this.size.start, this.zone !== this.size.baseDomain ? this.zone : null);
     const tenant: string = LINES.tenant(this.newName || '<name>');
-    commit.append(el('span', 'tdc-section-title', 'THE LINES COMMIT SENDS'), el('div', 'tdc-mono tdc-commit-line', line), el('div', 'tdc-mono tdc-commit-line', tenant),
-      el('p', 'tdc-prose tdc-quiet', 'The first writes the spec. The second plays the tenant: the build through the install, which asks before billing, then verify. A NO leaves the spec written and nothing made.'));
+    commit.append(el('span', 'tdc-section-title', 'THE LINES BUILD SENDS'), el('div', 'tdc-mono tdc-commit-line', line), el('div', 'tdc-mono tdc-commit-line', tenant),
+      el('p', 'tdc-prose tdc-quiet', 'The first writes the spec. The second plays the tenant, whose build asks first, here, what it makes before it bills (the compartment, the records at Red Hat, the discovery ISO and its link, the plan) at the rate above, and asks again before billing. A NO to the first leaves the spec written and nothing made.'));
     const pills: HTMLElement = el('div', 'tdc-commands');
     // loop: td-new-commit
-    const button: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain', refusal === null ? 'COMMIT' : `COMMIT · ${refusal}`);
+    const button: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill', refusal === null ? 'BUILD' : `BUILD · ${refusal}`);
     button.type = 'button';
     button.disabled = refusal !== null || this.busy !== null;
     button.addEventListener('click', (): void => {
-      this.hooks.voice.pill('COMMIT');
+      this.hooks.voice.pill('BUILD');
       const name: string = this.newName;
       void this.line_send(line).then(async (): Promise<void> => {
         // The spec written, the tenant plays on BUILD; a refused spec leaves SIZE as it was.

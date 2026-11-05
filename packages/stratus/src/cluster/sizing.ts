@@ -9,7 +9,7 @@
  * @module
  */
 import type { CapacityRow } from '@fnndsc/menu';
-import type { CloudDriver, CloudPrice, CloudShape, CloudZone } from '../cloud/driver.js';
+import type { CloudDriver, CloudPrice, CloudShape, CloudZone, ServicePrices } from '../cloud/driver.js';
 import { capacityRows_read } from '../commands/capacity.js';
 import { specNodes_build, type ClusterSpec, type SpecNode } from './spec.js';
 
@@ -60,6 +60,41 @@ export function specCost_compute(spec: ClusterSpec, shape: CloudShape | undefine
   const vcpu: number = spec.controlPlane.count * spec.controlPlane.vcpu + spec.workers.count * spec.workers.vcpu;
   const gib: number = spec.controlPlane.count * spec.controlPlane.ramGib + spec.workers.count * spec.workers.ramGib;
   return { hourly: vcpu * price.vcpuHour + gib * price.gibHour, currency: price.currency, covers: `compute and memory (${vcpu} vCPU, ${gib} GiB); volumes and load balancers are not priced yet` };
+}
+
+/** The volume performance units each boot tier buys per GiB, as the OCI driver's modules make them. */
+const TIER_VPUS: Readonly<Record<string, number>> = { balanced: 10, higher: 20, ultra: 30 };
+
+/** The load balancers a cluster makes (api-int, api, apps), each at its minimum bandwidth in Mbps. */
+const BALANCERS: number = 3;
+const BALANCER_MBPS: number = 10;
+
+/** Hours in a month, as the price list counts them. */
+const HOURS_A_MONTH: number = 730;
+
+/**
+ * What a spec costs an hour, whole: compute and memory, the boot volumes at
+ * their tiers, ChRIS's volumes and the load balancers, as SIZE prices it,
+ * so the question before billing asks the consequence the offer showed
+ * (AEGIS a-change-is-a-loop, clause 4). Storage and load balancing fall back
+ * to compute and memory alone, said so, when the list does not price them.
+ *
+ * @param spec - The spec.
+ * @param shape - Its family's shape.
+ * @param prices - The shapes' price list.
+ * @param services - Storage and load-balancing prices, or null.
+ * @returns The cost, or null when the shape is not priced.
+ */
+export function specCostWhole_compute(spec: ClusterSpec, shape: CloudShape | undefined, prices: ReadonlyArray<CloudPrice>, services: ServicePrices | null): SpecCost | null {
+  const base: SpecCost | null = specCost_compute(spec, shape, prices);
+  if (base === null || services === null) return base;
+  const volumeHour = (gib: number, tier: string): number => (gib * (services.volumeGibMonth + (TIER_VPUS[tier] ?? 10) * services.vpuGibMonth)) / HOURS_A_MONTH;
+  const boot: number = volumeHour(spec.controlPlane.count * spec.controlPlane.bootGib, spec.controlPlane.bootTier) + volumeHour(spec.workers.count * spec.workers.bootGib, spec.workers.bootTier);
+  const chrisGib: number = spec.chris.dataGib + spec.chris.databaseGib + spec.chris.queueGib;
+  const balancers: number = BALANCERS * (services.balancerHour + BALANCER_MBPS * services.balancerMbpsHour);
+  const vcpu: number = spec.controlPlane.count * spec.controlPlane.vcpu + spec.workers.count * spec.workers.vcpu;
+  const gib: number = spec.controlPlane.count * spec.controlPlane.ramGib + spec.workers.count * spec.workers.ramGib;
+  return { hourly: base.hourly + boot + volumeHour(chrisGib, 'balanced') + balancers, currency: base.currency, covers: `compute and memory (${vcpu} vCPU, ${gib} GiB), the boot and ChRIS volumes, and ${BALANCERS} load balancers` };
 }
 
 /**

@@ -92,7 +92,9 @@ async function net_read(deps: LineStatusDeps, words: ReadonlyArray<string>): Pro
     const spec: NetSpec = { cidr: cidr.cidr };
     if (keptSpec === null || record === null) return { state: 'ready', detail: '' };
     const changes: string[] = netSpec_diff(keptSpec, spec);
-    return changes.length === 0 ? { state: 'done', detail: 'unchanged' } : { state: 'changed', detail: changes.join(', ') };
+    // What the change does to what stands, said with it: a built network's CIDR is its VCN's and its subnet's.
+    const replaces: string = record.built !== undefined && (record.builtCidr ?? keptSpec.cidr) !== spec.cidr ? '; a new CIDR on a built network replaces its VCN and subnet, and every machine on them: net build refuses it unless --allow-alter' : '';
+    return changes.length === 0 ? { state: 'done', detail: 'unchanged' } : { state: 'changed', detail: `${changes.join(', ')}${replaces}` };
   }
   if (verb === 'build') {
     const running: string | undefined = running_find(deps, [NET_JOBS.plan(name), NET_JOBS.apply(name)]);

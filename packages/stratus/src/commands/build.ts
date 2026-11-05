@@ -29,7 +29,7 @@ import type { HarborCluster } from '../checkout/harborOci.js';
 import type { ClusterTree } from '../vfs/clusters.js';
 import { CLUSTER_NAME, CLUSTER_TAG, type ClusterRecord, type ClusterStore } from '../cluster/state.js';
 import { clusterSpec_diff, SPEC_DEFAULT, specOptions_apply, specYaml_render, type ClusterSpec } from '../cluster/spec.js';
-import { cost_words, familyShape_find, specCost_compute, specFit_read, type SpecCost, type ZoneFit } from '../cluster/sizing.js';
+import { cost_words, familyShape_find, specCostWhole_compute, specFit_read, type SpecCost, type ZoneFit } from '../cluster/sizing.js';
 import { clusterSummary_read } from '../cluster/readout.js';
 import { BUILD_STEPS, buildJob_id, buildRun_make, FIRST_BILLING_STEP, planRun_make, stepNext_find, STEPS_SOURCE, STEPS_WRITTEN, type BuildDeps } from '../cluster/steps.js';
 import { TIER_REFUSAL } from '../tier.js';
@@ -250,7 +250,8 @@ function builtCluster_need(context: BuildCommandContext, verb: string, name: str
 async function cost_read(context: BuildCommandContext, region: string, spec: ClusterSpec): Promise<SpecCost | null> {
   const shape: CloudShape | undefined = familyShape_find(await context.driver.shapes_list(region), spec.family);
   const prices: CloudPrice[] = await context.driver.prices_list();
-  return specCost_compute(spec, shape, prices);
+  // Priced whole, as SIZE prices it: the question asks the consequence the offer showed.
+  return specCostWhole_compute(spec, shape, prices, await context.driver.servicePrices_get());
 }
 
 /**
@@ -361,6 +362,22 @@ async function billing_question(context: BuildCommandContext, name: string, reco
 }
 
 /**
+ * The question before a build makes anything: what it makes before it
+ * bills, and the rate it would bill at once built, priced as SIZE prices it.
+ *
+ * @param context - The session.
+ * @param name - The cluster.
+ * @param record - Its state.
+ * @param spec - Its spec.
+ * @returns The question.
+ */
+async function makes_question(context: BuildCommandContext, name: string, record: ClusterRecord, spec: ClusterSpec): Promise<string> {
+  const cost: SpecCost | null = await cost_read(context, record.region, spec);
+  const rate: string = cost === null ? 'an unpriced rate' : cost_words(cost);
+  return `cluster build ${name}: before anything bills it makes the compartment clusters/${name}, the cluster and its infra-env at Red Hat, a discovery ISO with a public link valid seven days, and the infra plan; then it asks again before ${FIRST_BILLING_STEP}, which starts billing at ${rate}. Continue? [y/N]`;
+}
+
+/**
  * `cluster build [<name>] [--through <step>]`.
  *
  * @param context - The session.
@@ -382,6 +399,18 @@ export async function clusterBuild_run(context: BuildCommandContext, args: Reado
   const name: string = need.cluster.name;
   const asked: string | null = await account_askWhenMissing(context, need.record, through);
   if (asked !== null) return envelope_error('', undefined, `cluster build: ${asked}\n`);
+  // Nothing is made before the operator has seen all of it (AEGIS a-change-is-a-loop, clause 4): the free things a
+  // build makes before it bills (the compartment, the records at Red Hat, the discovery ISO and its public link, the
+  // plan) are asked once, up front, with the rate the build would bill at; billing is asked again, with the plan's count.
+  if (need.record.gone !== undefined) return envelope_error('', undefined, `cluster build: ${name} was torn down: cluster new makes another\n`);
+  if (need.record.buildAccepted === undefined && stepNext_find(need.record) === BUILD_STEPS[0]) {
+    const question: string = await makes_question(context, name, need.record, need.spec);
+    clusterState_show(context, name, question);
+    const yes: boolean = await repl_confirm(question);
+    clusterState_show(context, name);
+    if (!yes) return envelope_ok(`${chalk.gray(`stopped before anything was made; nothing changed (cluster build ${name} asks again)`)}\n`);
+    context.store.record_update(name, (current: ClusterRecord): void => { current.buildAccepted = new Date().toISOString(); });
+  }
   const id: string = buildJob_id(name);
   for (;;) {
     const running: JobRecord | undefined = runner.job_get(STEPS_SOURCE, id);
