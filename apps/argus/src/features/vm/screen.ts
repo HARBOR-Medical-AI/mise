@@ -146,10 +146,11 @@ export class VmScreen extends ScriptScreen {
       // No script declares it: its record is its script until the first act writes one.
       const row: VmStatusRow | undefined = this.vms.find((each: VmStatusRow): boolean => each.name === name);
       this.path = `/scripts/mine/${name}.mise`;
-      this.lines = lines_build(row === undefined ? `${vmNewLine_compose(name, NET_DEFAULT)}\nvm build ${name}\n` : vmScript_synthesize(row), []);
-      // Read from its record, not edited: written at the first act, as the header's chip says.
+      const text: string = row === undefined ? `${vmNewLine_compose(name, NET_DEFAULT)}\nvm build ${name}\n` : vmScript_synthesize(row);
+      // Read from its record, not edited: written at the first act, as the header's chip says; its lines' states are read from the text.
       this.unsaved = true;
       this.edited = false;
+      this.lines = lines_build(text, (await this.status_read(this.path, text))?.lines ?? []);
     }
     this.steps = this.steps_derive(this.lines);
     // A machine opens on what it is; a line running takes the seat it runs in.
@@ -235,6 +236,11 @@ export class VmScreen extends ScriptScreen {
   /** After a line ran, the machine's record is read again with the script's standing: its state, address and lock are the header's and TEARDOWN's. */
   protected override async standings_refresh(): Promise<void> {
     await Promise.all([super.standings_refresh(), this.vms_read()]);
+  }
+
+  /** A script not on the host yet is read from the screen's lines. */
+  protected override statusText_get(): string | null {
+    return this.unsaved ? script_render(this.lines) : null;
   }
 
   /** The stage strip names the machine; before it is named, the new one. */

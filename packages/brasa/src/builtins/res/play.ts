@@ -288,6 +288,8 @@ interface PlayArgs {
   dryRun: boolean;
   /** Read each line against what is kept, running none. */
   status: boolean;
+  /** The script's text, given in place of the file's (with `--status` only): a surface reads the standing of lines it has not written yet. */
+  text: string | null;
   parseError: string | null;
 }
 
@@ -307,6 +309,7 @@ export function playArgs_parse(args: string[]): PlayArgs {
   let paceMs: number = 0;
   let dryRun: boolean = false;
   let status: boolean = false;
+  let text: string | null = null;
   let parseError: string | null = null;
 
   for (let index = 0; index < args.length; index++) {
@@ -336,6 +339,17 @@ export function playArgs_parse(args: string[]): PlayArgs {
       dryRun = true;
     } else if (token === '--status') {
       status = true;
+    } else if (token.startsWith('--text=')) {
+      // The `=` form: a script whose text begins with `-` is the option's value, never another option.
+      text = token.slice('--text='.length);
+    } else if (token === '--text') {
+      const given: string | undefined = args[index + 1];
+      if (given === undefined) {
+        parseError = '--text takes the script\'s text';
+        break;
+      }
+      text = given;
+      index++;
     } else if (token === '--step') {
       // A keypress needs a terminal, and the daemon has none. Refusing by
       // name beats pausing forever on a surface that cannot answer.
@@ -352,7 +366,9 @@ export function playArgs_parse(args: string[]): PlayArgs {
     }
   }
 
-  return { manifest, params, paceMs, dryRun, status, parseError };
+  // A text given in place of the file is read, never played: what runs is always a file someone can read after.
+  if (parseError === null && text !== null && !status) parseError = '--text reads a script\'s standing only: with --status';
+  return { manifest, params, paceMs, dryRun, status, text, parseError };
 }
 
 /** The word a state is shown as, and its colour. */
@@ -425,14 +441,14 @@ export async function builtin_play(args: string[]): Promise<CommandEnvelope> {
   }
   if (parsed.manifest === null) {
     exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red('Usage: play <manifest> [--param NAME=value]... [--pace <duration>] [--dry-run] [--status]')}\n`);
+    return envelope_error('', undefined, `${chalk.red('Usage: play <manifest> [--param NAME=value]... [--pace <duration>] [--dry-run] [--status [--text <script>]]')}\n`);
   }
   if (depth_get() >= NESTING_MAX) {
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red(`play: ${parsed.manifest} is nested too deep — a manifest may play a manifest, not a chain of them.`)}\n`);
   }
 
-  const source: Result<{ text: string; from: string }> = await manifestText_read(parsed.manifest);
+  const source: Result<{ text: string; from: string }> = parsed.text !== null ? { ok: true, value: { text: parsed.text, from: parsed.manifest } } : await manifestText_read(parsed.manifest);
   if (!source.ok) {
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red(`play: cannot read ${parsed.manifest} — no such manifest in the session's filesystem, and none beside the engine.`)}\n`);

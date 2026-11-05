@@ -179,11 +179,13 @@ describe('the VM controller', () => {
   });
 
   it('a machine the host keeps with no script gets its script from its record, written at the first act; CHRIS not in the script is appended by RUN', async () => {
-    const { screen, sent } = screen_make();
+    const { screen, sent, asked } = screen_make();
     await screen.vm_open('lone');
     await settle();
     expect(screen.path_get()).toBe('/scripts/mine/lone.mise');
     expect(screen.root.querySelector('.ss-header')?.textContent).toContain('SCRIPT NOT WRITTEN YET');
+    // Not written yet, its lines' states are read from the screen's own text, so its seats wear them before the first act.
+    expect(asked.some((line: string): boolean => line.startsWith("play /scripts/mine/lone.mise --status --text='vm new lone"))).toBe(true);
     // Read from its record, the script is not called edited.
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
     await settle();

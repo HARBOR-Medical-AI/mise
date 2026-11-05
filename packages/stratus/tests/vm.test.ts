@@ -16,10 +16,11 @@ import type { CommandEnvelope } from '@fnndsc/menu';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
 import { vmCloudInit_render, vmMachineVariables_build, vmModule_zip, vmOs_lower } from '../src/cloud/oci/modules/vm.js';
-import { ports_read, vmLimits_derive, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, type VmSpec } from '../src/vm/spec.js';
+import { ports_read, vmLimits_derive, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, vmStands_diff, type VmSpec } from '../src/vm/spec.js';
 import { VmStore, type VmRecord } from '../src/vm/state.js';
 import { vmCost_estimate } from '../src/vm/build.js';
-import { vmKept_write } from '../src/vm/keep.js';
+import { vmKept_merge, vmKept_write } from '../src/vm/keep.js';
+import { lineStatusProviders_make } from '../src/commands/lineStatus.js';
 import { vmPlan_judge } from '../src/vm/resize.js';
 import { secrets_write } from '../src/chris/secrets.js';
 import type { CloudBuilder, InfraPlan, PlanRow } from '../src/cloud/builder.js';
@@ -65,6 +66,8 @@ describe('a VM\'s spec', () => {
   it('round-trips through spec.yaml, says each change, and names the ones that cost the data', () => {
     expect(vmSpecYaml_parse(vmSpecYaml_render('store', SPEC))).toEqual({ spec: SPEC });
     expect(vmSpec_diff(SPEC, { ...SPEC, memory: 16, open: [443] })).toEqual(['open 80,443 → 443', 'memory 8 → 16']);
+    // What a build would change is the declaration against what runs; a size the cloud was not read for says nothing.
+    expect(vmStands_diff({ vcpu: 2, memory: 8, disk: 50, data: null }, { ...SPEC, disk: 180, data: 100 })).toEqual(['disk 50 → 180 GB']);
     expect(vmSpec_dataLoss(SPEC, { ...SPEC, data: 100 })).toEqual([]);
     expect(vmSpec_dataLoss(SPEC, { ...SPEC, data: 40 })).toEqual(['data 50 → 40 (a volume only grows)']);
   });
@@ -189,11 +192,12 @@ describe('vm, over the fake cloud', () => {
   };
 
   it('declares protected, says unchanged on the same line, and the change on a different one', async () => {
-    expect(plain((await vm_run(context, ['new', 'store', ...STORE_LINE])).rendered)).toBe('store: declared, 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups) · ubuntu-26.04 · open 80,443 · on scratch, in us-ashburn-1; protected; vm build store builds it\n');
-    expect(plain((await vm_run(context, ['new', 'store', ...STORE_LINE])).rendered)).toBe('store: unchanged\n');
+    expect(plain((await vm_run(context, ['new', 'store', ...STORE_LINE])).rendered)).toBe('store: declared, 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups) · ubuntu-26.04 · open 80,443 · on scratch, in us-ashburn-1; protected; vm build store builds it\nkept in the tenancy: every session reads this declaration\n');
+    // Unchanged, a MANAGE session still keeps the declaration in the tenancy (one made at READ reaches it this way).
+    expect(plain((await vm_run(context, ['new', 'store', ...STORE_LINE])).rendered)).toBe('store: unchanged\nkept in the tenancy: every session reads this declaration\n');
     // The status carries the same rows as a model, for a surface's tile, from the records alone.
     expect((await vm_run(context, ['status'])).model).toMatchObject({ kind: 'stratus.vm.status', data: { vms: [{ name: 'store', state: 'declared', region: 'us-ashburn-1', spec: { vcpu: 2, memory: 8, net: 'scratch' }, address: null, inside: null, protected: true, built: null, chris: null }] } });
-    expect(plain((await vm_run(context, ['new', 'store', '--memory', '16'])).rendered)).toBe('store: memory 8 → 16\n');
+    expect(plain((await vm_run(context, ['new', 'store', '--memory', '16'])).rendered)).toBe('store: memory 8 → 16\nkept in the tenancy: every session reads this declaration\n');
     expect(store.record_read('store')?.protected).toBe(true);
     expect((await vm_run(context, ['new', 'Store', ...STORE_LINE])).renderedErr).toContain('a VM\'s name is a hostname');
   });
@@ -388,11 +392,43 @@ describe('vm, over the fake cloud', () => {
     const keyless = ((await vm_run(third, ['status'])).model as { data: { vms: Array<{ name: string; keyless?: boolean }> } }).data.vms.find((one) => one.name === 'old');
     expect(keyless?.keyless).toBe(true);
     expect((await vm_run(third, ['build', 'old'])).renderedErr).toContain('vm build: old: the tenancy keeps no SSH key for it, and this host holds none');
-    expect(plain((await vm_run(context, ['keep', 'old'])).rendered)).toContain('old: its SSH key kept in the tenancy: any session holding its credentials reaches it');
+    expect(plain((await vm_run(context, ['keep', 'old'])).rendered)).toContain('old: its SSH key and what was declared kept in the tenancy: any session holding its credentials reaches it');
     expect(world.kept.has('mise-vm-old')).toBe(true);
     // A VM made outside stratus is read, never taken over.
     seen.instances = [{ name: 'lab-box', id: 'ocid1.instance.lab', state: 'running', region: 'us-ashburn-1', created: '', tags: {}, raw: {}, shape: 'VM.Standard.E5.Flex', zone: 'AD-1', ips: ['10.0.0.9'], vcpus: 2, memoryGib: 8, containerId: built.placeId as string }];
     expect((await vm_run(there, ['protect', 'lab-box', 'off'])).renderedErr).toContain('vm protect: lab-box: made outside stratus (no mise-service tag): stratus acts only on what it built');
+  });
+
+  it('keeps a declaration in the tenancy from a MANAGE session, so another host reads it declared and not built; at READ it stays here and says so', async () => {
+    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+    surface.answers = ['y'];
+    await vm_run(context, ['build', 'store']);
+    // A bigger disk declared here reaches the vault with when it was declared.
+    expect(plain((await vm_run(context, ['new', 'store', '--disk', '180'])).rendered)).toContain('disk 50 → 180; built: vm build store plans the change and asks\nkept in the tenancy: every session reads this declaration');
+    expect(JSON.parse(world.kept.get('mise-vm-store') as string).declared).toMatchObject({ spec: { disk: 180 } });
+    // Another host reads the store whole from the tenancy: built at 50, declared 180, and its build line says what a build would change.
+    const there: VmCommandContext = { ...context, store: new VmStore(join(root, 'vms-there')), nets: new NetStore(join(root, 'nets-there')) };
+    const row = ((await vm_run(there, ['status'])).model as { data: { vms: Array<{ name: string; declaredKept?: boolean; stands?: { vcpu: number | null } | null }> } }).data.vms.find((one) => one.name === 'store');
+    expect(there.store.spec_read('store')).toMatchObject({ spec: { disk: 180 } });
+    expect(row?.declaredKept).toBe(true);
+    expect(row?.stands?.vcpu).toBe(2);
+    const providers = new Map(lineStatusProviders_make({ nets: there.nets, vms: there.store }).map((provider) => [provider.verb, provider]));
+    expect(await providers.get('vm')?.read(['vm', 'build', 'store'])).toMatchObject({ state: 'changed', detail: 'declared, not built: disk 50 → 180; the build plans and asks' });
+    // A keep written from a host whose declaration is older takes the vault's newer one; nothing it lacks is dropped.
+    await vm_run(context, ['new', 'store', '--disk', '200']);
+    there.store.record_update('store', (current: VmRecord): void => { current.declared = '2000-01-01T00:00:00.000Z'; });
+    await vmKept_write(context.builder as CloudBuilder, there.store, 'store', 'us-ashburn-1', { log: (): void => undefined, signal: new AbortController().signal });
+    expect(JSON.parse(world.kept.get('mise-vm-store') as string)).toMatchObject({ declared: { spec: { disk: 200 } }, ssh: { publicKey: expect.any(String) } });
+    expect(there.store.spec_read('store')).toMatchObject({ spec: { disk: 200 } });
+    // At READ a declaration stays on this host and says so; the vault keeps the last one a MANAGE session made.
+    (surface.capabilities as { tasks?: boolean }).tasks = false;
+    expect(plain((await vm_run(context, ['new', 'store', '--disk', '220'])).rendered)).toContain('kept on this host only: a session with the tasks tier keeps it in the tenancy');
+    expect(JSON.parse(world.kept.get('mise-vm-store') as string).declared.spec.disk).toBe(200);
+    (surface.capabilities as { tasks?: boolean }).tasks = true;
+    // Two keeps as one: each part from whichever holds it, the newer declaration of the two.
+    const spec180: VmSpec = { ...SPEC, disk: 180 };
+    expect(vmKept_merge({ vm: 'x', ssh: { privateKey: 'k', publicKey: 'p' }, declared: { spec: spec180, at: '2026-11-05' } }, { vm: 'x', declared: { spec: SPEC, at: '2026-11-04' } }))
+      .toEqual({ vm: 'x', ssh: { privateKey: 'k', publicKey: 'p' }, declared: { spec: spec180, at: '2026-11-05' } });
   });
 
   it('lists the VMs the tenancy runs beside those kept here, and refuses to declare over one (the tenancy is the truth)', async () => {

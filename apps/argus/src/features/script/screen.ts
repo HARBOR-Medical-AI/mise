@@ -29,7 +29,7 @@ import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../t
 import {
   askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
   runningStep_find, script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, stepBuildLine_get, stepKind_derive, stepKind_isTask, steps_build, userLine_build, vmLevers_read, vmSliders_build,
-  workingCopy_derive, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts,
+  word_quote, workingCopy_derive, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts,
 } from './model.js';
 
 /** An answer the session gave a quiet line: what the screen reads of it. */
@@ -463,9 +463,10 @@ export class ScriptScreen {
    * @param path - The script.
    * @returns The model, or null when the session did not answer it.
    */
-  protected async status_read(path: string): Promise<{ lines: LineStandingModel[] } | null> {
+  protected async status_read(path: string, text: string | null = null): Promise<{ lines: LineStandingModel[] } | null> {
     try {
-      const answer: QuietAnswer = await this.hooks.ask(`play ${path} --status`);
+      // A script not written yet is read from the screen's own lines (`--text`), so its seats wear their states before the first act.
+      const answer: QuietAnswer = await this.hooks.ask(`play ${path} --status${text === null ? '' : ` --text=${word_quote(text)}`}`);
       return model_extract(answer, MANIFEST_STATUS_MODEL_KIND, (data: unknown) => manifestStatusModelSchema.safeParse(data));
     } catch (error: unknown) {
       this.log_add(`play ${path} --status: ${error instanceof Error ? error.message : String(error)}`, 'note');
@@ -473,10 +474,15 @@ export class ScriptScreen {
     }
   }
 
+  /** The script's text when it is not on the host yet, to read its standing from; null when the file is the script. */
+  protected statusText_get(): string | null {
+    return null;
+  }
+
   /** Reads the script's standing again, after a line ran. */
   protected async standings_refresh(): Promise<void> {
     if (this.path === '') return;
-    const standings = await this.status_read(this.path);
+    const standings = await this.status_read(this.path, this.statusText_get());
     if (standings === null) return;
     const fresh: ScriptLine[] = lines_build(script_render(this.lines), standings.lines);
     this.lines = fresh;

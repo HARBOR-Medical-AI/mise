@@ -104,6 +104,12 @@ export const vmStatusRowSchema = z.object({
   takenFrom: z.string().nullable().optional(),
   /** Whether the tenancy keeps no SSH key for it and this host holds none either: it is read and torn down, never reached; absent from an older daemon. */
   keyless: z.boolean().optional(),
+  /** What the tenancy runs of it, read from the cloud on the last listing (never the declaration), with when; null when nothing runs; absent from an older daemon. */
+  stands: z.object({ at: z.string(), vcpu: z.number().nullable(), memory: z.number().nullable(), disk: z.number().nullable(), data: z.number().nullable() }).nullable().optional(),
+  /** When its spec was last declared, or null; absent from an older daemon. */
+  declared: z.string().nullable().optional(),
+  /** Whether that declaration is kept in the tenancy (every session reads it), or on this host only; absent from an older daemon. */
+  declaredKept: z.boolean().optional(),
   region: z.string(),
   /** Its spec, or null when spec.yaml does not read. */
   spec: vmSpecModelSchema.nullable(),

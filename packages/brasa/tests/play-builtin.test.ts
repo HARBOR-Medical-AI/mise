@@ -256,6 +256,11 @@ describe('playArgs_parse', () => {
 
   it('refuses --step, which needs a terminal, by name', () => {
     expect(playArgs_parse(['f.mise', '--step']).parseError).toContain('terminal');
+    // A script's text read in place of its file, for a standing only: a surface reads lines it has not written yet.
+    expect(playArgs_parse(['f.mise', '--status', '--text=vm new s\nvm build s']).text).toBe('vm new s\nvm build s');
+    expect(playArgs_parse(['f.mise', '--status', '--text', '-x']).text).toBe('-x');
+    expect(playArgs_parse(['f.mise', '--text=vm new s']).parseError).toContain('with --status');
+    expect(playArgs_parse(['f.mise', '--status', '--text']).parseError).toContain('--text takes');
   });
 });
 

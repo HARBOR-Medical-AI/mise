@@ -200,7 +200,15 @@ export class FakeDriver implements CloudDriver {
   }
 
   async volumes_list(containerId: string, region: string): Promise<CloudVolume[]> {
-    return this.resources_list<CloudVolume>('volumes', containerId, region);
+    const listed: CloudVolume[] = this.resources_list<CloudVolume>('volumes', containerId, region);
+    // What the fake builder applied: a machine's boot volume and a VM's data volume, at the sizes they were built at.
+    for (const stack of this.built?.moduleStacks.values() ?? []) {
+      if (stack.applied === null || stack.placeId !== containerId) continue;
+      const base = { region, state: 'available', created: '2026-11-01T21:22:15Z', tags: {}, raw: {} };
+      if (stack.module === 'vmMachine') listed.push({ ...base, id: `ocid1.bootvolume.oc1..fake-${stack.owner}`, name: `${stack.owner} (Boot Volume)`, sizeGib: Number(stack.applied['disk']), attachedTo: `ocid1.instance.oc1..fake-${stack.owner}`, boot: true });
+      if (stack.module === 'vmData') listed.push({ ...base, id: `ocid1.volume.oc1..fake-${stack.owner}`, name: `${stack.owner}-data`, sizeGib: Number(stack.applied['data']), attachedTo: null, boot: false });
+    }
+    return listed;
   }
 
   async buckets_list(containerId: string, region: string): Promise<CloudBucket[]> {
