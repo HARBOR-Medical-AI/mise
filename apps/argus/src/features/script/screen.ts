@@ -963,6 +963,7 @@ export class ScriptScreen {
       sources.append(this.pairs_make(rows));
     }
     const commands: HTMLElement = el('div', 'tdc-commands');
+    // loop: ss-pull
     commands.append(this.linePill_make('PULL', 'scripts pull', null, 'quiet'), el('span', 'tdc-commands-label', 'FAST-FORWARD EVERY CLONE'));
     sources.append(commands);
     sources.append(el('p', 'tdc-prose tdc-quiet', 'MINE holds this host\'s working copies, written by SAVE on a step.'));
@@ -1012,6 +1013,7 @@ export class ScriptScreen {
     if (this.edited) {
       const note: HTMLElement = el('div', 'tdc-note tdc-note-bill');
       note.append(el('span', 'tdc-note-title', 'EDITED · NOT SAVED'), el('span', 'tdc-prose', `A form changed a line. Its pills send the line as shown; SAVE writes the whole script to ${workingCopy_derive(this.path)} and opens it from there.`));
+      // loop: ss-save
       const save: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'SAVE');
       save.type = 'button';
       save.title = `sends: touch --withContents=… ${workingCopy_derive(this.path)}`;
@@ -1110,12 +1112,14 @@ export class ScriptScreen {
    * @returns The row.
    */
   protected declareRow_make(step: ScriptStep, declared: ScriptLine, built: ScriptLine | undefined, extra: HTMLElement[] = []): HTMLElement {
+    // loop: ss-net-declare, ss-vm-declare, vm-size-declare
     const commands: HTMLElement = this.runRow_make(step, declared, 'plain', [], 'DECLARE');
     if (built === undefined) {
       commands.append(...extra);
       return commands;
     }
     const hold: ReadHold = this.hold_derive(built.text);
+    // loop: ss-net-build, ss-vm-build, vm-size-build
     const build: HTMLButtonElement = el('button', `tdc-pill tdc-pill-bill ss-build${hold === 'asks' ? ' tdc-pill-asks' : ''}`, hold === 'held' ? 'BUILD · REFUSED' : 'BUILD');
     build.type = 'button';
     build.dataset['line'] = String(declared.number);
@@ -1140,6 +1144,7 @@ export class ScriptScreen {
     const name: string = parts.subject ?? '';
     const extra: HTMLElement[] = [];
     if (built !== undefined) {
+      // loop: ss-net-teardown
       const teardown: HTMLButtonElement = this.linePill_make('TEARDOWN', `net teardown ${name}`, step.key, 'destroy');
       teardown.title = `sends: net teardown ${name} (refused while anything stands on it)`;
       extra.push(el('span', 'tdc-flex'), teardown);
@@ -1147,6 +1152,7 @@ export class ScriptScreen {
     return [
       this.lineBoxNumbered_make(line),
       ...(built === undefined ? [] : [this.lineBoxNumbered_make(built)]),
+      // loop: ss-net-declare, ss-net-build
       this.declareRow_make(step, line, built, extra),
       this.pairs_make([['NETWORK', name || '—'], ['ON OCI', 'a compartment of that name, its VCN, subnet, gateway, route and bastion']]),
       this.optionField_make(line, '--cidr', 'CIDR', '10.20.0.0/16'),
@@ -1159,10 +1165,12 @@ export class ScriptScreen {
   protected netBuild_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
     const name: string = line_parse(line.text).subject ?? '';
+    // loop: ss-net-teardown
     const teardown: HTMLButtonElement = this.linePill_make('TEARDOWN', `net teardown ${name}`, step.key, 'destroy');
     teardown.title = `sends: net teardown ${name} (refused while anything stands on it)`;
     return [
       this.lineBoxNumbered_make(line),
+      // loop: ss-net-build
       this.runRow_make(step, line, 'bill', [el('span', 'tdc-flex'), teardown]),
       this.pairs_make([['NETWORK', name], ['BUILDS', 'the compartment, VCN, subnet, gateway, route, security list and bastion; asks before the apply']]),
       el('p', 'tdc-prose tdc-quiet', 'A build plans first and asks; a second build reads nothing to do. The bastion admits this host\'s address alone.'),
@@ -1173,6 +1181,7 @@ export class ScriptScreen {
     const line: ScriptLine = step.lines[0] as ScriptLine;
     const built: ScriptLine | undefined = stepBuildLine_get(step);
     const name: string = line_parse(line.text).subject ?? '';
+    // loop: ss-vm-declare, ss-vm-build, vm-size-declare, vm-size-build
     const nodes: HTMLElement[] = [this.lineBoxNumbered_make(line), ...(built === undefined ? [] : [this.lineBoxNumbered_make(built)]), this.declareRow_make(step, line, built), this.pairs_make([['VM', name], ['NETWORK', lineOption_get(line.text, '--net') ?? '—']])];
     if (this.limits === null) {
       nodes.push(el('p', 'tdc-prose tdc-quiet', 'reading what the shape sells: vm limits'));
@@ -1317,10 +1326,13 @@ export class ScriptScreen {
   protected vmUndoing_make(name: string, step: string): HTMLElement[] {
     if (!this.undoing_shown()) return [];
     const protect: HTMLElement = el('div', 'tdc-commands');
+    // loop: ss-vm-protect
     protect.append(el('span', 'tdc-commands-label', 'THE LOCK'), this.linePill_make('PROTECT · ON', `vm protect ${name} on`, step, 'quiet'), this.linePill_make('PROTECT · OFF', `vm protect ${name} off`, step, 'quiet'));
     const teardown: HTMLElement = el('div', 'tdc-commands');
+    // loop: ss-vm-teardown
     const machine: HTMLButtonElement = this.linePill_make('TEARDOWN', `vm teardown ${name}`, step, 'destroy');
     machine.title = `sends: vm teardown ${name} (the machine; the data, its backups and the address stay)`;
+    // loop: ss-vm-teardown
     const all: HTMLButtonElement = this.linePill_make('TEARDOWN · ALL', `vm teardown ${name} --all`, step, 'destroy');
     all.classList.add('ss-pill-redder');
     all.title = `sends: vm teardown ${name} --all (the data too; asks for the name typed back)`;
@@ -1333,6 +1345,7 @@ export class ScriptScreen {
     const name: string = line_parse(line.text).subject ?? '';
     return [
       this.lineBoxNumbered_make(line),
+      // loop: ss-vm-build
       this.runRow_make(step, line, 'bill'),
       this.vmBuilds_make(name),
       ...this.vmUndoing_make(name, step.key),
@@ -1354,6 +1367,7 @@ export class ScriptScreen {
     }
     return [
       this.lineBoxNumbered_make(line),
+      // loop: ss-chris-deploy
       this.runRow_make(step, line, 'bill'),
       this.pairs_make([['ON', name], ['PUTS UP', 'CUBE with its workers, Postgres, dragonfly, nats and pfcon, over the bastion path; the admin password asked once, hidden']]),
       profiles,
@@ -1371,6 +1385,7 @@ export class ScriptScreen {
     for (const line of step.lines) {
       const row: HTMLElement = this.lineBoxNumbered_make(line);
       const commands: HTMLElement = el('div', 'tdc-commands');
+      // loop: ss-user-add
       const run: HTMLButtonElement = this.linePill_make('RUN', line.text, step.key, 'quiet');
       run.classList.add('ss-run');
       run.dataset['line'] = String(line.number);
@@ -1420,6 +1435,7 @@ export class ScriptScreen {
     // The door's hold comes before the form's: in a READ session that cannot be raised ADD is refused whatever the form holds; one that can asks first.
     const doorHold: ReadHold = this.hold_derive('chris user add');
     const heldByDoor: boolean = doorHold === 'held';
+    // loop: ss-user-add
     const add: HTMLButtonElement = el('button', `tdc-pill tdc-pill-plain${doorHold === 'asks' && refusal === null ? ' tdc-pill-asks' : ''}`, heldByDoor ? 'ADD · REFUSED' : refusal === null ? 'ADD' : `ADD · ${refusal}`);
     if (heldByDoor) add.title = `refused: ${READ_HELD}`;
     else if (doorHold === 'asks' && refusal === null) add.title = `${READ_ASKS}: the user line`;
@@ -1445,6 +1461,7 @@ export class ScriptScreen {
 
   protected other_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
+    // loop: ss-line-run
     return [this.lineBoxNumbered_make(line), this.runRow_make(step, line), el('p', 'tdc-prose tdc-quiet', 'The screen has no form for this verb: the line runs as written.')];
   }
 
@@ -1465,6 +1482,7 @@ export class ScriptScreen {
     words.append(el('span', 'tdc-strip-title', 'THE ENGINE ASKS'), el('span', 'tdc-strip-text', ask.message));
     strip.append(words);
     if (form === 'yes-no') {
+      // loop: confirm
       const go: HTMLButtonElement = el('button', `tdc-pill ${destroying ? 'tdc-pill-destroy' : billing ? 'tdc-pill-bill' : 'tdc-pill-plain'}`, 'CONTINUE');
       go.type = 'button';
       go.addEventListener('click', (): void => { this.hooks.voice.pill('CONTINUE'); this.log_add('y', 'answer'); ask.answer('y'); });
@@ -1481,6 +1499,7 @@ export class ScriptScreen {
     input.spellcheck = false;
     const label: HTMLElement = el('label', 'tdc-pair-label', form === 'name' ? 'NAME' : ask.kind === 'secret' ? 'HIDDEN' : 'ANSWER');
     label.setAttribute('for', input.id);
+    // loop: confirm
     const send: HTMLButtonElement = el('button', `tdc-pill ${destroying ? 'tdc-pill-destroy' : 'tdc-pill-plain'}`, form === 'name' ? 'DESTROY' : 'SEND');
     send.type = 'button';
     const answer = (): void => {
