@@ -34,7 +34,7 @@ export interface VmRecord extends KeptRecord {
   /** The spec the last build made the tenancy match, so a later declare says what a build would change. */
   builtSpec?: VmSpec;
   /** The ChRIS deployed on it (`chris deploy`). */
-  chris?: { profile: string; compute: string; host: string | null; url: string; deployed: string; dns?: 'waiting' | 'seen'; porter?: string };
+  chris?: { profile: string; compute: string; host: string | null; url: string; deployed: string; dns?: 'waiting' | 'seen'; porter?: string; /** The CUBE image and porter version the deploy put up. */ image?: string; porterVersion?: string };
   /** When this host's cache of it was read from the tenancy (its stacks, and the secrets its vault keeps): built by a session that left no record here. */
   takenFrom?: string;
   /** The machine as this cache last saw it: a tenancy that answers otherwise (rebuilt or resized from another session) has the cache read again. */

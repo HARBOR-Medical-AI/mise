@@ -56,6 +56,10 @@ export const vmLimitsModelSchema = z.object({
 
 /** The model kind `vm cost` carries. */
 export const STRATUS_VM_COST_MODEL_KIND = 'stratus.vm.cost' as const;
+/** `chris status`: each deployed ChRIS, its deploy's record and what runs of it, read from it. */
+export const STRATUS_CHRIS_STATUS_MODEL_KIND = 'stratus.chris.status' as const;
+/** `chris deploy --plan`: what a deploy would change and restart, read without acting. */
+export const STRATUS_CHRIS_PLAN_MODEL_KIND = 'stratus.chris.plan' as const;
 
 /** A VM's spec, as `vm new` declares it. */
 export const vmSpecModelSchema = z.object({
@@ -110,6 +114,8 @@ export const vmStatusRowSchema = z.object({
   declared: z.string().nullable().optional(),
   /** Whether that declaration is kept in the tenancy (every session reads it), or on this host only; absent from an older daemon. */
   declaredKept: z.boolean().optional(),
+  /** Its instance's id, from what the machine's apply left; null without a machine; absent from an older daemon. */
+  instance: z.string().nullable().optional(),
   region: z.string(),
   /** Its spec, or null when spec.yaml does not read. */
   spec: vmSpecModelSchema.nullable(),
@@ -156,6 +162,46 @@ export const vmCostModelSchema = z.object({
   pricesRead: z.string().nullable().optional(),
 });
 
+/** What runs of a deployed ChRIS, read from it over HTTPS (never the deploy's record), with when. */
+export const chrisLiveSchema = z.object({
+  at: z.string(),
+  cube: z.object({ url: z.string(), status: z.number().nullable(), admin: z.boolean().nullable() }),
+  porter: z.object({ url: z.string(), status: z.number().nullable(), sessions: z.number().nullable(), version: z.string().nullable() }).nullable(),
+  accounts: z.array(z.object({ username: z.string(), email: z.string() })).nullable(),
+  accountsWhy: z.string().nullable(),
+});
+
+/** One VM's ChRIS as `chris status` answers it: what was deployed, and what runs. */
+export const chrisStatusRowSchema = z.object({
+  vm: z.string(),
+  profile: z.string(),
+  compute: z.string(),
+  url: z.string(),
+  host: z.string().nullable(),
+  porter: z.string().nullable(),
+  deployed: z.string(),
+  /** The CUBE image and porter version the last deploy put up, or null on a record from before deploys kept them. */
+  image: z.string().nullable(),
+  porterVersion: z.string().nullable(),
+  /** What runs, read from it; null when it was not read (no deploy, or asked not to). */
+  live: chrisLiveSchema.nullable(),
+});
+
+export const chrisStatusModelSchema = z.object({ chris: z.array(chrisStatusRowSchema) });
+
+/** What a deploy would do, read without acting: the changes to the line's record, the services it restarts and what that ends. */
+export const chrisPlanModelSchema = z.object({
+  vm: z.string(),
+  /** `host none → cube.example.org`, one per option changed; empty when the line is what was deployed. */
+  changes: z.array(z.string()),
+  /** What restarts, each with why: `porter (0.9.10 → 0.9.11)`; empty when a replay restarts nothing. */
+  restarts: z.array(z.string()),
+  /** Porter's open sessions, which a porter restart ends; null when not read. */
+  sessions: z.number().nullable(),
+  /** Whether the deploy asks before acting (anything restarts or changes). */
+  asks: z.boolean(),
+});
+
 export type LineState = (typeof LINE_STATES)[number];
 export type LineStandingModel = z.infer<typeof lineStandingSchema>;
 export type ManifestStatusModel = z.infer<typeof manifestStatusModelSchema>;
@@ -164,6 +210,10 @@ export type VmSpecModel = z.infer<typeof vmSpecModelSchema>;
 export type VmCostRate = z.infer<typeof vmCostRateSchema>;
 export type VmCostRow = z.infer<typeof vmCostRowSchema>;
 export type VmCostModel = z.infer<typeof vmCostModelSchema>;
+export type ChrisLiveModel = z.infer<typeof chrisLiveSchema>;
+export type ChrisStatusRow = z.infer<typeof chrisStatusRowSchema>;
+export type ChrisStatusModel = z.infer<typeof chrisStatusModelSchema>;
+export type ChrisPlanModel = z.infer<typeof chrisPlanModelSchema>;
 export type VmState = (typeof VM_STATES)[number];
 export type VmStatusRow = z.infer<typeof vmStatusRowSchema>;
 export type VmStatusModel = z.infer<typeof vmStatusModelSchema>;

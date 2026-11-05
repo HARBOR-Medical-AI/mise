@@ -209,6 +209,7 @@ function vmRowKept_make(context: VmCommandContext, name: string): VmStatusRow {
     stands: record.stands ?? null,
     declared: record.declared ?? null,
     declaredKept: declaredKept_is(record),
+    instance: record.machineOutputs?.['instance_id'] ?? null,
     teardown: record.teardown === undefined ? null : {
       started: record.teardown.started,
       steps: ['machine', 'data'].map((part: string) => ({ name: part, state: steps[part]?.state ?? 'not done', started: steps[part]?.started ?? null, ended: steps[part]?.ended ?? null, note: steps[part]?.note ?? null })),

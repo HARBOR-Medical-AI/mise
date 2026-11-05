@@ -10,6 +10,7 @@
  *
  * @module
  */
+import { httpGet_default } from './chris/live.js';
 import { commands_register, FileReadRefusal, type Backend, type JobRecord, type JobRun, type PromptLastCommand } from '@fnndsc/brasa/core';
 import { VFSDispatcher, type VfsOutcome } from '@fnndsc/fond';
 import type { PromptContext } from '@fnndsc/menu';
@@ -142,7 +143,7 @@ export function stratusBackend_make(options: StratusBackendOptions): StratusBack
     cache: new AnswerCache(CAPACITY_CACHE_LIFE_MS),
     net: { store: nets, driver: options.driver, builder: options.builder ?? null, region, clientCidr_read: options.clientCidr_read ?? ((): Promise<string> => clientCidr_read()) },
     vm: { store: vms, nets, driver: options.driver, builder: options.builder ?? null, region },
-    chris: { vms, nets, builder: options.builder ?? null, resolve: publicAddresses_resolve, nameservers_get: publicNameservers_get, registrar: goDaddy_make(), status_get: urlStatus_get },
+    chris: { vms, nets, builder: options.builder ?? null, resolve: publicAddresses_resolve, nameservers_get: publicNameservers_get, registrar: goDaddy_make(), status_get: urlStatus_get, http_get: httpGet_default },
     scripts: { library },
     build: { clusters, store, driver: options.driver, region, deps, clustersPath: (): string => `${session.tenancyPath}/clusters`, builder: options.builder ?? null, baseDomain: options.baseDomain ?? null, ...(options.account !== undefined ? { account: options.account } : {}), ...(options.verifyReach !== undefined ? { verifyReach: options.verifyReach } : {}) },
   }), 'backend');

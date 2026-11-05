@@ -376,7 +376,7 @@ describe('the registry', () => {
     expect(all[0]?.user).toBe('chris');
     built.registry.forget(all[0]?.key ?? '');
     expect(built.registry.all()).toEqual([]);
-    expect((await built.app.inject({ method: 'GET', url: '/healthz' })).json()).toMatchObject({ ok: true, sessions: 0 });
+    expect((await built.app.inject({ method: 'GET', url: '/healthz' })).json()).toMatchObject({ ok: true, sessions: 0, version: expect.stringMatching(/^\d+\.\d+\.\d+/) });
   });
 });
 

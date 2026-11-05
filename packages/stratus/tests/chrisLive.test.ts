@@ -1,0 +1,76 @@
+/**
+ * @file What runs of a ChRIS, read from it over HTTPS (CUBE's answer and the
+ * admin's sign-in, its accounts every page, porter's health, sessions and
+ * version), and what a deploy would do before it acts (the changes, the
+ * restarts, the sessions a porter restart ends, whether it asks).
+ */
+import { describe, it, expect } from '@jest/globals';
+import { chrisLive_read, type HttpGet } from '../src/chris/live.js';
+import { chrisPlan_derive, chrisPlan_words } from '../src/chris/plan.js';
+import { CHRIS_IMAGES, PORTER_VERSION } from '../src/chris/profiles.js';
+import type { VmRecord } from '../src/vm/state.js';
+import type { ChrisSecrets } from '../src/chris/compose.js';
+
+const CHRIS: NonNullable<VmRecord['chris']> = { profile: 'minimal', compute: 'NERC', host: 'cube.example.org', url: 'https://cube.example.org/api/v1/', deployed: '2026-11-04T20:00:00.000Z', porter: 'porter.example.org', image: CHRIS_IMAGES.cube, porterVersion: PORTER_VERSION };
+const SECRETS: ChrisSecrets = { djangoKey: 'd', postgresPassword: 'p', pfconSecretKey: 's', pfconPassword: 'f', adminPassword: 'right-password' };
+
+/** A CUBE and a porter as the public reaches them: two pages of accounts, the next page named on plain http (as behind the proxy). */
+function world_make(): { get: HttpGet; asked: string[] } {
+  const asked: string[] = [];
+  const get: HttpGet = async (url, auth) => {
+    asked.push(url);
+    const admin: boolean = auth?.user === 'chris' && auth.password === 'right-password';
+    if (url === 'https://porter.example.org/healthz') return { status: 200, body: { ok: true, sessions: 3, version: '0.9.11' } };
+    if (!admin) return { status: 401, body: null };
+    if (url === 'https://cube.example.org/api/v1/') return { status: 200, body: {} };
+    if (url.startsWith('https://cube.example.org/api/v1/groups/search/')) return { status: 200, body: { count: 1, next: null, results: [{ id: 7, name: 'all_users' }] } };
+    if (url === 'https://cube.example.org/api/v1/groups/7/users/?limit=100') return { status: 200, body: { next: 'http://cube.example.org/api/v1/groups/7/users/?limit=100&offset=100', results: [{ user_username: 'rudolph', user_email: 'r@example.org' }, { user_username: 'chris', user_email: 'dev@babyMRI.org' }] } };
+    if (url === 'https://cube.example.org/api/v1/groups/7/users/?limit=100&offset=100') return { status: 200, body: { next: null, results: [{ user_username: 'jennings', user_email: 'j@example.org' }] } };
+    return { status: 404, body: null };
+  };
+  return { get, asked };
+}
+
+describe('what runs of a ChRIS', () => {
+  it('reads CUBE, the admin\'s sign-in, every page of its accounts on the public origin, and porter\'s health, sessions and version', async () => {
+    const { get, asked } = world_make();
+    const live = await chrisLive_read(CHRIS, SECRETS, get);
+    expect(live.cube).toEqual({ url: 'https://cube.example.org/api/v1/', status: 200, admin: true });
+    expect(live.porter).toEqual({ url: 'https://porter.example.org/healthz', status: 200, sessions: 3, version: '0.9.11' });
+    expect(live.accounts?.map((one) => one.username)).toEqual(['chris', 'jennings', 'rudolph']);
+    expect(asked).toContain('https://cube.example.org/api/v1/groups/7/users/?limit=100&offset=100');
+    expect(asked.some((url: string): boolean => url.startsWith('http://'))).toBe(false);
+  });
+
+  it('says why the accounts were not read: no password kept here, or the admin does not sign in', async () => {
+    const { get } = world_make();
+    expect(await chrisLive_read(CHRIS, null, get)).toMatchObject({ cube: { status: 401, admin: null }, accounts: null, accountsWhy: 'this host keeps no admin password for it' });
+    expect(await chrisLive_read(CHRIS, { ...SECRETS, adminPassword: 'old' }, get)).toMatchObject({ cube: { admin: false }, accounts: null, accountsWhy: 'the admin does not sign in' });
+    const silent: HttpGet = async () => null;
+    expect(await chrisLive_read(CHRIS, SECRETS, silent)).toMatchObject({ cube: { status: null, admin: null }, porter: { status: null, sessions: null } });
+  });
+});
+
+describe('what a deploy would do', () => {
+  const ask = { profile: 'minimal', compute: 'NERC', host: 'cube.example.org', porter: 'porter.example.org' };
+
+  it('a replay as deployed restarts nothing and does not ask; a first deploy puts it up', () => {
+    expect(chrisPlan_derive(CHRIS, ask, null)).toEqual({ changes: [], restarts: [], sessions: null, asks: false });
+    expect(chrisPlan_derive(undefined, ask, null)).toMatchObject({ restarts: [], asks: false });
+  });
+
+  it('a new porter restarts porter and says the sessions it ends; a new host restarts CUBE; an old record says it may restart both', () => {
+    const older = { ...CHRIS, porterVersion: '0.9.10' };
+    const plan = chrisPlan_derive(older, ask, 3);
+    expect(plan.restarts).toEqual([`porter (0.9.10 → ${PORTER_VERSION}): its open sessions end`]);
+    expect(plan.asks).toBe(true);
+    expect(chrisPlan_words('store', plan)).toBe(`chris deploy store: as deployed; restarts porter (0.9.10 → ${PORTER_VERSION}): its open sessions end; 3 porter sessions open now end`);
+    expect(chrisPlan_derive(CHRIS, { ...ask, host: 'cube2.example.org' }, null)).toMatchObject({ changes: ['host cube.example.org → cube2.example.org'], restarts: ['CUBE and its workers (their environment changes)'], asks: true });
+    const unknown = { ...CHRIS, image: undefined, porterVersion: undefined };
+    delete unknown.image; delete unknown.porterVersion;
+    expect(chrisPlan_derive(unknown, ask, 1).restarts).toEqual(['CUBE and porter, perhaps (this deploy\'s record predates kept versions)']);
+    expect(chrisPlan_words('store', chrisPlan_derive(unknown, ask, 0))).toBe('chris deploy store: as deployed; restarts CUBE and porter, perhaps (this deploy\'s record predates kept versions); no porter session is open now');
+    // A compute changed alone is a registration: it changes the record and restarts nothing, and still asks with the change.
+    expect(chrisPlan_derive(CHRIS, { ...ask, compute: 'store' }, null)).toEqual({ changes: ['compute NERC → store'], restarts: [], sessions: null, asks: true });
+  });
+});
