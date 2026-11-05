@@ -101,7 +101,9 @@ export function condition_derive(cluster: HarborCluster, record: ClusterRecord |
   // Adopted from the tenancy with its machines live: up, as the cloud said when it was found.
   if (record?.adopted?.from === 'the tenancy' && stepState_read(cluster, FIRST_BILLING_STEP) === 'done') return 'UP';
   // The build halted between steps: before anything bills (PLANNED) or after (PARTLY BUILT); the word is the build's, never the machines'.
-  if (cluster.steps.some((step: StepState): boolean => step.state === 'done')) return record !== null && stepNext_find(record) !== null && BUILD_STEPS.indexOf(stepNext_find(record) as string) <= BUILD_STEPS.indexOf(FIRST_BILLING_STEP) ? 'PLANNED' : 'PARTLY BUILT';
+  // Once the billing step has started (stopped, killed or failed part way), something it made may stand and bill: never PLANNED.
+  const billingStarted: boolean = record?.steps[FIRST_BILLING_STEP]?.started !== undefined;
+  if (cluster.steps.some((step: StepState): boolean => step.state === 'done')) return !billingStarted && record !== null && stepNext_find(record) !== null && BUILD_STEPS.indexOf(stepNext_find(record) as string) <= BUILD_STEPS.indexOf(FIRST_BILLING_STEP) ? 'PLANNED' : 'PARTLY BUILT';
   return 'SIZING';
 }
 
@@ -195,7 +197,7 @@ export function clusterReadout_build(cluster: HarborCluster, store: ClusterStore
   const verify: VerifyKept | null = verifyText === null ? null : JSON.parse(verifyText) as VerifyKept;
   // Billing starts with the first resource the billing step makes: once it runs (or failed part way), not only once it is done.
   const billingState: string = stepState_read(cluster, FIRST_BILLING_STEP);
-  const applied: boolean = billingState === 'done' || billingState === 'running' || billingState === 'failed' || lastDone_find(cluster) !== null && (record === null || record.adopted !== undefined);
+  const applied: boolean = billingState === 'done' || billingState === 'running' || billingState === 'failed' || record?.steps[FIRST_BILLING_STEP]?.started !== undefined || lastDone_find(cluster) !== null && (record === null || record.adopted !== undefined);
   return {
     condition: condition_derive(cluster, record, running, asking !== null),
     // A found cluster bills when its machines live; the host attests nothing else of it.

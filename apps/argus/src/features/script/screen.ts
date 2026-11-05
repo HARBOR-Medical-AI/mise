@@ -243,6 +243,8 @@ export class ScriptScreen {
   protected readonly stepLogFrom: Map<string, { line: string; at: string }> = new Map();
   /** The last line the session refused, on the seat it was pressed on, with when and why; kept until a line is sent from that seat again. */
   protected refusal: { view: string; line: string; at: string; why: string; declined: boolean } | null = null;
+  /** The seat whose task this screen follows with no line in its lane (its question answered here), until it no longer runs. */
+  protected followStep: string | null = null;
   /** The line the standing question was asked for, when it is one of the script's: it reads ASKING. */
   protected askLine: string | null = null;
 
@@ -259,6 +261,8 @@ export class ScriptScreen {
   protected busyDeclined: boolean = false;
   /** The USERS form's words, kept across redraws. */
   protected userForm: { name: string; email: string; passwordFile: string } = { name: '', email: '', passwordFile: '' };
+  /** Each line's text as its standing was last read for: a line edited since wears no stale standing. */
+  protected stoodFor: Map<number, string> = new Map();
   /** The script as it was read (or last saved): an edit is said against it. */
   protected readText: string = '';
   /** The last SAVE, where and when: its receipt stands on the seat until the next edit. */
@@ -455,12 +459,19 @@ export class ScriptScreen {
       const seat: ScriptStep | undefined = this.askLine === null ? undefined : this.steps.find((step: ScriptStep): boolean => step.lines.some((line: ScriptLine): boolean => line.text === this.askLine));
       if (seat !== undefined) this.view = seat.key;
       this.ask = { message, kind, answer: (value: string | null): void => {
+        const answeredLine: string | null = this.askLine;
         this.ask = null;
         this.askLine = null;
         this.draw();
         resolve(value);
-        // A question this screen did not send the line for (asked while it was away): its standing is read again, so the
-        // line's task reads RUNNING and its commits wait, not 'waiting on the question' after it was answered.
+        // A question this screen did not send the line for (asked while it was away): from the answer on, the line reads
+        // RUNNING, its commits wait, and what its task prints lands under its seat; its standing is read again after.
+        if (this.busy === null && answeredLine !== null && value !== null && value !== '' && value.toLowerCase() !== 'n') {
+          this.followStep = this.steps.find((step: ScriptStep): boolean => step.lines.some((line: ScriptLine): boolean => line.text === answeredLine))?.key ?? null;
+          this.lines = this.lines.map((line: ScriptLine): ScriptLine => (line.text === answeredLine ? { ...line, running: 'its answer is given: the act goes on' } : line));
+          this.steps = this.steps_derive(this.lines);
+          this.draw();
+        }
         if (this.busy === null) void this.standings_refresh().then((): void => this.draw());
       } };
       this.log_add(message, 'ask');
@@ -483,6 +494,7 @@ export class ScriptScreen {
     const standings = await this.status_read(this.path);
     this.lines = this.accountsHeld_apply(lines_build(text, standings?.lines ?? []));
     this.readText = text;
+    this.stoodFor = new Map(this.lines.map((line: ScriptLine): [number, string] => [line.number, line.text]));
     this.steps = this.steps_derive(this.lines);
     void this.vmsSeen_read();
     void this.chrisSeen_read();
@@ -596,6 +608,8 @@ export class ScriptScreen {
     this.chrisPlans.clear();
     this.nets.clear();
     this.steps = this.steps_derive(this.lines);
+    this.stoodFor = new Map(this.lines.map((line: ScriptLine): [number, string] => [line.number, line.text]));
+    if (this.followStep !== null && runningStep_find(this.steps) === undefined) this.followStep = null;
     void this.standing_read();
     void this.vmsSeen_read();
     void this.chrisSeen_read();
@@ -912,7 +926,7 @@ export class ScriptScreen {
     header.replaceChildren();
     const counts: StateCounts = states_count(this.lines);
     const runningStep: ScriptStep | undefined = runningStep_find(this.steps);
-    const standingWord: string = this.path === '' ? 'LIBRARY' : this.busy !== null || runningStep !== undefined ? 'RUNNING' : counts.changed > 0 ? 'CHANGED' : counts.notYet > 0 ? 'NOT YET' : counts.ready > 0 ? 'READY' : counts.total > 0 ? 'DONE' : 'READING';
+    const standingWord: string = this.path === '' ? 'LIBRARY' : this.ask !== null ? 'ASKING' : this.busy !== null || runningStep !== undefined ? 'RUNNING' : counts.changed > 0 ? 'CHANGED' : counts.notYet > 0 ? 'NOT YET' : counts.ready > 0 ? 'READY' : counts.total > 0 ? 'DONE' : 'READING';
     const condition: HTMLElement = el('section', 'tdc-head-condition');
     const pill: HTMLElement = el('div', 'tdc-condition');
     pill.dataset['condition'] = standingWord;
@@ -1223,8 +1237,10 @@ export class ScriptScreen {
     // A line whose task runs, or the line in the lane, is RUNNING: its last standing waits for the run to end.
     const running: boolean = line.running !== null || this.busy?.line === line.text;
     const asking: boolean = this.ask !== null && this.askLine === line.text;
+    // A line edited since its standing was read: its old standing is not its own; said as such.
+    const edited: boolean = this.stoodFor.has(line.number) && this.stoodFor.get(line.number) !== line.text;
     const box: HTMLElement = el('div', `ss-line ss-line-${asking ? 'asking' : running ? 'running' : (line.state ?? 'none').replace(' ', '-')}`);
-    box.append(el('span', 'ss-line-state', asking ? '? ASKING · ITS QUESTION STANDS ABOVE' : running ? '▶ RUNNING' : line.state === null ? '—' : `${STATE_MARKS[line.state]} ${line.state.toUpperCase()}`), el('code', 'tdc-mono ss-line-text', line.text));
+    box.append(el('span', 'ss-line-state', asking ? '? ASKING · ITS QUESTION STANDS ABOVE' : running ? '▶ RUNNING' : edited ? '~ EDITED · NOT DECLARED (BUILD declares and builds it)' : line.state === null ? '—' : `${STATE_MARKS[line.state]} ${line.state.toUpperCase()}`), el('code', 'tdc-mono ss-line-text', line.text));
     if (line.detail !== '') box.append(el('span', 'tdc-prose tdc-quiet ss-line-detail', line.detail));
     return box;
   }
@@ -1280,7 +1296,7 @@ export class ScriptScreen {
     const box: HTMLElement = this.section_make('THE STEP\'S OUTPUT', 'tdc-col-steplog', subtitle);
     const lines: HTMLElement = el('div', 'tdc-steplog');
     const shown: string[] = (this.stepLogs.get(step.key) ?? []).slice(-80);
-    if (shown.length === 0) lines.append(el('span', 'tdc-quiet', 'what the line prints lands here when RUN sends it'));
+    if (shown.length === 0) lines.append(el('span', 'tdc-quiet', step.running !== null ? `its task runs (${step.running}): what it prints lands here as FOLLOW in the header follows it` : 'what the line prints lands here when RUN sends it'));
     for (const one of shown) lines.append(el('span', 'tdc-steplog-line', one));
     box.append(lines);
     return box;
@@ -2066,6 +2082,12 @@ export class ScriptScreen {
       // loop: ss-vm-teardown
       return [this.lineBoxNumbered_make(line), this.runRow_make(step, line), this.vmGoes_make(vm, machineStands, row === null || row.state !== 'gone')];
     }
+    // A VM's lock line says what it writes: the lock, kept in the tenancy; nothing is removed, and the teardown after it asks.
+    if (words[0] === 'vm' && words[1] === 'protect' && words[2] !== undefined) {
+      const off: boolean = words[3] === 'off';
+      // loop: ss-vm-protect
+      return [this.lineBoxNumbered_make(line), this.runRow_make(step, line), el('p', 'tdc-prose', off ? `Writes ${words[2]}'s lock off in the tenancy and removes nothing; a teardown after it still asks first, with what goes and what still bills.` : `Writes ${words[2]}'s lock on in the tenancy: a teardown refuses until the lock is lifted. Nothing else changes.`)];
+    }
     // loop: ss-line-run
     return [this.lineBoxNumbered_make(line), this.runRow_make(step, line), el('p', 'tdc-prose tdc-quiet', 'The screen has no form for this verb: the line runs as written. A line that would act asks first where its verb asks; one that only reads answers in THE STEP\'S OUTPUT.')];
   }
@@ -2134,6 +2156,8 @@ export class ScriptScreen {
     while (this.parts.log.childElementCount > LOG_LIMIT) this.parts.log.firstElementChild?.remove();
     this.parts.log.scrollTop = this.parts.log.scrollHeight;
     if (kind === 'out' && this.busy !== null) this.busyOut.push(text);
+    // A task followed with no line in this lane (its question answered here): what it prints lands under its seat.
+    if (kind === 'out' && this.busy === null && this.followStep !== null) this.stepLogs.set(this.followStep, [...(this.stepLogs.get(this.followStep) ?? []), text].slice(-200));
     if (kind === 'answer' && this.busy !== null && (text === 'n' || text === '(declined)')) this.busyDeclined = true;
     if (kind === 'out' && this.busy !== null && this.busy.step !== null) {
       const lines: string[] = this.stepLogs.get(this.busy.step) ?? [];
