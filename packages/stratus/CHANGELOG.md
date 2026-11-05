@@ -1,5 +1,11 @@
 # @fnndsc/stratus
 
+## 0.12.1
+
+### Patch Changes
+
+- 7f6e01c: A ChRIS deployed with `--porter` now runs porter 0.9.11, with the ARGUS whose SIZE seat declares and builds.
+
 ## 0.12.0
 
 ### Minor Changes
