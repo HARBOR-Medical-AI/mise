@@ -56,6 +56,14 @@ describe('the TD controller model', () => {
       '01 compartment DONE done', '02 infra-plan DONE done', '03 infra-apply NEXT next $', '04 dns NOT DONE later',
     ]);
     expect(stepLooks_build(cluster_make({ asking: 'Continue? [y/N]' }))[2]?.word).toBe('ASKING');
+    // Beside the record's word, what the tenancy holds of what each step makes, as its compartment was counted.
+    const counted = (resources: Record<string, number>): Array<[string, string | null, boolean]> =>
+      stepLooks_build(cluster_make({ resources, resourcesAt: '2026-11-05T14:00:00Z' })).map((look): [string, string | null, boolean] => [look.name, look.held, look.unheld]);
+    expect(counted({ instances: 3, loadbalancers: 1, dns: 1 })).toEqual([['compartment', 'COUNTED IN THE TENANCY', false], ['infra-plan', null, false], ['infra-apply', 'HOLDS 3 INSTANCES · 1 BALANCER', false], ['dns', null, false]]);
+    // A step done of which the tenancy holds nothing is the disagreement, drawn so.
+    const done: ClusterSummary = cluster_make({ resources: {}, resourcesAt: '2026-11-05T14:00:00Z', steps: [{ folder: '01-compartment', name: 'compartment', state: 'done' }, { folder: '02-infra-apply', name: 'infra-apply', state: 'done' }] });
+    expect(stepLooks_build(done).map((look) => [look.held, look.unheld])).toEqual([['COUNTED IN THE TENANCY', false], ['HOLDS NONE', true]]);
+    expect(stepLooks_build(cluster_make({ resources: null }))[0]?.held).toBeNull();
     const odd: ClusterSummary = cluster_make({ steps: [{ folder: '01-a', state: 'running' }, { folder: '02-b', state: 'failed' }, { folder: '03-c', state: 'expired' }, { folder: '04-d', state: 'unknown' }] });
     expect(stepLooks_build(odd).map((look) => `${look.name} ${look.tone}`)).toEqual(['a running', 'b failed', 'c expired', 'd unknown']);
     expect(noteShort_format('done before adoption (harbor-oci: done, Terraform state holds 79 resources)')).toBe('Terraform state holds 79 resources');

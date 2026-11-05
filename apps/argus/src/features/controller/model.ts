@@ -114,6 +114,32 @@ export interface StepLook {
   note: string;
   /** Whether billing starts at it: the line is drawn before it. */
   billFrom: boolean;
+  /** What the tenancy holds of what it makes, as the compartment was counted (`HOLDS 3 INSTANCES`, `HOLDS NONE`); null for a step that makes nothing in the cloud, or when the compartment was not counted. */
+  held: string | null;
+  /** Whether the record says done and the tenancy holds none of what it makes. */
+  unheld: boolean;
+}
+
+/** What each step that makes something in the cluster's compartment makes, by the kinds its count names (the DNS records live in the base domain's zone, elsewhere, so the count does not attest them). */
+const STEP_MAKES: Readonly<Record<string, ReadonlyArray<[string, string]>>> = {
+  iso: [['buckets', 'BUCKET']],
+  'infra-apply': [['instances', 'INSTANCE'], ['loadbalancers', 'BALANCER'], ['volumes', 'VOLUME']],
+};
+
+/**
+ * What the tenancy holds of what a step makes, as its compartment was counted.
+ *
+ * @param name - The step.
+ * @param resources - The compartment's counts by kind, or null when not counted.
+ * @returns The words, or null when the step makes nothing the count names (or nothing was counted).
+ */
+export function stepHeld_derive(name: string, resources: Readonly<Record<string, number | undefined>> | null | undefined): string | null {
+  if (resources === null || resources === undefined) return null;
+  if (name === 'compartment') return 'COUNTED IN THE TENANCY';
+  const makes = STEP_MAKES[name];
+  if (makes === undefined) return null;
+  const held: string[] = makes.filter(([kind]): boolean => (resources[kind] ?? 0) > 0).map(([kind, word]): string => `${resources[kind] as number} ${word}${(resources[kind] as number) === 1 ? '' : 'S'}`);
+  return held.length === 0 ? 'HOLDS NONE' : `HOLDS ${held.join(' · ')}`;
 }
 
 /**
@@ -128,7 +154,8 @@ export function stepLooks_build(cluster: ClusterSummary): StepLook[] {
     const n: string = String(index + 1).padStart(2, '0');
     const note: string = noteShort_format(step.evidence ?? '');
     const billFrom: boolean = name === cluster.billingStep;
-    const look = (word: string, tone: StepLook['tone']): StepLook => ({ n, name, word, tone, note, billFrom });
+    const held: string | null = stepHeld_derive(name, cluster.resources);
+    const look = (word: string, tone: StepLook['tone']): StepLook => ({ n, name, word, tone, note, billFrom, held, unheld: tone === 'done' && held === 'HOLDS NONE' });
     if (step.state === 'done') return look('DONE', 'done');
     if (step.state === 'running') return look('RUNNING', 'running');
     if (step.state === 'failed') return look('FAILED', 'failed');

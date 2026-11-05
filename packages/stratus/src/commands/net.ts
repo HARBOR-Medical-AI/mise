@@ -92,17 +92,44 @@ function net_need(context: NetCommandContext, name: string | undefined, verb: st
  * @param spec - Its spec, or null when it does not read.
  * @returns The lines.
  */
-function netStatus_lines(record: NetRecord, spec: NetSpec | null): string[] {
+function netStatus_lines(record: NetRecord, spec: NetSpec | null, stands: NetStands | null): string[] {
   const state: string = netState_word(record);
   const tone = state === 'built' ? chalk.cyan : state === 'gone' ? chalk.gray : chalk.yellow;
   const lines: string[] = [`${chalk.bold(record.name)}  ${tone(state)}  ${spec === null ? chalk.red('spec.yaml does not read') : `${spec.cidr} (subnet ${subnet_derive(spec.cidr)})`}  ${record.region}`];
   if (record.placeId !== undefined) lines.push(`  place    ${record.placeId}${record.placeMade === false ? chalk.gray(' (adopted)') : ''}`);
   if (record.stackRef !== undefined) lines.push(`  stack    ${record.stackRef}`);
+  if (stands !== null) lines.push(`  vcn      ${stands.cidr ?? chalk.yellow('the tenancy holds no VCN of it')}${chalk.gray(`  (read from the tenancy ${stands.at.slice(11, 16)} UTC)`)}`);
   if (record.clientCidr !== undefined) lines.push(`  bastion  ${record.outputs?.['bastion_id'] ?? chalk.gray('not built')}, admitting ${record.clientCidr}`);
   if (record.outputs?.['subnet_id'] !== undefined) lines.push(`  subnet   ${record.outputs['subnet_id']}`);
   if (record.built !== undefined) lines.push(chalk.gray(`  built ${record.built}`));
   if (record.gone !== undefined) lines.push(chalk.gray(`  torn down ${record.gone}: net build ${record.name} builds it again`));
   return lines;
+}
+
+/** A network's VCN as the tenancy answers it: the range it holds, null when it holds none, and when it was read. */
+interface NetStands {
+  readonly cidr: string | null;
+  readonly at: string;
+}
+
+/**
+ * A kept network's VCN, read from the tenancy (a-change-is-a-loop, clause 1):
+ * the range it was built with is the VCN's, not this host's record of it.
+ *
+ * @param context - The session.
+ * @param record - Its state.
+ * @returns What stands, or null when nothing of it is built or the cloud did not answer.
+ */
+async function netStands_read(context: NetCommandContext, record: NetRecord): Promise<NetStands | null> {
+  const vcn: string | undefined = record.outputs?.['vcn_id'];
+  if (record.placeId === undefined || vcn === undefined || record.gone !== undefined) return null;
+  try {
+    const networks = await context.driver.networks_list(record.placeId, record.region);
+    const found = networks.find((network): boolean => network.id === vcn);
+    return { cidr: found === undefined ? null : (found.cidrs ?? []).join(',') || null, at: new Date().toISOString() };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -136,6 +163,10 @@ async function netStatus_run(context: NetCommandContext, names: ReadonlyArray<st
   const missing: string[] = names.filter((name: string): boolean => !all.includes(name));
   if (missing.length > 0) return envelope_error('', undefined, `net: ${missing.join(', ')}: no such network (${all.join(', ')})\n`);
   const foundBy: Map<string, FoundNet> = new Map(found.map((net: FoundNet): [string, FoundNet] => [net.name, net]));
+  const standing: Map<string, NetStands | null> = new Map();
+  for (const name of names.length === 0 ? kept : names.filter((one: string): boolean => kept.includes(one))) {
+    standing.set(name, await netStands_read(context, context.store.record_read(name) as NetRecord));
+  }
   const blocks: string[] = (names.length === 0 ? all : [...names]).map((name: string): string => {
     const seen: FoundNet | undefined = foundBy.get(name);
     if (seen !== undefined) {
@@ -145,7 +176,7 @@ async function netStatus_run(context: NetCommandContext, names: ReadonlyArray<st
       ].join('\n');
     }
     const read = context.store.spec_read(name);
-    return netStatus_lines(context.store.record_read(name) as NetRecord, read !== null && 'spec' in read ? read.spec : null).join('\n');
+    return netStatus_lines(context.store.record_read(name) as NetRecord, read !== null && 'spec' in read ? read.spec : null, standing.get(name) ?? null).join('\n');
   });
   // The same as a model: what is declared, what its last build made, and its stack as the tenancy answers it, with when it was read.
   const stacks: Map<string, FoundNet> = new Map(tenancy.map((net: FoundNet): [string, FoundNet] => [net.name, net]));
@@ -155,7 +186,7 @@ async function netStatus_run(context: NetCommandContext, names: ReadonlyArray<st
     const stack = stacks.get(name)?.stack ?? null;
     return {
       name, state: record === null ? 'found' : record.gone !== undefined ? 'gone' : record.built !== undefined ? 'built' : 'declared',
-      cidr: spec !== null && 'spec' in spec ? spec.spec.cidr : null, builtCidr: record?.builtCidr ?? null,
+      cidr: spec !== null && 'spec' in spec ? spec.spec.cidr : null, builtCidr: record?.builtCidr ?? null, stands: standing.get(name) ?? null,
       stack: stack === null ? null : { id: stack.id, state: stack.state }, bastion: record?.outputs?.['bastion_id'] ?? null, admits: record?.clientCidr ?? null, subnet: record?.outputs?.['subnet_id'] ?? null,
     };
   });
@@ -219,7 +250,7 @@ async function netPlan_run(context: NetCommandContext, args: ReadonlyArray<strin
   const need = net_need(context, args[0], 'plan');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   const { name, record, spec } = need;
-  const lines: string[] = [...netStatus_lines(record, spec), 'made of:', ...NET_RESOURCES.map((kind: string): string => `  ${kind}`), chalk.gray('cost  none: nothing a network is made of is in the price list')];
+  const lines: string[] = [...netStatus_lines(record, spec, await netStands_read(context, record)), 'made of:', ...NET_RESOURCES.map((kind: string): string => `  ${kind}`), chalk.gray('cost  none: nothing a network is made of is in the price list')];
   if (record.stackRef !== undefined && tasks_granted()) {
     const deps = deps_make(context);
     if ('error' in deps) return envelope_error('', undefined, `net plan: ${deps.error}\n`);
@@ -266,7 +297,9 @@ async function netBuild_run(context: NetCommandContext, args: ReadonlyArray<stri
   if (!yes) return envelope_ok(`${chalk.gray(`stopped before the apply; nothing changed (net build ${name} plans and asks again)`)}\n`);
   const applied = await job_runFollowed(NET_JOBS.apply(name), `apply ${name}`, netApplyRun_make(name, deps));
   if ('error' in applied) return envelope_error('', undefined, `net build: ${applied.error}\n`);
-  return envelope_ok(`${netStatus_lines(context.store.record_read(name) as NetRecord, need.spec).join('\n')}\n`);
+  // The receipt is what stands, read back: the VCN's range as the tenancy holds it after the apply.
+  const after: NetRecord = context.store.record_read(name) as NetRecord;
+  return envelope_ok(`${netStatus_lines(after, need.spec, await netStands_read(context, after)).join('\n')}\n`);
 }
 
 /**

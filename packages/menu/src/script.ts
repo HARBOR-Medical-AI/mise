@@ -205,6 +205,8 @@ export const netStatusRowSchema = z.object({
   cidr: z.string().nullable(),
   /** The CIDR its last build made it with, or null before a build (or on a record from before builds kept it). */
   builtCidr: z.string().nullable(),
+  /** Its VCN as the tenancy answers it: the range it holds (null when the tenancy holds no VCN of it), with when it was read; null when not read; absent from an older daemon. */
+  stands: z.object({ cidr: z.string().nullable(), at: z.string() }).nullable().optional(),
   /** Its stack as the tenancy answers it, or null when none is found. */
   stack: z.object({ id: z.string(), state: z.string() }).nullable(),
   bastion: z.string().nullable(),

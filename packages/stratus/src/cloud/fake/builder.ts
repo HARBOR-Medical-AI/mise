@@ -69,6 +69,8 @@ export class FakeBuildWorld {
   private readonly clusters: Map<string, FakeCluster> = new Map();
   /** The compartments made, by cluster. */
   readonly compartments: Map<string, string> = new Map();
+  /** What a cluster's build made in its compartment, by kind, as the fake tenancy counts it (`resources_search`). */
+  readonly held: Map<string, Partial<Record<'instances' | 'loadbalancers' | 'volumes' | 'buckets', number>>> = new Map();
   /** The DNS zones the tenancy holds. */
   readonly zones: string[] = ['fake.example'];
   /** The stacks the tenancy holds, by id, as `stack_describe` reads them back; a test seeds them. */
@@ -306,6 +308,7 @@ export class FakeCloudBuilder implements CloudBuilder {
   async iso_store(request: { cluster: string; url: string; region: string; compartmentId: string }, call: BuildCall): Promise<{ object: string; expires: string; link: string; linkId: string }> {
     await this.world.tick(2, call.signal);
     const object: string = `${request.cluster}-discovery.iso`;
+    this.world.held.set(request.compartmentId, { ...this.world.held.get(request.compartmentId), buckets: 1 });
     call.log(`stored ${object} in stratus-iso, linked for 7 days`);
     return { object, expires: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(), link: `https://objectstorage.example/p/fake/${object}`, linkId: this.world.id_next('link') };
   }
@@ -342,6 +345,8 @@ export class FakeCloudBuilder implements CloudBuilder {
       .filter((row: PlanRow): boolean => row.kind === 'instances')
       .map((row: PlanRow, index: number): SpecNode => ({ name: row.name, role: row.name.includes('-cp-') ? 'plane' : 'worker', vcpu: 0, ramGib: 0, zoneIndex: index % FAKE_ZONES.length }));
     this.world.machines_boot(request.cluster, nodes);
+    const place: string | undefined = this.world.compartments.get(request.cluster);
+    if (place !== undefined) this.world.held.set(place, { ...this.world.held.get(place), instances: nodes.length, loadbalancers: 3, volumes: nodes.length });
     return {
       apiIp: '10.0.0.10', apiIntIp: '10.0.0.11', appsIp: '10.0.0.12', stackRef: request.stackRef ?? request.plan.stackRef ?? this.world.id_next('stack'),
       manifests: [{ name: 'oci-dynamic-custom-manifest.yml', content: '# the fake cloud controller and CSI driver\n' }],
@@ -371,9 +376,12 @@ export class FakeCloudBuilder implements CloudBuilder {
       gone.push(went);
       call.log(`removed ${went}`);
     };
-    await step('destroy', (): string | null => request.stackRef === undefined ? null : `the stack's resources (${request.stackRef})`);
+    const held = (change: Partial<Record<'instances' | 'loadbalancers' | 'volumes' | 'buckets', number>>): void => {
+      this.world.held.set(request.compartmentId, { ...this.world.held.get(request.compartmentId), ...change });
+    };
+    await step('destroy', (): string | null => { held({ instances: 0, loadbalancers: 0, volumes: 0 }); return request.stackRef === undefined ? null : `the stack's resources (${request.stackRef})`; });
     await step('dns', (): string | null => request.baseDomain === '' ? null : '3 DNS records');
-    await step('image', (): string | null => request.isoObject === undefined ? null : `the image ${request.isoObject} and its link`);
+    await step('image', (): string | null => { held({ buckets: 0 }); return request.isoObject === undefined ? null : `the image ${request.isoObject} and its link`; });
     await step('volumes', (): string | null => request.volumeIds.length === 0 ? null : `${request.volumeIds.length} volumes the cluster made`);
     await step('stack', (): string | null => {
       if (request.stackRef === undefined) return null;

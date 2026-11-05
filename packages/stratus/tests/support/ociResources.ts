@@ -108,7 +108,7 @@ export function recordedResourceApi_make(seen: string[] = []): OciResourceApi {
       ] : [];
     },
     async backupPolicy_read(_region, volumeId) { return volumeId === 'ocid1.volume.oc1.iad.csi001' ? { name: 'harbor-daily', periods: ['ONE_DAY'] } : null; },
-    async vcns_list(_region, compartmentId) { return inHarbor(compartmentId, [record(VCN, 'harbor', 'AVAILABLE')]); },
+    async vcns_list(_region, compartmentId) { return inHarbor(compartmentId, [{ ...record(VCN, 'harbor', 'AVAILABLE'), cidrBlocks: ['10.0.0.0/16'] }]); },
     async subnets_list(_region, compartmentId) { return inHarbor(compartmentId, SUBNETS); },
     async nsgs_list(_region, compartmentId) { return inHarbor(compartmentId, NSGS); },
     async loadBalancers_list(_region, compartmentId) { return inHarbor(compartmentId, BALANCERS); },

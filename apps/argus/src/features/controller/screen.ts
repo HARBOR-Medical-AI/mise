@@ -673,14 +673,17 @@ export class TdController {
     // What the cluster is comes first; for one found in the tenancy, that is what the cloud said of it.
     spec.append(this.classNote_make(cluster), ...this.spec_make(cluster.spec, cluster.origin === 'found'), el('span', 'tdc-section-title tdc-gap', 'SPEC · CHRIS ON IT'), this.chrisSpec_make(cluster.spec));
 
-    const steps: HTMLElement = this.section_make(cluster.origin === 'found' ? 'STEPS · AS FAR AS THE CLOUD ATTESTS THEM' : 'STEPS · THE MACHINE, THEN CHRIS', 'tdc-col-steps', 'PRESS A STEP · BUILD OPENS ON IT');
+    const counted: string = cluster.resourcesAt != null ? ` · THE TENANCY COUNTED ${cluster.resourcesAt.slice(11, 16)} UTC` : '';
+    const steps: HTMLElement = this.section_make(cluster.origin === 'found' ? 'STEPS · AS FAR AS THE CLOUD ATTESTS THEM' : 'STEPS · THE MACHINE, THEN CHRIS', 'tdc-col-steps', `PRESS A STEP · BUILD OPENS ON IT${counted}`);
     const grid: HTMLElement = el('div', 'tdc-step-grid');
     for (const look of stepLooks_build(cluster)) {
-      const cell: HTMLButtonElement = el('button', `tdc-step tdc-step-${look.tone}${look.billFrom ? ' tdc-step-billfrom' : ''}`);
+      const cell: HTMLButtonElement = el('button', `tdc-step tdc-step-${look.tone}${look.billFrom ? ' tdc-step-billfrom' : ''}${look.unheld ? ' tdc-step-unheld' : ''}`);
       cell.type = 'button';
-      cell.setAttribute('aria-label', `${look.name}, ${look.word}`);
+      cell.setAttribute('aria-label', `${look.name}, ${look.word}${look.held !== null ? `, ${look.held}` : ''}`);
       cell.title = look.note;
+      // The record's word, and beside it what the tenancy holds of what the step makes (a-change-is-a-loop, clause 1).
       cell.append(el('span', 'tdc-step-n', look.n), el('span', 'tdc-step-name', look.name), el('span', 'tdc-step-note', look.note), el('span', 'tdc-step-word', look.word));
+      if (look.held !== null) cell.append(el('span', 'tdc-step-held', look.held));
       cell.addEventListener('click', (): void => { this.hooks.voice.pill(look.name); this.view_show('build'); });
       grid.append(cell);
     }

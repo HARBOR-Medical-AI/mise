@@ -11,7 +11,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32 } from 'node:zlib';
 import { BufferSink, HeadlessSurface, JobRunner, runner_install, sink_set, surface_set, type PromptRequest } from '@fnndsc/brasa/core';
-import type { CloudDriver, ResourceCounts } from '../src/cloud/driver.js';
+import type { CloudDriver, CloudNetwork, ResourceCounts } from '../src/cloud/driver.js';
+import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import type { BuildCall } from '../src/cloud/builder.js';
 import type { OciBuildApi } from '../src/cloud/oci/buildApi.js';
 import type { RmApi, RmJobRecord, RmOperation } from '../src/cloud/oci/rmApi.js';
@@ -194,7 +195,8 @@ describe('net, over the fake cloud', () => {
     store = new NetStore(join(root, 'nets'));
     world = new FakeBuildWorld(0);
     standing = {};
-    const driver = { resources_search: async (): Promise<ResourceCounts> => standing } as unknown as CloudDriver;
+    // The VCNs the fake tenancy answers are what the fake builder applied.
+    const driver = { resources_search: async (): Promise<ResourceCounts> => standing, networks_list: async (place: string, region: string): Promise<CloudNetwork[]> => new FakeDriver({ ...fakeCloud_sample(), resources: [] }).built_see(world).networks_list(place, region) } as unknown as CloudDriver;
     context = { store, driver, builder: new FakeCloudBuilder(world), region: (): string => 'us-ashburn-1', clientCidr_read: async (): Promise<string> => '134.174.21.21/32' };
     surface = Object.assign(new HeadlessSurface(), { answers: [] as string[], asked: [] as string[] });
     (surface.capabilities as { tasks?: boolean }).tasks = true;
@@ -254,7 +256,9 @@ describe('net, over the fake cloud', () => {
     expect(plain((await net_run(context, ['new', 'scratch', '--cidr', '10.41.0.0/16'])).rendered)).toBe('scratch: cidr 10.40.0.0/16 → 10.41.0.0/16; a new CIDR on a built network replaces its VCN and subnet, and every machine on them: net build refuses it unless --allow-alter\n');
     // net status answers a model: what is declared, what the build made, and its stack as the tenancy answers it.
     const status = await net_run(context, ['status', 'scratch']);
-    expect(status.model).toMatchObject({ kind: 'stratus.net.status', data: { nets: [{ name: 'scratch', state: 'built', cidr: '10.41.0.0/16', builtCidr: '10.40.0.0/16', admits: '5.6.7.8/32' }] } });
+    expect(status.model).toMatchObject({ kind: 'stratus.net.status', data: { nets: [{ name: 'scratch', state: 'built', cidr: '10.41.0.0/16', builtCidr: '10.40.0.0/16', admits: '5.6.7.8/32', stands: { cidr: '10.40.0.0/16', at: expect.any(String) } }] } });
+    // The range it stands with is the VCN's, read from the tenancy with when.
+    expect(plain(status.rendered)).toMatch(/ {2}vcn {6}10\.40\.0\.0\/16 {2}\(read from the tenancy \d\d:\d\d UTC\)/);
   });
 
   it('adopts an empty compartment of its name, and refuses one that holds anything', async () => {
