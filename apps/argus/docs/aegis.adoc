@@ -560,7 +560,78 @@ The components a pane declares into are documented one section each in `componen
 | a-controller-leaves-a-script | A controller keyed by a thing (a machine, a cluster) is a way of writing its script, never a way around it: every act it offers is a line of that script, written to the working copy under `/scripts/mine/` before the line runs, so leaving the screen at any step leaves a script that replays to there; a thing the host keeps with no script gets one from its record at the first act. The script screen is the library and the replay; the controller is the door. | unit:vmModel, vmScreen; smoke:vm-controller
 | a-running-step-is-followed-not-held | A step that runs long is a task of the session, never a line the screen holds: the seat wears the run `play --status` names (`running`), the screen follows it with the session's own `wait` and the task's log lands under the step, STOP FOLLOWING and LEAVE free the lane as Ctrl-C does and never touch the task, and a script opens on its running seat and follows it again. A hidden word crosses once, on the errand's own bar, hidden and emptied as it is read; the step never shows or keeps it. | unit:scriptModel, scriptScreen, stratusTiles; stratus chrisDeploy; brasa play-builtin
 | a-step-is-its-line | A step on the script screen is its lines, and nothing else: one line, or a declaration with the build right after it of the same name (DECLARE and BUILD on one seat, 2026-11-04), or the user lines under USERS; its seat wears the state `play --status` read for those lines from the host's records (not yet, ready, done, changed; a declaration's until it is done, then its build's), never a visit; its body is a form over the lines' own options, each shown as it will run; every control sends a session line the operator could have typed (RUN or DECLARE the line itself, BUILD the declaration then its build, PROTECT and TEARDOWN their own), so nothing on the screen starts a step except by its lines. An edit lives in a working copy under `/scripts/mine/`, written by the editor's own save line; a source's clone is never written from the screen. | unit:scriptModel, scriptScreen; smoke:script-screen
+| a-change-is-a-loop | Every control that changes the world is one loop on one panel, (ROC)²: render what stands from its truth with its source and age; offer the change with its options as a difference against what stands; one commit per change to the world, in the offer's section, no half-commit named as one; confirm in place with the consequence; the receipt is the render, read back from the truth; coming back shows where the loop is (<<a-change-is-a-loop>>). Every control a takeover screen makes to send a line carries a `// loop: <id>` mark naming its row in the loop ledger, and every row a mark; a row is held, owed or reads. | lint:a-change-is-a-loop
 | a-takeover-keeps-the-frame | A program that takes the screen keeps the ARGUS frame: the gutter at the page's width with its brand block and seat, the head's elbow and the band that closes it, the gap, the body's elbow and band, the views as the page's own seats with LEAVE closing the column, the band's first block and the fillet in the colour of the seat they join, and the page's `main` under the body's band holding every field it draws as a pane under its titled strip. It is built once (`features/takeover/frame.ts`) on argus.css's own rules, where every `takeover-*` class stands beside the page's class in the same selector list, so no takeover measures a frame of its own; what it draws inside the frame is its own. | unit:controllerScreen, trekBridge; smoke:td-controller, trek-bridge; the theme canon
+|===
+
+[[a-change-is-a-loop]]
+== A change is a loop, seen whole, in one place
+
+Settled with the operator 2026-11-04, after the store's boot disk was moved from 50 to 180 GB on SIZE, RUN pressed, and nothing reached the tenancy while the screen gave no sign either way. The stratus screens had kept every law above and still failed the operator's loop: what is it now, what will this do, did it happen. The operator named the loop ROC, then (ROC)²: RENDER and REPRESENT, OFFER and show OPTIONS, CONFIRM and COMMIT. Its ends are joined: a commit ends in the render.
+
+Every act that changes the world (the tenancy, a CUBE, a record or file another session reads) is one loop on one panel. The operator sees what stands, moves what they would change and sees what the move does, agrees with the consequence in view, and watches the change become what stands, without leaving the panel and without having to ask.
+
+The six clauses, each a check a screen can be held to:
+
+. *Render the truth, and represent where it came from.* The panel shows the value as its truth holds it (for a VM, the tenancy: the instance's shape, the volumes' sizes), with its source and its age. A declared or cached value is never drawn as the current one; where they differ, both are drawn, each named.
+. *Offer, and show the options as a difference.* Every control shows, as it moves, its effect against what stands: the difference, the cost, a reboot or downtime, a refusal (a shrink, a new machine). It is worked out here, from what was read once; nothing slow is asked per move.
+. *One commit per change to the world.* The control that changes the world stands in the same section as the offer, and nothing on that panel that changes only a record wears a commit's name or place: a half-commit is a trap.
+. *Confirm in place, with the consequence.* The question stands on the panel, over the offer's own section, and carries the real consequence (the plan's changes, the cost, what cannot be undone), never a bare yes.
+. *The receipt is the render.* After the commit the same section shows the progress, then the outcome read back from the truth; a failure says what stands now and what to do next. Silence is a failure.
+. *Coming back shows the loop.* Leaving and returning finds the same state: running, owed, done or failed.
+
+*Done* means an operator who knows none of the verbs answers three questions from the screen alone: what is it now, what will this do, did it happen. An operator who has to ask "did it take?" means the slice failed, whatever its tests say.
+
+[[design-loop]]
+=== The design loop
+
+A surface slice that adds or changes a control that acts goes round this loop, in this order, and a pull request shows each turn:
+
+. *The journey first* (journeys-before-verbs): the operator's words for what they want, and the panel it happens on.
+. *The loop row before code:* the control's row in the ledger below, naming what Render reads and from where, the difference Options shows, the consequence Confirm carries and the receipt Commit leaves, and the clauses it holds or owes. No row, no code: `lint:a-change-is-a-loop` refuses an acting control without one.
+. *Build* the control over its row.
+. *Walk the loop* on the entry path the operator uses (porter, then the session): Render, Offer and Confirm over the real tenancy, read-only; Commit over `stratus --fake`, or over the real tenancy with the operator's word.
+. *Show it:* a screenshot of each beat (what stands, the offer moved, the question, the receipt), sent to the operator, and the three questions answered from them.
+. *Hold it:* the row's standing moves to `held`, naming the smoke scenario that walks it, once that scenario exists and passes; until then the row says which clauses it owes and why, and the owed clauses are the next slice's work.
+
+[[loop-ledger]]
+=== The loop ledger
+
+One row per control that sends a line from a takeover screen (the TD controller, the VM controller, the script screen), keyed by the `// loop: <id>` mark at the line that makes it. Standing is `held` (every clause, with the smoke scenario that proves it), `owes` (the clauses not yet held, and why), or `reads` (the control changes nothing; the loop's clauses do not apply). The ChRIS panes' acts (a feed deleted, a plugin run, an upload) enter the ledger as each is next touched. First audit 2026-11-04, from the code and the walk of #1376; a row is corrected when its loop is walked.
+
+[cols="2,2,2,3,2,5"]
+|===
+| Loop | Screen | Control | Sends | Changes | Standing
+
+| vm-size-declare | VM controller · SIZE | DECLARE | `vm new <vm> …` | its record | owes 1, 2, 3, 5: the size drawn is the declaration, not the tenancy's; the cost compares with the declaration; DECLARE stands beside BUILD as a second commit that changes nothing in the world (the trap of 2026-11-04)
+| vm-size-build | VM controller · SIZE | BUILD | `vm new <vm> …`, then `vm build <vm>` | the tenancy | owes 1, 2, 5: the record keeps no boot or data size read from the tenancy (`seen` holds vCPUs and memory), so neither the offer nor the receipt is drawn against what stands
+| vm-new-commit | VM controller · A NEW MACHINE | COMMIT | `touch … /scripts/mine/<vm>.mise`, then `vm new <vm> …` | a file and a record | owes 3: named COMMIT, it builds nothing
+| vm-protect | VM controller · TEARDOWN | PROTECT · ON, PROTECT · OFF | `vm protect <vm> on\|off` | its record | owes 1: the lock drawn is this host's record, its age unsaid
+| vm-teardown | VM controller · TEARDOWN | TEARDOWN | `vm teardown <vm>` | the tenancy | owes 1: the blocks are the receipt (STANDS, GOING, GONE), but what stands is the record's
+| vm-teardown-all | VM controller · TEARDOWN | TEARDOWN · ALL | `vm teardown <vm> --all` | the tenancy | owes 1: as TEARDOWN; the name typed back stands in place
+| ss-pull | script screen · LIBRARY | PULL | `scripts pull` | this host's clones | owes 5: the clones' heads before and after are not shown
+| ss-save | script screen · a step | SAVE | `touch --withContents=… <copy>` | a file | owes 5: the working copy written is said only by the chip
+| ss-net-declare | script screen · NET NEW | DECLARE | `net new <net> …` | its record | owes 1: the CIDR drawn is the line's, not the network's
+| ss-net-build | script screen · NET NEW, NET BUILD | BUILD, RUN | `net new <net> …` then `net build <net>`; `net build <net>` | the tenancy | owes 1, 2, 5: nothing of the network as the tenancy holds it is drawn
+| ss-net-teardown | script screen · NET NEW, NET BUILD | TEARDOWN | `net teardown <net>` | the tenancy | owes 1, 5: what the network holds is not drawn, and its going is said only in the step's output
+| ss-vm-declare | script screen · VM NEW | DECLARE | `vm new <vm> …` | its record | owes 1, 2: as SIZE; on the script screen declaring is authoring, so clause 3 holds here
+| ss-vm-build | script screen · VM NEW, VM BUILD | BUILD, RUN | `vm new <vm> …` then `vm build <vm>`; `vm build <vm>` | the tenancy | owes 1, 2, 5: as SIZE's BUILD
+| ss-vm-protect | script screen · VM NEW, VM BUILD | PROTECT · ON, PROTECT · OFF | `vm protect <vm> on\|off` | its record | owes 1: the lock is not drawn on this seat, only offered
+| ss-vm-teardown | script screen · VM NEW, VM BUILD | TEARDOWN, TEARDOWN · ALL | `vm teardown <vm> [--all]` | the tenancy | owes 1, 5: no blocks here, only the step's output
+| ss-chris-deploy | script screen · CHRIS DEPLOY | RUN | `chris deploy <vm> …` | the VM and its CUBE | owes 1, 2, 5: the deploy's standing is the record's; what changes is not drawn against what runs
+| ss-user-add | script screen · USERS | ADD, RUN | `chris user add <name> …` | the CUBE | owes 1, 5: the accounts the CUBE holds are not drawn, only the script's lines
+| ss-line-run | script screen · a line with no form | RUN | the line as written | what the line does | owes 1, 2, 4, 5: a line the screen has no form for has no render; it runs as typed
+| td-plan | TD controller · BUILD, SIZE | PLAN | `cluster plan <name>` | a stack's plan in the tenancy | owes 1: the plan's counts are drawn, its age is not
+| td-verify | TD controller · BUILD, VERIFY | VERIFY | `cluster verify <name>` | nothing | reads
+| td-spend | TD controller · BUILD | SPEND | `spend <name>` | nothing | reads
+| td-build | TD controller · BUILD | BUILD, BUILD · THROUGH RUN | `cluster build <name>` | the tenancy | owes 1, 2: the steps are drawn from the record, the cost from the price list, neither against what the tenancy runs
+| td-follow | TD controller · a running step | FOLLOW | `cluster build <name>` (a build) or `wait <job>` (a teardown) | nothing: it follows | reads
+| td-kill | TD controller · a running step | KILL | `kill <job>` | the running task | owes 4: KILL is sent unasked, and what stopping part way leaves is not said before it
+| td-new-commit | TD controller · NEW · SIZE | COMMIT | `cluster new <name> …` | its record | owes 3: named COMMIT, it builds nothing
+| td-adopt | TD controller · a found cluster | ADOPT | `cluster adopt <name>` | its record | owes 5: what adopting took over is said in the log, not drawn
+| td-lock | TD controller · TEARDOWN | LIFT THE LOCK, LOCK AGAIN | `cluster protect <name> off\|on` | its record | owes 1: the lock drawn is this host's record, its age unsaid
+| td-teardown | TD controller · TEARDOWN | TEAR DOWN, REMOVE WHAT IS LEFT | `cluster teardown <name>` | the tenancy | owes 1: the blocks are the receipt; what stands is the record's
+| confirm | any takeover screen · the question | CONTINUE, YES, SEND, DESTROY, STOP, NO | the answer to the engine's question | the answer | reads: the Confirm of the loop it answers, held by that loop's row
 |===
 
 == LCARS: what it is, and why ARGUS started there

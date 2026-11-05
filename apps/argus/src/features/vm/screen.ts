@@ -481,6 +481,7 @@ export class VmScreen extends ScriptScreen {
     };
     const lineBox: HTMLElement = el('div', 'ss-line ss-line-none');
     lineBox.append(el('span', 'ss-line-state', '—'), el('code', 'tdc-mono ss-line-text vm-new-line', this.newLine_text()));
+    // loop: vm-new-commit
     const commit: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain vm-new-commit', 'COMMIT');
     commit.type = 'button';
     commit.addEventListener('click', (): void => { this.hooks.voice.pill('COMMIT'); void this.new_commit(); });
@@ -545,11 +546,15 @@ export class VmScreen extends ScriptScreen {
       : row.protected ? 'A machine is born protected. Lifting the lock is a line of its own, so no single slip removes it.' : 'The lock is off. TEARDOWN sends the line; TEARDOWN · ALL asks for the name typed back.'));
     const commands: HTMLElement = el('div', 'tdc-commands');
     if (row !== null) {
+      // loop: vm-protect
       if (row.protected) commands.append(this.linePill_make('PROTECT · OFF', `vm protect ${name} off`, TEARDOWN_KEY, 'quiet'));
       else {
+        // loop: vm-teardown
         const machine: HTMLButtonElement = this.linePill_make('TEARDOWN', `vm teardown ${name}`, TEARDOWN_KEY, 'destroy');
+        // loop: vm-teardown-all
         const all: HTMLButtonElement = this.linePill_make('TEARDOWN · ALL', `vm teardown ${name} --all`, TEARDOWN_KEY, 'destroy');
         all.classList.add('ss-pill-redder');
+        // loop: vm-protect
         commands.append(this.linePill_make('PROTECT · ON', `vm protect ${name} on`, TEARDOWN_KEY, 'quiet'), el('span', 'tdc-flex'), machine, all);
       }
     }

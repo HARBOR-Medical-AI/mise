@@ -649,10 +649,12 @@ export class TdController {
     } else if (cluster.origin === 'found' && cluster.condition === 'GONE') {
       // Nothing of it is left in the tenancy but what carries its tag: its stack and its compartment (docs/stratus.adoc, D15).
       note.append(el('span', 'tdc-prose', `Torn down, or never built: nothing of it lives, and its stack holds nothing. What is left carries its tag: ${this.leftovers_words(cluster)}. REMOVE WHAT IS LEFT takes those away, after the name typed back; no adoption first.`));
+      // loop: td-teardown
       note.append(this.linePill_make('REMOVE WHAT IS LEFT', LINES.teardown(cluster.name), 'destroy', cluster.refused?.['teardown']));
     } else if (cluster.origin === 'found') {
       // Found in the tenancy by its tag and read from the cloud: address, spec and condition shown; acting on it waits on ADOPT (docs/stratus.adoc, D15).
       note.append(el('span', 'tdc-prose', 'Found in the tenancy by its tag. What is shown is what the cloud says of it: its address and spec from its stack, its condition from what lives in its compartment. ADOPT keeps it here, which is what PLAN, VERIFY, BUILD and TEAR DOWN wait on; its kubeconfig and CUBE token are then copied by hand.'));
+      // loop: td-adopt
       note.append(this.linePill_make('ADOPT', LINES.adopt(cluster.name), 'plain', cluster.refused?.['adopt']));
     } else if (cluster.origin === 'checkout') {
       note.append(el('span', 'tdc-prose', 'Read from a harbor-oci checkout. Adopting it keeps it here: cluster adopt <name> --from <checkout>.'));
@@ -683,10 +685,14 @@ export class TdController {
     steps.append(grid, el('div', 'tdc-billing-line', `BILLING STARTS AT ${(cluster.billingStep ?? 'infra-apply').toUpperCase()} · EVERY STEP AFTER IT RUNS ON PAID MACHINES`));
     const commands: HTMLElement = el('div', 'tdc-commands');
     commands.append(el('span', 'tdc-commands-label', 'CLUSTER'),
+      // loop: td-plan
       this.linePill_make('PLAN', LINES.plan(cluster.name), 'plain', cluster.refused?.['plan']),
+      // loop: td-verify
       this.linePill_make('VERIFY', LINES.verify(cluster.name), 'plain', cluster.refused?.['verify']),
+      // loop: td-spend
       this.linePill_make('SPEND', LINES.spend(cluster.name)),
       el('span', 'tdc-flex'),
+      // loop: td-build
       this.linePill_make('BUILD', LINES.build(cluster.name), 'bill', cluster.refused?.['build']));
     steps.append(commands);
 
@@ -753,6 +759,7 @@ export class TdController {
       plan.append(counts, rows);
     }
     const commands: HTMLElement = el('div', 'tdc-commands');
+    // loop: td-plan, td-build
     commands.append(this.linePill_make('PLAN', LINES.plan(cluster.name), 'plain', cluster.refused?.['plan']), el('span', 'tdc-flex'), this.linePill_make('BUILD · THROUGH RUN', LINES.build(cluster.name), 'bill', cluster.refused?.['build']));
     plan.append(commands);
     middle.append(plan);
@@ -775,11 +782,13 @@ export class TdController {
     now.querySelector('.tdc-pair-value')?.classList.add('tdc-running-clock');
     const controls: HTMLElement = el('div', 'tdc-commands');
     const following: boolean = this.following_is(cluster.name);
+    // loop: td-kill
     const kill: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-destroy', 'KILL');
     kill.type = 'button';
     kill.title = `stops following, then sends: ${LINES.kill(running.job)}`;
     kill.addEventListener('click', (): void => { this.hooks.voice.pill('KILL'); void this.kill_send(running.job); });
     // A build is followed by its own line again; a teardown's line would ask again, so its task is waited on by id.
+    // loop: td-follow
     const follow: HTMLButtonElement = following ? el('button', 'tdc-pill tdc-pill-quiet', 'STOP FOLLOWING') : this.linePill_make('FOLLOW', teardown ? LINES.wait(running.job) : LINES.follow(cluster.name), 'quiet');
     if (following) {
       follow.type = 'button';
@@ -838,6 +847,7 @@ export class TdController {
     const note: HTMLElement = el('div', 'tdc-note tdc-note-bill');
     note.append(el('span', 'tdc-note-title', 'ONE CHECK WRITES'), el('span', 'tdc-prose', 'The block-volume probe makes a claim and a pod, writes, reads back and removes both: it runs only under the tasks tier; without it verify says so and runs the other nine.'));
     const commands: HTMLElement = el('div', 'tdc-commands');
+    // loop: td-verify
     commands.append(this.linePill_make('VERIFY', LINES.verify(cluster.name), 'plain', cluster.refused?.['verify']));
     checks.append(note, commands);
     const side: HTMLElement = this.section_make('IN ITS COMPARTMENT', 'tdc-col-side');
@@ -946,6 +956,7 @@ export class TdController {
       const box: HTMLElement = el('div', 'tdc-note tdc-note-found');
       box.append(el('span', 'tdc-note-title', 'NOTHING TO PROTECT'), el('span', 'tdc-prose', `Nothing of ${cluster.name} lives and its stack holds nothing, so there is no lock. The engine still asks for the name typed back.`));
       const commands: HTMLElement = el('div', 'tdc-commands');
+      // loop: td-teardown
       commands.append(el('span', 'tdc-flex'), this.linePill_make('REMOVE WHAT IS LEFT', LINES.teardown(cluster.name), 'destroy'));
       box.append(commands);
       guard.append(box);
@@ -960,7 +971,9 @@ export class TdController {
       : 'The lock is off. TEAR DOWN sends the line; the engine lists what goes and asks for the name typed back.') + askFirst));
     const commands: HTMLElement = el('div', 'tdc-commands');
     if (this.reading !== null) commands.append(el('span', 'tdc-prose tdc-quiet tdc-reading', `READING AGAIN · the lock as the daemon now keeps it arrives when cluster status answers`));
+    // loop: td-lock
     if (cluster.protected !== false) commands.append(this.linePill_make('LIFT THE LOCK', LINES.protect(cluster.name, false), 'quiet'));
+    // loop: td-lock, td-teardown
     else commands.append(this.linePill_make('LOCK AGAIN', LINES.protect(cluster.name, true), 'quiet'), el('span', 'tdc-flex'), this.linePill_make('TEAR DOWN', LINES.teardown(cluster.name), 'destroy', cluster.refused?.['teardown']));
     lock.append(commands);
     guard.append(lock);
@@ -1138,6 +1151,7 @@ export class TdController {
     commit.append(el('span', 'tdc-section-title', 'THE LINES COMMIT SENDS'), el('div', 'tdc-mono tdc-commit-line', line), el('div', 'tdc-mono tdc-commit-line', tenant),
       el('p', 'tdc-prose tdc-quiet', 'The first writes the spec. The second plays the tenant: the build through the install, which asks before billing, then verify. A NO leaves the spec written and nothing made.'));
     const pills: HTMLElement = el('div', 'tdc-commands');
+    // loop: td-new-commit
     const button: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain', refusal === null ? 'COMMIT' : `COMMIT · ${refusal}`);
     button.type = 'button';
     button.disabled = refusal !== null || this.busy !== null;
@@ -1176,6 +1190,7 @@ export class TdController {
     words.append(el('span', 'tdc-strip-title', 'THE ENGINE ASKS'), el('span', 'tdc-strip-text', ask.message));
     strip.append(words);
     if (askForm_derive(ask.message) === 'yes-no') {
+      // loop: confirm
       const yes: HTMLButtonElement = el('button', `tdc-pill ${billing ? 'tdc-pill-bill' : 'tdc-pill-plain'}`, billing ? 'YES · BILL' : 'YES');
       yes.type = 'button';
       yes.addEventListener('click', (): void => { this.hooks.voice.pill('YES'); this.log_add('y', 'answer'); ask.answer('y'); });
@@ -1192,6 +1207,7 @@ export class TdController {
     input.spellcheck = false;
     const label: HTMLElement = el('label', 'tdc-pair-label', destroying ? 'NAME' : 'ANSWER');
     label.setAttribute('for', input.id);
+    // loop: confirm
     const send: HTMLButtonElement = el('button', `tdc-pill ${destroying ? 'tdc-pill-destroy' : 'tdc-pill-plain'}`, destroying ? 'DESTROY' : 'SEND');
     send.type = 'button';
     const name: string = this.current;

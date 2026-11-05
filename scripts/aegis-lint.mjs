@@ -649,6 +649,55 @@ LINT_CHECKS['a-mark-means-one-thing-everywhere'] = () => {
 
 // -------------------------------------------------- the table enforces itself
 
+// A change is a loop (aegis.adoc, a-change-is-a-loop): every control a takeover
+// screen makes to send a line carries a `// loop: <id>` mark at the line that
+// makes it or on one of the three lines above; every id is a row of the loop
+// ledger and every row is marked somewhere; a held row names a smoke scenario
+// that exists, an owed row the clauses it owes. A control made by hand (not
+// through the line-sending makers) is found when it wears a billing or
+// destroying pill or a commit's word; the rest are held to by review.
+LINT_CHECKS['a-change-is-a-loop'] = () => {
+  const law = 'a-change-is-a-loop';
+  const ledger = aegis.match(/\[\[loop-ledger\]\][\s\S]*?\| Loop \| Screen \| Control \| Sends \| Changes \| Standing\n([\s\S]*?)\n\|===/);
+  if (!ledger) { fail(law, 'no loop ledger ([[loop-ledger]]) in aegis.adoc'); return; }
+  const rows = new Map();
+  for (const line of ledger[1].split('\n').filter((each) => each.startsWith('| '))) {
+    const m = line.match(/^\| ([a-z0-9-]+) \| .* \| (held|owes|reads)(.*)$/);
+    if (!m) { fail(law, `ledger row unreadable: ${line.slice(0, 80)}`); continue; }
+    const [, id, standing, rest] = m;
+    if (rows.has(id)) fail(law, `ledger row '${id}' appears twice`);
+    rows.set(id, standing);
+    if (standing === 'owes' && !/^ [1-6](, [1-6])*: \S/.test(rest)) fail(law, `ledger row '${id}' owes without naming its clauses (owes 1, 5: why)`);
+    if (standing === 'held') {
+      const scenario = rest.match(/smoke:(.+)$/)?.[1]?.trim();
+      if (scenario === undefined) fail(law, `ledger row '${id}' is held without naming its smoke scenario`);
+      else if (!smoke.includes(scenario)) fail(law, `ledger row '${id}' names a smoke scenario not in smoke.mjs: "${scenario}"`);
+    }
+  }
+  const screens = ['apps/argus/src/features/script/screen.ts', 'apps/argus/src/features/vm/screen.ts', 'apps/argus/src/features/controller/screen.ts'];
+  const maker = /\b(?:linePill_make|runRow_make|declareRow_make)\(/;
+  const definition = /^\s*(?:protected|private|public)\s+(?:async\s+)?(?:linePill_make|runRow_make|declareRow_make)\(/;
+  const byHand = /el\('button',[^;]*(?:'(?:KILL|COMMIT|SAVE)'|tdc-pill-(?:bill|destroy))/;
+  const marked = new Set();
+  for (const path of screens) {
+    const lines = readFileSync(path, 'utf8').split('\n');
+    lines.forEach((line, index) => {
+      for (const m of line.matchAll(/\/\/ loop: ([a-z0-9-]+(?:, [a-z0-9-]+)*)/g)) {
+        for (const id of m[1].split(', ')) {
+          marked.add(id);
+          if (!rows.has(id)) fail(law, `${path}:${index + 1} marks loop '${id}', which has no row in the ledger`);
+        }
+      }
+      const trimmed = line.trim();
+      if (trimmed.startsWith('//') || trimmed.startsWith('*') || definition.test(line)) return;
+      if (!maker.test(line) && !byHand.test(line)) return;
+      const near = lines.slice(Math.max(0, index - 3), index + 1).join('\n');
+      if (!/\/\/ loop: /.test(near)) fail(law, `${path}:${index + 1} makes a control that sends a line with no // loop: <id> mark: ${trimmed.slice(0, 90)}`);
+    });
+  }
+  for (const id of rows.keys()) if (!marked.has(id)) fail(law, `ledger row '${id}' is marked by no control in the takeover screens`);
+};
+
 const lawsTable = aegis.match(/\| Law \| Statement \| Enforcement\n([\s\S]*?)\n\|===/);
 if (!lawsTable) {
   fail('laws-table', 'no "The laws" table found in aegis.adoc');
