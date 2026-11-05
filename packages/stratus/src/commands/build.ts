@@ -374,7 +374,7 @@ async function billing_question(context: BuildCommandContext, name: string, reco
 async function makes_question(context: BuildCommandContext, name: string, record: ClusterRecord, spec: ClusterSpec): Promise<string> {
   const cost: SpecCost | null = await cost_read(context, record.region, spec);
   const rate: string = cost === null ? 'an unpriced rate' : cost_words(cost);
-  return `cluster build ${name}: before anything bills it makes the compartment clusters/${name}, the cluster and its infra-env at Red Hat, a discovery ISO with a public link valid seven days, and the infra plan; then it asks again before ${FIRST_BILLING_STEP}, which starts billing at ${rate}. Continue? [y/N]`;
+  return `cluster build ${name}: before anything bills it makes the compartment clusters/${name}, the cluster and its infra-env at Red Hat, a discovery ISO with a public link valid seven days, and the infra plan; then it asks again before ${FIRST_BILLING_STEP}, which starts billing at ${rate}. Already written: its spec, on this host (cluster new); a NO keeps it and makes nothing else. Continue? [y/N]`;
 }
 
 /**
@@ -408,7 +408,7 @@ export async function clusterBuild_run(context: BuildCommandContext, args: Reado
     clusterState_show(context, name, question);
     const yes: boolean = await repl_confirm(question);
     clusterState_show(context, name);
-    if (!yes) return envelope_ok(`${chalk.gray(`stopped before anything was made; nothing changed (cluster build ${name} asks again)`)}\n`);
+    if (!yes) return envelope_ok(`${chalk.gray(`stopped before anything was made; its spec stays written on this host (cluster build ${name} asks again)`)}\n`);
     context.store.record_update(name, (current: ClusterRecord): void => { current.buildAccepted = new Date().toISOString(); });
   }
   const id: string = buildJob_id(name);

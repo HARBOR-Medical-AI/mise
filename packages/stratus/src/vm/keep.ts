@@ -120,6 +120,26 @@ export function vmLock_adopt(store: VmStore, name: string, kept: VmKept | null):
 }
 
 /**
+ * Takes the vault's ChRIS (its deploy's record and passwords) into the cache
+ * when it is newer than the cache's: a deploy made from another host, so
+ * this host's plans and renders say what that deploy put up.
+ *
+ * @param store - The VMs; the VM's record must exist.
+ * @param name - The VM.
+ * @param kept - The vault's keep.
+ * @returns True when the cache took it.
+ */
+export function vmChris_adopt(store: VmStore, name: string, kept: VmKept | null): boolean {
+  const record: VmRecord | null = store.record_read(name);
+  if (record === null || kept?.chris === undefined) return false;
+  if (record.chris !== undefined && record.chris.deployed >= kept.chris.record.deployed) return false;
+  secrets_write(store, name, kept.chris.secrets);
+  const chris: NonNullable<VmRecord['chris']> = kept.chris.record;
+  store.record_update(name, (current: VmRecord): void => { current.chris = chris; });
+  return true;
+}
+
+/**
  * The secret's name in the tenancy's vault.
  *
  * @param name - The VM.

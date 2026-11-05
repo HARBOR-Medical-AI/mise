@@ -345,10 +345,10 @@ describe('vm, over the fake cloud', () => {
     expect((await vm_run(context, ['teardown', 'store'])).renderedErr).toBe('vm teardown: store: protected (vm protect store off)\n');
     const lines = new Map(lineStatusProviders_make({ nets, vms: store }).map((provider) => [provider.verb, provider]));
     // The lock and teardown lines stand as the record and the tenancy say, never 'no verb reads it'.
-    expect(await lines.get('vm')?.read(['vm', 'protect', 'store', 'off'])).toEqual({ state: 'ready', detail: 'protected now; this line lifts the lock' });
+    expect(await lines.get('vm')?.read(['vm', 'protect', 'store', 'off'])).toEqual({ state: 'ready', detail: expect.stringMatching(/^protected now \(kept in the tenancy, set \d{4}-\d\d-\d\d \d\d:\d\d UTC\); this line lifts the lock$/) });
     expect(await lines.get('vm')?.read(['vm', 'teardown', 'store'])).toMatchObject({ state: 'not yet', detail: expect.stringContaining('protected (vm protect store off first)') });
     expect(plain((await vm_run(context, ['protect', 'store', 'off'])).rendered)).toBe('store: unprotected: vm teardown store may remove it\nkept in the tenancy: every session reads this lock\n');
-    expect(await lines.get('vm')?.read(['vm', 'protect', 'store', 'off'])).toEqual({ state: 'done', detail: 'unprotected (kept in the tenancy)' });
+    expect(await lines.get('vm')?.read(['vm', 'protect', 'store', 'off'])).toEqual({ state: 'done', detail: expect.stringMatching(/^unprotected \(kept in the tenancy, set .* UTC\)$/) });
     surface.answers = ['y'];
     expect(plain((await vm_run(context, ['teardown', 'store'])).rendered)).toBe('store: its machine is gone; its data and address stay (vm build store makes the machine again over them)\n');
     expect(surface.asked.at(-1)).toContain('keep its data volume, backups and address 203.0.113.10 ($0.003 an hour, $2.13 a month)');
@@ -494,6 +494,13 @@ describe('vm, over the fake cloud', () => {
     expect(await row()).toMatchObject({ protected: false, lock: { kept: false } });
     (surface.capabilities as { tasks?: boolean }).tasks = true;
     expect(vmKept_merge({ vm: 'x', lock: { protected: true, at: '2026-11-05' } }, { vm: 'x', lock: { protected: false, at: '2026-11-04' } })).toEqual({ vm: 'x', lock: { protected: true, at: '2026-11-05' } });
+    // A ChRIS deployed from another host, kept in the vault, is taken on the next listing when newer than this host's.
+    const deployed = { profile: 'minimal', compute: 'NERC', host: null, url: 'https://cube.example/api/v1/', deployed: '2026-11-05T14:51:00.000Z', image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.9.11' };
+    const keep = JSON.parse(world.kept.get('mise-vm-store') as string);
+    world.kept.set('mise-vm-store', JSON.stringify({ ...keep, chris: { record: deployed, secrets: { djangoKey: 'd', postgresPassword: 'p', pfconSecretKey: 's', pfconPassword: 'f', adminPassword: 'a' } } }));
+    there.store.record_update('store', (current: VmRecord): void => { current.chris = { ...deployed, deployed: '2026-11-04T00:00:00.000Z', image: undefined as unknown as string }; });
+    await vm_run(there, ['status']);
+    expect(there.store.record_read('store')?.chris).toMatchObject({ deployed: '2026-11-05T14:51:00.000Z', image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.9.11' });
   });
 
   it('lists the VMs the tenancy runs beside those kept here, and refuses to declare over one (the tenancy is the truth)', async () => {

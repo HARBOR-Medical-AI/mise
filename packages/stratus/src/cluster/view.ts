@@ -22,8 +22,10 @@ export function builtSteps_derive(record: ClusterRecord): StepState[] {
   return BUILD_STEPS.map((step: string, index: number): StepState => {
     // An adopted cluster came with its compartment; one adopted before that step existed keeps no record of it.
     const kept: StepRecord | undefined = record.steps[step] ?? (step === 'compartment' && record.adopted !== undefined ? ADOPTED_COMPARTMENT : undefined);
-    const evidence: string = kept?.note ?? (STEPS_WRITTEN.includes(step) ? 'not run yet' : 'not a step this session has yet');
-    return { folder: `${String(index + 1).padStart(2, '0')}-${step}`, name: step, state: kept?.state ?? 'not done', evidence };
+    // Adopted from the tenancy, a step the cloud did not attest stays unknown, as it was found: never 'not run yet' on a cluster that runs.
+    const fromTenancy: boolean = record.adopted?.from === 'the tenancy';
+    const evidence: string = kept?.note ?? (fromTenancy ? 'the cloud does not say; verify to know' : STEPS_WRITTEN.includes(step) ? 'not run yet' : 'not a step this session has yet');
+    return { folder: `${String(index + 1).padStart(2, '0')}-${step}`, name: step, state: kept?.state ?? (fromTenancy ? 'unknown' : 'not done'), evidence };
   });
 }
 

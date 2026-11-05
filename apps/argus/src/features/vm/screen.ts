@@ -285,8 +285,8 @@ export class VmScreen extends ScriptScreen {
   }
 
   /** The header prices the machine shown, never the tenancy's every machine. */
-  protected override costScope_get(): string | null {
-    return this.vm === '' ? null : this.vm;
+  protected override costScope_get(): ReadonlyArray<string> | null {
+    return this.vm === '' ? null : [this.vm];
   }
 
   /** What runs of the machine shown, as `vm status` read it from the tenancy: the sizes SIZE renders and offers against. */
@@ -294,6 +294,11 @@ export class VmScreen extends ScriptScreen {
     const row: VmStatusRow | null = this.vmRow_get();
     if (row === null || row.name !== name || row.stands === null || row.stands === undefined) return null;
     return row.stands;
+  }
+
+  /** BUILD writes the machine's script before it acts, so an edit is never offered a SAVE of its own here. */
+  protected override saveOffered(): boolean {
+    return false;
   }
 
   /** On a machine's own screen BUILD is the one commit: a declaration that builds nothing is not offered beside it (a-change-is-a-loop, clause 3). */
@@ -437,7 +442,7 @@ export class VmScreen extends ScriptScreen {
     header.append(condition);
     header.append(this.headSection_make('MACHINE', [
       ['NAME', this.vm === '' ? (this.newForm.name || '[NAME IT ON SIZE]') : this.vm],
-      ['STATE', row === null ? (this.vm === '' ? (this.view === MACHINES_KEY ? `${this.vms.length} in the tenancy` : 'not declared') : 'not kept here') : row.state === 'found' ? `found · ${row.found?.state ?? '?'}` : row.state],
+      ['STATE', row === null ? (this.vm === '' ? (this.view === MACHINES_KEY ? `${this.vms.filter((one: VmStatusRow): boolean => one.state !== 'gone').length} in the tenancy` : 'not declared') : 'not kept here') : row.state === 'found' ? `found · ${row.found?.state ?? '?'}` : row.state],
       ['ADDRESS', row?.address ?? '—'],
       ['INSIDE', row?.inside ?? '—'],
     ]));
@@ -490,7 +495,10 @@ export class VmScreen extends ScriptScreen {
     const rows: HTMLElement = el('div', 'ss-scripts');
     for (const row of this.vms) {
       const line: HTMLElement = el('div', 'ss-script vm-row');
-      const size: string = row.spec !== null ? `${row.spec.vcpu} vCPU · ${row.spec.memory} GiB` : row.found?.vcpus != null ? `${row.found.vcpus} vCPU${row.found.memoryGib != null ? ` · ${row.found.memoryGib} GiB` : ''}` : '—';
+      // What runs, read from the tenancy with when; the declaration only where nothing was read.
+      const stands = row.stands ?? null;
+      const size: string = stands !== null ? `${stands.vcpu === null ? 'no machine' : `${stands.vcpu} vCPU · ${stands.memory ?? '?'} GiB`}${stands.data === null ? '' : ` · data ${stands.data} GB`} · read ${stands.at.slice(11, 16)}`
+        : row.state === 'gone' ? 'nothing stands' : row.spec !== null ? `${row.spec.vcpu} vCPU · ${row.spec.memory} GiB declared` : row.found?.vcpus != null ? `${row.found.vcpus} vCPU${row.found.memoryGib != null ? ` · ${row.found.memoryGib} GiB` : ''}` : '—';
       const tagged: string | null = row.found?.chris != null ? row.found.chris.url.replace(/^https?:\/\//, '').replace(/\/api\/v1\/?$/, '') : null;
       const on: string = row.chris?.host ?? (row.chris !== null && row.chris !== undefined ? row.chris.url : tagged !== null ? `CUBE at ${tagged}` : vmKeyless_is(row) ? 'what runs on it is not said' : 'nothing deployed');
       line.append(
@@ -636,7 +644,9 @@ export class VmScreen extends ScriptScreen {
 
   private newCommit_redraw(commit: HTMLButtonElement): void {
     const name: string = this.newForm.name;
-    const refusal: string | null = name === '' ? 'NAME IT' : !vmName_valid(name) ? 'NAME IS A HOSTNAME' : this.vms.some((row: VmStatusRow): boolean => row.name === name) ? 'ALREADY IN THE TENANCY' : this.newForm.net === '' ? 'NETWORK' : null;
+    // Held until priced: BUILD bills, so the offer's price stands before it can be pressed (a-change-is-a-loop, clause 2).
+    const priced: boolean = this.stepCost !== null && this.stepCost.cost !== null;
+    const refusal: string | null = name === '' ? 'NAME IT' : !vmName_valid(name) ? 'NAME IS A HOSTNAME' : this.vms.some((row: VmStatusRow): boolean => row.name === name) ? 'ALREADY IN THE TENANCY' : this.newForm.net === '' ? 'NETWORK' : !priced ? 'PRICING' : null;
     commit.textContent = refusal === null ? 'BUILD' : `BUILD · ${refusal}`;
     commit.disabled = refusal !== null || this.busy !== null;
   }

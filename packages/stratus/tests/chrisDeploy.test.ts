@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import * as yaml from 'js-yaml';
 import { BufferSink, HeadlessSurface, JobRunner, runner_get, runner_install, sink_set, surface_set, type JobContext, type PromptRequest } from '@fnndsc/brasa/core';
 import type { CloudDriver, CloudPrice, ResourceCounts, ServicePrices } from '../src/cloud/driver.js';
+import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
 import { CHRIS_PROFILES, floor_short } from '../src/chris/profiles.js';
 import { caddyfile_render, compose_render, cubeEnv_render, type ChrisSecrets } from '../src/chris/compose.js';
@@ -167,7 +168,9 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const nets: NetStore = new NetStore(join(root, 'nets'));
     world = new FakeBuildWorld(0);
     const builder: FakeCloudBuilder = new FakeCloudBuilder(world);
-    const driver = { instances_find: async (): Promise<unknown[]> => [], clusters_find: async (): Promise<unknown[]> => [], resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => [], servicePrices_get: async (): Promise<ServicePrices | null> => null } as unknown as CloudDriver;
+    // The tenancy answers what the fake builder applied: a VM's machine an instance, read again after each act.
+    const built = (): FakeDriver => new FakeDriver({ ...fakeCloud_sample(), resources: [] }).built_see(world);
+    const driver = { instances_find: async (region: string): Promise<unknown[]> => built().instances_find(region), clusters_find: async (): Promise<unknown[]> => [], resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => [], servicePrices_get: async (): Promise<ServicePrices | null> => null } as unknown as CloudDriver;
     vm = new FakeVm();
     resolved = [];
     context = { vms, nets, builder, resolve: async (): Promise<string[]> => resolved, nameservers_get: async (): Promise<string[]> => ['ns37.domaincontrol.com', 'ns38.domaincontrol.com'], registrar: null, status_get: async (): Promise<number | null> => 200, remote_open: async (): Promise<VmRemote> => vm, tickMs: 0 };
@@ -410,9 +413,10 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     await vm_run(vmContext, ['new', 'store', '--memory', '16']);
     expect(await read('vm new store --net scratch --open 80,443 --vcpu 2 --memory 16 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
     // The record keeps what the build made, so the build line says what it would change.
-    expect(await read('vm build store')).toBe('changed (declared, not built: memory 8 → 16; the build plans and asks)');
-    // A record from before builds kept their spec says only that it was declared again.
-    vms.record_update('store', (record): void => { delete record.builtSpec; });
+    // What runs is read from the tenancy after the build, so the change is said against it, with its unit.
+    expect(await read('vm build store')).toBe('changed (declared, not built: memory 8 → 16 GiB; the build plans and asks)');
+    // A record from before builds kept their spec, and not read from the tenancy, says only that it was declared again.
+    vms.record_update('store', (record): void => { delete record.builtSpec; delete record.stands; });
     expect(await read('vm build store')).toBe('changed (declared again since it was built; the build plans and asks)');
     expect(await read('chris deploy store --profile minimal --compute NERC')).toBe('changed (the VM was declared again since the deploy)');
     // With a host whose DNS has not caught up, the deploy is ready to resume.

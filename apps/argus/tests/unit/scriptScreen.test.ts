@@ -41,7 +41,7 @@ function answer_make(line: string, states: string[]): QuietAnswer {
     return envelope({ kind: 'manifest.status', data: { manifest: 'store', lines } });
   }
   if (line === 'vm limits') return envelope({ kind: 'stratus.vm.limits', data: LIMITS });
-  if (line === 'net status chrisproject-services') return envelope({ kind: 'stratus.net.status', data: { read: '2026-11-05T06:10:00.000Z', nets: [{ name: 'chrisproject-services', state: 'built', cidr: '10.20.0.0/16', builtCidr: '10.20.0.0/16', stands: { cidr: '10.20.0.0/16', at: '2026-11-05T06:10:00.000Z' }, stack: { id: 'ocid1.ormstack.net', state: 'active' }, bastion: 'ocid1.bastion.net', admits: '134.174.21.21/32', subnet: 'ocid1.subnet.net' }] } });
+  if (line === 'net status') return envelope({ kind: 'stratus.net.status', data: { read: '2026-11-05T06:10:00.000Z', nets: [{ name: 'chrisproject-services', state: 'built', cidr: '10.20.0.0/16', builtCidr: '10.20.0.0/16', stands: { cidr: '10.20.0.0/16', at: '2026-11-05T06:10:00.000Z' }, stack: { id: 'ocid1.ormstack.net', state: 'active' }, bastion: 'ocid1.bastion.net', admits: '134.174.21.21/32', subnet: 'ocid1.subnet.net' }] } });
   if (line.startsWith('vm cost')) {
     const memory: number = Number(line.match(/--memory (\d+)/)?.[1] ?? 8);
     const spec = { net: 'chrisproject-services', open: [80, 443], vcpu: 2, memory, disk: 50, data: 50, dataBackup: 'daily', os: 'ubuntu-26.04' };
