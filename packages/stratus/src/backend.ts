@@ -42,6 +42,7 @@ import { ScriptLibrary } from './scripts/library.js';
 import { ScriptsProvider, SCRIPTS_PREFIX } from './vfs/scripts.js';
 import { publicAddresses_resolve, publicNameservers_get, urlStatus_get } from './chris/outside.js';
 import { goDaddy_make } from './chris/registrar.js';
+import type { ChrisCommandContext } from './commands/chris.js';
 import { clientCidr_read } from './net/address.js';
 
 /** How the backend is made. */
@@ -80,6 +81,8 @@ export interface StratusBackendOptions {
   readonly waits?: Pick<BuildDeps, 'pollMs' | 'hostsWaitMs' | 'installWaitMs' | 'verifyWaitMs' | 'chrisWaits'>;
   /** ChRIS on a cluster; the real cluster's, with `helm` and `uv` on the host, when absent. */
   readonly chris?: ChrisWork;
+  /** How ChRIS on a VM is reached: the VM, its API, public DNS and the registrar; the network's when absent. */
+  readonly chrisReach?: Pick<ChrisCommandContext, 'remote_open' | 'http_get' | 'resolve' | 'nameservers_get' | 'registrar' | 'status_get' | 'tickMs'>;
 }
 
 /** The backend and the pieces a host may reach into. */
@@ -143,7 +146,7 @@ export function stratusBackend_make(options: StratusBackendOptions): StratusBack
     cache: new AnswerCache(CAPACITY_CACHE_LIFE_MS),
     net: { store: nets, driver: options.driver, builder: options.builder ?? null, region, clientCidr_read: options.clientCidr_read ?? ((): Promise<string> => clientCidr_read()) },
     vm: { store: vms, nets, driver: options.driver, builder: options.builder ?? null, region },
-    chris: { vms, nets, builder: options.builder ?? null, resolve: publicAddresses_resolve, nameservers_get: publicNameservers_get, registrar: goDaddy_make(), status_get: urlStatus_get, http_get: httpGet_default },
+    chris: { vms, nets, builder: options.builder ?? null, ...(options.chrisReach ?? { resolve: publicAddresses_resolve, nameservers_get: publicNameservers_get, registrar: goDaddy_make(), status_get: urlStatus_get, http_get: httpGet_default }) },
     scripts: { library },
     build: { clusters, store, driver: options.driver, region, deps, clustersPath: (): string => `${session.tenancyPath}/clusters`, builder: options.builder ?? null, baseDomain: options.baseDomain ?? null, ...(options.account !== undefined ? { account: options.account } : {}), ...(options.verifyReach !== undefined ? { verifyReach: options.verifyReach } : {}) },
   }), 'backend');

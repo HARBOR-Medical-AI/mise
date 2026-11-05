@@ -34,72 +34,11 @@ import { lineStatusProviders_make } from '../src/commands/lineStatus.js';
 import { VM_JOBS } from '../src/vm/build.js';
 import { USER_JOBS } from '../src/chris/users.js';
 import type { LineStatusProvider } from '@fnndsc/brasa/core';
+import { FakeChrisVm as FakeVm } from '../src/cloud/fake/chris.js';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 const SECRETS: ChrisSecrets = { djangoKey: 'dk', postgresPassword: 'pg', pfconSecretKey: 'ps', pfconPassword: 'pp', adminPassword: 'admin-pass' };
 const VM_LINE: string[] = ['new', 'store', '--net', 'scratch', '--open', '80,443', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--os', 'ubuntu-26.04'];
-
-/** A VM that answers the deploy's lines, recording them and the files written. */
-class FakeVm implements VmRemote {
-  lines: string[] = [];
-  files: Map<string, string> = new Map();
-  computes: string[] = [];
-  /** CUBE's accounts, by name: their emails. */
-  users: Map<string, string> = new Map([['chris', 'dev@babymri.org']]);
-  /** Each account made, as CUBE was given it. */
-  made: Array<{ username: string; email: string; password: string }> = [];
-  /** Each account's password, as CUBE holds it: chris's set from cube.env each time the services start, as CUBE's migrations do. */
-  passwords: Map<string, string> = new Map();
-  /** Whether the admin has its home. */
-  adminHome: boolean = false;
-  /** Lines that fail, once each. */
-  failing: Set<string> = new Set();
-  async run(line: string, input?: string): Promise<RemoteAnswer> {
-    this.lines.push(line);
-    if (this.failing.delete(line)) return { code: 1, stdout: '', stderr: 'it failed' };
-    if (line.includes('docker compose up')) {
-      const env: string = this.files.get('/srv/data/chris/cube.env') ?? '';
-      const admin: string | undefined = /^CHRIS_SUPERUSER_PASSWORD=(.*)$/m.exec(env)?.[1];
-      if (admin !== undefined) this.passwords.set('chris', admin);
-      return { code: 0, stdout: '', stderr: '' };
-    }
-    if (line.includes('curl -s -K -')) {
-      const signed: string | undefined = /^user = "chris:(.*)"$/m.exec(input ?? '')?.[1];
-      if (this.passwords.has('chris') && signed !== this.passwords.get('chris')) return { code: 0, stdout: '{}\n401', stderr: '' };
-    }
-    if (line === CUBE_PYTHON_LINE && (input ?? '').includes('home/chris/feeds')) {
-      const made: boolean = !this.adminHome;
-      this.adminHome = true;
-      return { code: 0, stdout: `stratus-home ${made ? 'home/chris/uploads, home/chris/feeds, home/chris/public, home/chris/shared' : 'there'}\n`, stderr: '' };
-    }
-    if (line === CUBE_PYTHON_LINE) {
-      const ask = JSON.parse(Buffer.from((/b64decode\('([^']+)'\)/.exec(input ?? '') as RegExpMatchArray)[1] as string, 'base64').toString('utf-8')) as { username: string; email: string; password: string };
-      if ((input ?? '').includes('set_password')) {
-        if (!this.users.has(ask.username)) return { code: 0, stdout: 'stratus-user absent\n', stderr: '' };
-        this.passwords.set(ask.username, ask.password);
-        return { code: 0, stdout: 'stratus-user changed\n', stderr: '' };
-      }
-      const same: string | undefined = this.users.get(ask.username);
-      const other: string | undefined = [...this.users.entries()].find(([name, email]): boolean => email === ask.email && name !== ask.username)?.[0];
-      if (same !== undefined) return { code: 0, stdout: `stratus-user exists ${JSON.stringify(same)}\n`, stderr: '' };
-      if (other !== undefined) return { code: 0, stdout: `stratus-user email-taken ${JSON.stringify(other)}\n`, stderr: '' };
-      this.users.set(ask.username, ask.email);
-      this.made.push(ask);
-      return { code: 0, stdout: 'stratus-user added\n', stderr: '' };
-    }
-    const written: RegExpMatchArray | null = /cat > (\S+)\.new/.exec(line);
-    if (written !== null) this.files.set(written[1] as string, input ?? '');
-    if (line.includes('-o /dev/null')) return { code: 0, stdout: '200', stderr: '' };
-    if (line.includes('computeresources/search/')) return { code: 0, stdout: `{"results":[${this.computes.map((name: string): string => `{"name":"${name}"}`).join(',')}]}\n200`, stderr: '' };
-    if (line.includes('chris-admin/api/v1/computeresources/')) {
-      const quoted: string = (/json = (".*")/.exec(input ?? '') as RegExpMatchArray)[1] as string;
-      this.computes.push((JSON.parse(JSON.parse(quoted) as string) as { name: string }).name);
-      return { code: 0, stdout: '{}\n201', stderr: '' };
-    }
-    if (line.endsWith('http://127.0.0.1:8000/api/v1/')) return { code: 0, stdout: '{"collection_links":{"admin":"http://127.0.0.1:8000/chris-admin/api/v1/"}}\n200', stderr: '' };
-    return { code: 0, stdout: '', stderr: '' };
-  }
-}
 
 describe('a ChRIS profile and what it renders', () => {
   it('says by how much a target is below the floor', () => {

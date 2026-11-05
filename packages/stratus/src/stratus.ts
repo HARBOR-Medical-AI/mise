@@ -27,6 +27,7 @@ import { OciDriver } from './cloud/oci/driver.js';
 import { ociApi_make } from './cloud/oci/api.js';
 import { stratusArgs_parse, type StratusArgs } from './args.js';
 import { FakeBuildWorld, FakeCloudBuilder, FakeInstaller } from './cloud/fake/builder.js';
+import { FakeChrisFleet, chrisReach_fake } from './cloud/fake/chris.js';
 import { OciBuilder } from './cloud/oci/builder.js';
 import { ociBuildApi_make } from './cloud/oci/buildApi.js';
 import { ociKeepApi_make } from './cloud/oci/keepApi.js';
@@ -133,6 +134,8 @@ async function stratus_start(): Promise<void> {
       ? {
         builder: new FakeCloudBuilder(world), installer: new FakeInstaller(world), baseDomain: 'fake.example', waits: { pollMs: tickMs, hostsWaitMs: tickMs * 60, installWaitMs: tickMs * 120, verifyWaitMs: tickMs * 30, chrisWaits: { pollMs: 0, mirrorReactMs: 0, mirrorWaitMs: 0, rolloutWaitMs: 0, seedWaitMs: 0 } },
         chris: fakeChrisWork,
+        // ChRIS on a fake VM: the VM answers the deploy's lines, CUBE's API its accounts; no DNS is written.
+        chrisReach: chrisReach_fake(new FakeChrisFleet(tickMs), tickMs),
         // The fake cluster a fake build made answers verify: its hosts, healthy.
         verifyReach: fakeVerifyReach((kubeconfig: string) => world.hosts_now(/cluster-([a-z0-9-]+)/.exec(kubeconfig)?.[1] ?? '').map((host) => ({ name: host.name, zone: host.zone, shape: 'VM.Standard.E5.Flex' }))),
       }
