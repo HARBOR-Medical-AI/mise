@@ -67,6 +67,26 @@ const fetchJson = async (): Promise<unknown> => PRICE_LIST;
 driverContract_describe('the OCI driver over recorded answers', () => new OciDriver({ api: recordedApi_make(), fetchJson }));
 
 describe('the OCI driver', () => {
+  it('reads the price list once for the session, for the shapes and the services alike, and says when', async () => {
+    let fetched: number = 0;
+    const driver = new OciDriver({ api: recordedApi_make(), fetchJson: async (): Promise<unknown> => { fetched += 1; return PRICE_LIST; } });
+    expect(driver.pricesRead_get()).toBeNull();
+    await Promise.all([driver.prices_list(), driver.servicePrices_get()]);
+    await driver.prices_list();
+    await driver.servicePrices_get();
+    expect(fetched).toBe(1);
+    expect(driver.pricesRead_get()).toMatch(/^\d{4}-\d\d-\d\dT/);
+  });
+
+  it('keeps no failed read of the price list: the next price asks again', async () => {
+    let fetched: number = 0;
+    const driver = new OciDriver({ api: recordedApi_make(), fetchJson: async (): Promise<unknown> => { fetched += 1; if (fetched === 1) throw new Error('price list: 503 Service Unavailable'); return PRICE_LIST; } });
+    await expect(driver.prices_list()).rejects.toThrow('503');
+    expect(driver.pricesRead_get()).toBeNull();
+    expect((await driver.prices_list()).length).toBeGreaterThan(0);
+    expect(fetched).toBe(2);
+  });
+
   it('is the IAM user at the tenancy, with the profile\'s region as home', async () => {
     const driver = new OciDriver({ api: recordedApi_make(), fetchJson });
     expect(await driver.identity_get()).toEqual({ user: 'rudolph.pienaar@childrens.harvard.edu', tenancy: 'fnndsc-bch', tenancyId: TENANCY.id, homeRegion: 'us-ashburn-1' });

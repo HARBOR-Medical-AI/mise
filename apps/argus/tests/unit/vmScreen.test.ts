@@ -61,7 +61,7 @@ function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; a
   const sent: string[] = [];
   const asked: string[] = [];
   const hooks: ScriptHooks = {
-    run: async (line: string): Promise<void> => { sent.push(line); },
+    run: async (line: string): Promise<boolean> => { sent.push(line); return true; },
     ask: async (line: string): Promise<QuietAnswer> => { asked.push(line); return answer_make(line, mine); },
     stop: (): void => { sent.push('<stop>'); },
     leave: (): void => { sent.push('<leave>'); },
@@ -79,14 +79,35 @@ const button_named = (root: HTMLElement, text: string): HTMLButtonElement | unde
 const settle = async (rounds: number = 8): Promise<void> => { for (let i: number = 0; i < rounds; i++) await new Promise((resolve) => { setTimeout(resolve, 0); }); };
 
 describe('the VM controller', () => {
-  it('opens on a machine the library declares: its lines as SIZE, BUILD, CHRIS, USERS, then TEARDOWN; a pill per machine and + NEW; the machine\'s facts in the header', async () => {
+  it('SIZE changed by a slider writes the script before it declares, a script from git to its working copy, so the declaration reads done', async () => {
+    const { screen, sent } = screen_make();
+    await screen.vm_open('store');
+    await settle();
+    expect(screen.path_get()).toBe('/scripts/chrisproject/store.mise');
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
+    await settle();
+    const disk: HTMLInputElement = screen.root.querySelector('#ss-slider-disk') as HTMLInputElement;
+    disk.value = '180';
+    disk.dispatchEvent(new Event('input'));
+    button_named(screen.root, 'DECLARE')?.click();
+    await settle(20);
+    expect(sent[0]?.startsWith("touch --withContents='net new chrisproject-services")).toBe(true);
+    expect(sent[0]?.includes('--disk 180')).toBe(true);
+    expect(sent[0]?.endsWith("' '/scripts/mine/store.mise'")).toBe(true);
+    expect(sent[1]).toBe('vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 180 --data 50 --data-backup daily --os ubuntu-26.04');
+    expect(screen.path_get()).toBe('/scripts/mine/store.mise');
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('opens on a machine the library declares: its lines as SIZE (holding its build), CHRIS, USERS, then TEARDOWN; a pill per machine and + NEW; the machine\'s facts in the header', async () => {
     const { screen, asked } = screen_make();
     await screen.vm_open('store');
     await settle();
     expect(asked).toContain('vm status');
     expect(screen.vm_get()).toBe('store');
     expect(screen.path_get()).toBe('/scripts/chrisproject/store.mise');
-    expect(screen.steps_get().map((step) => step.label)).toEqual(['MACHINE', 'SIZE', 'BUILD', 'CHRIS', 'USERS', 'TEARDOWN']);
+    expect(screen.steps_get().map((step) => step.label)).toEqual(['MACHINE', 'SIZE', 'CHRIS', 'USERS', 'TEARDOWN']);
     expect([...screen.root.querySelectorAll('.takeover-seat .tdc-cluster')].map((pill) => pill.textContent)).toEqual(['STORE', 'LONE', 'WEB', '+ NEW']);
     expect(screen.root.querySelector('.tdc-condition-name')?.textContent).toBe('BUILT');
     expect(screen.root.querySelector('.ss-header')?.textContent).toContain('203.0.113.10');
@@ -99,11 +120,13 @@ describe('the VM controller', () => {
     expect(facts).toContain('2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups) · ubuntu-26.04');
     expect(facts).toContain('https://cube.chrisproject.org/api/v1/');
     expect(facts).toContain('its records and its SSH key held here');
-    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-4"]')?.click();
+    // SIZE holds the build: DECLARE and BUILD, and no undoing (TEARDOWN is its own seat here).
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
     await settle();
     const body: HTMLElement = screen.root.querySelector('.tdc-body') as HTMLElement;
     expect(button_named(body, 'TEARDOWN')).toBeUndefined();
-    expect(button_named(body, 'RUN')?.title).toContain('vm build store');
+    expect(button_named(body, 'DECLARE')?.title).toBe('sends: vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04');
+    expect(button_named(body, 'BUILD')?.title).toContain('then vm build store');
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
     await settle();
     expect(screen.root.querySelector('.tdc-note-title')?.textContent).toBe('UNLOCKED');
@@ -165,7 +188,7 @@ describe('the VM controller', () => {
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
     await settle();
     expect([...screen.root.querySelectorAll('.tdc-body .tdc-note-title')].map((title) => title.textContent)).not.toContain('EDITED · NOT SAVED');
-    expect(screen.steps_get().map((step) => [step.label, step.state])).toEqual([['MACHINE', null], ['SIZE', null], ['BUILD', null], ['CHRIS', null], ['USERS', null], ['TEARDOWN', null]]);
+    expect(screen.steps_get().map((step) => [step.label, step.state])).toEqual([['MACHINE', null], ['SIZE', null], ['CHRIS', null], ['USERS', null], ['TEARDOWN', null]]);
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="chris"]')?.click();
     await settle();
     expect(screen.root.querySelector('.ss-line-text')?.textContent).toBe('chris deploy lone --profile minimal --compute lone');
@@ -208,7 +231,7 @@ describe('the VM controller', () => {
     const { screen } = screen_make();
     await screen.vm_open('shared');
     await settle();
-    expect(screen.steps_get().map((step) => step.label)).toEqual(['MACHINE', 'SIZE', 'BUILD', 'CHRIS', 'USERS', 'TEARDOWN']);
+    expect(screen.steps_get().map((step) => step.label)).toEqual(['MACHINE', 'SIZE', 'CHRIS', 'USERS', 'TEARDOWN']);
     expect(screen.root.querySelector('.tdc-body')?.textContent).toContain('read from the tenancy 2026-11-04 10:00: its stacks and the secrets its vault keeps');
     screen.dispose();
     screen.root.remove();

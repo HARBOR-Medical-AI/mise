@@ -146,6 +146,8 @@ export const vmCostRowSchema = z.object({
 /** What `vm cost` answers: a row per VM priced. */
 export const vmCostModelSchema = z.object({
   vms: z.array(vmCostRowSchema),
+  /** When the session read the cloud's price list (once, kept for the session), or null before; absent from an older session. */
+  pricesRead: z.string().nullable().optional(),
 });
 
 export type LineState = (typeof LINE_STATES)[number];

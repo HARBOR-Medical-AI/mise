@@ -150,6 +150,7 @@ describe('vm, over the fake cloud', () => {
     nets = new NetStore(join(root, 'nets'));
     world = new FakeBuildWorld(0);
     seen = { instances: [], stacks: [] };
+    let pricesRead: string | null = null;
     const driver = {
       // What the tenancy runs beside this session's records; none until a test puts some there.
       // The fake tenancy answers what the fake builder applied (a VM's machine an instance, its stacks and the
@@ -163,7 +164,7 @@ describe('vm, over the fake cloud', () => {
       clusters_find: async (tagKey: string): Promise<FoundCluster[]> => [...seen.stacks.filter((one: FoundCluster & { tagKey: string }): boolean => one.tagKey === tagKey), ...[...world.moduleStacks.entries()]
         .filter(([, stack]) => stack.tag === tagKey && stack.applied !== null && (stack.module === 'net' || stack.module === 'vmData'))
         .map(([id, stack]): FoundCluster => ({ name: stack.owner, stack: { id, state: 'active', compartmentId: stack.placeId }, compartmentId: stack.placeId, region: 'us-ashburn-1' }))],
-      resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => PRICES, servicePrices_get: async (): Promise<ServicePrices> => SERVICE, shapes_list: async (): Promise<CloudShape[]> => (await new FakeDriver(fakeCloud_sample()).shapes_list('us-ashburn-1')) } as unknown as CloudDriver;
+      resources_search: async (): Promise<ResourceCounts> => ({}), prices_list: async (): Promise<CloudPrice[]> => { pricesRead = '2026-11-04T23:00:00.000Z'; return PRICES; }, pricesRead_get: (): string | null => pricesRead, servicePrices_get: async (): Promise<ServicePrices> => SERVICE, shapes_list: async (): Promise<CloudShape[]> => (await new FakeDriver(fakeCloud_sample()).shapes_list('us-ashburn-1')) } as unknown as CloudDriver;
     const builder: FakeCloudBuilder = new FakeCloudBuilder(world);
     netContext = { store: nets, driver, builder, region: (): string => 'us-ashburn-1', clientCidr_read: async (): Promise<string> => '134.174.21.21/32' };
     context = { store, nets, driver, builder, region: (): string => 'us-ashburn-1' };
@@ -200,9 +201,10 @@ describe('vm, over the fake cloud', () => {
   it('costs a VM without declaring it: the same words as vm new, a change on a declared one with its difference', async () => {
     expect(plain((await vm_run(context, ['cost'])).rendered)).toContain('no VM declared');
     const lone = await vm_run(context, ['cost', 'blt', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--data-backup', 'daily', '--os', 'ubuntu-26.04']);
-    expect(plain(lone.rendered)).toBe('blt (not declared): 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups): $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month)\n');
+    // The first price reads the price list and says so; the session keeps it, so no later price says it again.
+    expect(plain(lone.rendered)).toBe('read Oracle\'s price list, kept for this session: every price after this is worked out here\nblt (not declared): 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups): $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month)\n');
     // The model under the text: a surface prices a step from it as its levers move.
-    expect(lone.model).toMatchObject({ kind: 'stratus.vm.cost', data: { vms: [{ name: 'blt', declared: false, spec: { vcpu: 2, memory: 8, data: 50 }, changes: [], before: null }] } });
+    expect(lone.model).toMatchObject({ kind: 'stratus.vm.cost', data: { vms: [{ name: 'blt', declared: false, spec: { vcpu: 2, memory: 8, data: 50 }, changes: [], before: null }], pricesRead: '2026-11-04T23:00:00.000Z' } });
     expect((lone.model?.data as { vms: Array<{ cost: { currency: string } }> }).vms[0]?.cost.currency).toBe('USD');
     expect(store.names_list()).toEqual([]);
     expect((await vm_run(context, ['cost', 'blt', '--vcpu', '2'])).renderedErr).toContain('--memory is needed');
@@ -291,6 +293,8 @@ describe('vm, over the fake cloud', () => {
     surface.answers = ['y'];
     expect((await vm_run(failing, ['build', 'store'])).renderedErr).toContain('vm build: store: the disks grew, their filesystems did not: vm-store-grow: failed: growing /srv/data: resize2fs: busy (vm build store grows them again)');
     expect(store.record_read('store')?.growOwed).toEqual({ boot: false, data: true });
+    // The data volume grew alone (no machine applied): the build is still done for what was declared.
+    expect(store.record_read('store')?.builtSpec).toMatchObject({ data: 120, disk: 80, vcpu: 4 });
     expect(plain((await vm_run(resizing, ['build', 'store'])).rendered)).toContain('store: the plan reads nothing to do; growing the filesystems a build left ungrown');
     expect(store.record_read('store')?.growOwed).toBeUndefined();
     // A shrink and a new OS (a new machine) are refused unless asked by name.

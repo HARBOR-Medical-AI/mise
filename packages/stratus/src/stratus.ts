@@ -113,12 +113,13 @@ async function stratus_start(): Promise<void> {
     console.log(USAGE);
     return;
   }
-  const driver: CloudDriver = parsed.args.fake
-    ? new FakeDriver(fakeCloud_sample())
-    : new OciDriver({ api: ociApi_make({ configFile: parsed.args.configFile, profile: parsed.args.profile }) });
   // The fake cloud builds over a fake installer on a clock, so a build is seen moving; a real cloud's build half is not written yet.
   const tickMs: number = Number(process.env['STRATUS_FAKE_TICK_MS'] ?? 700);
   const world: FakeBuildWorld = new FakeBuildWorld(tickMs);
+  // The fake tenancy answers what the fake builder applied, as a real one answers what was built.
+  const driver: CloudDriver = parsed.args.fake
+    ? new FakeDriver(fakeCloud_sample()).built_see(world)
+    : new OciDriver({ api: ociApi_make({ configFile: parsed.args.configFile, profile: parsed.args.profile }) });
   const made: StratusBackend = stratusBackend_make({
     driver,
     region: parsed.args.region,

@@ -294,6 +294,8 @@ export interface CloudDriver {
   prices_list(): Promise<CloudPrice[]>;
   /** What storage and load balancing cost; null when the list does not say. */
   servicePrices_get(): Promise<ServicePrices | null>;
+  /** When the session read the cloud's price list (it is read once and kept), or null before the first price. */
+  pricesRead_get(): string | null;
   /** The machines in a container, in a region. */
   instances_list(containerId: string, region: string): Promise<CloudInstance[]>;
   /** The private networks in a container, in a region. */

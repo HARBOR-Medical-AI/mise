@@ -86,10 +86,12 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     }
     titleBefore = document.title;
     const opened: VmScreen = new VmScreen({
-      run: async (line: string): Promise<void> => {
+      run: async (line: string): Promise<boolean> => {
         lineRunning = true;
         try {
-          await context.client.line_execute(line, { operator: true });
+          const outcome: ExecuteOutcome = await context.client.line_execute(line, { operator: true });
+          // An answer the session refused stops what was to follow it (BUILD after its DECLARE).
+          return !outcome.envelopes.some((envelope): boolean => envelope.status === 'error');
         } finally {
           lineRunning = false;
         }

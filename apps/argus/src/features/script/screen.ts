@@ -28,7 +28,7 @@ import { modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } f
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
   askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
-  runningStep_find, script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, stepKind_isTask, steps_build, userLine_build, vmLevers_read, vmSliders_build,
+  runningStep_find, script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, stepBuildLine_get, stepKind_derive, stepKind_isTask, steps_build, userLine_build, vmLevers_read, vmSliders_build,
   workingCopy_derive, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts,
 } from './model.js';
 
@@ -39,8 +39,8 @@ export interface QuietAnswer {
 
 /** What the screen needs from its host. */
 export interface ScriptHooks {
-  /** Runs an operator's line (it may ask); its output arrives through `output_take`; resolves when it ends. */
-  run: (line: string) => Promise<void>;
+  /** Runs an operator's line (it may ask); its output arrives through `output_take`; resolves when it ends, true when no answer was an error. */
+  run: (line: string) => Promise<boolean>;
   /** Asks a line quietly, for a model; rejects when the session refused. */
   ask: (line: string) => Promise<QuietAnswer>;
   /** Stops following the running line. */
@@ -211,6 +211,10 @@ export class ScriptScreen {
   /** Why the last `vm cost` for the step did not answer, or null. */
   protected stepCostRefused: string | null = null;
   protected costTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The last `vm cost` sent for the step: an answer to an older one is dropped, so a slow price never overwrites a newer. */
+  protected costAsked: number = 0;
+  /** When the session read the price list, as `vm cost` last said; null before the first price. */
+  protected pricesRead: string | null = null;
   /** The line running, and since when. */
   protected busy: { line: string; step: string | null; since: number } | null = null;
   /** The standing read again a moment after a task-starting line was sent, so the seat wears the run while the line still holds the lane. */
@@ -569,18 +573,23 @@ export class ScriptScreen {
     if (this.costTimer !== null) clearTimeout(this.costTimer);
     this.costTimer = setTimeout((): void => {
       this.costTimer = null;
+      this.costAsked += 1;
+      const asked: number = this.costAsked;
       void this.hooks.ask(costLine_derive(line)).then((answer: QuietAnswer): void => {
+        if (asked !== this.costAsked) return;
         const model = model_extract(answer, STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
         this.stepCost = model?.vms[0] ?? null;
+        this.pricesRead = model?.pricesRead ?? this.pricesRead;
         this.stepCostRefused = model === null ? (plain_extract(answer.envelopes.map((envelope): string => envelope.renderedErr ?? '').join('')).trim() || 'the session answered no price') : null;
         this.cost_redraw();
         this.header_draw();
       }, (error: unknown): void => {
+        if (asked !== this.costAsked) return;
         this.stepCost = null;
         this.stepCostRefused = error instanceof Error ? error.message : String(error);
         this.cost_redraw();
       });
-    }, 250);
+    }, 100);
   }
 
   // ---------------------------------------------------------------- sending
@@ -591,21 +600,23 @@ export class ScriptScreen {
    *
    * @param line - The line.
    * @param step - The step it belongs to, whose body shows its output; null for a typed line.
+   * @param keepLog - Whether the step's output so far stays (the second line of a seat sent as one).
+   * @returns Whether the line ended with no error.
    */
-  public async line_send(line: string, step: string | null): Promise<void> {
+  public async line_send(line: string, step: string | null, keepLog: boolean = false): Promise<boolean> {
     if (this.busy !== null) {
       this.log_add(`the lane is held by: ${this.busy.line} (STOP FOLLOWING frees it; the line goes on)`, 'note');
-      return;
+      return false;
     }
     this.busy = { line, step, since: Date.now() };
     this.log_add(`stratus> ${line}`, 'sent');
-    if (step !== null) this.stepLogs.set(step, []);
+    if (step !== null && !keepLog) this.stepLogs.set(step, []);
     this.draw();
-    const kind: ScriptStep['kind'] | undefined = this.steps.find((each: ScriptStep): boolean => each.key === step)?.kind;
-    if (kind !== undefined && stepKind_isTask(kind) && !line.startsWith('wait ')) this.refresh_schedule(line);
+    // The line's own kind, not its seat's: a seat that declares and builds starts a task only with its build.
+    if (step !== null && stepKind_isTask(stepKind_derive(line)) && !line.startsWith('wait ')) this.refresh_schedule(line);
     let failed: boolean = false;
     try {
-      await this.hooks.run(line);
+      failed = !(await this.hooks.run(line));
     } catch (error: unknown) {
       failed = true;
       this.log_add(error instanceof Error ? error.message : String(error), 'note');
@@ -614,10 +625,33 @@ export class ScriptScreen {
       this.busy = null;
       this.hooks.voice.cue(failed ? 'redalert' : 'ack');
       await this.standings_refresh();
+      // A declaration sent moves what the price compares with: VM NEW's price is asked again of what now stands.
+      const shown: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
+      if (shown?.kind === 'vm new') this.stepCost_ask(shown.lines[0]?.text ?? '');
       this.draw();
       // A line run from the library (PULL, a touch into mine) may have changed what it lists.
       if (this.view === LIBRARY_VIEW) void this.library_read();
     }
+    return !failed;
+  }
+
+  /**
+   * BUILD on a seat that declares and builds: the declaration as the form
+   * shows it, then the build, one after the other. A session that must be
+   * raised for the build is raised first, so the password is asked before
+   * anything is sent; a declaration the session refused builds nothing.
+   *
+   * @param declared - The `vm new` or `net new` line, as shown.
+   * @param built - Its build line.
+   * @param step - The seat.
+   */
+  protected async declaredBuild_send(declared: string, built: string, step: string): Promise<void> {
+    if (this.hold_derive(built) === 'asks' && this.hooks.elevate_ask !== null) {
+      const raised: boolean = await this.hooks.elevate_ask(built);
+      if (!raised) return;
+    }
+    if (!(await this.line_send(declared, step))) return;
+    await this.line_send(built, step, true);
   }
 
   /** Writes the working copy under `/scripts/mine/`, as the editor saves: a line, echoed and run. */
@@ -973,14 +1007,11 @@ export class ScriptScreen {
     };
     side.append(el('p', 'tdc-prose', step.state === null ? 'No verb reads this line\'s state; it runs when sent.' : words[step.state]));
     if (step.lines.length === 1 && (step.lines[0]?.detail ?? '') !== '') side.append(this.pairs_make([['SAID', step.lines[0]?.detail ?? '']]));
-    if (step.running !== null) {
-      const note: HTMLElement = el('div', 'tdc-note ss-note-running');
-      note.append(el('span', 'tdc-note-title', 'RUNNING NOW'), this.pairs_make([['TASK', step.running]]), el('span', 'tdc-prose', 'The line runs as a task of the session: LEAVE and STOP FOLLOWING free the lane and the task goes on; the screen follows it again when the script opens, and FOLLOW in the header follows it now.'));
-      side.append(note);
-    }
+    const running: HTMLElement | null = this.runningNote_make(step);
+    if (running !== null) side.append(running);
     if (this.edited) {
       const note: HTMLElement = el('div', 'tdc-note tdc-note-bill');
-      note.append(el('span', 'tdc-note-title', 'EDITED · NOT SAVED'), el('span', 'tdc-prose', `A form changed a line. RUN sends the line as shown; SAVE writes the whole script to ${workingCopy_derive(this.path)} and opens it from there.`));
+      note.append(el('span', 'tdc-note-title', 'EDITED · NOT SAVED'), el('span', 'tdc-prose', `A form changed a line. Its pills send the line as shown; SAVE writes the whole script to ${workingCopy_derive(this.path)} and opens it from there.`));
       const save: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'SAVE');
       save.type = 'button';
       save.title = `sends: touch --withContents=… ${workingCopy_derive(this.path)}`;
@@ -992,6 +1023,14 @@ export class ScriptScreen {
       side.append(note);
     }
     return side;
+  }
+
+  /** The note a step whose task runs now wears, or null. */
+  protected runningNote_make(step: ScriptStep): HTMLElement | null {
+    if (step.running === null) return null;
+    const note: HTMLElement = el('div', 'tdc-note ss-note-running');
+    note.append(el('span', 'tdc-note-title', 'RUNNING NOW'), this.pairs_make([['TASK', step.running]]), el('span', 'tdc-prose', 'The line runs as a task of the session: LEAVE and STOP FOLLOWING free the lane and the task goes on; the screen follows it again when the script opens, and FOLLOW in the header follows it now.'));
+    return note;
   }
 
   protected stepLog_make(step: ScriptStep): HTMLElement {
@@ -1039,20 +1078,52 @@ export class ScriptScreen {
     if (text !== null) text.textContent = line.text;
     const run: HTMLButtonElement | null = this.parts.body.querySelector(`.ss-run[data-line='${line.number}']`);
     if (run !== null) run.title = `sends: ${line.text}`;
+    const build: HTMLButtonElement | null = this.parts.body.querySelector(`.ss-build[data-line='${line.number}']`);
+    if (build !== null) build.title = `sends: ${line.text}, then ${build.dataset['build'] ?? ''}`;
     this.header_draw();
   }
 
-  protected runRow_make(step: ScriptStep, line: ScriptLine, tone: 'plain' | 'bill' = 'plain', extra: HTMLElement[] = []): HTMLElement {
+  protected runRow_make(step: ScriptStep, line: ScriptLine, tone: 'plain' | 'bill' = 'plain', extra: HTMLElement[] = [], word: string = 'RUN'): HTMLElement {
     const commands: HTMLElement = el('div', 'tdc-commands');
     // The line is read when pressed, so an edit after the pill was drawn is what runs.
     const hold: ReadHold = this.hold_derive(line.text);
-    const run: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone} ss-run${hold === 'asks' ? ' tdc-pill-asks' : ''}`, hold === 'held' ? 'RUN · REFUSED' : 'RUN');
+    const run: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone} ss-run${hold === 'asks' ? ' tdc-pill-asks' : ''}`, hold === 'held' ? `${word} · REFUSED` : word);
     run.type = 'button';
     run.dataset['line'] = String(line.number);
     run.title = hold === 'held' ? `refused: ${READ_HELD}` : hold === 'asks' ? `${READ_ASKS}: ${line.text}` : `sends: ${line.text}`;
     run.disabled = hold === 'held' || this.busy !== null || this.ask !== null;
-    run.addEventListener('click', (): void => { this.hooks.voice.pill('RUN'); void this.line_sendRaised(line.text, step.key); });
+    run.addEventListener('click', (): void => { this.hooks.voice.pill(word); void this.line_sendRaised(line.text, step.key); });
     commands.append(run, ...extra);
+    return commands;
+  }
+
+  /**
+   * A declaring seat's pills: DECLARE sends the declaration alone, which
+   * builds nothing; BUILD, in the billing tone, sends it and then its build,
+   * whose plan, cost and question come before anything bills. Without a
+   * build line under the seat, DECLARE alone.
+   *
+   * @param step - The seat.
+   * @param declared - The declaration.
+   * @param built - Its build line, or undefined.
+   * @param extra - What stands after the pills (a teardown).
+   * @returns The row.
+   */
+  protected declareRow_make(step: ScriptStep, declared: ScriptLine, built: ScriptLine | undefined, extra: HTMLElement[] = []): HTMLElement {
+    const commands: HTMLElement = this.runRow_make(step, declared, 'plain', [], 'DECLARE');
+    if (built === undefined) {
+      commands.append(...extra);
+      return commands;
+    }
+    const hold: ReadHold = this.hold_derive(built.text);
+    const build: HTMLButtonElement = el('button', `tdc-pill tdc-pill-bill ss-build${hold === 'asks' ? ' tdc-pill-asks' : ''}`, hold === 'held' ? 'BUILD · REFUSED' : 'BUILD');
+    build.type = 'button';
+    build.dataset['line'] = String(declared.number);
+    build.dataset['build'] = built.text;
+    build.title = hold === 'held' ? `refused: ${READ_HELD}` : `sends: ${declared.text}, then ${built.text}${hold === 'asks' ? ` (${READ_ASKS})` : ''}`;
+    build.disabled = hold === 'held' || this.busy !== null || this.ask !== null;
+    build.addEventListener('click', (): void => { this.hooks.voice.pill('BUILD'); void this.declaredBuild_send(declared.text, built.text, step.key); });
+    commands.append(build, ...extra);
     return commands;
   }
 
@@ -1064,13 +1135,24 @@ export class ScriptScreen {
 
   protected netNew_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
+    const built: ScriptLine | undefined = stepBuildLine_get(step);
     const parts = line_parse(line.text);
+    const name: string = parts.subject ?? '';
+    const extra: HTMLElement[] = [];
+    if (built !== undefined) {
+      const teardown: HTMLButtonElement = this.linePill_make('TEARDOWN', `net teardown ${name}`, step.key, 'destroy');
+      teardown.title = `sends: net teardown ${name} (refused while anything stands on it)`;
+      extra.push(el('span', 'tdc-flex'), teardown);
+    }
     return [
       this.lineBoxNumbered_make(line),
-      this.runRow_make(step, line),
-      this.pairs_make([['NETWORK', parts.subject ?? '—'], ['ON OCI', 'a compartment of that name, its VCN, subnet, gateway, route and bastion']]),
+      ...(built === undefined ? [] : [this.lineBoxNumbered_make(built)]),
+      this.declareRow_make(step, line, built, extra),
+      this.pairs_make([['NETWORK', name || '—'], ['ON OCI', 'a compartment of that name, its VCN, subnet, gateway, route and bastion']]),
       this.optionField_make(line, '--cidr', 'CIDR', '10.20.0.0/16'),
-      el('p', 'tdc-prose tdc-quiet', 'Declares the network; nothing is built. The same values replay to unchanged.'),
+      el('p', 'tdc-prose tdc-quiet', built === undefined
+        ? 'DECLARE declares the network; nothing is built. The same values replay to unchanged.'
+        : 'DECLARE declares the network and builds nothing. BUILD declares it and builds it: the plan comes first and asks before the apply; a second build reads nothing to do. The bastion admits this host\'s address alone.'),
     ];
   }
 
@@ -1089,8 +1171,9 @@ export class ScriptScreen {
 
   protected vmNew_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
+    const built: ScriptLine | undefined = stepBuildLine_get(step);
     const name: string = line_parse(line.text).subject ?? '';
-    const nodes: HTMLElement[] = [this.lineBoxNumbered_make(line), this.runRow_make(step, line), this.pairs_make([['VM', name], ['NETWORK', lineOption_get(line.text, '--net') ?? '—']])];
+    const nodes: HTMLElement[] = [this.lineBoxNumbered_make(line), ...(built === undefined ? [] : [this.lineBoxNumbered_make(built)]), this.declareRow_make(step, line, built), this.pairs_make([['VM', name], ['NETWORK', lineOption_get(line.text, '--net') ?? '—']])];
     if (this.limits === null) {
       nodes.push(el('p', 'tdc-prose tdc-quiet', 'reading what the shape sells: vm limits'));
     } else {
@@ -1111,7 +1194,10 @@ export class ScriptScreen {
       nodes.push(backup);
     }
     nodes.push(this.optionField_make(line, '--open', 'OPEN PORTS', '80,443'), this.optionField_make(line, '--os', 'OS', 'ubuntu-26.04'));
-    nodes.push(el('p', 'tdc-prose tdc-quiet', 'Declares the VM; nothing is built. On a built VM a changed size is planned and asked by VM BUILD; a smaller data volume is refused unless named.'));
+    nodes.push(el('p', 'tdc-prose tdc-quiet', built === undefined
+      ? 'DECLARE declares the VM; nothing is built. On a built VM a changed size is planned and asked by its build line; a smaller data volume is refused unless named.'
+      : 'DECLARE saves the size and builds nothing. BUILD declares it and builds it: on a built VM the change is planned, priced and asked before anything bills, and a reboot is said first; a smaller data volume is refused unless named.'));
+    if (built !== undefined) nodes.push(this.vmBuilds_make(name), ...this.vmUndoing_make(name, step.key));
     return nodes;
   }
 
@@ -1159,10 +1245,38 @@ export class ScriptScreen {
   protected cost_make(step: ScriptStep): HTMLElement {
     const side: HTMLElement = this.section_make('COST · AS SIZED', 'ss-col-side tdc-col-cost', 'FROM THE PRICE LIST · vm cost');
     const box: HTMLElement = el('div', 'ss-cost');
+    // What the seat owes comes first, above the price, where the eye lands after a DECLARE.
+    const running: HTMLElement | null = this.runningNote_make(step);
+    const declared: HTMLElement | null = running === null ? this.declaredNote_make(step) : null;
+    if (running !== null) side.append(running);
+    if (declared !== null) side.append(declared);
     side.append(box);
     this.cost_fill(box, step);
     if (this.edited) side.append(this.state_make(step).querySelector('.tdc-note') ?? el('span', ''));
     return side;
+  }
+
+  /**
+   * The note a declaration not built yet wears, beside its price: what was
+   * declared and what a build would change, and that BUILD does it. Only on
+   * a seat that holds the build, and only while the build has something to
+   * do: a declaration builds nothing, and the screen says so where the
+   * operator is looking.
+   *
+   * @param step - The seat.
+   * @returns The note, or null.
+   */
+  protected declaredNote_make(step: ScriptStep): HTMLElement | null {
+    const built: ScriptLine | undefined = stepBuildLine_get(step);
+    if (built === undefined || step.lines[0]?.state !== 'done' || (built.state !== 'changed' && built.state !== 'ready')) return null;
+    const note: HTMLElement = el('div', 'tdc-note tdc-note-bill ss-note-declared');
+    const owed: string = built.detail.replace(/^declared, not built: /, '').replace(/; the build plans and asks$/, '');
+    note.append(
+      el('span', 'tdc-note-title', 'DECLARED · NOT BUILT'),
+      el('span', 'tdc-prose', built.state === 'ready' && built.detail === '' ? 'Declared, and nothing is made yet.' : owed),
+      el('span', 'tdc-prose tdc-quiet', 'BUILD applies it: it plans, says the cost and asks before anything bills.'),
+    );
+    return note;
   }
 
   protected cost_redraw(): void {
@@ -1179,7 +1293,7 @@ export class ScriptScreen {
         box.append(el('p', 'tdc-prose tdc-quiet', `not priced: ${this.stepCostRefused}`));
         return;
       }
-      box.append(el('p', 'tdc-prose tdc-quiet', 'pricing the line as it stands…'));
+      box.append(el('p', 'tdc-prose tdc-quiet', this.pricesRead === null ? 'reading Oracle\'s price list, once for this session; every price after it is worked out from it…' : 'pricing the line as it stands…'));
       if (this.costTimer === null) this.stepCost_ask(step.lines[0]?.text ?? '');
       return;
     }
@@ -1190,29 +1304,38 @@ export class ScriptScreen {
     rate('AS SIZED', row.cost, 'tdc-bill');
     if (row.cost !== null) rate('THE DATA ALONE', { machineHour: 0, dataHour: row.cost.dataHour, currency: row.cost.currency });
     if (row.before !== null) rate('AS DECLARED', row.before);
-    box.append(this.pairs_make([['SPEC', spec_words(row.spec)], ['DECLARED', row.declared ? (row.changes.length === 0 ? 'YES · UNCHANGED' : `YES · ${row.changes.join(', ')}`) : 'NOT YET']]), rows);
-    box.append(el('p', 'tdc-prose tdc-quiet', 'The data volume is kept by a default teardown, so its share is said apart. List price; nothing here bills until VM BUILD applies.'));
+    box.append(this.pairs_make([['SPEC', spec_words(row.spec)], ['DECLARED', row.declared ? (row.changes.length === 0 ? 'YES · UNCHANGED' : `YES · ${row.changes.join(', ')}`) : 'NOT YET'], ['PRICE LIST', this.pricesRead === null ? 'ORACLE\'S' : `ORACLE'S · READ ${this.pricesRead.slice(11, 16)} UTC · KEPT FOR THE SESSION`]]), rows);
+    box.append(el('p', 'tdc-prose tdc-quiet', 'The data volume is kept by a default teardown, so its share is said apart. List price; nothing here bills until BUILD applies.'));
+  }
+
+  /** What a VM's build makes, as pairs. */
+  protected vmBuilds_make(name: string): HTMLElement {
+    return this.pairs_make([['VM', name], ['BUILDS', 'the data volume, its backups and the address, then the machine; asks before the apply with the cost'], ['OVER', 'kept data, when the machine alone was torn down']]);
+  }
+
+  /** A VM's lock and undoing, each a line of its own, when this screen shows them under the build. */
+  protected vmUndoing_make(name: string, step: string): HTMLElement[] {
+    if (!this.undoing_shown()) return [];
+    const protect: HTMLElement = el('div', 'tdc-commands');
+    protect.append(el('span', 'tdc-commands-label', 'THE LOCK'), this.linePill_make('PROTECT · ON', `vm protect ${name} on`, step, 'quiet'), this.linePill_make('PROTECT · OFF', `vm protect ${name} off`, step, 'quiet'));
+    const teardown: HTMLElement = el('div', 'tdc-commands');
+    const machine: HTMLButtonElement = this.linePill_make('TEARDOWN', `vm teardown ${name}`, step, 'destroy');
+    machine.title = `sends: vm teardown ${name} (the machine; the data, its backups and the address stay)`;
+    const all: HTMLButtonElement = this.linePill_make('TEARDOWN · ALL', `vm teardown ${name} --all`, step, 'destroy');
+    all.classList.add('ss-pill-redder');
+    all.title = `sends: vm teardown ${name} --all (the data too; asks for the name typed back)`;
+    teardown.append(el('span', 'tdc-commands-label', 'UNDOING'), machine, all);
+    return [el('p', 'tdc-prose tdc-quiet', 'A VM is born protected: teardown refuses until PROTECT · OFF, a line of its own. A teardown returns the build to ready.'), protect, teardown];
   }
 
   protected vmBuild_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
     const name: string = line_parse(line.text).subject ?? '';
-    const protect: HTMLElement = el('div', 'tdc-commands');
-    protect.append(el('span', 'tdc-commands-label', 'THE LOCK'), this.linePill_make('PROTECT · ON', `vm protect ${name} on`, step.key, 'quiet'), this.linePill_make('PROTECT · OFF', `vm protect ${name} off`, step.key, 'quiet'));
-    const undoing: boolean = this.undoing_shown();
-    const teardown: HTMLElement = el('div', 'tdc-commands');
-    const machine: HTMLButtonElement = this.linePill_make('TEARDOWN', `vm teardown ${name}`, step.key, 'destroy');
-    machine.title = `sends: vm teardown ${name} (the machine; the data, its backups and the address stay)`;
-    const all: HTMLButtonElement = this.linePill_make('TEARDOWN · ALL', `vm teardown ${name} --all`, step.key, 'destroy');
-    all.classList.add('ss-pill-redder');
-    all.title = `sends: vm teardown ${name} --all (the data too; asks for the name typed back)`;
-    teardown.append(el('span', 'tdc-commands-label', 'UNDOING'), machine, all);
     return [
       this.lineBoxNumbered_make(line),
       this.runRow_make(step, line, 'bill'),
-      this.pairs_make([['VM', name], ['BUILDS', 'the data volume, its backups and the address, then the machine; asks before the apply with the cost'], ['OVER', 'kept data, when the machine alone was torn down']]),
-      el('p', 'tdc-prose tdc-quiet', 'A VM is born protected: teardown refuses until PROTECT · OFF, a line of its own. A teardown returns this step to ready.'),
-      ...(undoing ? [protect, teardown] : []),
+      this.vmBuilds_make(name),
+      ...this.vmUndoing_make(name, step.key),
     ];
   }
 

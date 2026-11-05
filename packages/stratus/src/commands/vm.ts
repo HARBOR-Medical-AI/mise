@@ -460,6 +460,10 @@ async function vmCost_run(context: VmCommandContext, args: ReadonlyArray<string>
   if ('error' in read) return envelope_error('', undefined, `vm cost: ${read.error} (${VM_OPTIONS.join(', ')})\n`);
   const [name, ...extra] = read.rest;
   if (extra.length > 0 || (name === undefined && read.options.size > 0)) return envelope_error('', undefined, `vm cost: usage: ${VM_COST_USAGE}\n`);
+  // The price list is read once for the session; the answer that read it says so, and every later price is worked out from it.
+  const readBefore: string | null = context.driver.pricesRead_get();
+  const told = (text: string): string => readBefore === null && context.driver.pricesRead_get() !== null ? `${chalk.gray('read Oracle\'s price list, kept for this session: every price after this is worked out here')}\n${text}` : text;
+  const model = (rows: VmCostRow[]): { kind: string; data: { vms: VmCostRow[]; pricesRead: string | null } } => ({ kind: STRATUS_VM_COST_MODEL_KIND, data: { vms: rows, pricesRead: context.driver.pricesRead_get() } });
   if (name === undefined) {
     const names: string[] = context.store.names_list();
     if (names.length === 0) return envelope_ok('no VM declared: vm cost <name> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> prices one without declaring it\n');
@@ -472,7 +476,7 @@ async function vmCost_run(context: VmCommandContext, args: ReadonlyArray<string>
       lines.push(`${chalk.bold(each)}: ${size_line(kept.spec)}: ${cost_line(cost)}`);
       rows.push({ name: each, declared: true, spec: kept.spec, cost, changes: [], before: null });
     }
-    return envelope_ok(`${lines.join('\n')}\n`, { kind: STRATUS_VM_COST_MODEL_KIND, data: { vms: rows } });
+    return envelope_ok(told(`${lines.join('\n')}\n`), model(rows));
   }
   const before = context.store.spec_read(name);
   const keptSpec: VmSpec | null = before !== null && 'spec' in before ? before.spec : null;
@@ -482,13 +486,13 @@ async function vmCost_run(context: VmCommandContext, args: ReadonlyArray<string>
   const spec = vmSpec_read(options, keptSpec);
   if ('error' in spec) return envelope_error('', undefined, `vm cost: ${spec.error}\n`);
   const after: VmCost | null = await cost_read(context, spec.spec);
-  const row = (changes: string[], was: VmCost | null): { kind: string; data: { vms: VmCostRow[] } } => ({ kind: STRATUS_VM_COST_MODEL_KIND, data: { vms: [{ name, declared: keptSpec !== null, spec: spec.spec, cost: after, changes, before: was }] } });
-  if (keptSpec === null) return envelope_ok(`${name} (not declared): ${size_line(spec.spec)}: ${cost_line(after)}\n`, row([], null));
+  const row = (changes: string[], was: VmCost | null): { kind: string; data: { vms: VmCostRow[]; pricesRead: string | null } } => model([{ name, declared: keptSpec !== null, spec: spec.spec, cost: after, changes, before: was }]);
+  if (keptSpec === null) return envelope_ok(told(`${name} (not declared): ${size_line(spec.spec)}: ${cost_line(after)}\n`), row([], null));
   const changes: string[] = vmSpec_diff(keptSpec, spec.spec);
-  if (changes.length === 0) return envelope_ok(`${name}: ${size_line(spec.spec)}: ${cost_line(after)}\n`, row([], null));
+  if (changes.length === 0) return envelope_ok(told(`${name}: ${size_line(spec.spec)}: ${cost_line(after)}\n`), row([], null));
   const was: VmCost | null = await cost_read(context, keptSpec);
   const priced: string = was === null || after === null ? cost_line(after) : costChange_line(was, after);
-  return envelope_ok(`${name}, ${changes.join(', ')}: ${priced}; nothing declared (vm new ${name} with the same options declares it)\n`, row(changes, was));
+  return envelope_ok(told(`${name}, ${changes.join(', ')}: ${priced}; nothing declared (vm new ${name} with the same options declares it)\n`), row(changes, was));
 }
 
 /**
@@ -611,6 +615,18 @@ async function grow_run(context: VmCommandContext, deps: VmDeps, name: string, g
  * @param args - The words after `build`.
  * @returns The envelope.
  */
+/**
+ * Marks a VM built to the spec declared: its build line reads done until the
+ * next declare, and a later declare says what a build would change from it.
+ *
+ * @param context - The session.
+ * @param name - The VM.
+ * @param spec - The spec the tenancy now matches.
+ */
+function built_mark(context: VmCommandContext, name: string, spec: VmSpec): void {
+  context.store.record_update(name, (current: VmRecord): void => { current.built = new Date().toISOString(); current.builtSpec = spec; });
+}
+
 async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
   const allowAlter: boolean = args.includes('--allow-alter');
   const words: string[] = args.filter((word: string): boolean => word !== '--allow-alter');
@@ -638,6 +654,8 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   if (counts_total(data.counts) === 0 && machine !== null && counts_total(machine.counts) === 0) {
     context.store.file_remove(name, planFile_derive('data'));
     context.store.file_remove(name, planFile_derive('machine'));
+    // The tenancy matches the spec declared: the build is done for it, so its line stops reading changed.
+    if (context.store.record_read(name)?.built !== undefined) built_mark(context, name, spec);
     if (owed !== undefined) return await grow_run(context, deps, name, owed, `${name}: the plan reads nothing to do; growing the filesystems a build left ungrown\n`);
     return envelope_ok(`${name}: built, and the plan reads nothing to do\n`);
   }
@@ -680,6 +698,8 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   } else {
     context.store.file_remove(name, planFile_derive('machine'));
   }
+  // A data volume grown alone applies no machine: the build is still done for the spec declared.
+  built_mark(context, name, spec);
   const growOwed = context.store.record_read(name)?.growOwed;
   if (growOwed !== undefined) return await grow_run(context, deps, name, growOwed, '');
   return envelope_ok(`${vmStatus_lines(context.store, context.store.record_read(name) as VmRecord, spec).join('\n')}\n`);

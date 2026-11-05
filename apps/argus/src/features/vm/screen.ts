@@ -3,8 +3,10 @@
  * (docs/stratus.adoc, D17 revised). Its door is MACHINES: every VM the
  * tenancy runs, as `ls` shows a folder, with + NEW (the operator, 2026-11-03).
  * The gutter carries a pill per VM and + NEW; a machine opens on MACHINE, what
- * it is and what is on it, then its lines as seats, SIZE, BUILD, CHRIS, USERS,
- * and TEARDOWN, which is no line but the VM's own undoing. A VM this session
+ * it is and what is on it, then its lines as seats, SIZE (its `vm new` with
+ * the `vm build` after it: DECLARE and BUILD), CHRIS, USERS, and TEARDOWN,
+ * which is no line but the VM's own undoing. A build line standing apart from
+ * its declaration keeps a BUILD seat of its own. A VM this session
  * can only see (found in the tenancy, or taken over from it, its SSH key kept
  * by the session that built it) stands with MACHINE and TEARDOWN alone. The
  * header is the machine's facts. Underneath, the script stays the truth: a VM
@@ -22,7 +24,7 @@ import { STRATUS_VM_STATUS_MODEL_KIND, vmStatusModelSchema } from '@fnndsc/menu'
 import { modePill_make } from '../takeover/tier.js';
 import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
-import { counts_words, line_parse, lines_build, runningStep_find, script_render, states_count, steps_build, type ScriptLine, type ScriptStep, type StateCounts } from '../script/model.js';
+import { counts_words, line_parse, lines_build, runningStep_find, script_render, states_count, steps_build, workingCopy_derive, type ScriptLine, type ScriptStep, type StateCounts } from '../script/model.js';
 import { ScriptScreen, type QuietAnswer, type ScriptHooks } from '../script/screen.js';
 import { FACTS_KEY, MACHINES_KEY, NEW_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
 
@@ -210,7 +212,7 @@ export class VmScreen extends ScriptScreen {
 
   // ------------------------------------------------------------------ steps
 
-  /** The VM's lines as its seats, SIZE, BUILD, CHRIS, USERS, in that order, then TEARDOWN; a seat whose line the script lacks stands over a template line. */
+  /** The VM's lines as its seats, SIZE (with its build), CHRIS, USERS, in that order, then TEARDOWN; a build apart from its declaration is a BUILD seat after SIZE; a seat whose line the script lacks stands over a template line. */
   protected override steps_derive(lines: ReadonlyArray<ScriptLine>): ScriptStep[] {
     if (this.vm === '') return [];
     const facts: ScriptStep = { key: FACTS_KEY, label: 'MACHINE', kind: 'other', lines: [], state: null, running: null, template: true };
@@ -248,10 +250,12 @@ export class VmScreen extends ScriptScreen {
 
   /**
    * Sends a line; a template seat's line (a CHRIS not in the script yet) is
-   * appended to the script first, and a script not on the host yet is written
-   * first, so the artifact is always ahead of the act.
+   * appended to the script first, and a script not on the host yet, or one a
+   * form changed, is written first (a script from git to its working copy
+   * under `/scripts/mine/`), so the artifact is always ahead of the act and
+   * what was declared reads done.
    */
-  public override async line_send(line: string, step: string | null): Promise<void> {
+  public override async line_send(line: string, step: string | null, keepLog: boolean = false): Promise<boolean> {
     const shown: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === step);
     if (shown?.template === true && shown.key !== TEARDOWN_KEY) {
       const text: string = vmScript_append(script_render(this.lines), this.vm, line);
@@ -259,15 +263,17 @@ export class VmScreen extends ScriptScreen {
       this.unsaved = true;
       this.edited = true;
     }
-    if (this.unsaved && this.path !== '' && !line.startsWith('touch ')) {
-      await super.line_send(saveLine_compose(this.path, script_render(this.lines)), null);
+    if ((this.unsaved || this.edited) && this.path !== '' && !line.startsWith('touch ')) {
+      const target: string = this.unsaved ? this.path : workingCopy_derive(this.path);
+      if (!(await super.line_send(saveLine_compose(target, script_render(this.lines)), null))) return false;
+      this.path = target;
       this.unsaved = false;
       this.edited = false;
       await this.script_read();
       this.steps = this.steps_derive(this.lines);
       this.draw();
     }
-    await super.line_send(line, step);
+    return await super.line_send(line, step, keepLog);
   }
 
   /** Declares the new machine: its script written under `/scripts/mine/`, then `vm new` sent. */
@@ -415,7 +421,7 @@ export class VmScreen extends ScriptScreen {
     commands.append(el('span', 'tdc-flex'), add);
     list.append(commands, el('p', 'tdc-prose tdc-quiet', 'Every machine the tenancy runs outside a cluster, as vm status reads it from the cloud. One stratus built shows its state, whichever session or host built it: its records and its SSH key are read from the tenancy. One FOUND was made outside stratus: it is seen, never built on.'));
     const side: HTMLElement = this.section_make('WHAT A ROW OPENS', 'ss-col-side');
-    side.append(this.pairs_make([['MACHINE', 'what it is and what runs on it'], ['SIZE · BUILD · CHRIS · USERS', 'its lines: resize it, build what changed, its ChRIS'], ['TEARDOWN', 'its undoing, behind its lock']]));
+    side.append(this.pairs_make([['MACHINE', 'what it is and what runs on it'], ['SIZE · CHRIS · USERS', 'its lines: size it and build it, its ChRIS, its accounts'], ['TEARDOWN', 'its undoing, behind its lock']]));
     return [list, side];
   }
 
@@ -452,7 +458,7 @@ export class VmScreen extends ScriptScreen {
     const side: HTMLElement = this.section_make('WHAT CAN BE DONE', 'ss-col-side');
     side.append(vmKeyless_is(row)
       ? el('p', 'tdc-prose', row.state === 'found' && row.found?.tagged !== true ? 'Made outside stratus: seen here, acted on in the cloud\'s own console.' : 'Its size, build and ChRIS need its SSH key, which the tenancy does not keep. TEARDOWN removes it, behind its lock and the name typed back.')
-      : this.pairs_make([['SIZE', 'resize it: vCPUs, memory, its disks, its ports, as its vm new line'], ['BUILD', 'plans and applies what changed, asking first'], ['CHRIS', 'deploys ChRIS on it'], ['USERS', 'its ChRIS accounts'], ['TEARDOWN', 'its undoing, behind its lock']]));
+      : this.pairs_make([['SIZE', 'its vCPUs, memory, disks and ports: DECLARE saves them, BUILD plans and applies what changed, asking first'], ['CHRIS', 'deploys ChRIS on it'], ['USERS', 'its ChRIS accounts'], ['TEARDOWN', 'its undoing, behind its lock']]));
     return [facts, side];
   }
 
@@ -481,7 +487,7 @@ export class VmScreen extends ScriptScreen {
     const commands: HTMLElement = el('div', 'tdc-commands');
     commands.append(commit, el('span', 'tdc-commands-label', 'writes the script, then declares'));
     form.append(field('name', 'NAME', 'a hostname label, as store'), field('net', 'NETWORK', NET_DEFAULT), lineBox, commands,
-      el('p', 'tdc-prose tdc-quiet', 'COMMIT writes /scripts/mine/<name>.mise with this line and its build, then sends the line: the machine is declared and nothing is made. SIZE then shows its sliders; BUILD builds it.'));
+      el('p', 'tdc-prose tdc-quiet', 'COMMIT writes /scripts/mine/<name>.mise with this line and its build, then sends the line: the machine is declared and nothing is made. SIZE then shows its sliders, and its BUILD builds it.'));
     this.newCommit_redraw(commit);
     const side: HTMLElement = this.section_make('WHAT A MACHINE IS', 'ss-col-side');
     side.append(this.pairs_make([['SCRIPT', 'one .mise file under /scripts/mine/, yours to keep'], ['LINES', 'vm new · vm build · chris deploy · chris user add'], ['REPLAY', 'played again, a line reads unchanged or asks before it changes anything']]));
