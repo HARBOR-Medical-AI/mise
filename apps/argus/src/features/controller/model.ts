@@ -156,7 +156,8 @@ export function stepLooks_build(cluster: ClusterSummary): StepLook[] {
     const billFrom: boolean = name === cluster.billingStep;
     const held: string | null = stepHeld_derive(name, cluster.resources);
     const look = (word: string, tone: StepLook['tone']): StepLook => ({ n, name, word, tone, note, billFrom, held, unheld: tone === 'done' && held === 'HOLDS NONE' });
-    if (step.state === 'done') return look('DONE', 'done');
+    // Torn down whole, what a step made is gone: it was done, it does not stand.
+    if (step.state === 'done') return cluster.condition === 'GONE' ? look('WAS DONE · GONE', 'later') : look('DONE', 'done');
     if (step.state === 'running') return look('RUNNING', 'running');
     if (step.state === 'failed') return look('FAILED', 'failed');
     if (step.state === 'expired') return look('EXPIRED', 'expired');
@@ -251,6 +252,8 @@ export function since_build(before: ClusterSummary | null, after: ClusterSummary
   if (before === null) return [{ label: '', text: 'FIRST READ' }];
   const rows: SinceRow[] = [];
   if (before.condition !== after.condition) rows.push({ label: 'CONDITION', text: `${before.condition ?? '?'} → ${after.condition ?? '?'}` });
+  // Adopted (or found again): where the cluster is kept moved, though nothing in the cloud did.
+  if (before.origin !== after.origin) rows.push({ label: 'KEPT', text: `${(before.origin ?? '?').toUpperCase()} → ${(after.origin ?? '?').toUpperCase()}` });
   const stepsBefore: Map<string, string> = new Map(before.steps.map((step): [string, string] => [step.name ?? step.folder, step.state]));
   const moved = after.steps.filter((step): boolean => stepsBefore.get(step.name ?? step.folder) !== step.state);
   for (const step of moved.slice(-2)) rows.push({ label: (step.name ?? step.folder).toUpperCase(), text: `${(stepsBefore.get(step.name ?? step.folder) ?? 'NONE').toUpperCase()} → ${step.state.toUpperCase()}` });

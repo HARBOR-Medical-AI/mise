@@ -202,6 +202,11 @@ export class VmScreen extends ScriptScreen {
     this.draw();
   }
 
+  /** The machine's own ChRIS is read by `chris_read`; the script screen's every-ChRIS read is not asked here. */
+  protected override async chrisSeen_read(): Promise<void> {
+    return;
+  }
+
   /** What runs of the machine's ChRIS, for CHRIS and USERS. */
   protected override chrisRow_get(vm: string): ChrisStatusRow | null {
     return this.chrisRow !== null && this.chrisRow.vm === vm ? this.chrisRow : null;
@@ -459,6 +464,7 @@ export class VmScreen extends ScriptScreen {
       body.dataset['view'] = 'step';
       body.append(...(this.view === MACHINES_KEY ? this.machines_make() : this.facts_make()));
       this.refusal_place();
+      this.saved_place();
       this.errand_place();
       return;
     }
@@ -468,6 +474,7 @@ export class VmScreen extends ScriptScreen {
       body.dataset['view'] = 'step';
       body.append(...this.new_make());
       this.refusal_place();
+      this.saved_place();
       this.errand_place();
       return;
     }
@@ -477,6 +484,7 @@ export class VmScreen extends ScriptScreen {
       body.dataset['view'] = 'step';
       body.append(...this.teardown_make());
       this.refusal_place();
+      this.saved_place();
       this.errand_place();
       return;
     }
@@ -503,7 +511,8 @@ export class VmScreen extends ScriptScreen {
       const on: string = row.chris?.host ?? (row.chris !== null && row.chris !== undefined ? row.chris.url : tagged !== null ? `CUBE at ${tagged}` : vmKeyless_is(row) ? 'what runs on it is not said' : 'nothing deployed');
       line.append(
         el('span', 'ss-script-name', row.name),
-        el('span', 'ss-script-source', vmCondition_derive(row, false)),
+        // An act in flight is the row's state: what it does and since when, read from the session's tasks.
+        el('span', 'ss-script-source', row.running != null ? `${row.running.what.toUpperCase()} · SINCE ${row.running.since.slice(11, 16)}` : vmCondition_derive(row, false)),
         el('span', 'ss-script-standing', `${row.address ?? 'no address'} · ${size} · ${on}`),
       );
       const open: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain', 'OPEN');

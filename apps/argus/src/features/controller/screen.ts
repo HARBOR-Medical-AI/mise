@@ -119,6 +119,10 @@ export class TdController {
   private busyOut: string[] = [];
   /** The last KILL sent from this screen: the cluster, the task, the step it was in, and when; its receipt stands on BUILD and OVERVIEW. */
   private killed: { cluster: string; job: string; step: string | null; at: string } | null = null;
+  /** When what SIZE is sized against (each zone's free room, the price) was read from the cloud. */
+  private sizeReadAt: string | null = null;
+  /** The last PLAN's answer, with when: its receipt stands in the panel, not only in the log. */
+  private planned: { cluster: string; at: string; said: string[] } | null = null;
   /** The last SPEND's answer, with when: a read whose answer stands in the panel, not only in the log. */
   private spent: { cluster: string; at: string; said: string[] } | null = null;
   /** Whether the operator answered no to the line in flight's question: its stop is a choice, said as declined. */
@@ -356,6 +360,8 @@ export class TdController {
       const taken: boolean | void = await this.hooks.run(line);
       const spending: RegExpExecArray | null = /^spend (\S+)/.exec(line);
       if (spending !== null) this.spent = { cluster: spending[1] as string, at: new Date().toISOString(), said: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(0, 12) };
+      const planning: RegExpExecArray | null = /^cluster plan (\S+)/.exec(line);
+      if (planning !== null) this.planned = { cluster: planning[1] as string, at: new Date().toISOString(), said: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-8) };
       if (this.partial !== '') { this.log_add(this.partial, 'out'); this.partial = ''; }
       // A refusal is said in the view its control stands in, with why, until that view sends again (a-change-is-a-loop, clauses 5 and 6).
       if (taken === false) this.refusal = { view: seat, line, at: new Date().toISOString(), declined: this.busyDeclined, why: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ') || 'the session refused it' };
@@ -564,7 +570,10 @@ export class TdController {
     const fits: ZoneFitLook[] = sizeFit_compute(this.size, this.levers, this.newName || 'new');
     const fitting: number = fits.filter((fit: ZoneFitLook): boolean => fit.fits === true).length;
     const tight: ZoneFitLook | undefined = fits.find((fit: ZoneFitLook): boolean => fit.tightest);
-    return [['ZONES', `${fitting} OF ${fits.length} FIT`], ['TIGHTEST', tight === undefined ? '—' : zoneShort_format(tight.zone)], ['FAMILY', this.levers.family]];
+    // A zone the cloud did not say the free room of is not known to fit or not: said as such, never counted as a no.
+    const unsaid: number = fits.filter((fit: ZoneFitLook): boolean => fit.fits === null).length;
+    const zones: string = unsaid === fits.length ? 'NOT SAID BY THE CLOUD' : `${fitting} OF ${fits.length} FIT${unsaid > 0 ? ` · ${unsaid} NOT SAID` : ''}`;
+    return [['ZONES', zones], ['TIGHTEST', tight === undefined ? '—' : zoneShort_format(tight.zone)], ['FAMILY', this.levers.family]];
   }
 
   private body_draw(): void {
@@ -704,7 +713,7 @@ export class TdController {
     if (cluster.origin === 'adopted') {
       note.append(el('span', 'tdc-prose', 'Adopted: planned against, never built on. Its steps are what the cloud attested; what it did not stays UNKNOWN until VERIFY.'));
       // The next step, on the panel: the credentials the cloud does not keep are copied here by hand.
-      note.append(el('span', 'tdc-prose tdc-quiet', `NEXT: copy its kubeconfig and CUBE token into ${cluster.path ?? 'its folder'} (the cloud does not keep them); VERIFY then reads it.`));
+      note.append(el('span', 'tdc-prose tdc-quiet', `NEXT: copy its kubeconfig and CUBE token into its auth/ folder on this host (${cluster.path ?? 'its folder'}/auth/; the cloud does not keep them); VERIFY then reads it.`));
       note.append(el('span', 'tdc-prose tdc-quiet', `build refused: ${cluster.refused?.['build'] ?? 'adopted'}`));
     } else if (cluster.origin === 'found' && cluster.condition === 'GONE') {
       // Nothing of it is left in the tenancy but what carries its tag: its stack and its compartment (docs/stratus.adoc, D15).
@@ -758,15 +767,23 @@ export class TdController {
       // loop: td-build
       this.linePill_make('BUILD', LINES.build(cluster.name), 'bill', cluster.refused?.['build']));
     steps.append(commands);
+    // PLAN writes a plan job in the tenancy's Resource Manager and nothing else: said beside it, and its answer after.
+    steps.append(el('p', 'tdc-prose tdc-quiet', 'PLAN makes a plan job in the tenancy\'s Resource Manager: nothing is built, changed or billed. VERIFY and SPEND only read.'));
+    if (this.planned !== null && this.planned.cluster === cluster.name && cluster.condition !== 'GONE') {
+      const box: HTMLElement = el('div', 'tdc-note tdc-note-found tdc-note-planned');
+      box.append(el('span', 'tdc-note-title', `PLANNED · ${this.planned.at.slice(11, 16)}`), ...this.planned.said.map((one: string): HTMLElement => el('span', 'tdc-mono', one)));
+      steps.append(box);
+    }
     // What SPEND answered, with when, beside SPEND.
-    if (this.spent !== null && this.spent.cluster === cluster.name) {
+    if (this.spent !== null && this.spent.cluster === cluster.name && cluster.condition !== 'GONE') {
       const box: HTMLElement = el('div', 'tdc-note tdc-note-found tdc-note-spent');
       box.append(el('span', 'tdc-note-title', `SPEND · READ ${this.spent.at.slice(11, 16)}`), ...this.spent.said.map((one: string): HTMLElement => el('span', 'tdc-mono', one)));
       steps.append(box);
     }
 
     const glance: HTMLElement = this.section_make('THE CLUSTER AT A GLANCE', 'tdc-col-glance');
-    const verify: string = cluster.verify === null || cluster.verify === undefined ? this.verifyUnkept_render(cluster) : `${verifyWords_render(cluster.verify.checks)} · ${(cluster.verify.at ?? '').slice(0, 19).replace('T', ' ')}`;
+    const verify: string = cluster.verify === null || cluster.verify === undefined ? this.verifyUnkept_render(cluster)
+      : `${cluster.condition === 'GONE' ? 'BEFORE ITS TEARDOWN: ' : ''}${verifyWords_render(cluster.verify.checks)} · ${(cluster.verify.at ?? '').slice(0, 19).replace('T', ' ')}`;
     glance.append(this.pairs_make([['ADDRESS', cluster.cluster ?? '?'], ['VERIFY', verify], ['RUNNING', cluster.running === null || cluster.running === undefined ? 'nothing' : cluster.running.step ?? 'between steps']]));
     glance.append(el('span', 'tdc-section-title tdc-gap', 'IN ITS COMPARTMENT'));
     glance.append(this.resources_make(cluster));
@@ -1096,6 +1113,7 @@ export class TdController {
     const read: ClusterSizeModel | null = await this.hooks.size_read(family);
     if (read === null) return;
     this.size = read;
+    this.sizeReadAt = new Date().toISOString();
     if (this.zone === null || !(read.dnsZones ?? [this.zone]).includes(this.zone)) this.zone = read.baseDomain;
     const keep: ClusterSpecModel | null = this.levers;
     this.levers = keep === null ? spec_copy(read.start) : { ...keep, family: read.family };
@@ -1198,7 +1216,7 @@ export class TdController {
         slider('cb', 'DATABASE GiB', 5, 200, 5, (): number => spec.chris.databaseGib, (value: number): void => { spec.chris.databaseGib = value; }, 'FIXED AFTER THE FIRST DEPLOY'),
       ]),
     );
-    const fit: HTMLElement = this.section_make(`FIT · ${spec.family} PER ZONE, AS SIZED`, 'tdc-col-fit', `FROM ${size.region} · READ ONCE`);
+    const fit: HTMLElement = this.section_make(`FIT · ${spec.family} PER ZONE, AS SIZED`, 'tdc-col-fit', `FROM ${size.region} · READ ${this.sizeReadAt?.slice(11, 16) ?? '…'} UTC`);
     const cost: HTMLElement = this.section_make('COST · PER HOUR, FROM THE PRICE LIST', 'tdc-col-cost');
     this.fit_fill(fit);
     this.cost_fill(cost, !existing);
@@ -1271,7 +1289,8 @@ export class TdController {
         if (!this.clusters.has(name)) return;
         this.current = name;
         this.newName = '';
-        this.view = 'build';
+        // The build's first question stands over what was sized (the offer it answers); a YES moves to BUILD, where the steps run.
+        this.view = 'size';
         this.draw();
         await this.line_send(LINES.tenant(name));
       });
@@ -1301,7 +1320,12 @@ export class TdController {
       // loop: confirm
       const yes: HTMLButtonElement = el('button', `tdc-pill ${billing ? 'tdc-pill-bill' : 'tdc-pill-plain'}`, billing ? 'YES · BILL' : 'YES');
       yes.type = 'button';
-      yes.addEventListener('click', (): void => { this.hooks.voice.pill('YES'); this.log_add('y', 'answer'); ask.answer('y'); });
+      yes.addEventListener('click', (): void => {
+        this.hooks.voice.pill('YES');
+        this.log_add('y', 'answer');
+        if (this.view === 'size' && this.busy?.startsWith('play ') === true) { this.view = 'build'; this.draw(); }
+        ask.answer('y');
+      });
       const no: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'NO');
       no.type = 'button';
       no.addEventListener('click', (): void => { this.hooks.voice.pill('NO'); this.log_add('n', 'answer'); ask.answer('n'); });

@@ -299,7 +299,8 @@ describe('the TD controller screen', () => {
     await flush();
     expect(sent).toEqual(['cluster new quay', 'play ~/tenant.mise --param NAME=quay']);
     expect(controller.cluster_get()?.name).toBe('quay');
-    expect(controller.view_get()).toBe('build');
+    // The build's first question stands over what was sized: the view stays on SIZE until it is answered.
+    expect(controller.view_get()).toBe('size');
     controller.dispose();
     controller.root.remove();
   });
