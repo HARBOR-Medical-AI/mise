@@ -309,7 +309,7 @@ export class VmScreen extends ScriptScreen {
 
   /** A script not on the host yet is read from the screen's lines. */
   protected override statusText_get(): string | null {
-    return this.unsaved ? script_render(this.lines) : null;
+    return this.unsaved || this.edited ? script_render(this.lines) : null;
   }
 
   /** The stage strip names the machine; before it is named, the new one. */

@@ -19,12 +19,12 @@
  * @module
  */
 import {
-  chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, vmCostModelSchema, vmLimitsModelSchema,
-  type ChrisPlanModel, type ChrisStatusRow, type NetStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel,
+  chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmLimitsModelSchema, vmStatusModelSchema,
+  type ChrisPlanModel, type ChrisStatusRow, type NetStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel, type VmStatusRow,
 } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
 import { saveLine_compose } from '../edit/line.js';
-import { modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } from '../takeover/tier.js';
+import { lockWhere_text, modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } from '../takeover/tier.js';
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
   askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
@@ -451,6 +451,7 @@ export class ScriptScreen {
     const standings = await this.status_read(this.path);
     this.lines = this.accountsHeld_apply(lines_build(text, standings?.lines ?? []));
     this.steps = this.steps_derive(this.lines);
+    void this.vmsSeen_read();
   }
 
   /**
@@ -523,8 +524,8 @@ export class ScriptScreen {
    * @param _name - The VM.
    * @returns What runs, or null.
    */
-  protected runs_get(_name: string): (VmRuns & { at: string }) | null {
-    return null;
+  protected runs_get(name: string): (VmRuns & { at: string }) | null {
+    return this.vmsSeen.get(name)?.stands ?? null;
   }
 
   /**
@@ -545,7 +546,9 @@ export class ScriptScreen {
 
   /** The script's text when it is not on the host yet, to read its standing from; null when the file is the script. */
   protected statusText_get(): string | null {
-    return null;
+    // An edit not saved is the screen's own text: the standing is read of what the screen shows, so a difference is said
+    // against what was declared in the operator's direction, never the file's.
+    return this.edited ? script_render(this.lines) : null;
   }
 
   /** Reads the script's standing again, after a line ran. */
@@ -560,6 +563,22 @@ export class ScriptScreen {
     this.nets.clear();
     this.steps = this.steps_derive(this.lines);
     void this.standing_read();
+    void this.vmsSeen_read();
+  }
+
+  /** What runs of each VM the script declares, as `vm status` read it from the tenancy: the script screen renders what runs beside its VM seats as the VM controller does. */
+  protected vmsSeen: Map<string, VmStatusRow> = new Map();
+
+  /** Reads `vm status` when the script declares a VM, then redraws. */
+  protected async vmsSeen_read(): Promise<void> {
+    if (!this.lines.some((line: ScriptLine): boolean => line_parse(line.text).verb[0] === 'vm')) return;
+    try {
+      const model = model_extract(await this.hooks.ask('vm status'), STRATUS_VM_STATUS_MODEL_KIND, (data: unknown) => vmStatusModelSchema.safeParse(data));
+      this.vmsSeen = new Map((model?.vms ?? []).map((row: VmStatusRow): [string, VmStatusRow] => [row.name, row]));
+    } catch {
+      return;
+    }
+    this.draw();
   }
 
   /**
@@ -1197,8 +1216,12 @@ export class ScriptScreen {
     input.addEventListener('input', (): void => {
       line.text = lineOption_set(line.text, word, input.value.trim());
       this.edited = true;
-      this.lineShown_redraw(line);
-      this.wouldNote_redraw(line);
+      // The seat is drawn again at each edit, so SAVE and the difference against what stands follow the hand; the field keeps it.
+      const at: number | null = input.selectionStart;
+      this.draw();
+      const again: HTMLInputElement | null = this.parts.body.querySelector<HTMLInputElement>(`#${input.id}`);
+      again?.focus();
+      if (at !== null) again?.setSelectionRange(at, at);
     });
     row.append(field, input);
     return row;
@@ -1277,6 +1300,13 @@ export class ScriptScreen {
       // loop: ss-net-teardown
       const teardown: HTMLButtonElement = this.linePill_make('TEARDOWN', `net teardown ${name}`, step.key, 'destroy');
       teardown.title = `sends: net teardown ${name} (refused while anything stands on it)`;
+      // Nothing of it built (as net status last read it): there is nothing to tear down, so the pill is held and says why.
+      const row: NetStatusRow | null = this.nets.get(name)?.row ?? null;
+      if (this.nets.has(name) && (row === null || (row.state !== 'built' && row.stack === null))) {
+        teardown.disabled = true;
+        teardown.textContent = 'TEARDOWN · NOTHING BUILT';
+        teardown.title = 'nothing of this network is built: there is nothing to tear down';
+      }
       extra.push(el('span', 'tdc-flex'), teardown);
     }
     return [
@@ -1532,9 +1562,15 @@ export class ScriptScreen {
   /** A VM's lock and undoing, each a line of its own, when this screen shows them under the build. */
   protected vmUndoing_make(name: string, step: string): HTMLElement[] {
     if (!this.undoing_shown()) return [];
+    // The lock and what stands, as `vm status` read them: the lock drawn, only its other setting offered, an undoing only of what stands.
+    const row: VmStatusRow | null = this.vmsSeen.get(name) ?? null;
     const protect: HTMLElement = el('div', 'tdc-commands');
+    const lockWord: string = row === null ? 'THE LOCK · NOT READ' : `THE LOCK · ${row.protected ? 'PROTECTED' : 'UNLOCKED'}${lockWhere_text(row.lock) !== null ? ` · ${(lockWhere_text(row.lock) as string).toUpperCase()}` : ''}`;
     // loop: ss-vm-protect
-    protect.append(el('span', 'tdc-commands-label', 'THE LOCK'), this.linePill_make('PROTECT · ON', `vm protect ${name} on`, step, 'quiet'), this.linePill_make('PROTECT · OFF', `vm protect ${name} off`, step, 'quiet'));
+    const on: HTMLButtonElement = this.linePill_make('PROTECT · ON', `vm protect ${name} on`, step, 'quiet');
+    // loop: ss-vm-protect
+    const off: HTMLButtonElement = this.linePill_make('PROTECT · OFF', `vm protect ${name} off`, step, 'quiet');
+    protect.append(el('span', 'tdc-commands-label', lockWord), ...(row === null ? [on, off] : row.protected ? [off] : [on]));
     const teardown: HTMLElement = el('div', 'tdc-commands');
     // loop: ss-vm-teardown
     const machine: HTMLButtonElement = this.linePill_make('TEARDOWN', `vm teardown ${name}`, step, 'destroy');
@@ -1543,7 +1579,10 @@ export class ScriptScreen {
     const all: HTMLButtonElement = this.linePill_make('TEARDOWN · ALL', `vm teardown ${name} --all`, step, 'destroy');
     all.classList.add('ss-pill-redder');
     all.title = `sends: vm teardown ${name} --all (the data too; asks for the name typed back)`;
-    teardown.append(el('span', 'tdc-commands-label', 'UNDOING'), machine, all);
+    const machineStands: boolean = row === null || (row.stands != null ? row.stands.vcpu !== null : row.state === 'built');
+    const anyStands: boolean = row === null || row.state !== 'gone';
+    const what: string = row?.stands != null ? `UNDOING · ${row.stands.vcpu !== null ? 'MACHINE STANDS' : 'NO MACHINE'} · ${row.stands.data !== null ? 'DATA STANDS' : 'NO DATA'} · READ ${row.stands.at.slice(11, 16)}` : row?.state === 'gone' ? 'UNDOING · NOTHING OF IT STANDS' : 'UNDOING';
+    teardown.append(el('span', 'tdc-commands-label', what), ...(machineStands ? [machine] : []), ...(anyStands ? [all] : []));
     return [el('p', 'tdc-prose tdc-quiet', 'A VM is born protected: teardown refuses until PROTECT · OFF, a line of its own. A teardown returns the build to ready.'), protect, teardown];
   }
 
@@ -1622,7 +1661,7 @@ export class ScriptScreen {
     const side: HTMLElement = this.section_make('THE NETWORK · AS IT STANDS', 'ss-col-side', read?.read == null ? 'NOT READ' : `READ FROM THE TENANCY ${read.read.slice(11, 16)} UTC`);
     const row: NetStatusRow | null = read?.row ?? null;
     if (read === null) side.append(el('p', 'tdc-prose tdc-quiet', 'reading what stands: net status'));
-    else if (row === null) side.append(el('p', 'tdc-prose', 'Nothing of it stands: neither this host nor the tenancy holds a network by that name.'));
+    else if (row === null) side.append(el('p', 'tdc-prose', read.read == null ? 'The tenancy was not searched, and this host keeps no record of a network by that name: what stands there is not known.' : 'Nothing of it stands: neither this host nor the tenancy holds a network by that name.'));
     else side.append(this.pairs_make([
       ['STATE', row.state.toUpperCase()],
       // The range it stands with is the VCN's, read from the tenancy; this host's record of the last build speaks only where the VCN was not read.
@@ -1636,6 +1675,13 @@ export class ScriptScreen {
         if (runs === null) return row.cidr ?? '—';
         return row.cidr === null || row.cidr === runs ? `${runs} (${how})` : `${runs} (${how}) · ${row.cidr} declared`;
       })()],
+      // The line's range against what stands (the VCN's) or, unbuilt, what is declared: the change the line would make, in the operator's direction.
+      ...((): Array<[string, string]> => {
+        const asked: string | null = lineOption_get(step.lines[0]?.text ?? '', '--cidr');
+        const against: string | null = row.stands?.cidr ?? (row.state === 'built' ? row.builtCidr : row.cidr);
+        if (asked === null || against === null || asked === against) return [];
+        return [['THIS LINE', `${against} → ${asked}${row.state === 'built' ? ': replaces the VCN and subnet and every machine on them (refused unless --allow-alter)' : ': declares the new range; nothing is built yet'}`]];
+      })(),
       ['STACK', row.stack === null ? 'none found in the tenancy' : `${row.stack.state.toUpperCase()} · ${row.stack.id}`],
       ['BASTION', row.bastion === null ? '—' : `${row.bastion}${row.admits !== null ? ` · admits ${row.admits}` : ''}`],
     ]));

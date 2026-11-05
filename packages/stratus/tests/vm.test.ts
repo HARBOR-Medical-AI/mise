@@ -343,13 +343,21 @@ describe('vm, over the fake cloud', () => {
     surface.answers = ['y'];
     await vm_run(context, ['build', 'store']);
     expect((await vm_run(context, ['teardown', 'store'])).renderedErr).toBe('vm teardown: store: protected (vm protect store off)\n');
+    const lines = new Map(lineStatusProviders_make({ nets, vms: store }).map((provider) => [provider.verb, provider]));
+    // The lock and teardown lines stand as the record and the tenancy say, never 'no verb reads it'.
+    expect(await lines.get('vm')?.read(['vm', 'protect', 'store', 'off'])).toEqual({ state: 'ready', detail: 'protected now; this line lifts the lock' });
+    expect(await lines.get('vm')?.read(['vm', 'teardown', 'store'])).toMatchObject({ state: 'not yet', detail: expect.stringContaining('protected (vm protect store off first)') });
     expect(plain((await vm_run(context, ['protect', 'store', 'off'])).rendered)).toBe('store: unprotected: vm teardown store may remove it\nkept in the tenancy: every session reads this lock\n');
+    expect(await lines.get('vm')?.read(['vm', 'protect', 'store', 'off'])).toEqual({ state: 'done', detail: 'unprotected (kept in the tenancy)' });
     surface.answers = ['y'];
     expect(plain((await vm_run(context, ['teardown', 'store'])).rendered)).toBe('store: its machine is gone; its data and address stay (vm build store makes the machine again over them)\n');
     expect(surface.asked.at(-1)).toContain('keep its data volume, backups and address 203.0.113.10 ($0.003 an hour, $2.13 a month)');
     expect(world.removed).toEqual(['stack fake-stack-vmMachine-store']);
     // Each part is a step on the record, the state shown as each began and ended: the machine gone, the data kept.
     expect(store.record_read('store')?.teardown?.steps).toMatchObject({ machine: { state: 'done', started: expect.any(String), ended: expect.any(String) }, data: { state: 'kept', note: expect.stringContaining('stay') } });
+    await vm_run(context, ['status']);
+    expect(await lines.get('vm')?.read(['vm', 'teardown', 'store'])).toMatchObject({ state: 'done', detail: expect.stringMatching(/^its machine is gone \(read from the tenancy \d\d:\d\d UTC\)$/) });
+    expect(await lines.get('vm')?.read(['vm', 'teardown', 'store', '--all'])).toMatchObject({ state: 'ready', detail: expect.stringContaining('its machine is gone; its data stands') });
     const row = ((await vm_run(context, ['status'])).model as { data: { vms: Array<{ name: string; teardown?: { steps: Array<{ name: string; state: string }> } | null }> } }).data.vms.find((one) => one.name === 'store');
     expect(row?.teardown?.steps.map((one) => `${one.name}:${one.state}`)).toEqual(['machine:done', 'data:kept']);
     expect(plain((await vm_run(context, ['store'])).rendered)).toContain('store  data kept');

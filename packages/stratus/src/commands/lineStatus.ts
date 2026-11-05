@@ -107,7 +107,7 @@ async function net_read(deps: LineStatusDeps, words: ReadonlyArray<string>): Pro
 }
 
 /**
- * `vm new <name> …` and `vm build <name>`.
+ * `vm new <name> …`, `vm build <name>`, `vm protect <name> on|off` and `vm teardown <name> [--all]`.
  *
  * @param deps - The stores.
  * @param words - The line's words.
@@ -130,6 +130,26 @@ async function vm_read(deps: LineStatusDeps, words: ReadonlyArray<string>): Prom
     }
     const changes: string[] = vmSpec_diff(keptSpec, spec.spec);
     return changes.length === 0 ? { state: 'done', detail: 'unchanged' } : { state: 'changed', detail: changes.join(', ') };
+  }
+  // The lock line: done when the lock stands as the line sets it, said with where it is kept (the tenancy's, as last read).
+  if (verb === 'protect') {
+    const setting: string | undefined = words[3];
+    if (record === null || (setting !== 'on' && setting !== 'off')) return record === null ? { state: 'not yet', detail: `${name}: not declared (vm new ${name})` } : null;
+    const want: boolean = setting === 'on';
+    const where: string = record.lockKept !== undefined && record.lockKept === (record.protectedAt ?? record.created) ? 'kept in the tenancy' : 'this host only';
+    return (record.protected === true) === want ? { state: 'done', detail: `${want ? 'protected' : 'unprotected'} (${where})` } : { state: 'ready', detail: `${record.protected === true ? 'protected' : 'unprotected'} now; this line ${want ? 'locks it' : 'lifts the lock'}` };
+  }
+  // The teardown line: done when what it removes is gone as the tenancy last answered; ready while it stands.
+  if (verb === 'teardown') {
+    const all: boolean = words.includes('--all');
+    const running: string | undefined = running_find(deps, [VM_JOBS.teardown(name)]);
+    if (record === null) return running_add({ state: 'not yet', detail: `${name}: not declared (vm new ${name})` }, running);
+    const stands = record.stands;
+    const machine: boolean = stands !== undefined ? stands.vcpu !== null : record.built !== undefined;
+    const data: boolean = stands !== undefined ? stands.data !== null : record.dataOutputs !== undefined && record.gone === undefined;
+    const at: string = stands !== undefined ? ` (read from the tenancy ${stands.at.slice(11, 16)} UTC)` : '';
+    if (all ? !machine && !data : !machine) return running_add({ state: 'done', detail: `${all ? 'nothing of it stands' : 'its machine is gone'}${at}` }, running);
+    return running_add({ state: record.protected === true ? 'not yet' : 'ready', detail: `${all ? (machine ? 'its machine and data stand' : 'its machine is gone; its data stands') : 'its machine stands'}${at}${record.protected === true ? `; protected (vm protect ${name} off first)` : ''}` }, running);
   }
   if (verb === 'build') {
     const running: string | undefined = running_find(deps, [VM_JOBS.plan(name, 'data'), VM_JOBS.plan(name, 'machine'), VM_JOBS.apply(name, 'data'), VM_JOBS.apply(name, 'machine')]);
