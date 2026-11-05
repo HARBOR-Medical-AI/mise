@@ -36,6 +36,8 @@ let ROWS_MORE: unknown[] = [];
 const WRITTEN: Map<string, string> = new Map();
 
 /** What the tenancy runs of store, as `vm status` reads it; a test moves it to stand for a build's effect. */
+/** CUBE's accounts as `chris status` reads them; a test may add one. */
+let ACCOUNTS: Array<{ username: string; email: string }> = [{ username: 'chris', email: 'dev@babyMRI.org' }, { username: 'jennings', email: 'j@example.org' }];
 let STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50, data: 50 };
 
 /** The session's answers: a library with store.mise, two machines kept (store from the script, lone from nothing). */
@@ -60,7 +62,7 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
   }
   if (line === 'vm limits') return envelope({ kind: 'stratus.vm.limits', data: LIMITS });
   if (line === 'chris status store') return envelope({ kind: 'stratus.chris.status', data: { chris: [{ vm: 'store', profile: 'minimal', compute: 'NERC', url: 'https://cube.chrisproject.org/api/v1/', host: 'cube.chrisproject.org', porter: 'porter.chrisproject.org', deployed: '2026-11-05T04:04:12.000Z', image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.9.10',
-    live: { at: '2026-11-05T06:00:00.000Z', cube: { url: 'https://cube.chrisproject.org/api/v1/', status: 200, admin: true }, porter: { url: 'https://porter.chrisproject.org/healthz', status: 200, sessions: 2, version: '0.9.10' }, accounts: [{ username: 'chris', email: 'dev@babyMRI.org' }, { username: 'jennings', email: 'j@example.org' }], accountsWhy: null } }] } });
+    live: { at: '2026-11-05T06:00:00.000Z', cube: { url: 'https://cube.chrisproject.org/api/v1/', status: 200, admin: true }, porter: { url: 'https://porter.chrisproject.org/healthz', status: 200, sessions: 2, version: '0.9.10' }, accounts: ACCOUNTS, accountsWhy: null } }] } });
   if (line.startsWith('chris deploy store') && line.endsWith('--plan')) return envelope({ kind: 'stratus.chris.plan', data: { vm: 'store', changes: [], restarts: ['porter (0.9.10 → 0.9.11): its open sessions end'], sessions: 2, asks: true } });
   if (line.startsWith('vm cost')) return envelope({ kind: 'stratus.vm.cost', data: { vms: [{ name: 'store', declared: true, spec: SPEC, cost: { machineHour: 0.052, dataHour: 0.003, currency: 'USD' }, changes: [], before: null }] } });
   return { envelopes: [{ rendered: '', status: 'ok' }] };
@@ -157,8 +159,28 @@ describe('the VM controller', () => {
     expect(users).toContain('RUDOLPHNOT IN CUBE YET · ITS LINE ADDS IT');
     expect(users).toContain('CHRISIN CUBE · NO LINE (the admin)');
     expect(users).toContain('JENNINGSIN CUBE · NO LINE');
+    // The host's records cannot say a user was made: its line stands as they read it until CUBE holds the account.
+    expect(screen.steps_get().find((step) => step.label === 'USERS')?.state).not.toBe('done');
     screen.dispose();
     screen.root.remove();
+  });
+
+  it('a user line reads done once CUBE holds its account, as its accounts were read from it: the receipt of ADD is the seat', async () => {
+    ACCOUNTS = [...ACCOUNTS, { username: 'rudolph', email: 'rudolph@example.org' }];
+    try {
+      const { screen } = screen_make();
+      await screen.vm_open('store');
+      await settle(12);
+      const users = screen.steps_get().find((step) => step.label === 'USERS');
+      expect(users?.state).toBe('done');
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="users"]')?.click();
+      await settle(12);
+      expect(screen.root.querySelector('.tdc-body')?.textContent).toContain('in CUBE, read from it 06:00 UTC');
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      ACCOUNTS = ACCOUNTS.filter((one) => one.username !== 'rudolph');
+    }
   });
 
   it('SIZE changed by a slider writes the script before it builds, a script from git to its working copy, so the declaration reads done', async () => {
@@ -306,6 +328,12 @@ describe('the VM controller', () => {
     expect(sent[0]?.startsWith("touch --withContents='vm new lone --net chrisproject-services --open 80,443 --vcpu 4")).toBe(true);
     expect(sent[0]?.includes('vm build lone\nchris deploy lone --profile minimal --compute lone')).toBe(true);
     expect(sent[1]).toBe('chris deploy lone --profile minimal --compute lone');
+    // USERS with no line yet names the machine on screen, never leaving the kernel to pick the ChRIS (walked on the store 2026-11-05).
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="users"]')?.click();
+    await settle();
+    const field = (key: string, value: string): void => { const input = screen.root.querySelector<HTMLInputElement>(`#ss-user-${key}`) as HTMLInputElement; input.value = value; input.dispatchEvent(new Event('input')); };
+    field('name', 'jennings'); field('email', 'j@example.org');
+    expect(screen.root.querySelector('.ss-user-line')?.textContent).toBe('chris user add jennings --email j@example.org --on lone');
     screen.dispose();
     screen.root.remove();
   });

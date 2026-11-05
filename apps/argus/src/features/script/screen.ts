@@ -435,8 +435,27 @@ export class ScriptScreen {
       this.log_add(`cat ${this.path}: ${error instanceof Error ? error.message : String(error)}`, 'note');
     }
     const standings = await this.status_read(this.path);
-    this.lines = lines_build(text, standings?.lines ?? []);
+    this.lines = this.accountsHeld_apply(lines_build(text, standings?.lines ?? []));
     this.steps = this.steps_derive(this.lines);
+  }
+
+  /**
+   * A user line stands done once CUBE holds its account, as its accounts were
+   * read from it (a-change-is-a-loop, clause 5: the receipt is the render);
+   * the host's records cannot say, so its standing alone reads ready. A
+   * screen that reads no ChRIS leaves the lines as they stand.
+   *
+   * @param lines - The lines.
+   * @returns The lines, a user line whose account CUBE holds standing done; the others as they were.
+   */
+  protected accountsHeld_apply(lines: ScriptLine[]): ScriptLine[] {
+    return lines.map((line: ScriptLine): ScriptLine => {
+      const parts = line_parse(line.text);
+      if (parts.verb.join(' ') !== 'chris user add' || parts.subject === null || line.running !== null || line.state === 'done') return line;
+      const live = this.chrisRow_get(lineOption_get(line.text, '--on') ?? '')?.live ?? null;
+      if (live?.accounts == null || !live.accounts.some((one): boolean => one.username === parts.subject)) return line;
+      return { ...line, state: 'done', detail: `in CUBE, read from it ${live.at.slice(11, 16)} UTC` };
+    });
   }
 
   /**
@@ -521,7 +540,7 @@ export class ScriptScreen {
     const standings = await this.status_read(this.path, this.statusText_get());
     if (standings === null) return;
     const fresh: ScriptLine[] = lines_build(script_render(this.lines), standings.lines);
-    this.lines = fresh;
+    this.lines = this.accountsHeld_apply(fresh);
     // What a deploy would do, and what stands of a network, are read again after any line: the line that ran may have changed them.
     this.chrisPlans.clear();
     this.nets.clear();
@@ -1555,6 +1574,8 @@ export class ScriptScreen {
         const runs: string | null = stands !== null ? stands.cidr : row.builtCidr;
         const how: string = stands !== null ? 'the VCN, read from the tenancy' : 'as built, this host\'s record';
         if (stands !== null && stands.cidr === null) return `the tenancy holds no VCN of it${row.cidr !== null ? ` · ${row.cidr} declared` : ''}`;
+        // Torn down, nothing of it stands: the range it was built with is history, not what stands.
+        if (row.state === 'gone') return `none stands: torn down${row.builtCidr !== null ? ` (it was built with ${row.builtCidr})` : ''}${row.cidr !== null ? ` · ${row.cidr} declared` : ''}`;
         if (runs === null) return row.cidr ?? '—';
         return row.cidr === null || row.cidr === runs ? `${runs} (${how})` : `${runs} (${how}) · ${row.cidr} declared`;
       })()],
@@ -1706,7 +1727,8 @@ export class ScriptScreen {
       return row;
     };
     form.append(field('name', 'NAME', 'a login, as rudolph'), field('email', 'EMAIL', 'where CUBE writes to'), field('passwordFile', 'PASSWORD FILE', 'a file on the host; empty: asked hidden when the line runs'));
-    const on: string = step.lines.map((line: ScriptLine): string | null => lineOption_get(line.text, '--on')).find((value): value is string => value !== null) ?? '';
+    // The ChRIS the account goes to: the seat's lines' own, else the machine the screen is on (never left to the kernel to pick).
+    const on: string = step.lines.map((line: ScriptLine): string | null => lineOption_get(line.text, '--on')).find((value): value is string => value !== null) ?? this.usersVm_get(step);
     const commands: HTMLElement = el('div', 'tdc-commands ss-user-add');
     form.append(commands);
     nodes.push(form, el('p', 'tdc-prose tdc-quiet', 'Each user is a line, so a ChRIS\'s accounts are declared, not remembered. ADD appends the line to the working copy and runs it; a name already there is left as it is. The password never shows here: it is asked hidden, or read from the file the line names.'));
@@ -1717,7 +1739,8 @@ export class ScriptScreen {
   protected userAdd_redraw(step: ScriptStep): void {
     const commands: HTMLElement | null = this.parts.body.querySelector('.ss-user-add');
     if (commands === null) return;
-    const on: string = step.lines.map((line: ScriptLine): string | null => lineOption_get(line.text, '--on')).find((value): value is string => value !== null) ?? '';
+    // The ChRIS the account goes to: the seat's lines' own, else the machine the screen is on (never left to the kernel to pick).
+    const on: string = step.lines.map((line: ScriptLine): string | null => lineOption_get(line.text, '--on')).find((value): value is string => value !== null) ?? this.usersVm_get(step);
     this.userAdd_fill(commands, step, on);
   }
 
