@@ -523,7 +523,8 @@ export class VmScreen extends ScriptScreen {
         : row.takenFrom !== undefined && row.takenFrom !== null ? `read from the tenancy ${row.takenFrom.slice(0, 16).replace('T', ' ')}: its stacks and the secrets its vault keeps` : 'its records and its SSH key held here';
     // What runs, read from the tenancy, beside what is declared: never one drawn for the other (a-change-is-a-loop, clause 1).
     const stands = row.stands ?? null;
-    const runs: string = stands === null ? '—' : `${stands.vcpu ?? '?'} vCPU · ${stands.memory ?? '?'} GiB · disk ${stands.disk ?? '?'} GB · data ${stands.data ?? '?'} GB (read from the tenancy ${stands.at.slice(11, 16)} UTC)`;
+    const rest: string = stands === null ? '' : `${stands.backup != null ? ` (${stands.backup === 'none' ? 'no backups' : `${stands.backup} backups`})` : ''}${stands.os != null ? ` · ${stands.os}` : ''}`;
+    const runs: string = stands === null ? '—' : `${stands.vcpu ?? '?'} vCPU · ${stands.memory ?? '?'} GiB · disk ${stands.disk ?? '?'} GB · data ${stands.data ?? '?'} GB${rest} (read from the tenancy ${stands.at.slice(11, 16)} UTC)`;
     facts.append(this.pairs_make([
       ['DOING', row.state === 'found' ? (row.found?.state ?? '?') : row.state],
       ['RUNS', runs],
@@ -531,7 +532,8 @@ export class VmScreen extends ScriptScreen {
       ['ADDRESS', row.address ?? '—'],
       ['INSIDE', row.inside ?? '—'],
       ['NETWORK', row.spec?.net ?? '—'],
-      ['OPEN', row.spec !== null ? (row.spec.open.length === 0 ? 'none' : row.spec.open.join(', ')) : '—'],
+      // The ports its security group opens now, read from the tenancy; the declaration's only where the tenancy was not read.
+      ['OPEN', stands?.open != null ? `${stands.open.length === 0 ? 'none' : stands.open.join(', ')} (read from the tenancy)` : row.spec !== null ? `${row.spec.open.length === 0 ? 'none' : row.spec.open.join(', ')} (as declared)` : '—'],
       ['INSTANCE', row.found?.instanceId ?? row.instance ?? '—'],
       ['BUILT', row.built?.slice(0, 16).replace('T', ' ') ?? '—'],
       ['CHRIS', row.chris !== null && row.chris !== undefined ? `${row.chris.url}${row.chris.porter !== null ? ` · porter ${row.chris.porter}` : ''}`
@@ -650,7 +652,7 @@ export class VmScreen extends ScriptScreen {
   private teardown_make(): HTMLElement[] {
     const row: VmStatusRow | null = this.vmRow_get();
     const name: string = this.vm;
-    const goes: HTMLElement = this.section_make('WHAT GOES · IN THIS ORDER', 'ss-col-form', 'ONLY WHAT THIS MACHINE MADE');
+    const goes: HTMLElement = this.section_make('WHAT GOES · IN THIS ORDER', 'ss-col-form', 'ONLY WHAT THIS MACHINE MADE · AS THE TENANCY ANSWERS');
     // Each part is a step the kernel keeps on the record, a block each: red while it stands, lit while it goes, gold
     // once gone; a default teardown keeps the data, said as STAYS. The cluster teardown's blocks, a machine's words.
     const kept = new Map((row?.teardown?.steps ?? []).map((step) => [step.name, step]));
@@ -660,12 +662,17 @@ export class VmScreen extends ScriptScreen {
       ['data', 'its data', 'the volume, its backups and the reserved address: TEARDOWN · ALL only; a TEARDOWN keeps them so a build brings the machine back over them'],
     ] as const) {
       const step = kept.get(part);
-      const state: string = step?.state ?? 'not done';
+      // A step under way, or one that failed, is the act's own word; otherwise whether the part stands is read from the
+      // tenancy (the listing's `stands`, with when), and the record speaks only where the tenancy was not read.
+      const stands = row?.stands;
+      const there: boolean | null = stands === null || stands === undefined ? null : part === 'machine' ? stands.vcpu !== null : stands.data !== null;
+      const acting: boolean = step?.state === 'running' || step?.state === 'failed';
+      const state: string = acting || there === null ? step?.state ?? 'not done' : there ? (step?.state === 'kept' ? 'kept' : 'not done') : 'done';
       const tone: string = state === 'running' ? 'going' : state === 'done' ? 'gone' : state === 'kept' ? 'skipped' : state === 'failed' ? 'failed' : 'stands';
       const word: string = state === 'running' ? 'GOING' : state === 'done' ? 'GONE' : state === 'kept' ? 'STAYS' : state === 'failed' ? 'FAILED' : 'STANDS';
       const block: HTMLElement = el('div', `tdc-strip-step tdc-teardown-step tdc-step-${tone}`);
       block.setAttribute('aria-label', `${what}, ${word}`);
-      const at: string = step?.ended != null ? ` · ${step.ended.slice(11, 16)}` : '';
+      const at: string = acting || there === null ? (step?.ended != null ? ` · ${step.ended.slice(11, 16)}` : ' · THIS HOST\'S RECORD') : ` · READ ${(stands as { at: string }).at.slice(11, 16)}`;
       block.append(el('span', 'tdc-strip-name', what), el('span', 'tdc-teardown-how', step?.note ?? how), el('span', 'tdc-strip-word', `${word}${at}`));
       strip.append(block);
     }

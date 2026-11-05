@@ -201,19 +201,24 @@ export function vmSpecYaml_parse(text: string): { spec: VmSpec } | { error: stri
 
 /**
  * What a build would change: the declared spec against what the tenancy
- * runs, for the sizes the tenancy was read for.
+ * runs, for each part the tenancy was read for (the sizes, the ports open to
+ * the internet, the data's backups, the OS).
  *
  * @param stands - What the tenancy runs, read from the cloud.
  * @param spec - The spec declared.
  * @returns The changes, `disk 50 → 180 GB`; empty when what runs is what is declared.
  */
-export function vmStands_diff(stands: { vcpu: number | null; memory: number | null; disk: number | null; data: number | null }, spec: VmSpec): string[] {
+export function vmStands_diff(stands: { vcpu: number | null; memory: number | null; disk: number | null; data: number | null; open?: ReadonlyArray<number> | null; backup?: string | null; os?: string | null }, spec: VmSpec): string[] {
   const owed: string[] = [];
   const unit: Readonly<Record<string, string>> = { vcpu: '', memory: ' GiB', disk: ' GB', data: ' GB' };
   for (const key of ['vcpu', 'memory', 'disk', 'data'] as const) {
     const now: number | null = stands[key];
     if (now !== null && now !== spec[key]) owed.push(`${key} ${now} → ${spec[key]}${unit[key]}`);
   }
+  const ports = (list: ReadonlyArray<number>): string => (list.length === 0 ? 'none' : list.join(','));
+  if (stands.open !== undefined && stands.open !== null && ports(stands.open) !== ports(spec.open)) owed.push(`open ${ports(stands.open)} → ${ports(spec.open)}`);
+  if (stands.backup !== undefined && stands.backup !== null && stands.backup !== spec.dataBackup) owed.push(`backups ${stands.backup} → ${spec.dataBackup}`);
+  if (stands.os !== undefined && stands.os !== null && stands.os !== spec.os) owed.push(`os ${stands.os} → ${spec.os}`);
   return owed;
 }
 

@@ -7,6 +7,7 @@
 import { describe, it, expect } from '@jest/globals';
 import type { VmLimitsModel } from '@fnndsc/menu';
 import {
+  buildWould_derive, ports_word,
   askForm_derive, costLine_derive, counts_words, duration_words, line_parse, line_render, lineOption_get, lineOption_set, lines_build, memoryRange_derive,
   rate_words, rates_sum, runningStep_find, scriptName_derive, scriptSource_derive, stepBuildLine_get, stepKind_derive, stepKind_isTask, stepLabel_derive, steps_build, states_count, userLine_build,
   vmLevers_read, vmSliders_build, words_split, workingCopy_derive, script_render, type ScriptStep,
@@ -134,5 +135,33 @@ describe('the script screen model', () => {
     expect(duration_words(4000)).toBe('4 s');
     expect(duration_words(200_000)).toBe('3 m 20 s');
     expect(duration_words(3_720_000)).toBe('1 h 02 m');
+  });
+});
+
+describe('what BUILD would do against what runs', () => {
+  const RUNS = { vcpu: 2, memory: 8, disk: 50, data: 50, open: [80, 443], backup: 'daily', os: 'ubuntu-26.04' };
+  const BASE: string = 'vm new store --net n --open 443,80 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04';
+  const line = (more: string): string => {
+    const words: string[] = more.split(' ').filter((word: string): boolean => word !== '');
+    let text: string = BASE;
+    for (let i = 0; i < words.length; i += 2) text = lineOption_set(text, words[i] as string, words[i + 1] as string);
+    return text;
+  };
+
+  it('says nothing to change when every part runs as offered, the ports in any order', () => {
+    expect(buildWould_derive(vmLevers_read(line('')), RUNS)).toEqual([]);
+    expect(ports_word('443, 80,80')).toBe('80,443');
+    expect(ports_word([])).toBe('none');
+  });
+
+  it('says a port, the backups and the OS against what runs, each with what it means', () => {
+    const would = buildWould_derive(vmLevers_read(line('--open 80,443,8080 --data-backup none --os ubuntu-24.04')), RUNS);
+    expect(would).toEqual([
+      { change: 'open 80,443 → 80,443,8080', consequence: 'the security group changes in place, no reboot', tone: 'grow' },
+      { change: 'backups daily → none', consequence: 'the daily backups stop; those already made stay until they age out', tone: 'grow' },
+      { change: 'os ubuntu-26.04 → ubuntu-24.04', consequence: 'refused unless named (--allow-alter): a new OS is a new machine with a new host key; the data volume stays', tone: 'refused' },
+    ]);
+    // A part the tenancy was not read for is not compared.
+    expect(buildWould_derive(vmLevers_read(line('--os ubuntu-24.04')), { ...RUNS, os: null })).toEqual([]);
   });
 });

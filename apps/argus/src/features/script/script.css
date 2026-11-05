@@ -76,6 +76,7 @@ body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
 .tdc-slider:has(.ss-slider-runs) { grid-template-columns: 6.5rem minmax(0, 1fr) 3.5rem 6rem; }
 .ss-slider-runs { font-family: var(--face-data); font-size: 0.7rem; color: var(--orange); letter-spacing: 0.04em; text-align: right; }
 .ss-slider-runs.ss-slider-differs { color: var(--tdc-bill); }
+.ss-field-runs { font-family: var(--face-data); font-size: 0.7rem; color: var(--orange); letter-spacing: 0.04em; margin-left: 0.75rem; align-self: center; white-space: nowrap; }
 /* What BUILD would do: each change in the tone of its consequence. */
 .ss-would-reboot { color: var(--tdc-bill); }
 .ss-would-refused { color: var(--tdc-destroy); }

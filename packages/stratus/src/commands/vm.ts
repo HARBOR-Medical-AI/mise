@@ -28,7 +28,7 @@ import type { VmRemote } from '../vm/remote.js';
 import type { CloudDriver } from '../cloud/driver.js';
 import type { NetStore } from '../net/state.js';
 import { VM_OPTIONS, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, type VmSpec } from '../vm/spec.js';
-import type { CloudShape, CloudVolume } from '../cloud/driver.js';
+import type { CloudInstance, CloudShape, CloudVolume } from '../cloud/driver.js';
 import { CHRIS_PORTER_TAG, CHRIS_URL_TAG, VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
 import { vmsFound_read, vmTakeover_run, type FoundVm } from '../vm/found.js';
 import { VM_KEYLESS, vmDeclared_adopt, vmKey_held, vmKeyless_is, vmKept_read, vmKept_write, vmLock_adopt, type VmKept } from '../vm/keep.js';
@@ -171,7 +171,9 @@ function vmStatus_lines(store: VmStore, record: VmRecord, spec: VmSpec | null): 
   const stands = record.stands;
   if (stands !== undefined) {
     const size = (value: number | null, unit: string): string => (value === null ? '?' : `${value}${unit}`);
-    lines.push(`  runs      ${size(stands.vcpu, ' vCPU')} · ${size(stands.memory, ' GiB')} · disk ${size(stands.disk, ' GB')} · data ${size(stands.data, ' GB')}${chalk.gray(`  (read from the tenancy ${stands.at.slice(11, 16)} UTC)`)}`);
+    const word = (value: string | null | undefined): string => value ?? '?';
+    const ports: string = stands.open === undefined || stands.open === null ? '?' : stands.open.length === 0 ? 'none' : stands.open.join(',');
+    lines.push(`  runs      ${size(stands.vcpu, ' vCPU')} · ${size(stands.memory, ' GiB')} · disk ${size(stands.disk, ' GB')} · data ${size(stands.data, ' GB')} · open ${ports} · backups ${word(stands.backup)} · ${word(stands.os)}${chalk.gray(`  (read from the tenancy ${stands.at.slice(11, 16)} UTC)`)}`);
   }
   if (record.dataOutputs !== undefined) lines.push(`  address  ${record.dataOutputs['public_ip'] ?? '?'}${record.built === undefined ? chalk.gray(' (reserved, kept)') : ''}`);
   if (record.machineOutputs !== undefined) lines.push(`  inside   ${record.machineOutputs['private_ip'] ?? '?'}, instance ${record.machineOutputs['instance_id'] ?? '?'}`);
@@ -340,10 +342,11 @@ async function vmTruth_read(context: VmCommandContext, region: string, byName: R
     const volumeId: string | undefined = record.dataOutputs?.['volume_id'];
     const disk: number | null = instance === null ? null : volumes.find((volume: CloudVolume): boolean => volume.boot && volume.attachedTo === instance.id)?.sizeGib ?? null;
     const data: number | null = volumeId === undefined ? null : volumes.find((volume: CloudVolume): boolean => volume.id === volumeId)?.sizeGib ?? null;
+    const facts = await vmFacts_read(context.driver, region, instance, volumeId === undefined || data === null ? null : volumeId);
     const at: string = new Date().toISOString();
     context.store.record_update(name, (current: VmRecord): void => {
       if (instance === null && data === null) delete current.stands;
-      else current.stands = { at, vcpu: instance?.vcpus ?? null, memory: instance?.memoryGib ?? null, disk, data };
+      else current.stands = { at, vcpu: instance?.vcpus ?? null, memory: instance?.memoryGib ?? null, disk, data, ...facts };
     });
     if (context.builder?.keep_read === undefined) continue;
     try {
@@ -358,6 +361,41 @@ async function vmTruth_read(context: VmCommandContext, region: string, byName: R
       // The vault did not answer: what is kept stays as last read.
     }
   }
+}
+
+/**
+ * What else runs of a VM, read from the tenancy: the ports its security
+ * groups open to the internet, its data volume's backups, the OS its image
+ * is. A part the cloud does not answer reads null, never the declaration.
+ *
+ * @param driver - The cloud.
+ * @param region - The region.
+ * @param instance - Its machine, or null when none runs.
+ * @param volumeId - Its data volume, or null when none stands.
+ * @returns The open ports, the backups and the OS.
+ */
+async function vmFacts_read(driver: CloudDriver, region: string, instance: CloudInstance | null, volumeId: string | null): Promise<{ open: number[] | null; backup: string | null; os: string | null }> {
+  const quietly = async <T>(read: () => Promise<T>): Promise<T | null> => { try { return await read(); } catch { return null; } };
+  const open = async (): Promise<number[] | null> => {
+    const groups: ReadonlyArray<string> | undefined = instance?.securityGroupIds;
+    if (instance === null || groups === undefined) return null;
+    const rules = await Promise.all(groups.map((group: string) => driver.ingress_list(group, region)));
+    const ports: Set<number> = new Set();
+    for (const rule of rules.flat()) {
+      // Open to the internet: from anywhere, TCP's, a range small enough to be ports named (a wide range is not a script's --open).
+      if (rule.source !== '0.0.0.0/0' || !rule.tcp || rule.ports === null || rule.ports.max - rule.ports.min > 64) continue;
+      for (let port: number = rule.ports.min; port <= rule.ports.max; port++) ports.add(port);
+    }
+    return [...ports].sort((a: number, b: number): number => a - b);
+  };
+  const backup = async (): Promise<string | null> => {
+    if (volumeId === null) return null;
+    const read = await driver.backups_read(volumeId, region);
+    return read === null ? 'none' : read.daily ? 'daily' : read.policy;
+  };
+  const os = async (): Promise<string | null> => (instance?.imageId === undefined || instance.imageId === '' ? null : await driver.image_read(instance.imageId, region));
+  const [openRead, backupRead, osRead] = await Promise.all([quietly(open), quietly(backup), quietly(os)]);
+  return { open: openRead, backup: backupRead, os: osRead };
 }
 
 /**

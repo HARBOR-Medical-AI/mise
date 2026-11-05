@@ -9,7 +9,7 @@
  */
 import type { FakeBuildWorld } from './builder.js';
 import type {
-  CloudAvailability, CloudBucket, CloudContainer, CloudDnsZone, CloudDriver, CloudIdentity, CloudInstance, CloudLimit, CloudLink, CloudLoadBalancer,
+  CloudAvailability, CloudBackups, CloudBucket, CloudIngress, CloudContainer, CloudDnsZone, CloudDriver, CloudIdentity, CloudInstance, CloudLimit, CloudLink, CloudLoadBalancer,
   CloudNetwork, CloudObject, CloudPrice, ServicePrices, CloudRecord, CloudResource, CloudSecurityGroup, CloudShape, CloudSubnet, CloudVolume, CloudZone, FoundCluster, FoundInstance, ResourceCounts, ResourceKind,
 } from '../driver.js';
 
@@ -199,6 +199,37 @@ export class FakeDriver implements CloudDriver {
     return this.resources_list<CloudLoadBalancer>('loadbalancers', containerId, region);
   }
 
+  /**
+   * A machine the fake builder applied, by what names it: its image, its security group or its data volume.
+   *
+   * @param module - The stack's module.
+   * @param owns - Whether the stack owns the thing asked about.
+   * @returns The stack's applied variables, or null.
+   */
+  private applied_find(module: string, owns: (owner: string, applied: Record<string, string>) => boolean): { owner: string; applied: Record<string, string> } | null {
+    for (const stack of this.built?.moduleStacks.values() ?? []) {
+      if (stack.module === module && stack.applied !== null && owns(stack.owner, stack.applied)) return { owner: stack.owner, applied: stack.applied };
+    }
+    return null;
+  }
+
+  async image_read(imageId: string, _region: string): Promise<string | null> {
+    return this.applied_find('vmMachine', (_owner: string, applied: Record<string, string>): boolean => applied['image'] === imageId)?.applied['os'] ?? null;
+  }
+
+  async ingress_list(groupId: string, _region: string): Promise<CloudIngress[]> {
+    const machine = this.applied_find('vmMachine', (owner: string): boolean => groupId === `ocid1.networksecuritygroup.oc1..fake-${owner}`);
+    if (machine === null) return [];
+    // As the module writes it: SSH from inside the network (the bastion), and each declared port from anywhere.
+    const open: number[] = (machine.applied['open'] ?? '') === '' ? [] : (machine.applied['open'] as string).split(',').map(Number);
+    return [{ source: '10.40.0.0/16', tcp: true, ports: { min: 22, max: 22 } }, ...open.map((port: number): CloudIngress => ({ source: '0.0.0.0/0', tcp: true, ports: { min: port, max: port } }))];
+  }
+
+  async backups_read(volumeId: string, _region: string): Promise<CloudBackups | null> {
+    const data = this.applied_find('vmData', (owner: string): boolean => volumeId === `ocid1.volume.oc1..fake-${owner}`);
+    return data === null || data.applied['dataBackup'] !== 'daily' ? null : { policy: `${data.owner}-daily`, daily: true };
+  }
+
   async volumes_list(containerId: string, region: string): Promise<CloudVolume[]> {
     const listed: CloudVolume[] = this.resources_list<CloudVolume>('volumes', containerId, region);
     // What the fake builder applied: a machine's boot volume and a VM's data volume, at the sizes they were built at.
@@ -276,6 +307,7 @@ export class FakeDriver implements CloudDriver {
       found.push({
         name: stack.owner, id, state: 'running', region, created: '2026-11-01T21:22:15Z', tags: { 'mise-service': stack.owner, ...(this.built?.instanceTags.get(id) ?? {}) }, raw: {},
         shape: 'VM.Standard.E5.Flex', zone: 'AD-1', ips: ['10.40.0.10', '203.0.113.10'], vcpus: Number(stack.applied['vcpu']), memoryGib: Number(stack.applied['memory']), containerId: stack.placeId,
+        imageId: stack.applied['image'] ?? '', securityGroupIds: [`ocid1.networksecuritygroup.oc1..fake-${stack.owner}`],
       });
     }
     return found.sort((a: FoundInstance, b: FoundInstance): number => a.name.localeCompare(b.name));

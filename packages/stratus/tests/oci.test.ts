@@ -152,6 +152,27 @@ describe('the OCI driver\'s resources', () => {
     expect(instances[0]).toMatchObject({ state: 'running', shape: 'VM.Standard.E5.Flex', region, created: '2026-10-06T14:00:00.000Z', tags: { 'openshift-resource': 'harbor', 'Oracle-Tags.CreatedBy': 'rudolph' } });
     expect(seen.filter((call) => call.startsWith('vnic_get'))).toHaveLength(3);
     expect(await driver.instances_list('ocid1.compartment.oc1..alpha0', region)).toEqual([]);
+    // Its image and security groups, as its VNICs name them.
+    expect(instances[1]).toMatchObject({ imageId: 'ocid1.image.oc1.iad.rhcos', securityGroupIds: ['ocid1.networksecuritygroup.oc1.iad.nsg001'] });
+    expect(instances[0]?.securityGroupIds).toEqual([]);
+  });
+
+  it('reads what an image is in a script\'s words (once per image), the rules a security group admits by, and a volume\'s backups', async () => {
+    const seen: string[] = [];
+    const driver = new OciDriver({ api: recordedApi_make(seen), fetchJson });
+    expect(await driver.image_read('ocid1.image.oc1.iad.ubuntu', region)).toBe('ubuntu-26.04');
+    expect(await driver.image_read('ocid1.image.oc1.iad.ubuntu', region)).toBe('ubuntu-26.04');
+    expect(seen.filter((call) => call.startsWith('image_get'))).toHaveLength(1);
+    // An OS stratus does not build has no script word.
+    expect(await driver.image_read('ocid1.image.oc1.iad.rhcos', region)).toBeNull();
+    expect(await driver.ingress_list('ocid1.networksecuritygroup.oc1.iad.nsg001', region)).toEqual([
+      { source: '0.0.0.0/0', tcp: true, ports: { min: 443, max: 443 } },
+      { source: '0.0.0.0/0', tcp: true, ports: { min: 80, max: 80 } },
+      { source: '10.0.0.0/16', tcp: true, ports: { min: 22, max: 22 } },
+      { source: '0.0.0.0/0', tcp: false, ports: null },
+    ]);
+    expect(await driver.backups_read('ocid1.volume.oc1.iad.csi001', region)).toEqual({ policy: 'harbor-daily', daily: true });
+    expect(await driver.backups_read('ocid1.volume.oc1.iad.csi002', region)).toBeNull();
   });
 
   it('lists block and boot volumes together, each boot volume asked per availability domain, attached only while attached', async () => {
