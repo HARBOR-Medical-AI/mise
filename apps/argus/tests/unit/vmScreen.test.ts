@@ -32,11 +32,17 @@ const SPEC = { net: 'chrisproject-services', open: [80, 443], vcpu: 2, memory: 8
 /** Rows a test adds to the session's VMs. */
 let ROWS_MORE: unknown[] = [];
 
+/** What the screen wrote with the editor's save line, by path: `cat` answers it as the host would. */
+const WRITTEN: Map<string, string> = new Map();
+
+/** What the tenancy runs of store, as `vm status` reads it; a test moves it to stand for a build's effect. */
+let STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50, data: 50 };
+
 /** The session's answers: a library with store.mise, two machines kept (store from the script, lone from nothing). */
 function answer_make(line: string, mine: string[]): QuietAnswer {
   const envelope = (model: { kind: string; data: unknown }, rendered: string = ''): QuietAnswer => ({ envelopes: [{ rendered, model, status: 'ok' }] });
   if (line === 'vm status') return envelope({ kind: 'stratus.vm.status', data: { vms: [
-    { name: 'store', state: 'built', region: 'us-ashburn-1', spec: SPEC, address: '203.0.113.10', inside: '10.20.0.5', protected: false, built: '2026-11-01T00:00:00Z', chris: { profile: 'minimal', compute: 'NERC', host: 'cube.chrisproject.org', url: 'https://cube.chrisproject.org/api/v1/', porter: null } },
+    { name: 'store', state: 'built', region: 'us-ashburn-1', stands: STORE_RUNS, declared: '2026-11-01T00:00:00Z', declaredKept: true, spec: SPEC, address: '203.0.113.10', inside: '10.20.0.5', protected: false, built: '2026-11-01T00:00:00Z', chris: { profile: 'minimal', compute: 'NERC', host: 'cube.chrisproject.org', url: 'https://cube.chrisproject.org/api/v1/', porter: null } },
     { name: 'lone', state: 'declared', region: 'us-ashburn-1', spec: { ...SPEC, vcpu: 4 }, address: null, inside: null, protected: true, built: null, chris: null },
     { name: 'web', state: 'found', region: 'us-ashburn-1', spec: null, address: '129.158.63.113', inside: '10.20.0.234', protected: true, built: null, chris: null,
       found: { state: 'running', instanceId: 'ocid1.instance.web', shape: 'VM.Standard.E5.Flex', vcpus: 2, memoryGib: 8, tagged: true, chris: { url: 'https://web.example.org/api/v1/', porter: null } } },
@@ -45,7 +51,7 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
   if (line === 'ls /scripts') return envelope({ kind: 'fs.listing', data: [{ path: '/scripts', items: [{ name: 'mine', type: 'dir' }, { name: 'chrisproject', type: 'source', status: 'cloned', title: 'git@github.com:HARBOR-Medical-AI/infra.git' }] }] });
   if (line === 'ls /scripts/mine') return envelope({ kind: 'fs.listing', data: [{ path: '/scripts/mine', items: mine.map((name: string) => ({ name, type: 'script' })) }] });
   if (line === 'ls /scripts/chrisproject') return envelope({ kind: 'fs.listing', data: [{ path: '/scripts/chrisproject', items: [{ name: 'store.mise', type: 'script' }] }] });
-  if (line.startsWith('cat ')) return { envelopes: [{ rendered: `${STORE_TEXT}\n`, status: 'ok' }] };
+  if (line.startsWith('cat ')) return { envelopes: [{ rendered: WRITTEN.get(line.slice(4)) ?? `${STORE_TEXT}\n`, status: 'ok' }] };
   if (line.startsWith('play ') && line.endsWith('--status')) {
     const text: string = line.includes('store.mise') ? STORE_TEXT : '';
     const lines = text === '' ? [] : text.split('\n').map((each: string, index: number) => ({ number: index + 1, text: each, state: index < 5 ? 'done' : 'ready', detail: '' }));
@@ -58,10 +64,16 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
 }
 
 function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; asked: string[] } {
+  WRITTEN.clear();
   const sent: string[] = [];
   const asked: string[] = [];
   const hooks: ScriptHooks = {
-    run: async (line: string): Promise<boolean> => { sent.push(line); return true; },
+    run: async (line: string): Promise<boolean> => {
+      sent.push(line);
+      const save: RegExpMatchArray | null = line.match(/^touch --withContents='([\s\S]*)' '([^']+)'$/);
+      if (save !== null) WRITTEN.set(save[2] as string, (save[1] as string).replace(/'\\''/g, "'"));
+      return true;
+    },
     ask: async (line: string): Promise<QuietAnswer> => { asked.push(line); return answer_make(line, mine); },
     stop: (): void => { sent.push('<stop>'); },
     leave: (): void => { sent.push('<leave>'); },
@@ -79,7 +91,46 @@ const button_named = (root: HTMLElement, text: string): HTMLButtonElement | unde
 const settle = async (rounds: number = 8): Promise<void> => { for (let i: number = 0; i < rounds; i++) await new Promise((resolve) => { setTimeout(resolve, 0); }); };
 
 describe('the VM controller', () => {
-  it('SIZE changed by a slider writes the script before it declares, a script from git to its working copy, so the declaration reads done', async () => {
+  it('SIZE renders what runs beside each lever, offers BUILD alone, says what BUILD would do against what runs, and its receipt is what runs read back', async () => {
+    STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50, data: 50 };
+    try {
+      const { screen } = screen_make();
+      await screen.vm_open('store');
+      await settle();
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
+      await settle();
+      // What runs, read from the tenancy, beside the lever; the levers come before the lines.
+      expect([...screen.root.querySelectorAll('.ss-slider-runs')].map((mark) => mark.textContent)).toEqual(['RUNS 2', 'RUNS 8 GiB', 'RUNS 50 GB', 'RUNS 50 GB']);
+      expect(screen.root.querySelector('.tdc-lever-group .tdc-section-title')?.textContent).toContain('RUNS AS READ FROM THE TENANCY 04:48 UTC');
+      expect(button_named(screen.root, 'DECLARE')).toBeUndefined();
+      expect(button_named(screen.root, 'BUILD')).toBeDefined();
+      expect(screen.root.querySelector('.ss-note-would .tdc-note-title')?.textContent).toBe('WHAT RUNS IS WHAT IS OFFERED');
+      // The offer moved off what runs: the mark lights, and BUILD WOULD says the change and what it means.
+      const disk: HTMLInputElement = screen.root.querySelector('#ss-slider-disk') as HTMLInputElement;
+      disk.value = '180';
+      disk.dispatchEvent(new Event('input'));
+      expect(screen.root.querySelectorAll('.ss-slider-differs').length).toBe(1);
+      expect(screen.root.querySelector('.ss-note-would')?.textContent).toContain('BUILD WOULDboot disk 50 → 180 GB: grows online, no reboot');
+      const memory: HTMLInputElement = screen.root.querySelector('#ss-slider-memory') as HTMLInputElement;
+      memory.value = '16';
+      memory.dispatchEvent(new Event('input'));
+      expect(screen.root.querySelector('.ss-note-would')?.textContent).toContain('memory 8 → 16 GiB: the machine reboots');
+      memory.value = '8';
+      memory.dispatchEvent(new Event('input'));
+      // BUILD sends the declaration then the build; once what runs reads back as offered, the note is the receipt.
+      STORE_RUNS = { at: '2026-11-05T05:10:00.000Z', vcpu: 2, memory: 8, disk: 180, data: 50 };
+      button_named(screen.root, 'BUILD')?.click();
+      await settle(30);
+      expect(screen.root.querySelector('.ss-note-would .tdc-note-title')?.textContent).toBe('BUILT · WHAT RUNS IS WHAT WAS OFFERED');
+      expect(screen.root.querySelector('.ss-note-would')?.textContent).toContain('read from the tenancy 05:10 UTC');
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50, data: 50 };
+    }
+  });
+
+  it('SIZE changed by a slider writes the script before it builds, a script from git to its working copy, so the declaration reads done', async () => {
     const { screen, sent } = screen_make();
     await screen.vm_open('store');
     await settle();
@@ -89,12 +140,13 @@ describe('the VM controller', () => {
     const disk: HTMLInputElement = screen.root.querySelector('#ss-slider-disk') as HTMLInputElement;
     disk.value = '180';
     disk.dispatchEvent(new Event('input'));
-    button_named(screen.root, 'DECLARE')?.click();
+    button_named(screen.root, 'BUILD')?.click();
     await settle(20);
     expect(sent[0]?.startsWith("touch --withContents='net new chrisproject-services")).toBe(true);
     expect(sent[0]?.includes('--disk 180')).toBe(true);
     expect(sent[0]?.endsWith("' '/scripts/mine/store.mise'")).toBe(true);
     expect(sent[1]).toBe('vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 180 --data 50 --data-backup daily --os ubuntu-26.04');
+    expect(sent[2]).toBe('vm build store');
     expect(screen.path_get()).toBe('/scripts/mine/store.mise');
     screen.dispose();
     screen.root.remove();
@@ -125,8 +177,8 @@ describe('the VM controller', () => {
     await settle();
     const body: HTMLElement = screen.root.querySelector('.tdc-body') as HTMLElement;
     expect(button_named(body, 'TEARDOWN')).toBeUndefined();
-    expect(button_named(body, 'DECLARE')?.title).toBe('sends: vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04');
-    expect(button_named(body, 'BUILD')?.title).toContain('then vm build store');
+    expect(button_named(body, 'DECLARE')).toBeUndefined();
+    expect(button_named(body, 'BUILD')?.title).toBe('sends: vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04, then vm build store');
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
     await settle();
     expect(screen.root.querySelector('.tdc-note-title')?.textContent).toBe('UNLOCKED');
@@ -136,8 +188,8 @@ describe('the VM controller', () => {
     screen.root.remove();
   });
 
-  it('a new machine: named and committed, its script is written under mine and the line declares it; then it is a machine of the gutter', async () => {
-    const { screen, sent } = screen_make();
+  it('a new machine: sized and priced before anything is sent, then BUILD, its one commit, writes its script, declares it and builds it; then it is a machine of the gutter', async () => {
+    const { screen, sent, asked } = screen_make();
     await screen.vm_open('');
     await settle();
     // The door lists what is there, as a folder does; + NEW MACHINE opens the new one.
@@ -153,27 +205,39 @@ describe('the VM controller', () => {
     await settle();
     expect(screen.view_get()).toBe('new');
     expect(screen.root.querySelector('.tdc-condition-name')?.textContent).toBe('NEW');
-    const commit: HTMLButtonElement | undefined = button_named(screen.root, 'COMMIT · NAME IT');
+    const commit: HTMLButtonElement | undefined = button_named(screen.root, 'BUILD · NAME IT');
     expect(commit?.disabled).toBe(true);
+    expect(commit?.classList.contains('tdc-pill-bill')).toBe(true);
+    // The levers and the price stand before anything is sent: the disk moved, the line and the price follow; nothing was sent.
+    const disk: HTMLInputElement = screen.root.querySelector('#ss-slider-disk') as HTMLInputElement;
+    disk.value = '120';
+    disk.dispatchEvent(new Event('input'));
+    await new Promise((resolve) => { setTimeout(resolve, 300); });
+    await settle();
+    expect(asked.some((line: string): boolean => line.startsWith('vm cost unnamed') && line.includes('--disk 120'))).toBe(true);
+    expect(screen.root.querySelector('.tdc-col-cost')?.textContent).toContain('AS SIZED');
+    expect(sent).toEqual([]);
     const name: HTMLInputElement = screen.root.querySelector('#vm-new-name') as HTMLInputElement;
     name.value = 'Blt';
     name.dispatchEvent(new Event('input'));
-    expect(button_named(screen.root, 'COMMIT · NAME IS A HOSTNAME')?.disabled).toBe(true);
+    expect(button_named(screen.root, 'BUILD · NAME IS A HOSTNAME')?.disabled).toBe(true);
     name.value = 'store';
     name.dispatchEvent(new Event('input'));
-    expect(button_named(screen.root, 'COMMIT · ALREADY IN THE TENANCY')?.disabled).toBe(true);
+    expect(button_named(screen.root, 'BUILD · ALREADY IN THE TENANCY')?.disabled).toBe(true);
     name.value = 'web';
     name.dispatchEvent(new Event('input'));
-    expect(button_named(screen.root, 'COMMIT · ALREADY IN THE TENANCY')?.disabled).toBe(true);
+    expect(button_named(screen.root, 'BUILD · ALREADY IN THE TENANCY')?.disabled).toBe(true);
     name.value = 'blt';
     name.dispatchEvent(new Event('input'));
-    expect(screen.root.querySelector('.vm-new-line')?.textContent).toBe('vm new blt --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04');
-    button_named(screen.root, 'COMMIT')?.click();
-    await settle(20);
+    expect(screen.root.querySelector('.vm-new-line')?.textContent).toBe('vm new blt --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 120 --data 50 --data-backup daily --os ubuntu-26.04');
+    button_named(screen.root, 'BUILD')?.click();
+    await settle(30);
     expect(sent[0]?.startsWith("touch --withContents='vm new blt --net chrisproject-services")).toBe(true);
+    expect(sent[0]?.includes('--disk 120')).toBe(true);
     expect(sent[0]?.includes('vm build blt')).toBe(true);
     expect(sent[0]?.endsWith("' '/scripts/mine/blt.mise'")).toBe(true);
-    expect(sent[1]).toBe('vm new blt --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04');
+    expect(sent[1]).toBe('vm new blt --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 120 --data 50 --data-backup daily --os ubuntu-26.04');
+    expect(sent[2]).toBe('vm build blt');
     screen.dispose();
     screen.root.remove();
   });

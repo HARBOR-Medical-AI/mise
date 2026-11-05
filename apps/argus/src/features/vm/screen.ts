@@ -19,17 +19,20 @@
  * Built on the script screen's bodies, which are the same forms over the
  * same lines; this file holds what differs.
  */
-import type { VmStatusRow } from '@fnndsc/menu';
+import type { VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
 import { STRATUS_VM_STATUS_MODEL_KIND, vmStatusModelSchema } from '@fnndsc/menu';
 import { modePill_make } from '../takeover/tier.js';
 import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
-import { counts_words, line_parse, lines_build, runningStep_find, script_render, states_count, steps_build, workingCopy_derive, type ScriptLine, type ScriptStep, type StateCounts } from '../script/model.js';
+import { counts_words, line_parse, line_render, lines_build, runningStep_find, script_render, states_count, steps_build, vmSliders_build, workingCopy_derive, type ScriptLine, type ScriptStep, type StateCounts, type VmRuns } from '../script/model.js';
 import { ScriptScreen, type QuietAnswer, type ScriptHooks } from '../script/screen.js';
 import { FACTS_KEY, MACHINES_KEY, NEW_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
 
 /** The order the VM's seats stand in, whatever order the script's lines come. */
 const SEAT_ORDER: ReadonlyArray<string> = ['SIZE', 'BUILD', 'CHRIS', 'USERS', 'TEARDOWN'];
+
+/** The name a new machine's line carries until one is typed: a plain word, so its price can be asked (`<name>` would be read as a redirect). */
+const UNNAMED: string = 'unnamed';
 
 /** The network a new machine starts on when the host keeps none to copy. */
 const NET_DEFAULT: string = 'chrisproject-services';
@@ -56,6 +59,8 @@ export class VmScreen extends ScriptScreen {
   private vm!: string;
   /** The new machine's name and network, before it is declared. */
   private newForm!: { name: string; net: string };
+  /** The new machine's line as the levers leave it, before anything is sent: its sizes kept across redraws and name edits. */
+  private newDraft!: ScriptLine;
   /** Whether the script shown is not on the host yet (synthesized from the record, or composed here). */
   private unsaved!: boolean;
 
@@ -73,6 +78,7 @@ export class VmScreen extends ScriptScreen {
     this.vms = [];
     this.vm = '';
     this.newForm = { name: '', net: '' };
+    this.newDraft = { number: 1, text: vmNewLine_compose(UNNAMED, NET_DEFAULT), state: null, detail: '', running: null };
     this.unsaved = false;
     this.draw();
   }
@@ -121,6 +127,10 @@ export class VmScreen extends ScriptScreen {
       this.unsaved = false;
       this.edited = false;
       this.newForm = { name: '', net: this.vms.find((row: VmStatusRow): boolean => row.spec !== null)?.spec?.net ?? NET_DEFAULT };
+      this.newDraft = { number: 1, text: vmNewLine_compose(UNNAMED, this.newForm.net), state: null, detail: '', running: null };
+      // The price shown is the new machine's, never the last machine's.
+      this.stepCost = null;
+      this.stepCostRefused = null;
       this.steps = this.steps_derive(this.lines);
       // The door shows what is there first, as a folder does; + NEW is beside it. With nothing there, the new one.
       this.view = this.vms.length > 0 ? MACHINES_KEY : NEW_KEY;
@@ -238,6 +248,24 @@ export class VmScreen extends ScriptScreen {
     await Promise.all([super.standings_refresh(), this.vms_read()]);
   }
 
+  /** What runs of the machine shown, as `vm status` read it from the tenancy: the sizes SIZE renders and offers against. */
+  protected override runs_get(name: string): (VmRuns & { at: string }) | null {
+    const row: VmStatusRow | null = this.vmRow_get();
+    if (row === null || row.name !== name || row.stands === null || row.stands === undefined) return null;
+    return row.stands;
+  }
+
+  /** On a machine's own screen BUILD is the one commit: a declaration that builds nothing is not offered beside it (a-change-is-a-loop, clause 3). */
+  protected override declareOffered(): boolean {
+    return false;
+  }
+
+  /** The machine's declaration is this host's alone when `vm status` says the tenancy does not keep it. */
+  protected override declaredHere_is(_step: ScriptStep): boolean {
+    const row: VmStatusRow | null = this.vmRow_get();
+    return row !== null && row.declared !== null && row.declared !== undefined && row.declaredKept === false;
+  }
+
   /** A script not on the host yet is read from the screen's lines. */
   protected override statusText_get(): string | null {
     return this.unsaved ? script_render(this.lines) : null;
@@ -282,20 +310,34 @@ export class VmScreen extends ScriptScreen {
     return await super.line_send(line, step, keepLog);
   }
 
-  /** Declares the new machine: its script written under `/scripts/mine/`, then `vm new` sent. */
-  private async new_commit(): Promise<void> {
+  /**
+   * BUILD on a new machine, its one commit (a-change-is-a-loop, clause 3):
+   * the session raised first when it must be, then the script written under
+   * `/scripts/mine/` with the line as the levers left it and its build, the
+   * line sent (it declares), and the build sent, whose plan, cost and
+   * question come in place before anything bills. The machine then stands on
+   * its SIZE seat, where the build runs and its receipt lands.
+   */
+  private async new_build(): Promise<void> {
     const name: string = this.newForm.name.trim();
     const net: string = this.newForm.net.trim();
     if (!vmName_valid(name) || net === '') return;
+    const build: string = `vm build ${name}`;
+    if (this.hold_derive(build) === 'asks' && this.hooks.elevate_ask !== null && !(await this.hooks.elevate_ask(build))) return;
     this.vm = name;
     this.path = `/scripts/mine/${name}.mise`;
-    this.lines = lines_build(vmScript_complete(`${vmNewLine_compose(name, net)}\n`, name), []);
+    this.lines = lines_build(vmScript_complete(`${this.newLine_text()}\n`, name), []);
     this.unsaved = true;
     this.steps = this.steps_derive(this.lines);
     this.view = 'line-1';
-    await this.line_send(this.lines[0]?.text ?? '', 'line-1');
+    if (!(await this.line_send(this.lines[0]?.text ?? '', 'line-1'))) return;
+    // The script just written is the machine's: kept as it is (never re-derived from a record), its seats read from it.
     await this.vms_read();
-    await this.vm_open(name);
+    this.steps = this.steps_derive(this.lines);
+    this.view = 'line-1';
+    this.draw();
+    if (await this.line_send(build, 'line-1', true)) this.builtHere = 'line-1';
+    this.draw();
   }
 
   // ---------------------------------------------------------------- drawing
@@ -468,9 +510,9 @@ export class VmScreen extends ScriptScreen {
     return [facts, side];
   }
 
-  /** SIZE for a machine not yet named: its name, its network, and the sliders over the line that will declare it. */
+  /** SIZE for a machine not yet named: its name, its network, its levers and its price, then BUILD, its one commit; nothing is sent before it. */
   private new_make(): HTMLElement[] {
-    const form: HTMLElement = this.section_make('A NEW MACHINE', 'ss-col-form', 'DECLARES; NOTHING IS BUILT');
+    const form: HTMLElement = this.section_make('A NEW MACHINE', 'ss-col-form', 'NOTHING IS SENT BEFORE BUILD');
     const field = (key: 'name' | 'net', label: string, placeholder: string): HTMLElement => {
       const row: HTMLElement = el('div', 'tdc-name-row');
       const tag: HTMLElement = el('label', 'tdc-pair-label', label);
@@ -485,31 +527,53 @@ export class VmScreen extends ScriptScreen {
       row.append(tag, input);
       return row;
     };
-    const lineBox: HTMLElement = el('div', 'ss-line ss-line-none');
-    lineBox.append(el('span', 'ss-line-state', '—'), el('code', 'tdc-mono ss-line-text vm-new-line', this.newLine_text()));
+    form.append(field('name', 'NAME', 'a hostname label, as store'), field('net', 'NETWORK', NET_DEFAULT));
+    if (this.limits === null) {
+      form.append(el('p', 'tdc-prose tdc-quiet', 'reading what the shape sells: vm limits'));
+    } else {
+      const limits: VmLimitsModel = this.limits;
+      const group: HTMLElement = el('div', 'tdc-lever-group');
+      group.append(el('span', 'tdc-section-title', `SIZE · ${limits.shape}`));
+      for (const spec of vmSliders_build(limits)) group.append(this.slider_make(this.newDraft, spec, limits));
+      form.append(group);
+    }
     // loop: vm-new-commit
-    const commit: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain vm-new-commit', 'COMMIT');
+    const commit: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill vm-new-commit', 'BUILD');
     commit.type = 'button';
-    commit.addEventListener('click', (): void => { this.hooks.voice.pill('COMMIT'); void this.new_commit(); });
+    commit.addEventListener('click', (): void => { this.hooks.voice.pill('BUILD'); void this.new_build(); });
     const commands: HTMLElement = el('div', 'tdc-commands');
-    commands.append(commit, el('span', 'tdc-commands-label', 'writes the script, then declares'));
-    form.append(field('name', 'NAME', 'a hostname label, as store'), field('net', 'NETWORK', NET_DEFAULT), lineBox, commands,
-      el('p', 'tdc-prose tdc-quiet', 'COMMIT writes /scripts/mine/<name>.mise with this line and its build, then sends the line: the machine is declared and nothing is made. SIZE then shows its sliders, and its BUILD builds it.'));
+    commands.append(commit, el('span', 'tdc-commands-label', 'writes its script, declares it, then plans and asks before anything bills'));
+    const lineBox: HTMLElement = el('div', 'ss-line ss-line-none');
+    lineBox.dataset['line'] = '1';
+    lineBox.append(el('span', 'ss-line-state', '—'), el('code', 'tdc-mono ss-line-text vm-new-line', this.newLine_text()));
+    form.append(commands, lineBox,
+      el('p', 'tdc-prose tdc-quiet', 'BUILD writes /scripts/mine/<name>.mise with this line and its build, declares the machine, then builds it: the plan, the cost and the question come here before anything bills. Nothing is sent before BUILD.'));
     this.newCommit_redraw(commit);
-    const side: HTMLElement = this.section_make('WHAT A MACHINE IS', 'ss-col-side');
-    side.append(this.pairs_make([['SCRIPT', 'one .mise file under /scripts/mine/, yours to keep'], ['LINES', 'vm new · vm build · chris deploy · chris user add'], ['REPLAY', 'played again, a line reads unchanged or asks before it changes anything']]));
+    const side: HTMLElement = this.section_make('COST · AS SIZED', 'ss-col-side tdc-col-cost', 'FROM THE PRICE LIST · vm cost');
+    const box: HTMLElement = el('div', 'ss-cost');
+    side.append(box);
+    this.cost_fill(box, this.newStep_get());
     const log: HTMLElement = this.section_make('THE STEP\'S OUTPUT', 'tdc-col-steplog');
     log.append(el('div', 'tdc-steplog'));
     return [form, side, log];
   }
 
+  /** The new machine's form as a seat, so the shared levers and price read it. */
+  private newStep_get(): ScriptStep {
+    return { key: NEW_KEY, label: 'NEW · SIZE', kind: 'vm new', lines: [this.newDraft], state: null, running: null };
+  }
+
+  /** The new machine's line: its name and network from the fields, its sizes from the levers. */
   private newLine_text(): string {
-    return vmNewLine_compose(this.newForm.name || '<name>', this.newForm.net || NET_DEFAULT);
+    const parts = line_parse(this.newDraft.text);
+    const options: Array<[string, string]> = parts.options.map(([word, value]): [string, string] => [word, word === '--net' ? (this.newForm.net || NET_DEFAULT) : value]);
+    return line_render({ ...parts, subject: this.newForm.name || UNNAMED, options });
   }
 
   private newLine_redraw(): void {
+    this.newDraft.text = this.newLine_text();
     const text: HTMLElement | null = this.parts.body.querySelector('.vm-new-line');
-    if (text !== null) text.textContent = this.newLine_text();
+    if (text !== null) text.textContent = this.newDraft.text;
     const commit: HTMLButtonElement | null = this.parts.body.querySelector('.vm-new-commit');
     if (commit !== null) this.newCommit_redraw(commit);
     this.header_draw();
@@ -518,7 +582,7 @@ export class VmScreen extends ScriptScreen {
   private newCommit_redraw(commit: HTMLButtonElement): void {
     const name: string = this.newForm.name;
     const refusal: string | null = name === '' ? 'NAME IT' : !vmName_valid(name) ? 'NAME IS A HOSTNAME' : this.vms.some((row: VmStatusRow): boolean => row.name === name) ? 'ALREADY IN THE TENANCY' : this.newForm.net === '' ? 'NETWORK' : null;
-    commit.textContent = refusal === null ? 'COMMIT' : `COMMIT · ${refusal}`;
+    commit.textContent = refusal === null ? 'BUILD' : `BUILD · ${refusal}`;
     commit.disabled = refusal !== null || this.busy !== null;
   }
 

@@ -3432,11 +3432,14 @@ try {
   }
 
   if (await stage('vm-controller')) {
-  // The VM controller (features/vm/, docs/stratus.adoc D17 revised): under
-  // stratus, `vm` takes the screen on a new machine; named and committed,
-  // its script is written under /scripts/mine/ and the line declares it; the
-  // machine then stands in the gutter and `vm <name>` opens on it with SIZE,
-  // BUILD, CHRIS, USERS and TEARDOWN; Esc gives the page back.
+  // The VM controller (features/vm/, docs/stratus.adoc D17 revised) and the
+  // law a-change-is-a-loop, walked whole over the fake cloud: a network built
+  // from the console; `vm` takes the screen on + NEW, where the levers and the
+  // price stand before anything is sent; BUILD, its one commit, writes the
+  // script, declares and builds, its question in place, CONTINUE answering;
+  // SIZE then renders what runs (RUNS beside each lever), a lever moved says
+  // what BUILD would do against it, BUILD again reshapes the machine, and the
+  // receipt is what runs read back. Esc gives the page back.
   const vc = await evalIn(`
     await console_idle();
     if (document.body.dataset.composition !== 'stratus') return { composition: document.body.dataset.composition ?? null };
@@ -3444,31 +3447,69 @@ try {
     const input = console_input();
     const type = (line) => { input.value = line; input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); };
     const settle = async (want, tries = 60) => { for (let i = 0; i < tries; i++) { if (want()) return true; await sleep(250); } return want(); };
+    const root = () => document.getElementById('vm-controller');
+    const pill = (word) => [...(root()?.querySelectorAll('button') ?? [])].find((b) => b.textContent.trim() === word);
+    const idle = () => root()?.dataset.busy === 'no';
+    const asking = () => root()?.querySelector('.tdc-strip')?.hidden === false;
+    const runsMarks = () => [...(root()?.querySelectorAll('.ss-slider-runs') ?? [])].map((m) => m.textContent);
+    const note = () => root()?.querySelector('.ss-note-would')?.textContent ?? null;
+    const noteTitle = () => root()?.querySelector('.ss-note-would .tdc-note-title')?.textContent ?? null;
+    // A network of this run's own, built from the console (its build asks; y answers).
+    const net = 'smokevm-' + String(Date.now() % 100000);
+    type('net new ' + net + ' --cidr 10.53.0.0/16'); await sleep(2000); await console_idle();
+    type('net build ' + net); await settle(() => /Continue\\? \\[y\\/N\\]/.test(console_text()), 400); await sleep(400); type('y');
+    await settle(() => new RegExp(net + '\\\\s+built').test(console_text()), 400); await console_idle();
     type('vm');
-    const opened = await settle(() => document.body.dataset.takeover === 'vm' || /needs a display/.test(console_text()), 40);
+    await settle(() => document.body.dataset.takeover === 'vm' || /needs a display/.test(console_text()), 40);
     if (document.body.dataset.takeover !== 'vm') return { composition: 'stratus', opened: false, narrow: innerWidth < 1250, said: (console_text().match(/vm: the controller needs[^\\n]*/) ?? [''])[0] };
-    await settle(() => window.__argusVm?.view() === 'new', 40);
+    await settle(() => ['new', 'machines'].includes(window.__argusVm?.view()), 40);
+    if (window.__argusVm?.view() === 'machines') { pill('+ NEW MACHINE')?.click(); await settle(() => window.__argusVm?.view() === 'new', 40); }
+    // + NEW: the levers and the price before anything is sent.
     const name = 'smoke' + String(Date.now() % 100000);
     const field = document.querySelector('#vm-new-name'); field.value = name; field.dispatchEvent(new Event('input'));
-    const net = document.querySelector('#vm-new-net'); net.value = 'smoke-net'; net.dispatchEvent(new Event('input'));
-    await sleep(200);
-    [...document.querySelectorAll('#vm-controller button')].find((b) => b.textContent.trim() === 'COMMIT')?.click();
-    const declared = await settle(() => window.__argusVm?.vm() === name && document.getElementById('vm-controller')?.dataset.busy === 'no' && (window.__argusVm?.vms() ?? []).includes(name), 120);
+    const netField = document.querySelector('#vm-new-net'); netField.value = net; netField.dispatchEvent(new Event('input'));
+    await settle(() => root().querySelector('#ss-slider-disk') !== null, 80);
+    const disk = root().querySelector('#ss-slider-disk'); disk.value = '60'; disk.dispatchEvent(new Event('input'));
+    const priced = await settle(() => /AS SIZED/.test(root().querySelector('.tdc-col-cost')?.textContent ?? ''), 80);
+    const sentBefore = [...document.querySelectorAll('#vm-controller .tdc-log-sent')].length;
+    // BUILD, its one commit: the script, the declaration, the build; the question in place, CONTINUE.
+    pill('BUILD')?.click();
+    const askedNew = await settle(() => asking(), 400);
+    const questionNew = root().querySelector('.tdc-strip-text')?.textContent ?? null;
+    pill('CONTINUE')?.click();
+    const built = await settle(() => idle() && window.__argusVm?.vm() === name && runsMarks().length === 4, 600);
+    const runsBuilt = runsMarks();
+    const titleBuilt = noteTitle();
+    // A lever moved off what runs: BUILD WOULD says the change and what it means.
+    const memory = root().querySelector('#ss-slider-memory'); memory.value = '16'; memory.dispatchEvent(new Event('input')); await sleep(300);
+    const would = note();
+    const declareShown = pill('DECLARE') !== undefined;
+    pill('BUILD')?.click();
+    const askedResize = await settle(() => asking(), 400);
+    const questionResize = root().querySelector('.tdc-strip-text')?.textContent ?? null;
+    pill('CONTINUE')?.click();
+    const receipt = await settle(() => idle() && noteTitle() === 'BUILT · WHAT RUNS IS WHAT WAS OFFERED', 600);
+    const runsAfter = runsMarks();
+    const receiptText = note();
     const logged = [...document.querySelectorAll('.tdc-log-sent')].map((l) => l.textContent);
     const steps = (window.__argusVm?.steps() ?? []).map((s) => s.label);
     const pills = [...document.querySelectorAll('#vm-controller .takeover-seat .tdc-cluster')].map((p) => p.textContent);
-    const condition = document.querySelector('#vm-controller .tdc-condition-name')?.textContent ?? null;
     const hidden = [...document.body.children].filter((node) => node.id !== 'vm-controller' && getComputedStyle(node).visibility !== 'hidden' && node.offsetParent !== null).length;
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await sleep(400);
-    return { composition: 'stratus', opened: true, name, declared, logged, steps, pills, condition, hidden, titleBack: document.title === titleBefore, after: document.body.dataset.takeover ?? null };`);
+    return { composition: 'stratus', opened: true, name, priced, sentBefore, askedNew, questionNew, built, runsBuilt, titleBuilt, would, declareShown, askedResize, questionResize, receipt, runsAfter, receiptText, logged, steps, pills, hidden, titleBack: document.title === titleBefore, after: document.body.dataset.takeover ?? null };`);
   if (vc.composition !== 'stratus') {
     check('under any other composition vm opens no controller', true, JSON.stringify(vc));
   } else if (!vc.opened) {
     check('a display narrower than the VM controller\'s least refuses by name, and the line runs as text', vc.narrow && /needs a display at least 1250 px wide/.test(vc.said), JSON.stringify(vc));
   } else {
-    check('vm takes the screen on a new machine; COMMIT writes its script under mine and declares it; the machine then stands in the gutter with its seats, MACHINE then SIZE (holding its build), CHRIS, USERS, TEARDOWN, the page hidden behind it',
-      vc.declared && vc.logged.some((l) => l.startsWith('stratus> touch --withContents=')) && vc.logged.some((l) => l.startsWith('stratus> vm new ' + vc.name))
-        && JSON.stringify(vc.steps) === JSON.stringify(['MACHINE', 'SIZE', 'CHRIS', 'USERS', 'TEARDOWN']) && vc.pills.includes(vc.name.toUpperCase()) && vc.pills.at(-1) === '+ NEW' && vc.condition === 'DECLARED' && vc.hidden === 0, JSON.stringify(vc));
+    check('vm on a new machine offers its levers and its price before anything is sent; BUILD, its one commit, writes the script, declares and builds, its question in place with the cost',
+      vc.priced && vc.sentBefore === 0 && vc.askedNew && /It bills/.test(vc.questionNew ?? '') && vc.logged.some((l) => l.startsWith('stratus> touch --withContents=')) && vc.logged.some((l) => l.startsWith('stratus> vm new ' + vc.name)) && vc.logged.includes('stratus> vm build ' + vc.name), JSON.stringify(vc));
+    check('SIZE is one loop: it renders what runs beside each lever, says what BUILD would do against it, BUILD is its only commit, the question is in place, and the receipt is what runs read back',
+      vc.built && JSON.stringify(vc.runsBuilt) === JSON.stringify(['RUNS 2', 'RUNS 8 GiB', 'RUNS 60 GB', 'RUNS 50 GB']) && vc.titleBuilt !== null
+        && /memory 8 → 16 GiB: the machine reboots/.test(vc.would ?? '') && !vc.declareShown && vc.askedResize && /REBOOTS/.test(vc.questionResize ?? '')
+        && vc.receipt && vc.runsAfter.includes('RUNS 16 GiB') && /read from the tenancy/.test(vc.receiptText ?? ''), JSON.stringify(vc));
+    check('the machine stands in the gutter with its seats, MACHINE then SIZE (holding its build), CHRIS, USERS, TEARDOWN, the page hidden behind it',
+      JSON.stringify(vc.steps) === JSON.stringify(['MACHINE', 'SIZE', 'CHRIS', 'USERS', 'TEARDOWN']) && vc.pills.includes(vc.name.toUpperCase()) && vc.pills.at(-1) === '+ NEW' && vc.hidden === 0, JSON.stringify(vc));
     check('Esc gives the VM controller back: no takeover, the tab\'s title as it was', vc.after === null && vc.titleBack, JSON.stringify(vc));
   }
   }
