@@ -247,6 +247,8 @@ export class ScriptScreen {
   protected busyDeclined: boolean = false;
   /** The USERS form's words, kept across redraws. */
   protected userForm: { name: string; email: string; passwordFile: string } = { name: '', email: '', passwordFile: '' };
+  /** The user line ADD was pressed for once: asked in place, with what it makes, before it is sent (the operator, 2026-11-05). */
+  protected userAddArmed: string | null = null;
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
   protected ticker: ReturnType<typeof setInterval> | null = null;
 
@@ -1862,8 +1864,7 @@ export class ScriptScreen {
     add.type = 'button';
     add.title = `appends and sends: ${line}`;
     add.disabled = heldByDoor || refusal !== null || this.busy !== null;
-    add.addEventListener('click', (): void => {
-      this.hooks.voice.pill('ADD');
+    const send = (): void => {
       void (async (): Promise<void> => {
         // A READ session that can be raised asks the password first; the line is appended only once it may run.
         if (this.hold_derive(line) === 'asks' && this.hooks.elevate_ask !== null && !(await this.hooks.elevate_ask(line))) return;
@@ -1875,6 +1876,28 @@ export class ScriptScreen {
         this.userForm = { name: '', email: '', passwordFile: '' };
         await this.line_send(line, 'users');
       })();
+    };
+    // Asked in place: the first press says what ADD makes and where; MAKE IT sends, KEEP AS IS backs out (a-change-is-a-loop, clause 4).
+    if (this.userAddArmed === line && !add.disabled) {
+      const host: string = ((): string => { try { return new URL(this.chrisRow_get(on)?.url ?? '').host; } catch { return on === '' ? 'the ChRIS' : `${on}'s ChRIS`; } })();
+      const ask: HTMLElement = el('div', 'tdc-note tdc-note-bill ss-user-ask');
+      ask.append(el('span', 'tdc-note-title', 'ADD MAKES AN ACCOUNT'), el('span', 'tdc-prose', `${name} (${email}) is made on ${host} now: a login that can sign in. stratus has no verb to remove an account; CUBE's admin does.`));
+      const make: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill', 'ADD · MAKE IT');
+      make.type = 'button';
+      make.addEventListener('click', (): void => { this.hooks.voice.pill('ADD · MAKE IT'); this.userAddArmed = null; send(); });
+      const keep: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'KEEP AS IS');
+      keep.type = 'button';
+      keep.addEventListener('click', (): void => { this.hooks.voice.pill('KEEP AS IS'); this.userAddArmed = null; this.userAdd_fill(commands, step, on); });
+      const pills: HTMLElement = el('div', 'tdc-commands');
+      pills.append(make, keep);
+      ask.append(pills);
+      commands.append(ask, el('span', 'tdc-mono ss-user-line', line));
+      return;
+    }
+    add.addEventListener('click', (): void => {
+      this.hooks.voice.pill('ADD');
+      this.userAddArmed = line;
+      this.userAdd_fill(commands, step, on);
     });
     commands.append(add, el('span', 'tdc-mono ss-user-line', line));
   }

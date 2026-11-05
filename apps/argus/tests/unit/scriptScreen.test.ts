@@ -419,7 +419,16 @@ describe('the script screen', () => {
     const add: HTMLButtonElement | undefined = button_named(screen.root, 'ADD');
     expect(add?.disabled).toBe(false);
     expect(screen.root.querySelector('.ss-user-line')?.textContent).toBe('chris user add jennings --email jennings@example.org');
+    // ADD asks in place first, with what it makes and where; nothing is sent until MAKE IT, and KEEP AS IS backs out.
     add?.click();
+    await settle();
+    expect(sent).toEqual([]);
+    expect(screen.root.querySelector('.ss-user-ask .tdc-note-title')?.textContent).toBe('ADD MAKES AN ACCOUNT');
+    expect(screen.root.querySelector('.ss-user-ask')?.textContent).toContain('jennings (jennings@example.org) is made on');
+    button_named(screen.root, 'KEEP AS IS')?.click();
+    expect(screen.root.querySelector('.ss-user-ask')).toBeNull();
+    button_named(screen.root, 'ADD')?.click();
+    button_named(screen.root, 'ADD · MAKE IT')?.click();
     await settle();
     expect(sent).toEqual(['chris user add jennings --email jennings@example.org']);
     expect(screen.root.querySelectorAll('.ss-users .ss-line').length).toBe(2);
