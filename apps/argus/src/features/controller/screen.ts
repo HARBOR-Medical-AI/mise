@@ -730,7 +730,7 @@ export class TdController {
     if (cluster.origin === 'adopted') {
       note.append(el('span', 'tdc-prose', 'Adopted: planned against, never built on. Its steps are what the cloud attested; what it did not stays UNKNOWN until VERIFY.'));
       // The next step, on the panel: the credentials the cloud does not keep are copied here by hand.
-      note.append(el('span', 'tdc-prose tdc-quiet', `NEXT: copy its kubeconfig and CUBE token into its auth/ folder on this host (${cluster.path ?? 'its folder'}/auth/; the cloud does not keep them); VERIFY then reads it.`));
+      note.append(el('span', 'tdc-prose tdc-quiet', `NEXT: copy its kubeconfig and CUBE token into ${cluster.folder != null ? `${cluster.folder}/auth/` : 'its auth/ folder on this host'} (the cloud does not keep them); VERIFY then reads it.`));
       note.append(el('span', 'tdc-prose tdc-quiet', `build refused: ${cluster.refused?.['build'] ?? 'adopted'}`));
     } else if (cluster.origin === 'found' && cluster.condition === 'GONE') {
       // Nothing of it is left in the tenancy but what carries its tag: its stack and its compartment (docs/stratus.adoc, D15).
@@ -1104,7 +1104,7 @@ export class TdController {
     const lock: HTMLElement = el('div', `tdc-note ${cluster.protected !== false ? 'tdc-note-locked' : 'tdc-note-refused'}`);
     lock.append(el('span', 'tdc-note-title', cluster.protected !== false ? 'PROTECTED' : 'UNLOCKED'), el('span', 'tdc-prose', (cluster.protected !== false
       ? 'A cluster is born protected. Lifting the lock is a line of its own, so no single slip or replayed line removes a tenant: LIFT THE LOCK writes the lock off in the tenancy and removes nothing; TEAR DOWN then asks for the name typed back, with what goes and what stops billing.'
-      : 'The lock is off. TEAR DOWN sends the line; the engine lists what goes and asks for the name typed back.') + askFirst));
+      : 'The lock is off. TEAR DOWN sends the line; the engine lists what goes and asks for the name typed back. LOCK AGAIN writes the lock on in the tenancy: teardown refuses until it is lifted.') + askFirst));
     const where: string | null = lockWhere_text(cluster.lock);
     if (where !== null) lock.append(el('span', 'tdc-prose tdc-quiet ss-lock-where', where.toUpperCase()));
     const commands: HTMLElement = el('div', 'tdc-commands');

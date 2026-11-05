@@ -95,7 +95,11 @@ export class FakeBuildWorld {
   readonly sessions: Array<{ bastionId: string; privateIp: string }> = [];
   private serial: number = 0;
 
-  constructor(readonly tickMs: number = 0) {}
+  /**
+   * @param tickMs - How long one tick of fake work takes.
+   * @param applyTicks - How many ticks an apply takes: more, so a walk can leave and come back while one runs.
+   */
+  constructor(readonly tickMs: number = 0, readonly applyTicks: number = 3) {}
 
   /**
    * Waits one tick, or several, unless stopped.
@@ -233,7 +237,7 @@ export class FakeCloudBuilder implements CloudBuilder {
   }
 
   async moduleApply_run(request: { region: string; stackRef: string; plan: InfraPlan; label: string }, call: BuildCall): Promise<Record<string, string>> {
-    await this.world.tick(3, call.signal);
+    await this.world.tick(this.world.applyTicks, call.signal);
     const stack = this.world.moduleStacks.get(request.stackRef);
     if (stack === undefined) throw new Error(`${request.stackRef}: no such stack`);
     const outputs: Record<string, string> = FAKE_MODULES[stack.module].outputs(stack.owner);
@@ -342,7 +346,7 @@ export class FakeCloudBuilder implements CloudBuilder {
 
   async infra_apply(request: { cluster: string; plan: InfraPlan; region: string; stackRef?: string }, call: BuildCall): Promise<InfraOutputs> {
     for (let i: number = 0; i < 4 && call.signal.aborted !== true; i++) {
-      await this.world.tick(1, call.signal);
+      await this.world.tick(Math.max(1, Math.ceil(this.world.applyTicks / 3)), call.signal);
       call.log(`apply job: ${Math.round(((i + 1) / 4) * request.plan.rows.length)} of ${request.plan.rows.length} created`);
     }
     const nodes: SpecNode[] = request.plan.rows

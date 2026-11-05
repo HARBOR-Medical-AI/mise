@@ -116,7 +116,8 @@ async function stratus_start(): Promise<void> {
   }
   // The fake cloud builds over a fake installer on a clock, so a build is seen moving; a real cloud's build half is not written yet.
   const tickMs: number = Number(process.env['STRATUS_FAKE_TICK_MS'] ?? 700);
-  const world: FakeBuildWorld = new FakeBuildWorld(tickMs);
+  // How many ticks an apply takes (STRATUS_FAKE_APPLY_TICKS): a walk that leaves mid-apply and comes back sees it run.
+  const world: FakeBuildWorld = new FakeBuildWorld(tickMs, Number(process.env['STRATUS_FAKE_APPLY_TICKS'] ?? 3));
   // The fake tenancy answers what the fake builder applied, as a real one answers what was built.
   // A cluster found in the fake tenancy (one another host built), for a walk that adopts it: STRATUS_FAKE_FOUND=<name>.
   const foundName: string | undefined = parsed.args.fake ? process.env['STRATUS_FAKE_FOUND'] : undefined;
