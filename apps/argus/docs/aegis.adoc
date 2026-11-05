@@ -597,18 +597,18 @@ A surface slice that adds or changes a control that acts goes round this loop, i
 [[loop-ledger]]
 === The loop ledger
 
-One row per control that sends a line from a takeover screen (the TD controller, the VM controller, the script screen), keyed by the `// loop: <id>` mark at the line that makes it. Standing is `held` (every clause, with the smoke scenario that proves it), `owes` (the clauses not yet held, and why), or `reads` (the control changes nothing; the loop's clauses do not apply). The ChRIS panes' acts (a feed deleted, a plugin run, an upload) enter the ledger as each is next touched. First audit 2026-11-04, from the code and the walk of #1376; a row is corrected when its loop is walked.
+One row per control that sends a line from a takeover screen (the TD controller, the VM controller, the script screen), keyed by the `// loop: <id>` mark at the line that makes it. Standing is `held` (every clause, with the smoke scenario that proves it), `owes` (the clauses not yet held, and why), or `reads` (the control changes nothing; the loop's clauses do not apply). The ChRIS panes' acts (a feed deleted, a plugin run, an upload) enter the ledger as each is next touched. First audit 2026-11-04, from the code and the walk of #1376; a row is corrected when its loop is walked. The VM controller's rows (and the script screen's CHRIS DEPLOY and USERS forms it shows) were walked the same night over the real tenancy, read-only, from a session with no records of its own, and their commits over the fake cloud.
 
 [cols="2,2,2,3,2,5"]
 |===
 | Loop | Screen | Control | Sends | Changes | Standing
 
-| vm-size-declare | VM controller · SIZE | DECLARE | `vm new <vm> …` | its record | owes 1, 2, 3, 5: the size drawn is the declaration, not the tenancy's; the cost compares with the declaration; DECLARE stands beside BUILD as a second commit that changes nothing in the world (the trap of 2026-11-04)
-| vm-size-build | VM controller · SIZE | BUILD | `vm new <vm> …`, then `vm build <vm>` | the tenancy | owes 1, 2, 5: the record keeps no boot or data size read from the tenancy (`seen` holds vCPUs and memory), so neither the offer nor the receipt is drawn against what stands
-| vm-new-commit | VM controller · A NEW MACHINE | COMMIT | `touch … /scripts/mine/<vm>.mise`, then `vm new <vm> …` | a file and a record | owes 3: named COMMIT, it builds nothing
-| vm-protect | VM controller · TEARDOWN | PROTECT · ON, PROTECT · OFF | `vm protect <vm> on\|off` | its record | owes 1: the lock drawn is this host's record, its age unsaid
-| vm-teardown | VM controller · TEARDOWN | TEARDOWN | `vm teardown <vm>` | the tenancy | owes 1: the blocks are the receipt (STANDS, GOING, GONE), but what stands is the record's
-| vm-teardown-all | VM controller · TEARDOWN | TEARDOWN · ALL | `vm teardown <vm> --all` | the tenancy | owes 1: as TEARDOWN; the name typed back stands in place
+| vm-size-declare | VM controller · SIZE | DECLARE | `vm new <vm> …` | its record | owes 1, 2, 3, 5: walked 2026-11-04; a machine opened with no script written shows both lines without a state (—), the size drawn is the declaration and not the tenancy's, the cost compares with the declaration, and DECLARE stands beside BUILD as a second commit that changes nothing in the world (the trap of 2026-11-04)
+| vm-size-build | VM controller · SIZE | BUILD | `vm new <vm> …`, then `vm build <vm>` | the tenancy | owes 1, 2, 5: walked 2026-11-04 (the question over the real tenancy's store, the commit over the fake cloud); clauses 4 and 6 hold: the question stands in the body with the real consequence (boot disk 50 → 180 GB, the filesystem grown after, the cost) and a running build is followed on return. Owed: the record keeps no boot or data size read from the tenancy (`seen` holds vCPUs and memory), so the offer is drawn against the declaration; a reboot is said in the question, not the offer; the sliders open below the fold at 2560×1440; after the build the render repeats the declaration instead of the size read back
+| vm-new-commit | VM controller · A NEW MACHINE | COMMIT | `touch … /scripts/mine/<vm>.mise`, then `vm new <vm> …` | a file and a record | owes 2, 3: walked 2026-11-04; A NEW MACHINE offers no sliders and no price before COMMIT (they come after it), and COMMIT, so named, builds nothing
+| vm-protect | VM controller · TEARDOWN | PROTECT · ON, PROTECT · OFF | `vm protect <vm> on\|off` | its record | owes 1: walked 2026-11-04; the guard draws PROTECTED from this host's record, its age unsaid
+| vm-teardown | VM controller · TEARDOWN | TEARDOWN | `vm teardown <vm>` | the tenancy | owes 1, 2: walked 2026-11-04; clauses 4, 5 and 6 hold: the question carries what stays billing, the blocks are the receipt (STANDS, GOING, GONE) and a teardown under way shows on return. Owed: the blocks' STANDS is the record's, its age unsaid; what stays billing after a TEARDOWN is said only in the question, not beside the offer
+| vm-teardown-all | VM controller · TEARDOWN | TEARDOWN · ALL | `vm teardown <vm> --all` | the tenancy | owes 1: walked 2026-11-04 as TEARDOWN; the name typed back stands in place
 | ss-pull | script screen · LIBRARY | PULL | `scripts pull` | this host's clones | owes 5: the clones' heads before and after are not shown
 | ss-save | script screen · a step | SAVE | `touch --withContents=… <copy>` | a file | owes 5: the working copy written is said only by the chip
 | ss-net-declare | script screen · NET NEW | DECLARE | `net new <net> …` | its record | owes 1: the CIDR drawn is the line's, not the network's
@@ -618,8 +618,8 @@ One row per control that sends a line from a takeover screen (the TD controller,
 | ss-vm-build | script screen · VM NEW, VM BUILD | BUILD, RUN | `vm new <vm> …` then `vm build <vm>`; `vm build <vm>` | the tenancy | owes 1, 2, 5: as SIZE's BUILD
 | ss-vm-protect | script screen · VM NEW, VM BUILD | PROTECT · ON, PROTECT · OFF | `vm protect <vm> on\|off` | its record | owes 1: the lock is not drawn on this seat, only offered
 | ss-vm-teardown | script screen · VM NEW, VM BUILD | TEARDOWN, TEARDOWN · ALL | `vm teardown <vm> [--all]` | the tenancy | owes 1, 5: no blocks here, only the step's output
-| ss-chris-deploy | script screen · CHRIS DEPLOY | RUN | `chris deploy <vm> …` | the VM and its CUBE | owes 1, 2, 5: the deploy's standing is the record's; what changes is not drawn against what runs
-| ss-user-add | script screen · USERS | ADD, RUN | `chris user add <name> …` | the CUBE | owes 1, 5: the accounts the CUBE holds are not drawn, only the script's lines
+| ss-chris-deploy | script screen · CHRIS DEPLOY; VM controller · CHRIS | RUN | `chris deploy <vm> …` | the VM and its CUBE | owes 1, 2, 4, 5: walked 2026-11-04 on the VM controller's CHRIS seat, which is this form; over a running CUBE it says "No verb reads this line's state" and draws nothing of what runs (versions, health); nothing is compared with what is deployed; a replay restarts porter and ends every porter session, asked by nothing and said by nothing (twice on 2026-11-04); the receipt is the step's output
+| ss-user-add | script screen · USERS; VM controller · USERS | ADD, RUN | `chris user add <name> …` | the CUBE | owes 1, 5: walked 2026-11-04 on the VM controller's USERS seat, which is this form; it reads 0 LINES over a CUBE that holds accounts (`chris` at least): the script's lines are drawn, not the CUBE's accounts
 | ss-line-run | script screen · a line with no form | RUN | the line as written | what the line does | owes 1, 2, 4, 5: a line the screen has no form for has no render; it runs as typed
 | td-plan | TD controller · BUILD, SIZE | PLAN | `cluster plan <name>` | a stack's plan in the tenancy | owes 1: the plan's counts are drawn, its age is not
 | td-verify | TD controller · BUILD, VERIFY | VERIFY | `cluster verify <name>` | nothing | reads
@@ -633,6 +633,11 @@ One row per control that sends a line from a takeover screen (the TD controller,
 | td-teardown | TD controller · TEARDOWN | TEAR DOWN, REMOVE WHAT IS LEFT | `cluster teardown <name>` | the tenancy | owes 1: the blocks are the receipt; what stands is the record's
 | confirm | any takeover screen · the question | CONTINUE, YES, SEND, DESTROY, STOP, NO | the answer to the engine's question | the answer | reads: the Confirm of the loop it answers, held by that loop's row
 |===
+
+*What no row owns.* Two failures the walk of 2026-11-04 found sit under every row, in the kernel, and clause 1 cannot hold for any VM control until they are gone:
+
+* *A declaration is not kept in the tenancy.* `vm new` writes the spec on the host that ran it; the vault is written by `vm keep`, a build and a deploy, and the last writer wins. The operator's 180 GB declaration lived only in a porter session's folder; the terminal stratus on the same host held 50, its store deploy wrote that to the vault, and a fresh session reads 50, declared and unchanged. The tenancy is the truth for secrets and keys (D16), not yet for what is declared.
+* *Nothing reads a VM's size from the tenancy.* The record's `seen` holds vCPUs and memory; the boot volume's and the data volume's sizes are never read, so every size a screen draws is the declaration.
 
 == LCARS: what it is, and why ARGUS started there
 
