@@ -202,6 +202,7 @@ export function vmApplyRun_make(name: string, part: VmPart, deps: VmDeps): JobRu
       current.machineOutputs = outputs;
       if (current.image === undefined && outputs['image_id'] !== undefined) current.image = outputs['image_id'];
       current.built = new Date().toISOString();
+      current.builtSpec = spec;
       current.seen = { instanceId: outputs['instance_id'] ?? '', vcpus: spec.vcpu, memoryGib: spec.memory };
       delete current.machineGone; delete current.gone;
     });

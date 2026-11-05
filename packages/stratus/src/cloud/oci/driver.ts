@@ -20,7 +20,7 @@ import type {
 import type { OciApi, OciCompartmentRecord, OciLimitValueRecord, OciShapeRecord, OciTenancyRecord } from './api.js';
 import type { OciAttachmentRecord, OciInstanceRecord, OciResourceRecord, OciVnicAttachmentRecord, OciVnicRecord, OciVolumeRecord } from './resourceApi.js';
 import { byName_sort, foundClusters_fold, resource_convert, searchHits_count, searchQuery_format, tagQuery_format } from './resourceMap.js';
-import { ociPrices_read, ociServicePrices_read, shapeTerms_get, type JsonFetch } from './prices.js';
+import { jsonFetch_default, ociPrices_read, ociServicePrices_read, PRICE_LIST_URL, shapeTerms_get, type JsonFetch } from './prices.js';
 
 /** How the driver is made. */
 export interface OciDriverOptions {
@@ -114,6 +114,10 @@ export class OciDriver implements CloudDriver {
   private readonly api: OciApi;
   private readonly fetchJson: JsonFetch | undefined;
   private readonly namespaces: Map<string, Promise<string>> = new Map();
+  /** Oracle's price list, read once for the session: every price after it is worked out from this reply. */
+  private priceList: Promise<unknown> | null = null;
+  /** When the price list was read, or null before. */
+  private priceListRead: string | null = null;
 
   constructor(options: OciDriverOptions) {
     this.api = options.api;
@@ -186,12 +190,35 @@ export class OciDriver implements CloudDriver {
     return shapes.sort((a: CloudShape, b: CloudShape): number => a.name.localeCompare(b.name));
   }
 
+  /**
+   * The price list, fetched the first time a price is asked and kept for the
+   * session (about 200 KB, the same for every price); a failed read is not
+   * kept, so the next ask tries again.
+   */
+  private priceList_get(): Promise<unknown> {
+    if (this.priceList === null) {
+      const fetchJson: JsonFetch = this.fetchJson ?? jsonFetch_default;
+      this.priceList = fetchJson(PRICE_LIST_URL).then((reply: unknown): unknown => {
+        this.priceListRead = new Date().toISOString();
+        return reply;
+      }, (error: unknown): never => {
+        this.priceList = null;
+        throw error;
+      });
+    }
+    return this.priceList;
+  }
+
   async prices_list(): Promise<CloudPrice[]> {
-    return ociPrices_read(this.fetchJson);
+    return ociPrices_read((): Promise<unknown> => this.priceList_get());
   }
 
   async servicePrices_get(): Promise<ServicePrices | null> {
-    return ociServicePrices_read(this.fetchJson);
+    return ociServicePrices_read((): Promise<unknown> => this.priceList_get());
+  }
+
+  pricesRead_get(): string | null {
+    return this.priceListRead;
   }
 
   async instances_list(containerId: string, region: string): Promise<CloudInstance[]> {

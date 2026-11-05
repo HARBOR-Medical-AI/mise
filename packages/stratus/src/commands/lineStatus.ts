@@ -136,7 +136,11 @@ async function vm_read(deps: LineStatusDeps, words: ReadonlyArray<string>): Prom
     if (net === null || net.built === undefined || net.gone !== undefined) return running_add({ state: 'not yet', detail: `the network ${keptSpec.net} is not built (net build ${keptSpec.net})` }, running);
     if (record.gone !== undefined || record.machineGone !== undefined) return running_add({ state: 'ready', detail: record.gone !== undefined ? 'torn down; a build makes it anew' : 'its machine is torn down; a build brings it back over its data' }, running);
     if (record.built === undefined) return running_add({ state: 'ready', detail: '' }, running);
-    return running_add(record.declared !== undefined && record.declared > record.built ? { state: 'changed', detail: 'declared again since it was built; the build plans and asks' } : { state: 'done', detail: `built ${record.built.slice(0, 10)}` }, running);
+    if (record.declared === undefined || record.declared <= record.built) return running_add({ state: 'done', detail: `built ${record.built.slice(0, 10)}` }, running);
+    // What a build would change, when the record keeps what the last build made; a record from before that says only that it was declared again.
+    const owed: string[] = record.builtSpec === undefined ? [] : vmSpec_diff(record.builtSpec, keptSpec);
+    if (record.builtSpec !== undefined && owed.length === 0) return running_add({ state: 'done', detail: `built ${record.built.slice(0, 10)}; declared again unchanged` }, running);
+    return running_add({ state: 'changed', detail: owed.length === 0 ? 'declared again since it was built; the build plans and asks' : `declared, not built: ${owed.join(', ')}; the build plans and asks` }, running);
   }
   return null;
 }

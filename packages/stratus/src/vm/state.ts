@@ -31,6 +31,8 @@ export interface VmRecord extends KeptRecord {
   machineStackRef?: string;
   machineOutputs?: Record<string, string>;
   built?: string;
+  /** The spec the last build made the tenancy match, so a later declare says what a build would change. */
+  builtSpec?: VmSpec;
   /** The ChRIS deployed on it (`chris deploy`). */
   chris?: { profile: string; compute: string; host: string | null; url: string; deployed: string; dns?: 'waiting' | 'seen'; porter?: string };
   /** When this host's cache of it was read from the tenancy (its stacks, and the secrets its vault keeps): built by a session that left no record here. */

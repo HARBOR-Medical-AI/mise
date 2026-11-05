@@ -8,8 +8,8 @@ import { describe, it, expect } from '@jest/globals';
 import type { VmLimitsModel } from '@fnndsc/menu';
 import {
   askForm_derive, costLine_derive, counts_words, duration_words, line_parse, line_render, lineOption_get, lineOption_set, lines_build, memoryRange_derive,
-  rate_words, rates_sum, runningStep_find, scriptName_derive, scriptSource_derive, stepKind_derive, stepKind_isTask, stepLabel_derive, steps_build, states_count, userLine_build,
-  vmLevers_read, vmSliders_build, words_split, workingCopy_derive, script_render,
+  rate_words, rates_sum, runningStep_find, scriptName_derive, scriptSource_derive, stepBuildLine_get, stepKind_derive, stepKind_isTask, stepLabel_derive, steps_build, states_count, userLine_build,
+  vmLevers_read, vmSliders_build, words_split, workingCopy_derive, script_render, type ScriptStep,
 } from '../../src/features/script/model.js';
 
 const STORE: string = [
@@ -64,10 +64,14 @@ describe('the script screen model', () => {
     // The file's own words are kept, not the status's filled text.
     expect(lines[1]?.text.startsWith('vm new store --net chrisproject-services')).toBe(true);
     const steps = steps_build(lines);
+    // The build is gathered under the declaration before it: a size declared and not built reads changed on its one seat.
     expect(steps.map((step) => [step.key, step.label, step.state])).toEqual([
-      ['line-1', 'NET NEW', 'done'], ['line-2', 'VM NEW', 'done'], ['line-3', 'VM BUILD', 'changed'], ['line-4', 'CHRIS DEPLOY', 'done'], ['users', 'USERS', 'not yet'],
+      ['line-1', 'NET NEW', 'done'], ['line-2', 'VM NEW', 'changed'], ['line-4', 'CHRIS DEPLOY', 'done'], ['users', 'USERS', 'not yet'],
     ]);
-    expect(steps[4]?.lines.map((line) => line.number)).toEqual([5, 6]);
+    expect(steps[1]?.lines.map((line) => line.number)).toEqual([2, 3]);
+    expect(stepBuildLine_get(steps[1] as ScriptStep)?.text).toBe('vm build store');
+    expect(stepBuildLine_get(steps[0] as ScriptStep)).toBeUndefined();
+    expect(steps[3]?.lines.map((line) => line.number)).toEqual([5, 6]);
     expect(counts_words(states_count(lines))).toBe('3 DONE · 1 READY · 1 CHANGED · 1 NOT YET');
     expect(counts_words(states_count([]))).toBe('NOTHING READ');
     expect(script_render(lines).split('\n').length).toBe(7);
@@ -79,10 +83,21 @@ describe('the script screen model', () => {
     const building = lines_build(STORE, standings.map((standing, index) => index === 2 ? { ...standing, running: '/proc/steps/vm-store-apply-machine' } : standing));
     expect(building[2]?.running).toBe('/proc/steps/vm-store-apply-machine');
     const buildingSteps = steps_build(building);
-    expect(buildingSteps.map((step) => step.running)).toEqual([null, null, '/proc/steps/vm-store-apply-machine', null, null]);
-    expect(runningStep_find(buildingSteps)?.key).toBe('line-3');
+    expect(buildingSteps.map((step) => step.running)).toEqual([null, '/proc/steps/vm-store-apply-machine', null, null]);
+    expect(runningStep_find(buildingSteps)?.key).toBe('line-2');
     // The steps whose lines run as tasks, whose run the screen follows rather than holds.
     expect((['net new', 'net build', 'vm new', 'vm build', 'chris deploy', 'users', 'other'] as const).filter(stepKind_isTask)).toEqual(['net build', 'vm build', 'chris deploy', 'users']);
+  });
+
+  it('gathers a build under the declaration just before it of the same name, and wears the declaration\'s state until it is done', () => {
+    const lines = (texts: string[], states: Array<'done' | 'ready' | 'changed' | 'not yet'>) => texts.map((text, index) => ({ number: index + 1, text, state: states[index] ?? null, detail: '', running: null }));
+    const pair = ['net new n --cidr 10.0.0.0/16', 'net build n', 'vm new s --net n', 'vm build s'];
+    expect(steps_build(lines(pair, ['done', 'done', 'ready', 'not yet'])).map((step) => [step.key, step.label, step.state, step.lines.length])).toEqual([['line-1', 'NET NEW', 'done', 2], ['line-3', 'VM NEW', 'ready', 2]]);
+    expect(steps_build(lines(pair, ['changed', 'done', 'done', 'changed'])).map((step) => step.state)).toEqual(['changed', 'changed']);
+    // A build of another name, or one not right after its declaration, keeps a seat of its own.
+    expect(steps_build(lines(['vm new s --net n', 'vm build t'], ['done', 'done'])).map((step) => step.label)).toEqual(['VM NEW', 'VM BUILD']);
+    expect(steps_build(lines(['vm new s --net n', 'echo hi', 'vm build s'], ['done', null as never, 'done'])).map((step) => step.label)).toEqual(['VM NEW', 'ECHO HI', 'VM BUILD']);
+    expect(steps_build(lines(['vm new s --net n', 'vm build s', 'vm build s'], ['done', 'done', 'done'])).map((step) => step.lines.length)).toEqual([2, 1]);
   });
 
   it('scales the sliders to what the shape sells and bounds the memory by the vCPUs', () => {

@@ -5,10 +5,13 @@
  * wire, so a step's grouping, a line's options and the words a control sends
  * are tested as functions.
  *
- * A step is a line. The rail shows one seat per line (NET NEW, NET BUILD, VM
- * NEW, VM BUILD, CHRIS DEPLOY), except that every `chris user add` line is
- * gathered under one seat, USERS, since a ChRIS's accounts are many lines of
- * one kind.
+ * A step is a line. The rail shows one seat per line (NET NEW, VM NEW, CHRIS
+ * DEPLOY), with two gatherings: every `chris user add` line under one seat,
+ * USERS, since a ChRIS's accounts are many lines of one kind; and a `net
+ * build` or `vm build` line under the `net new` or `vm new` line just before
+ * it that declares the same name, since a size means nothing until it is
+ * built (the operator, 2026-11-04). That seat declares and builds; a build
+ * line standing apart keeps a seat of its own.
  *
  * @module
  */
@@ -30,14 +33,14 @@ export interface ScriptLine {
 /** The kinds of step the screen draws a body for. */
 export type StepKind = 'net new' | 'net build' | 'vm new' | 'vm build' | 'chris deploy' | 'users' | 'other';
 
-/** One seat on the rail: a line, or the USERS gathering. */
+/** One seat on the rail: a line, a declaration with its build, or the USERS gathering. */
 export interface ScriptStep {
   /** The seat's key: `line-3`, or `users`. */
   readonly key: string;
   /** The seat's label: the line's verb and sub-verb (`VM BUILD`), or USERS. */
   readonly label: string;
   readonly kind: StepKind;
-  /** The lines under the seat: one, or every user line. */
+  /** The lines under the seat: one, a declaration then its build, or every user line. */
   readonly lines: ScriptLine[];
   /** The state the seat wears: the lines' together. */
   readonly state: LineState | null;
@@ -225,9 +228,38 @@ export function stepLabel_derive(text: string): string {
   return words.slice(0, 2).join(' ').toUpperCase() || '—';
 }
 
+/** The build kind each declaring kind gathers. */
+const BUILT_BY: Readonly<Partial<Record<StepKind, StepKind>>> = { 'net new': 'net build', 'vm new': 'vm build' };
+
+/**
+ * The build line a declaring seat gathers: its second line, when the seat
+ * is a `net new` or `vm new` with its build.
+ *
+ * @param step - The seat.
+ * @returns The build line, or undefined for a seat of one line.
+ */
+export function stepBuildLine_get(step: ScriptStep): ScriptLine | undefined {
+  return BUILT_BY[step.kind] !== undefined ? step.lines[1] : undefined;
+}
+
+/**
+ * The state a declaring seat wears: the declaration's until it is done, then
+ * the build's, so a size declared and not built reads changed and a VM not
+ * declared yet reads ready, not held behind its build.
+ *
+ * @param lines - The declaration, then its build.
+ * @returns The state.
+ */
+function declaredState_derive(lines: ReadonlyArray<ScriptLine>): LineState | null {
+  const [declared, built] = lines;
+  if (declared === undefined) return null;
+  return declared.state !== 'done' || built === undefined ? declared.state : built.state;
+}
+
 /**
  * The rail's steps from the script's lines: one per line, the user lines
- * gathered under USERS at the first one's place.
+ * gathered under USERS at the first one's place, and a build line gathered
+ * under the declaration just before it that names the same thing.
  *
  * @param lines - The lines, in the script's order.
  * @returns The steps, in order.
@@ -237,6 +269,11 @@ export function steps_build(lines: ReadonlyArray<ScriptLine>): ScriptStep[] {
   let users: ScriptLine[] | null = null;
   for (const line of lines) {
     const kind: StepKind = stepKind_derive(line.text);
+    const before: ScriptStep | undefined = steps.at(-1);
+    if (before !== undefined && before.lines.length === 1 && BUILT_BY[before.kind] === kind && line_parse(line.text).subject === line_parse(before.lines[0]?.text ?? '').subject) {
+      before.lines.push(line);
+      continue;
+    }
     if (kind === 'users') {
       if (users === null) {
         users = [line];
@@ -248,7 +285,7 @@ export function steps_build(lines: ReadonlyArray<ScriptLine>): ScriptStep[] {
     }
     steps.push({ key: `line-${line.number}`, label: stepLabel_derive(line.text), kind, lines: [line], state: line.state, running: line.running });
   }
-  return steps.map((step: ScriptStep): ScriptStep => ({ ...step, state: stepState_derive(step.lines), running: step.lines.find((line: ScriptLine): boolean => line.running !== null)?.running ?? null }));
+  return steps.map((step: ScriptStep): ScriptStep => ({ ...step, state: BUILT_BY[step.kind] !== undefined ? declaredState_derive(step.lines) : stepState_derive(step.lines), running: step.lines.find((line: ScriptLine): boolean => line.running !== null)?.running ?? null }));
 }
 
 /**

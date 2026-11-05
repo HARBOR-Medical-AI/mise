@@ -384,6 +384,10 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     // The spec moves under what was built: the build and the deploy have a change to plan.
     await vm_run(vmContext, ['new', 'store', '--memory', '16']);
     expect(await read('vm new store --net scratch --open 80,443 --vcpu 2 --memory 16 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
+    // The record keeps what the build made, so the build line says what it would change.
+    expect(await read('vm build store')).toBe('changed (declared, not built: memory 8 → 16; the build plans and asks)');
+    // A record from before builds kept their spec says only that it was declared again.
+    vms.record_update('store', (record): void => { delete record.builtSpec; });
     expect(await read('vm build store')).toBe('changed (declared again since it was built; the build plans and asks)');
     expect(await read('chris deploy store --profile minimal --compute NERC')).toBe('changed (the VM was declared again since the deploy)');
     // With a host whose DNS has not caught up, the deploy is ready to resume.

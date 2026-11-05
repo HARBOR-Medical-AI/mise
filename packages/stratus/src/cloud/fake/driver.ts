@@ -7,6 +7,7 @@
  *
  * @module
  */
+import type { FakeBuildWorld } from './builder.js';
 import type {
   CloudAvailability, CloudBucket, CloudContainer, CloudDnsZone, CloudDriver, CloudIdentity, CloudInstance, CloudLimit, CloudLink, CloudLoadBalancer,
   CloudNetwork, CloudObject, CloudPrice, ServicePrices, CloudRecord, CloudResource, CloudSecurityGroup, CloudShape, CloudSubnet, CloudVolume, CloudZone, FoundCluster, FoundInstance, ResourceCounts, ResourceKind,
@@ -79,10 +80,26 @@ export class FakeDriver implements CloudDriver {
   private readonly cloudData: FakeCloud;
   /** How often each method was asked; the tests read it to prove caching. */
   readonly calls: Record<string, number> = {};
+  /** What the fake builder applied, which the tenancy answers beside the fixture once seen (`built_see`). */
+  private built: FakeBuildWorld | null = null;
 
   constructor(cloudData: FakeCloud, cloud: string = 'oci') {
     this.cloudData = cloudData;
     this.cloud = cloud;
+  }
+
+  /**
+   * Makes the fake tenancy answer what the fake builder applied: a VM's
+   * machine as an instance, its data stack and the networks found by their
+   * tags. Without it, `vm status` (which reads the tenancy as the truth)
+   * would mark every VM the fake builds as gone.
+   *
+   * @param world - The fake builder's world.
+   * @returns This driver.
+   */
+  built_see(world: FakeBuildWorld): this {
+    this.built = world;
+    return this;
   }
 
   private call_count(method: string): void {
@@ -147,6 +164,10 @@ export class FakeDriver implements CloudDriver {
   async servicePrices_get(): Promise<ServicePrices | null> {
     this.call_count('servicePrices_get');
     return this.cloudData.servicePrices ?? null;
+  }
+
+  pricesRead_get(): string | null {
+    return (this.calls['prices_list'] ?? 0) + (this.calls['servicePrices_get'] ?? 0) > 0 ? '2026-01-01T00:00:00.000Z' : null;
   }
 
   /** The records of one kind in a container and region, sorted by name; DNS is global. */
@@ -225,6 +246,10 @@ export class FakeDriver implements CloudDriver {
       if (name === undefined || stack.region !== region || GONE_STATES.includes(stack.state)) continue;
       byName.set(name, { ...(byName.get(name) ?? { stack: null, compartmentId: null }), stack: { id: stack.id, state: stack.state, compartmentId: stack.compartmentId } });
     }
+    for (const [id, stack] of this.built?.moduleStacks ?? []) {
+      if (stack.tag !== tagKey || stack.applied === null || (stack.module !== 'net' && stack.module !== 'vmData')) continue;
+      byName.set(stack.owner, { stack: { id, state: 'active', compartmentId: stack.placeId }, compartmentId: stack.placeId });
+    }
     return [...byName.entries()]
       .sort(([a]: [string, unknown], [b]: [string, unknown]): number => a.localeCompare(b))
       .map(([name, entry]): FoundCluster => ({ name, stack: entry.stack, compartmentId: entry.compartmentId, region }));
@@ -236,6 +261,14 @@ export class FakeDriver implements CloudDriver {
     for (const entry of this.cloudData.resources) {
       if (entry.kind !== 'instances' || entry.record.region !== region || entry.record.state === 'terminated') continue;
       found.push({ ...entry.record, containerId: entry.containerId });
+    }
+    for (const stack of this.built?.moduleStacks.values() ?? []) {
+      if (stack.module !== 'vmMachine' || stack.applied === null) continue;
+      const id: string = `ocid1.instance.oc1..fake-${stack.owner}`;
+      found.push({
+        name: stack.owner, id, state: 'running', region, created: '2026-11-01T21:22:15Z', tags: { 'mise-service': stack.owner, ...(this.built?.instanceTags.get(id) ?? {}) }, raw: {},
+        shape: 'VM.Standard.E5.Flex', zone: 'AD-1', ips: ['10.40.0.10', '203.0.113.10'], vcpus: Number(stack.applied['vcpu']), memoryGib: Number(stack.applied['memory']), containerId: stack.placeId,
+      });
     }
     return found.sort((a: FoundInstance, b: FoundInstance): number => a.name.localeCompare(b.name));
   }

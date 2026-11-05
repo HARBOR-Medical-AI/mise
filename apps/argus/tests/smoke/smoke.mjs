@@ -3466,9 +3466,9 @@ try {
   } else if (!vc.opened) {
     check('a display narrower than the VM controller\'s least refuses by name, and the line runs as text', vc.narrow && /needs a display at least 1250 px wide/.test(vc.said), JSON.stringify(vc));
   } else {
-    check('vm takes the screen on a new machine; COMMIT writes its script under mine and declares it; the machine then stands in the gutter with its five seats, the page hidden behind it',
+    check('vm takes the screen on a new machine; COMMIT writes its script under mine and declares it; the machine then stands in the gutter with its seats, MACHINE then SIZE (holding its build), CHRIS, USERS, TEARDOWN, the page hidden behind it',
       vc.declared && vc.logged.some((l) => l.startsWith('stratus> touch --withContents=')) && vc.logged.some((l) => l.startsWith('stratus> vm new ' + vc.name))
-        && JSON.stringify(vc.steps) === JSON.stringify(['SIZE', 'BUILD', 'CHRIS', 'USERS', 'TEARDOWN']) && vc.pills.includes(vc.name.toUpperCase()) && vc.pills.at(-1) === '+ NEW' && vc.condition === 'DECLARED' && vc.hidden === 0, JSON.stringify(vc));
+        && JSON.stringify(vc.steps) === JSON.stringify(['MACHINE', 'SIZE', 'CHRIS', 'USERS', 'TEARDOWN']) && vc.pills.includes(vc.name.toUpperCase()) && vc.pills.at(-1) === '+ NEW' && vc.condition === 'DECLARED' && vc.hidden === 0, JSON.stringify(vc));
     check('Esc gives the VM controller back: no takeover, the tab\'s title as it was', vc.after === null && vc.titleBack, JSON.stringify(vc));
   }
   }

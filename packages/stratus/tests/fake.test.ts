@@ -3,6 +3,7 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import { FakeDriver, fakeCloud_sample, availabilityKey_make } from '../src/cloud/fake/driver.js';
+import { FakeBuildWorld } from '../src/cloud/fake/builder.js';
 import { driverContract_describe } from './support/driverContract.js';
 
 driverContract_describe('the fake cloud', () => new FakeDriver(fakeCloud_sample()));
@@ -20,6 +21,19 @@ describe('the fake cloud', () => {
     expect(availabilityKey_make('r', 's', 'n')).toBe('r/s/n');
     expect(availabilityKey_make('r', 's', 'n', 'z')).toBe('r/s/n/z');
     expect(driver.calls['containers_list']).toBe(2);
+  });
+
+  it('answers what the fake builder applied once it sees the world: a machine as an instance, a data stack by its tag', async () => {
+    const world: FakeBuildWorld = new FakeBuildWorld(0);
+    const driver: FakeDriver = new FakeDriver(fakeCloud_sample()).built_see(world);
+    const before: number = (await driver.instances_find('us-ashburn-1')).length;
+    world.moduleStacks.set('stack-m', { module: 'vmMachine', owner: 'smk', tag: 'mise-vm', placeId: 'ocid1.compartment.oc1..fake-scratch', planned: {}, applied: { vcpu: '2', memory: '8' } });
+    world.moduleStacks.set('stack-d', { module: 'vmData', owner: 'smk', tag: 'mise-vm', placeId: 'ocid1.compartment.oc1..fake-scratch', planned: {}, applied: {} });
+    world.moduleStacks.set('stack-p', { module: 'vmMachine', owner: 'planned', tag: 'mise-vm', placeId: 'ocid1.compartment.oc1..fake-scratch', planned: {}, applied: null });
+    const instances = await driver.instances_find('us-ashburn-1');
+    expect(instances.length).toBe(before + 1);
+    expect(instances.find((one) => one.name === 'smk')).toMatchObject({ id: 'ocid1.instance.oc1..fake-smk', state: 'running', vcpus: 2, memoryGib: 8, tags: { 'mise-service': 'smk' } });
+    expect((await driver.clusters_find('mise-vm', 'us-ashburn-1')).map((one) => one.name)).toEqual(['smk']);
   });
 
   it('refuses a fixture with no root', async () => {
