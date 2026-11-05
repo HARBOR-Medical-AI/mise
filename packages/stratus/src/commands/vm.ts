@@ -903,8 +903,15 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   const what: string = changed.length > 0 ? `${changed.join(', ')}.` : `data ${planCounts_words(data.counts)}; machine ${machineWords}.`;
   const made: string[] = context.store.record_read(name)?.planMade ?? [];
   const already: string = made.length === 0 ? '' : ` Already made to plan it, free: ${made.join(', ')}; STOP leaves ${made.length === 1 ? 'it' : 'them'}, and a later build reuses ${made.length === 1 ? 'it' : 'them'}.`;
-  const yes: boolean = await repl_confirm(`vm build ${name}: ${what}${warning}${growing} It bills: ${cost_line(await cost_read(context, spec))}.${already} Continue? [y/N]`);
-  if (!yes) return envelope_ok(`${chalk.gray(made.length === 0 ? `stopped before the apply; nothing changed (vm build ${name} plans and asks again)` : `stopped before the apply; nothing that bills was made (made to plan it, free: ${made.join(', ')}; vm build ${name} reuses ${made.length === 1 ? 'it' : 'them'})`)}\n`);
+  // The declaration this build applies is written already (a BUILD declares, then builds): said, and kept on a STOP.
+  const record: VmRecord | null = context.store.record_read(name);
+  const declaredSince: boolean = record?.declared !== undefined && (record.built === undefined || record.declared > record.built);
+  const written: string = declaredSince ? ` Already written: its declaration${record?.keptDeclared === record?.declared ? ', kept in the tenancy' : ''}; STOP keeps it and builds nothing.` : '';
+  const yes: boolean = await repl_confirm(`vm build ${name}: ${what}${warning}${growing} It bills: ${cost_line(await cost_read(context, spec))}.${written}${already} Continue? [y/N]`);
+  if (!yes) {
+    const left: string[] = [...(declaredSince ? ['the declaration stands as written'] : []), ...(made.length > 0 ? [`made to plan it, free: ${made.join(', ')}`] : [])];
+    return envelope_ok(`${chalk.gray(left.length === 0 ? `stopped before the apply; nothing changed (vm build ${name} plans and asks again)` : `stopped before the apply; nothing was built (${left.join('; ')}; vm build ${name} plans and asks again)`)}\n`);
+  }
   if (grow.boot || grow.data) context.store.record_update(name, (current: VmRecord): void => { current.growOwed = { boot: grow.boot || current.growOwed?.boot === true, data: grow.data || current.growOwed?.data === true }; });
   if (counts_total(data.counts) > 0) {
     const applied = await job_runFollowed(VM_JOBS.apply(name, 'data'), `apply ${name} data`, vmApplyRun_make(name, 'data', deps));
@@ -920,6 +927,11 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
     const judge: VmPlanJudged | null = kept === null ? null : vmPlan_judge(kept.plan);
     if (judge !== null && judge.refused.length > 0 && !allowAlter) return envelope_error('', undefined, `vm build: ${name}: the machine plan ${judge.refused.join('; ')}: refused unless vm build ${name} --allow-alter\n`);
     machineCounts = planned.counts;
+    // The machine was not planned when the build asked (its data had to stand first): its own plan is asked before it applies.
+    if (counts_total(planned.counts) > 0) {
+      const again: boolean = await repl_confirm(`vm build ${name}: its data stands; the machine plan ${planCounts_words(planned.counts)} (${spec.vcpu} vCPU, ${spec.memory} GiB, disk ${spec.disk} GB). It bills: ${cost_line(await cost_read(context, spec))} with its data. Continue? [y/N]`);
+      if (!again) return envelope_ok(`${chalk.gray(`stopped before the machine; its data stands and bills its own (vm build ${name} plans the machine and asks again; vm teardown ${name} --all removes the data)`)}\n`);
+    }
   }
   if (machineCounts !== undefined && counts_total(machineCounts) > 0) {
     const applied = await job_runFollowed(VM_JOBS.apply(name, 'machine'), `apply ${name} machine`, vmApplyRun_make(name, 'machine', deps));

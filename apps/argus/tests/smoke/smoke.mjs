@@ -3477,6 +3477,9 @@ try {
     const askedNew = await settle(() => asking(), 400);
     const questionNew = root().querySelector('.tdc-strip-text')?.textContent ?? null;
     pill('CONTINUE')?.click();
+    // A first build asks again before its machine, once its data stands: that question is answered too.
+    const askedMachine = await settle(() => asking() && /the machine plan/.test(root().querySelector('.tdc-strip-text')?.textContent ?? ''), 400);
+    if (askedMachine) pill('CONTINUE')?.click();
     const built = await settle(() => idle() && window.__argusVm?.vm() === name && runsMarks().length === 4, 600);
     const runsBuilt = runsMarks();
     const titleBuilt = noteTitle();
@@ -3511,14 +3514,14 @@ try {
     const pills = [...document.querySelectorAll('#vm-controller .takeover-seat .tdc-cluster')].map((p) => p.textContent);
     const hidden = [...document.body.children].filter((node) => node.id !== 'vm-controller' && getComputedStyle(node).visibility !== 'hidden' && node.offsetParent !== null).length;
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await sleep(400);
-    return { composition: 'stratus', opened: true, name, priced, sentBefore, askedNew, questionNew, built, runsBuilt, titleBuilt, would, declareShown, askedResize, questionResize, receipt, runsAfter, receiptText, fieldRuns, blocksRead, lockBorn, lifted, lockLifted, relocked, logged, steps, pills, hidden, titleBack: document.title === titleBefore, after: document.body.dataset.takeover ?? null };`);
+    return { composition: 'stratus', opened: true, name, priced, sentBefore, askedNew, questionNew, askedMachine, built, runsBuilt, titleBuilt, would, declareShown, askedResize, questionResize, receipt, runsAfter, receiptText, fieldRuns, blocksRead, lockBorn, lifted, lockLifted, relocked, logged, steps, pills, hidden, titleBack: document.title === titleBefore, after: document.body.dataset.takeover ?? null };`);
   if (vc.composition !== 'stratus') {
     check('under any other composition vm opens no controller', true, JSON.stringify(vc));
   } else if (!vc.opened) {
     check('a display narrower than the VM controller\'s least refuses by name, and the line runs as text', vc.narrow && /needs a display at least 1250 px wide/.test(vc.said), JSON.stringify(vc));
   } else {
     check('vm on a new machine offers its levers and its price before anything is sent; BUILD, its one commit, writes the script, declares and builds, its question in place with the cost',
-      vc.priced && vc.sentBefore === 0 && vc.askedNew && /It bills/.test(vc.questionNew ?? '') && vc.logged.some((l) => l.startsWith('stratus> touch --withContents=')) && vc.logged.some((l) => l.startsWith('stratus> vm new ' + vc.name)) && vc.logged.includes('stratus> vm build ' + vc.name), JSON.stringify(vc));
+      vc.priced && vc.sentBefore === 0 && vc.askedNew && /It bills/.test(vc.questionNew ?? '') && vc.askedMachine && vc.logged.some((l) => l.startsWith('stratus> touch --withContents=')) && vc.logged.some((l) => l.startsWith('stratus> vm new ' + vc.name)) && vc.logged.includes('stratus> vm build ' + vc.name), JSON.stringify(vc));
     check('SIZE is one loop: it renders what runs beside each lever, says what BUILD would do against it, BUILD is its only commit, the question is in place, and the receipt is what runs read back',
       vc.built && JSON.stringify(vc.runsBuilt) === JSON.stringify(['RUNS 2', 'RUNS 8 GiB', 'RUNS 60 GB', 'RUNS 50 GB']) && vc.titleBuilt !== null
         && /memory 8 → 16 GiB: the machine reboots/.test(vc.would ?? '') && !vc.declareShown && vc.askedResize && /REBOOTS/.test(vc.questionResize ?? '')

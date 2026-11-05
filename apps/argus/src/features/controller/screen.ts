@@ -546,7 +546,12 @@ export class TdController {
   }
 
   private cost_rows(cluster: ClusterSummary): Array<[string, string]> {
-    if (cluster.cost === null || cluster.cost === undefined) return [['PER HOUR', cluster.billing === true ? 'NOT PRICED' : '0'], ['SO FAR', '—'], ['A MONTH', '—']];
+    if (cluster.cost === null || cluster.cost === undefined) {
+      // Billing, and the tenancy not priced yet (the apply is making it): the rate SIZE priced, said as such, never NOT PRICED.
+      const sized = cluster.billing === true && this.size !== null && cluster.spec != null ? sizeCost_compute(this.size, cluster.spec as ClusterSpecModel) : null;
+      if (sized !== null && sized.hourly !== null) return [['PER HOUR', `${money_text(sized.hourly, sized.currency)} · AS SIZED, NOT YET READ`], ['SO FAR', '—'], ['A MONTH', `${money_text(sized.hourly * HOURS_PER_MONTH, sized.currency, 0)} · AS SIZED`]];
+      return [['PER HOUR', cluster.billing === true ? 'NOT YET PRICED FROM THE TENANCY' : '0'], ['SO FAR', '—'], ['A MONTH', '—']];
+    }
     const { hourly, soFar, currency } = cluster.cost;
     return [['PER HOUR', `${money_text(hourly, currency)} · EST`], ['SO FAR', money_text(soFar, currency)], ['A MONTH', `${money_text(hourly * HOURS_PER_MONTH, currency, 0)} · AT THIS RATE`]];
   }
@@ -616,6 +621,18 @@ export class TdController {
     const where: string = killed.step === null ? 'the task' : `${killed.step} (${(at?.state ?? 'not read').toUpperCase()} as read now)`;
     note.append(el('span', 'tdc-note-title', `KILLED · ${killed.at.slice(11, 16)}`), el('span', 'tdc-prose', `${killed.job} was stopped in ${where}. What it made stays${cluster.billing === true ? ' and bills' : ''}; BUILD · THROUGH RUN resumes at the first step not done.`));
     return note;
+  }
+
+  /**
+   * Why a verb waits while a task of the cluster runs: one act at a time, said on the pill.
+   *
+   * @param cluster - The cluster.
+   * @returns The reason, or null when nothing runs.
+   */
+  private runRefusal_get(cluster: ClusterSummary): string | null {
+    const running = cluster.running;
+    if (running === null || running === undefined) return null;
+    return `${running.job} runs now (${running.step ?? 'a step'}): one act at a time; it waits until that ends or is killed`;
   }
 
   /** The last refusal, in the view it was pressed in: at the head of the view's first section, beside what it refused. */
@@ -758,14 +775,14 @@ export class TdController {
     const commands: HTMLElement = el('div', 'tdc-commands');
     commands.append(el('span', 'tdc-commands-label', 'CLUSTER'),
       // loop: td-plan
-      this.linePill_make('PLAN', LINES.plan(cluster.name), 'plain', cluster.refused?.['plan']),
+      this.linePill_make('PLAN', LINES.plan(cluster.name), 'plain', this.runRefusal_get(cluster) ?? cluster.refused?.['plan']),
       // loop: td-verify
-      this.linePill_make('VERIFY', LINES.verify(cluster.name), 'plain', cluster.refused?.['verify']),
+      this.linePill_make('VERIFY', LINES.verify(cluster.name), 'plain', this.runRefusal_get(cluster) ?? cluster.refused?.['verify']),
       // loop: td-spend
       this.linePill_make('SPEND', LINES.spend(cluster.name)),
       el('span', 'tdc-flex'),
       // loop: td-build
-      this.linePill_make('BUILD', LINES.build(cluster.name), 'bill', cluster.refused?.['build']));
+      this.linePill_make('BUILD', LINES.build(cluster.name), 'bill', this.runRefusal_get(cluster) ?? cluster.refused?.['build']));
     steps.append(commands);
     // PLAN writes a plan job in the tenancy's Resource Manager and nothing else: said beside it, and its answer after.
     steps.append(el('p', 'tdc-prose tdc-quiet', 'PLAN makes a plan job in the tenancy\'s Resource Manager: nothing is built, changed or billed. VERIFY and SPEND only read.'));
@@ -873,9 +890,12 @@ export class TdController {
     now.querySelector('.tdc-pair-value')?.classList.add('tdc-running-clock');
     const controls: HTMLElement = el('div', 'tdc-commands');
     const following: boolean = this.following_is(cluster.name);
-    // loop: td-kill
     const armed: boolean = this.killArmed === running.job;
+    // KILL sent and the task not stopped yet: it stops when the step it is in ends; said so, and not offered again.
+    const stopping: boolean = this.killed !== null && this.killed.job === running.job;
+    // loop: td-kill
     const kill: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-destroy', armed ? 'KILL · NOW' : 'KILL');
+    kill.hidden = stopping;
     kill.type = 'button';
     kill.title = `stops following, then sends: ${LINES.kill(running.job)}`;
     // KILL asks in place before it sends (a-change-is-a-loop, clause 4): the first press says what stopping leaves, the second stops it.
@@ -887,6 +907,11 @@ export class TdController {
       this.killed = { cluster: cluster.name, job: running.job, step: running.step ?? null, at: new Date().toISOString() };
       void this.kill_send(running.job);
     });
+    if (stopping) {
+      const sent: HTMLElement = el('div', 'tdc-note tdc-note-refused tdc-note-killed');
+      sent.append(el('span', 'tdc-note-title', `KILL SENT · ${(this.killed as { at: string }).at.slice(11, 16)} · STOPPING`), el('span', 'tdc-prose', `It stops when ${running.step ?? 'the step it is in'} ends; what it made stays${cluster.billing === true ? ' and bills' : ''}. Read again until it has stopped.`));
+      controls.append(sent);
+    }
     if (armed) {
       const stop: HTMLElement = el('div', 'tdc-note tdc-note-refused');
       stop.append(el('span', 'tdc-note-title', 'KILL STOPS IT PART WAY'), el('span', 'tdc-prose', teardown
@@ -1043,7 +1068,7 @@ export class TdController {
     if (torn) {
       // Torn down from here: said as such, with when; the line is refused by name and no lock stands.
       const box: HTMLElement = el('div', 'tdc-note tdc-note-found');
-      box.append(el('span', 'tdc-note-title', 'TORN DOWN'), el('span', 'tdc-prose', `${cluster.name} was torn down ${cluster.gone === null || cluster.gone === undefined ? '' : `${cluster.gone.slice(0, 16).replace('T', ' ')} `}and nothing of it bills. A build brings it back.`));
+      box.append(el('span', 'tdc-note-title', 'TORN DOWN'), el('span', 'tdc-prose', `${cluster.name} was torn down ${cluster.gone === null || cluster.gone === undefined ? '' : `${cluster.gone.slice(0, 16).replace('T', ' ')} `}and nothing of it bills. Its record and spec stay on this host; a torn cluster is not built again (BUILD refuses it): + NEW makes a new one.`));
       guard.append(box);
       return [goes, guard];
     }
@@ -1392,6 +1417,14 @@ export class TdController {
       for (let i: number = 0; i < 50 && this.busy !== null; i++) await new Promise((resolve): void => { setTimeout(resolve, 100); });
     }
     await this.line_send(LINES.kill(job));
+    // The kill's receipt is the task stopped: the clusters are read again until it no longer runs (a minute at most).
+    for (let i: number = 0; i < 30; i++) {
+      const now: ClusterSummary | null = this.cluster_get();
+      if (now === null || now.running === null || now.running === undefined || now.running.job !== job) break;
+      await new Promise((resolve): void => { setTimeout(resolve, 2000); });
+      await this.hooks.refresh();
+    }
+    this.draw();
   }
 
   private cues_play(was: ClusterSummary | null, now: ClusterSummary | null): void {

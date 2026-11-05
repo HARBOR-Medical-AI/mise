@@ -152,6 +152,10 @@ describe('a session over a tenancy holding a cluster it keeps nothing of', () =>
     const answer = await cluster_run(bare, []);
     expect((answer.model?.data as { clusters: Array<{ name: string; condition?: string; cost?: { hourly: number } | null }> }).clusters).toEqual([expect.objectContaining({ name: 'quay', condition: 'GONE', cost: { hourly: 0, soFar: 0, currency: 'USD' } })]);
     expect(answer.rendered.replace(ANSI, '')).toContain('torn down and gone: quay (the record stays in ');
+    // Asked by name, it answers where its loop ended, never 'no such cluster'.
+    const named = await cluster_run(bare, ['quay']);
+    expect(named.rendered.replace(ANSI, '')).toMatch(/^quay  torn down whole 2026-10-25 04:45; nothing of it stands or bills/);
+    expect((named.model?.data as { clusters: Array<{ name: string; condition?: string }> }).clusters).toEqual([expect.objectContaining({ name: 'quay', condition: 'GONE' })]);
     // Its tag's carriers still standing, it is found and listed as GONE until they are removed (D15).
     world.stacks.set(QUAY_STACK, { state: 'active', compartmentId: QUAY_COMPARTMENT, baseDomain: 'oci.example.org', spec: SPEC_DEFAULT });
     const found = await cluster_run(context, []);

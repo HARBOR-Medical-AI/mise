@@ -730,7 +730,7 @@ export class VmScreen extends ScriptScreen {
     lock.append(el('span', 'tdc-note-title', row === null ? 'NOT KEPT HERE' : row.protected ? 'PROTECTED' : 'UNLOCKED'), el('span', 'tdc-prose', row === null
       ? 'The host keeps no record of this machine yet: declare and build it first.'
       : row.protected ? 'A machine is born protected. Lifting the lock is a line of its own, so no single slip removes it.'
-        : machineStands ? 'The lock is off. TEARDOWN sends the line; TEARDOWN · ALL asks for the name typed back.' : 'The lock is off. The machine is gone; its data stands. TEARDOWN · ALL takes the data too, asking for the name typed back.'));
+        : machineStands ? 'The lock is off. TEARDOWN asks first, with what goes and what still bills; TEARDOWN · ALL asks for the name typed back.' : 'The lock is off. The machine is gone; its data stands. TEARDOWN · ALL takes the data too, asking for the name typed back.'));
     const where: string | null = lockWhere_text(row?.lock);
     if (where !== null) lock.append(el('span', 'tdc-prose tdc-quiet ss-lock-where', where.toUpperCase()));
     const commands: HTMLElement = el('div', 'tdc-commands');

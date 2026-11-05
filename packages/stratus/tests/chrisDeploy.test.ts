@@ -186,7 +186,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     surface.answers = ['y'];
     await net_run(netContext, ['build', 'scratch']);
     await vm_run(vmContext, VM_LINE);
-    surface.answers = ['y'];
+    surface.answers = ['y', 'y'];
     await vm_run(vmContext, ['build', 'store']);
     surface.asked = [];
   });

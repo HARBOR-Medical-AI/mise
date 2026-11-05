@@ -227,12 +227,19 @@ export async function cluster_run(context: ClusterCommandContext, args: Readonly
   const history: HarborCluster[] = kept.filter((cluster: HarborCluster): boolean => torn(cluster) && !foundNames.has(cluster.name));
   const all: HarborCluster[] = [...standing, ...found.clusters];
   const historyLine: string = history.length === 0 ? '' : `\n${chalk.gray(`torn down and gone: ${history.map((cluster: HarborCluster): string => cluster.name).join(', ')} (the record stays in ${history.map((cluster: HarborCluster): string => cluster.root).join(', ')})`)}`;
-  // `cluster <name>` is that cluster's status: the line the TD controller opens on, and the same line as text in chell.
-  if (verb !== 'status' && rest.length === 0 && all.some((cluster: HarborCluster): boolean => cluster.name === verb)) return cluster_run(context, ['status', verb]);
-  if (verb !== 'status') return envelope_error('', undefined, `cluster: ${verb}: not a verb this session has yet (cluster status, new, size, plan, build, adopt, verify, protect, teardown)\n`);
   // A cluster torn down whole is history in the text, but the model carries it as GONE, so a screen coming back shows
   // where its loop ended (its teardown's blocks, nothing billing), as the VM list keeps a VM torn down whole.
   const historyRows = (): ClusterSummary[] => history.map((cluster: HarborCluster): ClusterSummary => ({ ...clusterSummary_read(context.build?.store ?? null, context.clustersPath(), cluster), resources: null, resourcesAt: null, cost: { hourly: 0, soFar: 0, currency: 'USD' } }));
+  // `cluster <name>` is that cluster's status: the line the TD controller opens on, and the same line as text in chell.
+  if (verb !== 'status' && rest.length === 0 && all.some((cluster: HarborCluster): boolean => cluster.name === verb)) return cluster_run(context, ['status', verb]);
+  // A cluster torn down whole answers too: where its loop ended (torn down, when; nothing bills), never 'no such cluster'.
+  const wentNamed: string | undefined = verb !== 'status' && rest.length === 0 ? verb : verb === 'status' && rest.length === 1 ? rest[0] : undefined;
+  const went: HarborCluster | undefined = history.find((cluster: HarborCluster): boolean => cluster.name === wentNamed);
+  if (went !== undefined) {
+    const gone: string = ((went.state as { gone?: string } | null)?.gone ?? '').slice(0, 16).replace('T', ' ');
+    return envelope_ok(`${chalk.bold(went.name)}  torn down whole ${gone}; nothing of it stands or bills (the record stays in ${went.root})\n`, { kind: STRATUS_CLUSTERS_MODEL_KIND, data: { clusters: historyRows().filter((row: ClusterSummary): boolean => row.name === went.name) } });
+  }
+  if (verb !== 'status') return envelope_error('', undefined, `cluster: ${verb}: not a verb this session has yet (cluster status, new, size, plan, build, adopt, verify, protect, teardown)\n`);
   if (all.length === 0) return envelope_ok(`no clusters${found.unsearched === null ? ' here or in the tenancy' : ` here (the tenancy was not searched: ${found.unsearched})`}: cluster new <name> makes one; stratus --cluster <name>=<harbor-oci checkout> reads one${historyLine}\n`, { kind: STRATUS_CLUSTERS_MODEL_KIND, data: { clusters: verb === 'status' && rest.length === 0 ? historyRows() : [] } });
   const chosen: HarborCluster[] = rest.length === 0 ? all : all.filter((cluster: HarborCluster): boolean => rest.includes(cluster.name));
   const missing: string[] = rest.filter((name: string): boolean => !all.some((cluster: HarborCluster): boolean => cluster.name === name));
