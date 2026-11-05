@@ -153,6 +153,9 @@ export function vmPlanRun_make(name: string, part: VmPart, deps: VmDeps): JobRun
     deps.store.record_update(name, (current: VmRecord): void => {
       current.placeId = net.placeId;
       if (plan.stackRef === undefined) return;
+      // A stack made to plan is made before the question: said in it, free, kept on a STOP.
+      if (stackRef === undefined) current.planMade = [...(part === 'data' ? [] : current.planMade ?? []), `its ${part} stack ${plan.stackRef}`];
+      else if (part === 'data') current.planMade = [];
       if (part === 'data') current.dataStackRef = plan.stackRef;
       else current.machineStackRef = plan.stackRef;
     });

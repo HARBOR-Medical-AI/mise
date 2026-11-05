@@ -98,9 +98,12 @@ export function netPlanRun_make(name: string, deps: NetDeps): JobRun {
     const builder = builder_check(deps.builder);
     const call: BuildCall = call_make(context);
     const { record, spec } = net_read(deps.store, name);
+    // What this plan makes before the question asks, said in it (a-change-is-a-loop, clause 4): free, and kept on a STOP.
+    const made: string[] = [];
     let placeId: string | undefined = record.placeId;
     if (placeId === undefined) {
       const place = await builder.place_ensure({ name, region: record.region, tag: NET_TAG }, call);
+      if (place.made) made.push(`the compartment ${name}`);
       if (!place.tagged) {
         const standing = standing_words(await deps.driver.resources_search(place.id, record.region));
         if (standing.total > 0) throw new Error(`the compartment ${name} is there and holds ${standing.words}: a network is built in an empty compartment or its own`);
@@ -117,7 +120,8 @@ export function netPlanRun_make(name: string, deps: NetDeps): JobRun {
       ...(record.stackRef !== undefined ? { stackRef: record.stackRef } : {}),
     }, call);
     if (context.signal.aborted) return;
-    deps.store.record_update(name, (current: NetRecord): void => { if (plan.stackRef !== undefined) current.stackRef = plan.stackRef; current.clientCidr = clientCidr; });
+    if (record.stackRef === undefined && plan.stackRef !== undefined) made.push(`its stack ${plan.stackRef}`);
+    deps.store.record_update(name, (current: NetRecord): void => { if (plan.stackRef !== undefined) current.stackRef = plan.stackRef; current.clientCidr = clientCidr; current.planMade = made; });
     deps.store.file_write(name, 'plan.json', `${JSON.stringify(plan, null, 2)}\n`);
     context.log_write(`plan: ${planCounts_words(plan_count(plan))}`);
   };

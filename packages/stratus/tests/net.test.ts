@@ -222,7 +222,8 @@ describe('net, over the fake cloud', () => {
     surface.answers = ['y'];
     const built = await net_run(context, ['build', 'scratch']);
     expect(built.renderedErr ?? '').toBe('');
-    expect(surface.asked).toEqual(['net build scratch: 6 to create, 0 to change, 0 to destroy. Nothing a network is made of bills. Continue? [y/N]']);
+    // What the plan made before the question is said in it: free, and kept on a STOP.
+    expect(surface.asked).toEqual(['net build scratch: 6 to create, 0 to change, 0 to destroy. Nothing a network is made of bills. Already made to plan it, free: the compartment scratch, its stack fake-stack-net-scratch; STOP leaves them, and a later build reuses them. Continue? [y/N]']);
     expect(plain(built.rendered)).toContain('scratch  built');
     expect(plain(built.rendered)).toContain('bastion  ocid1.bastion.oc1..fake-scratch, admitting 134.174.21.21/32');
     const record = store.record_read('scratch');
@@ -234,10 +235,10 @@ describe('net, over the fake cloud', () => {
     expect(surface.asked).toEqual([]);
   });
 
-  it('asks before the apply, and a no changes nothing', async () => {
+  it('asks before the apply, naming the free compartment and stack its plan made, and a no makes nothing else', async () => {
     await net_run(context, ['new', 'scratch', '--cidr', '10.40.0.0/16']);
     surface.answers = ['n'];
-    expect(plain((await net_run(context, ['build', 'scratch'])).rendered)).toContain('stopped before the apply; nothing changed');
+    expect(plain((await net_run(context, ['build', 'scratch'])).rendered)).toContain('stopped before the apply; nothing else was made (made to plan it, free: the compartment scratch, its stack fake-stack-net-scratch; net build scratch reuses them)');
     expect(store.record_read('scratch')?.built).toBeUndefined();
     expect(world.moduleStacks.get('fake-stack-net-scratch')?.applied).toBeNull();
   });

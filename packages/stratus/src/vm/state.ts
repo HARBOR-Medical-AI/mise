@@ -43,6 +43,8 @@ export interface VmRecord extends KeptRecord {
   takenFrom?: string;
   /** The machine as this cache last saw it: a tenancy that answers otherwise (rebuilt or resized from another session) has the cache read again. */
   seen?: { instanceId: string; vcpus: number; memoryGib: number };
+  /** What the last build's plans made before its question (free: a stack), so the question names it. */
+  planMade?: string[];
   /** What the tenancy runs, read on the last listing: the instance's vCPUs and memory, the boot and data volumes' sizes, and when it was read. */
   stands?: VmStands;
   /** When the declaration the vault keeps was made: equal to `declared` once this host's declaration is kept in the tenancy. */
