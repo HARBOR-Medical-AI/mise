@@ -144,13 +144,16 @@ export function tdController_wire(context: Pick<HostContext, 'client' | 'manage_
     }
     titleBefore = document.title;
     const opened: TdController = new TdController({
-      run: async (line: string): Promise<void> => {
+      run: async (line: string): Promise<boolean> => {
         lineRunning = true;
         try {
           // The operator's own line, never instrument traffic: the session may ask its questions.
-          await context.client.line_execute(line, { operator: true });
+          const outcome = await context.client.line_execute(line, { operator: true });
+          // A refused answer is said where its control stands.
+          return !outcome.envelopes.some((envelope): boolean => envelope.status === 'error');
         } catch (error: unknown) {
           opened.output_take(`${error instanceof Error ? error.message : String(error)}\n`);
+          return false;
         } finally {
           lineRunning = false;
         }

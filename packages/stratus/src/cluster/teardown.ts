@@ -53,7 +53,7 @@ export function teardownRun_make(store: ClusterStore, builder: CloudBuilder, ins
     const now = (): string => new Date().toISOString();
     // Each step lands on the record as it begins and ends, so a stopped teardown reads as such and resumes from the
     // first step not done, and the state is shown each time.
-    store.record_update(name, (current: ClusterRecord): void => { current.teardown = { started: current.teardown?.started ?? now(), steps: { ...(current.teardown?.steps ?? {}) } }; });
+    store.record_update(name, (current: ClusterRecord): void => { current.teardown = { started: current.teardown?.started ?? now(), steps: { ...(current.teardown?.steps ?? {}) } }; delete current.teardownRefused; });
     shown();
     const step = (stepName: TeardownStep, state: TeardownStepState, note?: string): void => {
       store.record_update(name, (current: ClusterRecord): void => {

@@ -24,7 +24,7 @@ import { VERIFY_FILE, type VerifyKept } from './verify.js';
 export { VERIFY_FILE, type VerifyKept };
 
 /** The parts of a summary the controller draws, beyond the tile's glance. */
-export type ClusterReadout = Required<Pick<ClusterSummary, 'condition' | 'billing' | 'origin' | 'protected' | 'lock' | 'refused' | 'region' | 'compartment' | 'gone' | 'teardown' | 'spec' | 'next' | 'billingStep' | 'running' | 'plan' | 'verify' | 'asking'>>;
+export type ClusterReadout = Required<Pick<ClusterSummary, 'condition' | 'billing' | 'origin' | 'protected' | 'lock' | 'teardownRefused' | 'refused' | 'region' | 'compartment' | 'gone' | 'teardown' | 'spec' | 'next' | 'billingStep' | 'running' | 'plan' | 'verify' | 'asking'>>;
 
 /**
  * Whether a teardown stopped part way: steps done, the record not yet gone, no task running.
@@ -200,6 +200,7 @@ export function clusterReadout_build(cluster: HarborCluster, store: ClusterStore
     origin: cluster.origin === 'found' ? 'found' : cluster.origin !== 'built' || record === null ? 'checkout' : record.adopted !== undefined ? 'adopted' : 'built',
     protected: record?.protected !== false,
     lock: record === null ? null : { at: lock_read(record, true).at, kept: lockKept_is(record, true) },
+    teardownRefused: record?.teardownRefused ?? null,
     refused: refusals_derive(cluster, record),
     region: record?.region ?? cluster.settings['OCI_REGION'] ?? null,
     compartment: record?.compartmentId ?? cluster.settings['OCI_COMPARTMENT_OCID'] ?? null,

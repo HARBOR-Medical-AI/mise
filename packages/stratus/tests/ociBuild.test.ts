@@ -358,12 +358,15 @@ describe('cluster teardown', () => {
     expect((await cluster_run(context, ['teardown'])).renderedErr).toBe('cluster teardown: usage: cluster teardown <name>\n');
     const blind: ClusterCommandContext = { ...context, build: { ...context.build!, verifyReach: { ...context.build!.verifyReach!, kube_make: (): KubeApi => ({ ...new FakeKube({ nodes: [] }), json_get: async () => { throw new Error('unreachable'); } }) as KubeApi } } };
     expect((await cluster_run(blind, ['teardown', 'trial'])).renderedErr).toBe("cluster teardown: trial: cannot read the cluster's volumes (unreachable): refusing, they would be left billing\n");
+    // The refusal is kept on the record, so a screen coming back says it, until a teardown starts.
+    expect(store.record_read('trial')?.teardownRefused).toEqual({ at: expect.any(String), why: "cannot read the cluster's volumes (unreachable): refusing, they would be left billing" });
     // Once an earlier pass emptied the stack the cluster is gone with it:
     // the teardown runs again without asking it, and finishes.
     const builderUsed = context.build!.builder!;
     const counted = jest.spyOn(builderUsed, 'stackResources_count').mockResolvedValue(0);
     const resumed = await cluster_run(blind, ['teardown', 'trial']);
     expect(plain(resumed.rendered)).toBe('trial: torn down\n');
+    expect(store.record_read('trial')?.teardownRefused).toBeUndefined();
     expect((store.record_read('trial') as ClusterRecord).gone).toBeDefined();
     counted.mockRestore();
     store.record_update('trial', (current: ClusterRecord): void => { delete current.gone; });

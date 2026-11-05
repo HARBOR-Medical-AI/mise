@@ -479,6 +479,14 @@ export interface BuildWould {
  */
 export function buildWould_derive(levers: VmNewLevers, runs: VmRuns): BuildWould[] {
   const would: BuildWould[] = [];
+  // No machine runs (torn down, its data kept, or nothing of it at all): the build makes it, not a change to one.
+  if (runs.vcpu === null && runs.memory === null) {
+    const size: string = `${levers.vcpu ?? '?'} vCPU · ${levers.memory ?? '?'} GiB · disk ${levers.disk ?? '?'} GB`;
+    would.push(runs.data !== null
+      ? { change: `the machine made again: ${size}`, consequence: `over its kept data volume (${runs.data} GB): its data and address come back with it`, tone: 'grow' }
+      : { change: `the machine and its data made: ${size} · data ${levers.data ?? '?'} GB`, consequence: 'nothing of it stands: a new, empty data volume', tone: 'grow' });
+    return would;
+  }
   const shape: string[] = [];
   if (levers.vcpu !== null && runs.vcpu !== null && levers.vcpu !== runs.vcpu) shape.push(`vCPU ${runs.vcpu} → ${levers.vcpu}`);
   if (levers.memory !== null && runs.memory !== null && levers.memory !== runs.memory) shape.push(`memory ${runs.memory} → ${levers.memory} GiB`);
