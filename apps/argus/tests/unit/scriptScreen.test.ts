@@ -402,6 +402,25 @@ describe('the script screen', () => {
     }
   });
 
+  it('leaving with a question standing carries it away unanswered: dispose never answers it, its keeper does', async () => {
+    const { screen } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    let answered: string | null | undefined;
+    void screen.ask_take('vm teardown store: remove its machine? Continue? [y/N]', 'confirm').then((value: string | null): void => { answered = value; });
+    expect(screen.asking_is()).toBe(true);
+    const carried = screen.ask_detach();
+    expect(carried?.message).toBe('vm teardown store: remove its machine? Continue? [y/N]');
+    expect(screen.asking_is()).toBe(false);
+    screen.dispose();
+    screen.root.remove();
+    await settle();
+    expect(answered).toBeUndefined();
+    carried?.resolve('y');
+    await settle();
+    expect(answered).toBe('y');
+  });
+
   it('USERS gathers the user lines; ADD is held until a login and an address stand, then appends the line and sends it', async () => {
     const { screen, sent } = screen_make();
     await screen.open('/scripts/chrisproject/store.mise');
@@ -430,8 +449,12 @@ describe('the script screen', () => {
     button_named(screen.root, 'ADD')?.click();
     button_named(screen.root, 'ADD · MAKE IT')?.click();
     await settle();
-    expect(sent).toEqual(['chris user add jennings --email jennings@example.org']);
-    expect(screen.root.querySelectorAll('.ss-users .ss-line').length).toBe(2);
+    // The line is saved to the working copy first, then run: the account it makes is always declared.
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toMatch(/^touch --withContents='[^']*chris user add jennings --email jennings@example.org\n' '\/scripts\/mine\/store\.mise'$/);
+    expect(sent[1]).toBe('chris user add jennings --email jennings@example.org');
+    // Saved, the screen reads its lines from the copy again (this fixture's copy answers the text it opened with) and owes no SAVE.
+    expect(screen.root.textContent).not.toContain('NOT SAVED');
     screen.dispose();
     screen.root.remove();
   });

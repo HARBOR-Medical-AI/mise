@@ -60,6 +60,8 @@ interface OpenAsk {
   message: string;
   kind: PromptKind;
   answer: (value: string | null) => void;
+  /** Answers the session alone, the screen untouched: for a question carried away when the screen is left. */
+  settle: (value: string | null) => void;
 }
 
 /** One script the library lists. */
@@ -419,6 +421,21 @@ export class ScriptScreen {
     return this.ask !== null;
   }
 
+  /**
+   * Takes the standing question off the strip unanswered, for the host to
+   * keep while the screen is away: leaving never answers it (a-change-is-a-loop,
+   * clause 6: returning finds the question where it was).
+   *
+   * @returns The question and how it is answered, or null when none stands.
+   */
+  public ask_detach(): { message: string; kind: PromptKind; resolve: (value: string | null) => void } | null {
+    const open: OpenAsk | null = this.ask;
+    if (open === null) return null;
+    this.ask = null;
+    this.askLine = null;
+    return { message: open.message, kind: open.kind, resolve: open.settle };
+  }
+
   /** Whether one of the screen's lines runs. */
   public running_is(): boolean {
     return this.busy !== null;
@@ -458,7 +475,7 @@ export class ScriptScreen {
       // The question stands over its own offer: the seat of the line it asks for is shown (a-change-is-a-loop, clause 4).
       const seat: ScriptStep | undefined = this.askLine === null ? undefined : this.steps.find((step: ScriptStep): boolean => step.lines.some((line: ScriptLine): boolean => line.text === this.askLine));
       if (seat !== undefined) this.view = seat.key;
-      this.ask = { message, kind, answer: (value: string | null): void => {
+      this.ask = { message, kind, settle: resolve, answer: (value: string | null): void => {
         const answeredLine: string | null = this.askLine;
         this.ask = null;
         this.askLine = null;
@@ -2003,7 +2020,7 @@ export class ScriptScreen {
     const on: string = step.lines.map((line: ScriptLine): string | null => lineOption_get(line.text, '--on')).find((value): value is string => value !== null) ?? this.usersVm_get(step);
     const commands: HTMLElement = el('div', 'tdc-commands ss-user-add');
     form.append(commands);
-    nodes.push(form, el('p', 'tdc-prose tdc-quiet', 'Each user is a line, so a ChRIS\'s accounts are declared, not remembered. ADD asks first, saying what it makes and where; MAKE IT appends the line to the working copy and runs it; a name already there is left as it is. The password never shows here: it is asked hidden, or read from the file the line names.'));
+    nodes.push(form, el('p', 'tdc-prose tdc-quiet', 'Each user is a line, so a ChRIS\'s accounts are declared, not remembered. ADD asks first, saying what it makes and where; MAKE IT appends the line, saves the working copy, then runs it; a name already there is left as it is. The password never shows here: it is asked hidden, or read from the file the line names.'));
     this.userAdd_fill(commands, step, on);
     return nodes;
   }
@@ -2041,6 +2058,10 @@ export class ScriptScreen {
         this.steps = this.steps_derive(this.lines);
         this.edited = true;
         this.userForm = { name: '', email: '', passwordFile: '' };
+        // The line is written before it runs, so the account it makes is always declared (a-change-is-a-loop, clause 3):
+        // a save refused runs nothing.
+        await this.save_send();
+        if (this.edited) return;
         await this.line_send(line, 'users');
       })();
     };
@@ -2048,7 +2069,7 @@ export class ScriptScreen {
     if (this.userAddArmed === line && !add.disabled) {
       const host: string = ((): string => { try { return new URL(this.chrisRow_get(on)?.url ?? '').host; } catch { return on === '' ? 'the ChRIS' : `${on}'s ChRIS`; } })();
       const ask: HTMLElement = el('div', 'tdc-note tdc-note-bill ss-user-ask');
-      ask.append(el('span', 'tdc-note-title', 'ADD MAKES AN ACCOUNT'), el('span', 'tdc-prose', `${name} (${email}) is made on ${host} now: a login that can sign in. stratus has no verb to remove an account; CUBE's admin does.`));
+      ask.append(el('span', 'tdc-note-title', 'ADD MAKES AN ACCOUNT'), el('span', 'tdc-prose', `${name} (${email}) is made on ${host} now: a login that can sign in. Its line is saved to ${workingCopy_derive(this.path)} first${this.edited ? ', with the script\'s other edits' : ''}, then run. stratus has no verb to remove an account; CUBE's admin does.`));
       // loop: ss-user-add
       const make: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill', 'ADD · MAKE IT');
       make.type = 'button';

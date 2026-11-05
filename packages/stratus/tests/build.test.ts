@@ -366,6 +366,12 @@ describe('building a cluster over the fakes', () => {
     expect(await read('cluster plan trial')).toMatch(/^done \(planned \d{4}-\d\d-\d\d\)$/);
     expect(await read('cluster build trial')).toBe('ready (next: postinstall)');
     expect(await read('cluster verify trial')).toBe('ready');
+    // The resume past billing asks first, naming what is left, the rate and the account the seed makes; NO changes nothing.
+    surface.answers = ['n'];
+    expect((await cluster_run(context, ['build', 'trial'])).model).toMatchObject({ kind: 'line.declined' });
+    expect(surface.asked.at(-1)).toMatch(/^cluster build trial: resumes at postinstall, 5 steps left \(postinstall, verify, chris-deploy, chris-seed, smoke\); what stands bills on at .+\. chris-seed makes the test user on its ChRIS\. A NO changes nothing\. Continue\? \[y\/N\]$/);
+    expect(await read('cluster build trial')).toBe('ready (next: postinstall)');
+    surface.answers = ['y'];
     await cluster_run(context, ['build', 'trial']);
     expect(await read('cluster build trial')).toBe('done (every step done)');
     expect(await read('cluster verify trial')).toMatch(/^done \(/);
