@@ -8,6 +8,8 @@
  * @module
  */
 import type { FakeBuildWorld } from './builder.js';
+import type { ClusterSpec } from '../../cluster/spec.js';
+import { CLUSTER_TAG } from '../../cluster/state.js';
 import type {
   CloudAvailability, CloudBackups, CloudBucket, CloudIngress, CloudContainer, CloudDnsZone, CloudDriver, CloudIdentity, CloudInstance, CloudLimit, CloudLink, CloudLoadBalancer,
   CloudNetwork, CloudObject, CloudPrice, ServicePrices, CloudRecord, CloudResource, CloudSecurityGroup, CloudShape, CloudSubnet, CloudVolume, CloudZone, FoundCluster, FoundInstance, ResourceCounts, ResourceKind,
@@ -158,16 +160,21 @@ export class FakeDriver implements CloudDriver {
 
   async prices_list(): Promise<CloudPrice[]> {
     this.call_count('prices_list');
+    this.pricesReadAt ??= new Date().toISOString();
     return [...this.cloudData.prices];
   }
 
   async servicePrices_get(): Promise<ServicePrices | null> {
     this.call_count('servicePrices_get');
+    this.pricesReadAt ??= new Date().toISOString();
     return this.cloudData.servicePrices ?? null;
   }
 
+  /** When the fake's price list was first read, as the real driver keeps it: once a session. */
+  private pricesReadAt: string | null = null;
+
   pricesRead_get(): string | null {
-    return (this.calls['prices_list'] ?? 0) + (this.calls['servicePrices_get'] ?? 0) > 0 ? '2026-01-01T00:00:00.000Z' : null;
+    return this.pricesReadAt;
   }
 
   /** The records of one kind in a container and region, sorted by name; DNS is global. */
@@ -448,4 +455,23 @@ export function fakeResources_sample(region: string, containerId: string): Pick<
       ],
     },
   };
+}
+
+/**
+ * The sample with a cluster found in it: a stack carrying stratus's cluster
+ * tag that no session keeps a record of, as one another host built, so a
+ * walk can adopt it (`STRATUS_FAKE_FOUND=<name>` on `stratus --fake`). The
+ * fake builder describes its stack (state, compartment, spec).
+ *
+ * @param sample - The fake cloud.
+ * @param name - The found cluster's name.
+ * @param world - The fake builder's world, which describes the stack.
+ * @param spec - The spec its stack says.
+ * @returns The fake cloud with the cluster's stack in it.
+ */
+export function fakeCloud_foundAdd(sample: FakeCloud, name: string, world: FakeBuildWorld, spec: ClusterSpec): FakeCloud {
+  const id: string = `ocid1.ormstack.oc1..found-${name}`;
+  const compartmentId: string = 'ocid1.compartment.oc1..harbor';
+  world.stacks.set(id, { state: 'ACTIVE', compartmentId, baseDomain: 'fake.example', spec });
+  return { ...sample, stacks: [...(sample.stacks ?? []), { id, displayName: `${name}-stack`, compartmentId, state: 'active', region: 'us-ashburn-1', tags: { [CLUSTER_TAG]: name } }] };
 }

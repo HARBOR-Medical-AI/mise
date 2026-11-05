@@ -61,6 +61,8 @@ export class FakeKube implements KubeApi {
     if (path === '/apis/storage.k8s.io/v1/storageclasses') {
       return { items: [{ metadata: { name: 'oci-bv', annotations: { 'storageclass.kubernetes.io/is-default-class': 'true' } } }, { metadata: { name: 'oci-bv-encrypted' } }] };
     }
+    // The fake cluster's volumes: none made by its CSI driver (the fake keeps ChRIS's data in no block volume), so a teardown has none to remove.
+    if (path === '/api/v1/persistentvolumes') return { items: [] };
     if (path === '/api/v1/pods') {
       return { items: this.options.nodes.map((node: FakeNode) => ({ spec: { nodeName: node.name, containers: [{ resources: { requests: { cpu: '3' } } }] }, status: { phase: 'Running' } })) };
     }
