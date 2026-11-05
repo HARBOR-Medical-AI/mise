@@ -119,6 +119,8 @@ export const clusterSummarySchema = z.object({
   origin: z.enum(['built', 'adopted', 'checkout', 'found']).optional(),
   /** Whether teardown is refused until `cluster protect <name> off`. */
   protected: z.boolean().optional(),
+  /** When the lock was set, and whether the tenancy holds it (false: this host only); null for a cluster kept nowhere here; absent from an older daemon. */
+  lock: z.object({ at: z.string(), kept: z.boolean() }).nullable().optional(),
   /** The verbs refused for this cluster, by name, with why. */
   refused: z.record(z.string(), z.string()).optional(),
   region: z.string().nullable().optional(),

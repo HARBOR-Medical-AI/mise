@@ -59,6 +59,10 @@ export interface ClusterRecord {
   teardown?: TeardownRecord;
   gone?: string;
   protected?: boolean;
+  /** When the lock was last set; the tenancy keeps it (`kept/lock.ts`). */
+  protectedAt?: string;
+  /** The time of the lock the tenancy's vault last held, as last read. */
+  lockKept?: string;
 }
 
 /** One teardown step's history: `skipped` when there was nothing of it to remove. */

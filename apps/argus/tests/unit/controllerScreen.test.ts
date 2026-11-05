@@ -92,6 +92,11 @@ describe('the TD controller screen', () => {
     expect(button_named(controller.root, 'VERIFY')?.disabled).toBe(false);
     controller.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
     expect(button_named(controller.root, 'TEAR DOWN · REFUSED')?.title).toContain('no door to check a password at');
+    // Setting the lock is kept in the tenancy, which READ would keep on this host alone: held too.
+    expect(button_named(controller.root, 'LOCK AGAIN · REFUSED')?.disabled).toBe(true);
+    // Where the lock is kept, and when it was set: this host's alone says how the tenancy comes to keep it.
+    controller.cluster_take(cluster_make('quay', { protected: false, refused: {}, lock: { at: '2026-11-05T14:02:00.000Z', kept: false } }));
+    expect(controller.root.querySelector('.ss-lock-where')?.textContent).toBe('THIS HOST ONLY · SET 2026-11-05 14:02 UTC: A MANAGE SESSION KEEPS IT IN THE TENANCY');
     // A found cluster's ADOPT is held the same way, by the kernel's reason when it carries one.
     controller.clusters_take([cluster_make('harbor', { origin: 'found', condition: 'UP', billing: true, protected: true, refused: { adopt: 'entered as READ; MANAGE asks your password once' } })]);
     controller.cluster_choose('harbor');

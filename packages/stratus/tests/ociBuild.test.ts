@@ -325,8 +325,8 @@ describe('cluster teardown', () => {
   it('refuses a protected cluster by name, and lifting it is a line of its own', async () => {
     store.record_update('trial', (record: ClusterRecord): void => { record.protected = true; });
     expect((await cluster_run(context, ['teardown', 'trial'])).renderedErr).toBe('cluster teardown: trial: Operation not permitted: protected (cluster protect trial off lifts it, as its own line)\n');
-    expect(plain((await cluster_run(context, ['protect', 'trial'])).rendered)).toBe('trial: protected (teardown refused)\n');
-    expect(plain((await cluster_run(context, ['protect', 'trial', 'off'])).rendered)).toBe('trial: no longer protected; cluster teardown trial will ask for its name\n');
+    expect(plain((await cluster_run(context, ['protect', 'trial'])).rendered)).toBe('trial: protected (teardown refused) (this host only, set now UTC)\n');
+    expect(plain((await cluster_run(context, ['protect', 'trial', 'off'])).rendered)).toBe('trial: no longer protected; cluster teardown trial will ask for its name\nkept in the tenancy: every session reads this lock\n');
     expect(store.record_read('trial')?.protected).toBe(false);
     expect((await cluster_run(context, ['protect', 'trial', 'maybe'])).renderedErr).toBe('cluster protect: usage: cluster protect <name> [on|off]\n');
     expect((await cluster_run(context, ['protect', 'ghost', 'on'])).renderedErr).toBe('cluster protect: ghost: no such cluster kept here\n');

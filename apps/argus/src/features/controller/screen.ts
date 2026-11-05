@@ -19,7 +19,7 @@
  * @module
  */
 import type { ClusterSizeModel, ClusterSpecModel, ClusterSummary, PromptKind } from '@fnndsc/menu';
-import { modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } from '../takeover/tier.js';
+import { lockWhere_text, modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } from '../takeover/tier.js';
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
   askForm_derive, CHRIS_STEPS, classBadge_render, conditionWhy_derive, CONTROLLER_VIEWS, duration_text, HOURS_PER_MONTH, LINES, money_text, nameRefusal_derive,
@@ -993,6 +993,8 @@ export class TdController {
     lock.append(el('span', 'tdc-note-title', cluster.protected !== false ? 'PROTECTED' : 'UNLOCKED'), el('span', 'tdc-prose', (cluster.protected !== false
       ? 'A cluster is born protected. Lifting the lock is a line of its own, so no single slip or replayed line removes a tenant.'
       : 'The lock is off. TEAR DOWN sends the line; the engine lists what goes and asks for the name typed back.') + askFirst));
+    const where: string | null = lockWhere_text(cluster.lock);
+    if (where !== null) lock.append(el('span', 'tdc-prose tdc-quiet ss-lock-where', where.toUpperCase()));
     const commands: HTMLElement = el('div', 'tdc-commands');
     if (this.reading !== null) commands.append(el('span', 'tdc-prose tdc-quiet tdc-reading', `READING AGAIN · the lock as the daemon now keeps it arrives when cluster status answers`));
     // loop: td-lock

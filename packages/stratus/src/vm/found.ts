@@ -171,7 +171,8 @@ export async function vmTakeover_run(deps: VmTakeoverDeps, name: string): Promis
   // The stacks hold what was last applied: that is what was built, and declared as of the build, so a newer declaration
   // the vault keeps (from another session or host) reads as declared since, not lost.
   const builtAt: string = found.instance?.created || now;
-  deps.store.record_update(name, (current: VmRecord): void => { current.declared = builtAt; current.builtSpec = spec; });
+  // Born protected here as of the build too: a lock the vault keeps, set since, is the newer and is taken.
+  deps.store.record_update(name, (current: VmRecord): void => { current.declared = builtAt; current.builtSpec = spec; current.protectedAt = builtAt; });
   const [inside, ...outside] = found.instance?.ips ?? [];
   const placeId: string = found.placeId;
   deps.store.record_update(name, (current: VmRecord): void => {

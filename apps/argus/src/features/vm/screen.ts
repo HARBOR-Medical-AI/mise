@@ -22,7 +22,7 @@
 import type { ChrisStatusRow, VmCostRate, VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
 import { chrisStatusModelSchema, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema } from '@fnndsc/menu';
-import { modePill_make } from '../takeover/tier.js';
+import { lockWhere_text, modePill_make } from '../takeover/tier.js';
 import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
 import { counts_words, line_parse, line_render, lines_build, runningStep_find, script_render, states_count, steps_build, vmSliders_build, workingCopy_derive, type ScriptLine, type ScriptStep, type StateCounts, type VmRuns } from '../script/model.js';
@@ -537,7 +537,7 @@ export class VmScreen extends ScriptScreen {
       ['CHRIS', row.chris !== null && row.chris !== undefined ? `${row.chris.url}${row.chris.porter !== null ? ` · porter ${row.chris.porter}` : ''}`
         : row.found?.chris != null ? `${row.found.chris.url}${row.found.chris.porter !== null ? ` · porter ${row.found.chris.porter}` : ''} (as its instance's tag says)`
           : vmKeyless_is(row) ? 'not said on the machine (deployed before deploys tagged it)' : 'none deployed'],
-      ['LOCK', row.protected ? 'protected: teardown refuses until lifted' : 'unlocked'],
+      ['LOCK', `${row.protected ? 'protected: teardown refuses until lifted' : 'unlocked'}${lockWhere_text(row.lock) !== null ? ` · ${lockWhere_text(row.lock) as string}` : ''}`],
       ['KEPT', kept],
     ]));
     const side: HTMLElement = this.section_make('WHAT CAN BE DONE', 'ss-col-side');
@@ -674,6 +674,8 @@ export class VmScreen extends ScriptScreen {
     lock.append(el('span', 'tdc-note-title', row === null ? 'NOT KEPT HERE' : row.protected ? 'PROTECTED' : 'UNLOCKED'), el('span', 'tdc-prose', row === null
       ? 'The host keeps no record of this machine yet: declare and build it first.'
       : row.protected ? 'A machine is born protected. Lifting the lock is a line of its own, so no single slip removes it.' : 'The lock is off. TEARDOWN sends the line; TEARDOWN · ALL asks for the name typed back.'));
+    const where: string | null = lockWhere_text(row?.lock);
+    if (where !== null) lock.append(el('span', 'tdc-prose tdc-quiet ss-lock-where', where.toUpperCase()));
     const commands: HTMLElement = el('div', 'tdc-commands');
     if (row !== null) {
       // loop: vm-protect

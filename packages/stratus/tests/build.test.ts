@@ -82,6 +82,25 @@ describe('building a cluster over the fakes', () => {
   });
   afterEach(() => { runner_install(null); surface_set(new HeadlessSurface()); rmSync(root, { recursive: true, force: true }); });
 
+  it('keeps the lock in the tenancy: one set on one host holds on another, and stops its teardown there', async () => {
+    const world: FakeBuildWorld = new FakeBuildWorld(0);
+    const builder: FakeCloudBuilder = new FakeCloudBuilder(world);
+    const here: ClusterCommandContext = { ...context, build: { ...context.build!, builder } };
+    const otherStore: ClusterStore = new ClusterStore(join(root, 'clusters-there'));
+    const otherTree: ClusterTree = new ClusterTree({ sources: [], owner: (): string => 'rudolph', now: (): Date => new Date('2026-10-22T12:00:00Z'), store: otherStore });
+    const there: ClusterCommandContext = { ...context, clusters: otherTree, build: { ...context.build!, clusters: otherTree, store: otherStore, builder } };
+    record_new('trial');
+    otherStore.create({ name: 'trial', created: '2026-10-22T00:00:00.000Z', region: 'us-ashburn-1', baseDomain: 'fake.example', steps: {}, ids: { stackRef: 'stack-1' }, protected: false, protectedAt: '2026-10-23T00:00:00.000Z' }, SPEC_DEFAULT);
+    // Locked here (as born, then set again): the vault keeps it; the other host, which holds it lifted and older, takes it.
+    expect(plain((await cluster_run(here, ['protect', 'trial', 'on'])).rendered)).toBe('trial: protected; teardown is refused\nkept in the tenancy: every session reads this lock\n');
+    expect(JSON.parse(world.kept.get('mise-cluster-trial') as string)).toEqual({ cluster: 'trial', lock: { protected: true, at: expect.any(String) } });
+    expect((await cluster_run(there, ['teardown', 'trial'])).renderedErr).toBe('cluster teardown: trial: Operation not permitted: protected (cluster protect trial off lifts it, as its own line)\n');
+    expect(otherStore.record_read('trial')?.protected).toBe(true);
+    const summary = ((await cluster_run(there, ['status', 'trial'])).model as ClustersModel).data.clusters[0];
+    expect(summary?.lock).toEqual({ at: expect.any(String), kept: true });
+    expect(plain((await cluster_run(there, ['protect', 'trial'])).rendered)).toMatch(/^trial: protected \(teardown refused\) \(kept in the tenancy, set /);
+  });
+
   it('moves the folder clusters were kept in as domains, once, and never over one already there', () => {
     const base: string = mkdtempSync(join(tmpdir(), 'stratus-settle-'));
     try {

@@ -155,7 +155,7 @@ describe('cluster status', () => {
         resources: { instances: 3, networks: 1, subnets: 3, securitygroups: 2, loadbalancers: 2, volumes: 5, buckets: 1, dns: 1 },
         resourcesAt: expect.any(String),
         cost: { hourly: expect.any(Number), soFar: expect.any(Number), currency: 'USD' },
-        condition: 'UP', billing: true, origin: 'checkout', protected: true, gone: null, teardown: null, spec: null, next: null, billingStep: 'infra-apply', running: null, plan: null, verify: null, asking: null,
+        condition: 'UP', billing: true, origin: 'checkout', protected: true, lock: null, gone: null, teardown: null, spec: null, next: null, billingStep: 'infra-apply', running: null, plan: null, verify: null, asking: null,
         refused: { build: 'read from a harbor-oci checkout, not built here', teardown: 'read from a harbor-oci checkout, not built here' },
         region: 'us-ashburn-1', compartment: 'ocid1.compartment.oc1..harbor',
       }] },

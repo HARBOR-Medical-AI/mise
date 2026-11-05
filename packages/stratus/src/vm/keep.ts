@@ -13,6 +13,10 @@
  * host kept is never dropped by a host that lacks it, and the newer
  * declaration wins.
  *
+ * It keeps the VM's lock (PROTECT) too, with when it was set: a lock set on
+ * one host holds on every host, and of two the newer is the lock
+ * (`kept/lock.ts`).
+ *
  * Written whenever the cache gains a secret (a build's machine, a deploy) or
  * a MANAGE session declares, read back when a session finds a VM it keeps no
  * record of, and read on each listing for a declaration newer than the
@@ -25,6 +29,7 @@ import * as path from 'path';
 import type { BuildCall, CloudBuilder } from '../cloud/builder.js';
 import type { ChrisSecrets } from '../chris/compose.js';
 import { secrets_read, secrets_write } from '../chris/secrets.js';
+import { lock_adopt, lock_newer, lock_read, type KeptLock } from '../kept/lock.js';
 import type { VmSpec } from './spec.js';
 import type { VmRecord, VmStore } from './state.js';
 
@@ -39,6 +44,8 @@ export interface VmKept {
   readonly chris?: { readonly record: NonNullable<VmRecord['chris']>; readonly secrets: ChrisSecrets };
   /** What was last declared of it, and when. */
   readonly declared?: { readonly spec: VmSpec; readonly at: string };
+  /** Whether teardown is refused, and when that was set. */
+  readonly lock?: KeptLock;
 }
 
 /**
@@ -56,7 +63,8 @@ export function vmKept_merge(vault: VmKept | null, here: VmKept): VmKept {
       : here.declared.at >= vault.declared.at ? here.declared : vault.declared;
   const ssh: VmKept['ssh'] = here.ssh ?? vault?.ssh;
   const chris: VmKept['chris'] = here.chris ?? vault?.chris;
-  return { vm: here.vm, ...(ssh !== undefined ? { ssh } : {}), ...(chris !== undefined ? { chris } : {}), ...(declared !== undefined ? { declared } : {}) };
+  const lock: KeptLock | undefined = lock_newer(here.lock, vault?.lock);
+  return { vm: here.vm, ...(ssh !== undefined ? { ssh } : {}), ...(chris !== undefined ? { chris } : {}), ...(declared !== undefined ? { declared } : {}), ...(lock !== undefined ? { lock } : {}) };
 }
 
 /**
@@ -96,6 +104,19 @@ export function vmDeclared_adopt(store: VmStore, name: string, kept: VmKept | nu
   store.declare(name, kept.declared.spec, record.region);
   store.record_update(name, (current: VmRecord): void => { current.declared = at; });
   return true;
+}
+
+/**
+ * Takes the vault's lock into the cache when it is newer than the cache's
+ * (set by another session or host), and keeps its time as the tenancy's.
+ *
+ * @param store - The VMs; the VM's record must exist.
+ * @param name - The VM.
+ * @param kept - The vault's keep.
+ */
+export function vmLock_adopt(store: VmStore, name: string, kept: VmKept | null): void {
+  if (store.record_read(name) === null) return;
+  store.record_update(name, (current: VmRecord): void => { lock_adopt(current, kept?.lock, false); });
 }
 
 /**
@@ -160,12 +181,14 @@ export function vmKept_gather(store: VmStore, name: string): VmKept | null {
   const spec: VmSpec | null = read !== null && 'spec' in read ? read.spec : null;
   const declared: VmKept['declared'] = spec !== null && record?.declared !== undefined ? { spec, at: record.declared } : undefined;
   const chris: VmKept['chris'] = record?.chris !== undefined && secrets !== null ? { record: record.chris, secrets } : undefined;
-  if (!keyed && chris === undefined && declared === undefined) return null;
+  const lock: KeptLock | undefined = record?.protected === undefined ? undefined : lock_read(record, false);
+  if (!keyed && chris === undefined && declared === undefined && lock === undefined) return null;
   return {
     vm: name,
     ...(keyed ? { ssh: { privateKey: fs.readFileSync(privatePath, 'utf-8'), publicKey: fs.readFileSync(publicPath, 'utf-8').trim() } } : {}),
     ...(chris !== undefined ? { chris } : {}),
     ...(declared !== undefined ? { declared } : {}),
+    ...(lock !== undefined ? { lock } : {}),
   };
 }
 
@@ -188,9 +211,10 @@ export async function vmKept_write(builder: CloudBuilder, store: VmStore, name: 
   await builder.keep_write({ region, name: vmKeepName_derive(name), content: JSON.stringify(kept) }, call);
   // The vault's declaration may be the newer: the cache follows it, so this host acts on what was last declared.
   vmDeclared_adopt(store, name, kept);
+  vmLock_adopt(store, name, kept);
   const keptAt: string | undefined = kept.declared?.at;
   if (keptAt !== undefined) store.record_update(name, (current: VmRecord): void => { current.keptDeclared = keptAt; });
-  const parts: string[] = [...(kept.ssh !== undefined ? ['its SSH key'] : []), ...(kept.chris !== undefined ? ['its ChRIS'] : []), ...(kept.declared !== undefined ? ['what was declared'] : [])];
+  const parts: string[] = [...(kept.ssh !== undefined ? ['its SSH key'] : []), ...(kept.chris !== undefined ? ['its ChRIS'] : []), ...(kept.declared !== undefined ? ['what was declared'] : []), ...(kept.lock !== undefined ? ['its lock'] : [])];
   return parts.length === 0 ? null : parts.length === 1 ? parts[0] as string : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1) as string}`;
 }
 
@@ -209,6 +233,7 @@ export async function vmKept_restore(builder: CloudBuilder, store: VmStore, name
   const kept: VmKept | null = await vmKept_read(builder, name, region);
   if (kept === null) return false;
   vmDeclared_adopt(store, name, kept);
+  vmLock_adopt(store, name, kept);
   if (kept.chris !== undefined) {
     secrets_write(store, name, kept.chris.secrets);
     const chris: NonNullable<VmRecord['chris']> = kept.chris.record;

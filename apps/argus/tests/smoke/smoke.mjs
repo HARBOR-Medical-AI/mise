@@ -3491,12 +3491,24 @@ try {
     const receipt = await settle(() => idle() && noteTitle() === 'BUILT · WHAT RUNS IS WHAT WAS OFFERED', 600);
     const runsAfter = runsMarks();
     const receiptText = note();
+    // TEARDOWN's guard: the lock is the tenancy's, said with when it was set; PROTECT · OFF lifts it there and it is read back.
+    const seat = (word) => [...root().querySelectorAll('.takeover-gutter button')].find((b) => b.textContent.trim().startsWith(word));
+    const lockWhere = () => root().querySelector('.ss-lock-where')?.textContent ?? null;
+    const lockTitle = () => root().querySelector('.ss-col-side .tdc-note-title')?.textContent ?? null;
+    seat('TEARDOWN')?.click();
+    await settle(() => lockWhere() !== null, 80);
+    const lockBorn = { title: lockTitle(), where: lockWhere() };
+    pill('PROTECT · OFF')?.click();
+    const lifted = await settle(() => idle() && lockTitle() === 'UNLOCKED' && /KEPT IN THE TENANCY/.test(lockWhere() ?? ''), 240);
+    const lockLifted = { title: lockTitle(), where: lockWhere() };
+    pill('PROTECT · ON')?.click();
+    const relocked = await settle(() => idle() && lockTitle() === 'PROTECTED', 240);
     const logged = [...document.querySelectorAll('.tdc-log-sent')].map((l) => l.textContent);
     const steps = (window.__argusVm?.steps() ?? []).map((s) => s.label);
     const pills = [...document.querySelectorAll('#vm-controller .takeover-seat .tdc-cluster')].map((p) => p.textContent);
     const hidden = [...document.body.children].filter((node) => node.id !== 'vm-controller' && getComputedStyle(node).visibility !== 'hidden' && node.offsetParent !== null).length;
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await sleep(400);
-    return { composition: 'stratus', opened: true, name, priced, sentBefore, askedNew, questionNew, built, runsBuilt, titleBuilt, would, declareShown, askedResize, questionResize, receipt, runsAfter, receiptText, logged, steps, pills, hidden, titleBack: document.title === titleBefore, after: document.body.dataset.takeover ?? null };`);
+    return { composition: 'stratus', opened: true, name, priced, sentBefore, askedNew, questionNew, built, runsBuilt, titleBuilt, would, declareShown, askedResize, questionResize, receipt, runsAfter, receiptText, lockBorn, lifted, lockLifted, relocked, logged, steps, pills, hidden, titleBack: document.title === titleBefore, after: document.body.dataset.takeover ?? null };`);
   if (vc.composition !== 'stratus') {
     check('under any other composition vm opens no controller', true, JSON.stringify(vc));
   } else if (!vc.opened) {
@@ -3508,6 +3520,9 @@ try {
       vc.built && JSON.stringify(vc.runsBuilt) === JSON.stringify(['RUNS 2', 'RUNS 8 GiB', 'RUNS 60 GB', 'RUNS 50 GB']) && vc.titleBuilt !== null
         && /memory 8 → 16 GiB: the machine reboots/.test(vc.would ?? '') && !vc.declareShown && vc.askedResize && /REBOOTS/.test(vc.questionResize ?? '')
         && vc.receipt && vc.runsAfter.includes('RUNS 16 GiB') && /read from the tenancy/.test(vc.receiptText ?? ''), JSON.stringify(vc));
+    check('the lock is kept in the tenancy: THE GUARD says where it is kept and when it was set, PROTECT · OFF lifts it there and the screen reads it back',
+      vc.lockBorn.title === 'PROTECTED' && /^KEPT IN THE TENANCY · SET \d{4}-\d\d-\d\d \d\d:\d\d UTC$/.test(vc.lockBorn.where ?? '') && vc.lifted && /^KEPT IN THE TENANCY/.test(vc.lockLifted.where ?? '')
+        && vc.lockLifted.where !== vc.lockBorn.where && vc.relocked && vc.logged.includes('stratus> vm protect ' + vc.name + ' off'), JSON.stringify(vc));
     check('the machine stands in the gutter with its seats, MACHINE then SIZE (holding its build), CHRIS, USERS, TEARDOWN, the page hidden behind it',
       JSON.stringify(vc.steps) === JSON.stringify(['MACHINE', 'SIZE', 'CHRIS', 'USERS', 'TEARDOWN']) && vc.pills.includes(vc.name.toUpperCase()) && vc.pills.at(-1) === '+ NEW' && vc.hidden === 0, JSON.stringify(vc));
     check('Esc gives the VM controller back: no takeover, the tab\'s title as it was', vc.after === null && vc.titleBack, JSON.stringify(vc));
