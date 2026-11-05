@@ -76,6 +76,9 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
     close();
   }, true);
 
+  /** A question the screen's line asked while the screen was away, held for the screen when it opens again. */
+  let held: { request: SurfaceAsk; resolve: (value: string | null) => void } | null = null;
+
   const open = async (path: string): Promise<string> => {
     if (window.innerWidth < CONTROLLER_MIN_WIDTH) {
       const said: string = `scripts: the screen needs a display at least ${CONTROLLER_MIN_WIDTH} px wide; this one is ${window.innerWidth}, so the line runs as text`;
@@ -115,15 +118,23 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
     document.body.dataset['takeover'] = 'script';
     synthVoice.preload();
     synthVoice.cue_play('open');
-    void opened.open(path);
+    void opened.open(path).then((): void => {
+      // A question the screen's line asked while the screen was away stands on the strip again, over its seat (a-change-is-a-loop, clauses 4 and 6).
+      const waiting = held;
+      if (waiting !== null && screen === opened) { held = null; void opened.ask_take(waiting.request.message, waiting.request.kind).then(waiting.resolve); }
+    });
     return `scripts: the script screen takes the display${path === '' ? ', on the library' : ` on ${path}`} (Esc or LEAVE gives it back)`;
   };
 
   return {
     open,
     active_is: (): boolean => screen !== null,
-    running_is: (): boolean => screen !== null && lineRunning,
-    ask: (request: SurfaceAsk): Promise<string | null> => screen === null ? Promise.resolve(null) : screen.ask_take(request.message, request.kind),
+    // The screen's line runs on after the screen is left: its question is the screen's still, held until it opens again.
+    running_is: (): boolean => lineRunning,
+    ask: (request: SurfaceAsk): Promise<string | null> => {
+      if (screen !== null) return screen.ask_take(request.message, request.kind);
+      return new Promise((resolve: (value: string | null) => void): void => { held = { request, resolve }; });
+    },
     output_take: (chunk: string): void => { screen?.output_take(chunk); },
     task_ended: (): void => { screen?.taskEnded_take(); },
     mode_refresh: (): void => { screen?.mode_refresh(); },

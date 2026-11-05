@@ -21,7 +21,7 @@
  */
 import * as path from 'path';
 import chalk from 'chalk';
-import { envelope_error, envelope_ok, taskState_isOver, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATE_EVENT, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow } from '@fnndsc/menu';
+import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, taskState_isOver, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATE_EVENT, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow } from '@fnndsc/menu';
 import { repl_confirm, repl_question, runner_get, sink_dataLine, sink_get, surface_get, type CommandHelp } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_words, type BuildCall, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import type { VmRemote } from '../vm/remote.js';
@@ -895,7 +895,10 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   }
   const reboot: boolean = judged.some(([, judge]): boolean => judge.reboot);
   const grow = { boot: judged.some(([, judge]): boolean => judge.bootGrow !== null), data: judged.some(([, judge]): boolean => judge.dataGrow !== null) };
-  const changed: string[] = judged.flatMap(([, judge]): string[] => judge.words);
+  // A port opened or closed is named: the ports as the security group opens them now, and as declared.
+  const nowOpen = context.store.record_read(name)?.stands?.open;
+  const portsWord = (list: ReadonlyArray<number>): string => (list.length === 0 ? 'none' : [...list].sort((a: number, b: number): number => a - b).join(','));
+  const changed: string[] = [...new Set(judged.flatMap(([, judge]): string[] => judge.words).map((word: string): string => (/^a port (opened|closed)$/.test(word) && nowOpen != null ? `ports ${portsWord(nowOpen)} → ${portsWord(spec.open)}` : word)))];
   const chrisUrl: string | undefined = context.store.record_read(name)?.chris?.url;
   const machineWords: string = machine === null ? `planned once its data stands (${spec.vcpu} vCPU, ${spec.memory} GiB, disk ${spec.disk} GB)` : planCounts_words(machine.counts);
   const warning: string = reboot ? ` ${name} REBOOTS to take its new shape: it${chrisUrl !== undefined ? `, and ChRIS at ${chrisUrl},` : ''} is down for a few minutes.` : '';
@@ -910,7 +913,7 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   const yes: boolean = await repl_confirm(`vm build ${name}: ${what}${warning}${growing} It bills: ${cost_line(await cost_read(context, spec))}.${written}${already} Continue? [y/N]`);
   if (!yes) {
     const left: string[] = [...(declaredSince ? ['the declaration stands as written'] : []), ...(made.length > 0 ? [`made to plan it, free: ${made.join(', ')}`] : [])];
-    return envelope_ok(`${chalk.gray(left.length === 0 ? `stopped before the apply; nothing changed (vm build ${name} plans and asks again)` : `stopped before the apply; nothing was built (${left.join('; ')}; vm build ${name} plans and asks again)`)}\n`);
+    return envelope_ok(`${chalk.gray(left.length === 0 ? `stopped before the apply; nothing changed (vm build ${name} plans and asks again)` : `stopped before the apply; nothing was built (${left.join('; ')}; vm build ${name} plans and asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: 'build' } });
   }
   if (grow.boot || grow.data) context.store.record_update(name, (current: VmRecord): void => { current.growOwed = { boot: grow.boot || current.growOwed?.boot === true, data: grow.data || current.growOwed?.data === true }; });
   if (counts_total(data.counts) > 0) {
@@ -930,7 +933,7 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
     // The machine was not planned when the build asked (its data had to stand first): its own plan is asked before it applies.
     if (counts_total(planned.counts) > 0) {
       const again: boolean = await repl_confirm(`vm build ${name}: its data stands; the machine plan ${planCounts_words(planned.counts)} (${spec.vcpu} vCPU, ${spec.memory} GiB, disk ${spec.disk} GB). It bills: ${cost_line(await cost_read(context, spec))} with its data. Continue? [y/N]`);
-      if (!again) return envelope_ok(`${chalk.gray(`stopped before the machine; its data stands and bills its own (vm build ${name} plans the machine and asks again; vm teardown ${name} --all removes the data)`)}\n`);
+      if (!again) return envelope_ok(`${chalk.gray(`stopped before the machine; its data stands and bills its own (vm build ${name} plans the machine and asks again; vm teardown ${name} --all removes the data)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: 'build' } });
     }
   }
   if (machineCounts !== undefined && counts_total(machineCounts) > 0) {

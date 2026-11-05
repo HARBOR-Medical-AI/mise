@@ -108,15 +108,27 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     document.body.dataset['takeover'] = 'vm';
     synthVoice.preload();
     synthVoice.cue_play('open');
-    void opened.vm_open(name).then((): void => names_seen([...opened.vms_get()]));
+    void opened.vm_open(name).then((): void => {
+      names_seen([...opened.vms_get()]);
+      // A question the screen's line asked while the screen was away stands on the strip again (a-change-is-a-loop, clauses 4 and 6).
+      const waiting = held;
+      if (waiting !== null && screen === opened) { held = null; void opened.ask_take(waiting.request.message, waiting.request.kind).then(waiting.resolve); }
+    });
     return `vm: the VM controller takes the display${name === '' ? ' on a new machine' : ` on ${name}`} (Esc or LEAVE gives it back)`;
   };
+
+  /** A question the screen's line asked while the screen was away, held for the screen when it opens again. */
+  let held: { request: SurfaceAsk; resolve: (value: string | null) => void } | null = null;
 
   return {
     open,
     active_is: (): boolean => screen !== null,
-    running_is: (): boolean => screen !== null && lineRunning,
-    ask: (request: SurfaceAsk): Promise<string | null> => screen === null ? Promise.resolve(null) : screen.ask_take(request.message, request.kind),
+    // The screen's line runs on after the screen is left: its question is the screen's still, held until it opens again.
+    running_is: (): boolean => lineRunning,
+    ask: (request: SurfaceAsk): Promise<string | null> => {
+      if (screen !== null) return screen.ask_take(request.message, request.kind);
+      return new Promise((resolve: (value: string | null) => void): void => { held = { request, resolve }; });
+    },
     output_take: (chunk: string): void => { screen?.output_take(chunk); },
     task_ended: (): void => { screen?.taskEnded_take(); },
     // A VM's teardown sends its row as each step begins and ends: the controller draws it without asking.

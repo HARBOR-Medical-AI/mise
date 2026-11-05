@@ -364,7 +364,7 @@ export class TdController {
       if (planning !== null) this.planned = { cluster: planning[1] as string, at: new Date().toISOString(), said: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-8) };
       if (this.partial !== '') { this.log_add(this.partial, 'out'); this.partial = ''; }
       // A refusal is said in the view its control stands in, with why, until that view sends again (a-change-is-a-loop, clauses 5 and 6).
-      if (taken === false) this.refusal = { view: seat, line, at: new Date().toISOString(), declined: this.busyDeclined, why: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ') || 'the session refused it' };
+      if (taken === false || this.busyDeclined) this.refusal = { view: seat, line, at: new Date().toISOString(), declined: this.busyDeclined, why: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ') || 'the session refused it' };
       // The line is answered; the clusters are read again before the seat changes, and the wait is said, not hidden.
       this.reading = line;
       this.log_add('reading the clusters again (the tenancy is searched: seconds)', 'note');
@@ -1103,7 +1103,7 @@ export class TdController {
     const askFirst: string = hold === 'asks' ? ' This session is READ: TEAR DOWN asks your password first, then the engine asks for the name.' : hold === 'held' ? ` This session is READ and cannot be raised here: ${READ_HELD}.` : '';
     const lock: HTMLElement = el('div', `tdc-note ${cluster.protected !== false ? 'tdc-note-locked' : 'tdc-note-refused'}`);
     lock.append(el('span', 'tdc-note-title', cluster.protected !== false ? 'PROTECTED' : 'UNLOCKED'), el('span', 'tdc-prose', (cluster.protected !== false
-      ? 'A cluster is born protected. Lifting the lock is a line of its own, so no single slip or replayed line removes a tenant.'
+      ? 'A cluster is born protected. Lifting the lock is a line of its own, so no single slip or replayed line removes a tenant: LIFT THE LOCK writes the lock off in the tenancy and removes nothing; TEAR DOWN then asks for the name typed back, with what goes and what stops billing.'
       : 'The lock is off. TEAR DOWN sends the line; the engine lists what goes and asks for the name typed back.') + askFirst));
     const where: string | null = lockWhere_text(cluster.lock);
     if (where !== null) lock.append(el('span', 'tdc-prose tdc-quiet ss-lock-where', where.toUpperCase()));

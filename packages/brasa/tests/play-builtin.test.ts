@@ -101,6 +101,8 @@ jest.unstable_mockModule('../src/core/engine.js', () => ({
     if (line === 'interrupt') throw new Error('interrupted');
     const capture: RegExpMatchArray | null = line.match(/^([A-Z])=\$\((.*)\)$/);
     if (capture !== null) variables.set(capture[1] as string, { answer: { source: capture[2] as string, kind: 'run.scheduled', rows: [], data: { instanceId: 4813 } }, readOnly: false });
+    // A line whose question was answered no: taken, and marked declined.
+    if (line === 'declined') return [{ status: 'ok', rendered: '', model: { kind: 'line.declined', data: {} } } as { status: string; rendered: string }];
     return [{ status: refuseAt !== null && line.includes(refuseAt) ? 'error' : 'ok', rendered: '' }];
   },
 }));
@@ -202,6 +204,13 @@ describe('a play gives back the working directory it began in (#1264)', () => {
     await builtin_play(['f.mise']);
     expect(ran).toEqual(['cd /home/chris/feeds/feed_5', 'boom']);
     expect(cwd).toBe('/home/chris/uploads');
+  });
+
+  it('stops quietly at a line whose question was answered no, never as a refusal', async () => {
+    stored = ['pwd', 'declined', 'ls'].join('\n');
+    const envelope = await builtin_play(['f.mise']);
+    expect(ran).toEqual(['pwd', 'declined']);
+    expect(envelope.status).toBe('ok');
   });
 
   it('when it is interrupted', async () => {
