@@ -1882,6 +1882,7 @@ export class ScriptScreen {
       const host: string = ((): string => { try { return new URL(this.chrisRow_get(on)?.url ?? '').host; } catch { return on === '' ? 'the ChRIS' : `${on}'s ChRIS`; } })();
       const ask: HTMLElement = el('div', 'tdc-note tdc-note-bill ss-user-ask');
       ask.append(el('span', 'tdc-note-title', 'ADD MAKES AN ACCOUNT'), el('span', 'tdc-prose', `${name} (${email}) is made on ${host} now: a login that can sign in. stratus has no verb to remove an account; CUBE's admin does.`));
+      // loop: ss-user-add
       const make: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill', 'ADD · MAKE IT');
       make.type = 'button';
       make.addEventListener('click', (): void => { this.hooks.voice.pill('ADD · MAKE IT'); this.userAddArmed = null; send(); });
