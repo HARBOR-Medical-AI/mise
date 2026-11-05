@@ -1,5 +1,11 @@
 # @fnndsc/menu
 
+## 0.36.0
+
+### Minor Changes
+
+- 352794c: The `vm cost` model carries `pricesRead`, when the session read the cloud's price list.
+
 ## 0.35.0
 
 ### Minor Changes

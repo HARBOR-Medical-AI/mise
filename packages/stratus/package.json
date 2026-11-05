@@ -1,6 +1,6 @@
 {
   "name": "@fnndsc/stratus",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "description": "STRATUS: a mise session over the cloud substrate a Trusted Domain runs on — one backend, clouds as drivers, OCI first",
   "repository": {
     "type": "git",
@@ -55,10 +55,10 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "@fnndsc/brasa": "^0.52.4",
-    "@fnndsc/calypso": "^0.29.1",
+    "@fnndsc/brasa": "^0.52.5",
+    "@fnndsc/calypso": "^0.29.2",
     "@fnndsc/fond": "^0.6.0",
-    "@fnndsc/menu": "^0.35.0",
+    "@fnndsc/menu": "^0.36.0",
     "chalk": "^4.1.2",
     "js-yaml": "^4.1.0",
     "oci-bastion": "2.144.0",
