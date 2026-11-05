@@ -28,10 +28,10 @@ import type { VmRemote } from '../vm/remote.js';
 import type { CloudDriver } from '../cloud/driver.js';
 import type { NetStore } from '../net/state.js';
 import { VM_OPTIONS, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, type VmSpec } from '../vm/spec.js';
-import type { CloudShape } from '../cloud/driver.js';
+import type { CloudShape, CloudVolume } from '../cloud/driver.js';
 import { CHRIS_PORTER_TAG, CHRIS_URL_TAG, VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
 import { vmsFound_read, vmTakeover_run, type FoundVm } from '../vm/found.js';
-import { VM_KEYLESS, vmKey_held, vmKeyless_is, vmKept_write } from '../vm/keep.js';
+import { VM_KEYLESS, vmDeclared_adopt, vmKey_held, vmKeyless_is, vmKept_read, vmKept_write, type VmKept } from '../vm/keep.js';
 import { cost_words, planFile_derive, VM_JOBS, vmApplyRun_make, vmCost_estimate, vmNet_read, vmPlanRun_make, vmTeardownRun_make, type VmCost, type VmDeps, type VmPart } from '../vm/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 import { VM_GROW_JOB, vmGrowRun_make, vmPlan_judge, type VmPlanJudged } from '../vm/resize.js';
@@ -139,6 +139,18 @@ async function vm_needOrTake(context: VmCommandContext, name: string | undefined
 }
 
 /**
+ * Whether what is declared of a VM is held by the tenancy: the vault keeps
+ * this declaration, or it is no newer than the build, whose stacks hold it.
+ *
+ * @param record - Its record.
+ * @returns True when every session reads the same declaration.
+ */
+function declaredKept_is(record: VmRecord): boolean {
+  if (record.declared === undefined) return false;
+  return record.keptDeclared === record.declared || (record.built !== undefined && record.declared <= record.built);
+}
+
+/**
  * One VM's lines.
  *
  * @param store - The VMs.
@@ -151,7 +163,15 @@ function vmStatus_lines(store: VmStore, record: VmRecord, spec: VmSpec | null): 
   const tone = state === 'built' ? chalk.cyan : state === 'gone' ? chalk.gray : chalk.yellow;
   const guard: string = record.protected === true ? chalk.gray('  protected') : chalk.yellow('  unprotected');
   const lines: string[] = [`${chalk.bold(record.name)}  ${tone(state)}${guard}  ${record.region}`];
-  lines.push(`  ${spec === null ? chalk.red('spec.yaml does not read') : spec_line(spec)}`);
+  // What runs, read from the tenancy, beside what is declared: the two are said apart, never one for the other.
+  const where: string = record.declared === undefined ? '' : record.built !== undefined && record.declared <= record.built ? chalk.gray('  (as built: the tenancy\'s stacks hold it)')
+    : declaredKept_is(record) ? chalk.gray('  (kept in the tenancy)') : chalk.yellow('  (declared on this host only)');
+  lines.push(`  declared  ${spec === null ? chalk.red('spec.yaml does not read') : spec_line(spec)}${where}`);
+  const stands = record.stands;
+  if (stands !== undefined) {
+    const size = (value: number | null, unit: string): string => (value === null ? '?' : `${value}${unit}`);
+    lines.push(`  runs      ${size(stands.vcpu, ' vCPU')} · ${size(stands.memory, ' GiB')} · disk ${size(stands.disk, ' GB')} · data ${size(stands.data, ' GB')}${chalk.gray(`  (read from the tenancy ${stands.at.slice(11, 16)} UTC)`)}`);
+  }
   if (record.dataOutputs !== undefined) lines.push(`  address  ${record.dataOutputs['public_ip'] ?? '?'}${record.built === undefined ? chalk.gray(' (reserved, kept)') : ''}`);
   if (record.machineOutputs !== undefined) lines.push(`  inside   ${record.machineOutputs['private_ip'] ?? '?'}, instance ${record.machineOutputs['instance_id'] ?? '?'}`);
   if (record.dataOutputs?.['volume_id'] !== undefined) lines.push(`  data     ${record.dataOutputs['volume_id']}`);
@@ -186,6 +206,9 @@ function vmRowKept_make(context: VmCommandContext, name: string): VmStatusRow {
     chris: record.chris === undefined ? null : { profile: record.chris.profile, compute: record.chris.compute, host: record.chris.host, url: record.chris.url, porter: record.chris.porter ?? null },
     takenFrom: record.takenFrom ?? null,
     keyless: vmKeyless_is(context.store, record),
+    stands: record.stands ?? null,
+    declared: record.declared ?? null,
+    declaredKept: declaredKept_is(record),
     teardown: record.teardown === undefined ? null : {
       started: record.teardown.started,
       steps: ['machine', 'data'].map((part: string) => ({ name: part, state: steps[part]?.state ?? 'not done', started: steps[part]?.started ?? null, ended: steps[part]?.ended ?? null, note: steps[part]?.note ?? null })),
@@ -279,7 +302,58 @@ async function vmCache_reconcile(context: VmCommandContext, region: string, tena
       || (instance.vcpus !== undefined && record.seen.vcpus !== instance.vcpus) || (instance.memoryGib !== undefined && record.seen.memoryGib !== instance.memoryGib);
     if (moved) await take(name);
   }
+  await vmTruth_read(context, region, byName, busy);
   return { found, notes };
+}
+
+/**
+ * What the tenancy holds of each VM this host keeps, read on every listing
+ * (the law a-change-is-a-loop, clause 1: render what stands, from its truth,
+ * with its age): what runs (the instance's vCPUs and memory, the boot and
+ * data volumes' sizes) as `stands`, and the declaration the vault keeps,
+ * taken when newer than this host's and its time kept as `keptDeclared`.
+ *
+ * @param context - The session.
+ * @param region - The region read.
+ * @param byName - What the tenancy runs, by name.
+ * @param busy - Whether a VM has an act in flight here (left as it is).
+ */
+async function vmTruth_read(context: VmCommandContext, region: string, byName: ReadonlyMap<string, FoundVm>, busy: (name: string) => boolean): Promise<void> {
+  const volumesBy: Map<string, Promise<CloudVolume[]>> = new Map();
+  const volumes_get = (place: string): Promise<CloudVolume[]> => {
+    let listed: Promise<CloudVolume[]> | undefined = volumesBy.get(place);
+    if (listed === undefined) {
+      // A cloud that does not list volumes leaves the sizes unread, never the listing broken.
+      listed = Promise.resolve().then((): Promise<CloudVolume[]> => context.driver.volumes_list(place, region)).catch((): CloudVolume[] => []);
+      volumesBy.set(place, listed);
+    }
+    return listed;
+  };
+  for (const name of context.store.names_list()) {
+    const record: VmRecord | null = context.store.record_read(name);
+    if (record === null || record.region !== region || busy(name)) continue;
+    const instance = byName.get(name)?.instance ?? null;
+    const volumes: CloudVolume[] = record.placeId === undefined ? [] : await volumes_get(record.placeId);
+    const volumeId: string | undefined = record.dataOutputs?.['volume_id'];
+    const disk: number | null = instance === null ? null : volumes.find((volume: CloudVolume): boolean => volume.boot && volume.attachedTo === instance.id)?.sizeGib ?? null;
+    const data: number | null = volumeId === undefined ? null : volumes.find((volume: CloudVolume): boolean => volume.id === volumeId)?.sizeGib ?? null;
+    const at: string = new Date().toISOString();
+    context.store.record_update(name, (current: VmRecord): void => {
+      if (instance === null && data === null) delete current.stands;
+      else current.stands = { at, vcpu: instance?.vcpus ?? null, memory: instance?.memoryGib ?? null, disk, data };
+    });
+    if (context.builder?.keep_read === undefined) continue;
+    try {
+      const kept: VmKept | null = await vmKept_read(context.builder, name, region);
+      vmDeclared_adopt(context.store, name, kept);
+      context.store.record_update(name, (current: VmRecord): void => {
+        if (kept?.declared === undefined) delete current.keptDeclared;
+        else current.keptDeclared = kept.declared.at;
+      });
+    } catch {
+      // The vault did not answer: what is kept stays as last read.
+    }
+  }
 }
 
 /**
@@ -383,12 +457,36 @@ async function vmNew_run(context: VmCommandContext, args: ReadonlyArray<string>)
     if (running !== undefined) return envelope_error('', undefined, `vm new: ${name}: Operation not permitted: the tenancy already runs a VM by that name (${running.tagged ? 'built by another stratus session' : 'made outside stratus'}); this session keeps no record of it, so it is read here (vm ${name}), never built over\n`);
   }
   const changes: string[] = keptSpec !== null ? vmSpec_diff(keptSpec, spec.spec) : [];
-  if (kept !== null && keptSpec !== null && changes.length === 0) return envelope_ok(`${name}: unchanged\n`);
+  if (kept !== null && keptSpec !== null && changes.length === 0) return envelope_ok(`${name}: unchanged\n${tasks_granted() ? await declaration_keep(context, name) : ''}`);
   context.store.declare(name, spec.spec, kept?.region ?? (region as string));
-  if (kept === null || keptSpec === null) return envelope_ok(`${name}: declared, ${spec_line(spec.spec)}, in ${kept?.region ?? region}; protected; vm build ${name} builds it\n`);
+  const where: string = await declaration_keep(context, name);
+  if (kept === null || keptSpec === null) return envelope_ok(`${name}: declared, ${spec_line(spec.spec)}, in ${kept?.region ?? region}; protected; vm build ${name} builds it\n${where}`);
   const lost: string[] = kept.dataOutputs !== undefined ? vmSpec_dataLoss(keptSpec, spec.spec) : [];
   const note: string = lost.length > 0 ? chalk.red(`; the build refuses this unless --allow-alter: it makes a new, empty data volume (${lost.join('; ')})`) : kept.built !== undefined ? chalk.gray(`; built: vm build ${name} plans the change and asks`) : '';
-  return envelope_ok(`${name}: ${changes.join(', ')}${note}\n`);
+  return envelope_ok(`${name}: ${changes.join(', ')}${note}\n${where}`);
+}
+
+/**
+ * Keeps a declaration in the tenancy from a MANAGE session, so every session
+ * and host reads it (the operator, 2026-11-04); a session below the tasks
+ * tier changes nothing outside its host, so there it stays on this host and
+ * the line says so.
+ *
+ * @param context - The session.
+ * @param name - The VM just declared.
+ * @returns A line saying where the declaration is kept.
+ */
+async function declaration_keep(context: VmCommandContext, name: string): Promise<string> {
+  const region: string = context.store.record_read(name)?.region ?? context.region() ?? '';
+  if (!tasks_granted() || context.builder?.keep_write === undefined) {
+    return `${chalk.yellow(`kept on this host only: a session with the tasks tier keeps it in the tenancy (vm new again, or vm build ${name})`)}\n`;
+  }
+  try {
+    await vmKept_write(context.builder, context.store, name, region, { log: (): void => undefined, signal: new AbortController().signal });
+    return `${chalk.gray('kept in the tenancy: every session reads this declaration')}\n`;
+  } catch (error: unknown) {
+    return `${chalk.yellow(`kept on this host only: the tenancy did not take it (${error instanceof Error ? error.message : String(error)}); vm build ${name} keeps it there first`)}\n`;
+  }
 }
 
 /**
@@ -639,7 +737,18 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   if (!tasks_granted()) return envelope_error('', undefined, `vm build: ${TIER_REFUSAL}\n`);
   const deps = deps_make(context);
   if ('error' in deps) return envelope_error('', undefined, `vm build: ${deps.error}\n`);
-  const { name, spec } = need;
+  // The declaration reaches the tenancy before anything is planned (the operator, 2026-11-04); a newer one the vault
+  // keeps, declared from another session or host, is taken first, so the build plans what was last declared.
+  if (context.builder?.keep_write !== undefined) {
+    try {
+      await vmKept_write(context.builder, context.store, need.name, need.record.region, { log: (): void => undefined, signal: new AbortController().signal });
+    } catch {
+      // Not kept now: the machine's apply keeps it again.
+    }
+  }
+  const name: string = need.name;
+  const keptNow = context.store.spec_read(name);
+  const spec: VmSpec = keptNow !== null && 'spec' in keptNow ? keptNow.spec : need.spec;
   try {
     vmNet_read(context.nets, spec);
   } catch (error: unknown) {

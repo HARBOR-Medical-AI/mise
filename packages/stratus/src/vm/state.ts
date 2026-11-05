@@ -39,6 +39,10 @@ export interface VmRecord extends KeptRecord {
   takenFrom?: string;
   /** The machine as this cache last saw it: a tenancy that answers otherwise (rebuilt or resized from another session) has the cache read again. */
   seen?: { instanceId: string; vcpus: number; memoryGib: number };
+  /** What the tenancy runs, read on the last listing: the instance's vCPUs and memory, the boot and data volumes' sizes, and when it was read. */
+  stands?: VmStands;
+  /** When the declaration the vault keeps was made: equal to `declared` once this host's declaration is kept in the tenancy. */
+  keptDeclared?: string;
   /** The disks a build grew whose filesystems are not grown yet: the next build grows them. */
   growOwed?: { boot: boolean; data: boolean };
   /** The last teardown, once one has started: when, and each step (`machine`, `data`) as it began and ended. */
@@ -47,6 +51,18 @@ export interface VmRecord extends KeptRecord {
   machineGone?: string;
   /** Everything went (`--all`). */
   gone?: string;
+}
+
+/** What the tenancy runs of a VM, read from the cloud: never the declaration. */
+export interface VmStands {
+  /** When it was read. */
+  readonly at: string;
+  readonly vcpu: number | null;
+  readonly memory: number | null;
+  /** The boot volume's size in GB, or null when not read. */
+  readonly disk: number | null;
+  /** The data volume's size in GB, or null when not read. */
+  readonly data: number | null;
 }
 
 /** The freeform tag a VM's stacks carry, so a fresh mise bastion finds them. */
