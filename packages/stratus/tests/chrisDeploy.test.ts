@@ -335,8 +335,8 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const secrets: ChrisSecrets | null = secrets_read(vms, 'store');
     expect(secrets?.porterSecret?.length).toBeGreaterThanOrEqual(32);
     const compose = yaml.load(vm.files.get('/srv/data/chris/compose.yml') ?? '') as { services: Record<string, Record<string, unknown>>; volumes: Record<string, unknown> };
-    expect(compose.services['porter']?.['image']).toBe('stratus/porter:0.9.10');
-    expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@0.9.10');
+    expect(compose.services['porter']?.['image']).toBe('stratus/porter:0.9.11');
+    expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@0.9.11');
     expect(compose.services['porter']?.['volumes']).toEqual(['porter:/var/lib/porter']);
     expect(compose.services['caddy']?.['networks']).toEqual({ default: { aliases: ['cube.example.org'] } });
     expect(Object.keys(compose.volumes)).toContain('porter');
