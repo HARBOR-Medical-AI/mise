@@ -196,6 +196,9 @@ export class VmScreen extends ScriptScreen {
     } catch {
       this.chrisRow = null;
     }
+    // The accounts just read are a user line's receipt: its seat reads done once CUBE holds the account.
+    this.lines = this.accountsHeld_apply(this.lines);
+    this.steps = this.steps_derive(this.lines);
     this.draw();
   }
 
