@@ -38,6 +38,9 @@ export interface VmControllerModule {
  * @param names_seen - Told the VMs each open finds, so the language can claim `vm <name>`.
  * @returns The controller's verbs.
  */
+/** How long a screen left with a line in flight keeps that line's question for itself. */
+const LEFT_LINE_MS: number = 30 * 60 * 1000;
+
 export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_is' | 'elevation_is' | 'elevate_ask'>, names_seen: (names: string[]) => void): VmControllerModule {
   let screen: VmScreen | null = null;
   let lineRunning: boolean = false;
@@ -52,6 +55,8 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
 
   const close = (): void => {
     if (screen === null) return;
+    // Left with a line in flight: its question, if it asks one before the line ends, is this screen's to show when it opens again.
+    leftWithLine = lineRunning || screen.following_is() ? Date.now() + LEFT_LINE_MS : 0;
     if (screen.following_is()) context.client.stop_send();
     screen.dispose();
     screen.root.remove();
@@ -112,11 +117,14 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
       names_seen([...opened.vms_get()]);
       // A question the screen's line asked while the screen was away stands on the strip again (a-change-is-a-loop, clauses 4 and 6).
       const waiting = held;
+      leftWithLine = 0;
       if (waiting !== null && screen === opened) { held = null; void opened.ask_take(waiting.request.message, waiting.request.kind).then(waiting.resolve); }
     });
     return `vm: the VM controller takes the display${name === '' ? ' on a new machine' : ` on ${name}`} (Esc or LEAVE gives it back)`;
   };
 
+  /** Until when a question is the left screen's: it was left with a line in flight, whose question waits for it to open again (a bound, so a forgotten screen never holds the console's questions). */
+  let leftWithLine: number = 0;
   /** A question the screen's line asked while the screen was away, held for the screen when it opens again. */
   let held: { request: SurfaceAsk; resolve: (value: string | null) => void } | null = null;
 
@@ -124,7 +132,7 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     open,
     active_is: (): boolean => screen !== null,
     // The screen's line runs on after the screen is left: its question is the screen's still, held until it opens again.
-    running_is: (): boolean => lineRunning,
+    running_is: (): boolean => lineRunning || Date.now() < leftWithLine,
     ask: (request: SurfaceAsk): Promise<string | null> => {
       if (screen !== null) return screen.ask_take(request.message, request.kind);
       return new Promise((resolve: (value: string | null) => void): void => { held = { request, resolve }; });

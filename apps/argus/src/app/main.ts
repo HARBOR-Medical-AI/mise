@@ -2482,6 +2482,10 @@ async function surface_start(token: string): Promise<void> {
         // The script screen's own lines ask on its strip too: a build's question with the cost, a user's hidden password.
         if (scriptScreen.running_is()) return scriptScreen.ask(request);
         if (vmController.running_is()) return vmController.ask(request);
+        // A stratus screen that is open is where its session's questions stand, even when the line that asks was sent
+        // before it opened (left mid-build and opened again): never the console behind it.
+        if (scriptScreen.active_is()) return scriptScreen.ask(request);
+        if (vmController.active_is()) return vmController.ask(request);
         if (request.kind !== 'path') {
           // A question a PRESSED VERB provoked stands on the pane that was
           // pressed: `rm -i` asks before it removes, and the operator is
