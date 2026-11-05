@@ -59,6 +59,9 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
     return envelope({ kind: 'manifest.status', data: { manifest: 'store', lines } });
   }
   if (line === 'vm limits') return envelope({ kind: 'stratus.vm.limits', data: LIMITS });
+  if (line === 'chris status store') return envelope({ kind: 'stratus.chris.status', data: { chris: [{ vm: 'store', profile: 'minimal', compute: 'NERC', url: 'https://cube.chrisproject.org/api/v1/', host: 'cube.chrisproject.org', porter: 'porter.chrisproject.org', deployed: '2026-11-05T04:04:12.000Z', image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.9.10',
+    live: { at: '2026-11-05T06:00:00.000Z', cube: { url: 'https://cube.chrisproject.org/api/v1/', status: 200, admin: true }, porter: { url: 'https://porter.chrisproject.org/healthz', status: 200, sessions: 2, version: '0.9.10' }, accounts: [{ username: 'chris', email: 'dev@babyMRI.org' }, { username: 'jennings', email: 'j@example.org' }], accountsWhy: null } }] } });
+  if (line.startsWith('chris deploy store') && line.endsWith('--plan')) return envelope({ kind: 'stratus.chris.plan', data: { vm: 'store', changes: [], restarts: ['porter (0.9.10 → 0.9.11): its open sessions end'], sessions: 2, asks: true } });
   if (line.startsWith('vm cost')) return envelope({ kind: 'stratus.vm.cost', data: { vms: [{ name: 'store', declared: true, spec: SPEC, cost: { machineHour: 0.052, dataHour: 0.003, currency: 'USD' }, changes: [], before: null }] } });
   return { envelopes: [{ rendered: '', status: 'ok' }] };
 }
@@ -130,6 +133,34 @@ describe('the VM controller', () => {
     }
   });
 
+  it('CHRIS renders what runs of the ChRIS and what a deploy would do; USERS renders CUBE\'s accounts beside the script\'s lines', async () => {
+    const { screen, asked } = screen_make();
+    await screen.vm_open('store');
+    await settle(12);
+    expect(asked).toContain('chris status store');
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
+    await settle(12);
+    const side: string = screen.root.querySelector('.ss-col-side')?.textContent ?? '';
+    expect(side).toContain('THE CHRIS · AS IT RUNS');
+    expect(side).toContain('READ FROM IT 06:00 UTC');
+    expect(side).toContain('ANSWERS 200 · CHRIS SIGNS IN');
+    expect(side).toContain('ANSWERS 200 · 2 OPEN · 0.9.10');
+    expect(asked.some((line: string): boolean => line.startsWith('chris deploy store') && line.endsWith('--plan'))).toBe(true);
+    const note: string = screen.root.querySelector('.ss-note-deploy')?.textContent ?? '';
+    expect(note).toContain('DEPLOY WOULD');
+    expect(note).toContain('restarts porter (0.9.10 → 0.9.11): its open sessions end');
+    expect(note).toContain('2 porter sessions open now end');
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="users"]')?.click();
+    await settle(12);
+    const users: string = screen.root.querySelector('.ss-col-side')?.textContent ?? '';
+    expect(users).toContain('IN THE CHRIS · ITS ACCOUNTS');
+    expect(users).toContain('RUDOLPHNOT IN CUBE YET · ITS LINE ADDS IT');
+    expect(users).toContain('CHRISIN CUBE · NO LINE (the admin)');
+    expect(users).toContain('JENNINGSIN CUBE · NO LINE');
+    screen.dispose();
+    screen.root.remove();
+  });
+
   it('SIZE changed by a slider writes the script before it builds, a script from git to its working copy, so the declaration reads done', async () => {
     const { screen, sent } = screen_make();
     await screen.vm_open('store');
@@ -172,6 +203,9 @@ describe('the VM controller', () => {
     expect(facts).toContain('2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups) · ubuntu-26.04');
     expect(facts).toContain('https://cube.chrisproject.org/api/v1/');
     expect(facts).toContain('its records and its SSH key held here');
+    // What runs, read from the tenancy, beside what is declared, and where the declaration is kept.
+    expect(facts).toContain('RUNS2 vCPU · 8 GiB · disk 50 GB · data 50 GB (read from the tenancy 04:48 UTC)');
+    expect(facts).toContain('· kept in the tenancy');
     // SIZE holds the build: DECLARE and BUILD, and no undoing (TEARDOWN is its own seat here).
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
     await settle();
@@ -182,6 +216,12 @@ describe('the VM controller', () => {
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
     await settle();
     expect(screen.root.querySelector('.tdc-note-title')?.textContent).toBe('UNLOCKED');
+    // What each undoing stops billing, and what keeps billing, beside the pills.
+    await settle(8);
+    const guard: string = screen.root.querySelector('.ss-col-side')?.textContent ?? '';
+    expect(guard).toContain('TEARDOWN STOPS');
+    expect(guard).toContain('STILL BILLS');
+    expect(guard).toContain('TEARDOWN · ALL STOPS');
     expect(button_named(body, 'TEARDOWN')?.title).toContain('vm teardown store');
     expect(button_named(body, 'TEARDOWN · ALL')?.title).toContain('--all');
     screen.dispose();

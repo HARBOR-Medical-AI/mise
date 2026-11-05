@@ -23,7 +23,7 @@
  */
 import * as fs from 'fs';
 import chalk from 'chalk';
-import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
+import { envelope_error, envelope_ok, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, type ChrisStatusRow, type CommandEnvelope } from '@fnndsc/menu';
 import { repl_confirm, repl_questionHidden, type CommandHelp } from '@fnndsc/brasa/core';
 import type { CloudBuilder } from '../cloud/builder.js';
 import type { NetStore } from '../net/state.js';
@@ -40,6 +40,8 @@ import { chrisUserAddRun_make, EMAIL, USER_JOBS, USER_NAME, type UserAddResult, 
 import { CHRIS_ADMIN, chrisPasswdRun_make, PASSWD_JOBS, type PasswdResult } from '../chris/passwd.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 import { TIER_REFUSAL } from '../tier.js';
+import { chrisLive_read, type ChrisLive, type HttpGet } from '../chris/live.js';
+import { chrisPlan_derive, chrisPlan_words, type ChrisPlan } from '../chris/plan.js';
 
 /** What `chris` reads from the session. */
 export interface ChrisCommandContext {
@@ -52,6 +54,8 @@ export interface ChrisCommandContext {
   /** The registrar whose API this host holds a token for, or null. */
   readonly registrar: Registrar | null;
   readonly status_get: (url: string) => Promise<number | null>;
+  /** A GET with the JSON body, for reading what runs of a ChRIS over HTTPS; reading is skipped when absent. */
+  readonly http_get?: HttpGet;
   /** Reaches a VM; through its bastion when absent. */
   readonly remote_open?: (name: string, call: BuildCall) => Promise<VmRemote>;
   readonly tickMs?: number;
@@ -61,7 +65,7 @@ export interface ChrisCommandContext {
 const DEPLOY_OPTIONS: ReadonlyArray<string> = ['--profile', '--compute', '--host', '--porter', '--admin-password-file'];
 
 /** `chris deploy`'s usage. */
-const DEPLOY_USAGE: string = 'chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--admin-password-file <file>]';
+const DEPLOY_USAGE: string = 'chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--admin-password-file <file>] [--plan]';
 
 /** The options `chris user add` reads, each a value. */
 const USER_OPTIONS: ReadonlyArray<string> = ['--email', '--password-file', '--on'];
@@ -85,13 +89,39 @@ const HOST_NAME: RegExp = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+
  * @param names - The VMs asked about; every one with a deploy when none.
  * @returns The envelope.
  */
-function chrisStatus_run(context: ChrisCommandContext, names: ReadonlyArray<string>): CommandEnvelope {
+async function chrisStatus_run(context: ChrisCommandContext, names: ReadonlyArray<string>): Promise<CommandEnvelope> {
   const records: VmRecord[] = (names.length > 0 ? [...names] : context.vms.names_list()).map((name: string): VmRecord | null => context.vms.record_read(name)).filter((record): record is VmRecord => record !== null && (names.length > 0 || record.chris !== undefined));
-  if (records.length === 0) return envelope_ok('no ChRIS deployed: chris deploy <vm> --profile minimal puts one on a built VM\n');
-  const lines: string[] = records.map((record: VmRecord): string => record.chris === undefined
-    ? `${chalk.bold(record.name)}  ${chalk.gray('no ChRIS')}`
-    : `${chalk.bold(record.name)}  ${chalk.cyan(record.chris.profile)}  ${record.chris.url}  compute ${record.chris.compute}${record.chris.porter !== undefined ? `  porter https://${record.chris.porter}/` : ''}${record.chris.dns === 'waiting' ? chalk.yellow('  waiting on DNS') : ''}${chalk.gray(`  deployed ${record.chris.deployed}`)}`);
-  return envelope_ok(`${lines.join('\n')}\n`);
+  if (records.length === 0) return envelope_ok('no ChRIS deployed: chris deploy <vm> --profile minimal puts one on a built VM\n', { kind: STRATUS_CHRIS_STATUS_MODEL_KIND, data: { chris: [] } });
+  const lines: string[] = [];
+  const rows: ChrisStatusRow[] = [];
+  for (const record of records) {
+    if (record.chris === undefined) { lines.push(`${chalk.bold(record.name)}  ${chalk.gray('no ChRIS')}`); continue; }
+    const chris = record.chris;
+    // What runs, read from it over HTTPS (AEGIS a-change-is-a-loop, clause 1): never the deploy's record standing in for it.
+    const live: ChrisLive | null = context.http_get === undefined ? null : await chrisLive_read(chris, secrets_read(context.vms, record.name), context.http_get);
+    lines.push(`${chalk.bold(record.name)}  ${chalk.cyan(chris.profile)}  ${chris.url}  compute ${chris.compute}${chris.porter !== undefined ? `  porter https://${chris.porter}/` : ''}${chris.dns === 'waiting' ? chalk.yellow('  waiting on DNS') : ''}${chalk.gray(`  deployed ${chris.deployed}${chris.image !== undefined ? ` (${chris.image}${chris.porterVersion !== undefined ? `, porter ${chris.porterVersion}` : ''})` : ''}`)}`);
+    if (live !== null) lines.push(...chrisLive_lines(live));
+    rows.push({
+      vm: record.name, profile: chris.profile, compute: chris.compute, url: chris.url, host: chris.host, porter: chris.porter ?? null, deployed: chris.deployed,
+      image: chris.image ?? null, porterVersion: chris.porterVersion ?? null,
+      live: live === null ? null : { at: live.at, cube: live.cube, porter: live.porter, accounts: live.accounts === null ? null : [...live.accounts], accountsWhy: live.accountsWhy },
+    });
+  }
+  return envelope_ok(`${lines.join('\n')}\n`, { kind: STRATUS_CHRIS_STATUS_MODEL_KIND, data: { chris: rows } });
+}
+
+/**
+ * What runs of a ChRIS, in lines under its record.
+ *
+ * @param live - What was read.
+ * @returns The lines.
+ */
+function chrisLive_lines(live: ChrisLive): string[] {
+  const read: string = chalk.gray(`  (read ${live.at.slice(11, 16)} UTC)`);
+  const cube: string = live.cube.status === null ? chalk.red('CUBE does not answer') : `CUBE answers ${live.cube.status}${live.cube.admin === true ? ', chris signs in' : live.cube.admin === false ? chalk.red(', chris does not sign in') : ''}`;
+  const porter: string = live.porter === null ? '' : live.porter.status === null ? `; ${chalk.red('porter does not answer')}` : `; porter answers ${live.porter.status}${live.porter.sessions !== null ? `, ${live.porter.sessions} session${live.porter.sessions === 1 ? '' : 's'} open` : ''}${live.porter.version !== null ? `, porter ${live.porter.version}` : ''}`;
+  const accounts: string = live.accounts === null ? chalk.yellow(`accounts not read: ${live.accountsWhy ?? '?'}`) : `${live.accounts.length} account${live.accounts.length === 1 ? '' : 's'}: ${live.accounts.map((one) => one.username).join(', ')}`;
+  return [`  runs      ${cube}${porter}${read}`, `  accounts  ${accounts}`];
 }
 
 /**
@@ -295,7 +325,9 @@ async function dns_point(context: ChrisCommandContext, host: string, address: st
  * @returns The envelope.
  */
 async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const read = options_read(args, DEPLOY_OPTIONS);
+  // `--plan` says what the deploy would do and does nothing: a surface draws it as the offer's options, at any tier.
+  const planOnly: boolean = args.includes('--plan');
+  const read = options_read(args.filter((word: string): boolean => word !== '--plan'), DEPLOY_OPTIONS);
   if ('error' in read) return envelope_error('', undefined, `chris deploy: ${read.error} (${DEPLOY_OPTIONS.join(', ')})\n`);
   const [name, ...extra] = read.rest;
   if (name === undefined || extra.length > 0) return envelope_error('', undefined, `chris deploy: usage: ${DEPLOY_USAGE}\n`);
@@ -318,7 +350,12 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   const short: string[] = floor_short(profile, vmSpec);
   if (short.length > 0) return envelope_error('', undefined, `chris deploy: ${name} is below the ${profile.name} profile's floor: ${short.join('; ')}\n`);
   if (!vmSpec.open.includes(80) || (host !== null && !vmSpec.open.includes(443))) return envelope_error('', undefined, `chris deploy: ${name} does not open ${host !== null ? '80 and 443' : '80'} (vm new ${name} --open 80,443, then vm build ${name})\n`);
+  const compute: string = read.options.get('--compute') ?? name;
+  const plan: ChrisPlan = await chrisPlan_read(context, record, { profile: profile.name, compute, host, porter });
+  if (planOnly) return envelope_ok(`${chrisPlan_words(name, plan)}\n`, { kind: STRATUS_CHRIS_PLAN_MODEL_KIND, data: { vm: name, ...plan } });
   if (!tasks_granted()) return envelope_error('', undefined, `chris deploy: ${TIER_REFUSAL}\n`);
+  // A replay that restarts or changes what runs asks first, with all of it (a-change-is-a-loop, clause 4).
+  if (plan.asks && !(await repl_confirm(`${chrisPlan_words(name, plan)}. Continue? [y/N]`))) return envelope_ok(`${chalk.gray(`stopped before the deploy; nothing changed (chris deploy ${name} plans and asks again)`)}\n`);
   if (context.builder === null) return envelope_error('', undefined, 'chris deploy: this cloud builds nothing yet\n');
   let generated: string | null = null;
   if (secrets_read(context.vms, name) === null) {
@@ -331,7 +368,6 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   if (kept === null) return envelope_error('', undefined, `chris deploy: ${name}: its secrets were not kept\n`);
   const secrets = porter !== null ? porterSecret_ensure(context.vms, name, kept) : kept;
   const deps: DeployDeps = { store: context.vms, nets: context.nets, builder: context.builder, resolve: context.resolve, status_get: context.status_get, ...(context.remote_open !== undefined ? { remote_open: context.remote_open } : {}), ...(context.tickMs !== undefined ? { tickMs: context.tickMs } : {}) };
-  const compute: string = read.options.get('--compute') ?? name;
   let pointed: string = '';
   const address: string | undefined = record.dataOutputs?.['public_ip'];
   if (host !== null && address !== undefined) {
@@ -350,6 +386,23 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
 }
 
 /**
+ * What a deploy would do, with porter's open sessions read from it when a
+ * porter restart is among the restarts.
+ *
+ * @param context - The session.
+ * @param record - The VM's record.
+ * @param ask - What the deploy is asked to put up.
+ * @returns The plan.
+ */
+async function chrisPlan_read(context: ChrisCommandContext, record: VmRecord, ask: { profile: string; compute: string; host: string | null; porter: string | null }): Promise<ChrisPlan> {
+  const first: ChrisPlan = chrisPlan_derive(record.chris, ask, null);
+  const porterRestarts: boolean = first.restarts.some((one: string): boolean => one.startsWith('porter (') || one.startsWith('CUBE and porter'));
+  if (!porterRestarts || record.chris === undefined || context.http_get === undefined) return first;
+  const live: ChrisLive = await chrisLive_read(record.chris, null, context.http_get);
+  return chrisPlan_derive(record.chris, ask, live.porter?.sessions ?? null);
+}
+
+/**
  * `chris`.
  *
  * @param context - The session.
@@ -359,7 +412,7 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
 export async function chris_run(context: ChrisCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
   const [verb = 'status', ...rest] = args;
   switch (verb) {
-    case 'status': return chrisStatus_run(context, rest);
+    case 'status': return await chrisStatus_run(context, rest);
     case 'deploy': return await chrisDeploy_run(context, rest);
     case 'user': return await chrisUser_run(context, rest);
     case 'passwd': return await chrisPasswd_run(context, rest);

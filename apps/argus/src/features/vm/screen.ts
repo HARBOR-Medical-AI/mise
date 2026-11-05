@@ -19,8 +19,9 @@
  * Built on the script screen's bodies, which are the same forms over the
  * same lines; this file holds what differs.
  */
-import type { VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
-import { STRATUS_VM_STATUS_MODEL_KIND, vmStatusModelSchema } from '@fnndsc/menu';
+import type { ChrisStatusRow, VmCostRate, VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
+import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
+import { chrisStatusModelSchema, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema } from '@fnndsc/menu';
 import { modePill_make } from '../takeover/tier.js';
 import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
@@ -63,6 +64,10 @@ export class VmScreen extends ScriptScreen {
   private newDraft!: ScriptLine;
   /** Whether the script shown is not on the host yet (synthesized from the record, or composed here). */
   private unsaved!: boolean;
+  /** What runs of the machine's ChRIS, as `chris status` read it from the ChRIS; null when none is deployed or it was not read. */
+  private chrisRow!: ChrisStatusRow | null;
+  /** What the machine shown bills, for TEARDOWN's guard: asked once per machine. */
+  private teardownCost: { vm: string; rate: VmCostRate | null } | null = null;
 
   constructor(hooks: ScriptHooks) {
     super(hooks, {
@@ -80,6 +85,7 @@ export class VmScreen extends ScriptScreen {
     this.newForm = { name: '', net: '' };
     this.newDraft = { number: 1, text: vmNewLine_compose(UNNAMED, NET_DEFAULT), state: null, detail: '', running: null };
     this.unsaved = false;
+    this.chrisRow = null;
     this.draw();
   }
 
@@ -165,9 +171,11 @@ export class VmScreen extends ScriptScreen {
     this.steps = this.steps_derive(this.lines);
     // A machine opens on what it is; a line running takes the seat it runs in.
     this.view = runningStep_find(this.steps)?.key ?? FACTS_KEY;
+    this.chrisRow = null;
     this.draw();
     void this.limits_need();
     void this.standing_read();
+    void this.chris_read();
     this.running_follow();
   }
 
@@ -177,6 +185,29 @@ export class VmScreen extends ScriptScreen {
   }
 
   // ---------------------------------------------------------------- reading
+
+  /** `chris status <vm>`, what runs of the machine's ChRIS, read from it: CHRIS and USERS render it. */
+  private async chris_read(): Promise<void> {
+    const row: VmStatusRow | null = this.vmRow_get();
+    if (row === null || row.chris === null || row.chris === undefined || vmKeyless_is(row)) { this.chrisRow = null; return; }
+    try {
+      const model = this.model_take(await this.hooks.ask(`chris status ${this.vm}`), STRATUS_CHRIS_STATUS_MODEL_KIND, (data: unknown) => chrisStatusModelSchema.safeParse(data));
+      this.chrisRow = model?.chris.find((one: ChrisStatusRow): boolean => one.vm === this.vm) ?? null;
+    } catch {
+      this.chrisRow = null;
+    }
+    this.draw();
+  }
+
+  /** What runs of the machine's ChRIS, for CHRIS and USERS. */
+  protected override chrisRow_get(vm: string): ChrisStatusRow | null {
+    return this.chrisRow !== null && this.chrisRow.vm === vm ? this.chrisRow : null;
+  }
+
+  /** The machine's USERS are on the machine shown. */
+  protected override usersVm_get(_step: ScriptStep): string {
+    return this.vm;
+  }
 
   /** `vm status`, for the pills and the header. */
   private async vms_read(): Promise<void> {
@@ -246,6 +277,8 @@ export class VmScreen extends ScriptScreen {
   /** After a line ran, the machine's record is read again with the script's standing: its state, address and lock are the header's and TEARDOWN's. */
   protected override async standings_refresh(): Promise<void> {
     await Promise.all([super.standings_refresh(), this.vms_read()]);
+    // What runs of its ChRIS is read again after any line: the receipt of a deploy or an account added.
+    await this.chris_read();
   }
 
   /** What runs of the machine shown, as `vm status` read it from the tenancy: the sizes SIZE renders and offers against. */
@@ -488,14 +521,18 @@ export class VmScreen extends ScriptScreen {
       ? (row.found?.tagged === true ? 'found: built by stratus, and its stacks did not read into this host' : 'found: made outside stratus')
       : row.keyless === true ? 'read from the tenancy, which keeps no SSH key for it (built before stratus kept keys there): vm keep, on the host that holds the key, keeps it'
         : row.takenFrom !== undefined && row.takenFrom !== null ? `read from the tenancy ${row.takenFrom.slice(0, 16).replace('T', ' ')}: its stacks and the secrets its vault keeps` : 'its records and its SSH key held here';
+    // What runs, read from the tenancy, beside what is declared: never one drawn for the other (a-change-is-a-loop, clause 1).
+    const stands = row.stands ?? null;
+    const runs: string = stands === null ? '—' : `${stands.vcpu ?? '?'} vCPU · ${stands.memory ?? '?'} GiB · disk ${stands.disk ?? '?'} GB · data ${stands.data ?? '?'} GB (read from the tenancy ${stands.at.slice(11, 16)} UTC)`;
     facts.append(this.pairs_make([
       ['DOING', row.state === 'found' ? (row.found?.state ?? '?') : row.state],
-      ['SIZE', size],
+      ['RUNS', runs],
+      ['DECLARED', `${size}${row.declared != null ? (row.declaredKept === true ? ' · kept in the tenancy' : ' · on this host only') : ''}`],
       ['ADDRESS', row.address ?? '—'],
       ['INSIDE', row.inside ?? '—'],
       ['NETWORK', row.spec?.net ?? '—'],
       ['OPEN', row.spec !== null ? (row.spec.open.length === 0 ? 'none' : row.spec.open.join(', ')) : '—'],
-      ['INSTANCE', row.found?.instanceId ?? '—'],
+      ['INSTANCE', row.found?.instanceId ?? row.instance ?? '—'],
       ['BUILT', row.built?.slice(0, 16).replace('T', ' ') ?? '—'],
       ['CHRIS', row.chris !== null && row.chris !== undefined ? `${row.chris.url}${row.chris.porter !== null ? ` · porter ${row.chris.porter}` : ''}`
         : row.found?.chris != null ? `${row.found.chris.url}${row.found.chris.porter !== null ? ` · porter ${row.found.chris.porter}` : ''} (as its instance's tag says)`
@@ -586,6 +623,29 @@ export class VmScreen extends ScriptScreen {
     commit.disabled = refusal !== null || this.busy !== null;
   }
 
+  /**
+   * What a teardown stops billing and what it leaves billing, from `vm cost`,
+   * asked once per machine shown: the machine's share goes with TEARDOWN, the
+   * data's stays until TEARDOWN · ALL.
+   *
+   * @param name - The VM.
+   * @returns The pairs, or a line saying the price is being read.
+   */
+  private teardownBill_make(name: string): HTMLElement {
+    if (this.teardownCost?.vm !== name) {
+      this.teardownCost = { vm: name, rate: null };
+      void this.hooks.ask(`vm cost ${name}`).then((answer: QuietAnswer): void => {
+        const model = this.model_take(answer, STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
+        if (this.teardownCost?.vm === name) this.teardownCost = { vm: name, rate: model?.vms[0]?.cost ?? null };
+        this.draw();
+      }, (): void => undefined);
+    }
+    const rate = this.teardownCost.rate;
+    if (rate === null) return el('p', 'tdc-prose tdc-quiet', 'reading what it bills: vm cost');
+    const month = (hourly: number): string => `${money_text(hourly * HOURS_PER_MONTH, rate.currency)} A MONTH`;
+    return this.pairs_make([['TEARDOWN STOPS', `${month(rate.machineHour)} · the machine`], ['STILL BILLS', `${month(rate.dataHour)} · its data, backups and address, kept`], ['TEARDOWN · ALL STOPS', month(rate.machineHour + rate.dataHour)]]);
+  }
+
   /** TEARDOWN: the lock, then the undoing, each a line of the VM's own. */
   private teardown_make(): HTMLElement[] {
     const row: VmStatusRow | null = this.vmRow_get();
@@ -631,6 +691,8 @@ export class VmScreen extends ScriptScreen {
     lock.append(commands);
     const guard: HTMLElement = this.section_make('THE GUARD', 'ss-col-side');
     guard.append(lock);
+    // What each undoing stops billing and what keeps billing, beside the pills (a-change-is-a-loop, clause 2).
+    if (row !== null && row.state !== 'gone') guard.append(this.teardownBill_make(name));
     return [goes, guard, this.stepLog_make({ key: TEARDOWN_KEY, label: 'TEARDOWN', kind: 'other', lines: [], state: null, running: null })];
   }
 }

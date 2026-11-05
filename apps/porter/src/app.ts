@@ -44,7 +44,7 @@
  *
  * @module
  */
-import { berth_behind, berthJoblets_read, installed_read, type BerthJoblet } from './versions.js';
+import { berth_behind, berthJoblets_read, installed_read, porterVersion_read, type BerthJoblet } from './versions.js';
 import { FAVICON_SVG } from './favicon.js';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyCookie, { unsign as cookie_unsign } from '@fastify/cookie';
@@ -303,7 +303,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   /** The key the request's cookie names, or null. */
   const requestKey_read = (request: FastifyRequest): string | null => cookieKey_read(request.headers.cookie, config.secret);
 
-  app.get('/healthz', async (): Promise<{ ok: true; cube: string; sessions: number }> => ({ ok: true, cube: config.cubeUrl, sessions: registry.all().length }));
+  // Its own version beside its sessions: a deploy that would replace porter says which version it replaces and what it ends.
+  const version: string = porterVersion_read();
+  app.get('/healthz', async (): Promise<{ ok: true; cube: string; sessions: number; version: string }> => ({ ok: true, cube: config.cubeUrl, sessions: registry.all().length, version }));
 
   app.get('/', async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     const key: string | null = requestKey_read(request);

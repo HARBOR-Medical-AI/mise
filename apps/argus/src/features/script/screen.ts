@@ -19,8 +19,8 @@
  * @module
  */
 import {
-  manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, vmCostModelSchema, vmLimitsModelSchema,
-  type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel,
+  chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, vmCostModelSchema, vmLimitsModelSchema,
+  type ChrisPlanModel, type ChrisStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel,
 } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
 import { saveLine_compose } from '../edit/line.js';
@@ -219,6 +219,8 @@ export class ScriptScreen {
   protected runsCost: { key: string; row: VmCostRow | null } | null = null;
   /** The seat a BUILD ended on in this screen, so its receipt says it was built here and read back. */
   protected builtHere: string | null = null;
+  /** What a `chris deploy` line would do, by the line's text, as `--plan` answered it (null while asked or when it did not answer). */
+  protected readonly chrisPlans: Map<string, ChrisPlanModel | null> = new Map();
   /** The line running, and since when. */
   protected busy: { line: string; step: string | null; since: number } | null = null;
   /** The standing read again a moment after a task-starting line was sent, so the seat wears the run while the line still holds the lane. */
@@ -490,6 +492,17 @@ export class ScriptScreen {
     return null;
   }
 
+  /**
+   * What runs of a VM's ChRIS, as `chris status` read it from the ChRIS;
+   * null on a screen that reads none (the script screen).
+   *
+   * @param _vm - The VM.
+   * @returns The row, or null.
+   */
+  protected chrisRow_get(_vm: string): ChrisStatusRow | null {
+    return null;
+  }
+
   /** Whether a declaring seat offers DECLARE beside BUILD: the script screen does (declaring is authoring there); a machine's own screen offers BUILD alone (a-change-is-a-loop, clause 3). */
   protected declareOffered(): boolean {
     return true;
@@ -507,6 +520,8 @@ export class ScriptScreen {
     if (standings === null) return;
     const fresh: ScriptLine[] = lines_build(script_render(this.lines), standings.lines);
     this.lines = fresh;
+    // What a deploy would do is read again after any line: the line that ran may have changed what runs.
+    this.chrisPlans.clear();
     this.steps = this.steps_derive(this.lines);
     void this.standing_read();
   }
@@ -1012,7 +1027,11 @@ export class ScriptScreen {
       other: (): HTMLElement[] => this.other_make(step),
     };
     form.append(...bodies[step.kind]());
-    const side: HTMLElement = step.kind === 'vm new' ? this.cost_make(step) : this.state_make(step);
+    const vm: string = line_parse(step.lines[0]?.text ?? '').subject ?? '';
+    const chris: ChrisStatusRow | null = step.kind === 'chris deploy' ? this.chrisRow_get(vm) : step.kind === 'users' ? this.chrisRow_get(this.usersVm_get(step)) : null;
+    const side: HTMLElement = step.kind === 'vm new' ? this.cost_make(step)
+      : step.kind === 'chris deploy' && chris !== null ? this.chrisSide_make(step, chris)
+        : step.kind === 'users' && chris !== null ? this.usersSide_make(step, chris) : this.state_make(step);
     const log: HTMLElement = this.stepLog_make(step);
     return [form, side, log];
   }
@@ -1495,6 +1514,94 @@ export class ScriptScreen {
       this.optionField_make(line, '--admin-password-file', 'PASSWORD FILE', 'a file on the host; empty: asked hidden'),
       el('p', 'tdc-prose tdc-quiet', 'Replays resume where they stopped: a deploy waiting on DNS reads ready and goes on from there.'),
     ];
+  }
+
+  /** The VM a USERS seat's accounts are on: its lines' `--on`, else the one the screen shows. */
+  protected usersVm_get(step: ScriptStep): string {
+    return step.lines.map((line: ScriptLine): string | null => lineOption_get(line.text, '--on')).find((on): on is string => on !== null && on !== '') ?? '';
+  }
+
+  /**
+   * What runs of the ChRIS, beside its deploy line (a-change-is-a-loop,
+   * clauses 1, 2 and 5): CUBE's answer and the admin's sign-in, porter's
+   * health, sessions and version, the image deployed, CUBE's accounts, with
+   * when they were read; then what the line would do as `chris deploy
+   * --plan` says it (the changes, the restarts, the sessions a porter
+   * restart ends). After a deploy both are read again: the render is the receipt.
+   *
+   * @param step - The seat.
+   * @param chris - What runs, as `chris status` read it.
+   * @returns The side column.
+   */
+  protected chrisSide_make(step: ScriptStep, chris: ChrisStatusRow): HTMLElement {
+    const side: HTMLElement = this.section_make('THE CHRIS · AS IT RUNS', 'ss-col-side', chris.live === null ? 'NOT READ' : `READ FROM IT ${chris.live.at.slice(11, 16)} UTC`);
+    const running: HTMLElement | null = this.runningNote_make(step);
+    if (running !== null) side.append(running);
+    const live = chris.live;
+    const cube: string = live === null ? '—' : live.cube.status === null ? 'DOES NOT ANSWER' : `ANSWERS ${live.cube.status}${live.cube.admin === true ? ' · CHRIS SIGNS IN' : live.cube.admin === false ? ' · CHRIS DOES NOT SIGN IN' : ''}`;
+    const porter: string = live?.porter == null ? (chris.porter === null ? 'none deployed' : '—') : live.porter.status === null ? 'DOES NOT ANSWER' : `ANSWERS ${live.porter.status}${live.porter.sessions !== null ? ` · ${live.porter.sessions} OPEN` : ''}${live.porter.version !== null ? ` · ${live.porter.version}` : ''}`;
+    side.append(this.pairs_make([
+      ['CUBE', cube], ['PORTER', porter], ['IMAGE', chris.image === null ? 'not kept by the deploy that put it up' : `${chris.image}${chris.porterVersion !== null ? ` · porter ${chris.porterVersion}` : ''} (as deployed)`],
+      ['ACCOUNTS', live?.accounts == null ? `not read${live?.accountsWhy ? `: ${live.accountsWhy}` : ''}` : String(live.accounts.length)], ['DEPLOYED', chris.deployed.slice(0, 16).replace('T', ' ')],
+    ]));
+    const line: ScriptLine | undefined = step.lines[0];
+    if (line === undefined) return side;
+    if (!this.chrisPlans.has(line.text)) this.chrisPlan_ask(line.text);
+    const plan: ChrisPlanModel | null | undefined = this.chrisPlans.get(line.text);
+    const note: HTMLElement = el('div', `tdc-note ss-note-deploy${plan?.asks === true ? ' tdc-note-bill' : ''}`);
+    if (plan === null || plan === undefined) {
+      note.append(el('span', 'tdc-note-title', 'DEPLOY WOULD'), el('span', 'tdc-prose tdc-quiet', 'reading what a deploy would do: chris deploy … --plan'));
+    } else if (!plan.asks) {
+      note.append(el('span', 'tdc-note-title', 'WHAT RUNS IS WHAT THIS DEPLOYS'), el('span', 'tdc-prose tdc-quiet', 'a replay changes nothing and restarts nothing: it checks again what is there'));
+    } else {
+      note.append(el('span', 'tdc-note-title', 'DEPLOY WOULD'));
+      for (const change of plan.changes) note.append(el('span', 'tdc-prose', change));
+      for (const restart of plan.restarts) note.append(el('span', 'tdc-prose ss-would-reboot', `restarts ${restart}`));
+      if (plan.sessions !== null && plan.restarts.some((one: string): boolean => one.startsWith('porter (') || one.startsWith('CUBE and porter'))) note.append(el('span', `tdc-prose${plan.sessions > 0 ? ' ss-would-reboot' : ' tdc-quiet'}`, plan.sessions === 0 ? 'no porter session is open now' : `${plan.sessions} porter session${plan.sessions === 1 ? '' : 's'} open now ${plan.sessions === 1 ? 'ends' : 'end'}`));
+      note.append(el('span', 'tdc-prose tdc-quiet', 'RUN asks here with all of it before anything restarts.'));
+    }
+    side.append(note);
+    return side;
+  }
+
+  /**
+   * Asks what a deploy line would do, once per text of it.
+   *
+   * @param text - The `chris deploy` line.
+   */
+  protected chrisPlan_ask(text: string): void {
+    this.chrisPlans.set(text, null);
+    void this.hooks.ask(`${text} --plan`).then((answer: QuietAnswer): void => {
+      this.chrisPlans.set(text, model_extract(answer, STRATUS_CHRIS_PLAN_MODEL_KIND, (data: unknown) => chrisPlanModelSchema.safeParse(data)));
+      this.draw();
+    }, (): void => undefined);
+  }
+
+  /**
+   * CUBE's accounts beside the script's user lines (a-change-is-a-loop,
+   * clause 1): each line wears whether CUBE holds its account, and an account
+   * CUBE holds with no line is said too; after ADD they are read again, so
+   * the new account appearing is the receipt.
+   *
+   * @param step - The USERS seat.
+   * @param chris - What runs, as `chris status` read it.
+   * @returns The side column.
+   */
+  protected usersSide_make(step: ScriptStep, chris: ChrisStatusRow): HTMLElement {
+    const live = chris.live;
+    const side: HTMLElement = this.section_make('IN THE CHRIS · ITS ACCOUNTS', 'ss-col-side', live === null ? 'NOT READ' : `READ FROM IT ${live.at.slice(11, 16)} UTC`);
+    if (live?.accounts == null) {
+      side.append(el('p', 'tdc-prose tdc-quiet', `CUBE's accounts were not read${live?.accountsWhy ? `: ${live.accountsWhy}` : ''}.`));
+      return side;
+    }
+    const lined: Set<string> = new Set(step.lines.map((line: ScriptLine): string => line_parse(line.text).subject ?? '').filter((name: string): boolean => name !== ''));
+    const held: Set<string> = new Set(live.accounts.map((one): string => one.username));
+    const rows: Array<[string, string]> = [
+      ...[...lined].map((name: string): [string, string] => [name.toUpperCase(), held.has(name) ? 'IN CUBE · A LINE OF THE SCRIPT' : 'NOT IN CUBE YET · ITS LINE ADDS IT']),
+      ...live.accounts.filter((one): boolean => !lined.has(one.username)).map((one): [string, string] => [one.username.toUpperCase(), `IN CUBE · NO LINE${one.username === 'chris' ? ' (the admin)' : ''}`]),
+    ];
+    side.append(this.pairs_make(rows), el('p', 'tdc-prose tdc-quiet', `${live.accounts.length} account${live.accounts.length === 1 ? '' : 's'} in CUBE, from its all_users group; a name already there is left as it is.`));
+    return side;
   }
 
   protected users_make(step: ScriptStep): HTMLElement[] {

@@ -347,6 +347,31 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(plain((await chris_run(context, ['status'])).rendered)).toContain('porter https://porter.example.org/');
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org']);
     expect(secrets_read(vms, 'store')).toEqual(secrets);
+    // The deploy keeps what it put up; a replay as deployed restarts nothing and asks nothing.
+    expect(vms.record_read('store')?.chris).toMatchObject({ image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.9.11' });
+    const line: string[] = ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org'];
+    const planned = await chris_run(context, [...line, '--plan']);
+    expect(plain(planned.rendered)).toBe('chris deploy store: as deployed; nothing restarts\n');
+    expect(planned.model).toMatchObject({ kind: 'stratus.chris.plan', data: { vm: 'store', changes: [], restarts: [], asks: false } });
+    // A porter older than this stratus's: the replay plans porter's restart, reads the sessions it ends from porter, and asks first; no, and nothing changes.
+    vms.record_update('store', (record): void => { if (record.chris !== undefined) record.chris.porterVersion = '0.9.10'; });
+    const live: ChrisCommandContext = { ...context, http_get: async (url: string) => (url === 'https://porter.example.org/healthz' ? { status: 200, body: { ok: true, sessions: 2, version: '0.9.10' } } : null) };
+    expect(plain((await chris_run(live, [...line, '--plan'])).rendered)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.9.11): its open sessions end; 2 porter sessions open now end\n');
+    surface.asked = [];
+    surface.answers = ['n'];
+    const before: number = vm.lines.length;
+    expect(plain((await chris_run(live, line)).rendered)).toContain('stopped before the deploy; nothing changed');
+    expect(surface.asked.at(-1)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.9.11): its open sessions end; 2 porter sessions open now end. Continue? [y/N]');
+    expect(vm.lines.length).toBe(before);
+    // status reads what runs from it, over HTTPS, under the deploy's record.
+    const reading: ChrisCommandContext = { ...context, http_get: async (url: string, auth) => (url === 'https://porter.example.org/healthz' ? { status: 200, body: { sessions: 2, version: '0.9.11' } }
+      : url === 'https://cube.example.org/api/v1/' ? { status: auth !== null ? 200 : 401, body: {} }
+        : url.includes('groups/search') ? { status: 200, body: { next: null, results: [{ id: 3 }] } }
+          : url.includes('groups/3/users') ? { status: 200, body: { next: null, results: [{ username: 'chris', email: 'dev@babyMRI.org' }] } } : null) };
+    const status = await chris_run(reading, ['status']);
+    expect(plain(status.rendered)).toMatch(/runs {6}CUBE answers 200, chris signs in; porter answers 200, 2 sessions open, porter 0\.9\.11 {2}\(read \d\d:\d\d UTC\)/);
+    expect(plain(status.rendered)).toContain('accounts  1 account: chris');
+    expect(status.model).toMatchObject({ kind: 'stratus.chris.status', data: { chris: [{ vm: 'store', image: 'ghcr.io/fnndsc/cube:6.11.0', live: { cube: { admin: true }, accounts: [{ username: 'chris' }] } }] } });
   });
 
   it('with --porter and a name not yet seen, says it waits on porter\'s DNS', async () => {
