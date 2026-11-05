@@ -19,8 +19,8 @@
  * @module
  */
 import {
-  chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, vmCostModelSchema, vmLimitsModelSchema,
-  type ChrisPlanModel, type ChrisStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel,
+  chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, vmCostModelSchema, vmLimitsModelSchema,
+  type ChrisPlanModel, type ChrisStatusRow, type NetStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel,
 } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
 import { saveLine_compose } from '../edit/line.js';
@@ -219,6 +219,8 @@ export class ScriptScreen {
   protected runsCost: { key: string; row: VmCostRow | null } | null = null;
   /** The seat a BUILD ended on in this screen, so its receipt says it was built here and read back. */
   protected builtHere: string | null = null;
+  /** What stands of each network, by name, as `net status` answered it with when it read the tenancy (null while asked). */
+  protected readonly nets: Map<string, { row: NetStatusRow | null; read: string | null } | null> = new Map();
   /** What a `chris deploy` line would do, by the line's text, as `--plan` answered it (null while asked or when it did not answer). */
   protected readonly chrisPlans: Map<string, ChrisPlanModel | null> = new Map();
   /** The line running, and since when. */
@@ -520,8 +522,9 @@ export class ScriptScreen {
     if (standings === null) return;
     const fresh: ScriptLine[] = lines_build(script_render(this.lines), standings.lines);
     this.lines = fresh;
-    // What a deploy would do is read again after any line: the line that ran may have changed what runs.
+    // What a deploy would do, and what stands of a network, are read again after any line: the line that ran may have changed them.
     this.chrisPlans.clear();
+    this.nets.clear();
     this.steps = this.steps_derive(this.lines);
     void this.standing_read();
   }
@@ -1030,6 +1033,7 @@ export class ScriptScreen {
     const vm: string = line_parse(step.lines[0]?.text ?? '').subject ?? '';
     const chris: ChrisStatusRow | null = step.kind === 'chris deploy' ? this.chrisRow_get(vm) : step.kind === 'users' ? this.chrisRow_get(this.usersVm_get(step)) : null;
     const side: HTMLElement = step.kind === 'vm new' ? this.cost_make(step)
+      : step.kind === 'net new' || step.kind === 'net build' ? this.netSide_make(step, vm)
       : step.kind === 'chris deploy' && chris !== null ? this.chrisSide_make(step, chris)
         : step.kind === 'users' && chris !== null ? this.usersSide_make(step, chris) : this.state_make(step);
     const log: HTMLElement = this.stepLog_make(step);
@@ -1053,7 +1057,9 @@ export class ScriptScreen {
       done: 'The line has run and would replay to unchanged or nothing to do.',
       changed: 'An earlier line changed under it: replaying it plans, prices and asks before anything is made.',
     };
-    side.append(el('p', 'tdc-prose', step.state === null ? 'No verb reads this line\'s state; it runs when sent.' : words[step.state]));
+    const declares: boolean = step.kind === 'net new' || step.kind === 'vm new';
+    side.append(el('p', 'tdc-prose', step.state === null ? 'No verb reads this line\'s state; it runs when sent.'
+      : declares && step.state === 'changed' ? 'This line differs from what is declared: DECLARE declares it as shown, and the build plans and asks before anything is made.' : words[step.state]));
     if (step.lines.length === 1 && (step.lines[0]?.detail ?? '') !== '') side.append(this.pairs_make([['SAID', step.lines[0]?.detail ?? '']]));
     const running: HTMLElement | null = this.runningNote_make(step);
     if (running !== null) side.append(running);
@@ -1514,6 +1520,53 @@ export class ScriptScreen {
       this.optionField_make(line, '--admin-password-file', 'PASSWORD FILE', 'a file on the host; empty: asked hidden'),
       el('p', 'tdc-prose tdc-quiet', 'Replays resume where they stopped: a deploy waiting on DNS reads ready and goes on from there.'),
     ];
+  }
+
+  /**
+   * What stands of a network beside its lines (a-change-is-a-loop, clauses
+   * 1 and 2): its state, the CIDR declared against the one its last build
+   * made, its stack as the tenancy answers it, its bastion and the address it
+   * admits, with when the tenancy was read; the line's own standing said under it.
+   *
+   * @param step - The seat.
+   * @param net - The network.
+   * @returns The side column.
+   */
+  protected netSide_make(step: ScriptStep, net: string): HTMLElement {
+    if (!this.nets.has(net)) this.net_ask(net);
+    const read = this.nets.get(net) ?? null;
+    const side: HTMLElement = this.section_make('THE NETWORK · AS IT STANDS', 'ss-col-side', read?.read == null ? 'NOT READ' : `READ FROM THE TENANCY ${read.read.slice(11, 16)} UTC`);
+    const row: NetStatusRow | null = read?.row ?? null;
+    if (read === null) side.append(el('p', 'tdc-prose tdc-quiet', 'reading what stands: net status'));
+    else if (row === null) side.append(el('p', 'tdc-prose', 'Nothing of it stands: neither this host nor the tenancy holds a network by that name.'));
+    else side.append(this.pairs_make([
+      ['STATE', row.state.toUpperCase()],
+      ['CIDR', row.builtCidr === null ? (row.cidr ?? '—') : row.cidr === null || row.cidr === row.builtCidr ? `${row.builtCidr} (as built)` : `${row.builtCidr} as built · ${row.cidr} declared`],
+      ['STACK', row.stack === null ? 'none found in the tenancy' : `${row.stack.state.toUpperCase()} · ${row.stack.id}`],
+      ['BASTION', row.bastion === null ? '—' : `${row.bastion}${row.admits !== null ? ` · admits ${row.admits}` : ''}`],
+    ]));
+    const said: string = step.lines.map((line: ScriptLine): string => line.detail).filter((detail: string): boolean => detail !== '').join('; ');
+    if (said !== '') side.append(this.pairs_make([['SAID', said]]));
+    const running: HTMLElement | null = this.runningNote_make(step);
+    if (running !== null) side.append(running);
+    // An edit not saved is said here as on any seat, with SAVE.
+    const edited: Element | undefined = this.edited ? [...this.state_make(step).querySelectorAll('.tdc-note')].find((note: Element): boolean => (note.textContent ?? '').includes('EDITED')) : undefined;
+    if (edited !== undefined) side.append(edited);
+    return side;
+  }
+
+  /**
+   * Asks what stands of a network, once per name until a line runs.
+   *
+   * @param net - The network.
+   */
+  protected net_ask(net: string): void {
+    this.nets.set(net, null);
+    void this.hooks.ask(`net status ${net}`).then((answer: QuietAnswer): void => {
+      const model = model_extract(answer, STRATUS_NET_STATUS_MODEL_KIND, (data: unknown) => netStatusModelSchema.safeParse(data));
+      this.nets.set(net, { row: model?.nets.find((one: NetStatusRow): boolean => one.name === net) ?? null, read: model?.read ?? null });
+      this.draw();
+    }, (): void => { this.nets.set(net, { row: null, read: null }); });
   }
 
   /** The VM a USERS seat's accounts are on: its lines' `--on`, else the one the screen shows. */

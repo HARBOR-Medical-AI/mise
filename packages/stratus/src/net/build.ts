@@ -138,7 +138,8 @@ export function netApplyRun_make(name: string, deps: NetDeps): JobRun {
     if (planText === null || record.stackRef === undefined) throw new Error(`${name}: no plan to apply (net build ${name} makes one)`);
     const plan: InfraPlan = JSON.parse(planText) as InfraPlan;
     const outputs: Record<string, string> = await builder.moduleApply_run({ region: record.region, stackRef: record.stackRef, plan, label: name }, call_make(context));
-    deps.store.record_update(name, (current: NetRecord): void => { current.outputs = outputs; current.built = new Date().toISOString(); delete current.gone; });
+    const built = deps.store.spec_read(name);
+    deps.store.record_update(name, (current: NetRecord): void => { current.outputs = outputs; current.built = new Date().toISOString(); if (built !== null && 'spec' in built) current.builtCidr = built.spec.cidr; delete current.gone; });
     deps.store.file_remove(name, 'plan.json');
     context.log_write(`${name}: built (${Object.entries(outputs).map(([key, value]): string => `${key} ${value}`).join(', ')})`);
   };

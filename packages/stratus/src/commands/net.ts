@@ -14,7 +14,7 @@
  * @module
  */
 import chalk from 'chalk';
-import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
+import { envelope_error, envelope_ok, STRATUS_NET_STATUS_MODEL_KIND, type CommandEnvelope, type NetStatusRow } from '@fnndsc/menu';
 import { repl_confirm, repl_question, type CommandHelp } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_alter, planCounts_words, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import type { CloudDriver } from '../cloud/driver.js';
@@ -118,17 +118,21 @@ async function netStatus_run(context: NetCommandContext, names: ReadonlyArray<st
   const kept: string[] = context.store.names_list();
   const region: string | null = context.region();
   let found: FoundNet[] = [];
+  let tenancy: FoundNet[] = [];
+  let read: string | null = null;
   let unsearched: string | null = region === null ? 'not connected' : null;
   if (region !== null) {
     try {
-      found = (await netsFound_read(context.driver, region)).filter((net: FoundNet): boolean => !kept.includes(net.name));
+      tenancy = await netsFound_read(context.driver, region);
+      read = new Date().toISOString();
+      found = tenancy.filter((net: FoundNet): boolean => !kept.includes(net.name));
     } catch (error: unknown) {
       unsearched = error instanceof Error ? error.message : String(error);
     }
   }
   const unsearchedLine: string = unsearched === null ? '' : `${chalk.yellow(`the tenancy was not searched for networks (${unsearched}): only those this session keeps are listed`)}\n`;
   const all: string[] = [...kept, ...found.map((net: FoundNet): string => net.name)];
-  if (all.length === 0) return envelope_ok(`${unsearchedLine}no networks${unsearched === null ? ' here or in the tenancy' : ''}: net new <name> --cidr <range> declares one\n`);
+  if (all.length === 0) return envelope_ok(`${unsearchedLine}no networks${unsearched === null ? ' here or in the tenancy' : ''}: net new <name> --cidr <range> declares one\n`, { kind: STRATUS_NET_STATUS_MODEL_KIND, data: { read, nets: [] } });
   const missing: string[] = names.filter((name: string): boolean => !all.includes(name));
   if (missing.length > 0) return envelope_error('', undefined, `net: ${missing.join(', ')}: no such network (${all.join(', ')})\n`);
   const foundBy: Map<string, FoundNet> = new Map(found.map((net: FoundNet): [string, FoundNet] => [net.name, net]));
@@ -143,7 +147,19 @@ async function netStatus_run(context: NetCommandContext, names: ReadonlyArray<st
     const read = context.store.spec_read(name);
     return netStatus_lines(context.store.record_read(name) as NetRecord, read !== null && 'spec' in read ? read.spec : null).join('\n');
   });
-  return envelope_ok(`${unsearchedLine}${blocks.join('\n\n')}\n`);
+  // The same as a model: what is declared, what its last build made, and its stack as the tenancy answers it, with when it was read.
+  const stacks: Map<string, FoundNet> = new Map(tenancy.map((net: FoundNet): [string, FoundNet] => [net.name, net]));
+  const rows: NetStatusRow[] = (names.length === 0 ? all : [...names]).map((name: string): NetStatusRow => {
+    const record: NetRecord | null = context.store.record_read(name);
+    const spec = context.store.spec_read(name);
+    const stack = stacks.get(name)?.stack ?? null;
+    return {
+      name, state: record === null ? 'found' : record.gone !== undefined ? 'gone' : record.built !== undefined ? 'built' : 'declared',
+      cidr: spec !== null && 'spec' in spec ? spec.spec.cidr : null, builtCidr: record?.builtCidr ?? null,
+      stack: stack === null ? null : { id: stack.id, state: stack.state }, bastion: record?.outputs?.['bastion_id'] ?? null, admits: record?.clientCidr ?? null, subnet: record?.outputs?.['subnet_id'] ?? null,
+    };
+  });
+  return envelope_ok(`${unsearchedLine}${blocks.join('\n\n')}\n`, { kind: STRATUS_NET_STATUS_MODEL_KIND, data: { read, nets: rows } });
 }
 
 /**
@@ -172,7 +188,8 @@ function netNew_run(context: NetCommandContext, args: ReadonlyArray<string>): Co
   if (kept !== null && before !== null && 'spec' in before && changes.length === 0) return envelope_ok(`${name}: unchanged\n`);
   context.store.declare(name, spec, kept?.region ?? (region as string));
   if (kept === null) return envelope_ok(`${name}: declared, ${spec.cidr} in ${region}; net build ${name} builds it\n`);
-  const built: string = kept.built !== undefined ? chalk.gray(`; built: net build ${name} plans the change and asks`) : '';
+  const replaces: boolean = kept.built !== undefined && (kept.builtCidr ?? (before !== null && 'spec' in before ? before.spec.cidr : spec.cidr)) !== spec.cidr;
+  const built: string = replaces ? chalk.red('; a new CIDR on a built network replaces its VCN and subnet, and every machine on them: net build refuses it unless --allow-alter') : kept.built !== undefined ? chalk.gray(`; built: net build ${name} plans the change and asks`) : '';
   return envelope_ok(`${name}: ${changes.join(', ')}${built}\n`);
 }
 

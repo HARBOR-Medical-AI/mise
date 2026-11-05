@@ -56,6 +56,8 @@ export const vmLimitsModelSchema = z.object({
 
 /** The model kind `vm cost` carries. */
 export const STRATUS_VM_COST_MODEL_KIND = 'stratus.vm.cost' as const;
+/** `net status`: each network, what is declared of it and what stands, its stack's state read from the tenancy. */
+export const STRATUS_NET_STATUS_MODEL_KIND = 'stratus.net.status' as const;
 /** `chris status`: each deployed ChRIS, its deploy's record and what runs of it, read from it. */
 export const STRATUS_CHRIS_STATUS_MODEL_KIND = 'stratus.chris.status' as const;
 /** `chris deploy --plan`: what a deploy would change and restart, read without acting. */
@@ -189,6 +191,27 @@ export const chrisStatusRowSchema = z.object({
 
 export const chrisStatusModelSchema = z.object({ chris: z.array(chrisStatusRowSchema) });
 
+/** One network as `net status` answers it: declared, built, and what the tenancy says of its stack. */
+export const netStatusRowSchema = z.object({
+  name: z.string(),
+  /** `built`, `declared`, `gone`, or `found` (built by stratus, not kept in this session). */
+  state: z.string(),
+  cidr: z.string().nullable(),
+  /** The CIDR its last build made it with, or null before a build (or on a record from before builds kept it). */
+  builtCidr: z.string().nullable(),
+  /** Its stack as the tenancy answers it, or null when none is found. */
+  stack: z.object({ id: z.string(), state: z.string() }).nullable(),
+  bastion: z.string().nullable(),
+  admits: z.string().nullable(),
+  subnet: z.string().nullable(),
+});
+
+export const netStatusModelSchema = z.object({
+  /** When the tenancy was searched, or null when it was not. */
+  read: z.string().nullable(),
+  nets: z.array(netStatusRowSchema),
+});
+
 /** What a deploy would do, read without acting: the changes to the line's record, the services it restarts and what that ends. */
 export const chrisPlanModelSchema = z.object({
   vm: z.string(),
@@ -214,6 +237,8 @@ export type ChrisLiveModel = z.infer<typeof chrisLiveSchema>;
 export type ChrisStatusRow = z.infer<typeof chrisStatusRowSchema>;
 export type ChrisStatusModel = z.infer<typeof chrisStatusModelSchema>;
 export type ChrisPlanModel = z.infer<typeof chrisPlanModelSchema>;
+export type NetStatusRow = z.infer<typeof netStatusRowSchema>;
+export type NetStatusModel = z.infer<typeof netStatusModelSchema>;
 export type VmState = (typeof VM_STATES)[number];
 export type VmStatusRow = z.infer<typeof vmStatusRowSchema>;
 export type VmStatusModel = z.infer<typeof vmStatusModelSchema>;

@@ -41,6 +41,7 @@ function answer_make(line: string, states: string[]): QuietAnswer {
     return envelope({ kind: 'manifest.status', data: { manifest: 'store', lines } });
   }
   if (line === 'vm limits') return envelope({ kind: 'stratus.vm.limits', data: LIMITS });
+  if (line === 'net status chrisproject-services') return envelope({ kind: 'stratus.net.status', data: { read: '2026-11-05T06:10:00.000Z', nets: [{ name: 'chrisproject-services', state: 'built', cidr: '10.20.0.0/16', builtCidr: '10.20.0.0/16', stack: { id: 'ocid1.ormstack.net', state: 'active' }, bastion: 'ocid1.bastion.net', admits: '134.174.21.21/32', subnet: 'ocid1.subnet.net' }] } });
   if (line.startsWith('vm cost')) {
     const memory: number = Number(line.match(/--memory (\d+)/)?.[1] ?? 8);
     const spec = { net: 'chrisproject-services', open: [80, 443], vcpu: 2, memory, disk: 50, data: 50, dataBackup: 'daily', os: 'ubuntu-26.04' };
@@ -110,6 +111,14 @@ describe('the script screen', () => {
     await settle();
     expect(screen.view_get()).toBe('line-1');
     expect(screen.root.querySelector('.ss-line-text')?.textContent).toBe('net new chrisproject-services --cidr 10.20.0.0/16');
+    // What stands of the network, read from the tenancy, beside its line.
+    await settle();
+    const stands: string = screen.root.querySelector('.ss-col-side')?.textContent ?? '';
+    expect(stands).toContain('THE NETWORK · AS IT STANDS');
+    expect(stands).toContain('READ FROM THE TENANCY 06:10 UTC');
+    expect(stands).toContain('10.20.0.0/16 (as built)');
+    expect(stands).toContain('ACTIVE · ocid1.ormstack.net');
+    expect(stands).toContain('admits 134.174.21.21/32');
     const cidr: HTMLInputElement | null = screen.root.querySelector('#ss-cidr-1');
     expect(cidr?.value).toBe('10.20.0.0/16');
     cidr!.value = '10.30.0.0/16';

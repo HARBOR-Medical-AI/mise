@@ -106,6 +106,8 @@ export const clusterSummarySchema = z.object({
   steps: z.array(clusterStepSchema),
   /** Its compartment's live resources by kind, or null when not counted. */
   resources: z.record(z.string(), z.number()).nullable(),
+  /** When `resources` was counted in the tenancy, or null when it was not; absent from an older daemon. */
+  resourcesAt: z.string().nullable().optional(),
   /** What it costs at list price, an hour and so far, or null when not priced; absent from an older daemon. */
   cost: z.object({ hourly: z.number(), soFar: z.number(), currency: z.string() }).nullable().optional(),
   // What the TD controller draws, beyond the tile's glance; each absent from an older daemon.

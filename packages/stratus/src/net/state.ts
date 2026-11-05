@@ -33,6 +33,8 @@ export interface NetRecord extends KeptRecord {
   outputs?: Record<string, string>;
   clientCidr?: string;
   built?: string;
+  /** The CIDR the last build made the network with. */
+  builtCidr?: string;
   gone?: string;
 }
 

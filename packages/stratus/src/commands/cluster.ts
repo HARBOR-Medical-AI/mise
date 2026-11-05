@@ -154,7 +154,10 @@ function teardownLines_make(cluster: HarborCluster, width: number): string[] {
 export async function clusterStatus_read(context: ClusterCommandContext, cluster: HarborCluster): Promise<{ lines: string[]; summary: ClusterSummary }> {
   const width: number = Math.max(0, ...cluster.steps.map((step: StepState): number => step.folder.length));
   const found = cluster.found;
-  const [compartment, cost] = await Promise.all([compartment_count(context, cluster.settings['OCI_COMPARTMENT_OCID'], found?.resources ?? null), clusterCost_read(context, cluster)]);
+  // A cluster built here keeps its compartment in its record, a checkout in its settings: either is counted in the tenancy.
+  const compartmentId: string | undefined = cluster.settings['OCI_COMPARTMENT_OCID'] ?? (cluster.state as { compartmentId?: string } | null)?.compartmentId;
+  const [compartment, cost] = await Promise.all([compartment_count(context, compartmentId, found?.resources ?? null), clusterCost_read(context, cluster)]);
+  const countedAt: string = new Date().toISOString();
   // A found cluster's line: what carries its tag, what the cloud makes of it, and the one line that moves it on.
   const foundLine = (): string => {
     const carried: string = `${found?.stack !== null && found?.stack !== undefined ? `stack ${found.stack.id} (${found.stack.state})` : 'no stack'}${found?.compartmentId !== null && found?.compartmentId !== undefined ? `, compartment ${found.compartmentId}` : ''}`;
@@ -174,6 +177,7 @@ export async function clusterStatus_read(context: ClusterCommandContext, cluster
   const summary: ClusterSummary = {
     ...clusterSummary_read(context.build?.store ?? null, context.clustersPath(), cluster),
     resources: compartment.counts === null ? null : { ...compartment.counts },
+    resourcesAt: compartment.counts === null ? null : countedAt,
     cost: cost.spend === null ? null : { hourly: cost.spend.hourly, soFar: cost.spend.soFar, currency: cost.spend.currency },
   };
   return { lines, summary };

@@ -341,7 +341,7 @@ describe('building a cluster over the fakes', () => {
     expect(await read('cluster build trial')).toBe('ready (next: compartment)');
     expect(await read('cluster verify trial')).toBe('not yet (trial: not installed (cluster build trial))');
     // Built through the install in the fake cloud: plan done, build done, verify ready; then declared again, each has a change.
-    surface.answers = ['y'];
+    surface.answers = ['y', 'y'];
     await cluster_run(context, ['build', 'trial', '--through', 'run']);
     expect(await read('cluster plan trial')).toMatch(/^done \(planned \d{4}-\d\d-\d\d\)$/);
     expect(await read('cluster build trial')).toBe('ready (next: postinstall)');
@@ -379,7 +379,8 @@ describe('building a cluster over the fakes', () => {
     surface_set(new GrantedSurface(false));
     const plan: string = plain((await cluster_run(context, ['plan', 'trial'])).rendered);
     expect(plan).toContain('fit, E5 per availability domain (us-ashburn-1):');
-    expect(plan).toContain('$0.50 an hour');
+    // Priced whole, as SIZE prices it: compute and memory, the boot and ChRIS volumes, the load balancers.
+    expect(plan).toMatch(/\$0\.6\d an hour/);
     expect(plan).toContain('steps next: compartment');
     expect(plan).toContain('the infrastructure plan: entered as READ, so nothing outside this host changes');
     surface_set(surface);
@@ -394,11 +395,20 @@ describe('building a cluster over the fakes', () => {
 
   it('cluster build asks before billing, follows the run, and says where it stopped', async () => {
     record_new('trial');
+    // Asked first what a build makes before it bills, and at what rate it would bill: no, and nothing is made.
     surface.answers = ['n'];
+    const untouched: CommandEnvelope = await cluster_run(context, ['build', 'trial']);
+    expect(plain(untouched.rendered)).toBe('stopped before anything was made; nothing changed (cluster build trial asks again)\n');
+    expect(surface.asked[0]).toMatch(/^cluster build trial: before anything bills it makes the compartment clusters\/trial, the cluster and its infra-env at Red Hat, a discovery ISO with a public link valid seven days, and the infra plan; then it asks again before infra-apply, which starts billing at \$0\.6\d an hour \(compute and memory \(24 vCPU, 72 GiB\), the boot and ChRIS volumes, and 3 load balancers\)\. Continue\? \[y\/N\]$/);
+    expect(sink.text_get()).not.toContain('compartment: started');
+    expect(store.record_read('trial')?.buildAccepted).toBeUndefined();
+    // Yes, then no at billing: what is free is made, nothing bills; the billing question prices what SIZE priced.
+    surface.answers = ['y', 'n'];
     const declined: CommandEnvelope = await cluster_run(context, ['build', 'trial']);
     expect(plain(declined.rendered)).toBe('stopped before infra-apply; nothing bills (cluster build trial asks again)\n');
-    expect(surface.asked[0]).toBe('infra-apply creates 17 resources. Billing starts at $0.50 an hour (compute and memory (24 vCPU, 72 GiB); volumes and load balancers are not priced yet). Continue? [y/N]');
+    expect(surface.asked.at(-1)).toMatch(/^infra-apply creates 17 resources\. Billing starts at \$0\.6\d an hour \(compute and memory \(24 vCPU, 72 GiB\), the boot and ChRIS volumes, and 3 load balancers\)\. Continue\? \[y\/N\]$/);
     expect(sink.text_get()).toContain('infra-plan: done');
+    // Asked once: the build goes on to billing's question alone.
     surface.answers = ['y'];
     const built: CommandEnvelope = await cluster_run(context, ['build', 'trial']);
     expect(plain(built.rendered)).toBe('trial: every step done\n');
@@ -411,12 +421,14 @@ describe('building a cluster over the fakes', () => {
     const shown: Array<{ kind: string; data: ClusterSummary }> = [];
     sink.event_write = (kind: string, data: unknown): void => { shown.push({ kind, data: data as ClusterSummary }); };
     context = { ...context, build: { ...context.build!, clustersPath: (): string => '/net/oci/fnndsc/clusters' } };
-    surface.answers = ['n'];
+    surface.answers = ['y', 'n'];
     await cluster_run(context, ['build', 'trial']);
     expect(shown.length).toBeGreaterThan(3);
     expect(shown.every((event) => event.kind === STRATUS_CLUSTER_STATE_EVENT && event.data.name === 'trial' && event.data.resources === null && event.data.cost === undefined)).toBe(true);
     expect(shown.some((event) => event.data.condition === 'BUILDING' && event.data.running?.job === 'trial-build')).toBe(true);
-    const asking = shown.find((event) => event.data.condition === 'ASKING');
+    // Two questions, each standing on the cluster while it is asked: what a build makes, then billing.
+    expect(shown.find((event) => event.data.condition === 'ASKING')?.data.asking).toContain('before anything bills it makes the compartment');
+    const asking = shown.findLast((event) => event.data.condition === 'ASKING');
     expect(asking?.data.asking).toContain('infra-apply creates 17 resources');
     expect(asking?.data.path).toBe('/net/oci/fnndsc/clusters/trial');
     const last: ClusterSummary = (shown.at(-1) as { data: ClusterSummary }).data;
@@ -433,11 +445,14 @@ describe('building a cluster over the fakes', () => {
     expect(before.refused).toEqual({ teardown: 'protected (cluster protect trial off lifts it)' });
     expect(before.spec).toEqual(SPEC_DEFAULT);
     expect(before.steps[0]).toEqual({ folder: '01-compartment', state: 'not done', name: 'compartment', evidence: 'not run yet', started: null, ended: null });
-    surface.answers = ['y'];
+    surface.answers = ['y', 'y'];
     await cluster_run(context, ['build', 'trial']);
     store.file_write('trial', 'verify.json', JSON.stringify({ at: '2026-10-23T00:00:00.000Z', checks: [{ name: 'API', ok: true, detail: '/readyz ok', how: 'reads' }] }));
     const after: ClusterSummary = ((await cluster_run(context, ['status', 'trial'])).model?.data as ClustersModel).clusters[0] as ClusterSummary;
     expect(after).toMatchObject({ condition: 'SERVING', billing: true, next: null });
+    // Built here, its compartment is counted in the tenancy, with when.
+    expect(after.resources).not.toBeNull();
+    expect(after.resourcesAt).toEqual(expect.any(String));
     expect(after.plan).toMatchObject({ create: 17, change: 0, drift: 0, destroy: 0, at: expect.any(String) });
     expect(after.verify?.checks).toEqual([{ name: 'API', ok: true, detail: '/readyz ok', how: 'reads' }]);
   });
@@ -458,6 +473,7 @@ describe('building a cluster over the fakes', () => {
 
   it('cluster build stops where asked, and refuses what it cannot do', async () => {
     record_new('trial');
+    surface.answers = ['y'];
     expect(plain((await cluster_run(context, ['build', 'trial', '--through', 'cluster'])).rendered)).toBe('trial: done through cluster; next: iso\n');
     expect((await cluster_run(context, ['build', 'trial', '--through', 'nope'])).renderedErr).toContain('--through nope: no such step');
     expect((await cluster_run(context, ['build', 'trial', '--colour'])).renderedErr).toContain('--colour: unknown option');

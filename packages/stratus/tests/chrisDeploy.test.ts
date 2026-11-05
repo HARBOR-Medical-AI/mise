@@ -387,7 +387,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const read = async (line: string): Promise<string> => { const answer = await (providers.get(line.split(' ')[0] as string) as LineStatusProvider).read(line.split(' ')); return answer === null ? '—' : `${answer.state}${answer.detail === '' ? '' : ` (${answer.detail})`}`; };
     // The fixture built the network scratch and the VM store already.
     expect(await read('net new scratch --cidr 10.40.0.0/16')).toBe('done (unchanged)');
-    expect(await read('net new scratch --cidr 10.50.0.0/16')).toBe('changed (cidr 10.40.0.0/16 → 10.50.0.0/16)');
+    expect(await read('net new scratch --cidr 10.50.0.0/16')).toBe('changed (cidr 10.40.0.0/16 → 10.50.0.0/16; a new CIDR on a built network replaces its VCN and subnet, and every machine on them: net build refuses it unless --allow-alter)');
     expect(await read('net new other --cidr 10.60.0.0/16')).toBe('ready');
     expect(await read('net build other')).toBe('not yet (other: not declared (net new other))');
     expect(await read('net build scratch')).toMatch(/^done \(built \d{4}-\d\d-\d\d\)$/);
