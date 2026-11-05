@@ -75,7 +75,8 @@ describe('building a cluster over the fakes', () => {
     runner_install(runner);
     sink = new BufferSink();
     sink_set(sink);
-    const driver: FakeDriver = new FakeDriver(fakeCloud_sample());
+    // The fake tenancy answers what the fake builder made: a cluster's machines, counted and priced as they run.
+    const driver: FakeDriver = new FakeDriver(fakeCloud_sample()).built_see(world);
     const clusters: ClusterTree = new ClusterTree({ sources: [], owner: (): string => 'rudolph', now: (): Date => new Date('2026-10-22T12:00:00Z'), store });
     const build: BuildCommandContext = { clusters, store, driver, region: (): string => 'us-ashburn-1', deps, baseDomain: 'fake.example' };
     context = { clusters, driver, region: (): string => 'us-ashburn-1', clustersPath: (): string => '/net/oci/fnndsc/clusters', build };
@@ -432,7 +433,10 @@ describe('building a cluster over the fakes', () => {
     const built: CommandEnvelope = await cluster_run(context, ['build', 'trial']);
     expect(plain(built.rendered)).toBe('trial: every step done\n');
     expect(store.record_read('trial')?.billingAccepted).toBeDefined();
-    expect(plain((await cluster_run(context, ['status', 'trial'])).rendered)).toContain('built here');
+    const status = await cluster_run(context, ['status', 'trial']);
+    expect(plain(status.rendered)).toContain('built here');
+    // A cluster built here is priced as it runs, from its record's compartment: its machines, read from the tenancy.
+    expect((status.model as ClustersModel).data.clusters[0]?.cost?.hourly).toBeGreaterThan(0.5);
   });
 
   it('cluster build shows its cluster as a state event at each line and before it asks', async () => {

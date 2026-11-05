@@ -284,6 +284,11 @@ export class VmScreen extends ScriptScreen {
     await this.chris_read();
   }
 
+  /** The header prices the machine shown, never the tenancy's every machine. */
+  protected override costScope_get(): string | null {
+    return this.vm === '' ? null : this.vm;
+  }
+
   /** What runs of the machine shown, as `vm status` read it from the tenancy: the sizes SIZE renders and offers against. */
   protected override runs_get(name: string): (VmRuns & { at: string }) | null {
     const row: VmStatusRow | null = this.vmRow_get();
