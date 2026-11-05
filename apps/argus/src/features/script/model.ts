@@ -440,6 +440,23 @@ export interface VmRuns {
   readonly memory: number | null;
   readonly disk: number | null;
   readonly data: number | null;
+  /** The ports its security groups open to the internet, its data's backups (`daily`, `none`, or another policy's name), its OS; null when not read, absent from an older daemon. */
+  readonly open?: ReadonlyArray<number> | null;
+  readonly backup?: string | null;
+  readonly os?: string | null;
+}
+
+/**
+ * Ports as one word, sorted: `80,443`, or `none`.
+ *
+ * @param ports - The ports, as numbers or as a `--open` word.
+ * @returns The word.
+ */
+export function ports_word(ports: ReadonlyArray<number> | string): string {
+  const list: number[] = typeof ports === 'string'
+    ? ports.split(',').map((word: string): number => Number(word.trim())).filter((port: number): boolean => Number.isInteger(port) && port > 0)
+    : [...ports];
+  return list.length === 0 ? 'none' : [...new Set(list)].sort((a: number, b: number): number => a - b).join(',');
 }
 
 /** One change a build would make to what runs, and what it means beyond the price. */
@@ -472,6 +489,15 @@ export function buildWould_derive(levers: VmNewLevers, runs: VmRuns): BuildWould
     if (now === null || want === null || now === want) continue;
     if (want > now) would.push({ change: `${label} ${now} → ${want} GB`, consequence: 'grows online, no reboot; its filesystem is grown after', tone: 'grow' });
     else would.push({ change: `${label} ${now} → ${want} GB`, consequence: key === 'disk' ? 'refused: a disk only grows' : 'refused unless named (--allow-alter): a smaller data volume is a new, empty one', tone: 'refused' });
+  }
+  if (levers.open !== null && runs.open !== undefined && runs.open !== null && ports_word(levers.open) !== ports_word(runs.open)) {
+    would.push({ change: `open ${ports_word(runs.open)} → ${ports_word(levers.open)}`, consequence: 'the security group changes in place, no reboot', tone: 'grow' });
+  }
+  if (levers.dataBackup !== null && runs.backup !== undefined && runs.backup !== null && levers.dataBackup !== runs.backup) {
+    would.push({ change: `backups ${runs.backup} → ${levers.dataBackup}`, consequence: levers.dataBackup === 'none' ? 'the daily backups stop; those already made stay until they age out' : 'the data volume is backed up each day from now, no reboot', tone: 'grow' });
+  }
+  if (levers.os !== null && runs.os !== undefined && runs.os !== null && levers.os !== runs.os) {
+    would.push({ change: `os ${runs.os} → ${levers.os}`, consequence: 'refused unless named (--allow-alter): a new OS is a new machine with a new host key; the data volume stays', tone: 'refused' });
   }
   return would;
 }

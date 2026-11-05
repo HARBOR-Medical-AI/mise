@@ -317,15 +317,20 @@ describe('the VM controller', () => {
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
     await settle();
     const blocks = (): string[] => [...screen.root.querySelectorAll('.tdc-teardown-step')].map((block) => `${block.querySelector('.tdc-strip-word')?.textContent}[${[...block.classList].find((name) => name.startsWith('tdc-step-'))}]`);
-    expect(blocks()).toEqual(['STANDS[tdc-step-stands]', 'STANDS[tdc-step-stands]']);
-    const row = (steps: Array<[string, string, string | null]>) => ({
-      name: 'store', state: 'built', region: 'us-ashburn-1', spec: SPEC, address: '203.0.113.10', inside: '10.20.0.5', protected: false, built: '2026-11-01T00:00:00Z', chris: null,
+    // Whether each part stands is read from the tenancy, with when.
+    expect(blocks()).toEqual([`STANDS · READ ${STORE_RUNS.at.slice(11, 16)}[tdc-step-stands]`, `STANDS · READ ${STORE_RUNS.at.slice(11, 16)}[tdc-step-stands]`]);
+    const row = (steps: Array<[string, string, string | null]>, stands: unknown = undefined) => ({
+      name: 'store', state: 'built', region: 'us-ashburn-1', spec: SPEC, address: '203.0.113.10', inside: '10.20.0.5', protected: false, built: '2026-11-01T00:00:00Z', chris: null, stands,
       teardown: { started: '2026-11-04T04:00:00Z', steps: steps.map(([name, state, ended]) => ({ name, state, started: '2026-11-04T04:00:00Z', ended, note: null })) },
     }) as unknown as Parameters<VmScreen['row_take']>[0];
+    // A step under way is the act's own word; a part the tenancy was not read for says the word is this host's record.
     screen.row_take(row([['machine', 'running', null], ['data', 'not done', null]]));
-    expect(blocks()).toEqual(['GOING[tdc-step-going]', 'STANDS[tdc-step-stands]']);
+    expect(blocks()).toEqual(['GOING · THIS HOST\'S RECORD[tdc-step-going]', 'STANDS · THIS HOST\'S RECORD[tdc-step-stands]']);
     screen.row_take(row([['machine', 'done', '2026-11-04T04:03:00Z'], ['data', 'kept', '2026-11-04T04:03:00Z']]));
     expect(blocks()).toEqual(['GONE · 04:03[tdc-step-gone]', 'STAYS · 04:03[tdc-step-skipped]']);
+    // Read back from the tenancy: the machine is not there and the data is, said with when it was read.
+    screen.row_take(row([['machine', 'done', '2026-11-04T04:03:00Z'], ['data', 'kept', '2026-11-04T04:03:00Z']], { at: '2026-11-04T04:05:00Z', vcpu: null, memory: null, disk: null, data: 50 }));
+    expect(blocks()).toEqual(['GONE · READ 04:05[tdc-step-gone]', 'STAYS · READ 04:05[tdc-step-skipped]']);
     screen.dispose();
     screen.root.remove();
   });

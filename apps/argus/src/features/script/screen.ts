@@ -28,7 +28,7 @@ import { modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } f
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
   askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
-  buildWould_derive, runningStep_find, script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, stepBuildLine_get, stepKind_derive, stepKind_isTask, steps_build, userLine_build, vmLevers_read, vmSliders_build,
+  buildWould_derive, ports_word, runningStep_find, script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, stepBuildLine_get, stepKind_derive, stepKind_isTask, steps_build, userLine_build, vmLevers_read, vmSliders_build,
   word_quote, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts, type VmRuns,
 } from './model.js';
 
@@ -1122,6 +1122,7 @@ export class ScriptScreen {
       line.text = lineOption_set(line.text, word, input.value.trim());
       this.edited = true;
       this.lineShown_redraw(line);
+      this.wouldNote_redraw(line);
     });
     row.append(field, input);
     return row;
@@ -1254,12 +1255,19 @@ export class ScriptScreen {
         pill.addEventListener('click', (): void => { this.hooks.voice.pill(choice); line.text = lineOption_set(line.text, '--data-backup', choice); this.edited = true; this.stepCost_ask(line.text); this.draw(); });
         backup.append(pill);
       }
+      if (runs?.backup !== undefined && runs.backup !== null) backup.append(el('span', 'ss-field-runs', `RUNS ${runs.backup.toUpperCase()}`));
       nodes.push(backup);
     }
     // loop: ss-vm-declare, ss-vm-build, vm-size-build
     nodes.push(this.declareRow_make(step, line, built));
     nodes.push(this.lineBoxNumbered_make(line), ...(built === undefined ? [] : [this.lineBoxNumbered_make(built)]), this.pairs_make([['VM', name], ['NETWORK', lineOption_get(line.text, '--net') ?? '—']]));
-    nodes.push(this.optionField_make(line, '--open', 'OPEN PORTS', '80,443'), this.optionField_make(line, '--os', 'OS', 'ubuntu-26.04'));
+    // What runs beside each field, read from the tenancy, so a change typed is seen against it (a-change-is-a-loop, clause 1).
+    const standing = this.runs_get(name);
+    const ports: HTMLElement = this.optionField_make(line, '--open', 'OPEN PORTS', '80,443');
+    if (standing?.open !== undefined && standing.open !== null) ports.append(el('span', 'ss-field-runs', `RUNS ${ports_word(standing.open).toUpperCase()}`));
+    const os: HTMLElement = this.optionField_make(line, '--os', 'OS', 'ubuntu-26.04');
+    if (standing?.os !== undefined && standing.os !== null) os.append(el('span', 'ss-field-runs', `RUNS ${standing.os.toUpperCase()}`));
+    nodes.push(ports, os);
     nodes.push(el('p', 'tdc-prose tdc-quiet', built === undefined
       ? 'DECLARE declares the VM; nothing is built. On a built VM a changed size is planned and asked by its build line; a smaller data volume is refused unless named.'
       : this.declareOffered()

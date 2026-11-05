@@ -23,6 +23,7 @@ const VCN: string = 'ocid1.vcn.oc1.iad.harbor';
 
 const INSTANCES: OciInstanceRecord[] = [3, 1, 2].map((n: number): OciInstanceRecord => ({
   ...record(`ocid1.instance.oc1.iad.cp000${n}`, `harbor-cp-${n}`, 'RUNNING'), shape: 'VM.Standard.E5.Flex', availabilityDomain: RECORDED_ZONES[n - 1] as string,
+  imageId: 'ocid1.image.oc1.iad.rhcos',
 }));
 const VNIC_ATTACHMENTS: OciVnicAttachmentRecord[] = [
   ...[1, 2, 3].map((n: number): OciVnicAttachmentRecord => ({ instanceId: `ocid1.instance.oc1.iad.cp000${n}`, vnicId: `ocid1.vnic.oc1.iad.vnic0${n}`, lifecycleState: 'ATTACHED' })),
@@ -30,7 +31,7 @@ const VNIC_ATTACHMENTS: OciVnicAttachmentRecord[] = [
 ];
 const VNICS: Record<string, OciVnicRecord> = {
   'ocid1.vnic.oc1.iad.vnic01': { privateIp: '10.0.16.11', publicIp: null },
-  'ocid1.vnic.oc1.iad.vnic02': { privateIp: '10.0.16.12', publicIp: '129.0.0.12' },
+  'ocid1.vnic.oc1.iad.vnic02': { privateIp: '10.0.16.12', publicIp: '129.0.0.12', nsgIds: ['ocid1.networksecuritygroup.oc1.iad.nsg001'] },
   'ocid1.vnic.oc1.iad.vnic03': { privateIp: '10.0.16.13', publicIp: null },
 };
 const SUBNETS: OciVcnMemberRecord[] = ['public', 'private_ocp', 'private_bare_metal'].map((name: string, n: number): OciVcnMemberRecord => ({ ...record(`ocid1.subnet.oc1.iad.sub00${n}`, name, 'AVAILABLE'), vcnId: VCN }));
@@ -94,6 +95,19 @@ export function recordedResourceApi_make(seen: string[] = []): OciResourceApi {
     async instances_list(_region, compartmentId) { seen.push('instances_list'); return inHarbor(compartmentId, INSTANCES); },
     async vnicAttachments_list(_region, compartmentId) { return inHarbor(compartmentId, VNIC_ATTACHMENTS); },
     async vnic_get(_region, vnicId) { seen.push(`vnic_get ${vnicId}`); return VNICS[vnicId] ?? { privateIp: null, publicIp: null }; },
+    async image_get(_region, imageId) {
+      seen.push(`image_get ${imageId}`);
+      return imageId === 'ocid1.image.oc1.iad.ubuntu' ? { operatingSystem: 'Canonical Ubuntu', operatingSystemVersion: '26.04' } : { operatingSystem: 'Red Hat Enterprise Linux CoreOS', operatingSystemVersion: '4.22' };
+    },
+    async nsgIngress_list(_region, nsgId) {
+      return nsgId === 'ocid1.networksecuritygroup.oc1.iad.nsg001' ? [
+        { source: '0.0.0.0/0', protocol: '6', ports: { min: 443, max: 443 } },
+        { source: '0.0.0.0/0', protocol: '6', ports: { min: 80, max: 80 } },
+        { source: '10.0.0.0/16', protocol: '6', ports: { min: 22, max: 22 } },
+        { source: '0.0.0.0/0', protocol: '17', ports: null },
+      ] : [];
+    },
+    async backupPolicy_read(_region, volumeId) { return volumeId === 'ocid1.volume.oc1.iad.csi001' ? { name: 'harbor-daily', periods: ['ONE_DAY'] } : null; },
     async vcns_list(_region, compartmentId) { return inHarbor(compartmentId, [record(VCN, 'harbor', 'AVAILABLE')]); },
     async subnets_list(_region, compartmentId) { return inHarbor(compartmentId, SUBNETS); },
     async nsgs_list(_region, compartmentId) { return inHarbor(compartmentId, NSGS); },

@@ -40,6 +40,28 @@ export interface OciInstanceRecord extends OciResourceRecord {
   /** Its OCPUs and memory, when the cloud says (a flexible shape's choice). */
   readonly ocpus?: number;
   readonly memoryInGBs?: number;
+  /** The image it was made from. */
+  readonly imageId?: string;
+}
+
+/** An image's operating system, as the cloud names it (`Canonical Ubuntu`, `26.04`). */
+export interface OciImageRecord {
+  readonly operatingSystem: string;
+  readonly operatingSystemVersion: string;
+}
+
+/** One ingress rule of a network security group: TCP's ports when it names them. */
+export interface OciIngressRecord {
+  readonly source: string;
+  /** The protocol's number (`6` TCP, `all`). */
+  readonly protocol: string;
+  readonly ports: { readonly min: number; readonly max: number } | null;
+}
+
+/** The backup policy a volume is assigned: its name and its schedules' periods (`ONE_DAY`). */
+export interface OciBackupPolicyRecord {
+  readonly name: string;
+  readonly periods: ReadonlyArray<string>;
 }
 
 /** A VNIC attached to an instance. */
@@ -53,6 +75,8 @@ export interface OciVnicAttachmentRecord {
 export interface OciVnicRecord {
   readonly privateIp: string | null;
   readonly publicIp: string | null;
+  /** The network security groups it is in. */
+  readonly nsgIds?: ReadonlyArray<string>;
 }
 
 /** A subnet or a network security group: a member of a VCN. */
@@ -125,6 +149,9 @@ export interface OciResourceApi {
   instances_list(region: string, compartmentId: string): Promise<OciInstanceRecord[]>;
   vnicAttachments_list(region: string, compartmentId: string): Promise<OciVnicAttachmentRecord[]>;
   vnic_get(region: string, vnicId: string): Promise<OciVnicRecord>;
+  image_get(region: string, imageId: string): Promise<OciImageRecord>;
+  nsgIngress_list(region: string, nsgId: string): Promise<OciIngressRecord[]>;
+  backupPolicy_read(region: string, volumeId: string): Promise<OciBackupPolicyRecord | null>;
   vcns_list(region: string, compartmentId: string): Promise<OciResourceRecord[]>;
   subnets_list(region: string, compartmentId: string): Promise<OciVcnMemberRecord[]>;
   nsgs_list(region: string, compartmentId: string): Promise<OciVcnMemberRecord[]>;
@@ -267,6 +294,7 @@ export function ociResourceApi_make(provider: common.AuthenticationDetailsProvid
         ...resourceRecord_convert(instance), shape: instance.shape, availabilityDomain: instance.availabilityDomain,
         ...(instance.shapeConfig?.ocpus !== undefined ? { ocpus: instance.shapeConfig.ocpus } : {}),
         ...(instance.shapeConfig?.memoryInGBs !== undefined ? { memoryInGBs: instance.shapeConfig.memoryInGBs } : {}),
+        ...(instance.imageId !== undefined ? { imageId: instance.imageId } : {}),
       }));
     },
     async vnicAttachments_list(region: string, compartmentId: string): Promise<OciVnicAttachmentRecord[]> {
@@ -280,7 +308,30 @@ export function ociResourceApi_make(provider: common.AuthenticationDetailsProvid
     },
     async vnic_get(region: string, vnicId: string): Promise<OciVnicRecord> {
       const answer: core.responses.GetVnicResponse = await clients.network(region).getVnic({ vnicId });
-      return { privateIp: answer.vnic.privateIp ?? null, publicIp: answer.vnic.publicIp ?? null };
+      return { privateIp: answer.vnic.privateIp ?? null, publicIp: answer.vnic.publicIp ?? null, nsgIds: answer.vnic.nsgIds ?? [] };
+    },
+    async image_get(region: string, imageId: string): Promise<OciImageRecord> {
+      const answer: core.responses.GetImageResponse = await clients.compute(region).getImage({ imageId });
+      return { operatingSystem: answer.image.operatingSystem, operatingSystemVersion: answer.image.operatingSystemVersion };
+    },
+    async nsgIngress_list(region: string, nsgId: string): Promise<OciIngressRecord[]> {
+      const items: core.models.SecurityRule[] = await pages_drain(async (page) => {
+        const answer: core.responses.ListNetworkSecurityGroupSecurityRulesResponse = await clients.network(region).listNetworkSecurityGroupSecurityRules({
+          networkSecurityGroupId: nsgId, direction: core.requests.ListNetworkSecurityGroupSecurityRulesRequest.Direction.Ingress, ...page_arg(page),
+        });
+        return { items: answer.items, next: answer.opcNextPage };
+      });
+      return items.map((rule: core.models.SecurityRule): OciIngressRecord => {
+        const range: core.models.PortRange | undefined = rule.tcpOptions?.destinationPortRange;
+        return { source: rule.source ?? '', protocol: rule.protocol, ports: range === undefined ? null : { min: range.min, max: range.max } };
+      });
+    },
+    async backupPolicy_read(region: string, volumeId: string): Promise<OciBackupPolicyRecord | null> {
+      const assigned: core.responses.GetVolumeBackupPolicyAssetAssignmentResponse = await clients.storage(region).getVolumeBackupPolicyAssetAssignment({ assetId: volumeId });
+      const policyId: string | undefined = assigned.items[0]?.policyId;
+      if (policyId === undefined) return null;
+      const policy: core.responses.GetVolumeBackupPolicyResponse = await clients.storage(region).getVolumeBackupPolicy({ policyId });
+      return { name: policy.volumeBackupPolicy.displayName, periods: policy.volumeBackupPolicy.schedules.map((schedule: core.models.VolumeBackupSchedule): string => String(schedule.period)) };
     },
     async vcns_list(region: string, compartmentId: string): Promise<OciResourceRecord[]> {
       const items: core.models.Vcn[] = await pages_drain(async (page) => {

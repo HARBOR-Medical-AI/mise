@@ -14,13 +14,14 @@
  * @module
  */
 import type {
-  CloudAvailability, CloudBucket, CloudContainer, CloudDnsZone, CloudDriver, CloudIdentity, CloudInstance, CloudLimit, CloudLink, CloudLoadBalancer,
+  CloudAvailability, CloudBackups, CloudBucket, CloudContainer, CloudIngress, CloudDnsZone, CloudDriver, CloudIdentity, CloudInstance, CloudLimit, CloudLink, CloudLoadBalancer,
   CloudNetwork, CloudObject, CloudPrice, ServicePrices, CloudRecord, CloudSecurityGroup, CloudShape, CloudSubnet, CloudVolume, CloudZone, FoundCluster, FoundInstance, ResourceCounts,
 } from '../driver.js';
 import type { OciApi, OciCompartmentRecord, OciLimitValueRecord, OciShapeRecord, OciTenancyRecord } from './api.js';
 import type { OciAttachmentRecord, OciInstanceRecord, OciResourceRecord, OciVnicAttachmentRecord, OciVnicRecord, OciVolumeRecord } from './resourceApi.js';
 import { byName_sort, foundClusters_fold, resource_convert, searchHits_count, searchQuery_format, tagQuery_format } from './resourceMap.js';
 import { jsonFetch_default, ociPrices_read, ociServicePrices_read, PRICE_LIST_URL, shapeTerms_get, type JsonFetch } from './prices.js';
+import { VM_OS_NAMES } from './modules/vm.js';
 
 /** How the driver is made. */
 export interface OciDriverOptions {
@@ -114,6 +115,8 @@ export class OciDriver implements CloudDriver {
   private readonly api: OciApi;
   private readonly fetchJson: JsonFetch | undefined;
   private readonly namespaces: Map<string, Promise<string>> = new Map();
+  /** What each image is, read once: an image never changes what it is. */
+  private readonly images: Map<string, string | null> = new Map();
   /** Oracle's price list, read once for the session: every price after it is worked out from this reply. */
   private priceList: Promise<unknown> | null = null;
   /** When the price list was read, or null before. */
@@ -229,8 +232,10 @@ export class OciDriver implements CloudDriver {
     const live: OciVnicAttachmentRecord[] = attachments.filter((attachment: OciVnicAttachmentRecord): boolean => attachment.lifecycleState.toUpperCase() === 'ATTACHED' && attachment.vnicId !== '');
     const vnics: OciVnicRecord[] = await Promise.all(live.map((attachment: OciVnicAttachmentRecord): Promise<OciVnicRecord> => this.api.vnic_get(region, attachment.vnicId)));
     const ipsByInstance: Map<string, string[]> = new Map();
+    const groupsByInstance: Map<string, string[]> = new Map();
     live.forEach((attachment: OciVnicAttachmentRecord, index: number): void => {
       const vnic: OciVnicRecord = vnics[index] as OciVnicRecord;
+      groupsByInstance.set(attachment.instanceId, [...(groupsByInstance.get(attachment.instanceId) ?? []), ...(vnic.nsgIds ?? [])]);
       const ips: string[] = ipsByInstance.get(attachment.instanceId) ?? [];
       if (vnic.privateIp !== null) ips.unshift(vnic.privateIp);
       if (vnic.publicIp !== null) ips.push(vnic.publicIp);
@@ -240,7 +245,29 @@ export class OciDriver implements CloudDriver {
       ...resource_convert(record, region), shape: record.shape, zone: record.availabilityDomain, ips: ipsByInstance.get(record.id) ?? [],
       ...(record.ocpus !== undefined ? { vcpus: record.ocpus * shapeTerms_get(record.shape).vcpuPerOcpu } : {}),
       ...(record.memoryInGBs !== undefined ? { memoryGib: record.memoryInGBs } : {}),
+      ...(record.imageId !== undefined ? { imageId: record.imageId } : {}),
+      securityGroupIds: groupsByInstance.get(record.id) ?? [],
     })));
+  }
+
+  async image_read(imageId: string, region: string): Promise<string | null> {
+    const cached: string | null | undefined = this.images.get(imageId);
+    if (cached !== undefined) return cached;
+    const image = await this.api.image_get(region, imageId);
+    // OCI's name for the OS as a script's --os word: the name VM_OS_NAMES gives it back to its word, the version after.
+    const word: string | undefined = Object.entries(VM_OS_NAMES).find(([, name]: [string, string]): boolean => name === image.operatingSystem)?.[0];
+    const os: string | null = word === undefined ? null : `${word}-${image.operatingSystemVersion}`;
+    this.images.set(imageId, os);
+    return os;
+  }
+
+  async ingress_list(groupId: string, region: string): Promise<CloudIngress[]> {
+    return (await this.api.nsgIngress_list(region, groupId)).map((rule): CloudIngress => ({ source: rule.source, tcp: rule.protocol === '6' || rule.protocol === 'all', ports: rule.ports }));
+  }
+
+  async backups_read(volumeId: string, region: string): Promise<CloudBackups | null> {
+    const policy = await this.api.backupPolicy_read(region, volumeId);
+    return policy === null ? null : { policy: policy.name, daily: policy.periods.includes('ONE_DAY') };
   }
 
   async networks_list(containerId: string, region: string): Promise<CloudNetwork[]> {

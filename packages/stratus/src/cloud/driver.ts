@@ -167,6 +167,27 @@ export interface CloudInstance extends CloudResource {
   /** Its vCPUs and memory, when the cloud says. */
   readonly vcpus?: number;
   readonly memoryGib?: number;
+  /** The image it was made from, when the cloud says. */
+  readonly imageId?: string;
+  /** The security groups its network interfaces are in, when the cloud says. */
+  readonly securityGroupIds?: ReadonlyArray<string>;
+}
+
+/** One rule letting traffic in: from where, and TCP's ports when it names them (null: every port of its protocol). */
+export interface CloudIngress {
+  /** Where it admits from, in CIDR (`0.0.0.0/0`), or the cloud's own name for a source. */
+  readonly source: string;
+  /** Whether it is TCP's (or every protocol's). */
+  readonly tcp: boolean;
+  readonly ports: { readonly min: number; readonly max: number } | null;
+}
+
+/** The backups a volume has, by the policy it is assigned. */
+export interface CloudBackups {
+  /** The policy's name, as the cloud shows it. */
+  readonly policy: string;
+  /** Whether one of its schedules runs each day. */
+  readonly daily: boolean;
 }
 
 /** A private network: a VCN, a VPC. */
@@ -306,6 +327,12 @@ export interface CloudDriver {
   securitygroups_list(containerId: string, region: string): Promise<CloudSecurityGroup[]>;
   /** The load balancers in a container, in a region. */
   loadbalancers_list(containerId: string, region: string): Promise<CloudLoadBalancer[]>;
+  /** The operating system an image is, in the portable words a script's `--os` takes (`ubuntu-26.04`); null when the cloud does not say. */
+  image_read(imageId: string, region: string): Promise<string | null>;
+  /** The rules a security group lets traffic in by. */
+  ingress_list(groupId: string, region: string): Promise<CloudIngress[]>;
+  /** The backups a volume is assigned, or null when it has none. */
+  backups_read(volumeId: string, region: string): Promise<CloudBackups | null>;
   /** The block and boot volumes in a container, in a region. */
   volumes_list(containerId: string, region: string): Promise<CloudVolume[]>;
   /** The buckets in a container, in a region. */

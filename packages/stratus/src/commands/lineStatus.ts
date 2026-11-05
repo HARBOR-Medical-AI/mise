@@ -141,11 +141,15 @@ async function vm_read(deps: LineStatusDeps, words: ReadonlyArray<string>): Prom
     if (record.declared === undefined || record.declared <= record.built) return running_add({ state: 'done', detail: `built ${record.built.slice(0, 10)}` }, running);
     // What a build would change, when the record keeps what the last build made; a record from before that says only that it was declared again.
     // What runs, read from the tenancy, is the truth to compare with; the spec the last build kept stands in when the cloud was not read.
-    // Sizes from what runs; the rest (ports, backups, the OS) from the spec the last build applied, which no listing reads.
+    // Each part from what runs when the listing read it (the sizes, the open ports, the backups, the OS); the spec the last build applied for a part it could not.
     const sizes: string[] | null = record.stands !== undefined ? vmStands_diff(record.stands, keptSpec) : null;
     const applied: string[] = record.builtSpec === undefined ? [] : vmSpec_diff(record.builtSpec, keptSpec);
     // A size the listing read is compared with what runs; one it could not read keeps the applied spec's word.
-    const read: ReadonlySet<string> = new Set(record.stands === undefined ? [] : (['vcpu', 'memory', 'disk', 'data'] as const).filter((key): boolean => record.stands?.[key] !== null));
+    const stands = record.stands;
+    const read: ReadonlySet<string> = new Set(stands === undefined ? [] : [
+      ...(['vcpu', 'memory', 'disk', 'data'] as const).filter((key): boolean => stands[key] !== null),
+      ...(stands.open !== undefined && stands.open !== null ? ['open'] : []), ...(stands.backup !== undefined && stands.backup !== null ? ['dataBackup'] : []), ...(stands.os !== undefined && stands.os !== null ? ['os'] : []),
+    ]);
     const owed: string[] = sizes === null ? applied : [...sizes, ...applied.filter((change: string): boolean => !read.has(change.split(' ')[0] ?? ''))];
     if ((record.stands !== undefined || record.builtSpec !== undefined) && owed.length === 0) return running_add({ state: 'done', detail: `built ${record.built.slice(0, 10)}; declared again unchanged` }, running);
     return running_add({ state: 'changed', detail: owed.length === 0 ? 'declared again since it was built; the build plans and asks' : `declared, not built: ${owed.join(', ')}; the build plans and asks` }, running);

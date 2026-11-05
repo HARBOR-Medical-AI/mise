@@ -11,7 +11,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BufferSink, HeadlessSurface, JobRunner, runner_install, sink_set, surface_set, type PromptRequest } from '@fnndsc/brasa/core';
-import type { CloudDriver, CloudPrice, CloudShape, FoundCluster, FoundInstance, ResourceCounts, ServicePrices } from '../src/cloud/driver.js';
+import type { CloudBackups, CloudDriver, CloudIngress, CloudPrice, CloudVolume, CloudShape, FoundCluster, FoundInstance, ResourceCounts, ServicePrices } from '../src/cloud/driver.js';
 import type { CommandEnvelope } from '@fnndsc/menu';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
@@ -154,6 +154,7 @@ describe('vm, over the fake cloud', () => {
     world = new FakeBuildWorld(0);
     seen = { instances: [], stacks: [] };
     let pricesRead: string | null = null;
+    const built = (): FakeDriver => new FakeDriver({ ...fakeCloud_sample(), resources: [] }).built_see(world);
     const driver = {
       // What the tenancy runs beside this session's records; none until a test puts some there.
       // The fake tenancy answers what the fake builder applied (a VM's machine an instance, its stacks and the
@@ -163,7 +164,13 @@ describe('vm, over the fake cloud', () => {
         .map((stack): FoundInstance => ({
           name: stack.owner, id: `ocid1.instance.oc1..fake-${stack.owner}`, state: 'running', region: 'us-ashburn-1', created: '2026-11-01T21:22:15Z', tags: { 'mise-service': stack.owner, ...(world.instanceTags.get(`ocid1.instance.oc1..fake-${stack.owner}`) ?? {}) }, raw: {},
           shape: 'VM.Standard.E5.Flex', zone: 'AD-1', ips: ['10.40.0.10', '203.0.113.10'], vcpus: Number(stack.applied?.['vcpu']), memoryGib: Number(stack.applied?.['memory']), containerId: stack.placeId,
+          imageId: stack.applied?.['image'] ?? '', securityGroupIds: [`ocid1.networksecuritygroup.oc1..fake-${stack.owner}`],
         }))],
+      // The volumes, the images, the security groups' rules and the backups, as the fake tenancy answers what the builder applied.
+      volumes_list: async (place: string, region: string): Promise<CloudVolume[]> => built().volumes_list(place, region),
+      image_read: async (imageId: string, region: string): Promise<string | null> => built().image_read(imageId, region),
+      ingress_list: async (groupId: string, region: string): Promise<CloudIngress[]> => built().ingress_list(groupId, region),
+      backups_read: async (volumeId: string, region: string): Promise<CloudBackups | null> => built().backups_read(volumeId, region),
       clusters_find: async (tagKey: string): Promise<FoundCluster[]> => [...seen.stacks.filter((one: FoundCluster & { tagKey: string }): boolean => one.tagKey === tagKey), ...[...world.moduleStacks.entries()]
         .filter(([, stack]) => stack.tag === tagKey && stack.applied !== null && (stack.module === 'net' || stack.module === 'vmData'))
         .map(([id, stack]): FoundCluster => ({ name: stack.owner, stack: { id, state: 'active', compartmentId: stack.placeId }, compartmentId: stack.placeId, region: 'us-ashburn-1' }))],
@@ -412,8 +419,16 @@ describe('vm, over the fake cloud', () => {
     expect(there.store.spec_read('store')).toMatchObject({ spec: { disk: 180 } });
     expect(row?.declaredKept).toBe(true);
     expect(row?.stands?.vcpu).toBe(2);
+    // The rest of what runs is read from the tenancy too: the ports its security group opens to the internet, its data's backups, its OS.
+    expect(row?.stands).toMatchObject({ open: [80, 443], backup: 'daily', os: 'ubuntu-26.04' });
+    expect(plain((await vm_run(there, ['store'])).rendered)).toMatch(/runs {6}2 vCPU · 8 GiB · disk 50 GB · data 50 GB · open 80,443 · backups daily · ubuntu-26\.04 {2}\(read from the tenancy \d\d:\d\d UTC\)/);
     const providers = new Map(lineStatusProviders_make({ nets: there.nets, vms: there.store }).map((provider) => [provider.verb, provider]));
-    expect(await providers.get('vm')?.read(['vm', 'build', 'store'])).toMatchObject({ state: 'changed', detail: 'declared, not built: disk 50 → 180; the build plans and asks' });
+    // Every part is compared with what runs, read from the tenancy: the disk as its volume's size.
+    expect(await providers.get('vm')?.read(['vm', 'build', 'store'])).toMatchObject({ state: 'changed', detail: 'declared, not built: disk 50 → 180 GB; the build plans and asks' });
+    // A port declared since is said against what the security group opens now.
+    await vm_run(there, ['new', 'store', '--open', '80,443,8080']);
+    expect(await providers.get('vm')?.read(['vm', 'build', 'store'])).toMatchObject({ state: 'changed', detail: 'declared, not built: disk 50 → 180 GB, open 80,443 → 80,443,8080; the build plans and asks' });
+    await vm_run(there, ['new', 'store', '--open', '80,443']);
     // A keep written from a host whose declaration is older takes the vault's newer one; nothing it lacks is dropped.
     await vm_run(context, ['new', 'store', '--disk', '200']);
     there.store.record_update('store', (current: VmRecord): void => { current.declared = '2000-01-01T00:00:00.000Z'; });

@@ -67,6 +67,12 @@ export interface VmStands {
   readonly disk: number | null;
   /** The data volume's size in GB, or null when not read. */
   readonly data: number | null;
+  /** The ports its security groups open to the internet (from anywhere), sorted, or null when not read; absent from an older read. */
+  readonly open?: number[] | null;
+  /** Its data volume's backups: `daily`, `none`, or the policy's name when it is another; null when not read. */
+  readonly backup?: string | null;
+  /** The operating system its image is, in a script's words (`ubuntu-26.04`), or null when not read. */
+  readonly os?: string | null;
 }
 
 /** The freeform tag a VM's stacks carry, so a fresh mise bastion finds them. */
