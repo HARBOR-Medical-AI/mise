@@ -434,6 +434,48 @@ export function vmLevers_read(text: string): VmNewLevers {
   };
 }
 
+/** What runs of a VM, read from the tenancy: the sizes a build compares with. */
+export interface VmRuns {
+  readonly vcpu: number | null;
+  readonly memory: number | null;
+  readonly disk: number | null;
+  readonly data: number | null;
+}
+
+/** One change a build would make to what runs, and what it means beyond the price. */
+export interface BuildWould {
+  readonly change: string;
+  readonly consequence: string;
+  /** `grow` online, `reboot` (the machine is down a while), or `refused` (the build will not do it as asked). */
+  readonly tone: 'grow' | 'reboot' | 'refused';
+}
+
+/**
+ * What a build of the levers as they stand would do to what runs (the law
+ * a-change-is-a-loop, clause 2: the offer shows its options as a difference
+ * against what stands): a new shape reboots, a disk grows online, a smaller
+ * disk is refused. A size the tenancy was not read for says nothing.
+ *
+ * @param levers - The line's levers, as the form left them.
+ * @param runs - What runs, read from the tenancy.
+ * @returns The changes, in order; empty when what runs is what is offered.
+ */
+export function buildWould_derive(levers: VmNewLevers, runs: VmRuns): BuildWould[] {
+  const would: BuildWould[] = [];
+  const shape: string[] = [];
+  if (levers.vcpu !== null && runs.vcpu !== null && levers.vcpu !== runs.vcpu) shape.push(`vCPU ${runs.vcpu} → ${levers.vcpu}`);
+  if (levers.memory !== null && runs.memory !== null && levers.memory !== runs.memory) shape.push(`memory ${runs.memory} → ${levers.memory} GiB`);
+  if (shape.length > 0) would.push({ change: shape.join(', '), consequence: 'the machine reboots to take its new shape: it, and the ChRIS on it, are down a few minutes', tone: 'reboot' });
+  for (const [key, label] of [['disk', 'boot disk'], ['data', 'data volume']] as const) {
+    const now: number | null = runs[key];
+    const want: number | null = levers[key];
+    if (now === null || want === null || now === want) continue;
+    if (want > now) would.push({ change: `${label} ${now} → ${want} GB`, consequence: 'grows online, no reboot; its filesystem is grown after', tone: 'grow' });
+    else would.push({ change: `${label} ${now} → ${want} GB`, consequence: key === 'disk' ? 'refused: a disk only grows' : 'refused unless named (--allow-alter): a smaller data volume is a new, empty one', tone: 'refused' });
+  }
+  return would;
+}
+
 /** One slider's ends and step, from `vm limits`. */
 export interface SliderSpec {
   readonly word: string;

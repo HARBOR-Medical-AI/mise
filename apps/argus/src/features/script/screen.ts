@@ -22,14 +22,14 @@ import {
   manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, vmCostModelSchema, vmLimitsModelSchema,
   type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel,
 } from '@fnndsc/menu';
-import { HOURS_PER_MONTH } from '../controller/model.js';
+import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
 import { saveLine_compose } from '../edit/line.js';
 import { modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } from '../takeover/tier.js';
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
   askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
-  runningStep_find, script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, stepBuildLine_get, stepKind_derive, stepKind_isTask, steps_build, userLine_build, vmLevers_read, vmSliders_build,
-  word_quote, workingCopy_derive, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts,
+  buildWould_derive, runningStep_find, script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, stepBuildLine_get, stepKind_derive, stepKind_isTask, steps_build, userLine_build, vmLevers_read, vmSliders_build,
+  word_quote, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts, type VmRuns,
 } from './model.js';
 
 /** An answer the session gave a quiet line: what the screen reads of it. */
@@ -215,6 +215,10 @@ export class ScriptScreen {
   protected costAsked: number = 0;
   /** When the session read the price list, as `vm cost` last said; null before the first price. */
   protected pricesRead: string | null = null;
+  /** What runs, priced: asked once per read of what runs (its VM and when it was read), so the offer's price is said against it. */
+  protected runsCost: { key: string; row: VmCostRow | null } | null = null;
+  /** The seat a BUILD ended on in this screen, so its receipt says it was built here and read back. */
+  protected builtHere: string | null = null;
   /** The line running, and since when. */
   protected busy: { line: string; step: string | null; since: number } | null = null;
   /** The standing read again a moment after a task-starting line was sent, so the seat wears the run while the line still holds the lane. */
@@ -474,6 +478,23 @@ export class ScriptScreen {
     }
   }
 
+  /**
+   * What runs of a VM, read from the tenancy, with when; null on a screen
+   * that reads none (the script screen, which shows a script's lines and
+   * nothing of a machine).
+   *
+   * @param _name - The VM.
+   * @returns What runs, or null.
+   */
+  protected runs_get(_name: string): (VmRuns & { at: string }) | null {
+    return null;
+  }
+
+  /** Whether a declaring seat offers DECLARE beside BUILD: the script screen does (declaring is authoring there); a machine's own screen offers BUILD alone (a-change-is-a-loop, clause 3). */
+  protected declareOffered(): boolean {
+    return true;
+  }
+
   /** The script's text when it is not on the host yet, to read its standing from; null when the file is the script. */
   protected statusText_get(): string | null {
     return null;
@@ -657,7 +678,8 @@ export class ScriptScreen {
       if (!raised) return;
     }
     if (!(await this.line_send(declared, step))) return;
-    await this.line_send(built, step, true);
+    if (await this.line_send(built, step, true)) this.builtHere = step;
+    this.draw();
   }
 
   /** Writes the working copy under `/scripts/mine/`, as the editor saves: a line, echoed and run. */
@@ -1118,8 +1140,8 @@ export class ScriptScreen {
    * @returns The row.
    */
   protected declareRow_make(step: ScriptStep, declared: ScriptLine, built: ScriptLine | undefined, extra: HTMLElement[] = []): HTMLElement {
-    // loop: ss-net-declare, ss-vm-declare, vm-size-declare
-    const commands: HTMLElement = this.runRow_make(step, declared, 'plain', [], 'DECLARE');
+    // loop: ss-net-declare, ss-vm-declare
+    const commands: HTMLElement = built !== undefined && !this.declareOffered() ? el('div', 'tdc-commands') : this.runRow_make(step, declared, 'plain', [], 'DECLARE');
     if (built === undefined) {
       commands.append(...extra);
       return commands;
@@ -1187,14 +1209,15 @@ export class ScriptScreen {
     const line: ScriptLine = step.lines[0] as ScriptLine;
     const built: ScriptLine | undefined = stepBuildLine_get(step);
     const name: string = line_parse(line.text).subject ?? '';
-    // loop: ss-vm-declare, ss-vm-build, vm-size-declare, vm-size-build
-    const nodes: HTMLElement[] = [this.lineBoxNumbered_make(line), ...(built === undefined ? [] : [this.lineBoxNumbered_make(built)]), this.declareRow_make(step, line, built), this.pairs_make([['VM', name], ['NETWORK', lineOption_get(line.text, '--net') ?? '—']])];
+    // The levers first, so the offer opens in view; the commit right under them; the lines as they will run after.
+    const nodes: HTMLElement[] = [];
     if (this.limits === null) {
       nodes.push(el('p', 'tdc-prose tdc-quiet', 'reading what the shape sells: vm limits'));
     } else {
       const limits: VmLimitsModel = this.limits;
       const group: HTMLElement = el('div', 'tdc-lever-group');
-      group.append(el('span', 'tdc-section-title', `SIZE · ${limits.shape}`));
+      const runs = this.runs_get(name);
+      group.append(el('span', 'tdc-section-title', `SIZE · ${limits.shape}${runs === null ? '' : ` · RUNS AS READ FROM THE TENANCY ${runs.at.slice(11, 16)} UTC`}`));
       for (const spec of vmSliders_build(limits)) group.append(this.slider_make(line, spec, limits));
       nodes.push(group);
       const backup: HTMLElement = el('div', 'tdc-families');
@@ -1208,13 +1231,19 @@ export class ScriptScreen {
       }
       nodes.push(backup);
     }
+    // loop: ss-vm-declare, ss-vm-build, vm-size-build
+    nodes.push(this.declareRow_make(step, line, built));
+    nodes.push(this.lineBoxNumbered_make(line), ...(built === undefined ? [] : [this.lineBoxNumbered_make(built)]), this.pairs_make([['VM', name], ['NETWORK', lineOption_get(line.text, '--net') ?? '—']]));
     nodes.push(this.optionField_make(line, '--open', 'OPEN PORTS', '80,443'), this.optionField_make(line, '--os', 'OS', 'ubuntu-26.04'));
     nodes.push(el('p', 'tdc-prose tdc-quiet', built === undefined
       ? 'DECLARE declares the VM; nothing is built. On a built VM a changed size is planned and asked by its build line; a smaller data volume is refused unless named.'
-      : 'DECLARE saves the size and builds nothing. BUILD declares it and builds it: on a built VM the change is planned, priced and asked before anything bills, and a reboot is said first; a smaller data volume is refused unless named.'));
+      : this.declareOffered()
+        ? 'DECLARE saves the size and builds nothing. BUILD declares it and builds it: on a built VM the change is planned, priced and asked before anything bills, and a reboot is said first; a smaller data volume is refused unless named.'
+        : 'BUILD declares the size and builds it: the change is planned, priced and asked in place before anything bills, and what runs is read back after.'));
     if (built !== undefined) nodes.push(this.vmBuilds_make(name), ...this.vmUndoing_make(name, step.key));
     return nodes;
   }
+
 
   protected slider_make(line: ScriptLine, spec: SliderSpec, limits: VmLimitsModel): HTMLElement {
     const row: HTMLElement = el('div', 'tdc-slider');
@@ -1238,11 +1267,19 @@ export class ScriptScreen {
     input.value = String(current ?? min);
     input.disabled = this.busy !== null;
     const shown: HTMLElement = el('span', 'tdc-slider-value', `${current ?? '—'}${spec.unit === '' ? '' : ` ${spec.unit}`}`);
+    // What runs of this lever, read from the tenancy, beside the offer: the slider moves from it, never from the declaration alone.
+    const key = ({ '--vcpu': 'vcpu', '--memory': 'memory', '--disk': 'disk', '--data': 'data' } as const)[spec.word as '--vcpu' | '--memory' | '--disk' | '--data'];
+    const runs: number | null = key === undefined ? null : this.runs_get(line_parse(line.text).subject ?? '')?.[key] ?? null;
+    const runsMark: HTMLElement | null = runs === null ? null : el('span', 'ss-slider-runs', `RUNS ${runs}${spec.unit === '' ? '' : ` ${spec.unit}`}`);
+    const runsMark_redraw = (): void => { runsMark?.classList.toggle('ss-slider-differs', runs !== null && Number(input.value) !== runs); };
+    runsMark_redraw();
     input.addEventListener('input', (): void => {
       line.text = lineOption_set(line.text, spec.word, input.value);
       this.edited = true;
       shown.textContent = `${input.value}${spec.unit === '' ? '' : ` ${spec.unit}`}`;
+      runsMark_redraw();
       this.lineShown_redraw(line);
+      this.wouldNote_redraw(line);
       this.stepCostRefused = null;
       this.stepCost_ask(line.text);
     });
@@ -1252,7 +1289,7 @@ export class ScriptScreen {
     const ends: HTMLElement = el('div', 'tdc-slider-ends');
     ends.append(el('span', '', String(min)), el('span', 'tdc-slider-note', spec.word === '--memory' && limits.memory.perVcpu !== null ? `${limits.memory.perVcpu.min} TO ${limits.memory.perVcpu.max} GiB PER vCPU` : spec.word === '--data' ? 'KEPT BY A TEARDOWN' : ''), el('span', '', String(max)));
     track.append(input, ends);
-    row.append(label, track, shown);
+    row.append(label, track, shown, ...(runsMark === null ? [] : [runsMark]));
     return row;
   }
 
@@ -1262,13 +1299,56 @@ export class ScriptScreen {
     const box: HTMLElement = el('div', 'ss-cost');
     // What the seat owes comes first, above the price, where the eye lands after a DECLARE.
     const running: HTMLElement | null = this.runningNote_make(step);
-    const declared: HTMLElement | null = running === null ? this.declaredNote_make(step) : null;
+    const runs = this.runs_get(line_parse(step.lines[0]?.text ?? '').subject ?? '');
+    const declared: HTMLElement | null = running !== null ? null : runs !== null ? this.wouldNote_make(step) : this.declaredNote_make(step);
     if (running !== null) side.append(running);
     if (declared !== null) side.append(declared);
     side.append(box);
     this.cost_fill(box, step);
     if (this.edited) side.append(this.state_make(step).querySelector('.tdc-note') ?? el('span', ''));
     return side;
+  }
+
+  /**
+   * What BUILD would do, as the levers stand, against what runs (read from
+   * the tenancy): each change and its consequence (a reboot, an online grow,
+   * a refusal), or, once a build here left what runs equal to the offer, the
+   * receipt read back. The note is the offer's options and the commit's
+   * receipt in one place (a-change-is-a-loop, clauses 2 and 5).
+   *
+   * @param step - The seat.
+   * @returns The note.
+   */
+  protected wouldNote_make(step: ScriptStep): HTMLElement | null {
+    const line: ScriptLine | undefined = step.lines[0];
+    const runs = this.runs_get(line_parse(line?.text ?? '').subject ?? '');
+    if (line === undefined || runs === null) return null;
+    const would: BuildWould[] = buildWould_derive(vmLevers_read(line.text), runs);
+    const read: string = `read from the tenancy ${runs.at.slice(11, 16)} UTC`;
+    const note: HTMLElement = el('div', `tdc-note ss-note-would${would.length === 0 ? '' : would.some((one: BuildWould): boolean => one.tone === 'refused') ? ' tdc-note-refused' : ' tdc-note-bill'}`);
+    if (would.length === 0) {
+      note.append(el('span', 'tdc-note-title', this.builtHere === step.key ? 'BUILT · WHAT RUNS IS WHAT WAS OFFERED' : 'WHAT RUNS IS WHAT IS OFFERED'), el('span', 'tdc-prose tdc-quiet', `${read}; BUILD has nothing to change`));
+      return note;
+    }
+    note.append(el('span', 'tdc-note-title', 'BUILD WOULD'));
+    for (const one of would) note.append(el('span', `tdc-prose ss-would-${one.tone}`, `${one.change}: ${one.consequence}`));
+    const declaredHere: boolean = this.declaredHere_is(step);
+    note.append(el('span', 'tdc-prose tdc-quiet', `against what runs, ${read}${declaredHere ? '; this size is declared on this host only until a MANAGE session keeps it' : ''}. BUILD plans it, says the cost and asks here before anything bills.`));
+    return note;
+  }
+
+  /** Whether the seat's declaration is held by this host alone (the VM controller reads it from the row); false where nothing says. */
+  protected declaredHere_is(_step: ScriptStep): boolean {
+    return false;
+  }
+
+  /** Redraws BUILD WOULD as a lever moves, without redrawing the levers under the hand. */
+  protected wouldNote_redraw(line: ScriptLine): void {
+    const now: HTMLElement | null = this.parts.body.querySelector('.ss-note-would');
+    const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.lines[0] === line);
+    if (now === null || step === undefined) return;
+    const fresh: HTMLElement | null = this.wouldNote_make(step);
+    if (fresh !== null) now.replaceWith(fresh);
   }
 
   /**
@@ -1317,8 +1397,20 @@ export class ScriptScreen {
       rows.append(el('span', `tdc-pair-label ${cls}`.trim(), label), el('span', `tdc-cost-rate ${cls}`.trim(), value === null ? 'NOT PRICED' : rate_words(value, HOURS_PER_MONTH)));
     };
     rate('AS SIZED', row.cost, 'tdc-bill');
+    // What runs, priced, and the offer's difference from it: the change is priced against what stands, not against the declaration.
+    const runs = this.runs_get(row.name);
+    if (runs !== null) {
+      const key: string = `${row.name}@${runs.at}`;
+      if (this.runsCost?.key !== key) this.runsCost_ask(key, step, runs);
+      const running: VmCostRate | null = this.runsCost?.key === key ? this.runsCost.row?.cost ?? null : null;
+      rate('AS IT RUNS', running);
+      if (running !== null && row.cost !== null) {
+        const delta: number = (row.cost.machineHour + row.cost.dataHour - running.machineHour - running.dataHour) * HOURS_PER_MONTH;
+        rows.append(el('span', 'tdc-pair-label', 'THE CHANGE'), el('span', `tdc-cost-rate${delta > 0 ? ' tdc-bill' : ''}`, Math.abs(delta) < 0.005 ? 'NONE' : `${delta > 0 ? '+' : '−'}${money_text(Math.abs(delta), row.cost.currency)} A MONTH`));
+      }
+    }
     if (row.cost !== null) rate('THE DATA ALONE', { machineHour: 0, dataHour: row.cost.dataHour, currency: row.cost.currency });
-    if (row.before !== null) rate('AS DECLARED', row.before);
+    if (row.before !== null && runs === null) rate('AS DECLARED', row.before);
     box.append(this.pairs_make([['SPEC', spec_words(row.spec)], ['DECLARED', row.declared ? (row.changes.length === 0 ? 'YES · UNCHANGED' : `YES · ${row.changes.join(', ')}`) : 'NOT YET'], ['PRICE LIST', this.pricesRead === null ? 'ORACLE\'S' : `ORACLE'S · READ ${this.pricesRead.slice(11, 16)} UTC · KEPT FOR THE SESSION`]]), rows);
     box.append(el('p', 'tdc-prose tdc-quiet', 'The data volume is kept by a default teardown, so its share is said apart. List price; nothing here bills until BUILD applies.'));
   }
@@ -1344,6 +1436,26 @@ export class ScriptScreen {
     all.title = `sends: vm teardown ${name} --all (the data too; asks for the name typed back)`;
     teardown.append(el('span', 'tdc-commands-label', 'UNDOING'), machine, all);
     return [el('p', 'tdc-prose tdc-quiet', 'A VM is born protected: teardown refuses until PROTECT · OFF, a line of its own. A teardown returns the build to ready.'), protect, teardown];
+  }
+
+  /**
+   * Prices what runs once per read of it: the line with its levers set to
+   * what the tenancy runs, asked of `vm cost`.
+   *
+   * @param key - The VM and when what runs was read.
+   * @param step - The seat.
+   * @param runs - What runs.
+   */
+  protected runsCost_ask(key: string, step: ScriptStep, runs: VmRuns): void {
+    this.runsCost = { key, row: null };
+    let line: string = step.lines[0]?.text ?? '';
+    for (const [word, value] of [['--vcpu', runs.vcpu], ['--memory', runs.memory], ['--disk', runs.disk], ['--data', runs.data]] as const) if (value !== null) line = lineOption_set(line, word, String(value));
+    void this.hooks.ask(costLine_derive(line)).then((answer: QuietAnswer): void => {
+      if (this.runsCost?.key !== key) return;
+      const model = model_extract(answer, STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
+      this.runsCost = { key, row: model?.vms[0] ?? null };
+      this.cost_redraw();
+    }, (): void => undefined);
   }
 
   protected vmBuild_make(step: ScriptStep): HTMLElement[] {
