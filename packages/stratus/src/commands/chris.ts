@@ -23,7 +23,7 @@
  */
 import * as fs from 'fs';
 import chalk from 'chalk';
-import { envelope_error, envelope_ok, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, type ChrisStatusRow, type CommandEnvelope } from '@fnndsc/menu';
+import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, type ChrisStatusRow, type CommandEnvelope } from '@fnndsc/menu';
 import { repl_confirm, repl_questionHidden, type CommandHelp } from '@fnndsc/brasa/core';
 import type { CloudBuilder } from '../cloud/builder.js';
 import type { NetStore } from '../net/state.js';
@@ -230,7 +230,27 @@ async function chrisUser_run(context: ChrisCommandContext, args: ReadonlyArray<s
   if ('error' in target) return envelope_error('', undefined, `chris user add: ${target.error}\n`);
   if (!tasks_granted()) return envelope_error('', undefined, `chris user add: ${TIER_REFUSAL}\n`);
   if (context.builder === null) return envelope_error('', undefined, 'chris user add: this cloud builds nothing yet\n');
-  const password = await userPassword_get(username, read.options.get('--password-file'));
+  // What CUBE holds, read before the question (AEGIS a-change-is-a-loop, clauses 1 and 4): an account already there is left as it is, unasked.
+  const record: VmRecord | null = context.vms.record_read(target.vm);
+  const live: ChrisLive | null = context.http_get === undefined || record?.chris === undefined ? null : await chrisLive_read(record.chris, secrets_read(context.vms, target.vm), context.http_get);
+  const held = live?.accounts?.find((one): boolean => one.username === username) ?? null;
+  if (held !== null) {
+    return held.email === email
+      ? envelope_ok(`${target.vm}: ${username} is there already (${email}, read ${live?.at.slice(11, 16) ?? '?'} UTC); left as it is\n`)
+      : envelope_error('', undefined, `chris user add: ${target.vm}: ${username} already exists, with ${held.email}; left as it is\n`);
+  }
+  const owner = live?.accounts?.find((one): boolean => one.email === email) ?? null;
+  if (owner !== null) return envelope_error('', undefined, `chris user add: ${target.vm}: ${email} is ${owner.username}'s already\n`);
+  const file: string | undefined = read.options.get('--password-file');
+  // A file's password is read before the question, so a bad file refuses without asking.
+  const filed = file === undefined ? null : await userPassword_get(username, file);
+  if (filed !== null && 'error' in filed) return envelope_error('', undefined, `chris user add: ${filed.error}\n`);
+  const counted: string = live?.accounts === null || live === null ? `its accounts not read${live?.accountsWhy ? `: ${live.accountsWhy}` : ''}` : `${live.accounts.length} account${live.accounts.length === 1 ? '' : 's'} there now, read ${live.at.slice(11, 16)} UTC`;
+  const question: string = `chris user add ${username}: makes the account ${username} (${email}) on the ChRIS at ${target.url}, on ${target.vm} (${counted}); its password ${file !== undefined ? `read from ${file}` : 'asked next, hidden'}. A NO makes nothing. Continue? [y/N]`;
+  if (!await repl_confirm(question)) {
+    return envelope_ok(`${chalk.gray(`stopped before ${username} was made; nothing changed on ${target.vm} (chris user add ${username} asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: `chris user add ${username}`, kept: 'nothing made' } });
+  }
+  const password = filed ?? await userPassword_get(username, undefined);
   if ('error' in password) return envelope_error('', undefined, `chris user add: ${password.error}\n`);
   const deps: DeployDeps = { store: context.vms, nets: context.nets, builder: context.builder, resolve: context.resolve, status_get: context.status_get, ...(context.remote_open !== undefined ? { remote_open: context.remote_open } : {}) };
   const result: UserAddResult = {};
@@ -354,8 +374,11 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   const plan: ChrisPlan = await chrisPlan_read(context, record, { profile: profile.name, compute, host, porter });
   if (planOnly) return envelope_ok(`${chrisPlan_words(name, plan)}\n`, { kind: STRATUS_CHRIS_PLAN_MODEL_KIND, data: { vm: name, ...plan } });
   if (!tasks_granted()) return envelope_error('', undefined, `chris deploy: ${TIER_REFUSAL}\n`);
-  // A replay that restarts or changes what runs asks first, with all of it (a-change-is-a-loop, clause 4).
-  if (plan.asks && !(await repl_confirm(`${chrisPlan_words(name, plan)}. Continue? [y/N]`))) return envelope_ok(`${chalk.gray(`stopped before the deploy; nothing changed (chris deploy ${name} plans and asks again)`)}\n`);
+  // A first deploy, or a replay that restarts or changes what runs, asks first, with all of it (a-change-is-a-loop, clause 4);
+  // a first deploy's admin password is asked after the yes, so the question says what it is for.
+  const passwordNext: boolean = secrets_read(context.vms, name) === null && !read.options.has('--admin-password-file');
+  const question: string = `${chrisPlan_words(name, plan)}${passwordNext ? '; the admin password for chris is asked next, hidden (empty: one is generated)' : ''}. A NO changes nothing. Continue? [y/N]`;
+  if (plan.asks && !(await repl_confirm(question))) return envelope_ok(`${chalk.gray(`stopped before the deploy; nothing changed (chris deploy ${name} plans and asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: `chris deploy ${name}`, kept: 'nothing made or changed' } });
   if (context.builder === null) return envelope_error('', undefined, 'chris deploy: this cloud builds nothing yet\n');
   let generated: string | null = null;
   if (secrets_read(context.vms, name) === null) {

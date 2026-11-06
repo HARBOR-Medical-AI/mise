@@ -7,6 +7,7 @@
 import type { ExecuteOutcome, SurfaceAsk } from '../calypso/client.js';
 import { STRATUS_VM_STATE_EVENT, vmStatusRowSchema } from '@fnndsc/menu';
 import { VmScreen } from '../features/vm/screen.js';
+import type { ScriptDraft } from '../features/script/screen.js';
 import { synthVoice } from '../lcars/synth.js';
 import type { HostContext } from './hostContext.js';
 import { CONTROLLER_MIN_WIDTH } from './tdController.js';
@@ -41,7 +42,7 @@ export interface VmControllerModule {
 /** How long a screen left with a line in flight keeps that line's question for itself. */
 const LEFT_LINE_MS: number = 30 * 60 * 1000;
 
-export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_is' | 'elevation_is' | 'elevate_ask'>, names_seen: (names: string[]) => void): VmControllerModule {
+export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_is' | 'elevation_is' | 'elevate_ask' | 'terminal'>, names_seen: (names: string[]) => void): VmControllerModule {
   let screen: VmScreen | null = null;
   let lineRunning: boolean = false;
   let titleBefore: string = document.title;
@@ -61,6 +62,9 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     // A question standing on the strip is carried, not answered: it stands again when the screen opens (a-change-is-a-loop, clause 6).
     const standing = screen.ask_detach();
     if (standing !== null) heldKeep({ request: { message: standing.message, kind: standing.kind }, resolve: standing.resolve });
+    // Edits not saved are kept, never dropped silently: they stand again when the machine's script opens (a-change-is-a-loop, clause 6d).
+    draft = screen.draft_detach();
+    if (draft !== null) context.terminal.line_note(`vm: ${draft.path}: ${draft.edits === 1 ? 'an edit' : `${draft.edits} edits`} not saved, kept: they stand again when it opens, until SAVE`);
     screen.dispose();
     screen.root.remove();
     screen = null;
@@ -111,6 +115,7 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
       elevate_ask: context.elevation_is() ? (line: string): Promise<boolean> => context.elevate_ask(line) : null,
       voice: { pill: (label: string): void => synthVoice.pill_play(label), cue: (cue: string): void => synthVoice.cue_play(cue) },
     });
+    if (draft !== null) { opened.draft_offer(draft); draft = null; }
     screen = opened;
     document.body.append(opened.root);
     document.body.dataset['takeover'] = 'vm';
@@ -132,6 +137,8 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
   let held: { request: SurfaceAsk; resolve: (value: string | null) => void } | null = null;
   /** The bound on a held question: unanswered by then, it is abandoned, so a forgotten screen never holds the session. */
   let heldTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Edits not saved when the screen was left, offered to it when it opens again. */
+  let draft: ScriptDraft | null = null;
   const heldKeep = (one: { request: SurfaceAsk; resolve: (value: string | null) => void }): void => {
     held?.resolve(null);
     held = one;

@@ -33,6 +33,18 @@ import {
 } from './model.js';
 
 /** An answer the session gave a quiet line: what the screen reads of it. */
+/** Edits not saved, kept by the host while the screen is away. */
+export interface ScriptDraft {
+  /** The script the edits are of. */
+  readonly path: string;
+  /** Its text as edited. */
+  readonly text: string;
+  /** Its text as it was read, to say when it changed on the host since. */
+  readonly read: string;
+  /** How many lines differ from what was read. */
+  readonly edits: number;
+}
+
 export interface QuietAnswer {
   envelopes: ReadonlyArray<{ rendered?: string; renderedErr?: string; status?: string; model?: { kind: string; data: unknown } }>;
 }
@@ -111,6 +123,15 @@ const SCRIPT_LOOK: ScreenLook = {
 
 /** How many log lines are kept. */
 const LOG_LIMIT: number = 400;
+
+/** What a line answered yes here reads while its task is not yet named. */
+const ANSWERED_GOING: string = 'its answer is given: the act goes on';
+
+/** How long a line answered yes here may read RUNNING with no task named: the build's next step starts well inside it. */
+const ANSWERED_GOING_MS: number = 120_000;
+
+/** How often the standing is read again while that line waits to be seen running. */
+const ANSWERED_POLL_MS: number = 1_500;
 
 /** The ChRIS profiles a deploy may name; the session refuses any other by name. */
 const CHRIS_PROFILES: ReadonlyArray<string> = ['minimal', 'complete'];
@@ -247,6 +268,17 @@ export class ScriptScreen {
   protected refusal: { view: string; line: string; at: string; why: string; declined: boolean } | null = null;
   /** The seat whose task this screen follows with no line in its lane (its question answered here), until it no longer runs. */
   protected followStep: string | null = null;
+  /** Edits the host kept from before the screen was left, laid over the script when it opens on their path. */
+  protected draftOffered: ScriptDraft | null = null;
+  /** The kept edits laid over the script, with when: said on the seat until SAVE or the next read. */
+  protected draftRestored: { at: string; edits: number; moved: boolean } | null = null;
+  /**
+   * A line whose question was answered yes here with no line in this lane:
+   * it reads RUNNING until a standing names its task (then followed), its
+   * state moves from what it was at the answer, or the bound passes; a
+   * standing read before the task starts never draws it idle.
+   */
+  protected answeredGoing: { line: string; state: LineState | null; until: number } | null = null;
   /** The line the standing question was asked for, when it is one of the script's: it reads ASKING. */
   protected askLine: string | null = null;
 
@@ -269,8 +301,6 @@ export class ScriptScreen {
   protected readText: string = '';
   /** The last SAVE, where and when: its receipt stands on the seat until the next edit. */
   protected saved: { path: string; at: string; view: string } | null = null;
-  /** The user line ADD was pressed for once: asked in place, with what it makes, before it is sent (the operator, 2026-11-05). */
-  protected userAddArmed: string | null = null;
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
   protected ticker: ReturnType<typeof setInterval> | null = null;
 
@@ -436,6 +466,33 @@ export class ScriptScreen {
     return { message: open.message, kind: open.kind, resolve: open.settle };
   }
 
+  /**
+   * The edits not saved, for the host to keep while the screen is away:
+   * leaving never drops them silently (a-change-is-a-loop, clause 6d).
+   *
+   * @returns The script's path, its text as edited and as it was read, or null when nothing is unsaved (kept edits
+   *   offered and not laid over a script are handed back).
+   */
+  public draft_detach(): ScriptDraft | null {
+    // Kept edits offered and never laid over a script (the screen opened elsewhere) go back to the host as they came.
+    const pending: ScriptDraft | null = this.draftOffered;
+    this.draftOffered = null;
+    if (!this.edited || this.path === '') return pending;
+    const draft: ScriptDraft = { path: this.path, text: script_render(this.lines), read: this.readText, edits: this.lines.filter((line: ScriptLine): boolean => this.stoodFor.get(line.number) !== line.text).length };
+    this.edited = false;
+    return draft;
+  }
+
+  /**
+   * Edits kept from before the screen was left, laid over the script when
+   * it opens on the same path: they stand again unsaved, said as kept.
+   *
+   * @param draft - The edits the host kept.
+   */
+  public draft_offer(draft: ScriptDraft): void {
+    this.draftOffered = draft;
+  }
+
   /** Whether one of the screen's lines runs. */
   public running_is(): boolean {
     return this.busy !== null;
@@ -484,12 +541,15 @@ export class ScriptScreen {
         // A question this screen did not send the line for (asked while it was away): from the answer on, the line reads
         // RUNNING, its commits wait, and what its task prints lands under its seat; its standing is read again after.
         if (this.busy === null && answeredLine !== null && value !== null && value !== '' && value.toLowerCase() !== 'n') {
+          this.answeredGoing = { line: answeredLine, state: this.lines.find((line: ScriptLine): boolean => line.text === answeredLine)?.state ?? null, until: Date.now() + ANSWERED_GOING_MS };
           this.followStep = this.steps.find((step: ScriptStep): boolean => step.lines.some((line: ScriptLine): boolean => line.text === answeredLine))?.key ?? null;
-          this.lines = this.lines.map((line: ScriptLine): ScriptLine => (line.text === answeredLine ? { ...line, running: 'its answer is given: the act goes on' } : line));
+          this.lines = this.lines.map((line: ScriptLine): ScriptLine => (line.text === answeredLine ? { ...line, running: ANSWERED_GOING } : line));
           this.steps = this.steps_derive(this.lines);
           this.draw();
         }
-        if (this.busy === null) void this.standings_refresh().then((): void => this.draw());
+        if (this.answeredGoing !== null && this.answeredGoing.line === answeredLine) {
+          this.answeredGoing_poll();
+        } else if (this.busy === null) void this.standings_refresh().then((): void => this.draw());
       } };
       this.log_add(message, 'ask');
       // What stands is read again while the question stands: a plan may have made free things (a stack) to plan it.
@@ -512,6 +572,16 @@ export class ScriptScreen {
     this.lines = this.accountsHeld_apply(lines_build(text, standings?.lines ?? []));
     this.readText = text;
     this.stoodFor = new Map(this.lines.map((line: ScriptLine): [number, string] => [line.number, line.text]));
+    this.draftRestored = null;
+    // Edits kept from before the screen was left stand again, unsaved, over the script as read now (clause 6d).
+    const draft: ScriptDraft | null = this.draftOffered;
+    if (draft !== null && draft.path === this.path) {
+      this.draftOffered = null;
+      const edited = await this.status_read(this.path, draft.text);
+      this.lines = this.accountsHeld_apply(lines_build(draft.text, edited?.lines ?? []));
+      this.edited = true;
+      this.draftRestored = { at: new Date().toISOString(), edits: draft.edits, moved: draft.read !== text };
+    }
     this.steps = this.steps_derive(this.lines);
     void this.vmsSeen_read();
     void this.chrisSeen_read();
@@ -619,7 +689,19 @@ export class ScriptScreen {
     if (this.path === '') return;
     const standings = await this.status_read(this.path, this.statusText_get());
     if (standings === null) return;
-    const fresh: ScriptLine[] = lines_build(script_render(this.lines), standings.lines);
+    let fresh: ScriptLine[] = lines_build(script_render(this.lines), standings.lines);
+    // A line answered yes here stays RUNNING until its task is named, its state moves, or the bound passes (a-change-is-a-loop, clause 5c).
+    let follow: boolean = false;
+    const going = this.answeredGoing;
+    if (going !== null) {
+      const stood: ScriptLine | undefined = fresh.find((line: ScriptLine): boolean => line.text === going.line);
+      if (stood === undefined || stood.running !== null || stood.state !== going.state || Date.now() > going.until) {
+        this.answeredGoing = null;
+        follow = stood?.running != null;
+      } else {
+        fresh = fresh.map((line: ScriptLine): ScriptLine => (line.text === going.line ? { ...line, running: ANSWERED_GOING } : line));
+      }
+    }
     this.lines = this.accountsHeld_apply(fresh);
     // What a deploy would do, and what stands of a network, are read again after any line: the line that ran may have changed them.
     this.chrisPlans.clear();
@@ -627,6 +709,8 @@ export class ScriptScreen {
     this.steps = this.steps_derive(this.lines);
     this.stoodFor = new Map(this.lines.map((line: ScriptLine): [number, string] => [line.number, line.text]));
     if (this.followStep !== null && runningStep_find(this.steps) === undefined) this.followStep = null;
+    // Its task named, the screen follows it as it does on opening: what it prints lands under its seat, and the lane says it runs.
+    if (follow) this.running_follow();
     void this.standing_read();
     void this.vmsSeen_read();
     void this.chrisSeen_read();
@@ -634,13 +718,20 @@ export class ScriptScreen {
 
   /** What runs of each ChRIS the script names, as `chris status` read it from the ChRIS: USERS' accounts and CHRIS's runs, beside their lines, as on the VM controller. */
   protected chrisSeen: Map<string, ChrisStatusRow> = new Map();
+  /** Whether `chris status` has answered once, so a ChRIS absent from it is known absent, not unread. */
+  protected chrisSeenRead: boolean = false;
+  /** When `chris status` last answered. */
+  protected chrisSeenAt: string | null = null;
 
   /** Reads `chris status` when the script names a ChRIS, then redraws; a user line CUBE now holds reads done. */
   protected async chrisSeen_read(): Promise<void> {
     if (!this.lines.some((line: ScriptLine): boolean => line_parse(line.text).verb[0] === 'chris')) return;
     try {
       const model = model_extract(await this.hooks.ask('chris status'), STRATUS_CHRIS_STATUS_MODEL_KIND, (data: unknown) => chrisStatusModelSchema.safeParse(data));
-      this.chrisSeen = new Map((model?.chris ?? []).map((row: ChrisStatusRow): [string, ChrisStatusRow] => [row.vm, row]));
+      if (model === null) return;
+      this.chrisSeen = new Map(model.chris.map((row: ChrisStatusRow): [string, ChrisStatusRow] => [row.vm, row]));
+      this.chrisSeenRead = true;
+      this.chrisSeenAt = new Date().toISOString();
     } catch {
       return;
     }
@@ -667,6 +758,17 @@ export class ScriptScreen {
     this.draw();
   }
 
+  /** Reads the standing again until the line answered yes here is seen running, moved, or past its bound. */
+  protected answeredGoing_poll(): void {
+    setTimeout((): void => {
+      if (this.answeredGoing === null || this.path === '') return;
+      void this.standings_refresh().then((): void => {
+        this.draw();
+        if (this.answeredGoing !== null) this.answeredGoing_poll();
+      });
+    }, ANSWERED_POLL_MS);
+  }
+
   /**
    * Follows the step whose task runs now with the session's own `wait`: its
    * log lands under the step as a RUN's would. Asked when a script opens and
@@ -675,7 +777,7 @@ export class ScriptScreen {
    */
   protected running_follow(): void {
     const step: ScriptStep | undefined = runningStep_find(this.steps);
-    if (step === undefined || step.running === null || this.busy !== null) return;
+    if (step === undefined || step.running === null || step.running === ANSWERED_GOING || this.busy !== null) return;
     void this.line_send(`wait ${step.running}`, step.key);
   }
 
@@ -985,6 +1087,8 @@ export class ScriptScreen {
       ? [['LINE', this.busy.line], ['FOR', duration_words(Date.now() - this.busy.since)]]
       // A question that stands with no line in this screen's lane (asked while the screen was away) is what runs: a line waiting on its answer.
       : this.ask !== null ? [['LINE', 'waiting on the question above'], ['FOR', 'until it is answered']]
+      : runningStep !== undefined && runningStep.running === ANSWERED_GOING
+        ? [['LINE', `${this.answeredGoing?.line ?? runningStep.lines[0]?.text ?? ''}: answered yes, the act goes on`], ['FOR', 'its task is read as it starts']]
       : runningStep !== undefined
         ? [['TASK', runningStep.running ?? ''], ['FOR', 'not followed']]
         : [['LINE', 'nothing'], ['FOR', '—']];
@@ -996,7 +1100,7 @@ export class ScriptScreen {
       stop.title = 'Ctrl-C at the console: the lane is freed, the task goes on';
       stop.addEventListener('click', (): void => { this.hooks.voice.pill('STOP FOLLOWING'); this.log_add('^C (stops following, not the task)', 'note'); this.hooks.stop(); });
       lanePills.push(stop);
-    } else if (this.busy === null && runningStep !== undefined && runningStep.running !== null) {
+    } else if (this.busy === null && runningStep !== undefined && runningStep.running !== null && runningStep.running !== ANSWERED_GOING) {
       const path: string = runningStep.running;
       const follow: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain', 'FOLLOW');
       follow.type = 'button';
@@ -1048,7 +1152,19 @@ export class ScriptScreen {
     if (log !== null) log.scrollTop = log.scrollHeight;
     this.refusal_place();
     this.saved_place();
+    this.draft_place();
     this.errand_place();
+  }
+
+  /** The edits kept from before the screen was left, said on every seat while they stand unsaved. */
+  protected draft_place(): void {
+    const kept = this.draftRestored;
+    if (kept === null || !this.edited) return;
+    const note: HTMLElement = el('div', 'tdc-note tdc-note-bill ss-note-draft');
+    note.append(el('span', 'tdc-note-title', `UNSAVED EDITS KEPT · ${kept.at.slice(11, 16)}`), el('span', 'tdc-prose', `The ${kept.edits === 1 ? 'edit' : `${kept.edits} edits`} you left with ${kept.edits === 1 ? 'stands' : 'stand'} again, not saved: SAVE writes ${kept.edits === 1 ? 'it' : 'them'} to ${workingCopy_derive(this.path)}; nothing was built or billed.${kept.moved ? ' The script changed on the host since you left: the edits are laid over what you left, not over its new text; SAVE writes them as shown.' : ''}`));
+    const first: Element | null = this.parts.body.querySelector('section');
+    if (first === null) this.parts.body.prepend(note);
+    else first.insertBefore(note, first.children[1] ?? null);
   }
 
   /** SAVE's receipt on whichever seat it was pressed from: the copy written, where and when, until the next edit. */
@@ -1244,6 +1360,7 @@ export class ScriptScreen {
     const side: HTMLElement = step.kind === 'vm new' ? this.cost_make(step)
       : step.kind === 'net new' || step.kind === 'net build' ? this.netSide_make(step, vm)
       : step.kind === 'chris deploy' && chris !== null ? this.chrisSide_make(step, chris)
+        : step.kind === 'chris deploy' && this.chrisAbsent_read(vm) !== null ? this.chrisFirstSide_make(step, vm, this.chrisAbsent_read(vm) as { at: string | null })
         : step.kind === 'users' && chris !== null ? this.usersSide_make(step, chris) : this.state_make(step);
     const log: HTMLElement = this.stepLog_make(step);
     return [form, side, log];
@@ -1925,6 +2042,49 @@ export class ScriptScreen {
     ]));
     const line: ScriptLine | undefined = step.lines[0];
     if (line === undefined) return side;
+    side.append(this.chrisPlanNote_make(line));
+    return side;
+  }
+
+  /**
+   * Whether no ChRIS is deployed on a VM, as read: when, or null when one
+   * stands or nothing was read yet.
+   *
+   * @param vm - The VM.
+   * @returns When it was read absent, or null.
+   */
+  protected chrisAbsent_read(vm: string): { at: string | null } | null {
+    if (!this.chrisSeenRead || this.chrisSeen.has(vm)) return null;
+    return { at: this.chrisSeenAt };
+  }
+
+  /**
+   * A deploy seat where nothing is deployed yet (a-change-is-a-loop, clauses
+   * 1 and 2): no ChRIS stands on the machine, as `chris status` read it, with
+   * when; then what the first deploy would put up, as `--plan` says it.
+   *
+   * @param step - The seat.
+   * @param vm - The VM.
+   * @param absent - When it was read absent.
+   * @returns The side column.
+   */
+  protected chrisFirstSide_make(step: ScriptStep, vm: string, absent: { at: string | null }): HTMLElement {
+    const side: HTMLElement = this.section_make('THE CHRIS · AS IT RUNS', 'ss-col-side', absent.at === null ? 'READ' : `READ ${absent.at.slice(11, 16)} UTC`);
+    const running: HTMLElement | null = this.runningNote_make(step);
+    if (running !== null) side.append(running);
+    side.append(this.pairs_make([['CUBE', `none deployed on ${vm}`], ['PORTER', 'none deployed'], ['ACCOUNTS', 'none: CUBE is not there']]));
+    const line: ScriptLine | undefined = step.lines[0];
+    if (line !== undefined) side.append(this.chrisPlanNote_make(line));
+    return side;
+  }
+
+  /**
+   * What a deploy line would do, as `chris deploy … --plan` says it.
+   *
+   * @param line - The deploy line.
+   * @returns The note.
+   */
+  protected chrisPlanNote_make(line: ScriptLine): HTMLElement {
     if (!this.chrisPlans.has(line.text)) this.chrisPlan_ask(line.text);
     const plan: ChrisPlanModel | null | undefined = this.chrisPlans.get(line.text);
     const note: HTMLElement = el('div', `tdc-note ss-note-deploy${plan?.asks === true ? ' tdc-note-bill' : ''}`);
@@ -1937,10 +2097,11 @@ export class ScriptScreen {
       for (const change of plan.changes) note.append(el('span', 'tdc-prose', change));
       for (const restart of plan.restarts) note.append(el('span', 'tdc-prose ss-would-reboot', `restarts ${restart}`));
       if (plan.sessions !== null && plan.restarts.some((one: string): boolean => one.startsWith('porter (') || one.startsWith('CUBE and porter'))) note.append(el('span', `tdc-prose${plan.sessions > 0 ? ' ss-would-reboot' : ' tdc-quiet'}`, plan.sessions === 0 ? 'no porter session is open now' : `${plan.sessions} porter session${plan.sessions === 1 ? '' : 's'} open now ${plan.sessions === 1 ? 'ends' : 'end'}`));
-      note.append(el('span', 'tdc-prose tdc-quiet', 'RUN asks here with all of it before anything restarts.'));
+      note.append(el('span', 'tdc-prose tdc-quiet', plan.first === true
+        ? `RUN asks here with all of it before anything is put up; the admin password is asked after the yes${lineOption_get(line.text, '--admin-password-file') !== null ? ', unless the line names its file' : ''}.`
+        : 'RUN asks here with all of it before anything restarts.'));
     }
-    side.append(note);
-    return side;
+    return note;
   }
 
   /**
@@ -2020,7 +2181,7 @@ export class ScriptScreen {
     const on: string = step.lines.map((line: ScriptLine): string | null => lineOption_get(line.text, '--on')).find((value): value is string => value !== null) ?? this.usersVm_get(step);
     const commands: HTMLElement = el('div', 'tdc-commands ss-user-add');
     form.append(commands);
-    nodes.push(form, el('p', 'tdc-prose tdc-quiet', 'Each user is a line, so a ChRIS\'s accounts are declared, not remembered. ADD asks first, saying what it makes and where; MAKE IT appends the line, saves the working copy, then runs it; a name already there is left as it is. The password never shows here: it is asked hidden, or read from the file the line names.'));
+    nodes.push(form, el('p', 'tdc-prose tdc-quiet', 'Each user is a line, so a ChRIS\'s accounts are declared, not remembered. ADD appends the line, saves the working copy, then runs it: the engine asks first, on the strip, naming the account and the ChRIS it is made on; a NO makes nothing and the line stays declared; a name CUBE already holds is left as it is, unasked. The password never shows here: it is asked hidden, or read from the file the line names.'));
     this.userAdd_fill(commands, step, on);
     return nodes;
   }
@@ -2033,10 +2194,26 @@ export class ScriptScreen {
     this.userAdd_fill(commands, step, on);
   }
 
+  /**
+   * Why a user line would be refused for its ChRIS, as `chris status` read
+   * it: none deployed where the account would go, or more than one with no
+   * `--on`; null when one stands or nothing was read yet.
+   *
+   * @param on - The line's `--on`, or empty.
+   * @returns The refusal's words for ADD, or null.
+   */
+  protected userAddChris_why(on: string): string | null {
+    if (!this.chrisSeenRead) return null;
+    if (on !== '') return this.chrisSeen.has(on) ? null : `NO CHRIS ON ${on.toUpperCase()}`;
+    return this.chrisSeen.size === 0 ? 'NO CHRIS' : this.chrisSeen.size > 1 ? 'WHICH CHRIS' : null;
+  }
+
   protected userAdd_fill(commands: HTMLElement, step: ScriptStep, on: string): void {
     commands.replaceChildren();
     const { name, email, passwordFile } = this.userForm;
-    const refusal: string | null = name === '' ? 'NAME' : !/^[a-z][a-z0-9_-]{1,31}$/.test(name) ? 'NAME IS A LOGIN' : email === '' ? 'EMAIL' : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? 'EMAIL IS AN ADDRESS' : step.lines.some((line: ScriptLine): boolean => line_parse(line.text).subject === name) ? 'ALREADY A LINE' : null;
+    // A refusal the line would meet, when the screen can know it, is said on ADD before the press (a-change-is-a-loop, clause 2).
+    const chrisWhy: string | null = this.userAddChris_why(on);
+    const refusal: string | null = name === '' ? 'NAME' : !/^[a-z][a-z0-9_-]{1,31}$/.test(name) ? 'NAME IS A LOGIN' : email === '' ? 'EMAIL' : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? 'EMAIL IS AN ADDRESS' : step.lines.some((line: ScriptLine): boolean => line_parse(line.text).subject === name) ? 'ALREADY A LINE' : chrisWhy;
     const line: string = userLine_build(name || '<name>', email || '<email>', passwordFile, on);
     // The door's hold comes before the form's: in a READ session that cannot be raised ADD is refused whatever the form holds; one that can asks first.
     const doorHold: ReadHold = this.hold_derive('chris user add');
@@ -2046,9 +2223,10 @@ export class ScriptScreen {
     if (heldByDoor) add.title = `refused: ${READ_HELD}`;
     else if (doorHold === 'asks' && refusal === null) add.title = `${READ_ASKS}: the user line`;
     add.type = 'button';
-    if (!heldByDoor && !(doorHold === 'asks' && refusal === null)) add.title = `asks first, then appends and sends: ${line}`;
+    if (!heldByDoor && !(doorHold === 'asks' && refusal === null)) add.title = `appends, saves, then sends; the engine asks first: ${line}`;
     add.disabled = heldByDoor || refusal !== null || this.busy !== null;
-    const send = (): void => {
+    add.addEventListener('click', (): void => {
+      this.hooks.voice.pill('ADD');
       void (async (): Promise<void> => {
         // A READ session that can be raised asks the password first; the line is appended only once it may run.
         if (this.hold_derive(line) === 'asks' && this.hooks.elevate_ask !== null && !(await this.hooks.elevate_ask(line))) return;
@@ -2059,36 +2237,22 @@ export class ScriptScreen {
         this.edited = true;
         this.userForm = { name: '', email: '', passwordFile: '' };
         // The line is written before it runs, so the account it makes is always declared (a-change-is-a-loop, clause 3):
-        // a save refused runs nothing.
+        // a save refused runs nothing. The engine's question, naming the account and the ChRIS, is the confirm (clause 4).
         await this.save_send();
         if (this.edited) return;
         await this.line_send(line, 'users');
       })();
-    };
-    // Asked in place: the first press says what ADD makes and where; MAKE IT sends, KEEP AS IS backs out (a-change-is-a-loop, clause 4).
-    if (this.userAddArmed === line && !add.disabled) {
-      const host: string = ((): string => { try { return new URL(this.chrisRow_get(on)?.url ?? '').host; } catch { return on === '' ? 'the ChRIS' : `${on}'s ChRIS`; } })();
-      const ask: HTMLElement = el('div', 'tdc-note tdc-note-bill ss-user-ask');
-      ask.append(el('span', 'tdc-note-title', 'ADD MAKES AN ACCOUNT'), el('span', 'tdc-prose', `${name} (${email}) is made on ${host} now: a login that can sign in. Its line is saved to ${workingCopy_derive(this.path)} first${this.edited ? ', with the script\'s other edits' : ''}, then run. stratus has no verb to remove an account; CUBE's admin does.`));
-      // loop: ss-user-add
-      const make: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill', 'ADD · MAKE IT');
-      make.type = 'button';
-      make.addEventListener('click', (): void => { this.hooks.voice.pill('ADD · MAKE IT'); this.userAddArmed = null; send(); });
-      const keep: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'KEEP AS IS');
-      keep.type = 'button';
-      keep.addEventListener('click', (): void => { this.hooks.voice.pill('KEEP AS IS'); this.userAddArmed = null; this.userAdd_fill(commands, step, on); });
-      const pills: HTMLElement = el('div', 'tdc-commands');
-      pills.append(make, keep);
-      ask.append(pills);
-      commands.append(ask, el('span', 'tdc-mono ss-user-line', line));
-      return;
-    }
-    add.addEventListener('click', (): void => {
-      this.hooks.voice.pill('ADD');
-      this.userAddArmed = line;
-      this.userAdd_fill(commands, step, on);
     });
     commands.append(add, el('span', 'tdc-mono ss-user-line', line));
+    // What ADD would do, or why it is refused, stands under it before the press (clause 2).
+    const host: string = ((): string => { try { return new URL(this.chrisRow_get(on === '' ? [...this.chrisSeen.keys()][0] ?? '' : on)?.url ?? '').host; } catch { return on === '' ? 'the ChRIS' : `${on}'s ChRIS`; } })();
+    if (chrisWhy !== null && refusal === chrisWhy) {
+      commands.append(el('p', 'tdc-prose ss-user-offer', chrisWhy === 'WHICH CHRIS'
+        ? `stratus runs ${this.chrisSeen.size} ChRIS (${[...this.chrisSeen.keys()].join(', ')}): the line needs --on to say which; nothing is made until it does.`
+        : `${on === '' ? 'No ChRIS is deployed' : `No ChRIS is deployed on ${on}`}, as chris status read it: the line would be refused. Deploy one first, on the CHRIS DEPLOY seat.`));
+    } else if (refusal === null && !heldByDoor) {
+      commands.append(el('p', 'tdc-prose ss-user-offer', `ADD makes ${name} (${email}) on ${host}: a login that can sign in. Its line is saved to ${workingCopy_derive(this.path)} first${this.edited ? ', with the script\'s other edits' : ''}, then run, and the engine asks before the account is made. stratus has no verb to remove an account; CUBE's admin does.`));
+    }
   }
 
   protected other_make(step: ScriptStep): HTMLElement[] {

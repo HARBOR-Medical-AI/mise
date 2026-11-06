@@ -4,8 +4,8 @@
  * options that change against the deploy's record, the services that
  * restart and why (a new CUBE image, a new porter, a CUBE whose environment
  * changes), and what a porter restart ends (its open sessions, read from it).
- * A replay that restarts nothing and changes nothing does not ask; one that
- * does asks with all of it first. Twice on 2026-11-04 a replay restarted
+ * A first deploy asks, with what it puts up. A replay that restarts nothing
+ * and changes nothing does not ask; one that does asks with all of it first. Twice on 2026-11-04 a replay restarted
  * porter and ended every session, asked by nothing and said by nothing.
  *
  * @module
@@ -27,6 +27,8 @@ export interface ChrisPlan {
   readonly restarts: string[];
   readonly sessions: number | null;
   readonly asks: boolean;
+  /** Whether nothing was deployed there before: a first deploy puts CUBE up. */
+  readonly first: boolean;
 }
 
 /**
@@ -38,7 +40,13 @@ export interface ChrisPlan {
  * @returns The changes, the restarts, the sessions a porter restart ends, and whether it asks.
  */
 export function chrisPlan_derive(deployed: VmRecord['chris'], ask: ChrisPlanAsk, sessions: number | null): ChrisPlan {
-  if (deployed === undefined) return { changes: ['a first deploy: CUBE and its services are put up'], restarts: [], sessions: null, asks: false };
+  // A first deploy builds on the machine: it asks, with what it puts up (a-change-is-a-loop, clause 4).
+  if (deployed === undefined) {
+    const changes: string[] = [`a first deploy: CUBE (${ask.profile}) with its workers, Postgres, dragonfly, nats and pfcon are put up`, `compute ${ask.compute}`];
+    if (ask.host !== null) changes.push(`CUBE at https://${ask.host}/`);
+    if (ask.porter !== null) changes.push(`porter at https://${ask.porter}/`);
+    return { changes, restarts: [], sessions: null, asks: true, first: true };
+  }
   const changes: string[] = [];
   const want = (word: string, kept: string | null | undefined, asked: string | null): void => {
     if ((kept ?? null) !== asked) changes.push(`${word} ${kept ?? 'none'} → ${asked ?? 'none'}`);
@@ -56,7 +64,7 @@ export function chrisPlan_derive(deployed: VmRecord['chris'], ask: ChrisPlanAsk,
     if (deployed.porter === undefined) restarts.push('porter is put up');
     else if (deployed.porterVersion !== PORTER_VERSION) restarts.push(`porter (${deployed.porterVersion ?? '?'} → ${PORTER_VERSION}): its open sessions end`);
   }
-  return { changes, restarts, sessions, asks: changes.length > 0 || restarts.length > 0 };
+  return { changes, restarts, sessions, asks: changes.length > 0 || restarts.length > 0, first: false };
 }
 
 /**
@@ -71,5 +79,6 @@ export function chrisPlan_words(vm: string, plan: ChrisPlan): string {
   const restarts: string = plan.restarts.length === 0 ? 'nothing restarts' : `restarts ${plan.restarts.join('; ')}`;
   const ends: string = plan.restarts.some((one: string): boolean => one.startsWith('porter (') || one.startsWith('CUBE and porter')) && plan.sessions !== null
     ? plan.sessions === 0 ? '; no porter session is open now' : `; ${plan.sessions} porter session${plan.sessions === 1 ? '' : 's'} open now ${plan.sessions === 1 ? 'ends' : 'end'}` : '';
+  if (plan.first) return `chris deploy ${vm}: ${changes}`;
   return `chris deploy ${vm}: ${changes}; ${restarts}${ends}`;
 }

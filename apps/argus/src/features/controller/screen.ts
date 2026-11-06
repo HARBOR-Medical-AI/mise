@@ -485,7 +485,9 @@ export class TdController {
     const chips: HTMLElement = el('div', 'tdc-chips');
     if (cluster !== null) {
       const steps = stepsDone_count(cluster);
-      chips.append(el('span', 'tdc-chip', `${steps.done} OF ${steps.total} DONE${cluster.origin === 'found' ? ' · FROM THE CLOUD' : ''}`), el('span', 'tdc-chip tdc-chip-class', classBadge_render(cluster)));
+      // Torn down, the build's count is history: what was done is gone, never drawn as standing (a-change-is-a-loop, clause 1c).
+      const counted: string = cluster.condition === 'GONE' ? `WAS ${steps.done} OF ${steps.total} DONE · ALL GONE` : `${steps.done} OF ${steps.total} DONE`;
+      chips.append(el('span', 'tdc-chip', `${counted}${cluster.origin === 'found' ? ' · FROM THE CLOUD' : ''}`), el('span', 'tdc-chip tdc-chip-class', classBadge_render(cluster)));
       // A found cluster with nothing left of it has nothing a lock would keep.
       if (!(cluster.origin === 'found' && cluster.condition === 'GONE')) chips.append(this.lock_make(cluster));
     } else {
@@ -557,7 +559,7 @@ export class TdController {
   }
 
   private build_rows(cluster: ClusterSummary): Array<[string, string]> {
-    const last: string = cluster.lastDone === null ? 'nothing' : cluster.lastDone.replace(/^\d+-/, '');
+    const last: string = cluster.lastDone === null ? 'nothing' : `${cluster.lastDone.replace(/^\d+-/, '')}${cluster.condition === 'GONE' ? ' · BEFORE THE TEARDOWN' : ''}`;
     const running: string = cluster.running === null || cluster.running === undefined ? 'nothing'
       : `${cluster.running.step ?? 'between steps'}${cluster.running.since !== null ? ` · ${duration_text(Date.now() - Date.parse(cluster.running.since))}` : ''}`;
     const plan: string = cluster.plan === null || cluster.plan === undefined ? 'none kept' : planWords_render(cluster.plan);

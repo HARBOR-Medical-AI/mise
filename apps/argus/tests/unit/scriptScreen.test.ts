@@ -28,6 +28,8 @@ let runningAt: Record<number, string> = {};
 
 /** What `play --status` says of a line, by line number, beyond its state's usual word. */
 let detailAt: Record<number, string> = {};
+/** What `chris status` answers; null: no model (unread). */
+let chrisRows: unknown[] | null = null;
 
 /** The session's answers to the screen's quiet lines, as a fake stratus would give them. */
 function answer_make(line: string, states: string[]): QuietAnswer {
@@ -40,6 +42,8 @@ function answer_make(line: string, states: string[]): QuietAnswer {
     const lines = STORE_TEXT.split('\n').map((text: string, index: number) => ({ number: index + 1, text, state: states[index] ?? null, detail: detailAt[index + 1] ?? (states[index] === 'done' ? 'unchanged' : ''), ...(runningAt[index + 1] === undefined ? {} : { running: runningAt[index + 1] }) }));
     return envelope({ kind: 'manifest.status', data: { manifest: 'store', lines } });
   }
+  if (line.startsWith('chris deploy ') && line.endsWith(' --plan') && chrisRows !== null && chrisRows.length === 0) return envelope({ kind: 'stratus.chris.plan', data: { vm: 'store', changes: ['a first deploy: CUBE (minimal) with its workers, Postgres, dragonfly, nats and pfcon are put up', 'compute NERC', 'CUBE at https://cube.chrisproject.org/'], restarts: [], sessions: null, asks: true, first: true } });
+  if (line === 'chris status' && chrisRows !== null) return envelope({ kind: 'stratus.chris.status', data: { chris: chrisRows } });
   if (line === 'vm limits') return envelope({ kind: 'stratus.vm.limits', data: LIMITS });
   if (line === 'net status') return envelope({ kind: 'stratus.net.status', data: { read: '2026-11-05T06:10:00.000Z', nets: [{ name: 'chrisproject-services', state: 'built', cidr: '10.20.0.0/16', builtCidr: '10.20.0.0/16', stands: { cidr: '10.20.0.0/16', at: '2026-11-05T06:10:00.000Z' }, stack: { id: 'ocid1.ormstack.net', state: 'active' }, bastion: 'ocid1.bastion.net', admits: '134.174.21.21/32', subnet: 'ocid1.subnet.net' }] } });
   if (line.startsWith('vm cost')) {
@@ -421,6 +425,88 @@ describe('the script screen', () => {
     expect(answered).toBe('y');
   });
 
+  it('a yes given here for a line this screen did not send reads RUNNING, with its commits shut, until its task is named, then follows it', async () => {
+    try {
+      const { screen, sent } = screen_make(['done', 'done', 'ready', 'not yet', 'not yet']);
+      await screen.open('/scripts/chrisproject/store.mise');
+      await settle();
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-2"]')?.click();
+      void screen.ask_take('vm build store: its data stands; the machine plan 3 to create. It bills: $0.052 an hour. Continue? [y/N]', 'confirm');
+      await settle();
+      button_named(screen.root, 'CONTINUE')?.click();
+      await settle();
+      // The daemon has not started the machine's task yet, and the standing still says READY: the line reads RUNNING all the same.
+      const header = (): string => screen.root.querySelector('.ss-header')?.textContent ?? '';
+      expect(header()).toContain('vm build store: answered yes, the act goes on');
+      expect(button_named(screen.root, 'BUILD')?.disabled).toBe(true);
+      expect(sent).toEqual([]);
+      // Its task named by the next standing, the screen follows it.
+      runningAt = { 3: '/proc/steps/vm-store-apply-machine' };
+      await new Promise((resolve: (value: unknown) => void): void => { setTimeout(resolve, 1_700); });
+      await settle();
+      expect(sent).toEqual(['wait /proc/steps/vm-store-apply-machine']);
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      runningAt = {};
+    }
+  });
+
+  it('leaving with edits not saved hands them to the host; the screen opened after lays them over the script and says they were kept', async () => {
+    const { screen } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    expect(screen.draft_detach()).toBeNull();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const cidr: HTMLInputElement | null = screen.root.querySelector('#ss-cidr-1');
+    cidr!.value = '10.30.0.0/16';
+    cidr!.dispatchEvent(new Event('input'));
+    const draft = screen.draft_detach();
+    expect(draft).toMatchObject({ path: '/scripts/chrisproject/store.mise', edits: 1 });
+    expect(draft?.text.startsWith('net new chrisproject-services --cidr 10.30.0.0/16\n')).toBe(true);
+    screen.dispose();
+    screen.root.remove();
+    const { screen: again } = screen_make();
+    again.draft_offer(draft!);
+    await again.open('/scripts/chrisproject/store.mise');
+    await settle();
+    again.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    expect(again.root.querySelector('.ss-line-text')?.textContent).toBe('net new chrisproject-services --cidr 10.30.0.0/16');
+    expect(again.root.querySelector('.ss-note-draft')?.textContent).toMatch(/^UNSAVED EDITS KEPT · \d\d:\d\dThe edit you left with stands again, not saved: SAVE writes it to \/scripts\/mine\/store\.mise; nothing was built or billed\.$/);
+    expect(button_named(again.root, 'SAVE')).toBeDefined();
+    // Offered and opened elsewhere, the kept edits go back to the host as they came.
+    const { screen: elsewhere } = screen_make();
+    elsewhere.draft_offer(draft!);
+    await elsewhere.open('');
+    expect(elsewhere.draft_detach()).toEqual(draft);
+    for (const one of [again, elsewhere]) { one.dispose(); one.root.remove(); }
+  });
+
+  it('a hidden word carried away stands again on the errand bar of the screen opened after, and its SEND answers the first ask', async () => {
+    const { screen } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    let answered: string | null | undefined;
+    void screen.ask_take('admin password for chris (empty: generate one):', 'secret').then((value: string | null): void => { answered = value; });
+    const carried = screen.ask_detach();
+    screen.dispose();
+    screen.root.remove();
+    const { screen: again } = screen_make();
+    await again.open('/scripts/chrisproject/store.mise');
+    await settle();
+    void again.ask_take(carried?.message ?? '', carried?.kind ?? 'secret').then((value: string | null): void => carried?.resolve(value));
+    await settle();
+    const field: HTMLInputElement | null = again.root.querySelector('#ss-errand-input');
+    expect(field).not.toBeNull();
+    (field as HTMLInputElement).value = 'admin-pass';
+    button_named(again.root, 'SEND')?.click();
+    await settle();
+    expect(answered).toBe('admin-pass');
+    expect(again.asking_is()).toBe(false);
+  });
+
   it('USERS gathers the user lines; ADD is held until a login and an address stand, then appends the line and sends it', async () => {
     const { screen, sent } = screen_make();
     await screen.open('/scripts/chrisproject/store.mise');
@@ -438,16 +524,9 @@ describe('the script screen', () => {
     const add: HTMLButtonElement | undefined = button_named(screen.root, 'ADD');
     expect(add?.disabled).toBe(false);
     expect(screen.root.querySelector('.ss-user-line')?.textContent).toBe('chris user add jennings --email jennings@example.org');
-    // ADD asks in place first, with what it makes and where; nothing is sent until MAKE IT, and KEEP AS IS backs out.
+    // What ADD makes, and where, stands under it before the press; the engine's question is the confirm.
+    expect(screen.root.querySelector('.ss-user-offer')?.textContent).toContain('ADD makes jennings (jennings@example.org) on');
     add?.click();
-    await settle();
-    expect(sent).toEqual([]);
-    expect(screen.root.querySelector('.ss-user-ask .tdc-note-title')?.textContent).toBe('ADD MAKES AN ACCOUNT');
-    expect(screen.root.querySelector('.ss-user-ask')?.textContent).toContain('jennings (jennings@example.org) is made on');
-    button_named(screen.root, 'KEEP AS IS')?.click();
-    expect(screen.root.querySelector('.ss-user-ask')).toBeNull();
-    button_named(screen.root, 'ADD')?.click();
-    button_named(screen.root, 'ADD · MAKE IT')?.click();
     await settle();
     // The line is saved to the working copy first, then run: the account it makes is always declared.
     expect(sent).toHaveLength(2);
@@ -457,5 +536,51 @@ describe('the script screen', () => {
     expect(screen.root.textContent).not.toContain('NOT SAVED');
     screen.dispose();
     screen.root.remove();
+  });
+
+  it('a deploy seat with no ChRIS deployed says so, with when it was read, and what the first deploy puts up before RUN', async () => {
+    chrisRows = [];
+    try {
+      const { screen } = screen_make(['done', 'done', 'done', 'ready', 'not yet']);
+      await screen.open('/scripts/chrisproject/store.mise');
+      await settle();
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-4"]')?.click();
+      await settle();
+      const side: string = screen.root.querySelector('.ss-col-side')?.textContent ?? '';
+      expect(side).toMatch(/THE CHRIS · AS IT RUNSREAD \d\d:\d\d UTC/);
+      expect(side).toContain('none deployed on store');
+      expect(side).toContain('DEPLOY WOULDa first deploy: CUBE (minimal) with its workers, Postgres, dragonfly, nats and pfcon are put upcompute NERCCUBE at https://cube.chrisproject.org/');
+      expect(side).toContain('RUN asks here with all of it before anything is put up; the admin password is asked after the yes.');
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      chrisRows = null;
+    }
+  });
+
+  it('USERS ADD is refused before the press when chris status reads no ChRIS, and says where to deploy one', async () => {
+    chrisRows = [];
+    try {
+      const { screen, sent } = screen_make();
+      await screen.open('/scripts/chrisproject/store.mise');
+      await settle();
+      const name: HTMLInputElement = screen.root.querySelector('#ss-user-name') as HTMLInputElement;
+      name.value = 'jennings';
+      name.dispatchEvent(new Event('input'));
+      const email: HTMLInputElement = screen.root.querySelector('#ss-user-email') as HTMLInputElement;
+      email.value = 'jennings@example.org';
+      email.dispatchEvent(new Event('input'));
+      expect(button_named(screen.root, 'ADD')).toBeUndefined();
+      const refused: HTMLButtonElement | undefined = [...screen.root.querySelectorAll('button')].find((button: HTMLButtonElement): boolean => (button.textContent ?? '').startsWith('ADD · NO CHRIS'));
+      expect(refused?.disabled).toBe(true);
+      expect(screen.root.querySelector('.ss-user-offer')?.textContent).toContain('the line would be refused. Deploy one first, on the CHRIS DEPLOY seat.');
+      refused?.click();
+      await settle();
+      expect(sent).toEqual([]);
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      chrisRows = null;
+    }
   });
 });

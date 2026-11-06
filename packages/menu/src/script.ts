@@ -238,6 +238,8 @@ export const chrisPlanModelSchema = z.object({
   sessions: z.number().nullable(),
   /** Whether the deploy asks before acting (anything restarts or changes). */
   asks: z.boolean(),
+  /** Whether nothing was deployed there before; absent from an older daemon. */
+  first: z.boolean().optional(),
 });
 
 export type LineState = (typeof LINE_STATES)[number];

@@ -212,7 +212,11 @@ export function teardownLooks_build(cluster: ClusterSummary): TeardownLook[] {
     // What the compartment's count reads (its machines, balancers, volumes in the stack; the compartment itself) is said
     // with when; the rest (the claims' volumes, the DNS records, the image) is counted only when the line runs.
     const counted: boolean = name === 'destroy' || name === 'compartment' || name === 'stack';
-    if (step === undefined || step.state === 'not done') return { ...look('STANDS', 'stands'), at: !counted ? 'COUNTED WHEN THE LINE RUNS' : cluster.resourcesAt != null ? `READ ${cluster.resourcesAt.slice(11, 16)}` : 'NOT READ' };
+    // What no count read is never said to stand: it is NOT COUNTED, and the line counts it as it runs (clause 1b).
+    if (step === undefined || step.state === 'not done') {
+      if (!counted) return { ...look('NOT COUNTED', 'stands'), at: 'THE LINE COUNTS IT AS IT RUNS' };
+      return { ...look(cluster.resourcesAt != null ? 'STANDS' : 'NOT COUNTED', 'stands'), at: cluster.resourcesAt != null ? `READ ${cluster.resourcesAt.slice(11, 16)}` : 'NOT READ' };
+    }
     if (step.state === 'running') return look('GOING', 'going');
     if (step.state === 'done') return look('GONE', 'gone');
     if (step.state === 'skipped') return look('NOTHING', 'skipped');
