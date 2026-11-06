@@ -733,6 +733,21 @@ export interface PluginFound {
 }
 
 /**
+ * Fetches one page of the plugins registered in the connected CUBE.
+ *
+ * @param client - Connected chrisapi client.
+ * @param params - Page window and search filters (limit, offset, name_exact…).
+ * @returns The page of plugin rows.
+ * @throws {Error} Propagates chrisapi/network errors.
+ */
+export async function pluginsPage_get(
+  client: Client,
+  params: Record<string, unknown>,
+): Promise<ListPage<PluginData>> {
+  return listPage_wrap<PluginData>(await resource_call<WirePage>(client, 'getPlugins', params));
+}
+
+/**
  * Fetches one registered plugin by exact name and version.
  *
  * @param client - Connected chrisapi client.

@@ -89,10 +89,13 @@ jest.unstable_mockModule('@fnndsc/brasa', () => ({
   // Imported transitively via prompt/session (promptFromContext_render); the
   // remote client renders a pushed context, it never builds one.
   sessionPromptContext_build: jest.fn(),
-  // Imported transitively via config/settings (store-config persistence hook).
+  // Imported transitively via config/settings (store- and index-config persistence hooks).
   storeUrl_set: jest.fn(),
   storeUrlOverride_get: jest.fn(),
   storeConfigPersist_install: jest.fn(),
+  pluginIndex_set: jest.fn(),
+  pluginIndexOverride_get: jest.fn(),
+  indexConfigPersist_install: jest.fn(),
   envelope_deliver: (envelope: CommandEnvelope): void => {
     if (envelope.rendered.length > 0) activeSink.data_write(envelope.rendered);
     if (envelope.renderedErr !== undefined && envelope.renderedErr.length > 0) activeSink.err_write(envelope.renderedErr);

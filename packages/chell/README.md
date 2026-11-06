@@ -152,10 +152,22 @@ store install pl-simplefsapp
 store install pl-simplefsapp --compute ares,argentum
 ```
 
-`store install` runs a three-phase resolution:
-1. Already in this CUBE → reports `[INFO] already registered`
-2. Found in peer store (cube.chrisproject.org) → imports via admin API
+`store install` (and `plugin add`) runs a three-phase resolution:
+1. Already in this CUBE → reports that it is already registered
+2. Found in the peer store (`store set` chooses it; cube.chrisproject.org by default) → imports via admin API
 3. Not found → Docker extraction and registration
+
+`plugin add` also takes a plugin URL in another CUBE, which CUBE fetches itself, and `--json <file>`, one descriptor file.
+
+### Filling a CUBE from the plugin index
+
+```bash
+plugin sync --plan        # what FNNDSC/chris-plugins would add, skip and report here
+sudo plugin sync          # the plan, one question, then the adds
+plugin validate ./plugins # check descriptors without a CUBE
+```
+
+`plugin sync` never deletes or changes a plugin already there; see [docs/plugins.adoc](docs/plugins.adoc).
 
 When registration needs escalation, ChELL reports the original failure and
 suggests the explicit retry, for example `sudo store install pl-simplefsapp`.
@@ -396,6 +408,7 @@ ChELL is the presentation layer of the "Sandwich Model":
 | [docs/vfs.adoc](docs/vfs.adoc) | VFS architecture — providers, dispatch, path resolution |
 | [docs/pluginrun.adoc](docs/pluginrun.adoc) | Running a plugin — new feed vs continue feed, the wait, naming the run |
 | [docs/store.adoc](docs/store.adoc) | Store install — three-phase resolution, admin escalation |
+| [docs/plugins.adoc](docs/plugins.adoc) | Registering plugins — `plugin add`, filling a CUBE from an index (`plugin sync`), `plugin validate`, `plugin index` |
 | [docs/login.adoc](docs/login.adoc) | Connection and authentication options |
 | [docs/execution.adoc](docs/execution.adoc) | How chell is invoked: REPL, `-c`, scripts, flags |
 | [../../docs/manifest.adoc](../../docs/manifest.adoc) | The script and manifest language: `@param`, variables, `expect`, `play` |

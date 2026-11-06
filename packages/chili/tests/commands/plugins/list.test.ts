@@ -34,4 +34,21 @@ describe('commands/plugins/list', () => {
 
     expect(result).toEqual({ plugins: [], selectedFields: [] });
   });
+
+  it('lists every plugin with --all, sorted, and reports the total', async () => {
+    (salsa.plugins_listAll as jest.Mock).mockResolvedValue({
+      tableData: [{ id: 1, name: 'pl-b' }, { id: 2, name: 'pl-a' }],
+      totalCount: 2,
+    });
+    const result = await plugins_fetchList({ all: true, sort: 'name', reverse: true });
+    expect(salsa.plugins_listAll).toHaveBeenCalled();
+    expect(result.plugins.map((p) => p.name)).toEqual(['pl-b', 'pl-a']);
+    expect(result.selectedFields).toEqual([]);
+    expect(result.totalCount).toBe(2);
+  });
+
+  it('returns nothing when salsa answers with nothing', async () => {
+    (salsa.plugins_list as jest.Mock).mockResolvedValue(null);
+    expect(await plugins_fetchList({})).toEqual({ plugins: [], selectedFields: [] });
+  });
 });

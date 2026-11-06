@@ -11,6 +11,8 @@
 import {
   client_create,
   client_adminUrlEnsure,
+  client_adminPluginUpload,
+  type PluginAdminSource,
   listData_get,
   itemData_get,
   resource_call,
@@ -761,6 +763,41 @@ export async function plugin_registerDirect(
   } catch (error: unknown) {
     const msg: string = error instanceof Error ? error.message : String(error);
     errorStack.stack_push("error", `Failed to register plugin: ${msg}`);
+    return Err();
+  }
+}
+
+/**
+ * Registers one plugin through CUBE's administrative upload, as the session
+ * or as an administrator token.
+ *
+ * The descriptor form and the store-URL form share this path, and a refusal
+ * carries CUBE's own reason (an existing version, an image already used, a
+ * descriptor the upload rejects) rather than chrisapi's generic one.
+ *
+ * @param source - The descriptor text, or a plugin URL in another CUBE.
+ * @param computeNames - Compute resources to register the plugin on.
+ * @param adminToken - An administrator token to upload as; the session's client when absent.
+ * @returns The registered plugin's fields, or an error on the error stack.
+ */
+export async function pluginAdmin_upload(
+  source: PluginAdminSource,
+  computeNames: string[],
+  adminToken?: string,
+): Promise<Result<Record<string, unknown>>> {
+  try {
+    let client: Client | null;
+    if (adminToken !== undefined) {
+      const url: string | null = await chrisConnection.chrisURL_get();
+      if (!url) throw new Error('ChRIS URL not found. Cannot create admin client.');
+      client = client_create(url, adminToken);
+    } else {
+      client = await chrisConnection.client_get();
+    }
+    if (!client) throw new Error('Not connected to ChRIS. Please log in.');
+    return Ok(await client_adminPluginUpload(client, computeNames, source));
+  } catch (error: unknown) {
+    errorStack.stack_push('error', error instanceof Error ? error.message : String(error));
     return Err();
   }
 }

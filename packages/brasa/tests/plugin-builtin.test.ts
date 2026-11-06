@@ -2,10 +2,13 @@ import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { cuminMock_install } from './support/cuminMock.js';
 
 // Real commandArgs_process runs; stub its load-time boundary.
+const mockAdd = jest.fn();
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
   // The wait for a run to settle asks for statuses in one batch.
   jobs_statusBatch: async (ids: number[]): Promise<Map<number, string>> =>
-    new Map(ids.map((id: number): [number, string] => [id, 'finishedSuccessfully'])), context_getSingle: jest.fn() }));
+    new Map(ids.map((id: number): [number, string] => [id, 'finishedSuccessfully'])), context_getSingle: jest.fn(),
+  plugin_add: mockAdd,
+}));
 jest.unstable_mockModule('@fnndsc/chili/models/listing.js', () => ({}));
 jest.unstable_mockModule('@fnndsc/chili/models/plugin.js', () => ({}));
 jest.unstable_mockModule('@fnndsc/chili/utils/cli.js', () => ({}));
@@ -28,11 +31,9 @@ cuminMock_install(() => ({
 const mockFetchList = jest.fn();
 const mockFieldsFetch = jest.fn();
 const mockExecute = jest.fn();
-const mockAdd = jest.fn();
 jest.unstable_mockModule('@fnndsc/chili/commands/plugins/list.js', () => ({ plugins_fetchList: mockFetchList }));
 jest.unstable_mockModule('@fnndsc/chili/commands/plugins/fields.js', () => ({ pluginFields_fetch: mockFieldsFetch }));
 jest.unstable_mockModule('@fnndsc/chili/commands/plugin/run.js', () => ({ plugin_execute: mockExecute }));
-jest.unstable_mockModule('@fnndsc/chili/commands/plugins/add.js', () => ({ plugin_add: mockAdd }));
 
 const mockListRender = jest.fn(() => 'PLUGIN_LIST');
 const mockRunRender = jest.fn(() => 'PLUGIN_RUN');
@@ -48,11 +49,6 @@ jest.unstable_mockModule('../src/core/elevation.js', () => ({
   authorizationFailure_is: (message: string): boolean => message.includes('403'),
   sudoHint_build: (command: string, args: string[]): string => `Try: sudo ${[command, ...args].join(' ')}\n`,
 }));
-const mockChiliCapture = jest.fn(async (fn: () => Promise<void>) => {
-  await fn();
-  return { out: '', err: '' };
-});
-jest.unstable_mockModule('@fnndsc/chili/screen/output.js', () => ({ chili_capture: mockChiliCapture }));
 
 const { builtin_plugin, plugin_addInteractive } = await import('../src/builtins/res/plugin.js');
 
@@ -62,10 +58,6 @@ beforeEach(() => {
   jest.clearAllMocks();
   process.exitCode = 0;
   mockAllOfType.mockReturnValue([]);
-  mockChiliCapture.mockImplementation(async (fn: () => Promise<void>) => {
-    await fn();
-    return { out: '', err: '' };
-  });
   logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
   errSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 });
@@ -128,40 +120,49 @@ describe('plugin_addInteractive', () => {
     expect(env.rendered).toContain('Usage: plugin add');
   });
 
-  it('reports a successful install', async () => {
-    mockAdd.mockResolvedValue('installed');
-    mockChiliCapture.mockImplementationOnce(async (fn: () => Promise<void>) => {
-      await fn();
-      return { out: 'Plugin registered.\n', err: '' };
+  it('reports a successful install, with the lines salsa wrote', async () => {
+    mockAdd.mockImplementation(async (_input: unknown, _options: unknown, note: (line: string) => void) => {
+      note('Searching the peer store for pl-x…');
+      return { outcome: 'installed', name: 'pl-x', version: '1.0' };
     });
     const env = await plugin_addInteractive({ _: ['add', 'pl-x'] } as never);
-    expect(env.rendered).toContain('SUCCESS');
-    expect(env.rendered).toContain('Plugin registered');
-    expect(mockChiliCapture).toHaveBeenCalledTimes(1);
+    expect(env.rendered).toContain('Registered pl-x 1.0.');
+    expect(env.rendered).toContain('Searching the peer store');
   });
 
   it('reports an already-registered plugin', async () => {
-    mockAdd.mockResolvedValue('already_exists');
+    mockAdd.mockResolvedValue({ outcome: 'already_exists', name: 'pl-x' });
     const env = await plugin_addInteractive({ _: ['add', 'pl-x'] } as never);
     expect(env.rendered).toContain('already registered');
   });
 
   it('reports a failure with collected errors and warnings', async () => {
-    mockAdd.mockResolvedValue('failed');
+    mockAdd.mockResolvedValue({ outcome: 'failed' });
     mockAllOfType.mockImplementation((type: string) => type === 'error' ? ['[x] | bad thing'] : ['[y] | heads up']);
     const env = await plugin_addInteractive({ _: ['add', 'pl-x'] } as never);
     expect(process.exitCode).toBe(1);
-    expect(env.rendered).toContain('FAILED');
-    expect(env.rendered).toContain('bad thing');
-    expect(env.rendered).toContain('heads up');
+    expect(env.renderedErr).toContain('Not registered: pl-x.');
+    expect(env.renderedErr).toContain('bad thing');
+    expect(env.renderedErr).toContain('heads up');
   });
 
   it('suggests sudo after a CUBE authorization failure', async () => {
-    mockAdd.mockResolvedValue('failed');
+    mockAdd.mockResolvedValue({ outcome: 'failed' });
     mockAllOfType.mockImplementation((type: string) => type === 'error' ? ['Request failed with status code 403'] : []);
 
     const env = await plugin_addInteractive({ _: ['add', 'pl-x'] } as never);
 
-    expect(env.rendered).toContain('Try: sudo plugin add pl-x');
+    expect(env.renderedErr).toContain('Try: sudo plugin add pl-x');
   });
 });
+
+describe('the registering subcommands', () => {
+  it('route add, sync, validate and index', async () => {
+    expect((await builtin_plugin(['add'])).rendered).toContain('Usage: plugin add');
+    expect((await builtin_plugin(['validate'])).rendered).toContain('Usage: plugin validate');
+    expect((await builtin_plugin(['index'])).rendered).toContain('Plugin index:');
+    // This suite's salsa has no index reader: the sync fails, and says so.
+    expect((await builtin_plugin(['sync', '--plan'])).renderedErr).toContain('Plugin error');
+  });
+});
+

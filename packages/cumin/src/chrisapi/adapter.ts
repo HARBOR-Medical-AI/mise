@@ -240,6 +240,81 @@ export async function client_adminRequest(
 }
 
 /**
+ * What an administrative plugin upload registers: a descriptor's JSON text,
+ * or the URL of a plugin in another CUBE, which CUBE fetches itself.
+ */
+export type PluginAdminSource =
+  | { readonly descriptor: string }
+  | { readonly storeUrl: string };
+
+/**
+ * Registers one plugin through CUBE's administrative upload.
+ *
+ * Posted as multipart directly rather than through chrisapi: on a refusal
+ * whose body is not Collection+JSON (Django REST's field errors are plain
+ * JSON), chrisapi replaces CUBE's reason with "Bad server response!", and
+ * a sync that names why each plugin failed needs that reason.
+ *
+ * @param client - Connected CUBE client whose token authorizes the upload.
+ * @param computeNames - Compute resources to register the plugin on.
+ * @param source - The descriptor text (field `fname`) or a store URL (field `plugin_store_url`).
+ * @returns The registered plugin's fields, decoded from the Collection+JSON item.
+ * @throws {Error} When the client has no administrative endpoint, or CUBE refuses (its reason in the message).
+ */
+export async function client_adminPluginUpload(
+  client: Client,
+  computeNames: string[],
+  source: PluginAdminSource,
+): Promise<Record<string, unknown>> {
+  const adminURL: string | null = await client_adminUrlEnsure(client);
+  if (!adminURL) throw new Error('Administrator privileges are required.');
+  const form: FormData = new FormData();
+  form.append('compute_names', computeNames.join(','));
+  if ('descriptor' in source) {
+    form.append('fname', new Blob([source.descriptor], { type: 'application/json' }), 'descriptor.json');
+  } else {
+    form.append('plugin_store_url', source.storeUrl);
+  }
+  const response: Response = await fetch(adminURL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Token ${client_authGet(client).token}`,
+      Accept: 'application/vnd.collection+json',
+    },
+    body: form,
+  });
+  const text: string = await response.text();
+  if (!response.ok) throw new Error(`CUBE refused the plugin (HTTP ${response.status}): ${refusalReason_extract(text)}`);
+  return collectionItemFields_decode(text);
+}
+
+/**
+ * Decodes the first item of a Collection+JSON document into its fields.
+ *
+ * @param text - The response body.
+ * @returns The item's `name`/`value` pairs as a record; empty when the body holds no item.
+ */
+export function collectionItemFields_decode(text: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return {};
+  }
+  const items: unknown = (parsed as { collection?: { items?: unknown } } | null)?.collection?.items;
+  const first: unknown = Array.isArray(items) ? items[0] : undefined;
+  const data: unknown = (first as { data?: unknown } | undefined)?.data;
+  const fields: Record<string, unknown> = {};
+  if (Array.isArray(data)) {
+    for (const datum of data) {
+      const pair: { name?: unknown; value?: unknown } = datum as { name?: unknown; value?: unknown };
+      if (typeof pair.name === 'string') fields[pair.name] = pair.value;
+    }
+  }
+  return fields;
+}
+
+/**
  * CUBE's own words for a refusal, from whatever body it sent: a
  * Collection+JSON error, Django REST field errors (\`{"username": ["…"]}\`)
  * or a \`detail\`, else the body itself.
