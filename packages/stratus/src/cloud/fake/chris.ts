@@ -1,12 +1,34 @@
 /**
  * @file A fake ChRIS VM, for tests and for `stratus --fake`: a VM that answers
- * `chris deploy`'s and `chris user add`'s lines as a VM running CUBE would,
- * keeping the files written, the computes registered and CUBE's accounts; and
- * the fleet of them a fake daemon reaches, which answers CUBE's API and
- * porter's health over "HTTPS" from what each was given.
+ * `chris deploy`'s, `chris user add`'s and `chris plugin sync`'s lines as a
+ * VM running CUBE and porter would, keeping the files written, the computes
+ * registered, CUBE's accounts and its plugins; and the fleet of them a fake
+ * daemon reaches, which answers CUBE's API and porter's health over "HTTPS"
+ * from what each was given.
  */
 import type { RemoteAnswer, VmRemote } from '../../vm/remote.js';
 import { CUBE_PYTHON_LINE } from '../../chris/users.js';
+import { EXIT_CHELL_OLD, EXIT_NO_PORTER, EXIT_NO_TOKEN, PLUGIN_MARK, PLUGIN_SYNC_LINE, type PluginSyncAsk } from '../../chris/plugins.js';
+
+/** One descriptor in the fake plugin index. */
+export interface FakeIndexPlugin {
+  readonly name: string;
+  readonly version: string;
+  /** Whether it fails the index's rules, as `pl-s3path` does in the real one. */
+  readonly invalid?: boolean;
+}
+
+/** The fake plugin index: four good descriptors and one that fails its rules. */
+export const FAKE_PLUGIN_INDEX: ReadonlyArray<FakeIndexPlugin> = [
+  { name: 'pl-dircopy', version: '3.0.0' },
+  { name: 'pl-simpledsapp', version: '2.1.3' },
+  { name: 'pl-tsdircopy', version: '1.2.1' },
+  { name: 'pl-dcm2niix', version: '1.0.2' },
+  { name: 'pl-s3path', version: '1.0.0', invalid: true },
+];
+
+/** The commit the fake index stands at. */
+export const FAKE_INDEX_COMMIT: string = '8c9a1f6e2d4b7a0c1e3f5a7b9d1c3e5f7a9b1d3c';
 import type { HttpGet } from '../../chris/live.js';
 import type { ChrisCommandContext } from '../../commands/chris.js';
 
@@ -25,6 +47,18 @@ export class FakeChrisVm implements VmRemote {
   adminHome: boolean = false;
   /** Lines that fail, once each. */
   failing: Set<string> = new Set();
+  /** CUBE's plugins, by name: their versions. */
+  plugins: Map<string, string> = new Map();
+  /** The plugin index porter's chell reads. */
+  pluginIndex: FakeIndexPlugin[] = [...FAKE_PLUGIN_INDEX];
+  /** The chell in porter's container. */
+  chellVersion: string = '5.20.0';
+  /** Whether porter's container answers. */
+  porterRuns: boolean = true;
+  /** Whether CUBE refuses chris's token, as when cube.env's password is not CUBE's. */
+  tokenRefused: boolean = false;
+  /** Each plugin sync run's ask, as it reached the chell: `plan` or `apply`, the source, the ref. */
+  syncs: Array<{ kind: string; ask: PluginSyncAsk }> = [];
   /** How long each line takes, in milliseconds, so a walk sees a deploy move. */
   readonly lineMs: number;
 
@@ -42,10 +76,11 @@ export class FakeChrisVm implements VmRemote {
    * @param input - What it is given on stdin.
    * @returns Its answer.
    */
-  async run(line: string, input?: string): Promise<RemoteAnswer> {
+  async run(line: string, input?: string, watch?: (chunk: string) => void): Promise<RemoteAnswer> {
     this.lines.push(line);
     if (this.lineMs > 0) await new Promise((done: (value: unknown) => void): void => { setTimeout(done, this.lineMs); });
     if (this.failing.delete(line)) return { code: 1, stdout: '', stderr: 'it failed' };
+    if (line === PLUGIN_SYNC_LINE) return this.pluginSync_answer(input ?? '', watch);
     if (line.includes('docker compose up')) {
       const env: string = this.files.get('/srv/data/chris/cube.env') ?? '';
       const admin: string | undefined = /^CHRIS_SUPERUSER_PASSWORD=(.*)$/m.exec(env)?.[1];
@@ -87,6 +122,52 @@ export class FakeChrisVm implements VmRemote {
     }
     if (line.endsWith('http://127.0.0.1:8000/api/v1/')) return { code: 0, stdout: '{"collection_links":{"admin":"http://127.0.0.1:8000/chris-admin/api/v1/"}}\n200', stderr: '' };
     return { code: 0, stdout: '', stderr: '' };
+  }
+
+  /**
+   * Answers a plugin sync script as porter's chell would: the plan's fields
+   * in marked lines, or each plugin added and the summary.
+   *
+   * @param script - The script, its first line carrying the ask.
+   * @param watch - Sees the output as it comes.
+   * @returns Its answer.
+   */
+  private pluginSync_answer(script: string, watch?: (chunk: string) => void): RemoteAnswer {
+    const head: RegExpExecArray | null = new RegExp(`^# ${PLUGIN_MARK} (plan|apply) (\\S+)`).exec(script);
+    if (head === null) return { code: 2, stdout: '', stderr: 'sh: no script' };
+    const kind: string = head[1] as string;
+    const ask: PluginSyncAsk = JSON.parse(Buffer.from(head[2] as string, 'base64').toString('utf-8')) as PluginSyncAsk;
+    this.syncs.push({ kind, ask });
+    if (!this.porterRuns) return { code: EXIT_NO_PORTER, stdout: `${PLUGIN_MARK} no-porter\n`, stderr: 'service "porter" is not running' };
+    let stdout: string = `${PLUGIN_MARK} chell ${this.chellVersion}\n`;
+    const [major = 0, minor = 0] = this.chellVersion.split('.').map(Number);
+    if (major < 5 || (major === 5 && minor < 20)) return { code: EXIT_CHELL_OLD, stdout, stderr: '' };
+    if (this.tokenRefused) return { code: EXIT_NO_TOKEN, stdout: `${stdout}${PLUGIN_MARK} no-token\n`, stderr: '' };
+    const source: string = ask.source ?? 'FNNDSC/chris-plugins@main';
+    const label: string = `chris-plugins @ ${FAKE_INDEX_COMMIT.slice(0, 7)}`;
+    const entries: Array<{ group: string; name: string; version: string }> = this.pluginIndex.map((plugin: FakeIndexPlugin) => {
+      const held: string | undefined = this.plugins.get(plugin.name);
+      const group: string = plugin.invalid === true ? 'invalid' : held === undefined ? 'add' : held === plugin.version ? 'skip' : held < plugin.version ? 'newer' : 'cubeNewer';
+      return { group, name: plugin.name, version: plugin.version };
+    });
+    const computes: string[] = this.computes.length > 0 ? [...this.computes] : ['host'];
+    if (kind === 'plan') {
+      stdout += `plugin sync: ${label}, ${this.pluginIndex.length} plugins → this CUBE, on ${computes.join(', ')}\n`;
+      const marks: Array<[string, string]> = [['indexed', String(this.pluginIndex.length)], ['label', label], ['source', source], ['commit', FAKE_INDEX_COMMIT], ['computes', computes.join(' ')], ['entries.group', entries.map((entry): string => entry.group).join(' ')], ['entries.name', entries.map((entry): string => entry.name).join(' ')]];
+      for (const [field, value] of marks) stdout += `${PLUGIN_MARK} ${field} ${value}\n`;
+      return { code: 0, stdout, stderr: '' };
+    }
+    let added: number = 0;
+    for (const entry of entries.filter((each): boolean => each.group === 'add' || each.group === 'newer')) {
+      this.plugins.set(entry.name, entry.version);
+      added += 1;
+      const landed: string = `added  ${entry.name} ${entry.version}\n`;
+      stdout += landed;
+      watch?.(landed);
+    }
+    const skipped: number = entries.filter((entry): boolean => entry.group === 'skip').length;
+    stdout += `${added} added, ${skipped} skipped, ${entries.length - added - skipped} reported, 0 failed.\n`;
+    return { code: 0, stdout, stderr: '' };
   }
 }
 

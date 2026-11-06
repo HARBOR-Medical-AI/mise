@@ -17,6 +17,7 @@ import { taskState_isOver } from '@fnndsc/menu';
 import { CHRIS_JOBS } from '../chris/deploy.js';
 import { CHRIS_PROFILES } from '../chris/profiles.js';
 import { USER_JOBS } from '../chris/users.js';
+import { PLUGIN_JOBS } from '../chris/plugins.js';
 import { clusterSpec_diff, specOptions_apply, type ClusterSpec } from '../cluster/spec.js';
 import type { ClusterRecord, ClusterStore, StepRecord } from '../cluster/state.js';
 import { buildJob_id, FIRST_BILLING_STEP, stepNext_find, STEPS_SOURCE } from '../cluster/steps.js';
@@ -179,7 +180,7 @@ async function vm_read(deps: LineStatusDeps, words: ReadonlyArray<string>): Prom
 }
 
 /**
- * `chris deploy <vm> …` and `chris user add <name> …`.
+ * `chris deploy <vm> …`, `chris user add <name> …` and `chris plugin sync …`.
  *
  * @param deps - The stores.
  * @param words - The line's words.
@@ -201,6 +202,17 @@ async function chris_read(deps: LineStatusDeps, words: ReadonlyArray<string>): P
     if (deployed.length === 0) return running_add({ state: 'not yet', detail: on !== undefined ? `no ChRIS on ${on} (chris deploy ${on})` : 'no ChRIS deployed (chris deploy)' }, running);
     if (on === undefined && deployed.length > 1) return running_add({ state: 'ready', detail: `stratus runs ${deployed.length} ChRIS; the line needs --on` }, running);
     return running_add({ state: 'ready', detail: 'asks CUBE when it runs; a name already there is left as it is' }, running);
+  }
+  if (verb === 'plugin' && third === 'sync') {
+    const read = options_parse(words.filter((word: string): boolean => word !== '--plan'), 3, ['--ref', '--on']);
+    const on: string | undefined = read?.options.get('--on');
+    const deployed: VmRecord[] = (on !== undefined ? [on] : deps.vms.names_list()).map((name: string): VmRecord | null => deps.vms.record_read(name)).filter((record): record is VmRecord => record !== null && record.chris !== undefined);
+    const running: string | undefined = running_find(deps, deployed.map((record: VmRecord): string => PLUGIN_JOBS.sync(record.name)));
+    if (deployed.length === 0) return running_add({ state: 'not yet', detail: on !== undefined ? `no ChRIS on ${on} (chris deploy ${on})` : 'no ChRIS deployed (chris deploy)' }, running);
+    if (on === undefined && deployed.length > 1) return running_add({ state: 'ready', detail: `stratus runs ${deployed.length} ChRIS; the line needs --on` }, running);
+    const [only] = deployed;
+    if (only?.chris?.porter === undefined) return running_add({ state: 'not yet', detail: `no porter on ${only?.name ?? on ?? '?'}; plugin sync runs in porter's chell (chris deploy --porter)` }, running);
+    return running_add({ state: 'ready', detail: 'reads the plan on the VM when it runs; nothing to add asks nothing' }, running);
   }
   return null;
 }

@@ -18,6 +18,10 @@
  * <file>] [--on <vm>]` changes an account's password there, the admin's
  * (`chris`, the default) on the host, in `cube.env` and in CUBE together,
  * CUBE's services started again to take it, and kept in the tenancy.
+ * `chris plugin sync [<source>] [--ref <ref>] [--on <vm>] [--plan]` fills that
+ * ChRIS from the plugin index with the chell porter runs beside it: the
+ * plan read there first, asked about here with its counts, then applied
+ * pinned to the commit it read.
  *
  * @module
  */
@@ -42,6 +46,7 @@ import { job_runFollowed, options_read, tasks_granted } from './build.js';
 import { TIER_REFUSAL } from '../tier.js';
 import { chrisLive_read, type ChrisLive, type HttpGet } from '../chris/live.js';
 import { chrisPlan_derive, chrisPlan_words, type ChrisPlan } from '../chris/plan.js';
+import { chrisPluginApplyRun_make, chrisPluginPlanRun_make, PLUGIN_JOBS, PLUGIN_REF, PLUGIN_SOURCE, PLUGIN_SYNC_CHELL_MIN, pluginPlanAdds_count, pluginPlanStanding_words, pluginSyncQuestion_words, type PluginApplyResult, type PluginPlanRead, type PluginPlanResult, type PluginSyncAsk } from '../chris/plugins.js';
 
 /** What `chris` reads from the session. */
 export interface ChrisCommandContext {
@@ -78,6 +83,12 @@ const PASSWD_OPTIONS: ReadonlyArray<string> = ['--password-file', '--on'];
 
 /** `chris passwd`'s usage. */
 const PASSWD_USAGE: string = 'chris passwd [<user>] [--password-file <file>] [--on <vm>]';
+
+/** The options `chris plugin sync` reads, each a value. */
+const PLUGIN_OPTIONS: ReadonlyArray<string> = ['--ref', '--on'];
+
+/** `chris plugin sync`'s usage. */
+const PLUGIN_USAGE: string = 'chris plugin sync [<source>] [--ref <ref>] [--on <vm>] [--plan]';
 
 /** A host name: labels of letters, digits and hyphens. */
 const HOST_NAME: RegExp = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -268,6 +279,63 @@ async function chrisUser_run(context: ChrisCommandContext, args: ReadonlyArray<s
 }
 
 /**
+ * `chris plugin sync [<source>] …`: the plugin index into a ChRIS this
+ * stratus deployed, by the chell porter runs beside it. The plan is read
+ * there first and asked about here, with its counts; a yes applies it,
+ * pinned to the commit the plan read.
+ *
+ * @param context - The session.
+ * @param args - The words after `plugin`.
+ * @returns The envelope.
+ */
+async function chrisPlugin_run(context: ChrisCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  const [verb, ...rest] = args;
+  if (verb !== 'sync') return envelope_error('', undefined, `chris plugin: ${verb === undefined ? 'usage' : `${verb}: not a verb`}: ${PLUGIN_USAGE}\n`);
+  // `--plan` reads the plan and stops: nothing is asked or registered.
+  const planOnly: boolean = rest.includes('--plan');
+  const read = options_read(rest.filter((word: string): boolean => word !== '--plan'), PLUGIN_OPTIONS);
+  if ('error' in read) return envelope_error('', undefined, `chris plugin sync: ${read.error} (${PLUGIN_OPTIONS.join(', ')}, --plan)\n`);
+  const [source, ...extra] = read.rest;
+  if (extra.length > 0) return envelope_error('', undefined, `chris plugin sync: usage: ${PLUGIN_USAGE}\n`);
+  if (source !== undefined && !PLUGIN_SOURCE.test(source)) return envelope_error('', undefined, `chris plugin sync: ${source}: an index is owner/repo[@ref], cube:<path> or host:<path>\n`);
+  const ref: string | undefined = read.options.get('--ref');
+  if (ref !== undefined && !PLUGIN_REF.test(ref)) return envelope_error('', undefined, `chris plugin sync: --ref ${ref}: a branch, a tag or a commit\n`);
+  const target = chrisTarget_pick(context, read.options.get('--on'));
+  if ('error' in target) return envelope_error('', undefined, `chris plugin sync: ${target.error}\n`);
+  const record: VmRecord | null = context.vms.record_read(target.vm);
+  if (record?.chris?.porter === undefined) return envelope_error('', undefined, `chris plugin sync: ${target.vm}: no porter runs there, and plugin sync runs in porter's chell (chris deploy ${target.vm} --host <name> --porter <name>)\n`);
+  if (vmKeyless_is(context.vms, record)) return envelope_error('', undefined, `chris plugin sync: ${target.vm}: ${VM_KEYLESS}\n`);
+  if (!tasks_granted()) return envelope_error('', undefined, `chris plugin sync: ${TIER_REFUSAL}\n`);
+  if (context.builder === null) return envelope_error('', undefined, 'chris plugin sync: this cloud builds nothing yet\n');
+  const deps: DeployDeps = { store: context.vms, nets: context.nets, builder: context.builder, resolve: context.resolve, status_get: context.status_get, ...(context.remote_open !== undefined ? { remote_open: context.remote_open } : {}) };
+  const ask: PluginSyncAsk = { ...(source !== undefined ? { source } : {}), ...(ref !== undefined ? { ref } : {}) };
+  const line: string = `chris plugin sync${source !== undefined ? ` ${source}` : ''}${read.options.has('--on') ? ` --on ${target.vm}` : ''}`;
+  // What the index holds against what CUBE holds, read on the VM before the question (AEGIS a-change-is-a-loop, clauses 1, 2 and 4).
+  const planned: PluginPlanResult = {};
+  const readRun = await job_runFollowed(PLUGIN_JOBS.sync(target.vm), `read the plugin plan on ${target.vm}`, chrisPluginPlanRun_make(target.vm, target.url, ask, deps, planned));
+  if ('error' in readRun) return envelope_error('', undefined, `chris plugin sync: ${readRun.error}\n`);
+  if (planned.old !== undefined) return envelope_error('', undefined, `chris plugin sync: the ${target.vm}'s chell is ${planned.old}; plugin sync needs ${PLUGIN_SYNC_CHELL_MIN} — replay chris deploy ${target.vm}\n`);
+  const plan: PluginPlanRead | undefined = planned.plan;
+  if (plan === undefined) return envelope_error('', undefined, `chris plugin sync: ${target.vm}: no plan was read\n`);
+  const adds: number = pluginPlanAdds_count(plan);
+  const question: string = pluginSyncQuestion_words(target.vm, plan);
+  if (adds === 0) return envelope_ok(`${target.vm}: nothing to add from ${plan.label}; ${pluginPlanStanding_words(plan)}\n`);
+  if (planOnly) return envelope_ok(`chris plugin sync ${target.vm}: would add ${adds} from ${plan.label}, ${pluginPlanStanding_words(plan)}; --plan: nothing was registered\n`);
+  if (!await repl_confirm(question)) {
+    return envelope_ok(`${chalk.gray(`stopped before any plugin was registered; nothing changed on ${target.vm} (${line} plans and asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line, kept: 'nothing registered' } });
+  }
+  const applied: PluginApplyResult = {};
+  const applyRun = await job_runFollowed(PLUGIN_JOBS.sync(target.vm), `sync plugins on ${target.vm} from ${plan.label}`, chrisPluginApplyRun_make(target.vm, target.url, plan, deps, applied));
+  if ('error' in applyRun) return envelope_error('', undefined, `chris plugin sync: ${applyRun.error}\n`);
+  const receipt = applied.receipt;
+  if (receipt === undefined) return envelope_error('', undefined, `chris plugin sync: ${target.vm}: no receipt was read\n`);
+  const summary: string = `${receipt.added} added, ${receipt.skipped} skipped, ${receipt.reported} reported, ${receipt.failed} failed`;
+  if (receipt.stopped) return envelope_error('', undefined, `chris plugin sync: ${target.vm}: stopped: ${summary}; what was added stays, and ${line} continues from it\n`);
+  if (receipt.failed > 0) return envelope_error('', undefined, `chris plugin sync: ${target.vm}: ${summary} from ${plan.label} (the task's log names each)\n`);
+  return envelope_ok(`${target.vm}: ${summary} from ${plan.label} at ${target.url}\n`);
+}
+
+/**
  * `chris passwd [<user>] …`.
  *
  * @param context - The session.
@@ -439,15 +507,16 @@ export async function chris_run(context: ChrisCommandContext, args: ReadonlyArra
     case 'deploy': return await chrisDeploy_run(context, rest);
     case 'user': return await chrisUser_run(context, rest);
     case 'passwd': return await chrisPasswd_run(context, rest);
-    default: return envelope_error('', undefined, `chris: ${verb}: not a verb (chris status, deploy, user, passwd)\n`);
+    case 'plugin': return await chrisPlugin_run(context, rest);
+    default: return envelope_error('', undefined, `chris: ${verb}: not a verb (chris status, deploy, user, passwd, plugin)\n`);
   }
 }
 
 /** `chris`'s help. */
 export const CHRIS_HELP: CommandHelp = {
-  usage: 'chris [status [<vm>…]] | chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--admin-password-file <file>] | chris user add <name> --email <address> [--password-file <file>] [--on <vm>] | chris passwd [<user>] [--password-file <file>] [--on <vm>]',
-  summary: 'Put ChRIS on a built VM, add its users, and change their passwords',
+  usage: 'chris [status [<vm>…]] | chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--admin-password-file <file>] | chris user add <name> --email <address> [--password-file <file>] [--on <vm>] | chris passwd [<user>] [--password-file <file>] [--on <vm>] | chris plugin sync [<source>] [--ref <ref>] [--on <vm>] [--plan]',
+  summary: 'Put ChRIS on a built VM, add its users, change their passwords, and fill its plugins',
   category: 'Resources',
-  description: 'chris deploy puts the all-in-one CUBE on a built VM, over the network\'s bastion and never through cloud-init, as a task (/proc/steps/chris-<vm>-deploy). A profile is data: minimal is CUBE 6.11.0 (production, uvicorn), its workers and scheduler, Postgres, Dragonfly, NATS and pfcon 5.3.1 in-network beside it running plugins through the VM\'s Docker, behind Caddy; a VM below its floor (2 vCPU, 4 GiB, 50 GB data) is refused and told by how much. Everything lands on the data volume (/srv/data/chris), so a rebuilt machine opens the old database. The internal secrets are generated by the first deploy and kept on this host; the admin password for chris is asked once (empty: generated and shown once) or read from --admin-password-file. The compute resource (--compute, default the VM\'s name) is registered, and the deploy checks chris sees the admin API, as plugin uploads need. Without --host, ChRIS answers over plain HTTP on the VM\'s address; with --host, Caddy obtains the certificate once public DNS gives the name the VM\'s address, which the deploy waits for (an hour at most; a replay resumes). No profile carries the ChRIS UI: --porter <name> (with --host) adds porter, the door to mise (chell, calypso and ARGUS), beside any profile, built on the VM from its pinned npm release, its sessions logging in to this CUBE by its name; Caddy obtains porter\'s certificate too, the registrar is asked for its name as for the host\'s, and porter\'s session folders are kept on the data volume. chris user add makes an account on a ChRIS this stratus deployed: the one --on names, or the only one (more than one and no --on is refused). Every deploy turns CUBE\'s own sign-up off, so the account is made on the VM, in the CUBE container, with CUBE\'s user model (its groups and home folders as a sign-up gives them). --email is needed; the password is asked (empty: generated and shown once) or read from --password-file, given on stdin, and never kept. A name already there with the same email is left as it is, so a script replays; with another email it is refused. chris passwd changes an account\'s password on that ChRIS: the new one typed twice (empty: generated and shown once) or read from --password-file, given on stdin. Without a user it is the admin\'s, chris: CUBE sets chris\'s password from cube.env each time it starts, so the new one is kept on this host, written to cube.env on the VM and set in CUBE, the services cube.env feeds are started again (CUBE is down for a minute or so, and the operator is asked first), chris is checked to sign in with it, and the tenancy keeps it with the VM\'s other secrets. A run stopped anywhere finishes when asked again with the same password. Any other account\'s is set in CUBE alone and never kept.',
-  examples: ['chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org --porter porter.chrisproject.org', 'chris deploy vm-try --profile minimal', 'chris status', 'chris user add jorge --email jorge@example.org --on store', 'chris passwd --on store', 'chris passwd jorge --on store'],
+  description: 'chris deploy puts the all-in-one CUBE on a built VM, over the network\'s bastion and never through cloud-init, as a task (/proc/steps/chris-<vm>-deploy). A profile is data: minimal is CUBE 6.11.0 (production, uvicorn), its workers and scheduler, Postgres, Dragonfly, NATS and pfcon 5.3.1 in-network beside it running plugins through the VM\'s Docker, behind Caddy; a VM below its floor (2 vCPU, 4 GiB, 50 GB data) is refused and told by how much. Everything lands on the data volume (/srv/data/chris), so a rebuilt machine opens the old database. The internal secrets are generated by the first deploy and kept on this host; the admin password for chris is asked once (empty: generated and shown once) or read from --admin-password-file. The compute resource (--compute, default the VM\'s name) is registered, and the deploy checks chris sees the admin API, as plugin uploads need. Without --host, ChRIS answers over plain HTTP on the VM\'s address; with --host, Caddy obtains the certificate once public DNS gives the name the VM\'s address, which the deploy waits for (an hour at most; a replay resumes). No profile carries the ChRIS UI: --porter <name> (with --host) adds porter, the door to mise (chell, calypso and ARGUS), beside any profile, built on the VM from its pinned npm release, its sessions logging in to this CUBE by its name; Caddy obtains porter\'s certificate too, the registrar is asked for its name as for the host\'s, and porter\'s session folders are kept on the data volume. chris user add makes an account on a ChRIS this stratus deployed: the one --on names, or the only one (more than one and no --on is refused). Every deploy turns CUBE\'s own sign-up off, so the account is made on the VM, in the CUBE container, with CUBE\'s user model (its groups and home folders as a sign-up gives them). --email is needed; the password is asked (empty: generated and shown once) or read from --password-file, given on stdin, and never kept. A name already there with the same email is left as it is, so a script replays; with another email it is refused. chris passwd changes an account\'s password on that ChRIS: the new one typed twice (empty: generated and shown once) or read from --password-file, given on stdin. Without a user it is the admin\'s, chris: CUBE sets chris\'s password from cube.env each time it starts, so the new one is kept on this host, written to cube.env on the VM and set in CUBE, the services cube.env feeds are started again (CUBE is down for a minute or so, and the operator is asked first), chris is checked to sign in with it, and the tenancy keeps it with the VM\'s other secrets. A run stopped anywhere finishes when asked again with the same password. Any other account\'s is set in CUBE alone and never kept. chris plugin sync fills that ChRIS from the plugin index (FNNDSC/chris-plugins by default, or the source given; --ref pins a branch, tag or commit) with the chell porter runs beside it, so it needs a deploy with --porter whose chell is 5.20.0 or later (an older one is refused, naming the deploy replay that updates it). On the VM, chris\'s password is read from cube.env and exchanged there for a token, which reaches that chell on stdin; it never leaves the VM. The chell reads the plan first: what it would add, what is there already, and what it reports and never touches (newer in CUBE, a different descriptor, an image taken, not in the index, invalid). The question names those counts; a yes applies the plan pinned to the commit it read, one line per plugin in the task\'s log, and nothing in CUBE is removed or changed. Nothing to add asks nothing, so a script replays; --plan reads the plan and stops.',
+  examples: ['chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org --porter porter.chrisproject.org', 'chris deploy vm-try --profile minimal', 'chris status', 'chris user add jorge --email jorge@example.org --on store', 'chris passwd --on store', 'chris passwd jorge --on store', 'chris plugin sync --on store', 'chris plugin sync FNNDSC/chris-plugins --ref 8c9a1f6 --on store --plan'],
 };

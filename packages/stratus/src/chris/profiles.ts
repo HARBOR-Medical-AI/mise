@@ -25,7 +25,7 @@ export const CHRIS_IMAGES = {
 } as const;
 
 /** The porter a deploy with `--porter` installs, pinned, with the chell, calypso and ARGUS it brings. */
-export const PORTER_VERSION: string = '0.9.11';
+export const PORTER_VERSION: string = '0.9.13';
 
 /** A profile: its services and the least it runs on. */
 export interface ChrisProfile {

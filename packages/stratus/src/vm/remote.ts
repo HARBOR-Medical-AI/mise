@@ -23,8 +23,11 @@ export interface RemoteAnswer {
 
 /** A VM reached: one line at a time. */
 export interface VmRemote {
-  /** Runs a line in the VM's shell, as its login user, with the given input. */
-  run(line: string, input?: string): Promise<RemoteAnswer>;
+  /**
+   * Runs a line in the VM's shell, as its login user, with the given input;
+   * `watch`, when given, sees its output as it comes, before the answer.
+   */
+  run(line: string, input?: string, watch?: (chunk: string) => void): Promise<RemoteAnswer>;
 }
 
 /** How long a session lasts: three hours, the bastion's longest. */
@@ -54,11 +57,11 @@ export function sshArgs_build(session: ShellSession, keyPath: string, privateIp:
  */
 export function sshRemote_make(args: ReadonlyArray<string>, signal: AbortSignal): VmRemote {
   return {
-    run: (line: string, input?: string): Promise<RemoteAnswer> => new Promise((resolve): void => {
+    run: (line: string, input?: string, watch?: (chunk: string) => void): Promise<RemoteAnswer> => new Promise((resolve): void => {
       const child = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=30', ...args, line], { stdio: ['pipe', 'pipe', 'pipe'], signal });
       let stdout: string = '';
       let stderr: string = '';
-      child.stdout.on('data', (chunk: Buffer): void => { stdout += chunk.toString(); });
+      child.stdout.on('data', (chunk: Buffer): void => { stdout += chunk.toString(); watch?.(chunk.toString()); });
       child.stderr.on('data', (chunk: Buffer): void => { stderr += chunk.toString(); });
       child.on('error', (error: Error): void => resolve({ code: 255, stdout, stderr: `${stderr}${error.message}` }));
       child.on('close', (code: number | null): void => resolve({ code: code ?? 255, stdout, stderr }));
@@ -109,9 +112,9 @@ const LINE_TRIES: number = 6;
  */
 export function remoteRetried_make(remote: VmRemote, call: BuildCall, retryMs: number): VmRemote {
   return {
-    run: async (line: string, input?: string): Promise<RemoteAnswer> => {
+    run: async (line: string, input?: string, watch?: (chunk: string) => void): Promise<RemoteAnswer> => {
       for (let tries: number = 1; ; tries += 1) {
-        const answer: RemoteAnswer = await remote.run(line, input);
+        const answer: RemoteAnswer = await remote.run(line, input, watch);
         if (answer.code !== 255 || answer.stdout !== '' || tries >= LINE_TRIES || call.signal.aborted) return answer;
         call.log(`ssh through the bastion did not carry a line (${answer.stderr.trim().split('\n').at(-1) ?? 'exit 255'}); trying again`);
         await pause(retryMs, call.signal);
