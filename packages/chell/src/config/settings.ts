@@ -19,6 +19,9 @@ import {
   storeUrl_set,
   storeUrlOverride_get,
   storeConfigPersist_install,
+  pluginIndex_set,
+  pluginIndexOverride_get,
+  indexConfigPersist_install,
 } from '@fnndsc/brasa';
 
 /**
@@ -96,6 +99,9 @@ export async function settings_load(): Promise<void> {
       if (typeof obj.storeUrl === 'string') {
         storeUrl_set(obj.storeUrl);
       }
+      if (typeof obj.pluginIndex === 'string') {
+        pluginIndex_set(obj.pluginIndex);
+      }
     }
   } catch (error: unknown) {
     // A missing file is the normal first-run state; any other failure
@@ -116,10 +122,12 @@ export async function settings_save(): Promise<void> {
   try {
     await fs.promises.mkdir(configDir_get(), { recursive: true });
     const storeUrl: string | undefined = storeUrlOverride_get();
+    const pluginIndex: string | undefined = pluginIndexOverride_get();
     const data: Record<string, unknown> = {
       promptTheme: settings.config.promptTheme,
       p10kSegments: settings.config.p10kSegments,
       ...(storeUrl !== undefined ? { storeUrl } : {}),
+      ...(pluginIndex !== undefined ? { pluginIndex } : {}),
     };
     await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(data, null, 2) + '\n');
   } catch (error: unknown) {
@@ -130,6 +138,8 @@ export async function settings_save(): Promise<void> {
   }
 }
 
-// The CLI persists engine store configuration into the same settings file, so
-// a `store set`/`store reset` is written through this module's saver.
+// The CLI persists engine store and plugin-index configuration into the same
+// settings file, so a `store set`/`store reset` or a `plugin index` change is
+// written through this module's saver.
 storeConfigPersist_install(settings_save);
+indexConfigPersist_install(settings_save);

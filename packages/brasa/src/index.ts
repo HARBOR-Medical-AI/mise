@@ -39,6 +39,7 @@ export * from './core/version.js';
 export * from './session/index.js';
 export * from './builtins/index.js';
 export * from './config/storeConfig.js';
+export * from './config/indexConfig.js';
 export * from './lib/vfs/vfs.js';
 export * from './lib/spinner.js';
 export * from './logo/brain.js';

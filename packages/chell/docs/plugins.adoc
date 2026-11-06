@@ -1,0 +1,101 @@
+= Registering plugins: `plugin add`, `sync`, `validate` and `index`
+:toc:
+:toclevels: 2
+
+== What this is
+
+Four `plugin` subcommands put plugins into a CUBE and check them before they get there. `plugin add` registers one plugin. `plugin sync` fills a CUBE from a plugin index: a list of descriptors in git, one per plugin at its latest version, in the form CUBE's administrative upload takes. `plugin validate` checks descriptors without a CUBE. `plugin index` says which index `plugin sync` reads.
+
+The index that matters is https://github.com/FNNDSC/chris-plugins[FNNDSC/chris-plugins]. A CUBE can be filled from it without any other CUBE running: before it, a fresh CUBE could be filled only by looking plugins up by name in a running store.
+
+Registering needs an administrator. Anyone may read a plan or run `validate`; to apply, run the line under `sudo`, which asks for the administrator's name and password and uses them for that one command only.
+
+== `plugin add`
+
+[source,bash]
+----
+plugin add pl-dircopy                      # by name
+plugin add fnndsc/pl-dircopy:2.1.1         # by image
+plugin add https://cube.chrisproject.org/api/v1/plugins/96/   # a plugin in another CUBE
+plugin add --json ./pl-dircopy.json        # one descriptor file
+----
+
+A name or an image already registered is left as it is. Otherwise the plugin is looked up in the peer store (`store set` chooses it; `--store <url>` for one line) and imported from there, and failing that its image's own descriptor is read out of it with docker on this host and uploaded. A URL is handed to CUBE's upload as `plugin_store_url`, and CUBE fetches the plugin itself. A `--json` file is uploaded as it is, unless that name and version are already registered.
+
+`--compute a,b` registers on those compute resources; the default is every compute resource the CUBE has. A refusal carries CUBE's own reason.
+
+== `plugin sync`
+
+[source,bash]
+----
+plugin sync --plan                                   # the plan against the index in effect, and stop
+sudo plugin sync                                     # the plan, one question, then the adds
+sudo plugin sync FNNDSC/chris-plugins --ref 8c9a1f6  # an index pinned to a commit
+sudo plugin sync ~/uploads/chris-plugins.tar.gz      # an index uploaded to CUBE
+----
+
+A sync reads the index once (for GitHub, the archive of the ref, whose header names the exact commit), compares every descriptor with what the CUBE holds, and shows the plan. Its header names the index and its commit and the compute resources plugins will be registered on. Each plugin falls in one group:
+
+[cols="2,3,2"]
+|===
+| Group | Means | Action
+
+| add | not in this CUBE | add
+| add beside | the index has a newer version | add beside the older one
+| skip | the same name and version, the same descriptor | nothing
+| report | this CUBE has a newer version | report
+| report, never touched | the same name and version, a different descriptor | report
+| report | the image is registered under another version | report: CUBE would refuse it
+| report | in this CUBE, not in the index | report
+| report, never uploaded | the descriptor fails `plugin validate` rules 1–4 | report
+|===
+
+A sync never deletes a plugin and never changes one already there. Deleting a plugin removes its runs and its nodes in every pipeline, and CUBE's administrative update changes only compute resources, so a descriptor cannot be corrected in place anyway. Comparing a version with its copy in CUBE ignores what only reflects CUBE's defaults: a limit the index leaves out because it equals the default, `1000m` against a stored `1000`, a field CUBE fills in when it is not given.
+
+After the plan comes one question, `[y/N]`. `--yes` answers it, `--plan` stops before it, and a session that is not an administrator sees the plan and the `sudo` line to run instead. The adds upload four at a time and print one line each as they land, then a summary: added, skipped, reported, failed. A sync exits 0 when everything the plan said to add was added; a reported plugin does not fail it. An upload that should have worked and did not is exit 1, naming the plugins.
+
+Run as a job (`plugin sync --yes &`), a sync stops with `kill %N`. What landed stays, and a second sync plans only what is still missing.
+
+=== Sources
+
+[cols="1,2"]
+|===
+| Written | Read from
+
+| `owner/repo[@ref]` | GitHub, the archive of the ref (`main` when none); `--ref <tag|commit>` pins it
+| a path | CUBE: a directory of `.json` files, or a `.tar.gz` holding one
+| `host:<path>` | this host: a directory or an archive
+|===
+
+A directory may hold the descriptors at its top or under `plugins/`; the schema is `schema/plugin.schema.json` beside them or one level up.
+
+== `plugin validate`
+
+[source,bash]
+----
+plugin validate ./plugins                 # a directory on this host
+plugin validate ./plugins/pl-x.json       # one file
+plugin validate FNNDSC/chris-plugins      # the index on GitHub
+plugin validate ./plugins --offline       # without asking any registry
+----
+
+Five rules, cheapest first, each failure naming the file and the rule:
+
+. the index's own JSON Schema (`schema/plugin.schema.json`);
+. CUBE's upload rules: a JSON object; the descriptors `name`, `version`, `dock_image`, `execshell`, `selfpath`, `selfexec` and `parameters`; a version of dotted numbers; parameter types `str`, `int`, `float`, `bool`, `path` or `unextpath` (the read API's `string`, `integer` and `boolean` are refused by the upload); an optional parameter has a default and is not a path; a required one is shown in the UI;
+. the file is named for the plugin, `<name>.json`;
+. no two names differ only in case;
+. every `dock_image` resolves anonymously on its registry, digests included, four lookups at a time.
+
+A rule that did not run says so: `not checked, no schema` when no schema came with the descriptors, `not checked, --offline` for rule 5. A registry that cannot be reached is a failure, not a pass. `validate` exits 1 when a rule that ran failed a file. A path with no prefix is on this host, since `validate` needs no CUBE; `cube:<path>` reads one in CUBE.
+
+== `plugin index`
+
+[source,bash]
+----
+plugin index                                # the index in effect, and whether it is the default
+plugin index FNNDSC/chris-plugins@v2026.11  # set it
+plugin index --reset                        # back to FNNDSC/chris-plugins@main
+----
+
+The setting is kept with the shell's other settings, apart from the peer store's: an index is a list of descriptors, not a store a plugin is looked up in by name. A source or `--ref` given to `plugin sync` applies to that sync only.
