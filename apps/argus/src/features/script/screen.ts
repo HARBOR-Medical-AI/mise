@@ -440,8 +440,11 @@ export class ScriptScreen {
     return new Promise((resolve: (value: string | null) => void): void => {
       this.ask = { message, kind, answer: (value: string | null): void => { this.ask = null; this.strip_draw(); this.body_draw(); resolve(value); } };
       this.log_add(message, 'ask');
+      // What stands is read again while the question stands: a plan may have made free things (a stack) to plan it.
+      this.nets.clear();
       this.strip_draw();
       this.body_draw();
+      void this.vmsSeen_read();
     });
   }
 
@@ -1577,7 +1580,7 @@ export class ScriptScreen {
     const owed: string = built.detail.replace(/^declared, not built: /, '').replace(/; the build plans and asks$/, '');
     note.append(
       el('span', 'tdc-note-title', 'DECLARED · NOT BUILT'),
-      el('span', 'tdc-prose', built.state === 'ready' && built.detail === '' ? 'Declared, and nothing is made yet.' : owed),
+      el('span', 'tdc-prose', built.state === 'ready' && built.detail === '' ? `Declared; nothing that bills is made yet${this.ask !== null ? ': the question names what its plan made, free, to plan it' : ''}.` : owed),
       el('span', 'tdc-prose tdc-quiet', 'BUILD applies it: it plans, says the cost and asks before anything bills.'),
     );
     return note;
@@ -1630,6 +1633,26 @@ export class ScriptScreen {
   }
 
   /** A VM's lock and undoing, each a line of its own, when this screen shows them under the build. */
+  /**
+   * What each undoing of a VM removes and what it stops billing, as what runs
+   * is priced (a-change-is-a-loop, clause 2); on its seat and on a teardown line's.
+   *
+   * @param name - The VM.
+   * @param machineStands - Whether its machine stands.
+   * @param anyStands - Whether anything of it stands.
+   * @returns The rows.
+   */
+  protected vmGoes_make(name: string, machineStands: boolean, anyStands: boolean): HTMLElement {
+    const rate = this.costRows.get(name)?.runs?.rate ?? null;
+    const month = (hourly: number): string => rate === null ? '' : ` · STOPS ${money_text(hourly * HOURS_PER_MONTH, rate.currency)} A MONTH`;
+    if (!anyStands) return this.pairs_make([['NOTHING STANDS', `nothing of ${name} is left to tear down`]]);
+    return this.pairs_make([
+      ...(machineStands ? [['TEARDOWN', `the machine and its boot disk; the data, its backups and the address stay${month(rate?.machineHour ?? 0)}`] as [string, string]] : []),
+      ['TEARDOWN · ALL', `the machine, the data volume and its backups, the address: the data cannot be had back${month((rate?.machineHour ?? 0) + (rate?.dataHour ?? 0))}`],
+      ['EITHER', 'asks first, with what goes and what still bills; ALL asks for the name typed back'],
+    ]);
+  }
+
   protected vmUndoing_make(name: string, step: string): HTMLElement[] {
     if (!this.undoing_shown()) return [];
     // The lock and what stands, as `vm status` read them: the lock drawn, only its other setting offered, an undoing only of what stands.
@@ -1660,13 +1683,7 @@ export class ScriptScreen {
       for (const pill of [machine, all]) hold(pill, `${name} is protected: PROTECT · OFF lifts the lock, as a line of its own`, 'LOCKED');
     }
     teardown.append(el('span', 'tdc-commands-label', what), ...(machineStands ? [machine] : []), ...(anyStands ? [all] : []));
-    // What each undoing removes and what it stops billing, as what runs is priced (a-change-is-a-loop, clause 2).
-    const rate = this.costRows.get(name)?.runs?.rate ?? null;
-    const month = (hourly: number): string => rate === null ? '' : ` · STOPS ${money_text(hourly * HOURS_PER_MONTH, rate.currency)} A MONTH`;
-    const goes: HTMLElement = this.pairs_make([
-      ...(machineStands ? [['TEARDOWN', `the machine and its boot disk; the data, its backups and the address stay${rate === null ? '' : month(rate.machineHour)}`] as [string, string]] : []),
-      ...(anyStands ? [['TEARDOWN · ALL', `the machine, the data volume and its backups, the address: the data cannot be had back${rate === null ? '' : month(rate.machineHour + rate.dataHour)}`] as [string, string]] : []),
-    ]);
+    const goes: HTMLElement = this.vmGoes_make(name, machineStands, anyStands);
     return [el('p', 'tdc-prose tdc-quiet', 'A VM is born protected: teardown refuses until PROTECT · OFF, a line of its own. A teardown returns the build to ready.'), protect, teardown, goes];
   }
 
@@ -1992,8 +2009,16 @@ export class ScriptScreen {
 
   protected other_make(step: ScriptStep): HTMLElement[] {
     const line: ScriptLine = step.lines[0] as ScriptLine;
+    const parts = line_parse(line.text);
+    // A VM's teardown or lock line says what it would undo, as its VM NEW seat does.
+    if (parts.verb.join(' ') === 'vm teardown' && parts.subject !== null) {
+      const row: VmStatusRow | null = this.vmsSeen.get(parts.subject) ?? null;
+      const machineStands: boolean = row === null || (row.stands != null ? row.stands.vcpu !== null : row.state === 'built');
+      // loop: ss-vm-teardown
+      return [this.lineBoxNumbered_make(line), this.runRow_make(step, line), this.vmGoes_make(parts.subject, machineStands, row === null || row.state !== 'gone')];
+    }
     // loop: ss-line-run
-    return [this.lineBoxNumbered_make(line), this.runRow_make(step, line), el('p', 'tdc-prose tdc-quiet', 'The screen has no form for this verb: the line runs as written.')];
+    return [this.lineBoxNumbered_make(line), this.runRow_make(step, line), el('p', 'tdc-prose tdc-quiet', 'The screen has no form for this verb: the line runs as written. A line that would act asks first where its verb asks; one that only reads answers in THE STEP\'S OUTPUT.')];
   }
 
   // -------------------------------------------------------------- the strip

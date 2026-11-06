@@ -230,7 +230,7 @@ describe('vm, over the fake cloud', () => {
     expect(plain((await vm_run(context, ['cost'])).rendered)).toMatch(/^store: declared 2 vCPU · 8 GiB · disk 50 GB · data 50 GB \(daily backups\): \$0\.052 an hour, \$37\.83 a month \(the data alone, kept after a teardown: \$0\.003 an hour, \$2\.13 a month\); runs \$0\.000 an hour/);
     expect((await vm_run(context, ['cost'])).model).toMatchObject({ data: { vms: [{ name: 'store', runs: { rate: { machineHour: 0, dataHour: 0 }, at: expect.any(String) } }] } });
     // Built, what runs is priced; its machine torn down, only its kept data bills.
-    surface.answers = ['y'];
+    surface.answers = ['y', 'y'];
     await vm_run(context, ['build', 'store']);
     const built = ((await vm_run(context, ['cost'])).model as { data: { vms: Array<{ runs: { rate: { machineHour: number; dataHour: number } } }> } }).data.vms[0]?.runs.rate;
     expect(built?.machineHour).toBeGreaterThan(0);
@@ -257,12 +257,16 @@ describe('vm, over the fake cloud', () => {
     expect((await vm_run(context, ['build', 'store'])).renderedErr).toContain('the network elsewhere is not declared');
   });
 
-  it('builds its data, then its machine, with one question saying the cost; points the address; again, nothing to do', async () => {
+  it('builds its data, then its machine, each asked with the cost before it is applied; points the address; again, nothing to do', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
-    surface.answers = ['y'];
+    surface.answers = ['y', 'y'];
     const built = await vm_run(context, ['build', 'store']);
     expect(built.renderedErr ?? '').toBe('');
-    expect(surface.asked).toEqual(['vm build store: data 3 to create, 0 to change, 0 to destroy; machine planned once its data stands (2 vCPU, 8 GiB, disk 50 GB). It bills: $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month). Already made to plan it, free: its data stack fake-stack-vmData-store; STOP leaves it, and a later build reuses it. Continue? [y/N]']);
+    // The declaration it applies is written already, and the free stack its plan made; the machine, planned once its data stands, is asked apart.
+    expect(surface.asked).toEqual([
+      'vm build store: data 3 to create, 0 to change, 0 to destroy; machine planned once its data stands (2 vCPU, 8 GiB, disk 50 GB). It bills: $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month). Already written: its declaration, kept in the tenancy; STOP keeps it and builds nothing. Already made to plan it, free: its data stack fake-stack-vmData-store; STOP leaves it, and a later build reuses it. Continue? [y/N]',
+      'vm build store: its data stands; the machine plan 3 to create, 0 to change, 0 to destroy (2 vCPU, 8 GiB, disk 50 GB). It bills: $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month) with its data. Continue? [y/N]',
+    ]);
     expect(plain(built.rendered)).toContain('store  built  protected');
     expect(plain(built.rendered)).toContain('address  203.0.113.10');
     expect(store.record_read('store')).toMatchObject({ image: 'ocid1.image.oc1..fake-ubuntu', dataStackRef: 'fake-stack-vmData-store', machineStackRef: 'fake-stack-vmMachine-store', placeId: 'ocid1.compartment.oc1..fake-scratch' });
@@ -280,7 +284,7 @@ describe('vm, over the fake cloud', () => {
   it('asks before any apply, naming the free stack its plan made, and a no makes nothing that bills', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
     surface.answers = ['n'];
-    expect(plain((await vm_run(context, ['build', 'store'])).rendered)).toContain('stopped before the apply; nothing that bills was made (made to plan it, free: its data stack fake-stack-vmData-store; vm build store reuses it)');
+    expect(plain((await vm_run(context, ['build', 'store'])).rendered)).toContain('stopped before the apply; nothing was built (the declaration stands as written; made to plan it, free: its data stack fake-stack-vmData-store; vm build store plans and asks again)');
     expect(world.moduleStacks.get('fake-stack-vmData-store')?.applied).toBeNull();
     expect(world.moduleStacks.has('fake-stack-vmMachine-store')).toBe(false);
   });
@@ -289,7 +293,7 @@ describe('vm, over the fake cloud', () => {
     const lines: string[] = [];
     const resizing: VmCommandContext = { ...context, remote_open: async () => ({ run: async (line: string) => { lines.push(line); return { code: 0, stdout: line.includes('/srv/data') ? '  100G\n' : '  80G\n', stderr: '' }; } }) };
     await vm_run(resizing, ['new', 'store', ...STORE_LINE]);
-    surface.answers = ['y'];
+    surface.answers = ['y', 'y'];
     await vm_run(resizing, ['build', 'store']);
     await chris_seed('store');
     // More memory and vCPUs reshape the machine, which the cloud reboots: said before the apply, with what runs on it.
@@ -328,7 +332,7 @@ describe('vm, over the fake cloud', () => {
 
   it('opens a shell session on the network\'s bastion and gives the line, under the shell tier', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
-    surface.answers = ['y'];
+    surface.answers = ['y', 'y'];
     await vm_run(context, ['build', 'store']);
     expect((await vm_run(context, ['shell', 'store'])).renderedErr).toContain('needs the shell tier');
     (surface.capabilities as { shellCommands: boolean }).shellCommands = true;
@@ -340,12 +344,12 @@ describe('vm, over the fake cloud', () => {
 
   it('tears down only when unprotected: the machine, keeping the data; --all takes the data on the name typed back', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
-    surface.answers = ['y'];
+    surface.answers = ['y', 'y'];
     await vm_run(context, ['build', 'store']);
     expect((await vm_run(context, ['teardown', 'store'])).renderedErr).toBe('vm teardown: store: protected (vm protect store off)\n');
     const lines = new Map(lineStatusProviders_make({ nets, vms: store }).map((provider) => [provider.verb, provider]));
     // The lock and teardown lines stand as the record and the tenancy say, never 'no verb reads it'.
-    expect(await lines.get('vm')?.read(['vm', 'protect', 'store', 'off'])).toEqual({ state: 'ready', detail: expect.stringMatching(/^protected now \(kept in the tenancy, set \d{4}-\d\d-\d\d \d\d:\d\d UTC\); this line lifts the lock$/) });
+    expect(await lines.get('vm')?.read(['vm', 'protect', 'store', 'off'])).toEqual({ state: 'ready', detail: expect.stringMatching(/^protected now \(kept in the tenancy, set \d{4}-\d\d-\d\d \d\d:\d\d UTC\); this line lifts the lock \(the teardown after it still asks\)$/) });
     expect(await lines.get('vm')?.read(['vm', 'teardown', 'store'])).toMatchObject({ state: 'not yet', detail: expect.stringContaining('protected (vm protect store off first)') });
     expect(plain((await vm_run(context, ['protect', 'store', 'off'])).rendered)).toBe('store: unprotected: vm teardown store may remove it\nkept in the tenancy: every session reads this lock\n');
     expect(await lines.get('vm')?.read(['vm', 'protect', 'store', 'off'])).toEqual({ state: 'done', detail: expect.stringMatching(/^unprotected \(kept in the tenancy, set .* UTC\)$/) });
@@ -378,7 +382,7 @@ describe('vm, over the fake cloud', () => {
   it('reads a VM another session built from the tenancy, whole: its stacks, its network, its SSH key and ChRIS from the vault; any host then resizes it', async () => {
     // Session A builds the store and deploys ChRIS on it; a second host, keeping nothing, lists the tenancy.
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
-    surface.answers = ['y'];
+    surface.answers = ['y', 'y'];
     await vm_run(context, ['build', 'store']);
     await chris_seed('store');
     const built: VmRecord = store.record_read('store') as VmRecord;
@@ -429,7 +433,7 @@ describe('vm, over the fake cloud', () => {
 
   it('keeps a declaration in the tenancy from a MANAGE session, so another host reads it declared and not built; at READ it stays here and says so', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
-    surface.answers = ['y'];
+    surface.answers = ['y', 'y'];
     await vm_run(context, ['build', 'store']);
     // A bigger disk declared here reaches the vault with when it was declared.
     expect(plain((await vm_run(context, ['new', 'store', '--disk', '180'])).rendered)).toContain('disk 50 → 180; built: vm build store plans the change and asks\nkept in the tenancy: every session reads this declaration');
@@ -469,7 +473,7 @@ describe('vm, over the fake cloud', () => {
 
   it('keeps the lock in the tenancy: a lock set on one host holds on another, and stops its teardown there; at READ it stays here and says so', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
-    surface.answers = ['y'];
+    surface.answers = ['y', 'y'];
     await vm_run(context, ['build', 'store']);
     const there: VmCommandContext = { ...context, store: new VmStore(join(root, 'vms-there')), nets: new NetStore(join(root, 'nets-there')) };
     await vm_run(there, ['status']);
