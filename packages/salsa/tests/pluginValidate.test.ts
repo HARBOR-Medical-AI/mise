@@ -95,7 +95,7 @@ describe('rules 1–4', () => {
 
   it('rule 2: CUBE\'s upload rules', async () => {
     const bad: Record<string, unknown> = {
-      name: 'pl-bad', version: 'v1', dock_image: 'x/y:1', execshell: 'sh', selfpath: '', selfexec: 'x',
+      name: 'pl-bad', version: 'v1', dock_image: 'x/y:1', execshell: 'sh'.repeat(26), selfpath: '', selfexec: ' ',
       min_number_of_workers: 0, max_gpu_limit: -1, min_gpu_limit: '',
       parameters: [
         null,
@@ -110,6 +110,9 @@ describe('rules 1–4', () => {
     const report: ValidateReport = await pluginIndex_validate(index_build({ 'pl-bad.json': bad }, null), { offline: true });
     const messages: string[] = report.findings.filter((f) => f.rule === 2).map((f) => f.message);
     expect(messages).toEqual([
+      'execshell is longer than 50 characters',
+      'selfpath may not be blank',
+      'selfexec may not be blank',
       'version "v1" is not a dotted number',
       'min_number_of_workers must be a positive integer',
       'max_gpu_limit must be a non-negative integer',
