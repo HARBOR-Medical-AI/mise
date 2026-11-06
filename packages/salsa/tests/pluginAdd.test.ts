@@ -262,4 +262,17 @@ describe('items_mapPooled', () => {
     expect(most).toBe(2);
     expect(await items_mapPooled([], 4, async () => 1)).toEqual([]);
   });
+
+  it('starts nothing more once stopped, and lets what runs finish', async () => {
+    const controller: AbortController = new AbortController();
+    const started: number[] = [];
+    const out: number[] = await items_mapPooled([1, 2, 3, 4, 5, 6], 2, async (n: number): Promise<number> => {
+      started.push(n);
+      if (n === 2) controller.abort();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return n * 10;
+    }, controller.signal);
+    expect(started).toEqual([1, 2]);
+    expect(out).toEqual([10, 20]);
+  });
 });

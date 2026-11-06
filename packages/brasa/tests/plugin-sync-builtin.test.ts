@@ -135,6 +135,18 @@ describe('plugin sync', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('says a stopped apply stopped, what landed and that a rerun continues', async () => {
+    mockApply.mockImplementation(async (_p: unknown, _s: unknown, note: unknown) => {
+      (note as (r: unknown) => void)({ name: 'pl-a', version: '1.0', ok: true });
+      return { plan: PLAN, results: [{ name: 'pl-a', version: '1.0', ok: true }], added: 1, skipped: 1, reported: 1, failed: 0, stopped: true, unsent: 1 };
+    });
+    const env = await verbs.pluginSync_run({ _: ['sync'], yes: true }, ['sync']);
+    expect(env.status).toBe('error');
+    expect(env.rendered).toContain('Stopped: 1 added, 1 skipped, 1 reported, 0 failed. 1 never sent; what was added stays, and a rerun continues from it.');
+    expect((env.model?.data as { stopped?: boolean }).stopped).toBe(true);
+    expect(process.exitCode).toBe(1);
+  });
+
   it('fails on an unreadable index, compute or CUBE', async () => {
     mockIndexLoad.mockResolvedValueOnce({ ok: false });
     mockPop.mockReturnValueOnce({ message: 'plugin index x: HTTP 404' });

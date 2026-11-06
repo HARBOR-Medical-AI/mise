@@ -163,6 +163,18 @@ describe('syncPlan_apply', () => {
     expect(receipt).toMatchObject({ added: 1, skipped: 1, reported: 1, failed: 2 });
     expect(receipt.results.find((r) => r.name === 'pl-throws')?.reason).toBe('socket hang up');
     expect(receipt.results.find((r) => r.name === 'pl-refused')?.reason).toContain('already exists');
+    expect(receipt).toMatchObject({ stopped: false, unsent: 0 });
+  });
+
+  it('stops sending when stopped, and counts what was never sent', async () => {
+    const seams = seams_fake([]);
+    const plan: SyncPlan = await syncPlan_build(index_of([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n: number) => descriptor(`pl-${n}`, '1'))), ['host'], seams);
+    const controller: AbortController = new AbortController();
+    const receipt = await syncPlan_apply(plan, seams, (): void => { controller.abort(); }, controller.signal);
+    expect(receipt.stopped).toBe(true);
+    expect(receipt.results.length).toBeLessThan(9);
+    expect(receipt.unsent).toBe(9 - receipt.results.length);
+    expect(seams.uploads).toHaveLength(receipt.results.length);
   });
 });
 
@@ -184,6 +196,29 @@ describe('descriptorDrift_find', () => {
       ],
     });
     expect(descriptorDrift_find(indexed, held)).toEqual([]);
+  });
+
+  it('reads text and defaults the way CUBE stores them (trimmed, typed)', () => {
+    const indexed: Record<string, unknown> = descriptor('pl-a', '1', {
+      description: 'A plugin.     ',
+      parameters: [
+        { name: 'pattern', type: 'str', optional: true, default: ' **/*dcm ', flag: '--pattern', help: '\n            the pattern\n            (quoted).' },
+        { name: 'top', type: 'bool', optional: true, default: 'False', flag: '--top', help: 'Train top' },
+        { name: 'k', type: 'float', optional: true, default: '0.50', flag: '-k' },
+      ],
+    });
+    const held: Record<string, unknown> = descriptor('pl-a', '1', {
+      description: 'A plugin.',
+      parameters: [
+        { name: 'pattern', type: 'string', optional: true, default: '**/*dcm', flag: '--pattern', help: 'the pattern\n            (quoted).' },
+        { name: 'top', type: 'boolean', optional: true, default: false, flag: '--top', help: 'Train top' },
+        { name: 'k', type: 'float', optional: true, default: 0.5, flag: '-k' },
+      ],
+    });
+    expect(descriptorDrift_find(indexed, held)).toEqual([]);
+    const heldParameters: Record<string, unknown>[] = held['parameters'] as Record<string, unknown>[];
+    const flipped: Record<string, unknown> = { ...held, parameters: heldParameters.map((p: Record<string, unknown>) => (p['name'] === 'top' ? { ...p, default: true } : p)) };
+    expect(descriptorDrift_find(indexed, flipped)).toEqual(['parameters.top.default']);
   });
 
   it('names what does differ', () => {

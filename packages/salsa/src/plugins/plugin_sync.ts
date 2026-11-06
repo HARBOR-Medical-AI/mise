@@ -197,6 +197,10 @@ export interface SyncReceipt {
   readonly reported: number;
   /** Uploads that should have worked and did not. */
   readonly failed: number;
+  /** Whether a stop (`kill %N`, Ctrl-C) ended it before every add was sent. */
+  readonly stopped: boolean;
+  /** Adds the plan had that were never sent, because it was stopped. */
+  readonly unsent: number;
 }
 
 /**
@@ -367,14 +371,16 @@ export function syncPlanAdds_list(plan: SyncPlan): SyncPlanEntry[] {
  * @param plan - The plan.
  * @param seams - The upload.
  * @param note - Called once per upload as it lands, in the order they land.
- * @returns What it did.
+ * @param signal - A stop: the uploads in flight finish, no more start, and
+ *   what landed stays (a rerun continues from it).
+ * @returns What it did, `stopped` when the signal ended it early.
  *
  * @example
  * ```ts
  * const receipt: SyncReceipt = await syncPlan_apply(plan, syncSeams_cube, (r: SyncResult): void => console.log(r.name, r.ok));
  * ```
  */
-export async function syncPlan_apply(plan: SyncPlan, seams: SyncSeams, note: (result: SyncResult) => void): Promise<SyncReceipt> {
+export async function syncPlan_apply(plan: SyncPlan, seams: SyncSeams, note: (result: SyncResult) => void, signal?: AbortSignal): Promise<SyncReceipt> {
   const adds: SyncPlanEntry[] = syncPlanAdds_list(plan);
   const results: SyncResult[] = await items_mapPooled(adds, POOL_WIDTH, async (entry: SyncPlanEntry): Promise<SyncResult> => {
     const version: string = entry.version ?? '';
@@ -387,7 +393,7 @@ export async function syncPlan_apply(plan: SyncPlan, seams: SyncSeams, note: (re
     }
     note(result);
     return result;
-  });
+  }, signal);
   const added: number = results.filter((result: SyncResult): boolean => result.ok).length;
   return {
     plan,
@@ -396,6 +402,8 @@ export async function syncPlan_apply(plan: SyncPlan, seams: SyncSeams, note: (re
     skipped: plan.entries.filter((entry: SyncPlanEntry): boolean => entry.group === 'skip').length,
     reported: plan.entries.filter((entry: SyncPlanEntry): boolean => !SYNC_ADD_GROUPS.includes(entry.group) && entry.group !== 'skip').length,
     failed: results.length - added,
+    stopped: results.length < adds.length,
+    unsent: adds.length - results.length,
   };
 }
 
@@ -415,7 +423,7 @@ export function descriptorDrift_find(indexed: Record<string, unknown>, held: Rec
   const differences: string[] = [];
   for (const field of TEXT_FIELDS) {
     if (!(field in indexed)) continue;
-    if (String(indexed[field] ?? '') !== String(held[field] ?? '')) differences.push(field);
+    if (text_normalize(indexed[field]) !== text_normalize(held[field])) differences.push(field);
   }
   for (const [field, fallback] of Object.entries(LIMIT_DEFAULTS)) {
     const mine: number | null = limit_normalize(indexed[field], limitFallback_get(indexed, field, fallback));
@@ -527,7 +535,7 @@ function parametersDrift_find(indexed: unknown, held: unknown): string[] {
     }
     for (const field of PARAMETER_FIELDS) {
       if (!(field in left)) continue;
-      if (!parameterValues_equal(field, left[field], right[field])) differences.push(`parameters.${name}.${field}`);
+      if (!parameterValues_equal(field, left[field], right[field], String(left['type'] ?? ''))) differences.push(`parameters.${name}.${field}`);
     }
   }
   return differences;
@@ -556,14 +564,49 @@ function parameters_index(parameters: unknown): Map<string, Record<string, unkno
  * @param field - The field.
  * @param mine - The index's value.
  * @param theirs - The CUBE's value.
+ * @param type - The parameter's type, in the upload's spelling (`bool`, `int`, …).
  * @returns True when they mean the same.
  */
-function parameterValues_equal(field: string, mine: unknown, theirs: unknown): boolean {
+function parameterValues_equal(field: string, mine: unknown, theirs: unknown, type: string): boolean {
   if (field === 'type') return String(mine) === (READ_TYPES[String(theirs)] ?? String(theirs));
   if (field === 'default') {
     if ((mine === null || mine === undefined) && (theirs === null || theirs === undefined || theirs === '')) return true;
-    return String(mine) === String(theirs);
+    return defaultValue_normalize(mine, type) === defaultValue_normalize(theirs, type);
   }
-  if (field === 'help' || field === 'short_flag') return String(mine ?? '') === String(theirs ?? '');
+  if (field === 'help' || field === 'short_flag') return text_normalize(mine) === text_normalize(theirs);
   return mine === theirs;
+}
+
+/**
+ * A text field as CUBE stores it: its serializers trim the whitespace around
+ * every text field on upload (DRF's `trim_whitespace`), so a descriptor's
+ * indented help reads back without its leading newline.
+ *
+ * @param value - The field's value, absent as empty.
+ * @returns The text, trimmed.
+ */
+function text_normalize(value: unknown): string {
+  return String(value ?? '').trim();
+}
+
+/** The spellings CUBE's boolean default field reads as true (DRF `BooleanField.TRUE_VALUES`). */
+const BOOLEAN_TRUE: ReadonlySet<string> = new Set(['true', 't', 'yes', 'y', 'on', '1']);
+
+/**
+ * A parameter default as CUBE stores it: the default serializer for the
+ * parameter's type coerces the upload's value (`'False'` reads back as
+ * `false`, `'5'` as `5`) and trims text.
+ *
+ * @param value - The default.
+ * @param type - The parameter's type, in the upload's spelling.
+ * @returns A comparable spelling of the default.
+ */
+function defaultValue_normalize(value: unknown, type: string): string {
+  const text: string = text_normalize(value);
+  if (type === 'bool' || type === 'boolean') return String(BOOLEAN_TRUE.has(text.toLowerCase()));
+  if (type === 'int' || type === 'integer' || type === 'float') {
+    const number: number = Number(text);
+    return Number.isFinite(number) ? String(number) : text;
+  }
+  return text;
 }

@@ -117,6 +117,8 @@ export const pluginSyncModelSchema = z.object({
   results: z.array(pluginSyncResultSchema).optional(),
   /** Whether the adds were applied. */
   applied: z.boolean(),
+  /** Whether a stop ended the apply before every add was sent; what landed stays. */
+  stopped: z.boolean().optional(),
 });
 
 /** One failure `plugin validate` found. */

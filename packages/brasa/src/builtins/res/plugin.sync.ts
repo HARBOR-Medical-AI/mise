@@ -66,6 +66,7 @@ import { errorStack, type Result } from '@fnndsc/fond';
 
 import { DEFAULT_PLUGIN_INDEX, indexConfig_persist, pluginIndex_clear, pluginIndex_get, pluginIndex_isDefault, pluginIndex_set } from '../../config/indexConfig.js';
 import { storeUrl_get } from '../../config/storeConfig.js';
+import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
 import { authorizationFailure_is, sudoHint_build } from '../../core/elevation.js';
 import { exitCode_set } from '../../core/handlerRun.js';
 import { repl_confirm } from '../../core/question.js';
@@ -212,12 +213,19 @@ export async function pluginSync_run(parsed: ParsedArgs, words: readonly string[
     return envelope_ok(`${chalk.yellow('No: nothing was registered.')}\n`, syncModel_build(plan));
   }
 
+  commandCancellation_enable();
   const receipt: SyncReceipt = await syncPlan_apply(plan, seams, (result: SyncResult): void => {
     sink_dataLine(result.ok
       ? `${chalk.green('added')}  ${result.name} ${result.version}`
       : `${chalk.red('failed')} ${result.name} ${result.version}: ${result.reason ?? 'no reason given'}`);
-  });
+  }, commandCancellation_signalGet());
   const summary: string = `${receipt.added} added, ${receipt.skipped} skipped, ${receipt.reported} reported, ${receipt.failed} failed.`;
+  if (receipt.stopped) {
+    exitCode_set(1);
+    return envelopeModel_attach(
+      envelope_error(`${chalk.yellow(`Stopped: ${summary} ${receipt.unsent} never sent; what was added stays, and a rerun continues from it.`)}\n`, undefined, ''),
+      syncModel_build(plan, receipt));
+  }
   if (receipt.failed > 0) {
     exitCode_set(1);
     const failedNames: string = receipt.results.filter((r: SyncResult): boolean => !r.ok).map((r: SyncResult): string => `${r.name} ${r.version}`).join(', ');
@@ -377,6 +385,7 @@ function syncModel_build(plan: SyncPlan, receipt?: SyncReceipt): { kind: typeof 
       entries: plan.entries.map(({ descriptor: _descriptor, ...entry }: SyncPlanEntry) => entry),
       ...(receipt === undefined ? {} : { results: receipt.results }),
       applied: receipt !== undefined,
+      ...(receipt?.stopped === true ? { stopped: true } : {}),
     },
   };
 }

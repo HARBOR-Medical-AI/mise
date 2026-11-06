@@ -50,11 +50,11 @@ A sync reads the index once (for GitHub, the archive of the ref, whose header na
 | report, never uploaded | the descriptor fails `plugin validate` rules 1–4 | report
 |===
 
-A sync never deletes a plugin and never changes one already there. Deleting a plugin removes its runs and its nodes in every pipeline, and CUBE's administrative update changes only compute resources, so a descriptor cannot be corrected in place anyway. Comparing a version with its copy in CUBE ignores what only reflects CUBE's defaults: a limit the index leaves out because it equals the default, `1000m` against a stored `1000`, a field CUBE fills in when it is not given.
+A sync never deletes a plugin and never changes one already there. Deleting a plugin removes its runs and its nodes in every pipeline, and CUBE's administrative update changes only compute resources, so a descriptor cannot be corrected in place anyway. Comparing a version with its copy in CUBE ignores what only reflects CUBE's defaults: a limit the index leaves out because it equals the default, `1000m` against a stored `1000`, a field CUBE fills in when it is not given, the whitespace CUBE trims from the ends of a text field, and a default CUBE stores typed (`'False'` read back as `false`).
 
 After the plan comes one question, `[y/N]`. `--yes` answers it, `--plan` stops before it, and a session that is not an administrator sees the plan and the `sudo` line to run instead. The adds upload four at a time and print one line each as they land, then a summary: added, skipped, reported, failed. A sync exits 0 when everything the plan said to add was added; a reported plugin does not fail it. An upload that should have worked and did not is exit 1, naming the plugins.
 
-Run as a job (`plugin sync --yes &`), a sync stops with `kill %N`. What landed stays, and a second sync plans only what is still missing.
+Run as a job (`plugin sync --yes &`), a sync stops with `kill %N` (or Ctrl-C in front): the uploads in flight finish, no more start, and the summary says how many were never sent. That is exit 1. What landed stays, and a second sync plans only what is still missing.
 
 === Sources
 

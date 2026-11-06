@@ -29,10 +29,16 @@ export const POOL_WIDTH: number = 4;
  * A task that throws is not caught here: map to a value that records the
  * failure when each failure must stay its own.
  *
+ * A stop (the signal aborting) lets the tasks already running finish and
+ * starts no more, so what was sent is all accounted for; the items never
+ * started have no result.
+ *
  * @param items - The items.
  * @param width - Tasks run at once; at least 1.
  * @param task - The work for one item.
- * @returns Each item's result, in order.
+ * @param signal - Stops the map; absent, it runs to the end.
+ * @returns The started items' results, in the items' order: every item's
+ *   unless stopped.
  *
  * @example
  * ```ts
@@ -43,16 +49,17 @@ export async function items_mapPooled<T, R>(
   items: readonly T[],
   width: number,
   task: (item: T, index: number) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   const results: R[] = new Array<R>(items.length);
   let next: number = 0;
   const worker = async (): Promise<void> => {
-    while (next < items.length) {
+    while (next < items.length && signal?.aborted !== true) {
       const index: number = next;
       next += 1;
       results[index] = await task(items[index] as T, index);
     }
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(width, items.length)) }, worker));
-  return results;
+  return results.slice(0, next);
 }
