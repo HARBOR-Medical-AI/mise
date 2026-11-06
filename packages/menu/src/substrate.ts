@@ -129,6 +129,8 @@ export const clusterSummarySchema = z.object({
   gone: z.string().nullable().optional(),
   /** The teardown, once one has started: when, and each of its steps where it stands; null when none has. */
   teardown: z.object({ started: z.string(), steps: z.array(teardownStepSchema) }).nullable().optional(),
+  /** The folder on the host its record and credentials are kept in, or null for one kept nowhere here; absent from an older daemon. */
+  folder: z.string().nullable().optional(),
   /** The last teardown refused for a reason of the world, with when and why, until one starts; absent from an older daemon. */
   teardownRefused: z.object({ at: z.string(), why: z.string() }).nullable().optional(),
   spec: clusterSpecSchema.nullable().optional(),

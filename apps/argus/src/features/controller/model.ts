@@ -250,6 +250,8 @@ export interface SinceRow {
  */
 export function since_build(before: ClusterSummary | null, after: ClusterSummary): SinceRow[] {
   if (before === null) return [{ label: '', text: 'FIRST READ' }];
+  // Another cluster than the one before the command: a new one's spec written (nothing made yet), or the first read of it.
+  if (before.name !== after.name) return [{ label: after.name.toUpperCase(), text: after.condition === 'SIZING' ? 'ITS SPEC WRITTEN · NOTHING MADE' : 'FIRST READ' }];
   const rows: SinceRow[] = [];
   if (before.condition !== after.condition) rows.push({ label: 'CONDITION', text: `${before.condition ?? '?'} → ${after.condition ?? '?'}` });
   // Adopted (or found again): where the cluster is kept moved, though nothing in the cloud did.
