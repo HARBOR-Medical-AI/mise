@@ -1,6 +1,6 @@
 {
   "name": "@fnndsc/porter",
-  "version": "0.9.13",
+  "version": "0.9.14",
   "description": "PORTER: the mise display manager — logs an operator in, finds or starts their calypso, and shows them to argus",
   "type": "module",
   "main": "dist/porter.js",
@@ -22,7 +22,7 @@
     "@fnndsc/chell": "^5.20.0",
     "@fnndsc/cumin": "^3.30.0",
     "@fnndsc/menu": "^0.38.0",
-    "@fnndsc/stratus": "^0.13.1",
+    "@fnndsc/stratus": "^0.14.0",
     "fastify": "^5.12.5",
     "ws": "^8.18.0",
     "zod": "^4.6.7"
