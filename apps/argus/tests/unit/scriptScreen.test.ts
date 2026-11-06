@@ -190,6 +190,16 @@ describe('the script screen', () => {
     button_named(screen.root, 'BUILD')?.click();
     await settle();
     expect(sent).toEqual(['vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 180 --data 50 --data-backup daily --os ubuntu-26.04']);
+    // The refusal is said on the seat it was pressed on, with why, and stays there until the seat sends again.
+    screen.output_take('vm new: store: the network is gone\n');
+    const refusal: Element | null = screen.root.querySelector('.ss-note-refusal');
+    expect(refusal?.querySelector('.tdc-note-title')?.textContent).toMatch(/^REFUSED · \d\d:\d\d$/);
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    expect(screen.root.querySelector('.ss-note-refusal')).toBeNull();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-2"]')?.click();
+    await settle();
+    expect(screen.root.querySelector('.ss-note-refusal .tdc-note-title')?.textContent).toMatch(/^REFUSED · /);
     screen.dispose();
     screen.root.remove();
   });

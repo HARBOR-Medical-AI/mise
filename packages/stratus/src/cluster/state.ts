@@ -59,6 +59,8 @@ export interface ClusterRecord {
   teardown?: TeardownRecord;
   gone?: string;
   protected?: boolean;
+  /** The last teardown refused for a reason of the world (its volumes unreadable), with when and why; cleared when a teardown starts, so a screen coming back shows it. */
+  teardownRefused?: { at: string; why: string };
   /** When the lock was last set; the tenancy keeps it (`kept/lock.ts`). */
   protectedAt?: string;
   /** The time of the lock the tenancy's vault last held, as last read. */

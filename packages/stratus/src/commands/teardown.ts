@@ -83,7 +83,10 @@ export async function clusterTeardown_run(context: BuildCommandContext, args: Re
     try {
       volumeIds = await clusterVolumes_read((context.verifyReach ?? verifyReach_default()).kube_make(readFileSync(kubeconfig.hostPath, 'utf-8')));
     } catch (error: unknown) {
-      return envelope_error('', undefined, `cluster teardown: ${name}: cannot read the cluster's volumes (${error instanceof Error ? error.message : String(error)}): refusing, they would be left billing\n`);
+      const why: string = `cannot read the cluster's volumes (${error instanceof Error ? error.message : String(error)}): refusing, they would be left billing`;
+      // Kept on the record, so a screen coming back says the teardown was refused, and why, until one starts.
+      context.store.record_update(name, (current: ClusterRecord): void => { current.teardownRefused = { at: new Date().toISOString(), why }; });
+      return envelope_error('', undefined, `cluster teardown: ${name}: ${why}\n`);
     }
   }
   // Each removal is a step; one an earlier pass finished is listed as such and not asked for again.

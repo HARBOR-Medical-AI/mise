@@ -129,6 +129,8 @@ export const clusterSummarySchema = z.object({
   gone: z.string().nullable().optional(),
   /** The teardown, once one has started: when, and each of its steps where it stands; null when none has. */
   teardown: z.object({ started: z.string(), steps: z.array(teardownStepSchema) }).nullable().optional(),
+  /** The last teardown refused for a reason of the world, with when and why, until one starts; absent from an older daemon. */
+  teardownRefused: z.object({ at: z.string(), why: z.string() }).nullable().optional(),
   spec: clusterSpecSchema.nullable().optional(),
   /** The first step not done, or null when every step is, or when the cluster is not built on here (adopted, torn down, read from a checkout). */
   next: z.string().nullable().optional(),

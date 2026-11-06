@@ -81,7 +81,8 @@ export class ScriptsProvider implements VFSProvider {
     const sources: VFSItem[] = this.library.sources_list().map((source: ScriptSource): VFSItem => ({
       ...this.item_make(source.name, this.library.shown_derive(source), SOURCE_TYPE),
       title: `${source.repo}${source.folder !== undefined && source.folder !== '' ? ` ${source.folder}` : ''}`,
-      status: this.library.cloned(source.name) ? 'cloned' : 'not cloned',
+      // Where the clone stands, read from git: its head's commit, date and subject, so a pull's receipt is the head moving.
+      status: this.library.cloned(source.name) ? `cloned · at ${this.library.head_read(source.name)}` : 'not cloned',
     }));
     return [...sources, { ...this.item_make(MINE, this.library.mine_derive(), 'dir'), title: 'this host\'s own scripts' }];
   }

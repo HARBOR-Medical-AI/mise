@@ -75,6 +75,8 @@ interface LibrarySource {
   readonly name: string;
   readonly repo: string;
   readonly cloned: boolean;
+  /** Where its clone stands (`<hash> <date> <subject>`), read from git; null when not said. */
+  readonly head: string | null;
 }
 
 /** The library's view key on the rail. */
@@ -235,6 +237,14 @@ export class ScriptScreen {
   protected partial: string = '';
   /** What each step's lines printed, for its body. */
   protected readonly stepLogs: Map<string, string[]> = new Map();
+  /** The last line the session refused, on the seat it was pressed on, with when and why; kept until a line is sent from that seat again. */
+  protected refusal: { view: string; line: string; at: string; why: string; declined: boolean } | null = null;
+  /** What the line in flight has printed, for the refusal's why. */
+  protected busyOut: string[] = [];
+  /** The last answer of a line that changes only this host's clones (PULL), with when: its receipt stands in the library, not only in the log. */
+  protected pulled: { at: string; said: string[] } | null = null;
+  /** Whether the operator answered no to the line in flight's question: its stop is a choice, said as declined, never as refused. */
+  protected busyDeclined: boolean = false;
   /** The USERS form's words, kept across redraws. */
   protected userForm: { name: string; email: string; passwordFile: string } = { name: '', email: '', passwordFile: '' };
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
@@ -585,7 +595,7 @@ export class ScriptScreen {
       const top: Listed[] = listings_extract(await this.hooks.ask('ls /scripts'));
       const folders: string[] = [];
       for (const item of top[0]?.items ?? []) {
-        if (item.type === 'source') sources.push({ name: item.name, repo: (item.title ?? '').split(' ')[0] ?? '', cloned: item.status === 'cloned' });
+        if (item.type === 'source') sources.push({ name: item.name, repo: (item.title ?? '').split(' ')[0] ?? '', cloned: (item.status ?? '').startsWith('cloned'), head: /^cloned · at (.+)$/.exec(item.status ?? '')?.[1] ?? null });
         folders.push(item.name);
       }
       for (const folder of folders) {
@@ -690,6 +700,10 @@ export class ScriptScreen {
       return false;
     }
     this.busy = { line, step, since: Date.now() };
+    this.busyOut = [];
+    this.busyDeclined = false;
+    const seat: string = step ?? this.view;
+    if (this.refusal?.view === seat) this.refusal = null;
     this.log_add(`stratus> ${line}`, 'sent');
     if (step !== null && !keepLog) this.stepLogs.set(step, []);
     this.draw();
@@ -704,6 +718,9 @@ export class ScriptScreen {
     } finally {
       if (this.partial !== '') { this.log_add(this.partial, 'out'); this.partial = ''; }
       this.busy = null;
+      // A refusal is said where its control stands, with why, and stays there until that seat sends again (a-change-is-a-loop, clauses 5 and 6).
+      if (line === 'scripts pull') this.pulled = { at: new Date().toISOString(), said: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-6) };
+      if (failed) this.refusal = { view: step ?? this.view, line, at: new Date().toISOString(), declined: this.busyDeclined, why: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ') || 'the session refused it' };
       this.hooks.voice.cue(failed ? 'redalert' : 'ack');
       await this.standings_refresh();
       // A declaration sent moves what the price compares with: VM NEW's price is asked again of what now stands.
@@ -892,6 +909,7 @@ export class ScriptScreen {
     if (this.view === LIBRARY_VIEW) {
       body.dataset['view'] = 'library';
       body.append(...this.library_make());
+      this.refusal_place();
       this.errand_place();
       return;
     }
@@ -906,7 +924,24 @@ export class ScriptScreen {
     body.append(...this.step_make(step));
     const log: HTMLElement | null = body.querySelector('.tdc-steplog');
     if (log !== null) log.scrollTop = log.scrollHeight;
+    this.refusal_place();
     this.errand_place();
+  }
+
+  /** The last refusal, on the seat it was pressed on: at the head of the seat's first section, beside what it refused. */
+  protected refusal_place(): void {
+    const refused = this.refusal;
+    if (refused === null || refused.view !== this.view) return;
+    const note: HTMLElement = el('div', 'tdc-note tdc-note-refused ss-note-refusal');
+    if (refused.declined) {
+      note.className = 'tdc-note tdc-note-found ss-note-refusal';
+      note.append(el('span', 'tdc-note-title', `DECLINED · ${refused.at.slice(11, 16)}`), el('span', 'tdc-prose', 'You answered no: the line stopped at its question, and nothing it asked about was made or changed.'), el('span', 'tdc-prose tdc-quiet', refused.line));
+    } else {
+      note.append(el('span', 'tdc-note-title', `REFUSED · ${refused.at.slice(11, 16)}`), el('span', 'tdc-prose', refused.why), el('span', 'tdc-prose tdc-quiet', `${refused.line}: nothing it would have changed was changed`));
+    }
+    const first: Element | null = this.parts.body.querySelector('section');
+    if (first === null) this.parts.body.prepend(note);
+    else first.insertBefore(note, first.children[1] ?? null);
   }
 
   /** A hidden word asked stands as an errand bar across the top of the body, whichever view shows; the strip is for words seen. */
@@ -1044,12 +1079,14 @@ export class ScriptScreen {
     if (this.sources.length === 0) {
       sources.append(el('p', 'tdc-prose tdc-quiet', this.libraryRead ? 'no sources named (scripts add)' : '…'));
     } else {
-      const rows: Array<[string, string]> = this.sources.map((source: LibrarySource): [string, string] => [source.name.toUpperCase(), `${source.repo}${source.cloned ? '' : ' · NOT CLONED'}`]);
+      const rows: Array<[string, string]> = this.sources.map((source: LibrarySource): [string, string] => [source.name.toUpperCase(), `${source.repo}${!source.cloned ? ' · NOT CLONED' : source.head !== null ? ` · AT ${source.head}` : ''}`]);
       sources.append(this.pairs_make(rows));
     }
     const commands: HTMLElement = el('div', 'tdc-commands');
     // loop: ss-pull
     commands.append(this.linePill_make('PULL', 'scripts pull', null, 'quiet'), el('span', 'tdc-commands-label', 'FAST-FORWARD EVERY CLONE'));
+    // What the last PULL did, with when: its receipt, here beside PULL (a-change-is-a-loop, clause 5).
+    if (this.pulled !== null) sources.append(this.pairs_make([[`PULLED · ${this.pulled.at.slice(11, 16)}`, this.pulled.said.length === 0 ? 'nothing said' : this.pulled.said.join(' · ')]]));
     sources.append(commands);
     sources.append(el('p', 'tdc-prose tdc-quiet', 'MINE holds this host\'s working copies, written by SAVE on a step.'));
     return [scripts, sources];
@@ -1865,6 +1902,8 @@ export class ScriptScreen {
     this.parts.log.append(row);
     while (this.parts.log.childElementCount > LOG_LIMIT) this.parts.log.firstElementChild?.remove();
     this.parts.log.scrollTop = this.parts.log.scrollHeight;
+    if (kind === 'out' && this.busy !== null) this.busyOut.push(text);
+    if (kind === 'answer' && this.busy !== null && (text === 'n' || text === '(declined)')) this.busyDeclined = true;
     if (kind === 'out' && this.busy !== null && this.busy.step !== null) {
       const lines: string[] = this.stepLogs.get(this.busy.step) ?? [];
       lines.push(text);

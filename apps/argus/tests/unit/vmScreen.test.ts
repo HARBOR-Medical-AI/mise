@@ -363,6 +363,33 @@ describe('the VM controller', () => {
     screen.root.remove();
   });
 
+  it('once the machine is gone, the guard offers only what is left to undo, and MACHINE says no machine; gone whole, nothing is offered', async () => {
+    const { screen } = screen_make();
+    await screen.vm_open('store');
+    await settle();
+    const kept = { name: 'store', state: 'data kept', region: 'us-ashburn-1', spec: SPEC, address: '203.0.113.10', inside: null, protected: false, built: null, chris: null,
+      stands: { at: '2026-11-05T16:00:00.000Z', vcpu: null, memory: null, disk: null, data: 50, backup: 'daily', os: null, open: null } } as unknown as Parameters<VmScreen['row_take']>[0];
+    screen.row_take(kept);
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
+    await settle(8);
+    const guard: HTMLElement = screen.root.querySelector('.ss-col-side') as HTMLElement;
+    expect(button_named(guard, 'TEARDOWN')).toBeUndefined();
+    expect(button_named(guard, 'TEARDOWN · ALL')).toBeDefined();
+    expect(guard.textContent).toContain('The machine is gone; its data stands.');
+    expect(guard.textContent).not.toContain('TEARDOWN STOPS');
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="machine"]')?.click();
+    await settle();
+    expect(screen.root.querySelector('.tdc-body')?.textContent).toContain('no machine · data 50 GB (daily backups) (read from the tenancy 16:00 UTC)');
+    screen.row_take({ ...kept, state: 'gone', stands: { ...(kept as unknown as { stands: object }).stands, data: null } } as unknown as Parameters<VmScreen['row_take']>[0]);
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
+    await settle();
+    const none: HTMLElement = screen.root.querySelector('.ss-col-side') as HTMLElement;
+    expect(none.querySelector('.tdc-note-title')?.textContent).toBe('NOTHING OF IT STANDS');
+    expect(none.querySelectorAll('button')).toHaveLength(0);
+    screen.dispose();
+    screen.root.remove();
+  });
+
   it('a machine another host built is read from the tenancy whole: every seat, its size changed here; one whose key the tenancy does not keep has only its facts and teardown', async () => {
     // Built by another host, read from the tenancy whole (its key kept there), and one the tenancy keeps no key for.
     ROWS_MORE = [

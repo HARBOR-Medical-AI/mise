@@ -428,7 +428,7 @@ export class VmScreen extends ScriptScreen {
     if (word.length > 9) pill.classList.add('tdc-condition-long');
     pill.append(el('span', 'tdc-condition-label', 'THE MACHINE'), el('span', 'tdc-condition-name', word));
     const mode: HTMLElement | null = modePill_make(this.hooks.manage_is());
-    const why: string = this.vm === '' ? (this.view === MACHINES_KEY ? `${this.vms.length} IN THE TENANCY · + NEW TO ADD ONE` : 'NAME IT ON SIZE') : vmKeyless_is(row) ? (row?.state === 'found' ? 'READ FROM THE TENANCY' : 'NO SSH KEY IN THE TENANCY') : counts_words(counts);
+    const why: string = this.vm === '' ? (this.view === MACHINES_KEY ? `${this.vms.filter((one: VmStatusRow): boolean => one.state !== 'gone').length} IN THE TENANCY · + NEW TO ADD ONE` : 'NAME IT ON SIZE') : vmKeyless_is(row) ? (row?.state === 'found' ? 'READ FROM THE TENANCY' : 'NO SSH KEY IN THE TENANCY') : counts_words(counts);
     condition.append(pill, ...(mode === null ? [] : [mode]), el('div', 'tdc-condition-why', why));
     const chips: HTMLElement = el('div', 'tdc-chips');
     if (this.vm !== '') chips.append(el('span', 'tdc-chip', vmKeyless_is(row) ? (row?.state === 'found' ? (row.found?.tagged === true ? 'FOUND · NOT READ' : 'MADE OUTSIDE STRATUS') : 'NO SSH KEY IN THE TENANCY') : this.unsaved ? 'SCRIPT NOT WRITTEN YET' : this.edited ? 'EDITED · NOT SAVED' : this.path.startsWith('/scripts/mine/') ? 'WORKING COPY' : 'FROM GIT · READ-ONLY'));
@@ -453,6 +453,7 @@ export class VmScreen extends ScriptScreen {
       body.replaceChildren();
       body.dataset['view'] = 'step';
       body.append(...(this.view === MACHINES_KEY ? this.machines_make() : this.facts_make()));
+      this.refusal_place();
       this.errand_place();
       return;
     }
@@ -461,6 +462,7 @@ export class VmScreen extends ScriptScreen {
       body.replaceChildren();
       body.dataset['view'] = 'step';
       body.append(...this.new_make());
+      this.refusal_place();
       this.errand_place();
       return;
     }
@@ -469,6 +471,7 @@ export class VmScreen extends ScriptScreen {
       body.replaceChildren();
       body.dataset['view'] = 'step';
       body.append(...this.teardown_make());
+      this.refusal_place();
       this.errand_place();
       return;
     }
@@ -481,7 +484,9 @@ export class VmScreen extends ScriptScreen {
    * The library's rows, in the machine's words.
    */
   private machines_make(): HTMLElement[] {
-    const list: HTMLElement = this.section_make('MACHINES', 'ss-col-wide', `${this.vms.length} IN THE TENANCY`);
+    const standing: number = this.vms.filter((one: VmStatusRow): boolean => one.state !== 'gone').length;
+    const goneCount: number = this.vms.length - standing;
+    const list: HTMLElement = this.section_make('MACHINES', 'ss-col-wide', `${standing} IN THE TENANCY${goneCount > 0 ? ` · ${goneCount} TORN DOWN WHOLE` : ''}`);
     const rows: HTMLElement = el('div', 'ss-scripts');
     for (const row of this.vms) {
       const line: HTMLElement = el('div', 'ss-script vm-row');
@@ -532,7 +537,10 @@ export class VmScreen extends ScriptScreen {
     // What runs, read from the tenancy, beside what is declared: never one drawn for the other (a-change-is-a-loop, clause 1).
     const stands = row.stands ?? null;
     const rest: string = stands === null ? '' : `${stands.backup != null ? ` (${stands.backup === 'none' ? 'no backups' : `${stands.backup} backups`})` : ''}${stands.os != null ? ` · ${stands.os}` : ''}`;
-    const runs: string = stands === null ? '—' : `${stands.vcpu ?? '?'} vCPU · ${stands.memory ?? '?'} GiB · disk ${stands.disk ?? '?'} GB · data ${stands.data ?? '?'} GB${rest} (read from the tenancy ${stands.at.slice(11, 16)} UTC)`;
+    // A part the tenancy holds none of is said as none, never as a size unread.
+    const machinePart: string = stands === null ? '' : stands.vcpu === null ? 'no machine' : `${stands.vcpu} vCPU · ${stands.memory ?? '?'} GiB · disk ${stands.disk ?? '?'} GB`;
+    const dataPart: string = stands === null ? '' : stands.data === null ? 'no data volume' : `data ${stands.data} GB`;
+    const runs: string = stands === null ? (row.state === 'gone' ? 'nothing: torn down whole' : '—') : `${machinePart} · ${dataPart}${rest} (read from the tenancy ${stands.at.slice(11, 16)} UTC)`;
     facts.append(this.pairs_make([
       ['DOING', row.state === 'found' ? (row.found?.state ?? '?') : row.state],
       ['RUNS', runs],
@@ -641,7 +649,7 @@ export class VmScreen extends ScriptScreen {
    * @param name - The VM.
    * @returns The pairs, or a line saying the price is being read.
    */
-  private teardownBill_make(name: string): HTMLElement {
+  private teardownBill_make(name: string, machineStands: boolean = true): HTMLElement {
     if (this.teardownCost?.vm !== name) {
       this.teardownCost = { vm: name, rate: null };
       void this.hooks.ask(`vm cost ${name}`).then((answer: QuietAnswer): void => {
@@ -653,6 +661,8 @@ export class VmScreen extends ScriptScreen {
     const rate = this.teardownCost.rate;
     if (rate === null) return el('p', 'tdc-prose tdc-quiet', 'reading what it bills: vm cost');
     const month = (hourly: number): string => `${money_text(hourly * HOURS_PER_MONTH, rate.currency)} A MONTH`;
+    // The machine gone, only its kept data bills: TEARDOWN · ALL stops that, and nothing else is left to stop.
+    if (!machineStands) return this.pairs_make([['BILLS NOW', `${month(rate.dataHour)} · its data, backups and address, kept`], ['TEARDOWN · ALL STOPS', month(rate.dataHour)]]);
     return this.pairs_make([['TEARDOWN STOPS', `${month(rate.machineHour)} · the machine`], ['STILL BILLS', `${month(rate.dataHour)} · its data, backups and address, kept`], ['TEARDOWN · ALL STOPS', month(rate.machineHour + rate.dataHour)]]);
   }
 
@@ -685,10 +695,23 @@ export class VmScreen extends ScriptScreen {
       strip.append(block);
     }
     goes.append(strip);
+    // What stands of it, as the tenancy answered: the undoings offered are only those with something left to undo (a-change-is-a-loop, clause 5).
+    // A machine found in the tenancy (no record here) stands as the cloud listed it: its instance, or its data alone.
+    const found: boolean = row?.state === 'found';
+    const machineStands: boolean = row !== null && (found ? row.found?.instanceId != null : row.stands != null ? row.stands.vcpu !== null : row.state === 'built');
+    const dataStands: boolean = row !== null && (found || (row.stands != null ? row.stands.data !== null : row.state === 'built' || row.state === 'data kept'));
+    if (row !== null && !machineStands && !dataStands) {
+      const none: HTMLElement = el('div', 'tdc-note tdc-note-found');
+      none.append(el('span', 'tdc-note-title', 'NOTHING OF IT STANDS'), el('span', 'tdc-prose', `The tenancy holds nothing of ${name}${row.stands != null ? `, as read ${row.stands.at.slice(11, 16)} UTC` : ''}: nothing to tear down, nothing bills. BUILD on SIZE builds it again, empty.`));
+      const guard: HTMLElement = this.section_make('THE GUARD', 'ss-col-side');
+      guard.append(none);
+      return [goes, guard, this.stepLog_make({ key: TEARDOWN_KEY, label: 'TEARDOWN', kind: 'other', lines: [], state: null, running: null })];
+    }
     const lock: HTMLElement = el('div', `tdc-note ${row === null || row.protected ? 'tdc-note-locked' : 'tdc-note-refused'}`);
     lock.append(el('span', 'tdc-note-title', row === null ? 'NOT KEPT HERE' : row.protected ? 'PROTECTED' : 'UNLOCKED'), el('span', 'tdc-prose', row === null
       ? 'The host keeps no record of this machine yet: declare and build it first.'
-      : row.protected ? 'A machine is born protected. Lifting the lock is a line of its own, so no single slip removes it.' : 'The lock is off. TEARDOWN sends the line; TEARDOWN · ALL asks for the name typed back.'));
+      : row.protected ? 'A machine is born protected. Lifting the lock is a line of its own, so no single slip removes it.'
+        : machineStands ? 'The lock is off. TEARDOWN sends the line; TEARDOWN · ALL asks for the name typed back.' : 'The lock is off. The machine is gone; its data stands. TEARDOWN · ALL takes the data too, asking for the name typed back.'));
     const where: string | null = lockWhere_text(row?.lock);
     if (where !== null) lock.append(el('span', 'tdc-prose tdc-quiet ss-lock-where', where.toUpperCase()));
     const commands: HTMLElement = el('div', 'tdc-commands');
@@ -702,14 +725,14 @@ export class VmScreen extends ScriptScreen {
         const all: HTMLButtonElement = this.linePill_make('TEARDOWN · ALL', `vm teardown ${name} --all`, TEARDOWN_KEY, 'destroy');
         all.classList.add('ss-pill-redder');
         // loop: vm-protect
-        commands.append(this.linePill_make('PROTECT · ON', `vm protect ${name} on`, TEARDOWN_KEY, 'quiet'), el('span', 'tdc-flex'), machine, all);
+        commands.append(this.linePill_make('PROTECT · ON', `vm protect ${name} on`, TEARDOWN_KEY, 'quiet'), el('span', 'tdc-flex'), ...(machineStands ? [machine] : []), all);
       }
     }
     lock.append(commands);
     const guard: HTMLElement = this.section_make('THE GUARD', 'ss-col-side');
     guard.append(lock);
     // What each undoing stops billing and what keeps billing, beside the pills (a-change-is-a-loop, clause 2).
-    if (row !== null && row.state !== 'gone') guard.append(this.teardownBill_make(name));
+    if (row !== null && row.state !== 'gone') guard.append(this.teardownBill_make(name, machineStands));
     return [goes, guard, this.stepLog_make({ key: TEARDOWN_KEY, label: 'TEARDOWN', kind: 'other', lines: [], state: null, running: null })];
   }
 }

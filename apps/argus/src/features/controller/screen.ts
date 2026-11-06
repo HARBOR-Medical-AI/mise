@@ -30,7 +30,8 @@ import {
 /** What the controller needs from its host. */
 export interface ControllerHooks {
   /** Runs an operator's line (it may ask); its output arrives through `output_take`; resolves when it ends. */
-  run: (line: string) => Promise<void>;
+  /** Runs a line; false when the session refused it (an older host answers nothing, read as taken). */
+  run: (line: string) => Promise<boolean | void>;
   /** Reads the clusters again after a line ran (the tenancy is searched, so seconds pass); the clusters arrive through `clusters_take`. */
   refresh: () => Promise<void>;
   /** Reads `cluster size` quietly; null when it did not answer the model. */
@@ -112,6 +113,14 @@ export class TdController {
   /** The DNS zone a new cluster's names go under: the session's default until another is pressed. */
   private zone: string | null = null;
   private busy: string | null = null;
+  /** The last line the session refused, in the view it was pressed in, with when and why; kept until that view sends again. */
+  private refusal: { view: string; line: string; at: string; why: string; declined: boolean } | null = null;
+  /** What the line in flight has printed, for the refusal's why. */
+  private busyOut: string[] = [];
+  /** The last SPEND's answer, with when: a read whose answer stands in the panel, not only in the log. */
+  private spent: { cluster: string; at: string; said: string[] } | null = null;
+  /** Whether the operator answered no to the line in flight's question: its stop is a choice, said as declined. */
+  private busyDeclined: boolean = false;
   private ask: OpenAsk | null = null;
   private partial: string = '';
   /** The lines of the build or plan running, for BUILD's log. */
@@ -332,12 +341,20 @@ export class TdController {
     }
     this.before = this.cluster_get();
     this.busy = line;
+    this.busyOut = [];
+    this.busyDeclined = false;
+    const seat: string = this.view;
+    if (this.refusal?.view === seat) this.refusal = null;
     this.log_add(`stratus> ${line}`, 'sent');
     if (/^(cluster (build|plan|teardown)|play|wait) /.test(line)) { this.stepLog = []; this.stepLogLine = line; }
     this.draw();
     try {
-      await this.hooks.run(line);
+      const taken: boolean | void = await this.hooks.run(line);
+      const spending: RegExpExecArray | null = /^spend (\S+)/.exec(line);
+      if (spending !== null) this.spent = { cluster: spending[1] as string, at: new Date().toISOString(), said: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(0, 12) };
       if (this.partial !== '') { this.log_add(this.partial, 'out'); this.partial = ''; }
+      // A refusal is said in the view its control stands in, with why, until that view sends again (a-change-is-a-loop, clauses 5 and 6).
+      if (taken === false) this.refusal = { view: seat, line, at: new Date().toISOString(), declined: this.busyDeclined, why: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ') || 'the session refused it' };
       // The line is answered; the clusters are read again before the seat changes, and the wait is said, not hidden.
       this.reading = line;
       this.log_add('reading the clusters again (the tenancy is searched: seconds)', 'note');
@@ -564,9 +581,26 @@ export class TdController {
       teardown: (): HTMLElement[] => this.teardown_make(cluster),
     };
     body.append(...views[this.view as Exclude<ControllerView, 'size'>]());
+    this.refusal_place();
     // A log drawn anew opens at its end, where the step is.
     const steplog: HTMLElement | null = body.querySelector('.tdc-steplog');
     if (steplog !== null) steplog.scrollTop = steplog.scrollHeight;
+  }
+
+  /** The last refusal, in the view it was pressed in: at the head of the view's first section, beside what it refused. */
+  private refusal_place(): void {
+    const refused = this.refusal;
+    if (refused === null || refused.view !== this.view) return;
+    const note: HTMLElement = el('div', 'tdc-note tdc-note-refused tdc-note-refusal');
+    if (refused.declined) {
+      note.className = 'tdc-note tdc-note-found tdc-note-refusal';
+      note.append(el('span', 'tdc-note-title', `DECLINED · ${refused.at.slice(11, 16)}`), el('span', 'tdc-prose', 'You answered no: the line stopped at its question, and nothing it asked about was made or changed.'), el('span', 'tdc-prose tdc-quiet', refused.line));
+    } else {
+      note.append(el('span', 'tdc-note-title', `REFUSED · ${refused.at.slice(11, 16)}`), el('span', 'tdc-prose', refused.why), el('span', 'tdc-prose tdc-quiet', `${refused.line}: nothing it would have changed was changed`));
+    }
+    const first: Element | null = this.parts.body.querySelector('section');
+    if (first === null) this.parts.body.prepend(note);
+    else first.insertBefore(note, first.children[1] ?? null);
   }
 
   private empty_make(title: string, text: string): HTMLElement {
@@ -700,6 +734,12 @@ export class TdController {
       // loop: td-build
       this.linePill_make('BUILD', LINES.build(cluster.name), 'bill', cluster.refused?.['build']));
     steps.append(commands);
+    // What SPEND answered, with when, beside SPEND.
+    if (this.spent !== null && this.spent.cluster === cluster.name) {
+      const box: HTMLElement = el('div', 'tdc-note tdc-note-found tdc-note-spent');
+      box.append(el('span', 'tdc-note-title', `SPEND · READ ${this.spent.at.slice(11, 16)}`), ...this.spent.said.map((one: string): HTMLElement => el('span', 'tdc-mono', one)));
+      steps.append(box);
+    }
 
     const glance: HTMLElement = this.section_make('THE CLUSTER AT A GLANCE', 'tdc-col-glance');
     const verify: string = cluster.verify === null || cluster.verify === undefined ? this.verifyUnkept_render(cluster) : `${verifyWords_render(cluster.verify.checks)} · ${(cluster.verify.at ?? '').slice(0, 16).replace('T', ' ')}`;
@@ -1006,6 +1046,14 @@ export class TdController {
     else commands.append(this.linePill_make('LOCK AGAIN', LINES.protect(cluster.name, true), 'quiet'), el('span', 'tdc-flex'), this.linePill_make('TEAR DOWN', LINES.teardown(cluster.name), 'destroy', cluster.refused?.['teardown']));
     lock.append(commands);
     guard.append(lock);
+    // The last teardown refused for a reason of the world, kept by the kernel until one starts: said here, coming back too.
+    const refusedLast = cluster.teardownRefused ?? null;
+    if (refusedLast !== null && !tearing) {
+      const box: HTMLElement = el('div', 'tdc-note tdc-note-refused tdc-note-teardown-refused');
+      const bills: string = cluster.cost !== null && cluster.cost !== undefined ? ` Everything it made still stands and bills ${money_text(cluster.cost.hourly, cluster.cost.currency)} an hour.` : ' Everything it made still stands.';
+      box.append(el('span', 'tdc-note-title', `TEARDOWN REFUSED · ${refusedLast.at.slice(0, 16).replace('T', ' ')} UTC`), el('span', 'tdc-prose', `${refusedLast.why}.${bills}`), el('span', 'tdc-prose tdc-quiet', 'TEAR DOWN asks again once what refused it answers (VERIFY reads the cluster through its kubeconfig).'));
+      guard.append(box);
+    }
     // What a teardown stops billing, beside the pills (a-change-is-a-loop, clause 2): the cluster's rate as spend reads it.
     if (cluster.cost !== null && cluster.cost !== undefined && cluster.gone === null) {
       guard.append(this.pairs_make([['TEAR DOWN STOPS', `${money_text(cluster.cost.hourly * HOURS_PER_MONTH, cluster.cost.currency, 0)} A MONTH · ${money_text(cluster.cost.hourly, cluster.cost.currency)} AN HOUR`], ['STILL BILLS', 'nothing it made: the zone, the tag namespace and what other clusters made are not its own']]));
@@ -1270,6 +1318,8 @@ export class TdController {
     this.parts.log.append(row);
     while (this.parts.log.childElementCount > LOG_LIMIT) this.parts.log.firstElementChild?.remove();
     this.parts.log.scrollTop = this.parts.log.scrollHeight;
+    if (kind === 'out' && this.busy !== null) this.busyOut.push(text);
+    if (kind === 'answer' && this.busy !== null && (text === 'n' || text === '(declined)')) this.busyDeclined = true;
     if (kind === 'out' && this.stepLogLine !== null && this.busy === this.stepLogLine) {
       this.stepLog.push(text);
       if (this.view === 'build' || this.view === 'teardown') {
