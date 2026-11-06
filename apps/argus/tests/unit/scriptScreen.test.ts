@@ -125,12 +125,17 @@ describe('the script screen', () => {
     cidr!.value = '10.30.0.0/16';
     cidr!.dispatchEvent(new Event('input'));
     expect(screen.root.querySelector('.ss-line-text')?.textContent).toBe('net new chrisproject-services --cidr 10.30.0.0/16');
+    // At the edit: the difference against what stands, beside the line, and SAVE at once; the field keeps the hand.
+    expect(screen.root.querySelector('.ss-col-side')?.textContent).toContain('THIS LINE10.20.0.0/16 → 10.30.0.0/16: replaces the VCN and subnet and every machine on them (refused unless --allow-alter)');
+    expect(button_named(screen.root, 'SAVE')).toBeDefined();
+    expect(document.activeElement?.id).toBe('ss-cidr-1');
     asked.length = 0;
     // A declaration's pill says what it does: DECLARE.
     button_named(screen.root, 'DECLARE')?.click();
     await settle();
     expect(sent).toEqual(['net new chrisproject-services --cidr 10.30.0.0/16']);
-    expect(asked).toContain('play /scripts/chrisproject/store.mise --status');
+    // Edited and not saved, the standing is read of the screen's own text, so the seat says the difference in the operator's direction.
+    expect(asked.some((line: string): boolean => line.startsWith("play /scripts/chrisproject/store.mise --status --text='net new chrisproject-services --cidr 10.30.0.0/16"))).toBe(true);
     // Edited: the side column offers SAVE to the working copy.
     expect(screen.root.querySelector('.tdc-note-title')?.textContent).toBe('EDITED · NOT SAVED');
     button_named(screen.root, 'SAVE')?.click();
