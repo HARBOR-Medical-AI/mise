@@ -46,7 +46,8 @@ function answer_make(line: string, states: string[]): QuietAnswer {
     const memory: number = Number(line.match(/--memory (\d+)/)?.[1] ?? 8);
     const spec = { net: 'chrisproject-services', open: [80, 443], vcpu: 2, memory, disk: 50, data: 50, dataBackup: 'daily', os: 'ubuntu-26.04' };
     const cost = { machineHour: 0.04 + memory * 0.0015, dataHour: 0.003, currency: 'USD' };
-    const row = line === 'vm cost' ? { name: 'store', declared: true, spec, cost, changes: [], before: null } : { name: 'store', declared: true, spec, cost, changes: memory === 8 ? [] : [`memory 8 → ${memory}`], before: memory === 8 ? null : { machineHour: 0.052, dataHour: 0.003, currency: 'USD' } };
+    // Bare, each VM also priced as it runs, read from the tenancy: its machine torn down, only its kept data bills.
+    const row = line === 'vm cost' ? { name: 'store', declared: true, spec, cost, changes: [], before: null, runs: { rate: { machineHour: 0, dataHour: 0.003, currency: 'USD' }, at: '2026-11-05T16:20:00.000Z' } } : { name: 'store', declared: true, spec, cost, changes: memory === 8 ? [] : [`memory 8 → ${memory}`], before: memory === 8 ? null : { machineHour: 0.052, dataHour: 0.003, currency: 'USD' } };
     return envelope({ kind: 'stratus.vm.cost', data: { vms: [row], pricesRead: '2026-11-04T23:41:00.000Z' } });
   }
   return { envelopes: [{ rendered: '', status: 'ok' }] };
@@ -164,6 +165,10 @@ describe('the script screen', () => {
     expect(screen.root.querySelector('.ss-cost')?.textContent).toContain('memory 8 → 16');
     expect(screen.root.querySelector('.ss-cost')?.textContent).toContain('AS DECLARED');
     expect(screen.root.querySelector('.ss-header')?.textContent).toContain('THIS STEP');
+    // What stands is what runs, with when it was read; the declaration is its own row, never priced as running.
+    const head: string = screen.root.querySelector('.ss-header')?.textContent ?? '';
+    expect(head).toContain('STANDS NOW$0.003/H · $2.19 A MONTH · READ 16:20');
+    expect(head).toContain('AS DECLARED$0.055/H · $40.15 A MONTH · NOT WHAT RUNS');
     screen.dispose();
     screen.root.remove();
   });

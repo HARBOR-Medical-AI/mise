@@ -206,6 +206,10 @@ export class ScriptScreen {
   protected limitsAsked: boolean = false;
   /** What the declared VMs bill together, from `vm cost` bare. */
   protected standing: VmCostRate | null = null;
+  /** When what stands was read from the tenancy (the oldest of the VMs priced), or null when none was. */
+  protected standingAt: string | null = null;
+  /** What every declared VM would cost as declared, beside what stands; null when not priced. */
+  protected declaredRate: VmCostRate | null = null;
   /** The VM NEW step's own price as its levers move. */
   protected stepCost: VmCostRow | null = null;
   /** Why the last `vm cost` for the step did not answer, or null. */
@@ -617,13 +621,26 @@ export class ScriptScreen {
     this.draw();
   }
 
+  /** Whose cost the header prices: every VM (null) on the script screen; a machine's own screen prices that machine. */
+  protected costScope_get(): string | null {
+    return null;
+  }
+
   /** What stands now: every declared VM's rate, from `vm cost` bare. */
   protected async standing_read(): Promise<void> {
     try {
       const model = model_extract(await this.hooks.ask('vm cost'), STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
-      this.standing = model === null ? null : rates_sum(model.vms.map((row: VmCostRow): VmCostRate | null => row.cost));
+      // What stands is what runs, priced from what the tenancy answered; what is declared is its own row (a-change-is-a-loop, clause 1).
+      const scope: string | null = this.costScope_get();
+      const rows: VmCostRow[] = (model?.vms ?? []).filter((row: VmCostRow): boolean => scope === null || row.name === scope);
+      const read: VmCostRow[] = rows.filter((row: VmCostRow): boolean => row.runs !== null && row.runs !== undefined);
+      this.standing = read.length === 0 ? null : rates_sum(read.map((row: VmCostRow): VmCostRate | null => row.runs?.rate ?? null));
+      this.standingAt = read.length === 0 ? null : read.map((row: VmCostRow): string => (row.runs as { at: string }).at).sort()[0] ?? null;
+      this.declaredRate = model === null ? null : rates_sum(rows.map((row: VmCostRow): VmCostRate | null => row.cost));
     } catch {
       this.standing = null;
+      this.standingAt = null;
+      this.declaredRate = null;
     }
     this.header_draw();
   }
@@ -813,9 +830,12 @@ export class ScriptScreen {
 
   /** The cost section: what stands now, and what the VM NEW step shown would add. */
   protected costSection_make(): HTMLElement {
-    const standing: string = this.standing === null ? 'NOT PRICED' : rate_words(this.standing, HOURS_PER_MONTH);
+    const standing: string = this.standingAt === null ? 'NOT READ FROM THE TENANCY' : this.standing === null ? 'NOT PRICED' : `${rate_words(this.standing, HOURS_PER_MONTH)} · READ ${this.standingAt.slice(11, 16)}`;
     const stepRate: VmCostRate | null = this.stepCost?.cost ?? null;
     const costRows: Array<[string, string]> = [['STANDS NOW', standing]];
+    // What is declared, apart, when it is not what stands: declared, not built, it bills nothing yet.
+    const declared: string = rate_words(this.declaredRate, HOURS_PER_MONTH);
+    if (this.declaredRate !== null && declared !== rate_words(this.standing, HOURS_PER_MONTH)) costRows.push(['AS DECLARED', `${declared} · NOT WHAT RUNS`]);
     const stepShown: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
     if (stepShown?.kind === 'vm new') costRows.push([this.stepCost?.declared === true ? 'THIS STEP' : 'WOULD ADD', stepRate === null ? '…' : rate_words(stepRate, HOURS_PER_MONTH)]);
     return this.headSection_make('COST · LIST PRICE', costRows, 0);

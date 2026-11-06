@@ -161,6 +161,8 @@ export const vmCostRowSchema = z.object({
   changes: z.array(z.string()),
   /** The declared spec's cost when the line changed it, so a surface shows the difference. */
   before: vmCostRateSchema.nullable(),
+  /** What runs of it costs, priced from what the tenancy answered (only the parts that stand: a machine torn down bills nothing, its kept data its own), with when it was read; null when the tenancy was not read for it; absent from an older daemon or a what-if. */
+  runs: z.object({ rate: vmCostRateSchema.nullable(), at: z.string() }).nullable().optional(),
 });
 
 /** What `vm cost` answers: a row per VM priced. */

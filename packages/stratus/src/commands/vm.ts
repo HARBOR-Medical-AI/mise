@@ -464,6 +464,51 @@ async function vmStatus_run(context: VmCommandContext, names: ReadonlyArray<stri
   return envelope_ok(`${unsearchedLine}${blocks.join('\n\n')}\n`, { kind: STRATUS_VM_STATUS_MODEL_KIND, data: { vms: rows } });
 }
 
+/** What runs of a VM costs, with when it was read; null when the tenancy was not read for it. */
+type RunsCost = NonNullable<VmCostRow['runs']> | null;
+
+/**
+ * Reads what runs of every VM from the tenancy, as `vm status` does, so a
+ * price of what runs is of what runs now.
+ *
+ * @param context - The session.
+ * @returns A line for anything the tenancy did not answer, and when it answered (null when it did not).
+ */
+async function vmStands_refresh(context: VmCommandContext): Promise<{ notes: string[]; at: string | null }> {
+  const region: string | null = context.region();
+  if (region === null) return { notes: ['not connected: what runs was not read'], at: null };
+  try {
+    const at: string = new Date().toISOString();
+    return { notes: (await vmCache_reconcile(context, region, await vmsFound_read(context.driver, region))).notes, at };
+  } catch (error: unknown) {
+    return { notes: [`the tenancy was not searched (${error instanceof Error ? error.message : String(error)}): what runs is as last read`], at: null };
+  }
+}
+
+/**
+ * What runs of a VM costs: its parts that stand, at the sizes the tenancy
+ * answered (a machine torn down bills nothing; its kept data bills its own).
+ *
+ * @param context - The session.
+ * @param record - Its record, with what the last listing read.
+ * @param spec - Its declared spec, for what the tenancy does not size (its OS, its ports).
+ * @param read - When the tenancy answered this listing, or null when it did not.
+ * @returns The rate and when it was read, or null when the tenancy was not read for it.
+ */
+async function runsCost_read(context: VmCommandContext, record: VmRecord, spec: VmSpec, read: string | null): Promise<RunsCost> {
+  const stands = record.stands;
+  // The tenancy answered and holds nothing of it (declared only, or torn down whole): nothing of it bills.
+  if (stands === undefined) return read === null || record.region !== context.region() ? null : { rate: { machineHour: 0, dataHour: 0, currency: 'USD' }, at: read };
+  const machine: boolean = stands.vcpu !== null;
+  const data: boolean = stands.data !== null;
+  const sized: VmSpec = {
+    ...spec, vcpu: stands.vcpu ?? spec.vcpu, memory: stands.memory ?? spec.memory, disk: stands.disk ?? spec.disk, data: stands.data ?? spec.data,
+    dataBackup: stands.backup === undefined || stands.backup === null ? spec.dataBackup : stands.backup === 'daily' ? 'daily' : 'none',
+  };
+  const cost: VmCost | null = await cost_read(context, sized);
+  return { rate: cost === null ? null : { machineHour: machine ? cost.machineHour : 0, dataHour: data ? cost.dataHour : 0, currency: cost.currency }, at: stands.at };
+}
+
 /** `vm cost`'s usage. */
 const VM_COST_USAGE: string = 'vm cost [<name> [--vcpu <n>] [--memory <GiB>] [--disk <GB>] [--data <GB>] [--data-backup daily|none] [--os <os>] [--net <network>] [--open <ports>]]';
 
@@ -607,14 +652,18 @@ async function vmCost_run(context: VmCommandContext, args: ReadonlyArray<string>
   if (name === undefined) {
     const names: string[] = context.store.names_list();
     if (names.length === 0) return envelope_ok('no VM declared: vm cost <name> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> prices one without declaring it\n');
-    const lines: string[] = [];
+    // What runs is read from the tenancy first, so each VM is priced as it stands beside as it is declared (a-change-is-a-loop, clause 1).
+    const { notes, at } = await vmStands_refresh(context);
+    const lines: string[] = notes.map((note: string): string => chalk.yellow(note));
     const rows: VmCostRow[] = [];
     for (const each of names) {
       const kept = context.store.spec_read(each);
       if (kept === null || 'error' in kept) { lines.push(`${chalk.bold(each)}: ${chalk.yellow('its spec cannot be read')}`); continue; }
       const cost: VmCost | null = await cost_read(context, kept.spec);
-      lines.push(`${chalk.bold(each)}: ${size_line(kept.spec)}: ${cost_line(cost)}`);
-      rows.push({ name: each, declared: true, spec: kept.spec, cost, changes: [], before: null });
+      const runs: RunsCost = await runsCost_read(context, context.store.record_read(each) as VmRecord, kept.spec, at);
+      const runsWords: string = runs === null ? chalk.gray('; what runs was not read') : `; runs ${runs.rate === null ? 'not priced' : cost_line(runs.rate)} ${chalk.gray(`(read from the tenancy ${runs.at.slice(11, 16)} UTC)`)}`;
+      lines.push(`${chalk.bold(each)}: declared ${size_line(kept.spec)}: ${cost_line(cost)}${runsWords}`);
+      rows.push({ name: each, declared: true, spec: kept.spec, cost, changes: [], before: null, runs });
     }
     return envelope_ok(told(`${lines.join('\n')}\n`), model(rows));
   }

@@ -180,7 +180,16 @@ export class FakeDriver implements CloudDriver {
   }
 
   async instances_list(containerId: string, region: string): Promise<CloudInstance[]> {
-    return this.resources_list<CloudInstance>('instances', containerId, region);
+    const listed: CloudInstance[] = this.resources_list<CloudInstance>('instances', containerId, region);
+    // What the fake builder made of a cluster: its machines, at the spec it was planned at.
+    const count: number = this.built?.held.get(containerId)?.instances ?? 0;
+    const spec = this.built?.heldSpec.get(containerId);
+    for (let i: number = 0; i < count && spec !== undefined; i++) {
+      const pool = i < spec.controlPlane.count ? spec.controlPlane : spec.workers;
+      listed.push({ id: `ocid1.instance.oc1..fake-${containerId.slice(-8)}-${i}`, name: `node-${i}`, state: 'running', region, created: '2026-11-05T00:00:00Z', tags: {}, raw: {},
+        shape: `VM.Standard.${spec.family}.Flex`, zone: 'AD-1', ips: [`10.0.16.${10 + i}`], vcpus: pool.vcpu, memoryGib: pool.ramGib });
+    }
+    return listed;
   }
 
   async networks_list(containerId: string, region: string): Promise<CloudNetwork[]> {

@@ -71,6 +71,8 @@ export class FakeBuildWorld {
   readonly compartments: Map<string, string> = new Map();
   /** What a cluster's build made in its compartment, by kind, as the fake tenancy counts it (`resources_search`). */
   readonly held: Map<string, Partial<Record<'instances' | 'loadbalancers' | 'volumes' | 'buckets', number>>> = new Map();
+  /** The spec each compartment's cluster was planned at, so the fake tenancy lists its machines at their sizes (what a price is worked from). */
+  readonly heldSpec: Map<string, ClusterSpec> = new Map();
   /** The DNS zones the tenancy holds. */
   readonly zones: string[] = ['fake.example'];
   /** The stacks the tenancy holds, by id, as `stack_describe` reads them back; a test seeds them. */
@@ -315,6 +317,8 @@ export class FakeCloudBuilder implements CloudBuilder {
 
   async infra_plan(request: { cluster: string; spec: ClusterSpec; region: string; isoObject: string; stackRef?: string; compartmentId?: string; baseDomain?: string; isoLink?: string }, call: BuildCall): Promise<InfraPlan> {
     await this.world.tick(3, call.signal);
+    const planned: string | undefined = request.compartmentId ?? this.world.compartments.get(request.cluster);
+    if (planned !== undefined) this.world.heldSpec.set(planned, request.spec);
     if (request.stackRef !== undefined) {
       // A built stack re-planned: nothing to make, OCI's own tags to strip.
       const drift: PlanRow[] = specNodes_build(request.cluster, request.spec, FAKE_ZONES.length).map((node: SpecNode): PlanRow => ({ action: 'change', kind: 'instances', name: node.name, drift: true }));

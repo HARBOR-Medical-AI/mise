@@ -91,7 +91,8 @@ async function compartment_count(context: ClusterCommandContext, compartmentId: 
  * @returns The spend (null when not priced) and the line.
  */
 async function clusterCost_read(context: ClusterCommandContext, cluster: HarborCluster): Promise<{ spend: Spend | null; line: string }> {
-  const compartmentId: string | undefined = cluster.settings['OCI_COMPARTMENT_OCID'];
+  // A checkout names its compartment in its settings; a cluster built here keeps it in its record: either is priced as it runs.
+  const compartmentId: string | undefined = cluster.settings['OCI_COMPARTMENT_OCID'] ?? (cluster.state as { compartmentId?: string } | null)?.compartmentId;
   const region: string | null = cluster.settings['OCI_REGION'] ?? context.region();
   if (compartmentId === undefined || region === null) return { spend: null, line: 'cost         not priced: no compartment known' };
   try {

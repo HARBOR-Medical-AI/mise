@@ -156,7 +156,11 @@ async function vms_read(ask: (line: string) => Promise<ExecuteOutcome>): Promise
   try { status = model_extract(await ask('vm status'), STRATUS_VM_STATUS_MODEL_KIND, (data) => vmStatusModelSchema.safeParse(data)); } catch { return []; }
   if (status === null) return [];
   try { cost = model_extract(await ask('vm cost'), STRATUS_VM_COST_MODEL_KIND, (data) => vmCostModelSchema.safeParse(data)); } catch { cost = null; }
-  return status.vms.map((row: VmStatusRow): VmSeen => ({ row, rate: cost?.vms.find((each: VmCostRow): boolean => each.name === row.name)?.cost ?? null }));
+  // What a VM bills is what runs of it, priced from what the tenancy answered; a daemon from before that prices the declaration.
+  return status.vms.map((row: VmStatusRow): VmSeen => {
+    const priced: VmCostRow | undefined = cost?.vms.find((each: VmCostRow): boolean => each.name === row.name);
+    return { row, rate: priced?.runs !== undefined ? (priced.runs?.rate ?? null) : (priced?.cost ?? null) };
+  });
 }
 
 /**

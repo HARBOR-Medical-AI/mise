@@ -226,7 +226,20 @@ describe('vm, over the fake cloud', () => {
     expect((await vm_run(context, ['cost', 'store', '--memory', '16'])).model).toMatchObject({ kind: 'stratus.vm.cost', data: { vms: [{ name: 'store', declared: true, spec: { memory: 16 }, changes: ['memory 8 → 16'], before: { currency: 'USD' } }] } });
     expect((await vm_run(context, ['cost'])).model).toMatchObject({ data: { vms: [{ name: 'store', declared: true, changes: [] }] } });
     expect(store.spec_read('store')).toMatchObject({ spec: { memory: 8 } });
-    expect(plain((await vm_run(context, ['cost'])).rendered)).toBe('store: 2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups): $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month)\n');
+    // Declared, priced as declared; nothing of it runs, read from the tenancy, so what runs bills nothing.
+    expect(plain((await vm_run(context, ['cost'])).rendered)).toMatch(/^store: declared 2 vCPU · 8 GiB · disk 50 GB · data 50 GB \(daily backups\): \$0\.052 an hour, \$37\.83 a month \(the data alone, kept after a teardown: \$0\.003 an hour, \$2\.13 a month\); runs \$0\.000 an hour/);
+    expect((await vm_run(context, ['cost'])).model).toMatchObject({ data: { vms: [{ name: 'store', runs: { rate: { machineHour: 0, dataHour: 0 }, at: expect.any(String) } }] } });
+    // Built, what runs is priced; its machine torn down, only its kept data bills.
+    surface.answers = ['y'];
+    await vm_run(context, ['build', 'store']);
+    const built = ((await vm_run(context, ['cost'])).model as { data: { vms: Array<{ runs: { rate: { machineHour: number; dataHour: number } } }> } }).data.vms[0]?.runs.rate;
+    expect(built?.machineHour).toBeGreaterThan(0);
+    expect(built?.dataHour).toBeGreaterThan(0);
+    await vm_run(context, ['protect', 'store', 'off']);
+    surface.answers = ['y'];
+    await vm_run(context, ['teardown', 'store']);
+    const kept = ((await vm_run(context, ['cost'])).model as { data: { vms: Array<{ runs: { rate: { machineHour: number; dataHour: number } } }> } }).data.vms[0]?.runs.rate;
+    expect(kept).toMatchObject({ machineHour: 0, dataHour: built?.dataHour });
     expect((await vm_run(context, ['cost', '--memory', '16'])).renderedErr).toContain('vm cost: usage:');
   });
 
