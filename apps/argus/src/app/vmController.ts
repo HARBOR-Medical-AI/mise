@@ -58,6 +58,9 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     // Left with a line in flight: its question, if it asks one before the line ends, is this screen's to show when it opens again.
     leftWithLine = lineRunning || screen.following_is() ? Date.now() + LEFT_LINE_MS : 0;
     if (screen.following_is()) context.client.stop_send();
+    // A question standing on the strip is carried, not answered: it stands again when the screen opens (a-change-is-a-loop, clause 6).
+    const standing = screen.ask_detach();
+    if (standing !== null) heldKeep({ request: { message: standing.message, kind: standing.kind }, resolve: standing.resolve });
     screen.dispose();
     screen.root.remove();
     screen = null;
@@ -127,6 +130,14 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
   let leftWithLine: number = 0;
   /** A question the screen's line asked while the screen was away, held for the screen when it opens again. */
   let held: { request: SurfaceAsk; resolve: (value: string | null) => void } | null = null;
+  /** The bound on a held question: unanswered by then, it is abandoned, so a forgotten screen never holds the session. */
+  let heldTimer: ReturnType<typeof setTimeout> | null = null;
+  const heldKeep = (one: { request: SurfaceAsk; resolve: (value: string | null) => void }): void => {
+    held?.resolve(null);
+    held = one;
+    if (heldTimer !== null) clearTimeout(heldTimer);
+    heldTimer = setTimeout((): void => { if (held === one) { held = null; one.resolve(null); } }, LEFT_LINE_MS);
+  };
 
   return {
     open,
@@ -135,7 +146,7 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     running_is: (): boolean => lineRunning || Date.now() < leftWithLine,
     ask: (request: SurfaceAsk): Promise<string | null> => {
       if (screen !== null) return screen.ask_take(request.message, request.kind);
-      return new Promise((resolve: (value: string | null) => void): void => { held = { request, resolve }; });
+      return new Promise((resolve: (value: string | null) => void): void => { heldKeep({ request, resolve }); });
     },
     output_take: (chunk: string): void => { screen?.output_take(chunk); },
     task_ended: (): void => { screen?.taskEnded_take(); },

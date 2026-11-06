@@ -619,7 +619,7 @@ export class TdController {
     const at = cluster.steps.find((step): boolean => (step.name ?? '') === killed.step);
     const note: HTMLElement = el('div', 'tdc-note tdc-note-refused tdc-note-killed');
     const where: string = killed.step === null ? 'the task' : `${killed.step} (${(at?.state ?? 'not read').toUpperCase()} as read now)`;
-    note.append(el('span', 'tdc-note-title', `KILLED · ${killed.at.slice(11, 16)}`), el('span', 'tdc-prose', `${killed.job} was stopped in ${where}. What it made stays${cluster.billing === true ? ' and bills' : ''}; BUILD · THROUGH RUN resumes at the first step not done.`));
+    note.append(el('span', 'tdc-note-title', `KILLED · ${killed.at.slice(11, 16)}`), el('span', 'tdc-prose', `${killed.job} was stopped in ${where}. What it made stays${cluster.billing === true ? ' and bills' : ''}; BUILD · THROUGH RUN asks first, then resumes at the first step not done.`));
     return note;
   }
 
@@ -916,7 +916,7 @@ export class TdController {
       const stop: HTMLElement = el('div', 'tdc-note tdc-note-refused');
       stop.append(el('span', 'tdc-note-title', 'KILL STOPS IT PART WAY'), el('span', 'tdc-prose', teardown
         ? 'What it removed stays removed; what stands stays and still bills. TEAR DOWN resumes at the first step not done.'
-        : `${running.step ?? 'The step'} stops where it is; what it made stays and bills if it bills. BUILD · THROUGH RUN resumes at the first step not done.`));
+        : `${running.step ?? 'The step'} stops where it is; what it made stays and bills if it bills. BUILD · THROUGH RUN asks first, then resumes at the first step not done.`));
       const back: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'KEEP IT RUNNING');
       back.type = 'button';
       back.addEventListener('click', (): void => { this.hooks.voice.pill('KEEP IT RUNNING'); this.killArmed = null; this.draw(); });

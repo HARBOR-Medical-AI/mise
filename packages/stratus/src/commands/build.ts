@@ -379,6 +379,30 @@ async function makes_question(context: BuildCommandContext, name: string, record
 }
 
 /**
+ * The question before a build resumes once billing was accepted: the steps
+ * left, the rate it bills on at, the account a seed makes, and what a step
+ * stopped part way may have left running in the cloud.
+ *
+ * @param context - The session.
+ * @param name - The cluster.
+ * @param record - Its state.
+ * @param spec - Its spec.
+ * @param next - The first step not done.
+ * @param through - The last step asked for, when one was.
+ * @returns The question.
+ */
+async function resume_question(context: BuildCommandContext, name: string, record: ClusterRecord, spec: ClusterSpec, next: string, through: string | undefined): Promise<string> {
+  const left: string[] = BUILD_STEPS.slice(BUILD_STEPS.indexOf(next), through === undefined ? undefined : BUILD_STEPS.indexOf(through) + 1);
+  const cost: SpecCost | null = await cost_read(context, record.region, spec);
+  const rate: string = cost === null ? 'an unpriced rate' : cost_words(cost);
+  const stopped: string = record.steps[next]?.started !== undefined
+    ? ` ${next} was stopped part way: a cloud job it started may have run on; the step reads back what stands and makes only what is missing.`
+    : '';
+  const account: string = left.includes('chris-seed') ? ' chris-seed makes the test user on its ChRIS.' : '';
+  return `cluster build ${name}: resumes at ${next}, ${left.length} step${left.length === 1 ? '' : 's'} left (${left.join(', ')}); what stands bills on at ${rate}.${stopped}${account} A NO changes nothing. Continue? [y/N]`;
+}
+
+/**
  * `cluster build [<name>] [--through <step>]`.
  *
  * @param context - The session.
@@ -421,6 +445,18 @@ export async function clusterBuild_run(context: BuildCommandContext, args: Reado
     }
   }
   const id: string = buildJob_id(name);
+  // A resume past the billing step builds on, bills on and may make an account: it asks first, with what is left
+  // (a-change-is-a-loop, clause 4). A build already running is followed, not asked again.
+  const resumeNext: string | null = stepNext_find(need.record);
+  const runningNow: JobRecord | undefined = runner.job_get(STEPS_SOURCE, id);
+  if (need.record.billingAccepted !== undefined && resumeNext !== null && (runningNow === undefined || taskState_isOver(runningNow.state))
+    && (through === undefined || BUILD_STEPS.indexOf(through) >= BUILD_STEPS.indexOf(resumeNext))) {
+    const question: string = await resume_question(context, name, need.record, need.spec, resumeNext, through);
+    clusterState_show(context, name, question);
+    const yes: boolean = await repl_confirm(question);
+    clusterState_show(context, name);
+    if (!yes) return envelope_ok(`${chalk.gray(`stopped before ${resumeNext}; nothing changed (cluster build ${name} asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: `cluster build ${name}`, kept: `done through ${BUILD_STEPS[BUILD_STEPS.indexOf(resumeNext) - 1] ?? ''}` } });
+  }
   for (;;) {
     const running: JobRecord | undefined = runner.job_get(STEPS_SOURCE, id);
     if (running === undefined || taskState_isOver(running.state)) {
