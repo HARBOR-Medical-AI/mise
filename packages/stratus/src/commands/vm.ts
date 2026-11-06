@@ -31,7 +31,7 @@ import { VM_OPTIONS, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_di
 import type { CloudInstance, CloudShape, CloudVolume } from '../cloud/driver.js';
 import { CHRIS_PORTER_TAG, CHRIS_URL_TAG, VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
 import { vmsFound_read, vmTakeover_run, type FoundVm } from '../vm/found.js';
-import { VM_KEYLESS, vmDeclared_adopt, vmKey_held, vmKeyless_is, vmKept_read, vmKept_write, vmLock_adopt, type VmKept } from '../vm/keep.js';
+import { VM_KEYLESS, vmChris_adopt, vmDeclared_adopt, vmKey_held, vmKeyless_is, vmKept_read, vmKept_write, vmLock_adopt, type VmKept } from '../vm/keep.js';
 import { lock_read, lock_where, lockKept_is } from '../kept/lock.js';
 import { cost_words, planFile_derive, VM_JOBS, vmApplyRun_make, vmCost_estimate, vmNet_read, vmPlanRun_make, vmTeardownRun_make, type VmCost, type VmDeps, type VmPart } from '../vm/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
@@ -353,6 +353,7 @@ async function vmTruth_read(context: VmCommandContext, region: string, byName: R
       const kept: VmKept | null = await vmKept_read(context.builder, name, region);
       vmDeclared_adopt(context.store, name, kept);
       vmLock_adopt(context.store, name, kept);
+      vmChris_adopt(context.store, name, kept);
       context.store.record_update(name, (current: VmRecord): void => {
         if (kept?.declared === undefined) delete current.keptDeclared;
         else current.keptDeclared = kept.declared.at;
@@ -792,6 +793,8 @@ async function grow_run(context: VmCommandContext, deps: VmDeps, name: string, g
   const ran = await job_runFollowed(VM_GROW_JOB(name), `grow ${name}`, vmGrowRun_make(name, grow, deps, context.remote_open));
   if ('error' in ran) return envelope_error(said, undefined, `vm build: ${name}: the disks grew, their filesystems did not: ${ran.error} (vm build ${name} grows them again)\n`);
   context.store.record_update(name, (current: VmRecord): void => { delete current.growOwed; });
+  // The receipt is what runs, read again from the tenancy after the act, never the read from before it.
+  await vmStands_refresh(context);
   const read = context.store.spec_read(name);
   return envelope_ok(`${said}${vmStatus_lines(context.store, context.store.record_read(name) as VmRecord, read !== null && 'spec' in read ? read.spec : null).join('\n')}\n`);
 }
@@ -904,6 +907,8 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   built_mark(context, name, spec);
   const growOwed = context.store.record_read(name)?.growOwed;
   if (growOwed !== undefined) return await grow_run(context, deps, name, growOwed, '');
+  // The receipt is what runs, read again from the tenancy after the apply, never the read from before it.
+  await vmStands_refresh(context);
   return envelope_ok(`${vmStatus_lines(context.store, context.store.record_read(name) as VmRecord, spec).join('\n')}\n`);
 }
 
@@ -1075,6 +1080,8 @@ async function vmTeardown_run(context: VmCommandContext, args: ReadonlyArray<str
   const shown = (): void => sink_get().event_write?.(STRATUS_VM_STATE_EVENT, vmRowKept_make(context, name));
   const ran = await job_runFollowed(VM_JOBS.teardown(name), `teardown ${name}`, vmTeardownRun_make(name, all, deps, shown), shown);
   if ('error' in ran) return envelope_error('', undefined, `vm teardown: ${ran.error}\n`);
+  // What stands is read again from the tenancy, so the seat and its line read the teardown's receipt, not the read from before it.
+  await vmStands_refresh(context);
   return envelope_ok(all ? `${name}: torn down whole; its spec stays (vm build ${name} builds it again, empty)\n` : `${name}: its machine is gone; its data and address stay (vm build ${name} makes the machine again over them)\n`);
 }
 

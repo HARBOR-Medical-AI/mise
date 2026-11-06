@@ -207,7 +207,8 @@ export function teardownLooks_build(cluster: ClusterSummary): TeardownLook[] {
     const at: string | null = step?.ended?.slice(11, 16) ?? null;
     const note: string | null = step?.note ?? null;
     const look = (word: string, tone: TeardownLook['tone']): TeardownLook => ({ name, what, how, word, tone, at, note });
-    if (step === undefined || step.state === 'not done') return look('STANDS', 'stands');
+    // Standing, as the compartment was last counted: said with when, so the word is a read, not a default.
+    if (step === undefined || step.state === 'not done') return { ...look('STANDS', 'stands'), at: cluster.resourcesAt != null ? `READ ${cluster.resourcesAt.slice(11, 16)}` : null };
     if (step.state === 'running') return look('GOING', 'going');
     if (step.state === 'done') return look('GONE', 'gone');
     if (step.state === 'skipped') return look('NOTHING', 'skipped');

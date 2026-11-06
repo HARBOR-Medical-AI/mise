@@ -137,7 +137,8 @@ async function vm_read(deps: LineStatusDeps, words: ReadonlyArray<string>): Prom
     if (record === null || (setting !== 'on' && setting !== 'off')) return record === null ? { state: 'not yet', detail: `${name}: not declared (vm new ${name})` } : null;
     const want: boolean = setting === 'on';
     const where: string = record.lockKept !== undefined && record.lockKept === (record.protectedAt ?? record.created) ? 'kept in the tenancy' : 'this host only';
-    return (record.protected === true) === want ? { state: 'done', detail: `${want ? 'protected' : 'unprotected'} (${where})` } : { state: 'ready', detail: `${record.protected === true ? 'protected' : 'unprotected'} now; this line ${want ? 'locks it' : 'lifts the lock'}` };
+    const set: string = (record.protectedAt ?? record.created).slice(0, 16).replace('T', ' ');
+    return (record.protected === true) === want ? { state: 'done', detail: `${want ? 'protected' : 'unprotected'} (${where}, set ${set} UTC)` } : { state: 'ready', detail: `${record.protected === true ? 'protected' : 'unprotected'} now (${where}, set ${set} UTC); this line ${want ? 'locks it' : 'lifts the lock'}` };
   }
   // The teardown line: done when what it removes is gone as the tenancy last answered; ready while it stands.
   if (verb === 'teardown') {

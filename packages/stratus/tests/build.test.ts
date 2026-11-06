@@ -418,8 +418,8 @@ describe('building a cluster over the fakes', () => {
     // Asked first what a build makes before it bills, and at what rate it would bill: no, and nothing is made.
     surface.answers = ['n'];
     const untouched: CommandEnvelope = await cluster_run(context, ['build', 'trial']);
-    expect(plain(untouched.rendered)).toBe('stopped before anything was made; nothing changed (cluster build trial asks again)\n');
-    expect(surface.asked[0]).toMatch(/^cluster build trial: before anything bills it makes the compartment clusters\/trial, the cluster and its infra-env at Red Hat, a discovery ISO with a public link valid seven days, and the infra plan; then it asks again before infra-apply, which starts billing at \$0\.6\d an hour \(compute and memory \(24 vCPU, 72 GiB\), the boot and ChRIS volumes, and 3 load balancers\)\. Continue\? \[y\/N\]$/);
+    expect(plain(untouched.rendered)).toBe('stopped before anything was made; its spec stays written on this host (cluster build trial asks again)\n');
+    expect(surface.asked[0]).toMatch(/^cluster build trial: before anything bills it makes the compartment clusters\/trial, the cluster and its infra-env at Red Hat, a discovery ISO with a public link valid seven days, and the infra plan; then it asks again before infra-apply, which starts billing at \$0\.6\d an hour \(compute and memory \(24 vCPU, 72 GiB\), the boot and ChRIS volumes, and 3 load balancers\)\. Already written: its spec, on this host \(cluster new\); a NO keeps it and makes nothing else\. Continue\? \[y\/N\]$/);
     expect(sink.text_get()).not.toContain('compartment: started');
     expect(store.record_read('trial')?.buildAccepted).toBeUndefined();
     // Yes, then no at billing: what is free is made, nothing bills; the billing question prices what SIZE priced.

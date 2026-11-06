@@ -144,13 +144,13 @@ describe('a session over a tenancy holding a cluster it keeps nothing of', () =>
   });
   afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
-  it('a cluster torn down here with nothing of it left in the tenancy is history: listed nowhere, named in a last line', async () => {
+  it('a cluster torn down here with nothing of it left in the tenancy is history in the text, named in a last line; the model carries it as GONE, nothing billing', async () => {
     store.create({ name: 'quay', created: '2026-10-23T19:35:52.019Z', region: 'us-ashburn-1', baseDomain: 'oci.example.org', steps: {}, ids: {}, gone: '2026-10-25T04:45:08.764Z' }, SPEC_DEFAULT);
     // A tenancy with nothing of it left: no stack, no compartment carries its tag.
     const bare: ClusterCommandContext = context_make(new FakeDriver(cloud_make()));
     (bare.driver as unknown as { clusters_find: () => Promise<FoundCluster[]> }).clusters_find = async (): Promise<FoundCluster[]> => [];
     const answer = await cluster_run(bare, []);
-    expect(answer.model?.data).toEqual({ clusters: [] });
+    expect((answer.model?.data as { clusters: Array<{ name: string; condition?: string; cost?: { hourly: number } | null }> }).clusters).toEqual([expect.objectContaining({ name: 'quay', condition: 'GONE', cost: { hourly: 0, soFar: 0, currency: 'USD' } })]);
     expect(answer.rendered.replace(ANSI, '')).toContain('torn down and gone: quay (the record stays in ');
     // Its tag's carriers still standing, it is found and listed as GONE until they are removed (D15).
     world.stacks.set(QUAY_STACK, { state: 'active', compartmentId: QUAY_COMPARTMENT, baseDomain: 'oci.example.org', spec: SPEC_DEFAULT });
@@ -232,8 +232,11 @@ describe('a session over a tenancy holding a cluster it keeps nothing of', () =>
     expect(record?.protected).toBe(true);
     expect(store.spec_read('quay')?.spec).toEqual(spec);
     const status = await cluster_run(context, ['status', 'quay']);
-    const model = status.model?.data as { clusters: Array<{ origin?: string }> };
+    const model = status.model?.data as { clusters: Array<{ origin?: string; steps: Array<{ name?: string; state: string; evidence?: string }> }> };
     expect(model.clusters[0]?.origin).toBe('adopted');
+    // What the cloud did not attest stays unknown once adopted, never 'not run yet' on a cluster found running.
+    const preflight = model.clusters[0]?.steps.find((step) => step.name === 'preflight');
+    expect(preflight).toMatchObject({ state: 'unknown', evidence: 'the cloud does not say; verify to know' });
     expect((await cluster_run(context, ['adopt', 'quay'])).rendered).toBe(`quay: already adopted; its stack is ${QUAY_STACK}\n`);
     expect((await cluster_run(context, ['adopt', 'nope'])).renderedErr).toBe('cluster adopt: nope: nothing in the tenancy is tagged mise-cluster=nope; a harbor-oci checkout adopts with --from\n');
   });

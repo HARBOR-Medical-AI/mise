@@ -4,6 +4,7 @@
  * variables and plan, the apply's outputs, the records, and the teardown in
  * its order; and the teardown verb.
  */
+import type { ClustersModel } from '@fnndsc/menu';
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -367,6 +368,9 @@ describe('cluster teardown', () => {
     const resumed = await cluster_run(blind, ['teardown', 'trial']);
     expect(plain(resumed.rendered)).toBe('trial: torn down\n');
     expect(store.record_read('trial')?.teardownRefused).toBeUndefined();
+    // Torn down whole, it is history in the text but GONE in the model, nothing billing, so a screen coming back shows it.
+    const after = await cluster_run(context, ['status']);
+    expect((after.model as ClustersModel).data.clusters.find((one) => one.name === 'trial')).toMatchObject({ condition: 'GONE', cost: { hourly: 0 } });
     expect((store.record_read('trial') as ClusterRecord).gone).toBeDefined();
     counted.mockRestore();
     store.record_update('trial', (current: ClusterRecord): void => { delete current.gone; });

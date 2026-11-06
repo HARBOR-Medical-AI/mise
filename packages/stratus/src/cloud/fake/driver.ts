@@ -218,7 +218,12 @@ export class FakeDriver implements CloudDriver {
   }
 
   async loadbalancers_list(containerId: string, region: string): Promise<CloudLoadBalancer[]> {
-    return this.resources_list<CloudLoadBalancer>('loadbalancers', containerId, region);
+    const listed: CloudLoadBalancer[] = this.resources_list<CloudLoadBalancer>('loadbalancers', containerId, region);
+    // A cluster's balancers, as the fake builder made them: flexible, at ten megabits.
+    for (let i: number = 0; i < (this.built?.held.get(containerId)?.loadbalancers ?? 0); i++) {
+      listed.push({ id: `ocid1.loadbalancer.oc1..fake-${containerId.slice(-8)}-${i}`, name: `lb-${i}`, state: 'active', region, created: '2026-11-05T00:00:00Z', tags: {}, raw: {}, ips: [`10.0.32.${10 + i}`], shape: 'flexible', minimumMbps: 10 });
+    }
+    return listed;
   }
 
   /**
@@ -255,6 +260,12 @@ export class FakeDriver implements CloudDriver {
   async volumes_list(containerId: string, region: string): Promise<CloudVolume[]> {
     const listed: CloudVolume[] = this.resources_list<CloudVolume>('volumes', containerId, region);
     // What the fake builder applied: a machine's boot volume and a VM's data volume, at the sizes they were built at.
+    // A cluster's machines' boot volumes, at the spec it was planned at.
+    const spec = this.built?.heldSpec.get(containerId);
+    for (let i: number = 0; i < (this.built?.held.get(containerId)?.instances ?? 0) && spec !== undefined; i++) {
+      const pool = i < spec.controlPlane.count ? spec.controlPlane : spec.workers;
+      listed.push({ id: `ocid1.bootvolume.oc1..fake-${containerId.slice(-8)}-${i}`, name: `node-${i} (Boot Volume)`, state: 'available', region, created: '2026-11-05T00:00:00Z', tags: {}, raw: {}, sizeGib: pool.bootGib, attachedTo: `ocid1.instance.oc1..fake-${containerId.slice(-8)}-${i}`, boot: true, vpusPerGib: pool.bootTier === 'ultra' ? 30 : 10 });
+    }
     for (const stack of this.built?.moduleStacks.values() ?? []) {
       if (stack.applied === null || stack.placeId !== containerId) continue;
       const base = { region, state: 'available', created: '2026-11-01T21:22:15Z', tags: {}, raw: {} };
@@ -346,6 +357,12 @@ export class FakeDriver implements CloudDriver {
     // What the fake builder made in a cluster's compartment.
     for (const [kind, count] of Object.entries(this.built?.held.get(containerId) ?? {})) {
       if (count !== undefined && count > 0) counts[kind as ResourceKind] = (counts[kind as ResourceKind] ?? 0) + count;
+    }
+    // And what a VM's stacks made in a network's compartment: its machine, its boot and data volumes.
+    for (const stack of this.built?.moduleStacks.values() ?? []) {
+      if (stack.applied === null || stack.placeId !== containerId) continue;
+      if (stack.module === 'vmMachine') { counts.instances = (counts.instances ?? 0) + 1; counts.volumes = (counts.volumes ?? 0) + 1; }
+      if (stack.module === 'vmData') counts.volumes = (counts.volumes ?? 0) + 1;
     }
     return counts;
   }

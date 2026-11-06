@@ -117,6 +117,8 @@ export class TdController {
   private refusal: { view: string; line: string; at: string; why: string; declined: boolean } | null = null;
   /** What the line in flight has printed, for the refusal's why. */
   private busyOut: string[] = [];
+  /** The last KILL sent from this screen: the cluster, the task, the step it was in, and when; its receipt stands on BUILD and OVERVIEW. */
+  private killed: { cluster: string; job: string; step: string | null; at: string } | null = null;
   /** The last SPEND's answer, with when: a read whose answer stands in the panel, not only in the log. */
   private spent: { cluster: string; at: string; said: string[] } | null = null;
   /** Whether the operator answered no to the line in flight's question: its stop is a choice, said as declined. */
@@ -340,6 +342,8 @@ export class TdController {
       return;
     }
     this.before = this.cluster_get();
+    // A build or teardown sent again moves past a kill: its receipt goes.
+    if (/^(cluster (build|teardown)|play) /.test(line)) this.killed = null;
     this.busy = line;
     this.busyOut = [];
     this.busyDeclined = false;
@@ -587,6 +591,24 @@ export class TdController {
     if (steplog !== null) steplog.scrollTop = steplog.scrollHeight;
   }
 
+  /**
+   * KILL's receipt: the task stopped, at the step it was in, with what that
+   * step now reads and what the steps after it read, from the cluster read
+   * again; gone once a build or teardown runs again.
+   *
+   * @param cluster - The cluster.
+   * @returns The note, or null when no kill was sent for it.
+   */
+  private killed_make(cluster: ClusterSummary): HTMLElement | null {
+    const killed = this.killed;
+    if (killed === null || killed.cluster !== cluster.name) return null;
+    const at = cluster.steps.find((step): boolean => (step.name ?? '') === killed.step);
+    const note: HTMLElement = el('div', 'tdc-note tdc-note-refused tdc-note-killed');
+    const where: string = killed.step === null ? 'the task' : `${killed.step} (${(at?.state ?? 'not read').toUpperCase()} as read now)`;
+    note.append(el('span', 'tdc-note-title', `KILLED · ${killed.at.slice(11, 16)}`), el('span', 'tdc-prose', `${killed.job} was stopped in ${where}. What it made stays${cluster.billing === true ? ' and bills' : ''}; BUILD · THROUGH RUN resumes at the first step not done.`));
+    return note;
+  }
+
   /** The last refusal, in the view it was pressed in: at the head of the view's first section, beside what it refused. */
   private refusal_place(): void {
     const refused = this.refusal;
@@ -594,7 +616,7 @@ export class TdController {
     const note: HTMLElement = el('div', 'tdc-note tdc-note-refused tdc-note-refusal');
     if (refused.declined) {
       note.className = 'tdc-note tdc-note-found tdc-note-refusal';
-      note.append(el('span', 'tdc-note-title', `DECLINED · ${refused.at.slice(11, 16)}`), el('span', 'tdc-prose', 'You answered no: the line stopped at its question, and nothing it asked about was made or changed.'), el('span', 'tdc-prose tdc-quiet', refused.line));
+      note.append(el('span', 'tdc-note-title', `DECLINED · ${refused.at.slice(11, 16)}`), el('span', 'tdc-prose', `You answered no: the line stopped at its question, and nothing it asked about was made or changed.${refused.line.startsWith('play ') ? ' The script\'s lines before the question ran: a new cluster\'s spec stays written on this host.' : ''}`), el('span', 'tdc-prose tdc-quiet', refused.line));
     } else {
       note.append(el('span', 'tdc-note-title', `REFUSED · ${refused.at.slice(11, 16)}`), el('span', 'tdc-prose', refused.why), el('span', 'tdc-prose tdc-quiet', `${refused.line}: nothing it would have changed was changed`));
     }
@@ -680,7 +702,9 @@ export class TdController {
     const badge: string = classBadge_render(cluster);
     note.append(el('span', 'tdc-note-title', badge));
     if (cluster.origin === 'adopted') {
-      note.append(el('span', 'tdc-prose', 'Built by harbor-oci. Its installer ids and its Terraform state are kept by stratus; it is planned against, never built on.'));
+      note.append(el('span', 'tdc-prose', 'Adopted: planned against, never built on. Its steps are what the cloud attested; what it did not stays UNKNOWN until VERIFY.'));
+      // The next step, on the panel: the credentials the cloud does not keep are copied here by hand.
+      note.append(el('span', 'tdc-prose tdc-quiet', `NEXT: copy its kubeconfig and CUBE token into ${cluster.path ?? 'its folder'} (the cloud does not keep them); VERIFY then reads it.`));
       note.append(el('span', 'tdc-prose tdc-quiet', `build refused: ${cluster.refused?.['build'] ?? 'adopted'}`));
     } else if (cluster.origin === 'found' && cluster.condition === 'GONE') {
       // Nothing of it is left in the tenancy but what carries its tag: its stack and its compartment (docs/stratus.adoc, D15).
@@ -689,7 +713,7 @@ export class TdController {
       note.append(this.linePill_make('REMOVE WHAT IS LEFT', LINES.teardown(cluster.name), 'destroy', cluster.refused?.['teardown']));
     } else if (cluster.origin === 'found') {
       // Found in the tenancy by its tag and read from the cloud: address, spec and condition shown; acting on it waits on ADOPT (docs/stratus.adoc, D15).
-      note.append(el('span', 'tdc-prose', 'Found in the tenancy by its tag. What is shown is what the cloud says of it: its address and spec from its stack, its condition from what lives in its compartment. ADOPT keeps it here, which is what PLAN, VERIFY, BUILD and TEAR DOWN wait on; its kubeconfig and CUBE token are then copied by hand.'));
+      note.append(el('span', 'tdc-prose', 'Found in the tenancy by its tag. What is shown is what the cloud says of it: its address and spec from its stack, its condition from what lives in its compartment. ADOPT keeps it here: it writes this host\'s record only, builds and bills nothing. Adopted, PLAN plans against it, VERIFY checks it once its kubeconfig is copied here, and TEAR DOWN may remove it behind its lock; an adopted cluster is never built on.'));
       // loop: td-adopt
       note.append(this.linePill_make('ADOPT', LINES.adopt(cluster.name), 'plain', cluster.refused?.['adopt']));
     } else if (cluster.origin === 'checkout') {
@@ -788,6 +812,7 @@ export class TdController {
     const middle: HTMLElement = el('div', 'tdc-col-middle');
     const running = cluster.running;
     if (running !== null && running !== undefined) middle.append(this.running_make(cluster, running));
+    else { const killed: HTMLElement | null = this.killed_make(cluster); if (killed !== null) middle.append(killed); }
     const plan: HTMLElement = this.section_make('THE PLAN', 'tdc-plan', cluster.plan?.at ? `MADE ${cluster.plan.at.slice(0, 16).replace('T', ' ')}` : undefined);
     if (cluster.plan === null || cluster.plan === undefined) {
       plan.append(el('p', 'tdc-prose', cluster.origin === 'adopted' ? 'No plan kept here. PLAN, under the tasks tier, plans against the adopted state; an apply is refused.' : 'No plan yet. BUILD makes it at infra-plan, and nothing it makes bills.'));
@@ -841,6 +866,8 @@ export class TdController {
       this.hooks.voice.pill(armed ? 'KILL' : 'KILL · NOW');
       if (!armed) { this.killArmed = running.job; this.draw(); return; }
       this.killArmed = null;
+      // KILL's receipt, kept on the panel: what was stopped, at which step, and when, read with the cluster again after.
+      this.killed = { cluster: cluster.name, job: running.job, step: running.step ?? null, at: new Date().toISOString() };
       void this.kill_send(running.job);
     });
     if (armed) {
