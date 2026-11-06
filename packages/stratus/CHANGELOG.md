@@ -1,5 +1,57 @@
 # @fnndsc/stratus
 
+## 0.13.0
+
+### Minor Changes
+
+- a00da3e: A ChRIS's status says what runs, read from it, and a deploy over one says what it would restart and asks first.
+
+  `chris status` reads each deployed ChRIS over HTTPS (CUBE's answer and whether the admin signs in, its accounts every page, porter's health, open sessions and version), with when, in its text and its model. A deploy keeps the CUBE image and porter version it put up; `chris deploy … --plan` says the changes, the restarts and the porter sessions a restart ends, acting on nothing; a replay that restarts or changes anything asks with all of it. The `vm status` row carries the instance's id.
+
+- 3636084: A cluster's build asks before it makes anything, and both its questions price what SIZE priced.
+
+  `cluster build` asks first, before its first step, with everything it makes before it bills (the compartment, the records at Red Hat, the discovery ISO and its public link, the plan) and the rate it would bill at; a NO makes nothing. Billing is asked again before infra-apply with the plan's count. Both price a spec whole: compute and memory, the boot and ChRIS volumes, the load balancers. A cluster built here is counted in its compartment on `cluster status`, with when. A network keeps the CIDR its build made; a new CIDR on a built network says what it would replace as it is declared; `net status` answers a model of what stands.
+
+- 6566de4: A VM's or a cluster's lock is kept in the tenancy, so a lock set on one host holds on every host. It carries when it was set, and stops a teardown from another host. `vm protect` and `cluster protect` write it to the vault from a MANAGE session (a READ session sets it on its host only and says so); every listing reads it back, and a teardown reads it again before it acts. `vm status` and the cluster summary carry `lock {at, kept}`; the VM and TD screens say where the lock is kept and when it was set, and in a READ session declaring a VM and setting a lock raise to MANAGE first.
+- f6424bc: A network's range is read from its VCN, and a cluster's steps are drawn against what its compartment holds. `net status` carries `stands {cidr, at}` and `net build` answers with the VCN read back; the network seat draws the VCN's range with when. The TD controller marks each step that makes something in OCI with what the tenancy holds of it, and a step done of which it holds none as the disagreement.
+- 2f4f3b3: A refused line, an answered no and a torn-down thing are rendered where they happen, not left to the log. A refusal is said in its seat with why until the seat sends again; a no is said as declined; a cluster teardown refused for its unreadable volumes is kept on its record so the guard says it coming back. A VM whose machine is gone is offered only what is left to undo; PULL, each source's clone head and SPEND's answer stand in their panels with when.
+- a9925d7: Receipts are read after the act, and commits that write a record alone say so. A VM build or teardown re-reads the tenancy before it answers; an adopted cluster keeps what the cloud attested; a cluster torn down whole stays listed as GONE; billing starts with the billing step. DECLARE, SAVE, PULL and ADOPT stand apart from the commits that bill and say they build nothing, with their receipts in place; KILL leaves its receipt, and + NEW's BUILD waits for its price.
+- 38474eb: What stands is read mid-act, and every panel says what it would undo and what it last did. A VM's row carries the act in flight and what runs even mid-build; a cluster's build keeps its born lock in the tenancy. A torn cluster's steps read as gone; the script screen reads its ChRIS and VMs, holds a network's teardown while a VM stands on it, and says what each undoing stops billing. SAVE, PLAN and ADOPT leave their receipts in place, and a running line reads RUNNING.
+- 90b360f: A build asks for what it is about to make once that is planned, and its question names what it already wrote. A first VM build asks again before its machine, once the machine is planned; every build question names the declaration already written; KILL says it was sent and reads the task again until it stops, with the other verbs held while it runs. A torn cluster answers by name with where its loop ended, and a teardown line seat says what goes and what it stops billing.
+- 13842b6: A question asked while its screen was away stands again when the screen opens, and a no is a choice, not a failure. The script and VM screens hold their line's question until they reopen, say RUNNING while it waits, and give a refusal the session's own reason. A line answered no stops a play quietly and is said as declined; the TD teardown's question names what goes and what stops billing; + NEW's price redraws as it arrives; the lock's words say what lifting it writes; a resize names its ports.
+- 4e2ce55: A question answered on a screen that did not send its line reads its task as running, and stands over its own seat. Commits wait while a step's task runs; a line whose question stands reads ASKING on its seat and rail. A teardown line says what goes and what it stops billing; a network's TEARDOWN says what it removes and why it is refused, beside it. An edit shows each changed line against the copy as read; a seat's output says which line printed it and when; the header names whose cost it shows; ADOPT's next step names the host folder. The fake's applies can be slowed (STRATUS_FAKE_APPLY_TICKS).
+- d4a8892: The script screen renders what runs beside its VM seats and an edit as its difference against what stands. VM seats read `vm status` (RUNS, BUILD WOULD, the lock with where it is kept, undoings only for what stands); `vm protect` and `vm teardown` lines wear a standing; an unsaved edit is read as the screen's text, SAVE appears at once, and a network's line shows its range as it stands → the line's.
+- e20fe22: What stands is priced as it runs, read from the tenancy, never as it is declared. `vm cost` bare reads the tenancy first and gives each VM `runs {rate, at}`: the parts that stand, a torn-down machine billing nothing and its kept data its own. The header's STANDS NOW draws that with when it was read, the declaration on its own row when it differs; a machine's screen prices that machine, the dashboard tile bills what runs, and a cluster built here is priced from its record's compartment.
+- 2285cce: What a VM runs is read whole from the tenancy: its open ports, its data's backups and its OS, beside its sizes. `vm status` and the row's `stands` carry `open`, `backup` and `os`; a build line and BUILD WOULD compare each with what is declared; SIZE draws RUNS beside the ports, backups and OS, MACHINE's OPEN is what the security group opens, and TEARDOWN's blocks say whether each part stands as the tenancy answered, with when.
+- ecb4a20: A VM's declaration is kept in the tenancy, and `vm status` says what runs, read from the cloud, beside what is declared.
+
+  From a session with the tasks tier, `vm new` keeps the declaration in the VM's vault secret with when it was made, and `vm build` keeps it before it plans; a READ session keeps it on its host and says so. Every keep merges with the vault's (a host lacking the VM's key or ChRIS never drops them; the newer declaration wins), and each listing takes a newer declaration from the vault. Each listing also reads the instance's vCPUs and memory and the boot and data volumes' sizes, with when (`stands`), and a build line's standing compares the declaration with what runs (`declared, not built: disk 50 → 180 GB`). Under `stratus --fake` the fake tenancy lists the volumes its builder made.
+
+### Patch Changes
+
+- 49d2d5f: A walk on the fake cloud can deploy ChRIS and add its accounts. The fake daemon's VMs answer the deploy's lines, and CUBE's API reads back what each was given.
+- a41fd9b: The fake cloud answers what the walks need, and two render faults are fixed. The fake keeps when its price list was read, answers a cluster's volumes (none), and seeds a found cluster for adoption with `STRATUS_FAKE_FOUND=<name>`. VERIFY's stamp says its seconds, so a run again in the same minute shows it moved.
+- 015cefb: A build's question names the free things its plan made before asking. `net build` makes its compartment and stack, and `vm build` its stacks, in order to plan; the question now says them ("already made to plan it, free: …; STOP leaves them, and a later build reuses them"), and a STOP says what it left rather than that nothing changed.
+- 7ad165e: A new ChRIS account and a first ChRIS deploy ask first, and a machine build answered on its screen reads running. ADD says before the press when no ChRIS stands to add to; unsaved script edits are kept when the screen is left; a torn-down cluster's build count reads as history, and a teardown says what it has not counted instead of calling it standing.
+- 77aae9e: A started billing step never reads as planned, and an answered question follows its task. A cluster stopped part way through its billing step reads PARTLY BUILT and billing; the machine's question says what STOP leaves billing; a line edited since its standing was read says so; the TD teardown blocks say which are counted and when; a lock line says what it writes.
+- e3e58dd: A cluster build resumed after a kill asks before it builds on. Leaving a screen with a question standing keeps the question for its return, and a new user's line is saved before its account is made.
+- Updated dependencies [a00da3e]
+- Updated dependencies [6566de4]
+- Updated dependencies [3636084]
+- Updated dependencies [f6424bc]
+- Updated dependencies [ecb4a20]
+- Updated dependencies [2f4f3b3]
+- Updated dependencies [7ad165e]
+- Updated dependencies [38474eb]
+- Updated dependencies [13842b6]
+- Updated dependencies [4e2ce55]
+- Updated dependencies [e20fe22]
+- Updated dependencies [ecb4a20]
+- Updated dependencies [2285cce]
+  - @fnndsc/menu@0.37.0
+  - @fnndsc/brasa@0.53.0
+  - @fnndsc/calypso@0.29.3
+
 ## 0.12.1
 
 ### Patch Changes

@@ -1,5 +1,41 @@
 # @fnndsc/chell
 
+## 5.19.16
+
+### Patch Changes
+
+- Updated dependencies [a00da3e]
+- Updated dependencies [a41fd9b]
+- Updated dependencies [6566de4]
+- Updated dependencies [3636084]
+- Updated dependencies [f6424bc]
+- Updated dependencies [ecb4a20]
+- Updated dependencies [2f4f3b3]
+- Updated dependencies [7ad165e]
+- Updated dependencies [a9925d7]
+- Updated dependencies [38474eb]
+- Updated dependencies [90b360f]
+- Updated dependencies [13842b6]
+- Updated dependencies [4e2ce55]
+- Updated dependencies [77aae9e]
+- Updated dependencies [e3e58dd]
+- Updated dependencies [d4a8892]
+- Updated dependencies [e20fe22]
+- Updated dependencies [3636084]
+- Updated dependencies [0e620ff]
+- Updated dependencies [bc61701]
+- Updated dependencies [a00da3e]
+- Updated dependencies [ecb4a20]
+- Updated dependencies [2285cce]
+- Updated dependencies [287e4c7]
+- Updated dependencies [ecb4a20]
+  - @fnndsc/menu@0.37.0
+  - @fnndsc/argus@0.52.0
+  - @fnndsc/brasa@0.53.0
+  - @fnndsc/calypso@0.29.3
+  - @fnndsc/chili@3.8.8
+  - @fnndsc/cumin@3.29.10
+
 ## 5.19.15
 
 ### Patch Changes

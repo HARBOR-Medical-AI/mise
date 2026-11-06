@@ -1,5 +1,30 @@
 # @fnndsc/brasa
 
+## 0.53.0
+
+### Minor Changes
+
+- ecb4a20: A script's standing can be read for lines not yet written to a file: `play <script> --status --text=<lines>`.
+- 13842b6: A question asked while its screen was away stands again when the screen opens, and a no is a choice, not a failure. The script and VM screens hold their line's question until they reopen, say RUNNING while it waits, and give a refusal the session's own reason. A line answered no stops a play quietly and is said as declined; the TD teardown's question names what goes and what stops billing; + NEW's price redraws as it arrives; the lock's words say what lifting it writes; a resize names its ports.
+
+### Patch Changes
+
+- Updated dependencies [a00da3e]
+- Updated dependencies [6566de4]
+- Updated dependencies [3636084]
+- Updated dependencies [f6424bc]
+- Updated dependencies [2f4f3b3]
+- Updated dependencies [7ad165e]
+- Updated dependencies [38474eb]
+- Updated dependencies [13842b6]
+- Updated dependencies [4e2ce55]
+- Updated dependencies [e20fe22]
+- Updated dependencies [ecb4a20]
+- Updated dependencies [2285cce]
+  - @fnndsc/menu@0.37.0
+  - @fnndsc/chili@3.8.8
+  - @fnndsc/cumin@3.29.10
+
 ## 0.52.5
 
 ### Patch Changes
