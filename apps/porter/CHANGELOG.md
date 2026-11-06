@@ -1,5 +1,16 @@
 # @fnndsc/porter
 
+## 0.9.13
+
+### Patch Changes
+
+- Updated dependencies [de5a6bf]
+  - @fnndsc/chell@5.20.0
+  - @fnndsc/cumin@3.30.0
+  - @fnndsc/menu@0.38.0
+  - @fnndsc/calypso@0.29.4
+  - @fnndsc/stratus@0.13.1
+
 ## 0.9.12
 
 ### Patch Changes
