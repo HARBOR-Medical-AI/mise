@@ -1,5 +1,39 @@
 # @fnndsc/porter
 
+## 0.9.12
+
+### Patch Changes
+
+- a00da3e: Porter's health answer names its version, so a deploy that would replace porter can say which version it replaces.
+- Updated dependencies [a00da3e]
+- Updated dependencies [a00da3e]
+- Updated dependencies [3636084]
+- Updated dependencies [49d2d5f]
+- Updated dependencies [a41fd9b]
+- Updated dependencies [6566de4]
+- Updated dependencies [3636084]
+- Updated dependencies [f6424bc]
+- Updated dependencies [015cefb]
+- Updated dependencies [2f4f3b3]
+- Updated dependencies [7ad165e]
+- Updated dependencies [a9925d7]
+- Updated dependencies [38474eb]
+- Updated dependencies [90b360f]
+- Updated dependencies [13842b6]
+- Updated dependencies [4e2ce55]
+- Updated dependencies [77aae9e]
+- Updated dependencies [e3e58dd]
+- Updated dependencies [d4a8892]
+- Updated dependencies [e20fe22]
+- Updated dependencies [ecb4a20]
+- Updated dependencies [2285cce]
+- Updated dependencies [ecb4a20]
+  - @fnndsc/menu@0.37.0
+  - @fnndsc/stratus@0.13.0
+  - @fnndsc/calypso@0.29.3
+  - @fnndsc/chell@5.19.16
+  - @fnndsc/cumin@3.29.10
+
 ## 0.9.11
 
 ### Patch Changes
