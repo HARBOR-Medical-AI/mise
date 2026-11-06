@@ -54,9 +54,10 @@ describe('what runs of a ChRIS', () => {
 describe('what a deploy would do', () => {
   const ask = { profile: 'minimal', compute: 'NERC', host: 'cube.example.org', porter: 'porter.example.org' };
 
-  it('a replay as deployed restarts nothing and does not ask; a first deploy puts it up', () => {
-    expect(chrisPlan_derive(CHRIS, ask, null)).toEqual({ changes: [], restarts: [], sessions: null, asks: false });
-    expect(chrisPlan_derive(undefined, ask, null)).toMatchObject({ restarts: [], asks: false });
+  it('a replay as deployed restarts nothing and does not ask; a first deploy puts it up and asks', () => {
+    expect(chrisPlan_derive(CHRIS, ask, null)).toEqual({ changes: [], restarts: [], sessions: null, asks: false, first: false });
+    // A first deploy builds on the machine: it asks, with what it puts up.
+    expect(chrisPlan_derive(undefined, ask, null)).toMatchObject({ restarts: [], asks: true, first: true });
   });
 
   it('a new porter restarts porter and says the sessions it ends; a new host restarts CUBE; an old record says it may restart both', () => {
@@ -71,6 +72,6 @@ describe('what a deploy would do', () => {
     expect(chrisPlan_derive(unknown, ask, 1).restarts).toEqual(['CUBE and porter, perhaps (this deploy\'s record predates kept versions)']);
     expect(chrisPlan_words('store', chrisPlan_derive(unknown, ask, 0))).toBe('chris deploy store: as deployed; restarts CUBE and porter, perhaps (this deploy\'s record predates kept versions); no porter session is open now');
     // A compute changed alone is a registration: it changes the record and restarts nothing, and still asks with the change.
-    expect(chrisPlan_derive(CHRIS, { ...ask, compute: 'store' }, null)).toEqual({ changes: ['compute NERC → store'], restarts: [], sessions: null, asks: true });
+    expect(chrisPlan_derive(CHRIS, { ...ask, compute: 'store' }, null)).toEqual({ changes: ['compute NERC → store'], restarts: [], sessions: null, asks: true, first: false });
   });
 });

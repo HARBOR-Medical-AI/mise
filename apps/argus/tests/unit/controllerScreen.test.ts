@@ -152,13 +152,13 @@ describe('the TD controller screen', () => {
     const body: HTMLElement = controller.root.querySelector('.tdc-body') as HTMLElement;
     const blocks = (): string[] => [...body.querySelectorAll('.tdc-teardown-step')].map((block: Element): string => `${block.querySelector('.tdc-strip-word')?.textContent}[${[...block.classList].find((name: string): boolean => name.startsWith('tdc-step-'))}]`);
     // Before: every removal stands; what the compartment's count reads says it was not read, the rest that the line counts it.
-    expect(blocks()).toEqual(['destroy', 'dns', 'image', 'volumes', 'stack', 'compartment', 'installer'].map((name: string): string => `STANDS · ${['destroy', 'stack', 'compartment'].includes(name) ? 'NOT READ' : 'COUNTED WHEN THE LINE RUNS'}[tdc-step-stands]`));
+    expect(blocks()).toEqual(['destroy', 'dns', 'image', 'volumes', 'stack', 'compartment', 'installer'].map((name: string): string => `NOT COUNTED · ${['destroy', 'stack', 'compartment'].includes(name) ? 'NOT READ' : 'THE LINE COUNTS IT AS IT RUNS'}[tdc-step-stands]`));
     const steps = (states: Record<string, string>): NonNullable<ClusterSummary['teardown']> => ({ started: '2026-11-03T14:54:55.990Z', steps: ['destroy', 'dns', 'image', 'volumes', 'stack', 'compartment', 'installer'].map((name: string) => ({ name, state: states[name] ?? 'not done', started: null, ended: states[name] === 'done' ? '2026-11-03T15:06:27.000Z' : null, note: states[name] === 'done' ? 'went' : null })) });
     controller.cluster_take({ ...cluster_make('quay', { condition: 'TEARING DOWN', protected: false, refused: {}, running: { job: 'quay-teardown', step: 'teardown', since: '2026-11-03T14:54:55.990Z' }, teardown: steps({ destroy: 'done', dns: 'running' }) }), cost: undefined });
     expect(controller.root.querySelector('.tdc-condition-name')?.textContent).toBe('TEARING DOWN');
     expect(controller.root.querySelector('.tdc-condition-why')?.textContent).toContain('BEING TORN DOWN');
     // Under way: the kernel's steps as blocks, in its order, each where it stands.
-    expect(blocks()).toEqual(['GONE · 15:06[tdc-step-gone]', 'GOING[tdc-step-going]', ...['image', 'volumes', 'stack', 'compartment', 'installer'].map((name: string): string => `STANDS · ${['stack', 'compartment'].includes(name) ? 'NOT READ' : 'COUNTED WHEN THE LINE RUNS'}[tdc-step-stands]`)]);
+    expect(blocks()).toEqual(['GONE · 15:06[tdc-step-gone]', 'GOING[tdc-step-going]', ...['image', 'volumes', 'stack', 'compartment', 'installer'].map((name: string): string => `NOT COUNTED · ${['stack', 'compartment'].includes(name) ? 'NOT READ' : 'THE LINE COUNTS IT AS IT RUNS'}[tdc-step-stands]`)]);
     expect(body.querySelector('.tdc-running .tdc-section-title, .tdc-running h3, .tdc-running')?.textContent).toContain('RUNNING · TEARDOWN');
     expect(body.querySelector('.tdc-running-clock')?.textContent).toMatch(/^14:54 · /);
     // KILL asks in place: the first press says what stopping part way leaves; KEEP IT RUNNING disarms it; the second press sends.
@@ -180,7 +180,7 @@ describe('the TD controller screen', () => {
     // Stopped part way (killed, or the daemon gone): PARTLY TORN, what went GONE on the left, TEAR DOWN resumes.
     controller.cluster_take({ ...cluster_make('quay', { condition: 'PARTLY TORN', protected: false, refused: { build: 'torn down part way: cluster teardown quay finishes it' }, teardown: steps({ destroy: 'done', dns: 'failed' }) }), cost: undefined });
     expect(controller.root.querySelector('.tdc-condition-name')?.textContent).toBe('PARTLY TORN');
-    expect(blocks()).toEqual(['GONE · 15:06[tdc-step-gone]', 'FAILED[tdc-step-failed]', ...['image', 'volumes', 'stack', 'compartment', 'installer'].map((name: string): string => `STANDS · ${['stack', 'compartment'].includes(name) ? 'NOT READ' : 'COUNTED WHEN THE LINE RUNS'}[tdc-step-stands]`)]);
+    expect(blocks()).toEqual(['GONE · 15:06[tdc-step-gone]', 'FAILED[tdc-step-failed]', ...['image', 'volumes', 'stack', 'compartment', 'installer'].map((name: string): string => `NOT COUNTED · ${['stack', 'compartment'].includes(name) ? 'NOT READ' : 'THE LINE COUNTS IT AS IT RUNS'}[tdc-step-stands]`)]);
     expect(body.querySelector('.tdc-note-title')?.textContent).toBe('STOPPED PART WAY');
     expect(body.querySelector('.tdc-note .tdc-prose')?.textContent).toContain('resumes at the DNS records');
     expect(button_named(body, 'TEAR DOWN')).toBeDefined();
@@ -196,6 +196,8 @@ describe('the TD controller screen', () => {
     expect(controller.cluster_get()?.name).toBe('quay');
     expect(controller.root.querySelector('.tdc-condition-name')?.textContent).toBe('GONE');
     expect(controller.root.querySelector('.tdc-body .tdc-note-title')?.textContent).toBe('TORN DOWN');
+    // Torn down, the build's count is history, never drawn as standing.
+    expect([...controller.root.querySelectorAll('.tdc-chip')].map((chip) => chip.textContent).find((text) => /OF \d+ DONE/.test(text ?? ''))).toMatch(/^WAS \d+ OF \d+ DONE · ALL GONE$/);
     controller.dispose();
     controller.root.remove();
   });

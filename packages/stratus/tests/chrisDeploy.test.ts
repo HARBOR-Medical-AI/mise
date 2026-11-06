@@ -34,7 +34,8 @@ import { lineStatusProviders_make } from '../src/commands/lineStatus.js';
 import { VM_JOBS } from '../src/vm/build.js';
 import { USER_JOBS } from '../src/chris/users.js';
 import type { LineStatusProvider } from '@fnndsc/brasa/core';
-import { FakeChrisVm as FakeVm } from '../src/cloud/fake/chris.js';
+import { chrisReach_fake, FakeChrisFleet, FakeChrisVm as FakeVm } from '../src/cloud/fake/chris.js';
+import { LINE_DECLINED_MODEL_KIND } from '@fnndsc/menu';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 const SECRETS: ChrisSecrets = { djangoKey: 'dk', postgresPassword: 'pg', pfconSecretKey: 'ps', pfconPassword: 'pp', adminPassword: 'admin-pass' };
@@ -139,7 +140,13 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
   });
 
   it('deploys: the password generated and shown once, the files written, CUBE waited for, the compute registered once, the admin API seen', async () => {
-    surface.answers = [''];
+    surface.answers = ['n'];
+    const declined = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--compute', 'NERC']);
+    expect(surface.asked).toEqual(['chris deploy store: a first deploy: CUBE (minimal) with its workers, Postgres, dragonfly, nats and pfcon are put up, compute NERC; the admin password for chris is asked next, hidden (empty: one is generated). A NO changes nothing. Continue? [y/N]']);
+    expect(declined.model?.kind).toBe(LINE_DECLINED_MODEL_KIND);
+    expect(vms.record_read('store')?.chris).toBeUndefined();
+    expect(secrets_read(vms, 'store')).toBeNull();
+    surface.answers = ['y', ''];
     const deployed = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--compute', 'NERC']);
     expect(deployed.renderedErr ?? '').toBe('');
     const secrets: ChrisSecrets | null = secrets_read(vms, 'store');
@@ -164,7 +171,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
   });
 
   it('with a host, waits on DNS and says so; once the name gives the address, it is done', async () => {
-    surface.answers = ['a-typed-password'];
+    surface.answers = ['y', 'a-typed-password'];
     const waiting = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org']);
     expect(waiting.renderedErr).toContain('waiting on DNS: cube.example.org does not resolve to 203.0.113.10 yet (chris deploy again resumes here)');
     expect(secrets_read(vms, 'store')?.adminPassword).toBe('a-typed-password');
@@ -187,9 +194,9 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
       record_create: async (zone: string, record: { name: string; type: string; data: string; ttl: number }): Promise<void> => { calls.push(`create ${zone} ${record.type} ${record.name} ${record.data} ${record.ttl}`); resolved = [record.data]; },
     };
     context = { ...context, registrar };
-    surface.answers = ['a-typed-password', 'n'];
+    surface.answers = ['y', 'a-typed-password', 'n'];
     const declined = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org']);
-    expect(surface.asked[1]).toBe('chris deploy: at GoDaddy, in example.org: remove CNAME cube → router-default.apps.example.org., add A cube → 203.0.113.10 (TTL 600)? [y/N]');
+    expect(surface.asked[2]).toBe('chris deploy: at GoDaddy, in example.org: remove CNAME cube → router-default.apps.example.org., add A cube → 203.0.113.10 (TTL 600)? [y/N]');
     expect(calls).toEqual([]);
     expect(declined.renderedErr).toContain('example.org at GoDaddy not changed');
     surface.answers = ['y'];
@@ -199,47 +206,71 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(vms.record_read('store')?.chris?.dns).toBe('seen');
   });
 
-  it('adds a user on the only ChRIS: the password asked, given on stdin, never kept; a replay leaves it as it is', async () => {
+  it('adds a user on the only ChRIS: asked first with the account and where, the password asked after, given on stdin, never kept', async () => {
     expect((await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org'])).renderedErr).toContain('no ChRIS deployed');
-    surface.answers = ['admin-password'];
+    surface.answers = ['y', 'admin-password'];
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
     surface.asked = [];
-    surface.answers = ['jorge-password'];
+    surface.answers = ['n'];
+    const declined = await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org']);
+    expect(declined.model?.kind).toBe(LINE_DECLINED_MODEL_KIND);
+    expect(plain(declined.rendered)).toContain('stopped before jorge was made; nothing changed on store');
+    expect(surface.asked).toEqual(['chris user add jorge: makes the account jorge (jorge@example.org) on the ChRIS at http://203.0.113.10/api/v1/, on store (its accounts not read); its password asked next, hidden. A NO makes nothing. Continue? [y/N]']);
+    expect(vm.made).toEqual([]);
+    surface.asked = [];
+    surface.answers = ['y', 'jorge-password'];
     const added = await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org']);
     expect(added.renderedErr ?? '').toBe('');
-    expect(surface.asked).toEqual(['jorge\'s password (empty: generate one):']);
+    expect(surface.asked[1]).toBe('jorge\'s password (empty: generate one):');
     expect(plain(added.rendered)).toBe('store: jorge added at http://203.0.113.10/api/v1/ (jorge@example.org)\n');
     expect(vm.made).toEqual([{ username: 'jorge', email: 'jorge@example.org', password: 'jorge-password' }]);
     expect(vm.lines.some((line: string): boolean => line.includes('jorge-password'))).toBe(false);
     expect(JSON.stringify(vms.record_read('store'))).not.toContain('jorge-password');
-    surface.answers = ['jorge-password'];
+    surface.answers = ['y', 'jorge-password'];
     expect(plain((await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org'])).rendered)).toBe('store: jorge is there already (jorge@example.org); left as it is\n');
-    surface.answers = ['jorge-password'];
+    surface.answers = ['y', 'jorge-password'];
     expect((await chris_run(context, ['user', 'add', 'jorge', '--email', 'other@example.org'])).renderedErr).toContain('store: jorge already exists, with jorge@example.org; left as it is');
-    surface.answers = ['sandip-password'];
+    surface.answers = ['y', 'sandip-password'];
     expect((await chris_run(context, ['user', 'add', 'sandip', '--email', 'jorge@example.org'])).renderedErr).toContain('jorge@example.org is jorge\'s already');
     expect(vm.made).toHaveLength(1);
   });
 
+  it('reads CUBE\'s accounts before it asks: one already there is left as it is, unasked; the question counts what stands', async () => {
+    const fleet: FakeChrisFleet = new FakeChrisFleet();
+    const reach: ChrisCommandContext = { ...context, ...chrisReach_fake(fleet, 0), registrar: null };
+    surface.answers = ['y', 'admin-password'];
+    await chris_run(reach, ['deploy', 'store', '--profile', 'minimal']);
+    surface.asked = [];
+    surface.answers = ['y', 'jorge-password'];
+    await chris_run(reach, ['user', 'add', 'jorge', '--email', 'jorge@example.org']);
+    expect(surface.asked[0]).toMatch(/^chris user add jorge: makes the account jorge \(jorge@example\.org\) on the ChRIS at http:\/\/203\.0\.113\.10\/api\/v1\/, on store \(1 account there now, read \d\d:\d\d UTC\); its password asked next, hidden\. A NO makes nothing\. Continue\? \[y\/N\]$/);
+    surface.asked = [];
+    const again = await chris_run(reach, ['user', 'add', 'jorge', '--email', 'jorge@example.org']);
+    expect(surface.asked).toEqual([]);
+    expect(plain(again.rendered)).toMatch(/^store: jorge is there already \(jorge@example\.org, read \d\d:\d\d UTC\); left as it is\n$/);
+  });
+
   it('generates a password when none is typed, shows it once, and reads one from a file', async () => {
-    surface.answers = ['admin-password'];
+    surface.answers = ['y', 'admin-password'];
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
-    surface.answers = [''];
+    surface.answers = ['y', ''];
     const generated = await chris_run(context, ['user', 'add', 'sandip', '--email', 'sandip@example.org']);
     expect(plain(generated.rendered)).toContain(`the password for sandip, generated, shown this once: ${vm.made[0]?.password}`);
     expect(vm.made[0]?.password.length).toBeGreaterThanOrEqual(32);
     const file: string = join(root, 'josh-password');
     writeFileSync(file, 'from-a-file-1\n', { mode: 0o600 });
     surface.asked = [];
+    surface.answers = ['y'];
     await chris_run(context, ['user', 'add', 'joshua', '--email', 'josh@example.org', '--password-file', file, '--on', 'store']);
-    expect(surface.asked).toEqual([]);
+    expect(surface.asked).toHaveLength(1);
+    expect(surface.asked[0]).toContain(`its password read from ${file}`);
     expect(vm.made[1]).toEqual({ username: 'joshua', email: 'josh@example.org', password: 'from-a-file-1' });
     writeFileSync(file, 'short\n');
     expect((await chris_run(context, ['user', 'add', 'joshua2', '--email', 'josh2@example.org', '--password-file', file])).renderedErr).toContain('shorter than eight characters');
   });
 
   it('refuses without an email, a bad name, a VM with no ChRIS, and more than one ChRIS without --on', async () => {
-    surface.answers = ['admin-password'];
+    surface.answers = ['y', 'admin-password'];
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
     expect((await chris_run(context, ['user', 'add', 'jorge'])).renderedErr).toContain('jorge: --email <address> is needed');
     expect((await chris_run(context, ['user', 'add', 'jo', '--email', 'jo@example.org'])).renderedErr).toContain('jo: a user name is 4 to 32');
@@ -262,7 +293,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
   it('with --porter, runs porter beside CUBE under its own name, its secret kept, both names pointed and waited for', async () => {
     expect((await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--porter', 'porter.example.org'])).renderedErr).toContain('--porter porter.example.org needs --host');
     expect((await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'cube.example.org'])).renderedErr).toContain('porter needs a name of its own');
-    surface.answers = ['admin-password'];
+    surface.answers = ['y', 'admin-password'];
     resolved = ['203.0.113.10'];
     const asked: string[] = [];
     context = { ...context, status_get: async (url: string): Promise<number | null> => { asked.push(url); return 200; } };
@@ -303,7 +334,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     surface.answers = ['n'];
     const before: number = vm.lines.length;
     expect(plain((await chris_run(live, line)).rendered)).toContain('stopped before the deploy; nothing changed');
-    expect(surface.asked.at(-1)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.9.11): its open sessions end; 2 porter sessions open now end. Continue? [y/N]');
+    expect(surface.asked.at(-1)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.9.11): its open sessions end; 2 porter sessions open now end. A NO changes nothing. Continue? [y/N]');
     expect(vm.lines.length).toBe(before);
     // status reads what runs from it, over HTTPS, under the deploy's record.
     const reading: ChrisCommandContext = { ...context, http_get: async (url: string, auth) => (url === 'https://porter.example.org/healthz' ? { status: 200, body: { sessions: 2, version: '0.9.11' } }
@@ -317,7 +348,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
   });
 
   it('with --porter and a name not yet seen, says it waits on porter\'s DNS', async () => {
-    surface.answers = ['admin-password'];
+    surface.answers = ['y', 'admin-password'];
     context = { ...context, resolve: async (host: string): Promise<string[]> => host === 'cube.example.org' ? ['203.0.113.10'] : [] };
     const waiting = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org']);
     expect(waiting.renderedErr).toContain('waiting on DNS: porter.example.org does not resolve to 203.0.113.10 yet (chris deploy again resumes here)');
@@ -341,7 +372,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(await read('chris deploy store --profile minimal --compute NERC')).toBe('ready');
     expect(await read('chris deploy store --profile huge')).toBe('ready (--profile huge: one of minimal)');
     expect(await read('chris user add jorge --email j@example.org')).toBe('not yet (no ChRIS deployed (chris deploy))');
-    surface.answers = ['admin-password'];
+    surface.answers = ['y', 'admin-password'];
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--compute', 'NERC']);
     expect(await read('chris deploy store --profile minimal --compute NERC')).toMatch(/^done \(deployed /);
     expect(await read('chris deploy store --profile minimal --compute NERC --host cube.example.org')).toBe('changed (host none → cube.example.org)');
@@ -379,7 +410,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     await new Promise((resolve: (value: unknown) => void): void => { setTimeout(resolve, 20); });
     expect(await running('vm build store')).toBeUndefined();
     // One add job serves a VM's user lines; the job's label says whose, so only that user's line runs.
-    surface.answers = ['admin-password'];
+    surface.answers = ['y', 'admin-password'];
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--compute', 'NERC']);
     runner.job_start(STEPS_SOURCE, USER_JOBS.add('store'), 'add jorge to the ChRIS on store', held);
     expect(await running('chris user add jorge --email j@example.org')).toBe('/proc/steps/chris-store-user-add');
@@ -389,7 +420,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
   });
 
   it('changes the admin\'s password: asked first, typed twice, kept on the host, in cube.env and in CUBE, the services started again, signed in with, kept in the tenancy', async () => {
-    surface.answers = ['admin-password'];
+    surface.answers = ['y', 'admin-password'];
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
     expect(vm.passwords.get('chris')).toBe('admin-password');
     surface.asked = [];
@@ -430,7 +461,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
   });
 
   it('a change stopped part way is kept on the host and finishes when asked again with the same password', async () => {
-    surface.answers = ['admin-password'];
+    surface.answers = ['y', 'admin-password'];
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
     vm.failing.add('cd /srv/data/chris && docker compose up -d');
     surface.answers = ['y', 'a-new-password', 'a-new-password'];
@@ -443,9 +474,9 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
   });
 
   it('changes another account\'s password in CUBE alone, never kept, without starting CUBE again; refuses one not there', async () => {
-    surface.answers = ['admin-password'];
+    surface.answers = ['y', 'admin-password'];
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
-    surface.answers = ['jorge-password'];
+    surface.answers = ['y', 'jorge-password'];
     await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org']);
     surface.asked = [];
     vm.lines = [];

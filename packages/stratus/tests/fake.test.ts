@@ -34,6 +34,9 @@ describe('the fake cloud', () => {
     expect(instances.length).toBe(before + 1);
     expect(instances.find((one) => one.name === 'smk')).toMatchObject({ id: 'ocid1.instance.oc1..fake-smk', state: 'running', vcpus: 2, memoryGib: 8, tags: { 'mise-service': 'smk' } });
     expect((await driver.clusters_find('mise-vm', 'us-ashburn-1')).map((one) => one.name)).toEqual(['smk']);
+    // A network's stack stands from the plan that made it, before any apply, as OCI lists it.
+    world.moduleStacks.set('stack-n', { module: 'net', owner: 'scratch2', tag: 'mise-net', placeId: 'ocid1.compartment.oc1..fake-scratch2', planned: {}, applied: null });
+    expect((await driver.clusters_find('mise-net', 'us-ashburn-1')).find((one) => one.name === 'scratch2')?.stack).toEqual({ id: 'stack-n', state: 'active', compartmentId: 'ocid1.compartment.oc1..fake-scratch2' });
   });
 
   it('refuses a fixture with no root', async () => {

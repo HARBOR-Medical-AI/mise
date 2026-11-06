@@ -212,6 +212,20 @@ export class VmScreen extends ScriptScreen {
     return this.chrisRow !== null && this.chrisRow.vm === vm ? this.chrisRow : null;
   }
 
+  /** No ChRIS on this machine, as `vm status` read its tag; unread, nothing is said. */
+  protected override chrisAbsent_read(vm: string): { at: string | null } | null {
+    const row: VmStatusRow | null = this.vmRow_get();
+    if (row === null || vm !== this.vm || (row.chris !== null && row.chris !== undefined)) return null;
+    return { at: row.stands?.at ?? null };
+  }
+
+  /** A user line on this machine is refused when `vm status` reads no ChRIS on it; unread, nothing is said. */
+  protected override userAddChris_why(_on: string): string | null {
+    const row: VmStatusRow | null = this.vmRow_get();
+    if (row === null) return null;
+    return row.chris === null || row.chris === undefined ? `NO CHRIS ON ${this.vm.toUpperCase()}` : null;
+  }
+
   /** The machine's USERS are on the machine shown. */
   protected override usersVm_get(_step: ScriptStep): string {
     return this.vm;

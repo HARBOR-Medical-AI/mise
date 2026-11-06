@@ -319,7 +319,8 @@ export class FakeDriver implements CloudDriver {
       byName.set(name, { ...(byName.get(name) ?? { stack: null, compartmentId: null }), stack: { id: stack.id, state: stack.state, compartmentId: stack.compartmentId } });
     }
     for (const [id, stack] of this.built?.moduleStacks ?? []) {
-      if (stack.tag !== tagKey || stack.applied === null || (stack.module !== 'net' && stack.module !== 'vmData')) continue;
+      // A stack stands in the tenancy from the plan that made it, applied or not, as OCI lists it.
+      if (stack.tag !== tagKey || (stack.module !== 'net' && stack.module !== 'vmData')) continue;
       byName.set(stack.owner, { stack: { id, state: 'active', compartmentId: stack.placeId }, compartmentId: stack.placeId });
     }
     return [...byName.entries()]
