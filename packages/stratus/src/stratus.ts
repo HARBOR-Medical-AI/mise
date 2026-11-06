@@ -21,7 +21,8 @@ import { daemon_launch, daemonConsole_run, hostControl_parseArgv, packageWebRoot
 import { fileAccount_make } from './installer/account.js';
 import { stratusBackend_make, type StratusBackend, type StratusBackendOptions } from './backend.js';
 import type { CloudDriver } from './cloud/driver.js';
-import { FakeDriver, fakeCloud_sample } from './cloud/fake/driver.js';
+import { FakeDriver, fakeCloud_foundAdd, fakeCloud_sample } from './cloud/fake/driver.js';
+import { SPEC_DEFAULT } from './cluster/spec.js';
 import { OciDriver } from './cloud/oci/driver.js';
 import { ociApi_make } from './cloud/oci/api.js';
 import { stratusArgs_parse, type StratusArgs } from './args.js';
@@ -117,8 +118,11 @@ async function stratus_start(): Promise<void> {
   const tickMs: number = Number(process.env['STRATUS_FAKE_TICK_MS'] ?? 700);
   const world: FakeBuildWorld = new FakeBuildWorld(tickMs);
   // The fake tenancy answers what the fake builder applied, as a real one answers what was built.
+  // A cluster found in the fake tenancy (one another host built), for a walk that adopts it: STRATUS_FAKE_FOUND=<name>.
+  const foundName: string | undefined = parsed.args.fake ? process.env['STRATUS_FAKE_FOUND'] : undefined;
+  const sample = foundName === undefined || foundName === '' ? fakeCloud_sample() : fakeCloud_foundAdd(fakeCloud_sample(), foundName, world, SPEC_DEFAULT);
   const driver: CloudDriver = parsed.args.fake
-    ? new FakeDriver(fakeCloud_sample()).built_see(world)
+    ? new FakeDriver(sample).built_see(world)
     : new OciDriver({ api: ociApi_make({ configFile: parsed.args.configFile, profile: parsed.args.profile }) });
   const made: StratusBackend = stratusBackend_make({
     driver,

@@ -742,7 +742,7 @@ export class TdController {
     }
 
     const glance: HTMLElement = this.section_make('THE CLUSTER AT A GLANCE', 'tdc-col-glance');
-    const verify: string = cluster.verify === null || cluster.verify === undefined ? this.verifyUnkept_render(cluster) : `${verifyWords_render(cluster.verify.checks)} · ${(cluster.verify.at ?? '').slice(0, 16).replace('T', ' ')}`;
+    const verify: string = cluster.verify === null || cluster.verify === undefined ? this.verifyUnkept_render(cluster) : `${verifyWords_render(cluster.verify.checks)} · ${(cluster.verify.at ?? '').slice(0, 19).replace('T', ' ')}`;
     glance.append(this.pairs_make([['ADDRESS', cluster.cluster ?? '?'], ['VERIFY', verify], ['RUNNING', cluster.running === null || cluster.running === undefined ? 'nothing' : cluster.running.step ?? 'between steps']]));
     glance.append(el('span', 'tdc-section-title tdc-gap', 'IN ITS COMPARTMENT'));
     glance.append(this.resources_make(cluster));
@@ -900,7 +900,7 @@ export class TdController {
   }
 
   private cluster_make(cluster: ClusterSummary): HTMLElement[] {
-    const checks: HTMLElement = this.section_make('VERIFY · TEN CHECKS', 'tdc-col-wide', cluster.verify?.at ? `LAST RUN ${cluster.verify.at.slice(0, 16).replace('T', ' ')}` : 'NOT RUN HERE');
+    const checks: HTMLElement = this.section_make('VERIFY · TEN CHECKS', 'tdc-col-wide', cluster.verify?.at ? `LAST RUN ${cluster.verify.at.slice(0, 19).replace('T', ' ')} UTC` : 'NOT RUN HERE');
     if (cluster.verify === null || cluster.verify === undefined) {
       checks.append(el('p', 'tdc-prose', `${this.verifyUnkept_render(cluster)}. VERIFY runs the checks through the cluster's kubeconfig, which stays on the host, and keeps them.`));
     } else {
