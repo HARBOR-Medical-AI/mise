@@ -12,6 +12,9 @@ import { z } from 'zod';
 /** The model kind `play --status` carries. */
 export const MANIFEST_STATUS_MODEL_KIND = 'manifest.status' as const;
 
+/** A line whose question the operator answered no: it made nothing past the question, and a play stops there quietly, as a choice, not a refusal. */
+export const LINE_DECLINED_MODEL_KIND = 'line.declined' as const;
+
 /** The four states a line stands in, read from what the backend keeps. */
 export const LINE_STATES = ['not yet', 'ready', 'done', 'changed'] as const;
 

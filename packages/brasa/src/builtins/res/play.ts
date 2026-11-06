@@ -34,7 +34,7 @@ import { semicolons_parse } from '../../lib/semicolonParser.js';
 import { VARIABLE_NAME, assignment_parse, variable_get, variableScope_run, type Assignment, type Variable } from '../../core/variables.js';
 import { shellWords_referencesExpand, shellWords_tokenize, type ReferenceExpansion, type ReferenceValue, type ShellWord } from '../../lib/parser.js';
 import { errorStack, type Result } from '@fnndsc/fond';
-import { CommandEnvelope, envelope_ok, envelope_error, MANIFEST_STATUS_MODEL_KIND } from '@fnndsc/menu';
+import { CommandEnvelope, envelope_ok, envelope_error, LINE_DECLINED_MODEL_KIND, MANIFEST_STATUS_MODEL_KIND } from '@fnndsc/menu';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 /** The model kind under which a played manifest's outcome travels. */
@@ -508,6 +508,8 @@ export async function builtin_play(args: string[]): Promise<CommandEnvelope> {
   const { line_execute } = await import('../../core/engine.js');
   let ran: number = 0;
   let stoppedAt: number | null = null;
+  /** Whether the play stopped at the operator's no to a line's question: a choice, answered ok, never an error. */
+  let declinedAt: number | null = null;
   // What the manifest answers with, read before its scope ends with it.
   let answered: Variable | undefined;
   // What the lines a dry run passed over could have changed.
@@ -547,6 +549,12 @@ export async function builtin_play(args: string[]): Promise<CommandEnvelope> {
       exitCode_set(0);
       const envelopes: CommandEnvelope[] = await line_execute(line.text);
       ran += 1;
+      // The operator answered no to the line's question: the play stops there, as their choice, never as a refusal.
+      if (envelopes.some((envelope: CommandEnvelope): boolean => envelope.model?.kind === LINE_DECLINED_MODEL_KIND)) {
+        sink_dataLine(chalk.gray(`play: stopped at your answer to ${parsed.manifest}:${line.number}; the lines after it did not run`));
+        declinedAt = line.number;
+        break;
+      }
       const refused: boolean = envelopes.some((envelope: CommandEnvelope): boolean => envelope.status === 'error')
         || exitCode_read() !== 0;
       if (refused) {
@@ -590,6 +598,10 @@ export async function builtin_play(args: string[]): Promise<CommandEnvelope> {
   const model = { kind: PLAY_MODEL_KIND, data: outcome };
   const took: string = `${Math.round(outcome.elapsedMs / 1000)}s`;
 
+  if (declinedAt !== null) {
+    exitCode_set(exitBeforePlay);
+    return envelope_ok(`${chalk.gray(`play: ${parsed.manifest} stopped at your answer to line ${declinedAt}, after ${ran} of ${manifest.lines.length} lines (${took})`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { manifest: parsed.manifest, line: declinedAt } });
+  }
   if (stoppedAt !== null) {
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red(`play: ${parsed.manifest} stopped at line ${stoppedAt} after ${ran} of ${manifest.lines.length} lines (${took})`)}\n`);

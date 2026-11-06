@@ -766,13 +766,16 @@ export class ScriptScreen {
       failed = !(await this.hooks.run(line));
     } catch (error: unknown) {
       failed = true;
-      this.log_add(error instanceof Error ? error.message : String(error), 'note');
+      const said: string = error instanceof Error ? error.message : String(error);
+      this.log_add(said, 'note');
+      // The session's own reason is the refusal's why, on the seat, not only in the log.
+      this.busyOut.push(said);
     } finally {
       if (this.partial !== '') { this.log_add(this.partial, 'out'); this.partial = ''; }
       this.busy = null;
       // A refusal is said where its control stands, with why, and stays there until that seat sends again (a-change-is-a-loop, clauses 5 and 6).
       if (line === 'scripts pull') this.pulled = { at: new Date().toISOString(), said: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-6) };
-      if (failed) this.refusal = { view: step ?? this.view, line, at: new Date().toISOString(), declined: this.busyDeclined, why: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ') || 'the session refused it' };
+      if (failed || this.busyDeclined) this.refusal = { view: step ?? this.view, line, at: new Date().toISOString(), declined: this.busyDeclined, why: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ') || 'the session refused it' };
       this.hooks.voice.cue(failed ? 'redalert' : 'ack');
       await this.standings_refresh();
       // A declaration sent moves what the price compares with: VM NEW's price is asked again of what now stands.
@@ -917,6 +920,8 @@ export class ScriptScreen {
     // The lane: the line it holds, or the task running unfollowed, which FOLLOW follows again; following is stopped, the task never.
     const running: Array<[string, string]> = this.busy !== null
       ? [['LINE', this.busy.line], ['FOR', duration_words(Date.now() - this.busy.since)]]
+      // A question that stands with no line in this screen's lane (asked while the screen was away) is what runs: a line waiting on its answer.
+      : this.ask !== null ? [['LINE', 'waiting on the question above'], ['FOR', 'until it is answered']]
       : runningStep !== undefined
         ? [['TASK', runningStep.running ?? ''], ['FOR', 'not followed']]
         : [['LINE', 'nothing'], ['FOR', '—']];

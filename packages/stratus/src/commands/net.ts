@@ -14,7 +14,7 @@
  * @module
  */
 import chalk from 'chalk';
-import { envelope_error, envelope_ok, STRATUS_NET_STATUS_MODEL_KIND, type CommandEnvelope, type NetStatusRow } from '@fnndsc/menu';
+import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, type CommandEnvelope, type NetStatusRow } from '@fnndsc/menu';
 import { repl_confirm, repl_question, type CommandHelp } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_alter, planCounts_words, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import type { CloudDriver } from '../cloud/driver.js';
@@ -296,7 +296,7 @@ async function netBuild_run(context: NetCommandContext, args: ReadonlyArray<stri
   const made: string[] = context.store.record_read(name)?.planMade ?? [];
   const already: string = made.length === 0 ? '' : ` Already made to plan it, free: ${made.join(', ')}; STOP leaves ${made.length === 1 ? 'it' : 'them'}, and a later build reuses ${made.length === 1 ? 'it' : 'them'}.`;
   const yes: boolean = await repl_confirm(`net build ${name}: ${planCounts_words(kept.counts)}. Nothing a network is made of bills.${already} Continue? [y/N]`);
-  if (!yes) return envelope_ok(`${chalk.gray(made.length === 0 ? `stopped before the apply; nothing changed (net build ${name} plans and asks again)` : `stopped before the apply; nothing else was made (made to plan it, free: ${made.join(', ')}; net build ${name} reuses ${made.length === 1 ? 'it' : 'them'})`)}\n`);
+  if (!yes) return envelope_ok(`${chalk.gray(made.length === 0 ? `stopped before the apply; nothing changed (net build ${name} plans and asks again)` : `stopped before the apply; nothing else was made (made to plan it, free: ${made.join(', ')}; net build ${name} reuses ${made.length === 1 ? 'it' : 'them'})`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: 'build' } });
   const applied = await job_runFollowed(NET_JOBS.apply(name), `apply ${name}`, netApplyRun_make(name, deps));
   if ('error' in applied) return envelope_error('', undefined, `net build: ${applied.error}\n`);
   // The receipt is what stands, read back: the VCN's range as the tenancy holds it after the apply.

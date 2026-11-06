@@ -15,6 +15,7 @@ import { SPEC_DEFAULT } from '../cluster/spec.js';
 import { TEARDOWN_STEPS, type TeardownStep } from '../cloud/builder.js';
 import type { ClusterRecord, TeardownStepRecord } from '../cluster/state.js';
 import { teardownJob_id } from '../cluster/steps.js';
+import { HOURS_PER_MONTH, money_words, spend_read } from '../cluster/spend.js';
 import { clusterVolumes_read, teardownRun_make } from '../cluster/teardown.js';
 import { clusterState_show, job_runFollowed, type BuildCommandContext } from './build.js';
 import { verifyReach_default } from './verify.js';
@@ -104,7 +105,18 @@ export async function clusterTeardown_run(context: BuildCommandContext, args: Re
     chalk.gray('  Nothing else is touched: the zone, the tag namespace and what other clusters made stay.'),
   ];
   for (const line of lines) sink_dataLine(line);
-  const answer: string = (await repl_question(`Destroy what ${name} built? Its data goes with it; billing stops. Type the cluster's name to go on:`)).trim();
+  // The question carries what goes and what stops billing, as the tenancy prices it now, and that it cannot be undone.
+  let stops: string = 'billing stops';
+  if (record.compartmentId !== undefined) {
+    try {
+      const spend = await spend_read(context.driver, record.compartmentId, record.region, new Date());
+      if (spend.hourly > 0) stops = `${money_words(spend.hourly * HOURS_PER_MONTH, spend.currency)} a month stops billing (${money_words(spend.hourly, spend.currency)} an hour, as the tenancy is priced now)`;
+    } catch {
+      // Not priced now: the question says billing stops, without a figure.
+    }
+  }
+  const goes: string = `the stack's ${inStack ?? '?'} resources, ${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'} it made for its claims, its DNS records, its image and its compartment`;
+  const answer: string = (await repl_question(`Destroy what ${name} built: ${goes}? Its data goes with it and cannot be had back; ${stops}. Type the cluster's name to go on:`)).trim();
   if (answer !== name) return envelope_ok(`${chalk.gray(`not torn down: '${answer}' is not ${name}`)}\n`);
   // The cluster's state is shown as the task starts (TEARING DOWN, with the task to follow), as each step begins and
   // ends, and as it ends (GONE), so a surface watching redraws without asking; the task's own lines stream to whoever follows.

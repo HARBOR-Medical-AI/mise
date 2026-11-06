@@ -578,7 +578,7 @@ export class VmScreen extends ScriptScreen {
     const side: HTMLElement = this.section_make('WHAT CAN BE DONE', 'ss-col-side');
     side.append(vmKeyless_is(row)
       ? el('p', 'tdc-prose', row.state === 'found' && row.found?.tagged !== true ? 'Made outside stratus: seen here, acted on in the cloud\'s own console.' : 'Its size, build and ChRIS need its SSH key, which the tenancy does not keep. TEARDOWN removes it, behind its lock and the name typed back.')
-      : this.pairs_make([['SIZE', 'its vCPUs, memory, disks and ports: DECLARE saves them, BUILD plans and applies what changed, asking first'], ['CHRIS', 'deploys ChRIS on it'], ['USERS', 'its ChRIS accounts'], ['TEARDOWN', 'its undoing, behind its lock']]));
+      : this.pairs_make([['SIZE', 'its vCPUs, memory, disks and ports: BUILD writes the change, plans it and asks before it applies'], ['CHRIS', 'deploys ChRIS on it'], ['USERS', 'its ChRIS accounts'], ['TEARDOWN', 'its undoing, behind its lock']]));
     return [facts, side];
   }
 
@@ -619,7 +619,7 @@ export class VmScreen extends ScriptScreen {
     lineBox.dataset['line'] = '1';
     lineBox.append(el('span', 'ss-line-state', '—'), el('code', 'tdc-mono ss-line-text vm-new-line', this.newLine_text()));
     form.append(commands, lineBox,
-      el('p', 'tdc-prose tdc-quiet', 'BUILD writes /scripts/mine/<name>.mise with this line and its build, declares the machine, then builds it: the plan, the cost and the question come here before anything bills. Nothing is sent before BUILD.'));
+      el('p', 'tdc-prose tdc-quiet ss-new-writes', `BUILD writes /scripts/mine/${this.newForm.name === '' ? '<name>' : this.newForm.name}.mise with this line and its build, declares the machine, then builds it: the plan, the cost and the question come here before anything bills, and the machine's own plan is asked again once its data stands. Nothing is sent before BUILD.`));
     this.newCommit_redraw(commit);
     const side: HTMLElement = this.section_make('COST · AS SIZED', 'ss-col-side tdc-col-cost', 'FROM THE PRICE LIST · vm cost');
     const box: HTMLElement = el('div', 'ss-cost');
@@ -628,6 +628,15 @@ export class VmScreen extends ScriptScreen {
     const log: HTMLElement = this.section_make('THE STEP\'S OUTPUT', 'tdc-col-steplog');
     log.append(el('div', 'tdc-steplog'));
     return [form, side, log];
+  }
+
+  /** The price column of + NEW is the new form's: redrawn when its price arrives, as a seat's is, and BUILD held until it stands. */
+  protected override cost_redraw(): void {
+    if (this.view !== NEW_KEY) { super.cost_redraw(); return; }
+    const box: HTMLElement | null = this.parts.body.querySelector('.ss-cost');
+    if (box !== null) this.cost_fill(box, this.newStep_get());
+    const commit: HTMLButtonElement | null = this.parts.body.querySelector('.vm-new-commit');
+    if (commit !== null) this.newCommit_redraw(commit);
   }
 
   /** The new machine's form as a seat, so the shared levers and price read it. */
@@ -729,7 +738,7 @@ export class VmScreen extends ScriptScreen {
     const lock: HTMLElement = el('div', `tdc-note ${row === null || row.protected ? 'tdc-note-locked' : 'tdc-note-refused'}`);
     lock.append(el('span', 'tdc-note-title', row === null ? 'NOT KEPT HERE' : row.protected ? 'PROTECTED' : 'UNLOCKED'), el('span', 'tdc-prose', row === null
       ? 'The host keeps no record of this machine yet: declare and build it first.'
-      : row.protected ? 'A machine is born protected. Lifting the lock is a line of its own, so no single slip removes it.'
+      : row.protected ? 'A machine is born protected. Lifting the lock is a line of its own, so no single slip removes it: PROTECT · OFF writes the lock off in the tenancy and removes nothing; TEARDOWN then asks first, with what goes and what still bills.'
         : machineStands ? 'The lock is off. TEARDOWN asks first, with what goes and what still bills; TEARDOWN · ALL asks for the name typed back.' : 'The lock is off. The machine is gone; its data stands. TEARDOWN · ALL takes the data too, asking for the name typed back.'));
     const where: string | null = lockWhere_text(row?.lock);
     if (where !== null) lock.append(el('span', 'tdc-prose tdc-quiet ss-lock-where', where.toUpperCase()));

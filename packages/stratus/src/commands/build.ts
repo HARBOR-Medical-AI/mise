@@ -15,7 +15,7 @@
  */
 import chalk from 'chalk';
 import { clusterLock_write } from '../cluster/keep.js';
-import { envelope_error, envelope_ok, STRATUS_CLUSTER_STATE_EVENT, taskState_isOver, type CommandEnvelope } from '@fnndsc/menu';
+import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_CLUSTER_STATE_EVENT, taskState_isOver, type CommandEnvelope } from '@fnndsc/menu';
 import {
   commandCancellation_enable, commandCancellation_signalGet, JobRefusal, repl_confirm, repl_question, repl_questionHidden, runner_get, sink_dataLine, sink_get, surface_get,
   type JobRecord, type JobRunner,
@@ -409,7 +409,7 @@ export async function clusterBuild_run(context: BuildCommandContext, args: Reado
     clusterState_show(context, name, question);
     const yes: boolean = await repl_confirm(question);
     clusterState_show(context, name);
-    if (!yes) return envelope_ok(`${chalk.gray(`stopped before anything was made; its spec stays written on this host (cluster build ${name} asks again)`)}\n`);
+    if (!yes) return envelope_ok(`${chalk.gray(`stopped before anything was made; its spec stays written on this host (cluster build ${name} asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: `cluster build ${name}`, kept: 'its spec, on this host' } });
     context.store.record_update(name, (current: ClusterRecord): void => { current.buildAccepted = new Date().toISOString(); });
     // The lock it was born with is kept in the tenancy as the build is accepted, so every session reads it, not this host alone.
     if (context.builder?.keep_write !== undefined) {
