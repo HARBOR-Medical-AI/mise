@@ -483,7 +483,7 @@ export function buildWould_derive(levers: VmNewLevers, runs: VmRuns): BuildWould
   if (runs.vcpu === null && runs.memory === null) {
     const size: string = `${levers.vcpu ?? '?'} vCPU · ${levers.memory ?? '?'} GiB · disk ${levers.disk ?? '?'} GB`;
     would.push(runs.data !== null
-      ? { change: `the machine made again: ${size}`, consequence: `over its kept data volume (${runs.data} GB): its data and address come back with it`, tone: 'grow' }
+      ? { change: `the machine made: ${size}`, consequence: `over its data volume (${runs.data} GB), which stands: its data and address are the machine's`, tone: 'grow' }
       : { change: `the machine and its data made: ${size} · data ${levers.data ?? '?'} GB`, consequence: 'nothing of it stands: a new, empty data volume', tone: 'grow' });
     return would;
   }

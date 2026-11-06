@@ -209,7 +209,10 @@ export function teardownLooks_build(cluster: ClusterSummary): TeardownLook[] {
     const note: string | null = step?.note ?? null;
     const look = (word: string, tone: TeardownLook['tone']): TeardownLook => ({ name, what, how, word, tone, at, note });
     // Standing, as the compartment was last counted: said with when, so the word is a read, not a default.
-    if (step === undefined || step.state === 'not done') return { ...look('STANDS', 'stands'), at: cluster.resourcesAt != null ? `READ ${cluster.resourcesAt.slice(11, 16)}` : null };
+    // What the compartment's count reads (its machines, balancers, volumes in the stack; the compartment itself) is said
+    // with when; the rest (the claims' volumes, the DNS records, the image) is counted only when the line runs.
+    const counted: boolean = name === 'destroy' || name === 'compartment' || name === 'stack';
+    if (step === undefined || step.state === 'not done') return { ...look('STANDS', 'stands'), at: !counted ? 'COUNTED WHEN THE LINE RUNS' : cluster.resourcesAt != null ? `READ ${cluster.resourcesAt.slice(11, 16)}` : 'NOT READ' };
     if (step.state === 'running') return look('GOING', 'going');
     if (step.state === 'done') return look('GONE', 'gone');
     if (step.state === 'skipped') return look('NOTHING', 'skipped');

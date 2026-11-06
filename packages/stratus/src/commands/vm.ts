@@ -932,7 +932,9 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
     machineCounts = planned.counts;
     // The machine was not planned when the build asked (its data had to stand first): its own plan is asked before it applies.
     if (counts_total(planned.counts) > 0) {
-      const again: boolean = await repl_confirm(`vm build ${name}: its data stands; the machine plan ${planCounts_words(planned.counts)} (${spec.vcpu} vCPU, ${spec.memory} GiB, disk ${spec.disk} GB). It bills: ${cost_line(await cost_read(context, spec))} with its data. Continue? [y/N]`);
+      const priced: VmCost | null = await cost_read(context, spec);
+      const dataStays: string = priced === null ? 'its data stays and bills its own' : `its data stays, billing ${cost_words(priced.dataHour, priced.currency)}, until vm teardown ${name} --all`;
+      const again: boolean = await repl_confirm(`vm build ${name}: its data stands; the machine plan ${planCounts_words(planned.counts)} (${spec.vcpu} vCPU, ${spec.memory} GiB, disk ${spec.disk} GB). It bills: ${cost_line(priced)} with its data. STOP makes no machine: ${dataStays}. Continue? [y/N]`);
       if (!again) return envelope_ok(`${chalk.gray(`stopped before the machine; its data stands and bills its own (vm build ${name} plans the machine and asks again; vm teardown ${name} --all removes the data)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: 'build' } });
     }
   }

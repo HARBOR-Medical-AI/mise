@@ -162,7 +162,7 @@ describe('what BUILD would do against what runs', () => {
       { change: 'os ubuntu-26.04 → ubuntu-24.04', consequence: 'refused unless named (--allow-alter): a new OS is a new machine with a new host key; the data volume stays', tone: 'refused' },
     ]);
     // No machine runs: the build makes it again over its kept data, or anew.
-    expect(buildWould_derive(vmLevers_read(line('')), { ...RUNS, vcpu: null, memory: null, disk: null })).toEqual([{ change: 'the machine made again: 2 vCPU · 8 GiB · disk 50 GB', consequence: 'over its kept data volume (50 GB): its data and address come back with it', tone: 'grow' }]);
+    expect(buildWould_derive(vmLevers_read(line('')), { ...RUNS, vcpu: null, memory: null, disk: null })).toEqual([{ change: 'the machine made: 2 vCPU · 8 GiB · disk 50 GB', consequence: 'over its data volume (50 GB), which stands: its data and address are the machine\'s', tone: 'grow' }]);
     expect(buildWould_derive(vmLevers_read(line('')), { vcpu: null, memory: null, disk: null, data: null })[0]?.change).toBe('the machine and its data made: 2 vCPU · 8 GiB · disk 50 GB · data 50 GB');
     // A part the tenancy was not read for is not compared.
     expect(buildWould_derive(vmLevers_read(line('--os ubuntu-24.04')), { ...RUNS, os: null })).toEqual([]);

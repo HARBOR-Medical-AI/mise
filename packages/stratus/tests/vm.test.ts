@@ -265,7 +265,7 @@ describe('vm, over the fake cloud', () => {
     // The declaration it applies is written already, and the free stack its plan made; the machine, planned once its data stands, is asked apart.
     expect(surface.asked).toEqual([
       'vm build store: data 3 to create, 0 to change, 0 to destroy; machine planned once its data stands (2 vCPU, 8 GiB, disk 50 GB). It bills: $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month). Already written: its declaration, kept in the tenancy; STOP keeps it and builds nothing. Already made to plan it, free: its data stack fake-stack-vmData-store; STOP leaves it, and a later build reuses it. Continue? [y/N]',
-      'vm build store: its data stands; the machine plan 3 to create, 0 to change, 0 to destroy (2 vCPU, 8 GiB, disk 50 GB). It bills: $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month) with its data. Continue? [y/N]',
+      'vm build store: its data stands; the machine plan 3 to create, 0 to change, 0 to destroy (2 vCPU, 8 GiB, disk 50 GB). It bills: $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month) with its data. STOP makes no machine: its data stays, billing $0.003 an hour, $2.13 a month, until vm teardown store --all. Continue? [y/N]',
     ]);
     expect(plain(built.rendered)).toContain('store  built  protected');
     expect(plain(built.rendered)).toContain('address  203.0.113.10');
