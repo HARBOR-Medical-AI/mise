@@ -6,7 +6,7 @@
  * 1. the index's own JSON Schema (`schema/plugin.schema.json`), so the
  *    schema has one home and this check follows it without a release;
  * 2. CUBE's administrative upload rules (ChRIS_ultron_backEnd
- *    `plugins/admin.py`): a JSON object, required descriptors, a dotted-number version,
+ *    `plugins/admin.py`, `plugins/models.py`): a JSON object, required descriptors, text descriptors neither blank nor past their length, a dotted-number version,
  *    the upload's parameter types (`str|int|float|bool|path|unextpath`,
  *    not the read API's `string|integer|boolean`), an optional parameter
  *    carries a default and is never a path, a required one is exposed;
@@ -55,6 +55,21 @@ export const VALIDATE_RULES: Readonly<Record<ValidateRuleNumber, string>> = {
 
 /** Descriptors CUBE's upload refuses a file without. */
 const REQUIRED_DESCRIPTORS: readonly string[] = ['name', 'version', 'dock_image', 'execshell', 'selfpath', 'selfexec', 'parameters'];
+
+/**
+ * The text descriptors CUBE's models keep without `blank=True`, with their
+ * `max_length` (`plugins/models.py`): the upload refuses a blank one ("This
+ * field may not be blank.", as an empty `selfpath` met on 6.11.0) and a longer
+ * one, after its own required-descriptor check has passed.
+ */
+const TEXT_DESCRIPTOR_LIMITS: Readonly<Record<string, number>> = {
+  name: 100,
+  version: 10,
+  dock_image: 500,
+  execshell: 50,
+  selfpath: 512,
+  selfexec: 50,
+};
 
 /** Parameter types CUBE's upload takes (its front-end spellings). */
 const UPLOAD_PARAMETER_TYPES: readonly string[] = ['str', 'int', 'float', 'bool', 'path', 'unextpath'];
@@ -449,6 +464,12 @@ function uploadRules_check(data: Record<string, unknown>): string[] {
   const problems: string[] = [];
   for (const required of REQUIRED_DESCRIPTORS) {
     if (!(required in data)) problems.push(`descriptor ${required} is required`);
+  }
+  for (const [field, limit] of Object.entries(TEXT_DESCRIPTOR_LIMITS)) {
+    const value: unknown = data[field];
+    if (typeof value !== 'string') continue;
+    if (value.trim() === '') problems.push(`${field} may not be blank`);
+    else if (value.length > limit) problems.push(`${field} is longer than ${limit} characters`);
   }
   const version: unknown = data['version'];
   if ('version' in data && (typeof version !== 'string' || !/^[0-9.]+$/.test(version))) {
