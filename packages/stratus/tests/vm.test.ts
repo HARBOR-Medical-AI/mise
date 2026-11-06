@@ -262,7 +262,7 @@ describe('vm, over the fake cloud', () => {
     surface.answers = ['y'];
     const built = await vm_run(context, ['build', 'store']);
     expect(built.renderedErr ?? '').toBe('');
-    expect(surface.asked).toEqual(['vm build store: data 3 to create, 0 to change, 0 to destroy; machine planned once its data stands (2 vCPU, 8 GiB, disk 50 GB). It bills: $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month). Continue? [y/N]']);
+    expect(surface.asked).toEqual(['vm build store: data 3 to create, 0 to change, 0 to destroy; machine planned once its data stands (2 vCPU, 8 GiB, disk 50 GB). It bills: $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month). Already made to plan it, free: its data stack fake-stack-vmData-store; STOP leaves it, and a later build reuses it. Continue? [y/N]']);
     expect(plain(built.rendered)).toContain('store  built  protected');
     expect(plain(built.rendered)).toContain('address  203.0.113.10');
     expect(store.record_read('store')).toMatchObject({ image: 'ocid1.image.oc1..fake-ubuntu', dataStackRef: 'fake-stack-vmData-store', machineStackRef: 'fake-stack-vmMachine-store', placeId: 'ocid1.compartment.oc1..fake-scratch' });
@@ -277,10 +277,10 @@ describe('vm, over the fake cloud', () => {
     expect(surface.asked).toEqual([]);
   });
 
-  it('asks before any apply, and a no changes nothing', async () => {
+  it('asks before any apply, naming the free stack its plan made, and a no makes nothing that bills', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
     surface.answers = ['n'];
-    expect(plain((await vm_run(context, ['build', 'store'])).rendered)).toContain('stopped before the apply; nothing changed');
+    expect(plain((await vm_run(context, ['build', 'store'])).rendered)).toContain('stopped before the apply; nothing that bills was made (made to plan it, free: its data stack fake-stack-vmData-store; vm build store reuses it)');
     expect(world.moduleStacks.get('fake-stack-vmData-store')?.applied).toBeNull();
     expect(world.moduleStacks.has('fake-stack-vmMachine-store')).toBe(false);
   });

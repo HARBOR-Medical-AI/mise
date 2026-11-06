@@ -33,6 +33,8 @@ export interface NetRecord extends KeptRecord {
   outputs?: Record<string, string>;
   clientCidr?: string;
   built?: string;
+  /** What the last plan made before its question (free: the compartment, the stack), so the question names it. */
+  planMade?: string[];
   /** The CIDR the last build made the network with. */
   builtCidr?: string;
   gone?: string;

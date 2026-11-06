@@ -874,8 +874,10 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   const warning: string = reboot ? ` ${name} REBOOTS to take its new shape: it${chrisUrl !== undefined ? `, and ChRIS at ${chrisUrl},` : ''} is down for a few minutes.` : '';
   const growing: string = grow.boot || grow.data ? ` The ${grow.boot && grow.data ? 'filesystems grow' : 'filesystem grows'} after, online, so the space appears.` : '';
   const what: string = changed.length > 0 ? `${changed.join(', ')}.` : `data ${planCounts_words(data.counts)}; machine ${machineWords}.`;
-  const yes: boolean = await repl_confirm(`vm build ${name}: ${what}${warning}${growing} It bills: ${cost_line(await cost_read(context, spec))}. Continue? [y/N]`);
-  if (!yes) return envelope_ok(`${chalk.gray(`stopped before the apply; nothing changed (vm build ${name} plans and asks again)`)}\n`);
+  const made: string[] = context.store.record_read(name)?.planMade ?? [];
+  const already: string = made.length === 0 ? '' : ` Already made to plan it, free: ${made.join(', ')}; STOP leaves ${made.length === 1 ? 'it' : 'them'}, and a later build reuses ${made.length === 1 ? 'it' : 'them'}.`;
+  const yes: boolean = await repl_confirm(`vm build ${name}: ${what}${warning}${growing} It bills: ${cost_line(await cost_read(context, spec))}.${already} Continue? [y/N]`);
+  if (!yes) return envelope_ok(`${chalk.gray(made.length === 0 ? `stopped before the apply; nothing changed (vm build ${name} plans and asks again)` : `stopped before the apply; nothing that bills was made (made to plan it, free: ${made.join(', ')}; vm build ${name} reuses ${made.length === 1 ? 'it' : 'them'})`)}\n`);
   if (grow.boot || grow.data) context.store.record_update(name, (current: VmRecord): void => { current.growOwed = { boot: grow.boot || current.growOwed?.boot === true, data: grow.data || current.growOwed?.data === true }; });
   if (counts_total(data.counts) > 0) {
     const applied = await job_runFollowed(VM_JOBS.apply(name, 'data'), `apply ${name} data`, vmApplyRun_make(name, 'data', deps));

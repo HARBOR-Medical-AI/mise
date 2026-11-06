@@ -293,8 +293,10 @@ async function netBuild_run(context: NetCommandContext, args: ReadonlyArray<stri
     return envelope_ok(`${name}: built, and the plan reads nothing to do\n`);
   }
   if (planCounts_alter(kept.counts) && !allowAlter) return envelope_error('', undefined, `net build: ${name}: the plan ${planCounts_words(kept.counts)}: it touches what exists, refused unless net build ${name} --allow-alter\n`);
-  const yes: boolean = await repl_confirm(`net build ${name}: ${planCounts_words(kept.counts)}. Nothing a network is made of bills. Continue? [y/N]`);
-  if (!yes) return envelope_ok(`${chalk.gray(`stopped before the apply; nothing changed (net build ${name} plans and asks again)`)}\n`);
+  const made: string[] = context.store.record_read(name)?.planMade ?? [];
+  const already: string = made.length === 0 ? '' : ` Already made to plan it, free: ${made.join(', ')}; STOP leaves ${made.length === 1 ? 'it' : 'them'}, and a later build reuses ${made.length === 1 ? 'it' : 'them'}.`;
+  const yes: boolean = await repl_confirm(`net build ${name}: ${planCounts_words(kept.counts)}. Nothing a network is made of bills.${already} Continue? [y/N]`);
+  if (!yes) return envelope_ok(`${chalk.gray(made.length === 0 ? `stopped before the apply; nothing changed (net build ${name} plans and asks again)` : `stopped before the apply; nothing else was made (made to plan it, free: ${made.join(', ')}; net build ${name} reuses ${made.length === 1 ? 'it' : 'them'})`)}\n`);
   const applied = await job_runFollowed(NET_JOBS.apply(name), `apply ${name}`, netApplyRun_make(name, deps));
   if ('error' in applied) return envelope_error('', undefined, `net build: ${applied.error}\n`);
   // The receipt is what stands, read back: the VCN's range as the tenancy holds it after the apply.
