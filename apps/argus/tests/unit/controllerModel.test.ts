@@ -64,6 +64,10 @@ describe('the TD controller model', () => {
     const done: ClusterSummary = cluster_make({ resources: {}, resourcesAt: '2026-11-05T14:00:00Z', steps: [{ folder: '01-compartment', name: 'compartment', state: 'done' }, { folder: '02-infra-apply', name: 'infra-apply', state: 'done' }] });
     expect(stepLooks_build(done).map((look) => [look.held, look.unheld])).toEqual([['COUNTED IN THE TENANCY', false], ['HOLDS NONE', true]]);
     expect(stepLooks_build(cluster_make({ resources: null }))[0]?.held).toBeNull();
+    // Torn down whole, a step that was done does not stand: said so, never DONE.
+    expect(stepLooks_build(cluster_make({ condition: 'GONE' }))[0]?.word).toBe('WAS DONE · GONE');
+    // Adopted: where it is kept moved, though nothing in the cloud did; said since the last command.
+    expect(since_build(cluster_make({ origin: 'found' }), cluster_make({ origin: 'adopted' }))).toContainEqual({ label: 'KEPT', text: 'FOUND → ADOPTED' });
     const odd: ClusterSummary = cluster_make({ steps: [{ folder: '01-a', state: 'running' }, { folder: '02-b', state: 'failed' }, { folder: '03-c', state: 'expired' }, { folder: '04-d', state: 'unknown' }] });
     expect(stepLooks_build(odd).map((look) => `${look.name} ${look.tone}`)).toEqual(['a running', 'b failed', 'c expired', 'd unknown']);
     expect(noteShort_format('done before adoption (harbor-oci: done, Terraform state holds 79 resources)')).toBe('Terraform state holds 79 resources');

@@ -130,6 +130,8 @@ export const vmStatusRowSchema = z.object({
   /** The machine's private address, null without a machine. */
   inside: z.string().nullable(),
   protected: z.boolean(),
+  /** The act in flight on it (a build, its disks grown, its teardown), as the session's tasks hold it; null when none runs; absent from an older daemon. */
+  running: z.object({ job: z.string(), what: z.string(), since: z.string() }).nullable().optional(),
   /** When the lock was set, and whether the tenancy holds it (false: this host only); absent from an older daemon. */
   lock: z.object({ at: z.string(), kept: z.boolean() }).optional(),
   /** When its machine was last built, ISO 8601; null when it stands without one. */

@@ -21,8 +21,8 @@
  */
 import * as path from 'path';
 import chalk from 'chalk';
-import { envelope_error, envelope_ok, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATE_EVENT, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow } from '@fnndsc/menu';
-import { repl_confirm, repl_question, sink_dataLine, sink_get, surface_get, type CommandHelp } from '@fnndsc/brasa/core';
+import { envelope_error, envelope_ok, taskState_isOver, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATE_EVENT, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow } from '@fnndsc/menu';
+import { repl_confirm, repl_question, runner_get, sink_dataLine, sink_get, surface_get, type CommandHelp } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_words, type BuildCall, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import type { VmRemote } from '../vm/remote.js';
 import type { CloudDriver } from '../cloud/driver.js';
@@ -35,6 +35,7 @@ import { VM_KEYLESS, vmChris_adopt, vmDeclared_adopt, vmKey_held, vmKeyless_is, 
 import { lock_read, lock_where, lockKept_is } from '../kept/lock.js';
 import { cost_words, planFile_derive, VM_JOBS, vmApplyRun_make, vmCost_estimate, vmNet_read, vmPlanRun_make, vmTeardownRun_make, type VmCost, type VmDeps, type VmPart } from '../vm/build.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
+import { STEPS_SOURCE } from '../cluster/steps.js';
 import { VM_GROW_JOB, vmGrowRun_make, vmPlan_judge, type VmPlanJudged } from '../vm/resize.js';
 import { HOURS_PER_MONTH } from '../cluster/spend.js';
 import { TIER_REFUSAL } from '../tier.js';
@@ -187,6 +188,25 @@ function vmStatus_lines(store: VmStore, record: VmRecord, spec: VmSpec | null): 
 }
 
 /**
+ * The act in flight on a VM, as the session's tasks hold it: a build's plan or
+ * apply, its disks grown, its teardown.
+ *
+ * @param name - The VM.
+ * @returns The task and what it does and since when, or null when none runs.
+ */
+function vmRunning_find(name: string): { job: string; what: string; since: string } | null {
+  const runner = runner_get();
+  if (runner === null) return null;
+  const ids: Array<[string, string]> = [[VM_JOBS.plan(name, 'data'), 'building'], [VM_JOBS.plan(name, 'machine'), 'building'], [VM_JOBS.apply(name, 'data'), 'building'], [VM_JOBS.apply(name, 'machine'), 'building'], [VM_GROW_JOB(name), 'growing its disks'], [VM_JOBS.teardown(name), 'tearing down']];
+  for (const job of runner.jobs_list(STEPS_SOURCE)) {
+    if (taskState_isOver(job.state)) continue;
+    const hit = ids.find(([id]): boolean => id === job.id);
+    if (hit !== undefined) return { job: job.id, what: hit[1], since: job.started };
+  }
+  return null;
+}
+
+/**
  * A kept VM as a row of the model `vm status` answers, and the VM state event carries.
  *
  * @param context - The session.
@@ -214,6 +234,7 @@ function vmRowKept_make(context: VmCommandContext, name: string): VmStatusRow {
     declared: record.declared ?? null,
     declaredKept: declaredKept_is(record),
     instance: record.machineOutputs?.['instance_id'] ?? null,
+    running: vmRunning_find(name),
     teardown: record.teardown === undefined ? null : {
       started: record.teardown.started,
       steps: ['machine', 'data'].map((part: string) => ({ name: part, state: steps[part]?.state ?? 'not done', started: steps[part]?.started ?? null, ended: steps[part]?.ended ?? null, note: steps[part]?.note ?? null })),
@@ -336,7 +357,10 @@ async function vmTruth_read(context: VmCommandContext, region: string, byName: R
   };
   for (const name of context.store.names_list()) {
     const record: VmRecord | null = context.store.record_read(name);
-    if (record === null || record.region !== region || busy(name)) continue;
+    if (record === null || record.region !== region) continue;
+    // What runs is read even while an act is in flight here (mid-build, its data may already stand and bill); only the
+    // vault's declaration and lock wait for the act to end.
+    const acting: boolean = busy(name);
     const instance = byName.get(name)?.instance ?? null;
     const volumes: CloudVolume[] = record.placeId === undefined ? [] : await volumes_get(record.placeId);
     const volumeId: string | undefined = record.dataOutputs?.['volume_id'];
@@ -348,7 +372,7 @@ async function vmTruth_read(context: VmCommandContext, region: string, byName: R
       if (instance === null && data === null) delete current.stands;
       else current.stands = { at, vcpu: instance?.vcpus ?? null, memory: instance?.memoryGib ?? null, disk, data, ...facts };
     });
-    if (context.builder?.keep_read === undefined) continue;
+    if (context.builder?.keep_read === undefined || acting) continue;
     try {
       const kept: VmKept | null = await vmKept_read(context.builder, name, region);
       vmDeclared_adopt(context.store, name, kept);

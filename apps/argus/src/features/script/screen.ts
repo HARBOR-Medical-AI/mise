@@ -19,7 +19,7 @@
  * @module
  */
 import {
-  chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmLimitsModelSchema, vmStatusModelSchema,
+  chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, chrisStatusModelSchema, vmCostModelSchema, vmLimitsModelSchema, vmStatusModelSchema,
   type ChrisPlanModel, type ChrisStatusRow, type NetStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel, type VmStatusRow,
 } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
@@ -208,6 +208,8 @@ export class ScriptScreen {
   protected limitsAsked: boolean = false;
   /** What the declared VMs bill together, from `vm cost` bare. */
   protected standing: VmCostRate | null = null;
+  /** Each VM as `vm cost` bare priced it (as declared, and as it runs): what an undoing stops billing. */
+  protected costRows: Map<string, VmCostRow> = new Map();
   /** When what stands was read from the tenancy (the oldest of the VMs priced), or null when none was. */
   protected standingAt: string | null = null;
   /** What every declared VM would cost as declared, beside what stands; null when not priced. */
@@ -248,7 +250,7 @@ export class ScriptScreen {
   /** The USERS form's words, kept across redraws. */
   protected userForm: { name: string; email: string; passwordFile: string } = { name: '', email: '', passwordFile: '' };
   /** The last SAVE, where and when: its receipt stands on the seat until the next edit. */
-  protected saved: { path: string; at: string } | null = null;
+  protected saved: { path: string; at: string; view: string } | null = null;
   /** The user line ADD was pressed for once: asked in place, with what it makes, before it is sent (the operator, 2026-11-05). */
   protected userAddArmed: string | null = null;
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
@@ -456,6 +458,7 @@ export class ScriptScreen {
     this.lines = this.accountsHeld_apply(lines_build(text, standings?.lines ?? []));
     this.steps = this.steps_derive(this.lines);
     void this.vmsSeen_read();
+    void this.chrisSeen_read();
   }
 
   /**
@@ -539,8 +542,8 @@ export class ScriptScreen {
    * @param _vm - The VM.
    * @returns The row, or null.
    */
-  protected chrisRow_get(_vm: string): ChrisStatusRow | null {
-    return null;
+  protected chrisRow_get(vm: string): ChrisStatusRow | null {
+    return this.chrisSeen.get(vm) ?? null;
   }
 
   /** Whether a declaring seat offers DECLARE beside BUILD: the script screen does (declaring is authoring there); a machine's own screen offers BUILD alone (a-change-is-a-loop, clause 3). */
@@ -568,6 +571,24 @@ export class ScriptScreen {
     this.steps = this.steps_derive(this.lines);
     void this.standing_read();
     void this.vmsSeen_read();
+    void this.chrisSeen_read();
+  }
+
+  /** What runs of each ChRIS the script names, as `chris status` read it from the ChRIS: USERS' accounts and CHRIS's runs, beside their lines, as on the VM controller. */
+  protected chrisSeen: Map<string, ChrisStatusRow> = new Map();
+
+  /** Reads `chris status` when the script names a ChRIS, then redraws; a user line CUBE now holds reads done. */
+  protected async chrisSeen_read(): Promise<void> {
+    if (!this.lines.some((line: ScriptLine): boolean => line_parse(line.text).verb[0] === 'chris')) return;
+    try {
+      const model = model_extract(await this.hooks.ask('chris status'), STRATUS_CHRIS_STATUS_MODEL_KIND, (data: unknown) => chrisStatusModelSchema.safeParse(data));
+      this.chrisSeen = new Map((model?.chris ?? []).map((row: ChrisStatusRow): [string, ChrisStatusRow] => [row.vm, row]));
+    } catch {
+      return;
+    }
+    this.lines = this.accountsHeld_apply(this.lines);
+    this.steps = this.steps_derive(this.lines);
+    this.draw();
   }
 
   /** What runs of each VM the script declares, as `vm status` read it from the tenancy: the script screen renders what runs beside its VM seats as the VM controller does. */
@@ -668,6 +689,7 @@ export class ScriptScreen {
     try {
       const model = model_extract(await this.hooks.ask('vm cost'), STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
       // What stands is what runs, priced from what the tenancy answered; what is declared is its own row (a-change-is-a-loop, clause 1).
+      this.costRows = new Map((model?.vms ?? []).map((row: VmCostRow): [string, VmCostRow] => [row.name, row]));
       const scope: ReadonlyArray<string> | null = this.costScope_get();
       const rows: VmCostRow[] = (model?.vms ?? []).filter((row: VmCostRow): boolean => scope === null || scope.includes(row.name));
       const read: VmCostRow[] = rows.filter((row: VmCostRow): boolean => row.runs !== null && row.runs !== undefined);
@@ -784,7 +806,7 @@ export class ScriptScreen {
   protected async save_send(): Promise<void> {
     const copy: string = workingCopy_derive(this.path);
     if (!(await this.line_send(saveLine_compose(copy, script_render(this.lines)), null))) return;
-    this.saved = { path: copy, at: new Date().toISOString() };
+    this.saved = { path: copy, at: new Date().toISOString(), view: this.view };
     this.path = copy;
     this.edited = false;
     await this.script_read();
@@ -938,6 +960,7 @@ export class ScriptScreen {
       body.dataset['view'] = 'library';
       body.append(...this.library_make());
       this.refusal_place();
+      this.saved_place();
       this.errand_place();
       return;
     }
@@ -953,7 +976,18 @@ export class ScriptScreen {
     const log: HTMLElement | null = body.querySelector('.tdc-steplog');
     if (log !== null) log.scrollTop = log.scrollHeight;
     this.refusal_place();
+    this.saved_place();
     this.errand_place();
+  }
+
+  /** SAVE's receipt on whichever seat it was pressed from: the copy written, where and when, until the next edit. */
+  protected saved_place(): void {
+    if (this.edited || this.saved === null || this.saved.path !== this.path || this.saved.view !== this.view) return;
+    const note: HTMLElement = el('div', 'tdc-note tdc-note-found ss-note-saved');
+    note.append(el('span', 'tdc-note-title', `SAVED · ${this.saved.at.slice(11, 16)}`), el('span', 'tdc-prose', `${this.saved.path}: this host's working copy, opened from there; nothing was built or billed.`));
+    const first: Element | null = this.parts.body.querySelector('section');
+    if (first === null) this.parts.body.prepend(note);
+    else first.insertBefore(note, first.children[1] ?? null);
   }
 
   /** The last refusal, on the seat it was pressed on: at the head of the seat's first section, beside what it refused. */
@@ -1146,8 +1180,10 @@ export class ScriptScreen {
 
   /** The line as it will run, and its state. */
   protected lineBox_make(line: ScriptLine): HTMLElement {
-    const box: HTMLElement = el('div', `ss-line ss-line-${(line.state ?? 'none').replace(' ', '-')}`);
-    box.append(el('span', 'ss-line-state', line.state === null ? '—' : `${STATE_MARKS[line.state]} ${line.state.toUpperCase()}`), el('code', 'tdc-mono ss-line-text', line.text));
+    // A line whose task runs, or the line in the lane, is RUNNING: its last standing waits for the run to end.
+    const running: boolean = line.running !== null || this.busy?.line === line.text;
+    const box: HTMLElement = el('div', `ss-line ss-line-${running ? 'running' : (line.state ?? 'none').replace(' ', '-')}`);
+    box.append(el('span', 'ss-line-state', running ? '▶ RUNNING' : line.state === null ? '—' : `${STATE_MARKS[line.state]} ${line.state.toUpperCase()}`), el('code', 'tdc-mono ss-line-text', line.text));
     if (line.detail !== '') box.append(el('span', 'tdc-prose tdc-quiet ss-line-detail', line.detail));
     return box;
   }
@@ -1167,10 +1203,6 @@ export class ScriptScreen {
     if (step.lines.length === 1 && (step.lines[0]?.detail ?? '') !== '') side.append(this.pairs_make([['SAID', step.lines[0]?.detail ?? '']]));
     const running: HTMLElement | null = this.runningNote_make(step);
     if (running !== null) side.append(running);
-    if (!this.edited && this.saved !== null && this.saved.path === this.path) {
-      // SAVE's receipt, in place: the copy written, where and when.
-      side.append(this.pairs_make([[`SAVED · ${this.saved.at.slice(11, 16)}`, `${this.saved.path}: this host's working copy; nothing was built`]]));
-    }
     if (this.edited && this.saveOffered()) {
       const note: HTMLElement = el('div', 'tdc-note tdc-note-bill');
       note.append(el('span', 'tdc-note-title', 'EDITED · NOT SAVED'), el('span', 'tdc-prose', `A form changed a line. Its pills send the line as shown; SAVE writes the whole script to ${workingCopy_derive(this.path)} (this host's copy; it builds and bills nothing) and opens it from there.`));
@@ -1328,10 +1360,17 @@ export class ScriptScreen {
       teardown.title = `sends: net teardown ${name} (refused while anything stands on it)`;
       // Nothing of it built (as net status last read it): there is nothing to tear down, so the pill is held and says why.
       const row: NetStatusRow | null = this.nets.get(name)?.row ?? null;
+      // VMs whose data or machine still stand on it, as `vm status` read them: the engine refuses while they do, so the pill says so first.
+      const standing: string[] = [...this.vmsSeen.values()].filter((vm: VmStatusRow): boolean => vm.spec?.net === name && vm.state !== 'gone').map((vm: VmStatusRow): string => vm.name);
       if (this.nets.has(name) && (row === null || (row.state !== 'built' && row.stack === null))) {
         teardown.disabled = true;
         teardown.textContent = 'TEARDOWN · NOTHING BUILT';
         teardown.title = 'nothing of this network is built: there is nothing to tear down';
+      } else if (standing.length > 0) {
+        teardown.disabled = true;
+        teardown.textContent = 'TEARDOWN · REFUSED';
+        teardown.title = `${standing.join(', ')} still stand${standing.length === 1 ? 's' : ''} on it: TEARDOWN · ALL on ${standing.length === 1 ? 'its' : 'their'} VM NEW seat first`;
+        extra.push(el('span', 'tdc-prose tdc-quiet', `refused while ${standing.join(', ')} stand${standing.length === 1 ? 's' : ''} on it: TEARDOWN · ALL on ${standing.length === 1 ? 'its' : 'their'} VM NEW seat first`));
       }
       extra.push(el('span', 'tdc-flex'), teardown);
     }
@@ -1596,7 +1635,7 @@ export class ScriptScreen {
     // The lock and what stands, as `vm status` read them: the lock drawn, only its other setting offered, an undoing only of what stands.
     const row: VmStatusRow | null = this.vmsSeen.get(name) ?? null;
     const protect: HTMLElement = el('div', 'tdc-commands');
-    const lockWord: string = row === null ? 'THE LOCK · NOT READ' : `THE LOCK · ${row.protected ? 'PROTECTED' : 'UNLOCKED'}${lockWhere_text(row.lock) !== null ? ` · ${(lockWhere_text(row.lock) as string).toUpperCase()}` : ''}`;
+    const lockWord: string = row === null ? 'THE LOCK · NOT READ' : row.state === 'gone' ? 'THE LOCK · NOTHING STANDS TO LOCK' : `THE LOCK · ${row.protected ? 'PROTECTED' : 'UNLOCKED'}${lockWhere_text(row.lock) !== null ? ` · ${(lockWhere_text(row.lock) as string).toUpperCase()}` : ''}`;
     // loop: ss-vm-protect
     const on: HTMLButtonElement = this.linePill_make('PROTECT · ON', `vm protect ${name} on`, step, 'quiet');
     // loop: ss-vm-protect
@@ -1621,7 +1660,14 @@ export class ScriptScreen {
       for (const pill of [machine, all]) hold(pill, `${name} is protected: PROTECT · OFF lifts the lock, as a line of its own`, 'LOCKED');
     }
     teardown.append(el('span', 'tdc-commands-label', what), ...(machineStands ? [machine] : []), ...(anyStands ? [all] : []));
-    return [el('p', 'tdc-prose tdc-quiet', 'A VM is born protected: teardown refuses until PROTECT · OFF, a line of its own. A teardown returns the build to ready.'), protect, teardown];
+    // What each undoing removes and what it stops billing, as what runs is priced (a-change-is-a-loop, clause 2).
+    const rate = this.costRows.get(name)?.runs?.rate ?? null;
+    const month = (hourly: number): string => rate === null ? '' : ` · STOPS ${money_text(hourly * HOURS_PER_MONTH, rate.currency)} A MONTH`;
+    const goes: HTMLElement = this.pairs_make([
+      ...(machineStands ? [['TEARDOWN', `the machine and its boot disk; the data, its backups and the address stay${rate === null ? '' : month(rate.machineHour)}`] as [string, string]] : []),
+      ...(anyStands ? [['TEARDOWN · ALL', `the machine, the data volume and its backups, the address: the data cannot be had back${rate === null ? '' : month(rate.machineHour + rate.dataHour)}`] as [string, string]] : []),
+    ]);
+    return [el('p', 'tdc-prose tdc-quiet', 'A VM is born protected: teardown refuses until PROTECT · OFF, a line of its own. A teardown returns the build to ready.'), protect, teardown, goes];
   }
 
   /**
@@ -1877,7 +1923,7 @@ export class ScriptScreen {
     const on: string = step.lines.map((line: ScriptLine): string | null => lineOption_get(line.text, '--on')).find((value): value is string => value !== null) ?? this.usersVm_get(step);
     const commands: HTMLElement = el('div', 'tdc-commands ss-user-add');
     form.append(commands);
-    nodes.push(form, el('p', 'tdc-prose tdc-quiet', 'Each user is a line, so a ChRIS\'s accounts are declared, not remembered. ADD appends the line to the working copy and runs it; a name already there is left as it is. The password never shows here: it is asked hidden, or read from the file the line names.'));
+    nodes.push(form, el('p', 'tdc-prose tdc-quiet', 'Each user is a line, so a ChRIS\'s accounts are declared, not remembered. ADD asks first, saying what it makes and where; MAKE IT appends the line to the working copy and runs it; a name already there is left as it is. The password never shows here: it is asked hidden, or read from the file the line names.'));
     this.userAdd_fill(commands, step, on);
     return nodes;
   }
