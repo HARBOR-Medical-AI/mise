@@ -1009,11 +1009,14 @@ export class VmScreen extends ScriptScreen {
       runs(this.optionField_make(line, '--compute', 'COMPUTE', `the pfcon resource's name (default ${this.vm})`), chris?.compute ?? null),
       runs(this.optionField_make(line, '--host', 'HOST', 'cube.example.org · empty: by address'), chris === null ? null : chris.host ?? 'by address'),
       runs(this.optionField_make(line, '--porter', 'PORTER', 'porter.example.org · the door to mise beside it'), chris?.porter ?? null),
-      this.lineBoxNumbered_make(line),
     );
     // The offer is spent once pressed: while the deploy runs only its run speaks; after it the offer returns.
     const ours: boolean = this.chrisRun !== null && this.chrisRun.vm === this.vm;
     if (!ours || this.chrisRun?.outcome != null) pane.append(this.chrisChange_make(step, line));
+    // THE SCRIPT after the change it carries, as on SPEC and SERVICES; the accounts, their own block, after it.
+    const script: HTMLElement = el('div', 'vm-size-lines');
+    script.append(el('span', 'tdc-section-title', `THE SCRIPT · ${this.path === '' ? 'NOT WRITTEN YET' : this.path}`), this.lineBoxNumbered_make(line));
+    pane.append(script);
     const users: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.kind === 'users');
     const accounts: HTMLElement = el('div', 'vm-chris-users');
     accounts.append(el('span', 'tdc-section-title', 'ITS ACCOUNTS · EACH WITH ITS HOST ACCESS'));
@@ -1150,7 +1153,16 @@ export class VmScreen extends ScriptScreen {
     const runs = this.runs_get(name);
     const pane: HTMLElement = this.section_make('THE SPEC', 'ss-col-wide vm-size', runs === null ? 'NOT BUILT YET' : `RUNS AS READ FROM THE TENANCY ${runs.at.slice(11, 16)} UTC`);
     if (this.run !== null && this.run.vm === this.vm) pane.append(this.run_make(this.run));
-    // The levers and the change they make side by side, so the change and BUILD stand in view with the run above them.
+    // The machine's facts first: where it stands and its OS, with what runs beside it.
+    const row: VmStatusRow | null = this.vmRow_get();
+    const where: HTMLElement = this.pairs_make([
+      ['NETWORK', lineOption_get(line.text, '--net') ?? '—'],
+      ['ADDRESS', `${row?.address ?? '—'}${row?.inside != null ? ` · inside ${row.inside}` : ''}`],
+    ]);
+    const os: HTMLElement = this.optionField_make(line, '--os', 'OS', 'ubuntu-26.04');
+    if (runs?.os != null) os.append(el('span', 'ss-field-runs', `RUNS ${runs.os.toUpperCase()}`));
+    pane.append(where, os);
+    // Then the levers, then the one change block they make, then the script.
     const main: HTMLElement = el('div', 'vm-size-main');
     if (this.limits === null) {
       main.append(el('p', 'tdc-prose tdc-quiet', 'reading what the shape sells: vm limits'));
@@ -1166,21 +1178,12 @@ export class VmScreen extends ScriptScreen {
     // something is still to build (the operator, 2026-11-07).
     const ours: boolean = this.run !== null && this.run.vm === this.vm;
     const offered: boolean = !ours || (this.run?.outcome != null && this.would_get().would.length > 0);
-    if (offered) main.append(this.change_make(step, line, built));
-    // While a run speaks the offer is not drawn: the levers take the whole width (the operator, 2026-11-07).
-    else main.classList.add('vm-size-main-full');
     pane.append(main);
-    // What else the machine is: its OS as a field with what runs beside it; where it stands. Its ports are SERVICES'.
-    const os: HTMLElement = this.optionField_make(line, '--os', 'OS', 'ubuntu-26.04');
-    if (runs?.os != null) os.append(el('span', 'ss-field-runs', `RUNS ${runs.os.toUpperCase()}`));
-    const row: VmStatusRow | null = this.vmRow_get();
-    const where: HTMLElement = this.pairs_make([
-      ['NETWORK', lineOption_get(line.text, '--net') ?? '—'],
-      ['ADDRESS', `${row?.address ?? '—'}${row?.inside != null ? ` · inside ${row.inside}` : ''}`],
-    ]);
+    if (offered) pane.append(this.change_make(step, line, built));
+    // THE SCRIPT last: the line as it will run, under the change it carries.
     const script: HTMLElement = el('div', 'vm-size-lines');
     script.append(el('span', 'tdc-section-title', `THE SCRIPT · ${this.path === '' ? 'NOT WRITTEN YET' : this.path}`), this.lineBoxNumbered_make(line), ...(built === undefined ? [] : [this.lineBoxNumbered_make(built)]));
-    pane.append(os, where, script);
+    pane.append(script);
     this.sizeCost_need(line);
     return pane;
   }
