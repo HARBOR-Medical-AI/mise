@@ -16,12 +16,13 @@ import type { CommandEnvelope } from '@fnndsc/menu';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
 import { vmCloudInit_render, vmMachineVariables_build, vmModule_zip, vmOs_lower } from '../src/cloud/oci/modules/vm.js';
-import { ports_read, vmLimits_derive, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, vmStands_diff, type VmSpec } from '../src/vm/spec.js';
+import { ports_read, vmPorts_open, vmLimits_derive, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, vmStands_diff, type VmSpec } from '../src/vm/spec.js';
 import { VmStore, type VmRecord } from '../src/vm/state.js';
 import { vmCost_estimate } from '../src/vm/build.js';
 import { vmKept_merge, vmKept_write } from '../src/vm/keep.js';
 import { lineStatusProviders_make } from '../src/commands/lineStatus.js';
 import { vmPlan_judge } from '../src/vm/resize.js';
+import { SSHD_DROP_IN, vmHost_owed, vmHostScript_render } from '../src/vm/host.js';
 import { secrets_write } from '../src/chris/secrets.js';
 import type { CloudBuilder, InfraPlan, PlanRow } from '../src/cloud/builder.js';
 import { NetStore } from '../src/net/state.js';
@@ -57,10 +58,49 @@ describe('a VM\'s spec', () => {
     expect(vmSpec_read(options_make([...STORE_LINE, '--os', 'Ubuntu']), null)).toEqual({ error: '--os Ubuntu: a name and a version (ubuntu-26.04)' });
   });
 
-  it('keeps SSH off the internet', () => {
+  it('keeps SSH out of --open: public SSH is its own service, for its own user, key-only', () => {
     expect(ports_read('80,443,80')).toEqual({ ports: [80, 443] });
     expect(ports_read('none')).toEqual({ ports: [] });
-    expect(ports_read('22')).toEqual({ error: expect.stringContaining('SSH goes through the network\'s bastion') });
+    expect(ports_read('22')).toEqual({ error: expect.stringContaining('--ssh 22 --ssh-key-file') });
+    const key: string = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyOnlyForTests operator@pangea';
+    const opened = vmSpec_read(options_make([...STORE_LINE, '--ssh', '2222', '--ssh-key', key]), null);
+    expect(opened).toEqual({ spec: { ...SPEC, ssh: { port: 2222, user: 'ops', key, on: true } } });
+    if (!('spec' in opened)) throw new Error('no spec');
+    expect(vmPorts_open(opened.spec)).toEqual([80, 443, 2222]);
+    // Closed, the user and the key are kept; opened again with only the port.
+    const closed = vmSpec_read(options_make(['--ssh', 'off']), opened.spec);
+    expect(closed).toEqual({ spec: { ...SPEC, ssh: { port: 2222, user: 'ops', key, on: false } } });
+    if (!('spec' in closed)) throw new Error('no spec');
+    expect(vmPorts_open(closed.spec)).toEqual([80, 443]);
+    expect(vmSpec_diff(opened.spec, closed.spec)).toEqual([expect.stringMatching(/^ssh 2222 for ops \(key …[^)]+\) → off \(2222 for ops kept\) \(key …/)]);
+    expect(vmSpecYaml_parse(vmSpecYaml_render('store', closed.spec))).toEqual(closed);
+    // Refused: a private key, a port another service has, root, a door without a key.
+    expect(vmSpec_read(options_make([...STORE_LINE, '--ssh', '2222', '--ssh-key', '-----BEGIN OPENSSH PRIVATE KEY-----']), null)).toEqual({ error: expect.stringContaining('private key') });
+    expect(vmSpec_read(options_make([...STORE_LINE, '--ssh', '443', '--ssh-key', key]), null)).toEqual({ error: expect.stringContaining('--open already opens 443') });
+    expect(vmSpec_read(options_make([...STORE_LINE, '--ssh', '2222', '--ssh-user', 'root', '--ssh-key', key]), null)).toEqual({ error: expect.stringContaining('not root or ubuntu') });
+    expect(vmSpec_read(options_make([...STORE_LINE, '--ssh', '2222']), null)).toEqual({ error: expect.stringContaining('public key') });
+  });
+
+  it('sets the machine up: its firewall admits the ports, public SSH has its user, key and port, 22 kept', () => {
+    const key: string = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyOnlyForTests operator@pangea';
+    const door = { port: 2222, user: 'ops', key, on: true };
+    const opened: string = vmHostScript_render({ ports: [80, 443, 2222], ssh: door }, { ports: [80, 443], ssh: null });
+    expect(opened).toContain('sudo iptables -C INPUT -p tcp --dport 2222 -m state --state NEW -j ACCEPT 2>/dev/null || sudo iptables -I INPUT 5 -p tcp --dport 2222');
+    expect(opened).toContain('id -u ops >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ops');
+    expect(opened).toContain(`printf '%s\\n' '${key}' | sudo tee /home/ops/.ssh/authorized_keys`);
+    expect(opened).toContain(`printf '%s\\n' 'Port 22' 'Port 2222' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' | sudo tee ${SSHD_DROP_IN}`);
+    expect(opened).toContain('sudo sshd -t');
+    // Closed: the port leaves the firewall and sshd; the user and key stay; 22 is never dropped.
+    const closed: string = vmHostScript_render({ ports: [80, 443], ssh: { ...door, on: false } }, { ports: [22, 80, 443, 2222], ssh: door });
+    expect(closed).toContain('while sudo iptables -C INPUT -p tcp --dport 2222');
+    expect(closed).not.toContain('--dport 22 -m state --state NEW -j ACCEPT; done');
+    expect(closed).toContain(`printf '%s\\n' 'Port 22' 'PasswordAuthentication no'`);
+    expect(closed).toContain('useradd');
+    const built: VmRecord = { name: 'store', built: '2026-11-07T00:00:00Z', host: { ports: [80, 443], ssh: null } } as VmRecord;
+    expect(vmHost_owed(built, { ...SPEC, ssh: door })).toEqual(['public SSH opened on 2222 for ops, key-only, with sudo']);
+    expect(vmHost_owed({ ...built, host: { ports: [80, 443, 2222], ssh: door } } as VmRecord, { ...SPEC, ssh: { ...door, on: false } })).toEqual(['public SSH on 2222 closed (ops and its key kept)']);
+    expect(vmHost_owed(built, { ...SPEC, open: [80, 443, 8080] })).toEqual(['its firewall admits 80,443,8080']);
+    expect(vmHost_owed(built, SPEC)).toEqual([]);
   });
 
   it('round-trips through spec.yaml, says each change, and names the ones that cost the data', () => {
@@ -281,6 +321,39 @@ describe('vm, over the fake cloud', () => {
     expect(surface.asked).toEqual([]);
   });
 
+  it('opens public SSH on a VM that stands: asked with the warning, the machine set up over the bastion, closed again keeping the user', async () => {
+    const lines: Array<{ line: string; input: string }> = [];
+    const key: string = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyOnlyForTests operator@pangea';
+    const reaching: VmCommandContext = { ...context, remote_open: async () => ({ run: async (line: string, input?: string) => { lines.push({ line, input: input ?? '' }); return { code: 0, stdout: 'stratus-host\n', stderr: '' }; } }) };
+    await vm_run(reaching, ['new', 'store', ...STORE_LINE]);
+    surface.answers = ['y', 'y'];
+    await vm_run(reaching, ['build', 'store']);
+    expect(lines).toEqual([]);
+    expect(store.record_read('store')?.host).toEqual({ ports: [80, 443], ssh: null });
+    await vm_run(reaching, ['new', 'store', '--ssh', '2222', '--ssh-key', key]);
+    surface.answers = ['n'];
+    await vm_run(reaching, ['build', 'store']);
+    expect(surface.asked.at(-1)).toContain('ports 80,443 → 80,443,2222, public SSH opened on 2222 for ops, key-only, with sudo.');
+    expect(surface.asked.at(-1)).toContain('SSH answers the internet on port 2222: only ops\'s key gets in, and ops has sudo.');
+    expect(lines).toEqual([]);
+    surface.answers = ['y'];
+    expect((await vm_run(reaching, ['build', 'store'])).status).toBe('ok');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.line).toBe('bash -s');
+    expect(lines[0]?.input).toContain('Port 2222');
+    expect(store.record_read('store')?.host).toEqual({ ports: [80, 443, 2222], ssh: { port: 2222, user: 'ops', key, on: true } });
+    // Nothing owed: nothing asked, nothing run.
+    expect(plain((await vm_run(reaching, ['build', 'store'])).rendered)).toBe('store: built, and the plan reads nothing to do\n');
+    expect(lines).toHaveLength(1);
+    // Closed: the port leaves the group and the machine; the user and the key are kept.
+    await vm_run(reaching, ['new', 'store', '--ssh', 'off']);
+    surface.answers = ['y'];
+    expect((await vm_run(reaching, ['build', 'store'])).status).toBe('ok');
+    expect(lines).toHaveLength(2);
+    expect(lines[1]?.input).toContain('while sudo iptables -C INPUT -p tcp --dport 2222');
+    expect(store.record_read('store')?.host?.ssh).toMatchObject({ on: false, user: 'ops' });
+  });
+
   it('asks before any apply, naming the free stack its plan made, and a no makes nothing that bills', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
     surface.answers = ['n'];
@@ -498,6 +571,11 @@ describe('vm, over the fake cloud', () => {
     expect(await row()).toMatchObject({ protected: false, lock: { kept: false } });
     (surface.capabilities as { tasks?: boolean }).tasks = true;
     expect(vmKept_merge({ vm: 'x', lock: { protected: true, at: '2026-11-05' } }, { vm: 'x', lock: { protected: false, at: '2026-11-04' } })).toEqual({ vm: 'x', lock: { protected: true, at: '2026-11-05' } });
+    // A ChRIS record: the newer deploy wins, so a session holding an older one never overwrites a replay kept from elsewhere.
+    const older = { record: { profile: 'minimal', compute: 'NERC', host: null, url: 'u', deployed: '2026-11-04T20:56:45Z' }, secrets: { djangoKey: 'd', postgresPassword: 'p', pfconSecretKey: 's', pfconPassword: 'f', adminPassword: 'a' } };
+    const newer = { ...older, record: { ...older.record, deployed: '2026-11-06T14:27:04Z', image: 'ghcr.io/fnndsc/cube:6.11.0' } };
+    expect(vmKept_merge({ vm: 'x', chris: newer }, { vm: 'x', chris: older }).chris).toEqual(newer);
+    expect(vmKept_merge({ vm: 'x', chris: older }, { vm: 'x', chris: newer }).chris).toEqual(newer);
     // A ChRIS deployed from another host, kept in the vault, is taken on the next listing when newer than this host's.
     const deployed = { profile: 'minimal', compute: 'NERC', host: null, url: 'https://cube.example/api/v1/', deployed: '2026-11-05T14:51:00.000Z', image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.9.11' };
     const keep = JSON.parse(world.kept.get('mise-vm-store') as string);

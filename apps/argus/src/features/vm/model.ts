@@ -12,7 +12,101 @@ import type { VmStatusRow } from '@fnndsc/menu';
 import { line_parse, type LineParts, type ScriptLine, type StepKind } from '../script/model.js';
 
 /** The seat a VM's line sits on: the controller's words for the script's verbs. */
-export const VM_SEAT_LABELS: Readonly<Partial<Record<StepKind, string>>> = { 'vm new': 'SIZE', 'vm build': 'BUILD', 'chris deploy': 'CHRIS', users: 'USERS' };
+export const VM_SEAT_LABELS: Readonly<Partial<Record<StepKind, string>>> = { 'vm new': 'SPEC', 'vm build': 'BUILD', 'chris deploy': 'CHRIS', users: 'USERS' };
+
+/** SERVICES' view key: what the machine opens to the internet, set on its `vm new` line and built with it. */
+export const SERVICES_KEY: string = 'services';
+
+/** Public SSH as a `vm new` line declares it. */
+export interface VmSshDeclared {
+  /** The port it opens. */
+  readonly port: number | null;
+  /** The administrative Linux user it admits. */
+  readonly user: string;
+  /** The user's public key on the line, or null when a file is named instead. */
+  readonly key: string | null;
+  /** The key file the line names, read when the line runs, or null. */
+  readonly keyFile: string | null;
+  /** Whether the door is open. */
+  readonly on: boolean;
+}
+
+/** What a `vm new` line opens to the internet. */
+export interface VmServicesDeclared {
+  /** The ports `--open` opens, sorted. */
+  readonly open: number[];
+  /** Public SSH, or null when the line declares none. */
+  readonly ssh: VmSshDeclared | null;
+}
+
+/**
+ * What a `vm new` line opens to the internet.
+ *
+ * @param text - The line.
+ * @param kept - Public SSH as the record keeps it, for a line that says only `--ssh off`.
+ * @returns The ports and public SSH.
+ *
+ * @example
+ * ```ts
+ * vmServices_read('vm new store --open 443,80 --ssh 2222 --ssh-key-file ~/.ssh/id_ed25519.pub', null).ssh?.port; // 2222
+ * ```
+ */
+export function vmServices_read(text: string, kept: { port: number; user: string; key: string; on: boolean } | null): VmServicesDeclared {
+  const parts: LineParts = line_parse(text);
+  const get = (word: string): string | null => parts.options.find(([each]): boolean => each === word)?.[1] ?? null;
+  const openWord: string | null = get('--open');
+  const open: number[] = openWord === null || openWord === 'none' ? [] : [...new Set(openWord.split(',').map(Number).filter((port: number): boolean => Number.isInteger(port) && port > 0))].sort((a: number, b: number): number => a - b);
+  const sshWord: string | null = get('--ssh');
+  if (sshWord === null && kept === null) return { open, ssh: null };
+  const on: boolean = sshWord === null ? kept?.on ?? false : sshWord !== 'off';
+  const port: number | null = sshWord !== null && sshWord !== 'off' ? Number(sshWord) : kept?.port ?? null;
+  return { open, ssh: { port, user: get('--ssh-user') ?? kept?.user ?? 'ops', key: get('--ssh-key') ?? (get('--ssh-key-file') === null ? kept?.key ?? null : null), keyFile: get('--ssh-key-file'), on } };
+}
+
+/**
+ * A port's kind: the web's two, or a port of the operator's own.
+ *
+ * @param port - The port.
+ * @returns `WEB` or `CUSTOM`.
+ */
+export function vmServiceKind_derive(port: number): 'WEB' | 'CUSTOM' {
+  return port === 80 || port === 443 ? 'WEB' : 'CUSTOM';
+}
+
+/**
+ * What a line's services would change against what runs: ports opened and
+ * closed, public SSH opened, closed, moved, its user or key changed.
+ *
+ * @param declared - What the line opens.
+ * @param runs - The ports the tenancy opens now (public SSH's among them), or null when not read.
+ * @param host - What the machine was last set up with, or null.
+ * @returns The changes in words; empty when nothing changes.
+ *
+ * @example
+ * ```ts
+ * vmServices_change({ open: [80, 443, 8080], ssh: null }, [80, 443], null); // ['open 8080']
+ * ```
+ */
+export function vmServices_change(declared: VmServicesDeclared, runs: ReadonlyArray<number> | null, host: VmStatusRow['host'] | null | undefined): string[] {
+  const words: string[] = [];
+  const sshNow = host?.ssh ?? null;
+  const sshOpenNow: number | null = sshNow !== null && sshNow.on ? sshNow.port : null;
+  const others = (ports: ReadonlyArray<number>): number[] => ports.filter((port: number): boolean => port !== sshOpenNow);
+  if (runs !== null) {
+    const now: number[] = others(runs);
+    for (const port of declared.open) if (!now.includes(port)) words.push(`open ${port}`);
+    for (const port of now) if (!declared.open.includes(port) && port !== (declared.ssh?.on === true ? declared.ssh.port : null)) words.push(`close ${port}`);
+  }
+  const want = declared.ssh;
+  if (want !== null && want.on && sshOpenNow === null) words.push(`public SSH on ${want.port ?? '?'} for ${want.user}`);
+  else if ((want === null || !want.on) && sshOpenNow !== null) words.push(`public SSH on ${sshOpenNow} closed`);
+  else if (want !== null && want.on && sshNow !== null) {
+    if (want.port !== sshNow.port) words.push(`public SSH ${sshNow.port} → ${want.port ?? '?'}`);
+    if (want.user !== sshNow.user) words.push(`public SSH's user ${sshNow.user} → ${want.user}`);
+    if (want.key !== null && want.key !== sshNow.key) words.push(`${want.user}'s key replaced`);
+  }
+  return words;
+}
 
 /** The seat that is no line of the script: the undoing, drawn from the VM's own lines (`vm protect`, `vm teardown`). */
 export const TEARDOWN_KEY: string = 'teardown';

@@ -17,7 +17,7 @@ import type { CloudDriver, CloudPrice, ServicePrices } from '../cloud/driver.js'
 import { plan_count, planCounts_words, type BuildCall, type CloudBuilder, type InfraPlan, type StackModule } from '../cloud/builder.js';
 import { HOURS_PER_MONTH } from '../cluster/spend.js';
 import type { NetRecord, NetStore } from '../net/state.js';
-import type { VmSpec } from './spec.js';
+import { vmPorts_open, type VmSpec } from './spec.js';
 import { VM_TAG, type VmRecord, type VmStore } from './state.js';
 import { vmKeepName_derive, vmKept_write } from './keep.js';
 
@@ -122,7 +122,7 @@ function partInputs_build(part: VmPart, record: VmRecord, spec: VmSpec, net: Net
   const data: Record<string, string> | undefined = record.dataOutputs;
   if (data === undefined) throw new Error(`${record.name}: its data is not built yet, so its machine cannot be planned`);
   return {
-    os: spec.os, open: spec.open.join(','), vcpu: String(spec.vcpu), memory: String(spec.memory), disk: String(spec.disk),
+    os: spec.os, open: vmPorts_open(spec).join(','), vcpu: String(spec.vcpu), memory: String(spec.memory), disk: String(spec.disk),
     image: record.image ?? '', sshPublicKey: publicKey,
     availabilityDomain: data['availability_domain'] ?? '', volumeId: data['volume_id'] ?? '',
     subnetId: net.outputs['subnet_id'] ?? '', vcnId: net.outputs['vcn_id'] ?? '',
@@ -254,7 +254,7 @@ export function vmTeardownRun_make(name: string, all: boolean, deps: VmDeps, sho
     await part_run('machine', record.machineStackRef, `${name} machine`);
     if (record.machineStackRef !== undefined) {
       deps.store.record_update(name, (current: VmRecord): void => {
-        delete current.machineStackRef; delete current.machineOutputs; delete current.built;
+        delete current.machineStackRef; delete current.machineOutputs; delete current.built; delete current.host;
         current.machineGone = new Date().toISOString();
       });
       deps.store.file_remove(name, planFile_derive('machine'));

@@ -27,7 +27,8 @@ import { plan_count, planCounts_words, type BuildCall, type CloudBuilder, type I
 import type { VmRemote } from '../vm/remote.js';
 import type { CloudDriver } from '../cloud/driver.js';
 import type { NetStore } from '../net/state.js';
-import { VM_OPTIONS, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, type VmSpec } from '../vm/spec.js';
+import { VM_OPTIONS, vmPorts_open as vmPorts_openOf, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSsh_words, sshKeyFile_resolve, type VmSpec } from '../vm/spec.js';
+import { VM_HOST_JOB, vmHost_current, vmHost_owed, vmHostRun_make } from '../vm/host.js';
 import type { CloudInstance, CloudShape, CloudVolume } from '../cloud/driver.js';
 import { CHRIS_PORTER_TAG, CHRIS_URL_TAG, VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
 import { vmsFound_read, vmTakeover_run, type FoundVm } from '../vm/found.js';
@@ -88,7 +89,8 @@ function vmState_word(record: VmRecord): VmState {
  */
 function spec_line(spec: VmSpec): string {
   const backup: string = spec.dataBackup === 'daily' ? ' (daily backups)' : '';
-  return `${spec.vcpu} vCPU · ${spec.memory} GiB · disk ${spec.disk} GB · data ${spec.data} GB${backup} · ${spec.os} · open ${spec.open.length === 0 ? 'none' : spec.open.join(',')} · on ${spec.net}`;
+  const ssh: string = spec.ssh === undefined ? '' : ` · public SSH ${vmSsh_words(spec.ssh)}`;
+  return `${spec.vcpu} vCPU · ${spec.memory} GiB · disk ${spec.disk} GB · data ${spec.data} GB${backup} · ${spec.os} · open ${spec.open.length === 0 ? 'none' : spec.open.join(',')}${ssh} · on ${spec.net}`;
 }
 
 /**
@@ -197,7 +199,7 @@ function vmStatus_lines(store: VmStore, record: VmRecord, spec: VmSpec | null): 
 function vmRunning_find(name: string): { job: string; what: string; since: string } | null {
   const runner = runner_get();
   if (runner === null) return null;
-  const ids: Array<[string, string]> = [[VM_JOBS.plan(name, 'data'), 'building'], [VM_JOBS.plan(name, 'machine'), 'building'], [VM_JOBS.apply(name, 'data'), 'building'], [VM_JOBS.apply(name, 'machine'), 'building'], [VM_GROW_JOB(name), 'growing its disks'], [VM_JOBS.teardown(name), 'tearing down']];
+  const ids: Array<[string, string]> = [[VM_JOBS.plan(name, 'data'), 'building'], [VM_JOBS.plan(name, 'machine'), 'building'], [VM_JOBS.apply(name, 'data'), 'building'], [VM_JOBS.apply(name, 'machine'), 'building'], [VM_GROW_JOB(name), 'growing its disks'], [VM_HOST_JOB(name), 'setting it up'], [VM_JOBS.teardown(name), 'tearing down']];
   for (const job of runner.jobs_list(STEPS_SOURCE)) {
     if (taskState_isOver(job.state)) continue;
     const hit = ids.find(([id]): boolean => id === job.id);
@@ -234,6 +236,7 @@ function vmRowKept_make(context: VmCommandContext, name: string): VmStatusRow {
     declared: record.declared ?? null,
     declaredKept: declaredKept_is(record),
     instance: record.machineOutputs?.['instance_id'] ?? null,
+    host: record.host ?? null,
     running: vmRunning_find(name),
     teardown: record.teardown === undefined ? null : {
       started: record.teardown.started,
@@ -548,7 +551,10 @@ async function vmNew_run(context: VmCommandContext, args: ReadonlyArray<string>)
   const read = options_read(args, VM_OPTIONS);
   if ('error' in read) return envelope_error('', undefined, `vm new: ${read.error} (${VM_OPTIONS.join(', ')})\n`);
   const [name, ...extra] = read.rest;
-  if (name === undefined || extra.length > 0) return envelope_error('', undefined, 'vm new: usage: vm new <name> --net <network> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> [--open <ports>] [--data-backup daily|none]\n');
+  if (name === undefined || extra.length > 0) return envelope_error('', undefined, 'vm new: usage: vm new <name> --net <network> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> [--open <ports>] [--data-backup daily|none] [--ssh <port>|off --ssh-user <user> --ssh-key-file <key.pub>]\n');
+  // A key file is read here, once: the declaration keeps the public key itself, so a rebuild needs no file.
+  const keyRead: string | null = sshKeyFile_resolve(read.options);
+  if (keyRead !== null) return envelope_error('', undefined, `vm new: ${keyRead}\n`);
   if (!VM_NAME.test(name)) return envelope_error('', undefined, `vm new: ${name}: a VM's name is a hostname: lower-case letters, digits and hyphens, starting with a letter, at most 32\n`);
   const before = context.store.spec_read(name);
   const keptSpec: VmSpec | null = before !== null && 'spec' in before ? before.spec : null;
@@ -643,7 +649,7 @@ async function costChange_words(context: VmCommandContext, record: VmRecord | nu
   const stands = record?.stands;
   if (record?.built === undefined || stands === undefined || stands.vcpu === null || stands.memory === null) return `It bills ${month(after)} a month (${cost_words(after.machineHour + after.dataHour, after.currency).split(',')[0]}).`;
   const before: VmCost | null = await cost_read(context, { ...spec, vcpu: stands.vcpu, memory: stands.memory, disk: stands.disk ?? spec.disk, data: stands.data ?? spec.data, dataBackup: stands.backup === 'none' ? 'none' : stands.backup === 'daily' ? 'daily' : spec.dataBackup });
-  return before === null ? `It bills ${month(after)} a month.` : `${month(before)} → ${month(after)} a month.`;
+  return before === null ? `It bills ${month(after)} a month.` : month(before) === month(after) ? `No change in cost: ${month(after)} a month.` : `${month(before)} → ${month(after)} a month.`;
 }
 
 /**
@@ -832,10 +838,18 @@ async function part_plan(name: string, part: VmPart, deps: VmDeps, context: VmCo
  * @param said - What to say before the VM.
  * @returns The envelope.
  */
-async function grow_run(context: VmCommandContext, deps: VmDeps, name: string, grow: { boot: boolean; data: boolean }, said: string): Promise<CommandEnvelope> {
-  const ran = await job_runFollowed(VM_GROW_JOB(name), `grow ${name}`, vmGrowRun_make(name, grow, deps, context.remote_open));
-  if ('error' in ran) return envelope_error(said, undefined, `vm build: ${name}: the disks grew, their filesystems did not: ${ran.error} (vm build ${name} grows them again)\n`);
-  context.store.record_update(name, (current: VmRecord): void => { delete current.growOwed; });
+async function grow_run(context: VmCommandContext, deps: VmDeps, name: string, grow: { boot: boolean; data: boolean } | undefined, said: string, spec?: VmSpec): Promise<CommandEnvelope> {
+  if (grow !== undefined) {
+    const ran = await job_runFollowed(VM_GROW_JOB(name), `grow ${name}`, vmGrowRun_make(name, grow, deps, context.remote_open));
+    if ('error' in ran) return envelope_error(said, undefined, `vm build: ${name}: the disks grew, their filesystems did not: ${ran.error} (vm build ${name} grows them again)\n`);
+    context.store.record_update(name, (current: VmRecord): void => { delete current.growOwed; });
+  }
+  // The machine itself last: its firewall and public SSH, set over the bastion once the stacks stand.
+  const record: VmRecord | null = context.store.record_read(name);
+  if (spec !== undefined && record !== null && record.built !== undefined && vmHost_owed(record, spec).length > 0) {
+    const ran = await job_runFollowed(VM_HOST_JOB(name), `set up ${name}`, vmHostRun_make(name, spec, deps, context.remote_open));
+    if ('error' in ran) return envelope_error(said, undefined, `vm build: ${name}: built, but the machine was not set up: ${ran.error} (vm build ${name} sets it up again)\n`);
+  }
   // The receipt is what runs, read again from the tenancy after the act, never the read from before it.
   await vmStands_refresh(context);
   const read = context.store.spec_read(name);
@@ -886,6 +900,12 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   const name: string = need.name;
   const keptNow = context.store.spec_read(name);
   const spec: VmSpec = keptNow !== null && 'spec' in keptNow ? keptNow.spec : need.spec;
+  // A machine no host step has set up keeps what its first boot left, noted now, before a build changes its spec built.
+  const before: VmRecord | null = context.store.record_read(name);
+  if (before !== null && before.built !== undefined && before.host === undefined) context.store.record_update(name, (current: VmRecord): void => { current.host = vmHost_current(before, spec); });
+  const firstMachine: boolean = before?.built === undefined;
+  const hostOwed: string[] = before === null || firstMachine ? (spec.ssh?.on === true ? vmHost_owed({ ...before, built: 'now' } as VmRecord, spec).filter((word: string): boolean => word.startsWith('public SSH')) : []) : vmHost_owed(context.store.record_read(name) as VmRecord, spec);
+  const sshOpens: string = spec.ssh?.on === true && hostOwed.some((word: string): boolean => /^public SSH (opened|moved)/.test(word)) ? ` SSH answers the internet on port ${spec.ssh.port}: only ${spec.ssh.user}'s key gets in, and ${spec.ssh.user} has sudo.` : '';
   try {
     vmNet_read(context.nets, spec);
   } catch (error: unknown) {
@@ -902,7 +922,11 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
     context.store.file_remove(name, planFile_derive('machine'));
     // The tenancy matches the spec declared: the build is done for it, so its line stops reading changed.
     if (context.store.record_read(name)?.built !== undefined) built_mark(context, name, spec);
-    if (owed !== undefined) return await grow_run(context, deps, name, owed, `${name}: the plan reads nothing to do; growing the filesystems a build left ungrown\n`);
+    if (hostOwed.length > 0) {
+      const yes: boolean = await repl_confirm(`vm build ${name}: ${hostOwed.join('; ')}.${sshOpens} Nothing bills. A NO changes nothing on the machine. Continue? [y/N]`);
+      if (!yes) return envelope_ok(`${chalk.gray(`stopped before setting the machine up; nothing changed on it (vm build ${name} asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: 'build' } });
+    }
+    if (owed !== undefined || hostOwed.length > 0) return await grow_run(context, deps, name, owed, owed !== undefined ? `${name}: the plan reads nothing to do; growing the filesystems a build left ungrown\n` : '', spec);
     return envelope_ok(`${name}: built, and the plan reads nothing to do\n`);
   }
   // What each plan does to what stands: a size changed in place, a port, the backups; anything else is refused unless asked.
@@ -917,12 +941,13 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   // A port opened or closed is named: the ports as the security group opens them now, and as declared.
   const nowOpen = context.store.record_read(name)?.stands?.open;
   const portsWord = (list: ReadonlyArray<number>): string => (list.length === 0 ? 'none' : [...list].sort((a: number, b: number): number => a - b).join(','));
-  const changed: string[] = [...new Set(judged.flatMap(([, judge]): string[] => judge.words).map((word: string): string => (/^a port (opened|closed)$/.test(word) && nowOpen != null ? `ports ${portsWord(nowOpen)} → ${portsWord(spec.open)}` : word)))];
+  const changed: string[] = [...new Set(judged.flatMap(([, judge]): string[] => judge.words).map((word: string): string => (/^a port (opened|closed)$/.test(word) && nowOpen != null ? `ports ${portsWord(nowOpen)} → ${portsWord(vmPorts_openOf(spec))}` : word)))];
   const chrisUrl: string | undefined = context.store.record_read(name)?.chris?.url;
   const machineWords: string = machine === null ? `planned once its data stands (${spec.vcpu} vCPU, ${spec.memory} GiB, disk ${spec.disk} GB)` : planCounts_words(machine.counts);
   const warning: string = reboot ? ` ${name} reboots to take its new shape: it${chrisUrl !== undefined ? `, and ChRIS at ${chrisUrl},` : ''} is down a few minutes.` : '';
   const growing: string = !reboot && (grow.boot || grow.data) ? ' Grown online, no reboot.' : '';
-  const what: string = changed.length > 0 ? `${changed.join(', ')}.` : `data ${planCounts_words(data.counts)}; machine ${machineWords}.`;
+  const hostWords: string[] = hostOwed.filter((word: string): boolean => word.startsWith('public SSH') || word.endsWith('SSH key replaced'));
+  const what: string = changed.length > 0 || hostWords.length > 0 ? `${[...changed, ...hostWords].join(', ')}.` : `data ${planCounts_words(data.counts)}; machine ${machineWords}.`;
   const made: string[] = context.store.record_read(name)?.planMade ?? [];
   // A plan's free things are named, as they stand whatever the answer (a-change-is-a-loop, 4d).
   const already: string = made.length === 0 ? '' : ` Made to plan it, free, and kept on a NO: ${made.join(', ')}.`;
@@ -930,7 +955,7 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   const record: VmRecord | null = context.store.record_read(name);
   const declaredSince: boolean = record?.declared !== undefined && (record.built === undefined || record.declared > record.built);
   const offered: VmCost | null = await cost_read(context, spec);
-  const yes: boolean = await repl_confirm(`vm build ${name}: ${what}${warning}${growing} ${await costChange_words(context, record, spec, offered)} A NO builds nothing${declaredSince ? '; the declaration stays written' : ''}.${already} Continue? [y/N]`);
+  const yes: boolean = await repl_confirm(`vm build ${name}: ${what}${warning}${growing}${sshOpens} ${await costChange_words(context, record, spec, offered)} A NO builds nothing${declaredSince ? '; the declaration stays written' : ''}.${already} Continue? [y/N]`);
   if (!yes) {
     const left: string[] = [...(declaredSince ? ['the declaration stands as written'] : []), ...(made.length > 0 ? [`made to plan it, free: ${made.join(', ')}`] : [])];
     return envelope_ok(`${chalk.gray(left.length === 0 ? `stopped before the apply; nothing changed (vm build ${name} plans and asks again)` : `stopped before the apply; nothing was built (${left.join('; ')}; vm build ${name} plans and asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: 'build' } });
@@ -966,11 +991,9 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   }
   // A data volume grown alone applies no machine: the build is still done for the spec declared.
   built_mark(context, name, spec);
-  const growOwed = context.store.record_read(name)?.growOwed;
-  if (growOwed !== undefined) return await grow_run(context, deps, name, growOwed, '');
-  // The receipt is what runs, read again from the tenancy after the apply, never the read from before it.
-  await vmStands_refresh(context);
-  return envelope_ok(`${vmStatus_lines(context.store, context.store.record_read(name) as VmRecord, spec).join('\n')}\n`);
+  // A machine first built has its ports admitted by its first boot: only public SSH is still to set up on it.
+  if (firstMachine) context.store.record_update(name, (current: VmRecord): void => { current.host = { ports: vmPorts_openOf(spec), ssh: null }; });
+  return await grow_run(context, deps, name, context.store.record_read(name)?.growOwed, '', spec);
 }
 
 /**
@@ -1182,6 +1205,6 @@ export const VM_HELP: CommandHelp = {
   usage: 'vm [status [<name>…]] | vm <name> | vm new <name> --net <network> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> [--open <ports>] [--data-backup daily|none] | vm cost [<name> [<vm new\'s options>]] | vm limits | vm plan [<name>] | vm build [<name>] [--allow-alter] | vm shell [<name>] | vm protect <name> on|off | vm teardown <name> [--all] | vm keep <name>',
   summary: 'Declare, build, reach and tear down VMs on a network',
   category: 'Resources',
-  description: 'vm new declares a VM and builds nothing; on a VM already declared it compares, printing unchanged or the change (a script is the truth), and an option not given keeps its value. A VM stands on a built network (--net) and is named in portable words only: vCPUs, memory in GiB, a boot disk and a data volume in GB (50 at least), the operating system (ubuntu-26.04), the ports open to the internet (--open 80,443; SSH goes through the network\'s bastion) and daily backups of its data. The driver chooses the rest: on OCI an E5.Flex (two vCPUs to an OCPU), the newest image of the OS (pinned at the first build), the first availability domain. A VM is two stacks: its data (the volume, its backups, a reserved address) and its machine (the instance, its boot disk, a security group, the volume\'s attachment); cloud-init formats the volume once, mounts it at /srv/data and puts Docker\'s data there. vm cost says what a VM bills at list price, an hour and a month, and what its data alone keeps billing after a teardown; it declares and saves nothing. Its words are vm new\'s: on a declared VM the options given change its spec for the answer and the difference is said (vm cost store --memory 16); on a name not declared they are the whole spec, without --net (the price is the session\'s region\'s); bare, every declared VM. vm limits says what the shape VMs are built from sells, in the same words: vCPUs from the least to the most in the cloud\'s steps, memory in GiB and per vCPU, the disks\' floors and ceilings; a slider takes its ends from it. vm plan says the size, the network and the cost. vm build plans as tasks (/proc/steps/vm-<name>-plan-data, -machine), says the counts and the cost and asks, applies the data and the machine and points the address at it. On a VM that stands it resizes in place: new vCPUs or memory reshape the machine, which the cloud reboots (the question says so first); a grown boot disk or data volume has its filesystem grown after, over the bastion (/proc/steps/vm-<name>-grow); ports open and close, backups turn on and off; a shrink, a new OS (a new machine) or a replaced volume is refused unless --allow-alter. vm shell (shell tier) opens a three-hour session on the network\'s bastion for the VM\'s own key and prints the ssh line. A VM is born protected: vm protect <name> off lets teardown run. vm teardown removes the machine and keeps the data, backups and address, so the next build brings it back with its data and name; --all takes those too, asking for the name typed back. The tenancy is the truth and this host\'s records its cache: a VM\'s SSH key and its ChRIS\'s record and passwords are kept in the tenancy\'s vault (mise), so every session on every host holding the tenancy\'s credentials reads a VM stratus built whole, on vm status; vm keep <name> keeps them from this host for a VM built before they were kept.',
+  description: 'vm new declares a VM and builds nothing; on a VM already declared it compares, printing unchanged or the change (a script is the truth), and an option not given keeps its value. A VM stands on a built network (--net) and is named in portable words only: vCPUs, memory in GiB, a boot disk and a data volume in GB (50 at least), the operating system (ubuntu-26.04), the ports open to the internet (--open 80,443), public SSH for an administrative Linux user that is not a ChRIS account (--ssh <port>|off, --ssh-user, default ops, --ssh-key-file <key.pub> or --ssh-key: key-only, with sudo; off keeps the user and the key; the network\'s bastion reaches the machine either way) and daily backups of its data. The driver chooses the rest: on OCI an E5.Flex (two vCPUs to an OCPU), the newest image of the OS (pinned at the first build), the first availability domain. A VM is two stacks: its data (the volume, its backups, a reserved address) and its machine (the instance, its boot disk, a security group, the volume\'s attachment); cloud-init formats the volume once, mounts it at /srv/data and puts Docker\'s data there. vm cost says what a VM bills at list price, an hour and a month, and what its data alone keeps billing after a teardown; it declares and saves nothing. Its words are vm new\'s: on a declared VM the options given change its spec for the answer and the difference is said (vm cost store --memory 16); on a name not declared they are the whole spec, without --net (the price is the session\'s region\'s); bare, every declared VM. vm limits says what the shape VMs are built from sells, in the same words: vCPUs from the least to the most in the cloud\'s steps, memory in GiB and per vCPU, the disks\' floors and ceilings; a slider takes its ends from it. vm plan says the size, the network and the cost. vm build plans as tasks (/proc/steps/vm-<name>-plan-data, -machine), says the counts and the cost and asks, applies the data and the machine and points the address at it. On a VM that stands it resizes in place: new vCPUs or memory reshape the machine, which the cloud reboots (the question says so first); a grown boot disk or data volume has its filesystem grown after, over the bastion (/proc/steps/vm-<name>-grow); ports open and close (the machine\'s own firewall admits them over the bastion after the apply, /proc/steps/vm-<name>-host, which also makes public SSH\'s user, its key and sshd\'s port), backups turn on and off; a shrink, a new OS (a new machine) or a replaced volume is refused unless --allow-alter. vm shell (shell tier) opens a three-hour session on the network\'s bastion for the VM\'s own key and prints the ssh line. A VM is born protected: vm protect <name> off lets teardown run. vm teardown removes the machine and keeps the data, backups and address, so the next build brings it back with its data and name; --all takes those too, asking for the name typed back. The tenancy is the truth and this host\'s records its cache: a VM\'s SSH key and its ChRIS\'s record and passwords are kept in the tenancy\'s vault (mise), so every session on every host holding the tenancy\'s credentials reads a VM stratus built whole, on vm status; vm keep <name> keeps them from this host for a VM built before they were kept.',
   examples: ['vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04', 'vm cost store --memory 16', 'vm cost blt --vcpu 4 --memory 16 --disk 50 --data 1024 --data-backup daily --os ubuntu-26.04', 'vm limits', 'vm plan store', 'vm build store', 'vm shell store', 'vm protect store off', 'vm teardown store'],
 };

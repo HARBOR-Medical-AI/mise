@@ -19,7 +19,7 @@
  * Built on the script screen's bodies, which are the same forms over the
  * same lines; this file holds what differs.
  */
-import type { ChrisStatusRow, PromptKind, VmCostRate, VmCostRow, VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
+import type { ChrisPlanModel, ChrisStatusRow, PromptKind, VmCostRate, VmCostRow, VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
 import { chrisStatusModelSchema, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema } from '@fnndsc/menu';
 import { lockWhere_text, modePill_make } from '../takeover/tier.js';
@@ -27,13 +27,16 @@ import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
 import { buildWould_derive, costLine_derive, line_parse, line_render, lineOption_get, lineOption_set, lines_build, ports_word, rate_words, runningStep_find, script_render, stepBuildLine_get, steps_build, vmLevers_read, vmSliders_build, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type VmRuns } from '../script/model.js';
 import { ScriptScreen, type OpenAsk, type QuietAnswer, type ScriptHooks } from '../script/screen.js';
-import { FACTS_KEY, MACHINES_KEY, NEW_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
-import { BUILD_PHASES, buildQuestion_plain, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_take, type BuildQuestion, type BuildRun } from './run.js';
+import { FACTS_KEY, MACHINES_KEY, NEW_KEY, SERVICES_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmServiceKind_derive, vmServices_change, vmServices_read, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
+import { BUILD_PHASES, buildQuestion_plain, chrisQuestion_plain, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_take, type BuildQuestion, type BuildRun } from './run.js';
 import { Listing } from '../roster/listing.js';
 import type { ListingTrait } from '../roster/row.js';
 
 /** The order the VM's seats stand in, whatever order the script's lines come. */
-const SEAT_ORDER: ReadonlyArray<string> = ['SIZE', 'BUILD', 'CHRIS', 'USERS', 'TEARDOWN'];
+const SEAT_ORDER: ReadonlyArray<string> = ['SPEC', 'BUILD', 'SERVICES', 'CHRIS', 'USERS', 'TEARDOWN'];
+
+/** The seats the gutter does not show: a ChRIS's accounts stand on CHRIS (the operator, 2026-11-07). */
+const SEATS_UNSHOWN: ReadonlyArray<string> = ['USERS'];
 
 /** The name a new machine's line carries until one is typed: a plain word, so its price can be asked (`<name>` would be read as a redirect). */
 const UNNAMED: string = 'unnamed';
@@ -113,7 +116,41 @@ export class VmScreen extends ScriptScreen {
     this.newDraft = { number: 1, text: vmNewLine_compose(UNNAMED, NET_DEFAULT), state: null, detail: '', running: null };
     this.unsaved = false;
     this.chrisRow = null;
+    this.logFold_install();
     this.draw();
+  }
+
+  /** The label of the seat shown, so the view follows it when its key changes (a template seat gaining its line). */
+  private viewLabel: string = '';
+
+  /** Whether the VM LOG is open: shut by default to its newest line (the operator, 2026-11-07). */
+  private logOpen: boolean = false;
+
+  /** The VM LOG folds: its strip opens and shuts it; shut, it shows its newest line. */
+  private logFold_install(): void {
+    const strip: HTMLElement | null = this.frame.logTitle.parentElement;
+    if (strip === null) return;
+    strip.classList.add('vm-log-strip');
+    strip.setAttribute('role', 'button');
+    strip.tabIndex = 0;
+    const toggle = (): void => { this.hooks.voice.pill(this.logOpen ? 'SHUT' : 'OPEN'); this.logOpen_set(!this.logOpen); };
+    strip.addEventListener('click', toggle);
+    strip.addEventListener('keydown', (event: KeyboardEvent): void => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); } });
+    this.logOpen_set(false);
+  }
+
+  /**
+   * Opens or shuts the VM LOG.
+   *
+   * @param open - Whether it is open.
+   */
+  private logOpen_set(open: boolean): void {
+    this.logOpen = open;
+    const stage: HTMLElement | null = this.frame.log.parentElement;
+    if (stage !== null) stage.dataset['vmLog'] = open ? 'open' : 'shut';
+    this.frame.logNote.textContent = open ? 'THE SESSION\'S LINES · TYPE BELOW · PRESS TO SHUT' : 'THE NEWEST LINE · PRESS TO OPEN';
+    this.frame.logTitle.parentElement?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) this.parts.log.scrollTop = this.parts.log.scrollHeight;
   }
 
   /** The script screen's constructor draws before this screen's fields exist: that first draw waits for them. */
@@ -197,7 +234,7 @@ export class VmScreen extends ScriptScreen {
     }
     this.steps = this.steps_derive(this.lines);
     // A machine opens on its SIZE; a line running takes the seat it runs in; one this session can only see, on what it is.
-    this.view = runningStep_find(this.steps)?.key ?? this.steps.find((step: ScriptStep): boolean => step.label === 'SIZE')?.key ?? this.steps[0]?.key ?? FACTS_KEY;
+    this.view = runningStep_find(this.steps)?.key ?? this.steps.find((step: ScriptStep): boolean => step.label === 'SPEC')?.key ?? this.steps[0]?.key ?? FACTS_KEY;
     if (this.run !== null && this.run.vm !== name) this.run = null;
     this.followDeclined = false;
     this.chrisRow = null;
@@ -317,6 +354,9 @@ export class VmScreen extends ScriptScreen {
     for (const label of SEAT_ORDER) {
       const found: ScriptStep | undefined = built.find((step: ScriptStep): boolean => step.label === label);
       if (found !== undefined) { steps.push(found); continue; }
+      // SERVICES is the same `vm new` line as SPEC, its ports and public SSH, built with the same BUILD.
+      const spec: ScriptStep | undefined = steps.find((step: ScriptStep): boolean => step.label === 'SPEC');
+      if (label === 'SERVICES') { if (spec !== undefined) steps.push({ ...spec, key: SERVICES_KEY, label }); continue; }
       const number: number = (lines.at(-1)?.number ?? 0) + 1;
       if (label === 'CHRIS') steps.push({ key: 'chris', label, kind: 'chris deploy', lines: [{ number, text: `chris deploy ${this.vm} --profile minimal --compute ${this.vm}`, state: null, detail: 'not in the script yet: RUN appends it', running: null }], state: null, running: null, template: true });
       else if (label === 'USERS') steps.push({ key: 'users', label, kind: 'users', lines: [], state: null, running: null });
@@ -416,6 +456,8 @@ export class VmScreen extends ScriptScreen {
       // The session's last word on why, once: its own `vm build:` sentence when it said one.
       const why: string = (this.refusal?.why ?? '').split(/(?=vm build: )/).at(-1)?.replace(/^vm build: /, '').trim() ?? '';
       this.run = buildRun_end(this.run, !ok ? { tone: 'failed', why } : declined ? { tone: 'declined', why: '' } : { tone: 'done', why: '' }, new Date().toISOString());
+      // A failure opens the log: what the session said of it is there.
+      if (!ok && !this.logOpen) this.logOpen_set(true);
       this.runTick_set(false);
       this.draw();
     }
@@ -456,9 +498,9 @@ export class VmScreen extends ScriptScreen {
 
   /** The gutter: a pill per machine and + NEW; the rail: the VM's seats. */
   protected override rail_draw(): void {
-    const views: TakeoverView[] = this.steps.map((step: ScriptStep): TakeoverView => ({ key: step.key, label: step.label }));
+    const views: TakeoverView[] = this.steps.filter((step: ScriptStep): boolean => !SEATS_UNSHOWN.includes(step.label)).map((step: ScriptStep): TakeoverView => ({ key: step.key, label: step.label }));
     if (this.vm === '') {
-      views.unshift({ key: NEW_KEY, label: 'NEW · SIZE' });
+      views.unshift({ key: NEW_KEY, label: 'NEW · SPEC' });
       if (this.vms.length > 0) views.unshift({ key: MACHINES_KEY, label: 'MACHINES' });
     }
     const shown: string[] = [...this.frame.views.keys()];
@@ -511,7 +553,8 @@ export class VmScreen extends ScriptScreen {
     if (row !== null && vmKeyless_is(row)) chips.append(el('span', 'tdc-chip', row.state === 'found' ? (row.found?.tagged === true ? 'FOUND · NOT READ' : 'MADE OUTSIDE STRATUS') : 'NO SSH KEY IN THE TENANCY'));
     if (row !== null) chips.append(el('span', `tdc-chip tdc-lock${row.protected ? ' tdc-lock-on' : ' tdc-lock-off'}`, row.protected ? 'PROTECTED' : 'UNLOCKED'));
     // Said only while it is true: an edit not yet built is the screen's, and BUILD writes it first.
-    if (this.vm !== '' && this.edited && !vmKeyless_is(row)) chips.append(el('span', 'tdc-chip vm-chip-edited', 'EDITED · NOT BUILT'));
+    const editedOn: string[] = this.editedSeats_get();
+    if (this.vm !== '' && editedOn.length > 0 && !vmKeyless_is(row)) chips.append(el('span', 'tdc-chip vm-chip-edited', `${editedOn.join(' · ')} EDITED · NOT BUILT`));
     else if (this.vm !== '' && this.unsaved && !vmKeyless_is(row)) chips.append(el('span', 'tdc-chip', 'SCRIPT NOT WRITTEN YET'));
     if (chips.childElementCount > 0) condition.append(chips);
     header.append(condition, this.costSection_make(), this.bandRunning_make());
@@ -564,6 +607,14 @@ export class VmScreen extends ScriptScreen {
       [TEARDOWN_KEY]: (): HTMLElement[] => this.teardown_make(),
     };
     const make: (() => HTMLElement[]) | undefined = own[this.view];
+    // A seat whose line the script lacked (CHRIS before its deploy line) gets the line's key once RUN appends it:
+    // the view follows its seat by name, so RUN never leaves the screen on no step.
+    const shownStep: ScriptStep | undefined = this.steps.find((step: ScriptStep): boolean => step.key === this.view);
+    if (shownStep !== undefined) this.viewLabel = shownStep.label;
+    else if (make === undefined && this.viewLabel !== '') {
+      const same: ScriptStep | undefined = this.steps.find((step: ScriptStep): boolean => step.label === this.viewLabel);
+      if (same !== undefined) { this.view = same.key; this.frame.view_mark(same.key); }
+    }
     if (make === undefined) {
       super.body_draw();
       const panes: number = [...this.parts.body.children].filter((child: Element): boolean => child.tagName === 'SECTION').length;
@@ -674,11 +725,410 @@ export class VmScreen extends ScriptScreen {
     return [facts];
   }
 
+  // -------------------------------------------------------------- SERVICES
+
+  /** A service being added: its kind, port, and for public SSH the user and the key or key file. */
+  private serviceDraft: { kind: 'WEB' | 'CUSTOM' | 'SSH'; port: string; user: string; key: string } = { kind: 'CUSTOM', port: '', user: 'ops', key: '' };
+
+  /** What SERVICES' line would change against what runs, in words. */
+  private servicesChange_get(): string[] {
+    const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === SERVICES_KEY);
+    const line: ScriptLine | undefined = step?.lines[0];
+    const row: VmStatusRow | null = this.vmRow_get();
+    if (line === undefined || row === null) return [];
+    const runs = this.runs_get(line_parse(line.text).subject ?? '');
+    return vmServices_change(vmServices_read(line.text, row.spec?.ssh ?? null), runs?.open ?? null, row.host);
+  }
+
+  /**
+   * SERVICES, one pane (the operator, 2026-11-07): what the machine opens to
+   * the internet, a row each, what answers there and whether the tenancy
+   * opens it; public SSH with its user, key and warning; ADD SERVICE; the
+   * change against what runs and BUILD saying it. A build in flight stands
+   * at the top as one run, as on SPEC.
+   */
+  private services_make(step: ScriptStep): HTMLElement {
+    const line: ScriptLine = step.lines[0] as ScriptLine;
+    const built: ScriptLine | undefined = stepBuildLine_get(step);
+    const row: VmStatusRow | null = this.vmRow_get();
+    const runs = this.runs_get(line_parse(line.text).subject ?? '');
+    const declared = vmServices_read(line.text, row?.spec?.ssh ?? null);
+    const pane: HTMLElement = this.section_make('THE SERVICES', 'ss-col-wide vm-services', runs === null ? 'NOT BUILT YET' : `OPEN IN THE TENANCY · READ ${runs.at.slice(11, 16)} UTC`);
+    const ours: boolean = this.run !== null && this.run.vm === this.vm;
+    if (ours && this.run !== null) pane.append(this.run_make(this.run));
+    const list: HTMLElement = el('div', 'vm-services-list');
+    list.append(this.serviceHead_make());
+    for (const port of declared.open) list.append(this.serviceRow_make(line, port, declared.open, runs?.open ?? null));
+    if (declared.ssh !== null) list.append(this.sshRow_make(line, declared.ssh, row));
+    if (declared.open.length === 0 && declared.ssh === null) list.append(el('p', 'tdc-prose tdc-quiet', 'Nothing is open to the internet: the network\'s bastion is the only way to the machine.'));
+    pane.append(list, this.serviceAdd_make(line, declared.open, declared.ssh !== null));
+    const words: string[] = this.servicesChange_get();
+    if (!ours || (this.run?.outcome != null && words.length > 0)) pane.append(this.servicesCommit_make(step, line, built, words));
+    // The line as it will run: SERVICES writes on the same `vm new` line as SPEC.
+    const script: HTMLElement = el('div', 'vm-size-lines');
+    script.append(el('span', 'tdc-section-title', `THE SCRIPT · ${this.path === '' ? 'NOT WRITTEN YET' : this.path}`), this.lineBoxNumbered_make(line));
+    pane.append(script);
+    return pane;
+  }
+
+  /** The services list's head row. */
+  private serviceHead_make(): HTMLElement {
+    const head: HTMLElement = el('div', 'vm-service vm-service-head');
+    for (const word of ['KIND', 'PORT', 'WHAT ANSWERS', 'IN THE TENANCY', '']) head.append(el('span', 'tdc-pair-label', word));
+    return head;
+  }
+
+  /** One port the line opens: its kind, what answers there (read live for the web's), whether the tenancy opens it, REMOVE. */
+  private serviceRow_make(line: ScriptLine, port: number, open: ReadonlyArray<number>, runs: ReadonlyArray<number> | null): HTMLElement {
+    const kind: 'WEB' | 'CUSTOM' = vmServiceKind_derive(port);
+    const chris: ChrisStatusRow | null = this.chrisRow_get(this.vm);
+    const live = chris?.live ?? null;
+    const answers: string = kind === 'CUSTOM' || chris === null ? 'nothing stratus put up answers here'
+      : `Caddy: CUBE ${live === null ? '(not read)' : live.cube.status === null ? 'does not answer' : `answers ${live.cube.status}`}${chris.porter !== null ? ` · porter ${live?.porter == null ? '(not read)' : live.porter.status === null ? 'does not answer' : `answers ${live.porter.status}`}` : ''}${live !== null ? ` · read ${live.at.slice(11, 16)}` : ''}`;
+    const item: HTMLElement = el('div', 'vm-service');
+    item.append(
+      el('span', `vm-service-kind vm-service-${kind.toLowerCase()}`, kind),
+      el('span', 'vm-service-port', String(port)),
+      el('span', 'vm-service-answers', answers),
+      el('span', 'ss-field-runs', runs === null ? '—' : runs.includes(port) ? 'OPEN' : 'NOT OPEN YET'),
+    );
+    const remove: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet vm-service-remove', 'REMOVE');
+    remove.type = 'button';
+    remove.disabled = this.busy !== null;
+    remove.addEventListener('click', (): void => {
+      this.hooks.voice.pill('REMOVE');
+      const rest: number[] = open.filter((each: number): boolean => each !== port);
+      line.text = lineOption_set(line.text, '--open', rest.length === 0 ? 'none' : rest.join(','));
+      this.edited = true;
+      this.draw();
+    });
+    item.append(remove);
+    return item;
+  }
+
+  /** Public SSH: its port, user and key, open or closed as declared and as the machine was set up, the warning, OPEN or CLOSE. */
+  private sshRow_make(line: ScriptLine, ssh: { port: number | null; user: string; key: string | null; keyFile: string | null; on: boolean }, row: VmStatusRow | null): HTMLElement {
+    const box: HTMLElement = el('div', 'vm-service-ssh');
+    const item: HTMLElement = el('div', 'vm-service');
+    const host = row?.host?.ssh ?? null;
+    const machine: string = host === null ? 'NOT SET UP YET' : host.on ? `SET UP · OPEN ON ${host.port}` : `SET UP · CLOSED (${host.user} KEPT)`;
+    const key: string = ssh.keyFile !== null ? `key from ${ssh.keyFile}` : ssh.key === null ? 'no key' : `key …${(ssh.key.split(' ')[1] ?? '').slice(-10)}${ssh.key.split(' ')[2] !== undefined ? ` (${ssh.key.split(' ').slice(2).join(' ')})` : ''}`;
+    item.append(
+      el('span', 'vm-service-kind vm-service-ssh-kind', 'PUBLIC SSH'),
+      el('span', 'vm-service-port', ssh.port === null ? '—' : String(ssh.port)),
+      el('span', 'vm-service-answers', `${ssh.on ? 'open' : 'closed'} for ${ssh.user} · ${key} · password login off · sudo`),
+      el('span', 'ss-field-runs', machine),
+    );
+    const toggle: HTMLButtonElement = el('button', `tdc-pill${ssh.on ? ' tdc-pill-quiet' : ''} vm-service-remove`, ssh.on ? 'CLOSE' : 'OPEN');
+    toggle.type = 'button';
+    toggle.disabled = this.busy !== null || (!ssh.on && ssh.port === null);
+    toggle.addEventListener('click', (): void => {
+      this.hooks.voice.pill(toggle.textContent ?? '');
+      line.text = lineOption_set(line.text, '--ssh', ssh.on ? 'off' : String(ssh.port));
+      this.edited = true;
+      this.draw();
+    });
+    item.append(toggle);
+    box.append(item, el('p', 'tdc-prose ss-would-reboot vm-service-warning', ssh.on
+      ? `SSH answers the internet on port ${ssh.port ?? '?'}: anyone can knock, only ${ssh.user}'s key gets in, and ${ssh.user} has sudo. The network's bastion stays the operator's way in without it.`
+      : `Closed: ${ssh.user} and its key stay on the machine; OPEN brings the port back.`));
+    return box;
+  }
+
+  /** ADD SERVICE: a kind, a port, and for public SSH its user and public key (pasted, or a key file on this host); ADD writes it on the line. */
+  private serviceAdd_make(line: ScriptLine, open: ReadonlyArray<number>, sshDeclared: boolean): HTMLElement {
+    const box: HTMLElement = el('div', 'vm-service-add');
+    box.append(el('span', 'tdc-section-title', 'ADD SERVICE'));
+    const kinds: HTMLElement = el('div', 'tdc-families');
+    const draft = this.serviceDraft;
+    for (const kind of ['WEB', 'CUSTOM', 'SSH'] as const) {
+      if (kind === 'SSH' && sshDeclared) continue;
+      const pill: HTMLButtonElement = el('button', `tdc-family${draft.kind === kind ? ' tdc-family-on' : ''}`, kind === 'SSH' ? 'PUBLIC SSH' : kind);
+      pill.type = 'button';
+      pill.disabled = this.busy !== null;
+      pill.addEventListener('click', (): void => { this.serviceDraft = { ...draft, kind, port: kind === 'WEB' ? (open.includes(80) ? '443' : '80') : kind === 'SSH' ? '2222' : '' }; this.draw(); });
+      kinds.append(pill);
+    }
+    box.append(kinds);
+    const field = (label: string, value: string, placeholder: string, set: (value: string) => void, wide: boolean = false): HTMLElement => {
+      const row: HTMLElement = el('div', `tdc-name-row${wide ? ' vm-service-key' : ''}`);
+      const tag: HTMLElement = el('label', 'tdc-pair-label', label);
+      const input: HTMLInputElement = el('input', 'tdc-name-input');
+      input.id = `vm-service-${label.toLowerCase().replace(/\s+/g, '-')}`;
+      tag.setAttribute('for', input.id);
+      input.value = value;
+      input.placeholder = placeholder;
+      input.spellcheck = false;
+      input.autocomplete = 'off';
+      input.disabled = this.busy !== null;
+      input.addEventListener('input', (): void => set(input.value));
+      row.append(tag, input);
+      return row;
+    };
+    box.append(field('PORT', draft.port, draft.kind === 'WEB' ? '80 or 443' : '1–65535', (value: string): void => { draft.port = value.trim(); }));
+    if (draft.kind === 'SSH') {
+      box.append(
+        field('USER', draft.user, 'ops · a Linux user, not a ChRIS account', (value: string): void => { draft.user = value.trim(); }),
+        field('PUBLIC KEY', draft.key, 'ssh-ed25519 AAAA… you@host, or a .pub file on this host (~/.ssh/id_ed25519.pub)', (value: string): void => { draft.key = value.trim(); }, true),
+        el('p', 'tdc-prose ss-would-reboot', 'Public SSH opens a port to the internet for one administrative user, key-only, with sudo. Off by default; the network\'s bastion reaches the machine without it.'),
+      );
+    }
+    const add: HTMLButtonElement = el('button', 'tdc-pill', 'ADD');
+    add.type = 'button';
+    add.disabled = this.busy !== null;
+    add.addEventListener('click', (): void => {
+      this.hooks.voice.pill('ADD');
+      const port: number = Number(draft.port);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) { this.refusal_say(line.text, 'a port is a whole number from 1 to 65535'); return; }
+      if (open.includes(port)) { this.refusal_say(line.text, `${port} is open already`); return; }
+      if (draft.kind === 'SSH') {
+        if (draft.key === '') { this.refusal_say(line.text, 'public SSH needs the user\'s public key, pasted or as a .pub file'); return; }
+        let text: string = lineOption_set(line.text, '--ssh', String(port));
+        text = lineOption_set(text, '--ssh-user', draft.user === '' ? 'ops' : draft.user);
+        text = draft.key.startsWith('ssh-') || draft.key.startsWith('ecdsa-') || draft.key.startsWith('sk-')
+          ? lineOption_set(lineOption_set(text, '--ssh-key-file', ''), '--ssh-key', draft.key)
+          : lineOption_set(lineOption_set(text, '--ssh-key', ''), '--ssh-key-file', draft.key);
+        line.text = text;
+      } else {
+        line.text = lineOption_set(line.text, '--open', [...open, port].sort((a: number, b: number): number => a - b).join(','));
+      }
+      this.serviceDraft = { kind: 'CUSTOM', port: '', user: 'ops', key: '' };
+      this.edited = true;
+      this.draw();
+    });
+    box.append(add);
+    return box;
+  }
+
+  /** SERVICES' change against what runs, and BUILD saying it; nothing to change, nothing offered. */
+  private servicesCommit_make(step: ScriptStep, line: ScriptLine, built: ScriptLine | undefined, words: string[]): HTMLElement {
+    const box: HTMLElement = el('div', 'vm-change vm-services-change');
+    if (words.length === 0) {
+      box.append(el('div', 'vm-change-word', 'NOTHING CHANGES'), el('p', 'tdc-prose tdc-quiet', 'What the line opens is what the tenancy opens.'));
+      return box;
+    }
+    box.append(el('div', 'vm-change-word', words.join(' · ').toUpperCase()), el('p', 'tdc-prose', 'Nothing bills: a port is a rule in the tenancy and in the machine\'s own firewall. BUILD asks first, then opens or closes them and sets the machine up over the bastion.'));
+    if (built !== undefined) {
+      // loop: vm-services-build
+      const build: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill ss-build vm-build', `BUILD · ${words.join(' · ')}`);
+      build.type = 'button';
+      build.disabled = this.busy !== null;
+      build.addEventListener('click', (): void => { this.hooks.voice.pill('BUILD'); void this.declaredBuild_send(line.text, built.text, step.key); });
+      box.append(build);
+    }
+    return box;
+  }
+
+  /**
+   * Says why an edit was not made, where the control stands.
+   *
+   * @param line - The line edited.
+   * @param why - Why not.
+   */
+  private refusal_say(line: string, why: string): void {
+    this.refusal = { view: this.view, line, at: new Date().toISOString(), why, declined: false };
+    this.draw();
+  }
+
+  /**
+   * The seats whose lines differ from what the script stood for when read:
+   * the header's edited chip names them, and is drawn only while one does
+   * (a flag left over from an edit undone, or set on another seat, never draws it).
+   * SPEC and SERVICES share the `vm new` line: an edit to its ports or public
+   * SSH is SERVICES', any other SPEC's.
+   */
+  private editedSeats_get(): string[] {
+    if (!this.edited) return [];
+    const seats: Set<string> = new Set();
+    for (const line of this.lines) {
+      const stood: string | undefined = this.stoodFor.get(line.number);
+      if (stood === line.text) continue;
+      const parts = line_parse(line.text);
+      const verb: string = parts.verb.join(' ');
+      if (verb === 'vm new') {
+        const before = stood === undefined ? [] : line_parse(stood).options;
+        const word = (options: ReadonlyArray<[string, string]>, name: string): string => options.find(([each]): boolean => each === name)?.[1] ?? '';
+        const services: string[] = ['--open', '--ssh', '--ssh-user', '--ssh-key', '--ssh-key-file'];
+        const differs = (names: ReadonlyArray<string>): boolean => names.some((name: string): boolean => word(before, name) !== word(parts.options, name));
+        if (differs(services)) seats.add('SERVICES');
+        const others: string[] = [...new Set([...before, ...parts.options].map(([name]): string => name))].filter((name: string): boolean => !services.includes(name));
+        if (stood === undefined || differs(others)) seats.add('SPEC');
+      } else {
+        const seat: ScriptStep | undefined = this.steps.find((step: ScriptStep): boolean => step.lines.some((one: ScriptLine): boolean => one.number === line.number));
+        seats.add(seat?.label === 'USERS' ? 'CHRIS' : seat?.label ?? 'THE SCRIPT');
+      }
+    }
+    return [...seats];
+  }
+
+  // ------------------------------------------------------------------ CHRIS
+
+  /**
+   * CHRIS, one pane (the operator, 2026-11-07): each part of the ChRIS as the
+   * line declares it beside what runs, the line's fields, RUN saying what a
+   * replay does, then its accounts, each with its host access (berths, the
+   * per-user shells, are the next step: said, never a control yet).
+   */
+  private chris_make(step: ScriptStep): HTMLElement {
+    const line: ScriptLine = step.lines[0] as ScriptLine;
+    const chris: ChrisStatusRow | null = this.chrisRow_get(this.vm);
+    const live = chris?.live ?? null;
+    const pane: HTMLElement = this.section_make('THE CHRIS', 'ss-col-wide vm-chris', live === null ? (chris === null ? 'NONE DEPLOYED' : 'NOT READ') : `READ FROM IT ${live.at.slice(11, 16)} UTC`);
+    const running: HTMLElement | null = this.runningNote_make(step);
+    if (this.chrisRun !== null && this.chrisRun.vm === this.vm) pane.append(this.chrisRun_make(this.chrisRun));
+    else if (running !== null) pane.append(running);
+    const declared = (word: string, fallback: string): string => lineOption_get(line.text, word) ?? fallback;
+    if (chris !== null) {
+      const cube: string = live === null ? 'not read' : live.cube.status === null ? 'does not answer' : `answers ${live.cube.status}${live.cube.admin === true ? ' · chris signs in' : live.cube.admin === false ? ' · chris does not sign in' : ''}`;
+      const porter: string = chris.porter === null ? 'none deployed' : live?.porter == null ? 'not read' : live.porter.status === null ? 'does not answer' : `answers ${live.porter.status}${live.porter.version !== null ? ` · ${live.porter.version}` : ''}${live.porter.sessions !== null ? ` · ${live.porter.sessions} open` : ''}`;
+      pane.append(this.pairs_make([
+        ['CUBE ANSWERS', `${chris.url} · ${cube}`], ['THE DOOR', porter],
+        ...(chris.image !== null ? [['IMAGE', `${chris.image}${chris.porterVersion !== null ? ` · porter ${chris.porterVersion}` : ''}`] as [string, string]] : []),
+        ['DEPLOYED', `${chris.deployed.slice(0, 16).replace('T', ' ')} UTC (the last deploy kept)`],
+      ]));
+    } else if (this.chrisAbsent_read(this.vm) !== null) {
+      pane.append(this.pairs_make([['CUBE', `none deployed on ${this.vm}`], ['THE DOOR', 'no porter deployed']]));
+    }
+    const profiles: HTMLElement = el('div', 'tdc-families');
+    profiles.append(el('span', 'tdc-pair-label', 'PROFILE'));
+    const chosen: string = declared('--profile', 'minimal');
+    for (const profile of [...new Set([chosen, 'minimal', 'complete'])]) {
+      const pill: HTMLButtonElement = el('button', `tdc-family${profile === chosen ? ' tdc-family-on' : ''}`, profile.toUpperCase());
+      pill.type = 'button';
+      pill.disabled = this.busy !== null;
+      pill.addEventListener('click', (): void => { this.hooks.voice.pill(profile); line.text = lineOption_set(line.text, '--profile', profile); this.edited = true; this.draw(); });
+      profiles.append(pill);
+    }
+    // Each field with what runs beside it, as SPEC's levers: the line and the ChRIS read together, never twice.
+    const runs = (node: HTMLElement, has: string | null): HTMLElement => { if (chris !== null) node.append(el('span', 'ss-field-runs', `RUNS ${(has ?? 'none').toUpperCase()}`)); return node; };
+    pane.append(
+      runs(profiles, chris?.profile ?? null),
+      runs(this.optionField_make(line, '--compute', 'COMPUTE', `the pfcon resource's name (default ${this.vm})`), chris?.compute ?? null),
+      runs(this.optionField_make(line, '--host', 'HOST', 'cube.example.org · empty: by address'), chris === null ? null : chris.host ?? 'by address'),
+      runs(this.optionField_make(line, '--porter', 'PORTER', 'porter.example.org · the door to mise beside it'), chris?.porter ?? null),
+      this.lineBoxNumbered_make(line),
+    );
+    // The offer is spent once pressed: while the deploy runs only its run speaks; after it the offer returns.
+    const ours: boolean = this.chrisRun !== null && this.chrisRun.vm === this.vm;
+    if (!ours || this.chrisRun?.outcome != null) pane.append(this.chrisChange_make(step, line));
+    const users: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.kind === 'users');
+    const accounts: HTMLElement = el('div', 'vm-chris-users');
+    accounts.append(el('span', 'tdc-section-title', 'ITS ACCOUNTS · EACH WITH ITS HOST ACCESS'));
+    if (live?.accounts != null) {
+      const lined: Set<string> = new Set((users?.lines ?? []).map((one: ScriptLine): string => line_parse(one.text).subject ?? '').filter((name: string): boolean => name !== ''));
+      const held: Set<string> = new Set(live.accounts.map((one): string => one.username));
+      const list: HTMLElement = el('div', 'vm-chris-accounts');
+      for (const name of [...new Set([...lined, ...held])]) {
+        list.append(el('span', 'vm-chris-account', name), el('span', 'ss-field-runs', held.has(name) ? (lined.has(name) ? 'IN CUBE · A LINE OF THE SCRIPT' : `IN CUBE · NO LINE${name === 'chris' ? ' (THE ADMIN)' : ''}`) : 'NOT IN CUBE YET · ITS LINE ADDS IT'), el('span', 'tdc-quiet vm-chris-access', 'HOST ACCESS · berths not built yet'));
+      }
+      accounts.append(list);
+    } else if (chris !== null) {
+      accounts.append(el('p', 'tdc-prose tdc-quiet', `CUBE's accounts were not read${live?.accountsWhy ? `: ${live.accountsWhy}` : ''}.`));
+    }
+    // The accounts as CUBE holds them first, then the script's user lines and THE NEXT USER.
+    if (users !== undefined) accounts.append(...this.users_make(users));
+    pane.append(accounts);
+    return pane;
+  }
+
+  /** A deploy in flight on CHRIS, or the one that just ended, drawn as one run. */
+  private chrisRun: { vm: string; label: string; since: number; ask: 'waiting' | 'going' | 'yes' | 'no' | 'skipped'; deploy: 'waiting' | 'going' | 'done' | 'not done'; outcome: { tone: 'done' | 'declined' | 'failed'; words: string; at: string } | null } | null = null;
+
+  /**
+   * What a deploy line would do, as one change block (the SPEC pattern): the
+   * act in large words, what it means, and the button naming the act, read
+   * from `chris deploy … --plan`.
+   */
+  private chrisChange_make(step: ScriptStep, line: ScriptLine): HTMLElement {
+    if (!this.chrisPlans.has(line.text)) this.chrisPlan_ask(line.text);
+    const plan: ChrisPlanModel | null | undefined = this.chrisPlans.get(line.text);
+    const box: HTMLElement = el('div', 'vm-change vm-chris-change');
+    if (plan === null || plan === undefined) {
+      // Not read yet (or the plan could not be asked): RUN still asks before it acts, and says so.
+      box.append(el('p', 'tdc-prose tdc-quiet', 'what a deploy would do is not read yet: RUN asks with all of it before anything changes'));
+      // loop: ss-chris-deploy
+      const asking: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill ss-run vm-build vm-chris-run', 'RUN · asks before it acts');
+      asking.type = 'button';
+      asking.dataset['line'] = String(line.number);
+      asking.disabled = this.busy !== null;
+      asking.addEventListener('click', (): void => { this.hooks.voice.pill('RUN'); void this.chrisRun_send(step, line, 'RUN · asks before it acts', true); });
+      box.append(asking);
+      return box;
+    }
+    const restarts: string = plan.restarts.map((one: string): string => one.split(/[:(]/)[0]?.trim() ?? one).join(' and ');
+    const act: { word: string; label: string; quiet: boolean } = plan.first === true ? { word: 'A FIRST DEPLOY', label: 'DEPLOY · puts CUBE up', quiet: false }
+      : plan.changes.length > 0 ? { word: plan.changes.join(', '), label: `CHANGE · ${plan.changes.join(', ')}`, quiet: false }
+        : plan.restarts.length > 0 ? { word: `REPLAY · RESTARTS ${restarts}`, label: `REPLAY · restarts ${restarts}`, quiet: false }
+          : { word: 'NOTHING CHANGES', label: 'REPLAY · checks again, restarts nothing', quiet: true };
+    box.append(el('div', 'vm-change-word', act.word.toUpperCase()));
+    const means: HTMLElement = el('div', 'vm-change-means');
+    for (const change of plan.first === true ? plan.changes : []) means.append(el('span', 'tdc-prose', change.replace(/^a first deploy: /, '')));
+    for (const restart of plan.restarts) means.append(el('span', 'tdc-prose ss-would-reboot', `restarts ${restart}`));
+    if (plan.sessions !== null && plan.restarts.some((one: string): boolean => one.startsWith('porter (') || one.startsWith('CUBE and porter'))) means.append(el('span', `tdc-prose${plan.sessions > 0 ? ' ss-would-reboot' : ' tdc-quiet'}`, plan.sessions === 0 ? 'no porter session is open now' : `${plan.sessions} porter session${plan.sessions === 1 ? '' : 's'} open now ${plan.sessions === 1 ? 'ends' : 'end'}`));
+    if (act.quiet) means.append(el('span', 'tdc-prose tdc-quiet', 'what runs is what this line deploys: a replay checks it again'));
+    box.append(means);
+    // loop: ss-chris-deploy
+    const run: HTMLButtonElement = el('button', `tdc-pill ${act.quiet ? 'tdc-pill-quiet' : 'tdc-pill-bill'} ss-run vm-build vm-chris-run`, act.label);
+    run.type = 'button';
+    run.dataset['line'] = String(line.number);
+    run.disabled = this.busy !== null;
+    run.addEventListener('click', (): void => { this.hooks.voice.pill(act.label.split(' · ')[0] ?? 'RUN'); void this.chrisRun_send(step, line, act.label, plan.asks); });
+    box.append(run);
+    return box;
+  }
+
+  /**
+   * RUN on CHRIS: the run drawn from the press (the password first when the
+   * session must be raised), the deploy line sent, its end the run's outcome.
+   *
+   * @param step - The seat.
+   * @param line - The deploy line.
+   * @param label - What the button said, the run's name.
+   * @param asks - Whether the deploy asks before it acts, as its plan says.
+   */
+  private async chrisRun_send(step: ScriptStep, line: ScriptLine, label: string, asks: boolean): Promise<void> {
+    if (this.hold_derive(line.text) === 'asks' && this.hooks.elevate_ask !== null && !(await this.hooks.elevate_ask(line.text))) return;
+    this.chrisRun = { vm: this.vm, label, since: Date.now(), ask: asks ? 'waiting' : 'skipped', deploy: asks ? 'waiting' : 'going', outcome: null };
+    this.draw();
+    const ok: boolean = await this.line_send(line.text, step.key);
+    if (this.chrisRun === null) return;
+    const declined: boolean = this.refusal?.declined === true && this.refusal.line === line.text;
+    const why: string = (this.refusal?.why ?? '').split(/(?=chris deploy: )/).at(-1)?.replace(/^chris deploy: /, '').trim() ?? '';
+    const tone: 'done' | 'declined' | 'failed' = !ok ? 'failed' : declined ? 'declined' : 'done';
+    this.chrisRun = {
+      ...this.chrisRun,
+      deploy: tone === 'done' ? 'done' : 'not done',
+      ask: this.chrisRun.ask === 'going' ? (declined ? 'no' : 'yes') : this.chrisRun.ask,
+      outcome: { tone, words: tone === 'done' ? ({ DEPLOY: 'DEPLOYED', REPLAY: 'REPLAYED', CHANGE: 'CHANGED' }[label.split(' · ')[0] ?? ''] ?? 'DONE') + ` · ${this.vm.toUpperCase()}'S CHRIS` : tone === 'declined' ? 'STOPPED BEFORE THE DEPLOY · NOTHING CHANGED' : `FAILED · ${why || 'the session refused it'}`, at: new Date().toISOString() },
+    };
+    if (!ok && !this.logOpen) this.logOpen_set(true);
+    this.draw();
+  }
+
+  /** The deploy as one run: its question and the deploy, each with its state, the outcome large when it ends. */
+  private chrisRun_make(run: NonNullable<VmScreen['chrisRun']>): HTMLElement {
+    const box: HTMLElement = el('div', `vm-run vm-run-${run.outcome === null ? 'going' : run.outcome.tone}`);
+    const head: HTMLElement = el('div', 'vm-run-head');
+    head.append(el('span', 'tdc-section-title', `THE DEPLOY · ${run.label.toUpperCase()}`), el('span', 'vm-run-time', run.outcome === null ? `SINCE ${new Date(run.since).toISOString().slice(11, 16)} UTC` : `ENDED ${run.outcome.at.slice(11, 16)} UTC · TOOK ${duration_text(Date.parse(run.outcome.at) - run.since)}`));
+    const strip: HTMLElement = el('div', 'vm-run-strip');
+    const block = (name: string, tone: string, word: string): HTMLElement => { const one: HTMLElement = el('div', `tdc-strip-step vm-run-step ${tone}`); one.append(el('span', 'tdc-strip-name', name), el('span', 'tdc-strip-word', word)); return one; };
+    const askWord: Record<string, [string, string]> = { waiting: ['vm-step-waiting', 'WAITING'], going: ['tdc-step-asking', 'ASKING'], yes: ['tdc-step-done', 'ANSWERED YES'], no: ['tdc-step-skipped', 'ANSWERED NO'], skipped: ['tdc-step-skipped', 'NOT NEEDED'] };
+    const deployWord: Record<string, [string, string]> = { waiting: ['vm-step-waiting', 'WAITING'], going: ['tdc-step-going', 'UNDER WAY'], done: ['tdc-step-done', 'DONE'], 'not done': ['tdc-step-skipped', 'NOT DONE'] };
+    const [askTone, askText] = askWord[run.ask] as [string, string];
+    const [deployTone, deployText] = deployWord[run.deploy] as [string, string];
+    strip.append(block('ASKS', askTone, askText), block('DEPLOY', deployTone, deployText));
+    box.append(head, strip);
+    if (run.outcome !== null) box.append(el('div', 'vm-run-outcome', run.outcome.words));
+    return box;
+  }
+
   // ------------------------------------------------------------------ SIZE
 
   /** A machine's seats: SIZE is one pane of its own; the others are the script screen's, without the log column (the VM LOG is the one log). */
   protected override step_make(step: ScriptStep): HTMLElement[] {
+    if (step.key === SERVICES_KEY) return [this.services_make(step)];
     if (step.kind === 'vm new') return [this.size_make(step)];
+    if (step.kind === 'chris deploy') return [this.chris_make(step)];
     return super.step_make(step).filter((node: HTMLElement): boolean => !node.classList.contains('tdc-col-steplog'));
   }
 
@@ -694,7 +1144,7 @@ export class VmScreen extends ScriptScreen {
     const built: ScriptLine | undefined = stepBuildLine_get(step);
     const name: string = line_parse(line.text).subject ?? '';
     const runs = this.runs_get(name);
-    const pane: HTMLElement = this.section_make('THE SIZE', 'ss-col-wide vm-size', runs === null ? 'NOT BUILT YET' : `RUNS AS READ FROM THE TENANCY ${runs.at.slice(11, 16)} UTC`);
+    const pane: HTMLElement = this.section_make('THE SPEC', 'ss-col-wide vm-size', runs === null ? 'NOT BUILT YET' : `RUNS AS READ FROM THE TENANCY ${runs.at.slice(11, 16)} UTC`);
     if (this.run !== null && this.run.vm === this.vm) pane.append(this.run_make(this.run));
     // The levers and the change they make side by side, so the change and BUILD stand in view with the run above them.
     const main: HTMLElement = el('div', 'vm-size-main');
@@ -713,10 +1163,10 @@ export class VmScreen extends ScriptScreen {
     const ours: boolean = this.run !== null && this.run.vm === this.vm;
     const offered: boolean = !ours || (this.run?.outcome != null && this.would_get().would.length > 0);
     if (offered) main.append(this.change_make(step, line, built));
+    // While a run speaks the offer is not drawn: the levers take the whole width (the operator, 2026-11-07).
+    else main.classList.add('vm-size-main-full');
     pane.append(main);
-    // What else the machine is: its ports and OS as fields with what runs beside each; where it stands.
-    const ports: HTMLElement = this.optionField_make(line, '--open', 'OPEN PORTS', '80,443');
-    if (runs?.open != null) ports.append(el('span', 'ss-field-runs', `RUNS ${ports_word(runs.open).toUpperCase()}`));
+    // What else the machine is: its OS as a field with what runs beside it; where it stands. Its ports are SERVICES'.
     const os: HTMLElement = this.optionField_make(line, '--os', 'OS', 'ubuntu-26.04');
     if (runs?.os != null) os.append(el('span', 'ss-field-runs', `RUNS ${runs.os.toUpperCase()}`));
     const row: VmStatusRow | null = this.vmRow_get();
@@ -726,7 +1176,7 @@ export class VmScreen extends ScriptScreen {
     ]);
     const script: HTMLElement = el('div', 'vm-size-lines');
     script.append(el('span', 'tdc-section-title', `THE SCRIPT · ${this.path === '' ? 'NOT WRITTEN YET' : this.path}`), this.lineBoxNumbered_make(line), ...(built === undefined ? [] : [this.lineBoxNumbered_make(built)]));
-    pane.append(ports, os, where, script);
+    pane.append(os, where, script);
     this.sizeCost_need(line);
     return pane;
   }
@@ -784,7 +1234,8 @@ export class VmScreen extends ScriptScreen {
     const line: ScriptLine | undefined = step?.lines[0];
     const runs = this.runs_get(line_parse(line?.text ?? '').subject ?? '');
     if (line === undefined || runs === null) return { would: [], words: '' };
-    const would: BuildWould[] = buildWould_derive(vmLevers_read(line.text), runs);
+    // The ports are SERVICES' (public SSH's among them): SPEC offers its levers alone.
+    const would: BuildWould[] = buildWould_derive(vmLevers_read(line.text), runs).filter((one: BuildWould): boolean => !/^open /.test(one.change));
     return { would, words: would.map((one: BuildWould): string => one.change).join(', ') };
   }
 
@@ -975,11 +1426,13 @@ export class VmScreen extends ScriptScreen {
    */
   protected override strip_draw(): void {
     super.strip_draw();
-    const plain: BuildQuestion | null = this.ask === null ? null : buildQuestion_plain(this.ask.message);
+    const build: BuildQuestion | null = this.ask === null ? null : buildQuestion_plain(this.ask.message);
+    const deploy: BuildQuestion | null = this.ask === null || build !== null ? null : chrisQuestion_plain(this.ask.message);
+    const plain: BuildQuestion | null = build ?? deploy;
     if (plain === null) return;
     const strip: HTMLElement = this.parts.strip;
     const title: Element | null = strip.querySelector('.tdc-strip-title');
-    if (title !== null) title.textContent = 'THE BUILD ASKS';
+    if (title !== null) title.textContent = build !== null ? 'THE BUILD ASKS' : 'THE DEPLOY ASKS';
     const text: Element | null = strip.querySelector('.tdc-strip-text');
     if (text !== null) text.textContent = plain.text;
     const [yes, no] = [...strip.querySelectorAll<HTMLButtonElement>(':scope > button')];
@@ -1012,7 +1465,7 @@ export class VmScreen extends ScriptScreen {
     const building: boolean = built.startsWith(`vm build ${this.vm}`) && this.vm !== '';
     if (!building) { await super.declaredBuild_send(declared, built, step); return; }
     if (this.hold_derive(built) === 'asks' && this.hooks.elevate_ask !== null && !(await this.hooks.elevate_ask(built))) return;
-    this.run = buildRun_start(this.vm, this.would_get().words, Date.now());
+    this.run = buildRun_start(this.vm, [this.would_get().words, this.servicesChange_get().join(', ')].filter((words: string): boolean => words !== '').join(', '), Date.now());
     this.runTick_set(true);
     this.draw();
     if (await this.line_send(declared, step) && await this.line_send(built, step, true)) this.builtHere = step;
@@ -1027,6 +1480,8 @@ export class VmScreen extends ScriptScreen {
   /** A build's NO or refusal is said once, as the run's outcome on SIZE; any other refusal stands where its control does. */
   protected override refusal_place(): void {
     if (this.run !== null && this.run.outcome !== null && this.refusal !== null && this.refusal.line.startsWith(`vm build ${this.run.vm}`)) return;
+    // A deploy's NO or failure is said once too, as its run's outcome on CHRIS.
+    if (this.chrisRun !== null && this.chrisRun.outcome !== null && this.refusal !== null && this.refusal.line.startsWith(`chris deploy ${this.chrisRun.vm}`)) return;
     super.refusal_place();
   }
 
@@ -1051,7 +1506,22 @@ export class VmScreen extends ScriptScreen {
 
   /** The build's own question: the run says it asks; its answer moves it on. */
   public override ask_take(message: string, kind: PromptKind): Promise<string | null> {
+    const before: string = this.view;
     const asked: Promise<string | null> = super.ask_take(message, kind);
+    // SERVICES and SPEC are one line: a question asked for it stands where it was offered, never moved to SPEC.
+    if (before === SERVICES_KEY && this.view !== SERVICES_KEY) { this.view = SERVICES_KEY; this.frame.view_mark(SERVICES_KEY); this.draw(); }
+    if (this.chrisRun !== null && this.chrisRun.outcome === null && message.startsWith(`chris deploy ${this.chrisRun.vm}:`)) {
+      this.chrisRun = { ...this.chrisRun, ask: 'going' };
+      this.draw();
+      void asked.then((value: string | null): void => {
+        if (this.chrisRun === null || this.chrisRun.outcome !== null) return;
+        const yes: boolean = value !== null && value.toLowerCase().startsWith('y');
+        this.chrisRun = { ...this.chrisRun, ask: yes ? 'yes' : 'no', deploy: yes ? 'going' : this.chrisRun.deploy };
+        this.draw();
+      });
+    }
+    // A question opens the log: what led to it is there.
+    if (!this.logOpen) this.logOpen_set(true);
     if (this.run !== null && this.run.outcome === null && message.startsWith(`vm build ${this.run.vm}`)) {
       this.run = buildRun_ask(this.run);
       this.run_redraw();

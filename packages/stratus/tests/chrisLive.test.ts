@@ -69,8 +69,8 @@ describe('what a deploy would do', () => {
     expect(chrisPlan_derive(CHRIS, { ...ask, host: 'cube2.example.org' }, null)).toMatchObject({ changes: ['host cube.example.org → cube2.example.org'], restarts: ['CUBE and its workers (their environment changes)'], asks: true });
     const unknown = { ...CHRIS, image: undefined, porterVersion: undefined };
     delete unknown.image; delete unknown.porterVersion;
-    expect(chrisPlan_derive(unknown, ask, 1).restarts).toEqual(['CUBE and porter, perhaps (this deploy\'s record predates kept versions)']);
-    expect(chrisPlan_words('store', chrisPlan_derive(unknown, ask, 0))).toBe('chris deploy store: as deployed; restarts CUBE and porter, perhaps (this deploy\'s record predates kept versions); no porter session is open now');
+    expect(chrisPlan_derive(unknown, ask, 1).restarts).toEqual(['CUBE and porter: their files are written again and Docker restarts what changed in them (this deploy\'s record keeps no versions to compare)']);
+    expect(chrisPlan_words('store', chrisPlan_derive(unknown, ask, 0))).toBe('chris deploy store: as deployed; restarts CUBE and porter: their files are written again and Docker restarts what changed in them (this deploy\'s record keeps no versions to compare); no porter session is open now');
     // A compute changed alone is a registration: it changes the record and restarts nothing, and still asks with the change.
     expect(chrisPlan_derive(CHRIS, { ...ask, compute: 'store' }, null)).toEqual({ changes: ['compute NERC → store'], restarts: [], sessions: null, asks: true, first: false });
   });

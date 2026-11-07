@@ -16,6 +16,8 @@
 import { describe, it, expect } from '@jest/globals';
 import type { QuietAnswer, ScriptHooks } from '../../src/features/script/screen.js';
 import { VmScreen } from '../../src/features/vm/screen.js';
+import { vmServices_change, vmServices_read } from '../../src/features/vm/model.js';
+import { chrisQuestion_plain } from '../../src/features/vm/run.js';
 
 const STORE_TEXT: string = [
   'net new chrisproject-services --cidr 10.20.0.0/16',
@@ -193,37 +195,44 @@ describe('the VM controller', () => {
     screen.root.remove();
   });
 
-  it('CHRIS renders what runs of the ChRIS and what a deploy would do; USERS renders CUBE\'s accounts beside the script\'s lines', async () => {
+  it('CHRIS is one pane: the line beside what runs, what a replay does, RUN, and its accounts each with its host access', async () => {
     const { screen, asked } = screen_make();
     await screen.vm_open('store');
     await settle(12);
     expect(asked).toContain('chris status store');
+    // USERS is no seat of its own: a ChRIS's accounts stand on CHRIS (the operator, 2026-11-07).
+    expect(screen.root.querySelector('.takeover-gutter button[data-view="users"]')).toBeNull();
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
     await settle(12);
-    const side: string = screen.root.querySelector('.ss-col-side')?.textContent ?? '';
-    expect(side).toContain('THE CHRIS · AS IT RUNS');
-    expect(side).toContain('READ FROM IT 06:00 UTC');
-    expect(side).toContain('ANSWERS 200 · CHRIS SIGNS IN');
-    expect(side).toContain('ANSWERS 200 · 2 OPEN · 0.9.10');
+    const pane: string = screen.root.querySelector('.vm-chris')?.textContent ?? '';
+    expect(pane).toContain('THE CHRIS');
+    expect(pane).toContain('READ FROM IT 06:00 UTC');
+    expect(pane).toContain('answers 200 · chris signs in');
+    expect(pane).toContain('answers 200 · 0.9.10 · 2 open');
+    expect(screen.root.querySelectorAll('.ss-col-side')).toHaveLength(0);
     expect(asked.some((line: string): boolean => line.startsWith('chris deploy store') && line.endsWith('--plan'))).toBe(true);
-    const note: string = screen.root.querySelector('.ss-note-deploy')?.textContent ?? '';
-    expect(note).toContain('DEPLOY WOULD');
-    expect(note).toContain('restarts porter (0.9.10 → 0.9.11): its open sessions end');
-    expect(note).toContain('2 porter sessions open now end');
-    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="users"]')?.click();
-    await settle(12);
-    const users: string = screen.root.querySelector('.ss-col-side')?.textContent ?? '';
-    expect(users).toContain('IN THE CHRIS · ITS ACCOUNTS');
-    expect(users).toContain('RUDOLPHNOT IN CUBE YET · ITS LINE ADDS IT');
-    expect(users).toContain('CHRISIN CUBE · NO LINE (the admin)');
-    expect(users).toContain('JENNINGSIN CUBE · NO LINE');
+    // The change as SPEC draws one: the act in large words, what it means, the button naming it; no DEPLOY WOULD box.
+    expect(screen.root.querySelector('.ss-note-deploy')).toBeNull();
+    const change: string = screen.root.querySelector('.vm-chris-change')?.textContent ?? '';
+    expect(change).toContain('REPLAY · RESTARTS PORTER');
+    expect(change).toContain('restarts porter (0.9.10 → 0.9.11): its open sessions end');
+    expect(change).toContain('2 porter sessions open now end');
+    expect(screen.root.querySelector('.vm-chris-run')?.textContent).toBe('REPLAY · restarts porter');
+    // Nothing edited: no edited chip on any seat.
+    expect(screen.root.querySelector('.vm-chip-edited')).toBeNull();
+    const accounts: string = screen.root.querySelector('.vm-chris-accounts')?.textContent ?? '';
+    expect(accounts).toContain('rudolphNOT IN CUBE YET · ITS LINE ADDS IT');
+    expect(accounts).toContain('chrisIN CUBE · NO LINE (THE ADMIN)');
+    expect(accounts).toContain('jenningsIN CUBE · NO LINE');
+    expect(accounts).toContain('HOST ACCESS · berths not built yet');
+    expect(screen.root.querySelector('.vm-chris .ss-user-add')).not.toBeNull();
     // The host's records cannot say a user was made: its line stands as they read it until CUBE holds the account.
     expect(screen.steps_get().find((step) => step.label === 'USERS')?.state).not.toBe('done');
     screen.dispose();
     screen.root.remove();
   });
 
-  it('a user line reads done once CUBE holds its account, as its accounts were read from it: the receipt of ADD is the seat', async () => {
+  it('a user line reads done once CUBE holds its account, as its accounts were read from it: the receipt of ADD is CHRIS', async () => {
     ACCOUNTS = [...ACCOUNTS, { username: 'rudolph', email: 'rudolph@example.org' }];
     try {
       const { screen } = screen_make();
@@ -231,9 +240,9 @@ describe('the VM controller', () => {
       await settle(12);
       const users = screen.steps_get().find((step) => step.label === 'USERS');
       expect(users?.state).toBe('done');
-      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="users"]')?.click();
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
       await settle(12);
-      expect(screen.root.querySelector('.tdc-body')?.textContent).toContain('in CUBE, read from it 06:00 UTC');
+      expect(screen.root.querySelector('.vm-chris')?.textContent).toContain('in CUBE, read from it 06:00 UTC');
       screen.dispose();
       screen.root.remove();
     } finally {
@@ -270,7 +279,7 @@ describe('the VM controller', () => {
     expect(asked).toContain('vm status');
     expect(screen.vm_get()).toBe('store');
     expect(screen.path_get()).toBe('/scripts/chrisproject/store.mise');
-    expect(screen.steps_get().map((step) => step.label)).toEqual(['SIZE', 'CHRIS', 'USERS', 'TEARDOWN']);
+    expect(screen.steps_get().map((step) => step.label)).toEqual(['SPEC', 'SERVICES', 'CHRIS', 'USERS', 'TEARDOWN']);
     expect([...screen.root.querySelectorAll('.takeover-seat .tdc-cluster')].map((pill) => pill.textContent)).toEqual(['STORE', 'LONE', 'WEB', '+ NEW']);
     // The header is one band: which machine and its condition, the mode, its cost now, what runs, its lock.
     expect(screen.root.querySelector('.tdc-condition-label')?.textContent).toBe('STORE');
@@ -284,7 +293,7 @@ describe('the VM controller', () => {
     // A machine opens on its SIZE: what runs, where it stands.
     expect(screen.view_get()).toBe('line-3');
     const size: string = screen.root.querySelector('.tdc-body')?.textContent ?? '';
-    expect(size).toContain('THE SIZE');
+    expect(size).toContain('THE SPEC');
     expect(size).toContain('203.0.113.10 · inside 10.20.0.5');
     expect(size).toContain('chrisproject-services');
     expect(size).not.toContain('WHAT CAN BE DONE');
@@ -318,7 +327,7 @@ describe('the VM controller', () => {
     await settle();
     // The door lists what is there, as a folder does; + NEW MACHINE opens the new one.
     expect(screen.view_get()).toBe('machines');
-    expect([...screen.root.querySelectorAll('.takeover-gutter button')].map((seat) => seat.textContent?.trim())).toEqual(['MACHINES', 'NEW · SIZE', 'LEAVE']);
+    expect([...screen.root.querySelectorAll('.takeover-gutter button')].map((seat) => seat.textContent?.trim())).toEqual(['MACHINES', 'NEW · SPEC', 'LEAVE']);
     // The machines are an ARGUS listing: a row a machine, its columns read from the tenancy; no legend beside it.
     const listed: string[] = [...screen.root.querySelectorAll('.vm-row')].map((row) => row.textContent ?? '');
     expect(listed).toHaveLength(3);
@@ -382,18 +391,18 @@ describe('the VM controller', () => {
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
     await settle();
     expect([...screen.root.querySelectorAll('.tdc-body .tdc-note-title')].map((title) => title.textContent)).not.toContain('EDITED · NOT SAVED');
-    expect(screen.steps_get().map((step) => [step.label, step.state])).toEqual([['SIZE', null], ['CHRIS', null], ['USERS', null], ['TEARDOWN', null]]);
+    expect(screen.steps_get().map((step) => [step.label, step.state])).toEqual([['SPEC', null], ['SERVICES', null], ['CHRIS', null], ['USERS', null], ['TEARDOWN', null]]);
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="chris"]')?.click();
     await settle();
     expect(screen.root.querySelector('.ss-line-text')?.textContent).toBe('chris deploy lone --profile minimal --compute lone');
-    button_named(screen.root, 'RUN')?.click();
+    screen.root.querySelector<HTMLButtonElement>('.vm-chris-run')?.click();
     await settle(20);
     // The script is written first (declaration, build, the deploy after the build), then the deploy runs.
     expect(sent[0]?.startsWith("touch --withContents='vm new lone --net chrisproject-services --open 80,443 --vcpu 4")).toBe(true);
     expect(sent[0]?.includes('vm build lone\nchris deploy lone --profile minimal --compute lone')).toBe(true);
     expect(sent[1]).toBe('chris deploy lone --profile minimal --compute lone');
-    // USERS with no line yet names the machine on screen, never leaving the kernel to pick the ChRIS (walked on the store 2026-11-05).
-    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="users"]')?.click();
+    // A user with no line yet, added on CHRIS, names the machine on screen, never leaving the kernel to pick the ChRIS (walked on the store 2026-11-05).
+    [...screen.root.querySelectorAll<HTMLButtonElement>('.takeover-gutter button')].find((seat) => seat.textContent?.trim() === 'CHRIS')?.click();
     await settle();
     const field = (key: string, value: string): void => { const input = screen.root.querySelector<HTMLInputElement>(`#ss-user-${key}`) as HTMLInputElement; input.value = value; input.dispatchEvent(new Event('input')); };
     field('name', 'jennings'); field('email', 'j@example.org');
@@ -465,7 +474,7 @@ describe('the VM controller', () => {
     const { screen } = screen_make();
     await screen.vm_open('shared');
     await settle();
-    expect(screen.steps_get().map((step) => step.label)).toEqual(['SIZE', 'CHRIS', 'USERS', 'TEARDOWN']);
+    expect(screen.steps_get().map((step) => step.label)).toEqual(['SPEC', 'SERVICES', 'CHRIS', 'USERS', 'TEARDOWN']);
     screen.dispose();
     screen.root.remove();
     const { screen: second } = screen_make();
@@ -499,5 +508,72 @@ describe('the VM controller', () => {
     expect(sent).toEqual(['vm protect web off']);
     screen.dispose();
     screen.root.remove();
+  });
+
+  it('SERVICES: what the machine opens, a row each; ADD SERVICE writes public SSH on the line; BUILD says the change', async () => {
+    STORE_RUNS = { ...STORE_RUNS, open: [80, 443] } as typeof STORE_RUNS;
+    try {
+      const { screen } = screen_make();
+      await screen.vm_open('store');
+      await settle(12);
+      expect([...screen.root.querySelectorAll('.takeover-gutter button')].map((seat) => seat.textContent?.trim())).toEqual(['SPEC', 'SERVICES', 'CHRIS', 'TEARDOWN', 'LEAVE']);
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="services"]')?.click();
+      await settle(12);
+      const rows: string[] = [...screen.root.querySelectorAll('.vm-services-list .vm-service:not(.vm-service-head)')].map((row) => row.textContent ?? '');
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toContain('WEB80Caddy: CUBE answers 200');
+      expect(rows[0]).toContain('OPEN');
+      expect(screen.root.querySelector('.vm-services-change')?.textContent).toContain('NOTHING CHANGES');
+      // ADD SERVICE: public SSH for ops, its key pasted; the line carries it, and the change names it with the warning.
+      [...screen.root.querySelectorAll<HTMLButtonElement>('.vm-service-add .tdc-family')].find((pill) => pill.textContent === 'PUBLIC SSH')?.click();
+      await settle(2);
+      const key = screen.root.querySelector<HTMLInputElement>('#vm-service-public-key') as HTMLInputElement;
+      key.value = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyOnlyForTests op@pangea';
+      key.dispatchEvent(new Event('input'));
+      button_named(screen.root, 'ADD')?.click();
+      await settle(4);
+      const line: string = screen.root.querySelector('.vm-services .ss-line-text')?.textContent ?? '';
+      expect(line).toContain("--ssh 2222 --ssh-user ops --ssh-key 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyOnlyForTests op@pangea'");
+      expect(screen.root.querySelector('.vm-service-ssh')?.textContent).toContain('anyone can knock, only ops\'s key gets in, and ops has sudo');
+      // The edit is SERVICES', and the chip names it there and on every seat.
+      expect(screen.root.querySelector('.vm-chip-edited')?.textContent).toBe('SERVICES EDITED · NOT BUILT');
+      const build = [...screen.root.querySelectorAll<HTMLButtonElement>('.vm-services-change button')][0];
+      expect(build?.textContent).toBe('BUILD · public SSH on 2222 for ops');
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50, data: 50 };
+    }
+  });
+
+  it('the VM LOG is shut to its newest line until its strip is pressed', async () => {
+    const { screen } = screen_make();
+    await screen.vm_open('store');
+    await settle(12);
+    const stage = screen.root.querySelector('.takeover-stage') as HTMLElement;
+    expect(stage.dataset['vmLog']).toBe('shut');
+    (screen.root.querySelector('.vm-log-strip') as HTMLElement).click();
+    expect(stage.dataset['vmLog']).toBe('open');
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('services read off a line, and what they change against what runs', () => {
+    const key: string = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyOnlyForTests op@pangea';
+    expect(vmServices_read('vm new store --open 443,80', null)).toEqual({ open: [80, 443], ssh: null });
+    expect(vmServices_change(vmServices_read('vm new store --open 80,443,8080', null), [80, 443], null)).toEqual(['open 8080']);
+    expect(vmServices_change(vmServices_read('vm new store --open 80', null), [80, 443], null)).toEqual(['close 443']);
+    const kept = { port: 2222, user: 'ops', key, on: true };
+    expect(vmServices_change(vmServices_read('vm new store --open 80,443 --ssh off', kept), [80, 443, 2222], { ports: [80, 443, 2222], ssh: kept })).toEqual(['public SSH on 2222 closed']);
+    expect(vmServices_change(vmServices_read('vm new store --open 80,443', kept), [80, 443, 2222], { ports: [80, 443, 2222], ssh: kept })).toEqual([]);
+  });
+
+  it('a deploy\'s question reads in the screen\'s words, its buttons saying what they do', () => {
+    expect(chrisQuestion_plain('chris deploy store: as deployed; restarts CUBE and porter: their files are written again and Docker restarts what changed in them (this deploy\'s record keeps no versions to compare); no porter session is open now. A NO changes nothing. Continue? [y/N]')).toEqual({
+      text: 'Replay ChRIS on store? It restarts CUBE and porter: their files are written again and Docker restarts what changed in them (this deploy\'s record keeps no versions to compare). No porter session is open now.',
+      yes: 'YES · REPLAY', no: 'NO · CHANGE NOTHING',
+    });
+    expect(chrisQuestion_plain('chris deploy store: a first deploy: CUBE (minimal) with its workers, Postgres, dragonfly, nats and pfcon are put up, compute store; the admin password for chris is asked next, hidden (empty: one is generated). A NO changes nothing. Continue? [y/N]')?.yes).toBe('YES · DEPLOY');
+    expect(chrisQuestion_plain('vm build store: boot disk 100 → 150 GB. Continue? [y/N]')).toBeNull();
   });
 });

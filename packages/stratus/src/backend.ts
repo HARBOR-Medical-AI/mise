@@ -145,7 +145,7 @@ export function stratusBackend_make(options: StratusBackendOptions): StratusBack
     clusters, driver: options.driver, region, clustersPath: (): string => `${session.tenancyPath}/clusters`,
     cache: new AnswerCache(CAPACITY_CACHE_LIFE_MS),
     net: { store: nets, driver: options.driver, builder: options.builder ?? null, region, clientCidr_read: options.clientCidr_read ?? ((): Promise<string> => clientCidr_read()) },
-    vm: { store: vms, nets, driver: options.driver, builder: options.builder ?? null, region },
+    vm: { store: vms, nets, driver: options.driver, builder: options.builder ?? null, region, ...(options.chrisReach?.remote_open !== undefined ? { remote_open: options.chrisReach.remote_open } : {}) },
     chris: { vms, nets, builder: options.builder ?? null, ...(options.chrisReach ?? { resolve: publicAddresses_resolve, nameservers_get: publicNameservers_get, registrar: goDaddy_make(), status_get: urlStatus_get, http_get: httpGet_default }) },
     scripts: { library },
     build: { clusters, store, driver: options.driver, region, deps, clustersPath: (): string => `${session.tenancyPath}/clusters`, builder: options.builder ?? null, baseDomain: options.baseDomain ?? null, ...(options.account !== undefined ? { account: options.account } : {}), ...(options.verifyReach !== undefined ? { verifyReach: options.verifyReach } : {}) },
