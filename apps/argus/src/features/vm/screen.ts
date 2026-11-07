@@ -19,15 +19,18 @@
  * Built on the script screen's bodies, which are the same forms over the
  * same lines; this file holds what differs.
  */
-import type { ChrisStatusRow, VmCostRate, VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
+import type { ChrisStatusRow, PromptKind, VmCostRate, VmCostRow, VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
 import { chrisStatusModelSchema, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema } from '@fnndsc/menu';
 import { lockWhere_text, modePill_make } from '../takeover/tier.js';
 import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
-import { counts_words, line_parse, line_render, lines_build, runningStep_find, script_render, states_count, steps_build, vmSliders_build, workingCopy_derive, type ScriptLine, type ScriptStep, type StateCounts, type VmRuns } from '../script/model.js';
-import { ScriptScreen, type QuietAnswer, type ScriptHooks } from '../script/screen.js';
+import { buildWould_derive, costLine_derive, line_parse, line_render, lineOption_get, lineOption_set, lines_build, ports_word, rate_words, runningStep_find, script_render, stepBuildLine_get, steps_build, vmLevers_read, vmSliders_build, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type VmRuns } from '../script/model.js';
+import { ScriptScreen, type OpenAsk, type QuietAnswer, type ScriptHooks } from '../script/screen.js';
 import { FACTS_KEY, MACHINES_KEY, NEW_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
+import { BUILD_PHASES, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_take, type BuildRun } from './run.js';
+import { Listing } from '../roster/listing.js';
+import type { ListingTrait } from '../roster/row.js';
 
 /** The order the VM's seats stand in, whatever order the script's lines come. */
 const SEAT_ORDER: ReadonlyArray<string> = ['SIZE', 'BUILD', 'CHRIS', 'USERS', 'TEARDOWN'];
@@ -44,6 +47,20 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, te
   if (text !== undefined) node.textContent = text;
   return node;
 }
+
+/**
+ * A span of time, as the band says it.
+ *
+ * @param ms - Milliseconds.
+ * @returns `42 s`, `3 m 05 s`.
+ */
+function duration_text(ms: number): string {
+  const seconds: number = Math.max(0, Math.round(ms / 1000));
+  return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} m ${String(seconds % 60).padStart(2, '0')} s`;
+}
+
+/** What BUILD says in a READ session no password can raise. */
+const READ_HELD_SHORT: string = 'this session can only read and cannot be raised here: enter through porter, or say stratus oci manage in the console';
 
 /** One listed item of `ls`, as the screen reads it. */
 interface Listed {
@@ -68,6 +85,16 @@ export class VmScreen extends ScriptScreen {
   private chrisRow!: ChrisStatusRow | null;
   /** What the machine shown bills, for TEARDOWN's guard: asked once per machine. */
   private teardownCost: { vm: string; rate: VmCostRate | null } | null = null;
+  /** The machines as an ARGUS listing; its mount stays across redraws, so its caps, widths and order do. */
+  private machineListing: Listing<VmStatusRow> | null = null;
+  private machineListingMount: HTMLElement | null = null;
+  /** The build in flight, or the one that just ended, drawn as one run on SIZE. */
+  private run: BuildRun | null = null;
+  /** Whether the operator stopped following a task: then the screen does not follow it again by itself. */
+  private followDeclined: boolean = false;
+  /** Each lever's share of the change, a month, priced against what runs: keyed by the line priced. */
+  private leverCosts: { key: string; deltas: Map<string, number | null> } | null = null;
+  private leverTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(hooks: ScriptHooks) {
     super(hooks, {
@@ -169,8 +196,10 @@ export class VmScreen extends ScriptScreen {
       this.lines = lines_build(text, (await this.status_read(this.path, text))?.lines ?? []);
     }
     this.steps = this.steps_derive(this.lines);
-    // A machine opens on what it is; a line running takes the seat it runs in.
-    this.view = runningStep_find(this.steps)?.key ?? FACTS_KEY;
+    // A machine opens on its SIZE; a line running takes the seat it runs in; one this session can only see, on what it is.
+    this.view = runningStep_find(this.steps)?.key ?? this.steps.find((step: ScriptStep): boolean => step.label === 'SIZE')?.key ?? this.steps[0]?.key ?? FACTS_KEY;
+    if (this.run !== null && this.run.vm !== name) this.run = null;
+    this.followDeclined = false;
     this.chrisRow = null;
     this.draw();
     void this.limits_need();
@@ -279,12 +308,12 @@ export class VmScreen extends ScriptScreen {
   /** The VM's lines as its seats, SIZE (with its build), CHRIS, USERS, in that order, then TEARDOWN; a build apart from its declaration is a BUILD seat after SIZE; a seat whose line the script lacks stands over a template line. */
   protected override steps_derive(lines: ReadonlyArray<ScriptLine>): ScriptStep[] {
     if (this.vm === '') return [];
-    const facts: ScriptStep = { key: FACTS_KEY, label: 'MACHINE', kind: 'other', lines: [], state: null, running: null, template: true };
     // A machine this session can only see: what it is, and its undoing; its size, build and ChRIS need its SSH key.
-    if (vmKeyless_is(this.vmRow_get())) return [facts, { key: TEARDOWN_KEY, label: 'TEARDOWN', kind: 'other', lines: [], state: null, running: null, template: true }];
+    // A machine it builds on has no MACHINE seat: what it is stands in the header and on SIZE (the operator, 2026-11-06).
+    if (vmKeyless_is(this.vmRow_get())) return [{ key: FACTS_KEY, label: 'MACHINE', kind: 'other', lines: [], state: null, running: null, template: true }, { key: TEARDOWN_KEY, label: 'TEARDOWN', kind: 'other', lines: [], state: null, running: null, template: true }];
     const mine: ScriptLine[] = vmLines_filter(lines, this.vm);
     const built: ScriptStep[] = steps_build(mine).map((step: ScriptStep): ScriptStep => ({ ...step, label: VM_SEAT_LABELS[step.kind] ?? step.label }));
-    const steps: ScriptStep[] = [facts];
+    const steps: ScriptStep[] = [];
     for (const label of SEAT_ORDER) {
       const found: ScriptStep | undefined = built.find((step: ScriptStep): boolean => step.label === label);
       if (found !== undefined) { steps.push(found); continue; }
@@ -301,6 +330,13 @@ export class VmScreen extends ScriptScreen {
     await Promise.all([super.standings_refresh(), this.vms_read()]);
     // What runs of its ChRIS is read again after any line: the receipt of a deploy or an account added.
     await this.chris_read();
+    this.follow_auto();
+  }
+
+  /** The prices read: the listing's COST column follows them. */
+  protected override async standing_read(): Promise<void> {
+    await super.standing_read();
+    if (this.view === MACHINES_KEY) this.machineListing?.rows_set([{ key: 'machines', rows: this.vms }], { field: 'machines' });
   }
 
   /** The header prices the machine shown, never the tenancy's every machine. */
@@ -372,7 +408,18 @@ export class VmScreen extends ScriptScreen {
       this.steps = this.steps_derive(this.lines);
       this.draw();
     }
-    return await super.line_send(line, step, keepLog);
+    const building: boolean = this.run !== null && this.run.outcome === null && line.startsWith(`vm build ${this.run.vm}`);
+    const ok: boolean = await super.line_send(line, step, keepLog);
+    if (building && this.run !== null) {
+      // The line's end is the run's: a NO, a refusal, or the change made and read back.
+      const declined: boolean = this.refusal?.declined === true && this.refusal.line === line;
+      // The session's last word on why, once: its own `vm build:` sentence when it said one.
+      const why: string = (this.refusal?.why ?? '').split(/(?=vm build: )/).at(-1)?.replace(/^vm build: /, '').trim() ?? '';
+      this.run = buildRun_end(this.run, !ok ? { tone: 'failed', why } : declined ? { tone: 'declined', why: '' } : { tone: 'done', why: '' }, new Date().toISOString());
+      this.runTick_set(false);
+      this.draw();
+    }
+    return ok;
   }
 
   /**
@@ -438,162 +485,573 @@ export class VmScreen extends ScriptScreen {
     }
   }
 
-  /** The machine's facts: condition and mode, the machine, the ChRIS on it, the cost, the line running, the standing. */
+  /**
+   * The header is one band, the same on every seat of a machine: which
+   * machine and its condition, the mode, what it costs now, what runs on it,
+   * and its lock (the operator, 2026-11-06). What it is in detail is the
+   * seat's: the size on SIZE, the ChRIS on CHRIS. On the listing the band is
+   * the listing's: how many machines, what they all cost, what runs.
+   */
   protected override header_draw(): void {
     const header: HTMLElement = this.parts.header;
     header.replaceChildren();
+    header.classList.add('vm-band');
     const row: VmStatusRow | null = this.vmRow_get();
-    const counts: StateCounts = states_count(this.lines);
+    const listing: boolean = this.vm === '' && this.view === MACHINES_KEY;
+    const standing: number = this.vms.filter((one: VmStatusRow): boolean => one.state !== 'gone').length;
     const condition: HTMLElement = el('section', 'tdc-head-condition');
     const pill: HTMLElement = el('div', 'tdc-condition');
-    // On the listing the header names the listing, not a machine.
-    const word: string = this.vm === '' && this.view === MACHINES_KEY ? 'MACHINES' : vmCondition_derive(row, this.busy !== null);
-    pill.dataset['condition'] = word;
+    const word: string = listing ? String(standing) : vmCondition_derive(row, this.busy !== null || this.run?.outcome === null);
+    pill.dataset['condition'] = listing ? 'MACHINES' : word;
     if (word.length > 9) pill.classList.add('tdc-condition-long');
-    pill.append(el('span', 'tdc-condition-label', 'THE MACHINE'), el('span', 'tdc-condition-name', word));
+    pill.append(el('span', 'tdc-condition-label', listing ? `MACHINE${standing === 1 ? '' : 'S'} IN THE TENANCY` : this.vm === '' ? 'A NEW MACHINE' : this.vm.toUpperCase()), el('span', 'tdc-condition-name', word));
     const mode: HTMLElement | null = modePill_make(this.hooks.manage_is());
-    const why: string = this.vm === '' ? (this.view === MACHINES_KEY ? `${this.vms.filter((one: VmStatusRow): boolean => one.state !== 'gone').length} IN THE TENANCY · + NEW TO ADD ONE` : 'NAME IT ON SIZE') : vmKeyless_is(row) ? (row?.state === 'found' ? 'READ FROM THE TENANCY' : 'NO SSH KEY IN THE TENANCY') : counts_words(counts);
-    condition.append(pill, ...(mode === null ? [] : [mode]), el('div', 'tdc-condition-why', why));
+    condition.append(pill, ...(mode === null ? [] : [mode]));
     const chips: HTMLElement = el('div', 'tdc-chips');
-    if (this.vm !== '') chips.append(el('span', 'tdc-chip', vmKeyless_is(row) ? (row?.state === 'found' ? (row.found?.tagged === true ? 'FOUND · NOT READ' : 'MADE OUTSIDE STRATUS') : 'NO SSH KEY IN THE TENANCY') : this.unsaved ? 'SCRIPT NOT WRITTEN YET' : this.edited ? 'EDITED · NOT SAVED' : this.path.startsWith('/scripts/mine/') ? 'WORKING COPY' : 'FROM GIT · READ-ONLY'));
+    if (row !== null && vmKeyless_is(row)) chips.append(el('span', 'tdc-chip', row.state === 'found' ? (row.found?.tagged === true ? 'FOUND · NOT READ' : 'MADE OUTSIDE STRATUS') : 'NO SSH KEY IN THE TENANCY'));
     if (row !== null) chips.append(el('span', `tdc-chip tdc-lock${row.protected ? ' tdc-lock-on' : ' tdc-lock-off'}`, row.protected ? 'PROTECTED' : 'UNLOCKED'));
-    condition.append(chips);
-    header.append(condition);
-    header.append(this.headSection_make('MACHINE', [
-      ['NAME', this.vm === '' ? (this.newForm.name || '[NAME IT ON SIZE]') : this.vm],
-      ['STATE', row === null ? (this.vm === '' ? (this.view === MACHINES_KEY ? `${this.vms.filter((one: VmStatusRow): boolean => one.state !== 'gone').length} in the tenancy` : 'not declared') : 'not kept here') : row.state === 'found' ? `found · ${row.found?.state ?? '?'}` : row.state],
-      ['ADDRESS', row?.address ?? '—'],
-      ['INSIDE', row?.inside ?? '—'],
-    ]));
-    header.append(this.headSection_make('CHRIS', row?.found?.chris != null ? [['URL', row.found.chris.url], ['PORTER', row.found.chris.porter ?? '—']] : vmKeyless_is(row) && (row?.chris === null || row?.chris === undefined) ? [['DEPLOYED', 'not said on the machine']] : row?.chris === null || row?.chris === undefined ? [['DEPLOYED', 'none']] : [['HOST', row.chris.host ?? '(by address)'], ['URL', row.chris.url], ['PORTER', row.chris.porter ?? '—']]));
-    header.append(this.costSection_make());
-    header.append(this.runningSection_make());
-    header.append(this.headSection_make('SCRIPT', [['PATH', this.path === '' ? '—' : this.path], ['STANDING', counts_words(counts)]]));
+    // Said only while it is true: an edit not yet built is the screen's, and BUILD writes it first.
+    if (this.vm !== '' && this.edited && !vmKeyless_is(row)) chips.append(el('span', 'tdc-chip vm-chip-edited', 'EDITED · NOT BUILT'));
+    else if (this.vm !== '' && this.unsaved && !vmKeyless_is(row)) chips.append(el('span', 'tdc-chip', 'SCRIPT NOT WRITTEN YET'));
+    if (chips.childElementCount > 0) condition.append(chips);
+    header.append(condition, this.costSection_make(), this.bandRunning_make());
+  }
+
+  /** What it costs now, read from the tenancy with when: the machine shown, or on the listing every machine. What a change would cost is SIZE's. */
+  protected override costSection_make(): HTMLElement {
+    const now: string = this.standingAt === null ? 'not read from the tenancy yet' : this.standing === null ? 'not priced' : `${rate_words(this.standing, HOURS_PER_MONTH)} · READ ${this.standingAt.slice(11, 16)}`;
+    return this.headSection_make(this.vm === '' ? 'COST · EVERY MACHINE · LIST PRICE' : 'COST · LIST PRICE', [['NOW', now]], 0);
+  }
+
+  /** What runs: the build in flight with its step and time, a task followed or not, or nothing; STOP FOLLOWING or FOLLOW beside it. */
+  private bandRunning_make(): HTMLElement {
+    const running: ScriptStep | undefined = runningStep_find(this.steps);
+    const pills: HTMLElement[] = [];
+    let rows: Array<[string, string]>;
+    if (this.run !== null && this.run.outcome === null) {
+      const going = BUILD_PHASES.find((phase): boolean => this.run?.phases[phase.key] === 'going');
+      const at: number = going === undefined ? 0 : BUILD_PHASES.indexOf(going) + 1;
+      // Before its first task the build writes the script and its declaration: said, never a bare `starting`.
+      const before: string = this.busy?.line.startsWith('vm new ') === true ? 'writing its declaration' : this.busy?.line.startsWith('touch ') === true ? 'writing its script' : 'starting';
+      rows = [['BUILD', `${this.run.vm}${this.run.change === '' ? '' : ` · ${this.run.change}`}`], ['NOW', going === undefined ? before : `${going.label} · ${at} OF ${BUILD_PHASES.length}`], ['FOR', duration_text(Date.now() - this.run.since)]];
+    } else if (this.busy !== null) {
+      rows = [['LINE', this.busy.line], ['FOR', duration_text(Date.now() - this.busy.since)]];
+    } else if (running !== undefined && running.running !== null) {
+      rows = [['TASK', running.running], ['FOR', this.followDeclined ? 'not followed: FOLLOW follows it' : 'following']];
+    } else {
+      rows = [['NOTHING', 'runs now']];
+    }
+    if (this.busy !== null && this.ask === null && this.following_is()) {
+      const stop: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'STOP FOLLOWING');
+      stop.type = 'button';
+      stop.title = 'frees the screen; the task goes on, and FOLLOW follows it again';
+      stop.addEventListener('click', (): void => { this.hooks.voice.pill('STOP FOLLOWING'); this.followDeclined = true; this.log_add('^C (stops following, not the task)', 'note'); this.hooks.stop(); });
+      pills.push(stop);
+    } else if (this.busy === null && running?.running != null && this.followDeclined) {
+      const follow: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain', 'FOLLOW');
+      follow.type = 'button';
+      follow.title = `sends: wait ${running.running}`;
+      follow.addEventListener('click', (): void => { this.hooks.voice.pill('FOLLOW'); this.followDeclined = false; this.running_follow(); });
+      pills.push(follow);
+    }
+    return this.headSection_make('RUNNING', rows, -1, pills);
   }
 
   protected override body_draw(): void {
-    if (this.view === MACHINES_KEY || this.view === FACTS_KEY) {
-      const body: HTMLElement = this.parts.body;
-      body.replaceChildren();
-      body.dataset['view'] = 'step';
-      body.append(...(this.view === MACHINES_KEY ? this.machines_make() : this.facts_make()));
-      this.refusal_place();
-      this.saved_place();
-      this.errand_place();
+    const own: Record<string, () => HTMLElement[]> = {
+      [MACHINES_KEY]: (): HTMLElement[] => this.machines_make(),
+      [FACTS_KEY]: (): HTMLElement[] => this.facts_make(),
+      [NEW_KEY]: (): HTMLElement[] => this.new_make(),
+      [TEARDOWN_KEY]: (): HTMLElement[] => this.teardown_make(),
+    };
+    const make: (() => HTMLElement[]) | undefined = own[this.view];
+    if (make === undefined) {
+      super.body_draw();
+      const panes: number = [...this.parts.body.children].filter((child: Element): boolean => child.tagName === 'SECTION').length;
+      if (this.parts.body.dataset['view'] === 'step') this.parts.body.dataset['view'] = panes <= 1 ? 'vm-one' : 'vm-two';
       return;
     }
-    if (this.view === NEW_KEY) {
-      const body: HTMLElement = this.parts.body;
-      body.replaceChildren();
-      body.dataset['view'] = 'step';
-      body.append(...this.new_make());
-      this.refusal_place();
-      this.saved_place();
-      this.errand_place();
-      return;
-    }
-    if (this.view === TEARDOWN_KEY) {
-      const body: HTMLElement = this.parts.body;
-      body.replaceChildren();
-      body.dataset['view'] = 'step';
-      body.append(...this.teardown_make());
-      this.refusal_place();
-      this.saved_place();
-      this.errand_place();
-      return;
-    }
-    super.body_draw();
+    const body: HTMLElement = this.parts.body;
+    body.replaceChildren();
+    const nodes: HTMLElement[] = make();
+    // One pane, or two (TEARDOWN's blocks and its guard); never a log column: the VM LOG is the one log.
+    body.dataset['view'] = nodes.length === 1 ? 'vm-one' : 'vm-two';
+    body.append(...nodes);
+    this.refusal_place();
+    this.saved_place();
+    this.errand_place();
   }
 
   /**
-   * MACHINES: every VM the tenancy runs, one row each (what it is doing, its
-   * address, its size, what runs on it), each opening that machine, and + NEW.
-   * The library's rows, in the machine's words.
+   * MACHINES: every VM the tenancy runs as an ARGUS listing, a row a machine
+   * (its name, condition, address, size, data, ChRIS, cost and read time),
+   * a press on the row opening it; + NEW MACHINE under it.
    */
   private machines_make(): HTMLElement[] {
-    const standing: number = this.vms.filter((one: VmStatusRow): boolean => one.state !== 'gone').length;
-    const goneCount: number = this.vms.length - standing;
-    const list: HTMLElement = this.section_make('MACHINES', 'ss-col-wide', `${standing} IN THE TENANCY${goneCount > 0 ? ` · ${goneCount} TORN DOWN WHOLE` : ''}`);
-    const rows: HTMLElement = el('div', 'ss-scripts');
-    for (const row of this.vms) {
-      const line: HTMLElement = el('div', 'ss-script vm-row');
-      // What runs, read from the tenancy with when; the declaration only where nothing was read.
-      const stands = row.stands ?? null;
-      const size: string = stands !== null ? `${stands.vcpu === null ? 'no machine' : `${stands.vcpu} vCPU · ${stands.memory ?? '?'} GiB`}${stands.data === null ? '' : ` · data ${stands.data} GB`} · read ${stands.at.slice(11, 16)}`
-        : row.state === 'gone' ? 'nothing stands' : row.spec !== null ? `${row.spec.vcpu} vCPU · ${row.spec.memory} GiB declared` : row.found?.vcpus != null ? `${row.found.vcpus} vCPU${row.found.memoryGib != null ? ` · ${row.found.memoryGib} GiB` : ''}` : '—';
-      const tagged: string | null = row.found?.chris != null ? row.found.chris.url.replace(/^https?:\/\//, '').replace(/\/api\/v1\/?$/, '') : null;
-      const on: string = row.chris?.host ?? (row.chris !== null && row.chris !== undefined ? row.chris.url : tagged !== null ? `CUBE at ${tagged}` : vmKeyless_is(row) ? 'what runs on it is not said' : 'nothing deployed');
-      line.append(
-        el('span', 'ss-script-name', row.name),
-        // An act in flight is the row's state: what it does and since when, read from the session's tasks.
-        el('span', 'ss-script-source', row.running != null ? `${row.running.what.toUpperCase()} · SINCE ${row.running.since.slice(11, 16)}` : vmCondition_derive(row, false)),
-        el('span', 'ss-script-standing', `${row.address ?? 'no address'} · ${size} · ${on}`),
-      );
-      const open: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain', 'OPEN');
-      open.type = 'button';
-      open.title = `opens ${row.name}: what it is, then what can be done with it`;
-      open.disabled = this.busy !== null;
-      open.addEventListener('click', (): void => { this.hooks.voice.pill('OPEN'); void this.vm_open(row.name); });
-      line.append(open);
-      rows.append(line);
+    const list: HTMLElement = el('section', 'ss-col-wide vm-machines');
+    if (this.machineListingMount === null) {
+      this.machineListingMount = el('section', 'vm-machines-listing');
+      this.machineListingMount.setAttribute('aria-label', 'The machines the tenancy runs');
+      this.machineListing = new Listing<VmStatusRow>({
+        mount: this.machineListingMount,
+        traits: this.machineTraits_declare(),
+        key: (row: VmStatusRow): string => row.name,
+        caps: 'root',
+        activate: (row: VmStatusRow): void => { if (this.busy === null) { this.hooks.voice.pill(row.name.toUpperCase()); void this.vm_open(row.name); } },
+        row: { className: (row: VmStatusRow): string => `vm-row vm-row-${row.state.replace(/\s+/g, '-')}`, decorate: (element: HTMLElement, row: VmStatusRow): void => { element.title = `opens ${row.name}`; } },
+        empty: (): HTMLElement => el('p', 'tdc-prose tdc-quiet', 'The tenancy runs no machine outside a cluster.'),
+      });
     }
-    list.append(rows);
+    list.append(this.machineListingMount);
+    this.machineListing?.rows_set([{ key: 'machines', rows: this.vms }], { field: 'machines' });
     const commands: HTMLElement = el('div', 'tdc-commands');
     const add: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain vm-new-open', '+ NEW MACHINE');
     add.type = 'button';
     add.disabled = this.busy !== null;
     add.addEventListener('click', (): void => { this.view_press(NEW_KEY); });
-    commands.append(el('span', 'tdc-flex'), add);
-    list.append(commands, el('p', 'tdc-prose tdc-quiet', 'Every machine the tenancy runs outside a cluster, as vm status reads it from the cloud. One stratus built shows its state, whichever session or host built it: its records and its SSH key are read from the tenancy. One FOUND was made outside stratus: it is seen, never built on.'));
-    const side: HTMLElement = this.section_make('WHAT A ROW OPENS', 'ss-col-side');
-    side.append(this.pairs_make([['MACHINE', 'what it is and what runs on it'], ['SIZE · CHRIS · USERS', 'its lines: size it and build it, its ChRIS, its accounts'], ['TEARDOWN', 'its undoing, behind its lock']]));
-    return [list, side];
+    commands.append(add);
+    list.append(commands);
+    return [list];
   }
 
-  /** MACHINE: what the opened machine is, where it stands, and what is on it; for one seen only, why it can only be seen. */
+  /** The listing's columns: what each machine is, read from the tenancy. */
+  private machineTraits_declare(): ReadonlyArray<ListingTrait<VmStatusRow>> {
+    const size = (row: VmStatusRow): string => {
+      const stands = row.stands ?? null;
+      if (stands !== null) return stands.vcpu === null ? 'no machine' : `${stands.vcpu} vCPU · ${stands.memory ?? '?'} GiB · disk ${stands.disk ?? '?'} GB`;
+      if (row.state === 'gone') return '—';
+      if (row.spec !== null) return `${row.spec.vcpu} vCPU · ${row.spec.memory} GiB (declared)`;
+      return row.found?.vcpus != null ? `${row.found.vcpus} vCPU${row.found.memoryGib != null ? ` · ${row.found.memoryGib} GiB` : ''}` : '—';
+    };
+    const chris = (row: VmStatusRow): string => row.chris?.host ?? (row.chris != null ? row.chris.url.replace(/^https?:\/\//, '').replace(/\/api\/v1\/?$/, '') : row.found?.chris != null ? row.found.chris.url.replace(/^https?:\/\//, '').replace(/\/api\/v1\/?$/, '') : '—');
+    // What it bills as it runs, read from the tenancy; nothing read, nothing said.
+    const cost = (row: VmStatusRow): string => { const rate: VmCostRate | null | undefined = this.costRows.get(row.name)?.runs?.rate; return rate == null ? '—' : `${money_text((rate.machineHour + rate.dataHour) * HOURS_PER_MONTH, rate.currency)}/MO`; };
+    return [
+      { key: 'name', label: 'NAME', className: 'vm-cell-name', width: 'minmax(6em, 1fr)', cell: (row: VmStatusRow): string => row.name },
+      { key: 'state', label: 'STATE', className: 'vm-cell-state', width: 'minmax(6em, 9em)', cell: (row: VmStatusRow): string => (row.running != null ? `${row.running.what} · since ${row.running.since.slice(11, 16)}` : vmCondition_derive(row, false)) },
+      { key: 'address', label: 'ADDRESS', className: 'vm-cell-address', width: 'minmax(8em, 10em)', shed: 3, cell: (row: VmStatusRow): string => row.address ?? '—' },
+      { key: 'size', label: 'SIZE', className: 'vm-cell-size', width: 'minmax(12em, 16em)', shed: 2, cell: size },
+      { key: 'data', label: 'DATA', className: 'vm-cell-data', width: 'minmax(5em, 6em)', shed: 4, cell: (row: VmStatusRow): string => (row.stands != null ? (row.stands.data === null ? 'none' : `${row.stands.data} GB`) : row.spec !== null ? `${row.spec.data} GB` : '—'), compare: (row: VmStatusRow): number => row.stands?.data ?? row.spec?.data ?? 0 },
+      { key: 'chris', label: 'CHRIS', className: 'vm-cell-chris', width: 'minmax(10em, 14em)', shed: 1, cell: chris },
+      { key: 'cost', label: 'COST', className: 'vm-cell-cost', width: 'minmax(6em, 7em)', shed: 5, cell: cost },
+      { key: 'read', label: 'READ', className: 'vm-cell-read', width: 'minmax(4em, 5em)', shed: 6, cell: (row: VmStatusRow): string => row.stands?.at.slice(11, 16) ?? '—' },
+    ];
+  }
+
+  /** MACHINE, for a machine this session can only see: what the tenancy says it is, and why nothing but its teardown is offered. */
   private facts_make(): HTMLElement[] {
     const row: VmStatusRow | null = this.vmRow_get();
     const facts: HTMLElement = this.section_make('THE MACHINE', 'ss-col-wide', row === null ? 'NOT KEPT HERE' : row.region.toUpperCase());
     if (row === null) {
-      facts.append(el('p', 'tdc-prose', `The tenancy runs no machine called ${this.vm}, and this session keeps none: declare it on SIZE.`));
+      facts.append(el('p', 'tdc-prose', `The tenancy runs no machine called ${this.vm}.`));
       return [facts];
     }
-    const size: string = row.spec !== null
-      ? `${row.spec.vcpu} vCPU · ${row.spec.memory} GiB · disk ${row.spec.disk} GB · data ${row.spec.data} GB${row.spec.dataBackup === 'daily' ? ' (daily backups)' : ''} · ${row.spec.os}`
-      : row.found !== null && row.found !== undefined ? `${row.found.shape ?? '?'}${row.found.vcpus != null ? ` · ${row.found.vcpus} vCPU` : ''}${row.found.memoryGib != null ? ` · ${row.found.memoryGib} GiB` : ''}` : '—';
-    const kept: string = row.state === 'found'
-      ? (row.found?.tagged === true ? 'found: built by stratus, and its stacks did not read into this host' : 'found: made outside stratus')
-      : row.keyless === true ? 'read from the tenancy, which keeps no SSH key for it (built before stratus kept keys there): vm keep, on the host that holds the key, keeps it'
-        : row.takenFrom !== undefined && row.takenFrom !== null ? `read from the tenancy ${row.takenFrom.slice(0, 16).replace('T', ' ')}: its stacks and the secrets its vault keeps` : 'its records and its SSH key held here';
-    // What runs, read from the tenancy, beside what is declared: never one drawn for the other (a-change-is-a-loop, clause 1).
-    const stands = row.stands ?? null;
-    const rest: string = stands === null ? '' : `${stands.backup != null ? ` (${stands.backup === 'none' ? 'no backups' : `${stands.backup} backups`})` : ''}${stands.os != null ? ` · ${stands.os}` : ''}`;
-    // A part the tenancy holds none of is said as none, never as a size unread.
-    const machinePart: string = stands === null ? '' : stands.vcpu === null ? 'no machine' : `${stands.vcpu} vCPU · ${stands.memory ?? '?'} GiB · disk ${stands.disk ?? '?'} GB`;
-    const dataPart: string = stands === null ? '' : stands.data === null ? 'no data volume' : `data ${stands.data} GB`;
-    const runs: string = stands === null ? (row.state === 'gone' ? 'nothing: torn down whole' : '—') : `${machinePart} · ${dataPart}${rest} (read from the tenancy ${stands.at.slice(11, 16)} UTC)`;
+    const size: string = row.found !== null && row.found !== undefined ? `${row.found.shape ?? '?'}${row.found.vcpus != null ? ` · ${row.found.vcpus} vCPU` : ''}${row.found.memoryGib != null ? ` · ${row.found.memoryGib} GiB` : ''}` : row.spec !== null ? `${row.spec.vcpu} vCPU · ${row.spec.memory} GiB · disk ${row.spec.disk} GB · data ${row.spec.data} GB` : '—';
     facts.append(this.pairs_make([
       ['DOING', row.state === 'found' ? (row.found?.state ?? '?') : row.state],
-      ['RUNS', runs],
-      ['DECLARED', `${size}${row.declared != null ? (row.declaredKept === true ? ' · kept in the tenancy' : ' · on this host only') : ''}`],
-      ['ADDRESS', row.address ?? '—'],
-      ['INSIDE', row.inside ?? '—'],
-      ['NETWORK', row.spec?.net ?? '—'],
-      // The ports its security group opens now, read from the tenancy; the declaration's only where the tenancy was not read.
-      ['OPEN', stands?.open != null ? `${stands.open.length === 0 ? 'none' : stands.open.join(', ')} (read from the tenancy)` : row.spec !== null ? `${row.spec.open.length === 0 ? 'none' : row.spec.open.join(', ')} (as declared)` : '—'],
+      ['SIZE', size],
+      ['ADDRESS', `${row.address ?? '—'}${row.inside != null ? ` · inside ${row.inside}` : ''}`],
       ['INSTANCE', row.found?.instanceId ?? row.instance ?? '—'],
-      ['BUILT', row.built?.slice(0, 16).replace('T', ' ') ?? '—'],
-      ['CHRIS', row.chris !== null && row.chris !== undefined ? `${row.chris.url}${row.chris.porter !== null ? ` · porter ${row.chris.porter}` : ''}`
-        : row.found?.chris != null ? `${row.found.chris.url}${row.found.chris.porter !== null ? ` · porter ${row.found.chris.porter}` : ''} (as its instance's tag says)`
-          : vmKeyless_is(row) ? 'not said on the machine (deployed before deploys tagged it)' : 'none deployed'],
-      ['LOCK', `${row.protected ? 'protected: teardown refuses until lifted' : 'unlocked'}${lockWhere_text(row.lock) !== null ? ` · ${lockWhere_text(row.lock) as string}` : ''}`],
-      ['KEPT', kept],
+      ['CHRIS', row.found?.chris != null ? `${row.found.chris.url} (as its instance's tag says)` : row.chris != null ? row.chris.url : 'not said on the machine'],
     ]));
-    const side: HTMLElement = this.section_make('WHAT CAN BE DONE', 'ss-col-side');
-    side.append(vmKeyless_is(row)
-      ? el('p', 'tdc-prose', row.state === 'found' && row.found?.tagged !== true ? 'Made outside stratus: seen here, acted on in the cloud\'s own console.' : 'Its size, build and ChRIS need its SSH key, which the tenancy does not keep. TEARDOWN removes it, behind its lock and the name typed back.')
-      : this.pairs_make([['SIZE', 'its vCPUs, memory, disks and ports: BUILD writes the change, plans it and asks before it applies'], ['CHRIS', 'deploys ChRIS on it'], ['USERS', 'its ChRIS accounts'], ['TEARDOWN', 'its undoing, behind its lock']]));
-    return [facts, side];
+    const why: string = row.state === 'found'
+      ? (row.found?.tagged === true ? 'found: built by stratus, and its stacks did not read into this host. TEARDOWN removes it.' : 'Made outside stratus: seen here, changed in the cloud\'s own console. TEARDOWN removes it.')
+      : 'Read from the tenancy, which keeps no SSH key for it (built before stratus kept keys there): vm keep, on the host that holds the key, keeps it. Its size, build and ChRIS need that key; TEARDOWN removes it.';
+    facts.append(el('p', 'tdc-prose', why));
+    return [facts];
+  }
+
+  // ------------------------------------------------------------------ SIZE
+
+  /** A machine's seats: SIZE is one pane of its own; the others are the script screen's, without the log column (the VM LOG is the one log). */
+  protected override step_make(step: ScriptStep): HTMLElement[] {
+    if (step.kind === 'vm new') return [this.size_make(step)];
+    return super.step_make(step).filter((node: HTMLElement): boolean => !node.classList.contains('tdc-col-steplog'));
+  }
+
+  /**
+   * SIZE, one pane (the operator, 2026-11-06): each lever with what runs, the
+   * value offered and its share of the cost; under them the whole change in
+   * money, what it means, and BUILD saying what it does and what it costs;
+   * then the ports, the OS and the lines as they will run. A build in flight
+   * or just ended stands at the top as one run.
+   */
+  private size_make(step: ScriptStep): HTMLElement {
+    const line: ScriptLine = step.lines[0] as ScriptLine;
+    const built: ScriptLine | undefined = stepBuildLine_get(step);
+    const name: string = line_parse(line.text).subject ?? '';
+    const runs = this.runs_get(name);
+    const pane: HTMLElement = this.section_make('THE SIZE', 'ss-col-wide vm-size', runs === null ? 'NOT BUILT YET' : `RUNS AS READ FROM THE TENANCY ${runs.at.slice(11, 16)} UTC`);
+    if (this.run !== null && this.run.vm === this.vm) pane.append(this.run_make(this.run));
+    if (this.limits === null) {
+      pane.append(el('p', 'tdc-prose tdc-quiet', 'reading what the shape sells: vm limits'));
+    } else {
+      const limits: VmLimitsModel = this.limits;
+      const group: HTMLElement = el('div', 'tdc-lever-group vm-levers');
+      group.append(el('span', 'tdc-section-title', limits.shape));
+      for (const spec of vmSliders_build(limits)) group.append(this.lever_make(line, spec, limits));
+      group.append(this.backup_make(line, runs?.backup ?? null));
+      pane.append(group);
+    }
+    pane.append(this.change_make(step, line, built));
+    // What else the machine is: its ports and OS as fields with what runs beside each; where it stands.
+    const ports: HTMLElement = this.optionField_make(line, '--open', 'OPEN PORTS', '80,443');
+    if (runs?.open != null) ports.append(el('span', 'ss-field-runs', `RUNS ${ports_word(runs.open).toUpperCase()}`));
+    const os: HTMLElement = this.optionField_make(line, '--os', 'OS', 'ubuntu-26.04');
+    if (runs?.os != null) os.append(el('span', 'ss-field-runs', `RUNS ${runs.os.toUpperCase()}`));
+    const row: VmStatusRow | null = this.vmRow_get();
+    const where: HTMLElement = this.pairs_make([
+      ['NETWORK', lineOption_get(line.text, '--net') ?? '—'],
+      ['ADDRESS', `${row?.address ?? '—'}${row?.inside != null ? ` · inside ${row.inside}` : ''}`],
+    ]);
+    const script: HTMLElement = el('div', 'vm-size-lines');
+    script.append(el('span', 'tdc-section-title', `THE SCRIPT · ${this.path === '' ? 'NOT WRITTEN YET' : this.path}`), this.lineBoxNumbered_make(line), ...(built === undefined ? [] : [this.lineBoxNumbered_make(built)]));
+    pane.append(ports, os, where, script);
+    this.sizeCost_need(line);
+    return pane;
+  }
+
+  /** One lever: its slider (with what runs beside it), and its share of the change a month. */
+  private lever_make(line: ScriptLine, spec: SliderSpec, limits: VmLimitsModel): HTMLElement {
+    const row: HTMLElement = this.slider_make(line, spec, limits);
+    row.classList.add('vm-lever');
+    const delta: HTMLElement = el('span', 'vm-lever-delta', '');
+    delta.dataset['word'] = spec.word;
+    row.append(delta);
+    return row;
+  }
+
+  /** DATA BACKUP as two pills, with what runs and its share of the change. */
+  private backup_make(line: ScriptLine, runs: string | null): HTMLElement {
+    const backup: HTMLElement = el('div', 'tdc-families vm-lever-backup');
+    backup.append(el('span', 'tdc-pair-label', 'DATA BACKUP'));
+    for (const choice of ['daily', 'none']) {
+      const pill: HTMLButtonElement = el('button', `tdc-family${(vmLevers_read(line.text).dataBackup ?? 'none') === choice ? ' tdc-family-on' : ''}`, choice.toUpperCase());
+      pill.type = 'button';
+      pill.disabled = this.busy !== null;
+      pill.addEventListener('click', (): void => { this.hooks.voice.pill(choice); line.text = lineOption_set(line.text, '--data-backup', choice); this.edited = true; this.stepCost_ask(line.text); this.draw(); });
+      backup.append(pill);
+    }
+    if (runs !== null) backup.append(el('span', 'ss-field-runs', `RUNS ${runs.toUpperCase()}`));
+    const delta: HTMLElement = el('span', 'vm-lever-delta', '');
+    delta.dataset['word'] = '--data-backup';
+    backup.append(delta);
+    return backup;
+  }
+
+  /** The change as one block: what it costs a month against what runs, what it means, and BUILD saying both. */
+  private change_make(step: ScriptStep, line: ScriptLine, built: ScriptLine | undefined): HTMLElement {
+    const box: HTMLElement = el('div', 'vm-change');
+    box.append(el('div', 'vm-change-total'), el('div', 'vm-change-means'));
+    const commands: HTMLElement = el('div', 'tdc-commands vm-commit');
+    if (built !== undefined) {
+      // loop: ss-vm-build, vm-size-build
+      const build: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill ss-build vm-build', 'BUILD');
+      build.type = 'button';
+      build.dataset['line'] = String(line.number);
+      build.dataset['build'] = built.text;
+      build.addEventListener('click', (): void => { this.hooks.voice.pill('BUILD'); void this.declaredBuild_send(line.text, built.text, step.key); });
+      commands.append(build, el('span', 'tdc-commands-label vm-commit-says', ''));
+    }
+    box.append(commands);
+    queueMicrotask((): void => this.change_redraw());
+    return box;
+  }
+
+  /** What the levers offer against what runs, as words: `disk 100 → 150 GB`; empty when nothing changes. */
+  private would_get(): { would: BuildWould[]; words: string } {
+    const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.kind === 'vm new');
+    const line: ScriptLine | undefined = step?.lines[0];
+    const runs = this.runs_get(line_parse(line?.text ?? '').subject ?? '');
+    if (line === undefined || runs === null) return { would: [], words: '' };
+    const would: BuildWould[] = buildWould_derive(vmLevers_read(line.text), runs);
+    return { would, words: would.map((one: BuildWould): string => one.change).join(', ') };
+  }
+
+  /** The change block and the levers' shares, redrawn in place as a lever moves or a price arrives. */
+  private change_redraw(): void {
+    const body: HTMLElement = this.parts.body;
+    const total: HTMLElement | null = body.querySelector('.vm-change-total');
+    if (total === null) return;
+    const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
+    const line: ScriptLine | undefined = step?.lines[0];
+    if (step === undefined || line === undefined) return;
+    const runs = this.runs_get(line_parse(line.text).subject ?? '');
+    const { would, words } = this.would_get();
+    const refused: BuildWould | undefined = would.find((one: BuildWould): boolean => one.tone === 'refused');
+    const month: number | null = this.changeMonth_get(line, runs);
+    const money = (value: number): string => `${value > 0 ? '+' : '−'}${money_text(Math.abs(value), this.stepCost?.cost?.currency ?? 'USD')} a month`;
+    total.replaceChildren();
+    if (runs === null) {
+      total.append(el('span', 'vm-change-word', 'NOT BUILT YET'), el('span', 'vm-change-money', this.stepCost?.cost == null ? 'pricing…' : `${rate_words(this.stepCost.cost, HOURS_PER_MONTH)} once built`));
+    } else if (would.length === 0) {
+      total.append(el('span', 'vm-change-word', 'NOTHING CHANGES'), el('span', 'vm-change-money', 'what runs is what is sized'));
+    } else {
+      total.append(el('span', 'vm-change-word', words.toUpperCase()), el('span', `vm-change-money${month !== null && month > 0 ? ' tdc-bill' : ''}`, month === null ? 'pricing…' : Math.abs(month) < 0.005 ? 'no change in cost' : money(month)));
+    }
+    const means: HTMLElement | null = body.querySelector('.vm-change-means');
+    if (means !== null) {
+      means.replaceChildren();
+      const plain: Readonly<Record<BuildWould['tone'], string>> = { grow: 'grows while it runs: no restart', reboot: 'the machine restarts: it, and the ChRIS on it, are down a few minutes', refused: '' };
+
+      // A resize in place is said plainly; a machine made (none runs) keeps its own words: what it is made over.
+      for (const one of would) {
+        const said: string = one.tone === 'refused' || !one.change.includes('→') ? one.consequence : plain[one.tone];
+        // One change is named large above: what it means is enough under it; several each say which.
+        means.append(el('span', `tdc-prose ss-would-${one.tone}`, would.length === 1 ? said : `${one.change}: ${said}`));
+      }
+      // Declared before and not built (here or by another session): said, so the offer is not taken for a fresh edit.
+      if (!this.edited && would.length > 0 && stepBuildLine_get(step)?.state === 'changed') means.append(el('span', 'tdc-prose tdc-quiet vm-change-declared', 'declared already, kept in the tenancy, and not built yet: BUILD applies it'));
+    }
+    // Each lever's share, beside it; a lever off what runs before its share is priced says so.
+    const shares: Map<string, number | null> = this.leverCosts?.deltas ?? new Map();
+    for (const cell of body.querySelectorAll<HTMLElement>('.vm-lever-delta')) {
+      const word: string = cell.dataset['word'] ?? '';
+      const share: number | null | undefined = shares.get(word);
+      cell.textContent = share === undefined ? '' : share === null ? 'pricing…' : Math.abs(share) < 0.005 ? 'no cost' : money(share);
+      cell.classList.toggle('tdc-bill', share != null && share > 0.005);
+    }
+    const build: HTMLButtonElement | null = body.querySelector('.vm-build');
+    const says: HTMLElement | null = body.querySelector('.vm-commit-says');
+    if (build === null || says === null) return;
+    const hold = this.hold_derive(build.dataset['build'] ?? '');
+    const priced: string = month === null || Math.abs(month) < 0.005 ? '' : ` · ${money(month)}`;
+    build.textContent = hold === 'held' ? 'BUILD · REFUSED IN READ' : refused !== undefined ? `BUILD · ${refused.change.toUpperCase()} IS REFUSED` : would.length === 0 ? 'BUILD' : `BUILD · ${words}${priced}`;
+    build.classList.toggle('tdc-pill-quiet', would.length === 0);
+    build.classList.toggle('tdc-pill-asks', hold === 'asks');
+    build.disabled = hold === 'held' || refused !== undefined || this.acting_is();
+    build.title = `sends: ${line.text}, then ${build.dataset['build'] ?? ''}`;
+    says.textContent = hold === 'held' ? READ_HELD_SHORT
+      : `${hold === 'asks' ? 'asks your password first (this session can only read), then ' : ''}${would.length === 0 ? 'plans and says there is nothing to do' : 'plans, then asks with the cost before anything bills, then applies'}`;
+  }
+
+  /** The whole change a month against what runs, or null while either side is unpriced. */
+  private changeMonth_get(line: ScriptLine, runs: (VmRuns & { at: string }) | null): number | null {
+    const offered: VmCostRow | null = this.stepCost;
+    if (runs === null || offered === null || offered.cost === null) return null;
+    const key: string = `${line_parse(line.text).subject ?? ''}@${runs.at}`;
+    const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.kind === 'vm new');
+    if (this.runsCost?.key !== key && step !== undefined) this.runsCost_ask(key, step, runs);
+    const now: VmCostRate | null = this.runsCost?.key === key ? this.runsCost.row?.cost ?? null : null;
+    if (now === null) return null;
+    return (offered.cost.machineHour + offered.cost.dataHour - now.machineHour - now.dataHour) * HOURS_PER_MONTH;
+  }
+
+  /** The price of the line shown, asked once per text; each lever's share asked after it. */
+  private sizeCost_need(line: ScriptLine): void {
+    if (this.stepCost === null && this.costTimer === null) this.stepCost_ask(line.text);
+    this.leverCosts_ask(line);
+  }
+
+  /**
+   * Each lever's share of the change: the line as it runs, with that lever
+   * alone moved, priced against the line as it runs. The price list is the
+   * session's, read once, so these are worked out, not fetched.
+   */
+  private leverCosts_ask(line: ScriptLine): void {
+    const runs = this.runs_get(line_parse(line.text).subject ?? '');
+    if (runs === null) { this.leverCosts = null; return; }
+    const key: string = `${line.text}@${runs.at}`;
+    if (this.leverCosts?.key === key) return;
+    const levers = vmLevers_read(line.text);
+    let asRuns: string = line.text;
+    for (const [word, value] of [['--vcpu', runs.vcpu], ['--memory', runs.memory], ['--disk', runs.disk], ['--data', runs.data], ['--data-backup', runs.backup ?? null]] as const) if (value !== null) asRuns = lineOption_set(asRuns, word, String(value));
+    const moved: Array<[string, string]> = ([['--vcpu', levers.vcpu, runs.vcpu], ['--memory', levers.memory, runs.memory], ['--disk', levers.disk, runs.disk], ['--data', levers.data, runs.data], ['--data-backup', levers.dataBackup, runs.backup ?? null]] as const)
+      .filter(([, want, now]): boolean => want !== null && now !== null && String(want) !== String(now)).map(([word, want]): [string, string] => [word, String(want)]);
+    this.leverCosts = { key, deltas: new Map(moved.map(([word]): [string, number | null] => [word, null])) };
+    if (this.leverTimer !== null) clearTimeout(this.leverTimer);
+    if (moved.length === 0) { this.change_redraw(); return; }
+    this.leverTimer = setTimeout((): void => {
+      this.leverTimer = null;
+      const priced = async (text: string): Promise<number | null> => {
+        const model = this.model_take(await this.hooks.ask(costLine_derive(text)), STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
+        const cost: VmCostRate | null | undefined = model?.vms[0]?.cost;
+        return cost == null ? null : (cost.machineHour + cost.dataHour) * HOURS_PER_MONTH;
+      };
+      void (async (): Promise<void> => {
+        const base: number | null = await priced(asRuns);
+        for (const [word, value] of moved) {
+          if (this.leverCosts?.key !== key) return;
+          const one: number | null = await priced(lineOption_set(asRuns, word, value));
+          this.leverCosts.deltas.set(word, base === null || one === null ? null : one - base);
+        }
+        if (this.leverCosts?.key === key) this.change_redraw();
+      })().catch((): void => undefined);
+    }, 150);
+  }
+
+  /** A price arrived: SIZE's change block is redrawn in place; + NEW's price column as before. */
+  protected override cost_redraw(): void {
+    if (this.view === NEW_KEY) {
+      const box: HTMLElement | null = this.parts.body.querySelector('.ss-cost');
+      if (box !== null) this.cost_fill(box, this.newStep_get());
+      const commit: HTMLButtonElement | null = this.parts.body.querySelector('.vm-new-commit');
+      if (commit !== null) this.newCommit_redraw(commit);
+      return;
+    }
+    const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
+    if (step?.kind === 'vm new' && step.lines[0] !== undefined) this.leverCosts_ask(step.lines[0]);
+    this.change_redraw();
+  }
+
+  /** A slider moved: the change block follows the hand. */
+  protected override lineShown_redraw(line: ScriptLine): void {
+    super.lineShown_redraw(line);
+    // The line's state is redrawn with its text: an edit reads EDITED the moment the hand moves.
+    const shown: HTMLElement | null = this.parts.body.querySelector(`.vm-size-lines .ss-line[data-line="${line.number}"]`);
+    if (shown !== null) shown.replaceWith(this.lineBoxNumbered_make(line));
+    this.change_redraw();
+    this.header_draw();
+  }
+
+  /** The script's line as it will run: an edit not built yet never reads as done (the operator, 2026-11-06). */
+  protected override lineBox_make(line: ScriptLine): HTMLElement {
+    const box: HTMLElement = super.lineBox_make(line);
+    const edited: boolean = (this.edited || this.unsaved) && line.state === 'done' && line_parse(line.text).verb.join(' ') === 'vm new';
+    if (edited && this.busy === null) {
+      box.className = 'ss-line ss-line-changed';
+      const state: Element | null = box.querySelector('.ss-line-state');
+      if (state !== null) state.textContent = '~ EDITED · NOT BUILT: BUILD writes it, then builds it';
+    }
+    return box;
+  }
+
+  // ------------------------------------------------------------------ the run
+
+  /** The build as one run: its steps with where each stands, how long, what it last said, and its outcome large. */
+  private run_make(run: BuildRun): HTMLElement {
+    const box: HTMLElement = el('div', `vm-run vm-run-${run.outcome === null ? 'going' : run.outcome.tone}`);
+    const head: HTMLElement = el('div', 'vm-run-head');
+    head.append(el('span', 'tdc-section-title', `THE BUILD · ${run.change === '' ? run.vm.toUpperCase() : run.change.toUpperCase()}`), el('span', 'vm-run-time', run.outcome === null ? `${duration_text(Date.now() - run.since)} SO FAR` : `ENDED ${run.outcome.at.slice(11, 16)} UTC · TOOK ${duration_text(Date.parse(run.outcome.at) - run.since)}`));
+    const strip: HTMLElement = el('div', 'vm-run-strip');
+    for (const phase of BUILD_PHASES) {
+      const state = run.phases[phase.key];
+      const tone: string = state === 'going' ? (phase.key === 'ask' ? 'tdc-step-asking' : 'tdc-step-going') : state === 'done' ? 'tdc-step-done' : state === 'skipped' ? 'tdc-step-skipped' : 'vm-step-waiting';
+      const block: HTMLElement = el('div', `tdc-strip-step vm-run-step ${tone}`);
+      // Once a run stopped short, a step it never reached is not done; a question it stopped at was answered no.
+      const short: boolean = run.outcome !== null && run.outcome.tone !== 'done';
+      const word: string = state === 'going' ? (phase.key === 'ask' ? 'ASKING' : 'UNDER WAY') : state === 'done' ? (phase.key === 'ask' ? 'ANSWERED YES' : 'DONE')
+        : short && phase.key === 'ask' && state === 'skipped' && run.phases['plan-machine'] !== 'waiting' ? 'ANSWERED NO' : short ? 'NOT DONE' : state === 'skipped' ? 'NOT NEEDED' : 'WAITING';
+      block.append(el('span', 'tdc-strip-name', phase.label), el('span', 'tdc-strip-word', word));
+      strip.append(block);
+    }
+    box.append(head, strip);
+    if (run.outcome !== null) box.append(el('div', 'vm-run-outcome', run.outcome.words));
+    else box.append(el('span', 'tdc-prose tdc-quiet vm-run-said', run.phases.ask === 'going' ? 'its question is asked below, with the cost: answer it to go on' : run.said === '' ? 'what each step prints runs in the VM LOG below' : run.said));
+    return box;
+  }
+
+  /** The run block and the band, redrawn in place: the levers under the hand are never redrawn for a line printed. */
+  private run_redraw(): void {
+    const now: HTMLElement | null = this.parts.body.querySelector('.vm-run');
+    if (now !== null && this.run !== null) now.replaceWith(this.run_make(this.run));
+    this.header_draw();
+  }
+
+  private runTick: ReturnType<typeof setInterval> | null = null;
+
+  /** The run's clock: the band and the block say how long, every second, while it runs. */
+  private runTick_set(on: boolean): void {
+    if (on && this.runTick === null) this.runTick = setInterval((): void => { if (this.run?.outcome === null) this.run_redraw(); else this.runTick_set(false); }, 1000);
+    if (!on && this.runTick !== null) { clearInterval(this.runTick); this.runTick = null; }
+  }
+
+  /** BUILD on SIZE: the run stands from the press, before the password, so nothing looks idle; a build never sent ends said. */
+  protected override async declaredBuild_send(declared: string, built: string, step: string): Promise<void> {
+    const building: boolean = built.startsWith(`vm build ${this.vm}`) && this.vm !== '';
+    if (building) {
+      this.run = buildRun_start(this.vm, this.would_get().words, Date.now());
+      this.runTick_set(true);
+      this.draw();
+    }
+    await super.declaredBuild_send(declared, built, step);
+    if (building && this.run !== null && this.run.outcome === null) {
+      this.run = buildRun_end(this.run, this.refusal !== null && !this.refusal.declined ? { tone: 'failed', why: this.refusal.why } : { tone: 'declined', why: '' }, new Date().toISOString());
+      if (this.run.outcome?.tone === 'declined') this.run = { ...this.run, outcome: { tone: 'declined', words: 'NOT BUILT · NO PASSWORD GIVEN, NOTHING SENT', at: this.run.outcome.at } };
+    }
+    this.runTick_set(false);
+    this.draw();
+  }
+
+  /** A build's NO or refusal is said once, as the run's outcome on SIZE; any other refusal stands where its control does. */
+  protected override refusal_place(): void {
+    if (this.run !== null && this.run.outcome !== null && this.refusal !== null && this.refusal.line.startsWith(`vm build ${this.run.vm}`)) return;
+    super.refusal_place();
+  }
+
+  /** A line printed: the run moves on, in place. */
+  protected override log_add(text: string, kind: 'sent' | 'out' | 'ask' | 'answer' | 'note'): void {
+    super.log_add(text, kind);
+    if (this.run === null || this.run.outcome !== null) return;
+    if (kind === 'out') {
+      const moved: BuildRun = buildRun_take(this.run, text);
+      if (moved !== this.run) { this.run = moved; this.run_redraw(); }
+    }
+  }
+
+  /** The build's own question: the run says it asks; its answer moves it on. */
+  public override ask_take(message: string, kind: PromptKind): Promise<string | null> {
+    const asked: Promise<string | null> = super.ask_take(message, kind);
+    if (this.run !== null && this.run.outcome === null && message.startsWith(`vm build ${this.run.vm}`)) {
+      this.run = buildRun_ask(this.run);
+      this.run_redraw();
+      void asked.then((value: string | null): void => {
+        if (this.run === null) return;
+        this.run = buildRun_answer(this.run, value !== null && value !== '' && value.toLowerCase().startsWith('y'));
+        this.run_redraw();
+      });
+    }
+    return asked;
+  }
+
+  /** The last follow asked by the screen itself: one task is never followed again in a loop. */
+  private followedLast: { task: string; at: number } | null = null;
+
+  /** A task running with nothing following it is followed: its output runs in the VM LOG without a press, unless the operator stopped following. */
+  private follow_auto(): void {
+    const running: ScriptStep | undefined = runningStep_find(this.steps);
+    const task: string | null = running?.running ?? null;
+    if (task === null || this.busy !== null || this.followDeclined || this.ask !== null || !task.startsWith('/proc/')) return;
+    if (this.followedLast?.task === task && Date.now() - this.followedLast.at < 10_000) return;
+    this.followedLast = { task, at: Date.now() };
+    this.running_follow();
+  }
+
+  /**
+   * The password asked to raise a READ session, in plain words: what it is
+   * for, that it is checked where the operator logged in and kept nowhere,
+   * and a field wide enough to type in.
+   */
+  protected override errand_make(ask: OpenAsk): HTMLElement {
+    const raise: RegExpMatchArray | null = ask.message.match(/^MANAGE · your password, for: (.+?) · /);
+    if (raise === null) return super.errand_make(ask);
+    const line: string = raise[1] as string;
+    const bar: HTMLElement = el('div', 'errand-bar ss-errand vm-raise');
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', 'Your password, to act');
+    const words: HTMLElement = el('div', 'vm-raise-words');
+    words.append(el('span', 'vm-raise-title', `YOUR PASSWORD, TO ${line.split(' ').slice(0, 2).join(' ').toUpperCase()} ${line_parse(line).subject?.toUpperCase() ?? ''}`.trim()),
+      el('span', 'tdc-prose', 'This session can only read. Your password lets it act until you leave: it is checked where you logged in, sent once, and kept nowhere.'));
+    const field: HTMLInputElement = el('input', 'vm-raise-input ss-errand-input');
+    field.id = 'ss-errand-input';
+    field.type = 'password';
+    field.autocomplete = 'current-password';
+    field.spellcheck = false;
+    field.placeholder = 'your password';
+    field.setAttribute('aria-label', 'Your password');
+    const go: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain errand-commit vm-raise-go', 'CONTINUE');
+    go.type = 'button';
+    const cancel: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet ss-errand-stop', 'CANCEL');
+    cancel.type = 'button';
+    const answer = (): void => { const value: string = field.value; field.value = ''; this.hooks.voice.pill('CONTINUE'); this.log_add('(hidden)', 'answer'); ask.answer(value); };
+    go.addEventListener('click', answer);
+    field.addEventListener('keydown', (event: KeyboardEvent): void => { if (event.key === 'Enter') answer(); });
+    cancel.addEventListener('click', (): void => { field.value = ''; this.hooks.voice.pill('CANCEL'); this.log_add('(declined)', 'answer'); ask.answer(''); });
+    const row: HTMLElement = el('div', 'vm-raise-row');
+    row.append(field, go, cancel);
+    bar.append(words, row);
+    queueMicrotask((): void => field.focus());
+    return bar;
   }
 
   /** SIZE for a machine not yet named: its name, its network, its levers and its price, then BUILD, its one commit; nothing is sent before it. */
@@ -639,18 +1097,7 @@ export class VmScreen extends ScriptScreen {
     const box: HTMLElement = el('div', 'ss-cost');
     side.append(box);
     this.cost_fill(box, this.newStep_get());
-    const log: HTMLElement = this.section_make('THE STEP\'S OUTPUT', 'tdc-col-steplog');
-    log.append(el('div', 'tdc-steplog'));
-    return [form, side, log];
-  }
-
-  /** The price column of + NEW is the new form's: redrawn when its price arrives, as a seat's is, and BUILD held until it stands. */
-  protected override cost_redraw(): void {
-    if (this.view !== NEW_KEY) { super.cost_redraw(); return; }
-    const box: HTMLElement | null = this.parts.body.querySelector('.ss-cost');
-    if (box !== null) this.cost_fill(box, this.newStep_get());
-    const commit: HTMLButtonElement | null = this.parts.body.querySelector('.vm-new-commit');
-    if (commit !== null) this.newCommit_redraw(commit);
+    return [form, side];
   }
 
   /** The new machine's form as a seat, so the shared levers and price read it. */
@@ -747,7 +1194,7 @@ export class VmScreen extends ScriptScreen {
       none.append(el('span', 'tdc-note-title', 'NOTHING OF IT STANDS'), el('span', 'tdc-prose', `The tenancy holds nothing of ${name}${row.stands != null ? `, as read ${row.stands.at.slice(11, 16)} UTC` : ''}: nothing to tear down, nothing bills. BUILD on SIZE builds it again, empty.`));
       const guard: HTMLElement = this.section_make('THE GUARD', 'ss-col-side');
       guard.append(none);
-      return [goes, guard, this.stepLog_make({ key: TEARDOWN_KEY, label: 'TEARDOWN', kind: 'other', lines: [], state: null, running: null })];
+      return [goes, guard];
     }
     const lock: HTMLElement = el('div', `tdc-note ${row === null || row.protected ? 'tdc-note-locked' : 'tdc-note-refused'}`);
     lock.append(el('span', 'tdc-note-title', row === null ? 'NOT KEPT HERE' : row.protected ? 'PROTECTED' : 'UNLOCKED'), el('span', 'tdc-prose', row === null
@@ -775,6 +1222,6 @@ export class VmScreen extends ScriptScreen {
     guard.append(lock);
     // What each undoing stops billing and what keeps billing, beside the pills (a-change-is-a-loop, clause 2).
     if (row !== null && row.state !== 'gone') guard.append(this.teardownBill_make(name, machineStands));
-    return [goes, guard, this.stepLog_make({ key: TEARDOWN_KEY, label: 'TEARDOWN', kind: 'other', lines: [], state: null, running: null })];
+    return [goes, guard];
   }
 }

@@ -106,33 +106,62 @@ describe('the VM controller', () => {
       await settle();
       // What runs, read from the tenancy, beside the lever; the levers come before the lines.
       expect([...screen.root.querySelectorAll('.ss-slider-runs')].map((mark) => mark.textContent)).toEqual(['RUNS 2', 'RUNS 8 GiB', 'RUNS 50 GB', 'RUNS 50 GB']);
-      expect(screen.root.querySelector('.tdc-lever-group .tdc-section-title')?.textContent).toContain('RUNS AS READ FROM THE TENANCY 04:48 UTC');
+      expect(screen.root.querySelector('.vm-size .tdc-section-aside')?.textContent).toContain('RUNS AS READ FROM THE TENANCY 04:48 UTC');
       expect(button_named(screen.root, 'DECLARE')).toBeUndefined();
       expect(button_named(screen.root, 'BUILD')).toBeDefined();
-      expect(screen.root.querySelector('.ss-note-would .tdc-note-title')?.textContent).toBe('WHAT RUNS IS WHAT IS OFFERED');
+      // SIZE is one pane: no cost column, no log column (the operator, 2026-11-06).
+      expect(screen.root.querySelector('.tdc-col-cost')).toBeNull();
+      expect(screen.root.querySelector('.tdc-col-steplog')).toBeNull();
+      expect(screen.root.querySelector('.vm-change-word')?.textContent).toBe('NOTHING CHANGES');
       // The offer moved off what runs: the mark lights, and BUILD WOULD says the change and what it means.
       const disk: HTMLInputElement = screen.root.querySelector('#ss-slider-disk') as HTMLInputElement;
       disk.value = '180';
       disk.dispatchEvent(new Event('input'));
       expect(screen.root.querySelectorAll('.ss-slider-differs').length).toBe(1);
-      expect(screen.root.querySelector('.ss-note-would')?.textContent).toContain('BUILD WOULDboot disk 50 → 180 GB: grows online, no reboot');
+      expect(screen.root.querySelector('.vm-change-word')?.textContent).toBe('BOOT DISK 50 → 180 GB');
+      expect(screen.root.querySelector('.vm-change-means')?.textContent).toBe('grows while it runs: no restart');
+      // BUILD says what it does; the script's line says it is edited, never done.
+      expect(screen.root.querySelector('.vm-build')?.textContent).toContain('BUILD · boot disk 50 → 180 GB');
+      expect([...screen.root.querySelectorAll('.ss-line-state')].map((state) => state.textContent)).toContain('~ EDITED · NOT BUILT: BUILD writes it, then builds it');
       const memory: HTMLInputElement = screen.root.querySelector('#ss-slider-memory') as HTMLInputElement;
       memory.value = '16';
       memory.dispatchEvent(new Event('input'));
-      expect(screen.root.querySelector('.ss-note-would')?.textContent).toContain('memory 8 → 16 GiB: the machine reboots');
+      expect(screen.root.querySelector('.vm-change-means')?.textContent).toContain('memory 8 → 16 GiB: the machine restarts');
       memory.value = '8';
       memory.dispatchEvent(new Event('input'));
       // BUILD sends the declaration then the build; once what runs reads back as offered, the note is the receipt.
       STORE_RUNS = { at: '2026-11-05T05:10:00.000Z', vcpu: 2, memory: 8, disk: 180, data: 50 };
-      button_named(screen.root, 'BUILD')?.click();
+      screen.root.querySelector<HTMLButtonElement>('.vm-build')?.click();
       await settle(30);
-      expect(screen.root.querySelector('.ss-note-would .tdc-note-title')?.textContent).toBe('BUILT · WHAT RUNS IS WHAT WAS OFFERED');
-      expect(screen.root.querySelector('.ss-note-would')?.textContent).toContain('read from the tenancy 05:10 UTC');
+      // The build is one run, its outcome said large; what runs is read back after.
+      expect(screen.root.querySelector('.vm-run-outcome')?.textContent).toBe('BUILT · BOOT DISK 50 → 180 GB');
+      expect(screen.root.querySelector('.vm-size .tdc-section-aside')?.textContent).toContain('RUNS AS READ FROM THE TENANCY 05:10 UTC');
+      expect(screen.root.querySelector('.vm-change-word')?.textContent).toBe('NOTHING CHANGES');
       screen.dispose();
       screen.root.remove();
     } finally {
       STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50, data: 50 };
     }
+  });
+
+  it('the password that raises a READ session is asked in plain words, in a field wide enough, CONTINUE or CANCEL', async () => {
+    const { screen } = screen_make();
+    await screen.vm_open('store');
+    await settle();
+    const answered: Promise<string | null> = screen.ask_take('MANAGE · your password, for: vm build store · this session was entered as READ; your password, checked at the door you logged in by, makes it MANAGE until you leave it (it crosses once, kept nowhere); NO, or nothing, keeps READ', 'secret');
+    await settle();
+    const bar: HTMLElement = screen.root.querySelector('.vm-raise') as HTMLElement;
+    expect(bar.querySelector('.vm-raise-title')?.textContent).toBe('YOUR PASSWORD, TO VM BUILD STORE');
+    expect(bar.textContent).toContain('This session can only read.');
+    expect(bar.textContent).not.toContain('door you logged in by');
+    const field: HTMLInputElement = bar.querySelector('#ss-errand-input') as HTMLInputElement;
+    expect(field.type).toBe('password');
+    field.value = 'a password';
+    button_named(bar, 'CONTINUE')?.click();
+    await expect(answered).resolves.toBe('a password');
+    expect(field.value).toBe('');
+    screen.dispose();
+    screen.root.remove();
   });
 
   it('CHRIS renders what runs of the ChRIS and what a deploy would do; USERS renders CUBE\'s accounts beside the script\'s lines', async () => {
@@ -193,7 +222,7 @@ describe('the VM controller', () => {
     const disk: HTMLInputElement = screen.root.querySelector('#ss-slider-disk') as HTMLInputElement;
     disk.value = '180';
     disk.dispatchEvent(new Event('input'));
-    button_named(screen.root, 'BUILD')?.click();
+    screen.root.querySelector<HTMLButtonElement>('.vm-build')?.click();
     await settle(20);
     expect(sent[0]?.startsWith("touch --withContents='net new chrisproject-services")).toBe(true);
     expect(sent[0]?.includes('--disk 180')).toBe(true);
@@ -212,22 +241,24 @@ describe('the VM controller', () => {
     expect(asked).toContain('vm status');
     expect(screen.vm_get()).toBe('store');
     expect(screen.path_get()).toBe('/scripts/chrisproject/store.mise');
-    expect(screen.steps_get().map((step) => step.label)).toEqual(['MACHINE', 'SIZE', 'CHRIS', 'USERS', 'TEARDOWN']);
+    expect(screen.steps_get().map((step) => step.label)).toEqual(['SIZE', 'CHRIS', 'USERS', 'TEARDOWN']);
     expect([...screen.root.querySelectorAll('.takeover-seat .tdc-cluster')].map((pill) => pill.textContent)).toEqual(['STORE', 'LONE', 'WEB', '+ NEW']);
+    // The header is one band: which machine and its condition, the mode, its cost now, what runs, its lock.
+    expect(screen.root.querySelector('.tdc-condition-label')?.textContent).toBe('STORE');
     expect(screen.root.querySelector('.tdc-condition-name')?.textContent).toBe('BUILT');
-    expect(screen.root.querySelector('.ss-header')?.textContent).toContain('203.0.113.10');
-    expect(screen.root.querySelector('.ss-header')?.textContent).toContain('cube.chrisproject.org');
+    const band: string = screen.root.querySelector('.ss-header')?.textContent ?? '';
+    expect(band).toContain('UNLOCKED');
+    expect(band).toContain('NOW');
+    expect(band).not.toContain('203.0.113.10');
+    expect(band).not.toContain('2 DONE');
     expect(document.title).toBe('BUILT · store');
-    // A machine opens on what it is: its doing, size, addresses and the ChRIS on it.
-    expect(screen.view_get()).toBe('machine');
-    const facts: string = screen.root.querySelector('.tdc-body')?.textContent ?? '';
-    expect(facts).toContain('THE MACHINE');
-    expect(facts).toContain('2 vCPU · 8 GiB · disk 50 GB · data 50 GB (daily backups) · ubuntu-26.04');
-    expect(facts).toContain('https://cube.chrisproject.org/api/v1/');
-    expect(facts).toContain('its records and its SSH key held here');
-    // What runs, read from the tenancy, beside what is declared, and where the declaration is kept.
-    expect(facts).toContain('RUNS2 vCPU · 8 GiB · disk 50 GB · data 50 GB (read from the tenancy 04:48 UTC)');
-    expect(facts).toContain('· kept in the tenancy');
+    // A machine opens on its SIZE: what runs, where it stands.
+    expect(screen.view_get()).toBe('line-3');
+    const size: string = screen.root.querySelector('.tdc-body')?.textContent ?? '';
+    expect(size).toContain('THE SIZE');
+    expect(size).toContain('203.0.113.10 · inside 10.20.0.5');
+    expect(size).toContain('chrisproject-services');
+    expect(size).not.toContain('WHAT CAN BE DONE');
     // SIZE holds the build: DECLARE and BUILD, and no undoing (TEARDOWN is its own seat here).
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
     await settle();
@@ -259,12 +290,16 @@ describe('the VM controller', () => {
     // The door lists what is there, as a folder does; + NEW MACHINE opens the new one.
     expect(screen.view_get()).toBe('machines');
     expect([...screen.root.querySelectorAll('.takeover-gutter button')].map((seat) => seat.textContent?.trim())).toEqual(['MACHINES', 'NEW · SIZE', 'LEAVE']);
+    // The machines are an ARGUS listing: a row a machine, its columns read from the tenancy; no legend beside it.
     const listed: string[] = [...screen.root.querySelectorAll('.vm-row')].map((row) => row.textContent ?? '');
     expect(listed).toHaveLength(3);
     expect(listed[0]).toContain('BUILT');
     expect(listed[0]).toContain('cube.chrisproject.org');
     expect(listed[2]).toContain('FOUND · RUNNING');
-    expect(listed[2]).toContain('129.158.63.113 · 2 vCPU · 8 GiB · CUBE at web.example.org');
+    expect(listed[2]).toContain('129.158.63.113');
+    expect(listed[2]).toContain('web.example.org');
+    expect(screen.root.querySelector('.tdc-body')?.textContent).not.toContain('WHAT A ROW OPENS');
+    expect(screen.root.querySelector('.tdc-condition-label')?.textContent).toBe('MACHINES IN THE TENANCY');
     button_named(screen.root, '+ NEW MACHINE')?.click();
     await settle();
     expect(screen.view_get()).toBe('new');
@@ -318,7 +353,7 @@ describe('the VM controller', () => {
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
     await settle();
     expect([...screen.root.querySelectorAll('.tdc-body .tdc-note-title')].map((title) => title.textContent)).not.toContain('EDITED · NOT SAVED');
-    expect(screen.steps_get().map((step) => [step.label, step.state])).toEqual([['MACHINE', null], ['SIZE', null], ['CHRIS', null], ['USERS', null], ['TEARDOWN', null]]);
+    expect(screen.steps_get().map((step) => [step.label, step.state])).toEqual([['SIZE', null], ['CHRIS', null], ['USERS', null], ['TEARDOWN', null]]);
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="chris"]')?.click();
     await settle();
     expect(screen.root.querySelector('.ss-line-text')?.textContent).toBe('chris deploy lone --profile minimal --compute lone');
@@ -377,9 +412,11 @@ describe('the VM controller', () => {
     expect(button_named(guard, 'TEARDOWN · ALL')).toBeDefined();
     expect(guard.textContent).toContain('The machine is gone; its data stands.');
     expect(guard.textContent).not.toContain('TEARDOWN STOPS');
-    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="machine"]')?.click();
+    // SIZE says the machine is gone and its data stands: a build makes the machine over it.
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
     await settle();
-    expect(screen.root.querySelector('.tdc-body')?.textContent).toContain('no machine · data 50 GB (daily backups) (read from the tenancy 16:00 UTC)');
+    expect(screen.root.querySelector('.vm-change-word')?.textContent).toContain('THE MACHINE MADE');
+    expect(screen.root.querySelector('.vm-change-means')?.textContent).toContain('over its data volume (50 GB), which stands');
     screen.row_take({ ...kept, state: 'gone', stands: { ...(kept as unknown as { stands: object }).stands, data: null } } as unknown as Parameters<VmScreen['row_take']>[0]);
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
     await settle();
@@ -399,8 +436,7 @@ describe('the VM controller', () => {
     const { screen } = screen_make();
     await screen.vm_open('shared');
     await settle();
-    expect(screen.steps_get().map((step) => step.label)).toEqual(['MACHINE', 'SIZE', 'CHRIS', 'USERS', 'TEARDOWN']);
-    expect(screen.root.querySelector('.tdc-body')?.textContent).toContain('read from the tenancy 2026-11-04 10:00: its stacks and the secrets its vault keeps');
+    expect(screen.steps_get().map((step) => step.label)).toEqual(['SIZE', 'CHRIS', 'USERS', 'TEARDOWN']);
     screen.dispose();
     screen.root.remove();
     const { screen: second } = screen_make();
@@ -425,7 +461,7 @@ describe('the VM controller', () => {
     expect(facts).toContain('found: built by stratus, and its stacks did not read into this host');
     expect(facts).toContain('VM.Standard.E5.Flex · 2 vCPU · 8 GiB');
     expect(facts).toContain('https://web.example.org/api/v1/ (as its instance\'s tag says)');
-    expect(screen.root.querySelector('.ss-header')?.textContent).toContain('https://web.example.org/api/v1/');
+    expect(screen.root.querySelector('.ss-header')?.textContent).toContain('FOUND · NOT READ');
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
     await settle();
     expect(screen.root.querySelector('.tdc-body .tdc-note-title')?.textContent).toBe('PROTECTED');

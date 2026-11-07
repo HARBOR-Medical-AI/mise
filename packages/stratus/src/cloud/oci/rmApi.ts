@@ -82,6 +82,8 @@ export interface RmApiOptions {
  * @returns Its text.
  */
 async function stream_text(value: unknown): Promise<string> {
+  // A job that has written nothing yet answers no stream: its log is empty, never the word `undefined`.
+  if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value;
   const chunks: Buffer[] = [];
   if (value !== null && typeof value === 'object' && Symbol.asyncIterator in value) {

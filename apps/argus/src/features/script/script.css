@@ -81,3 +81,62 @@ body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
 .ss-would-reboot { color: var(--tdc-bill); }
 .ss-would-refused { color: var(--tdc-destroy); }
 .ss-would-grow { color: var(--butter); }
+
+/* The VM controller (the operator, 2026-11-06): one band of a header, the machines as a listing, SIZE as one pane, a build as one run. */
+.vm-controller .tdc-header.vm-band { grid-template-columns: 15rem minmax(0, 1.2fr) minmax(0, 1.4fr); }
+.vm-controller .ss-body[data-view='vm-one'] { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
+.vm-controller .ss-body[data-view='vm-two'] { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); overflow-y: auto; }
+.vm-machines { display: flex; flex-direction: column; gap: 0.8rem; min-height: 0; }
+.vm-machines-listing { display: flex; flex-direction: column; flex: none; }
+.vm-machines-listing > .listing-field { flex: none; overflow: visible; }
+.vm-machines-listing > .roster-order { position: static; z-index: auto; flex: none; }
+.vm-row { cursor: pointer; }
+.vm-cell-name { color: var(--butter); font-size: 1.05rem; letter-spacing: 0.06em; }
+.vm-cell-state { color: var(--harvestgold); font-size: 0.75rem; letter-spacing: 0.12em; text-transform: uppercase; }
+.vm-cell-address, .vm-cell-size, .vm-cell-data, .vm-cell-chris, .vm-cell-cost, .vm-cell-read { font-family: var(--face-data); font-size: 0.8rem; color: var(--honey); }
+.vm-size { display: flex; flex-direction: column; gap: 0.9rem; max-width: 72rem; }
+.vm-levers { display: flex; flex-direction: column; gap: 0.6rem; }
+.vm-controller .tdc-slider.vm-lever { grid-template-columns: 6.5rem minmax(0, 1fr) 4.5rem 7rem 9rem; }
+.vm-lever-delta { font-family: var(--face-data); font-size: 0.8rem; color: var(--honey); text-align: right; white-space: nowrap; }
+.vm-lever-delta.tdc-bill { color: var(--tdc-bill); }
+.vm-lever-backup { align-items: center; }
+.vm-lever-backup .vm-lever-delta { margin-left: auto; }
+.vm-change { display: flex; flex-direction: column; gap: 0.45rem; border-left: 0.5rem solid var(--harvestgold); padding: 0.4rem 0 0.5rem 0.9rem; }
+.vm-change-total { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 1.4rem; }
+.vm-change-word { font-size: 1.25rem; letter-spacing: 0.06em; color: var(--butter); }
+.vm-change-money { font-family: var(--face-data); font-size: 1.05rem; color: var(--honey); }
+.vm-change-money.tdc-bill { color: var(--tdc-bill); }
+.vm-change-means { display: flex; flex-direction: column; gap: 0.2rem; }
+.vm-commit { flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; }
+.vm-controller .vm-build { font-size: 1.05rem; padding: 0.55rem 1.4rem; }
+.vm-commit-says { text-transform: none; letter-spacing: 0.04em; }
+.vm-size-lines { display: flex; flex-direction: column; gap: 0.4rem; }
+.vm-run { display: flex; flex-direction: column; gap: 0.6rem; border: 2px solid var(--butter); border-radius: 1rem; padding: 0.7rem 1rem; }
+.vm-run-done { border-color: var(--harvestgold); }
+.vm-run-declined { border-color: var(--honey); }
+.vm-run-failed { border-color: var(--tdc-destroy); }
+.vm-run-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+.vm-run-time { font-family: var(--face-data); font-size: 0.85rem; color: var(--butter); }
+.vm-run-strip { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.vm-run-strip .vm-run-step { flex: 1 1 8rem; flex-direction: column; align-items: flex-start; gap: 0.15rem; }
+.tdc-strip-step.vm-step-waiting { border-color: color-mix(in srgb, var(--honey) 55%, transparent); color: var(--honey); }
+.vm-run-outcome { font-size: 1.6rem; letter-spacing: 0.08em; color: var(--butter); }
+.vm-run-done .vm-run-outcome { color: var(--harvestgold); }
+.vm-run-declined .vm-run-outcome { color: var(--honey); }
+.vm-run-failed .vm-run-outcome { color: var(--tdc-destroy); }
+.vm-raise { display: flex; flex-direction: column; gap: 0.6rem; align-items: stretch; }
+.vm-raise-words { display: flex; flex-direction: column; gap: 0.25rem; }
+.vm-raise-title { font-size: 1.1rem; letter-spacing: 0.1em; color: var(--butter); }
+.vm-raise-row { display: flex; gap: 0.8rem; align-items: center; flex-wrap: wrap; }
+.vm-raise-input { flex: 1 1 18rem; min-width: 12rem; font-size: 1.1rem; padding: 0.55rem 0.9rem; border-radius: 1.2rem; border: 2px solid var(--harvestgold); background: #000; color: var(--butter); font-family: var(--face-data); }
+.vm-raise-input:focus { outline: none; border-color: var(--butter); }
+@media (max-width: 760px) {
+  .vm-controller .tdc-header.vm-band { grid-template-columns: minmax(0, 1fr); }
+  .vm-controller .tdc-slider.vm-lever { grid-template-columns: 5rem minmax(0, 1fr) 4rem; }
+  .vm-controller .tdc-slider.vm-lever .ss-slider-runs, .vm-controller .tdc-slider.vm-lever .vm-lever-delta { grid-column: 2 / -1; text-align: left; }
+  .vm-controller .ss-body[data-view='vm-two'] { grid-template-columns: minmax(0, 1fr); }
+  .vm-run-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .vm-run-strip .vm-run-step { padding: 0.15rem 0.45rem; font-size: 0.7rem; }
+  .vm-run-outcome { font-size: 1.15rem; }
+}
+.vm-controller .vm-raise-go { background-color: var(--harvestgold); color: #000; }
