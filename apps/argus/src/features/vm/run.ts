@@ -26,7 +26,7 @@
  */
 
 /** A step of a build, in the order `vm build` takes them. */
-export type BuildPhaseKey = 'prepare' | 'plan-data' | 'plan-machine' | 'ask' | 'apply-data' | 'apply-machine' | 'grow';
+export type BuildPhaseKey = 'prepare' | 'plan-data' | 'plan-machine' | 'ask' | 'apply-data' | 'apply-machine' | 'grow' | 'host';
 
 /** Where one step stands. */
 export type BuildPhaseState = 'waiting' | 'going' | 'done' | 'skipped';
@@ -40,6 +40,7 @@ export const BUILD_PHASES: ReadonlyArray<{ readonly key: BuildPhaseKey; readonly
   { key: 'apply-data', label: 'APPLY DATA' },
   { key: 'apply-machine', label: 'APPLY MACHINE' },
   { key: 'grow', label: 'GROW' },
+  { key: 'host', label: 'SET UP' },
 ];
 
 /** How a run ended. */
@@ -89,7 +90,7 @@ export interface BuildRun {
  */
 export function buildRun_start(vm: string, change: string, since: number): BuildRun {
   // The build is under way from the press: its first step, writing and keeping the declaration and readying the stacks, goes at once.
-  return { vm, change, since, phases: { prepare: 'going', 'plan-data': 'waiting', 'plan-machine': 'waiting', ask: 'waiting', 'apply-data': 'waiting', 'apply-machine': 'waiting', grow: 'waiting' }, said: '', outcome: null };
+  return { vm, change, since, phases: { prepare: 'going', 'plan-data': 'waiting', 'plan-machine': 'waiting', ask: 'waiting', 'apply-data': 'waiting', 'apply-machine': 'waiting', grow: 'waiting', host: 'waiting' }, said: '', outcome: null };
 }
 
 /**
@@ -101,7 +102,7 @@ export function buildRun_start(vm: string, change: string, since: number): Build
  */
 function phase_named(vm: string, line: string): BuildPhaseKey | null {
   const escaped: string = vm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const found: RegExpMatchArray | null = line.match(new RegExp(`/proc/steps/vm-${escaped}-(plan-data|plan-machine|apply-data|apply-machine|grow)\\b`));
+  const found: RegExpMatchArray | null = line.match(new RegExp(`/proc/steps/vm-${escaped}-(plan-data|plan-machine|apply-data|apply-machine|grow|host)\\b`));
   return found === null ? null : (found[1] as BuildPhaseKey);
 }
 

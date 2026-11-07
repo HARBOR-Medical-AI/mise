@@ -57,7 +57,7 @@ export function chrisPlan_derive(deployed: VmRecord['chris'], ask: ChrisPlanAsk,
   want('porter', deployed.porter, ask.porter);
   const restarts: string[] = [];
   const known: boolean = deployed.image !== undefined;
-  if (!known) restarts.push('CUBE and porter, perhaps (this deploy\'s record predates kept versions)');
+  if (!known) restarts.push(`CUBE${ask.porter !== null ? ' and porter' : ''}: their files are written again and Docker restarts what changed in them (this deploy's record keeps no versions to compare)`);
   else if (deployed.image !== CHRIS_IMAGES.cube) restarts.push(`CUBE and its workers (${deployed.image} → ${CHRIS_IMAGES.cube})`);
   else if ((deployed.host ?? null) !== ask.host || (deployed.porter ?? null) !== ask.porter) restarts.push('CUBE and its workers (their environment changes)');
   if (known && ask.porter !== null) {

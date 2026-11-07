@@ -144,3 +144,36 @@ body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
 .vm-controller .vm-raise-go { background-color: var(--harvestgold); color: #000; }
 /* No line names a machine by its row: the listing's index pill is folded away on MACHINES. */
 .vm-machines-listing .listing-index-cell, .vm-machines-listing .listing-index { visibility: hidden; overflow: hidden; }
+
+/* The VM LOG folds (the operator, 2026-11-07): shut, it keeps its newest line; its strip opens it. */
+.vm-controller .vm-log-strip { cursor: pointer; }
+.vm-controller [data-vm-log='shut'] > .takeover-log { flex-basis: 2.4rem; }
+.vm-controller [data-vm-log='shut'] > .takeover-log .tdc-log > :not(:last-child) { display: none; }
+.vm-controller [data-vm-log='shut'] > .takeover-log .tdc-log { overflow: hidden; }
+/* SPEC's levers take the whole width while a run speaks. */
+.vm-size-main.vm-size-main-full { grid-template-columns: minmax(0, 1fr); }
+/* SERVICES: a row a service, ADD SERVICE, the change and BUILD. */
+.vm-services { display: flex; flex-direction: column; gap: 0.9rem; }
+.vm-services-change > .vm-build { align-self: flex-start; }
+.vm-services-list { display: flex; flex-direction: column; gap: 0.35rem; }
+.vm-service { display: grid; grid-template-columns: 9rem 5rem minmax(0, 1fr) 13rem 6.5rem; gap: 0.3rem 1rem; align-items: center; }
+.vm-service-head { border-bottom: 1px solid var(--tdc-rule, #444); padding-bottom: 0.2rem; }
+.vm-service-kind { font-size: 0.95rem; letter-spacing: 0.08em; color: var(--harvestgold); }
+.vm-service-ssh-kind { color: var(--tdc-bill); }
+.vm-service-port { font-family: var(--face-data); font-size: 1.05rem; color: var(--butter); }
+.vm-service-answers { color: var(--honey); overflow-wrap: anywhere; }
+.vm-service-warning { margin: 0.1rem 0 0 10rem; }
+.vm-service-add { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; border-left: 0.5rem solid var(--tdc-rule, #555); padding: 0.4rem 0 0.4rem 0.9rem; }
+.vm-service-add .tdc-section-title { flex-basis: 100%; }
+.vm-service-add .vm-service-key { flex: 1 1 32rem; }
+/* CHRIS: the line beside what runs, its fields, RUN, its accounts. */
+.vm-chris { display: flex; flex-direction: column; gap: 0.7rem; }
+.vm-chris-users { display: flex; flex-direction: column; gap: 0.4rem; border-left: 0.5rem solid var(--harvestgold); padding: 0.4rem 0 0.4rem 0.9rem; }
+.vm-chris-accounts { display: grid; grid-template-columns: 10rem minmax(0, 1fr) minmax(0, 1fr); gap: 0.2rem 1rem; }
+.vm-chris-account { color: var(--butter); }
+@media (max-width: 760px) {
+  .vm-service { grid-template-columns: 1fr 1fr; }
+  .vm-service-warning { margin-left: 0; }
+  .vm-chris-accounts { grid-template-columns: 1fr 1fr; }
+}
+

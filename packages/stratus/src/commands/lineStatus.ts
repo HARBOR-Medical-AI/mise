@@ -25,7 +25,7 @@ import { NET_JOBS } from '../net/build.js';
 import { cidr_read, netSpec_diff, type NetSpec } from '../net/spec.js';
 import type { NetRecord, NetStore } from '../net/state.js';
 import { VM_JOBS } from '../vm/build.js';
-import { vmSpec_diff, vmSpec_read, vmStands_diff } from '../vm/spec.js';
+import { sshKeyFile_resolve, VM_OPTIONS, vmSpec_diff, vmSpec_read, vmStands_diff } from '../vm/spec.js';
 import type { VmRecord, VmStore } from '../vm/state.js';
 import { NEW_OPTIONS, options_read, sizingOptions_pick } from './build.js';
 
@@ -121,8 +121,10 @@ async function vm_read(deps: LineStatusDeps, words: ReadonlyArray<string>): Prom
   const kept = deps.vms.spec_read(name);
   const keptSpec = kept !== null && 'spec' in kept ? kept.spec : null;
   if (verb === 'new') {
-    const read = options_parse(words, 3, ['--net', '--open', '--vcpu', '--memory', '--disk', '--data', '--data-backup', '--os']);
+    const read = options_parse(words, 3, [...VM_OPTIONS]);
     if (read === null) return { state: 'ready', detail: '' };
+    const keyRead: string | null = sshKeyFile_resolve(read.options);
+    if (keyRead !== null) return { state: 'ready', detail: keyRead };
     const spec = vmSpec_read(read.options, keptSpec);
     if ('error' in spec) return { state: 'ready', detail: spec.error };
     if (keptSpec === null || record === null) {
@@ -245,7 +247,7 @@ function chrisDeploy_read(deps: LineStatusDeps, words: ReadonlyArray<string>, th
   want('--porter', record.chris.porter, null);
   if (changes.length > 0) return { state: 'changed', detail: changes.join(', ') };
   if (record.chris.dns === 'waiting') return { state: 'ready', detail: `waiting on DNS for ${record.chris.host ?? ''}; a replay resumes there` };
-  if (record.declared !== undefined && record.declared > record.chris.deployed) return { state: 'changed', detail: 'the VM was declared again since the deploy' };
+  // Declaring or resizing the VM changes nothing of its ChRIS: the line reads changed only for what it deploys.
   return { state: 'done', detail: `deployed ${record.chris.deployed.slice(0, 10)}` };
 }
 

@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { SpecStore, type KeptRecord } from '../kept/specStore.js';
+import type { VmHostState } from './host.js';
 import { vmSpecYaml_parse, vmSpecYaml_render, type VmSpec } from './spec.js';
 
 /** What stratus knows of a VM it builds. */
@@ -51,6 +52,8 @@ export interface VmRecord extends KeptRecord {
   keptDeclared?: string;
   /** The disks a build grew whose filesystems are not grown yet: the next build grows them. */
   growOwed?: { boot: boolean; data: boolean };
+  /** What the machine itself was last set up with (its own firewall's ports, public SSH), by a build's host step; absent until one runs, and gone with the machine. */
+  host?: VmHostState;
   /** The last teardown, once one has started: when, and each step (`machine`, `data`) as it began and ended. */
   teardown?: { started: string; steps: Record<string, { state: 'running' | 'done' | 'kept' | 'failed'; started?: string; ended?: string; note?: string }> };
   /** The machine went (a default teardown); the data stays. */

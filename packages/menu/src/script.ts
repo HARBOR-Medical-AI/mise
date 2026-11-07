@@ -76,6 +76,8 @@ export const vmSpecModelSchema = z.object({
   data: z.number(),
   dataBackup: z.enum(['daily', 'none']),
   os: z.string(),
+  /** Public SSH for an administrative Linux user (not a ChRIS account): its port, the user, the user's public key, whether it is open; absent when never declared and from an older daemon. */
+  ssh: z.object({ port: z.number(), user: z.string(), key: z.string(), on: z.boolean() }).optional(),
 });
 
 /** The model kind `vm status` carries. */
@@ -141,6 +143,8 @@ export const vmStatusRowSchema = z.object({
   built: z.string().nullable(),
   /** The ChRIS deployed on it, or null. */
   chris: z.object({ profile: z.string(), compute: z.string(), host: z.string().nullable(), url: z.string(), porter: z.string().nullable() }).nullable(),
+  /** What the machine itself was last set up with by a build (its firewall's ports, public SSH as set up), or null before any; absent from an older daemon. */
+  host: z.object({ ports: z.array(z.number()), ssh: z.object({ port: z.number(), user: z.string(), key: z.string(), on: z.boolean() }).nullable() }).nullable().optional(),
 });
 
 /** What `vm status` answers: a row per VM kept here. */

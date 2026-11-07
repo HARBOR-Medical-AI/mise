@@ -194,7 +194,7 @@ export async function vmTakeover_run(deps: VmTakeoverDeps, name: string): Promis
       current.seen = { instanceId: found.instance.id, vcpus: found.instance.vcpus ?? spec.vcpu, memoryGib: found.instance.memoryGib ?? spec.memory };
       delete current.machineGone; delete current.gone;
     } else if (machine === undefined && data !== undefined) {
-      delete current.machineStackRef; delete current.machineOutputs; delete current.built; delete current.seen;
+      delete current.machineStackRef; delete current.machineOutputs; delete current.built; delete current.seen; delete current.host;
       current.machineGone = now;
     }
   });

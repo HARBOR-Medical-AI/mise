@@ -62,7 +62,9 @@ export function vmKept_merge(vault: VmKept | null, here: VmKept): VmKept {
     : here.declared === undefined ? vault.declared
       : here.declared.at >= vault.declared.at ? here.declared : vault.declared;
   const ssh: VmKept['ssh'] = here.ssh ?? vault?.ssh;
-  const chris: VmKept['chris'] = here.chris ?? vault?.chris;
+  // The newer deploy wins: a session holding an older record must not overwrite a replay kept since from elsewhere.
+  const chris: VmKept['chris'] = here.chris === undefined ? vault?.chris : vault?.chris === undefined ? here.chris
+    : here.chris.record.deployed >= vault.chris.record.deployed ? here.chris : vault.chris;
   const lock: KeptLock | undefined = lock_newer(here.lock, vault?.lock);
   return { vm: here.vm, ...(ssh !== undefined ? { ssh } : {}), ...(chris !== undefined ? { chris } : {}), ...(declared !== undefined ? { declared } : {}), ...(lock !== undefined ? { lock } : {}) };
 }

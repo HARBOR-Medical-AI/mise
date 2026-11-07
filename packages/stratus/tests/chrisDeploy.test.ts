@@ -388,7 +388,8 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     // A record from before builds kept their spec, and not read from the tenancy, says only that it was declared again.
     vms.record_update('store', (record): void => { delete record.builtSpec; delete record.stands; });
     expect(await read('vm build store')).toBe('changed (declared again since it was built; the build plans and asks)');
-    expect(await read('chris deploy store --profile minimal --compute NERC')).toBe('changed (the VM was declared again since the deploy)');
+    // Declaring the VM again changes nothing of its ChRIS (the operator, 2026-11-07).
+    expect(await read('chris deploy store --profile minimal --compute NERC')).toMatch(/^done \(deployed /);
     // With a host whose DNS has not caught up, the deploy is ready to resume.
     vms.record_update('store', (record): void => { if (record.chris !== undefined) { record.chris.host = 'cube.example.org'; record.chris.dns = 'waiting'; } delete record.declared; });
     expect(await read('chris deploy store --profile minimal --compute NERC --host cube.example.org')).toBe('ready (waiting on DNS for cube.example.org; a replay resumes there)');
