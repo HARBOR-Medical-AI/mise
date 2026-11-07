@@ -105,6 +105,13 @@ A ChRIS that stratus deploys on one VM, the store at cube.chrisproject.org among
 * *porter is the one privileged piece.* Starting a berth means starting a container: on the VM, through its Docker; in a Trusted Domain, through the cluster's API. Nothing else on the path holds that right.
 * *The VM's own exposures are services of the machine,* set apart from ChRIS: 80 and 443 for Caddy, which serves CUBE and the door; and, only when the operator opens it with a warning, a public SSH port for an administrative Linux user that is not a ChRIS user.
 
+A berth, settled for the stand-in spoke:
+
+* *Its cohort is a feed the person picks at the door.* The picker lists the feeds that person can read on this ChRIS; a `gather` is a feed too, and the whole shard is the case where the custodian picks it. "No cohort" is in the list: the berth starts without `/incoming` and says so (`no cohort mounted · make one (gather, upload) and choose it`); its chell is a ChRIS session, so the cohort is made from inside it and chosen at the next start.
+* *`/incoming` is a copy, pulled through the CUBE API* when the berth starts and made read-only. It reads the same on any Trusted Domain, passes through ChRIS's own permissions, needs no privilege, and keeps a person's code away from CUBE's files and CUBE away from half-written results. The copy is a step with its progress, and a later start copies only what it lacks. A bind of CUBE's storage may come later as a speed-up for one VM.
+* *The store is open.* The posture is the spoke's and is set on its CHRIS; sealed waits for the gate.
+* *It stops at logout, or after two hours with no shell, no process and no surface;* a long run keeps it alive. A volume per person keeps the home, `src/`, `/outgoing` until it is returned, and the copied `/incoming`; the container is made from the image at each start, so a new image is in force at the next login. Removing a person's volume is an act of its own on their CHRIS row, asked first.
+
 This refines <<spoke-side>> in one respect: the berth is per person, inside a spoke that holds one shard, rather than one container per cohort shared by whoever logs in. In the common case no human is inside and the berth is the unattended run's.
 
 [[policy]]
@@ -181,7 +188,4 @@ Because the cohort is a feed and `/outgoing` becomes a node of it, every run und
 * *How source crosses the wire.* A file landing through the `tasks` tier, or a `run` verb that carries it; and how a run is cancelled across N spokes.
 * *What "reviewed" means for `/outgoing`.* A person at the spoke, a person at the Hub, or an automatic disclosure check with thresholds.
 * *Whether the spoke bastion is OpenShift Dev Spaces or a plain Deployment* with our image; the plain one is smaller.
-* *What a berth's `/incoming` holds* (<<stand-in>>): a feed the person picks at the door, a `gather`, or the spoke's whole shard.
-* *Mount or copy.* `/incoming` as a read-only bind of CUBE's own storage, fast and tied to CUBE's file layout, or a copy pulled through the CUBE API, slower and the same on any Trusted Domain.
-* *The stand-in spoke's posture.* Open or sealed on the store.
-* *A berth's life.* Whether it stops at logout or when idle, and whether its home survives.
+* *The gate blocks sealed everywhere.* Until it is designed, no spoke, the stand-in included, can run sealed; this is the architectural gap downstream of every posture decision.
