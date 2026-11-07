@@ -182,6 +182,8 @@ export function buildRun_answer(run: BuildRun, yes: boolean): BuildRun {
 export function buildRun_end(run: BuildRun, ended: { tone: BuildOutcome['tone']; why: string }, at: string): BuildRun {
   const phases: Record<BuildPhaseKey, BuildPhaseState> = { ...run.phases };
   for (const phase of BUILD_PHASES) if (phases[phase.key] === 'going') phases[phase.key] = ended.tone === 'done' ? 'done' : 'skipped';
+  // A build that ended done needed none of the steps it never reached: they read not needed, never waiting.
+  if (ended.tone === 'done') for (const phase of BUILD_PHASES) if (phases[phase.key] === 'waiting') phases[phase.key] = 'skipped';
   const words: string = ended.tone === 'done' ? (run.change === '' ? 'BUILT' : `BUILT · ${run.change.toUpperCase()}`)
     : ended.tone === 'declined' ? 'STOPPED BEFORE THE APPLY · NOTHING CHANGED'
       : `FAILED${ended.why === '' ? '' : ` · ${ended.why}`}`;
@@ -237,3 +239,41 @@ export function buildQuestion_plain(message: string): BuildQuestion | null {
     no: machineAfterData ? 'NO · MAKE NO MACHINE' : 'NO · BUILD NOTHING',
   };
 }
+
+/**
+ * A ChRIS deploy's console question in the screen's words: what the deploy
+ * does as a question, the buttons saying what they do; the console keeps its
+ * `[y/N]` line. Null for any other question.
+ *
+ * @param message - The question as the session asked it.
+ * @returns The question, its YES and its NO; null when it is not a deploy's.
+ *
+ * @example
+ * ```ts
+ * chrisQuestion_plain('chris deploy store: as deployed; restarts CUBE and porter: their files are written again; no porter session is open now. A NO changes nothing. Continue? [y/N]')?.yes;
+ * // 'YES · REPLAY'
+ * ```
+ */
+export function chrisQuestion_plain(message: string): BuildQuestion | null {
+  const asked: RegExpMatchArray | null = message.trim().match(/^chris deploy (\S+): ([\s\S]*?)\. A NO changes nothing\. Continue\? \[y\/N\]$/);
+  if (asked === null) return null;
+  const vm: string = asked[1] as string;
+  const parts: string[] = (asked[2] as string).split('; ').map((one: string): string => one.trim()).filter((one: string): boolean => one !== '');
+  const capital = (words: string): string => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+  const first: string = parts[0] ?? '';
+  if (first.startsWith('a first deploy: ')) {
+    return {
+      text: [`Deploy ChRIS on ${vm}? ${capital(first.replace(/^a first deploy: /, ''))}.`, ...parts.slice(1).map((one: string): string => `${capital(one)}.`)].join(' '),
+      yes: 'YES · DEPLOY',
+      no: 'NO · CHANGE NOTHING',
+    };
+  }
+  const changes: string | null = first === 'as deployed' ? null : first;
+  const rest: string[] = parts.slice(1).map((one: string): string => `${capital(one.replace(/^restarts /, 'it restarts '))}.`);
+  return {
+    text: [changes === null ? `Replay ChRIS on ${vm}?` : `Change ChRIS on ${vm}: ${changes}?`, ...rest].join(' '),
+    yes: changes === null ? 'YES · REPLAY' : 'YES · CHANGE',
+    no: 'NO · CHANGE NOTHING',
+  };
+}
+

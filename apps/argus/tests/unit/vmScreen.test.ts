@@ -17,6 +17,7 @@ import { describe, it, expect } from '@jest/globals';
 import type { QuietAnswer, ScriptHooks } from '../../src/features/script/screen.js';
 import { VmScreen } from '../../src/features/vm/screen.js';
 import { vmServices_change, vmServices_read } from '../../src/features/vm/model.js';
+import { chrisQuestion_plain } from '../../src/features/vm/run.js';
 
 const STORE_TEXT: string = [
   'net new chrisproject-services --cidr 10.20.0.0/16',
@@ -210,9 +211,15 @@ describe('the VM controller', () => {
     expect(pane).toContain('answers 200 · 0.9.10 · 2 open');
     expect(screen.root.querySelectorAll('.ss-col-side')).toHaveLength(0);
     expect(asked.some((line: string): boolean => line.startsWith('chris deploy store') && line.endsWith('--plan'))).toBe(true);
-    const note: string = screen.root.querySelector('.ss-note-deploy')?.textContent ?? '';
-    expect(note).toContain('restarts porter (0.9.10 → 0.9.11): its open sessions end');
-    expect(note).toContain('2 porter sessions open now end');
+    // The change as SPEC draws one: the act in large words, what it means, the button naming it; no DEPLOY WOULD box.
+    expect(screen.root.querySelector('.ss-note-deploy')).toBeNull();
+    const change: string = screen.root.querySelector('.vm-chris-change')?.textContent ?? '';
+    expect(change).toContain('REPLAY · RESTARTS PORTER');
+    expect(change).toContain('restarts porter (0.9.10 → 0.9.11): its open sessions end');
+    expect(change).toContain('2 porter sessions open now end');
+    expect(screen.root.querySelector('.vm-chris-run')?.textContent).toBe('REPLAY · restarts porter');
+    // Nothing edited: no edited chip on any seat.
+    expect(screen.root.querySelector('.vm-chip-edited')).toBeNull();
     const accounts: string = screen.root.querySelector('.vm-chris-accounts')?.textContent ?? '';
     expect(accounts).toContain('rudolphNOT IN CUBE YET · ITS LINE ADDS IT');
     expect(accounts).toContain('chrisIN CUBE · NO LINE (THE ADMIN)');
@@ -388,7 +395,7 @@ describe('the VM controller', () => {
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="chris"]')?.click();
     await settle();
     expect(screen.root.querySelector('.ss-line-text')?.textContent).toBe('chris deploy lone --profile minimal --compute lone');
-    button_named(screen.root, 'RUN')?.click();
+    screen.root.querySelector<HTMLButtonElement>('.vm-chris-run')?.click();
     await settle(20);
     // The script is written first (declaration, build, the deploy after the build), then the deploy runs.
     expect(sent[0]?.startsWith("touch --withContents='vm new lone --net chrisproject-services --open 80,443 --vcpu 4")).toBe(true);
@@ -528,6 +535,8 @@ describe('the VM controller', () => {
       const line: string = screen.root.querySelector('.vm-services .ss-line-text')?.textContent ?? '';
       expect(line).toContain("--ssh 2222 --ssh-user ops --ssh-key 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyOnlyForTests op@pangea'");
       expect(screen.root.querySelector('.vm-service-ssh')?.textContent).toContain('anyone can knock, only ops\'s key gets in, and ops has sudo');
+      // The edit is SERVICES', and the chip names it there and on every seat.
+      expect(screen.root.querySelector('.vm-chip-edited')?.textContent).toBe('SERVICES EDITED · NOT BUILT');
       const build = [...screen.root.querySelectorAll<HTMLButtonElement>('.vm-services-change button')][0];
       expect(build?.textContent).toBe('BUILD · public SSH on 2222 for ops');
       screen.dispose();
@@ -557,5 +566,14 @@ describe('the VM controller', () => {
     const kept = { port: 2222, user: 'ops', key, on: true };
     expect(vmServices_change(vmServices_read('vm new store --open 80,443 --ssh off', kept), [80, 443, 2222], { ports: [80, 443, 2222], ssh: kept })).toEqual(['public SSH on 2222 closed']);
     expect(vmServices_change(vmServices_read('vm new store --open 80,443', kept), [80, 443, 2222], { ports: [80, 443, 2222], ssh: kept })).toEqual([]);
+  });
+
+  it('a deploy\'s question reads in the screen\'s words, its buttons saying what they do', () => {
+    expect(chrisQuestion_plain('chris deploy store: as deployed; restarts CUBE and porter: their files are written again and Docker restarts what changed in them (this deploy\'s record keeps no versions to compare); no porter session is open now. A NO changes nothing. Continue? [y/N]')).toEqual({
+      text: 'Replay ChRIS on store? It restarts CUBE and porter: their files are written again and Docker restarts what changed in them (this deploy\'s record keeps no versions to compare). No porter session is open now.',
+      yes: 'YES · REPLAY', no: 'NO · CHANGE NOTHING',
+    });
+    expect(chrisQuestion_plain('chris deploy store: a first deploy: CUBE (minimal) with its workers, Postgres, dragonfly, nats and pfcon are put up, compute store; the admin password for chris is asked next, hidden (empty: one is generated). A NO changes nothing. Continue? [y/N]')?.yes).toBe('YES · DEPLOY');
+    expect(chrisQuestion_plain('vm build store: boot disk 100 → 150 GB. Continue? [y/N]')).toBeNull();
   });
 });

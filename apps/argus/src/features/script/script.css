@@ -154,7 +154,7 @@ body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
 .vm-size-main.vm-size-main-full { grid-template-columns: minmax(0, 1fr); }
 /* SERVICES: a row a service, ADD SERVICE, the change and BUILD. */
 .vm-services { display: flex; flex-direction: column; gap: 0.9rem; }
-.vm-services-change > .vm-build { align-self: flex-start; }
+.vm-services-change > .vm-build, .vm-chris-change > .vm-build { align-self: flex-start; }
 .vm-services-list { display: flex; flex-direction: column; gap: 0.35rem; }
 .vm-service { display: grid; grid-template-columns: 9rem 5rem minmax(0, 1fr) 13rem 6.5rem; gap: 0.3rem 1rem; align-items: center; }
 .vm-service-head { border-bottom: 1px solid var(--tdc-rule, #444); padding-bottom: 0.2rem; }
