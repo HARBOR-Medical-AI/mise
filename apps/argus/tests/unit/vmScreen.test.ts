@@ -114,21 +114,34 @@ describe('the VM controller', () => {
       // SIZE is one pane: no cost column, no log column (the operator, 2026-11-06).
       expect(screen.root.querySelector('.tdc-col-cost')).toBeNull();
       expect(screen.root.querySelector('.tdc-col-steplog')).toBeNull();
-      expect(screen.root.querySelector('.vm-change-word')?.textContent).toBe('NOTHING CHANGES');
+      expect(screen.root.querySelector('.vm-change-lines')?.textContent).toBe('nothing changes: what runs is what is sized');
+      // Each lever's value is typed too: a number box in step with its slider, its range in its title.
+      expect((screen.root.querySelector('#vm-number-disk') as HTMLInputElement).value).toBe('50');
+      expect((screen.root.querySelector('#vm-number-disk') as HTMLInputElement).step).toBe('10');
       // The offer moved off what runs: the mark lights, and BUILD WOULD says the change and what it means.
       const disk: HTMLInputElement = screen.root.querySelector('#ss-slider-disk') as HTMLInputElement;
       disk.value = '180';
       disk.dispatchEvent(new Event('input'));
       expect(screen.root.querySelectorAll('.ss-slider-differs').length).toBe(1);
-      expect(screen.root.querySelector('.vm-change-word')?.textContent).toBe('BOOT DISK 50 → 180 GB');
-      expect(screen.root.querySelector('.vm-change-means')?.textContent).toBe('grows while it runs: no restart');
+      expect(screen.root.querySelector('.vm-change-lines')?.textContent).toBe('boot disk 50 → 180 GB · grows online');
+      expect((screen.root.querySelector('#vm-number-disk') as HTMLInputElement).value).toBe('180');
+      // The script's line, edited, never says the standing it had before the edit.
+      expect(screen.root.querySelector('.vm-size-lines .ss-line-changed .ss-line-detail')).toBeNull();
       // BUILD says what it does; the script's line says it is edited, never done.
       expect(screen.root.querySelector('.vm-build')?.textContent).toContain('BUILD · boot disk 50 → 180 GB');
       expect([...screen.root.querySelectorAll('.ss-line-state')].map((state) => state.textContent)).toContain('~ EDITED · NOT BUILT: BUILD writes it, then builds it');
       const memory: HTMLInputElement = screen.root.querySelector('#ss-slider-memory') as HTMLInputElement;
       memory.value = '16';
       memory.dispatchEvent(new Event('input'));
-      expect(screen.root.querySelector('.vm-change-means')?.textContent).toContain('memory 8 → 16 GiB: the machine restarts');
+      // Several changes are listed one a line, and BUILD counts them.
+      expect([...screen.root.querySelectorAll('.vm-change-line')].map((one) => one.textContent)).toEqual(['memory 8 → 16 GiB · reboots', 'boot disk 50 → 180 GB · grows online']);
+      expect(screen.root.querySelector('.vm-build')?.textContent).toMatch(/^BUILD · 2 changes/);
+      // A number typed moves its slider; one off the steps is said wrong and moves nothing.
+      const typed = screen.root.querySelector('#vm-number-memory') as HTMLInputElement;
+      typed.value = '15.5';
+      typed.dispatchEvent(new Event('input'));
+      expect(typed.classList.contains('vm-lever-wrong')).toBe(true);
+      expect(memory.value).toBe('16');
       memory.value = '8';
       memory.dispatchEvent(new Event('input'));
       // BUILD sends the declaration then the build; once what runs reads back as offered, the note is the receipt.
@@ -214,7 +227,7 @@ describe('the VM controller', () => {
     // The change as SPEC draws one: the act in large words, what it means, the button naming it; no DEPLOY WOULD box.
     expect(screen.root.querySelector('.ss-note-deploy')).toBeNull();
     const change: string = screen.root.querySelector('.vm-chris-change')?.textContent ?? '';
-    expect(change).toContain('REPLAY · RESTARTS PORTER');
+    expect(change).not.toContain('DEPLOY WOULD');
     expect(change).toContain('restarts porter (0.9.10 → 0.9.11): its open sessions end');
     expect(change).toContain('2 porter sessions open now end');
     expect(screen.root.querySelector('.vm-chris-run')?.textContent).toBe('REPLAY · restarts porter');
@@ -453,8 +466,8 @@ describe('the VM controller', () => {
     // SIZE says the machine is gone and its data stands: a build makes the machine over it.
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
     await settle();
-    expect(screen.root.querySelector('.vm-change-word')?.textContent).toContain('THE MACHINE MADE');
-    expect(screen.root.querySelector('.vm-change-means')?.textContent).toContain('over its data volume (50 GB), which stands');
+    expect(screen.root.querySelector('.vm-change-lines')?.textContent).toContain('the machine made');
+    expect(screen.root.querySelector('.vm-change-lines')?.textContent).toContain('over its data volume (50 GB), which stands');
     screen.row_take({ ...kept, state: 'gone', stands: { ...(kept as unknown as { stands: object }).stands, data: null } } as unknown as Parameters<VmScreen['row_take']>[0]);
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
     await settle();
