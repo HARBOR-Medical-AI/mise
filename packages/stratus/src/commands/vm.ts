@@ -628,6 +628,25 @@ function cost_line(cost: VmCost | null): string {
 }
 
 /**
+ * What a build does to the bill a month: what runs now against what it
+ * builds, or, with nothing running yet, what it will bill.
+ *
+ * @param context - The session.
+ * @param record - The VM's record, whose stands is what runs.
+ * @param spec - What the build builds.
+ * @param after - Its price.
+ * @returns `$39.95 → $42.08 a month.`, or `It bills $37.83 a month ($0.052 an hour).`
+ */
+async function costChange_words(context: VmCommandContext, record: VmRecord | null, spec: VmSpec, after: VmCost | null): Promise<string> {
+  if (after === null) return 'Not priced: the cloud gave no list price for its shape or storage.';
+  const month = (cost: VmCost): string => `${cost.currency === 'USD' ? '$' : `${cost.currency} `}${((cost.machineHour + cost.dataHour) * HOURS_PER_MONTH).toFixed(2)}`;
+  const stands = record?.stands;
+  if (record?.built === undefined || stands === undefined || stands.vcpu === null || stands.memory === null) return `It bills ${month(after)} a month (${cost_words(after.machineHour + after.dataHour, after.currency).split(',')[0]}).`;
+  const before: VmCost | null = await cost_read(context, { ...spec, vcpu: stands.vcpu, memory: stands.memory, disk: stands.disk ?? spec.disk, data: stands.data ?? spec.data, dataBackup: stands.backup === 'none' ? 'none' : stands.backup === 'daily' ? 'daily' : spec.dataBackup });
+  return before === null ? `It bills ${month(after)} a month.` : `${month(before)} → ${month(after)} a month.`;
+}
+
+/**
  * What a spec bills, in words: the machine's size and the data's.
  *
  * @param spec - The spec.
@@ -901,16 +920,17 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
   const changed: string[] = [...new Set(judged.flatMap(([, judge]): string[] => judge.words).map((word: string): string => (/^a port (opened|closed)$/.test(word) && nowOpen != null ? `ports ${portsWord(nowOpen)} → ${portsWord(spec.open)}` : word)))];
   const chrisUrl: string | undefined = context.store.record_read(name)?.chris?.url;
   const machineWords: string = machine === null ? `planned once its data stands (${spec.vcpu} vCPU, ${spec.memory} GiB, disk ${spec.disk} GB)` : planCounts_words(machine.counts);
-  const warning: string = reboot ? ` ${name} REBOOTS to take its new shape: it${chrisUrl !== undefined ? `, and ChRIS at ${chrisUrl},` : ''} is down for a few minutes.` : '';
-  const growing: string = grow.boot || grow.data ? ` The ${grow.boot && grow.data ? 'filesystems grow' : 'filesystem grows'} after, online, so the space appears.` : '';
+  const warning: string = reboot ? ` ${name} reboots to take its new shape: it${chrisUrl !== undefined ? `, and ChRIS at ${chrisUrl},` : ''} is down a few minutes.` : '';
+  const growing: string = !reboot && (grow.boot || grow.data) ? ' Grown online, no reboot.' : '';
   const what: string = changed.length > 0 ? `${changed.join(', ')}.` : `data ${planCounts_words(data.counts)}; machine ${machineWords}.`;
   const made: string[] = context.store.record_read(name)?.planMade ?? [];
-  const already: string = made.length === 0 ? '' : ` Already made to plan it, free: ${made.join(', ')}; STOP leaves ${made.length === 1 ? 'it' : 'them'}, and a later build reuses ${made.length === 1 ? 'it' : 'them'}.`;
-  // The declaration this build applies is written already (a BUILD declares, then builds): said, and kept on a STOP.
+  // A plan's free things are named, as they stand whatever the answer (a-change-is-a-loop, 4d).
+  const already: string = made.length === 0 ? '' : ` Made to plan it, free, and kept on a NO: ${made.join(', ')}.`;
+  // The declaration this build applies is written already (a BUILD declares, then builds): a NO keeps it.
   const record: VmRecord | null = context.store.record_read(name);
   const declaredSince: boolean = record?.declared !== undefined && (record.built === undefined || record.declared > record.built);
-  const written: string = declaredSince ? ` Already written: its declaration${record?.keptDeclared === record?.declared ? ', kept in the tenancy' : ''}; STOP keeps it and builds nothing.` : '';
-  const yes: boolean = await repl_confirm(`vm build ${name}: ${what}${warning}${growing} It bills: ${cost_line(await cost_read(context, spec))}.${written}${already} Continue? [y/N]`);
+  const offered: VmCost | null = await cost_read(context, spec);
+  const yes: boolean = await repl_confirm(`vm build ${name}: ${what}${warning}${growing} ${await costChange_words(context, record, spec, offered)} A NO builds nothing${declaredSince ? '; the declaration stays written' : ''}.${already} Continue? [y/N]`);
   if (!yes) {
     const left: string[] = [...(declaredSince ? ['the declaration stands as written'] : []), ...(made.length > 0 ? [`made to plan it, free: ${made.join(', ')}`] : [])];
     return envelope_ok(`${chalk.gray(left.length === 0 ? `stopped before the apply; nothing changed (vm build ${name} plans and asks again)` : `stopped before the apply; nothing was built (${left.join('; ')}; vm build ${name} plans and asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: 'build' } });
@@ -934,7 +954,7 @@ async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string
     if (counts_total(planned.counts) > 0) {
       const priced: VmCost | null = await cost_read(context, spec);
       const dataStays: string = priced === null ? 'its data stays and bills its own' : `its data stays, billing ${cost_words(priced.dataHour, priced.currency)}, until vm teardown ${name} --all`;
-      const again: boolean = await repl_confirm(`vm build ${name}: its data stands; the machine plan ${planCounts_words(planned.counts)} (${spec.vcpu} vCPU, ${spec.memory} GiB, disk ${spec.disk} GB). It bills: ${cost_line(priced)} with its data. STOP makes no machine: ${dataStays}. Continue? [y/N]`);
+      const again: boolean = await repl_confirm(`vm build ${name}: its data stands; now the machine: ${planCounts_words(planned.counts)} (${spec.vcpu} vCPU, ${spec.memory} GiB, disk ${spec.disk} GB). It bills ${cost_line(priced)} with its data. A NO makes no machine: ${dataStays}. Continue? [y/N]`);
       if (!again) return envelope_ok(`${chalk.gray(`stopped before the machine; its data stands and bills its own (vm build ${name} plans the machine and asks again; vm teardown ${name} --all removes the data)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: 'build' } });
     }
   }

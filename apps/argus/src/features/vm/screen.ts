@@ -336,7 +336,7 @@ export class VmScreen extends ScriptScreen {
   /** The prices read: the listing's COST column follows them. */
   protected override async standing_read(): Promise<void> {
     await super.standing_read();
-    if (this.view === MACHINES_KEY) this.machineListing?.rows_set([{ key: 'machines', rows: this.vms }], { field: 'machines' });
+    if (this.view === MACHINES_KEY) this.machineRows_set();
   }
 
   /** The header prices the machine shown, never the tenancy's every machine. */
@@ -532,7 +532,7 @@ export class VmScreen extends ScriptScreen {
       const going = BUILD_PHASES.find((phase): boolean => this.run?.phases[phase.key] === 'going');
       const at: number = going === undefined ? 0 : BUILD_PHASES.indexOf(going) + 1;
       // Before its first task the build writes the script and its declaration: said, never a bare `starting`.
-      const before: string = this.busy?.line.startsWith('vm new ') === true ? 'writing its declaration' : this.busy?.line.startsWith('touch ') === true ? 'writing its script' : 'starting';
+      const before: string = this.busy?.line.startsWith('vm new ') === true ? 'writing its declaration' : this.busy?.line.startsWith('touch ') === true ? 'writing its script' : this.busy?.line.startsWith('vm build ') === true ? 'reading the tenancy, then planning' : 'starting';
       rows = [['BUILD', `${this.run.vm}${this.run.change === '' ? '' : ` · ${this.run.change}`}`], ['NOW', going === undefined ? before : `${going.label} · ${at} OF ${BUILD_PHASES.length}`], ['FOR', duration_text(Date.now() - this.run.since)]];
     } else if (this.busy !== null) {
       rows = [['LINE', this.busy.line], ['FOR', duration_text(Date.now() - this.busy.since)]];
@@ -603,7 +603,7 @@ export class VmScreen extends ScriptScreen {
       });
     }
     list.append(this.machineListingMount);
-    this.machineListing?.rows_set([{ key: 'machines', rows: this.vms }], { field: 'machines' });
+    this.machineRows_set();
     const commands: HTMLElement = el('div', 'tdc-commands');
     const add: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain vm-new-open', '+ NEW MACHINE');
     add.type = 'button';
@@ -612,6 +612,20 @@ export class VmScreen extends ScriptScreen {
     commands.append(add);
     list.append(commands);
     return [list];
+  }
+
+  /**
+   * The machines into the listing. Every ARGUS listing leads with an index
+   * pill, the number `@N` takes for a row the session can name; no line
+   * names a machine by its row, so the pill would be a bare count: its track
+   * is folded to nothing here (the operator, 2026-11-06).
+   */
+  private machineRows_set(): void {
+    const mount: HTMLElement | null = this.machineListingMount;
+    this.machineListing?.rows_set([{ key: 'machines', rows: this.vms }], { field: 'machines' });
+    if (mount === null) return;
+    const cols: string = mount.style.getPropertyValue('--roster-cols');
+    if (cols.startsWith('5.2rem ')) mount.style.setProperty('--roster-cols', `0px ${cols.slice('5.2rem '.length)}`);
   }
 
   /** The listing's columns: what each machine is, read from the tenancy. */
@@ -683,17 +697,20 @@ export class VmScreen extends ScriptScreen {
     const runs = this.runs_get(name);
     const pane: HTMLElement = this.section_make('THE SIZE', 'ss-col-wide vm-size', runs === null ? 'NOT BUILT YET' : `RUNS AS READ FROM THE TENANCY ${runs.at.slice(11, 16)} UTC`);
     if (this.run !== null && this.run.vm === this.vm) pane.append(this.run_make(this.run));
+    // The levers and the change they make side by side, so the change and BUILD stand in view with the run above them.
+    const main: HTMLElement = el('div', 'vm-size-main');
     if (this.limits === null) {
-      pane.append(el('p', 'tdc-prose tdc-quiet', 'reading what the shape sells: vm limits'));
+      main.append(el('p', 'tdc-prose tdc-quiet', 'reading what the shape sells: vm limits'));
     } else {
       const limits: VmLimitsModel = this.limits;
       const group: HTMLElement = el('div', 'tdc-lever-group vm-levers');
       group.append(el('span', 'tdc-section-title', limits.shape));
       for (const spec of vmSliders_build(limits)) group.append(this.lever_make(line, spec, limits));
       group.append(this.backup_make(line, runs?.backup ?? null));
-      pane.append(group);
+      main.append(group);
     }
-    pane.append(this.change_make(step, line, built));
+    main.append(this.change_make(step, line, built));
+    pane.append(main);
     // What else the machine is: its ports and OS as fields with what runs beside each; where it stands.
     const ports: HTMLElement = this.optionField_make(line, '--open', 'OPEN PORTS', '80,443');
     if (runs?.open != null) ports.append(el('span', 'ss-field-runs', `RUNS ${ports_word(runs.open).toUpperCase()}`));
@@ -981,6 +998,15 @@ export class VmScreen extends ScriptScreen {
 
   /** A line printed: the run moves on, in place. */
   protected override log_add(text: string, kind: 'sent' | 'out' | 'ask' | 'answer' | 'note'): void {
+    // A question is shown once, on the strip where it is answered; the log carries the answer, named by its line.
+    if (kind === 'ask') { this.askedHead = text.split(':')[0] ?? ''; return; }
+    if (kind === 'answer' && this.askedHead !== '' && (text === 'y' || text === 'n')) {
+      super.log_add(`${this.askedHead}: answered ${text === 'y' ? 'YES' : 'NO'}`, kind);
+      // The base reads a NO from the bare answer: kept, so the line still ends declined.
+      if (text === 'n' && this.busy !== null) this.busyDeclined = true;
+      this.askedHead = '';
+      return;
+    }
     super.log_add(text, kind);
     if (this.run === null || this.run.outcome !== null) return;
     if (kind === 'out') {
@@ -1003,6 +1029,9 @@ export class VmScreen extends ScriptScreen {
     }
     return asked;
   }
+
+  /** The line a standing question asks for (`vm build store`), for the answer's log line. */
+  private askedHead: string = '';
 
   /** The last follow asked by the screen itself: one task is never followed again in a loop. */
   private followedLast: { task: string; at: number } | null = null;

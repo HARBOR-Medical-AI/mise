@@ -164,6 +164,26 @@ describe('the VM controller', () => {
     screen.root.remove();
   });
 
+  it('a question is shown once, on the strip; the log carries its answer; the machines listing wears no index pill', async () => {
+    const { screen } = screen_make();
+    await screen.vm_open('store');
+    await settle();
+    const answered: Promise<string | null> = screen.ask_take('vm build store: boot disk 100 → 150 GB. Grown online, no reboot. $39.95 → $42.08 a month. A NO builds nothing. Continue? [y/N]', 'confirm');
+    await settle();
+    expect(screen.root.querySelector('.tdc-strip')?.textContent).toContain('A NO builds nothing.');
+    const log = (): string => [...screen.root.querySelectorAll('.tdc-log-line')].map((line) => line.textContent).join('\n');
+    expect(log()).not.toContain('Continue? [y/N]');
+    button_named(screen.root.querySelector('.tdc-strip') as HTMLElement, 'STOP')?.click();
+    await expect(answered).resolves.toBe('n');
+    expect(log()).toContain('vm build store: answered NO');
+    await screen.vm_open('');
+    await settle();
+    const mount: HTMLElement = screen.root.querySelector('.vm-machines-listing') as HTMLElement;
+    expect(mount.style.getPropertyValue('--roster-cols').startsWith('0px ')).toBe(true);
+    screen.dispose();
+    screen.root.remove();
+  });
+
   it('CHRIS renders what runs of the ChRIS and what a deploy would do; USERS renders CUBE\'s accounts beside the script\'s lines', async () => {
     const { screen, asked } = screen_make();
     await screen.vm_open('store');
