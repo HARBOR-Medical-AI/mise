@@ -132,11 +132,17 @@ describe('the VM controller', () => {
       // BUILD sends the declaration then the build; once what runs reads back as offered, the note is the receipt.
       STORE_RUNS = { at: '2026-11-05T05:10:00.000Z', vcpu: 2, memory: 8, disk: 180, data: 50 };
       screen.root.querySelector<HTMLButtonElement>('.vm-build')?.click();
+      await settle(1);
+      // From the press the run alone speaks: PREPARE under way, the offer spent (no change block, no BUILD).
+      expect(screen.root.querySelector('.vm-run .vm-run-step')?.textContent).toContain('PREPARE');
+      expect(screen.root.querySelector('.vm-run')?.textContent).not.toContain('VM LOG');
+      expect(screen.root.querySelector('.vm-change')).toBeNull();
       await settle(30);
       // The build is one run, its outcome said large; what runs is read back after.
       expect(screen.root.querySelector('.vm-run-outcome')?.textContent).toBe('BUILT · BOOT DISK 50 → 180 GB');
       expect(screen.root.querySelector('.vm-size .tdc-section-aside')?.textContent).toContain('RUNS AS READ FROM THE TENANCY 05:10 UTC');
-      expect(screen.root.querySelector('.vm-change-word')?.textContent).toBe('NOTHING CHANGES');
+      // Built, and nothing is left to build: the offer does not return.
+      expect(screen.root.querySelector('.vm-change')).toBeNull();
       screen.dispose();
       screen.root.remove();
     } finally {
@@ -170,10 +176,13 @@ describe('the VM controller', () => {
     await settle();
     const answered: Promise<string | null> = screen.ask_take('vm build store: boot disk 100 → 150 GB. Grown online, no reboot. $39.95 → $42.08 a month. A NO builds nothing. Continue? [y/N]', 'confirm');
     await settle();
-    expect(screen.root.querySelector('.tdc-strip')?.textContent).toContain('A NO builds nothing.');
+    // On the screen the question is the act's, plain; its buttons say what each answer does.
+    const strip: HTMLElement = screen.root.querySelector('.tdc-strip') as HTMLElement;
+    expect(strip.querySelector('.tdc-strip-text')?.textContent).toBe('Resize store\'s boot disk 100 → 150 GB? Grown online, no reboot. $39.95 → $42.08 a month.');
+    expect([...strip.querySelectorAll('button')].map((button) => button.textContent)).toEqual(['YES · RESIZE', 'NO · BUILD NOTHING']);
     const log = (): string => [...screen.root.querySelectorAll('.tdc-log-line')].map((line) => line.textContent).join('\n');
     expect(log()).not.toContain('Continue? [y/N]');
-    button_named(screen.root.querySelector('.tdc-strip') as HTMLElement, 'STOP')?.click();
+    button_named(strip, 'NO · BUILD NOTHING')?.click();
     await expect(answered).resolves.toBe('n');
     expect(log()).toContain('vm build store: answered NO');
     await screen.vm_open('');

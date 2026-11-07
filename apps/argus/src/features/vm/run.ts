@@ -12,6 +12,7 @@
  * - buildRun_take: a printed line moves the run.
  * - buildRun_ask, buildRun_answer: the question, and its answer.
  * - buildRun_end: the line's end, its outcome.
+ * - buildQuestion_plain: the build's console question in the screen's words.
  *
  * Typical usage:
  * ```ts
@@ -25,13 +26,14 @@
  */
 
 /** A step of a build, in the order `vm build` takes them. */
-export type BuildPhaseKey = 'plan-data' | 'plan-machine' | 'ask' | 'apply-data' | 'apply-machine' | 'grow';
+export type BuildPhaseKey = 'prepare' | 'plan-data' | 'plan-machine' | 'ask' | 'apply-data' | 'apply-machine' | 'grow';
 
 /** Where one step stands. */
 export type BuildPhaseState = 'waiting' | 'going' | 'done' | 'skipped';
 
 /** The steps a build is drawn as, with the words each is drawn with. */
 export const BUILD_PHASES: ReadonlyArray<{ readonly key: BuildPhaseKey; readonly label: string }> = [
+  { key: 'prepare', label: 'PREPARE' },
   { key: 'plan-data', label: 'PLAN DATA' },
   { key: 'plan-machine', label: 'PLAN MACHINE' },
   { key: 'ask', label: 'ASKS' },
@@ -74,7 +76,7 @@ export interface BuildRun {
 }
 
 /**
- * A run, at the line sent: every step waiting.
+ * A run, at the press: PREPARE under way, every later step waiting.
  *
  * @param vm - The machine.
  * @param change - What the build changes, in words.
@@ -82,11 +84,12 @@ export interface BuildRun {
  * @returns The run.
  * @example
  * ```ts
- * buildRun_start('store', 'disk 100 → 150 GB', 0).phases['plan-data']; // 'waiting'
+ * buildRun_start('store', 'disk 100 → 150 GB', 0).phases.prepare; // 'going'
  * ```
  */
 export function buildRun_start(vm: string, change: string, since: number): BuildRun {
-  return { vm, change, since, phases: { 'plan-data': 'waiting', 'plan-machine': 'waiting', ask: 'waiting', 'apply-data': 'waiting', 'apply-machine': 'waiting', grow: 'waiting' }, said: '', outcome: null };
+  // The build is under way from the press: its first step, writing and keeping the declaration and readying the stacks, goes at once.
+  return { vm, change, since, phases: { prepare: 'going', 'plan-data': 'waiting', 'plan-machine': 'waiting', ask: 'waiting', 'apply-data': 'waiting', 'apply-machine': 'waiting', grow: 'waiting' }, said: '', outcome: null };
 }
 
 /**
@@ -182,4 +185,54 @@ export function buildRun_end(run: BuildRun, ended: { tone: BuildOutcome['tone'];
     : ended.tone === 'declined' ? 'STOPPED BEFORE THE APPLY · NOTHING CHANGED'
       : `FAILED${ended.why === '' ? '' : ` · ${ended.why}`}`;
   return { ...run, phases, outcome: { tone: ended.tone, words, at } };
+}
+
+/** The build's question, as the screen asks it: plain words, and buttons that say what each answer does. */
+export interface BuildQuestion {
+  /** The question, in the screen's words (the console keeps its own `[y/N]` line). */
+  readonly text: string;
+  /** What YES does: `YES · RESIZE`, `YES · REBOOT AND RESIZE`, `YES · BUILD`. */
+  readonly yes: string;
+  /** What NO does: `NO · BUILD NOTHING`, or for the machine after its data, `NO · MAKE NO MACHINE`. */
+  readonly no: string;
+}
+
+/**
+ * `vm build`'s console question, as the screen asks it. The console's form
+ * (`vm build store: … Continue? [y/N]`) names the line and the keys; on the
+ * screen the question is the act's own (`Resize store's boot disk 100 → 150
+ * GB?`), its consequence and cost after it, and the buttons say what each
+ * answer does, so a NO's sentence is the button's.
+ *
+ * @param message - The question the engine put.
+ * @returns The screen's question, or null for one that is not a build's.
+ * @example
+ * ```ts
+ * buildQuestion_plain('vm build store: boot disk 100 → 150 GB. Grown online, no reboot. $39.95 → $42.08 a month. A NO builds nothing; the declaration stays written. Continue? [y/N]')?.text;
+ * // "Resize store's boot disk 100 → 150 GB? Grown online, no reboot. $39.95 → $42.08 a month."
+ * ```
+ */
+export function buildQuestion_plain(message: string): BuildQuestion | null {
+  const asked: RegExpMatchArray | null = message.trim().match(/^vm build (\S+): ([\s\S]*?)\s*Continue\? \[y\/N\]$/);
+  if (asked === null) return null;
+  const vm: string = asked[1] as string;
+  const sentences: string[] = (asked[2] as string).split(/\.\s+(?=[A-Z$(]|[a-z]+ reboots)/).map((one: string): string => one.trim().replace(/\.$/, '')).filter((one: string): boolean => one !== '');
+  const what: string = sentences.shift() ?? '';
+  // A NO's own sentence is the NO button's: the screen does not say it twice.
+  const rest: string[] = sentences.filter((one: string): boolean => !/^A NO builds nothing/.test(one))
+    // What a NO leaves billing is the NO's consequence, kept (a-change-is-a-loop, 2b).
+    .map((one: string): string => one.replace(/^A NO makes no machine: /, 'On a NO: '));
+  const reboots: boolean = rest.some((one: string): boolean => / reboots /.test(one));
+  const machineAfterData: boolean = /^its data stands; now the machine: /.test(what);
+  const resizes: boolean = /→/.test(what) && /(GB|GiB|vCPU)/.test(what);
+  const changes: boolean = /→/.test(what);
+  const part: boolean = /^(boot disk|data|memory|backups|ports|open|os) /.test(what) && !what.includes(',');
+  const question: string = machineAfterData ? `Build ${vm}'s machine now, ${what.replace(/^its data stands; now the machine: /, '')}?`
+    : changes ? `${resizes ? 'Resize' : 'Change'} ${vm}${part ? `'s ${what}` : `: ${what}`}?`
+      : `Build ${vm}: ${what}?`;
+  return {
+    text: [question, ...rest.map((one: string): string => `${one}.`)].join(' '),
+    yes: reboots ? 'YES · REBOOT AND RESIZE' : resizes ? 'YES · RESIZE' : changes ? 'YES · CHANGE' : 'YES · BUILD',
+    no: machineAfterData ? 'NO · MAKE NO MACHINE' : 'NO · BUILD NOTHING',
+  };
 }
