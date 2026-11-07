@@ -1,6 +1,6 @@
 {
   "name": "@fnndsc/chell",
-  "version": "5.20.2",
+  "version": "5.20.3",
   "description": "ChELL Executes Layered Logic - Interactive ChRIS REPL Shell",
   "repository": {
     "type": "git",
@@ -53,7 +53,7 @@
     "minimatch": "^10.1.1",
     "ws": "^8.21.0",
     "@fnndsc/menu": "^0.39.0",
-    "@fnndsc/argus": "^0.54.0"
+    "@fnndsc/argus": "^0.55.0"
   },
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",
