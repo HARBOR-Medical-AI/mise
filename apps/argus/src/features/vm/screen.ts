@@ -28,7 +28,7 @@ import { saveLine_compose } from '../edit/line.js';
 import { buildWould_derive, costLine_derive, line_parse, line_render, lineOption_get, lineOption_set, lines_build, ports_word, rate_words, runningStep_find, script_render, stepBuildLine_get, steps_build, vmLevers_read, vmSliders_build, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type VmRuns } from '../script/model.js';
 import { ScriptScreen, type OpenAsk, type QuietAnswer, type ScriptHooks } from '../script/screen.js';
 import { FACTS_KEY, MACHINES_KEY, NEW_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
-import { BUILD_PHASES, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_take, type BuildRun } from './run.js';
+import { BUILD_PHASES, buildQuestion_plain, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_take, type BuildQuestion, type BuildRun } from './run.js';
 import { Listing } from '../roster/listing.js';
 import type { ListingTrait } from '../roster/row.js';
 
@@ -532,8 +532,7 @@ export class VmScreen extends ScriptScreen {
       const going = BUILD_PHASES.find((phase): boolean => this.run?.phases[phase.key] === 'going');
       const at: number = going === undefined ? 0 : BUILD_PHASES.indexOf(going) + 1;
       // Before its first task the build writes the script and its declaration: said, never a bare `starting`.
-      const before: string = this.busy?.line.startsWith('vm new ') === true ? 'writing its declaration' : this.busy?.line.startsWith('touch ') === true ? 'writing its script' : this.busy?.line.startsWith('vm build ') === true ? 'reading the tenancy, then planning' : 'starting';
-      rows = [['BUILD', `${this.run.vm}${this.run.change === '' ? '' : ` · ${this.run.change}`}`], ['NOW', going === undefined ? before : `${going.label} · ${at} OF ${BUILD_PHASES.length}`], ['FOR', duration_text(Date.now() - this.run.since)]];
+      rows = [['BUILD', `${this.run.vm}${this.run.change === '' ? '' : ` · ${this.run.change}`}`], ['NOW', going === undefined ? 'starting' : going.key === 'prepare' ? `${going.label} · ${this.preparing_word()} · ${at} OF ${BUILD_PHASES.length}` : `${going.label} · ${at} OF ${BUILD_PHASES.length}`], ['FOR', duration_text(Date.now() - this.run.since)]];
     } else if (this.busy !== null) {
       rows = [['LINE', this.busy.line], ['FOR', duration_text(Date.now() - this.busy.since)]];
     } else if (running !== undefined && running.running !== null) {
@@ -709,7 +708,11 @@ export class VmScreen extends ScriptScreen {
       group.append(this.backup_make(line, runs?.backup ?? null));
       main.append(group);
     }
-    main.append(this.change_make(step, line, built));
+    // The offer is spent once pressed: while its run runs only the run speaks, and after it the offer returns only if
+    // something is still to build (the operator, 2026-11-07).
+    const ours: boolean = this.run !== null && this.run.vm === this.vm;
+    const offered: boolean = !ours || (this.run?.outcome != null && this.would_get().would.length > 0);
+    if (offered) main.append(this.change_make(step, line, built));
     pane.append(main);
     // What else the machine is: its ports and OS as fields with what runs beside each; where it stands.
     const ports: HTMLElement = this.optionField_make(line, '--open', 'OPEN PORTS', '80,443');
@@ -947,15 +950,41 @@ export class VmScreen extends ScriptScreen {
       const block: HTMLElement = el('div', `tdc-strip-step vm-run-step ${tone}`);
       // Once a run stopped short, a step it never reached is not done; a question it stopped at was answered no.
       const short: boolean = run.outcome !== null && run.outcome.tone !== 'done';
-      const word: string = state === 'going' ? (phase.key === 'ask' ? 'ASKING' : 'UNDER WAY') : state === 'done' ? (phase.key === 'ask' ? 'ANSWERED YES' : 'DONE')
+      const word: string = state === 'going' ? (phase.key === 'ask' ? 'ASKING' : phase.key === 'prepare' ? this.preparing_word().toUpperCase() : 'UNDER WAY') : state === 'done' ? (phase.key === 'ask' ? 'ANSWERED YES' : 'DONE')
         : short && phase.key === 'ask' && state === 'skipped' && run.phases['plan-machine'] !== 'waiting' ? 'ANSWERED NO' : short ? 'NOT DONE' : state === 'skipped' ? 'NOT NEEDED' : 'WAITING';
       block.append(el('span', 'tdc-strip-name', phase.label), el('span', 'tdc-strip-word', word));
       strip.append(block);
     }
     box.append(head, strip);
     if (run.outcome !== null) box.append(el('div', 'vm-run-outcome', run.outcome.words));
-    else box.append(el('span', 'tdc-prose tdc-quiet vm-run-said', run.phases.ask === 'going' ? 'its question is asked below, with the cost: answer it to go on' : run.said === '' ? 'what each step prints runs in the VM LOG below' : run.said));
+    // What a step last said of its work (a plan's counts), when it said something; never a hint about the screen.
+    else if (run.said !== '' && run.phases.ask !== 'going') box.append(el('span', 'tdc-prose vm-run-said', run.said));
     return box;
+  }
+
+  /** What PREPARE does now, from the line it runs: the script, the declaration kept in the tenancy, then the stacks readied for the plan. */
+  private preparing_word(): string {
+    const line: string = this.busy?.line ?? '';
+    return line.startsWith('touch ') ? 'writing the script' : line.startsWith('vm new ') ? 'writing the declaration' : line.startsWith('vm build ') ? 'keeping it, readying the stacks' : 'writing the declaration';
+  }
+
+  /**
+   * The strip: a build's question in the screen's words, answered by buttons
+   * that say what each answer does (the console keeps its `[y/N]`); every
+   * other question as the script screen draws it.
+   */
+  protected override strip_draw(): void {
+    super.strip_draw();
+    const plain: BuildQuestion | null = this.ask === null ? null : buildQuestion_plain(this.ask.message);
+    if (plain === null) return;
+    const strip: HTMLElement = this.parts.strip;
+    const title: Element | null = strip.querySelector('.tdc-strip-title');
+    if (title !== null) title.textContent = 'THE BUILD ASKS';
+    const text: Element | null = strip.querySelector('.tdc-strip-text');
+    if (text !== null) text.textContent = plain.text;
+    const [yes, no] = [...strip.querySelectorAll<HTMLButtonElement>(':scope > button')];
+    if (yes !== undefined) yes.textContent = plain.yes;
+    if (no !== undefined) no.textContent = plain.no;
   }
 
   /** The run block and the band, redrawn in place: the levers under the hand are never redrawn for a line printed. */
@@ -973,18 +1002,23 @@ export class VmScreen extends ScriptScreen {
     if (!on && this.runTick !== null) { clearInterval(this.runTick); this.runTick = null; }
   }
 
-  /** BUILD on SIZE: the run stands from the press, before the password, so nothing looks idle; a build never sent ends said. */
+  /**
+   * BUILD on SIZE: the password first when the session must be raised, then
+   * the run stands at once with PREPARE under way (the script written, the
+   * declaration written and kept in the tenancy, the stacks readied), so no
+   * moment of the build is idle; the declaration, then the build.
+   */
   protected override async declaredBuild_send(declared: string, built: string, step: string): Promise<void> {
     const building: boolean = built.startsWith(`vm build ${this.vm}`) && this.vm !== '';
-    if (building) {
-      this.run = buildRun_start(this.vm, this.would_get().words, Date.now());
-      this.runTick_set(true);
-      this.draw();
-    }
-    await super.declaredBuild_send(declared, built, step);
-    if (building && this.run !== null && this.run.outcome === null) {
-      this.run = buildRun_end(this.run, this.refusal !== null && !this.refusal.declined ? { tone: 'failed', why: this.refusal.why } : { tone: 'declined', why: '' }, new Date().toISOString());
-      if (this.run.outcome?.tone === 'declined') this.run = { ...this.run, outcome: { tone: 'declined', words: 'NOT BUILT · NO PASSWORD GIVEN, NOTHING SENT', at: this.run.outcome.at } };
+    if (!building) { await super.declaredBuild_send(declared, built, step); return; }
+    if (this.hold_derive(built) === 'asks' && this.hooks.elevate_ask !== null && !(await this.hooks.elevate_ask(built))) return;
+    this.run = buildRun_start(this.vm, this.would_get().words, Date.now());
+    this.runTick_set(true);
+    this.draw();
+    if (await this.line_send(declared, step) && await this.line_send(built, step, true)) this.builtHere = step;
+    if (this.run !== null && this.run.outcome === null) {
+      // Ended before its build line ran (the declaration refused): said where the run stands.
+      this.run = buildRun_end(this.run, { tone: 'failed', why: this.refusal?.why ?? 'the declaration was refused' }, new Date().toISOString());
     }
     this.runTick_set(false);
     this.draw();
