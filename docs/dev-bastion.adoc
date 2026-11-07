@@ -94,6 +94,19 @@ ChRIS is on both ends of the loop and nowhere in the middle. It gathers the coho
 
 A developer may log in at a spoke's own door and work inside its bastion. Same host, a human in it, under the open posture. This is the case for code that cannot be written blind: exploratory analysis, a bug that only the data explains, a method whose first draft needs eyes on the files. It is the exception because it puts a person next to the data, and because it does not scale past one spoke at a time.
 
+[[stand-in]]
+=== The stand-in spoke: a ChRIS on one VM
+
+A ChRIS that stratus deploys on one VM, the store at cube.chrisproject.org among them, is a stand-in spoke: one Trusted Domain's ChRIS holding one shard of a cohort, on a machine instead of a cluster. The design is the same one, read against a smaller floor.
+
+* *The VM plays the cluster.* Its containers play the pods: CUBE, its database, its workers, pfcon and Caddy on one side, the bastion on the other. The VM itself is a node. No person works on it; the operator reaches it for maintenance over the cloud's own bastion service, which is a door for the operator and never for users.
+* *porter is the spoke's door, one per spoke.* It signs a person in and starts their berth, as it starts a calypso per identity on any host.
+* *Each user's berth is a container: their bastion.* calypso, chell and the development tooling run in it; `/incoming` is mounted read-only and `/outgoing` is that user's own. `!` under the `tasks` tier opens the shell of this container, so a user's shell is never on the machine that runs CUBE: it cannot reach the database, `cube.env`, the data volume or Docker. One user cannot see another's work or processes, and inside a berth there is one Linux user, so no mapping between ChRIS accounts and Linux accounts is needed.
+* *porter is the one privileged piece.* Starting a berth means starting a container: on the VM, through its Docker; in a Trusted Domain, through the cluster's API. Nothing else on the path holds that right.
+* *The VM's own exposures are services of the machine,* set apart from ChRIS: 80 and 443 for Caddy, which serves CUBE and the door; and, only when the operator opens it with a warning, a public SSH port for an administrative Linux user that is not a ChRIS user.
+
+This refines <<spoke-side>> in one respect: the berth is per person, inside a spoke that holds one shard, rather than one container per cohort shared by whoever logs in. In the common case no human is inside and the berth is the unattended run's.
+
 [[policy]]
 == The policy, and why
 
@@ -168,3 +181,7 @@ Because the cohort is a feed and `/outgoing` becomes a node of it, every run und
 * *How source crosses the wire.* A file landing through the `tasks` tier, or a `run` verb that carries it; and how a run is cancelled across N spokes.
 * *What "reviewed" means for `/outgoing`.* A person at the spoke, a person at the Hub, or an automatic disclosure check with thresholds.
 * *Whether the spoke bastion is OpenShift Dev Spaces or a plain Deployment* with our image; the plain one is smaller.
+* *What a berth's `/incoming` holds* (<<stand-in>>): a feed the person picks at the door, a `gather`, or the spoke's whole shard.
+* *Mount or copy.* `/incoming` as a read-only bind of CUBE's own storage, fast and tied to CUBE's file layout, or a copy pulled through the CUBE API, slower and the same on any Trusted Domain.
+* *The stand-in spoke's posture.* Open or sealed on the store.
+* *A berth's life.* Whether it stops at logout or when idle, and whether its home survives.
