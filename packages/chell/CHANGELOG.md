@@ -1,5 +1,12 @@
 # @fnndsc/chell
 
+## 5.20.1
+
+### Patch Changes
+
+- Updated dependencies [c40bbf2]
+  - @fnndsc/argus@0.53.0
+
 ## 5.20.0
 
 ### Minor Changes
