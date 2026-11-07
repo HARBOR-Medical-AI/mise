@@ -1375,7 +1375,8 @@ export class ScriptScreen {
     const edited: boolean = this.stoodFor.has(line.number) && this.stoodFor.get(line.number) !== line.text;
     const box: HTMLElement = el('div', `ss-line ss-line-${asking ? 'asking' : running ? 'running' : (line.state ?? 'none').replace(' ', '-')}`);
     box.append(el('span', 'ss-line-state', asking ? '? ASKING · ITS QUESTION STANDS ABOVE' : running ? '▶ RUNNING' : edited ? '~ EDITED · NOT DECLARED (BUILD declares and builds it)' : line.state === null ? '—' : `${STATE_MARKS[line.state]} ${line.state.toUpperCase()}`), el('code', 'tdc-mono ss-line-text', line.text));
-    if (line.detail !== '') box.append(el('span', 'tdc-prose tdc-quiet ss-line-detail', line.detail));
+    // An edited line's standing was read for its text before the edit: never said under it (it would read unchanged).
+    if (line.detail !== '' && !edited) box.append(el('span', 'tdc-prose tdc-quiet ss-line-detail', line.detail));
     return box;
   }
 

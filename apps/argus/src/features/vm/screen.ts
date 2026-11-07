@@ -907,14 +907,17 @@ export class VmScreen extends ScriptScreen {
       box.append(el('div', 'vm-change-word', 'NOTHING CHANGES'), el('p', 'tdc-prose tdc-quiet', 'What the line opens is what the tenancy opens.'));
       return box;
     }
-    box.append(el('div', 'vm-change-word', words.join(' · ').toUpperCase()), el('p', 'tdc-prose', 'Nothing bills: a port is a rule in the tenancy and in the machine\'s own firewall. BUILD asks first, then opens or closes them and sets the machine up over the bastion.'));
+    // One line a change, then the cost and BUILD naming them: no big words when there are several.
+    const list: HTMLElement = el('div', 'vm-change-lines');
+    for (const word of words) list.append(el('span', `vm-change-line${/SSH/.test(word) && !/closed/.test(word) ? ' ss-would-reboot' : ''}`, word));
+    box.append(list, el('span', 'vm-change-money', 'no change in cost: a port is a rule, in the tenancy and in the machine\'s own firewall'));
     if (built !== undefined) {
       // loop: vm-services-build
-      const build: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill ss-build vm-build', `BUILD · ${words.join(' · ')}`);
+      const build: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill ss-build vm-build', `BUILD · ${words.length === 1 ? words[0] : `${words.length} changes`}`);
       build.type = 'button';
       build.disabled = this.busy !== null;
       build.addEventListener('click', (): void => { this.hooks.voice.pill('BUILD'); void this.declaredBuild_send(line.text, built.text, step.key); });
-      box.append(build);
+      box.append(build, el('span', 'tdc-prose tdc-quiet vm-commit-says', 'plans, then asks before anything opens or closes; the machine is set up over the bastion after'));
     }
     return box;
   }
@@ -1006,11 +1009,14 @@ export class VmScreen extends ScriptScreen {
       runs(this.optionField_make(line, '--compute', 'COMPUTE', `the pfcon resource's name (default ${this.vm})`), chris?.compute ?? null),
       runs(this.optionField_make(line, '--host', 'HOST', 'cube.example.org · empty: by address'), chris === null ? null : chris.host ?? 'by address'),
       runs(this.optionField_make(line, '--porter', 'PORTER', 'porter.example.org · the door to mise beside it'), chris?.porter ?? null),
-      this.lineBoxNumbered_make(line),
     );
     // The offer is spent once pressed: while the deploy runs only its run speaks; after it the offer returns.
     const ours: boolean = this.chrisRun !== null && this.chrisRun.vm === this.vm;
     if (!ours || this.chrisRun?.outcome != null) pane.append(this.chrisChange_make(step, line));
+    // THE SCRIPT after the change it carries, as on SPEC and SERVICES; the accounts, their own block, after it.
+    const script: HTMLElement = el('div', 'vm-size-lines');
+    script.append(el('span', 'tdc-section-title', `THE SCRIPT · ${this.path === '' ? 'NOT WRITTEN YET' : this.path}`), this.lineBoxNumbered_make(line));
+    pane.append(script);
     const users: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.kind === 'users');
     const accounts: HTMLElement = el('div', 'vm-chris-users');
     accounts.append(el('span', 'tdc-section-title', 'ITS ACCOUNTS · EACH WITH ITS HOST ACCESS'));
@@ -1060,12 +1066,13 @@ export class VmScreen extends ScriptScreen {
       : plan.changes.length > 0 ? { word: plan.changes.join(', '), label: `CHANGE · ${plan.changes.join(', ')}`, quiet: false }
         : plan.restarts.length > 0 ? { word: `REPLAY · RESTARTS ${restarts}`, label: `REPLAY · restarts ${restarts}`, quiet: false }
           : { word: 'NOTHING CHANGES', label: 'REPLAY · checks again, restarts nothing', quiet: true };
-    box.append(el('div', 'vm-change-word', act.word.toUpperCase()));
-    const means: HTMLElement = el('div', 'vm-change-means');
-    for (const change of plan.first === true ? plan.changes : []) means.append(el('span', 'tdc-prose', change.replace(/^a first deploy: /, '')));
-    for (const restart of plan.restarts) means.append(el('span', 'tdc-prose ss-would-reboot', `restarts ${restart}`));
+    // One line a change, as SPEC lists its own: what is put up or changed, then what restarts.
+    const means: HTMLElement = el('div', 'vm-change-lines');
+    if (plan.first === true) for (const change of plan.changes) means.append(el('span', 'vm-change-line', change.replace(/^a first deploy: /, '')));
+    else for (const change of plan.changes) means.append(el('span', 'vm-change-line', change));
+    for (const restart of plan.restarts) means.append(el('span', 'vm-change-line ss-would-reboot', `restarts ${restart}`));
     if (plan.sessions !== null && plan.restarts.some((one: string): boolean => one.startsWith('porter (') || one.startsWith('CUBE and porter'))) means.append(el('span', `tdc-prose${plan.sessions > 0 ? ' ss-would-reboot' : ' tdc-quiet'}`, plan.sessions === 0 ? 'no porter session is open now' : `${plan.sessions} porter session${plan.sessions === 1 ? '' : 's'} open now ${plan.sessions === 1 ? 'ends' : 'end'}`));
-    if (act.quiet) means.append(el('span', 'tdc-prose tdc-quiet', 'what runs is what this line deploys: a replay checks it again'));
+    if (act.quiet) means.append(el('span', 'vm-change-line', 'nothing changes: what runs is what this line deploys'));
     box.append(means);
     // loop: ss-chris-deploy
     const run: HTMLButtonElement = el('button', `tdc-pill ${act.quiet ? 'tdc-pill-quiet' : 'tdc-pill-bill'} ss-run vm-build vm-chris-run`, act.label);
@@ -1073,7 +1080,7 @@ export class VmScreen extends ScriptScreen {
     run.dataset['line'] = String(line.number);
     run.disabled = this.busy !== null;
     run.addEventListener('click', (): void => { this.hooks.voice.pill(act.label.split(' · ')[0] ?? 'RUN'); void this.chrisRun_send(step, line, act.label, plan.asks); });
-    box.append(run);
+    box.append(run, el('span', 'tdc-prose tdc-quiet vm-commit-says', act.quiet ? 'checks again what is there; nothing restarts' : 'asks with all of it before anything restarts'));
     return box;
   }
 
@@ -1146,7 +1153,16 @@ export class VmScreen extends ScriptScreen {
     const runs = this.runs_get(name);
     const pane: HTMLElement = this.section_make('THE SPEC', 'ss-col-wide vm-size', runs === null ? 'NOT BUILT YET' : `RUNS AS READ FROM THE TENANCY ${runs.at.slice(11, 16)} UTC`);
     if (this.run !== null && this.run.vm === this.vm) pane.append(this.run_make(this.run));
-    // The levers and the change they make side by side, so the change and BUILD stand in view with the run above them.
+    // The machine's facts first: where it stands and its OS, with what runs beside it.
+    const row: VmStatusRow | null = this.vmRow_get();
+    const where: HTMLElement = this.pairs_make([
+      ['NETWORK', lineOption_get(line.text, '--net') ?? '—'],
+      ['ADDRESS', `${row?.address ?? '—'}${row?.inside != null ? ` · inside ${row.inside}` : ''}`],
+    ]);
+    const os: HTMLElement = this.optionField_make(line, '--os', 'OS', 'ubuntu-26.04');
+    if (runs?.os != null) os.append(el('span', 'ss-field-runs', `RUNS ${runs.os.toUpperCase()}`));
+    pane.append(where, os);
+    // Then the levers, then the one change block they make, then the script.
     const main: HTMLElement = el('div', 'vm-size-main');
     if (this.limits === null) {
       main.append(el('p', 'tdc-prose tdc-quiet', 'reading what the shape sells: vm limits'));
@@ -1162,21 +1178,12 @@ export class VmScreen extends ScriptScreen {
     // something is still to build (the operator, 2026-11-07).
     const ours: boolean = this.run !== null && this.run.vm === this.vm;
     const offered: boolean = !ours || (this.run?.outcome != null && this.would_get().would.length > 0);
-    if (offered) main.append(this.change_make(step, line, built));
-    // While a run speaks the offer is not drawn: the levers take the whole width (the operator, 2026-11-07).
-    else main.classList.add('vm-size-main-full');
     pane.append(main);
-    // What else the machine is: its OS as a field with what runs beside it; where it stands. Its ports are SERVICES'.
-    const os: HTMLElement = this.optionField_make(line, '--os', 'OS', 'ubuntu-26.04');
-    if (runs?.os != null) os.append(el('span', 'ss-field-runs', `RUNS ${runs.os.toUpperCase()}`));
-    const row: VmStatusRow | null = this.vmRow_get();
-    const where: HTMLElement = this.pairs_make([
-      ['NETWORK', lineOption_get(line.text, '--net') ?? '—'],
-      ['ADDRESS', `${row?.address ?? '—'}${row?.inside != null ? ` · inside ${row.inside}` : ''}`],
-    ]);
+    if (offered) pane.append(this.change_make(step, line, built));
+    // THE SCRIPT last: the line as it will run, under the change it carries.
     const script: HTMLElement = el('div', 'vm-size-lines');
     script.append(el('span', 'tdc-section-title', `THE SCRIPT · ${this.path === '' ? 'NOT WRITTEN YET' : this.path}`), this.lineBoxNumbered_make(line), ...(built === undefined ? [] : [this.lineBoxNumbered_make(built)]));
-    pane.append(os, where, script);
+    pane.append(script);
     this.sizeCost_need(line);
     return pane;
   }
@@ -1185,11 +1192,46 @@ export class VmScreen extends ScriptScreen {
   private lever_make(line: ScriptLine, spec: SliderSpec, limits: VmLimitsModel): HTMLElement {
     const row: HTMLElement = this.slider_make(line, spec, limits);
     row.classList.add('vm-lever');
+    // The value is typed as well as slid: a number box in step with the slider, its range said, arrow keys stepping.
+    const slider: HTMLInputElement | null = row.querySelector<HTMLInputElement>('input[type="range"]');
+    const shown: HTMLElement | null = row.querySelector('.tdc-slider-value');
+    if (slider !== null && shown !== null) {
+      const box: HTMLElement = el('label', 'vm-lever-box');
+      const typed: HTMLInputElement = el('input', 'vm-lever-number');
+      typed.type = 'number';
+      typed.id = `vm-number-${spec.word.slice(2)}`;
+      typed.min = slider.min;
+      typed.max = slider.max;
+      typed.step = slider.step;
+      typed.value = slider.value;
+      typed.disabled = slider.disabled;
+      typed.setAttribute('aria-label', `${spec.label}${spec.unit === '' ? '' : `, ${spec.unit}`}: ${slider.min} to ${slider.max} in steps of ${slider.step}`);
+      typed.title = `${slider.min} to ${slider.max}${spec.unit === '' ? '' : ` ${spec.unit}`}, in steps of ${slider.step}`;
+      const hint: HTMLElement = el('span', 'vm-lever-hint', '');
+      const take = (): void => {
+        const value: number = Number(typed.value);
+        const min: number = Number(slider.min);
+        const max: number = Number(slider.max);
+        const step: number = Number(slider.step);
+        const fits: boolean = typed.value !== '' && Number.isFinite(value) && value >= min && value <= max && (value - min) % step === 0;
+        typed.classList.toggle('vm-lever-wrong', !fits);
+        hint.textContent = fits ? '' : `${min}–${max}${spec.unit === '' ? '' : ` ${spec.unit}`}, steps of ${step}`;
+        if (!fits || slider.value === typed.value) return;
+        slider.value = typed.value;
+        slider.dispatchEvent(new Event('input'));
+      };
+      typed.addEventListener('input', take);
+      typed.addEventListener('change', (): void => { take(); if (spec.word === '--vcpu') slider.dispatchEvent(new Event('change')); });
+      slider.addEventListener('input', (): void => { if (typed.value !== slider.value) { typed.value = slider.value; typed.classList.remove('vm-lever-wrong'); hint.textContent = ''; } });
+      box.append(typed, el('span', 'vm-lever-unit', spec.unit), hint);
+      shown.replaceWith(box);
+    }
     const delta: HTMLElement = el('span', 'vm-lever-delta', '');
     delta.dataset['word'] = spec.word;
     row.append(delta);
     return row;
   }
+
 
   /** DATA BACKUP as two pills, with what runs and its share of the change. */
   private backup_make(line: ScriptLine, runs: string | null): HTMLElement {
@@ -1212,7 +1254,7 @@ export class VmScreen extends ScriptScreen {
   /** The change as one block: what it costs a month against what runs, what it means, and BUILD saying both. */
   private change_make(step: ScriptStep, line: ScriptLine, built: ScriptLine | undefined): HTMLElement {
     const box: HTMLElement = el('div', 'vm-change');
-    box.append(el('div', 'vm-change-total'), el('div', 'vm-change-means'));
+    box.append(el('div', 'vm-change-lines'), el('div', 'vm-change-total'), el('div', 'vm-change-means'));
     const commands: HTMLElement = el('div', 'tdc-commands vm-commit');
     if (built !== undefined) {
       // loop: ss-vm-build, vm-size-build
@@ -1221,12 +1263,13 @@ export class VmScreen extends ScriptScreen {
       build.dataset['line'] = String(line.number);
       build.dataset['build'] = built.text;
       build.addEventListener('click', (): void => { this.hooks.voice.pill('BUILD'); void this.declaredBuild_send(line.text, built.text, step.key); });
-      commands.append(build, el('span', 'tdc-commands-label vm-commit-says', ''));
+      commands.append(build);
     }
-    box.append(commands);
+    box.append(commands, el('span', 'tdc-prose tdc-quiet vm-commit-says', ''));
     queueMicrotask((): void => this.change_redraw());
     return box;
   }
+
 
   /** What the levers offer against what runs, as words: `disk 100 → 150 GB`; empty when nothing changes. */
   private would_get(): { would: BuildWould[]; words: string } {
@@ -1242,8 +1285,9 @@ export class VmScreen extends ScriptScreen {
   /** The change block and the levers' shares, redrawn in place as a lever moves or a price arrives. */
   private change_redraw(): void {
     const body: HTMLElement = this.parts.body;
+    const lines: HTMLElement | null = body.querySelector('.vm-change-lines');
     const total: HTMLElement | null = body.querySelector('.vm-change-total');
-    if (total === null) return;
+    if (lines === null || total === null) return;
     const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
     const line: ScriptLine | undefined = step?.lines[0];
     if (step === undefined || line === undefined) return;
@@ -1251,50 +1295,75 @@ export class VmScreen extends ScriptScreen {
     const { would, words } = this.would_get();
     const refused: BuildWould | undefined = would.find((one: BuildWould): boolean => one.tone === 'refused');
     const month: number | null = this.changeMonth_get(line, runs);
-    const money = (value: number): string => `${value > 0 ? '+' : '−'}${money_text(Math.abs(value), this.stepCost?.cost?.currency ?? 'USD')} a month`;
+    const currency: string = this.stepCost?.cost?.currency ?? 'USD';
+    const money = (value: number): string => `${value > 0 ? '+' : '−'}${money_text(Math.abs(value), currency)}`;
+    const shares: Map<string, number | null> = this.leverCosts?.deltas ?? new Map();
+    // A change's own lever, for its share of the cost: `data volume 50 → 110 GB` is --data's.
+    const changeWord_derive = (change: string): string => (/vCPU/.test(change) ? '--vcpu' : /^memory/.test(change) ? '--memory' : /^boot disk/.test(change) ? '--disk' : /^data/.test(change) ? '--data' : /^backups/.test(change) ? '--data-backup' : '');
+    lines.replaceChildren();
     total.replaceChildren();
     if (runs === null) {
-      total.append(el('span', 'vm-change-word', 'NOT BUILT YET'), el('span', 'vm-change-money', this.stepCost?.cost == null ? 'pricing…' : `${rate_words(this.stepCost.cost, HOURS_PER_MONTH)} once built`));
+      lines.append(el('span', 'vm-change-line', 'not built yet'));
+      total.append(el('span', 'vm-change-money', this.stepCost?.cost == null ? 'pricing…' : `${rate_words(this.stepCost.cost, HOURS_PER_MONTH)} once built`));
     } else if (would.length === 0) {
-      total.append(el('span', 'vm-change-word', 'NOTHING CHANGES'), el('span', 'vm-change-money', 'what runs is what is sized'));
+      lines.append(el('span', 'vm-change-line', 'nothing changes: what runs is what is sized'));
     } else {
-      total.append(el('span', 'vm-change-word', words.toUpperCase()), el('span', `vm-change-money${month !== null && month > 0 ? ' tdc-bill' : ''}`, month === null ? 'pricing…' : Math.abs(month) < 0.005 ? 'no change in cost' : money(month)));
+      // One line a change: what, what it does to the machine, its own share of the cost.
+      for (const one of would) {
+        const share: number | null | undefined = shares.get(changeWord_derive(one.change));
+        const does: string = one.tone === 'refused' ? one.consequence : !one.change.includes('→') ? one.consequence : one.tone === 'reboot' ? 'reboots' : 'grows online';
+        const row: HTMLElement = el('span', `vm-change-line ss-would-${one.tone}`, `${one.change} · ${does}`);
+        if (share != null && Math.abs(share) >= 0.005) row.append(el('span', `vm-change-share${share > 0 ? ' tdc-bill' : ''}`, ` · ${money(share)}`));
+        lines.append(row);
+      }
+      const pair = this.monthPair_get(line, runs);
+      total.append(el('span', `vm-change-money${month !== null && month > 0.005 ? ' tdc-bill' : ''}`, pair === null ? 'pricing…' : Math.abs(pair.then - pair.now) < 0.005 ? `no change in cost: ${money_text(pair.then, currency)} a month` : `${money_text(pair.now, currency)} → ${money_text(pair.then, currency)} a month`));
     }
     const means: HTMLElement | null = body.querySelector('.vm-change-means');
     if (means !== null) {
       means.replaceChildren();
-      const plain: Readonly<Record<BuildWould['tone'], string>> = { grow: 'grows while it runs: no restart', reboot: 'the machine restarts: it, and the ChRIS on it, are down a few minutes', refused: '' };
-
-      // A resize in place is said plainly; a machine made (none runs) keeps its own words: what it is made over.
-      for (const one of would) {
-        const said: string = one.tone === 'refused' || !one.change.includes('→') ? one.consequence : plain[one.tone];
-        // One change is named large above: what it means is enough under it; several each say which.
-        means.append(el('span', `tdc-prose ss-would-${one.tone}`, would.length === 1 ? said : `${one.change}: ${said}`));
-      }
+      const machine: boolean = would.some((one: BuildWould): boolean => one.tone === 'reboot');
+      if (machine) means.append(el('span', 'tdc-prose ss-would-reboot', `the machine restarts: it, and the ChRIS on it, are down a few minutes`));
       // Declared before and not built (here or by another session): said, so the offer is not taken for a fresh edit.
-      if (!this.edited && would.length > 0 && stepBuildLine_get(step)?.state === 'changed') means.append(el('span', 'tdc-prose tdc-quiet vm-change-declared', 'declared already, kept in the tenancy, and not built yet: BUILD applies it'));
+      if (this.editedSeats_get().length === 0 && would.length > 0 && stepBuildLine_get(step)?.state === 'changed') means.append(el('span', 'tdc-prose tdc-quiet vm-change-declared', 'declared already, kept in the tenancy, and not built yet: BUILD applies it'));
     }
-    // Each lever's share, beside it; a lever off what runs before its share is priced says so.
-    const shares: Map<string, number | null> = this.leverCosts?.deltas ?? new Map();
+    // Each lever's share, beside it, only when it differs.
     for (const cell of body.querySelectorAll<HTMLElement>('.vm-lever-delta')) {
-      const word: string = cell.dataset['word'] ?? '';
-      const share: number | null | undefined = shares.get(word);
-      cell.textContent = share === undefined ? '' : share === null ? 'pricing…' : Math.abs(share) < 0.005 ? 'no cost' : money(share);
+      const share: number | null | undefined = shares.get(cell.dataset['word'] ?? '');
+      cell.textContent = share === undefined ? '' : share === null ? 'pricing…' : Math.abs(share) < 0.005 ? '' : `${money(share)} a month`;
       cell.classList.toggle('tdc-bill', share != null && share > 0.005);
     }
     const build: HTMLButtonElement | null = body.querySelector('.vm-build');
     const says: HTMLElement | null = body.querySelector('.vm-commit-says');
     if (build === null || says === null) return;
     const hold = this.hold_derive(build.dataset['build'] ?? '');
-    const priced: string = month === null || Math.abs(month) < 0.005 ? '' : ` · ${money(month)}`;
-    build.textContent = hold === 'held' ? 'BUILD · REFUSED IN READ' : refused !== undefined ? `BUILD · ${refused.change.toUpperCase()} IS REFUSED` : would.length === 0 ? 'BUILD' : `BUILD · ${words}${priced}`;
+    const priced: string = month === null || Math.abs(month) < 0.005 ? '' : ` · ${money(month)} a month`;
+    build.textContent = hold === 'held' ? 'BUILD · REFUSED IN READ' : refused !== undefined ? `BUILD · ${refused.change.toUpperCase()} IS REFUSED` : would.length === 0 ? 'BUILD' : `BUILD · ${would.length === 1 ? words : `${would.length} changes`}${priced}`;
     build.classList.toggle('tdc-pill-quiet', would.length === 0);
     build.classList.toggle('tdc-pill-asks', hold === 'asks');
     build.disabled = hold === 'held' || refused !== undefined || this.acting_is();
     build.title = `sends: ${line.text}, then ${build.dataset['build'] ?? ''}`;
     says.textContent = hold === 'held' ? READ_HELD_SHORT
-      : `${hold === 'asks' ? 'asks your password first (this session can only read), then ' : ''}${would.length === 0 ? 'plans and says there is nothing to do' : 'plans, then asks with the cost before anything bills, then applies'}`;
+      : `${hold === 'asks' ? 'your password first, then ' : ''}${would.length === 0 ? 'plans and says there is nothing to do' : 'plans, then asks with the cost before anything bills'}`;
   }
+
+  /**
+   * What the machine costs a month as it runs and as the levers offer it, or
+   * null until both are priced.
+   *
+   * @param line - The `vm new` line.
+   * @param runs - What runs.
+   * @returns The month now and then.
+   */
+  private monthPair_get(line: ScriptLine, runs: (VmRuns & { at: string }) | null): { now: number; then: number } | null {
+    const offered: VmCostRow | null = this.stepCost;
+    if (runs === null || offered === null || offered.cost === null) return null;
+    const key: string = `${line_parse(line.text).subject ?? ''}@${runs.at}`;
+    const now: VmCostRate | null = this.runsCost?.key === key ? this.runsCost.row?.cost ?? null : null;
+    if (now === null) return null;
+    return { now: (now.machineHour + now.dataHour) * HOURS_PER_MONTH, then: (offered.cost.machineHour + offered.cost.dataHour) * HOURS_PER_MONTH };
+  }
+
 
   /** The whole change a month against what runs, or null while either side is unpriced. */
   private changeMonth_get(line: ScriptLine, runs: (VmRuns & { at: string }) | null): number | null {
@@ -1378,14 +1447,24 @@ export class VmScreen extends ScriptScreen {
   /** The script's line as it will run: an edit not built yet never reads as done (the operator, 2026-11-06). */
   protected override lineBox_make(line: ScriptLine): HTMLElement {
     const box: HTMLElement = super.lineBox_make(line);
-    const edited: boolean = (this.edited || this.unsaved) && line.state === 'done' && line_parse(line.text).verb.join(' ') === 'vm new';
+    // Edited only while its text differs from what the script stood for (or the script is not written yet).
+    const differs: boolean = this.stoodFor.has(line.number) ? this.stoodFor.get(line.number) !== line.text : this.unsaved;
+    const edited: boolean = differs && line.state === 'done' && line_parse(line.text).verb.join(' ') === 'vm new';
     if (edited && this.busy === null) {
       box.className = 'ss-line ss-line-changed';
       const state: Element | null = box.querySelector('.ss-line-state');
       if (state !== null) state.textContent = '~ EDITED · NOT BUILT: BUILD writes it, then builds it';
+      // Its standing was read for the text before the edit: it is not this line's, so it is not said under it.
+      box.querySelector('.ss-line-detail')?.remove();
+    }
+    // A deploy line edited is the deploy's to write and run: said in CHRIS's words, never BUILD's.
+    if (differs && this.busy === null && line_parse(line.text).verb.join(' ') === 'chris deploy') {
+      const state: Element | null = box.querySelector('.ss-line-state');
+      if (state !== null) state.textContent = '~ EDITED · NOT DEPLOYED: its button writes it, then deploys it';
     }
     return box;
   }
+
 
   // ------------------------------------------------------------------ the run
 
