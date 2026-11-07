@@ -68,7 +68,7 @@ export interface ScriptHooks {
 }
 
 /** A question the engine put, standing on the strip. */
-interface OpenAsk {
+export interface OpenAsk {
   message: string;
   kind: PromptKind;
   answer: (value: string | null) => void;

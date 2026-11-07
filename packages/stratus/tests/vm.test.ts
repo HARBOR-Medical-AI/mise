@@ -264,8 +264,8 @@ describe('vm, over the fake cloud', () => {
     expect(built.renderedErr ?? '').toBe('');
     // The declaration it applies is written already, and the free stack its plan made; the machine, planned once its data stands, is asked apart.
     expect(surface.asked).toEqual([
-      'vm build store: data 3 to create, 0 to change, 0 to destroy; machine planned once its data stands (2 vCPU, 8 GiB, disk 50 GB). It bills: $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month). Already written: its declaration, kept in the tenancy; STOP keeps it and builds nothing. Already made to plan it, free: its data stack fake-stack-vmData-store; STOP leaves it, and a later build reuses it. Continue? [y/N]',
-      'vm build store: its data stands; the machine plan 3 to create, 0 to change, 0 to destroy (2 vCPU, 8 GiB, disk 50 GB). It bills: $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month) with its data. STOP makes no machine: its data stays, billing $0.003 an hour, $2.13 a month, until vm teardown store --all. Continue? [y/N]',
+      'vm build store: data 3 to create, 0 to change, 0 to destroy; machine planned once its data stands (2 vCPU, 8 GiB, disk 50 GB). It bills $37.83 a month ($0.052 an hour). A NO builds nothing; the declaration stays written. Made to plan it, free, and kept on a NO: its data stack fake-stack-vmData-store. Continue? [y/N]',
+      'vm build store: its data stands; now the machine: 3 to create, 0 to change, 0 to destroy (2 vCPU, 8 GiB, disk 50 GB). It bills $0.052 an hour, $37.83 a month (the data alone, kept after a teardown: $0.003 an hour, $2.13 a month) with its data. A NO makes no machine: its data stays, billing $0.003 an hour, $2.13 a month, until vm teardown store --all. Continue? [y/N]',
     ]);
     expect(plain(built.rendered)).toContain('store  built  protected');
     expect(plain(built.rendered)).toContain('address  203.0.113.10');
@@ -301,7 +301,7 @@ describe('vm, over the fake cloud', () => {
     surface.answers = ['y'];
     const reshaped: CommandEnvelope = await vm_run(resizing, ['build', 'store']);
     expect(reshaped.status).toBe('ok');
-    expect(surface.asked.at(-1)).toContain('vm build store: 2 → 4 vCPU, memory 8 → 16 GiB. store REBOOTS to take its new shape: it, and ChRIS at https://cube.example/api/v1/, is down for a few minutes.');
+    expect(surface.asked.at(-1)).toBe('vm build store: 2 → 4 vCPU, memory 8 → 16 GiB. store reboots to take its new shape: it, and ChRIS at https://cube.example/api/v1/, is down a few minutes. $37.83 → $71.41 a month. A NO builds nothing; the declaration stays written. Continue? [y/N]');
     expect(store.record_read('store')?.seen).toMatchObject({ vcpus: 4, memoryGib: 16 });
     expect(lines).toEqual([]);
     // A disk and the data volume grow online, and their filesystems are grown after, so the space appears.
@@ -309,8 +309,8 @@ describe('vm, over the fake cloud', () => {
     surface.answers = ['y'];
     const grown: CommandEnvelope = await vm_run(resizing, ['build', 'store']);
     expect(grown.status).toBe('ok');
-    expect(surface.asked.at(-1)).toContain('data 50 → 100 GB, boot disk 50 → 80 GB. The filesystems grow after, online, so the space appears.');
-    expect(surface.asked.at(-1)).not.toContain('REBOOTS');
+    expect(surface.asked.at(-1)).toContain('data 50 → 100 GB, boot disk 50 → 80 GB. Grown online, no reboot. $71.41 → ');
+    expect(surface.asked.at(-1)).not.toContain('reboots');
     expect(lines).toHaveLength(2);
     expect(lines[0]).toContain('growpart');
     expect(lines[1]).toContain('resize2fs "$dev"');
@@ -405,7 +405,7 @@ describe('vm, over the fake cloud', () => {
     await vm_run(there, ['new', 'store', '--memory', '16']);
     surface.answers = ['y'];
     expect((await vm_run(there, ['build', 'store'])).status).toBe('ok');
-    expect(surface.asked.at(-1)).toContain('memory 8 → 16 GiB. store REBOOTS');
+    expect(surface.asked.at(-1)).toContain('memory 8 → 16 GiB. store reboots');
     await vm_run(context, ['status']);
     expect(store.spec_read('store')).toMatchObject({ spec: { memory: 16 } });
     // Torn down whole from either host, the tenancy's keep goes with it, and the other host's cache says so.

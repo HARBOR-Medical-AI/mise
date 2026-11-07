@@ -21,6 +21,7 @@
  * @module
  */
 import { createHash } from 'node:crypto';
+import { jobLogLine_keep } from './jobLog.js';
 import type { ClusterSpec } from '../../cluster/spec.js';
 import { teardownStep_run, type BuildCall, type CloudBuilder, type InfraOutputs, type InfraPlan, type ModulePlanRequest, type ModuleStackRead, type PlaceAnswer, type PreflightCheck, type ShellSession, type ShellSessionRequest, type StackModule, type TeardownCall, type TeardownRequest } from '../builder.js';
 import { netModule_digest, netModule_zip, netVariables_build } from './modules/net.js';
@@ -222,7 +223,11 @@ export class OciBuilder implements CloudBuilder {
     } catch {
       return shown;
     }
-    for (const line of lines.slice(shown)) call.log(line);
+    for (const line of lines.slice(shown)) {
+      // What every Terraform run says (its set-up, each resource refreshed) is left in Resource Manager; what this job does is passed on.
+      const kept: string | null = jobLogLine_keep(line);
+      if (kept !== null) call.log(kept);
+    }
     return Math.max(shown, lines.length);
   }
 
