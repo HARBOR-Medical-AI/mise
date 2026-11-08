@@ -88,6 +88,6 @@ describe('what a deploy would do', () => {
     expect(on).toMatchObject({ changes: ['berths off → on'], restarts: ['porter (berths on): its open sessions end'], asks: true, first: false });
     const had = { ...CHRIS, berths: 'launcher' as const, berthImage: 'ghcr.io/fnndsc/berth@sha256:' + 'a'.repeat(64) };
     expect(chrisPlan_derive(had, berthed, null)).toEqual({ changes: [], restarts: [], sessions: null, asks: false, first: false });
-    expect(chrisPlan_derive(had, ask, null)).toMatchObject({ changes: ['berths on → off'], restarts: ['porter (berths off): its open sessions end'], asks: true });
+    expect(chrisPlan_derive(had, ask, null)).toMatchObject({ changes: ['berths on → off'], restarts: ['porter (berths off): its open sessions end, and the running berths stop (their homes are kept)'], asks: true });
   });
 });

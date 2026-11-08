@@ -317,7 +317,7 @@ export function compose_render(profile: ChrisProfile, target: ChrisTarget | null
       env_file: ['porter.env'],
       volumes: ['porter:/var/lib/porter', ...(berths ? [`./berth/launcher.secret:${BERTH_MOUNT}/launcher.secret:ro`, `./berth/run:${BERTH_MOUNT}/run`] : [])],
       restart: 'unless-stopped',
-      depends_on: { caddy: { condition: 'service_started' }, ...(berths ? { 'berth-launcher': { condition: 'service_healthy' } } : {}) },
+      depends_on: { caddy: { condition: 'service_started' }, ...(berths ? { 'berth-launcher': { condition: 'service_started' } } : {}) },
     },
     // The one service given Docker's socket: on no network, it answers porter on a unix socket alone.
     'berth-launcher': {

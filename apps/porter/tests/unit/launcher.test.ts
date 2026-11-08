@@ -211,6 +211,15 @@ describe('the launcher over an engine', () => {
     expect(docker.volumes.size).toBe(2);
   });
 
+  it('joins porter to a running berth\'s wire again when porter was made again and left it, making nothing new', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: 42 });
+    docker.networks.get('mbw-net-ana')?.members.delete('porter');
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token-2', cohort: 42 });
+    expect(docker.networks.get('mbw-net-ana')?.members.has('porter')).toBe(true);
+    expect(docker.containers.size).toBe(1);
+  });
+
   it('switches cohort: the berth is made again on the new pair, the home the same; none is a pair of its own', async () => {
     const launcher: BerthLauncher = launcher_make(docker);
     await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: 42 });

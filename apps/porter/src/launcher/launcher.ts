@@ -379,6 +379,8 @@ export class BerthLauncher {
     const found: DockerAnswer = await docker.call('GET', `/containers/${names.container}/json`);
     const cohortHeld: unknown = field_get(found.body, 'Config', 'Labels', `${BERTH_LABEL}.cohort`);
     if (found.status === 200 && field_get(found.body, 'State', 'Running') === true && cohortHeld === cohort_word(ask.cohort)) {
+      // A porter made again since the berth started has left its wire: joined again before it is handed back.
+      await this.porter_join(names.network);
       await this.token_write(names.container, ask, token);
       this.held.set(identity, { token, uid: ask.uid, gid: ask.gid });
       const berth = await this.berth_read(names, identity);

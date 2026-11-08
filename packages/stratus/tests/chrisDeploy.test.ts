@@ -93,7 +93,7 @@ describe('a ChRIS profile and what it renders', () => {
     expect(BERTH_SOCKET).toBe('/srv/berth/run/launcher.sock');
     const porter: Service = compose.services['porter'] as Service;
     expect(porter['volumes']).toEqual(['porter:/var/lib/porter', './berth/launcher.secret:/srv/berth/launcher.secret:ro', './berth/run:/srv/berth/run']);
-    expect(porter['depends_on']).toEqual({ caddy: { condition: 'service_started' }, 'berth-launcher': { condition: 'service_healthy' } });
+    expect(porter['depends_on']).toEqual({ caddy: { condition: 'service_started' }, 'berth-launcher': { condition: 'service_started' } });
     // Only the launcher is given Docker's socket among the porter pair.
     expect(JSON.stringify(porter)).not.toContain('docker.sock');
     expect(compose_render(minimal, berthed).startsWith('# ChRIS, profile minimal, with porter and berths:')).toBe(true);
@@ -486,6 +486,20 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
       expect([...vm.files.keys()].some((file: string): boolean => file.includes('berth') || file.includes('launcher'))).toBe(false);
       expect(vms.record_read('store')?.chris?.berths).toBeUndefined();
       expect(vms.record_read('store')?.chris?.berthImage).toBeUndefined();
+    });
+
+    it('turning berths off removes the berths and wires the launcher made, keeping the homes; a deploy that never had them removes nothing', async () => {
+      const removal: string = 'docker ps -aq --filter label=org.fnndsc.mise.berth | xargs -r docker rm -f && docker network ls -q --filter label=org.fnndsc.mise.berth | xargs -r docker network rm';
+      await chrisDeployRun_make(request({ berths: false }), deps())(job([]));
+      expect(vm.lines).not.toContain(removal);
+      await chrisDeployRun_make(request(), deps())(job([]));
+      expect(vm.lines).not.toContain(removal);
+      const logged: string[] = [];
+      await chrisDeployRun_make(request({ berths: false }), deps())(job(logged));
+      expect(vm.lines).toContain(removal);
+      expect(vm.lines.indexOf(removal)).toBeGreaterThan(vm.lines.lastIndexOf('cd /srv/data/chris && docker compose up -d --build --remove-orphans'));
+      expect(vm.lines.some((line: string): boolean => line.includes('docker volume rm'))).toBe(false);
+      expect(logged).toContain('berths off: the running berths and their wires are removed; every person\'s home is kept');
     });
 
     it('refuses a pin that is not an image by digest, before anything is pulled or started', async () => {

@@ -28,6 +28,9 @@ import { launcherServer_create } from './server.js';
 
 async function launcher_start(): Promise<void> {
   const env: NodeJS.ProcessEnv = process.env;
+  const listen: string | undefined = env['BERTH_LAUNCHER_LISTEN'];
+  // A socket an earlier run left is removed first, so a launcher that stops below never looks as if it answers.
+  if (listen !== undefined && listen !== '' && !/^(127\.0\.0\.1|localhost|::1):\d+$/.test(listen) && existsSync(listen)) unlinkSync(listen);
   let secret: string;
   let policy: BerthPolicy;
   try {
@@ -37,7 +40,6 @@ async function launcher_start(): Promise<void> {
     console.error(`[!] berth-launcher: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
-  const listen: string | undefined = env['BERTH_LAUNCHER_LISTEN'];
   if (listen === undefined || listen === '') {
     console.error('[!] berth-launcher: BERTH_LAUNCHER_LISTEN is required: a unix socket path, or 127.0.0.1:<port>');
     process.exit(1);

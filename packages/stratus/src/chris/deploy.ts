@@ -44,6 +44,9 @@ export interface DeployRequest {
 /** Where porter's release keeps the berth image it pins, in porter's image. */
 const BERTH_PIN_MODULE: string = '/usr/local/lib/node_modules/@fnndsc/porter/dist/launcher/launcher.js';
 
+/** The label the launcher puts on every berth, wire and volume it makes. */
+const BERTH_LABEL: string = 'org.fnndsc.mise.berth';
+
 /** A berth image named by digest, as porter pins it. */
 const BERTH_IMAGE_PINNED: RegExp = /^[a-z0-9./-]+@sha256:[0-9a-f]{64}$/;
 
@@ -183,6 +186,11 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
       berthImage = image;
     }
     await run_must(remote, `cd ${CHRIS_DIR} && docker compose up -d --build --remove-orphans`, 'docker compose up');
+    if (!berths && record.chris?.berths === 'launcher') {
+      // Berths turned off: the launcher is gone with --remove-orphans; the berths and wires it made go too, the homes kept.
+      await run_must(remote, `docker ps -aq --filter label=${BERTH_LABEL} | xargs -r docker rm -f && docker network ls -q --filter label=${BERTH_LABEL} | xargs -r docker network rm`, 'stopping the berths');
+      context.log_write('berths off: the running berths and their wires are removed; every person\'s home is kept');
+    }
     if (berths) {
       context.log_write('waiting for the berth launcher\'s socket');
       const healthy: boolean = await until(async (): Promise<boolean> => (await remote.run(`docker inspect -f '{{.State.Health.Status}}' ${LAUNCHER_CONTAINER}`)).stdout.trim() === 'healthy', 30, tick, context.signal);
