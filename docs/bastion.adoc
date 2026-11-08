@@ -88,7 +88,7 @@ The spoke bastion has nothing to do with the cloud, little to do with the cluste
 [[spoke-host]]
 === The host
 
-A ChRIS that stratus puts on one VM is a stand-in spoke: the VM plays the cluster, porter is its door, and each user's berth is a container of its own with the tooling and the two mounts, so a user's shell is never on the machine that runs CUBE (<<dev-bastion.adoc#stand-in,dev-bastion.adoc>>).
+A ChRIS that stratus puts on one VM is a stand-in spoke: the VM plays the cluster, porter is its door, and each person's berth is a container of its own with the tooling and the two mounts, so their shell is never on the machine that runs CUBE (<<berths.adoc#,berths.adoc>>; the stand-in itself is <<dev-bastion.adoc#stand-in,dev-bastion.adoc>>'s).
 
 The host is the Hub bastion's shape with other contents (<<host>>): a container in the spoke, one per cohort, whose entrypoint starts porter; porter starts calypso; calypso spawns a pty per console; one path to the shell through chell, calypso and `!` under the `tasks` tier. calypso hosts this TD's ChRIS session with the ordinary trio, salsa, cumin and chrisapi over the CUBE API; its working directory is the project directory, and `/incoming` and `/outgoing` are mounted under the policy above. The shell holds the runtime: python, compilers, the project scaffolding, `run`, an editor for the exception. The key ring is this TD's CUBE token and nothing else: no cloud key, no kubeconfig, no `oc`. The cluster is the floor the host stands on, not a thing it operates; how the host is built and where it runs is the Hub figure's subject, not this one's.
 
