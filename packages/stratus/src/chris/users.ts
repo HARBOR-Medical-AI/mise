@@ -15,12 +15,26 @@ import { vmRemote_open, type RemoteAnswer, type VmRemote } from '../vm/remote.js
 import type { DeployDeps } from './deploy.js';
 import { CHRIS_DIR } from './compose.js';
 
-/** The account asked for. */
+/** The account asked for, with the groups it joins beside `all_users` (every account's). */
 export interface UserAsk {
   readonly username: string;
   readonly email: string;
   readonly password: string;
+  readonly groups?: ReadonlyArray<string>;
 }
+
+/** An account's change: its email, its groups (the whole set; `all_users` always kept), or both. */
+export interface UserModAsk {
+  readonly username: string;
+  readonly email?: string;
+  readonly groups?: ReadonlyArray<string>;
+}
+
+/** The group every CUBE account is in, kept whatever a change names. */
+export const ALL_USERS: string = 'all_users';
+
+/** A CUBE group's name, as a command line carries it. */
+export const GROUP_NAME: RegExp = /^[A-Za-z0-9_.@+-]{1,150}$/;
 
 /** What CUBE said: made, there already (with its email), or the email another's; a password changed, or no such account. */
 export type UserAnswer =
@@ -28,7 +42,8 @@ export type UserAnswer =
   | { readonly kind: 'exists'; readonly email: string }
   | { readonly kind: 'emailTaken'; readonly username: string }
   | { readonly kind: 'changed' }
-  | { readonly kind: 'absent' };
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'noGroup'; readonly groups: ReadonlyArray<string> };
 
 /** A user name CUBE takes: four to thirty-two of Django's letters, never a comma or a slash. */
 export const USER_NAME: RegExp = /^[A-Za-z0-9_.@+-]{4,32}$/;
@@ -53,18 +68,63 @@ export function userAddProgram_render(ask: UserAsk): string {
   const carried: string = Buffer.from(JSON.stringify(ask), 'utf-8').toString('base64');
   return [
     'import base64, json',
-    'from django.contrib.auth.models import User',
+    'from django.contrib.auth.models import Group, User',
     'from users.models import UserProxy',
     `ask = json.loads(base64.b64decode('${carried}').decode('utf-8'))`,
     'same = User.objects.filter(username=ask["username"]).first()',
     'other = User.objects.filter(email=ask["email"]).exclude(username=ask["username"]).first()',
+    'missing = [name for name in ask.get("groups", []) if not Group.objects.filter(name=name).exists()]',
     'if same is not None:',
     `    print("${ANSWER_MARK} exists " + json.dumps(same.email))`,
     'elif other is not None:',
     `    print("${ANSWER_MARK} email-taken " + json.dumps(other.username))`,
+    'elif missing:',
+    `    print("${ANSWER_MARK} no-group " + json.dumps(missing))`,
     'else:',
-    '    UserProxy.objects.create_user(username=ask["username"], email=ask["email"], password=ask["password"])',
+    '    user = UserProxy.objects.create_user(username=ask["username"], email=ask["email"], password=ask["password"])',
+    '    for name in ask.get("groups", []):',
+    '        user.groups.add(Group.objects.get(name=name))',
     `    print("${ANSWER_MARK} added")`,
+    '',
+  ].join('\n');
+}
+
+/**
+ * The program that changes an account's email or groups, or says why not:
+ * no such account, the email another's, a group CUBE does not hold. Groups
+ * are set whole, `all_users` always among them; nothing changes unless all
+ * of it can.
+ *
+ * @param ask - The account and its change.
+ * @returns The Python program.
+ */
+export function userModProgram_render(ask: UserModAsk): string {
+  const carried: string = Buffer.from(JSON.stringify(ask), 'utf-8').toString('base64');
+  return [
+    'import base64, json',
+    'from django.contrib.auth.models import Group, User',
+    `ask = json.loads(base64.b64decode('${carried}').decode('utf-8'))`,
+    'user = User.objects.filter(username=ask["username"]).first()',
+    'other = None if "email" not in ask else User.objects.filter(email=ask["email"]).exclude(username=ask["username"]).first()',
+    `wanted = None if "groups" not in ask else set(ask["groups"]) | {"${ALL_USERS}"}`,
+    'missing = [] if wanted is None else sorted(name for name in wanted if not Group.objects.filter(name=name).exists())',
+    'if user is None:',
+    `    print("${ANSWER_MARK} absent")`,
+    'elif other is not None:',
+    `    print("${ANSWER_MARK} email-taken " + json.dumps(other.username))`,
+    'elif missing:',
+    `    print("${ANSWER_MARK} no-group " + json.dumps(missing))`,
+    'else:',
+    '    if "email" in ask:',
+    '        user.email = ask["email"]',
+    '        user.save()',
+    '    if wanted is not None:',
+    '        for group in list(user.groups.all()):',
+    '            if group.name not in wanted:',
+    '                user.groups.remove(group)',
+    '        for name in sorted(wanted):',
+    '            user.groups.add(Group.objects.get(name=name))',
+    `    print("${ANSWER_MARK} changed")`,
     '',
   ].join('\n');
 }
@@ -148,11 +208,12 @@ export function userAnswer_parse(stdout: string): UserAnswer | null {
   if (kind === 'email-taken') return { kind: 'emailTaken', username: JSON.parse(value) as string };
   if (kind === 'changed') return { kind: 'changed' };
   if (kind === 'absent') return { kind: 'absent' };
+  if (kind === 'no-group') return { kind: 'noGroup', groups: JSON.parse(value) as string[] };
   return null;
 }
 
-/** The user job's id. */
-export const USER_JOBS = { add: (vm: string): string => `chris-${vm}-user-add` } as const;
+/** The user jobs' ids. */
+export const USER_JOBS = { add: (vm: string): string => `chris-${vm}-user-add`, mod: (vm: string): string => `chris-${vm}-user-mod` } as const;
 
 /** Where the job leaves CUBE's answer for the command. */
 export interface UserAddResult {
@@ -177,6 +238,28 @@ export function chrisUserAddRun_make(vm: string, ask: UserAsk, deps: DeployDeps,
     const parsed: UserAnswer | null = userAnswer_parse(answer.stdout);
     if (answer.code !== 0 || parsed === null) throw new Error(`CUBE on ${vm} did not make ${ask.username}: exit ${answer.code}: ${(answer.stderr || answer.stdout).trim().split('\n').slice(-3).join(' / ')}`);
     result.answer = parsed;
-    context.log_write(parsed.kind === 'added' ? `${ask.username} made` : `${ask.username} not made (${parsed.kind === 'exists' ? 'there already' : parsed.kind === 'emailTaken' ? `the email is ${parsed.username}'s` : parsed.kind})`);
+    context.log_write(parsed.kind === 'added' ? `${ask.username} made` : `${ask.username} not made (${parsed.kind === 'exists' ? 'there already' : parsed.kind === 'emailTaken' ? `the email is ${parsed.username}'s` : parsed.kind === 'noGroup' ? `CUBE has no group ${parsed.groups.join(', ')}` : parsed.kind})`);
+  };
+}
+
+/**
+ * The job that changes an account's email or groups on a VM's ChRIS.
+ *
+ * @param vm - The VM.
+ * @param ask - The account and its change.
+ * @param deps - What it runs over (the deploy's).
+ * @param result - Given CUBE's answer.
+ * @returns The job's work.
+ */
+export function chrisUserModRun_make(vm: string, ask: UserModAsk, deps: DeployDeps, result: UserAddResult): JobRun {
+  return async (context: JobContext): Promise<void> => {
+    const call: BuildCall = { log: (line: string): void => context.log_write(line), signal: context.signal };
+    const remote: VmRemote = await (deps.remote_open ?? ((name: string, inner: BuildCall): Promise<VmRemote> => vmRemote_open(name, { store: deps.store, nets: deps.nets, builder: deps.builder }, inner)))(vm, call);
+    context.log_write(`asking CUBE on ${vm} to change ${ask.username}`);
+    const answer: RemoteAnswer = await remote.run(CUBE_PYTHON_LINE, userModProgram_render(ask));
+    const parsed: UserAnswer | null = userAnswer_parse(answer.stdout);
+    if (answer.code !== 0 || parsed === null) throw new Error(`CUBE on ${vm} did not change ${ask.username}: exit ${answer.code}: ${(answer.stderr || answer.stdout).trim().split('\n').slice(-3).join(' / ')}`);
+    result.answer = parsed;
+    context.log_write(parsed.kind === 'changed' ? `${ask.username} changed` : `${ask.username} not changed (${parsed.kind === 'absent' ? 'no such account' : parsed.kind === 'emailTaken' ? `the email is ${parsed.username}'s` : parsed.kind === 'noGroup' ? `CUBE has no group ${parsed.groups.join(', ')}` : parsed.kind})`);
   };
 }

@@ -8,7 +8,7 @@
  *
  * @module
  */
-import type { VmStatusRow } from '@fnndsc/menu';
+import type { ChrisProfileFloor, ChrisProfileOffer, VmStatusRow } from '@fnndsc/menu';
 import { line_parse, type LineParts, type ScriptLine, type StepKind } from '../script/model.js';
 
 /** The seat a VM's line sits on: the controller's words for the script's verbs. */
@@ -106,6 +106,71 @@ export function vmServices_change(declared: VmServicesDeclared, runs: ReadonlyAr
     if (want.key !== null && want.key !== sshNow.key) words.push(`${want.user}'s key replaced`);
   }
   return words;
+}
+
+/** One OpenSSH public key line, as the engine takes it (`vm new --ssh-key`). */
+const SSH_KEY_LINE: RegExp = /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/=]{16,}( [^\n]*)?$/;
+
+/** A Linux user's name public SSH may admit: not root, not the image's own. */
+const SSH_USER_WORD: RegExp = /^[a-z_][a-z0-9_-]{0,31}$/;
+
+/** A service being added, as typed. */
+export interface ServiceDraft {
+  readonly kind: 'WEB' | 'CUSTOM' | 'SSH';
+  readonly port: string;
+  readonly user: string;
+  readonly key: string;
+}
+
+/**
+ * Why a service as typed cannot be added, or null when it can: the screen
+ * says it on ADD before the press, so nothing the engine would refuse is
+ * ever written on the line.
+ *
+ * @param draft - The service as typed.
+ * @param open - The ports the line opens already.
+ * @param sshPort - Public SSH's port when declared, or null.
+ * @returns The reason in a few words, or null.
+ *
+ * @example
+ * ```ts
+ * serviceDraft_why({ kind: 'CUSTOM', port: '22', user: 'ops', key: '' }, [80, 443], null); // '22 IS SSH: ADD PUBLIC SSH'
+ * ```
+ */
+export function serviceDraft_why(draft: ServiceDraft, open: ReadonlyArray<number>, sshPort: number | null): string | null {
+  const port: number = Number(draft.port);
+  if (draft.port === '') return 'A PORT';
+  if (!/^[0-9]+$/.test(draft.port) || port < 1 || port > 65535) return 'A PORT IS 1–65535';
+  if (open.includes(port) || port === sshPort) return `${port} IS OPEN ALREADY`;
+  if (draft.kind === 'WEB' && port !== 80 && port !== 443) return 'WEB IS 80 OR 443';
+  if (draft.kind !== 'SSH' && port === 22) return '22 IS SSH: ADD PUBLIC SSH';
+  if (draft.kind === 'SSH') {
+    const user: string = draft.user === '' ? 'ops' : draft.user;
+    if (!SSH_USER_WORD.test(user) || user === 'root' || user === 'ubuntu') return 'A LINUX USER, NOT ROOT OR UBUNTU';
+    if (draft.key === '') return 'ITS PUBLIC KEY';
+    if (/PRIVATE KEY/.test(draft.key)) return 'THAT IS A PRIVATE KEY';
+    const file: boolean = draft.key.startsWith('/') || draft.key.startsWith('~/');
+    if (!file && !SSH_KEY_LINE.test(draft.key)) return 'NOT A PUBLIC KEY (ssh-ed25519 …) OR A .pub PATH';
+  }
+  return null;
+}
+
+/**
+ * The floor a size lever has on a machine that stands: a boot disk and a
+ * data volume only grow, so what runs is the least either can be offered.
+ *
+ * @param word - The lever (`--disk`, `--data`; others have none).
+ * @param least - The shape's own least.
+ * @param runs - What runs of it, or null when nothing was read.
+ * @returns The least to offer.
+ *
+ * @example
+ * ```ts
+ * leverFloor_derive('--disk', 50, 150); // 150
+ * ```
+ */
+export function leverFloor_derive(word: string, least: number, runs: number | null): number {
+  return (word === '--disk' || word === '--data') && runs !== null ? Math.max(least, runs) : least;
 }
 
 /** The seat that is no line of the script: the undoing, drawn from the VM's own lines (`vm protect`, `vm teardown`). */
@@ -254,4 +319,184 @@ export function vmScript_append(text: string, name: string, line: string): strin
   const at: number = lines.findIndex((each: string): boolean => line_parse(each.trim()).verb.join(' ') === 'vm build' && line_parse(each.trim()).subject === name);
   if (at === -1) lines.push(line); else lines.splice(at + 1, 0, line);
   return `${lines.join('\n')}\n`;
+}
+
+/** A ChRIS profile as PROFILE's listing shows it: what it puts up, what it needs, its state, and why it is not offered (null when it is). */
+export interface ProfileRow {
+  readonly name: string;
+  readonly puts: string;
+  readonly needs: string;
+  readonly state: string;
+  readonly chosen: boolean;
+  readonly why: string | null;
+}
+
+/**
+ * The listing's rows: every profile stratus knows, each offered only when it
+ * is built and the machine standing is big enough for it
+ * (a-control-offers-only-what-can-be-done).
+ *
+ * @param offers - The profiles, as the menu lists them.
+ * @param stands - What the machine has, or null when none stands.
+ * @param chosen - The profile the line declares.
+ * @returns A row a profile.
+ */
+export function profileRows_derive(offers: ReadonlyArray<ChrisProfileOffer>, stands: VmStatusRow['stands'] | null, chosen: string): ProfileRow[] {
+  return offers.map((offer: ChrisProfileOffer): ProfileRow => {
+    const floor: ChrisProfileFloor | null = offer.floor;
+    const below: string[] = [];
+    if (floor !== null && stands != null) {
+      if (stands.vcpu !== null && stands.vcpu < floor.vcpu) below.push(`${stands.vcpu} of ${floor.vcpu} vCPU`);
+      if (stands.memory !== null && stands.memory < floor.memory) below.push(`${stands.memory} of ${floor.memory} GiB`);
+      if (stands.data !== null && stands.data < floor.data) below.push(`data ${stands.data} of ${floor.data} GB`);
+    }
+    const why: string | null = !offer.built ? 'not built yet' : below.length > 0 ? `the machine has ${below.join(', ')}` : null;
+    const isChosen: boolean = offer.name === chosen;
+    const state: string = why !== null ? (offer.built ? `too small: ${below.join(', ')}` : 'not built yet') : isChosen ? 'available · chosen' : 'available';
+    const needs: string = floor === null ? 'floor to be set' : `${floor.vcpu} vCPU · ${floor.memory} GiB · data ${floor.data} GB`;
+    return { name: offer.name, puts: offer.summary, needs, state, chosen: isChosen, why };
+  });
+}
+
+/** An account as CUBE holds it, read live: its CUBE id (null when CUBE does not say) and its groups. */
+export interface HeldAccount {
+  readonly username: string;
+  readonly email: string;
+  readonly id: number | null;
+  readonly groups: ReadonlyArray<string>;
+}
+
+/** What the operator changed of a held account, not yet applied: its email, its groups (whole), a new password. */
+export interface AccountEdit {
+  readonly email?: string;
+  readonly groups?: ReadonlyArray<string>;
+  readonly password?: boolean;
+}
+
+/** A new account the operator wrote, not yet applied: a row of its own until APPLY makes it. */
+export interface AccountDraft {
+  readonly key: string;
+  readonly name: string;
+  readonly email: string;
+  readonly groups: ReadonlyArray<string>;
+}
+
+/** One change to a ChRIS's accounts: what it does in words, the line that does it, why it cannot (null when it can), whether it restarts CUBE. */
+export interface AccountChange {
+  readonly account: string;
+  readonly words: string;
+  readonly line: string;
+  readonly why: string | null;
+  readonly restarts: boolean;
+  /** A new account's `chris user add` line, which APPLY writes into the script before it runs. */
+  readonly declares: boolean;
+}
+
+/** The group every CUBE account is in: always on, never a choice. */
+export const ALL_USERS_GROUP: string = 'all_users';
+
+/** The admin CUBE makes, whose new password restarts CUBE. */
+export const CHRIS_ADMIN_NAME: string = 'chris';
+
+/** A user name CUBE takes, as stratus checks it: four to thirty-two of Django's letters. */
+const ACCOUNT_NAME: RegExp = /^[A-Za-z0-9_.@+-]{4,32}$/;
+
+/** An email address, as stratus checks it. */
+const ACCOUNT_EMAIL: RegExp = /^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/;
+
+/**
+ * The groups beside `all_users`, as a `--groups` value names them.
+ *
+ * @param groups - The whole set.
+ * @returns The value, or empty when only `all_users`.
+ */
+function groupsWord_derive(groups: ReadonlyArray<string>): string {
+  return [...new Set(groups)].filter((name: string): boolean => name !== ALL_USERS_GROUP).sort().join(',');
+}
+
+/**
+ * A groups change in words: what joins and what leaves.
+ *
+ * @param had - The groups held.
+ * @param wanted - The groups asked.
+ * @returns `+ a, − b`, or empty when nothing moves.
+ */
+export function groupsMove_words(had: ReadonlyArray<string>, wanted: ReadonlyArray<string>): string {
+  const plus: string[] = wanted.filter((name: string): boolean => !had.includes(name)).sort();
+  const minus: string[] = had.filter((name: string): boolean => !wanted.includes(name)).sort();
+  return [...plus.map((name: string): string => `+ ${name}`), ...minus.map((name: string): string => `− ${name}`)].join(', ');
+}
+
+/**
+ * Every pending change to a ChRIS's accounts, in the order APPLY runs them:
+ * new accounts, then changes of email and groups, then passwords, the admin's
+ * last (it restarts CUBE). Each says why it cannot be done when the screen can
+ * know (a name or an email CUBE would refuse); such a change is listed and
+ * left out of APPLY (a-control-offers-only-what-can-be-done).
+ *
+ * @param held - The accounts CUBE holds.
+ * @param edits - The changes of held accounts, by name.
+ * @param drafts - The new accounts.
+ * @param on - The machine the ChRIS runs on.
+ * @returns The changes.
+ */
+export function accountChanges_derive(held: ReadonlyArray<HeldAccount>, edits: ReadonlyMap<string, AccountEdit>, drafts: ReadonlyArray<AccountDraft>, on: string): AccountChange[] {
+  const adds: AccountChange[] = [];
+  const mods: AccountChange[] = [];
+  const passwords: AccountChange[] = [];
+  const names: Set<string> = new Set(held.map((one: HeldAccount): string => one.username));
+  const emailOwner = (email: string, self: string): string | undefined => held.find((one: HeldAccount): boolean => one.email === email && one.username !== self)?.username;
+  const drafted: Map<string, number> = new Map();
+  for (const draft of drafts) drafted.set(draft.name, (drafted.get(draft.name) ?? 0) + 1);
+  for (const draft of drafts) {
+    const groups: string = groupsWord_derive(draft.groups);
+    const why: string | null = draft.name === '' ? 'a name' : !ACCOUNT_NAME.test(draft.name) ? 'a name is 4 to 32 letters, digits or . @ + - _'
+      : names.has(draft.name) ? `${draft.name} is an account already` : (drafted.get(draft.name) ?? 0) > 1 ? `${draft.name} is written twice`
+        : draft.email === '' ? 'an email' : !ACCOUNT_EMAIL.test(draft.email) ? `${draft.email} is not an email address`
+          : emailOwner(draft.email, draft.name) !== undefined ? `${draft.email} is ${emailOwner(draft.email, draft.name) ?? ''}'s already` : null;
+    adds.push({
+      account: draft.name, declares: true, restarts: false, why,
+      words: `add user ${draft.name || '(no name yet)'} · groups ${[ALL_USERS_GROUP, ...groups.split(',').filter((one: string): boolean => one !== '')].join(', ')}`,
+      line: `chris user add ${draft.name || '<name>'} --email ${draft.email || '<email>'}${groups !== '' ? ` --groups ${groups}` : ''} --on ${on}`,
+    });
+  }
+  for (const account of held) {
+    const edit: AccountEdit | undefined = edits.get(account.username);
+    if (edit === undefined) continue;
+    const said: string[] = [];
+    const options: string[] = [];
+    let why: string | null = null;
+    if (edit.email !== undefined && edit.email !== account.email) {
+      said.push(`email ${account.email || '(none)'} → ${edit.email}`);
+      options.push(`--email ${edit.email}`);
+      why = !ACCOUNT_EMAIL.test(edit.email) ? `${edit.email} is not an email address` : emailOwner(edit.email, account.username) !== undefined ? `${edit.email} is ${emailOwner(edit.email, account.username) ?? ''}'s already` : null;
+    }
+    if (edit.groups !== undefined) {
+      const moved: string = groupsMove_words(account.groups, [...new Set([ALL_USERS_GROUP, ...edit.groups])]);
+      if (moved !== '') {
+        said.push(`groups ${moved}`);
+        options.push(`--groups ${groupsWord_derive(edit.groups) || ALL_USERS_GROUP}`);
+      }
+    }
+    if (said.length > 0) mods.push({ account: account.username, declares: false, restarts: false, why, words: `${said.map((one: string, at: number): string => (at === 0 ? `${one.split(' ')[0] ?? ''} for ${account.username}: ${one.split(' ').slice(1).join(' ')}` : one)).join(' · ')}`, line: `chris user mod ${account.username} ${options.join(' ')} --on ${on}` });
+    if (edit.password === true) {
+      const admin: boolean = account.username === CHRIS_ADMIN_NAME;
+      passwords.push({ account: account.username, declares: false, restarts: admin, why: null, words: `new password for ${account.username}${admin ? ' · restarts CUBE' : ''}`, line: `chris passwd ${account.username} --on ${on}` });
+    }
+  }
+  passwords.sort((a: AccountChange, b: AccountChange): number => Number(a.restarts) - Number(b.restarts));
+  return [...adds, ...mods, ...passwords];
+}
+
+/** A row of ITS USERS: a held account (its pending change in place), a script line's account CUBE does not hold yet, or a new one written here. */
+export interface AccountRow {
+  readonly key: string;
+  readonly kind: 'held' | 'lined' | 'new';
+  readonly name: string;
+  readonly uid: string;
+  readonly gid: string;
+  readonly groups: string;
+  readonly email: string;
+  readonly password: string;
+  readonly pending: boolean;
 }

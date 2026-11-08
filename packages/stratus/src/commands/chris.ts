@@ -11,10 +11,13 @@
  * `--porter`, porter (the door to mise: chell, calypso, ARGUS) runs beside
  * it under its own name, logging in to this CUBE.
  * `chris status [<vm>]` says what is deployed where. `chris user add <name>
- * --email <address> [--password-file <file>] [--on <vm>]` makes an account
- * on a ChRIS this stratus deployed, on the VM itself (CUBE's API makes none
- * once sign-up is off); the password asked (empty: generated and shown once)
- * or read from a file, and never kept. `chris passwd [<user>] [--password-file
+ * --email <address> [--groups <group,…>] [--password-file <file>] [--on <vm>]`
+ * makes an account on a ChRIS this stratus deployed, on the VM itself
+ * (CUBE's API makes none once sign-up is off), in the groups named beside
+ * `all_users`; the password asked (empty: generated and shown once) or read
+ * from a file, and never kept. `chris user mod <name> [--email <address>]
+ * [--groups <group,…>] [--on <vm>]` changes an account's email or its groups
+ * (set whole, `all_users` always kept) there the same way, asking first. `chris passwd [<user>] [--password-file
  * <file>] [--on <vm>]` changes an account's password there, the admin's
  * (`chris`, the default) on the host, in `cube.env` and in CUBE together,
  * CUBE's services started again to take it, and kept in the tenancy.
@@ -27,7 +30,7 @@
  */
 import * as fs from 'fs';
 import chalk from 'chalk';
-import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, type ChrisStatusRow, type CommandEnvelope } from '@fnndsc/menu';
+import { CHRIS_PROFILE_OFFERS, envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, type ChrisProfileOffer, type ChrisStatusRow, type CommandEnvelope } from '@fnndsc/menu';
 import { repl_confirm, repl_questionHidden, type CommandHelp } from '@fnndsc/brasa/core';
 import type { CloudBuilder } from '../cloud/builder.js';
 import type { NetStore } from '../net/state.js';
@@ -40,7 +43,7 @@ import { VM_KEYLESS, vmKeyless_is } from '../vm/keep.js';
 import { porterSecret_ensure, secret_make, secrets_ensure, secrets_read } from '../chris/secrets.js';
 import { CHRIS_JOBS, chrisDeployRun_make, type DeployDeps } from '../chris/deploy.js';
 import { host_split, point_plan, pointPlan_words, POINT_TTL, type Registrar } from '../chris/registrar.js';
-import { chrisUserAddRun_make, EMAIL, USER_JOBS, USER_NAME, type UserAddResult, type UserAnswer } from '../chris/users.js';
+import { ALL_USERS, chrisUserAddRun_make, chrisUserModRun_make, EMAIL, GROUP_NAME, USER_JOBS, USER_NAME, type UserAddResult, type UserAnswer, type UserModAsk } from '../chris/users.js';
 import { CHRIS_ADMIN, chrisPasswdRun_make, PASSWD_JOBS, type PasswdResult } from '../chris/passwd.js';
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 import { TIER_REFUSAL } from '../tier.js';
@@ -73,10 +76,13 @@ const DEPLOY_OPTIONS: ReadonlyArray<string> = ['--profile', '--compute', '--host
 const DEPLOY_USAGE: string = 'chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--admin-password-file <file>] [--plan]';
 
 /** The options `chris user add` reads, each a value. */
-const USER_OPTIONS: ReadonlyArray<string> = ['--email', '--password-file', '--on'];
+const USER_OPTIONS: ReadonlyArray<string> = ['--email', '--groups', '--password-file', '--on'];
 
-/** `chris user add`'s usage. */
-const USER_USAGE: string = 'chris user add <name> --email <address> [--password-file <file>] [--on <vm>]';
+/** `chris user`'s usage. */
+const USER_USAGE: string = 'chris user add <name> --email <address> [--groups <group,…>] [--password-file <file>] [--on <vm>] | chris user mod <name> [--email <address>] [--groups <group,…>] [--on <vm>]';
+
+/** The options `chris user mod` reads, each a value. */
+const USER_MOD_OPTIONS: ReadonlyArray<string> = ['--email', '--groups', '--on'];
 
 /** The options `chris passwd` reads, each a value. */
 const PASSWD_OPTIONS: ReadonlyArray<string> = ['--password-file', '--on'];
@@ -115,7 +121,7 @@ async function chrisStatus_run(context: ChrisCommandContext, names: ReadonlyArra
     rows.push({
       vm: record.name, profile: chris.profile, compute: chris.compute, url: chris.url, host: chris.host, porter: chris.porter ?? null, deployed: chris.deployed,
       image: chris.image ?? null, porterVersion: chris.porterVersion ?? null,
-      live: live === null ? null : { at: live.at, cube: live.cube, porter: live.porter, accounts: live.accounts === null ? null : [...live.accounts], accountsWhy: live.accountsWhy },
+      live: live === null ? null : { at: live.at, cube: live.cube, porter: live.porter, accounts: live.accounts === null ? null : live.accounts.map((one) => ({ ...one, groups: [...one.groups] })), accountsWhy: live.accountsWhy, groups: live.groups === null ? null : [...live.groups] },
     });
   }
   return envelope_ok(`${lines.join('\n')}\n`, { kind: STRATUS_CHRIS_STATUS_MODEL_KIND, data: { chris: rows } });
@@ -228,6 +234,7 @@ function chrisTarget_pick(context: ChrisCommandContext, on: string | undefined):
  */
 async function chrisUser_run(context: ChrisCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
   const [verb, ...rest] = args;
+  if (verb === 'mod') return chrisUserMod_run(context, rest);
   if (verb !== 'add') return envelope_error('', undefined, `chris user: ${verb === undefined ? 'usage' : `${verb}: not a verb`}: ${USER_USAGE}\n`);
   const read = options_read(rest, USER_OPTIONS);
   if ('error' in read) return envelope_error('', undefined, `chris user add: ${read.error} (${USER_OPTIONS.join(', ')})\n`);
@@ -237,6 +244,8 @@ async function chrisUser_run(context: ChrisCommandContext, args: ReadonlyArray<s
   const email: string | undefined = read.options.get('--email');
   if (email === undefined) return envelope_error('', undefined, `chris user add: ${username}: --email <address> is needed (CUBE makes no account without one)\n`);
   if (!EMAIL.test(email)) return envelope_error('', undefined, `chris user add: --email ${email}: not an email address\n`);
+  const groups = groups_read(read.options.get('--groups'));
+  if ('error' in groups) return envelope_error('', undefined, `chris user add: ${groups.error}\n`);
   const target = chrisTarget_pick(context, read.options.get('--on'));
   if ('error' in target) return envelope_error('', undefined, `chris user add: ${target.error}\n`);
   if (!tasks_granted()) return envelope_error('', undefined, `chris user add: ${TIER_REFUSAL}\n`);
@@ -252,12 +261,16 @@ async function chrisUser_run(context: ChrisCommandContext, args: ReadonlyArray<s
   }
   const owner = live?.accounts?.find((one): boolean => one.email === email) ?? null;
   if (owner !== null) return envelope_error('', undefined, `chris user add: ${target.vm}: ${email} is ${owner.username}'s already\n`);
+  // Only groups CUBE holds are joined: one it does not is refused before the question.
+  const unheld: string[] = live?.groups == null ? [] : groups.groups.filter((name: string): boolean => !(live.groups ?? []).includes(name));
+  if (unheld.length > 0) return envelope_error('', undefined, `chris user add: ${target.vm}: CUBE has no group ${unheld.join(', ')} (it holds ${live?.groups?.join(', ') ?? '?'})\n`);
   const file: string | undefined = read.options.get('--password-file');
   // A file's password is read before the question, so a bad file refuses without asking.
   const filed = file === undefined ? null : await userPassword_get(username, file);
   if (filed !== null && 'error' in filed) return envelope_error('', undefined, `chris user add: ${filed.error}\n`);
   const counted: string = live?.accounts === null || live === null ? `its accounts not read${live?.accountsWhy ? `: ${live.accountsWhy}` : ''}` : `${live.accounts.length} account${live.accounts.length === 1 ? '' : 's'} there now, read ${live.at.slice(11, 16)} UTC`;
-  const question: string = `chris user add ${username}: makes the account ${username} (${email}) on the ChRIS at ${target.url}, on ${target.vm} (${counted}); its password ${file !== undefined ? `read from ${file}` : 'asked next, hidden'}. A NO makes nothing. Continue? [y/N]`;
+  const joins: string = groups.groups.length === 0 ? '' : `, in ${['all_users', ...groups.groups].join(', ')}`;
+  const question: string = `chris user add ${username}: makes the account ${username} (${email}${joins}) on the ChRIS at ${target.url}, on ${target.vm} (${counted}); its password ${file !== undefined ? `read from ${file}` : 'asked next, hidden'}. A NO makes nothing. Continue? [y/N]`;
   if (!await repl_confirm(question)) {
     return envelope_ok(`${chalk.gray(`stopped before ${username} was made; nothing changed on ${target.vm} (chris user add ${username} asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: `chris user add ${username}`, kept: 'nothing made' } });
   }
@@ -265,7 +278,7 @@ async function chrisUser_run(context: ChrisCommandContext, args: ReadonlyArray<s
   if ('error' in password) return envelope_error('', undefined, `chris user add: ${password.error}\n`);
   const deps: DeployDeps = { store: context.vms, nets: context.nets, builder: context.builder, resolve: context.resolve, status_get: context.status_get, ...(context.remote_open !== undefined ? { remote_open: context.remote_open } : {}) };
   const result: UserAddResult = {};
-  const ran = await job_runFollowed(USER_JOBS.add(target.vm), `add ${username} to the ChRIS on ${target.vm}`, chrisUserAddRun_make(target.vm, { username, email, password: password.password }, deps, result));
+  const ran = await job_runFollowed(USER_JOBS.add(target.vm), `add ${username} to the ChRIS on ${target.vm}`, chrisUserAddRun_make(target.vm, { username, email, password: password.password, ...(groups.groups.length > 0 ? { groups: groups.groups } : {}) }, deps, result));
   if ('error' in ran) return envelope_error('', undefined, `chris user add: ${ran.error}\n`);
   const answer: UserAnswer | undefined = result.answer;
   if (answer?.kind === 'exists') {
@@ -274,8 +287,88 @@ async function chrisUser_run(context: ChrisCommandContext, args: ReadonlyArray<s
       : envelope_error('', undefined, `chris user add: ${target.vm}: ${username} already exists, with ${answer.email}; left as it is\n`);
   }
   if (answer?.kind === 'emailTaken') return envelope_error('', undefined, `chris user add: ${target.vm}: ${email} is ${answer.username}'s already\n`);
+  if (answer?.kind === 'noGroup') return envelope_error('', undefined, `chris user add: ${target.vm}: CUBE has no group ${answer.groups.join(', ')}; nothing made\n`);
   const shown: string = password.generated ? `${chalk.yellow(`the password for ${username}, generated, shown this once: ${password.password}`)}\n` : '';
-  return envelope_ok(`${shown}${target.vm}: ${username} added at ${target.url} (${email})\n`);
+  return envelope_ok(`${shown}${target.vm}: ${username} added at ${target.url} (${email}${joins})\n`);
+}
+
+/**
+ * A `--groups` value: the groups named, comma-separated, `all_users` dropped
+ * (every account's, never named), each once.
+ *
+ * @param value - The option's value, or undefined.
+ * @returns The groups, or why the value is not a list of them.
+ */
+function groups_read(value: string | undefined): { groups: string[] } | { error: string } {
+  if (value === undefined) return { groups: [] };
+  const named: string[] = value.split(',').map((name: string): string => name.trim()).filter((name: string): boolean => name !== '');
+  const wrong: string | undefined = named.find((name: string): boolean => !GROUP_NAME.test(name));
+  if (wrong !== undefined) return { error: `--groups ${value}: ${wrong} is not a group name` };
+  return { groups: [...new Set(named)].filter((name: string): boolean => name !== ALL_USERS) };
+}
+
+/**
+ * `chris user mod <name> [--email <address>] [--groups <group,…>] [--on <vm>]`:
+ * an account's email or groups changed on a ChRIS this stratus deployed. What
+ * CUBE holds is read first: no account, an email another's, a group CUBE
+ * does not hold, each refused before the question; a change that is already
+ * so is said and not asked.
+ *
+ * @param context - The session.
+ * @param rest - The words after `mod`.
+ * @returns The envelope.
+ */
+async function chrisUserMod_run(context: ChrisCommandContext, rest: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  const read = options_read(rest, USER_MOD_OPTIONS);
+  if ('error' in read) return envelope_error('', undefined, `chris user mod: ${read.error} (${USER_MOD_OPTIONS.join(', ')})\n`);
+  const [username, ...extra] = read.rest;
+  if (username === undefined || extra.length > 0) return envelope_error('', undefined, `chris user mod: usage: ${USER_USAGE}\n`);
+  if (!USER_NAME.test(username)) return envelope_error('', undefined, `chris user mod: ${username}: a user name is 4 to 32 letters, digits or . @ + - _\n`);
+  const email: string | undefined = read.options.get('--email');
+  if (email !== undefined && !EMAIL.test(email)) return envelope_error('', undefined, `chris user mod: --email ${email}: not an email address\n`);
+  const named: string | undefined = read.options.get('--groups');
+  const groups = groups_read(named);
+  if ('error' in groups) return envelope_error('', undefined, `chris user mod: ${groups.error}\n`);
+  if (email === undefined && named === undefined) return envelope_error('', undefined, `chris user mod: ${username}: nothing to change: --email or --groups\n`);
+  const target = chrisTarget_pick(context, read.options.get('--on'));
+  if ('error' in target) return envelope_error('', undefined, `chris user mod: ${target.error}\n`);
+  const record: VmRecord | null = context.vms.record_read(target.vm);
+  if (record !== null && vmKeyless_is(context.vms, record)) return envelope_error('', undefined, `chris user mod: ${target.vm}: ${VM_KEYLESS}\n`);
+  if (!tasks_granted()) return envelope_error('', undefined, `chris user mod: ${TIER_REFUSAL}\n`);
+  if (context.builder === null) return envelope_error('', undefined, 'chris user mod: this cloud builds nothing yet\n');
+  // What CUBE holds, read before the question (AEGIS a-change-is-a-loop, clauses 1 and 4).
+  const live: ChrisLive | null = context.http_get === undefined || record?.chris === undefined ? null : await chrisLive_read(record.chris, secrets_read(context.vms, target.vm), context.http_get);
+  const held = live?.accounts?.find((one): boolean => one.username === username) ?? null;
+  if (live?.accounts != null && held === null) return envelope_error('', undefined, `chris user mod: ${target.vm}: no account ${username} (chris user add ${username} --email <address>)\n`);
+  const owner = email === undefined ? null : live?.accounts?.find((one): boolean => one.email === email && one.username !== username) ?? null;
+  if (owner !== null) return envelope_error('', undefined, `chris user mod: ${target.vm}: ${email ?? ''} is ${owner.username}'s already\n`);
+  const unheld: string[] = live?.groups == null ? [] : groups.groups.filter((name: string): boolean => !(live.groups ?? []).includes(name));
+  if (unheld.length > 0) return envelope_error('', undefined, `chris user mod: ${target.vm}: CUBE has no group ${unheld.join(', ')} (it holds ${live?.groups?.join(', ') ?? '?'})\n`);
+  // The change in words, against what CUBE holds when it was read.
+  const wanted: string[] = [ALL_USERS, ...groups.groups].sort();
+  const had: ReadonlyArray<string> | null = held?.groups ?? null;
+  const said: string[] = [];
+  if (email !== undefined && held?.email !== email) said.push(`email ${held?.email ?? '?'} → ${email}`);
+  if (named !== undefined) {
+    const plus: string[] = had === null ? wanted : wanted.filter((name: string): boolean => !had.includes(name));
+    const minus: string[] = had === null ? [] : had.filter((name: string): boolean => !wanted.includes(name));
+    if (plus.length > 0 || minus.length > 0) said.push(`groups ${[...plus.map((name: string): string => `+ ${name}`), ...minus.map((name: string): string => `− ${name}`)].join(', ')}`);
+  }
+  if (said.length === 0) return envelope_ok(`${target.vm}: ${username} is so already (read ${live?.at.slice(11, 16) ?? '?'} UTC); nothing changed\n`);
+  const question: string = `chris user mod ${username}: on the ChRIS at ${target.url}, on ${target.vm}: ${said.join('; ')}. A NO changes nothing. Continue? [y/N]`;
+  if (!await repl_confirm(question)) {
+    return envelope_ok(`${chalk.gray(`stopped before ${username} was changed; nothing changed on ${target.vm}`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: `chris user mod ${username}`, kept: 'nothing changed' } });
+  }
+  const deps: DeployDeps = { store: context.vms, nets: context.nets, builder: context.builder, resolve: context.resolve, status_get: context.status_get, ...(context.remote_open !== undefined ? { remote_open: context.remote_open } : {}) };
+  const result: UserAddResult = {};
+  const ask: UserModAsk = { username, ...(email !== undefined ? { email } : {}), ...(named !== undefined ? { groups: groups.groups } : {}) };
+  const ran = await job_runFollowed(USER_JOBS.mod(target.vm), `change ${username} on the ChRIS on ${target.vm}`, chrisUserModRun_make(target.vm, ask, deps, result));
+  if ('error' in ran) return envelope_error('', undefined, `chris user mod: ${ran.error}\n`);
+  const answer: UserAnswer | undefined = result.answer;
+  if (answer?.kind === 'absent') return envelope_error('', undefined, `chris user mod: ${target.vm}: no account ${username}\n`);
+  if (answer?.kind === 'emailTaken') return envelope_error('', undefined, `chris user mod: ${target.vm}: ${email ?? ''} is ${answer.username}'s already\n`);
+  if (answer?.kind === 'noGroup') return envelope_error('', undefined, `chris user mod: ${target.vm}: CUBE has no group ${answer.groups.join(', ')}; nothing changed\n`);
+  return envelope_ok(`${target.vm}: ${username} changed at ${target.url}: ${said.join('; ')}\n`);
 }
 
 /**
@@ -421,6 +514,8 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   if (name === undefined || extra.length > 0) return envelope_error('', undefined, `chris deploy: usage: ${DEPLOY_USAGE}\n`);
   const profileName: string | undefined = read.options.get('--profile');
   const profile: ChrisProfile | undefined = profileName === undefined ? undefined : CHRIS_PROFILES[profileName];
+  const unbuilt: boolean = CHRIS_PROFILE_OFFERS.some((offer: ChrisProfileOffer): boolean => offer.name === profileName && !offer.built);
+  if (profile === undefined && unbuilt) return envelope_error('', undefined, `chris deploy: --profile ${profileName ?? ''} is not built yet; one of ${Object.keys(CHRIS_PROFILES).join(', ')}\n`);
   if (profile === undefined) return envelope_error('', undefined, `chris deploy: --profile ${profileName ?? '<profile>'}: one of ${Object.keys(CHRIS_PROFILES).join(', ')}\n`);
   const host: string | null = read.options.get('--host') ?? null;
   if (host !== null && !HOST_NAME.test(host)) return envelope_error('', undefined, `chris deploy: --host ${host}: not a host name\n`);

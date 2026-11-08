@@ -2,7 +2,8 @@
  * @file What runs of a ChRIS a deploy put up, read from it (AEGIS's
  * a-change-is-a-loop, clause 1: render what stands, from its truth, with its
  * age): CUBE's API as the public reaches it and whether the admin signs in,
- * CUBE's accounts (the `all_users` group's members, every page), and porter's
+ * CUBE's groups and their members (every page; an account is a member of
+ * `all_users` at least, its id CUBE's own), and porter's
  * health, open sessions and version. Read over HTTPS from this host with the
  * admin password the host keeps, so a READ session reads it: no bastion
  * session is made, nothing in the tenancy changes.
@@ -15,10 +16,12 @@ import type { ChrisSecrets } from './compose.js';
 /** A GET as this host makes it: the status and the JSON body, or null when nothing answered. */
 export type HttpGet = (url: string, auth: { user: string; password: string } | null) => Promise<{ status: number; body: unknown } | null>;
 
-/** A CUBE account as the ChRIS holds it. */
+/** A CUBE account as the ChRIS holds it: its CUBE id (null when CUBE does not say) and the groups it is in. */
 export interface ChrisAccount {
   readonly username: string;
   readonly email: string;
+  readonly id: number | null;
+  readonly groups: ReadonlyArray<string>;
 }
 
 /** What runs of a deployed ChRIS, read from it. */
@@ -32,6 +35,8 @@ export interface ChrisLive {
   /** CUBE's accounts, or null when they could not be read; with why. */
   readonly accounts: ReadonlyArray<ChrisAccount> | null;
   readonly accountsWhy: string | null;
+  /** CUBE's groups by name, read with the accounts (null when they were not). */
+  readonly groups: ReadonlyArray<string> | null;
 }
 
 /** How many accounts a page asks for; the walk follows every page. */
@@ -69,37 +74,65 @@ function page_read(body: unknown): { results: unknown[]; next: string | null } {
 }
 
 /**
- * CUBE's accounts: the members of `all_users`, every page.
+ * Every page of a DRF list, from the first.
  *
  * @param api - CUBE's API root, ending in `/`.
+ * @param first - The first page's address.
  * @param auth - The admin's credentials.
  * @param get - How a GET is made.
- * @returns The accounts, or why they were not read.
+ * @returns Every result, or why not.
  */
-async function accounts_read(api: string, auth: { user: string; password: string }, get: HttpGet): Promise<{ accounts: ChrisAccount[] } | { why: string }> {
-  const found = await get(`${api}groups/search/?name=all_users`, auth);
-  if (found === null || found.status !== 200) return { why: `groups/search answered ${found?.status ?? 'nothing'}` };
-  const group: unknown = page_read(found.body).results[0];
-  const id: unknown = typeof group === 'object' && group !== null ? (group as Record<string, unknown>)['id'] : undefined;
-  if (typeof id !== 'number') return { why: 'CUBE has no all_users group' };
-  const accounts: ChrisAccount[] = [];
-  let next: string | null = `${api}groups/${id}/users/?limit=${PAGE}`;
+async function pages_walk(api: string, first: string, auth: { user: string; password: string }, get: HttpGet): Promise<{ results: unknown[] } | { why: string }> {
+  const results: unknown[] = [];
+  let next: string | null = first;
   while (next !== null) {
     const answered = await get(next, auth);
-    if (answered === null || answered.status !== 200) return { why: `the group's users answered ${answered?.status ?? 'nothing'}` };
+    if (answered === null || answered.status !== 200) return { why: `${new URL(next).pathname} answered ${answered?.status ?? 'nothing'}` };
     const read = page_read(answered.body);
-    for (const one of read.results) {
-      // A group's member is a membership: CUBE names the account `user_username`, `user_email` (6.11.0).
-      const row: Record<string, unknown> = typeof one === 'object' && one !== null ? one as Record<string, unknown> : {};
-      const username: unknown = row['user_username'] ?? row['username'];
-      const email: unknown = row['user_email'] ?? row['email'];
-      if (typeof username === 'string') accounts.push({ username, email: typeof email === 'string' ? email : '' });
-    }
+    results.push(...read.results);
     // CUBE names its next page by the address it was asked at, which behind the proxy may be plain http: the path is
     // kept and the origin is the one the public reaches.
     next = read.next === null ? null : new URL(`${new URL(read.next).pathname}${new URL(read.next).search}`, api).toString();
   }
-  return { accounts: accounts.sort((a: ChrisAccount, b: ChrisAccount): number => a.username.localeCompare(b.username)) };
+  return { results };
+}
+
+/**
+ * CUBE's groups and accounts: every group, then each group's members, every
+ * page; an account is any member of any group (`all_users` holds them all).
+ *
+ * @param api - CUBE's API root, ending in `/`.
+ * @param auth - The admin's credentials.
+ * @param get - How a GET is made.
+ * @returns The accounts with their groups and the groups' names, or why they were not read.
+ */
+async function accounts_read(api: string, auth: { user: string; password: string }, get: HttpGet): Promise<{ accounts: ChrisAccount[]; groups: string[] } | { why: string }> {
+  const listed = await pages_walk(api, `${api}groups/?limit=${PAGE}`, auth, get);
+  if ('why' in listed) return { why: listed.why };
+  const groups: Array<{ id: number; name: string }> = [];
+  for (const one of listed.results) {
+    const row: Record<string, unknown> = typeof one === 'object' && one !== null ? one as Record<string, unknown> : {};
+    if (typeof row['id'] === 'number' && typeof row['name'] === 'string') groups.push({ id: row['id'], name: row['name'] });
+  }
+  if (!groups.some((group): boolean => group.name === 'all_users')) return { why: 'CUBE has no all_users group' };
+  const held: Map<string, { email: string; id: number | null; groups: string[] }> = new Map();
+  for (const group of groups) {
+    const members = await pages_walk(api, `${api}groups/${group.id}/users/?limit=${PAGE}`, auth, get);
+    if ('why' in members) return { why: members.why };
+    for (const one of members.results) {
+      // A group's member is a membership: CUBE names the account `user_id`, `user_username`, `user_email` (6.11.0).
+      const row: Record<string, unknown> = typeof one === 'object' && one !== null ? one as Record<string, unknown> : {};
+      const username: unknown = row['user_username'] ?? row['username'];
+      if (typeof username !== 'string') continue;
+      const email: unknown = row['user_email'] ?? row['email'];
+      const id: unknown = row['user_id'];
+      const account = held.get(username) ?? { email: typeof email === 'string' ? email : '', id: typeof id === 'number' ? id : null, groups: [] };
+      account.groups.push(group.name);
+      held.set(username, account);
+    }
+  }
+  const accounts: ChrisAccount[] = [...held.entries()].map(([username, account]): ChrisAccount => ({ username, email: account.email, id: account.id, groups: account.groups.sort() }));
+  return { accounts: accounts.sort((a: ChrisAccount, b: ChrisAccount): number => a.username.localeCompare(b.username)), groups: groups.map((group): string => group.name).sort() };
 }
 
 /**
@@ -123,8 +156,8 @@ export async function chrisLive_read(chris: NonNullable<VmRecord['chris']>, secr
     const body: Record<string, unknown> = typeof health?.body === 'object' && health.body !== null ? health.body as Record<string, unknown> : {};
     porter = { url, status: health?.status ?? null, sessions: typeof body['sessions'] === 'number' ? body['sessions'] : null, version: typeof body['version'] === 'string' ? body['version'] : null };
   }
-  if (auth === null) return { at, cube, porter, accounts: null, accountsWhy: 'this host keeps no admin password for it' };
-  if (cube.admin !== true) return { at, cube, porter, accounts: null, accountsWhy: 'the admin does not sign in' };
+  if (auth === null) return { at, cube, porter, accounts: null, accountsWhy: 'this host keeps no admin password for it', groups: null };
+  if (cube.admin !== true) return { at, cube, porter, accounts: null, accountsWhy: 'the admin does not sign in', groups: null };
   const read = await accounts_read(api, auth, get);
-  return 'accounts' in read ? { at, cube, porter, accounts: read.accounts, accountsWhy: null } : { at, cube, porter, accounts: null, accountsWhy: read.why };
+  return 'accounts' in read ? { at, cube, porter, accounts: read.accounts, accountsWhy: null, groups: read.groups } : { at, cube, porter, accounts: null, accountsWhy: read.why, groups: null };
 }

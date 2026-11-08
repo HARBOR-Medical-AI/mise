@@ -250,6 +250,43 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(plain(again.rendered)).toMatch(/^store: jorge is there already \(jorge@example\.org, read \d\d:\d\d UTC\); left as it is\n$/);
   });
 
+  it('adds a user into the groups CUBE holds, and changes an account\'s groups and email: read first, a group CUBE lacks refused unasked, asked with the change', async () => {
+    const fleet: FakeChrisFleet = new FakeChrisFleet();
+    const reach: ChrisCommandContext = { ...context, ...chrisReach_fake(fleet, 0), registrar: null };
+    surface.answers = ['y', 'admin-password'];
+    await chris_run(reach, ['deploy', 'store', '--profile', 'minimal']);
+    const cube = fleet.vm_get('store');
+    surface.asked = [];
+    expect((await chris_run(reach, ['user', 'add', 'anabela', '--email', 'ana@example.org', '--groups', 'pacs_users,radiology'])).renderedErr).toContain('store: CUBE has no group radiology (it holds all_users, pacs_users)');
+    expect(surface.asked).toEqual([]);
+    surface.answers = ['y', 'ana-password-1'];
+    const added = await chris_run(reach, ['user', 'add', 'anabela', '--email', 'ana@example.org', '--groups', 'all_users,pacs_users']);
+    expect(surface.asked[0]).toMatch(/^chris user add anabela: makes the account anabela \(ana@example\.org, in all_users, pacs_users\) on the ChRIS/);
+    expect(plain(added.rendered)).toBe('store: anabela added at http://203.0.113.10/api/v1/ (ana@example.org, in all_users, pacs_users)\n');
+    expect([...cube.groups.get('pacs_users') ?? []]).toContain('anabela');
+    // The status reads each account's id and groups, and the groups CUBE holds.
+    const status = await chris_run(reach, ['status']);
+    expect(status.model).toMatchObject({ data: { chris: [{ live: { groups: ['all_users', 'pacs_users'], accounts: [{ username: 'anabela', id: 2, groups: ['all_users', 'pacs_users'] }, { username: 'chris', id: 1 }] } }] } });
+    surface.asked = [];
+    surface.answers = ['n'];
+    const declined = await chris_run(reach, ['user', 'mod', 'anabela', '--groups', 'all_users', '--email', 'anabela@example.org']);
+    expect(surface.asked).toEqual(['chris user mod anabela: on the ChRIS at http://203.0.113.10/api/v1/, on store: email ana@example.org → anabela@example.org; groups − pacs_users. A NO changes nothing. Continue? [y/N]']);
+    expect(declined.model?.kind).toBe(LINE_DECLINED_MODEL_KIND);
+    expect([...cube.groups.get('pacs_users') ?? []]).toContain('anabela');
+    surface.answers = ['y'];
+    const changed = await chris_run(reach, ['user', 'mod', 'anabela', '--groups', 'all_users', '--email', 'anabela@example.org']);
+    expect(plain(changed.rendered)).toBe('store: anabela changed at http://203.0.113.10/api/v1/: email ana@example.org → anabela@example.org; groups − pacs_users\n');
+    expect([...cube.groups.get('pacs_users') ?? []]).not.toContain('anabela');
+    expect([...cube.groups.get('all_users') ?? []]).toContain('anabela');
+    expect(cube.users.get('anabela')).toBe('anabela@example.org');
+    surface.asked = [];
+    expect(plain((await chris_run(reach, ['user', 'mod', 'anabela', '--email', 'anabela@example.org'])).rendered)).toMatch(/^store: anabela is so already/);
+    expect((await chris_run(reach, ['user', 'mod', 'nobody', '--groups', 'pacs_users'])).renderedErr).toContain('store: no account nobody');
+    expect((await chris_run(reach, ['user', 'mod', 'anabela', '--email', 'dev@babymri.org'])).renderedErr).toContain('dev@babymri.org is chris\'s already');
+    expect((await chris_run(reach, ['user', 'mod', 'anabela'])).renderedErr).toContain('nothing to change: --email or --groups');
+    expect(surface.asked).toEqual([]);
+  });
+
   it('generates a password when none is typed, shows it once, and reads one from a file', async () => {
     surface.answers = ['y', 'admin-password'];
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal']);
@@ -287,6 +324,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
   it('reads CUBE\'s answer line among whatever else the container prints', () => {
     expect(userAnswer_parse('warning: x\nstratus-user exists "a@b.org"\n')).toEqual({ kind: 'exists', email: 'a@b.org' });
     expect(userAnswer_parse('stratus-user email-taken "jorge"\n')).toEqual({ kind: 'emailTaken', username: 'jorge' });
+    expect(userAnswer_parse('stratus-user no-group ["radiology"]\n')).toEqual({ kind: 'noGroup', groups: ['radiology'] });
     expect(userAnswer_parse('Traceback (most recent call last):\n')).toBeNull();
   });
 
@@ -339,7 +377,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     // status reads what runs from it, over HTTPS, under the deploy's record.
     const reading: ChrisCommandContext = { ...context, http_get: async (url: string, auth) => (url === 'https://porter.example.org/healthz' ? { status: 200, body: { sessions: 2, version: '0.9.11' } }
       : url === 'https://cube.example.org/api/v1/' ? { status: auth !== null ? 200 : 401, body: {} }
-        : url.includes('groups/search') ? { status: 200, body: { next: null, results: [{ id: 3 }] } }
+        : url.includes('groups/?limit') ? { status: 200, body: { next: null, results: [{ id: 3, name: 'all_users' }] } }
           : url.includes('groups/3/users') ? { status: 200, body: { next: null, results: [{ username: 'chris', email: 'dev@babyMRI.org' }] } } : null) };
     const status = await chris_run(reading, ['status']);
     expect(plain(status.rendered)).toMatch(/runs {6}CUBE answers 200, chris signs in; porter answers 200, 2 sessions open, porter 0\.9\.11 {2}\(read \d\d:\d\d UTC\)/);

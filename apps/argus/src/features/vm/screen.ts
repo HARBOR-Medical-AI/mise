@@ -21,13 +21,13 @@
  */
 import type { ChrisPlanModel, ChrisStatusRow, PromptKind, VmCostRate, VmCostRow, VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
-import { chrisStatusModelSchema, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema } from '@fnndsc/menu';
-import { lockWhere_text, modePill_make } from '../takeover/tier.js';
+import { CHRIS_PROFILE_OFFERS, chrisStatusModelSchema, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema } from '@fnndsc/menu';
+import { lockWhere_text, modePill_make, READ_HELD, type ReadHold } from '../takeover/tier.js';
 import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
 import { buildWould_derive, costLine_derive, line_parse, line_render, lineOption_get, lineOption_set, lines_build, ports_word, rate_words, runningStep_find, script_render, stepBuildLine_get, steps_build, vmLevers_read, vmSliders_build, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type VmRuns } from '../script/model.js';
 import { ScriptScreen, type OpenAsk, type QuietAnswer, type ScriptHooks } from '../script/screen.js';
-import { FACTS_KEY, MACHINES_KEY, NEW_KEY, SERVICES_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmServiceKind_derive, vmServices_change, vmServices_read, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
+import { FACTS_KEY, MACHINES_KEY, NEW_KEY, SERVICES_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmServiceKind_derive, vmServices_change, vmServices_read, serviceDraft_why, leverFloor_derive, profileRows_derive, accountChanges_derive, groupsMove_words, ALL_USERS_GROUP, CHRIS_ADMIN_NAME, type AccountChange, type AccountDraft, type AccountEdit, type AccountRow, type HeldAccount, type ProfileRow, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
 import { BUILD_PHASES, buildQuestion_plain, chrisQuestion_plain, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_take, type BuildQuestion, type BuildRun } from './run.js';
 import { Listing } from '../roster/listing.js';
 import type { ListingTrait } from '../roster/row.js';
@@ -91,6 +91,21 @@ export class VmScreen extends ScriptScreen {
   /** The machines as an ARGUS listing; its mount stays across redraws, so its caps, widths and order do. */
   private machineListing: Listing<VmStatusRow> | null = null;
   private machineListingMount: HTMLElement | null = null;
+  /** PROFILE's listing, kept across draws as MACHINES' is, and the line a press writes. */
+  private profileListing: Listing<ProfileRow> | null = null;
+  private profileListingMount: HTMLElement | null = null;
+  private profileLine: ScriptLine | undefined = undefined;
+  /** ITS USERS: the listing (kept across draws), what the operator changed of each account and the new ones written, not yet applied; the row open in the editor; the change block's mount, redrawn as a field is typed. */
+  private accountListing: Listing<AccountRow> | null = null;
+  private accountListingMount: HTMLElement | null = null;
+  private accountEdits: Map<string, AccountEdit> = new Map();
+  private accountDrafts: AccountDraft[] = [];
+  private accountOpen: string | null = null;
+  private accountChangeMount: HTMLElement | null = null;
+  /** What the listing's press and the editor read: the seat, the accounts and groups CUBE holds, the script's user lines. */
+  private accountContext: { step: ScriptStep; held: ReadonlyArray<HeldAccount>; groups: ReadonlyArray<string> | null; users: ScriptStep | undefined } | null = null;
+  /** APPLY in flight, or the one that just ended: each change and where it stands. */
+  private accountRun: { vm: string; changes: Array<{ words: string; state: 'waiting' | 'going' | 'done' | 'declined' | 'failed' | 'skipped' }>; outcome: { tone: 'done' | 'declined' | 'failed'; words: string } | null } | null = null;
   /** The build in flight, or the one that just ended, drawn as one run on SIZE. */
   private run: BuildRun | null = null;
   /** Whether the operator stopped following a task: then the screen does not follow it again by itself. */
@@ -238,6 +253,11 @@ export class VmScreen extends ScriptScreen {
     if (this.run !== null && this.run.vm !== name) this.run = null;
     this.followDeclined = false;
     this.chrisRow = null;
+    // An account's pending change is the machine's it was written on.
+    this.accountEdits = new Map();
+    this.accountDrafts = [];
+    this.accountOpen = null;
+    if (this.accountRun !== null && this.accountRun.vm !== name) this.accountRun = null;
     this.draw();
     void this.limits_need();
     void this.standing_read();
@@ -640,7 +660,7 @@ export class VmScreen extends ScriptScreen {
   private machines_make(): HTMLElement[] {
     const list: HTMLElement = el('section', 'ss-col-wide vm-machines');
     if (this.machineListingMount === null) {
-      this.machineListingMount = el('section', 'vm-machines-listing');
+      this.machineListingMount = el('section', 'vm-listing vm-machines-listing');
       this.machineListingMount.setAttribute('aria-label', 'The machines the tenancy runs');
       this.machineListing = new Listing<VmStatusRow>({
         mount: this.machineListingMount,
@@ -664,18 +684,11 @@ export class VmScreen extends ScriptScreen {
     return [list];
   }
 
-  /**
-   * The machines into the listing. Every ARGUS listing leads with an index
-   * pill, the number `@N` takes for a row the session can name; no line
-   * names a machine by its row, so the pill would be a bare count: its track
-   * is folded to nothing here (the operator, 2026-11-06).
-   */
+  /** The machines into the listing, its index track folded (indexTrack_fold). */
   private machineRows_set(): void {
     const mount: HTMLElement | null = this.machineListingMount;
     this.machineListing?.rows_set([{ key: 'machines', rows: this.vms }], { field: 'machines' });
-    if (mount === null) return;
-    const cols: string = mount.style.getPropertyValue('--roster-cols');
-    if (cols.startsWith('5.2rem ')) mount.style.setProperty('--roster-cols', `0px ${cols.slice('5.2rem '.length)}`);
+    if (mount !== null) indexTrack_fold(mount);
   }
 
   /** The listing's columns: what each machine is, read from the tenancy. */
@@ -821,7 +834,8 @@ export class VmScreen extends ScriptScreen {
     );
     const toggle: HTMLButtonElement = el('button', `tdc-pill${ssh.on ? ' tdc-pill-quiet' : ''} vm-service-remove`, ssh.on ? 'CLOSE' : 'OPEN');
     toggle.type = 'button';
-    toggle.disabled = this.busy !== null || (!ssh.on && ssh.port === null);
+    toggle.disabled = this.busy !== null;
+    toggle.hidden = !ssh.on && ssh.port === null;
     toggle.addEventListener('click', (): void => {
       this.hooks.voice.pill(toggle.textContent ?? '');
       line.text = lineOption_set(line.text, '--ssh', ssh.on ? 'off' : String(ssh.port));
@@ -841,53 +855,67 @@ export class VmScreen extends ScriptScreen {
     box.append(el('span', 'tdc-section-title', 'ADD SERVICE'));
     const kinds: HTMLElement = el('div', 'tdc-families');
     const draft = this.serviceDraft;
+    const sshPort: number | null = vmServices_read(line.text, this.vmRow_get()?.spec?.ssh ?? null).ssh?.port ?? null;
+    // Only kinds that can be added are offered: WEB while 80 or 443 is free, public SSH while none is declared.
+    const webFree: number[] = [80, 443].filter((port: number): boolean => !open.includes(port));
     for (const kind of ['WEB', 'CUSTOM', 'SSH'] as const) {
       if (kind === 'SSH' && sshDeclared) continue;
+      if (kind === 'WEB' && webFree.length === 0) continue;
       const pill: HTMLButtonElement = el('button', `tdc-family${draft.kind === kind ? ' tdc-family-on' : ''}`, kind === 'SSH' ? 'PUBLIC SSH' : kind);
       pill.type = 'button';
       pill.disabled = this.busy !== null;
-      pill.addEventListener('click', (): void => { this.serviceDraft = { ...draft, kind, port: kind === 'WEB' ? (open.includes(80) ? '443' : '80') : kind === 'SSH' ? '2222' : '' }; this.draw(); });
+      pill.addEventListener('click', (): void => { this.serviceDraft = { ...draft, kind, port: kind === 'WEB' ? String(webFree[0] ?? '') : kind === 'SSH' ? '2222' : '' }; this.draw(); });
       kinds.append(pill);
     }
     box.append(kinds);
-    const field = (label: string, value: string, placeholder: string, set: (value: string) => void, wide: boolean = false): HTMLElement => {
-      const row: HTMLElement = el('div', `tdc-name-row${wide ? ' vm-service-key' : ''}`);
+    const add: HTMLButtonElement = el('button', 'tdc-pill vm-service-add-go', 'ADD');
+    const needs: HTMLElement = el('span', 'tdc-prose ss-would-refused vm-service-needs', '');
+    // ADD stands only when the service as typed can be added; until then what it still needs is said in its place.
+    const add_redraw = (): void => {
+      const why: string | null = serviceDraft_why(draft, open, sshPort);
+      add.hidden = why !== null;
+      add.disabled = this.busy !== null;
+      needs.textContent = why === null ? '' : `to add: ${why.toLowerCase()}`;
+      needs.hidden = why === null;
+    };
+    const field = (label: string, value: string, placeholder: string, set: (value: string) => void, opts: { wide?: boolean; type?: string; min?: string; max?: string; locked?: boolean } = {}): HTMLElement => {
+      const row: HTMLElement = el('div', `tdc-name-row${opts.wide === true ? ' vm-service-key' : ''}`);
       const tag: HTMLElement = el('label', 'tdc-pair-label', label);
       const input: HTMLInputElement = el('input', 'tdc-name-input');
       input.id = `vm-service-${label.toLowerCase().replace(/\s+/g, '-')}`;
       tag.setAttribute('for', input.id);
+      if (opts.type !== undefined) input.type = opts.type;
+      if (opts.min !== undefined) input.min = opts.min;
+      if (opts.max !== undefined) input.max = opts.max;
       input.value = value;
       input.placeholder = placeholder;
       input.spellcheck = false;
       input.autocomplete = 'off';
-      input.disabled = this.busy !== null;
-      input.addEventListener('input', (): void => set(input.value));
+      input.disabled = this.busy !== null || opts.locked === true;
+      input.addEventListener('input', (): void => { set(input.value); add_redraw(); });
       row.append(tag, input);
       return row;
     };
-    box.append(field('PORT', draft.port, draft.kind === 'WEB' ? '80 or 443' : '1–65535', (value: string): void => { draft.port = value.trim(); }));
+    // A web service is 80 or 443, whichever is free: chosen by the kind, never typed.
+    box.append(field('PORT', draft.port, draft.kind === 'WEB' ? '80 or 443' : '1–65535', (value: string): void => { this.serviceDraft = { ...this.serviceDraft, port: value.trim() }; Object.assign(draft, { port: value.trim() }); }, { type: 'number', min: '1', max: '65535', locked: draft.kind === 'WEB' }));
     if (draft.kind === 'SSH') {
       box.append(
-        field('USER', draft.user, 'ops · a Linux user, not a ChRIS account', (value: string): void => { draft.user = value.trim(); }),
-        field('PUBLIC KEY', draft.key, 'ssh-ed25519 AAAA… you@host, or a .pub file on this host (~/.ssh/id_ed25519.pub)', (value: string): void => { draft.key = value.trim(); }, true),
+        field('USER', draft.user, 'ops · a Linux user, not a ChRIS account', (value: string): void => { Object.assign(draft, { user: value.trim() }); }),
+        field('PUBLIC KEY', draft.key, 'ssh-ed25519 AAAA… you@host, or a .pub file on this host (~/.ssh/id_ed25519.pub)', (value: string): void => { Object.assign(draft, { key: value.trim() }); }, { wide: true }),
         el('p', 'tdc-prose ss-would-reboot', 'Public SSH opens a port to the internet for one administrative user, key-only, with sudo. Off by default; the network\'s bastion reaches the machine without it.'),
       );
     }
-    const add: HTMLButtonElement = el('button', 'tdc-pill', 'ADD');
     add.type = 'button';
-    add.disabled = this.busy !== null;
     add.addEventListener('click', (): void => {
+      if (serviceDraft_why(draft, open, sshPort) !== null) return;
       this.hooks.voice.pill('ADD');
       const port: number = Number(draft.port);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) { this.refusal_say(line.text, 'a port is a whole number from 1 to 65535'); return; }
-      if (open.includes(port)) { this.refusal_say(line.text, `${port} is open already`); return; }
       if (draft.kind === 'SSH') {
-        if (draft.key === '') { this.refusal_say(line.text, 'public SSH needs the user\'s public key, pasted or as a .pub file'); return; }
         let text: string = lineOption_set(line.text, '--ssh', String(port));
         text = lineOption_set(text, '--ssh-user', draft.user === '' ? 'ops' : draft.user);
-        text = draft.key.startsWith('ssh-') || draft.key.startsWith('ecdsa-') || draft.key.startsWith('sk-')
-          ? lineOption_set(lineOption_set(text, '--ssh-key-file', ''), '--ssh-key', draft.key)
-          : lineOption_set(lineOption_set(text, '--ssh-key', ''), '--ssh-key-file', draft.key);
+        text = draft.key.startsWith('/') || draft.key.startsWith('~/')
+          ? lineOption_set(lineOption_set(text, '--ssh-key', ''), '--ssh-key-file', draft.key)
+          : lineOption_set(lineOption_set(text, '--ssh-key-file', ''), '--ssh-key', draft.key);
         line.text = text;
       } else {
         line.text = lineOption_set(line.text, '--open', [...open, port].sort((a: number, b: number): number => a - b).join(','));
@@ -896,9 +924,11 @@ export class VmScreen extends ScriptScreen {
       this.edited = true;
       this.draw();
     });
-    box.append(add);
+    add_redraw();
+    box.append(add, needs);
     return box;
   }
+
 
   /** SERVICES' change against what runs, and BUILD saying it; nothing to change, nothing offered. */
   private servicesCommit_make(step: ScriptStep, line: ScriptLine, built: ScriptLine | undefined, words: string[]): HTMLElement {
@@ -911,7 +941,9 @@ export class VmScreen extends ScriptScreen {
     const list: HTMLElement = el('div', 'vm-change-lines');
     for (const word of words) list.append(el('span', `vm-change-line${/SSH/.test(word) && !/closed/.test(word) ? ' ss-would-reboot' : ''}`, word));
     box.append(list, el('span', 'vm-change-money', 'no change in cost: a port is a rule, in the tenancy and in the machine\'s own firewall'));
-    if (built !== undefined) {
+    // A READ session that cannot raise is told why there is no BUILD: a button that cannot be pressed is not drawn.
+    if (built !== undefined && this.hold_derive(built.text) === 'held') box.append(el('p', 'tdc-prose tdc-quiet vm-commit-says', READ_HELD_SHORT));
+    else if (built !== undefined) {
       // loop: vm-services-build
       const build: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill ss-build vm-build', `BUILD · ${words.length === 1 ? words[0] : `${words.length} changes`}`);
       build.type = 'button';
@@ -967,6 +999,54 @@ export class VmScreen extends ScriptScreen {
   // ------------------------------------------------------------------ CHRIS
 
   /**
+   * PROFILE as an ARGUS listing (a-control-offers-only-what-can-be-done): every
+   * profile stratus knows, a row each (what it puts up, what it needs, whether
+   * it can be chosen), from the one list the engine deploys from. A press
+   * chooses a row only when it is built and the machine is big enough for it;
+   * any other row is shown with why, never offered.
+   *
+   * @param line - The `chris deploy` line.
+   * @param chosen - The profile it declares.
+   * @returns The listing's mount.
+   */
+  private profileListing_make(line: ScriptLine, chosen: string): HTMLElement {
+    const rows: ProfileRow[] = profileRows_derive(CHRIS_PROFILE_OFFERS, this.vmRow_get()?.stands ?? null, chosen);
+    if (this.profileListingMount === null) {
+      this.profileListingMount = el('section', 'vm-listing vm-profile-listing');
+      this.profileListingMount.setAttribute('aria-label', 'The ChRIS profiles stratus knows');
+      this.profileListing = new Listing<ProfileRow>({
+        mount: this.profileListingMount,
+        traits: [
+          { key: 'name', label: 'NAME', className: 'vm-cell-name', width: 'minmax(6em, 8em)', cell: (row: ProfileRow): string => row.name.toUpperCase() },
+          { key: 'puts', label: 'WHAT IT PUTS UP', className: 'vm-cell-puts', width: 'minmax(12em, 1fr)', shed: 2, cell: (row: ProfileRow): string => row.puts },
+          { key: 'needs', label: 'NEEDS', className: 'vm-cell-needs', width: 'minmax(10em, 15em)', shed: 1, cell: (row: ProfileRow): string => row.needs },
+          { key: 'state', label: 'STATE', className: 'vm-cell-state', width: 'minmax(8em, 14em)', cell: (row: ProfileRow): string => row.state },
+        ],
+        key: (row: ProfileRow): string => row.name,
+        caps: 'root',
+        activate: (row: ProfileRow): void => {
+          if (this.busy !== null || row.why !== null || row.chosen) return;
+          this.hooks.voice.pill(row.name.toUpperCase());
+          const target: ScriptLine | undefined = this.profileLine;
+          if (target === undefined) return;
+          target.text = lineOption_set(target.text, '--profile', row.name);
+          this.edited = true;
+          this.draw();
+        },
+        row: {
+          className: (row: ProfileRow): string => `vm-profile-row${row.chosen ? ' vm-profile-chosen' : ''}${row.why !== null ? ' vm-profile-unoffered' : ''}`,
+          decorate: (element: HTMLElement, row: ProfileRow): void => { element.title = row.why !== null ? `not offered: ${row.why}` : row.chosen ? 'the profile the line declares' : `chooses ${row.name}`; },
+        },
+        empty: (): HTMLElement => el('p', 'tdc-prose tdc-quiet', 'stratus knows no ChRIS profile.'),
+      });
+    }
+    this.profileLine = line;
+    this.profileListing?.rows_set([{ key: 'profiles', rows }], { field: 'profiles' });
+    indexTrack_fold(this.profileListingMount);
+    return this.profileListingMount;
+  }
+
+  /**
    * CHRIS, one pane (the operator, 2026-11-07): each part of the ChRIS as the
    * line declares it beside what runs, the line's fields, RUN saying what a
    * replay does, then its accounts, each with its host access (berths, the
@@ -992,20 +1072,16 @@ export class VmScreen extends ScriptScreen {
     } else if (this.chrisAbsent_read(this.vm) !== null) {
       pane.append(this.pairs_make([['CUBE', `none deployed on ${this.vm}`], ['THE DOOR', 'no porter deployed']]));
     }
-    const profiles: HTMLElement = el('div', 'tdc-families');
-    profiles.append(el('span', 'tdc-pair-label', 'PROFILE'));
     const chosen: string = declared('--profile', 'minimal');
-    for (const profile of [...new Set([chosen, 'minimal', 'complete'])]) {
-      const pill: HTMLButtonElement = el('button', `tdc-family${profile === chosen ? ' tdc-family-on' : ''}`, profile.toUpperCase());
-      pill.type = 'button';
-      pill.disabled = this.busy !== null;
-      pill.addEventListener('click', (): void => { this.hooks.voice.pill(profile); line.text = lineOption_set(line.text, '--profile', profile); this.edited = true; this.draw(); });
-      profiles.append(pill);
-    }
+    const profiles: HTMLElement = el('div', 'vm-chris-profiles');
+    const profileHead: HTMLElement = el('div', 'vm-chris-profiles-head');
+    profileHead.append(el('span', 'tdc-pair-label', 'PROFILE'));
+    profiles.append(profileHead, this.profileListing_make(line, chosen));
     // Each field with what runs beside it, as SPEC's levers: the line and the ChRIS read together, never twice.
     const runs = (node: HTMLElement, has: string | null): HTMLElement => { if (chris !== null) node.append(el('span', 'ss-field-runs', `RUNS ${(has ?? 'none').toUpperCase()}`)); return node; };
+    runs(profileHead, chris?.profile ?? null);
     pane.append(
-      runs(profiles, chris?.profile ?? null),
+      profiles,
       runs(this.optionField_make(line, '--compute', 'COMPUTE', `the pfcon resource's name (default ${this.vm})`), chris?.compute ?? null),
       runs(this.optionField_make(line, '--host', 'HOST', 'cube.example.org · empty: by address'), chris === null ? null : chris.host ?? 'by address'),
       runs(this.optionField_make(line, '--porter', 'PORTER', 'porter.example.org · the door to mise beside it'), chris?.porter ?? null),
@@ -1019,22 +1095,389 @@ export class VmScreen extends ScriptScreen {
     pane.append(script);
     const users: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.kind === 'users');
     const accounts: HTMLElement = el('div', 'vm-chris-users');
-    accounts.append(el('span', 'tdc-section-title', 'ITS ACCOUNTS · EACH WITH ITS HOST ACCESS'));
+    accounts.append(el('span', 'tdc-section-title', 'ITS USERS'));
     if (live?.accounts != null) {
-      const lined: Set<string> = new Set((users?.lines ?? []).map((one: ScriptLine): string => line_parse(one.text).subject ?? '').filter((name: string): boolean => name !== ''));
-      const held: Set<string> = new Set(live.accounts.map((one): string => one.username));
-      const list: HTMLElement = el('div', 'vm-chris-accounts');
-      for (const name of [...new Set([...lined, ...held])]) {
-        list.append(el('span', 'vm-chris-account', name), el('span', 'ss-field-runs', held.has(name) ? (lined.has(name) ? 'IN CUBE · A LINE OF THE SCRIPT' : `IN CUBE · NO LINE${name === 'chris' ? ' (THE ADMIN)' : ''}`) : 'NOT IN CUBE YET · ITS LINE ADDS IT'), el('span', 'tdc-quiet vm-chris-access', 'HOST ACCESS · berths not built yet'));
-      }
-      accounts.append(list);
+      accounts.append(...this.accounts_make(step, live.accounts.map((one): HeldAccount => ({ username: one.username, email: one.email, id: one.id ?? null, groups: one.groups ?? [] })), live.groups ?? null, users));
     } else if (chris !== null) {
       accounts.append(el('p', 'tdc-prose tdc-quiet', `CUBE's accounts were not read${live?.accountsWhy ? `: ${live.accountsWhy}` : ''}.`));
     }
-    // The accounts as CUBE holds them first, then the script's user lines and THE NEXT USER.
-    if (users !== undefined) accounts.append(...this.users_make(users));
     pane.append(accounts);
     return pane;
+  }
+
+  // ------------------------------------------------------------- ITS USERS
+
+  /**
+   * ITS USERS (a-control-offers-only-what-can-be-done): CUBE's accounts as an
+   * ARGUS listing (NAME · UID · GID · GROUPS · EMAIL · PASSWORD, UID CUBE's
+   * own id and GID the same, the user-private group chell's `id` projects),
+   * the script's user lines CUBE does not hold yet and the new ones written
+   * here as rows of their own; a press opens a row's editor; every edit is a
+   * pending change, collected into one change block with one APPLY.
+   *
+   * @param step - The CHRIS seat.
+   * @param held - The accounts CUBE holds.
+   * @param groups - CUBE's groups, or null when they were not read.
+   * @param users - The script's user lines' seat.
+   * @returns The listing, the editor, + NEW USER, the change block and the user lines.
+   */
+  private accounts_make(step: ScriptStep, held: ReadonlyArray<HeldAccount>, groups: ReadonlyArray<string> | null, users: ScriptStep | undefined): HTMLElement[] {
+    this.accountContext = { step, held, groups, users };
+    // An edit CUBE now holds is spent: what it asked is what stands.
+    for (const [name, edit] of [...this.accountEdits]) {
+      const account: HeldAccount | undefined = held.find((one: HeldAccount): boolean => one.username === name);
+      if (account === undefined) { this.accountEdits.delete(name); continue; }
+      const kept: AccountEdit = { ...(edit.email !== undefined && edit.email !== account.email ? { email: edit.email } : {}), ...(edit.groups !== undefined && groupsMove_words(account.groups, [...new Set([ALL_USERS_GROUP, ...edit.groups])]) !== '' ? { groups: edit.groups } : {}), ...(edit.password === true ? { password: true } : {}) };
+      if (Object.keys(kept).length === 0) this.accountEdits.delete(name); else this.accountEdits.set(name, kept);
+    }
+    this.accountDrafts = this.accountDrafts.filter((draft: AccountDraft): boolean => !held.some((one: HeldAccount): boolean => one.username === draft.name));
+    if (this.accountListingMount === null) {
+      this.accountListingMount = el('section', 'vm-listing vm-account-listing');
+      this.accountListingMount.setAttribute('aria-label', 'The ChRIS\'s users');
+      this.accountListing = new Listing<AccountRow>({
+        mount: this.accountListingMount,
+        traits: [
+          { key: 'name', label: 'NAME', className: 'vm-cell-name', width: 'minmax(7em, 11em)', cell: (row: AccountRow): string => row.name },
+          { key: 'uid', label: 'UID', className: 'vm-cell-uid', width: 'minmax(3em, 4em)', shed: 3, cell: (row: AccountRow): string => row.uid },
+          { key: 'gid', label: 'GID', className: 'vm-cell-gid', width: 'minmax(3em, 4em)', shed: 4, cell: (row: AccountRow): string => row.gid },
+          { key: 'groups', label: 'GROUPS', className: 'vm-cell-groups', width: 'minmax(10em, 1fr)', cell: (row: AccountRow): string => row.groups },
+          { key: 'email', label: 'EMAIL', className: 'vm-cell-email', width: 'minmax(10em, 16em)', shed: 1, cell: (row: AccountRow): string => row.email },
+          { key: 'password', label: 'PASSWORD', className: 'vm-cell-password', width: 'minmax(7em, 10em)', shed: 2, cell: (row: AccountRow): string => row.password },
+        ],
+        key: (row: AccountRow): string => row.key,
+        caps: 'root',
+        activate: (row: AccountRow): void => {
+          if (this.busy !== null || row.kind === 'lined') return;
+          this.hooks.voice.pill(row.name.toUpperCase());
+          this.accountOpen = this.accountOpen === row.key ? null : row.key;
+          this.draw();
+        },
+        row: {
+          className: (row: AccountRow): string => `vm-account-row vm-account-${row.kind}${row.pending ? ' vm-account-pending' : ''}${row.key === this.accountOpen ? ' vm-account-open' : ''}`,
+          decorate: (element: HTMLElement, row: AccountRow): void => { element.title = row.kind === 'lined' ? 'its line in the script adds it' : row.key === this.accountOpen ? 'closes its editor' : `edits ${row.name}`; },
+        },
+        empty: (): HTMLElement => el('p', 'tdc-prose tdc-quiet', 'CUBE holds no account.'),
+      });
+    }
+    this.accountRows_set();
+    const nodes: HTMLElement[] = [this.accountListingMount];
+    const open: string | null = this.accountOpen;
+    if (open !== null) {
+      const editor: HTMLElement | null = this.accountEditor_make(open);
+      if (editor === null) this.accountOpen = null; else nodes.push(editor);
+    }
+    const commands: HTMLElement = el('div', 'tdc-commands');
+    const add: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-plain vm-account-new', '+ NEW USER');
+    add.type = 'button';
+    add.disabled = this.busy !== null;
+    add.addEventListener('click', (): void => {
+      this.hooks.voice.pill('NEW USER');
+      const key: string = `new-${Date.now()}`;
+      this.accountDrafts.push({ key, name: '', email: '', groups: [ALL_USERS_GROUP] });
+      this.accountOpen = key;
+      this.accountRunEnded_clear();
+      this.draw();
+    });
+    commands.append(add);
+    nodes.push(commands);
+    this.accountChangeMount = el('div', 'vm-change vm-account-change');
+    this.accountChange_fill();
+    nodes.push(this.accountChangeMount);
+    nodes.push(el('p', 'tdc-prose tdc-quiet', 'Host access (berths, the per-user shells) is the next step: said here, not a control yet.'));
+    // The script's user lines, the accounts it declares; THE SCRIPT shows them as written.
+    if (users !== undefined && users.lines.length > 0) {
+      const lines: HTMLElement = el('div', 'vm-size-lines');
+      lines.append(el('span', 'tdc-section-title', 'THE SCRIPT · ITS USER LINES'));
+      for (const line of users.lines) lines.append(this.lineBoxNumbered_make(line));
+      nodes.push(lines);
+    }
+    return nodes;
+  }
+
+  /**
+   * The listing's rows: each account CUBE holds with its pending change shown
+   * in place, each script user line CUBE does not hold yet, each new account
+   * written here.
+   */
+  private accountRows_set(): void {
+    const context = this.accountContext;
+    if (context === null || this.accountListing === null) return;
+    const rows: AccountRow[] = [];
+    for (const account of context.held) {
+      const edit: AccountEdit | undefined = this.accountEdits.get(account.username);
+      const wanted: ReadonlyArray<string> | null = edit?.groups === undefined ? null : [...new Set([ALL_USERS_GROUP, ...edit.groups])];
+      const moved: string = wanted === null ? '' : groupsMove_words(account.groups, wanted);
+      const email: string = edit?.email !== undefined && edit.email !== account.email ? `${edit.email} (was ${account.email || 'none'})` : account.email || '—';
+      const id: string = account.id === null ? '—' : String(account.id);
+      rows.push({
+        key: account.username, kind: 'held', uid: id, gid: id,
+        name: account.username === CHRIS_ADMIN_NAME ? `${account.username} · admin` : account.username,
+        groups: moved === '' ? account.groups.join(', ') : `${account.groups.filter((name: string): boolean => wanted?.includes(name) ?? true).join(', ')} · ${moved}`,
+        email,
+        password: edit?.password === true ? 'new · asked at APPLY' : '•••• set',
+        pending: moved !== '' || email.includes('(was ') || edit?.password === true,
+      });
+    }
+    const heldNames: Set<string> = new Set(context.held.map((one: HeldAccount): string => one.username));
+    for (const line of context.users?.lines ?? []) {
+      const name: string = line_parse(line.text).subject ?? '';
+      if (name === '' || heldNames.has(name)) continue;
+      rows.push({ key: `line-${line.number}`, kind: 'lined', name: `${name} · its line adds it`, uid: '—', gid: '—', groups: [ALL_USERS_GROUP, ...(lineOption_get(line.text, '--groups') ?? '').split(',').filter((one: string): boolean => one !== '' && one !== ALL_USERS_GROUP)].join(', '), email: lineOption_get(line.text, '--email') ?? '—', password: 'asked when it runs', pending: true });
+    }
+    for (const draft of this.accountDrafts) {
+      rows.push({ key: draft.key, kind: 'new', name: `${draft.name || '(no name yet)'} · new`, uid: '—', gid: '—', groups: [...new Set([ALL_USERS_GROUP, ...draft.groups])].join(', '), email: draft.email || '—', password: 'asked at APPLY', pending: true });
+    }
+    this.accountListing.rows_set([{ key: 'accounts', rows }], { field: 'accounts' });
+    if (this.accountListingMount !== null) indexTrack_fold(this.accountListingMount);
+  }
+
+  /** Every pending change, the script's user lines CUBE does not hold yet first (each is an account its line adds). */
+  private accountChanges_get(): AccountChange[] {
+    const context = this.accountContext;
+    if (context === null) return [];
+    const heldNames: Set<string> = new Set(context.held.map((one: HeldAccount): string => one.username));
+    const lined: AccountChange[] = (context.users?.lines ?? []).filter((line: ScriptLine): boolean => { const name: string = line_parse(line.text).subject ?? ''; return name !== '' && !heldNames.has(name); })
+      .map((line: ScriptLine): AccountChange => ({ account: line_parse(line.text).subject ?? '', words: `add user ${line_parse(line.text).subject ?? ''} · its line in the script`, line: line.text, why: null, restarts: false, declares: false }));
+    return [...lined, ...accountChanges_derive(context.held, this.accountEdits, this.accountDrafts, this.vm)];
+  }
+
+  /**
+   * The editor of the row open: a new account's NAME, then EMAIL, GROUPS (only
+   * the groups CUBE holds; `all_users` always on) and, for a held account, a
+   * new PASSWORD (asked hidden at APPLY, never shown here).
+   *
+   * @param key - The row: an account's name or a new one's key.
+   * @returns The editor, or null when the row is gone.
+   */
+  private accountEditor_make(key: string): HTMLElement | null {
+    const context = this.accountContext;
+    if (context === null) return null;
+    const account: HeldAccount | undefined = context.held.find((one: HeldAccount): boolean => one.username === key);
+    const draftAt: number = this.accountDrafts.findIndex((one: AccountDraft): boolean => one.key === key);
+    if (account === undefined && draftAt < 0) return null;
+    const draft = (): AccountDraft => this.accountDrafts[draftAt] as AccountDraft;
+    const edit = (): AccountEdit => this.accountEdits.get(key) ?? {};
+    const edit_set = (next: AccountEdit): void => { if (Object.keys(next).length === 0) this.accountEdits.delete(key); else this.accountEdits.set(key, next); };
+    const box: HTMLElement = el('div', 'tdc-lever-group vm-account-edit');
+    box.append(el('span', 'tdc-section-title', account === undefined ? 'A NEW USER' : `EDIT ${account.username}`));
+    const field = (word: string, label: string, value: string, placeholder: string, set: (value: string) => void, why: () => string | null): void => {
+      const row: HTMLElement = el('div', 'tdc-name-row');
+      const tag: HTMLElement = el('label', 'tdc-pair-label', label);
+      const input: HTMLInputElement = el('input', 'tdc-name-input');
+      input.id = `vm-account-${word}`;
+      tag.setAttribute('for', input.id);
+      input.value = value;
+      input.placeholder = placeholder;
+      input.spellcheck = false;
+      input.autocomplete = 'off';
+      input.disabled = this.busy !== null;
+      const hint: HTMLElement = el('span', 'tdc-quiet vm-lever-hint', '');
+      const mark = (): void => { const wrong: string | null = why(); input.classList.toggle('vm-lever-wrong', wrong !== null && input.value !== ''); hint.textContent = wrong !== null && input.value !== '' ? wrong : ''; };
+      input.addEventListener('input', (): void => { set(input.value.trim()); this.accountRunEnded_clear(); mark(); this.accountRows_set(); this.accountChange_fill(); });
+      mark();
+      row.append(tag, input, hint);
+      box.append(row);
+    };
+    const whyOf = (name: string): (() => string | null) => (): string | null => this.accountChanges_get().find((one: AccountChange): boolean => one.account === name && one.why !== null)?.why ?? null;
+    if (account === undefined) {
+      field('name', 'NAME', draft().name, 'a login, as ana.lima', (value: string): void => { this.accountDrafts[draftAt] = { ...draft(), name: value }; }, (): string | null => whyOf(draft().name)());
+      field('email', 'EMAIL', draft().email, 'where CUBE writes to', (value: string): void => { this.accountDrafts[draftAt] = { ...draft(), email: value }; }, (): string | null => whyOf(draft().name)());
+    } else {
+      field('email', 'EMAIL', edit().email ?? account.email, account.email, (value: string): void => { const { email: _was, ...rest } = edit(); edit_set(value === '' || value === account.email ? rest : { ...rest, email: value }); }, whyOf(account.username));
+    }
+    // GROUPS: only the groups CUBE holds are offered; all_users is every account's and never a choice.
+    const groups: HTMLElement = el('div', 'tdc-families vm-account-groups');
+    groups.append(el('span', 'tdc-pair-label', 'GROUPS'));
+    if (context.groups === null) {
+      groups.append(el('span', 'tdc-prose tdc-quiet', 'CUBE\'s groups were not read: none is offered'));
+    } else {
+      const chosen = (): ReadonlyArray<string> => (account === undefined ? draft().groups : edit().groups ?? account.groups);
+      for (const name of context.groups) {
+        // all_users is every account's: a state shown, never a button.
+        if (name === ALL_USERS_GROUP) {
+          const chip: HTMLElement = el('span', 'tdc-family tdc-family-on vm-account-group-fixed', name);
+          chip.title = 'every account is in all_users';
+          groups.append(chip);
+          continue;
+        }
+        const on: boolean = chosen().includes(name);
+        const pill: HTMLButtonElement = el('button', `tdc-family${on ? ' tdc-family-on' : ''}`, name);
+        pill.type = 'button';
+        pill.disabled = this.busy !== null;
+        pill.title = on ? `leaves ${name}` : `joins ${name}`;
+        pill.addEventListener('click', (): void => {
+          this.hooks.voice.pill(name);
+          const next: string[] = on ? chosen().filter((one: string): boolean => one !== name) : [...chosen(), name];
+          if (account === undefined) this.accountDrafts[draftAt] = { ...draft(), groups: next };
+          else { const { groups: _was, ...rest } = edit(); edit_set(groupsMove_words(account.groups, [...new Set([ALL_USERS_GROUP, ...next])]) === '' ? rest : { ...rest, groups: next }); }
+          this.accountRunEnded_clear();
+          this.draw();
+        });
+        groups.append(pill);
+      }
+    }
+    box.append(groups);
+    // PASSWORD: never shown; a new one is asked at APPLY, hidden, typed twice, or empty for one generated and shown once.
+    const password: HTMLElement = el('div', 'tdc-families vm-account-password');
+    password.append(el('span', 'tdc-pair-label', 'PASSWORD'));
+    if (account === undefined) {
+      password.append(el('span', 'tdc-prose tdc-quiet', 'asked at APPLY, hidden: empty for one generated and shown once'));
+    } else {
+      const asked: boolean = edit().password === true;
+      const admin: boolean = account.username === CHRIS_ADMIN_NAME;
+      const pill: HTMLButtonElement = el('button', `tdc-family${asked ? ' tdc-family-on' : ''}`, asked ? 'NEW PASSWORD · ASKED AT APPLY' : 'SET · NEW PASSWORD');
+      pill.type = 'button';
+      pill.disabled = this.busy !== null;
+      pill.addEventListener('click', (): void => {
+        this.hooks.voice.pill('PASSWORD');
+        const { password: _was, ...rest } = edit();
+        edit_set(asked ? rest : { ...rest, password: true });
+        this.accountRunEnded_clear();
+        this.draw();
+      });
+      password.append(pill, el('span', 'tdc-prose tdc-quiet', asked ? `asked at APPLY, hidden: typed twice, or empty for one generated and shown once${admin ? '; CUBE restarts to take it, down a minute or so' : ''}` : `•••• set, never shown${admin ? '; a new one restarts CUBE' : ''}`));
+    }
+    box.append(password);
+    const commands: HTMLElement = el('div', 'tdc-commands');
+    const done: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet vm-account-close', 'CLOSE');
+    done.type = 'button';
+    done.addEventListener('click', (): void => { this.hooks.voice.pill('CLOSE'); this.accountOpen = null; this.draw(); });
+    const drop: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet vm-account-drop', account === undefined ? 'DROP THIS USER' : 'UNDO ITS CHANGES');
+    drop.type = 'button';
+    drop.disabled = this.busy !== null;
+    // UNDO stands only when the row has a change to undo.
+    drop.hidden = account !== undefined && this.accountEdits.get(key) === undefined;
+    drop.addEventListener('click', (): void => {
+      this.hooks.voice.pill('UNDO');
+      if (account === undefined) { this.accountDrafts.splice(draftAt, 1); this.accountOpen = null; } else this.accountEdits.delete(key);
+      this.draw();
+    });
+    commands.append(done, drop);
+    box.append(commands);
+    return box;
+  }
+
+  /**
+   * The change block of ITS USERS: one line a change, those CUBE would refuse
+   * said with why and left out, then APPLY naming what it does; the note
+   * under it only while it can be pressed. While APPLY runs, each change with
+   * where it stands.
+   */
+  private accountChange_fill(): void {
+    const box: HTMLElement | null = this.accountChangeMount;
+    if (box === null) return;
+    box.replaceChildren();
+    const changes: AccountChange[] = this.accountChanges_get();
+    const run = this.accountRun !== null && this.accountRun.vm === this.vm ? this.accountRun : null;
+    if (run !== null) {
+      const lines: HTMLElement = el('div', 'vm-change-lines vm-account-run');
+      for (const change of run.changes) lines.append(el('span', `vm-change-line vm-account-${change.state}`, `${change.words} · ${change.state === 'going' ? 'asking, then doing' : change.state === 'skipped' ? 'not done: stopped before it' : change.state}`));
+      box.append(lines);
+      if (run.outcome === null) return;
+      box.append(el('p', `tdc-prose ${run.outcome.tone === 'done' ? 'tdc-quiet' : 'ss-would-refused'}`, run.outcome.words));
+    }
+    const valid: AccountChange[] = changes.filter((one: AccountChange): boolean => one.why === null);
+    const refused: AccountChange[] = changes.filter((one: AccountChange): boolean => one.why !== null);
+    if (changes.length > 0) {
+      const lines: HTMLElement = el('div', 'vm-change-lines');
+      for (const change of changes) lines.append(el('span', `vm-change-line${change.why !== null ? ' ss-would-refused' : change.restarts ? ' ss-would-reboot' : ''}`, change.why !== null ? `${change.words} · not applied: ${change.why}` : change.words));
+      box.append(lines);
+    }
+    // APPLY stands only when a change is pending that this session can apply; a button that cannot be pressed is not drawn.
+    box.hidden = changes.length === 0 && run === null;
+    if (valid.length === 0) return;
+    const hold: ReadHold = this.hold_derive((valid[0] as AccountChange).line);
+    if (hold === 'held') { box.append(el('p', 'tdc-prose tdc-quiet', `not applied: ${READ_HELD}`)); return; }
+    const label: string = valid.length === 1 ? `APPLY · ${(valid[0] as AccountChange).words}` : `APPLY · ${valid.length} changes`;
+    // loop: ss-user-add
+    const apply: HTMLButtonElement = el('button', `tdc-pill tdc-pill-plain${hold === 'asks' ? ' tdc-pill-asks' : ''} vm-account-apply`, label);
+    apply.type = 'button';
+    apply.disabled = this.busy !== null;
+    apply.addEventListener('click', (): void => { this.hooks.voice.pill('APPLY'); void this.accounts_apply(valid); });
+    box.append(apply);
+    const said: string[] = [];
+    said.push(`${hold === 'asks' ? 'asks your password first, then each change in turn' : 'each change in turn'}, asked on the strip in plain words before it is done${valid.some((one: AccountChange): boolean => one.line.startsWith('chris passwd') || one.declares) ? '; a password is asked there hidden, typed twice, or empty for one generated and shown once' : ''}`);
+    if (valid.some((one: AccountChange): boolean => one.declares)) said.push('a new user\'s line is saved to the script first');
+    const lined: Set<string> = new Set((this.accountContext?.users?.lines ?? []).map((line: ScriptLine): string => line_parse(line.text).subject ?? ''));
+    if (valid.some((one: AccountChange): boolean => one.line.startsWith('chris user mod ') && lined.has(one.account))) said.push('an account the script declares has its line rewritten to match, saved first');
+    said.push('a NO stops there and leaves the rest as they are');
+    if (refused.length > 0) said.push(`${refused.map((one: AccountChange): string => one.account || 'the new user').join(', ')} ${refused.length === 1 ? 'is' : 'are'} left out`);
+    box.append(el('span', 'tdc-prose tdc-quiet vm-commit-says', said.join('; ')));
+  }
+
+  /** An ended APPLY is its receipt until the next edit, which replaces it with the change it writes. */
+  private accountRunEnded_clear(): void {
+    if (this.accountRun?.outcome != null) this.accountRun = null;
+  }
+
+  /**
+   * APPLY: the password first when the session must be raised; a new user's
+   * line written into the script and saved (a-change-is-a-loop, clause 3);
+   * then each change sent in turn, the engine asking each (clause 4); a NO or
+   * a refusal stops the rest. The accounts read again after each are the
+   * receipt.
+   *
+   * @param changes - The changes APPLY carries.
+   */
+  private async accounts_apply(changes: ReadonlyArray<AccountChange>): Promise<void> {
+    const context = this.accountContext;
+    if (context === null || changes.length === 0) return;
+    const first: string = (changes[0] as AccountChange).line;
+    if (this.hold_derive(first) === 'asks' && this.hooks.elevate_ask !== null && !(await this.hooks.elevate_ask(first))) return;
+    const declared: AccountChange[] = changes.filter((one: AccountChange): boolean => one.declares);
+    // An account the script declares keeps its line true to what is applied: a changed email or groups rewrite its `chris user add` line, so a replay asks for what CUBE holds.
+    let rewritten: boolean = false;
+    for (const change of changes.filter((one: AccountChange): boolean => one.line.startsWith('chris user mod '))) {
+      const own: ScriptLine | undefined = this.lines.find((line: ScriptLine): boolean => line_parse(line.text).verb.join(' ') === 'chris user add' && line_parse(line.text).subject === change.account);
+      if (own === undefined) continue;
+      const email: string | null = lineOption_get(change.line, '--email');
+      const groups: string | null = lineOption_get(change.line, '--groups');
+      let text: string = own.text;
+      if (email !== null) text = lineOption_set(text, '--email', email);
+      if (groups !== null) text = lineOption_set(text, '--groups', groups === ALL_USERS_GROUP ? '' : groups);
+      if (text !== own.text) { own.text = text; rewritten = true; }
+    }
+    if (declared.length > 0 || rewritten) {
+      for (const change of declared) {
+        const number: number = (this.lines.at(-1)?.number ?? 0) + 1;
+        this.lines.push({ number, text: change.line, state: 'ready', detail: '', running: null });
+      }
+      this.steps = this.steps_derive(this.lines);
+      this.edited = true;
+      this.accountDrafts = this.accountDrafts.filter((draft: AccountDraft): boolean => !declared.some((one: AccountChange): boolean => one.account === draft.name));
+      await this.save_send();
+      if (this.edited) return;
+    }
+    const run: NonNullable<VmScreen['accountRun']> = { vm: this.vm, changes: changes.map((one: AccountChange) => ({ words: one.words, state: 'waiting' as const })), outcome: null };
+    this.accountRun = run;
+    this.accountOpen = null;
+    for (const [at, change] of changes.entries()) {
+      const shown = run.changes[at];
+      if (shown === undefined) continue;
+      shown.state = 'going';
+      this.draw();
+      const ok: boolean = await this.line_send(change.line, context.step.key);
+      const declined: boolean = ok && this.refusal?.declined === true && this.refusal.line === change.line;
+      shown.state = !ok ? 'failed' : declined ? 'declined' : 'done';
+      if (shown.state === 'done' && !change.declares) {
+        // What was asked is done: its edit is spent (the accounts read again show it).
+        const edit: AccountEdit | undefined = this.accountEdits.get(change.account);
+        if (edit !== undefined) {
+          const { password: _password, ...rest } = edit;
+          const next: AccountEdit = change.line.startsWith('chris passwd') ? rest : (edit.password === true ? { password: true } : {});
+          if (Object.keys(next).length === 0) this.accountEdits.delete(change.account); else this.accountEdits.set(change.account, next);
+        }
+      }
+      if (shown.state !== 'done') {
+        for (const rest of run.changes.slice(at + 1)) rest.state = 'skipped';
+        break;
+      }
+    }
+    const last = run.changes.find((one): boolean => one.state !== 'done');
+    run.outcome = last === undefined
+      ? { tone: 'done', words: `${run.changes.length === 1 ? 'done' : `all ${run.changes.length} done`}, read again from CUBE ${new Date().toISOString().slice(11, 16)} UTC` }
+      : { tone: last.state === 'declined' ? 'declined' : 'failed', words: last.state === 'declined' ? `${last.words}: NO, nothing changed for it; what came after was not done` : `${last.words}: refused${this.refusal?.why ? ` (${this.refusal.why})` : ''}; what came after was not done` };
+    this.draw();
   }
 
   /** A deploy in flight on CHRIS, or the one that just ended, drawn as one run. */
@@ -1049,8 +1492,14 @@ export class VmScreen extends ScriptScreen {
     if (!this.chrisPlans.has(line.text)) this.chrisPlan_ask(line.text);
     const plan: ChrisPlanModel | null | undefined = this.chrisPlans.get(line.text);
     const box: HTMLElement = el('div', 'vm-change vm-chris-change');
+    // A READ session that cannot raise is told why there is no RUN: a button that cannot be pressed is not drawn.
+    const held: boolean = this.hold_derive(line.text) === 'held';
     if (plan === null || plan === undefined) {
       // Not read yet (or the plan could not be asked): RUN still asks before it acts, and says so.
+      if (held) {
+        box.append(el('p', 'tdc-prose tdc-quiet vm-commit-says', READ_HELD_SHORT));
+        return box;
+      }
       box.append(el('p', 'tdc-prose tdc-quiet', 'what a deploy would do is not read yet: RUN asks with all of it before anything changes'));
       // loop: ss-chris-deploy
       const asking: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill ss-run vm-build vm-chris-run', 'RUN · asks before it acts');
@@ -1074,6 +1523,10 @@ export class VmScreen extends ScriptScreen {
     if (plan.sessions !== null && plan.restarts.some((one: string): boolean => one.startsWith('porter (') || one.startsWith('CUBE and porter'))) means.append(el('span', `tdc-prose${plan.sessions > 0 ? ' ss-would-reboot' : ' tdc-quiet'}`, plan.sessions === 0 ? 'no porter session is open now' : `${plan.sessions} porter session${plan.sessions === 1 ? '' : 's'} open now ${plan.sessions === 1 ? 'ends' : 'end'}`));
     if (act.quiet) means.append(el('span', 'vm-change-line', 'nothing changes: what runs is what this line deploys'));
     box.append(means);
+    if (held) {
+      box.append(el('p', 'tdc-prose tdc-quiet vm-commit-says', READ_HELD_SHORT));
+      return box;
+    }
     // loop: ss-chris-deploy
     const run: HTMLButtonElement = el('button', `tdc-pill ${act.quiet ? 'tdc-pill-quiet' : 'tdc-pill-bill'} ss-run vm-build vm-chris-run`, act.label);
     run.type = 'button';
@@ -1161,6 +1614,12 @@ export class VmScreen extends ScriptScreen {
     ]);
     const os: HTMLElement = this.optionField_make(line, '--os', 'OS', 'ubuntu-26.04');
     if (runs?.os != null) os.append(el('span', 'ss-field-runs', `RUNS ${runs.os.toUpperCase()}`));
+    // A new OS is a new machine: on one that stands it is not offered here (teardown, then build, is that act).
+    if (runs !== null) {
+      const field: HTMLInputElement | null = os.querySelector('input');
+      if (field !== null) { field.disabled = true; field.title = 'a new OS is a new machine: not offered on a machine that stands'; }
+      os.append(el('span', 'tdc-prose tdc-quiet vm-os-fixed', 'fixed while the machine stands: a new OS is a new machine'));
+    }
     pane.append(where, os);
     // Then the levers, then the one change block they make, then the script.
     const main: HTMLElement = el('div', 'vm-size-main');
@@ -1190,8 +1649,20 @@ export class VmScreen extends ScriptScreen {
 
   /** One lever: its slider (with what runs beside it), and its share of the change a month. */
   private lever_make(line: ScriptLine, spec: SliderSpec, limits: VmLimitsModel): HTMLElement {
-    const row: HTMLElement = this.slider_make(line, spec, limits);
+    // A control offers only what can be done: on a machine that stands a disk only grows, so what runs is its floor.
+    const key = ({ '--disk': 'disk', '--data': 'data' } as const)[spec.word as '--disk' | '--data'];
+    const runsSize: number | null = key === undefined ? null : this.runs_get(line_parse(line.text).subject ?? '')?.[key] ?? null;
+    const floor: number = leverFloor_derive(spec.word, spec.min, runsSize);
+    const declared: number | null = key === undefined ? null : Number(lineOption_get(line.text, spec.word) ?? NaN);
+    // A declaration below what runs (made elsewhere, or before a grow) is raised to it: never offered, never built.
+    if (declared !== null && Number.isFinite(declared) && declared < floor) line.text = lineOption_set(line.text, spec.word, String(floor));
+    const row: HTMLElement = this.slider_make(line, { ...spec, min: floor }, limits);
     row.classList.add('vm-lever');
+    if (floor > spec.min) {
+      const first: Element | null = row.querySelector('.tdc-slider-ends > span:first-child');
+      if (first !== null) first.textContent = `${floor} · ONLY GROWS`;
+      row.title = `${spec.label.toLowerCase()} only grows: ${floor} ${spec.unit} runs, so less is not offered`;
+    }
     // The value is typed as well as slid: a number box in step with the slider, its range said, arrow keys stepping.
     const slider: HTMLInputElement | null = row.querySelector<HTMLInputElement>('input[type="range"]');
     const shown: HTMLElement | null = row.querySelector('.tdc-slider-value');
@@ -1215,7 +1686,8 @@ export class VmScreen extends ScriptScreen {
         const step: number = Number(slider.step);
         const fits: boolean = typed.value !== '' && Number.isFinite(value) && value >= min && value <= max && (value - min) % step === 0;
         typed.classList.toggle('vm-lever-wrong', !fits);
-        hint.textContent = fits ? '' : `${min}–${max}${spec.unit === '' ? '' : ` ${spec.unit}`}, steps of ${step}`;
+        // Below what runs on a disk that only grows, the hint says so; otherwise it says the range.
+        hint.textContent = fits ? '' : floor > spec.min && value < floor ? `${floor} runs: only grows` : `${min}–${max}${spec.unit === '' ? '' : ` ${spec.unit}`}, steps of ${step}`;
         if (!fits || slider.value === typed.value) return;
         slider.value = typed.value;
         slider.dispatchEvent(new Event('input'));
@@ -1311,7 +1783,7 @@ export class VmScreen extends ScriptScreen {
       // One line a change: what, what it does to the machine, its own share of the cost.
       for (const one of would) {
         const share: number | null | undefined = shares.get(changeWord_derive(one.change));
-        const does: string = one.tone === 'refused' ? one.consequence : !one.change.includes('→') ? one.consequence : one.tone === 'reboot' ? 'reboots' : 'grows online';
+        const does: string = one.tone === 'refused' ? `not built: ${one.consequence.replace(/^refused( unless named \(--allow-alter\))?: /, '')}` : !one.change.includes('→') ? one.consequence : one.tone === 'reboot' ? 'reboots' : 'grows online';
         const row: HTMLElement = el('span', `vm-change-line ss-would-${one.tone}`, `${one.change} · ${does}`);
         if (share != null && Math.abs(share) >= 0.005) row.append(el('span', `vm-change-share${share > 0 ? ' tdc-bill' : ''}`, ` · ${money(share)}`));
         lines.append(row);
@@ -1337,14 +1809,40 @@ export class VmScreen extends ScriptScreen {
     const says: HTMLElement | null = body.querySelector('.vm-commit-says');
     if (build === null || says === null) return;
     const hold = this.hold_derive(build.dataset['build'] ?? '');
-    const priced: string = month === null || Math.abs(month) < 0.005 ? '' : ` · ${money(month)} a month`;
-    build.textContent = hold === 'held' ? 'BUILD · REFUSED IN READ' : refused !== undefined ? `BUILD · ${refused.change.toUpperCase()} IS REFUSED` : would.length === 0 ? 'BUILD' : `BUILD · ${would.length === 1 ? words : `${would.length} changes`}${priced}`;
-    build.classList.toggle('tdc-pill-quiet', would.length === 0);
+    // BUILD carries what can be built; what only the engine refuses is listed above with its reason and left out.
+    const valid: BuildWould[] = would.filter((one: BuildWould): boolean => one.tone !== 'refused');
+    const priced: string = month === null || Math.abs(month) < 0.005 || refused !== undefined ? '' : ` · ${money(month)} a month`;
+    build.textContent = valid.length === 0 ? 'BUILD' : `BUILD · ${valid.length === 1 ? (valid[0] as BuildWould).change : `${valid.length} changes`}${priced}`;
     build.classList.toggle('tdc-pill-asks', hold === 'asks');
-    build.disabled = hold === 'held' || refused !== undefined || this.acting_is();
-    build.title = `sends: ${line.text}, then ${build.dataset['build'] ?? ''}`;
-    says.textContent = hold === 'held' ? READ_HELD_SHORT
-      : `${hold === 'asks' ? 'your password first, then ' : ''}${would.length === 0 ? 'plans and says there is nothing to do' : 'plans, then asks with the cost before anything bills'}`;
+    // BUILD stands only when it has something it can build and this session can build it; a button that cannot be pressed is not drawn.
+    build.hidden = valid.length === 0 || hold === 'held';
+    build.disabled = this.acting_is();
+    build.title = `sends: ${this.declaredValid_derive(line.text, runs, would)}, then ${build.dataset['build'] ?? ''}`;
+    // The note says what the press does, and only while it can be pressed; a READ session that cannot raise is told why there is no BUILD.
+    says.textContent = valid.length === 0 ? ''
+      : hold === 'held' ? READ_HELD_SHORT
+        : build.disabled ? ''
+          : `${hold === 'asks' ? 'asks your password first, then ' : ''}plans, then asks with the cost before anything bills${refused !== undefined ? `; ${refused.change} is left out` : ''}`;
+  }
+
+  /**
+   * The declaration BUILD sends: the line with any change the engine would
+   * refuse put back to what runs, so the valid changes build alone.
+   *
+   * @param text - The `vm new` line.
+   * @param runs - What runs.
+   * @param would - What the levers would change.
+   * @returns The line to declare.
+   */
+  private declaredValid_derive(text: string, runs: (VmRuns & { at: string }) | null, would: ReadonlyArray<BuildWould>): string {
+    if (runs === null) return text;
+    let valid: string = text;
+    for (const one of would.filter((each: BuildWould): boolean => each.tone === 'refused')) {
+      if (/^boot disk /.test(one.change) && runs.disk !== null) valid = lineOption_set(valid, '--disk', String(runs.disk));
+      else if (/^data /.test(one.change) && runs.data !== null) valid = lineOption_set(valid, '--data', String(runs.data));
+      else if (/^os /.test(one.change) && runs.os != null) valid = lineOption_set(valid, '--os', runs.os);
+    }
+    return valid;
   }
 
   /**
@@ -1544,7 +2042,16 @@ export class VmScreen extends ScriptScreen {
     const building: boolean = built.startsWith(`vm build ${this.vm}`) && this.vm !== '';
     if (!building) { await super.declaredBuild_send(declared, built, step); return; }
     if (this.hold_derive(built) === 'asks' && this.hooks.elevate_ask !== null && !(await this.hooks.elevate_ask(built))) return;
-    this.run = buildRun_start(this.vm, [this.would_get().words, this.servicesChange_get().join(', ')].filter((words: string): boolean => words !== '').join(', '), Date.now());
+    // What the engine would refuse is put back to what runs first: the valid changes build alone.
+    const spec: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.kind === 'vm new');
+    const specLine: ScriptLine | undefined = spec?.lines[0];
+    const { would } = this.would_get();
+    if (specLine !== undefined && specLine.text === declared && would.some((one: BuildWould): boolean => one.tone === 'refused')) {
+      specLine.text = this.declaredValid_derive(declared, this.runs_get(this.vm), would);
+      declared = specLine.text;
+    }
+    const valid: string = this.would_get().would.filter((one: BuildWould): boolean => one.tone !== 'refused').map((one: BuildWould): string => one.change).join(', ');
+    this.run = buildRun_start(this.vm, [valid, this.servicesChange_get().join(', ')].filter((words: string): boolean => words !== '').join(', '), Date.now());
     this.runTick_set(true);
     this.draw();
     if (await this.line_send(declared, step) && await this.line_send(built, step, true)) this.builtHere = step;
@@ -1837,3 +2344,26 @@ export class VmScreen extends ScriptScreen {
     return [goes, guard];
   }
 }
+
+/**
+ * Folds a listing's index track to nothing. Every ARGUS listing leads with an
+ * index pill, the number `@N` takes for a row the session can name; no line
+ * names a machine, a profile or an account by its row, so the pill would be
+ * a bare count (the operator, 2026-11-06).
+ *
+ * @param mount - The listing's mount.
+ */
+function indexTrack_fold(mount: HTMLElement): void {
+  const fold = (): void => {
+    const cols: string = mount.style.getPropertyValue('--roster-cols');
+    if (cols.startsWith('5.2rem ')) mount.style.setProperty('--roster-cols', `0px ${cols.slice('5.2rem '.length)}`);
+  };
+  fold();
+  // The listing fits its columns again as the pane moves (a phone's width sheds some), writing the track back: it is folded each time.
+  if (FOLDED.has(mount) || typeof MutationObserver === 'undefined') return;
+  FOLDED.add(mount);
+  new MutationObserver(fold).observe(mount, { attributes: true, attributeFilter: ['style'] });
+}
+
+/** The listing mounts whose index track is kept folded. */
+const FOLDED: WeakSet<HTMLElement> = new WeakSet();

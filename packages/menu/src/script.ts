@@ -80,6 +80,26 @@ export const vmSpecModelSchema = z.object({
   ssh: z.object({ port: z.number(), user: z.string(), key: z.string(), on: z.boolean() }).optional(),
 });
 
+/** A machine's size as a ChRIS profile needs it: vCPUs, GiB of memory, GB of data. */
+export interface ChrisProfileFloor { readonly vcpu: number; readonly memory: number; readonly data: number }
+
+/** A ChRIS profile as a screen lists it: its name, what it puts up in plain words, the least a machine has for it, and whether it can be deployed. */
+export interface ChrisProfileOffer {
+  readonly name: string;
+  /** What it puts up, in plain words. */
+  readonly summary: string;
+  /** The least a machine has, or null while it is not set. */
+  readonly floor: ChrisProfileFloor | null;
+  /** Whether the engine deploys it; one that is not is listed and never offered. */
+  readonly built: boolean;
+}
+
+/** The profiles, one source for the engine that deploys them and the screens that list them. */
+export const CHRIS_PROFILE_OFFERS: ReadonlyArray<ChrisProfileOffer> = [
+  { name: 'minimal', summary: 'CUBE, workers, Postgres, Dragonfly, NATS, pfcon, Caddy', floor: { vcpu: 2, memory: 4, data: 50 }, built: true },
+  { name: 'complete', summary: 'minimal + Orthanc, pfdcm, oxidicom (the PACS side)', floor: null, built: false },
+];
+
 /** The model kind `vm status` carries. */
 export const STRATUS_VM_STATUS_MODEL_KIND = 'stratus.vm.status' as const;
 
@@ -186,8 +206,11 @@ export const chrisLiveSchema = z.object({
   at: z.string(),
   cube: z.object({ url: z.string(), status: z.number().nullable(), admin: z.boolean().nullable() }),
   porter: z.object({ url: z.string(), status: z.number().nullable(), sessions: z.number().nullable(), version: z.string().nullable() }).nullable(),
-  accounts: z.array(z.object({ username: z.string(), email: z.string() })).nullable(),
+  /** Each account with its CUBE id and groups; id and groups are absent from an older daemon. */
+  accounts: z.array(z.object({ username: z.string(), email: z.string(), id: z.number().nullable().optional(), groups: z.array(z.string()).optional() })).nullable(),
   accountsWhy: z.string().nullable(),
+  /** CUBE's groups, read with the accounts; absent from an older daemon. */
+  groups: z.array(z.string()).nullable().optional(),
 });
 
 /** One VM's ChRIS as `chris status` answers it: what was deployed, and what runs. */
