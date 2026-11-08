@@ -57,7 +57,7 @@ describe('what runs of a ChRIS', () => {
 });
 
 describe('what a deploy would do', () => {
-  const ask = { profile: 'minimal', compute: 'NERC', host: 'cube.example.org', porter: 'porter.example.org' };
+  const ask = { profile: 'minimal', compute: 'NERC', host: 'cube.example.org', porter: 'porter.example.org', berths: false };
 
   it('a replay as deployed restarts nothing and does not ask; a first deploy puts it up and asks', () => {
     expect(chrisPlan_derive(CHRIS, ask, null)).toEqual({ changes: [], restarts: [], sessions: null, asks: false, first: false });
@@ -78,5 +78,16 @@ describe('what a deploy would do', () => {
     expect(chrisPlan_words('store', chrisPlan_derive(unknown, ask, 0))).toBe('chris deploy store: as deployed; restarts CUBE and porter: their files are written again and Docker restarts what changed in them (this deploy\'s record keeps no versions to compare); no porter session is open now');
     // A compute changed alone is a registration: it changes the record and restarts nothing, and still asks with the change.
     expect(chrisPlan_derive(CHRIS, { ...ask, compute: 'store' }, null)).toEqual({ changes: ['compute NERC → store'], restarts: [], sessions: null, asks: true, first: false });
+  });
+
+  it('berths: a first deploy says it puts a berth up for each person; off → on is a change and a porter restart, as deployed asks nothing', () => {
+    const berthed = { ...ask, berths: true };
+    expect(chrisPlan_derive(undefined, berthed, null).changes).toContain('a berth for each person behind porter (the berth launcher, the berth image pulled)');
+    expect(chrisPlan_derive(undefined, ask, null).changes.some((one: string): boolean => one.includes('berth'))).toBe(false);
+    const on = chrisPlan_derive(CHRIS, berthed, 2);
+    expect(on).toMatchObject({ changes: ['berths off → on'], restarts: ['porter (berths on): its open sessions end'], asks: true, first: false });
+    const had = { ...CHRIS, berths: 'launcher' as const, berthImage: 'ghcr.io/fnndsc/berth@sha256:' + 'a'.repeat(64) };
+    expect(chrisPlan_derive(had, berthed, null)).toEqual({ changes: [], restarts: [], sessions: null, asks: false, first: false });
+    expect(chrisPlan_derive(had, ask, null)).toMatchObject({ changes: ['berths on → off'], restarts: ['porter (berths off): its open sessions end, and the running berths stop (their homes are kept)'], asks: true });
   });
 });

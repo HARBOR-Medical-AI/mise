@@ -61,6 +61,14 @@ export class FakeChrisVm implements VmRemote {
   tokenRefused: boolean = false;
   /** Each plugin sync run's ask, as it reached the chell: `plan` or `apply`, the source, the ref. */
   syncs: Array<{ kind: string; ask: PluginSyncAsk }> = [];
+  /** The group that owns Docker's socket on this VM. */
+  dockerGid: string = '998';
+  /** What porter's image prints for the berth image it pins. */
+  berthPin: string = `ghcr.io/fnndsc/berth@sha256:${'ab12'.repeat(16)}`;
+  /** What the berth launcher's health reads, until it is `healthy`. */
+  launcherHealth: string = 'healthy';
+  /** Each image pulled by name. */
+  pulled: string[] = [];
   /** How long each line takes, in milliseconds, so a walk sees a deploy move. */
   readonly lineMs: number;
 
@@ -83,6 +91,11 @@ export class FakeChrisVm implements VmRemote {
     if (this.lineMs > 0) await new Promise((done: (value: unknown) => void): void => { setTimeout(done, this.lineMs); });
     if (this.failing.delete(line)) return { code: 1, stdout: '', stderr: 'it failed' };
     if (line === PLUGIN_SYNC_LINE) return this.pluginSync_answer(input ?? '', watch);
+    if (line === 'stat -c %g /var/run/docker.sock') return { code: 0, stdout: `${this.dockerGid}\n`, stderr: '' };
+    if (line.startsWith('docker run --rm --entrypoint node ')) return { code: 0, stdout: `${this.berthPin}\n`, stderr: '' };
+    if (line.startsWith('docker pull -q ')) { this.pulled.push(line.slice('docker pull -q '.length)); return { code: 0, stdout: '', stderr: '' }; }
+    if (line.startsWith('docker inspect -f ')) return { code: 0, stdout: `${this.launcherHealth}\n`, stderr: '' };
+    if (line.startsWith('docker logs --tail 5 ')) return { code: 0, stdout: 'listening failed\nEACCES docker.sock\n', stderr: '' };
     if (line.includes('docker compose up')) {
       const env: string = this.files.get('/srv/data/chris/cube.env') ?? '';
       const admin: string | undefined = /^CHRIS_SUPERUSER_PASSWORD=(.*)$/m.exec(env)?.[1];

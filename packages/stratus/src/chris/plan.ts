@@ -19,6 +19,8 @@ export interface ChrisPlanAsk {
   readonly compute: string;
   readonly host: string | null;
   readonly porter: string | null;
+  /** Whether porter starts each person's session in a berth of its own. */
+  readonly berths: boolean;
 }
 
 /** What a deploy would do, worked out without acting. */
@@ -45,6 +47,7 @@ export function chrisPlan_derive(deployed: VmRecord['chris'], ask: ChrisPlanAsk,
     const changes: string[] = [`a first deploy: CUBE (${ask.profile}) with its workers, Postgres, dragonfly, nats and pfcon are put up`, `compute ${ask.compute}`];
     if (ask.host !== null) changes.push(`CUBE at https://${ask.host}/`);
     if (ask.porter !== null) changes.push(`porter at https://${ask.porter}/`);
+    if (ask.berths) changes.push('a berth for each person behind porter (the berth launcher, the berth image pulled)');
     return { changes, restarts: [], sessions: null, asks: true, first: true };
   }
   const changes: string[] = [];
@@ -55,6 +58,8 @@ export function chrisPlan_derive(deployed: VmRecord['chris'], ask: ChrisPlanAsk,
   want('compute', deployed.compute, ask.compute);
   want('host', deployed.host, ask.host);
   want('porter', deployed.porter, ask.porter);
+  const berthsWas: boolean = deployed.berths === 'launcher';
+  if (berthsWas !== ask.berths) changes.push(`berths ${berthsWas ? 'on' : 'off'} → ${ask.berths ? 'on' : 'off'}`);
   const restarts: string[] = [];
   const known: boolean = deployed.image !== undefined;
   if (!known) restarts.push(`CUBE${ask.porter !== null ? ' and porter' : ''}: their files are written again and Docker restarts what changed in them (this deploy's record keeps no versions to compare)`);
@@ -63,6 +68,7 @@ export function chrisPlan_derive(deployed: VmRecord['chris'], ask: ChrisPlanAsk,
   if (known && ask.porter !== null) {
     if (deployed.porter === undefined) restarts.push('porter is put up');
     else if (deployed.porterVersion !== PORTER_VERSION) restarts.push(`porter (${deployed.porterVersion ?? '?'} → ${PORTER_VERSION}): its open sessions end`);
+    else if (berthsWas !== ask.berths) restarts.push(`porter (berths ${ask.berths ? 'on' : 'off'}): its open sessions end${ask.berths ? '' : ', and the running berths stop (their homes are kept)'}`);
   }
   return { changes, restarts, sessions, asks: changes.length > 0 || restarts.length > 0, first: false };
 }

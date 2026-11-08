@@ -100,6 +100,11 @@ export interface LauncherOptions {
   readonly cubeNetwork: string;
   /** Porter's container, when porter is one: joined to each berth's wire as it starts; null when porter runs on the host. */
   readonly porterContainer: string | null;
+  /**
+   * The name CUBE answers to (`cube.chrisproject.org`) when the spoke publishes its API on cube-net's gateway: inside
+   * each berth that name resolves to the gateway, so the session's URL is the one porter's is; absent, by public DNS.
+   */
+  readonly cubeHost?: string;
   /** The ChRIS profile the spoke runs, for its floor. */
   readonly profile?: string;
   /** How long a berth has to answer, in ms. */
@@ -154,7 +159,7 @@ export function berthNames_derive(prefix: string, identity: string, user: string
  * @param identity - The normalised identity.
  * @returns The engine's create body.
  */
-export function berthContainer_spec(options: Pick<LauncherOptions, 'image' | 'prefix' | 'cubeNetwork' | 'policy'>, ask: BerthAsk, identity: string): Record<string, unknown> {
+export function berthContainer_spec(options: Pick<LauncherOptions, 'image' | 'prefix' | 'cubeNetwork' | 'policy'>, ask: BerthAsk, identity: string, hosts: ReadonlyArray<string> = []): Record<string, unknown> {
   const names: BerthNames = berthNames_derive(options.prefix, identity, ask.user, ask.cohort);
   const limits = options.policy.limits;
   const cohort: string = cohort_word(ask.cohort);
@@ -193,6 +198,7 @@ export function berthContainer_spec(options: Pick<LauncherOptions, 'image' | 'pr
       PidsLimit: limits.pids,
       // The berth's own wire is its first network; cube-net its second.
       NetworkMode: names.network,
+      ...(hosts.length > 0 ? { ExtraHosts: [...hosts] } : {}),
       RestartPolicy: { Name: 'no' },
     },
     NetworkingConfig: { EndpointsConfig: { [names.network]: {}, [options.cubeNetwork]: {} } },
@@ -373,6 +379,8 @@ export class BerthLauncher {
     const found: DockerAnswer = await docker.call('GET', `/containers/${names.container}/json`);
     const cohortHeld: unknown = field_get(found.body, 'Config', 'Labels', `${BERTH_LABEL}.cohort`);
     if (found.status === 200 && field_get(found.body, 'State', 'Running') === true && cohortHeld === cohort_word(ask.cohort)) {
+      // A porter made again since the berth started has left its wire: joined again before it is handed back.
+      await this.porter_join(names.network);
       await this.token_write(names.container, ask, token);
       this.held.set(identity, { token, uid: ask.uid, gid: ask.gid });
       const berth = await this.berth_read(names, identity);
@@ -390,7 +398,7 @@ export class BerthLauncher {
     await this.cubeNetwork_ensure();
     await this.wire_ensure(names.network, ask.user);
     await this.volumes_ensure(names, ask);
-    const made: DockerAnswer = await docker.call('POST', `/containers/create?name=${names.container}`, berthContainer_spec(this.options, ask, identity));
+    const made: DockerAnswer = await docker.call('POST', `/containers/create?name=${names.container}`, berthContainer_spec(this.options, ask, identity, await this.cubeHosts_read()));
     if (made.status !== 201) throw new BerthRefusal(502, `${ask.user}'s berth was not made: ${JSON.stringify(made.body)}`);
     const started: DockerAnswer = await docker.call('POST', `/containers/${names.container}/start`);
     if (started.status !== 204 && started.status !== 304) throw new BerthRefusal(502, `${ask.user}'s berth did not start: ${JSON.stringify(started.body)}`);
@@ -399,6 +407,21 @@ export class BerthLauncher {
     this.held.set(identity, { token, uid: ask.uid, gid: ask.gid });
     const berth = await this.berth_wait(names, identity);
     return { identity, user: ask.user, state: 'running', url: berth.url, token: berth.token, container: names.container, cohort: cohort_word(ask.cohort) };
+  }
+
+  /**
+   * The host lines a berth carries: CUBE's name at cube-net's gateway, when the spoke publishes its API there.
+   *
+   * @returns `cube.chrisproject.org:172.18.0.1`, or none.
+   * @throws {BerthRefusal} When cube-net names no gateway.
+   */
+  private async cubeHosts_read(): Promise<string[]> {
+    if (this.options.cubeHost === undefined) return [];
+    const found: DockerAnswer = await this.options.docker.call('GET', `/networks/${this.options.cubeNetwork}`);
+    const configs: unknown = field_get(found.body, 'IPAM', 'Config');
+    const gateway: unknown = Array.isArray(configs) ? (configs as unknown[]).map((one: unknown): unknown => field_get(one, 'Gateway')).find((one: unknown): boolean => typeof one === 'string' && one !== '') : undefined;
+    if (typeof gateway !== 'string') throw new BerthRefusal(502, `cube-net ${this.options.cubeNetwork} names no gateway for ${this.options.cubeHost}`);
+    return [`${this.options.cubeHost}:${gateway}`];
   }
 
   /** cube-net, made when missing: a bridge whose containers cannot reach one another, carrying only the CUBE API. */
@@ -471,6 +494,24 @@ export class BerthLauncher {
       fresh.push(volume);
     }
     if (fresh.length === 0) return;
+    // Volumes never given to the person are removed again, so the next start makes them and gives them anew.
+    try {
+      await this.volumes_own(names, ask);
+    } catch (error: unknown) {
+      for (const volume of fresh) await docker.call('DELETE', `/volumes/${volume}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Gives the person's volumes to their uid, `incoming/` and `outgoing/` made in the cohort's pair.
+   *
+   * @param names - The volumes' names.
+   * @param ask - Whose.
+   * @throws {BerthRefusal} When the one-shot container is not made or does not succeed.
+   */
+  private async volumes_own(names: BerthNames, ask: BerthAsk): Promise<void> {
+    const docker: DockerApi = this.options.docker;
     const owner: string = `${names.container}-own`;
     await docker.call('DELETE', `/containers/${owner}?force=true`);
     const made: DockerAnswer = await docker.call('POST', `/containers/create?name=${owner}`, {

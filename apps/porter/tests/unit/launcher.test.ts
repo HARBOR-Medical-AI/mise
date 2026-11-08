@@ -30,6 +30,10 @@ class FakeDocker implements DockerApi {
   execs: Array<{ container: string; cmd: string[]; user: string; stdin: string | null }> = [];
   /** A berth whose session never writes its berth file. */
   silent: boolean = false;
+  /** The gateway every network inspect names; null: the network has an address range and no gateway. */
+  gateway: string | null = '172.18.0.1';
+  /** What the one-shot container that gives the volumes away exits with. */
+  ownExit: number = 0;
   private serial: number = 2;
 
   async call(method: string, path: string, body?: unknown): Promise<DockerAnswer> {
@@ -43,10 +47,11 @@ class FakeDocker implements DockerApi {
     if (route.endsWith('/disconnect') && parts[1] === 'networks') { this.networks.get(name)?.members.delete((body as { Container: string }).Container); return { status: 200, body: null }; }
     if (method === 'GET' && parts[1] === 'networks') {
       const net = this.networks.get(name);
-      return net === undefined ? { status: 404, body: {} } : { status: 200, body: { Name: name, Containers: Object.fromEntries([...net.members].map((member) => [member, { Name: member }])) } };
+      return net === undefined ? { status: 404, body: {} } : { status: 200, body: { Name: name, Containers: Object.fromEntries([...net.members].map((member) => [member, { Name: member }])), IPAM: { Config: [{ Subnet: '172.18.0.0/16', ...(this.gateway !== null ? { Gateway: this.gateway } : {}) }] } } };
     }
     if (method === 'DELETE' && parts[1] === 'networks') { const had = this.networks.delete(name); return { status: had ? 204 : 404, body: null }; }
     if (route === '/volumes/create') { const spec = body as { Name: string; Labels: Record<string, string> }; this.volumes.set(spec.Name, spec.Labels); return { status: 201, body: {} }; }
+    if (method === 'DELETE' && parts[1] === 'volumes') { const had = this.volumes.delete(name); return { status: had ? 204 : 404, body: null }; }
     if (method === 'GET' && parts[1] === 'volumes') return { status: this.volumes.has(name) ? 200 : 404, body: {} };
     if (route === '/containers/json') {
       const filter = JSON.parse(decodeURIComponent(new URLSearchParams(query).get('filters') ?? '{}')) as { name?: string[] };
@@ -67,7 +72,7 @@ class FakeDocker implements DockerApi {
       return { status: 200, body: { State: { Running: found.running }, Config: { User: found.spec['User'], Labels: found.spec['Labels'] }, NetworkSettings: { Networks: { [wire]: { IPAddress: found.ip } } } } };
     }
     if (route.endsWith('/start')) { if (found !== undefined) found.running = true; return { status: 204, body: null }; }
-    if (route.endsWith('/wait')) { if (found !== undefined) found.running = false; return { status: 200, body: { StatusCode: 0 } }; }
+    if (route.endsWith('/wait')) { if (found !== undefined) found.running = false; return { status: 200, body: { StatusCode: name.endsWith('-own') ? this.ownExit : 0 } }; }
     if (route.endsWith('/stop')) { if (found !== undefined) found.running = false; return { status: 204, body: null }; }
     if (method === 'DELETE' && parts[1] === 'containers') { for (const net of this.networks.values()) net.members.delete(name); this.containers.delete(name); return { status: found === undefined ? 404 : 204, body: null }; }
     return { status: 404, body: {} };
@@ -153,12 +158,38 @@ describe('the names and the container a berth is', () => {
     expect(Object.keys((spec['NetworkingConfig'] as { EndpointsConfig: Record<string, unknown> }).EndpointsConfig)).toEqual(['mbw-net-ana', 'mbw-cube-net']);
     expect(JSON.stringify(spec)).not.toContain('docker.sock');
     expect(JSON.stringify(spec)).not.toContain('secret-cube-token');
+    expect(host).not.toHaveProperty('ExtraHosts');
+  });
+
+  it('carries the host lines it is given as the engine\'s ExtraHosts, and none when given none', () => {
+    const options = { image: 'img@sha256:abc', prefix: 'mbw', cubeNetwork: 'mbw-cube-net', policy: POLICY };
+    const ask = { user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 't', cohort: 42 };
+    expect((berthContainer_spec(options, ask, ANA, ['cube.example.org:172.18.0.1'])['HostConfig'] as Record<string, unknown>)['ExtraHosts']).toEqual(['cube.example.org:172.18.0.1']);
+    expect(berthContainer_spec(options, ask, ANA, [])['HostConfig']).not.toHaveProperty('ExtraHosts');
   });
 });
 
 describe('the launcher over an engine', () => {
   let docker: FakeDocker;
   beforeEach(() => { docker = new FakeDocker(); });
+
+  it('with a cubeHost, reads cube-net\'s gateway from the engine and puts CUBE\'s name at it inside the berth; without one, adds no host', async () => {
+    docker.gateway = '172.31.0.1';
+    const named: BerthLauncher = new BerthLauncher({ docker, policy: POLICY, image: 'mbw/mise-berth@sha256:abc', prefix: 'mbw', cubeNetwork: 'mbw-cube-net', porterContainer: 'porter', cubeHost: 'cube.example.org', bootMs: 300, pollMs: 10 });
+    await named.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    const names = berthNames_derive('mbw', ANA, 'ana', null);
+    expect((docker.containers.get(names.container)?.spec['HostConfig'] as Record<string, unknown>)['ExtraHosts']).toEqual(['cube.example.org:172.31.0.1']);
+    const plain = new FakeDocker();
+    await launcher_make(plain).start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    expect(plain.containers.get(names.container)?.spec['HostConfig']).not.toHaveProperty('ExtraHosts');
+  });
+
+  it('refuses to start a berth when cube-net names no gateway for CUBE\'s name, and makes no container', async () => {
+    docker.gateway = null;
+    const named: BerthLauncher = new BerthLauncher({ docker, policy: POLICY, image: 'mbw/mise-berth@sha256:abc', prefix: 'mbw', cubeNetwork: 'mbw-cube-net', porterContainer: 'porter', cubeHost: 'cube.example.org', bootMs: 300, pollMs: 10 });
+    await expect(named.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' })).rejects.toMatchObject({ status: 502, message: 'cube-net mbw-cube-net names no gateway for cube.example.org' });
+    expect(docker.containers.size).toBe(0);
+  });
 
   it('starts a berth: cube-net blocking its containers from one another, the person\'s own wire with porter joined, the home and the cohort pair made and given to the uid, the token written on stdin as the user, the address on the wire', async () => {
     const launcher: BerthLauncher = launcher_make(docker);
@@ -180,6 +211,26 @@ describe('the launcher over an engine', () => {
     expect(docker.containers.get(names.container)?.token).toBe('ana-token-2\n');
     expect(docker.containers.size).toBe(1);
     expect(docker.execs.length).toBeGreaterThan(own);
+    expect(docker.volumes.size).toBe(2);
+  });
+
+  it('joins porter to a running berth\'s wire again when porter was made again and left it, making nothing new', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: 42 });
+    docker.networks.get('mbw-net-ana')?.members.delete('porter');
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token-2', cohort: 42 });
+    expect(docker.networks.get('mbw-net-ana')?.members.has('porter')).toBe(true);
+    expect(docker.containers.size).toBe(1);
+  });
+
+  it('removes the volumes it made when they could not be given to the person, so the next start gives them anew', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    docker.ownExit = 1;
+    await expect(launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: null })).rejects.toThrow('ana\'s volumes were not given to them (exit 1)');
+    expect(docker.volumes.size).toBe(0);
+    docker.ownExit = 0;
+    const berth = await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: null });
+    expect(berth.state).toBe('running');
     expect(docker.volumes.size).toBe(2);
   });
 
