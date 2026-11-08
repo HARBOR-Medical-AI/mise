@@ -7,8 +7,9 @@
 #   MISE_USER            the CUBE user name
 #   MISE_CUBE_URL        the CUBE API the session signs in to (https://…/api/v1/)
 #   MISE_HOST_CONTROL    the session's host-control tiers (default: shell — `!` lands here)
-#   CALYPSO_BIND         where calypso listens, when the launcher reaches it over a network
-# and writes the user's CUBE token to /run/mise/token (a tmpfs, readable by the uid alone).
+#   CALYPSO_BIND         where calypso listens, when porter reaches it over the berth network
+# and writes the user's CUBE token to /run/mise/token (a tmpfs, readable by the uid alone) as
+# the berth starts; the entrypoint waits for it.
 #
 # Given a command, the entrypoint runs it as the named user instead of the session.
 set -euo pipefail
@@ -50,7 +51,15 @@ if [[ $# -gt 0 ]]; then
   exec "$@"
 fi
 
+# The session's runtime (its berth file, which the launcher reads back) lives beside the token, on the tmpfs.
+export XDG_RUNTIME_DIR=/run/mise
+
+# The launcher writes the token as the berth starts: it is waited for, a minute at most.
 token=/run/mise/token
+for _ in $(seq 1 "${MISE_TOKEN_WAIT:-600}"); do
+  [[ -s "${token}" ]] && break
+  sleep 0.1
+done
 if [[ ! -r "${token}" ]]; then
   echo "mise-berth: no token at ${token}: the launcher writes the user's CUBE token there" >&2
   exit 66
@@ -62,5 +71,14 @@ fi
 
 # The session as porter starts one (apps/porter/src/host/processHost.ts): the token on stdin,
 # one line, never argv or the environment.
+# Bound beyond loopback (the berth network, where porter reaches it), calypso refuses a shell
+# unless told the exposure is meant: here it is, the attach token guards it, and the shell is
+# this container's alone.
+expose=()
+if [[ -n "${CALYPSO_BIND:-}" && "${CALYPSO_BIND}" != "127.0.0.1" ]]; then
+  expose=(--expose-host-control)
+fi
+# The token is read at each start of the session: a new login's, rewritten by the launcher,
+# is the one a restarted session signs in with.
 exec chell "${user}@${MISE_CUBE_URL}" --daemon --auth-token-stdin --no-logo \
-  --host-control="${MISE_HOST_CONTROL:-shell}" <"${token}"
+  --host-control="${MISE_HOST_CONTROL:-shell}" "${expose[@]}" <"${token}"

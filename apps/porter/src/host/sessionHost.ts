@@ -198,6 +198,17 @@ export interface SessionHost {
    * @param why - Why, for the boot's first line; the operator's RESTART by default.
    */
   restart_begin(identity: string, user: string, cubeUrl: string, why?: RestartWhy): void;
+  /**
+   * A new login's token for a session already up, where the host keeps the
+   * token outside the session (a berth's token file); a host that hands the
+   * token only at start has none.
+   *
+   * @param identity - The normalised `<user>@<url>`.
+   * @param user - The CUBE username.
+   * @param cubeUrl - The CUBE API base.
+   * @param token - The new token.
+   */
+  token_renew?(identity: string, user: string, cubeUrl: string, token: string): Promise<void>;
 }
 
 /**

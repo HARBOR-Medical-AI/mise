@@ -62,8 +62,15 @@ RUN case "${TARGETARCH:-amd64}" in \
     && ln -s "/opt/nvim-linux-${arch}/bin/nvim" /usr/local/bin/nvim \
     && rm /tmp/nvim.tar.gz
 
-# calypso and chell, the versions the porter beside the berth depends on.
-RUN npm install -g --no-fund --no-audit "@fnndsc/calypso@${CALYPSO_VERSION}" "@fnndsc/chell@${CHELL_VERSION}" \
+# calypso and chell, the versions the porter beside the berth depends on, installed as porter
+# installs them: one tree, so the session's chell and the calypso it starts share one brasa
+# (two global installs each carry their own, and the daemon finds no backend in its copy).
+RUN mkdir -p /opt/mise \
+    && cd /opt/mise \
+    && printf '{"name":"mise-berth","private":true,"dependencies":{"@fnndsc/calypso":"%s","@fnndsc/chell":"%s"}}\n' "${CALYPSO_VERSION}" "${CHELL_VERSION}" > package.json \
+    && npm install --no-fund --no-audit --omit=dev \
+    && ln -s /opt/mise/node_modules/.bin/chell /usr/local/bin/chell \
+    && ln -s /opt/mise/node_modules/.bin/calypso /usr/local/bin/calypso \
     && npm cache clean --force \
     && rm -rf /root/.cache /root/.npm
 

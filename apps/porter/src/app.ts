@@ -87,6 +87,8 @@ export interface PorterAppOptions {
   tokens?: TokenStore;
   /** The device codes out; fresh when not given. */
   codes?: DeviceCodes;
+  /** Whether a logout ends the person's session (a berth stops; its volumes stay); otherwise it lives on. */
+  logoutEnds?: boolean;
 }
 
 /** A porter application: the Fastify instance and the registry behind it. */
@@ -506,6 +508,10 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
         return wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'starting' }) : reply.redirect(`/greet/${key}`, 303);
       }
     }
+    // A new login's token reaches a berth already up: the launcher rewrites its token file.
+    if (found !== null && cubeToken !== null && host.token_renew !== undefined) {
+      await host.token_renew(identity, username, config.cubeUrl, cubeToken).catch((error: unknown): void => { options.log?.(`${username}'s new token did not reach the berth: ${error instanceof Error ? error.message : String(error)}`); });
+    }
     if (found !== null) {
       registry.note(identity, username, found);
       options.log?.(`attached ${username} to the session up at ${found.url}`);
@@ -644,6 +650,13 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   });
 
   app.post('/logout', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+    // On a door that starts berths a logout stops the person's berth; its volumes, and so their home, stay.
+    const leaving: string | null = options.logoutEnds === true ? requestKey_read(request) : null;
+    const identity: string | null = leaving === null ? null : registry.identity_find(leaving);
+    if (identity !== null) {
+      const ended: boolean = await host.evict(identity, 'end').catch((): boolean => false);
+      options.log?.(`${user_extract(identity)} logged out${ended ? '; their berth stopped, its volumes kept' : ''}`);
+    }
     void reply.clearCookie(DOOR_COOKIE, { path: '/' });
     return request_wantsJson(request) ? { ok: true } : reply.redirect('/login', 303);
   });

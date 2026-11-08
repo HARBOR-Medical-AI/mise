@@ -45,6 +45,13 @@ export interface PorterConfig {
    * install so an upgrade does not take them away. Null when none.
    */
   soundsDir: string | null;
+  /**
+   * Where sessions run: beside this porter (`local`, the default) or in
+   * berths the berth launcher starts (`launcher`), when the deployment
+   * turns it on; with it, where the launcher listens and the file holding
+   * the secret porter carries to it.
+   */
+  berths: { mode: 'local' } | { mode: 'launcher'; listen: string; secretFile: string };
 }
 
 /** The environment variables a porter reads, and no others. */
@@ -60,6 +67,9 @@ export interface PorterEnv {
   PORTER_TOKEN_DAYS?: string;
   PORTER_TOKENS_FILE?: string;
   PORTER_SOUNDS_DIR?: string;
+  PORTER_BERTHS?: string;
+  PORTER_LAUNCHER?: string;
+  PORTER_LAUNCHER_SECRET_FILE?: string;
   XDG_STATE_HOME?: string;
 }
 
@@ -184,6 +194,12 @@ export function porterConfig_resolve(env: PorterEnv, locateChell: () => string =
   if (env.PORTER_SECRET !== undefined && !secretGiven) {
     throw new Error('PORTER_SECRET is too short: give at least 20 characters, or none to have one made up per start');
   }
+  // Berths are a deployment's choice, off unless it says: a porter on a workstation starts sessions beside itself.
+  const berthsMode: string = env.PORTER_BERTHS ?? 'local';
+  if (berthsMode !== 'local' && berthsMode !== 'launcher') throw new Error(`PORTER_BERTHS is local or launcher, not ${berthsMode}`);
+  if (berthsMode === 'launcher' && (env.PORTER_LAUNCHER === undefined || env.PORTER_LAUNCHER === '' || env.PORTER_LAUNCHER_SECRET_FILE === undefined || env.PORTER_LAUNCHER_SECRET_FILE === '')) {
+    throw new Error('PORTER_BERTHS=launcher needs PORTER_LAUNCHER (the launcher\'s socket, or 127.0.0.1:<port>) and PORTER_LAUNCHER_SECRET_FILE');
+  }
   return {
     cubeUrl: cubeUrl.endsWith('/') ? cubeUrl : `${cubeUrl}/`,
     stateDir,
@@ -198,5 +214,6 @@ export function porterConfig_resolve(env: PorterEnv, locateChell: () => string =
     // Beside the session directories, which the adopt scan skips as a file.
     tokensFile: porterTokensFile_resolve(env),
     soundsDir: env.PORTER_SOUNDS_DIR !== undefined && env.PORTER_SOUNDS_DIR.length > 0 ? env.PORTER_SOUNDS_DIR : null,
+    berths: berthsMode === 'launcher' ? { mode: 'launcher', listen: env.PORTER_LAUNCHER as string, secretFile: env.PORTER_LAUNCHER_SECRET_FILE as string } : { mode: 'local' },
   };
 }

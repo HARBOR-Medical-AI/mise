@@ -40,7 +40,7 @@ beforeEach(async () => {
   stateDir = mkdtempSync(join(tmpdir(), 'porter-switch-'));
   config = {
     cubeUrl: 'https://cube.example.org/api/v1/', stateDir, host: '127.0.0.1', port: 0, chellEntry: '/opt/chell/dist/index.js',
-    secret: 'a-secret-of-at-least-twenty-characters', secretGenerated: false, cookieHours: 24, idleHours: 24, soundsDir: null,
+    secret: 'a-secret-of-at-least-twenty-characters', secretGenerated: false, cookieHours: 24, idleHours: 24, soundsDir: null, berths: { mode: 'local' },
     tokenDays: 30, tokensFile: join(stateDir, 'tokens.json'),
   };
   host = new SwitchHost();

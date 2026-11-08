@@ -13,8 +13,10 @@ import { porterConfig_resolve, porterStateDir_resolve, porterTokensFile_resolve,
 import { TokenStore, type DoorToken } from './tokens.js';
 import { identity_normalise } from '@fnndsc/calypso/berth';
 import { ProcessHost } from './host/processHost.js';
+import { LauncherHost } from './host/launcherHost.js';
+import { launcherSecret_read } from './launcher/secret.js';
 import { porterApp_build, type PorterApp } from './app.js';
-import type { SessionSighting } from './host/sessionHost.js';
+import type { SessionHost, SessionSighting } from './host/sessionHost.js';
 import { berthKey_compute } from '@fnndsc/calypso/berth';
 import { entry_isMain } from './entry.js';
 import { versionReport_build } from './versions.js';
@@ -280,11 +282,26 @@ async function porter_start(): Promise<void> {
     console.error(`[!] ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
-  const host: ProcessHost = new ProcessHost({ stateDir: config.stateDir, chellEntry: config.chellEntry, stratusEntry: stratusEntry_locate() });
+  // Sessions beside this porter, or berths the launcher starts (PORTER_BERTHS=launcher).
+  let host: SessionHost;
+  if (config.berths.mode === 'launcher') {
+    let secret: string;
+    try {
+      secret = launcherSecret_read(config.berths.secretFile);
+    } catch (error: unknown) {
+      console.error(`[!] ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+    host = new LauncherHost({ listen: config.berths.listen, secret });
+  } else {
+    host = new ProcessHost({ stateDir: config.stateDir, chellEntry: config.chellEntry, stratusEntry: stratusEntry_locate() });
+  }
   const sweepText: string | undefined = process.env['PORTER_SWEEP_SECONDS'];
   const built: PorterApp = await porterApp_build({
     config,
     host,
+    // A berth runs the image's calypso, not this porter's: its versions are the image's to keep, never a reason to restart it.
+    ...(config.berths.mode === 'launcher' ? { installed: {}, logoutEnds: true } : {}),
     logger: false,
     log: (line: string): void => { console.log(`[+] ${line}`); },
     // Not documented: the sweep's cadence only matters to a test of it.
@@ -296,7 +313,7 @@ async function porter_start(): Promise<void> {
   await built.adopt();
   console.log(`[+] PORTER at http://${config.host}:${config.port}/ for ${config.cubeUrl}`);
   console.log(`    state:  ${config.stateDir}`);
-  console.log(`    chell:  ${config.chellEntry}`);
+  console.log(config.berths.mode === 'launcher' ? `    berths: started by the launcher at ${config.berths.listen}; a logout stops the user's berth` : `    chell:  ${config.chellEntry}`);
   console.log(`    idle:   sessions end after ${config.idleHours} h with nobody on them; their state directories stay`);
   if (config.secretGenerated) {
     console.log('    secret: made up for this run — set PORTER_SECRET so a restart does not ask every browser again');

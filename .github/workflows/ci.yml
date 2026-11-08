@@ -116,4 +116,6 @@ jobs:
       - run: npm run lint:changesets
       - run: npm run lint:aegis
       - run: npm run lint:orrery
+      # The berth image's pin follows its source (images/mise-berth/pin.mjs).
+      - run: npm run lint:berth-pin
       - run: npm run lint --if-present
