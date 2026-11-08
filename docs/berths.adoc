@@ -1,0 +1,87 @@
+= Berths: one person's place in a spoke
+:toc: left
+:toclevels: 2
+:sectnums:
+:sectanchors:
+:source-highlighter: rouge
+:icons: font
+
+== Abstract
+
+A berth is one person's mise session, running in a container of its own behind a spoke's door, with the cohort mounted at `/incoming`, their results at `/outgoing`, and a shell that is never on the machine that runs CUBE. This document owns the word, the topology and the decisions that build it. The spoke it sits in is <<dev-bastion.adoc#,dev-bastion.adoc>>'s subject; the host that runs the door is <<bastion.adoc#,bastion.adoc>>'s; how a spoke is built is <<stratus.adoc#,stratus.adoc>>'s.
+
+[[words]]
+== The words
+
+CUBE is a server: its API hands out files, feeds and runs, and never a shell. The mise stack (calypso, chell, ARGUS) is a client of that API, and the shell it shows, `ls`, `cd`, `id`, `!`, is built inside the client; nothing on CUBE's side executes a command for a person. A client has to run on a computer: a tablet with chell on it, pangea, or a container that behaves as one. porter is a host for many people's clients at one door, as a jump host holds many ssh sessions. A *berth* is one person's client under porter, in its own walls: calypso, chell, the tooling, the two mounts and a home that persists. The *berth image*, `mise-berth`, is what a berth is made from; a berth is that image running, a container on a VM today and a pod on a cluster later. The word is the harbor's: a ship ties up at a berth, and the porter shows a person to theirs. It is not a bastion: that word already names the host that runs porter (<<bastion.adoc#host,bastion.adoc>>) and the cloud's own maintenance door (`vm shell`), and a third meaning would leave none of them sayable.
+
+A berth is a development environment only by what it is stocked with. The image carries a developer's tools today; another image could stock an analyst's. The berth is the place, not the stocking.
+
+[[figure]]
+== The topology
+
+----
+                        browser / tablet
+                               |  443
+                               v
+                      +-------------------+
+                      |      porter       |  the door (hub)
+                      +----+----+----+----+
+                           |    |    |
+          +----------------+    |    +----------------+
+          |  net-ana            |  net-benito         |  net-rudolph
+          v                     v                     v
+   +--------------+      +--------------+      +--------------+
+   |  berth ana   |      | berth benito |      | berth rudolph|
+   |  calypso     |      |  calypso     |      |  calypso     |
+   |  chell  !    |      |  chell  !    |      |  chell  !    |
+   |  /incoming   |      |  /incoming   |      |  /incoming   |
+   |  /outgoing   |      |  /outgoing   |      |  /outgoing   |
+   +------+-------+      +------+-------+      +------+-------+
+          |                     |                     |
+          +---------------------+---------------------+
+                                |  cube-net (API only; berth-to-berth blocked)
+                                v
+                      +-------------------+
+                      |       CUBE        |  + postgres, pfcon, caddy ...
+                      +-------------------+
+----
+
+A hub and spokes. porter is the hub; each berth hangs off it on a wire of its own, `net-<user>`, a network whose only two members are porter and that berth. Every berth also stands on `cube-net`, where CUBE's API is, because the berth's calypso is the person's ChRIS session: the cohort copy into `/incoming`, `gather`, `ls` and `outgoing return` are all calls to CUBE made from inside the berth. `cube-net` blocks traffic between its containers, so a berth reaches CUBE and nothing else on it; porter is not on `cube-net`, so the block never stands between porter and a berth. No berth has a path to another: its own wire has no other berth on it, and `cube-net` forbids the hop. The launcher, which makes these wires, is not drawn; it stands beside porter and is the only process given the engine's socket.
+
+This replaces the first build's one shared berth network, which kept berths apart with the same blanket rule and so also kept apart a porter that ran as a container on it; on pangea porter ran on the host, outside the network, and the rule never touched it.
+
+[[files]]
+== A person's own files
+
+The lowest impedance for a person's own files is chell on the metal, on the machine where the files are: `upload` reads the local disk and talks to CUBE directly, and what comes down lands where it can be used. A berth's shell sees only its home and its volumes; a file from a laptop reaches it by an extra hop through the browser, and that hop is for a few files, never a dataset. So the two paths split by what the files are: a person's own data and results go through chell on the metal, straight to CUBE; cohort work goes through the berth, whose data arrives from ChRIS (the copy into `/incoming`) and leaves through ChRIS (`outgoing return`), and never needs a laptop's disk.
+
+[[settled]]
+== What is settled
+
+* *The VM plays the cluster.* Its containers play the pods: CUBE, its database, its workers, pfcon and Caddy on one side, the berths on the other. The VM itself is a node. No person works on it; the operator reaches it for maintenance over the cloud's own bastion service, which is a door for the operator and never for users.
+* *porter is the spoke's door, one per spoke.* It signs a person in and starts their berth, as it starts a calypso per identity on any host.
+* *Each person's berth is a container.* calypso, chell and the tooling run in it; `/incoming` is mounted read-only and `/outgoing` is that person's own. `!` under the `tasks` tier opens the shell of this container, so a person's shell is never on the machine that runs CUBE: it cannot reach the database, `cube.env`, the data volume or Docker. One person cannot see another's work or processes, and inside a berth there is one Linux user, so no mapping between ChRIS accounts and Linux accounts is needed.
+* *A berth launcher holds the right to start containers, and nothing else does.* It runs beside porter and is the only holder of Docker's socket; porter asks it one thing, start or stop the berth for an identity. The launcher fixes everything else: the image, the person's volume, the mounts, the uid and gid (CUBE's own for that person), the limits, the networks, and no Docker inside. In a Trusted Domain it is a controller whose namespaced role can create berth pods and nothing more.
+* *The berth is one image, `mise-berth`, built by CI and pinned by digest as porter is.* It holds Node with the calypso and chell that porter's release depends on; Python 3 with uv and pip, and numpy, scipy, pandas, nibabel, pydicom, SimpleITK and chris_plugin; gcc, make, git and curl; the latest upstream Neovim, emacs-nox, vim and nano. It holds no Docker, no cloud CLI and no key, and runs as a non-root user with the person's CUBE uid and gid. What a person installs beyond it lives in their persistent home. The image and its pins are in `images/mise-berth`; it is published at `ghcr.io/harbor-medical-ai/mise-berth`, public.
+* *The person's identity is their CUBE token, and only that.* porter hands it to the launcher, which writes it to a tmpfs at `/run/mise/token` readable by the person's uid alone and rewrites it when it is refreshed; it is never on a disk, in the environment or in the image. No password enters the berth.
+* *Its cohort is a feed the person picks at the door.* The picker lists the feeds that person can read on this ChRIS; a `gather` is a feed too, and the whole shard is the case where the custodian picks it. "No cohort" is in the list: the berth starts without `/incoming` and says so (`no cohort mounted · make one (gather, upload) and choose it`); its chell is a ChRIS session, so the cohort is made from inside it and chosen at the next start.
+* *`/incoming` is a copy, pulled through the CUBE API* when the berth starts and made read-only. It reads the same on any Trusted Domain, passes through ChRIS's own permissions, needs no privilege, and keeps a person's code away from CUBE's files and CUBE away from half-written results. The copy is a step with its progress, and a later start copies only what it lacks. A bind of CUBE's storage may come later as a speed-up for one VM.
+* *A berth session is a plugin instance run by hand.* `/incoming` is the cohort node's output and `/outgoing` is the session's. `outgoing return` uploads `/outgoing` to staging, then runs a registered ds plugin, `pl-berth`, on the cohort node with who ran it, the berth session and the source commit as its parameters, so the result is an ordinary node in the feed. Later, `plugin build` makes the person's code a plugin of its own. This part is expected to be refined.
+* *The store is open.* The posture is the spoke's and is set on its CHRIS; sealed waits for the gate (<<dev-bastion.adoc#open,dev-bastion.adoc>>).
+* *Limits are a policy of each ChRIS,* set among its CHRIS settings, with defaults read from the host's size. Capacity is the host less the profile's floor, divided by the limit per berth, on any host; on a cluster it is a namespace ResourceQuota with limits per pod. A spoke that is full says so, "holds N, in use by …", and SPEC shows the capacity.
+* *It stops at logout, or after two hours with no shell, no process and no surface;* a long run keeps it alive. A volume per person keeps the home, `src/`, `/outgoing` until it is returned, and the copied `/incoming`; the container is made from the image at each start, so a new image is in force at the next login. Removing a person's volume is an act of its own on their CHRIS row, asked first.
+
+[[built]]
+== The launcher and porter's switch, as built
+
+The berth launcher is a second program of porter's package, `berth-launcher`: one version line, so porter and the launcher always speak the same API, while the right to start containers stays a property of the deployment (only the launcher's process is given the engine's socket). Its API is local (a unix socket of mode 0600, or loopback) and every call carries a secret both read from one file of mode 0600; it is exactly start, stop and status of the berth for an identity. A berth it starts runs the pinned image as the person's CUBE id (uid and gid alike), with their home on a named volume, `/incoming` read-only and `/outgoing` their own (each mounted without copying the image's mount point over an empty volume, so the ownership given at the first start stays), the token on a tmpfs at `/run/mise` of mode 0700 owned by that uid, written as that uid on stdin, the policy's CPU, memory and process limits, every capability dropped, no new privileges, no privilege, a read-only root, and the networks of <<figure>>. A full spoke refuses with "this ChRIS holds N berths, in use by …". A porter starts berths only when its deployment sets `PORTER_BERTHS=launcher`; it then reads the person's CUBE id with their token at login, hands a later login's token to a berth already up, and stops the berth at logout. A berth's versions are its image's, never a reason for porter to restart it. A stratus session is not offered on such a door.
+
+[[open]]
+== Open
+
+* *The image pin.* The launcher's default digest must follow the image the workflow pushes after a change to `images/mise-berth`; until a release carries the pin, a deployment sets `BERTH_IMAGE`.
+* *A refreshed token takes effect at the berth's next start,* not live; and a launcher restarted forgets the tokens it held, so the next start needs a fresh login.
+* *The two-hour idle stop* is not built; stop at logout is.
+* *A short-lived root helper* gives new volumes to the person's uid at the first start; it is the one moment of root on the path.
+* *Reaching CUBE from inside a berth* needs CUBE's URL to resolve to the same address inside as it does for porter, because the session's identity is that URL; a public host name does, and `cube-net` carries it.
