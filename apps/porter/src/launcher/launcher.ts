@@ -551,8 +551,9 @@ export class BerthLauncher {
   private async logsTail_read(container: string): Promise<string> {
     const docker: DockerApi = this.options.docker;
     const answer: DockerAnswer = await docker.call('GET', `/containers/${container}/logs?stdout=true&stderr=true&tail=6`);
+    // The log is the engine's multiplexed stream: its frame headers are control bytes, taken out; the lines stay.
     // eslint-disable-next-line no-control-regex
-    const text: string = typeof answer.body === 'string' ? answer.body.replace(/[\u0000-\u0008]/g, '') : '';
+    const text: string = typeof answer.body === 'string' ? answer.body.replace(/[\u0000-\u0009\u000b-\u001f]/g, '') : '';
     return text.split('\n').map((line: string): string => line.trim()).filter((line: string): boolean => line !== '').slice(-3).join(' / ') || 'no words';
   }
 }
