@@ -1,5 +1,17 @@
 # @fnndsc/chell
 
+## 5.20.4
+
+### Patch Changes
+
+- Updated dependencies [0f87832]
+  - @fnndsc/argus@0.56.0
+  - @fnndsc/menu@0.40.0
+  - @fnndsc/brasa@0.54.2
+  - @fnndsc/calypso@0.29.6
+  - @fnndsc/chili@3.9.2
+  - @fnndsc/cumin@3.30.2
+
 ## 5.20.3
 
 ### Patch Changes
