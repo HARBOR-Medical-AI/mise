@@ -157,6 +157,20 @@ body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
 .vm-listing .listing-index-cell, .vm-listing .listing-index { visibility: hidden; overflow: hidden; }
 .vm-chris-profiles { display: flex; flex-direction: column; gap: 0.3rem; }
 .vm-account-apply { align-self: flex-start; }
+.vm-change.vm-change-none { border-left: none; padding: 0; gap: 0; }
+.vm-replay-quiet { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; padding-left: 0.9rem; }
+.vm-replay-small { font-size: 0.7rem; padding: 0.1rem 0.8rem; }
+.vm-account-password { display: flex; flex-direction: column; gap: 0.35rem; }
+.vm-password-check:empty, .vm-password-generated[hidden] { display: none; }
+.vm-password-generated { font-family: var(--face-data); color: var(--butter); word-break: break-all; }
+.vm-password-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.vm-password-ask > span { flex-basis: 100%; }
+.vm-password-commands { align-items: center; }
+.vm-setting-edited .vm-cell-field, .vm-setting-edited .vm-cell-set { color: var(--butter); font-weight: 600; }
+.vm-setting-edit { display: flex; flex-direction: column; gap: 0.1rem; width: 100%; }
+.vm-setting-input { width: 100%; box-sizing: border-box; }
+.vm-cell-field { color: var(--orange); letter-spacing: 0.12em; }
+.vm-cell-set, .vm-cell-runs { font-family: var(--face-data); font-size: 0.9rem; color: var(--honey); }
 .vm-chris-profiles-head { display: flex; align-items: baseline; gap: 1rem; }
 .vm-profile-unoffered { opacity: 0.55; cursor: default; }
 .vm-profile-chosen .vm-cell-name, .vm-profile-chosen .vm-cell-state { color: var(--butter); }
