@@ -4,7 +4,7 @@
  * exactly start, stop and status of the berth for an identity; the launcher
  * fixes everything else.
  *
- *   POST /berths/start   {user, uid, gid, cubeUrl, token}  → the berth, running
+ *   POST /berths/start   {user, uid, gid, cubeUrl, token, cohort?}  → the berth, running
  *   POST /berths/stop    {user, cubeUrl}                   → {stopped}
  *   GET  /berths/status  [?user=…&cubeUrl=…]               → {berths: […]}
  *
@@ -21,6 +21,7 @@ const startSchema = z.object({
   gid: z.number().int(),
   cubeUrl: z.string().min(1),
   token: z.string().min(1).nullable(),
+  cohort: z.number().int().positive().nullable().optional(),
 }).strict();
 
 const stopSchema = z.object({ user: z.string().min(1), cubeUrl: z.string().min(1) }).strict();
@@ -46,7 +47,7 @@ export function secret_matches(header: string | undefined, secret: string): bool
  * @returns Its fields.
  */
 function berth_render(berth: BerthState): Record<string, unknown> {
-  return { identity: berth.identity, user: berth.user, state: berth.state, url: berth.url, token: berth.token, container: berth.container };
+  return { identity: berth.identity, user: berth.user, state: berth.state, url: berth.url, token: berth.token, container: berth.container, cohort: berth.cohort };
 }
 
 /**
@@ -91,9 +92,9 @@ export function launcherServer_create(launcher: BerthLauncher, secret: string, l
       try {
         if (req.method === 'POST' && url.pathname === '/berths/start') {
           const ask = startSchema.safeParse(await body_read(req));
-          if (!ask.success) throw new BerthRefusal(400, 'start wants {user, uid, gid, cubeUrl, token}');
+          if (!ask.success) throw new BerthRefusal(400, 'start wants {user, uid, gid, cubeUrl, token} and at most a cohort');
           const berth: BerthState = await launcher.start(ask.data);
-          log(`${berth.user}: berth running at ${berth.url ?? '?'}`);
+          log(`${berth.user}: berth running at ${berth.url ?? '?'} (cohort ${berth.cohort})`);
           answer(200, berth_render(berth));
           return;
         }

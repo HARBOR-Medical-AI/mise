@@ -12,8 +12,8 @@
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from 'node:http';
 import type { Socket } from 'node:net';
 
-/** The API version the launcher asks for; Docker 25 and later speak it. */
-export const DOCKER_API: string = '/v1.44';
+/** The API version the launcher asks for; Docker 26 and later speak it (a volume's subpath mount needs 1.45). */
+export const DOCKER_API: string = '/v1.45';
 
 /** An engine's answer: its status and its parsed body (null when empty, the text when not JSON). */
 export interface DockerAnswer {

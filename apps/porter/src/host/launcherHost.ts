@@ -230,7 +230,8 @@ export class LauncherHost implements SessionHost {
         this.line_add(record, `[ OK ]    Identity     ${user} is CUBE user ${uid}`);
       }
       this.line_add(record, `[PENDING] Berth        starting ${user}'s berth`);
-      const answer = await launcher_call(this.reach, 'POST', '/berths/start', { user, uid: uid ?? 0, gid: uid ?? 0, cubeUrl, token });
+      // No cohort yet: the picker at the door is a later stage; the berth starts with an empty pair.
+      const answer = await launcher_call(this.reach, 'POST', '/berths/start', { user, uid: uid ?? 0, gid: uid ?? 0, cubeUrl, token, cohort: null });
       if (answer.status !== 200) throw new Error(typeof answer.body['error'] === 'string' ? answer.body['error'] : `the launcher answered ${answer.status}`);
       const berth: Berth | null = LauncherHost.berth_take(answer.body as unknown as LauncherBerth);
       if (berth === null) throw new Error('the launcher started no berth');

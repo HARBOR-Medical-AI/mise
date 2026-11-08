@@ -10,7 +10,8 @@
  *   BERTH_DOCKER_SOCKET         the engine's socket (/var/run/docker.sock)
  *   BERTH_IMAGE                 the berth image, pinned by digest (mise-berth's pin by default)
  *   BERTH_PREFIX                what this spoke's berths are named with (mise-berth)
- *   BERTH_NETWORK               the berth network, shared with porter alone (<prefix>s)
+ *   BERTH_CUBE_NETWORK          cube-net, where every berth reaches the CUBE API (<prefix>-cube-net)
+ *   BERTH_PORTER_CONTAINER      porter's container, joined to each berth's wire; unset when porter runs on the host
  *   BERTH_POLICY_FILE           the spoke's policy (cpus, memoryGib, pids, holds); defaults when unset
  *   BERTH_PROFILE               the ChRIS profile the spoke runs, for its floor (minimal)
  *
@@ -50,7 +51,8 @@ async function launcher_start(): Promise<void> {
     policy,
     image: env['BERTH_IMAGE'] ?? BERTH_IMAGE_DEFAULT,
     prefix,
-    network: env['BERTH_NETWORK'] ?? `${prefix}s`,
+    cubeNetwork: env['BERTH_CUBE_NETWORK'] ?? `${prefix}-cube-net`,
+    porterContainer: env['BERTH_PORTER_CONTAINER'] !== undefined && env['BERTH_PORTER_CONTAINER'] !== '' ? env['BERTH_PORTER_CONTAINER'] : null,
     ...(env['BERTH_PROFILE'] !== undefined ? { profile: env['BERTH_PROFILE'] } : {}),
   });
   const server = launcherServer_create(launcher, secret, (line: string): void => { console.log(`[+] ${line}`); });
@@ -62,8 +64,9 @@ async function launcher_start(): Promise<void> {
     server.listen(listen, (): void => { chmodSync(listen, 0o600); });
   }
   server.on('listening', (): void => {
-    console.log(`[+] BERTH LAUNCHER on ${listen}: ${prefix} berths on ${env['BERTH_NETWORK'] ?? `${prefix}s`}, each ${policy.limits.cpus} CPU, ${policy.limits.memoryGib} GiB, ${policy.limits.pids} processes${policy.holds !== null ? `, at most ${policy.holds}` : ''}`);
+    console.log(`[+] BERTH LAUNCHER on ${listen}: ${prefix} berths, each on its own wire with porter${env['BERTH_PORTER_CONTAINER'] ? ` (${env['BERTH_PORTER_CONTAINER']})` : ' (on the host)'} and on ${env['BERTH_CUBE_NETWORK'] ?? `${prefix}-cube-net`}; each ${policy.limits.cpus} CPU, ${policy.limits.memoryGib} GiB, ${policy.limits.pids} processes${policy.holds !== null ? `, at most ${policy.holds}` : ''}`);
     void launcher.capacity_get().then((capacity: number): void => { console.log(`    this host holds ${capacity} berth${capacity === 1 ? '' : 's'}`); }, (): void => undefined);
+    void launcher.orphans_clear().then((removed: string[]): void => { if (removed.length > 0) console.log(`    removed what an earlier run left: ${removed.join(', ')}`); }, (error: unknown): void => { console.error(`[!] orphans: ${error instanceof Error ? error.message : String(error)}`); });
   });
   const stop = (): void => { server.close(); process.exit(0); };
   process.once('SIGINT', stop);
