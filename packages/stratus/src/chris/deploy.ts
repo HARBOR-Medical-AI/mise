@@ -7,7 +7,8 @@
  * CUBE, registers the compute resource the plugin uploads name, and checks
  * that `chris` sees the admin API. With a host, it then waits for public
  * DNS to show the VM's address and for the certificate; with a porter, for
- * porter's name and its certificate too.
+ * porter's name and its certificate too. With berths, it pulls the berth
+ * image porter's release pins and waits for the launcher's socket.
  *
  * Every line CUBE is asked goes from the VM itself to 127.0.0.1:8000, the
  * admin password in curl's configuration on stdin, never on a command line.
@@ -22,7 +23,7 @@ import { pause, vmRemote_open, type RemoteAnswer, type VmRemote } from '../vm/re
 import { vmKept_write } from '../vm/keep.js';
 import { vm_read } from '../vm/build.js';
 import type { VmRecord, VmStore } from '../vm/state.js';
-import { apiUrl_derive, caddyfile_render, CHRIS_DIR, compose_render, cubeEnv_render, PFCON_HOST, PFCON_USER, pfconEnv_render, porterEnv_render, type ChrisSecrets, type ChrisTarget } from './compose.js';
+import { apiUrl_derive, BERTH_DIR, caddyfile_render, CHRIS_DIR, compose_render, cubeEnv_render, LAUNCHER_CONTAINER, launcherEnv_render, PFCON_HOST, PFCON_USER, pfconEnv_render, PORTER_UID, porterEnv_render, type ChrisSecrets, type ChrisTarget } from './compose.js';
 import { CHRIS_IMAGES, PORTER_VERSION, type ChrisProfile } from './profiles.js';
 import { adminHomeProgram_render, CUBE_PYTHON_LINE, HOME_MARK } from './users.js';
 
@@ -35,8 +36,16 @@ export interface DeployRequest {
   readonly host: string | null;
   /** The name porter answers to, or null for no porter; needs a host. */
   readonly porter: string | null;
+  /** Whether porter starts each person's session in a berth of its own; needs a porter. */
+  readonly berths: boolean;
   readonly secrets: ChrisSecrets;
 }
+
+/** Where porter's release keeps the berth image it pins, in porter's image. */
+const BERTH_PIN_MODULE: string = '/usr/local/lib/node_modules/@fnndsc/porter/dist/launcher/launcher.js';
+
+/** A berth image named by digest, as porter pins it. */
+const BERTH_IMAGE_PINNED: RegExp = /^[a-z0-9./-]+@sha256:[0-9a-f]{64}$/;
 
 /** What a deploy runs over. */
 export interface DeployDeps {
@@ -131,25 +140,58 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
     const { record } = vm_read(deps.store, request.vm);
     const address: string | undefined = record.dataOutputs?.['public_ip'];
     if (address === undefined) throw new Error(`${request.vm}: it has no public address`);
-    const target: ChrisTarget = { host: request.host, address, porter: request.porter };
     const remote: VmRemote = await (deps.remote_open ?? ((name: string, inner: BuildCall): Promise<VmRemote> => vmRemote_open(name, { store: deps.store, nets: deps.nets, builder: deps.builder }, inner)))(request.vm, call);
 
     context.log_write('waiting for the VM\'s cloud-init (Docker, the data volume)');
     if (!await until(async (): Promise<boolean> => (await remote.run('test -f /var/lib/cloud/stratus-ready')).code === 0, 90, tick, context.signal)) throw new Error(`${request.vm}: cloud-init has not finished in fifteen minutes (/var/lib/cloud/stratus-ready)`);
 
     await run_must(remote, `sudo install -d -o ubuntu -g ubuntu -m 0750 ${CHRIS_DIR}`, `making ${CHRIS_DIR}`);
+    const berths: boolean = request.berths && request.porter !== null;
+    // The launcher alone is given the group that owns Docker's socket.
+    const dockerGid: number | null = berths ? Number((await run_must(remote, 'stat -c %g /var/run/docker.sock', 'reading the group of Docker\'s socket')).stdout.trim()) : null;
+    if (dockerGid !== null && !Number.isInteger(dockerGid)) throw new Error('reading the group of Docker\'s socket: not a number');
+    const target: ChrisTarget = { host: request.host, address, porter: request.porter, berths: dockerGid !== null ? { dockerGid } : null };
     const files: Array<[string, string, string]> = [
       ['compose.yml', compose_render(request.profile, target), '0644'],
       ['cube.env', cubeEnv_render(target, request.secrets), '0600'],
       ['pfcon.env', pfconEnv_render(request.secrets), '0600'],
       ['Caddyfile', caddyfile_render(target), '0644'],
       ...(request.porter !== null ? [['porter.env', porterEnv_render(target, request.secrets), '0600'] as [string, string, string]] : []),
+      ...(berths ? [['launcher.env', launcherEnv_render(request.profile, target), '0600'] as [string, string, string]] : []),
     ];
     for (const [file, text, mode] of files) await run_must(remote, `umask 077 && cat > ${CHRIS_DIR}/${file}.new && chmod ${mode} ${CHRIS_DIR}/${file}.new && mv ${CHRIS_DIR}/${file}.new ${CHRIS_DIR}/${file}`, `writing ${file}`, text);
     context.log_write(`wrote ${files.map(([file]): string => file).join(', ')} to ${CHRIS_DIR}`);
+    if (berths) {
+      // porter's and the launcher's own user (the image's node) reads the secret and makes the socket; nobody else.
+      if (request.secrets.launcherSecret === undefined) throw new Error('berths need the launcher\'s secret');
+      await run_must(remote, `sudo install -d -o ${PORTER_UID} -g ${PORTER_UID} -m 0700 ${BERTH_DIR} ${BERTH_DIR}/run`, `making ${BERTH_DIR}`);
+      const berthFiles: Array<[string, string, string]> = [['launcher.secret', `${request.secrets.launcherSecret}\n`, '0600'], ['policy.json', '{}\n', '0644']];
+      for (const [file, text, mode] of berthFiles) await run_must(remote, `sudo sh -c 'umask 077 && cat > ${BERTH_DIR}/${file}.new && chown ${PORTER_UID}:${PORTER_UID} ${BERTH_DIR}/${file}.new && chmod ${mode} ${BERTH_DIR}/${file}.new && mv ${BERTH_DIR}/${file}.new ${BERTH_DIR}/${file}'`, `writing ${file}`, text);
+      context.log_write(`wrote launcher.secret and policy.json to ${BERTH_DIR} (the image's node user's)`);
+    }
 
     context.log_write(request.porter !== null ? 'pulling the images, building porter\'s, and starting the services' : 'pulling the images and starting the services');
-    await run_must(remote, `cd ${CHRIS_DIR} && docker compose pull -q --ignore-buildable && docker compose up -d --build --remove-orphans`, 'docker compose up');
+    await run_must(remote, `cd ${CHRIS_DIR} && docker compose pull -q --ignore-buildable${request.porter !== null ? ' && docker compose build -q' : ''}`, 'docker compose pull');
+    let berthImage: string | null = null;
+    if (berths) {
+      // The berth image is the one porter's release pins, read from the porter just built, and pulled before any login waits on it.
+      const pin: RemoteAnswer = await run_must(remote, `docker run --rm --entrypoint node stratus/porter:${PORTER_VERSION} --input-type=module -e "console.log((await import('${BERTH_PIN_MODULE}')).BERTH_IMAGE_DEFAULT)"`, 'reading the berth image porter pins');
+      const image: string = pin.stdout.trim().split('\n').pop() ?? '';
+      if (!BERTH_IMAGE_PINNED.test(image)) throw new Error(`reading the berth image porter pins: ${image || 'nothing'} is not an image by digest`);
+      context.log_write(`pulling the berth image ${image}`);
+      await run_must(remote, `docker pull -q ${image}`, 'pulling the berth image');
+      berthImage = image;
+    }
+    await run_must(remote, `cd ${CHRIS_DIR} && docker compose up -d --build --remove-orphans`, 'docker compose up');
+    if (berths) {
+      context.log_write('waiting for the berth launcher\'s socket');
+      const healthy: boolean = await until(async (): Promise<boolean> => (await remote.run(`docker inspect -f '{{.State.Health.Status}}' ${LAUNCHER_CONTAINER}`)).stdout.trim() === 'healthy', 30, tick, context.signal);
+      if (!healthy) {
+        const logs: RemoteAnswer = await remote.run(`docker logs --tail 5 ${LAUNCHER_CONTAINER} 2>&1`);
+        throw new Error(`the berth launcher did not answer on its socket in five minutes: ${logs.stdout.trim().split('\n').join(' / ')}`);
+      }
+      context.log_write('the berth launcher answers on its socket: porter starts a berth for each person');
+    }
 
     context.log_write('waiting for CUBE (migrations first)');
     const up: boolean = await until(async (): Promise<boolean> => {
@@ -200,7 +242,7 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
       }
     }
     deps.store.record_update(request.vm, (current: VmRecord): void => {
-      current.chris = { profile: request.profile.name, compute: request.compute, host: request.host, url, deployed: new Date().toISOString(), image: CHRIS_IMAGES.cube, ...(request.host !== null ? { dns: 'waiting' } : {}), ...(request.porter !== null ? { porter: request.porter, porterVersion: PORTER_VERSION } : {}) };
+      current.chris = { profile: request.profile.name, compute: request.compute, host: request.host, url, deployed: new Date().toISOString(), image: CHRIS_IMAGES.cube, ...(request.host !== null ? { dns: 'waiting' } : {}), ...(request.porter !== null ? { porter: request.porter, porterVersion: PORTER_VERSION } : {}), ...(berthImage !== null ? { berths: 'launcher' as const, berthImage } : {}) };
     });
     await kept_write(deps, request.vm, context);
     if (request.host === null) {

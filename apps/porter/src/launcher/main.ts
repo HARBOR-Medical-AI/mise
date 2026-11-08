@@ -12,6 +12,7 @@
  *   BERTH_PREFIX                what this spoke's berths are named with (mise-berth)
  *   BERTH_CUBE_NETWORK          cube-net, where every berth reaches the CUBE API (<prefix>-cube-net)
  *   BERTH_PORTER_CONTAINER      porter's container, joined to each berth's wire; unset when porter runs on the host
+ *   BERTH_CUBE_HOST             CUBE's name, resolved to cube-net's gateway inside each berth; unset: by public DNS
  *   BERTH_POLICY_FILE           the spoke's policy (cpus, memoryGib, pids, holds); defaults when unset
  *   BERTH_PROFILE               the ChRIS profile the spoke runs, for its floor (minimal)
  *
@@ -54,6 +55,7 @@ async function launcher_start(): Promise<void> {
     cubeNetwork: env['BERTH_CUBE_NETWORK'] ?? `${prefix}-cube-net`,
     porterContainer: env['BERTH_PORTER_CONTAINER'] !== undefined && env['BERTH_PORTER_CONTAINER'] !== '' ? env['BERTH_PORTER_CONTAINER'] : null,
     ...(env['BERTH_PROFILE'] !== undefined ? { profile: env['BERTH_PROFILE'] } : {}),
+    ...(env['BERTH_CUBE_HOST'] !== undefined && env['BERTH_CUBE_HOST'] !== '' ? { cubeHost: env['BERTH_CUBE_HOST'] } : {}),
   });
   const server = launcherServer_create(launcher, secret, (line: string): void => { console.log(`[+] ${line}`); });
   const hostPort: RegExpExecArray | null = /^(127\.0\.0\.1|localhost|::1):(\d+)$/.exec(listen);

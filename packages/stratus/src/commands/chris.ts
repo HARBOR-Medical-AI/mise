@@ -2,14 +2,16 @@
  * @file `chris`: the ChRIS layer on a built VM (docs/stratus.adoc, D16).
  *
  * `chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>]
- * [--porter <name>] [--admin-password-file <file>]` puts the all-in-one CUBE on the VM over
+ * [--porter <name>] [--berths on|off] [--admin-password-file <file>]` puts the all-in-one CUBE on the VM over
  * the bastion path, as a task: refused below the profile's floor; the
  * internal secrets generated once and kept on this host; the admin password
  * asked once (empty: generated and shown once) or read from a file; the
  * compute resource (default: the VM's name) registered. With `--host`, it
  * waits for public DNS and the certificate, and a replay resumes there. With
  * `--porter`, porter (the door to mise: chell, calypso, ARGUS) runs beside
- * it under its own name, logging in to this CUBE.
+ * it under its own name, logging in to this CUBE, and starts each person's
+ * session in a berth of its own through the berth launcher unless
+ * `--berths off` (docs/berths.adoc).
  * `chris status [<vm>]` says what is deployed where. `chris user add <name>
  * --email <address> [--groups <group,…>] [--password-file <file>] [--on <vm>]`
  * makes an account on a ChRIS this stratus deployed, on the VM itself
@@ -38,9 +40,9 @@ import type { VmSpec } from '../vm/spec.js';
 import type { VmRecord, VmStore } from '../vm/state.js';
 import type { VmRemote } from '../vm/remote.js';
 import type { BuildCall } from '../cloud/builder.js';
-import { CHRIS_PROFILES, floor_short, type ChrisProfile } from '../chris/profiles.js';
+import { CHRIS_PROFILES, floor_short, PORTER_BERTHS_SINCE, PORTER_VERSION, porterBerths_carries, type ChrisProfile } from '../chris/profiles.js';
 import { VM_KEYLESS, vmKeyless_is } from '../vm/keep.js';
-import { porterSecret_ensure, secret_make, secrets_ensure, secrets_read } from '../chris/secrets.js';
+import { launcherSecret_ensure, porterSecret_ensure, secret_make, secrets_ensure, secrets_read } from '../chris/secrets.js';
 import { CHRIS_JOBS, chrisDeployRun_make, type DeployDeps } from '../chris/deploy.js';
 import { host_split, point_plan, pointPlan_words, POINT_TTL, type Registrar } from '../chris/registrar.js';
 import { ALL_USERS, chrisUserAddRun_make, chrisUserModRun_make, EMAIL, GROUP_NAME, USER_JOBS, USER_NAME, type UserAddResult, type UserAnswer, type UserModAsk } from '../chris/users.js';
@@ -70,10 +72,10 @@ export interface ChrisCommandContext {
 }
 
 /** The options `chris deploy` reads, each a value. */
-const DEPLOY_OPTIONS: ReadonlyArray<string> = ['--profile', '--compute', '--host', '--porter', '--admin-password-file'];
+const DEPLOY_OPTIONS: ReadonlyArray<string> = ['--profile', '--compute', '--host', '--porter', '--berths', '--admin-password-file'];
 
 /** `chris deploy`'s usage. */
-const DEPLOY_USAGE: string = 'chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--admin-password-file <file>] [--plan]';
+const DEPLOY_USAGE: string = 'chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--berths on|off] [--admin-password-file <file>] [--plan]';
 
 /** The options `chris user add` reads, each a value. */
 const USER_OPTIONS: ReadonlyArray<string> = ['--email', '--groups', '--password-file', '--on'];
@@ -523,6 +525,13 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   if (porter !== null && !HOST_NAME.test(porter)) return envelope_error('', undefined, `chris deploy: --porter ${porter}: not a host name\n`);
   if (porter !== null && host === null) return envelope_error('', undefined, `chris deploy: --porter ${porter} needs --host: porter's sessions reach CUBE by its name, both over HTTPS\n`);
   if (porter !== null && porter === host) return envelope_error('', undefined, `chris deploy: --porter ${porter}: porter needs a name of its own, not CUBE's\n`);
+  // A porter starts each person's session in a berth of its own unless the deploy says off.
+  const berthsWord: string | undefined = read.options.get('--berths');
+  if (berthsWord !== undefined && berthsWord !== 'on' && berthsWord !== 'off') return envelope_error('', undefined, `chris deploy: --berths ${berthsWord}: on or off\n`);
+  if (berthsWord === 'on' && porter === null) return envelope_error('', undefined, 'chris deploy: --berths on needs --porter: berths are started behind porter\'s door\n');
+  // Until stratus pins a porter that carries the launcher, berths stay off and asking for them says why.
+  if (berthsWord === 'on' && !porterBerths_carries()) return envelope_error('', undefined, `chris deploy: --berths on: porter ${PORTER_VERSION}, which this stratus puts up, has no berth launcher (${PORTER_BERTHS_SINCE} or later)\n`);
+  const berths: boolean = porter !== null && berthsWord !== 'off' && porterBerths_carries();
   const record: VmRecord | null = context.vms.record_read(name);
   const spec = context.vms.spec_read(name);
   if (record === null || spec === null || 'error' in spec) return envelope_error('', undefined, `chris deploy: ${name}: no such VM (vm new declares one)\n`);
@@ -534,7 +543,7 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   if (short.length > 0) return envelope_error('', undefined, `chris deploy: ${name} is below the ${profile.name} profile's floor: ${short.join('; ')}\n`);
   if (!vmSpec.open.includes(80) || (host !== null && !vmSpec.open.includes(443))) return envelope_error('', undefined, `chris deploy: ${name} does not open ${host !== null ? '80 and 443' : '80'} (vm new ${name} --open 80,443, then vm build ${name})\n`);
   const compute: string = read.options.get('--compute') ?? name;
-  const plan: ChrisPlan = await chrisPlan_read(context, record, { profile: profile.name, compute, host, porter });
+  const plan: ChrisPlan = await chrisPlan_read(context, record, { profile: profile.name, compute, host, porter, berths });
   if (planOnly) return envelope_ok(`${chrisPlan_words(name, plan)}\n`, { kind: STRATUS_CHRIS_PLAN_MODEL_KIND, data: { vm: name, ...plan } });
   if (!tasks_granted()) return envelope_error('', undefined, `chris deploy: ${TIER_REFUSAL}\n`);
   // A first deploy, or a replay that restarts or changes what runs, asks first, with all of it (a-change-is-a-loop, clause 4);
@@ -552,7 +561,8 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   }
   const kept = secrets_read(context.vms, name);
   if (kept === null) return envelope_error('', undefined, `chris deploy: ${name}: its secrets were not kept\n`);
-  const secrets = porter !== null ? porterSecret_ensure(context.vms, name, kept) : kept;
+  const withPorter = porter !== null ? porterSecret_ensure(context.vms, name, kept) : kept;
+  const secrets = berths ? launcherSecret_ensure(context.vms, name, withPorter) : withPorter;
   const deps: DeployDeps = { store: context.vms, nets: context.nets, builder: context.builder, resolve: context.resolve, status_get: context.status_get, ...(context.remote_open !== undefined ? { remote_open: context.remote_open } : {}), ...(context.tickMs !== undefined ? { tickMs: context.tickMs } : {}) };
   let pointed: string = '';
   const address: string | undefined = record.dataOutputs?.['public_ip'];
@@ -564,10 +574,10 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
     }
   }
   const shown: string = generated !== null ? `${chalk.yellow(`the admin password for chris, generated, shown this once: ${generated}`)}\n` : '';
-  const ran = await job_runFollowed(CHRIS_JOBS.deploy(name), `deploy ChRIS on ${name}`, chrisDeployRun_make({ vm: name, profile, compute, host, porter, secrets }, deps));
+  const ran = await job_runFollowed(CHRIS_JOBS.deploy(name), `deploy ChRIS on ${name}`, chrisDeployRun_make({ vm: name, profile, compute, host, porter, berths, secrets }, deps));
   if ('error' in ran) return envelope_error('', undefined, `${shown}${pointed}chris deploy: ${ran.error}\n`);
   const done: VmRecord | null = context.vms.record_read(name);
-  const door: string = porter !== null ? `; porter at https://${porter}/` : '';
+  const door: string = porter !== null ? `; porter at https://${porter}/${berths ? ', a berth for each person' : ''}` : '';
   return envelope_ok(`${shown}${pointed}${name}: ChRIS ${profile.name} at ${done?.chris?.url ?? '?'}, compute ${compute}${door}; the admin is chris (its password is kept on this host, never shown again)\n`);
 }
 
@@ -580,7 +590,7 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
  * @param ask - What the deploy is asked to put up.
  * @returns The plan.
  */
-async function chrisPlan_read(context: ChrisCommandContext, record: VmRecord, ask: { profile: string; compute: string; host: string | null; porter: string | null }): Promise<ChrisPlan> {
+async function chrisPlan_read(context: ChrisCommandContext, record: VmRecord, ask: { profile: string; compute: string; host: string | null; porter: string | null; berths: boolean }): Promise<ChrisPlan> {
   const first: ChrisPlan = chrisPlan_derive(record.chris, ask, null);
   const porterRestarts: boolean = first.restarts.some((one: string): boolean => one.startsWith('porter (') || one.startsWith('CUBE and porter'));
   if (!porterRestarts || record.chris === undefined || context.http_get === undefined) return first;

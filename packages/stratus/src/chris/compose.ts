@@ -15,6 +15,14 @@
  * inside the network, so porter's sessions reach CUBE by its public name
  * without leaving the VM.
  *
+ * With berths (docs/berths.adoc), porter starts each person's session in a
+ * container of its own, through the berth launcher beside it: the same
+ * image, the one service given Docker's socket, on no network, answering on
+ * a unix socket in `berth/run/` with a secret both read from
+ * `berth/launcher.secret` (0600, the image's `node` user). Each berth
+ * reaches CUBE by its public name at cube-net's gateway, where Caddy's
+ * ports are published.
+ *
  * Every file lands in `/srv/data/chris/` on the VM, on the data volume, so a
  * rebuilt machine finds them with the database and the files; Docker's own
  * folder is on the data volume too, and the named volumes with it.
@@ -34,6 +42,14 @@ export interface ChrisSecrets {
   adminPassword: string;
   /** Signs porter's cookies; made by the first deploy with a porter. */
   porterSecret?: string;
+  /** What porter carries to the berth launcher; made by the first deploy with berths. */
+  launcherSecret?: string;
+}
+
+/** Berths behind porter, as a deploy puts them up. */
+export interface ChrisBerths {
+  /** The group that owns Docker's socket on the VM, given to the launcher alone. */
+  readonly dockerGid: number;
 }
 
 /** What a deploy is told. */
@@ -44,6 +60,8 @@ export interface ChrisTarget {
   readonly address: string;
   /** The name porter answers to (`porter.chrisproject.org`), or null for no porter; needs a host. */
   readonly porter?: string | null;
+  /** Berths behind porter, or null for none; needs a porter. */
+  readonly berths?: ChrisBerths | null;
 }
 
 /** Where everything lands on the VM. */
@@ -67,6 +85,34 @@ export const PORTER_STATE: string = '/var/lib/porter/sessions';
 
 /** The port porter answers on, inside the network. */
 export const PORTER_PORT: number = 4180;
+
+/** The berth launcher's files on the VM: its secret, its policy and the folder of its socket. */
+export const BERTH_DIR: string = `${CHRIS_DIR}/berth`;
+
+/** Where the launcher's files are, in porter's and the launcher's containers. */
+export const BERTH_MOUNT: string = '/srv/berth';
+
+/** The launcher's socket, in both containers. */
+export const BERTH_SOCKET: string = `${BERTH_MOUNT}/run/launcher.sock`;
+
+/** The uid and gid of the image's `node` user, which porter and the launcher run as, and which owns the launcher's files. */
+export const PORTER_UID: number = 1000;
+
+/** Porter's container as compose names it: the launcher joins it to each berth's wire. */
+export const PORTER_CONTAINER: string = `${CHRIS_PROJECT}-porter-1`;
+
+/** The launcher's container as compose names it: the deploy waits for its health. */
+export const LAUNCHER_CONTAINER: string = `${CHRIS_PROJECT}-berth-launcher-1`;
+
+/**
+ * Whether a target puts berths up.
+ *
+ * @param target - The target.
+ * @returns Whether it has berths (and so porter).
+ */
+export function berths_has(target: ChrisTarget | null): target is ChrisTarget & { berths: ChrisBerths } {
+  return target !== null && target.berths !== undefined && target.berths !== null && target.porter !== undefined && target.porter !== null && target.host !== null;
+}
 
 /**
  * The URL CUBE answers on, as clients reach it.
@@ -147,12 +193,35 @@ export function pfconEnv_render(secrets: ChrisSecrets): string {
  */
 export function porterEnv_render(target: ChrisTarget, secrets: ChrisSecrets): string {
   if (target.host === null || secrets.porterSecret === undefined) throw new Error('porter needs the host CUBE answers to and its own secret');
+  if (berths_has(target) && secrets.launcherSecret === undefined) throw new Error('berths need the launcher\'s secret');
   const pairs: Array<[string, string]> = [
     ['PORTER_CUBE_URL', apiUrl_derive(target)],
     ['PORTER_STATE_DIR', PORTER_STATE],
     ['PORTER_HOST', '0.0.0.0'],
     ['PORTER_PORT', String(PORTER_PORT)],
     ['PORTER_SECRET', secrets.porterSecret],
+    ...(berths_has(target) ? [['PORTER_BERTHS', 'launcher'], ['PORTER_LAUNCHER', BERTH_SOCKET], ['PORTER_LAUNCHER_SECRET_FILE', `${BERTH_MOUNT}/launcher.secret`]] as Array<[string, string]> : []),
+  ];
+  return `${pairs.map(([key, value]): string => `${key}=${value}`).join('\n')}\n`;
+}
+
+/**
+ * The berth launcher's environment: its socket and secret, the policy, the
+ * profile whose floor it keeps, porter's container to join to each wire,
+ * and CUBE's name, which each berth resolves to cube-net's gateway.
+ *
+ * @param profile - The profile.
+ * @param target - The host.
+ * @returns `launcher.env`.
+ */
+export function launcherEnv_render(profile: ChrisProfile, target: ChrisTarget): string {
+  const pairs: Array<[string, string]> = [
+    ['BERTH_LAUNCHER_LISTEN', BERTH_SOCKET],
+    ['BERTH_LAUNCHER_SECRET_FILE', `${BERTH_MOUNT}/launcher.secret`],
+    ['BERTH_POLICY_FILE', `${BERTH_MOUNT}/policy.json`],
+    ['BERTH_PROFILE', profile.name],
+    ['BERTH_PORTER_CONTAINER', PORTER_CONTAINER],
+    ...(target.host !== null ? [['BERTH_CUBE_HOST', target.host] as [string, string]] : []),
   ];
   return `${pairs.map(([key, value]): string => `${key}=${value}`).join('\n')}\n`;
 }
@@ -190,6 +259,8 @@ const PORTER_DOCKERFILE: string = [
  */
 export function compose_render(profile: ChrisProfile, target: ChrisTarget | null = null): string {
   const porter: boolean = target !== null && target.host !== null && target.porter !== undefined && target.porter !== null;
+  const berths: boolean = berths_has(target);
+  const porterBuild = { build: { context: '.', dockerfile_inline: PORTER_DOCKERFILE }, image: `stratus/porter:${PORTER_VERSION}` };
   const cube = (command: string[] | null, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
     image: CHRIS_IMAGES.cube,
     ...(command !== null ? { command } : {}),
@@ -242,20 +313,30 @@ export function compose_render(profile: ChrisProfile, target: ChrisTarget | null
       depends_on: { chris: { condition: 'service_started' } },
     },
     porter: {
-      build: { context: '.', dockerfile_inline: PORTER_DOCKERFILE },
-      image: `stratus/porter:${PORTER_VERSION}`,
+      ...porterBuild,
       env_file: ['porter.env'],
-      volumes: ['porter:/var/lib/porter'],
+      volumes: ['porter:/var/lib/porter', ...(berths ? [`./berth/launcher.secret:${BERTH_MOUNT}/launcher.secret:ro`, `./berth/run:${BERTH_MOUNT}/run`] : [])],
       restart: 'unless-stopped',
-      depends_on: { caddy: { condition: 'service_started' } },
+      depends_on: { caddy: { condition: 'service_started' }, ...(berths ? { 'berth-launcher': { condition: 'service_healthy' } } : {}) },
+    },
+    // The one service given Docker's socket: on no network, it answers porter on a unix socket alone.
+    'berth-launcher': {
+      ...porterBuild,
+      command: ['berth-launcher'],
+      env_file: ['launcher.env'],
+      group_add: [String(berths_has(target) ? target.berths.dockerGid : 0)],
+      network_mode: 'none',
+      volumes: ['/var/run/docker.sock:/var/run/docker.sock', `./berth/launcher.secret:${BERTH_MOUNT}/launcher.secret:ro`, `./berth/policy.json:${BERTH_MOUNT}/policy.json:ro`, `./berth/run:${BERTH_MOUNT}/run`],
+      restart: 'unless-stopped',
+      healthcheck: { test: ['CMD', 'test', '-S', BERTH_SOCKET], interval: '5s', timeout: '3s', retries: 12, start_period: '10s' },
     },
   };
-  const names: string[] = [...profile.services, ...(porter ? ['porter'] : [])];
+  const names: string[] = [...profile.services, ...(porter ? ['porter'] : []), ...(berths ? ['berth-launcher'] : [])];
   const services: Record<string, unknown> = Object.fromEntries(names.map((name: string): [string, unknown] => {
     const service: unknown = all[name];
     if (service === undefined) throw new Error(`the profile ${profile.name} names ${name}, which no service is`);
     return [name, service];
   }));
   const volumes: Record<string, null> = { files: null, db: null, 'caddy-data': null, 'caddy-config': null, ...(porter ? { porter: null } : {}) };
-  return `# ChRIS, profile ${profile.name}${porter ? ', with porter' : ''}: written by stratus's chris deploy; replay the script to change it.\n${yaml.dump({ name: CHRIS_PROJECT, services, volumes }, { lineWidth: -1, noRefs: true })}`;
+  return `# ChRIS, profile ${profile.name}${porter ? `, with porter${berths ? ' and berths' : ''}` : ''}: written by stratus's chris deploy; replay the script to change it.\n${yaml.dump({ name: CHRIS_PROJECT, services, volumes }, { lineWidth: -1, noRefs: true })}`;
 }

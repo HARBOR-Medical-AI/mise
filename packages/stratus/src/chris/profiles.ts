@@ -29,6 +29,22 @@ export const CHRIS_IMAGES = {
 /** The porter a deploy with `--porter` installs, pinned, with the chell, calypso and ARGUS it brings. */
 export const PORTER_VERSION: string = '0.9.13';
 
+/** The first porter whose release carries the berth launcher, and the berths' way to CUBE at cube-net's gateway. */
+export const PORTER_BERTHS_SINCE: string = '0.10.0';
+
+/**
+ * Whether a porter release carries the berth launcher.
+ *
+ * @param version - The release (`0.9.13`).
+ * @returns Whether it is {@link PORTER_BERTHS_SINCE} or later.
+ */
+export function porterBerths_carries(version: string = PORTER_VERSION): boolean {
+  const parts = (one: string): number[] => one.split('.').map((part: string): number => Number(part));
+  const [have, since] = [parts(version), parts(PORTER_BERTHS_SINCE)];
+  for (let i: number = 0; i < 3; i++) if ((have[i] ?? 0) !== (since[i] ?? 0)) return (have[i] ?? 0) > (since[i] ?? 0);
+  return true;
+}
+
 /** A profile: its services and the least it runs on. */
 export interface ChrisProfile {
   readonly name: string;

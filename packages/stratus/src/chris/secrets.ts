@@ -78,6 +78,22 @@ export function porterSecret_ensure(store: VmStore, name: string, kept: ChrisSec
 }
 
 /**
+ * The secrets with the berth launcher's: those kept, the launcher's made and
+ * kept beside them the first time a deploy has berths.
+ *
+ * @param store - The VMs.
+ * @param name - The VM.
+ * @param kept - The secrets kept.
+ * @returns The secrets, with the launcher's.
+ */
+export function launcherSecret_ensure(store: VmStore, name: string, kept: ChrisSecrets): ChrisSecrets {
+  if (kept.launcherSecret !== undefined) return kept;
+  const secrets: ChrisSecrets = { ...kept, launcherSecret: secret_make() };
+  secrets_write(store, name, secrets);
+  return secrets;
+}
+
+/**
  * Keeps a VM's secrets, mode 600.
  *
  * @param store - The VMs.
