@@ -1,5 +1,20 @@
 # @fnndsc/porter
 
+## 0.10.0
+
+### Minor Changes
+
+- d5598fc: Porter can start each person's session in a berth of their own, started by the new berth launcher, when turned on. `berth-launcher`, porter's second program, is the one process that holds the container engine: porter asks it, with a secret both read from a 0600 file, to start, stop or report a person's berth, and it fixes everything else (the pinned mise-berth image, the person's CUBE id as uid and gid, their home volume, `/incoming` read-only and `/outgoing`, the token on a tmpfs written on stdin, CPU, memory and process limits from the spoke's policy, every capability dropped, a read-only root, a wire of the berth's own shared with porter and a cube-net that carries only the CUBE API and blocks berth from berth, and one volume per person and cohort for `/incoming` and `/outgoing` beside the home) and refuses a full spoke naming who holds it. With `PORTER_BERTHS=launcher` a login reads the person's CUBE id and asks for their berth, `!` lands in that container, a later login's token reaches the berth already up, and a logout stops it and keeps its volumes; without it porter starts sessions beside itself as before.
+
+### Patch Changes
+
+- 750a7ac: A berth can reach a CUBE published on its own host by the name porter uses, through `BERTH_CUBE_HOST`. Set to CUBE's name, the launcher reads cube-net's gateway and gives every berth that name as a host line at it; a cube-net with no gateway refuses to start the berth, saying so. Unset, a berth resolves CUBE by public DNS as before.
+
+  The launcher also joins a porter made again back to the wires of berths already running, removes a socket an earlier run left before it starts, and removes the volumes it made when it could not give them to the person, so the next start gives them anew.
+
+- Updated dependencies [750a7ac]
+  - @fnndsc/stratus@0.17.0
+
 ## 0.9.16
 
 ### Patch Changes
