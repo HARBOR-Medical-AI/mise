@@ -834,7 +834,8 @@ export class VmScreen extends ScriptScreen {
     );
     const toggle: HTMLButtonElement = el('button', `tdc-pill${ssh.on ? ' tdc-pill-quiet' : ''} vm-service-remove`, ssh.on ? 'CLOSE' : 'OPEN');
     toggle.type = 'button';
-    toggle.disabled = this.busy !== null || (!ssh.on && ssh.port === null);
+    toggle.disabled = this.busy !== null;
+    toggle.hidden = !ssh.on && ssh.port === null;
     toggle.addEventListener('click', (): void => {
       this.hooks.voice.pill(toggle.textContent ?? '');
       line.text = lineOption_set(line.text, '--ssh', ssh.on ? 'off' : String(ssh.port));
@@ -868,11 +869,14 @@ export class VmScreen extends ScriptScreen {
     }
     box.append(kinds);
     const add: HTMLButtonElement = el('button', 'tdc-pill vm-service-add-go', 'ADD');
-    // ADD says, before the press, why the service as typed cannot be added: nothing the engine refuses reaches the line.
+    const needs: HTMLElement = el('span', 'tdc-prose ss-would-refused vm-service-needs', '');
+    // ADD stands only when the service as typed can be added; until then what it still needs is said in its place.
     const add_redraw = (): void => {
       const why: string | null = serviceDraft_why(draft, open, sshPort);
-      add.textContent = why === null ? 'ADD' : `ADD · ${why}`;
-      add.disabled = this.busy !== null || why !== null;
+      add.hidden = why !== null;
+      add.disabled = this.busy !== null;
+      needs.textContent = why === null ? '' : `to add: ${why.toLowerCase()}`;
+      needs.hidden = why === null;
     };
     const field = (label: string, value: string, placeholder: string, set: (value: string) => void, opts: { wide?: boolean; type?: string; min?: string; max?: string; locked?: boolean } = {}): HTMLElement => {
       const row: HTMLElement = el('div', `tdc-name-row${opts.wide === true ? ' vm-service-key' : ''}`);
@@ -921,7 +925,7 @@ export class VmScreen extends ScriptScreen {
       this.draw();
     });
     add_redraw();
-    box.append(add);
+    box.append(add, needs);
     return box;
   }
 
@@ -937,7 +941,9 @@ export class VmScreen extends ScriptScreen {
     const list: HTMLElement = el('div', 'vm-change-lines');
     for (const word of words) list.append(el('span', `vm-change-line${/SSH/.test(word) && !/closed/.test(word) ? ' ss-would-reboot' : ''}`, word));
     box.append(list, el('span', 'vm-change-money', 'no change in cost: a port is a rule, in the tenancy and in the machine\'s own firewall'));
-    if (built !== undefined) {
+    // A READ session that cannot raise is told why there is no BUILD: a button that cannot be pressed is not drawn.
+    if (built !== undefined && this.hold_derive(built.text) === 'held') box.append(el('p', 'tdc-prose tdc-quiet vm-commit-says', READ_HELD_SHORT));
+    else if (built !== undefined) {
       // loop: vm-services-build
       const build: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill ss-build vm-build', `BUILD · ${words.length === 1 ? words[0] : `${words.length} changes`}`);
       build.type = 'button';
@@ -1287,11 +1293,18 @@ export class VmScreen extends ScriptScreen {
     } else {
       const chosen = (): ReadonlyArray<string> => (account === undefined ? draft().groups : edit().groups ?? account.groups);
       for (const name of context.groups) {
-        const on: boolean = name === ALL_USERS_GROUP || chosen().includes(name);
+        // all_users is every account's: a state shown, never a button.
+        if (name === ALL_USERS_GROUP) {
+          const chip: HTMLElement = el('span', 'tdc-family tdc-family-on vm-account-group-fixed', name);
+          chip.title = 'every account is in all_users';
+          groups.append(chip);
+          continue;
+        }
+        const on: boolean = chosen().includes(name);
         const pill: HTMLButtonElement = el('button', `tdc-family${on ? ' tdc-family-on' : ''}`, name);
         pill.type = 'button';
-        pill.disabled = this.busy !== null || name === ALL_USERS_GROUP;
-        pill.title = name === ALL_USERS_GROUP ? 'every account is in all_users' : on ? `leaves ${name}` : `joins ${name}`;
+        pill.disabled = this.busy !== null;
+        pill.title = on ? `leaves ${name}` : `joins ${name}`;
         pill.addEventListener('click', (): void => {
           this.hooks.voice.pill(name);
           const next: string[] = on ? chosen().filter((one: string): boolean => one !== name) : [...chosen(), name];
@@ -1331,7 +1344,9 @@ export class VmScreen extends ScriptScreen {
     done.addEventListener('click', (): void => { this.hooks.voice.pill('CLOSE'); this.accountOpen = null; this.draw(); });
     const drop: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet vm-account-drop', account === undefined ? 'DROP THIS USER' : 'UNDO ITS CHANGES');
     drop.type = 'button';
-    drop.disabled = account !== undefined && this.accountEdits.get(key) === undefined;
+    drop.disabled = this.busy !== null;
+    // UNDO stands only when the row has a change to undo.
+    drop.hidden = account !== undefined && this.accountEdits.get(key) === undefined;
     drop.addEventListener('click', (): void => {
       this.hooks.voice.pill('UNDO');
       if (account === undefined) { this.accountDrafts.splice(draftAt, 1); this.accountOpen = null; } else this.accountEdits.delete(key);
@@ -1368,17 +1383,18 @@ export class VmScreen extends ScriptScreen {
       for (const change of changes) lines.append(el('span', `vm-change-line${change.why !== null ? ' ss-would-refused' : change.restarts ? ' ss-would-reboot' : ''}`, change.why !== null ? `${change.words} · not applied: ${change.why}` : change.words));
       box.append(lines);
     }
-    const hold: ReadHold = this.hold_derive(valid[0]?.line ?? 'chris user mod');
-    const held: boolean = hold === 'held';
-    const label: string = held ? 'APPLY · REFUSED' : valid.length === 0 ? 'APPLY · nothing to apply' : valid.length === 1 ? `APPLY · ${(valid[0] as AccountChange).words}` : `APPLY · ${valid.length} changes`;
+    // APPLY stands only when a change is pending that this session can apply; a button that cannot be pressed is not drawn.
+    box.hidden = changes.length === 0 && run === null;
+    if (valid.length === 0) return;
+    const hold: ReadHold = this.hold_derive((valid[0] as AccountChange).line);
+    if (hold === 'held') { box.append(el('p', 'tdc-prose tdc-quiet', `not applied: ${READ_HELD}`)); return; }
+    const label: string = valid.length === 1 ? `APPLY · ${(valid[0] as AccountChange).words}` : `APPLY · ${valid.length} changes`;
     // loop: ss-user-add
-    const apply: HTMLButtonElement = el('button', `tdc-pill ${valid.length === 0 ? 'tdc-pill-quiet' : 'tdc-pill-plain'}${hold === 'asks' && valid.length > 0 ? ' tdc-pill-asks' : ''} vm-account-apply`, label);
+    const apply: HTMLButtonElement = el('button', `tdc-pill tdc-pill-plain${hold === 'asks' ? ' tdc-pill-asks' : ''} vm-account-apply`, label);
     apply.type = 'button';
-    apply.disabled = held || valid.length === 0 || this.busy !== null;
-    if (held) apply.title = `refused: ${READ_HELD}`;
+    apply.disabled = this.busy !== null;
     apply.addEventListener('click', (): void => { this.hooks.voice.pill('APPLY'); void this.accounts_apply(valid); });
     box.append(apply);
-    if (apply.disabled) return;
     const said: string[] = [];
     said.push(`${hold === 'asks' ? 'asks your password first, then each change in turn' : 'each change in turn'}, asked on the strip in plain words before it is done${valid.some((one: AccountChange): boolean => one.line.startsWith('chris passwd') || one.declares) ? '; a password is asked there hidden, typed twice, or empty for one generated and shown once' : ''}`);
     if (valid.some((one: AccountChange): boolean => one.declares)) said.push('a new user\'s line is saved to the script first');
@@ -1476,8 +1492,14 @@ export class VmScreen extends ScriptScreen {
     if (!this.chrisPlans.has(line.text)) this.chrisPlan_ask(line.text);
     const plan: ChrisPlanModel | null | undefined = this.chrisPlans.get(line.text);
     const box: HTMLElement = el('div', 'vm-change vm-chris-change');
+    // A READ session that cannot raise is told why there is no RUN: a button that cannot be pressed is not drawn.
+    const held: boolean = this.hold_derive(line.text) === 'held';
     if (plan === null || plan === undefined) {
       // Not read yet (or the plan could not be asked): RUN still asks before it acts, and says so.
+      if (held) {
+        box.append(el('p', 'tdc-prose tdc-quiet vm-commit-says', READ_HELD_SHORT));
+        return box;
+      }
       box.append(el('p', 'tdc-prose tdc-quiet', 'what a deploy would do is not read yet: RUN asks with all of it before anything changes'));
       // loop: ss-chris-deploy
       const asking: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-bill ss-run vm-build vm-chris-run', 'RUN · asks before it acts');
@@ -1501,6 +1523,10 @@ export class VmScreen extends ScriptScreen {
     if (plan.sessions !== null && plan.restarts.some((one: string): boolean => one.startsWith('porter (') || one.startsWith('CUBE and porter'))) means.append(el('span', `tdc-prose${plan.sessions > 0 ? ' ss-would-reboot' : ' tdc-quiet'}`, plan.sessions === 0 ? 'no porter session is open now' : `${plan.sessions} porter session${plan.sessions === 1 ? '' : 's'} open now ${plan.sessions === 1 ? 'ends' : 'end'}`));
     if (act.quiet) means.append(el('span', 'vm-change-line', 'nothing changes: what runs is what this line deploys'));
     box.append(means);
+    if (held) {
+      box.append(el('p', 'tdc-prose tdc-quiet vm-commit-says', READ_HELD_SHORT));
+      return box;
+    }
     // loop: ss-chris-deploy
     const run: HTMLButtonElement = el('button', `tdc-pill ${act.quiet ? 'tdc-pill-quiet' : 'tdc-pill-bill'} ss-run vm-build vm-chris-run`, act.label);
     run.type = 'button';
@@ -1786,15 +1812,17 @@ export class VmScreen extends ScriptScreen {
     // BUILD carries what can be built; what only the engine refuses is listed above with its reason and left out.
     const valid: BuildWould[] = would.filter((one: BuildWould): boolean => one.tone !== 'refused');
     const priced: string = month === null || Math.abs(month) < 0.005 || refused !== undefined ? '' : ` · ${money(month)} a month`;
-    build.textContent = valid.length === 0 && would.length > 0 ? 'BUILD · nothing it can do' : valid.length === 0 ? 'BUILD' : `BUILD · ${valid.length === 1 ? (valid[0] as BuildWould).change : `${valid.length} changes`}${priced}`;
-    build.classList.toggle('tdc-pill-quiet', valid.length === 0);
+    build.textContent = valid.length === 0 ? 'BUILD' : `BUILD · ${valid.length === 1 ? (valid[0] as BuildWould).change : `${valid.length} changes`}${priced}`;
     build.classList.toggle('tdc-pill-asks', hold === 'asks');
-    build.disabled = hold === 'held' || (valid.length === 0 && would.length > 0) || this.acting_is();
+    // BUILD stands only when it has something it can build and this session can build it; a button that cannot be pressed is not drawn.
+    build.hidden = valid.length === 0 || hold === 'held';
+    build.disabled = this.acting_is();
     build.title = `sends: ${this.declaredValid_derive(line.text, runs, would)}, then ${build.dataset['build'] ?? ''}`;
-    // The note says what the press does, and only while it can be pressed.
-    says.textContent = hold === 'held' ? READ_HELD_SHORT
-      : build.disabled ? ''
-        : `${hold === 'asks' ? 'asks your password first, then ' : ''}${valid.length === 0 ? 'plans and says there is nothing to do' : 'plans, then asks with the cost before anything bills'}${refused !== undefined ? `; ${refused.change} is left out` : ''}`;
+    // The note says what the press does, and only while it can be pressed; a READ session that cannot raise is told why there is no BUILD.
+    says.textContent = valid.length === 0 ? ''
+      : hold === 'held' ? READ_HELD_SHORT
+        : build.disabled ? ''
+          : `${hold === 'asks' ? 'asks your password first, then ' : ''}plans, then asks with the cost before anything bills${refused !== undefined ? `; ${refused.change} is left out` : ''}`;
   }
 
   /**

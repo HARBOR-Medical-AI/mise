@@ -109,6 +109,7 @@ body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
 .vm-lever-backup { align-items: center; }
 .vm-lever-backup .vm-lever-delta { margin-left: auto; }
 .vm-change { display: flex; flex-direction: column; gap: 0.45rem; border-left: 0.5rem solid var(--harvestgold); padding: 0.4rem 0 0.5rem 0.9rem; }
+.vm-change > span:empty, .vm-change > p:empty, .vm-change > div:empty { display: none; }
 .vm-change-lines { display: flex; flex-direction: column; gap: 0.2rem; }
 .vm-change-line { font-family: var(--face-data); font-size: 0.95rem; color: var(--butter); }
 .vm-change-share { color: var(--honey); }
@@ -183,8 +184,6 @@ body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
 /* CHRIS: the line beside what runs, its fields, RUN, its accounts. */
 .vm-chris { display: flex; flex-direction: column; gap: 0.7rem; }
 .vm-chris-users { display: flex; flex-direction: column; gap: 0.4rem; border-left: 0.5rem solid var(--harvestgold); padding: 0.4rem 0 0.4rem 0.9rem; }
-.vm-chris-accounts { display: grid; grid-template-columns: 10rem minmax(0, 1fr) minmax(0, 1fr); gap: 0.2rem 1rem; }
-.vm-chris-account { color: var(--butter); }
 @media (max-width: 760px) {
   .vm-controller .tdc-slider.vm-lever { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'label box' 'track track' 'runs delta'; row-gap: 0.25rem; }
   .vm-controller .tdc-slider.vm-lever > .tdc-slider-label { grid-area: label; }
@@ -195,6 +194,7 @@ body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
   .vm-lever-hint { position: static; }
   .vm-service { grid-template-columns: 1fr 1fr; }
   .vm-service-warning { margin-left: 0; }
-  .vm-chris-accounts { grid-template-columns: 1fr 1fr; }
+  .vm-account-edit .tdc-name-row { grid-template-columns: minmax(0, 1fr); gap: 0.2rem; }
+  .vm-account-edit .tdc-name-input { width: 100%; box-sizing: border-box; }
 }
 

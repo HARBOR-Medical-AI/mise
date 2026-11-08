@@ -114,7 +114,8 @@ describe('the VM controller', () => {
       expect([...screen.root.querySelectorAll('.ss-slider-runs')].map((mark) => mark.textContent)).toEqual(['RUNS 2', 'RUNS 8 GiB', 'RUNS 50 GB', 'RUNS 50 GB']);
       expect(screen.root.querySelector('.vm-size .tdc-section-aside')?.textContent).toContain('RUNS AS READ FROM THE TENANCY 04:48 UTC');
       expect(button_named(screen.root, 'DECLARE')).toBeUndefined();
-      expect(button_named(screen.root, 'BUILD')).toBeDefined();
+      // Nothing differs from what runs: BUILD is not drawn.
+      expect(button_named(screen.root, 'BUILD')?.hidden).toBe(true);
       // SIZE is one pane: no cost column, no log column (the operator, 2026-11-06).
       expect(screen.root.querySelector('.tdc-col-cost')).toBeNull();
       expect(screen.root.querySelector('.tdc-col-steplog')).toBeNull();
@@ -277,9 +278,13 @@ describe('the VM controller', () => {
     expect(screen.path_get()).toBe('/scripts/chrisproject/store.mise');
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
     await settle();
+    // Nothing changed: BUILD is not drawn, nor a note under it (a button that cannot do anything is not offered).
+    expect(screen.root.querySelector<HTMLButtonElement>('.vm-build')?.hidden).toBe(true);
+    expect(screen.root.querySelector('.vm-commit-says')?.textContent).toBe('');
     const disk: HTMLInputElement = screen.root.querySelector('#ss-slider-disk') as HTMLInputElement;
     disk.value = '180';
     disk.dispatchEvent(new Event('input'));
+    expect(screen.root.querySelector<HTMLButtonElement>('.vm-build')?.hidden).toBe(false);
     screen.root.querySelector<HTMLButtonElement>('.vm-build')?.click();
     await settle(20);
     expect(sent[0]?.startsWith("touch --withContents='net new chrisproject-services")).toBe(true);
@@ -323,6 +328,7 @@ describe('the VM controller', () => {
     const body: HTMLElement = screen.root.querySelector('.tdc-body') as HTMLElement;
     expect(button_named(body, 'TEARDOWN')).toBeUndefined();
     expect(button_named(body, 'DECLARE')).toBeUndefined();
+    expect(button_named(body, 'BUILD')?.hidden).toBe(true);
     expect(button_named(body, 'BUILD')?.title).toBe('sends: vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04, then vm build store');
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="teardown"]')?.click();
     await settle();
@@ -647,17 +653,21 @@ describe('the VM controller', () => {
     await settle(12);
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="services"]')?.click();
     await settle(4);
-    // Both web ports are open: WEB is not offered; ADD, empty, says what it needs.
+    // Both web ports are open: WEB is not offered; ADD is not drawn until the service can be added, what it needs said in its place.
     expect([...screen.root.querySelectorAll('.vm-service-add .tdc-family')].map((pill) => pill.textContent)).toEqual(['CUSTOM', 'PUBLIC SSH']);
     const add = screen.root.querySelector('.vm-service-add-go') as HTMLButtonElement;
-    expect(add.disabled).toBe(true);
+    const needs = screen.root.querySelector('.vm-service-needs') as HTMLElement;
+    expect(add.hidden).toBe(true);
+    expect(needs.textContent).toBe('to add: a port');
     const port = screen.root.querySelector('#vm-service-port') as HTMLInputElement;
     port.value = '22';
     port.dispatchEvent(new Event('input'));
-    expect(add.textContent).toBe('ADD · 22 IS SSH: ADD PUBLIC SSH');
+    expect(needs.textContent).toBe('to add: 22 is ssh: add public ssh');
     port.value = '8080';
     port.dispatchEvent(new Event('input'));
+    expect(add.hidden).toBe(false);
     expect(add.disabled).toBe(false);
+    expect(needs.hidden).toBe(true);
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
     await settle(8);
     // PROFILE is a listing of every profile stratus knows; complete is shown, never offered.
@@ -685,7 +695,8 @@ describe('the VM controller', () => {
     // A new user is a new row; its groups are only the ones CUBE holds, all_users always on.
     button_named(screen.root, '+ NEW USER')?.click();
     await settle();
-    expect([...screen.root.querySelectorAll<HTMLButtonElement>('.vm-account-groups .tdc-family')].map((pill) => `${pill.textContent}${pill.disabled ? ' (locked)' : ''}`)).toEqual(['all_users (locked)', 'pacs_users']);
+    // all_users is shown as every account's, never a button; the groups CUBE holds beside it are the choice.
+    expect([...screen.root.querySelectorAll<HTMLElement>('.vm-account-groups .tdc-family')].map((pill) => `${pill.textContent}${pill.tagName === 'BUTTON' ? '' : ' (fixed)'}`)).toEqual(['all_users (fixed)', 'pacs_users']);
     type('name', 'ana');
     expect(changeLines(screen.root)).toContain('add user ana · groups all_users · not applied: a name is 4 to 32 letters, digits or . @ + - _');
     type('name', 'ana.lima');
@@ -749,14 +760,20 @@ describe('the VM controller', () => {
       await settle(12);
       screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
       await settle(12);
+      // Nothing pending: no APPLY, no change block, no note.
+      expect(screen.root.querySelector('.vm-account-apply')).toBeNull();
+      expect((screen.root.querySelector('.vm-account-change') as HTMLElement).hidden).toBe(true);
       ([...screen.root.querySelectorAll<HTMLElement>('.vm-account-listing .listing-row')].find((one) => one.querySelector('.vm-cell-name')?.textContent === 'rudolph') as HTMLElement).click();
       await settle();
+      // A row with nothing changed offers no UNDO.
+      expect(button_named(screen.root, 'UNDO ITS CHANGES')?.hidden).toBe(true);
       const email = screen.root.querySelector<HTMLInputElement>('#vm-account-email') as HTMLInputElement;
       email.value = 'rp@example.org';
       email.dispatchEvent(new Event('input'));
       button_named(screen.root, 'pacs_users')?.click();
       await settle();
       expect(changeLines(screen.root)).toEqual(['email for rudolph: rudolph@example.org → rp@example.org · groups + pacs_users']);
+      expect(button_named(screen.root, 'UNDO ITS CHANGES')?.hidden).toBe(false);
       expect(screen.root.querySelector('.vm-account-change .vm-commit-says')?.textContent).toContain('an account the script declares has its line rewritten to match, saved first');
       (screen.root.querySelector('.vm-account-apply') as HTMLButtonElement).click();
       await settle(30);
