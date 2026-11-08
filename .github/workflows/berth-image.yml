@@ -1,0 +1,68 @@
+name: Berth image
+
+# Builds and pushes mise-berth, one ChRIS user's working container (images/mise-berth),
+# when its folder or its pins' source changes on main, on a release, or by hand. Every pin
+# comes from images/mise-berth/pins.mjs; consumers pin the pushed image by its digest.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'images/mise-berth/**'
+      - 'packages/stratus/src/chris/profiles.ts'
+      - '.github/workflows/berth-image.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Pins
+        id: pins
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node images/mise-berth/pins.mjs | tee pins.env
+          {
+            echo 'args<<EOF'
+            cat pins.env
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "porter=$(sed -n 's/^PORTER_VERSION=//p' pins.env)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          # GHCR names are lower case; the repository's owner is the namespace its token can push to.
+          echo "image=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/mise-berth" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: images/mise-berth
+          platforms: linux/amd64
+          push: true
+          build-args: ${{ steps.pins.outputs.args }}
+          tags: |
+            ${{ steps.pins.outputs.image }}:${{ steps.pins.outputs.porter }}-${{ steps.pins.outputs.date }}
+            ${{ steps.pins.outputs.image }}:sha-${{ github.sha }}
+            ${{ steps.pins.outputs.image }}:latest
+      - name: The digest to pin
+        run: |
+          echo "### mise-berth" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ steps.pins.outputs.image }}@${{ steps.push.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          sed 's/^/- /' pins.env >> "$GITHUB_STEP_SUMMARY"
