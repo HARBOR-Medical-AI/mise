@@ -10,6 +10,8 @@
  * @module
  */
 
+import { CHRIS_PROFILE_OFFERS, type ChrisProfileFloor } from '@fnndsc/menu';
+
 /** The images a profile runs, pinned. */
 export const CHRIS_IMAGES = {
   cube: 'ghcr.io/fnndsc/cube:6.11.0',
@@ -34,18 +36,31 @@ export interface ChrisProfile {
   /** The compose services it runs. */
   readonly services: ReadonlyArray<string>;
   /** The least a target has: vCPUs, GiB of memory, GB of data. */
-  readonly floor: { readonly vcpu: number; readonly memory: number; readonly data: number };
+  readonly floor: ChrisProfileFloor;
+}
+
+/** The compose services each deployed profile runs. */
+const PROFILE_SERVICES: Readonly<Record<string, ReadonlyArray<string>>> = {
+  minimal: ['db', 'dragonfly', 'nats', 'files-fix', 'migrate', 'chris', 'worker', 'worker-periodic', 'scheduler', 'pfcon', 'caddy'],
+};
+
+/**
+ * The profiles the engine deploys, by name: the menu's built offers with their services. What each is and its floor are the menu's, the one source the screens list them from.
+ *
+ * @returns The deployable profiles.
+ */
+function profiles_build(): Record<string, ChrisProfile> {
+  const profiles: Record<string, ChrisProfile> = {};
+  for (const offer of CHRIS_PROFILE_OFFERS) {
+    const services: ReadonlyArray<string> | undefined = PROFILE_SERVICES[offer.name];
+    if (!offer.built || offer.floor === null || services === undefined) continue;
+    profiles[offer.name] = { name: offer.name, summary: offer.summary, services, floor: offer.floor };
+  }
+  return profiles;
 }
 
 /** The profiles, by name. */
-export const CHRIS_PROFILES: Readonly<Record<string, ChrisProfile>> = {
-  minimal: {
-    name: 'minimal',
-    summary: 'CUBE, its workers and scheduler, Postgres, Dragonfly, NATS and pfcon, behind Caddy',
-    services: ['db', 'dragonfly', 'nats', 'files-fix', 'migrate', 'chris', 'worker', 'worker-periodic', 'scheduler', 'pfcon', 'caddy'],
-    floor: { vcpu: 2, memory: 4, data: 50 },
-  },
-};
+export const CHRIS_PROFILES: Readonly<Record<string, ChrisProfile>> = profiles_build();
 
 /**
  * Why a target is below a profile's floor, a line each.

@@ -19,7 +19,7 @@
  * @module
  */
 import {
-  chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, chrisStatusModelSchema, vmCostModelSchema, vmLimitsModelSchema, vmStatusModelSchema,
+  CHRIS_PROFILE_OFFERS, chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, chrisStatusModelSchema, vmCostModelSchema, vmLimitsModelSchema, vmStatusModelSchema,
   type ChrisPlanModel, type ChrisStatusRow, type NetStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel, type VmStatusRow,
 } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
@@ -134,7 +134,6 @@ const ANSWERED_GOING_MS: number = 120_000;
 const ANSWERED_POLL_MS: number = 1_500;
 
 /** The ChRIS profiles a deploy may name; the session refuses any other by name. */
-const CHRIS_PROFILES: ReadonlyArray<string> = ['minimal', 'complete'];
 
 /** The word a seat wears for each state. */
 const STATE_MARKS: Readonly<Record<LineState, string>> = { 'not yet': '·', ready: '▸', done: '✓', changed: '~' };
@@ -1927,11 +1926,13 @@ export class ScriptScreen {
     const profiles: HTMLElement = el('div', 'tdc-families');
     profiles.append(el('span', 'tdc-pair-label', 'PROFILE'));
     const chosen: string = lineOption_get(line.text, '--profile') ?? 'minimal';
-    for (const profile of [...new Set([chosen, ...CHRIS_PROFILES])]) {
-      const pill: HTMLButtonElement = el('button', `tdc-family${profile === chosen ? ' tdc-family-on' : ''}`, profile.toUpperCase());
+    // Every profile stratus knows, from the one list it deploys from; one not built yet is shown and never offered (a-control-offers-only-what-can-be-done).
+    for (const offer of CHRIS_PROFILE_OFFERS) {
+      const pill: HTMLButtonElement = el('button', `tdc-family${offer.name === chosen ? ' tdc-family-on' : ''}`, offer.name.toUpperCase());
       pill.type = 'button';
-      pill.disabled = this.busy !== null;
-      pill.addEventListener('click', (): void => { this.hooks.voice.pill(profile); line.text = lineOption_set(line.text, '--profile', profile); this.edited = true; this.draw(); });
+      pill.disabled = this.busy !== null || !offer.built;
+      if (!offer.built) pill.title = 'not built yet';
+      pill.addEventListener('click', (): void => { this.hooks.voice.pill(offer.name); line.text = lineOption_set(line.text, '--profile', offer.name); this.edited = true; this.draw(); });
       profiles.append(pill);
     }
     return [

@@ -87,9 +87,9 @@ body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
 .vm-controller .ss-body[data-view='vm-one'] { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
 .vm-controller .ss-body[data-view='vm-two'] { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); overflow-y: auto; }
 .vm-machines { display: flex; flex-direction: column; gap: 0.8rem; min-height: 0; }
-.vm-machines-listing { display: flex; flex-direction: column; flex: none; }
-.vm-machines-listing > .listing-field { flex: none; overflow: visible; }
-.vm-machines-listing > .roster-order { position: static; z-index: auto; flex: none; }
+.vm-listing { display: flex; flex-direction: column; flex: none; }
+.vm-listing > .listing-field { flex: none; overflow: visible; }
+.vm-listing > .roster-order { position: static; z-index: auto; flex: none; }
 .vm-row { cursor: pointer; }
 .vm-cell-name { color: var(--butter); font-size: 1.05rem; letter-spacing: 0.06em; }
 .vm-cell-state { color: var(--harvestgold); font-size: 0.75rem; letter-spacing: 0.12em; text-transform: uppercase; }
@@ -98,11 +98,12 @@ body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
 .vm-size-main { display: flex; flex-direction: column; gap: 0.8rem; }
 .vm-levers { display: flex; flex-direction: column; gap: 0.35rem; }
 .vm-controller .tdc-slider.vm-lever { grid-template-columns: 6.5rem minmax(0, 1fr) 8.5rem 7rem 9rem; }
-.vm-lever-box { display: flex; align-items: center; gap: 0.35rem; position: relative; }
+.vm-lever-box { display: flex; flex-wrap: wrap; align-items: center; gap: 0.1rem 0.35rem; }
 .vm-lever-number { width: 5.2rem; font-family: var(--face-data); font-size: 1rem; color: var(--butter); background: transparent; border: 1px solid var(--harvestgold); border-radius: 0.6rem; padding: 0.15rem 0.4rem; text-align: right; }
 .vm-lever-number.vm-lever-wrong { border-color: var(--tdc-bill); color: var(--tdc-bill); }
 .vm-lever-unit { font-size: 0.75rem; color: var(--orange); min-width: 1.8rem; }
-.vm-lever-hint { position: absolute; top: 100%; right: 0; font-size: 0.6rem; color: var(--tdc-bill); white-space: nowrap; }
+.vm-lever-hint { flex-basis: 100%; font-size: 0.7rem; letter-spacing: 0.06em; color: var(--tdc-bill); white-space: nowrap; }
+.vm-lever-hint:empty { display: none; }
 .vm-lever-delta { font-family: var(--face-data); font-size: 0.8rem; color: var(--honey); text-align: right; white-space: nowrap; }
 .vm-lever-delta.tdc-bill { color: var(--tdc-bill); }
 .vm-lever-backup { align-items: center; }
@@ -152,7 +153,12 @@ body[data-takeover='vm'] > *:not(#vm-controller) { visibility: hidden; }
 }
 .vm-controller .vm-raise-go { background-color: var(--harvestgold); color: #000; }
 /* No line names a machine by its row: the listing's index pill is folded away on MACHINES. */
-.vm-machines-listing .listing-index-cell, .vm-machines-listing .listing-index { visibility: hidden; overflow: hidden; }
+.vm-listing .listing-index-cell, .vm-listing .listing-index { visibility: hidden; overflow: hidden; }
+.vm-chris-profiles { display: flex; flex-direction: column; gap: 0.3rem; }
+.vm-account-apply { align-self: flex-start; }
+.vm-chris-profiles-head { display: flex; align-items: baseline; gap: 1rem; }
+.vm-profile-unoffered { opacity: 0.55; cursor: default; }
+.vm-profile-chosen .vm-cell-name, .vm-profile-chosen .vm-cell-state { color: var(--butter); }
 
 /* The VM LOG folds (the operator, 2026-11-07): shut, it keeps its newest line; its strip opens it. */
 .vm-controller .vm-log-strip { cursor: pointer; }

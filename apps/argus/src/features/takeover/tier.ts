@@ -33,17 +33,17 @@ export function readHold_derive(line: string, manage: boolean | null, canElevate
 
 /**
  * The lines that act outside this host: a build, a teardown, an adoption, a
- * deploy, a user added, and what the tenancy keeps of a VM or a cluster (a
+ * deploy, a user added or changed, a password set, and what the tenancy keeps of a VM or a cluster (a
  * VM's declaration, a lock), which a READ session would keep on this host
  * alone (the operator, 2026-11-05: declaring and locking raise first).
  */
-const ACTING_LINE: RegExp = /^(cluster (build|adopt|teardown|protect)|net (build|teardown)|vm (build|teardown|new|protect)|chris (deploy|user add)|play )\b/;
+const ACTING_LINE: RegExp = /^(cluster (build|adopt|teardown|protect)|net (build|teardown)|vm (build|teardown|new|protect)|chris (deploy|user add|user mod|passwd)|play )\b/;
 
 /**
  * Whether a session line would act outside this host, and so needs MANAGE.
  *
  * @param line - The line a control sends.
- * @returns True for a build, a teardown, an adoption, a deploy, a user add, a play, a VM declared, a lock set.
+ * @returns True for a build, a teardown, an adoption, a deploy, a user added or changed, a password set, a play, a VM declared, a lock set.
  */
 export function line_acts(line: string): boolean {
   return ACTING_LINE.test(line.trim());

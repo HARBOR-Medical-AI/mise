@@ -23,9 +23,10 @@ function world_make(): { get: HttpGet; asked: string[] } {
     if (url === 'https://porter.example.org/healthz') return { status: 200, body: { ok: true, sessions: 3, version: '0.9.11' } };
     if (!admin) return { status: 401, body: null };
     if (url === 'https://cube.example.org/api/v1/') return { status: 200, body: {} };
-    if (url.startsWith('https://cube.example.org/api/v1/groups/search/')) return { status: 200, body: { count: 1, next: null, results: [{ id: 7, name: 'all_users' }] } };
-    if (url === 'https://cube.example.org/api/v1/groups/7/users/?limit=100') return { status: 200, body: { next: 'http://cube.example.org/api/v1/groups/7/users/?limit=100&offset=100', results: [{ user_username: 'rudolph', user_email: 'r@example.org' }, { user_username: 'chris', user_email: 'dev@babyMRI.org' }] } };
-    if (url === 'https://cube.example.org/api/v1/groups/7/users/?limit=100&offset=100') return { status: 200, body: { next: null, results: [{ user_username: 'jennings', user_email: 'j@example.org' }] } };
+    if (url === 'https://cube.example.org/api/v1/groups/?limit=100') return { status: 200, body: { count: 2, next: null, results: [{ id: 7, name: 'all_users' }, { id: 8, name: 'pacs_users' }] } };
+    if (url === 'https://cube.example.org/api/v1/groups/7/users/?limit=100') return { status: 200, body: { next: 'http://cube.example.org/api/v1/groups/7/users/?limit=100&offset=100', results: [{ user_id: 3, user_username: 'rudolph', user_email: 'r@example.org' }, { user_id: 1, user_username: 'chris', user_email: 'dev@babyMRI.org' }] } };
+    if (url === 'https://cube.example.org/api/v1/groups/7/users/?limit=100&offset=100') return { status: 200, body: { next: null, results: [{ user_id: 4, user_username: 'jennings', user_email: 'j@example.org' }] } };
+    if (url === 'https://cube.example.org/api/v1/groups/8/users/?limit=100') return { status: 200, body: { next: null, results: [{ user_id: 1, user_username: 'chris', user_email: 'dev@babyMRI.org' }] } };
     return { status: 404, body: null };
   };
   return { get, asked };
@@ -38,6 +39,10 @@ describe('what runs of a ChRIS', () => {
     expect(live.cube).toEqual({ url: 'https://cube.example.org/api/v1/', status: 200, admin: true });
     expect(live.porter).toEqual({ url: 'https://porter.example.org/healthz', status: 200, sessions: 3, version: '0.9.11' });
     expect(live.accounts?.map((one) => one.username)).toEqual(['chris', 'jennings', 'rudolph']);
+    // Each account with CUBE's id and every group it is in; the groups CUBE holds beside them.
+    expect(live.accounts?.[0]).toEqual({ username: 'chris', email: 'dev@babyMRI.org', id: 1, groups: ['all_users', 'pacs_users'] });
+    expect(live.accounts?.[2]).toEqual({ username: 'rudolph', email: 'r@example.org', id: 3, groups: ['all_users'] });
+    expect(live.groups).toEqual(['all_users', 'pacs_users']);
     expect(asked).toContain('https://cube.example.org/api/v1/groups/7/users/?limit=100&offset=100');
     expect(asked.some((url: string): boolean => url.startsWith('http://'))).toBe(false);
   });

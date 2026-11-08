@@ -39,6 +39,8 @@ export class FakeChrisVm implements VmRemote {
   computes: string[] = [];
   /** CUBE's accounts, by name: their emails. */
   users: Map<string, string> = new Map([['chris', 'dev@babymri.org']]);
+  /** CUBE's groups, by name: their members, as a fresh CUBE holds them (the admin's home program puts chris in both). */
+  groups: Map<string, Set<string>> = new Map([['all_users', new Set(['chris'])], ['pacs_users', new Set(['chris'])]]);
   /** Each account made, as CUBE was given it. */
   made: Array<{ username: string; email: string; password: string }> = [];
   /** Each account's password, as CUBE holds it: chris's set from cube.env each time the services start, as CUBE's migrations do. */
@@ -97,18 +99,33 @@ export class FakeChrisVm implements VmRemote {
       return { code: 0, stdout: `stratus-home ${made ? 'home/chris/uploads, home/chris/feeds, home/chris/public, home/chris/shared' : 'there'}\n`, stderr: '' };
     }
     if (line === CUBE_PYTHON_LINE) {
-      const ask = JSON.parse(Buffer.from((/b64decode\('([^']+)'\)/.exec(input ?? '') as RegExpMatchArray)[1] as string, 'base64').toString('utf-8')) as { username: string; email: string; password: string };
+      const ask = JSON.parse(Buffer.from((/b64decode\('([^']+)'\)/.exec(input ?? '') as RegExpMatchArray)[1] as string, 'base64').toString('utf-8')) as { username: string; email?: string; password?: string; groups?: string[] };
       if ((input ?? '').includes('set_password')) {
         if (!this.users.has(ask.username)) return { code: 0, stdout: 'stratus-user absent\n', stderr: '' };
-        this.passwords.set(ask.username, ask.password);
+        this.passwords.set(ask.username, ask.password ?? '');
         return { code: 0, stdout: 'stratus-user changed\n', stderr: '' };
       }
       const same: string | undefined = this.users.get(ask.username);
-      const other: string | undefined = [...this.users.entries()].find(([name, email]): boolean => email === ask.email && name !== ask.username)?.[0];
+      const other: string | undefined = ask.email === undefined ? undefined : [...this.users.entries()].find(([name, email]): boolean => email === ask.email && name !== ask.username)?.[0];
+      const missing: string[] = (ask.groups ?? []).filter((name: string): boolean => !this.groups.has(name));
+      // A change of an account: its email, its groups set whole with all_users kept.
+      if (ask.password === undefined) {
+        if (same === undefined) return { code: 0, stdout: 'stratus-user absent\n', stderr: '' };
+        if (other !== undefined) return { code: 0, stdout: `stratus-user email-taken ${JSON.stringify(other)}\n`, stderr: '' };
+        if (missing.length > 0) return { code: 0, stdout: `stratus-user no-group ${JSON.stringify(missing)}\n`, stderr: '' };
+        if (ask.email !== undefined) this.users.set(ask.username, ask.email);
+        if (ask.groups !== undefined) {
+          const wanted: Set<string> = new Set([...ask.groups, 'all_users']);
+          for (const [name, members] of this.groups) { if (wanted.has(name)) members.add(ask.username); else members.delete(ask.username); }
+        }
+        return { code: 0, stdout: 'stratus-user changed\n', stderr: '' };
+      }
       if (same !== undefined) return { code: 0, stdout: `stratus-user exists ${JSON.stringify(same)}\n`, stderr: '' };
       if (other !== undefined) return { code: 0, stdout: `stratus-user email-taken ${JSON.stringify(other)}\n`, stderr: '' };
-      this.users.set(ask.username, ask.email);
-      this.made.push(ask);
+      if (missing.length > 0) return { code: 0, stdout: `stratus-user no-group ${JSON.stringify(missing)}\n`, stderr: '' };
+      this.users.set(ask.username, ask.email ?? '');
+      for (const name of ['all_users', ...(ask.groups ?? [])]) this.groups.get(name)?.add(ask.username);
+      this.made.push({ username: ask.username, email: ask.email ?? '', password: ask.password });
       return { code: 0, stdout: 'stratus-user added\n', stderr: '' };
     }
     const written: RegExpMatchArray | null = /cat > (\S+)\.new/.exec(line);
@@ -219,8 +236,14 @@ export class FakeChrisFleet {
     const signed: boolean = auth !== null && vm.passwords.get(auth.user) === auth.password;
     if (path.endsWith('/api/v1/')) return { status: auth === null || signed ? 200 : 401, body: {} };
     if (!signed) return { status: 401, body: {} };
-    if (path.endsWith('/groups/search/')) return { status: 200, body: { next: null, results: [{ id: 1, name: 'all_users' }] } };
-    if (path.endsWith('/groups/1/users/')) return { status: 200, body: { next: null, results: [...vm.users.entries()].map(([username, email]: [string, string]) => ({ user_username: username, user_email: email })) } };
+    const names: string[] = [...vm.groups.keys()];
+    if (path.endsWith('/groups/')) return { status: 200, body: { next: null, results: names.map((name: string, at: number) => ({ id: at + 1, name })) } };
+    const members: RegExpExecArray | null = /\/groups\/(\d+)\/users\/$/.exec(path);
+    if (members !== null) {
+      const name: string | undefined = names[Number(members[1]) - 1];
+      const ids: string[] = [...vm.users.keys()];
+      return { status: 200, body: { next: null, results: [...(name === undefined ? [] : vm.groups.get(name) ?? [])].map((username: string) => ({ user_id: ids.indexOf(username) + 1, user_username: username, user_email: vm.users.get(username) ?? '' })) } };
+    }
     return { status: 404, body: {} };
   };
 
