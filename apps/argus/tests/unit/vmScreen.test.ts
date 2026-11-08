@@ -70,13 +70,23 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
   return { envelopes: [{ rendered: '', status: 'ok' }] };
 }
 
-function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; asked: string[] } {
+function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; asked: string[]; fed: Array<string | null> } {
   WRITTEN.clear();
   const sent: string[] = [];
   const asked: string[] = [];
+  const fed: Array<string | null> = [];
+  let screen: VmScreen | null = null;
   const hooks: ScriptHooks = {
     run: async (line: string): Promise<boolean> => {
       sent.push(line);
+      // `chris passwd` asks as the engine does: the admin's restart first, then the password hidden, twice.
+      const passwd: RegExpMatchArray | null = line.match(/^chris passwd (\S+) --on (\S+)$/);
+      if (passwd !== null && screen !== null) {
+        const name: string = passwd[1] as string;
+        if (name === 'chris') fed.push(await screen.ask_take(`chris passwd: chris on ${passwd[2]}: CUBE at https://cube.chrisproject.org/api/v1/ starts again to take the new password, and is down for a minute or so. Continue? [y/N]`, 'confirm'));
+        fed.push(await screen.ask_take(`${name}'s new password (empty: generate one):`, 'secret'));
+        fed.push(await screen.ask_take(`${name}'s new password, again:`, 'secret'));
+      }
       const save: RegExpMatchArray | null = line.match(/^touch --withContents='([\s\S]*)' '([^']+)'$/);
       if (save !== null) WRITTEN.set(save[2] as string, (save[1] as string).replace(/'\\''/g, "'"));
       return true;
@@ -88,9 +98,9 @@ function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; a
     elevate_ask: null,
     voice: { pill: (): void => undefined, cue: (): void => undefined },
   };
-  const screen: VmScreen = new VmScreen(hooks);
+  screen = new VmScreen(hooks);
   document.body.append(screen.root);
-  return { screen, sent, asked };
+  return { screen, sent, asked, fed };
 }
 
 const button_named = (root: HTMLElement, text: string): HTMLButtonElement | undefined =>
@@ -705,30 +715,21 @@ describe('the VM controller', () => {
     type('email', 'ana@example.org');
     button_named(screen.root, 'pacs_users')?.click();
     await settle();
-    // A held account's groups and password: pressed, edited, each a pending change shown in its row.
+    // A held account's groups: pressed, edited, a pending change shown in its row (a password is set in its row, never here).
     const row = (name: string): HTMLElement => [...screen.root.querySelectorAll<HTMLElement>('.vm-account-listing .listing-row')].find((one) => one.querySelector('.vm-cell-name')?.textContent === name) as HTMLElement;
     row('jennings').click();
     await settle();
     button_named(screen.root, 'pacs_users')?.click();
     await settle();
-    button_named(screen.root, 'SET · NEW PASSWORD')?.click();
-    await settle();
-    expect(accountRows(screen.root)[1]).toEqual(['jennings', '4', '4', 'all_users · + pacs_users', 'j@example.org', 'new · asked at APPLY']);
-    row('chris · admin').click();
-    await settle();
-    button_named(screen.root, 'SET · NEW PASSWORD')?.click();
-    await settle();
-    expect(screen.root.querySelector('.vm-account-password')?.textContent).toContain('CUBE restarts to take it');
+    expect(accountRows(screen.root)[1]).toEqual(['jennings', '4', '4', 'all_users · + pacs_users', 'j@example.org', '•••• set']);
     expect(changeLines(screen.root)).toEqual([
       'add user rudolph · its line in the script',
       'add user ana.lima · groups all_users, pacs_users',
       'groups for jennings: + pacs_users',
-      'new password for jennings',
-      'new password for chris · restarts CUBE',
     ]);
     const apply: HTMLButtonElement = screen.root.querySelector('.vm-account-apply') as HTMLButtonElement;
-    expect(apply.textContent).toBe('APPLY · 5 changes');
-    expect(screen.root.querySelector('.vm-account-change .vm-commit-says')?.textContent).toContain('a password is asked there hidden, typed twice, or empty for one generated and shown once');
+    expect(apply.textContent).toBe('APPLY · 3 changes');
+    expect(screen.root.querySelector('.vm-account-change .vm-commit-says')?.textContent).toContain('a new user\'s password is asked there hidden, typed twice, or empty for one generated and shown once');
     apply.click();
     await settle(40);
     // The new user's line is saved into the script first, then every change runs in turn, each naming the machine.
@@ -738,15 +739,11 @@ describe('the VM controller', () => {
       'chris user add rudolph --email rudolph@example.org --on store',
       'chris user add ana.lima --email ana@example.org --groups pacs_users --on store',
       'chris user mod jennings --groups pacs_users --on store',
-      'chris passwd jennings --on store',
-      'chris passwd chris --on store',
     ]);
     expect([...screen.root.querySelectorAll('.vm-account-run .vm-change-line')].map((line) => line.textContent)).toEqual([
       'add user rudolph · its line in the script · done',
       'add user ana.lima · groups all_users, pacs_users · done',
       'groups for jennings: + pacs_users · done',
-      'new password for jennings · done',
-      'new password for chris · restarts CUBE · done',
     ]);
     screen.dispose();
     screen.root.remove();
@@ -761,7 +758,7 @@ describe('the VM controller', () => {
       screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
       await settle(12);
       // Nothing pending: no APPLY, no change block, no note.
-      expect(screen.root.querySelector('.vm-account-apply')).toBeNull();
+      expect(changeLines(screen.root).some((line) => /password/.test(line))).toBe(false);
       expect((screen.root.querySelector('.vm-account-change') as HTMLElement).hidden).toBe(true);
       ([...screen.root.querySelectorAll<HTMLElement>('.vm-account-listing .listing-row')].find((one) => one.querySelector('.vm-cell-name')?.textContent === 'rudolph') as HTMLElement).click();
       await settle();
@@ -784,5 +781,104 @@ describe('the VM controller', () => {
     } finally {
       ACCOUNTS = ACCOUNTS.filter((one) => one.username !== 'rudolph');
     }
+  });
+
+  it('a password is set in its row: typed twice and matched as typed, SET in the row, the engine answered from it, never in the log, a line or the page after', async () => {
+    const { screen, sent, fed } = screen_make();
+    await screen.vm_open('store');
+    await settle(12);
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
+    await settle(12);
+    const row = (name: string): HTMLElement => [...screen.root.querySelectorAll<HTMLElement>('.vm-account-listing .listing-row')].find((one) => one.querySelector('.vm-cell-name')?.textContent === name) as HTMLElement;
+    const type = (id: string, value: string): void => { const input = screen.root.querySelector<HTMLInputElement>(`#vm-account-${id}`) as HTMLInputElement; input.value = value; input.dispatchEvent(new Event('input')); };
+    const set = (): HTMLButtonElement | null => screen.root.querySelector<HTMLButtonElement>('.vm-password-set');
+    row('jennings').click();
+    await settle();
+    // Masked, both; SET is not drawn until the two match and are long enough.
+    expect([...screen.root.querySelectorAll<HTMLInputElement>('.vm-password-input')].map((input) => `${input.id}:${input.type}`)).toEqual(['vm-account-password:password', 'vm-account-retype:password']);
+    expect(set()?.hidden).toBe(true);
+    type('password', 'short');
+    expect(screen.root.querySelector('.vm-password-check')?.textContent).toBe('at least 8 characters');
+    type('password', 'a-secret-for-jennings');
+    type('retype', 'a-secret-for-jenning');
+    expect(screen.root.querySelector('.vm-password-check')?.textContent).toBe('the two differ');
+    expect(set()?.hidden).toBe(true);
+    type('retype', 'a-secret-for-jennings');
+    expect(screen.root.querySelector('.vm-password-check')?.textContent).toBe('the two match');
+    expect(set()?.hidden).toBe(false);
+    expect(set()?.textContent).toBe('SET PASSWORD · jennings');
+    // An ordinary account: set at the press, nothing asked on the strip; the row answers the engine's two hidden questions.
+    set()?.click();
+    await settle(20);
+    expect(sent).toEqual(['chris passwd jennings --on store']);
+    expect(fed).toEqual(['a-secret-for-jennings', 'a-secret-for-jennings']);
+    expect((screen.root.querySelector('.tdc-strip') as HTMLElement).hidden).toBe(true);
+    expect(accountRows(screen.root)[1]?.[5]).toMatch(/^password set · \d\d:\d\d$/);
+    expect(screen.root.querySelector('.vm-password-receipt')?.textContent).toMatch(/^password set · \d\d:\d\d UTC$/);
+    // Never in the log, the lines sent, or the page.
+    const log: string = [...screen.root.querySelectorAll('.tdc-log-line')].map((line) => line.textContent).join('\n');
+    expect(log).not.toContain('a-secret-for-jennings');
+    expect(sent.join('\n')).not.toContain('a-secret-for-jennings');
+    expect(screen.root.outerHTML).not.toContain('a-secret-for-jennings');
+    expect([...screen.root.querySelectorAll<HTMLInputElement>('input')].some((input) => input.value === 'a-secret-for-jennings')).toBe(false);
+    // The admin's: GENERATE fills both and shows it once; SET asks here, in the row; YES answers the engine's restart question from the row.
+    row('chris · admin').click();
+    await settle();
+    expect(screen.root.querySelector('.vm-account-password')?.textContent).toContain('a new password for chris restarts CUBE, asked here first');
+    button_named(screen.root, 'GENERATE')?.click();
+    const made: string = (screen.root.querySelector<HTMLInputElement>('#vm-account-password') as HTMLInputElement).value;
+    expect(made).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect((screen.root.querySelector<HTMLInputElement>('#vm-account-retype') as HTMLInputElement).value).toBe(made);
+    expect(screen.root.querySelector('.vm-password-generated')?.textContent).toBe(`generated: ${made} · shown this once: keep it now`);
+    set()?.click();
+    await settle();
+    expect(sent).toHaveLength(1);
+    expect(screen.root.querySelector('.vm-password-ask')?.textContent).toContain('CUBE starts again to take it');
+    button_named(screen.root, 'YES · SET AND RESTART CUBE')?.click();
+    await settle(20);
+    expect(sent.at(-1)).toBe('chris passwd chris --on store');
+    expect(fed.slice(2)).toEqual(['y', made, made]);
+    expect(screen.root.outerHTML).not.toContain(made);
+    expect([...screen.root.querySelectorAll('.tdc-log-line')].map((line) => line.textContent).join('\n')).not.toContain(made);
+    expect(screen.root.querySelector('.vm-password-receipt')?.textContent).toMatch(/^password set · \d\d:\d\d UTC · CUBE took it$/);
+    // Passwords are never in the change block.
+    expect(changeLines(screen.root).some((line) => /password/.test(line))).toBe(false);
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('CHRIS settings are a listing: FIELD · SET TO · RUNS, a value edited in place, one the engine would refuse marked and never kept, a row that differs from what runs marked', async () => {
+    const { screen } = screen_make();
+    await screen.vm_open('store');
+    await settle(12);
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
+    await settle(12);
+    const rows = (): string[][] => [...screen.root.querySelectorAll('.vm-setting-listing .listing-row')].map((row) => ['field', 'set', 'runs'].map((key) => row.querySelector(`.vm-cell-${key}`)?.textContent ?? ''));
+    expect(rows()).toEqual([
+      ['COMPUTE', 'NERC', 'NERC'],
+      ['HOST', 'cube.chrisproject.org', 'cube.chrisproject.org'],
+      ['PORTER', 'none · changes', 'porter.chrisproject.org'],
+    ]);
+    expect(screen.root.querySelectorAll('.vm-chris .tdc-name-row')).toHaveLength(0);
+    const host = (): HTMLElement => [...screen.root.querySelectorAll<HTMLElement>('.vm-setting-listing .listing-row')][1] as HTMLElement;
+    host().click();
+    await settle();
+    const input = screen.root.querySelector<HTMLInputElement>('#vm-setting-host') as HTMLInputElement;
+    expect(input.value).toBe('cube.chrisproject.org');
+    input.value = 'not a host';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    await settle();
+    expect(input.classList.contains('vm-lever-wrong')).toBe(true);
+    expect(screen.root.querySelector('.vm-setting-edit .vm-lever-hint')?.textContent).toBe('a host name, as cube.example.org');
+    input.value = 'cube2.chrisproject.org';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    await settle();
+    expect(rows()[1]).toEqual(['HOST', 'cube2.chrisproject.org · changes', 'cube.chrisproject.org']);
+    expect(host().classList.contains('vm-setting-edited')).toBe(true);
+    expect(screen.root.querySelector('.vm-chris .ss-line-text')?.textContent).toContain('--host cube2.chrisproject.org');
+    screen.dispose();
+    screen.root.remove();
   });
 });

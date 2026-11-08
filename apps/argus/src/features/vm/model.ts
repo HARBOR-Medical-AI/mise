@@ -366,11 +366,10 @@ export interface HeldAccount {
   readonly groups: ReadonlyArray<string>;
 }
 
-/** What the operator changed of a held account, not yet applied: its email, its groups (whole), a new password. */
+/** What the operator changed of a held account, not yet applied: its email, its groups (whole). A password is set in its row, never batched. */
 export interface AccountEdit {
   readonly email?: string;
   readonly groups?: ReadonlyArray<string>;
-  readonly password?: boolean;
 }
 
 /** A new account the operator wrote, not yet applied: a row of its own until APPLY makes it. */
@@ -381,13 +380,12 @@ export interface AccountDraft {
   readonly groups: ReadonlyArray<string>;
 }
 
-/** One change to a ChRIS's accounts: what it does in words, the line that does it, why it cannot (null when it can), whether it restarts CUBE. */
+/** One change to a ChRIS's accounts: what it does in words, the line that does it, why it cannot (null when it can). */
 export interface AccountChange {
   readonly account: string;
   readonly words: string;
   readonly line: string;
   readonly why: string | null;
-  readonly restarts: boolean;
   /** A new account's `chris user add` line, which APPLY writes into the script before it runs. */
   readonly declares: boolean;
 }
@@ -429,8 +427,8 @@ export function groupsMove_words(had: ReadonlyArray<string>, wanted: ReadonlyArr
 
 /**
  * Every pending change to a ChRIS's accounts, in the order APPLY runs them:
- * new accounts, then changes of email and groups, then passwords, the admin's
- * last (it restarts CUBE). Each says why it cannot be done when the screen can
+ * new accounts, then changes of email and groups (a password is set in its
+ * row, never here). Each says why it cannot be done when the screen can
  * know (a name or an email CUBE would refuse); such a change is listed and
  * left out of APPLY (a-control-offers-only-what-can-be-done).
  *
@@ -443,7 +441,6 @@ export function groupsMove_words(had: ReadonlyArray<string>, wanted: ReadonlyArr
 export function accountChanges_derive(held: ReadonlyArray<HeldAccount>, edits: ReadonlyMap<string, AccountEdit>, drafts: ReadonlyArray<AccountDraft>, on: string): AccountChange[] {
   const adds: AccountChange[] = [];
   const mods: AccountChange[] = [];
-  const passwords: AccountChange[] = [];
   const names: Set<string> = new Set(held.map((one: HeldAccount): string => one.username));
   const emailOwner = (email: string, self: string): string | undefined => held.find((one: HeldAccount): boolean => one.email === email && one.username !== self)?.username;
   const drafted: Map<string, number> = new Map();
@@ -455,7 +452,7 @@ export function accountChanges_derive(held: ReadonlyArray<HeldAccount>, edits: R
         : draft.email === '' ? 'an email' : !ACCOUNT_EMAIL.test(draft.email) ? `${draft.email} is not an email address`
           : emailOwner(draft.email, draft.name) !== undefined ? `${draft.email} is ${emailOwner(draft.email, draft.name) ?? ''}'s already` : null;
     adds.push({
-      account: draft.name, declares: true, restarts: false, why,
+      account: draft.name, declares: true, why,
       words: `add user ${draft.name || '(no name yet)'} · groups ${[ALL_USERS_GROUP, ...groups.split(',').filter((one: string): boolean => one !== '')].join(', ')}`,
       line: `chris user add ${draft.name || '<name>'} --email ${draft.email || '<email>'}${groups !== '' ? ` --groups ${groups}` : ''} --on ${on}`,
     });
@@ -478,14 +475,9 @@ export function accountChanges_derive(held: ReadonlyArray<HeldAccount>, edits: R
         options.push(`--groups ${groupsWord_derive(edit.groups) || ALL_USERS_GROUP}`);
       }
     }
-    if (said.length > 0) mods.push({ account: account.username, declares: false, restarts: false, why, words: `${said.map((one: string, at: number): string => (at === 0 ? `${one.split(' ')[0] ?? ''} for ${account.username}: ${one.split(' ').slice(1).join(' ')}` : one)).join(' · ')}`, line: `chris user mod ${account.username} ${options.join(' ')} --on ${on}` });
-    if (edit.password === true) {
-      const admin: boolean = account.username === CHRIS_ADMIN_NAME;
-      passwords.push({ account: account.username, declares: false, restarts: admin, why: null, words: `new password for ${account.username}${admin ? ' · restarts CUBE' : ''}`, line: `chris passwd ${account.username} --on ${on}` });
-    }
+    if (said.length > 0) mods.push({ account: account.username, declares: false, why, words: `${said.map((one: string, at: number): string => (at === 0 ? `${one.split(' ')[0] ?? ''} for ${account.username}: ${one.split(' ').slice(1).join(' ')}` : one)).join(' · ')}`, line: `chris user mod ${account.username} ${options.join(' ')} --on ${on}` });
   }
-  passwords.sort((a: AccountChange, b: AccountChange): number => Number(a.restarts) - Number(b.restarts));
-  return [...adds, ...mods, ...passwords];
+  return [...adds, ...mods];
 }
 
 /** A row of ITS USERS: a held account (its pending change in place), a script line's account CUBE does not hold yet, or a new one written here. */
@@ -499,4 +491,85 @@ export interface AccountRow {
   readonly email: string;
   readonly password: string;
   readonly pending: boolean;
+}
+
+/** A deploy setting as CHRIS's settings listing shows it: the field, what the line sets it to, what runs, and whether a replay changes it. */
+export interface SettingRow {
+  readonly word: string;
+  readonly field: string;
+  readonly setTo: string;
+  readonly runs: string;
+  /** Whether the line sets it to something other than what runs: a replay changes it. */
+  readonly edited: boolean;
+  /** The line's own value, empty when it sets none. */
+  readonly value: string;
+  readonly placeholder: string;
+}
+
+/** A host name as the engine takes one for `--host` and `--porter`. */
+const SETTING_HOST: RegExp = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
+/** A compute resource's name, as the deploy registers it. */
+const SETTING_COMPUTE: RegExp = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
+
+/**
+ * The deploy's settings, a row each: COMPUTE, HOST, PORTER, each with what
+ * the line sets and what runs (none read: a dash).
+ *
+ * @param text - The `chris deploy` line.
+ * @param vm - The machine (COMPUTE's default).
+ * @param runs - What the deploy that runs was given, or null when none runs.
+ * @returns The rows.
+ */
+export function settingRows_derive(text: string, vm: string, runs: { compute: string; host: string | null; porter: string | null } | null): SettingRow[] {
+  const get = (word: string): string => line_parse(text).options.find(([each]): boolean => each === word)?.[1] ?? '';
+  const row = (word: string, field: string, value: string, shown: string, ran: string | null, placeholder: string): SettingRow =>
+    ({ word, field, value, placeholder, setTo: shown, runs: ran ?? '—', edited: ran !== null && shown !== ran });
+  const compute: string = get('--compute');
+  const host: string = get('--host');
+  const porter: string = get('--porter');
+  return [
+    row('--compute', 'COMPUTE', compute, compute || vm, runs === null ? null : runs.compute, `the pfcon resource's name (empty: ${vm})`),
+    row('--host', 'HOST', host, host || 'by address', runs === null ? null : runs.host ?? 'by address', 'cube.example.org (empty: by address)'),
+    row('--porter', 'PORTER', porter, porter || 'none', runs === null ? null : runs.porter ?? 'none', 'porter.example.org (empty: none)'),
+  ];
+}
+
+/**
+ * Why a setting cannot take a value, as the engine would refuse it; null when it can.
+ *
+ * @param word - The option.
+ * @param value - The value typed (empty: the option taken away).
+ * @param text - The line, for what the other settings hold.
+ * @returns Why not, or null.
+ */
+export function settingValue_why(word: string, value: string, text: string): string | null {
+  if (value === '') return word === '--host' && (line_parse(text).options.find(([each]): boolean => each === '--porter')?.[1] ?? '') !== '' ? 'porter needs a host: clear PORTER first' : null;
+  if (word === '--compute') return SETTING_COMPUTE.test(value) ? null : 'a name of letters, digits, . _ -';
+  if (!SETTING_HOST.test(value)) return 'a host name, as cube.example.org';
+  if (word === '--porter') {
+    const host: string = line_parse(text).options.find(([each]): boolean => each === '--host')?.[1] ?? '';
+    if (host === '') return 'porter needs a HOST first';
+    if (host === value) return 'porter needs a name of its own, not CUBE\'s';
+  }
+  return null;
+}
+
+/** The least and most a CUBE password is, as the engine takes one. */
+export const PASSWORD_MIN: number = 8;
+export const PASSWORD_MAX: number = 100;
+
+/**
+ * Why a new password typed twice cannot be set yet; null when it can.
+ *
+ * @param typed - The new password.
+ * @param again - Typed again.
+ * @returns What it still needs, or null.
+ */
+export function passwordPair_why(typed: string, again: string): string | null {
+  if (typed === '') return 'a new password, or GENERATE';
+  if (typed.length < PASSWORD_MIN) return `at least ${PASSWORD_MIN} characters`;
+  if (typed.length > PASSWORD_MAX) return `at most ${PASSWORD_MAX} characters`;
+  if (again === '') return 'typed again';
+  return typed === again ? null : 'the two differ';
 }
