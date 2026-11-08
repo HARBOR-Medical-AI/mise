@@ -29,10 +29,10 @@ import { berthCapacity_derive, capacityRefusal_words, profileFloor_get, type Ber
  * workflow pushed, and `lint:berth-pin` refuses a build where the image's
  * source changed and the pin did not.
  */
-export const BERTH_IMAGE_DEFAULT: string = 'ghcr.io/harbor-medical-ai/mise-berth@sha256:5ffe45e8a55e7ab2990a6886eaefac544fb48f67844c54b4c6461a6732495360';
+export const BERTH_IMAGE_DEFAULT: string = 'ghcr.io/harbor-medical-ai/mise-berth@sha256:446b470b3fb8ab9ea237dc2e5ded76b0d33a476052d0eada8bb6e33951ddbe5d';
 
 /** The SHA-256 of `images/mise-berth`'s source the pin above was built from (pin.mjs writes it; lint:berth-pin checks it). */
-export const BERTH_IMAGE_SOURCE: string = 'f0e0e3860842182687d4b50236a84b9bfca3a3113c4b0a22226f623110b025a2';
+export const BERTH_IMAGE_SOURCE: string = '792832b25cbde139087b793eee103d8d0aa962b3106b9b8cefaf344876602394';
 
 /** The label every berth, its networks and its volumes carry: the launcher's prefix. */
 export const BERTH_LABEL: string = 'org.fnndsc.mise.berth';
