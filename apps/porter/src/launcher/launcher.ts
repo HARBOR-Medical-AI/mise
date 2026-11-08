@@ -270,9 +270,10 @@ export class BerthLauncher {
       if (typeof name !== 'string' || !name.startsWith(`${this.options.prefix}-net-`)) continue;
       const inspected: DockerAnswer = await docker.call('GET', `/networks/${name}`);
       const members: unknown = field_get(inspected.body, 'Containers');
+      // A berth is named by the prefix and its identity's key, nothing else; porter or a helper on the wire does not keep it.
       const berthOn: boolean = typeof members === 'object' && members !== null && Object.values(members as Record<string, unknown>).some((member: unknown): boolean => {
         const memberName: unknown = field_get(member, 'Name');
-        return typeof memberName === 'string' && memberName.startsWith(`${this.options.prefix}-`) && !memberName.endsWith('-own');
+        return typeof memberName === 'string' && new RegExp(`^${this.options.prefix}-[0-9a-f]{16}$`).test(memberName);
       });
       if (berthOn) continue;
       await this.porter_leave(name);

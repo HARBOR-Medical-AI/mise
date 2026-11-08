@@ -225,8 +225,8 @@ describe('the launcher over an engine', () => {
     expect(docker.containers.get(names.container)?.spec['User']).toBe('7:7');
     docker.silent = true;
     await expect(launcher.start({ user: 'rudolph', uid: 3, gid: 3, cubeUrl: CUBE, token: 'r' })).rejects.toThrow('did not answer');
-    // An earlier run's helper and a wire with no berth on it are removed; a wire with one is kept.
-    docker.networks.set('mbw-net-ghost', { options: {}, members: new Set(['porter']) });
+    // An earlier run's helper and a wire with no berth on it are removed, whoever else stands on it (porter, a helper); a wire with a berth is kept.
+    docker.networks.set('mbw-net-ghost', { options: {}, members: new Set(['porter', 'mbw-porter-standin', 'mbw-x-own']) });
     docker.containers.set('mbw-x-own', { spec: { Labels: { [BERTH_LABEL]: 'mbw' } }, running: false, ip: '', token: null });
     expect((await launcher.orphans_clear()).sort()).toEqual(['mbw-net-ghost', 'mbw-x-own']);
     expect(docker.networks.has('mbw-net-ana')).toBe(true);
