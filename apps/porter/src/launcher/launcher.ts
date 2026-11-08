@@ -494,6 +494,24 @@ export class BerthLauncher {
       fresh.push(volume);
     }
     if (fresh.length === 0) return;
+    // Volumes never given to the person are removed again, so the next start makes them and gives them anew.
+    try {
+      await this.volumes_own(names, ask);
+    } catch (error: unknown) {
+      for (const volume of fresh) await docker.call('DELETE', `/volumes/${volume}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Gives the person's volumes to their uid, `incoming/` and `outgoing/` made in the cohort's pair.
+   *
+   * @param names - The volumes' names.
+   * @param ask - Whose.
+   * @throws {BerthRefusal} When the one-shot container is not made or does not succeed.
+   */
+  private async volumes_own(names: BerthNames, ask: BerthAsk): Promise<void> {
+    const docker: DockerApi = this.options.docker;
     const owner: string = `${names.container}-own`;
     await docker.call('DELETE', `/containers/${owner}?force=true`);
     const made: DockerAnswer = await docker.call('POST', `/containers/create?name=${owner}`, {

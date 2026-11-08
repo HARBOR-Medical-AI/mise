@@ -32,6 +32,8 @@ class FakeDocker implements DockerApi {
   silent: boolean = false;
   /** The gateway every network inspect names; null: the network has an address range and no gateway. */
   gateway: string | null = '172.18.0.1';
+  /** What the one-shot container that gives the volumes away exits with. */
+  ownExit: number = 0;
   private serial: number = 2;
 
   async call(method: string, path: string, body?: unknown): Promise<DockerAnswer> {
@@ -49,6 +51,7 @@ class FakeDocker implements DockerApi {
     }
     if (method === 'DELETE' && parts[1] === 'networks') { const had = this.networks.delete(name); return { status: had ? 204 : 404, body: null }; }
     if (route === '/volumes/create') { const spec = body as { Name: string; Labels: Record<string, string> }; this.volumes.set(spec.Name, spec.Labels); return { status: 201, body: {} }; }
+    if (method === 'DELETE' && parts[1] === 'volumes') { const had = this.volumes.delete(name); return { status: had ? 204 : 404, body: null }; }
     if (method === 'GET' && parts[1] === 'volumes') return { status: this.volumes.has(name) ? 200 : 404, body: {} };
     if (route === '/containers/json') {
       const filter = JSON.parse(decodeURIComponent(new URLSearchParams(query).get('filters') ?? '{}')) as { name?: string[] };
@@ -69,7 +72,7 @@ class FakeDocker implements DockerApi {
       return { status: 200, body: { State: { Running: found.running }, Config: { User: found.spec['User'], Labels: found.spec['Labels'] }, NetworkSettings: { Networks: { [wire]: { IPAddress: found.ip } } } } };
     }
     if (route.endsWith('/start')) { if (found !== undefined) found.running = true; return { status: 204, body: null }; }
-    if (route.endsWith('/wait')) { if (found !== undefined) found.running = false; return { status: 200, body: { StatusCode: 0 } }; }
+    if (route.endsWith('/wait')) { if (found !== undefined) found.running = false; return { status: 200, body: { StatusCode: name.endsWith('-own') ? this.ownExit : 0 } }; }
     if (route.endsWith('/stop')) { if (found !== undefined) found.running = false; return { status: 204, body: null }; }
     if (method === 'DELETE' && parts[1] === 'containers') { for (const net of this.networks.values()) net.members.delete(name); this.containers.delete(name); return { status: found === undefined ? 404 : 204, body: null }; }
     return { status: 404, body: {} };
@@ -218,6 +221,17 @@ describe('the launcher over an engine', () => {
     await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token-2', cohort: 42 });
     expect(docker.networks.get('mbw-net-ana')?.members.has('porter')).toBe(true);
     expect(docker.containers.size).toBe(1);
+  });
+
+  it('removes the volumes it made when they could not be given to the person, so the next start gives them anew', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    docker.ownExit = 1;
+    await expect(launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: null })).rejects.toThrow('ana\'s volumes were not given to them (exit 1)');
+    expect(docker.volumes.size).toBe(0);
+    docker.ownExit = 0;
+    const berth = await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: null });
+    expect(berth.state).toBe('running');
+    expect(docker.volumes.size).toBe(2);
   });
 
   it('switches cohort: the berth is made again on the new pair, the home the same; none is a pair of its own', async () => {
