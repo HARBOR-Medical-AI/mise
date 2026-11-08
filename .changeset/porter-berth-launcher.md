@@ -1,0 +1,5 @@
+---
+"@fnndsc/porter": minor
+---
+
+Porter can start each person's session in a berth of their own, started by the new berth launcher, when turned on. `berth-launcher`, porter's second program, is the one process that holds the container engine: porter asks it, with a secret both read from a 0600 file, to start, stop or report a person's berth, and it fixes everything else (the pinned mise-berth image, the person's CUBE id as uid and gid, their home volume, `/incoming` read-only and `/outgoing`, the token on a tmpfs written on stdin, CPU, memory and process limits from the spoke's policy, every capability dropped, a read-only root, a network the berths share only with porter) and refuses a full spoke naming who holds it. With `PORTER_BERTHS=launcher` a login reads the person's CUBE id and asks for their berth, `!` lands in that container, a later login's token reaches the berth already up, and a logout stops it and keeps its volumes; without it porter starts sessions beside itself as before.

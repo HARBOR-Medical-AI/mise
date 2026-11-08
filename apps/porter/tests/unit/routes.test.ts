@@ -28,6 +28,7 @@ const config: PorterConfig = {
   idleHours: 24, soundsDir: null,
   tokenDays: 30,
   tokensFile: '/tmp/porter-test-tokens-unused.json',
+  berths: { mode: 'local' },
 };
 
 /** The door's cookie as a browser would send it back, from a login reply. */
@@ -64,6 +65,12 @@ class FakeHost implements SessionHost {
   async evict(identity: string): Promise<boolean> { this.evicted.push(identity); return true; }
   public restarted: Array<{ identity: string; user: string }> = [];
   restart_begin(identity: string, user: string): void { this.restarted.push({ identity, user }); }
+}
+
+/** A host that keeps tokens outside its sessions, as the berth launcher does. */
+class FakeBerthHost extends FakeHost {
+  public renewed: Array<{ identity: string; token: string }> = [];
+  async token_renew(identity: string, _user: string, _cubeUrl: string, token: string): Promise<void> { this.renewed.push({ identity, token }); }
 }
 
 let host: FakeHost;
@@ -292,6 +299,22 @@ describe('the door', () => {
     expect(again.statusCode).toBe(303);
     expect(again.headers.location).toBe(`/greet/${key}`);
     expect(host.restarted).toHaveLength(1);
+  });
+
+  it('on a door that starts berths, a logout stops the person\'s berth and a new login\'s token reaches the one running', async () => {
+    const berths = new FakeBerthHost();
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, log: (line: string): void => { said.push(line); }, mint: async (_cube: string, username: string) => ({ token: `TOKEN-${username}` }) });
+    const login = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    expect(login.statusCode).toBe(200);
+    berths.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://10.213.77.2:4444', token: 'ATTACH' };
+    const again = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    expect(again.json()).toMatchObject({ state: 'attached' });
+    expect(berths.renewed).toEqual([{ identity: 'chris@https://cube.example.org/api/v1/', token: 'TOKEN-chris' }]);
+    const out = await door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(again) } });
+    expect(out.json()).toEqual({ ok: true });
+    expect(berths.evicted).toEqual(['chris@https://cube.example.org/api/v1/']);
+    expect(said).toContain('chris logged out; their berth stopped, its volumes kept');
+    await door.app.close();
   });
 
   it('logs a browser out by clearing its cookie, and leaves the session alone', async () => {

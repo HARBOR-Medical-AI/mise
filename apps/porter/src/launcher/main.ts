@@ -1,0 +1,74 @@
+#!/usr/bin/env node
+/**
+ * @file `berth-launcher`: the one process on a spoke that holds the
+ * container engine (docs/dev-bastion.adoc, stand-in, Q1). Porter asks it,
+ * and nothing else may, to start, stop or report a user's berth.
+ *
+ * It reads:
+ *   BERTH_LAUNCHER_SECRET_FILE  the secret porter carries (mode 0600; required)
+ *   BERTH_LAUNCHER_LISTEN       a unix socket path, or host:port on loopback (required)
+ *   BERTH_DOCKER_SOCKET         the engine's socket (/var/run/docker.sock)
+ *   BERTH_IMAGE                 the berth image, pinned by digest (mise-berth's pin by default)
+ *   BERTH_PREFIX                what this spoke's berths are named with (mise-berth)
+ *   BERTH_NETWORK               the berth network, shared with porter alone (<prefix>s)
+ *   BERTH_POLICY_FILE           the spoke's policy (cpus, memoryGib, pids, holds); defaults when unset
+ *   BERTH_PROFILE               the ChRIS profile the spoke runs, for its floor (minimal)
+ *
+ * @module
+ */
+import { chmodSync, existsSync, unlinkSync } from 'node:fs';
+import { entry_isMain } from '../entry.js';
+import { launcherSecret_read } from './secret.js';
+import { DockerSocket } from './docker.js';
+import { BERTH_IMAGE_DEFAULT, BerthLauncher } from './launcher.js';
+import { berthPolicy_read, type BerthPolicy } from './policy.js';
+import { launcherServer_create } from './server.js';
+
+async function launcher_start(): Promise<void> {
+  const env: NodeJS.ProcessEnv = process.env;
+  let secret: string;
+  let policy: BerthPolicy;
+  try {
+    secret = launcherSecret_read(env['BERTH_LAUNCHER_SECRET_FILE']);
+    policy = berthPolicy_read(env['BERTH_POLICY_FILE'] ?? null);
+  } catch (error: unknown) {
+    console.error(`[!] berth-launcher: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+  const listen: string | undefined = env['BERTH_LAUNCHER_LISTEN'];
+  if (listen === undefined || listen === '') {
+    console.error('[!] berth-launcher: BERTH_LAUNCHER_LISTEN is required: a unix socket path, or 127.0.0.1:<port>');
+    process.exit(1);
+  }
+  if (!/^(127\.0\.0\.1|localhost|::1):\d+$/.test(listen) && Buffer.byteLength(listen) > 100) {
+    console.error(`[!] berth-launcher: ${listen}: a socket path longer than 100 bytes; give a shorter one`);
+    process.exit(1);
+  }
+  const prefix: string = env['BERTH_PREFIX'] ?? 'mise-berth';
+  const launcher: BerthLauncher = new BerthLauncher({
+    docker: new DockerSocket(env['BERTH_DOCKER_SOCKET'] ?? '/var/run/docker.sock'),
+    policy,
+    image: env['BERTH_IMAGE'] ?? BERTH_IMAGE_DEFAULT,
+    prefix,
+    network: env['BERTH_NETWORK'] ?? `${prefix}s`,
+    ...(env['BERTH_PROFILE'] !== undefined ? { profile: env['BERTH_PROFILE'] } : {}),
+  });
+  const server = launcherServer_create(launcher, secret, (line: string): void => { console.log(`[+] ${line}`); });
+  const hostPort: RegExpExecArray | null = /^(127\.0\.0\.1|localhost|::1):(\d+)$/.exec(listen);
+  if (hostPort !== null) {
+    server.listen(Number(hostPort[2]), hostPort[1]);
+  } else {
+    if (existsSync(listen)) unlinkSync(listen);
+    server.listen(listen, (): void => { chmodSync(listen, 0o600); });
+  }
+  server.on('listening', (): void => {
+    console.log(`[+] BERTH LAUNCHER on ${listen}: ${prefix} berths on ${env['BERTH_NETWORK'] ?? `${prefix}s`}, each ${policy.limits.cpus} CPU, ${policy.limits.memoryGib} GiB, ${policy.limits.pids} processes${policy.holds !== null ? `, at most ${policy.holds}` : ''}`);
+    void launcher.capacity_get().then((capacity: number): void => { console.log(`    this host holds ${capacity} berth${capacity === 1 ? '' : 's'}`); }, (): void => undefined);
+  });
+  const stop = (): void => { server.close(); process.exit(0); };
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+}
+
+// Started as the program, through npm's bin link or by its own path; imported, it stays quiet.
+if (entry_isMain(process.argv[1], import.meta.url)) void launcher_start();

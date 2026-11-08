@@ -4,7 +4,7 @@ The container one ChRIS user works in on a spoke: their own calypso and chell, s
 
 ## What it holds
 
-- Node and the `@fnndsc/calypso` and `@fnndsc/chell` that the porter beside it depends on.
+- Node and the `@fnndsc/calypso` and `@fnndsc/chell` that the porter beside it depends on, installed in one tree at `/opt/mise` as porter installs them.
 - Python 3 with pip and uv, and numpy, scipy, pandas, nibabel, pydicom, SimpleITK and chris_plugin in the system site; a user's own `pip install --user` lands in their persistent home.
 - gcc, g++, make, git, curl.
 - The latest upstream Neovim (its tarball checked against the SHA-256 GitHub records), emacs-nox, vim, nano.
@@ -33,4 +33,4 @@ docker run --user 2001:2001 \
   ghcr.io/<owner>/mise-berth@sha256:…
 ```
 
-The entrypoint (`entrypoint.sh`) names the uid it was given through nss_wrapper (a passwd entry in a file the user owns, so `/etc` stays read-only and nothing is setuid), makes `/home/<user>` if no volume is mounted there, and starts the session as porter starts one: `chell <user>@<cube> --daemon --auth-token-stdin --no-logo --host-control=shell`, the token on stdin. `MISE_HOST_CONTROL` sets other tiers; `CALYPSO_BIND` sets where calypso listens. Given a command, the entrypoint runs that as the user instead.
+The entrypoint (`entrypoint.sh`) names the uid it was given through nss_wrapper (a passwd entry in a file the user owns, so `/etc` stays read-only and nothing is setuid), makes `/home/<user>` if no volume is mounted there, waits for the token the launcher writes as the berth starts, and starts the session as porter starts one: `chell <user>@<cube> --daemon --auth-token-stdin --no-logo --host-control=shell`, the token on stdin and read at each start of the session, so a new login's token rewritten by the launcher is the one a restarted session signs in with. The session's runtime (its berth file, which the launcher reads back for porter) is on the same tmpfs, `/run/mise`. `MISE_HOST_CONTROL` sets other tiers; `CALYPSO_BIND` sets where calypso listens, and beyond loopback the shell is exposed on purpose (`--expose-host-control`): the attach token guards it, and the shell is the container's alone. The image runs with a read-only root; its writable places are the home, `/outgoing`, `/tmp` and `/run/mise`. Given a command, the entrypoint runs that as the user instead.
