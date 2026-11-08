@@ -957,7 +957,9 @@ export class VmScreen extends ScriptScreen {
   private servicesCommit_make(step: ScriptStep, line: ScriptLine, built: ScriptLine | undefined, words: string[]): HTMLElement {
     const box: HTMLElement = el('div', 'vm-change vm-services-change');
     if (words.length === 0) {
-      box.append(el('div', 'vm-change-word', 'NOTHING CHANGES'), el('p', 'tdc-prose tdc-quiet', 'What the line opens is what the tenancy opens.'));
+      // Nothing differs: one quiet line, never a block.
+      box.classList.add('vm-change-none');
+      box.append(el('span', 'tdc-prose tdc-quiet', 'nothing changes · what the line opens is what the tenancy opens'));
       return box;
     }
     // One line a change, then the cost and BUILD naming them: no big words when there are several.
@@ -1208,10 +1210,16 @@ export class VmScreen extends ScriptScreen {
     );
     // The offer is spent once pressed: while the deploy runs only its run speaks; after it the offer returns.
     const ours: boolean = this.chrisRun !== null && this.chrisRun.vm === this.vm;
-    if (!ours || this.chrisRun?.outcome != null) pane.append(this.chrisChange_make(step, line));
+    // Nothing differs from what runs: no change block; the replay is one quiet line on the deploy line, still asking before it restarts.
+    if (!this.chrisPlans.has(line.text)) this.chrisPlan_ask(line.text);
+    const plan: ChrisPlanModel | null | undefined = this.chrisPlans.get(line.text);
+    const quiet: boolean = plan != null && plan.first !== true && plan.changes.length === 0;
+    const offered: boolean = !ours || this.chrisRun?.outcome != null;
+    if (offered && !quiet) pane.append(this.chrisChange_make(step, line));
     // THE SCRIPT after the change it carries, as on SPEC and SERVICES; the accounts, their own block, after it.
     const script: HTMLElement = el('div', 'vm-size-lines');
     script.append(el('span', 'tdc-section-title', `THE SCRIPT · ${this.path === '' ? 'NOT WRITTEN YET' : this.path}`), this.lineBoxNumbered_make(line));
+    if (offered && quiet && plan != null) script.append(this.chrisReplay_make(step, line, plan));
     pane.append(script);
     const users: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.kind === 'users');
     const accounts: HTMLElement = el('div', 'vm-chris-users');
@@ -1813,6 +1821,34 @@ export class VmScreen extends ScriptScreen {
   }
 
   /**
+   * The replay when nothing differs from what runs (the operator,
+   * 2026-11-07): one quiet line under the deploy line, what a replay does in
+   * a few words and a small REPLAY beside it, which still asks before it
+   * restarts anything; no change block.
+   *
+   * @param step - The seat.
+   * @param line - The deploy line.
+   * @param plan - What the deploy would do.
+   * @returns The line.
+   */
+  private chrisReplay_make(step: ScriptStep, line: ScriptLine, plan: ChrisPlanModel): HTMLElement {
+    const restarts: string = plan.restarts.map((one: string): string => one.split(/[:(]/)[0]?.trim() ?? one).join(' and ');
+    const sessions: string = plan.sessions !== null && plan.sessions > 0 && plan.restarts.some((one: string): boolean => one.startsWith('porter (') || one.startsWith('CUBE and porter')) ? `; ${plan.sessions} porter session${plan.sessions === 1 ? '' : 's'} open now ${plan.sessions === 1 ? 'ends' : 'end'}` : '';
+    const row: HTMLElement = el('div', 'vm-replay-quiet');
+    row.append(el('span', 'tdc-prose tdc-quiet', `nothing changes · a replay re-checks${restarts === '' ? ', restarting nothing' : ` and restarts ${restarts}`}${sessions}`));
+    if (this.hold_derive(line.text) === 'held') return row;
+    // loop: ss-chris-deploy
+    const replay: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet ss-run vm-chris-run vm-replay-small', 'REPLAY');
+    replay.type = 'button';
+    replay.dataset['line'] = String(line.number);
+    replay.disabled = this.busy !== null;
+    replay.title = restarts === '' ? 'checks again; restarts nothing' : `asks before it restarts ${restarts}`;
+    replay.addEventListener('click', (): void => { this.hooks.voice.pill('REPLAY'); void this.chrisRun_send(step, line, restarts === '' ? 'REPLAY · checks again' : `REPLAY · restarts ${restarts}`, plan.asks); });
+    row.append(replay);
+    return row;
+  }
+
+  /**
    * RUN on CHRIS: the run drawn from the press (the password first when the
    * session must be raised), the deploy line sent, its end the run's outcome.
    *
@@ -2048,12 +2084,14 @@ export class VmScreen extends ScriptScreen {
     // A change's own lever, for its share of the cost: `data volume 50 → 110 GB` is --data's.
     const changeWord_derive = (change: string): string => (/vCPU/.test(change) ? '--vcpu' : /^memory/.test(change) ? '--memory' : /^boot disk/.test(change) ? '--disk' : /^data/.test(change) ? '--data' : /^backups/.test(change) ? '--data-backup' : '');
     lines.replaceChildren();
+    // Nothing differs from what runs: one quiet line, never a block (the operator, 2026-11-07).
+    lines.closest('.vm-change')?.classList.toggle('vm-change-none', runs !== null && would.length === 0);
     total.replaceChildren();
     if (runs === null) {
       lines.append(el('span', 'vm-change-line', 'not built yet'));
       total.append(el('span', 'vm-change-money', this.stepCost?.cost == null ? 'pricing…' : `${rate_words(this.stepCost.cost, HOURS_PER_MONTH)} once built`));
     } else if (would.length === 0) {
-      lines.append(el('span', 'vm-change-line', 'nothing changes: what runs is what is sized'));
+      lines.append(el('span', 'tdc-prose tdc-quiet', 'nothing changes · what runs is what is sized'));
     } else {
       // One line a change: what, what it does to the machine, its own share of the cost.
       for (const one of would) {

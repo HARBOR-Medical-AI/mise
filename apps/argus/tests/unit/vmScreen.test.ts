@@ -65,7 +65,7 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
   if (line === 'vm limits') return envelope({ kind: 'stratus.vm.limits', data: LIMITS });
   if (line === 'chris status store') return envelope({ kind: 'stratus.chris.status', data: { chris: [{ vm: 'store', profile: 'minimal', compute: 'NERC', url: 'https://cube.chrisproject.org/api/v1/', host: 'cube.chrisproject.org', porter: 'porter.chrisproject.org', deployed: '2026-11-05T04:04:12.000Z', image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.9.10',
     live: { at: '2026-11-05T06:00:00.000Z', cube: { url: 'https://cube.chrisproject.org/api/v1/', status: 200, admin: true }, porter: { url: 'https://porter.chrisproject.org/healthz', status: 200, sessions: 2, version: '0.9.10' }, accounts: ACCOUNTS, accountsWhy: null, groups: ['all_users', 'pacs_users'] } }] } });
-  if (line.startsWith('chris deploy store') && line.endsWith('--plan')) return envelope({ kind: 'stratus.chris.plan', data: { vm: 'store', changes: [], restarts: ['porter (0.9.10 → 0.9.11): its open sessions end'], sessions: 2, asks: true } });
+  if (line.startsWith('chris deploy store') && line.endsWith('--plan')) return envelope({ kind: 'stratus.chris.plan', data: { vm: 'store', changes: line.includes('cube2') ? ['host cube.chrisproject.org → cube2.chrisproject.org'] : [], restarts: ['porter (0.9.10 → 0.9.11): its open sessions end'], sessions: 2, asks: true } });
   if (line.startsWith('vm cost')) return envelope({ kind: 'stratus.vm.cost', data: { vms: [{ name: 'store', declared: true, spec: SPEC, cost: { machineHour: 0.052, dataHour: 0.003, currency: 'USD' }, changes: [], before: null }] } });
   return { envelopes: [{ rendered: '', status: 'ok' }] };
 }
@@ -129,7 +129,8 @@ describe('the VM controller', () => {
       // SIZE is one pane: no cost column, no log column (the operator, 2026-11-06).
       expect(screen.root.querySelector('.tdc-col-cost')).toBeNull();
       expect(screen.root.querySelector('.tdc-col-steplog')).toBeNull();
-      expect(screen.root.querySelector('.vm-change-lines')?.textContent).toBe('nothing changes: what runs is what is sized');
+      expect(screen.root.querySelector('.vm-change-lines')?.textContent).toBe('nothing changes · what runs is what is sized');
+      expect(screen.root.querySelector('.vm-change')?.classList.contains('vm-change-none')).toBe(true);
       // Each lever's value is typed too: a number box in step with its slider, its range in its title.
       expect((screen.root.querySelector('#vm-number-disk') as HTMLInputElement).value).toBe('50');
       expect((screen.root.querySelector('#vm-number-disk') as HTMLInputElement).step).toBe('10');
@@ -239,13 +240,11 @@ describe('the VM controller', () => {
     expect(pane).toContain('answers 200 · 0.9.10 · 2 open');
     expect(screen.root.querySelectorAll('.ss-col-side')).toHaveLength(0);
     expect(asked.some((line: string): boolean => line.startsWith('chris deploy store') && line.endsWith('--plan'))).toBe(true);
-    // The change as SPEC draws one: the act in large words, what it means, the button naming it; no DEPLOY WOULD box.
+    // Nothing differs from what runs: no change block; one quiet line on the deploy line, with a small REPLAY that still asks.
     expect(screen.root.querySelector('.ss-note-deploy')).toBeNull();
-    const change: string = screen.root.querySelector('.vm-chris-change')?.textContent ?? '';
-    expect(change).not.toContain('DEPLOY WOULD');
-    expect(change).toContain('restarts porter (0.9.10 → 0.9.11): its open sessions end');
-    expect(change).toContain('2 porter sessions open now end');
-    expect(screen.root.querySelector('.vm-chris-run')?.textContent).toBe('REPLAY · restarts porter');
+    expect(screen.root.querySelector('.vm-chris-change')).toBeNull();
+    expect(screen.root.querySelector('.vm-replay-quiet span')?.textContent).toBe('nothing changes · a replay re-checks and restarts porter; 2 porter sessions open now end');
+    expect(screen.root.querySelector('.vm-chris-run')?.textContent).toBe('REPLAY');
     // Nothing edited: no edited chip on any seat.
     expect(screen.root.querySelector('.vm-chip-edited')).toBeNull();
     // ITS USERS is an ARGUS listing: CUBE's accounts with their id, the user-private group, groups and email; the password never shown.
@@ -558,7 +557,7 @@ describe('the VM controller', () => {
       expect(rows).toHaveLength(2);
       expect(rows[0]).toContain('WEB80Caddy: CUBE answers 200');
       expect(rows[0]).toContain('OPEN');
-      expect(screen.root.querySelector('.vm-services-change')?.textContent).toContain('NOTHING CHANGES');
+      expect(screen.root.querySelector('.vm-services-change')?.textContent).toBe('nothing changes · what the line opens is what the tenancy opens');
       // ADD SERVICE: public SSH for ops, its key pasted; the line carries it, and the change names it with the warning.
       [...screen.root.querySelectorAll<HTMLButtonElement>('.vm-service-add .tdc-family')].find((pill) => pill.textContent === 'PUBLIC SSH')?.click();
       await settle(2);
@@ -878,6 +877,10 @@ describe('the VM controller', () => {
     expect(rows()[1]).toEqual(['HOST', 'cube2.chrisproject.org · changes', 'cube.chrisproject.org']);
     expect(host().classList.contains('vm-setting-edited')).toBe(true);
     expect(screen.root.querySelector('.vm-chris .ss-line-text')?.textContent).toContain('--host cube2.chrisproject.org');
+    // A setting that changes brings the change block; the quiet replay line goes.
+    await settle(8);
+    expect(screen.root.querySelector('.vm-chris-change')?.textContent).toContain('host cube.chrisproject.org → cube2.chrisproject.org');
+    expect(screen.root.querySelector('.vm-replay-quiet')).toBeNull();
     screen.dispose();
     screen.root.remove();
   });
