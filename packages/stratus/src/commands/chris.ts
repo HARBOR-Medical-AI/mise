@@ -40,7 +40,7 @@ import type { VmSpec } from '../vm/spec.js';
 import type { VmRecord, VmStore } from '../vm/state.js';
 import type { VmRemote } from '../vm/remote.js';
 import type { BuildCall } from '../cloud/builder.js';
-import { CHRIS_PROFILES, floor_short, PORTER_BERTHS_SINCE, PORTER_VERSION, porterBerths_carries, type ChrisProfile } from '../chris/profiles.js';
+import { CHRIS_PROFILES, floor_short, type ChrisProfile } from '../chris/profiles.js';
 import { VM_KEYLESS, vmKeyless_is } from '../vm/keep.js';
 import { launcherSecret_ensure, porterSecret_ensure, secret_make, secrets_ensure, secrets_read } from '../chris/secrets.js';
 import { CHRIS_JOBS, chrisDeployRun_make, type DeployDeps } from '../chris/deploy.js';
@@ -529,9 +529,7 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   const berthsWord: string | undefined = read.options.get('--berths');
   if (berthsWord !== undefined && berthsWord !== 'on' && berthsWord !== 'off') return envelope_error('', undefined, `chris deploy: --berths ${berthsWord}: on or off\n`);
   if (berthsWord === 'on' && porter === null) return envelope_error('', undefined, 'chris deploy: --berths on needs --porter: berths are started behind porter\'s door\n');
-  // Until stratus pins a porter that carries the launcher, berths stay off and asking for them says why.
-  if (berthsWord === 'on' && !porterBerths_carries()) return envelope_error('', undefined, `chris deploy: --berths on: porter ${PORTER_VERSION}, which this stratus puts up, has no berth launcher (${PORTER_BERTHS_SINCE} or later)\n`);
-  const berths: boolean = porter !== null && berthsWord !== 'off' && porterBerths_carries();
+  const berths: boolean = porter !== null && berthsWord !== 'off';
   const record: VmRecord | null = context.vms.record_read(name);
   const spec = context.vms.spec_read(name);
   if (record === null || spec === null || 'error' in spec) return envelope_error('', undefined, `chris deploy: ${name}: no such VM (vm new declares one)\n`);
