@@ -35,13 +35,15 @@ class FakeDocker implements DockerApi {
   gateway: string | null = '172.18.0.1';
   /** What the one-shot container that gives the volumes away exits with. */
   ownExit: number = 0;
+  /** The CPUs and bytes of memory the engine reports for the host. */
+  host: { cpus: number; memory: number } = { cpus: 24, memory: 64 * 1024 ** 3 };
   private serial: number = 2;
 
   async call(method: string, path: string, body?: unknown): Promise<DockerAnswer> {
     const [route = '', query = ''] = path.split('?');
     const parts: string[] = route.split('/');
     const name: string = decodeURIComponent(parts[2] ?? '');
-    if (method === 'GET' && route === '/info') return { status: 200, body: { NCPU: 24, MemTotal: 64 * 1024 ** 3 } };
+    if (method === 'GET' && route === '/info') return { status: 200, body: { NCPU: this.host.cpus, MemTotal: this.host.memory } };
     if (route === '/networks/create') { const spec = body as { Name: string; Options?: Record<string, string> }; this.networks.set(spec.Name, { options: spec.Options ?? {}, members: new Set() }); return { status: 201, body: {} }; }
     if (method === 'GET' && route === '/networks') return { status: 200, body: [...this.networks.keys()].map((one) => ({ Name: one })) };
     if (route.endsWith('/connect') && parts[1] === 'networks') { this.networks.get(name)?.members.add((body as { Container: string }).Container); return { status: 200, body: null }; }
@@ -173,6 +175,16 @@ describe('the names and the container a berth is', () => {
 describe('the launcher over an engine', () => {
   let docker: FakeDocker;
   beforeEach(() => { docker = new FakeDocker(); });
+
+  it('counts a host at its nominal GiB: the engine\'s 7.7 of an 8 GiB machine holds the berths 8 does', async () => {
+    docker.host = { cpus: 4, memory: Math.floor(7.7 * 1024 ** 3) };
+    expect(await launcher_make(docker).capacity_get()).toBe(2);
+    docker.host = { cpus: 4, memory: 8 * 1024 ** 3 };
+    expect(await launcher_make(docker).capacity_get()).toBe(2);
+    // CPUs stay as reported.
+    docker.host = { cpus: 3, memory: Math.floor(15.6 * 1024 ** 3) };
+    expect(await launcher_make(docker).capacity_get()).toBe(1);
+  });
 
   it('with a cubeHost, reads cube-net\'s gateway from the engine and puts CUBE\'s name at it inside the berth; without one, adds no host', async () => {
     docker.gateway = '172.31.0.1';

@@ -133,6 +133,29 @@ export async function until(test: () => Promise<boolean>, tries: number, everyMs
 }
 
 /**
+ * The limits the berth launcher's policy file on the VM holds: what it read
+ * when it started. A missing file or one that names none is the defaults.
+ *
+ * @param remote - The VM.
+ * @returns The limits, or null when the file is no policy (the launcher is then restarted to be sure).
+ */
+async function berthLimits_read(remote: VmRemote): Promise<BerthLimits | null> {
+  const answer: RemoteAnswer = await remote.run(`sudo cat ${BERTH_DIR}/policy.json 2>/dev/null`);
+  if (answer.code !== 0 || answer.stdout.trim() === '') return BERTH_LIMITS_DEFAULT;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(answer.stdout);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+  const policy: { cpus?: unknown; memoryGib?: unknown } = parsed as { cpus?: unknown; memoryGib?: unknown };
+  const cpus: unknown = policy.cpus ?? BERTH_LIMITS_DEFAULT.cpus;
+  const memoryGib: unknown = policy.memoryGib ?? BERTH_LIMITS_DEFAULT.memoryGib;
+  return typeof cpus === 'number' && typeof memoryGib === 'number' ? { cpus, memoryGib } : null;
+}
+
+/**
  * The deploy's job.
  *
  * @param request - The VM, the profile, the compute, the host, the secrets.
@@ -168,7 +191,12 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
     ];
     for (const [file, text, mode] of files) await run_must(remote, `umask 077 && cat > ${CHRIS_DIR}/${file}.new && chmod ${mode} ${CHRIS_DIR}/${file}.new && mv ${CHRIS_DIR}/${file}.new ${CHRIS_DIR}/${file}`, `writing ${file}`, text);
     context.log_write(`wrote ${files.map(([file]): string => file).join(', ')} to ${CHRIS_DIR}`);
+    // What the launcher read when it started is the policy file on the VM, not the record, which a failed run leaves behind; read it before it is written again.
+    let launcherRestart: boolean = false;
     if (berths) {
+      const wasLimits: BerthLimits | null = await berthLimits_read(remote);
+      const wasUp: boolean = record.chris?.berths === 'launcher' || (await remote.run(`docker inspect -f '{{.State.Running}}' ${LAUNCHER_CONTAINER}`)).stdout.trim() === 'true';
+      launcherRestart = wasUp && (wasLimits === null || !berthLimits_equal(wasLimits, berthLimits));
       // porter's and the launcher's own user (the image's node) reads the secret and makes the socket; nobody else.
       if (request.secrets.launcherSecret === undefined) throw new Error('berths need the launcher\'s secret');
       await run_must(remote, `sudo install -d -o ${PORTER_UID} -g ${PORTER_UID} -m 0700 ${BERTH_DIR} ${BERTH_DIR}/run`, `making ${BERTH_DIR}`);
@@ -195,7 +223,7 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
       await run_must(remote, `docker ps -aq --filter label=${BERTH_LABEL} | xargs -r docker rm -f && docker network ls -q --filter label=${BERTH_LABEL} | xargs -r docker network rm`, 'stopping the berths');
       context.log_write('berths off: the running berths and their wires are removed; every person\'s home is kept');
     }
-    if (berths && record.chris?.berths === 'launcher' && !berthLimits_equal(record.chris.berthLimits ?? BERTH_LIMITS_DEFAULT, berthLimits)) {
+    if (launcherRestart) {
       // `up -d` does not recreate the launcher for a changed policy file; it reads the file when it starts.
       await run_must(remote, `cd ${CHRIS_DIR} && docker compose restart berth-launcher`, 'restarting the berth launcher');
       context.log_write('the berth limits changed: the berth launcher is restarted to read them; running berths keep their limits until their next start');

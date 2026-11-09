@@ -8,7 +8,7 @@
  *
  * @module
  */
-import { BERTH_LIMITS_DEFAULT, berthCapacity_derive, profileFloor_get, type BerthLimits, type ChrisProfileFloor, type ChrisProfileOffer, type VmStatusRow } from '@fnndsc/menu';
+import { BERTH_LIMITS_DEFAULT, berthCapacity_derive, profileFloor_get, type BerthLimits, type ChrisProfileFloor, type HostSize, type ChrisProfileOffer, type VmStatusRow } from '@fnndsc/menu';
 import { line_parse, type LineParts, type ScriptLine, type StepKind } from '../script/model.js';
 
 /** The seat a VM's line sits on: the controller's words for the script's verbs. */
@@ -607,21 +607,46 @@ export function settingRows_derive(text: string, vm: string, runs: SettingRuns |
  * @param text - The `chris deploy` line, or null when the script has none.
  * @param runs - What the deploy that runs was given, or null when none runs.
  * @param profile - The ChRIS profile, whose floor CUBE takes before any berth.
- * @returns `holds 3 berths`, or null.
+ * @param change - Whether to add the count at the line's limits when they differ from what runs.
+ * @returns `holds 3 berths`, with `· 2 after the change` when asked and the line's limits differ; or null.
  *
  * @example
  * ```ts
  * berthsHold_words({ vcpu: 4, memory: 8 }, 'chris deploy store --profile minimal --porter p.example.org', null, 'minimal'); // 'holds 2 berths'
+ * berthsHold_words({ vcpu: 4, memory: 8 }, 'chris deploy store --profile minimal --porter p.example.org --berth-cpus 2', { compute: 'store', host: 'h.example.org', porter: 'p.example.org', berths: true, berthLimits: null }, 'minimal', true); // 'holds 2 berths · 1 after the change'
  * ```
  */
-export function berthsHold_words(host: { readonly vcpu: number | null; readonly memory: number | null } | null, text: string | null, runs: SettingRuns | null, profile: string): string | null {
+export function berthsHold_words(host: { readonly vcpu: number | null; readonly memory: number | null } | null, text: string | null, runs: SettingRuns | null, profile: string, change: boolean = false): string | null {
   if (host === null || host.vcpu === null || host.memory === null) return null;
   let limits: BerthLimits | null;
   if (runs !== null && runs.berths !== null) limits = runs.berths ? (runs.berthLimits ?? BERTH_LIMITS_DEFAULT) : null;
   else limits = text !== null && lineBerths_read(text) ? lineBerthLimits_read(text) : null;
   if (limits === null) return null;
-  const held: number = berthCapacity_derive({ cpus: host.vcpu, memoryGib: host.memory }, profileFloor_get(profile), { limits, holds: null });
-  return `holds ${held} berth${held === 1 ? '' : 's'}`;
+  const size: HostSize = { cpus: host.vcpu, memoryGib: host.memory };
+  const held: number = berthCapacity_derive(size, profileFloor_get(profile), { limits, holds: null });
+  const words: string = `holds ${held} berth${held === 1 ? '' : 's'}`;
+  if (!change || runs === null || runs.berths !== true || text === null || !lineBerths_read(text)) return words;
+  const asked: BerthLimits | null = lineBerthLimits_read(text);
+  if (asked === null || (asked.cpus === limits.cpus && asked.memoryGib === limits.memoryGib)) return words;
+  return `${words} · ${berthCapacity_derive(size, profileFloor_get(profile), { limits: asked, holds: null })} after the change`;
+}
+
+/**
+ * Why berths of the limits named cannot be held, as `chris deploy` refuses them: nothing is left of the machine above the profile's floor.
+ *
+ * @param shape - The machine's vCPUs and GiB of memory, or null when its shape is not known.
+ * @param cpus - A berth's CPUs as the line has them (empty: the default).
+ * @param memory - A berth's GiB as the line has them (empty: the default).
+ * @param profile - The profile as the line names it (empty: the minimal profile).
+ * @returns Why not, or null when one fits or the shape is not known.
+ */
+function limitsFit_why(shape: { readonly vcpu: number | null; readonly memory: number | null } | null, cpus: string, memory: string, profile: string): string | null {
+  if (shape === null || shape.vcpu === null || shape.memory === null) return null;
+  const limits: BerthLimits = { cpus: cpus === '' ? BERTH_LIMITS_DEFAULT.cpus : Number(cpus), memoryGib: memory === '' ? BERTH_LIMITS_DEFAULT.memoryGib : Number(memory) };
+  if (!(limits.cpus > 0) || !(limits.memoryGib > 0)) return null;
+  const floor: ChrisProfileFloor = profileFloor_get(profile === '' ? 'minimal' : profile);
+  if (berthCapacity_derive({ cpus: shape.vcpu, memoryGib: shape.memory }, floor, { limits, holds: null }) > 0) return null;
+  return `berths of ${limits.cpus} vCPU · ${limits.memoryGib} GiB do not fit this machine above the ${profile === '' ? 'minimal' : profile} profile's floor (${shape.vcpu} vCPU, ${shape.memory} GiB; the floor takes ${floor.vcpu} vCPU, ${floor.memory} GiB)`;
 }
 
 /**
@@ -630,9 +655,10 @@ export function berthsHold_words(host: { readonly vcpu: number | null; readonly 
  * @param word - The option.
  * @param value - The value typed (empty: the option taken away).
  * @param text - The line, for what the other settings hold.
+ * @param shape - The machine's vCPUs and GiB of memory, or null when its shape is not known.
  * @returns Why not, or null.
  */
-export function settingValue_why(word: string, value: string, text: string): string | null {
+export function settingValue_why(word: string, value: string, text: string, shape: { readonly vcpu: number | null; readonly memory: number | null } | null = null): string | null {
   const options: ReadonlyArray<readonly [string, string]> = line_parse(text).options;
   const get = (each: string): string => options.find(([one]): boolean => one === each)?.[1] ?? '';
   if (value === '') {
@@ -643,13 +669,15 @@ export function settingValue_why(word: string, value: string, text: string): str
   if (word === '--compute') return SETTING_COMPUTE.test(value) ? null : 'a name of letters, digits, . _ -';
   if (word === '--berths') {
     if (value !== 'on' && value !== 'off') return 'on or off';
+    if (value === 'off' && (get('--berth-cpus') !== '' || get('--berth-memory') !== '')) return 'clear BERTH CPU and BERTH MEMORY first';
     return value === 'on' && get('--porter') === '' ? 'berths need a PORTER first' : null;
   }
   if (word === '--berth-cpus' || word === '--berth-memory') {
     const cpus: boolean = word === '--berth-cpus';
     if (!(cpus ? SETTING_BERTH_CPUS : SETTING_BERTH_MEMORY).test(value) || !(Number(value) > 0)) return cpus ? 'a positive number of CPUs, at most two decimals' : 'a positive number of GiB, at most one decimal';
     if (get('--porter') === '') return 'berths need a PORTER first';
-    return get('--berths') === 'off' ? 'berths are off: set BERTHS on, or leave this empty' : null;
+    if (get('--berths') === 'off') return 'berths are off: set BERTHS on, or leave this empty';
+    return limitsFit_why(shape, cpus ? value : get('--berth-cpus'), cpus ? get('--berth-memory') : value, get('--profile'));
   }
   if (!SETTING_HOST.test(value)) return 'a host name, as cube.example.org';
   if (word === '--porter') {

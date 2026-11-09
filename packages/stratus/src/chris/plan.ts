@@ -103,7 +103,7 @@ export function chrisPlan_derive(deployed: VmRecord['chris'], ask: ChrisPlanAsk,
     else if (deployed.porterVersion !== PORTER_VERSION) restarts.push(`porter (${deployed.porterVersion ?? '?'} → ${PORTER_VERSION}): its open sessions end`);
     else if (berthsWas !== ask.berths) restarts.push(`porter (berths ${ask.berths ? 'on' : 'off'}): its open sessions end${ask.berths ? '' : ', and the running berths stop (their homes are kept)'}`);
   }
-  if (limitsChange) restarts.push('the berth launcher: running berths keep their limits until their next start, and each person logs in again');
+  if (limitsChange) restarts.push('the berth launcher: running berths keep their limits and sessions until their next start, which needs a fresh login');
   return { changes, restarts, sessions, asks: changes.length > 0 || restarts.length > 0, first: false };
 }
 

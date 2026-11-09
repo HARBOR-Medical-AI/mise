@@ -887,6 +887,46 @@ describe('the VM controller', () => {
     screen.dispose();
     screen.root.remove();
   });
+  it('the CHRIS band adds the count at the line\'s limits once they differ from what runs, and the settings refuse limits the machine cannot hold and BERTHS off beside limits', async () => {
+    STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 6, memory: 16, disk: 50, data: 50 };
+    const { screen } = screen_make();
+    await screen.vm_open('store');
+    await settle(12);
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
+    await settle(12);
+    const aside = (): string => screen.root.querySelector('.vm-chris .tdc-section-aside')?.textContent ?? '';
+    const row = (index: number): HTMLElement => [...screen.root.querySelectorAll<HTMLElement>('.vm-setting-listing .listing-row')][index] as HTMLElement;
+    const edit = async (index: number, id: string, value: string): Promise<HTMLInputElement> => {
+      row(index).click();
+      await settle();
+      const input = screen.root.querySelector<HTMLInputElement>(`#vm-setting-${id}`) as HTMLInputElement;
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+      await settle();
+      return input;
+    };
+    // The line puts no berths up, the machine runs them at 2 CPUs and 4 GiB: nothing to compare yet.
+    expect(aside()).toBe('READ FROM IT 06:00 UTC · HOLDS 2 BERTHS');
+    await edit(2, 'porter', 'porter.chrisproject.org');
+    // Berths on at the defaults (1 CPU, 2 GiB): the count at those limits is 4 by CPU and 6 by memory.
+    expect(aside()).toBe('READ FROM IT 06:00 UTC · HOLDS 2 BERTHS · 4 AFTER THE CHANGE');
+    // Limits the machine cannot hold above the floor are refused, never kept.
+    const refused = await edit(4, 'berth-cpus', '5');
+    expect(refused.classList.contains('vm-lever-wrong')).toBe(true);
+    expect(screen.root.querySelector('.vm-setting-edit .vm-lever-hint')?.textContent).toBe('berths of 5 vCPU · 2 GiB do not fit this machine above the minimal profile\'s floor (6 vCPU, 16 GiB; the floor takes 2 vCPU, 4 GiB)');
+    refused.value = '2';
+    refused.dispatchEvent(new Event('input'));
+    refused.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    await settle();
+    // BERTHS off beside a limit on the line is refused.
+    const off = await edit(3, 'berths', 'off');
+    expect(off.classList.contains('vm-lever-wrong')).toBe(true);
+    expect(screen.root.querySelector('.vm-setting-edit .vm-lever-hint')?.textContent).toBe('clear BERTH CPU and BERTH MEMORY first');
+    screen.dispose();
+    screen.root.remove();
+    STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50, data: 50 };
+  });
   it('the CHRIS and SPEC bands say how many berths the machine holds: of the shape it stands in on CHRIS, of the shape the line declares on SPEC, and nothing when berths are off', async () => {
     STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 6, memory: 16, disk: 50, data: 50 };
     const { screen } = screen_make();

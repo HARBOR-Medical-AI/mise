@@ -1130,9 +1130,26 @@ export class VmScreen extends ScriptScreen {
   }
 
   /**
-   * How many berths the machine holds, as the bands say it: of the shape the
-   * machine stands in (CHRIS) or the shape the SPEC line declares (SPEC), the
-   * profile's floor and the limits that run, else the line's.
+   * The machine's shape: the one it stands in (CHRIS) or the one the SPEC line declares (SPEC) first, the other when that is not known.
+   *
+   * @param declaredFirst - Whether the `vm new` line's shape outranks what the tenancy runs, else the other way.
+   * @param newText - The `vm new` line to read the declared shape from; the script's own when absent.
+   * @returns Its vCPUs and GiB of memory, or null when neither is known.
+   */
+  private shape_get(declaredFirst: boolean, newText?: string): { vcpu: number | null; memory: number | null } | null {
+    const stands: { vcpu: number | null; memory: number | null } | null = this.runs_get(this.vm);
+    const sourceText: string | undefined = newText ?? this.steps.find((each: ScriptStep): boolean => each.kind === 'vm new')?.lines[0]?.text;
+    const number_read = (word: string): number | null => { const value: number = Number(sourceText === undefined ? NaN : lineOption_get(sourceText, word) ?? NaN); return Number.isFinite(value) ? value : null; };
+    const declared: { vcpu: number | null; memory: number | null } = { vcpu: number_read('--vcpu'), memory: number_read('--memory') };
+    const known = (shape: { vcpu: number | null; memory: number | null } | null): boolean => shape !== null && shape.vcpu !== null && shape.memory !== null;
+    const order = declaredFirst ? [declared, stands] : [stands, declared];
+    return order.find(known) ?? null;
+  }
+
+  /**
+   * How many berths the machine holds, as the bands say it: of its shape, the
+   * profile's floor and the limits that run, else the line's; the CHRIS band
+   * adds the count at the line's limits when they differ from what runs.
    *
    * @param deployText - The `chris deploy` line, or null when the script has none.
    * @param runs - What the deploy that runs was given.
@@ -1142,13 +1159,7 @@ export class VmScreen extends ScriptScreen {
    * @returns `holds N berths`, or null when berths are off or the shape is unknown.
    */
   private berthsHold_get(deployText: string | null, runs: SettingRuns | null, profile: string, declaredFirst: boolean, newText?: string): string | null {
-    const stands: { vcpu: number | null; memory: number | null } | null = this.runs_get(this.vm);
-    const sourceText: string | undefined = newText ?? this.steps.find((each: ScriptStep): boolean => each.kind === 'vm new')?.lines[0]?.text;
-    const number_read = (word: string): number | null => { const value: number = Number(sourceText === undefined ? NaN : lineOption_get(sourceText, word) ?? NaN); return Number.isFinite(value) ? value : null; };
-    const declared: { vcpu: number | null; memory: number | null } = { vcpu: number_read('--vcpu'), memory: number_read('--memory') };
-    const known = (shape: { vcpu: number | null; memory: number | null } | null): boolean => shape !== null && shape.vcpu !== null && shape.memory !== null;
-    const order = declaredFirst ? [declared, stands] : [stands, declared];
-    return berthsHold_words(order.find(known) ?? null, deployText, runs, profile);
+    return berthsHold_words(this.shape_get(declaredFirst, newText), deployText, runs, profile, !declaredFirst);
   }
 
   /** The settings into their listing, the index track folded. */
@@ -1178,7 +1189,7 @@ export class VmScreen extends ScriptScreen {
     input.setAttribute('aria-label', row.field);
     const hint: HTMLElement = el('span', 'vm-lever-hint', '');
     const line = (): ScriptLine | undefined => this.settingLine;
-    const why = (): string | null => settingValue_why(row.word, input.value.trim(), line()?.text ?? '');
+    const why = (): string | null => settingValue_why(row.word, input.value.trim(), line()?.text ?? '', this.shape_get(false));
     const mark = (): void => { const wrong: string | null = why(); input.classList.toggle('vm-lever-wrong', wrong !== null); hint.textContent = wrong ?? ''; };
     let done: boolean = false;
     const close = (): void => {

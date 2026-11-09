@@ -92,7 +92,7 @@ describe('what a deploy would do', () => {
     // Limits: a record without them ran the defaults; a change on a replay with berths on is a change and a launcher restart, not a porter restart.
     expect(chrisPlan_derive(had, { ...berthed, berthLimits: { cpus: 1, memoryGib: 2 } }, null).asks).toBe(false);
     const limited = { ...had, berthLimits: { cpus: 1, memoryGib: 2 } };
-    expect(chrisPlan_derive(limited, { ...berthed, berthLimits: { cpus: 2, memoryGib: 4 } }, 3)).toEqual({ changes: ['berth limits 1 vCPU · 2 GiB → 2 vCPU · 4 GiB'], restarts: ['the berth launcher: running berths keep their limits until their next start, and each person logs in again'], sessions: 3, asks: true, first: false });
+    expect(chrisPlan_derive(limited, { ...berthed, berthLimits: { cpus: 2, memoryGib: 4 } }, 3)).toEqual({ changes: ['berth limits 1 vCPU · 2 GiB → 2 vCPU · 4 GiB'], restarts: ['the berth launcher: running berths keep their limits and sessions until their next start, which needs a fresh login'], sessions: 3, asks: true, first: false });
     expect(chrisPlan_derive({ ...had, berthLimits: { cpus: 0.5, memoryGib: 1.5 } }, berthed, null).changes).toEqual(['berth limits 0.5 vCPU · 1.5 GiB → 1 vCPU · 2 GiB']);
     // Berths turning on or off carry no limits change.
     expect(chrisPlan_derive(CHRIS, { ...berthed, berthLimits: { cpus: 2, memoryGib: 4 } }, null).changes).toEqual(['berths off → on']);

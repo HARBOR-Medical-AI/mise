@@ -241,6 +241,10 @@ export class BerthLauncher {
 
   /**
    * How many berths this spoke holds, from the host the engine reports.
+   * Memory is rounded up to whole GiB: the engine reports what the kernel
+   * leaves after its own reserve (about 7.7 GiB on an 8 GiB machine), and
+   * the machine is sized, and counted by every surface, at its nominal GiB.
+   * CPUs are taken as reported.
    *
    * @returns The capacity.
    */
@@ -248,7 +252,7 @@ export class BerthLauncher {
     const info: DockerAnswer = await this.options.docker.call('GET', '/info');
     const cpus: unknown = field_get(info.body, 'NCPU');
     const memory: unknown = field_get(info.body, 'MemTotal');
-    const host: HostSize = { cpus: typeof cpus === 'number' ? cpus : 0, memoryGib: typeof memory === 'number' ? memory / 1024 ** 3 : 0 };
+    const host: HostSize = { cpus: typeof cpus === 'number' ? cpus : 0, memoryGib: typeof memory === 'number' ? Math.ceil(memory / 1024 ** 3) : 0 };
     return berthCapacity_derive(host, profileFloor_get(this.options.profile), this.options.policy);
   }
 

@@ -39,7 +39,7 @@ import { LINE_DECLINED_MODEL_KIND } from '@fnndsc/menu';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 const SECRETS: ChrisSecrets = { djangoKey: 'dk', postgresPassword: 'pg', pfconSecretKey: 'ps', pfconPassword: 'pp', adminPassword: 'admin-pass' };
-const VM_LINE: string[] = ['new', 'store', '--net', 'scratch', '--open', '80,443', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--os', 'ubuntu-26.04'];
+const VM_LINE: string[] = ['new', 'store', '--net', 'scratch', '--open', '80,443', '--vcpu', '4', '--memory', '8', '--disk', '50', '--data', '50', '--os', 'ubuntu-26.04'];
 
 describe('a ChRIS profile and what it renders', () => {
   it('says by how much a target is below the floor', () => {
@@ -458,7 +458,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
       expect(pin).toContain('/usr/local/lib/node_modules/@fnndsc/porter/dist/launcher/launcher.js');
       expect(vm.pulled).toEqual([vm.berthPin]);
       // Built, then the pin read, the image pulled, the services up, the launcher's health asked, only then CUBE.
-      const order: number[] = ['docker compose build', 'docker run --rm', 'docker pull -q', 'docker compose up', 'docker inspect -f', 'http://127.0.0.1:8000/api/v1/'].map(at);
+      const order: number[] = ['docker compose build', 'docker run --rm', 'docker pull -q', 'docker compose up', 'Health.Status', 'http://127.0.0.1:8000/api/v1/'].map(at);
       expect(order.every((index: number): boolean => index >= 0)).toBe(true);
       expect(order).toEqual([...order].sort((a: number, b: number): number => a - b));
       expect(vm.lines).toContain('docker inspect -f \'{{.State.Health.Status}}\' chris-berth-launcher-1');
@@ -484,17 +484,53 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
       const at = (needle: string): number => vm.lines.findIndex((line: string): boolean => line.includes(needle));
       expect(at('docker compose up')).toBeGreaterThanOrEqual(0);
       expect(at('docker compose restart')).toBeGreaterThan(at('docker compose up'));
-      expect(at('docker inspect -f')).toBeGreaterThan(at('docker compose restart'));
+      expect(at('Health.Status')).toBeGreaterThan(at('docker compose restart'));
       expect(vms.record_read('store')?.chris?.berthLimits).toEqual({ cpus: 2, memoryGib: 4 });
       expect(logged).toContain('the berth limits changed: the berth launcher is restarted to read them; running berths keep their limits until their next start');
-      // A record from before limits ran the defaults: asking for the defaults restarts nothing, asking for others does.
-      vms.record_update('store', (record): void => { if (record.chris !== undefined) delete record.chris.berthLimits; });
+      // A launcher from before limits read an empty policy, the defaults: asking for the defaults restarts nothing, asking for others does.
+      vm.files.set('/srv/data/chris/berth/policy.json', '{}\n');
       vm.lines.length = 0;
       await chrisDeployRun_make(request(), deps())(job([]));
       expect(vm.lines).not.toContain(restart);
-      vms.record_update('store', (record): void => { if (record.chris !== undefined) delete record.chris.berthLimits; });
+      vm.files.set('/srv/data/chris/berth/policy.json', '{}\n');
       await chrisDeployRun_make(request({ berthLimits: { cpus: 3, memoryGib: 2 } }), deps())(job([]));
       expect(vm.lines).toContain(restart);
+    });
+
+    it('decides the launcher\'s restart by the policy file on the VM, not the record a failed run leaves behind', async () => {
+      const restart: string = 'cd /srv/data/chris && docker compose restart berth-launcher';
+      await chrisDeployRun_make(request(), deps())(job([]));
+      // A run that restarts the launcher for 2 CPU, 4 GiB and then fails: the file and the launcher say 2 and 4, the record still 1 and 2.
+      vm.launcherHealth = 'starting';
+      await expect(chrisDeployRun_make(request({ berthLimits: { cpus: 2, memoryGib: 4 } }), deps())(job([]))).rejects.toThrow('the berth launcher did not answer');
+      vm.launcherHealth = 'healthy';
+      expect(vms.record_read('store')?.chris?.berthLimits).toEqual({ cpus: 1, memoryGib: 2 });
+      expect(vm.lines.filter((line: string): boolean => line === restart)).toHaveLength(1);
+      // The same ask again: the launcher already has them, so it is not restarted (the record would have said it differs).
+      vm.lines.length = 0;
+      await chrisDeployRun_make(request({ berthLimits: { cpus: 2, memoryGib: 4 } }), deps())(job([]));
+      expect(vm.lines).not.toContain(restart);
+      expect(vms.record_read('store')?.chris?.berthLimits).toEqual({ cpus: 2, memoryGib: 4 });
+      // Back to the record's own limits after another failed run: the file differs from them, so the launcher is restarted (the record would have said it matches).
+      vms.record_update('store', (record): void => { if (record.chris !== undefined) record.chris.berthLimits = { cpus: 1, memoryGib: 2 }; });
+      await chrisDeployRun_make(request(), deps())(job([]));
+      expect(vm.lines).toContain(restart);
+    });
+
+    it('with no record but the launcher up, a changed policy restarts it; with it not up, nothing restarts', async () => {
+      const restart: string = 'cd /srv/data/chris && docker compose restart berth-launcher';
+      await chrisDeployRun_make(request(), deps())(job([]));
+      // The first run failed before it kept a record: the compose state alone says the launcher runs.
+      vms.record_update('store', (record): void => { delete record.chris; });
+      vm.lines.length = 0;
+      await chrisDeployRun_make(request({ berthLimits: { cpus: 2, memoryGib: 4 } }), deps())(job([]));
+      expect(vm.lines).toContain(restart);
+      // No launcher, no record: a policy file left on the VM differing from the ask restarts nothing.
+      await chrisDeployRun_make(request({ berths: false }), deps())(job([]));
+      vms.record_update('store', (record): void => { delete record.chris; });
+      vm.lines.length = 0;
+      await chrisDeployRun_make(request({ berthLimits: { cpus: 3, memoryGib: 6 } }), deps())(job([]));
+      expect(vm.lines).not.toContain(restart);
     });
 
     it('turning berths off and on again is no limits change: no restart of the launcher, which is up fresh', async () => {
@@ -593,12 +629,23 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
       expect(vm.lines).toEqual([]);
     });
 
+    it('refuses berths its machine cannot hold above the profile\'s floor, naming the shape, the floor and the limits; berths off and limits that fit are not refused', async () => {
+      const line: string[] = ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org', '--plan'];
+      // store is 4 vCPU, 8 GiB: the floor takes 2 vCPU, 4 GiB, leaving 2 and 4.
+      expect((await chris_run(context, [...line, '--berth-cpus', '3'])).renderedErr).toBe('chris deploy: berths of 3 vCPU · 2 GiB do not fit store above the minimal profile\'s floor (4 vCPU, 8 GiB; the floor takes 2 vCPU, 4 GiB)\n');
+      expect((await chris_run(context, [...line, '--berth-memory', '4.5'])).renderedErr).toContain('berths of 1 vCPU · 4.5 GiB do not fit store');
+      expect((await chris_run(context, [...line, '--berth-cpus', '2', '--berth-memory', '4'])).renderedErr ?? '').toBe('');
+      expect((await chris_run(context, [...line.filter((word: string): boolean => word !== '--porter' && word !== 'porter.example.org')])).renderedErr ?? '').toBe('');
+      expect((await chris_run(context, [...line, '--berths', 'off'])).renderedErr ?? '').toBe('');
+      expect(vm.lines).toEqual([]);
+    });
+
     it('a replay with other limits plans the change and the launcher\'s restart, and asks; the same limits ask nothing', async () => {
       const line: string[] = ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org'];
       vms.record_update('store', (record): void => { record.chris = { profile: 'minimal', compute: 'store', host: 'cube.example.org', url: 'https://cube.example.org/api/v1/', deployed: '2026-11-09T00:00:00.000Z', porter: 'porter.example.org', image: CHRIS_IMAGES.cube, porterVersion: PORTER_VERSION, berths: 'launcher', berthImage: vm.berthPin }; });
       expect(plain((await chris_run(context, [...line, '--plan'])).rendered)).toBe('chris deploy store: as deployed; nothing restarts\n');
       const changed = await chris_run(context, [...line, '--berth-cpus', '2', '--berth-memory', '4', '--plan']);
-      expect(plain(changed.rendered)).toBe('chris deploy store: berth limits 1 vCPU · 2 GiB → 2 vCPU · 4 GiB; restarts the berth launcher: running berths keep their limits until their next start, and each person logs in again\n');
+      expect(plain(changed.rendered)).toBe('chris deploy store: berth limits 1 vCPU · 2 GiB → 2 vCPU · 4 GiB; restarts the berth launcher: running berths keep their limits and sessions until their next start, which needs a fresh login\n');
       expect(changed.model).toMatchObject({ data: { asks: true } });
       // `chris status` carries the berths and their limits, for a screen to set the line beside them.
       expect((await chris_run(context, ['status'])).model).toMatchObject({ data: { chris: [{ vm: 'store', berths: true, berthLimits: null }] } });
@@ -624,7 +671,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(await read('net new other --cidr 10.60.0.0/16')).toBe('ready');
     expect(await read('net build other')).toBe('not yet (other: not declared (net new other))');
     expect(await read('net build scratch')).toMatch(/^done \(built \d{4}-\d\d-\d\d\)$/);
-    expect(await read('vm new store --net scratch --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
+    expect(await read('vm new store --net scratch --open 80,443 --vcpu 4 --memory 8 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
     expect(await read('vm new blt --net nowhere --vcpu 2 --memory 8 --disk 50 --data 50 --os ubuntu-26.04')).toBe('not yet (the network nowhere is not declared (net new nowhere))');
     expect(await read('vm build blt')).toBe('not yet (blt: not declared (vm new blt))');
     expect(await read('vm build store')).toMatch(/^done \(built /);
@@ -641,7 +688,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(await read('chris user add jorge --email j@example.org --on blt')).toBe('not yet (no ChRIS on blt (chris deploy blt))');
     // The spec moves under what was built: the build and the deploy have a change to plan.
     await vm_run(vmContext, ['new', 'store', '--memory', '16']);
-    expect(await read('vm new store --net scratch --open 80,443 --vcpu 2 --memory 16 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
+    expect(await read('vm new store --net scratch --open 80,443 --vcpu 4 --memory 16 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
     // The record keeps what the build made, so the build line says what it would change.
     // What runs is read from the tenancy after the build, so the change is said against it, with its unit.
     expect(await read('vm build store')).toBe('changed (declared, not built: memory 8 → 16 GiB; the build plans and asks)');

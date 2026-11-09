@@ -94,7 +94,21 @@ describe('the VM controller model', () => {
       expect(settingValue_why('--berths', 'maybe', DEPLOY)).toBe('on or off');
       expect(settingValue_why('--berth-cpus', '', DEPLOY)).toBeNull();
       expect(settingValue_why('--berths', '', DEPLOY)).toBeNull();
+      expect(settingValue_why('--berths', 'off', `${DEPLOY} --berth-cpus 2`)).toBe('clear BERTH CPU and BERTH MEMORY first');
+      expect(settingValue_why('--berths', 'off', `${DEPLOY} --berth-memory 4`)).toBe('clear BERTH CPU and BERTH MEMORY first');
+      expect(settingValue_why('--berths', 'off', DEPLOY)).toBeNull();
       expect(settingValue_why('--porter', '', `${DEPLOY} --berth-cpus 2`)).toBe('berths need a porter: clear BERTHS, BERTH CPU and BERTH MEMORY first');
+    });
+
+    it('refuses limits the machine cannot hold above the profile\'s floor, when its shape is known', () => {
+      const shape = { vcpu: 4, memory: 16 };
+      expect(settingValue_why('--berth-cpus', '4', DEPLOY, shape)).toBe('berths of 4 vCPU · 2 GiB do not fit this machine above the minimal profile\'s floor (4 vCPU, 16 GiB; the floor takes 2 vCPU, 4 GiB)');
+      expect(settingValue_why('--berth-cpus', '2', DEPLOY, shape)).toBeNull();
+      expect(settingValue_why('--berth-memory', '12.5', DEPLOY, shape)).toBe('berths of 1 vCPU · 12.5 GiB do not fit this machine above the minimal profile\'s floor (4 vCPU, 16 GiB; the floor takes 2 vCPU, 4 GiB)');
+      // The other limit is the line's own.
+      expect(settingValue_why('--berth-memory', '4', `${DEPLOY} --berth-cpus 3`, shape)).toBe('berths of 3 vCPU · 4 GiB do not fit this machine above the minimal profile\'s floor (4 vCPU, 16 GiB; the floor takes 2 vCPU, 4 GiB)');
+      expect(settingValue_why('--berth-cpus', '4', DEPLOY, null)).toBeNull();
+      expect(settingValue_why('--berth-cpus', '4', DEPLOY, { vcpu: null, memory: 16 })).toBeNull();
     });
 
     it('reads whether berths are on and what one may use, off the line', () => {
@@ -121,6 +135,19 @@ describe('the VM controller model', () => {
       expect(berthsHold_words({ vcpu: 4, memory: 8 }, DEPLOY, null, 'minimal')).toBe('holds 2 berths');
       expect(berthsHold_words({ vcpu: 4, memory: 8 }, `${DEPLOY} --berth-cpus 2`, null, 'minimal')).toBe('holds 1 berth');
       expect(berthsHold_words({ vcpu: 4, memory: 8 }, `${DEPLOY} --berth-cpus 2`, { ...RUNS, berthLimits: null }, 'minimal')).toBe('holds 2 berths');
+    });
+
+    it('adds the count at the line\'s limits when they differ from what runs, only when asked', () => {
+      const host = { vcpu: 6, memory: 16 };
+      expect(berthsHold_words(host, `${DEPLOY} --berth-cpus 1 --berth-memory 4`, RUNS, 'minimal', true)).toBe('holds 2 berths · 3 after the change');
+      expect(berthsHold_words(host, `${DEPLOY} --berth-cpus 1 --berth-memory 4`, RUNS, 'minimal')).toBe('holds 2 berths');
+      expect(berthsHold_words(host, `${DEPLOY} --berth-cpus 5`, RUNS, 'minimal', true)).toBe('holds 2 berths · 0 after the change');
+      expect(berthsHold_words({ vcpu: 4, memory: 8 }, `${DEPLOY} --berth-cpus 2 --berth-memory 4`, { ...RUNS, berthLimits: { cpus: 1, memoryGib: 2 } }, 'minimal', true)).toBe('holds 2 berths · 1 after the change');
+      // The same limits, a line with berths off, an invalid limit or nothing running: nothing is added.
+      expect(berthsHold_words(host, `${DEPLOY} --berth-cpus 2 --berth-memory 4`, RUNS, 'minimal', true)).toBe('holds 2 berths');
+      expect(berthsHold_words(host, `${DEPLOY} --berths off`, RUNS, 'minimal', true)).toBe('holds 2 berths');
+      expect(berthsHold_words(host, `${DEPLOY} --berth-cpus 0`, RUNS, 'minimal', true)).toBe('holds 2 berths');
+      expect(berthsHold_words(host, `${DEPLOY} --berth-cpus 1`, null, 'minimal', true)).toBe('holds 4 berths');
     });
 
     it('says nothing when berths are off, the shape is unknown, or the line names no limits it can read', () => {
