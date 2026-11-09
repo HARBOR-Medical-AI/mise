@@ -12,7 +12,7 @@
  */
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from 'node:http';
 import { identity_normalise, type Berth } from '@fnndsc/calypso/berth';
-import { restartLine_render, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
+import { restartLine_render, type BerthAccess, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
 
 /** A berth as the launcher answers it. */
 interface LauncherBerth {
@@ -137,6 +137,13 @@ export class LauncherHost implements SessionHost {
       const berth: Berth | null = LauncherHost.berth_take(one);
       return berth === null ? [] : [{ identity: one.identity, berth, alive: true }];
     });
+  }
+
+  /** @inheritdoc */
+  public async access_read(): Promise<BerthAccess[]> {
+    const answer = await launcher_call(this.reach, 'GET', '/berths/access');
+    if (answer.status !== 200) throw new Error(typeof answer.body['error'] === 'string' ? answer.body['error'] : `the launcher answered ${answer.status}`);
+    return Array.isArray(answer.body['berths']) ? answer.body['berths'] as BerthAccess[] : [];
   }
 
   /** @inheritdoc */

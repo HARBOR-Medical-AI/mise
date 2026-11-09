@@ -60,3 +60,39 @@ export async function cubeToken_mint(
   }
   return { token };
 }
+
+/** What CUBE says of the credentials a caller presents. */
+export type AdminVerdict = 'admin' | 'not-admin' | 'refused' | 'unreachable';
+
+/**
+ * Asks CUBE whether the credentials presented are an administrator's. The
+ * API root answers a signed-in caller with its links, and names the `admin`
+ * link only to an administrator (`collection_links.admin`; it is the link the
+ * plugin upload workflow reads, and fails without when the user is not an
+ * admin). CUBE does the verifying: the header is handed over as it came,
+ * a token or Basic credentials, and neither is kept or logged here.
+ *
+ * @param cubeUrl - The CUBE API base, trailing slash included.
+ * @param authorization - The caller's `Authorization` header.
+ * @param fetchLike - The HTTP client; the global `fetch` by default.
+ * @returns `admin` when the root names the admin link, `not-admin` when it does not, `refused` when CUBE does not accept the credentials, `unreachable` when CUBE does not answer.
+ */
+export async function cubeAdmin_check(
+  cubeUrl: string,
+  authorization: string,
+  fetchLike: (url: string, init: { headers: Record<string, string> }) => Promise<{ status: number; json(): Promise<unknown> }> = (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(15_000) }),
+): Promise<AdminVerdict> {
+  let response: { status: number; json(): Promise<unknown> };
+  try {
+    response = await fetchLike(cubeUrl, { headers: { Authorization: authorization, Accept: 'application/json' } });
+  } catch {
+    return 'unreachable';
+  }
+  if (response.status === 401 || response.status === 403) return 'refused';
+  if (response.status !== 200) return 'unreachable';
+  let body: unknown = null;
+  try { body = await response.json(); } catch { body = null; }
+  const links: unknown = typeof body === 'object' && body !== null ? (body as { collection_links?: unknown }).collection_links : undefined;
+  const admin: unknown = typeof links === 'object' && links !== null ? (links as { admin?: unknown }).admin : undefined;
+  return typeof admin === 'string' && admin.length > 0 ? 'admin' : 'not-admin';
+}

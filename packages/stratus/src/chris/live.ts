@@ -4,7 +4,9 @@
  * age): CUBE's API as the public reaches it and whether the admin signs in,
  * CUBE's groups and their members (every page; an account is a member of
  * `all_users` at least, its id CUBE's own), and porter's
- * health, open sessions and version. Read over HTTPS from this host with the
+ * health, open sessions and version, and porter's berths (each person's
+ * berth or kept home, with what a running one uses, from `GET /berths`, asked
+ * with the admin's credentials). Read over HTTPS from this host with the
  * admin password the host keeps, so a READ session reads it: no bastion
  * session is made, nothing in the tenancy changes.
  *
@@ -24,6 +26,20 @@ export interface ChrisAccount {
   readonly groups: ReadonlyArray<string>;
 }
 
+/** One person's berth as porter answers it: up with what it uses, or stopped with the home kept. */
+export interface ChrisBerth {
+  readonly user: string;
+  readonly state: 'running' | 'stopped';
+  /** The cohort a running berth holds (`none` for no cohort); null when stopped. */
+  readonly cohort: string | null;
+  /** CPU use as a percent of one CPU; null when stopped or not sampled. */
+  readonly cpuPercent: number | null;
+  /** Memory in use, in bytes; null when stopped or not sampled. */
+  readonly memoryBytes: number | null;
+  /** Memory the berth may use, in bytes; null when stopped or not sampled. */
+  readonly memoryLimitBytes: number | null;
+}
+
 /** What runs of a deployed ChRIS, read from it. */
 export interface ChrisLive {
   /** When it was read. */
@@ -37,6 +53,9 @@ export interface ChrisLive {
   readonly accountsWhy: string | null;
   /** CUBE's groups by name, read with the accounts (null when they were not). */
   readonly groups: ReadonlyArray<string> | null;
+  /** Porter's berths by person (a person with neither a berth nor a home is absent), or null when they could not be read; with why. */
+  readonly berths: ReadonlyArray<ChrisBerth> | null;
+  readonly berthsWhy: string | null;
 }
 
 /** How many accounts a page asks for; the walk follows every page. */
@@ -136,6 +155,40 @@ async function accounts_read(api: string, auth: { user: string; password: string
 }
 
 /**
+ * One berth row as porter answered it, or null when it is not one.
+ *
+ * @param one - The row.
+ * @returns The berth.
+ */
+function berth_take(one: unknown): ChrisBerth | null {
+  const row: Record<string, unknown> = typeof one === 'object' && one !== null ? one as Record<string, unknown> : {};
+  if (typeof row['user'] !== 'string' || (row['state'] !== 'running' && row['state'] !== 'stopped')) return null;
+  const number_take = (value: unknown): number | null => typeof value === 'number' ? value : null;
+  return { user: row['user'], state: row['state'], cohort: typeof row['cohort'] === 'string' ? row['cohort'] : null, cpuPercent: number_take(row['cpuPercent']), memoryBytes: number_take(row['memoryBytes']), memoryLimitBytes: number_take(row['memoryLimitBytes']) };
+}
+
+/**
+ * Porter's berths, asked of its `GET /berths` with the admin's credentials.
+ *
+ * @param porter - Porter's name, or undefined when none was deployed.
+ * @param version - Porter's version as `/healthz` said it, or null.
+ * @param auth - The admin's credentials, or null when this host keeps none.
+ * @param get - How a GET is made.
+ * @returns The berths, or why they were not read.
+ */
+async function berths_read(porter: string | undefined, version: string | null, auth: { user: string; password: string } | null, get: HttpGet): Promise<{ berths: ChrisBerth[] } | { why: string }> {
+  if (porter === undefined) return { why: 'no porter was deployed' };
+  if (auth === null) return { why: 'this host keeps no admin password for it' };
+  const answered = await get(`https://${porter}/berths`, auth);
+  if (answered === null) return { why: 'porter does not answer' };
+  if (answered.status === 404) return { why: `porter ${version ?? '?'} answers no berth status` };
+  if (answered.status !== 200) return { why: `porter answered ${answered.status} to the admin` };
+  const body: Record<string, unknown> = typeof answered.body === 'object' && answered.body !== null ? answered.body as Record<string, unknown> : {};
+  if (!Array.isArray(body['berths'])) return { why: typeof body['why'] === 'string' ? body['why'] : 'porter answered no berths' };
+  return { berths: body['berths'].map(berth_take).filter((one): one is ChrisBerth => one !== null) };
+}
+
+/**
  * Reads what runs of a VM's ChRIS.
  *
  * @param chris - The deploy's record.
@@ -156,8 +209,14 @@ export async function chrisLive_read(chris: NonNullable<VmRecord['chris']>, secr
     const body: Record<string, unknown> = typeof health?.body === 'object' && health.body !== null ? health.body as Record<string, unknown> : {};
     porter = { url, status: health?.status ?? null, sessions: typeof body['sessions'] === 'number' ? body['sessions'] : null, version: typeof body['version'] === 'string' ? body['version'] : null };
   }
-  if (auth === null) return { at, cube, porter, accounts: null, accountsWhy: 'this host keeps no admin password for it', groups: null };
-  if (cube.admin !== true) return { at, cube, porter, accounts: null, accountsWhy: 'the admin does not sign in', groups: null };
+  // Porter's berths and CUBE's accounts are read together: the launcher takes a second to sample a berth.
+  const berthsRead = berths_read(chris.porter, porter?.version ?? null, auth, get);
+  const berths = async (): Promise<Pick<ChrisLive, 'berths' | 'berthsWhy'>> => {
+    const read = await berthsRead;
+    return 'berths' in read ? { berths: read.berths, berthsWhy: null } : { berths: null, berthsWhy: read.why };
+  };
+  if (auth === null) return { at, cube, porter, accounts: null, accountsWhy: 'this host keeps no admin password for it', groups: null, ...await berths() };
+  if (cube.admin !== true) return { at, cube, porter, accounts: null, accountsWhy: 'the admin does not sign in', groups: null, ...await berths() };
   const read = await accounts_read(api, auth, get);
-  return 'accounts' in read ? { at, cube, porter, accounts: read.accounts, accountsWhy: null, groups: read.groups } : { at, cube, porter, accounts: null, accountsWhy: read.why, groups: null };
+  return 'accounts' in read ? { at, cube, porter, accounts: read.accounts, accountsWhy: null, groups: read.groups, ...await berths() } : { at, cube, porter, accounts: null, accountsWhy: read.why, groups: null, ...await berths() };
 }

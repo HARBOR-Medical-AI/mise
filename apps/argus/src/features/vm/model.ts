@@ -8,7 +8,7 @@
  *
  * @module
  */
-import { BERTH_LIMITS_DEFAULT, berthCapacity_derive, profileFloor_get, type BerthLimits, type ChrisProfileFloor, type HostSize, type ChrisProfileOffer, type VmStatusRow } from '@fnndsc/menu';
+import { BERTH_LIMITS_DEFAULT, berthCapacity_derive, profileFloor_get, type BerthLimits, type ChrisProfileFloor, type HostSize, type ChrisBerthModel, type ChrisProfileOffer, type VmStatusRow } from '@fnndsc/menu';
 import { line_parse, type LineParts, type ScriptLine, type StepKind } from '../script/model.js';
 
 /** The seat a VM's line sits on: the controller's words for the script's verbs. */
@@ -490,7 +490,42 @@ export interface AccountRow {
   readonly groups: string;
   readonly email: string;
   readonly password: string;
+  /** HOST ACCESS: the person's berth as porter read it (`running · 3% · 210 MiB / 2 GiB`, `stopped · home kept`, `none`), or `—` when it was not read. */
+  readonly access: string;
   readonly pending: boolean;
+}
+
+/**
+ * A byte count in the largest binary unit that keeps it short: whole MiB
+ * under a GiB, GiB with a decimal only when it is not whole.
+ *
+ * @param bytes - The count.
+ * @returns `210 MiB`, `2 GiB`, `1.5 GiB`.
+ */
+export function bytes_words(bytes: number): string {
+  const gib: number = bytes / 1024 ** 3;
+  if (gib >= 1) return `${Number.isInteger(Math.round(gib * 10) / 10) ? Math.round(gib * 10) / 10 : (Math.round(gib * 10) / 10).toFixed(1)} GiB`;
+  return `${Math.round(bytes / 1024 ** 2)} MiB`;
+}
+
+/**
+ * HOST ACCESS for one person (a-control-offers-only-what-can-be-done: it
+ * shows what stands and offers nothing): a running berth with what it uses,
+ * a stopped one as the home kept, `none` for a person with neither; `—` when
+ * porter's berths were not read at all.
+ *
+ * @param berths - The berths porter answered, or null when they were not read.
+ * @param user - The CUBE user.
+ * @returns The cell's words.
+ */
+export function access_words(berths: ReadonlyArray<ChrisBerthModel> | null, user: string): string {
+  if (berths === null) return '—';
+  const berth: ChrisBerthModel | undefined = berths.find((one: ChrisBerthModel): boolean => one.user === user);
+  if (berth === undefined) return 'none';
+  if (berth.state === 'stopped') return 'stopped · home kept';
+  const cpu: string | null = berth.cpuPercent === null ? null : berth.cpuPercent > 0 && berth.cpuPercent < 1 ? '<1%' : `${Math.round(berth.cpuPercent)}%`;
+  const memory: string | null = berth.memoryBytes === null ? null : berth.memoryLimitBytes === null ? bytes_words(berth.memoryBytes) : `${bytes_words(berth.memoryBytes)} / ${bytes_words(berth.memoryLimitBytes)}`;
+  return ['running', cpu, memory].filter((one: string | null): one is string => one !== null).join(' · ');
 }
 
 /** A deploy setting as CHRIS's settings listing shows it: the field, what the line sets it to, what runs, and whether a replay changes it. */

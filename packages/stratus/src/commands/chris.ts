@@ -130,7 +130,7 @@ async function chrisStatus_run(context: ChrisCommandContext, names: ReadonlyArra
     rows.push({
       vm: record.name, profile: chris.profile, compute: chris.compute, url: chris.url, host: chris.host, porter: chris.porter ?? null, deployed: chris.deployed,
       image: chris.image ?? null, porterVersion: chris.porterVersion ?? null, berths: chris.berths === 'launcher', berthLimits: chris.berthLimits ?? null,
-      live: live === null ? null : { at: live.at, cube: live.cube, porter: live.porter, accounts: live.accounts === null ? null : live.accounts.map((one) => ({ ...one, groups: [...one.groups] })), accountsWhy: live.accountsWhy, groups: live.groups === null ? null : [...live.groups] },
+      live: live === null ? null : { at: live.at, cube: live.cube, porter: live.porter, accounts: live.accounts === null ? null : live.accounts.map((one) => ({ ...one, groups: [...one.groups] })), accountsWhy: live.accountsWhy, groups: live.groups === null ? null : [...live.groups], berths: live.berths === null ? null : live.berths.map((one) => ({ ...one })), berthsWhy: live.berthsWhy },
     });
   }
   return envelope_ok(`${lines.join('\n')}\n`, { kind: STRATUS_CHRIS_STATUS_MODEL_KIND, data: { chris: rows } });
@@ -147,7 +147,14 @@ function chrisLive_lines(live: ChrisLive): string[] {
   const cube: string = live.cube.status === null ? chalk.red('CUBE does not answer') : `CUBE answers ${live.cube.status}${live.cube.admin === true ? ', chris signs in' : live.cube.admin === false ? chalk.red(', chris does not sign in') : ''}`;
   const porter: string = live.porter === null ? '' : live.porter.status === null ? `; ${chalk.red('porter does not answer')}` : `; porter answers ${live.porter.status}${live.porter.sessions !== null ? `, ${live.porter.sessions} session${live.porter.sessions === 1 ? '' : 's'} open` : ''}${live.porter.version !== null ? `, porter ${live.porter.version}` : ''}`;
   const accounts: string = live.accounts === null ? chalk.yellow(`accounts not read: ${live.accountsWhy ?? '?'}`) : `${live.accounts.length} account${live.accounts.length === 1 ? '' : 's'}: ${live.accounts.map((one) => one.username).join(', ')}`;
-  return [`  runs      ${cube}${porter}${read}`, `  accounts  ${accounts}`];
+  const lines: string[] = [`  runs      ${cube}${porter}${read}`, `  accounts  ${accounts}`];
+  // Berths are porter's: a ChRIS with no porter has none to say.
+  if (live.porter !== null) {
+    const running: number = live.berths?.filter((one): boolean => one.state === 'running').length ?? 0;
+    const stopped: number = (live.berths?.length ?? 0) - running;
+    lines.push(`  berths    ${live.berths === null ? chalk.yellow(`not read: ${live.berthsWhy ?? '?'}`) : live.berths.length === 0 ? 'none' : `${running} running, ${stopped} home${stopped === 1 ? '' : 's'} kept (${live.berths.map((one) => `${one.user} ${one.state}`).join(', ')})`}`);
+  }
+  return lines;
 }
 
 /**

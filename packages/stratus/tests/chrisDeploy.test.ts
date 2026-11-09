@@ -424,6 +424,14 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const status = await chris_run(reading, ['status']);
     expect(plain(status.rendered)).toMatch(/runs {6}CUBE answers 200, chris signs in; porter answers 200, 2 sessions open, porter 0\.9\.11 {2}\(read \d\d:\d\d UTC\)/);
     expect(plain(status.rendered)).toContain('accounts  1 account: chris');
+    expect(plain(status.rendered)).toContain('berths    not read: porter does not answer');
+    // Porter answering its berths: each person's berth or kept home, in the lines and in the model.
+    const berthed: ChrisCommandContext = { ...reading, http_get: async (url: string, auth) => url === 'https://porter.example.org/berths'
+      ? { status: 200, body: { berths: [{ user: 'ana', state: 'running', cohort: 'none', cpuPercent: 3, memoryBytes: 220200960, memoryLimitBytes: 2147483648 }, { user: 'benito', state: 'stopped', cohort: null, cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }] } }
+      : reading.http_get!(url, auth) };
+    const berthStatus = await chris_run(berthed, ['status']);
+    expect(plain(berthStatus.rendered)).toContain('berths    1 running, 1 home kept (ana running, benito stopped)');
+    expect(berthStatus.model).toMatchObject({ data: { chris: [{ live: { berthsWhy: null, berths: [{ user: 'ana', state: 'running', memoryBytes: 220200960 }, { user: 'benito', state: 'stopped', cohort: null }] } }] } });
     expect(status.model).toMatchObject({ kind: 'stratus.chris.status', data: { chris: [{ vm: 'store', image: 'ghcr.io/fnndsc/cube:6.11.0', live: { cube: { admin: true }, accounts: [{ username: 'chris' }] } }] } });
   });
 

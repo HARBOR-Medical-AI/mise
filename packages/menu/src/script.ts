@@ -268,6 +268,18 @@ export const vmCostModelSchema = z.object({
   pricesRead: z.string().nullable().optional(),
 });
 
+/** One person's berth as porter answers the operator: up with what it uses, or stopped with the home kept. */
+export const chrisBerthSchema = z.object({
+  user: z.string(),
+  state: z.enum(['running', 'stopped']),
+  /** The cohort a running berth holds (`none` for no cohort); null when stopped. */
+  cohort: z.string().nullable(),
+  /** CPU use as a percent of one CPU, memory in use and its limit in bytes; null when stopped or not sampled. */
+  cpuPercent: z.number().nullable(),
+  memoryBytes: z.number().nullable(),
+  memoryLimitBytes: z.number().nullable(),
+});
+
 /** What runs of a deployed ChRIS, read from it over HTTPS (never the deploy's record), with when. */
 export const chrisLiveSchema = z.object({
   at: z.string(),
@@ -278,6 +290,10 @@ export const chrisLiveSchema = z.object({
   accountsWhy: z.string().nullable(),
   /** CUBE's groups, read with the accounts; absent from an older daemon. */
   groups: z.array(z.string()).nullable().optional(),
+  /** Porter's berths by person: a running one with what it uses, a stopped one as the home kept; null when not read; absent from an older daemon. */
+  berths: z.array(chrisBerthSchema).nullable().optional(),
+  /** Why the berths were not read; absent from an older daemon. */
+  berthsWhy: z.string().nullable().optional(),
 });
 
 /** One VM's ChRIS as `chris status` answers it: what was deployed, and what runs. */
@@ -348,6 +364,7 @@ export type VmSpecModel = z.infer<typeof vmSpecModelSchema>;
 export type VmCostRate = z.infer<typeof vmCostRateSchema>;
 export type VmCostRow = z.infer<typeof vmCostRowSchema>;
 export type VmCostModel = z.infer<typeof vmCostModelSchema>;
+export type ChrisBerthModel = z.infer<typeof chrisBerthSchema>;
 export type ChrisLiveModel = z.infer<typeof chrisLiveSchema>;
 export type ChrisStatusRow = z.infer<typeof chrisStatusRowSchema>;
 export type ChrisStatusModel = z.infer<typeof chrisStatusModelSchema>;

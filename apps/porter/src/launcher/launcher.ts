@@ -21,6 +21,7 @@
  */
 import { berthKey_compute, identity_normalise } from '@fnndsc/calypso/berth';
 import { berthCapacity_derive, profileFloor_get, type ChrisProfileFloor, type HostSize } from '@fnndsc/menu';
+import type { BerthAccess } from '../host/sessionHost.js';
 import type { DockerAnswer, DockerApi } from './docker.js';
 import { capacityRefusal_words, type BerthPolicy, type BerthRoom } from './policy.js';
 
@@ -219,6 +220,38 @@ function field_get(body: unknown, ...path: string[]): unknown {
   return at;
 }
 
+/**
+ * What one engine stats sample says of a container, as `docker stats` reads it:
+ * CPU is the container's share of the host's CPU time since the sample before,
+ * scaled by the CPUs online (a percent of one CPU); memory is the usage less
+ * the page cache the kernel can take back.
+ *
+ * @param body - The engine's `/containers/<id>/stats?stream=false` answer.
+ * @returns CPU percent (one decimal), memory in use and the memory limit, in bytes; null where the sample does not say.
+ */
+export function stats_digest(body: unknown): { cpuPercent: number | null; memoryBytes: number | null; memoryLimitBytes: number | null } {
+  const stat_read = (...path: string[]): number | null => {
+    const value: unknown = field_get(body, ...path);
+    return typeof value === 'number' ? value : null;
+  };
+  const total: number | null = stat_read('cpu_stats', 'cpu_usage', 'total_usage');
+  const before: number | null = stat_read('precpu_stats', 'cpu_usage', 'total_usage');
+  const system: number | null = stat_read('cpu_stats', 'system_cpu_usage');
+  const systemBefore: number | null = stat_read('precpu_stats', 'system_cpu_usage');
+  const percpu: unknown = field_get(body, 'cpu_stats', 'cpu_usage', 'percpu_usage');
+  const online: number = stat_read('cpu_stats', 'online_cpus') ?? (Array.isArray(percpu) ? percpu.length : 1);
+  let cpuPercent: number | null = null;
+  if (total !== null && before !== null && system !== null && systemBefore !== null) {
+    const cpuDelta: number = total - before;
+    const systemDelta: number = system - systemBefore;
+    cpuPercent = cpuDelta > 0 && systemDelta > 0 ? Math.round((cpuDelta / systemDelta) * online * 1000) / 10 : 0;
+  }
+  const usage: number | null = stat_read('memory_stats', 'usage');
+  // Page cache is not the berth's to give up last: cgroup v2 names it inactive_file, v1 total_inactive_file or cache.
+  const cache: number = stat_read('memory_stats', 'stats', 'inactive_file') ?? stat_read('memory_stats', 'stats', 'total_inactive_file') ?? stat_read('memory_stats', 'stats', 'cache') ?? 0;
+  return { cpuPercent, memoryBytes: usage === null ? null : Math.max(0, usage - cache), memoryLimitBytes: stat_read('memory_stats', 'limit') };
+}
+
 /** A filter on the launcher's label, for the engine's list calls. */
 function labelFilter_build(prefix: string, more: Record<string, string[]> = {}): string {
   return encodeURIComponent(JSON.stringify({ label: [`${BERTH_LABEL}=${prefix}`], ...more }));
@@ -372,6 +405,42 @@ export class BerthLauncher {
       states.push({ identity, user, state: up && berth !== null ? 'running' : 'stopped', url: berth?.url ?? null, token: berth?.token ?? null, container: names.container, cohort: typeof cohort === 'string' ? cohort : NO_COHORT });
     }
     return states;
+  }
+
+  /**
+   * Every person's berth as the operator reads it: a running berth with one
+   * sample of what it uses, and a stopped one that is a home kept (the
+   * person's volume labelled `home`, with no container up). A person with
+   * neither is absent.
+   *
+   * @returns One row a person, by name.
+   */
+  public async access_read(): Promise<BerthAccess[]> {
+    const docker: DockerApi = this.options.docker;
+    const listed: DockerAnswer = await docker.call('GET', `/containers/json?all=true&filters=${labelFilter_build(this.options.prefix)}`);
+    const up: Map<string, { name: string; cohort: string }> = new Map();
+    for (const row of Array.isArray(listed.body) ? listed.body : []) {
+      const user: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.user`);
+      const cohort: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.cohort`);
+      const names: unknown = field_get(row, 'Names');
+      const name: string = Array.isArray(names) && typeof names[0] === 'string' ? names[0].replace(/^\//, '') : '';
+      if (typeof user !== 'string' || name === '' || name.endsWith('-own') || field_get(row, 'State') !== 'running') continue;
+      up.set(user, { name, cohort: typeof cohort === 'string' ? cohort : NO_COHORT });
+    }
+    const homes: DockerAnswer = await docker.call('GET', `/volumes?filters=${encodeURIComponent(JSON.stringify({ label: [`${BERTH_LABEL}=${this.options.prefix}`, `${BERTH_LABEL}.volume=home`] }))}`);
+    const volumes: unknown = field_get(homes.body, 'Volumes');
+    const kept: Set<string> = new Set();
+    for (const row of Array.isArray(volumes) ? volumes : []) {
+      const user: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.user`);
+      if (typeof user === 'string') kept.add(user);
+    }
+    // The samples are taken together: the engine holds each call for a second to measure the CPU.
+    const running: BerthAccess[] = await Promise.all([...up.entries()].map(async ([user, one]): Promise<BerthAccess> => {
+      const sample: DockerAnswer = await docker.call('GET', `/containers/${encodeURIComponent(one.name)}/stats?stream=false`).catch((): DockerAnswer => ({ status: 0, body: null }));
+      return { user, state: 'running', cohort: one.cohort, ...(sample.status === 200 ? stats_digest(sample.body) : { cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }) };
+    }));
+    const stopped: BerthAccess[] = [...kept].filter((user: string): boolean => !up.has(user)).map((user: string): BerthAccess => ({ user, state: 'stopped', cohort: null, cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }));
+    return [...running, ...stopped].sort((a: BerthAccess, b: BerthAccess): number => a.user.localeCompare(b.user));
   }
 
   /**

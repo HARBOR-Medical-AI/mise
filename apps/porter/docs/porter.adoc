@@ -54,6 +54,7 @@ Grilled and settled 2026-09-21; built in slices from that day. Tier 2 of link:..
 | `GET /auth/device/<code>` | Chell's poll: `{state: pending}`, then `{state: authorised, token, user, name, expires}` once, then 404.
 | `GET /auth/tokens` | Bearer-gated: the identity's own tokens (`name`, `created`, `expires`, `lastUsed`), what `chell auth tokens` reads.
 | `DELETE /auth/token` | Bearer-gated: revokes the token in hand, what `chell auth logout` calls.
+| `GET /berths` | For the operator, asked with `Authorization: Token <CUBE token>` or Basic credentials, which porter hands to CUBE to verify; only a CUBE administrator is answered (401 with none or ones CUBE refuses, 403 for a CUBE user who is not an administrator, 502 when CUBE or the launcher does not answer). `{at, berths: [{user, state, cohort, cpuPercent, memoryBytes, memoryLimitBytes}]}`: a running berth with one sample of what it uses, a stopped one as the home kept (usage null); a person with neither is absent. A porter that starts no berths answers `{berths: null, why}`. Credentials are never logged or echoed.
 | `GET /boot/<key>` | Cookie-gated (401). Server-sent events: `line` (`{channel, text}`), then `ready` or `failed` (`{reason}`).
 | `/s/<key>/…` | Cookie-gated (302 to `/login`; an upgrade without it is dropped). The session: page, assets, `/vfs`, and the WebSocket wire, proxied to that identity's daemon on loopback with the token added by the porter.
 |===

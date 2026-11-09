@@ -22,6 +22,11 @@ function world_make(): { get: HttpGet; asked: string[] } {
     const admin: boolean = auth?.user === 'chris' && auth.password === 'right-password';
     if (url === 'https://porter.example.org/healthz') return { status: 200, body: { ok: true, sessions: 3, version: '0.9.11' } };
     if (!admin) return { status: 401, body: null };
+    if (url === 'https://porter.example.org/berths') return { status: 200, body: { at: '2026-11-09T10:00:00.000Z', berths: [
+      { user: 'rudolph', state: 'running', cohort: '42', cpuPercent: 3, memoryBytes: 220200960, memoryLimitBytes: 2147483648 },
+      { user: 'jennings', state: 'stopped', cohort: null, cpuPercent: null, memoryBytes: null, memoryLimitBytes: null },
+      { junk: true },
+    ] } };
     if (url === 'https://cube.example.org/api/v1/') return { status: 200, body: {} };
     if (url === 'https://cube.example.org/api/v1/groups/?limit=100') return { status: 200, body: { count: 2, next: null, results: [{ id: 7, name: 'all_users' }, { id: 8, name: 'pacs_users' }] } };
     if (url === 'https://cube.example.org/api/v1/groups/7/users/?limit=100') return { status: 200, body: { next: 'http://cube.example.org/api/v1/groups/7/users/?limit=100&offset=100', results: [{ user_id: 3, user_username: 'rudolph', user_email: 'r@example.org' }, { user_id: 1, user_username: 'chris', user_email: 'dev@babyMRI.org' }] } };
@@ -45,6 +50,32 @@ describe('what runs of a ChRIS', () => {
     expect(live.groups).toEqual(['all_users', 'pacs_users']);
     expect(asked).toContain('https://cube.example.org/api/v1/groups/7/users/?limit=100&offset=100');
     expect(asked.some((url: string): boolean => url.startsWith('http://'))).toBe(false);
+  });
+
+  it('reads porter\'s berths with the admin\'s credentials beside the accounts', async () => {
+    const { get } = world_make();
+    const live = await chrisLive_read(CHRIS, SECRETS, get);
+    expect(live.berthsWhy).toBeNull();
+    expect(live.berths).toEqual([
+      { user: 'rudolph', state: 'running', cohort: '42', cpuPercent: 3, memoryBytes: 220200960, memoryLimitBytes: 2147483648 },
+      { user: 'jennings', state: 'stopped', cohort: null, cpuPercent: null, memoryBytes: null, memoryLimitBytes: null },
+    ]);
+  });
+
+  it('says why the berths were not read: an older porter, a porter with none, no porter, no password, a porter that is silent', async () => {
+    const porterAnswers = (berths: { status: number; body: unknown } | null): HttpGet => async (url, auth) => {
+      if (url === 'https://porter.example.org/healthz') return { status: 200, body: { ok: true, sessions: 0, version: '0.9.11' } };
+      if (url === 'https://porter.example.org/berths') return berths;
+      return auth === null ? { status: 401, body: null } : { status: 200, body: {} };
+    };
+    expect((await chrisLive_read(CHRIS, SECRETS, porterAnswers({ status: 404, body: null }))).berthsWhy).toBe('porter 0.9.11 answers no berth status');
+    expect(await chrisLive_read(CHRIS, SECRETS, porterAnswers({ status: 200, body: { berths: null, why: 'this porter starts no berths' } }))).toMatchObject({ berths: null, berthsWhy: 'this porter starts no berths' });
+    expect((await chrisLive_read(CHRIS, SECRETS, porterAnswers({ status: 403, body: null }))).berthsWhy).toBe('porter answered 403 to the admin');
+    expect((await chrisLive_read(CHRIS, SECRETS, porterAnswers(null))).berthsWhy).toBe('porter does not answer');
+    expect(await chrisLive_read(CHRIS, null, porterAnswers({ status: 200, body: { berths: [] } }))).toMatchObject({ berths: null, berthsWhy: 'this host keeps no admin password for it' });
+    const { porter: _porter, ...bare } = CHRIS;
+    expect(await chrisLive_read(bare, SECRETS, porterAnswers({ status: 200, body: { berths: [] } }))).toMatchObject({ berths: null, berthsWhy: 'no porter was deployed' });
+    expect(await chrisLive_read(CHRIS, { ...SECRETS, adminPassword: 'old' }, world_make().get)).toMatchObject({ accounts: null, berths: null, berthsWhy: 'porter answered 401 to the admin' });
   });
 
   it('says why the accounts were not read: no password kept here, or the admin does not sign in', async () => {
