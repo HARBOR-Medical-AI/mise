@@ -130,7 +130,7 @@ async function chrisStatus_run(context: ChrisCommandContext, names: ReadonlyArra
     rows.push({
       vm: record.name, profile: chris.profile, compute: chris.compute, url: chris.url, host: chris.host, porter: chris.porter ?? null, deployed: chris.deployed,
       image: chris.image ?? null, porterVersion: chris.porterVersion ?? null, berths: chris.berths === 'launcher', berthLimits: chris.berthLimits ?? null,
-      live: live === null ? null : { at: live.at, cube: live.cube, porter: live.porter, accounts: live.accounts === null ? null : live.accounts.map((one) => ({ ...one, groups: [...one.groups] })), accountsWhy: live.accountsWhy, groups: live.groups === null ? null : [...live.groups], berths: live.berths === null ? null : live.berths.map((one) => ({ ...one })), berthsWhy: live.berthsWhy },
+      live: live === null ? null : { at: live.at, cube: live.cube, porter: live.porter, accounts: live.accounts === null ? null : live.accounts.map((one) => ({ ...one, groups: [...one.groups] })), accountsWhy: live.accountsWhy, groups: live.groups === null ? null : [...live.groups], berths: live.berths === null ? null : live.berths.map((one) => ({ ...one })), berthsWhy: live.berthsWhy, berthsOff: live.berthsOff },
     });
   }
   return envelope_ok(`${lines.join('\n')}\n`, { kind: STRATUS_CHRIS_STATUS_MODEL_KIND, data: { chris: rows } });
@@ -152,7 +152,7 @@ function chrisLive_lines(live: ChrisLive): string[] {
   if (live.porter !== null) {
     const running: number = live.berths?.filter((one): boolean => one.state === 'running').length ?? 0;
     const stopped: number = (live.berths?.length ?? 0) - running;
-    lines.push(`  berths    ${live.berths === null ? chalk.yellow(`not read: ${live.berthsWhy ?? '?'}`) : live.berths.length === 0 ? 'none' : `${running} running, ${stopped} home${stopped === 1 ? '' : 's'} kept (${live.berths.map((one) => `${one.user} ${one.state}`).join(', ')})`}`);
+    lines.push(`  berths    ${live.berths === null ? (live.berthsOff ? 'off' : chalk.yellow(`not read: ${live.berthsWhy ?? '?'}`)) : live.berths.length === 0 ? 'none' : `${running} running, ${stopped} home${stopped === 1 ? '' : 's'} kept (${live.berths.map((one) => `${one.user} ${one.state}`).join(', ')})`}`);
   }
   return lines;
 }

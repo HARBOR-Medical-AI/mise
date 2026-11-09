@@ -69,7 +69,8 @@ describe('what runs of a ChRIS', () => {
       return auth === null ? { status: 401, body: null } : { status: 200, body: {} };
     };
     expect((await chrisLive_read(CHRIS, SECRETS, porterAnswers({ status: 404, body: null }))).berthsWhy).toBe('porter 0.9.11 answers no berth status');
-    expect(await chrisLive_read(CHRIS, SECRETS, porterAnswers({ status: 200, body: { berths: null, why: 'this porter starts no berths' } }))).toMatchObject({ berths: null, berthsWhy: 'this porter starts no berths' });
+    expect(await chrisLive_read(CHRIS, SECRETS, porterAnswers({ status: 200, body: { berths: null, why: 'this porter starts no berths' } }))).toMatchObject({ berths: null, berthsWhy: null, berthsOff: true });
+    expect(await chrisLive_read(CHRIS, SECRETS, porterAnswers({ status: 200, body: {} }))).toMatchObject({ berths: null, berthsWhy: 'porter answered no berths', berthsOff: false });
     expect((await chrisLive_read(CHRIS, SECRETS, porterAnswers({ status: 403, body: null }))).berthsWhy).toBe('porter answered 403 to the admin');
     expect((await chrisLive_read(CHRIS, SECRETS, porterAnswers(null))).berthsWhy).toBe('porter does not answer');
     expect(await chrisLive_read(CHRIS, null, porterAnswers({ status: 200, body: { berths: [] } }))).toMatchObject({ berths: null, berthsWhy: 'this host keeps no admin password for it' });

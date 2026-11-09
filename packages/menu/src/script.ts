@@ -294,6 +294,8 @@ export const chrisLiveSchema = z.object({
   berths: z.array(chrisBerthSchema).nullable().optional(),
   /** Why the berths were not read; absent from an older daemon. */
   berthsWhy: z.string().nullable().optional(),
+  /** True when porter answered that it starts no berths: a definite answer, not a failed read; absent from an older daemon. */
+  berthsOff: z.boolean().optional(),
 });
 
 /** One VM's ChRIS as `chris status` answers it: what was deployed, and what runs. */

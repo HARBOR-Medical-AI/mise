@@ -432,6 +432,10 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const berthStatus = await chris_run(berthed, ['status']);
     expect(plain(berthStatus.rendered)).toContain('berths    1 running, 1 home kept (ana running, benito stopped)');
     expect(berthStatus.model).toMatchObject({ data: { chris: [{ live: { berthsWhy: null, berths: [{ user: 'ana', state: 'running', memoryBytes: 220200960 }, { user: 'benito', state: 'stopped', cohort: null }] } }] } });
+    // A porter that starts no berths says so: the line says off, not a failed read.
+    const off = await chris_run({ ...reading, http_get: async (url: string, auth) => url === 'https://porter.example.org/berths' ? { status: 200, body: { berths: null, why: 'this porter starts no berths' } } : reading.http_get!(url, auth) }, ['status']);
+    expect(plain(off.rendered)).toContain('berths    off');
+    expect(off.model).toMatchObject({ data: { chris: [{ live: { berths: null, berthsWhy: null, berthsOff: true } }] } });
     expect(status.model).toMatchObject({ kind: 'stratus.chris.status', data: { chris: [{ vm: 'store', image: 'ghcr.io/fnndsc/cube:6.11.0', live: { cube: { admin: true }, accounts: [{ username: 'chris' }] } }] } });
   });
 

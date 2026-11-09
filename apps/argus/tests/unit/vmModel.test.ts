@@ -189,5 +189,9 @@ describe('HOST ACCESS', () => {
     expect(bytes_words(512 * 1024 ** 2)).toBe('512 MiB');
     expect(bytes_words(2 * GIB)).toBe('2 GiB');
     expect(bytes_words(1.5 * GIB)).toBe('1.5 GiB');
+    // Just short of a GiB: whole MiB that reach 1024 are a GiB, never `1024 MiB`.
+    expect(bytes_words(1023.4 * 1024 ** 2)).toBe('1023 MiB');
+    expect(bytes_words(1023.5 * 1024 ** 2)).toBe('1 GiB');
+    expect(bytes_words(GIB - 1)).toBe('1 GiB');
   });
 });

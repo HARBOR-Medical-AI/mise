@@ -7,7 +7,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Server } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { berthKey_compute, identity_normalise } from '@fnndsc/calypso/berth';
 import { berthCapacity_derive, profileFloor_get } from '@fnndsc/menu';
@@ -39,6 +39,8 @@ class FakeDocker implements DockerApi {
   host: { cpus: number; memory: number } = { cpus: 24, memory: 64 * 1024 ** 3 };
   /** The stats sample the engine gives for a running container; absent: none. */
   stats: Record<string, unknown> = {};
+  /** Containers whose stats call the engine never answers. */
+  hung: Set<string> = new Set();
   private serial: number = 2;
 
   async call(method: string, path: string, body?: unknown): Promise<DockerAnswer> {
@@ -63,6 +65,7 @@ class FakeDocker implements DockerApi {
       return { status: 200, body: { Volumes: [...this.volumes.entries()].filter(([, labels]) => wanted.every((one) => { const [key = '', value = ''] = one.split('='); return labels[key] === value; })).map(([one, labels]) => ({ Name: one, Labels: labels })), Warnings: null } };
     }
     if (method === 'GET' && route.endsWith('/stats')) {
+      if (this.hung.has(name)) return new Promise<DockerAnswer>((): void => undefined);
       const sample = this.stats[name];
       return this.containers.get(name)?.running === true && sample !== undefined ? { status: 200, body: sample } : { status: 404, body: {} };
     }
@@ -111,8 +114,8 @@ const POLICY: BerthPolicy = { limits: BERTH_LIMITS_DEFAULT, holds: null };
 const ANA: string = identity_normalise('ana', CUBE);
 
 /** A launcher over a fake engine, quick to give up; porter a container when named. */
-function launcher_make(docker: FakeDocker, policy: BerthPolicy = POLICY, porterContainer: string | null = 'porter'): BerthLauncher {
-  return new BerthLauncher({ docker, policy, image: 'mbw/mise-berth@sha256:abc', prefix: 'mbw', cubeNetwork: 'mbw-cube-net', porterContainer, bootMs: 300, pollMs: 10 });
+function launcher_make(docker: FakeDocker, policy: BerthPolicy = POLICY, porterContainer: string | null = 'porter', statsMs?: number): BerthLauncher {
+  return new BerthLauncher({ docker, policy, image: 'mbw/mise-berth@sha256:abc', prefix: 'mbw', cubeNetwork: 'mbw-cube-net', porterContainer, bootMs: 300, pollMs: 10, ...(statsMs !== undefined ? { statsMs } : {}) });
 }
 
 describe('the berth policy', () => {
@@ -325,7 +328,7 @@ describe('the launcher over an engine', () => {
       memory_stats: { usage: 300 * 1024 ** 2, limit: 2 * 1024 ** 3, stats: { inactive_file: 90 * 1024 ** 2 } },
     };
     docker.volumes.set('mbw-other-home', { [BERTH_LABEL]: 'another-spoke', [`${BERTH_LABEL}.user`]: 'zed', [`${BERTH_LABEL}.volume`]: 'home' });
-    expect(await launcher.access_read()).toEqual([
+    expect(await launcher.access_read(CUBE)).toEqual([
       { user: 'ana', state: 'running', cohort: '42', cpuPercent: 12, memoryBytes: 210 * 1024 ** 2, memoryLimitBytes: 2 * 1024 ** 3 },
       { user: 'benito', state: 'stopped', cohort: null, cpuPercent: null, memoryBytes: null, memoryLimitBytes: null },
       { user: 'carla', state: 'running', cohort: 'none', cpuPercent: null, memoryBytes: null, memoryLimitBytes: null },
@@ -335,7 +338,51 @@ describe('the launcher over an engine', () => {
   it('reads CPU as the engine\'s sample against the host\'s time, and memory without the page cache', () => {
     expect(stats_digest({})).toEqual({ cpuPercent: null, memoryBytes: null, memoryLimitBytes: null });
     expect(stats_digest({ cpu_stats: { cpu_usage: { total_usage: 5, percpu_usage: [1, 2] }, system_cpu_usage: 10 }, precpu_stats: { cpu_usage: { total_usage: 5 }, system_cpu_usage: 0 }, memory_stats: { usage: 50, stats: { cache: 80 } } }))
-      .toEqual({ cpuPercent: 0, memoryBytes: 0, memoryLimitBytes: null });
+      .toEqual({ cpuPercent: 0, memoryBytes: 50, memoryLimitBytes: null });
+  });
+
+  it('reads memory as docker stats does: total_inactive_file first on cgroup v1, inactive_file on v2, a cache as large as the usage not taken', () => {
+    const memory = (stats: Record<string, number>): number | null => stats_digest({ memory_stats: { usage: 1000, stats } }).memoryBytes;
+    expect(memory({ total_inactive_file: 300, inactive_file: 100, cache: 500 })).toBe(700);
+    expect(memory({ inactive_file: 100, cache: 500 })).toBe(900);
+    expect(memory({ cache: 400 })).toBe(600);
+    expect(memory({ total_inactive_file: 1000 })).toBe(1000);
+    expect(memory({ total_inactive_file: 1200 })).toBe(1000);
+  });
+
+  it('reads the people of this CUBE only: a leftover of an earlier CUBE is not this person\'s, a home made before the label still counts for its user', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const OLD: string = 'http://old-cube.example.org/api/v1/';
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    await launcher.start({ user: 'dora', uid: 8, gid: 8, cubeUrl: OLD, token: 'dora-token' });
+    await launcher.start({ user: 'eli', uid: 9, gid: 9, cubeUrl: CUBE, token: 'eli-token' });
+    await launcher.stop('eli', CUBE);
+    // Eli had a home on the earlier CUBE as well, and Fay's was made before volumes carried an identity.
+    docker.volumes.set('mbw-eli-old-home', { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: identity_normalise('eli', OLD), [`${BERTH_LABEL}.user`]: 'eli', [`${BERTH_LABEL}.volume`]: 'home' });
+    docker.volumes.set('mbw-gil-old-home', { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: identity_normalise('gil', OLD), [`${BERTH_LABEL}.user`]: 'gil', [`${BERTH_LABEL}.volume`]: 'home' });
+    docker.volumes.set('mbw-fay-home', { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.user`]: 'fay', [`${BERTH_LABEL}.volume`]: 'home' });
+    expect([...docker.volumes.entries()].find(([name]) => name === berthNames_derive('mbw', ANA, 'ana', null).home)?.[1][`${BERTH_LABEL}.identity`]).toBe(ANA);
+    expect((await launcher.access_read(CUBE)).map((row) => `${row.user}:${row.state}`)).toEqual(['ana:running', 'eli:stopped', 'fay:stopped']);
+    expect((await launcher.access_read(OLD)).map((row) => `${row.user}:${row.state}`)).toEqual(['dora:running', 'eli:stopped', 'fay:stopped', 'gil:stopped']);
+  });
+
+  it('reports one running berth for a person whose identity has two containers up, the same one whatever order the engine lists them', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: 42 });
+    const first: string = berthNames_derive('mbw', ANA, 'ana', 42).container;
+    const labels = { ...(docker.containers.get(first)?.spec['Labels'] as Record<string, string>), [`${BERTH_LABEL}.cohort`]: '7' };
+    docker.containers.set('mbw-aaaa', { spec: { Labels: labels }, running: true, ip: '', token: null });
+    const forward = await launcher.access_read(CUBE);
+    docker.containers = new Map([...docker.containers.entries()].reverse());
+    expect(await launcher.access_read(CUBE)).toEqual(forward);
+    expect(forward).toEqual([{ user: 'ana', state: 'running', cohort: '7', cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }]);
+  });
+
+  it('gives up on a container the engine does not sample in time: the berth is running, its usage unread', async () => {
+    const launcher: BerthLauncher = launcher_make(docker, POLICY, 'porter', 50);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    docker.hung.add(berthNames_derive('mbw', ANA, 'ana', null).container);
+    expect(await launcher.access_read(CUBE)).toEqual([{ user: 'ana', state: 'running', cohort: 'none', cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }]);
   });
 
   it('a porter on the host joins no wire', async () => {
@@ -378,8 +425,23 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
     const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
     await host.spawn(ANA, 'ana', CUBE, 'ana-token');
-    expect(await host.access_read()).toEqual([{ user: 'ana', state: 'running', cohort: 'none', cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }]);
+    expect(await host.access_read(CUBE)).toEqual([{ user: 'ana', state: 'running', cohort: 'none', cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }]);
     expect((await launcher_call({ ...reach, secret: 'x'.repeat(40) }, 'GET', '/berths/access')).status).toBe(401);
+  });
+
+  it('asks the launcher for the access read with a CUBE, and gives up on a launcher that never answers', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const refused = await launcher_call(reach, 'GET', '/berths/access');
+    expect(refused.status).toBe(400);
+    const silent: Server = createServer((): void => undefined);
+    const hung: string = join(dir, 'hung.sock');
+    await new Promise<void>((resolve) => { silent.listen(hung, resolve); });
+    try {
+      await expect(launcher_call({ listen: hung, secret: SECRET }, 'GET', '/berths/access?cubeUrl=x', undefined, 100)).rejects.toThrow(/berth launcher did not answer/);
+    } finally {
+      silent.closeAllConnections();
+      await new Promise<void>((resolve) => { silent.close(() => resolve()); });
+    }
   });
 
   it('porter\'s host starts a berth at login with the user\'s CUBE id and no cohort, finds it, follows its boot, and stops it', async () => {

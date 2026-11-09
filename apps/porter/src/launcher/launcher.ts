@@ -113,6 +113,8 @@ export interface LauncherOptions {
   readonly bootMs?: number;
   /** How often its berth file is looked for, in ms. */
   readonly pollMs?: number;
+  /** How long the engine has to give one container's usage for the operator's read, in ms; 3 s by default. */
+  readonly statsMs?: number;
 }
 
 /** The names a berth's container, wire and volumes take. */
@@ -247,9 +249,29 @@ export function stats_digest(body: unknown): { cpuPercent: number | null; memory
     cpuPercent = cpuDelta > 0 && systemDelta > 0 ? Math.round((cpuDelta / systemDelta) * online * 1000) / 10 : 0;
   }
   const usage: number | null = stat_read('memory_stats', 'usage');
-  // Page cache is not the berth's to give up last: cgroup v2 names it inactive_file, v1 total_inactive_file or cache.
-  const cache: number = stat_read('memory_stats', 'stats', 'inactive_file') ?? stat_read('memory_stats', 'stats', 'total_inactive_file') ?? stat_read('memory_stats', 'stats', 'cache') ?? 0;
-  return { cpuPercent, memoryBytes: usage === null ? null : Math.max(0, usage - cache), memoryLimitBytes: stat_read('memory_stats', 'limit') };
+  // Read as `docker stats` reads it: the page cache the kernel can take back is the inactive file pages (cgroup v1 names them total_inactive_file, v2 inactive_file; older engines gave `cache`), and a cache as large as the usage is no cache to be believed.
+  const cache: number = stat_read('memory_stats', 'stats', 'total_inactive_file') ?? stat_read('memory_stats', 'stats', 'inactive_file') ?? stat_read('memory_stats', 'stats', 'cache') ?? 0;
+  return { cpuPercent, memoryBytes: usage === null ? null : cache < usage ? usage - cache : usage, memoryLimitBytes: stat_read('memory_stats', 'limit') };
+}
+
+/** How long the engine has to give one container's stats, in ms, unless the launcher is set otherwise. */
+const STATS_ANSWER_MS: number = 3_000;
+
+/**
+ * An engine call held to a time: the answer, or a no-answer (status 0) when it fails or is not given in time.
+ *
+ * @param call - The engine call.
+ * @param ms - How long it has.
+ * @returns Its answer, or status 0.
+ */
+async function answer_within(call: Promise<DockerAnswer>, ms: number): Promise<DockerAnswer> {
+  let timer: NodeJS.Timeout | undefined;
+  const late: Promise<DockerAnswer> = new Promise((resolve: (answer: DockerAnswer) => void): void => { timer = setTimeout((): void => { resolve({ status: 0, body: null }); }, ms); });
+  try {
+    return await Promise.race([call.catch((): DockerAnswer => ({ status: 0, body: null })), late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** A filter on the launcher's label, for the engine's list calls. */
@@ -411,32 +433,42 @@ export class BerthLauncher {
    * Every person's berth as the operator reads it: a running berth with one
    * sample of what it uses, and a stopped one that is a home kept (the
    * person's volume labelled `home`, with no container up). A person with
-   * neither is absent.
+   * neither is absent. Only the people of one CUBE are read: a container or
+   * a home made for the same user name on another CUBE is not this person's.
+   * A berth is read for no longer than the sample takes: one the engine does
+   * not sample in time is running with its usage unread.
    *
+   * @param cubeUrl - The CUBE whose people are read.
    * @returns One row a person, by name.
    */
-  public async access_read(): Promise<BerthAccess[]> {
+  public async access_read(cubeUrl: string): Promise<BerthAccess[]> {
     const docker: DockerApi = this.options.docker;
     const listed: DockerAnswer = await docker.call('GET', `/containers/json?all=true&filters=${labelFilter_build(this.options.prefix)}`);
     const up: Map<string, { name: string; cohort: string }> = new Map();
     for (const row of Array.isArray(listed.body) ? listed.body : []) {
+      const identity: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.identity`);
       const user: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.user`);
       const cohort: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.cohort`);
       const names: unknown = field_get(row, 'Names');
       const name: string = Array.isArray(names) && typeof names[0] === 'string' ? names[0].replace(/^\//, '') : '';
-      if (typeof user !== 'string' || name === '' || name.endsWith('-own') || field_get(row, 'State') !== 'running') continue;
-      up.set(user, { name, cohort: typeof cohort === 'string' ? cohort : NO_COHORT });
+      if (typeof user !== 'string' || identity !== identity_normalise(user, cubeUrl) || name === '' || name.endsWith('-own') || field_get(row, 'State') !== 'running') continue;
+      // Two running containers of one identity: the first by name is the one reported, whatever order the engine lists them in.
+      const held = up.get(user);
+      if (held === undefined || name < held.name) up.set(user, { name, cohort: typeof cohort === 'string' ? cohort : NO_COHORT });
     }
     const homes: DockerAnswer = await docker.call('GET', `/volumes?filters=${encodeURIComponent(JSON.stringify({ label: [`${BERTH_LABEL}=${this.options.prefix}`, `${BERTH_LABEL}.volume=home`] }))}`);
     const volumes: unknown = field_get(homes.body, 'Volumes');
     const kept: Set<string> = new Set();
     for (const row of Array.isArray(volumes) ? volumes : []) {
       const user: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.user`);
-      if (typeof user === 'string') kept.add(user);
+      const identity: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.identity`);
+      if (typeof user !== 'string') continue;
+      // A home made before volumes carried an identity has none to compare: it counts for its user.
+      if (identity === undefined || identity === identity_normalise(user, cubeUrl)) kept.add(user);
     }
     // The samples are taken together: the engine holds each call for a second to measure the CPU.
     const running: BerthAccess[] = await Promise.all([...up.entries()].map(async ([user, one]): Promise<BerthAccess> => {
-      const sample: DockerAnswer = await docker.call('GET', `/containers/${encodeURIComponent(one.name)}/stats?stream=false`).catch((): DockerAnswer => ({ status: 0, body: null }));
+      const sample: DockerAnswer = await answer_within(docker.call('GET', `/containers/${encodeURIComponent(one.name)}/stats?stream=false`), this.options.statsMs ?? STATS_ANSWER_MS);
       return { user, state: 'running', cohort: one.cohort, ...(sample.status === 200 ? stats_digest(sample.body) : { cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }) };
     }));
     const stopped: BerthAccess[] = [...kept].filter((user: string): boolean => !up.has(user)).map((user: string): BerthAccess => ({ user, state: 'stopped', cohort: null, cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }));
@@ -576,7 +608,7 @@ export class BerthLauncher {
     for (const [volume, kind] of [[names.home, 'home'], [names.cohort, 'cohort']] as const) {
       const found: DockerAnswer = await docker.call('GET', `/volumes/${volume}`);
       if (found.status === 200) continue;
-      await docker.call('POST', '/volumes/create', { Name: volume, Labels: { [BERTH_LABEL]: this.options.prefix, [`${BERTH_LABEL}.user`]: ask.user, [`${BERTH_LABEL}.volume`]: kind, ...(kind === 'cohort' ? { [`${BERTH_LABEL}.cohort`]: cohort_word(ask.cohort) } : {}) } });
+      await docker.call('POST', '/volumes/create', { Name: volume, Labels: { [BERTH_LABEL]: this.options.prefix, [`${BERTH_LABEL}.identity`]: identity_normalise(ask.user, ask.cubeUrl), [`${BERTH_LABEL}.user`]: ask.user, [`${BERTH_LABEL}.volume`]: kind, ...(kind === 'cohort' ? { [`${BERTH_LABEL}.cohort`]: cohort_word(ask.cohort) } : {}) } });
       fresh.push(volume);
     }
     if (fresh.length === 0) return;

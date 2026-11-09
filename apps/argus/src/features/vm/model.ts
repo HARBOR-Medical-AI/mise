@@ -504,8 +504,11 @@ export interface AccountRow {
  */
 export function bytes_words(bytes: number): string {
   const gib: number = bytes / 1024 ** 3;
-  if (gib >= 1) return `${Number.isInteger(Math.round(gib * 10) / 10) ? Math.round(gib * 10) / 10 : (Math.round(gib * 10) / 10).toFixed(1)} GiB`;
-  return `${Math.round(bytes / 1024 ** 2)} MiB`;
+  const mib: number = Math.round(bytes / 1024 ** 2);
+  // Whole MiB reaching a GiB is shown in GiB: 1023.5 MiB rounds to 1024 MiB, which is 1 GiB.
+  if (mib < 1024) return `${mib} MiB`;
+  const tenths: number = Math.round(gib * 10) / 10;
+  return `${Number.isInteger(tenths) ? tenths : tenths.toFixed(1)} GiB`;
 }
 
 /**

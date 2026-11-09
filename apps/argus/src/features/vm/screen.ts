@@ -1270,7 +1270,7 @@ export class VmScreen extends ScriptScreen {
     const accounts: HTMLElement = el('div', 'vm-chris-users');
     accounts.append(el('span', 'tdc-section-title', 'ITS USERS'));
     if (live?.accounts != null) {
-      accounts.append(...this.accounts_make(step, live.accounts.map((one): HeldAccount => ({ username: one.username, email: one.email, id: one.id ?? null, groups: one.groups ?? [] })), live.groups ?? null, users, live.berths ?? null, live.berths == null ? (live.berthsWhy ?? 'the stratus daemon here does not read them') : null));
+      accounts.append(...this.accounts_make(step, live.accounts.map((one): HeldAccount => ({ username: one.username, email: one.email, id: one.id ?? null, groups: one.groups ?? [] })), live.groups ?? null, users, live.berths ?? null, live.berths == null ? (live.berthsWhy ?? 'the stratus daemon here does not read them') : null, live.berthsOff === true));
     } else if (chris !== null) {
       accounts.append(el('p', 'tdc-prose tdc-quiet', `CUBE's accounts were not read${live?.accountsWhy ? `: ${live.accountsWhy}` : ''}.`));
     }
@@ -1294,9 +1294,10 @@ export class VmScreen extends ScriptScreen {
    * @param users - The script's user lines' seat.
    * @param berths - Porter's berths as it answered, or null when they were not read.
    * @param berthsWhy - Why they were not read, or null when they were.
+   * @param berthsOff - True when porter answered that it starts no berths: an answer, said as `berths are off`, not a failed read.
    * @returns The listing, the editor, + NEW USER, the change block and the user lines.
    */
-  private accounts_make(step: ScriptStep, held: ReadonlyArray<HeldAccount>, groups: ReadonlyArray<string> | null, users: ScriptStep | undefined, berths: ReadonlyArray<ChrisBerthModel> | null, berthsWhy: string | null): HTMLElement[] {
+  private accounts_make(step: ScriptStep, held: ReadonlyArray<HeldAccount>, groups: ReadonlyArray<string> | null, users: ScriptStep | undefined, berths: ReadonlyArray<ChrisBerthModel> | null, berthsWhy: string | null, berthsOff: boolean = false): HTMLElement[] {
     this.accountContext = { step, held, groups, users, berths };
     // An edit CUBE now holds is spent: what it asked is what stands.
     for (const [name, edit] of [...this.accountEdits]) {
@@ -1359,7 +1360,8 @@ export class VmScreen extends ScriptScreen {
     this.accountChangeMount = el('div', 'vm-change vm-account-change');
     this.accountChange_fill();
     nodes.push(this.accountChangeMount);
-    if (berthsWhy !== null) nodes.push(el('p', 'tdc-prose tdc-quiet vm-access-why', `HOST ACCESS was not read: ${berthsWhy}.`));
+    if (berthsOff) nodes.push(el('p', 'tdc-prose tdc-quiet vm-access-why', 'berths are off'));
+    else if (berthsWhy !== null) nodes.push(el('p', 'tdc-prose tdc-quiet vm-access-why', `HOST ACCESS was not read: ${berthsWhy}.`));
     nodes.push(el('p', 'tdc-prose tdc-quiet vm-access-note', 'Starting a berth, stopping it and removing a person\'s home are not controls here yet.'));
     // The script's user lines, the accounts it declares; THE SCRIPT shows them as written.
     if (users !== undefined && users.lines.length > 0) {

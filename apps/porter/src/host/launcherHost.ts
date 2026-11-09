@@ -14,6 +14,11 @@ import { request as httpRequest, type ClientRequest, type IncomingMessage } from
 import { identity_normalise, type Berth } from '@fnndsc/calypso/berth';
 import { restartLine_render, type BerthAccess, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
 
+/** How long the launcher has to answer a read, in ms. */
+const LAUNCHER_ANSWER_MS: number = 10_000;
+/** How long it has to answer a start or a stop, which wait on a berth to boot or to end, in ms. */
+const LAUNCHER_START_MS: number = 300_000;
+
 /** A berth as the launcher answers it. */
 interface LauncherBerth {
   identity: string;
@@ -69,9 +74,11 @@ export function identity_split(identity: string): { user: string; cubeUrl: strin
  * @param method - The HTTP method.
  * @param path - The path and query.
  * @param body - The JSON body, when there is one.
+ * @param timeoutMs - How long the launcher has to answer in all, in ms; a start waits on a berth, so a caller that starts one gives longer.
  * @returns The status and the parsed body.
+ * @throws {Error} When the launcher does not answer in time, or cannot be reached.
  */
-export function launcher_call(reach: LauncherReach, method: string, path: string, body?: unknown): Promise<{ status: number; body: Record<string, unknown> }> {
+export function launcher_call(reach: LauncherReach, method: string, path: string, body?: unknown, timeoutMs: number = LAUNCHER_ANSWER_MS): Promise<{ status: number; body: Record<string, unknown> }> {
   return new Promise((resolve: (answer: { status: number; body: Record<string, unknown> }) => void, reject: (error: Error) => void): void => {
     const payload: string | null = body === undefined ? null : JSON.stringify(body);
     const hostPort: RegExpExecArray | null = /^(127\.0\.0\.1|localhost|::1):(\d+)$/.exec(reach.listen);
@@ -88,6 +95,8 @@ export function launcher_call(reach: LauncherReach, method: string, path: string
         resolve({ status: res.statusCode ?? 0, body: typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {} });
       });
     });
+    const timer: NodeJS.Timeout = setTimeout((): void => { req.destroy(new Error(`the berth launcher did not answer in ${Math.round(timeoutMs / 1000)} s`)); }, timeoutMs);
+    req.on('close', (): void => { clearTimeout(timer); });
     req.on('error', reject);
     if (payload !== null) req.write(payload);
     req.end();
@@ -140,8 +149,8 @@ export class LauncherHost implements SessionHost {
   }
 
   /** @inheritdoc */
-  public async access_read(): Promise<BerthAccess[]> {
-    const answer = await launcher_call(this.reach, 'GET', '/berths/access');
+  public async access_read(cubeUrl: string): Promise<BerthAccess[]> {
+    const answer = await launcher_call(this.reach, 'GET', `/berths/access?cubeUrl=${encodeURIComponent(cubeUrl)}`);
     if (answer.status !== 200) throw new Error(typeof answer.body['error'] === 'string' ? answer.body['error'] : `the launcher answered ${answer.status}`);
     return Array.isArray(answer.body['berths']) ? answer.body['berths'] as BerthAccess[] : [];
   }
@@ -177,7 +186,7 @@ export class LauncherHost implements SessionHost {
    */
   public async token_renew(identity: string, user: string, cubeUrl: string, token: string): Promise<void> {
     const uid: number = await this.userId_read(cubeUrl, token);
-    await launcher_call(this.reach, 'POST', '/berths/start', { user, uid, gid: uid, cubeUrl, token });
+    await launcher_call(this.reach, 'POST', '/berths/start', { user, uid, gid: uid, cubeUrl, token }, LAUNCHER_START_MS);
   }
 
   /** @inheritdoc */
@@ -204,7 +213,7 @@ export class LauncherHost implements SessionHost {
   public async evict(identity: string): Promise<boolean> {
     const who = identity_split(identity);
     if (who === null) return false;
-    const answer = await launcher_call(this.reach, 'POST', '/berths/stop', { user: who.user, cubeUrl: who.cubeUrl });
+    const answer = await launcher_call(this.reach, 'POST', '/berths/stop', { user: who.user, cubeUrl: who.cubeUrl }, LAUNCHER_START_MS);
     return answer.body['stopped'] === true;
   }
 
@@ -238,7 +247,7 @@ export class LauncherHost implements SessionHost {
       }
       this.line_add(record, `[PENDING] Berth        starting ${user}'s berth`);
       // No cohort yet: the picker at the door is a later stage; the berth starts with an empty pair.
-      const answer = await launcher_call(this.reach, 'POST', '/berths/start', { user, uid: uid ?? 0, gid: uid ?? 0, cubeUrl, token, cohort: null });
+      const answer = await launcher_call(this.reach, 'POST', '/berths/start', { user, uid: uid ?? 0, gid: uid ?? 0, cubeUrl, token, cohort: null }, LAUNCHER_START_MS);
       if (answer.status !== 200) throw new Error(typeof answer.body['error'] === 'string' ? answer.body['error'] : `the launcher answered ${answer.status}`);
       const berth: Berth | null = LauncherHost.berth_take(answer.body as unknown as LauncherBerth);
       if (berth === null) throw new Error('the launcher started no berth');

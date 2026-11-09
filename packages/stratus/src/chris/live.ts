@@ -56,6 +56,8 @@ export interface ChrisLive {
   /** Porter's berths by person (a person with neither a berth nor a home is absent), or null when they could not be read; with why. */
   readonly berths: ReadonlyArray<ChrisBerth> | null;
   readonly berthsWhy: string | null;
+  /** True when porter answered that it starts no berths (`berths` null, `berthsWhy` null): an answer, not a failed read. */
+  readonly berthsOff: boolean;
 }
 
 /** How many accounts a page asks for; the walk follows every page. */
@@ -174,9 +176,9 @@ function berth_take(one: unknown): ChrisBerth | null {
  * @param version - Porter's version as `/healthz` said it, or null.
  * @param auth - The admin's credentials, or null when this host keeps none.
  * @param get - How a GET is made.
- * @returns The berths, or why they were not read.
+ * @returns The berths, that porter starts none, or why they were not read.
  */
-async function berths_read(porter: string | undefined, version: string | null, auth: { user: string; password: string } | null, get: HttpGet): Promise<{ berths: ChrisBerth[] } | { why: string }> {
+async function berths_read(porter: string | undefined, version: string | null, auth: { user: string; password: string } | null, get: HttpGet): Promise<{ berths: ChrisBerth[] } | { why: string } | { off: true }> {
   if (porter === undefined) return { why: 'no porter was deployed' };
   if (auth === null) return { why: 'this host keeps no admin password for it' };
   const answered = await get(`https://${porter}/berths`, auth);
@@ -184,7 +186,9 @@ async function berths_read(porter: string | undefined, version: string | null, a
   if (answered.status === 404) return { why: `porter ${version ?? '?'} answers no berth status` };
   if (answered.status !== 200) return { why: `porter answered ${answered.status} to the admin` };
   const body: Record<string, unknown> = typeof answered.body === 'object' && answered.body !== null ? answered.body as Record<string, unknown> : {};
-  if (!Array.isArray(body['berths'])) return { why: typeof body['why'] === 'string' ? body['why'] : 'porter answered no berths' };
+  // `{berths: null, why}` is porter's word that it starts no berths: an answer, not a failed read.
+  if (body['berths'] === null) return { off: true };
+  if (!Array.isArray(body['berths'])) return { why: 'porter answered no berths' };
   return { berths: body['berths'].map(berth_take).filter((one): one is ChrisBerth => one !== null) };
 }
 
@@ -211,9 +215,10 @@ export async function chrisLive_read(chris: NonNullable<VmRecord['chris']>, secr
   }
   // Porter's berths and CUBE's accounts are read together: the launcher takes a second to sample a berth.
   const berthsRead = berths_read(chris.porter, porter?.version ?? null, auth, get);
-  const berths = async (): Promise<Pick<ChrisLive, 'berths' | 'berthsWhy'>> => {
+  const berths = async (): Promise<Pick<ChrisLive, 'berths' | 'berthsWhy' | 'berthsOff'>> => {
     const read = await berthsRead;
-    return 'berths' in read ? { berths: read.berths, berthsWhy: null } : { berths: null, berthsWhy: read.why };
+    if ('berths' in read) return { berths: read.berths, berthsWhy: null, berthsOff: false };
+    return 'off' in read ? { berths: null, berthsWhy: null, berthsOff: true } : { berths: null, berthsWhy: read.why, berthsOff: false };
   };
   if (auth === null) return { at, cube, porter, accounts: null, accountsWhy: 'this host keeps no admin password for it', groups: null, ...await berths() };
   if (cube.admin !== true) return { at, cube, porter, accounts: null, accountsWhy: 'the admin does not sign in', groups: null, ...await berths() };

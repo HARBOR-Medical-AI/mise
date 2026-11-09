@@ -64,13 +64,28 @@ export async function cubeToken_mint(
 /** What CUBE says of the credentials a caller presents. */
 export type AdminVerdict = 'admin' | 'not-admin' | 'refused' | 'unreachable';
 
+/** The shape of an answer the admin check reads: its status, its body to read or let go. */
+export interface AdminAnswer {
+  status: number;
+  json(): Promise<unknown>;
+  /** The body stream, when the client has one; let go of when the answer is not read. */
+  body?: { cancel(): Promise<void> } | null;
+}
+
+/** The shape of `fetch` the admin check needs, so a test can stand one in. */
+export type AdminFetch = (url: string, init: { headers: Record<string, string>; redirect: 'manual' }) => Promise<AdminAnswer>;
+
 /**
  * Asks CUBE whether the credentials presented are an administrator's. The
  * API root answers a signed-in caller with its links, and names the `admin`
  * link only to an administrator (`collection_links.admin`; it is the link the
  * plugin upload workflow reads, and fails without when the user is not an
- * admin). CUBE does the verifying: the header is handed over as it came,
- * a token or Basic credentials, and neither is kept or logged here.
+ * admin). The root is a list of feeds, so one item is asked for (`?limit=1`;
+ * the links do not change with it). CUBE does the verifying: the header is
+ * handed over as it came, a token or Basic credentials, and neither is kept
+ * or logged here. A redirect is not followed, so the header goes to the one
+ * CUBE and nowhere it points; it counts as CUBE not answering. Every answer
+ * not read is let go of.
  *
  * @param cubeUrl - The CUBE API base, trailing slash included.
  * @param authorization - The caller's `Authorization` header.
@@ -80,16 +95,18 @@ export type AdminVerdict = 'admin' | 'not-admin' | 'refused' | 'unreachable';
 export async function cubeAdmin_check(
   cubeUrl: string,
   authorization: string,
-  fetchLike: (url: string, init: { headers: Record<string, string> }) => Promise<{ status: number; json(): Promise<unknown> }> = (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(15_000) }),
+  fetchLike: AdminFetch = (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(15_000) }),
 ): Promise<AdminVerdict> {
-  let response: { status: number; json(): Promise<unknown> };
+  let response: AdminAnswer;
   try {
-    response = await fetchLike(cubeUrl, { headers: { Authorization: authorization, Accept: 'application/json' } });
+    response = await fetchLike(`${cubeUrl}?limit=1`, { headers: { Authorization: authorization, Accept: 'application/json' }, redirect: 'manual' });
   } catch {
     return 'unreachable';
   }
-  if (response.status === 401 || response.status === 403) return 'refused';
-  if (response.status !== 200) return 'unreachable';
+  if (response.status !== 200) {
+    await response.body?.cancel().catch((): void => undefined);
+    return response.status === 401 || response.status === 403 ? 'refused' : 'unreachable';
+  }
   let body: unknown = null;
   try { body = await response.json(); } catch { body = null; }
   const links: unknown = typeof body === 'object' && body !== null ? (body as { collection_links?: unknown }).collection_links : undefined;

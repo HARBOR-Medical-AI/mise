@@ -37,7 +37,10 @@
  *   Asked with `Authorization: Token <CUBE token>` or Basic credentials, which
  *   porter hands to CUBE to verify; only an administrator is answered (401
  *   with no credentials or ones CUBE refuses, 403 for a CUBE user who is not
- *   an administrator). A porter that starts no berths says so.
+ *   an administrator). A client may ask ten times a minute (429 with
+ *   `Retry-After` past that, and CUBE is not asked); CUBE's verdict on one
+ *   set of credentials is kept for 30 s, under a hash of the header. A porter
+ *   that starts no berths says so.
  * - `/s/<key>/…` — the session itself: the argus page and its assets, the
  *   `/vfs` byte route, and the WebSocket wire, proxied to the daemon on
  *   loopback. The attach token is put on the proxied `/vfs` query and the
@@ -74,6 +77,7 @@ import { DOOR_COOKIE, doorCookie_options } from './door.js';
 import { loginPage_render, greetPage_render, authorisedPage_render } from './greeter.js';
 import { DeviceCodes, TokenStore, token_looksLike, type DeviceGrant, type DoorToken, type TokenCheck } from './tokens.js';
 import { idleSweep_run } from './sweep.js';
+import { HitLimit, VerdictCache } from './limit.js';
 
 /** What the routes are built over. */
 export interface PorterAppOptions {
@@ -95,6 +99,8 @@ export interface PorterAppOptions {
   codes?: DeviceCodes;
   /** How the credentials of a `GET /berths` are checked against CUBE; CUBE's API root by default. */
   adminCheck?: (cubeUrl: string, authorization: string) => Promise<AdminVerdict>;
+  /** The clock, in ms, for the `/berths` rate limit and verdict cache; the system's by default (a test steps its own). */
+  now?: () => number;
   /** Whether a logout ends the person's session (a berth stops; its volumes stay); otherwise it lives on. */
   logoutEnds?: boolean;
 }
@@ -108,6 +114,11 @@ export interface PorterApp {
   /** Adopts the sessions the state directory holds that still answer; called once the door is bound. */
   adopt: () => Promise<void>;
 }
+
+/** How many times a client may ask `/berths` in a minute. */
+const BERTHS_PER_MINUTE: number = 10;
+/** How long CUBE's verdict on one set of credentials is kept, in ms. */
+const BERTHS_VERDICT_MS: number = 30_000;
 
 const loginSchema = z.object({
   username: z.string().min(1),
@@ -261,6 +272,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   const { config, host } = options;
   const installed: Record<string, string> = options.installed ?? installed_read();
   const mint = options.mint ?? cubeToken_mint;
+  // /berths asks CUBE, and a Basic header makes CUBE hash a password each time: a client is allowed a few asks a minute, and a verdict (never the credentials) is kept for a short while.
+  const berthsHits: HitLimit = new HitLimit(BERTHS_PER_MINUTE, 60_000, options.now);
+  const berthsVerdicts: VerdictCache<AdminVerdict> = new VerdictCache<AdminVerdict>(BERTHS_VERDICT_MS, options.now);
   const adminCheck = options.adminCheck ?? ((cubeUrl: string, authorization: string): Promise<AdminVerdict> => cubeAdmin_check(cubeUrl, authorization));
   const registry: SessionRegistry = new SessionRegistry();
   const creds: CredentialStore = new CredentialStore(config.stateDir);
@@ -320,15 +334,21 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
 
   // The operator's read of every berth. CUBE verifies the caller and says whether they administer it; the launcher, the only holder of the engine, reads the berths.
   app.get('/berths', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+    const wait: number = berthsHits.hit_take(request.ip);
+    if (wait > 0) return reply.code(429).header('Retry-After', String(wait)).send({ error: `too many asks for /berths; try again in ${wait} s` });
     const authorization: string = String(request.headers.authorization ?? '');
     if (!/^(Token|Basic)\s+\S+$/i.test(authorization)) return reply.code(401).send({ error: 'send a CUBE token (Authorization: Token <token>) or the admin\'s Basic credentials' });
-    const verdict: AdminVerdict = await adminCheck(config.cubeUrl, authorization);
+    let verdict: AdminVerdict | null = berthsVerdicts.verdict_get(authorization);
+    if (verdict === null) {
+      verdict = await adminCheck(config.cubeUrl, authorization);
+      if (verdict !== 'unreachable') berthsVerdicts.verdict_keep(authorization, verdict);
+    }
     if (verdict === 'refused') return reply.code(401).send({ error: 'CUBE does not accept those credentials' });
     if (verdict === 'unreachable') return reply.code(502).send({ error: 'CUBE did not answer' });
     if (verdict === 'not-admin') return reply.code(403).send({ error: 'berths are read by a CUBE administrator' });
     if (host.access_read === undefined) return { berths: null, why: 'this porter starts no berths' };
     try {
-      return { at: new Date().toISOString(), berths: await host.access_read() };
+      return { at: new Date().toISOString(), berths: await host.access_read(config.cubeUrl) };
     } catch (error: unknown) {
       return reply.code(502).send({ error: `the berth launcher did not answer: ${error instanceof Error ? error.message : String(error)}` });
     }

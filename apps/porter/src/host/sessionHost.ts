@@ -231,10 +231,11 @@ export interface SessionHost {
    * Every person's berth and what it uses, for the operator; a host that
    * starts no berths has none to read.
    *
+   * @param cubeUrl - This door's CUBE: only the berths and homes of its people are read, not leftovers of an earlier CUBE.
    * @returns One row a person who has a berth up or a home kept.
    * @throws {Error} When the berth launcher does not answer.
    */
-  access_read?(): Promise<BerthAccess[]>;
+  access_read?(cubeUrl: string): Promise<BerthAccess[]>;
 }
 
 /**

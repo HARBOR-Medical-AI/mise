@@ -292,6 +292,24 @@ describe('the VM controller', () => {
     }
   });
 
+  it('HOST ACCESS says berths are off when porter answered that it starts none: an answer, not a failed read', async () => {
+    const was = BERTHS;
+    try {
+      BERTHS = { berths: null, berthsWhy: null, berthsOff: true };
+      const { screen } = screen_make();
+      await screen.vm_open('store');
+      await settle(12);
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
+      await settle(12);
+      expect(accountRows(screen.root).map((row) => row[6])).toEqual(['—', '—', '—']);
+      expect(screen.root.querySelector('.vm-access-why')?.textContent).toBe('berths are off');
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      BERTHS = was;
+    }
+  });
+
   it('a user line reads done once CUBE holds its account, as its accounts were read from it: the receipt of ADD is CHRIS', async () => {
     ACCOUNTS = [...ACCOUNTS, { username: 'rudolph', email: 'rudolph@example.org' }];
     try {
