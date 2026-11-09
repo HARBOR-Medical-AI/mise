@@ -1,5 +1,22 @@
 # @fnndsc/porter
 
+## 0.11.0
+
+### Minor Changes
+
+- fe455c9: A CUBE administrator can read every person's berth from the door at `/berths`, over HTTPS with no SSH. It shows who has a berth running and what it uses, and who has only a home kept. porter hands the caller's token or Basic credentials to CUBE and answers an administrator alone (401 with none or refused ones, 403 for any other user). The berth launcher reads the berths through its local API, so porter never touches the container engine. A client may ask ten times a minute (429 with `Retry-After` past that), and CUBE's verdict on one header is kept for 30 s, so the route cannot be used to make porter hammer CUBE. A porter that starts no berths says so.
+
+### Patch Changes
+
+- 6223aeb: A ChRIS's settings show BERTHS, BERTH CPU and BERTH MEMORY, edited in place like PORTER. The CHRIS and SPEC bands say how many berths the machine holds. porter reads the berth capacity rule from menu. The CHRIS band adds the count at the line's limits once they differ from what runs. porter counts the host's memory in whole GiB.
+- Updated dependencies [6223aeb]
+- Updated dependencies [fe455c9]
+  - @fnndsc/stratus@0.18.0
+  - @fnndsc/menu@0.41.0
+  - @fnndsc/chell@5.20.6
+  - @fnndsc/calypso@0.29.7
+  - @fnndsc/cumin@3.30.3
+
 ## 0.10.0
 
 ### Minor Changes

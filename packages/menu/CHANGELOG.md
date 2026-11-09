@@ -1,5 +1,12 @@
 # @fnndsc/menu
 
+## 0.41.0
+
+### Minor Changes
+
+- 6223aeb: Each berth's CPU and memory limits are set at deploy, with `--berth-cpus` and `--berth-memory`. The berth launcher restarts when they change. The berth capacity rule (the host's memory less the profile's floor, divided by one berth's memory; a berth's CPUs are a cap on shared CPUs, not counted) moves to menu, shared by porter and ARGUS, and `chris status` carries a ChRIS's berths and their limits. A deploy refuses a berth memory the machine cannot hold above the profile's floor and `--berth-cpus` above its vCPUs, and restarts the launcher by the policy file on the machine rather than the record.
+- fe455c9: A ChRIS's status reads each person's berth through porter, with the admin's credentials, beside the accounts. A berth is running with its CPU and memory, or stopped with the home kept; when porter cannot say, the status says why (an older porter names its version). A porter that starts no berths has answered, and the status says berths are off rather than not read. The live read carries `berths`, `berthsWhy` and `berthsOff`, all optional in the menu schema, so an older daemon and a newer ARGUS work together either way.
+
 ## 0.40.0
 
 ### Minor Changes
