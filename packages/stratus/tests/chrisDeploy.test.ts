@@ -15,7 +15,7 @@ import { BufferSink, HeadlessSurface, JobRunner, runner_get, runner_install, sin
 import type { CloudDriver, CloudPrice, ResourceCounts, ServicePrices } from '../src/cloud/driver.js';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
-import { CHRIS_PROFILES, floor_short, PORTER_BERTHS_SINCE, PORTER_VERSION, porterBerths_carries, type ChrisProfile } from '../src/chris/profiles.js';
+import { CHRIS_PROFILES, floor_short, PORTER_VERSION, type ChrisProfile } from '../src/chris/profiles.js';
 import { BERTH_SOCKET, berths_has, caddyfile_render, compose_render, cubeEnv_render, launcherEnv_render, PORTER_CONTAINER, porterEnv_render, type ChrisSecrets, type ChrisTarget } from '../src/chris/compose.js';
 import { chrisDeployRun_make, curlQuote, type DeployDeps, type DeployRequest } from '../src/chris/deploy.js';
 import { launcherSecret_ensure, secrets_read } from '../src/chris/secrets.js';
@@ -112,19 +112,6 @@ describe('a ChRIS profile and what it renders', () => {
     expect(compose_render(minimal, plain_)).not.toContain('berth');
     expect(porterEnv_render(plain_, keyed)).not.toContain('BERTH');
     expect(berths_has(berthed)).toBe(true);
-  });
-
-  it('knows which porter releases carry the berth launcher', () => {
-    expect(PORTER_BERTHS_SINCE).toBe('0.10.0');
-    expect(porterBerths_carries('0.9.13')).toBe(false);
-    expect(porterBerths_carries('0.9.99')).toBe(false);
-    expect(porterBerths_carries('0.10.0')).toBe(true);
-    expect(porterBerths_carries('0.10.1')).toBe(true);
-    expect(porterBerths_carries('0.11')).toBe(true);
-    expect(porterBerths_carries('1.0.0')).toBe(true);
-    expect(porterBerths_carries('0.9')).toBe(false);
-    expect(porterBerths_carries()).toBe(porterBerths_carries(PORTER_VERSION));
-    expect(porterBerths_carries()).toBe(false);
   });
 
   it('tries a line again when ssh itself failed to carry it, never one the VM ran', async () => {
@@ -390,7 +377,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     resolved = ['203.0.113.10'];
     const asked: string[] = [];
     context = { ...context, status_get: async (url: string): Promise<number | null> => { asked.push(url); return 200; } };
-    const deployed = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org']);
+    const deployed = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org', '--berths', 'off']);
     expect(deployed.renderedErr ?? '').toBe('');
     expect(plain(deployed.rendered)).toContain('porter.example.org already resolves to 203.0.113.10');
     expect(plain(deployed.rendered)).toContain('store: ChRIS minimal at https://cube.example.org/api/v1/, compute store; porter at https://porter.example.org/');
@@ -401,8 +388,8 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const secrets: ChrisSecrets | null = secrets_read(vms, 'store');
     expect(secrets?.porterSecret?.length).toBeGreaterThanOrEqual(32);
     const compose = yaml.load(vm.files.get('/srv/data/chris/compose.yml') ?? '') as { services: Record<string, Record<string, unknown>>; volumes: Record<string, unknown> };
-    expect(compose.services['porter']?.['image']).toBe('stratus/porter:0.9.13');
-    expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@0.9.13');
+    expect(compose.services['porter']?.['image']).toBe('stratus/porter:0.10.0');
+    expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@0.10.0');
     expect(compose.services['porter']?.['volumes']).toEqual(['porter:/var/lib/porter']);
     expect(compose.services['caddy']?.['networks']).toEqual({ default: { aliases: ['cube.example.org'] } });
     expect(Object.keys(compose.volumes)).toContain('porter');
@@ -411,23 +398,23 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(vm.lines.some((line: string): boolean => line.includes(secrets?.porterSecret ?? '?'))).toBe(false);
     expect(vms.record_read('store')?.chris).toMatchObject({ porter: 'porter.example.org', dns: 'seen' });
     expect(plain((await chris_run(context, ['status'])).rendered)).toContain('porter https://porter.example.org/');
-    await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org']);
+    await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org', '--berths', 'off']);
     expect(secrets_read(vms, 'store')).toEqual(secrets);
     // The deploy keeps what it put up; a replay as deployed restarts nothing and asks nothing.
-    expect(vms.record_read('store')?.chris).toMatchObject({ image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.9.13' });
-    const line: string[] = ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org'];
+    expect(vms.record_read('store')?.chris).toMatchObject({ image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.10.0' });
+    const line: string[] = ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org', '--berths', 'off'];
     const planned = await chris_run(context, [...line, '--plan']);
     expect(plain(planned.rendered)).toBe('chris deploy store: as deployed; nothing restarts\n');
     expect(planned.model).toMatchObject({ kind: 'stratus.chris.plan', data: { vm: 'store', changes: [], restarts: [], asks: false } });
     // A porter older than this stratus's: the replay plans porter's restart, reads the sessions it ends from porter, and asks first; no, and nothing changes.
     vms.record_update('store', (record): void => { if (record.chris !== undefined) record.chris.porterVersion = '0.9.10'; });
     const live: ChrisCommandContext = { ...context, http_get: async (url: string) => (url === 'https://porter.example.org/healthz' ? { status: 200, body: { ok: true, sessions: 2, version: '0.9.10' } } : null) };
-    expect(plain((await chris_run(live, [...line, '--plan'])).rendered)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.9.13): its open sessions end; 2 porter sessions open now end\n');
+    expect(plain((await chris_run(live, [...line, '--plan'])).rendered)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.10.0): its open sessions end; 2 porter sessions open now end\n');
     surface.asked = [];
     surface.answers = ['n'];
     const before: number = vm.lines.length;
     expect(plain((await chris_run(live, line)).rendered)).toContain('stopped before the deploy; nothing changed');
-    expect(surface.asked.at(-1)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.9.13): its open sessions end; 2 porter sessions open now end. A NO changes nothing. Continue? [y/N]');
+    expect(surface.asked.at(-1)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.10.0): its open sessions end; 2 porter sessions open now end. A NO changes nothing. Continue? [y/N]');
     expect(vm.lines.length).toBe(before);
     // status reads what runs from it, over HTTPS, under the deploy's record.
     const reading: ChrisCommandContext = { ...context, http_get: async (url: string, auth) => (url === 'https://porter.example.org/healthz' ? { status: 200, body: { sessions: 2, version: '0.9.11' } }
@@ -534,18 +521,19 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
       expect(launcherSecret_ensure(vms, 'store', first)).toBe(first);
     });
 
-    it('refuses --berths on while the porter this stratus puts up has no launcher, anything but on or off, and berths without a porter; off and nothing are accepted', async () => {
+    it('a porter brings berths unless --berths off; refuses anything but on or off, and berths without a porter', async () => {
       const line: string[] = ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org'];
-      expect(porterBerths_carries()).toBe(false);
-      expect((await chris_run(context, [...line, '--berths', 'on'])).renderedErr).toContain(`chris deploy: --berths on: porter ${PORTER_VERSION}, which this stratus puts up, has no berth launcher (${PORTER_BERTHS_SINCE} or later)`);
+      for (const word of ['on', undefined]) {
+        const planned = await chris_run(context, [...line, ...(word !== undefined ? ['--berths', word] : []), '--plan']);
+        expect(planned.renderedErr ?? '').toBe('');
+        expect(plain(planned.rendered)).toContain('a berth for each person behind porter');
+      }
       expect((await chris_run(context, [...line, '--berths', 'maybe'])).renderedErr).toContain('chris deploy: --berths maybe: on or off');
       expect((await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--berths', 'on'])).renderedErr).toContain('chris deploy: --berths on needs --porter');
       expect((await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--berths', 'on'])).renderedErr).toContain('chris deploy: --berths on needs --porter');
-      for (const word of ['off', undefined]) {
-        const planned = await chris_run(context, [...line, ...(word !== undefined ? ['--berths', word] : []), '--plan']);
-        expect(planned.renderedErr ?? '').toBe('');
-        expect(plain(planned.rendered)).not.toContain('berth');
-      }
+      const off = await chris_run(context, [...line, '--berths', 'off', '--plan']);
+      expect(off.renderedErr ?? '').toBe('');
+      expect(plain(off.rendered)).not.toContain('berth');
       expect(vm.lines).toEqual([]);
     });
   });
