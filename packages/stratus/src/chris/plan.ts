@@ -10,8 +10,8 @@
  *
  * @module
  */
-import type { VmRecord } from '../vm/state.js';
-import { CHRIS_IMAGES, PORTER_VERSION } from './profiles.js';
+import type { BerthLimits, VmRecord } from '../vm/state.js';
+import { BERTH_LIMITS_DEFAULT, CHRIS_IMAGES, PORTER_VERSION } from './profiles.js';
 
 /** What a deploy is asked to put up. */
 export interface ChrisPlanAsk {
@@ -21,6 +21,8 @@ export interface ChrisPlanAsk {
   readonly porter: string | null;
   /** Whether porter starts each person's session in a berth of its own. */
   readonly berths: boolean;
+  /** What one berth may use; the launcher's defaults when absent. */
+  readonly berthLimits?: BerthLimits;
 }
 
 /** What a deploy would do, worked out without acting. */
@@ -34,6 +36,32 @@ export interface ChrisPlan {
 }
 
 /**
+ * A berth's limits in words.
+ *
+ * @param limits - The limits.
+ * @returns `1 vCPU · 2 GiB`; whole numbers print without decimals.
+ *
+ * @example
+ * ```ts
+ * berthLimits_words({ cpus: 1.5, memoryGib: 4 }); // '1.5 vCPU · 4 GiB'
+ * ```
+ */
+export function berthLimits_words(limits: BerthLimits): string {
+  return `${limits.cpus} vCPU · ${limits.memoryGib} GiB`;
+}
+
+/**
+ * Whether two berth limits are the same.
+ *
+ * @param one - The first.
+ * @param other - The second.
+ * @returns True when both CPUs and memory match.
+ */
+export function berthLimits_equal(one: BerthLimits, other: BerthLimits): boolean {
+  return one.cpus === other.cpus && one.memoryGib === other.memoryGib;
+}
+
+/**
  * What a deploy would do over what was deployed.
  *
  * @param deployed - The deploy's record, or undefined for a first deploy.
@@ -42,12 +70,13 @@ export interface ChrisPlan {
  * @returns The changes, the restarts, the sessions a porter restart ends, and whether it asks.
  */
 export function chrisPlan_derive(deployed: VmRecord['chris'], ask: ChrisPlanAsk, sessions: number | null): ChrisPlan {
+  const askedLimits: BerthLimits = ask.berthLimits ?? BERTH_LIMITS_DEFAULT;
   // A first deploy builds on the machine: it asks, with what it puts up (a-change-is-a-loop, clause 4).
   if (deployed === undefined) {
     const changes: string[] = [`a first deploy: CUBE (${ask.profile}) with its workers, Postgres, dragonfly, nats and pfcon are put up`, `compute ${ask.compute}`];
     if (ask.host !== null) changes.push(`CUBE at https://${ask.host}/`);
     if (ask.porter !== null) changes.push(`porter at https://${ask.porter}/`);
-    if (ask.berths) changes.push('a berth for each person behind porter (the berth launcher, the berth image pulled)');
+    if (ask.berths) changes.push(`a berth for each person behind porter, ${berthLimits_words(askedLimits)} each (the berth launcher, the berth image pulled)`);
     return { changes, restarts: [], sessions: null, asks: true, first: true };
   }
   const changes: string[] = [];
@@ -60,6 +89,10 @@ export function chrisPlan_derive(deployed: VmRecord['chris'], ask: ChrisPlanAsk,
   want('porter', deployed.porter, ask.porter);
   const berthsWas: boolean = deployed.berths === 'launcher';
   if (berthsWas !== ask.berths) changes.push(`berths ${berthsWas ? 'on' : 'off'} → ${ask.berths ? 'on' : 'off'}`);
+  // A record from before limits ran its launcher on the defaults, which an empty policy gave.
+  const limitsWas: BerthLimits = deployed.berthLimits ?? BERTH_LIMITS_DEFAULT;
+  const limitsChange: boolean = berthsWas && ask.berths && !berthLimits_equal(limitsWas, askedLimits);
+  if (limitsChange) changes.push(`berth limits ${berthLimits_words(limitsWas)} → ${berthLimits_words(askedLimits)}`);
   const restarts: string[] = [];
   const known: boolean = deployed.image !== undefined;
   if (!known) restarts.push(`CUBE${ask.porter !== null ? ' and porter' : ''}: their files are written again and Docker restarts what changed in them (this deploy's record keeps no versions to compare)`);
@@ -70,6 +103,7 @@ export function chrisPlan_derive(deployed: VmRecord['chris'], ask: ChrisPlanAsk,
     else if (deployed.porterVersion !== PORTER_VERSION) restarts.push(`porter (${deployed.porterVersion ?? '?'} → ${PORTER_VERSION}): its open sessions end`);
     else if (berthsWas !== ask.berths) restarts.push(`porter (berths ${ask.berths ? 'on' : 'off'}): its open sessions end${ask.berths ? '' : ', and the running berths stop (their homes are kept)'}`);
   }
+  if (limitsChange) restarts.push('the berth launcher: running berths keep their limits and sessions until their next start, which needs a fresh login');
   return { changes, restarts, sessions, asks: changes.length > 0 || restarts.length > 0, first: false };
 }
 

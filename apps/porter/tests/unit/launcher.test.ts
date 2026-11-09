@@ -10,10 +10,11 @@ import { join } from 'node:path';
 import type { Server } from 'node:http';
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { berthKey_compute, identity_normalise } from '@fnndsc/calypso/berth';
+import { berthCapacity_derive, profileFloor_get } from '@fnndsc/menu';
 import type { DockerAnswer, DockerApi, ExecAnswer } from '../../src/launcher/docker.js';
 import { dockerStream_demux } from '../../src/launcher/docker.js';
 import { BERTH_LABEL, BerthLauncher, berthContainer_spec, berthNames_derive, cohort_word } from '../../src/launcher/launcher.js';
-import { BERTH_LIMITS_DEFAULT, berthCapacity_derive, berthPolicy_read, capacityRefusal_words, profileFloor_get, type BerthPolicy } from '../../src/launcher/policy.js';
+import { BERTH_LIMITS_DEFAULT, berthPolicy_read, capacityRefusal_words, type BerthPolicy } from '../../src/launcher/policy.js';
 import { launcherServer_create, secret_matches } from '../../src/launcher/server.js';
 import { launcherSecret_read } from '../../src/launcher/secret.js';
 import { LauncherHost, identity_split, launcher_call } from '../../src/host/launcherHost.js';
@@ -34,13 +35,15 @@ class FakeDocker implements DockerApi {
   gateway: string | null = '172.18.0.1';
   /** What the one-shot container that gives the volumes away exits with. */
   ownExit: number = 0;
+  /** The CPUs and bytes of memory the engine reports for the host. */
+  host: { cpus: number; memory: number } = { cpus: 24, memory: 64 * 1024 ** 3 };
   private serial: number = 2;
 
   async call(method: string, path: string, body?: unknown): Promise<DockerAnswer> {
     const [route = '', query = ''] = path.split('?');
     const parts: string[] = route.split('/');
     const name: string = decodeURIComponent(parts[2] ?? '');
-    if (method === 'GET' && route === '/info') return { status: 200, body: { NCPU: 24, MemTotal: 64 * 1024 ** 3 } };
+    if (method === 'GET' && route === '/info') return { status: 200, body: { NCPU: this.host.cpus, MemTotal: this.host.memory } };
     if (route === '/networks/create') { const spec = body as { Name: string; Options?: Record<string, string> }; this.networks.set(spec.Name, { options: spec.Options ?? {}, members: new Set() }); return { status: 201, body: {} }; }
     if (method === 'GET' && route === '/networks') return { status: 200, body: [...this.networks.keys()].map((one) => ({ Name: one })) };
     if (route.endsWith('/connect') && parts[1] === 'networks') { this.networks.get(name)?.members.add((body as { Container: string }).Container); return { status: 200, body: null }; }
@@ -102,20 +105,23 @@ function launcher_make(docker: FakeDocker, policy: BerthPolicy = POLICY, porterC
 }
 
 describe('the berth policy', () => {
-  it('holds what is left of the host above the profile\'s floor, the scarcer of CPU and memory deciding', () => {
+  it('holds the memory left of the host above the profile\'s floor, divided by one berth\'s memory; CPUs do not count', () => {
     const floor = profileFloor_get('minimal');
     expect(floor).toEqual({ vcpu: 2, memory: 4, data: 50 });
-    expect(berthCapacity_derive({ cpus: 24, memoryGib: 62.7 }, floor, POLICY)).toBe(22);
-    expect(berthCapacity_derive({ cpus: 4, memoryGib: 16 }, floor, { limits: { cpus: 1, memoryGib: 4, pids: 512 }, holds: null })).toBe(2);
+    expect(berthCapacity_derive({ cpus: 24, memoryGib: 62.7 }, floor, POLICY)).toBe(29);
+    expect(berthCapacity_derive({ cpus: 4, memoryGib: 16 }, floor, { limits: { cpus: 1, memoryGib: 4, pids: 512 }, holds: null })).toBe(3);
     expect(berthCapacity_derive({ cpus: 2, memoryGib: 4 }, floor, POLICY)).toBe(0);
+    expect(berthCapacity_derive({ cpus: 2, memoryGib: 8 }, floor, POLICY)).toBe(2);
     expect(berthCapacity_derive({ cpus: 24, memoryGib: 62.7 }, floor, { limits: BERTH_LIMITS_DEFAULT, holds: 1 })).toBe(1);
     expect(berthCapacity_derive({ cpus: 4, memoryGib: 8 }, floor, { limits: BERTH_LIMITS_DEFAULT, holds: 10 })).toBe(2);
   });
 
   it('refuses a full spoke naming who holds it', () => {
-    expect(capacityRefusal_words(2, ['rudolph', 'ana'])).toBe('this ChRIS holds 2 berths, in use by ana, rudolph');
-    expect(capacityRefusal_words(1, ['ana'])).toBe('this ChRIS holds 1 berth, in use by ana');
-    expect(capacityRefusal_words(0, [])).toBe('this ChRIS holds no berth: its host has nothing above the profile\'s floor');
+    const room = { hostGib: 8, floorGib: 4, berthGib: 2 };
+    expect(capacityRefusal_words(2, ['rudolph', 'ana'], room)).toBe('this ChRIS holds 2 berths, in use by ana, rudolph');
+    expect(capacityRefusal_words(1, ['ana'], room)).toBe('this ChRIS holds 1 berth, in use by ana');
+    expect(capacityRefusal_words(0, [], { ...room, berthGib: 6 })).toBe('this ChRIS holds no berth: 6 GiB each does not fit above the profile\'s floor (8 GiB, the floor takes 4 GiB)');
+    expect(capacityRefusal_words(0, [], room)).toBe('this ChRIS holds no berth: its policy holds none');
   });
 
   it('reads a policy file, refusing one that is not', () => {
@@ -172,6 +178,18 @@ describe('the names and the container a berth is', () => {
 describe('the launcher over an engine', () => {
   let docker: FakeDocker;
   beforeEach(() => { docker = new FakeDocker(); });
+
+  it('counts a host at its nominal GiB: the engine\'s 7.7 of an 8 GiB machine holds the berths 8 does', async () => {
+    docker.host = { cpus: 4, memory: Math.floor(7.7 * 1024 ** 3) };
+    expect(await launcher_make(docker).capacity_get()).toBe(2);
+    docker.host = { cpus: 4, memory: 8 * 1024 ** 3 };
+    expect(await launcher_make(docker).capacity_get()).toBe(2);
+    // CPUs do not count: a berth's are a cap on shared CPUs.
+    docker.host = { cpus: 2, memory: 8 * 1024 ** 3 };
+    expect(await launcher_make(docker).capacity_get()).toBe(2);
+    docker.host = { cpus: 3, memory: Math.floor(15.6 * 1024 ** 3) };
+    expect(await launcher_make(docker).capacity_get()).toBe(6);
+  });
 
   it('with a cubeHost, reads cube-net\'s gateway from the engine and puts CUBE\'s name at it inside the berth; without one, adds no host', async () => {
     docker.gateway = '172.31.0.1';

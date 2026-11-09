@@ -8,7 +8,7 @@
  *
  * @module
  */
-import type { ChrisProfileFloor, ChrisProfileOffer, VmStatusRow } from '@fnndsc/menu';
+import { BERTH_LIMITS_DEFAULT, berthCapacity_derive, profileFloor_get, type BerthLimits, type ChrisProfileFloor, type HostSize, type ChrisProfileOffer, type VmStatusRow } from '@fnndsc/menu';
 import { line_parse, type LineParts, type ScriptLine, type StepKind } from '../script/model.js';
 
 /** The seat a VM's line sits on: the controller's words for the script's verbs. */
@@ -512,27 +512,142 @@ const SETTING_HOST: RegExp = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\
 /** A compute resource's name, as the deploy registers it. */
 const SETTING_COMPUTE: RegExp = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
 
+/** What the deploy that runs was given, for the settings' RUNS column; berths and their limits are null when not read (an older daemon). */
+export interface SettingRuns {
+  readonly compute: string;
+  readonly host: string | null;
+  readonly porter: string | null;
+  /** Whether berths run behind porter. */
+  readonly berths: boolean | null;
+  /** What one berth may use as the deploy wrote it; null on a record from before limits, whose launcher ran the defaults. */
+  readonly berthLimits: BerthLimits | null;
+}
+
+/** A berth's CPUs on the line: a positive number, at most two decimals. */
+const SETTING_BERTH_CPUS: RegExp = /^\d+(\.\d{1,2})?$/;
+
+/** A berth's memory in GiB on the line: a positive number, at most one decimal. */
+const SETTING_BERTH_MEMORY: RegExp = /^\d+(\.\d)?$/;
+
+/** A number as the engine reads it, so `2.0` and `2` are one value; the word itself when it is no number. */
+function number_word(word: string): string {
+  const value: number = Number(word);
+  return word !== '' && Number.isFinite(value) ? String(value) : word;
+}
+
 /**
- * The deploy's settings, a row each: COMPUTE, HOST, PORTER, each with what
- * the line sets and what runs (none read: a dash).
+ * Whether the line puts berths behind porter, as the engine reads it: a
+ * porter and not `--berths off`.
+ *
+ * @param text - The `chris deploy` line.
+ * @returns True when berths are on.
+ */
+export function lineBerths_read(text: string): boolean {
+  const options: ReadonlyArray<readonly [string, string]> = line_parse(text).options;
+  const get = (word: string): string => options.find(([each]): boolean => each === word)?.[1] ?? '';
+  return get('--porter') !== '' && get('--berths') !== 'off';
+}
+
+/**
+ * What one berth may use on the line.
+ *
+ * @param text - The `chris deploy` line.
+ * @returns The limits (the defaults for an option the line lacks), or null when the line names one the engine would refuse.
+ */
+export function lineBerthLimits_read(text: string): BerthLimits | null {
+  const options: ReadonlyArray<readonly [string, string]> = line_parse(text).options;
+  const get = (word: string): string => options.find(([each]): boolean => each === word)?.[1] ?? '';
+  const cpus: string = get('--berth-cpus');
+  const memory: string = get('--berth-memory');
+  if ((cpus !== '' && !(SETTING_BERTH_CPUS.test(cpus) && Number(cpus) > 0)) || (memory !== '' && !(SETTING_BERTH_MEMORY.test(memory) && Number(memory) > 0))) return null;
+  return { cpus: cpus === '' ? BERTH_LIMITS_DEFAULT.cpus : Number(cpus), memoryGib: memory === '' ? BERTH_LIMITS_DEFAULT.memoryGib : Number(memory) };
+}
+
+/**
+ * The deploy's settings, a row each: COMPUTE, HOST, PORTER, BERTHS, BERTH
+ * CPU and BERTH MEMORY, each with what the line sets and what runs (none
+ * read: a dash). Berth limits are set only where berths are on; elsewhere
+ * the line sets none, and the row says so.
  *
  * @param text - The `chris deploy` line.
  * @param vm - The machine (COMPUTE's default).
  * @param runs - What the deploy that runs was given, or null when none runs.
  * @returns The rows.
  */
-export function settingRows_derive(text: string, vm: string, runs: { compute: string; host: string | null; porter: string | null } | null): SettingRow[] {
+export function settingRows_derive(text: string, vm: string, runs: SettingRuns | null): SettingRow[] {
   const get = (word: string): string => line_parse(text).options.find(([each]): boolean => each === word)?.[1] ?? '';
-  const row = (word: string, field: string, value: string, shown: string, ran: string | null, placeholder: string): SettingRow =>
-    ({ word, field, value, placeholder, setTo: shown, runs: ran ?? '—', edited: ran !== null && shown !== ran });
+  const row = (word: string, field: string, value: string, shown: string, ran: string | null, placeholder: string, changes: boolean = true): SettingRow =>
+    ({ word, field, value, placeholder, setTo: shown, runs: ran ?? '—', edited: changes && ran !== null && shown !== ran });
   const compute: string = get('--compute');
   const host: string = get('--host');
   const porter: string = get('--porter');
+  const berths: string = get('--berths');
+  const cpus: string = get('--berth-cpus');
+  const memory: string = get('--berth-memory');
+  const on: boolean = lineBerths_read(text);
+  const ranBerths: boolean | null = runs === null ? null : runs.berths;
+  const ranLimits: BerthLimits | null = ranBerths === true ? (runs?.berthLimits ?? BERTH_LIMITS_DEFAULT) : null;
   return [
     row('--compute', 'COMPUTE', compute, compute || vm, runs === null ? null : runs.compute, `the pfcon resource's name (empty: ${vm})`),
     row('--host', 'HOST', host, host || 'by address', runs === null ? null : runs.host ?? 'by address', 'cube.example.org (empty: by address)'),
     row('--porter', 'PORTER', porter, porter || 'none', runs === null ? null : runs.porter ?? 'none', 'porter.example.org (empty: none)'),
+    row('--berths', 'BERTHS', berths, berths || (porter !== '' ? 'on' : 'off'), ranBerths === null ? null : ranBerths ? 'on' : 'off', 'on or off (empty: on with a porter)'),
+    row('--berth-cpus', 'BERTH CPU', cpus, on ? number_word(cpus) || String(BERTH_LIMITS_DEFAULT.cpus) : '—', ranLimits === null ? null : String(ranLimits.cpus), `CPUs one berth may use (empty: ${BERTH_LIMITS_DEFAULT.cpus})`, on),
+    row('--berth-memory', 'BERTH MEMORY', memory, on ? `${number_word(memory) || String(BERTH_LIMITS_DEFAULT.memoryGib)} GiB` : '—', ranLimits === null ? null : `${ranLimits.memoryGib} GiB`, `GiB one berth may use (empty: ${BERTH_LIMITS_DEFAULT.memoryGib})`, on),
   ];
+}
+
+/**
+ * How many berths a machine holds, as the band says it.
+ *
+ * Berths and their limits are what run when a deploy stands, else the line's.
+ * Nothing is said when berths are off or the machine's size is unknown.
+ *
+ * @param host - The machine's vCPUs and GiB of memory, or null when its shape is not known.
+ * @param text - The `chris deploy` line, or null when the script has none.
+ * @param runs - What the deploy that runs was given, or null when none runs.
+ * @param profile - The ChRIS profile, whose floor CUBE takes before any berth.
+ * @param change - Whether to add the count at the line's limits when they differ from what runs.
+ * @returns `holds 3 berths`, with `· 2 after the change` when asked and the line's limits differ; or null.
+ *
+ * @example
+ * ```ts
+ * berthsHold_words({ vcpu: 4, memory: 8 }, 'chris deploy store --profile minimal --porter p.example.org', null, 'minimal'); // 'holds 2 berths'
+ * berthsHold_words({ vcpu: 4, memory: 8 }, 'chris deploy store --profile minimal --porter p.example.org --berth-cpus 2', { compute: 'store', host: 'h.example.org', porter: 'p.example.org', berths: true, berthLimits: null }, 'minimal', true); // 'holds 2 berths · 1 after the change'
+ * ```
+ */
+export function berthsHold_words(host: { readonly vcpu: number | null; readonly memory: number | null } | null, text: string | null, runs: SettingRuns | null, profile: string, change: boolean = false): string | null {
+  if (host === null || host.vcpu === null || host.memory === null) return null;
+  let limits: BerthLimits | null;
+  if (runs !== null && runs.berths !== null) limits = runs.berths ? (runs.berthLimits ?? BERTH_LIMITS_DEFAULT) : null;
+  else limits = text !== null && lineBerths_read(text) ? lineBerthLimits_read(text) : null;
+  if (limits === null) return null;
+  const size: HostSize = { cpus: host.vcpu, memoryGib: host.memory };
+  const held: number = berthCapacity_derive(size, profileFloor_get(profile), { limits, holds: null });
+  const words: string = `holds ${held} berth${held === 1 ? '' : 's'}`;
+  if (!change || runs === null || runs.berths !== true || text === null || !lineBerths_read(text)) return words;
+  const asked: BerthLimits | null = lineBerthLimits_read(text);
+  if (asked === null || (asked.cpus === limits.cpus && asked.memoryGib === limits.memoryGib)) return words;
+  return `${words} · ${berthCapacity_derive(size, profileFloor_get(profile), { limits: asked, holds: null })} after the change`;
+}
+
+/**
+ * Why berths of the limits named cannot be held, as `chris deploy` refuses them: a berth's CPUs above the machine's, or no berth's memory left above the profile's floor.
+ *
+ * @param shape - The machine's vCPUs and GiB of memory, or null when its shape is not known.
+ * @param cpus - A berth's CPUs as the line has them (empty: the default).
+ * @param memory - A berth's GiB as the line has them (empty: the default).
+ * @param profile - The profile as the line names it (empty: the minimal profile).
+ * @returns Why not, or null when one fits or the shape is not known.
+ */
+function limitsFit_why(shape: { readonly vcpu: number | null; readonly memory: number | null } | null, cpus: string, memory: string, profile: string): string | null {
+  if (shape === null || shape.vcpu === null || shape.memory === null) return null;
+  const limits: BerthLimits = { cpus: cpus === '' ? BERTH_LIMITS_DEFAULT.cpus : Number(cpus), memoryGib: memory === '' ? BERTH_LIMITS_DEFAULT.memoryGib : Number(memory) };
+  if (!(limits.cpus > 0) || !(limits.memoryGib > 0)) return null;
+  if (limits.cpus > shape.vcpu) return `--berth-cpus ${limits.cpus}: this machine has ${shape.vcpu} vCPU`;
+  const floor: ChrisProfileFloor = profileFloor_get(profile === '' ? 'minimal' : profile);
+  if (berthCapacity_derive({ cpus: shape.vcpu, memoryGib: shape.memory }, floor, { limits, holds: null }) > 0) return null;
+  return `berths of ${limits.memoryGib} GiB do not fit this machine above the ${profile === '' ? 'minimal' : profile} profile's floor (${shape.memory} GiB; the floor takes ${floor.memory} GiB)`;
 }
 
 /**
@@ -541,14 +656,33 @@ export function settingRows_derive(text: string, vm: string, runs: { compute: st
  * @param word - The option.
  * @param value - The value typed (empty: the option taken away).
  * @param text - The line, for what the other settings hold.
+ * @param shape - The machine's vCPUs and GiB of memory, or null when its shape is not known.
  * @returns Why not, or null.
  */
-export function settingValue_why(word: string, value: string, text: string): string | null {
-  if (value === '') return word === '--host' && (line_parse(text).options.find(([each]): boolean => each === '--porter')?.[1] ?? '') !== '' ? 'porter needs a host: clear PORTER first' : null;
+export function settingValue_why(word: string, value: string, text: string, shape: { readonly vcpu: number | null; readonly memory: number | null } | null = null): string | null {
+  const options: ReadonlyArray<readonly [string, string]> = line_parse(text).options;
+  const get = (each: string): string => options.find(([one]): boolean => one === each)?.[1] ?? '';
+  if (value === '') {
+    if (word === '--host' && get('--porter') !== '') return 'porter needs a host: clear PORTER first';
+    if (word === '--porter' && (get('--berths') === 'on' || get('--berth-cpus') !== '' || get('--berth-memory') !== '')) return 'berths need a porter: clear BERTHS, BERTH CPU and BERTH MEMORY first';
+    return null;
+  }
   if (word === '--compute') return SETTING_COMPUTE.test(value) ? null : 'a name of letters, digits, . _ -';
+  if (word === '--berths') {
+    if (value !== 'on' && value !== 'off') return 'on or off';
+    if (value === 'off' && (get('--berth-cpus') !== '' || get('--berth-memory') !== '')) return 'clear BERTH CPU and BERTH MEMORY first';
+    return value === 'on' && get('--porter') === '' ? 'berths need a PORTER first' : null;
+  }
+  if (word === '--berth-cpus' || word === '--berth-memory') {
+    const cpus: boolean = word === '--berth-cpus';
+    if (!(cpus ? SETTING_BERTH_CPUS : SETTING_BERTH_MEMORY).test(value) || !(Number(value) > 0)) return cpus ? 'a positive number of CPUs, at most two decimals' : 'a positive number of GiB, at most one decimal';
+    if (get('--porter') === '') return 'berths need a PORTER first';
+    if (get('--berths') === 'off') return 'berths are off: set BERTHS on, or leave this empty';
+    return limitsFit_why(shape, cpus ? value : get('--berth-cpus'), cpus ? get('--berth-memory') : value, get('--profile'));
+  }
   if (!SETTING_HOST.test(value)) return 'a host name, as cube.example.org';
   if (word === '--porter') {
-    const host: string = line_parse(text).options.find(([each]): boolean => each === '--host')?.[1] ?? '';
+    const host: string = get('--host');
     if (host === '') return 'porter needs a HOST first';
     if (host === value) return 'porter needs a name of its own, not CUBE\'s';
   }

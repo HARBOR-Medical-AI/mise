@@ -27,7 +27,7 @@ import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
 import { buildWould_derive, costLine_derive, line_parse, line_render, lineOption_get, lineOption_set, lines_build, ports_word, rate_words, runningStep_find, script_render, stepBuildLine_get, steps_build, vmLevers_read, vmSliders_build, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type VmRuns } from '../script/model.js';
 import { ScriptScreen, type OpenAsk, type QuietAnswer, type ScriptHooks } from '../script/screen.js';
-import { FACTS_KEY, MACHINES_KEY, NEW_KEY, SERVICES_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmServiceKind_derive, vmServices_change, vmServices_read, serviceDraft_why, leverFloor_derive, profileRows_derive, settingRows_derive, settingValue_why, type SettingRow, accountChanges_derive, groupsMove_words, ALL_USERS_GROUP, CHRIS_ADMIN_NAME, passwordPair_why, type AccountChange, type AccountDraft, type AccountEdit, type AccountRow, type HeldAccount, type ProfileRow, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
+import { FACTS_KEY, MACHINES_KEY, NEW_KEY, SERVICES_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmServiceKind_derive, vmServices_change, vmServices_read, serviceDraft_why, leverFloor_derive, profileRows_derive, berthsHold_words, settingRows_derive, type SettingRuns, settingValue_why, type SettingRow, accountChanges_derive, groupsMove_words, ALL_USERS_GROUP, CHRIS_ADMIN_NAME, passwordPair_why, type AccountChange, type AccountDraft, type AccountEdit, type AccountRow, type HeldAccount, type ProfileRow, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
 import { BUILD_PHASES, buildQuestion_plain, chrisQuestion_plain, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_take, type BuildQuestion, type BuildRun } from './run.js';
 import { Listing } from '../roster/listing.js';
 import type { ListingTrait } from '../roster/row.js';
@@ -1082,7 +1082,7 @@ export class VmScreen extends ScriptScreen {
    * @param runs - What the deploy that runs was given, or null when none runs.
    * @returns The listing's mount.
    */
-  private settingListing_make(line: ScriptLine, runs: { compute: string; host: string | null; porter: string | null } | null): HTMLElement {
+  private settingListing_make(line: ScriptLine, runs: SettingRuns | null): HTMLElement {
     this.settingLine = line;
     if (this.settingListingMount === null) {
       this.settingListingMount = el('section', 'vm-listing vm-setting-listing');
@@ -1116,7 +1116,51 @@ export class VmScreen extends ScriptScreen {
   }
 
   /** What runs, for the settings' rows. */
-  private settingRunsFor: { compute: string; host: string | null; porter: string | null } | null = null;
+  private settingRunsFor: SettingRuns | null = null;
+
+  /**
+   * What the deploy that runs was given, for the settings' RUNS column and the berth count.
+   *
+   * @param chris - The ChRIS `chris status` read, or null when none is deployed.
+   * @returns What runs, or null when none does.
+   */
+  private settingRuns_get(chris: ChrisStatusRow | null): SettingRuns | null {
+    if (chris === null) return null;
+    return { compute: chris.compute, host: chris.host ?? null, porter: chris.porter ?? null, berths: chris.berths ?? null, berthLimits: chris.berthLimits ?? null };
+  }
+
+  /**
+   * The machine's shape: the one it stands in (CHRIS) or the one the SPEC line declares (SPEC) first, the other when that is not known.
+   *
+   * @param declaredFirst - Whether the `vm new` line's shape outranks what the tenancy runs, else the other way.
+   * @param newText - The `vm new` line to read the declared shape from; the script's own when absent.
+   * @returns Its vCPUs and GiB of memory, or null when neither is known.
+   */
+  private shape_get(declaredFirst: boolean, newText?: string): { vcpu: number | null; memory: number | null } | null {
+    const stands: { vcpu: number | null; memory: number | null } | null = this.runs_get(this.vm);
+    const sourceText: string | undefined = newText ?? this.steps.find((each: ScriptStep): boolean => each.kind === 'vm new')?.lines[0]?.text;
+    const number_read = (word: string): number | null => { const value: number = Number(sourceText === undefined ? NaN : lineOption_get(sourceText, word) ?? NaN); return Number.isFinite(value) ? value : null; };
+    const declared: { vcpu: number | null; memory: number | null } = { vcpu: number_read('--vcpu'), memory: number_read('--memory') };
+    const known = (shape: { vcpu: number | null; memory: number | null } | null): boolean => shape !== null && shape.vcpu !== null && shape.memory !== null;
+    const order = declaredFirst ? [declared, stands] : [stands, declared];
+    return order.find(known) ?? null;
+  }
+
+  /**
+   * How many berths the machine holds, as the bands say it: of its shape, the
+   * profile's floor and the limits that run, else the line's; the CHRIS band
+   * adds the count at the line's limits when they differ from what runs.
+   *
+   * @param deployText - The `chris deploy` line, or null when the script has none.
+   * @param runs - What the deploy that runs was given.
+   * @param profile - The profile.
+   * @param declaredFirst - Whether the `vm new` line's shape outranks what the tenancy runs (SPEC), else the other way.
+   * @param newText - The `vm new` line to read the declared shape from; the machine's own when absent.
+   * @returns `holds N berths`, or null when berths are off or the shape is unknown.
+   */
+  private berthsHold_get(deployText: string | null, runs: SettingRuns | null, profile: string, declaredFirst: boolean, newText?: string): string | null {
+    return berthsHold_words(this.shape_get(declaredFirst, newText), deployText, runs, profile, !declaredFirst);
+  }
 
   /** The settings into their listing, the index track folded. */
   private settingRows_set(): void {
@@ -1145,7 +1189,7 @@ export class VmScreen extends ScriptScreen {
     input.setAttribute('aria-label', row.field);
     const hint: HTMLElement = el('span', 'vm-lever-hint', '');
     const line = (): ScriptLine | undefined => this.settingLine;
-    const why = (): string | null => settingValue_why(row.word, input.value.trim(), line()?.text ?? '');
+    const why = (): string | null => settingValue_why(row.word, input.value.trim(), line()?.text ?? '', this.shape_get(false));
     const mark = (): void => { const wrong: string | null = why(); input.classList.toggle('vm-lever-wrong', wrong !== null); hint.textContent = wrong ?? ''; };
     let done: boolean = false;
     const close = (): void => {
@@ -1180,7 +1224,8 @@ export class VmScreen extends ScriptScreen {
     const line: ScriptLine = step.lines[0] as ScriptLine;
     const chris: ChrisStatusRow | null = this.chrisRow_get(this.vm);
     const live = chris?.live ?? null;
-    const pane: HTMLElement = this.section_make('THE CHRIS', 'ss-col-wide vm-chris', live === null ? (chris === null ? 'NONE DEPLOYED' : 'NOT READ') : `READ FROM IT ${live.at.slice(11, 16)} UTC`);
+    const holds: string | null = this.berthsHold_get(line.text, this.settingRuns_get(chris), chris?.profile ?? lineOption_get(line.text, '--profile') ?? 'minimal', false);
+    const pane: HTMLElement = this.section_make('THE CHRIS', 'ss-col-wide vm-chris', `${live === null ? (chris === null ? 'NONE DEPLOYED' : 'NOT READ') : `READ FROM IT ${live.at.slice(11, 16)} UTC`}${holds === null ? '' : ` · ${holds.toUpperCase()}`}`);
     const running: HTMLElement | null = this.runningNote_make(step);
     if (this.chrisRun !== null && this.chrisRun.vm === this.vm) pane.append(this.chrisRun_make(this.chrisRun));
     else if (running !== null) pane.append(running);
@@ -1206,7 +1251,7 @@ export class VmScreen extends ScriptScreen {
     runs(profileHead, chris?.profile ?? null);
     pane.append(
       profiles,
-      this.settingListing_make(line, chris === null ? null : { compute: chris.compute, host: chris.host ?? null, porter: chris.porter ?? null }),
+      this.settingListing_make(line, this.settingRuns_get(chris)),
     );
     // The offer is spent once pressed: while the deploy runs only its run speaks; after it the offer returns.
     const ours: boolean = this.chrisRun !== null && this.chrisRun.vm === this.vm;
@@ -1915,7 +1960,10 @@ export class VmScreen extends ScriptScreen {
     const built: ScriptLine | undefined = stepBuildLine_get(step);
     const name: string = line_parse(line.text).subject ?? '';
     const runs = this.runs_get(name);
-    const pane: HTMLElement = this.section_make('THE SPEC', 'ss-col-wide vm-size', runs === null ? 'NOT BUILT YET' : `RUNS AS READ FROM THE TENANCY ${runs.at.slice(11, 16)} UTC`);
+    const deploy: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.kind === 'chris deploy');
+    const deployText: string | null = deploy?.lines[0]?.text ?? null;
+    const holds: string | null = this.berthsHold_get(deployText, this.settingRuns_get(this.chrisRow_get(name)), this.chrisRow_get(name)?.profile ?? (deployText === null ? null : lineOption_get(deployText, '--profile')) ?? 'minimal', true, line.text);
+    const pane: HTMLElement = this.section_make('THE SPEC', 'ss-col-wide vm-size', `${runs === null ? 'NOT BUILT YET' : `RUNS AS READ FROM THE TENANCY ${runs.at.slice(11, 16)} UTC`}${holds === null ? '' : ` · ${holds.toUpperCase()}`}`);
     if (this.run !== null && this.run.vm === this.vm) pane.append(this.run_make(this.run));
     // The machine's facts first: where it stands and its OS, with what runs beside it.
     const row: VmStatusRow | null = this.vmRow_get();

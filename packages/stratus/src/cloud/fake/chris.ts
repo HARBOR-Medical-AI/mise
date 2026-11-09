@@ -67,6 +67,8 @@ export class FakeChrisVm implements VmRemote {
   berthPin: string = `ghcr.io/fnndsc/berth@sha256:${'ab12'.repeat(16)}`;
   /** What the berth launcher's health reads, until it is `healthy`. */
   launcherHealth: string = 'healthy';
+  /** Whether the berth launcher's container is up: made by `docker compose up` when the compose file has it, gone when it has not. */
+  launcherUp: boolean = false;
   /** Each image pulled by name. */
   pulled: string[] = [];
   /** How long each line takes, in milliseconds, so a walk sees a deploy move. */
@@ -94,12 +96,18 @@ export class FakeChrisVm implements VmRemote {
     if (line === 'stat -c %g /var/run/docker.sock') return { code: 0, stdout: `${this.dockerGid}\n`, stderr: '' };
     if (line.startsWith('docker run --rm --entrypoint node ')) return { code: 0, stdout: `${this.berthPin}\n`, stderr: '' };
     if (line.startsWith('docker pull -q ')) { this.pulled.push(line.slice('docker pull -q '.length)); return { code: 0, stdout: '', stderr: '' }; }
+    if (line.startsWith('sudo cat ') && line.endsWith('/policy.json 2>/dev/null')) {
+      const policy: string | undefined = this.files.get(line.slice('sudo cat '.length, -' 2>/dev/null'.length));
+      return policy === undefined ? { code: 1, stdout: '', stderr: '' } : { code: 0, stdout: policy, stderr: '' };
+    }
+    if (line.startsWith('docker inspect -f \'{{.State.Running}}\' ')) return { code: 0, stdout: `${this.launcherUp}\n`, stderr: '' };
     if (line.startsWith('docker inspect -f ')) return { code: 0, stdout: `${this.launcherHealth}\n`, stderr: '' };
     if (line.startsWith('docker logs --tail 5 ')) return { code: 0, stdout: 'listening failed\nEACCES docker.sock\n', stderr: '' };
     if (line.includes('docker compose up')) {
       const env: string = this.files.get('/srv/data/chris/cube.env') ?? '';
       const admin: string | undefined = /^CHRIS_SUPERUSER_PASSWORD=(.*)$/m.exec(env)?.[1];
       if (admin !== undefined) this.passwords.set('chris', admin);
+      this.launcherUp = (this.files.get('/srv/data/chris/compose.yml') ?? '').includes('berth-launcher');
       return { code: 0, stdout: '', stderr: '' };
     }
     if (line.includes('curl -s -K -')) {

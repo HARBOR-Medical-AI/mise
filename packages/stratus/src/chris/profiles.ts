@@ -11,6 +11,7 @@
  */
 
 import { CHRIS_PROFILE_OFFERS, type ChrisProfileFloor } from '@fnndsc/menu';
+import type { BerthLimits } from '../vm/state.js';
 
 /** The images a profile runs, pinned. */
 export const CHRIS_IMAGES = {
@@ -28,6 +29,9 @@ export const CHRIS_IMAGES = {
 
 /** The porter a deploy with `--porter` installs, pinned, with the chell, calypso and ARGUS it brings. */
 export const PORTER_VERSION: string = '0.10.0';
+
+/** What one berth may use when the deploy names none: the berth launcher's own defaults. */
+export const BERTH_LIMITS_DEFAULT: BerthLimits = { cpus: 1, memoryGib: 2 };
 
 /** A profile: its services and the least it runs on. */
 export interface ChrisProfile {

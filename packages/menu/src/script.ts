@@ -100,6 +100,73 @@ export const CHRIS_PROFILE_OFFERS: ReadonlyArray<ChrisProfileOffer> = [
   { name: 'complete', summary: 'minimal + Orthanc, pfdcm, oxidicom (the PACS side)', floor: null, built: false },
 ];
 
+/** What one berth may use: CPUs and GiB of memory. */
+export interface BerthLimits {
+  /** CPUs. */
+  readonly cpus: number;
+  /** Memory, in GiB. */
+  readonly memoryGib: number;
+}
+
+/** What one berth may use when a deploy names none: one CPU, 2 GiB. */
+export const BERTH_LIMITS_DEFAULT: BerthLimits = { cpus: 1, memoryGib: 2 };
+
+/** The host berths run on, as its engine or its record reports it. */
+export interface HostSize {
+  /** CPUs. */
+  readonly cpus: number;
+  /** Memory, in GiB. */
+  readonly memoryGib: number;
+}
+
+/** What decides how many berths a host holds: the limits per berth, and the number a policy names when it names one. */
+export interface BerthCapacityRule {
+  /** What one berth may use. */
+  readonly limits: BerthLimits;
+  /** The berths the host holds, when the policy says; null: as many as the host holds. */
+  readonly holds: number | null;
+}
+
+/** The floor of the profile a ChRIS runs when none is named or the name is not listed: the minimal profile's. */
+const CHRIS_PROFILE_FLOOR_DEFAULT: ChrisProfileFloor = { vcpu: 2, memory: 4, data: 50 };
+
+/**
+ * The floor of the ChRIS profile a host runs: what CUBE takes before any berth.
+ *
+ * @param profile - The profile's name.
+ * @returns Its floor; the minimal profile's when the profile is unknown or has none set.
+ *
+ * @example
+ * ```ts
+ * profileFloor_get('minimal'); // { vcpu: 2, memory: 4, data: 50 }
+ * ```
+ */
+export function profileFloor_get(profile: string = 'minimal'): ChrisProfileFloor {
+  const floor: ChrisProfileFloor | null | undefined = CHRIS_PROFILE_OFFERS.find((offer): boolean => offer.name === profile)?.floor;
+  return floor ?? CHRIS_PROFILE_FLOOR_DEFAULT;
+}
+
+/**
+ * How many berths a host holds: the memory left of it above the profile's
+ * floor, divided by one berth's memory; a policy's own number when it names a
+ * smaller one. Memory alone decides: a berth's CPU is a cap on CPUs it shares
+ * with CUBE, not a reservation, so it does not count.
+ *
+ * @param host - The host's size.
+ * @param floor - The profile's floor.
+ * @param rule - The limits per berth and the policy's own number.
+ * @returns The berths it holds, never less than none.
+ *
+ * @example
+ * ```ts
+ * berthCapacity_derive({ cpus: 4, memoryGib: 8 }, profileFloor_get(), { limits: { cpus: 1, memoryGib: 2 }, holds: null }); // 2
+ * ```
+ */
+export function berthCapacity_derive(host: HostSize, floor: ChrisProfileFloor, rule: BerthCapacityRule): number {
+  const fits: number = Math.max(0, Math.floor((host.memoryGib - floor.memory) / rule.limits.memoryGib));
+  return rule.holds === null ? fits : Math.min(fits, rule.holds);
+}
+
 /** The model kind `vm status` carries. */
 export const STRATUS_VM_STATUS_MODEL_KIND = 'stratus.vm.status' as const;
 
@@ -225,6 +292,10 @@ export const chrisStatusRowSchema = z.object({
   /** The CUBE image and porter version the last deploy put up, or null on a record from before deploys kept them. */
   image: z.string().nullable(),
   porterVersion: z.string().nullable(),
+  /** Whether the last deploy put berths behind porter; absent from an older daemon. */
+  berths: z.boolean().optional(),
+  /** What one berth may use, as the last deploy wrote it; null on a record from before limits (the launcher's defaults ran); absent from an older daemon. */
+  berthLimits: z.object({ cpus: z.number(), memoryGib: z.number() }).nullable().optional(),
   /** What runs, read from it; null when it was not read (no deploy, or asked not to). */
   live: chrisLiveSchema.nullable(),
 });

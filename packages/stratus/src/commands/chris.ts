@@ -2,7 +2,7 @@
  * @file `chris`: the ChRIS layer on a built VM (docs/stratus.adoc, D16).
  *
  * `chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>]
- * [--porter <name>] [--berths on|off] [--admin-password-file <file>]` puts the all-in-one CUBE on the VM over
+ * [--porter <name>] [--berths on|off] [--berth-cpus <N>] [--berth-memory <GiB>] [--admin-password-file <file>]` puts the all-in-one CUBE on the VM over
  * the bastion path, as a task: refused below the profile's floor; the
  * internal secrets generated once and kept on this host; the admin password
  * asked once (empty: generated and shown once) or read from a file; the
@@ -11,7 +11,8 @@
  * `--porter`, porter (the door to mise: chell, calypso, ARGUS) runs beside
  * it under its own name, logging in to this CUBE, and starts each person's
  * session in a berth of its own through the berth launcher unless
- * `--berths off` (docs/berths.adoc).
+ * `--berths off` (docs/berths.adoc), each with `--berth-cpus` CPUs and
+ * `--berth-memory` GiB at most (default 1 and 2), written to the launcher's policy.
  * `chris status [<vm>]` says what is deployed where. `chris user add <name>
  * --email <address> [--groups <group,…>] [--password-file <file>] [--on <vm>]`
  * makes an account on a ChRIS this stratus deployed, on the VM itself
@@ -32,15 +33,15 @@
  */
 import * as fs from 'fs';
 import chalk from 'chalk';
-import { CHRIS_PROFILE_OFFERS, envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, type ChrisProfileOffer, type ChrisStatusRow, type CommandEnvelope } from '@fnndsc/menu';
+import { berthCapacity_derive, CHRIS_PROFILE_OFFERS, envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, type ChrisProfileOffer, type ChrisStatusRow, type CommandEnvelope } from '@fnndsc/menu';
 import { repl_confirm, repl_questionHidden, type CommandHelp } from '@fnndsc/brasa/core';
 import type { CloudBuilder } from '../cloud/builder.js';
 import type { NetStore } from '../net/state.js';
 import type { VmSpec } from '../vm/spec.js';
-import type { VmRecord, VmStore } from '../vm/state.js';
+import type { BerthLimits, VmRecord, VmStore } from '../vm/state.js';
 import type { VmRemote } from '../vm/remote.js';
 import type { BuildCall } from '../cloud/builder.js';
-import { CHRIS_PROFILES, floor_short, type ChrisProfile } from '../chris/profiles.js';
+import { BERTH_LIMITS_DEFAULT, CHRIS_PROFILES, floor_short, type ChrisProfile } from '../chris/profiles.js';
 import { VM_KEYLESS, vmKeyless_is } from '../vm/keep.js';
 import { launcherSecret_ensure, porterSecret_ensure, secret_make, secrets_ensure, secrets_read } from '../chris/secrets.js';
 import { CHRIS_JOBS, chrisDeployRun_make, type DeployDeps } from '../chris/deploy.js';
@@ -50,7 +51,7 @@ import { CHRIS_ADMIN, chrisPasswdRun_make, PASSWD_JOBS, type PasswdResult } from
 import { job_runFollowed, options_read, tasks_granted } from './build.js';
 import { TIER_REFUSAL } from '../tier.js';
 import { chrisLive_read, type ChrisLive, type HttpGet } from '../chris/live.js';
-import { chrisPlan_derive, chrisPlan_words, type ChrisPlan } from '../chris/plan.js';
+import { berthLimits_words, chrisPlan_derive, chrisPlan_words, type ChrisPlan } from '../chris/plan.js';
 import { chrisPluginApplyRun_make, chrisPluginPlanRun_make, PLUGIN_JOBS, PLUGIN_REF, PLUGIN_SOURCE, PLUGIN_SYNC_CHELL_MIN, pluginPlanAdds_count, pluginPlanStanding_words, pluginSyncQuestion_words, type PluginApplyResult, type PluginPlanRead, type PluginPlanResult, type PluginSyncAsk } from '../chris/plugins.js';
 
 /** What `chris` reads from the session. */
@@ -72,10 +73,16 @@ export interface ChrisCommandContext {
 }
 
 /** The options `chris deploy` reads, each a value. */
-const DEPLOY_OPTIONS: ReadonlyArray<string> = ['--profile', '--compute', '--host', '--porter', '--berths', '--admin-password-file'];
+const DEPLOY_OPTIONS: ReadonlyArray<string> = ['--profile', '--compute', '--host', '--porter', '--berths', '--berth-cpus', '--berth-memory', '--admin-password-file'];
 
 /** `chris deploy`'s usage. */
-const DEPLOY_USAGE: string = 'chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--berths on|off] [--admin-password-file <file>] [--plan]';
+const DEPLOY_USAGE: string = 'chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--berths on|off] [--berth-cpus <N>] [--berth-memory <GiB>] [--admin-password-file <file>] [--plan]';
+
+/** A berth's CPUs: a positive number, at most two decimals. */
+const BERTH_CPUS: RegExp = /^\d+(\.\d{1,2})?$/;
+
+/** A berth's memory in GiB: a positive number, at most one decimal. */
+const BERTH_MEMORY: RegExp = /^\d+(\.\d)?$/;
 
 /** The options `chris user add` reads, each a value. */
 const USER_OPTIONS: ReadonlyArray<string> = ['--email', '--groups', '--password-file', '--on'];
@@ -122,7 +129,7 @@ async function chrisStatus_run(context: ChrisCommandContext, names: ReadonlyArra
     if (live !== null) lines.push(...chrisLive_lines(live));
     rows.push({
       vm: record.name, profile: chris.profile, compute: chris.compute, url: chris.url, host: chris.host, porter: chris.porter ?? null, deployed: chris.deployed,
-      image: chris.image ?? null, porterVersion: chris.porterVersion ?? null,
+      image: chris.image ?? null, porterVersion: chris.porterVersion ?? null, berths: chris.berths === 'launcher', berthLimits: chris.berthLimits ?? null,
       live: live === null ? null : { at: live.at, cube: live.cube, porter: live.porter, accounts: live.accounts === null ? null : live.accounts.map((one) => ({ ...one, groups: [...one.groups] })), accountsWhy: live.accountsWhy, groups: live.groups === null ? null : [...live.groups] },
     });
   }
@@ -501,6 +508,23 @@ async function dns_point(context: ChrisCommandContext, host: string, address: st
 }
 
 /**
+ * A berth limit from the line: a positive number in the shape asked.
+ *
+ * @param option - The option, for the refusal.
+ * @param word - The value, or undefined when the option is absent.
+ * @param shape - What the value must look like.
+ * @param said - How the shape is said in the refusal.
+ * @param kept - The limit when the option is absent.
+ * @returns The limit, or the refusal.
+ */
+function berthLimit_parse(option: string, word: string | undefined, shape: RegExp, said: string, kept: number): { value: number } | { error: string } {
+  if (word === undefined) return { value: kept };
+  const value: number = Number(word);
+  if (!shape.test(word) || !(value > 0)) return { error: `chris deploy: ${option} ${word}: ${said}\n` };
+  return { value };
+}
+
+/**
  * `chris deploy <vm> --profile <profile> …`.
  *
  * @param context - The session.
@@ -530,6 +554,14 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   if (berthsWord !== undefined && berthsWord !== 'on' && berthsWord !== 'off') return envelope_error('', undefined, `chris deploy: --berths ${berthsWord}: on or off\n`);
   if (berthsWord === 'on' && porter === null) return envelope_error('', undefined, 'chris deploy: --berths on needs --porter: berths are started behind porter\'s door\n');
   const berths: boolean = porter !== null && berthsWord !== 'off';
+  const cpus = berthLimit_parse('--berth-cpus', read.options.get('--berth-cpus'), BERTH_CPUS, 'a positive number of CPUs, at most two decimals', BERTH_LIMITS_DEFAULT.cpus);
+  if ('error' in cpus) return envelope_error('', undefined, cpus.error);
+  const memory = berthLimit_parse('--berth-memory', read.options.get('--berth-memory'), BERTH_MEMORY, 'a positive number of GiB, at most one decimal', BERTH_LIMITS_DEFAULT.memoryGib);
+  if ('error' in memory) return envelope_error('', undefined, memory.error);
+  for (const option of ['--berth-cpus', '--berth-memory']) {
+    if (read.options.has(option) && !berths) return envelope_error('', undefined, `chris deploy: ${option} needs berths (a --porter, and not --berths off)\n`);
+  }
+  const berthLimits: BerthLimits = { cpus: cpus.value, memoryGib: memory.value };
   const record: VmRecord | null = context.vms.record_read(name);
   const spec = context.vms.spec_read(name);
   if (record === null || spec === null || 'error' in spec) return envelope_error('', undefined, `chris deploy: ${name}: no such VM (vm new declares one)\n`);
@@ -539,9 +571,14 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   const vmSpec: VmSpec = spec.spec;
   const short: string[] = floor_short(profile, vmSpec);
   if (short.length > 0) return envelope_error('', undefined, `chris deploy: ${name} is below the ${profile.name} profile's floor: ${short.join('; ')}\n`);
+  // A berth's CPUs are a cap on CPUs it shares with CUBE: no more than the machine has; how many berths it holds is memory alone.
+  if (berths && berthLimits.cpus > vmSpec.vcpu) return envelope_error('', undefined, `chris deploy: --berth-cpus ${berthLimits.cpus}: ${name} has ${vmSpec.vcpu} vCPU\n`);
+  if (berths && berthCapacity_derive({ cpus: vmSpec.vcpu, memoryGib: vmSpec.memory }, profile.floor, { limits: berthLimits, holds: null }) === 0) {
+    return envelope_error('', undefined, `chris deploy: berths of ${berthLimits.memoryGib} GiB do not fit ${name} above the ${profile.name} profile's floor (${vmSpec.memory} GiB; the floor takes ${profile.floor.memory} GiB)\n`);
+  }
   if (!vmSpec.open.includes(80) || (host !== null && !vmSpec.open.includes(443))) return envelope_error('', undefined, `chris deploy: ${name} does not open ${host !== null ? '80 and 443' : '80'} (vm new ${name} --open 80,443, then vm build ${name})\n`);
   const compute: string = read.options.get('--compute') ?? name;
-  const plan: ChrisPlan = await chrisPlan_read(context, record, { profile: profile.name, compute, host, porter, berths });
+  const plan: ChrisPlan = await chrisPlan_read(context, record, { profile: profile.name, compute, host, porter, berths, berthLimits });
   if (planOnly) return envelope_ok(`${chrisPlan_words(name, plan)}\n`, { kind: STRATUS_CHRIS_PLAN_MODEL_KIND, data: { vm: name, ...plan } });
   if (!tasks_granted()) return envelope_error('', undefined, `chris deploy: ${TIER_REFUSAL}\n`);
   // A first deploy, or a replay that restarts or changes what runs, asks first, with all of it (a-change-is-a-loop, clause 4);
@@ -572,7 +609,7 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
     }
   }
   const shown: string = generated !== null ? `${chalk.yellow(`the admin password for chris, generated, shown this once: ${generated}`)}\n` : '';
-  const ran = await job_runFollowed(CHRIS_JOBS.deploy(name), `deploy ChRIS on ${name}`, chrisDeployRun_make({ vm: name, profile, compute, host, porter, berths, secrets }, deps));
+  const ran = await job_runFollowed(CHRIS_JOBS.deploy(name), `deploy ChRIS on ${name}`, chrisDeployRun_make({ vm: name, profile, compute, host, porter, berths, berthLimits, secrets }, deps));
   if ('error' in ran) return envelope_error('', undefined, `${shown}${pointed}chris deploy: ${ran.error}\n`);
   const done: VmRecord | null = context.vms.record_read(name);
   const door: string = porter !== null ? `; porter at https://${porter}/${berths ? ', a berth for each person' : ''}` : '';
@@ -588,7 +625,7 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
  * @param ask - What the deploy is asked to put up.
  * @returns The plan.
  */
-async function chrisPlan_read(context: ChrisCommandContext, record: VmRecord, ask: { profile: string; compute: string; host: string | null; porter: string | null; berths: boolean }): Promise<ChrisPlan> {
+async function chrisPlan_read(context: ChrisCommandContext, record: VmRecord, ask: { profile: string; compute: string; host: string | null; porter: string | null; berths: boolean; berthLimits: BerthLimits }): Promise<ChrisPlan> {
   const first: ChrisPlan = chrisPlan_derive(record.chris, ask, null);
   const porterRestarts: boolean = first.restarts.some((one: string): boolean => one.startsWith('porter (') || one.startsWith('CUBE and porter'));
   if (!porterRestarts || record.chris === undefined || context.http_get === undefined) return first;
@@ -617,9 +654,9 @@ export async function chris_run(context: ChrisCommandContext, args: ReadonlyArra
 
 /** `chris`'s help. */
 export const CHRIS_HELP: CommandHelp = {
-  usage: 'chris [status [<vm>…]] | chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--admin-password-file <file>] | chris user add <name> --email <address> [--password-file <file>] [--on <vm>] | chris passwd [<user>] [--password-file <file>] [--on <vm>] | chris plugin sync [<source>] [--ref <ref>] [--on <vm>] [--plan]',
+  usage: 'chris [status [<vm>…]] | chris deploy <vm> --profile <profile> [--compute <name>] [--host <name>] [--porter <name>] [--berths on|off] [--berth-cpus <N>] [--berth-memory <GiB>] [--admin-password-file <file>] | chris user add <name> --email <address> [--password-file <file>] [--on <vm>] | chris passwd [<user>] [--password-file <file>] [--on <vm>] | chris plugin sync [<source>] [--ref <ref>] [--on <vm>] [--plan]',
   summary: 'Put ChRIS on a built VM, add its users, change their passwords, and fill its plugins',
   category: 'Resources',
-  description: 'chris deploy puts the all-in-one CUBE on a built VM, over the network\'s bastion and never through cloud-init, as a task (/proc/steps/chris-<vm>-deploy). A profile is data: minimal is CUBE 6.11.0 (production, uvicorn), its workers and scheduler, Postgres, Dragonfly, NATS and pfcon 5.3.1 in-network beside it running plugins through the VM\'s Docker, behind Caddy; a VM below its floor (2 vCPU, 4 GiB, 50 GB data) is refused and told by how much. Everything lands on the data volume (/srv/data/chris), so a rebuilt machine opens the old database. The internal secrets are generated by the first deploy and kept on this host; the admin password for chris is asked once (empty: generated and shown once) or read from --admin-password-file. The compute resource (--compute, default the VM\'s name) is registered, and the deploy checks chris sees the admin API, as plugin uploads need. Without --host, ChRIS answers over plain HTTP on the VM\'s address; with --host, Caddy obtains the certificate once public DNS gives the name the VM\'s address, which the deploy waits for (an hour at most; a replay resumes). No profile carries the ChRIS UI: --porter <name> (with --host) adds porter, the door to mise (chell, calypso and ARGUS), beside any profile, built on the VM from its pinned npm release, its sessions logging in to this CUBE by its name; Caddy obtains porter\'s certificate too, the registrar is asked for its name as for the host\'s, and porter\'s session folders are kept on the data volume. chris user add makes an account on a ChRIS this stratus deployed: the one --on names, or the only one (more than one and no --on is refused). Every deploy turns CUBE\'s own sign-up off, so the account is made on the VM, in the CUBE container, with CUBE\'s user model (its groups and home folders as a sign-up gives them). --email is needed; the password is asked (empty: generated and shown once) or read from --password-file, given on stdin, and never kept. A name already there with the same email is left as it is, so a script replays; with another email it is refused. chris passwd changes an account\'s password on that ChRIS: the new one typed twice (empty: generated and shown once) or read from --password-file, given on stdin. Without a user it is the admin\'s, chris: CUBE sets chris\'s password from cube.env each time it starts, so the new one is kept on this host, written to cube.env on the VM and set in CUBE, the services cube.env feeds are started again (CUBE is down for a minute or so, and the operator is asked first), chris is checked to sign in with it, and the tenancy keeps it with the VM\'s other secrets. A run stopped anywhere finishes when asked again with the same password. Any other account\'s is set in CUBE alone and never kept. chris plugin sync fills that ChRIS from the plugin index (FNNDSC/chris-plugins by default, or the source given; --ref pins a branch, tag or commit) with the chell porter runs beside it, so it needs a deploy with --porter whose chell is 5.20.0 or later (an older one is refused, naming the deploy replay that updates it). On the VM, chris\'s password is read from cube.env and exchanged there for a token, which reaches that chell on stdin; it never leaves the VM. The chell reads the plan first: what it would add, what is there already, and what it reports and never touches (newer in CUBE, a different descriptor, an image taken, not in the index, invalid). The question names those counts; a yes applies the plan pinned to the commit it read, one line per plugin in the task\'s log, and nothing in CUBE is removed or changed. Nothing to add asks nothing, so a script replays; --plan reads the plan and stops.',
+  description: 'chris deploy puts the all-in-one CUBE on a built VM, over the network\'s bastion and never through cloud-init, as a task (/proc/steps/chris-<vm>-deploy). A profile is data: minimal is CUBE 6.11.0 (production, uvicorn), its workers and scheduler, Postgres, Dragonfly, NATS and pfcon 5.3.1 in-network beside it running plugins through the VM\'s Docker, behind Caddy; a VM below its floor (2 vCPU, 4 GiB, 50 GB data) is refused and told by how much. Everything lands on the data volume (/srv/data/chris), so a rebuilt machine opens the old database. The internal secrets are generated by the first deploy and kept on this host; the admin password for chris is asked once (empty: generated and shown once) or read from --admin-password-file. The compute resource (--compute, default the VM\'s name) is registered, and the deploy checks chris sees the admin API, as plugin uploads need. Without --host, ChRIS answers over plain HTTP on the VM\'s address; with --host, Caddy obtains the certificate once public DNS gives the name the VM\'s address, which the deploy waits for (an hour at most; a replay resumes). No profile carries the ChRIS UI: --porter <name> (with --host) adds porter, the door to mise (chell, calypso and ARGUS), beside any profile, built on the VM from its pinned npm release, its sessions logging in to this CUBE by its name; Caddy obtains porter\'s certificate too, the registrar is asked for its name as for the host\'s, and porter\'s session folders are kept on the data volume. With --porter, porter starts each person\'s session in a berth of its own through the berth launcher unless --berths off; --berth-cpus <N> (a positive number, at most two decimals) and --berth-memory <GiB> (at most one decimal) are the most one berth may use, default 1 CPU and 2 GiB, written to the launcher\'s policy; both are refused without berths. A replay that changes them restarts the berth launcher, asked first: running berths keep their limits and sessions until their next start, which needs a fresh login. chris user add makes an account on a ChRIS this stratus deployed: the one --on names, or the only one (more than one and no --on is refused). Every deploy turns CUBE\'s own sign-up off, so the account is made on the VM, in the CUBE container, with CUBE\'s user model (its groups and home folders as a sign-up gives them). --email is needed; the password is asked (empty: generated and shown once) or read from --password-file, given on stdin, and never kept. A name already there with the same email is left as it is, so a script replays; with another email it is refused. chris passwd changes an account\'s password on that ChRIS: the new one typed twice (empty: generated and shown once) or read from --password-file, given on stdin. Without a user it is the admin\'s, chris: CUBE sets chris\'s password from cube.env each time it starts, so the new one is kept on this host, written to cube.env on the VM and set in CUBE, the services cube.env feeds are started again (CUBE is down for a minute or so, and the operator is asked first), chris is checked to sign in with it, and the tenancy keeps it with the VM\'s other secrets. A run stopped anywhere finishes when asked again with the same password. Any other account\'s is set in CUBE alone and never kept. chris plugin sync fills that ChRIS from the plugin index (FNNDSC/chris-plugins by default, or the source given; --ref pins a branch, tag or commit) with the chell porter runs beside it, so it needs a deploy with --porter whose chell is 5.20.0 or later (an older one is refused, naming the deploy replay that updates it). On the VM, chris\'s password is read from cube.env and exchanged there for a token, which reaches that chell on stdin; it never leaves the VM. The chell reads the plan first: what it would add, what is there already, and what it reports and never touches (newer in CUBE, a different descriptor, an image taken, not in the index, invalid). The question names those counts; a yes applies the plan pinned to the commit it read, one line per plugin in the task\'s log, and nothing in CUBE is removed or changed. Nothing to add asks nothing, so a script replays; --plan reads the plan and stops.',
   examples: ['chris deploy store --profile minimal --compute NERC --host cube.chrisproject.org --porter porter.chrisproject.org', 'chris deploy vm-try --profile minimal', 'chris status', 'chris user add jorge --email jorge@example.org --on store', 'chris passwd --on store', 'chris passwd jorge --on store', 'chris plugin sync --on store', 'chris plugin sync FNNDSC/chris-plugins --ref 8c9a1f6 --on store --plan'],
 };

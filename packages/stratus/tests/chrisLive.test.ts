@@ -82,12 +82,20 @@ describe('what a deploy would do', () => {
 
   it('berths: a first deploy says it puts a berth up for each person; off → on is a change and a porter restart, as deployed asks nothing', () => {
     const berthed = { ...ask, berths: true };
-    expect(chrisPlan_derive(undefined, berthed, null).changes).toContain('a berth for each person behind porter (the berth launcher, the berth image pulled)');
+    expect(chrisPlan_derive(undefined, berthed, null).changes).toContain('a berth for each person behind porter, 1 vCPU · 2 GiB each (the berth launcher, the berth image pulled)');
+    expect(chrisPlan_derive(undefined, { ...berthed, berthLimits: { cpus: 1.5, memoryGib: 4 } }, null).changes).toContain('a berth for each person behind porter, 1.5 vCPU · 4 GiB each (the berth launcher, the berth image pulled)');
     expect(chrisPlan_derive(undefined, ask, null).changes.some((one: string): boolean => one.includes('berth'))).toBe(false);
     const on = chrisPlan_derive(CHRIS, berthed, 2);
     expect(on).toMatchObject({ changes: ['berths off → on'], restarts: ['porter (berths on): its open sessions end'], asks: true, first: false });
     const had = { ...CHRIS, berths: 'launcher' as const, berthImage: 'ghcr.io/fnndsc/berth@sha256:' + 'a'.repeat(64) };
     expect(chrisPlan_derive(had, berthed, null)).toEqual({ changes: [], restarts: [], sessions: null, asks: false, first: false });
+    // Limits: a record without them ran the defaults; a change on a replay with berths on is a change and a launcher restart, not a porter restart.
+    expect(chrisPlan_derive(had, { ...berthed, berthLimits: { cpus: 1, memoryGib: 2 } }, null).asks).toBe(false);
+    const limited = { ...had, berthLimits: { cpus: 1, memoryGib: 2 } };
+    expect(chrisPlan_derive(limited, { ...berthed, berthLimits: { cpus: 2, memoryGib: 4 } }, 3)).toEqual({ changes: ['berth limits 1 vCPU · 2 GiB → 2 vCPU · 4 GiB'], restarts: ['the berth launcher: running berths keep their limits and sessions until their next start, which needs a fresh login'], sessions: 3, asks: true, first: false });
+    expect(chrisPlan_derive({ ...had, berthLimits: { cpus: 0.5, memoryGib: 1.5 } }, berthed, null).changes).toEqual(['berth limits 0.5 vCPU · 1.5 GiB → 1 vCPU · 2 GiB']);
+    // Berths turning on or off carry no limits change.
+    expect(chrisPlan_derive(CHRIS, { ...berthed, berthLimits: { cpus: 2, memoryGib: 4 } }, null).changes).toEqual(['berths off → on']);
     expect(chrisPlan_derive(had, ask, null)).toMatchObject({ changes: ['berths on → off'], restarts: ['porter (berths off): its open sessions end, and the running berths stop (their homes are kept)'], asks: true });
   });
 });
