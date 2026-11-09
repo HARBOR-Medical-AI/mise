@@ -1,5 +1,11 @@
 # @fnndsc/stratus
 
+## 0.17.1
+
+### Patch Changes
+
+- f19cdb7: A ChRIS deployed with a porter now gives each person a berth of their own, unless `--berths off`. It puts up porter 0.10.0.
+
 ## 0.17.0
 
 ### Minor Changes
