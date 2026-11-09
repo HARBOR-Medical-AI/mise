@@ -22,9 +22,10 @@ import type { NetStore } from '../net/state.js';
 import { pause, vmRemote_open, type RemoteAnswer, type VmRemote } from '../vm/remote.js';
 import { vmKept_write } from '../vm/keep.js';
 import { vm_read } from '../vm/build.js';
-import type { VmRecord, VmStore } from '../vm/state.js';
+import type { BerthLimits, VmRecord, VmStore } from '../vm/state.js';
 import { apiUrl_derive, BERTH_DIR, caddyfile_render, CHRIS_DIR, compose_render, cubeEnv_render, LAUNCHER_CONTAINER, launcherEnv_render, PFCON_HOST, PFCON_USER, pfconEnv_render, PORTER_UID, porterEnv_render, type ChrisSecrets, type ChrisTarget } from './compose.js';
-import { CHRIS_IMAGES, PORTER_VERSION, type ChrisProfile } from './profiles.js';
+import { BERTH_LIMITS_DEFAULT, CHRIS_IMAGES, PORTER_VERSION, type ChrisProfile } from './profiles.js';
+import { berthLimits_equal } from './plan.js';
 import { adminHomeProgram_render, CUBE_PYTHON_LINE, HOME_MARK } from './users.js';
 
 /** What a deploy is asked for. */
@@ -38,6 +39,8 @@ export interface DeployRequest {
   readonly porter: string | null;
   /** Whether porter starts each person's session in a berth of its own; needs a porter. */
   readonly berths: boolean;
+  /** What one berth may use, written to the launcher's policy; the launcher's defaults when absent. */
+  readonly berthLimits?: BerthLimits;
   readonly secrets: ChrisSecrets;
 }
 
@@ -150,6 +153,7 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
 
     await run_must(remote, `sudo install -d -o ubuntu -g ubuntu -m 0750 ${CHRIS_DIR}`, `making ${CHRIS_DIR}`);
     const berths: boolean = request.berths && request.porter !== null;
+    const berthLimits: BerthLimits = request.berthLimits ?? BERTH_LIMITS_DEFAULT;
     // The launcher alone is given the group that owns Docker's socket.
     const dockerGid: number | null = berths ? Number((await run_must(remote, 'stat -c %g /var/run/docker.sock', 'reading the group of Docker\'s socket')).stdout.trim()) : null;
     if (dockerGid !== null && !Number.isInteger(dockerGid)) throw new Error('reading the group of Docker\'s socket: not a number');
@@ -168,9 +172,9 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
       // porter's and the launcher's own user (the image's node) reads the secret and makes the socket; nobody else.
       if (request.secrets.launcherSecret === undefined) throw new Error('berths need the launcher\'s secret');
       await run_must(remote, `sudo install -d -o ${PORTER_UID} -g ${PORTER_UID} -m 0700 ${BERTH_DIR} ${BERTH_DIR}/run`, `making ${BERTH_DIR}`);
-      const berthFiles: Array<[string, string, string]> = [['launcher.secret', `${request.secrets.launcherSecret}\n`, '0600'], ['policy.json', '{}\n', '0644']];
+      const berthFiles: Array<[string, string, string]> = [['launcher.secret', `${request.secrets.launcherSecret}\n`, '0600'], ['policy.json', `${JSON.stringify({ cpus: berthLimits.cpus, memoryGib: berthLimits.memoryGib })}\n`, '0644']];
       for (const [file, text, mode] of berthFiles) await run_must(remote, `sudo sh -c 'umask 077 && cat > ${BERTH_DIR}/${file}.new && chown ${PORTER_UID}:${PORTER_UID} ${BERTH_DIR}/${file}.new && chmod ${mode} ${BERTH_DIR}/${file}.new && mv ${BERTH_DIR}/${file}.new ${BERTH_DIR}/${file}'`, `writing ${file}`, text);
-      context.log_write(`wrote launcher.secret and policy.json to ${BERTH_DIR} (the image's node user's)`);
+      context.log_write(`wrote launcher.secret and policy.json (${berthLimits.cpus} CPU, ${berthLimits.memoryGib} GiB a berth) to ${BERTH_DIR} (the image's node user's)`);
     }
 
     context.log_write(request.porter !== null ? 'pulling the images, building porter\'s, and starting the services' : 'pulling the images and starting the services');
@@ -190,6 +194,11 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
       // Berths turned off: the launcher is gone with --remove-orphans; the berths and wires it made go too, the homes kept.
       await run_must(remote, `docker ps -aq --filter label=${BERTH_LABEL} | xargs -r docker rm -f && docker network ls -q --filter label=${BERTH_LABEL} | xargs -r docker network rm`, 'stopping the berths');
       context.log_write('berths off: the running berths and their wires are removed; every person\'s home is kept');
+    }
+    if (berths && record.chris?.berths === 'launcher' && !berthLimits_equal(record.chris.berthLimits ?? BERTH_LIMITS_DEFAULT, berthLimits)) {
+      // `up -d` does not recreate the launcher for a changed policy file; it reads the file when it starts.
+      await run_must(remote, `cd ${CHRIS_DIR} && docker compose restart berth-launcher`, 'restarting the berth launcher');
+      context.log_write('the berth limits changed: the berth launcher is restarted to read them; running berths keep their limits until their next start');
     }
     if (berths) {
       context.log_write('waiting for the berth launcher\'s socket');
@@ -250,7 +259,7 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
       }
     }
     deps.store.record_update(request.vm, (current: VmRecord): void => {
-      current.chris = { profile: request.profile.name, compute: request.compute, host: request.host, url, deployed: new Date().toISOString(), image: CHRIS_IMAGES.cube, ...(request.host !== null ? { dns: 'waiting' } : {}), ...(request.porter !== null ? { porter: request.porter, porterVersion: PORTER_VERSION } : {}), ...(berthImage !== null ? { berths: 'launcher' as const, berthImage } : {}) };
+      current.chris = { profile: request.profile.name, compute: request.compute, host: request.host, url, deployed: new Date().toISOString(), image: CHRIS_IMAGES.cube, ...(request.host !== null ? { dns: 'waiting' } : {}), ...(request.porter !== null ? { porter: request.porter, porterVersion: PORTER_VERSION } : {}), ...(berthImage !== null ? { berths: 'launcher' as const, berthImage, berthLimits: { cpus: berthLimits.cpus, memoryGib: berthLimits.memoryGib } } : {}) };
     });
     await kept_write(deps, request.vm, context);
     if (request.host === null) {
