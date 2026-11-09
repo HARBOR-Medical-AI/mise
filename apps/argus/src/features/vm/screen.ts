@@ -19,7 +19,7 @@
  * Built on the script screen's bodies, which are the same forms over the
  * same lines; this file holds what differs.
  */
-import type { ChrisPlanModel, ChrisStatusRow, PromptKind, VmCostRate, VmCostRow, VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
+import type { ChrisBerthModel, ChrisPlanModel, ChrisStatusRow, PromptKind, VmCostRate, VmCostRow, VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
 import { CHRIS_PROFILE_OFFERS, chrisStatusModelSchema, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema } from '@fnndsc/menu';
 import { lockWhere_text, modePill_make, READ_HELD, type ReadHold } from '../takeover/tier.js';
@@ -27,7 +27,7 @@ import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
 import { buildWould_derive, costLine_derive, line_parse, line_render, lineOption_get, lineOption_set, lines_build, ports_word, rate_words, runningStep_find, script_render, stepBuildLine_get, steps_build, vmLevers_read, vmSliders_build, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type VmRuns } from '../script/model.js';
 import { ScriptScreen, type OpenAsk, type QuietAnswer, type ScriptHooks } from '../script/screen.js';
-import { FACTS_KEY, MACHINES_KEY, NEW_KEY, SERVICES_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmServiceKind_derive, vmServices_change, vmServices_read, serviceDraft_why, leverFloor_derive, profileRows_derive, berthsHold_words, settingRows_derive, type SettingRuns, settingValue_why, type SettingRow, accountChanges_derive, groupsMove_words, ALL_USERS_GROUP, CHRIS_ADMIN_NAME, passwordPair_why, type AccountChange, type AccountDraft, type AccountEdit, type AccountRow, type HeldAccount, type ProfileRow, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
+import { FACTS_KEY, MACHINES_KEY, NEW_KEY, SERVICES_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmServiceKind_derive, vmServices_change, vmServices_read, serviceDraft_why, leverFloor_derive, profileRows_derive, berthsHold_words, settingRows_derive, type SettingRuns, settingValue_why, type SettingRow, accountChanges_derive, access_words, groupsMove_words, ALL_USERS_GROUP, CHRIS_ADMIN_NAME, passwordPair_why, type AccountChange, type AccountDraft, type AccountEdit, type AccountRow, type HeldAccount, type ProfileRow, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
 import { BUILD_PHASES, buildQuestion_plain, chrisQuestion_plain, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_take, type BuildQuestion, type BuildRun } from './run.js';
 import { Listing } from '../roster/listing.js';
 import type { ListingTrait } from '../roster/row.js';
@@ -108,7 +108,7 @@ export class VmScreen extends ScriptScreen {
   private accountOpen: string | null = null;
   private accountChangeMount: HTMLElement | null = null;
   /** What the listing's press and the editor read: the seat, the accounts and groups CUBE holds, the script's user lines. */
-  private accountContext: { step: ScriptStep; held: ReadonlyArray<HeldAccount>; groups: ReadonlyArray<string> | null; users: ScriptStep | undefined } | null = null;
+  private accountContext: { step: ScriptStep; held: ReadonlyArray<HeldAccount>; groups: ReadonlyArray<string> | null; users: ScriptStep | undefined; berths: ReadonlyArray<ChrisBerthModel> | null } | null = null;
   /** A password being written in its row: typed, typed again, and the one GENERATE made (shown once, until it is set). */
   private passwordDrafts: Map<string, { typed: string; again: string; generated: string | null }> = new Map();
   /** Each row's password act: asking in the row (the admin's), setting, set (the receipt), refused or declined. */
@@ -1217,8 +1217,8 @@ export class VmScreen extends ScriptScreen {
   /**
    * CHRIS, one pane (the operator, 2026-11-07): each part of the ChRIS as the
    * line declares it beside what runs, the line's fields, RUN saying what a
-   * replay does, then its accounts, each with its host access (berths, the
-   * per-user shells, are the next step: said, never a control yet).
+   * replay does, then its accounts, each with its host access (the berth
+   * porter reads for them: shown, never a control yet).
    */
   private chris_make(step: ScriptStep): HTMLElement {
     const line: ScriptLine = step.lines[0] as ScriptLine;
@@ -1270,7 +1270,7 @@ export class VmScreen extends ScriptScreen {
     const accounts: HTMLElement = el('div', 'vm-chris-users');
     accounts.append(el('span', 'tdc-section-title', 'ITS USERS'));
     if (live?.accounts != null) {
-      accounts.append(...this.accounts_make(step, live.accounts.map((one): HeldAccount => ({ username: one.username, email: one.email, id: one.id ?? null, groups: one.groups ?? [] })), live.groups ?? null, users));
+      accounts.append(...this.accounts_make(step, live.accounts.map((one): HeldAccount => ({ username: one.username, email: one.email, id: one.id ?? null, groups: one.groups ?? [] })), live.groups ?? null, users, live.berths ?? null, live.berths == null ? (live.berthsWhy ?? 'the stratus daemon here does not read them') : null, live.berthsOff === true));
     } else if (chris !== null) {
       accounts.append(el('p', 'tdc-prose tdc-quiet', `CUBE's accounts were not read${live?.accountsWhy ? `: ${live.accountsWhy}` : ''}.`));
     }
@@ -1282,7 +1282,7 @@ export class VmScreen extends ScriptScreen {
 
   /**
    * ITS USERS (a-control-offers-only-what-can-be-done): CUBE's accounts as an
-   * ARGUS listing (NAME · UID · GID · GROUPS · EMAIL · PASSWORD, UID CUBE's
+   * ARGUS listing (NAME · UID · GID · GROUPS · EMAIL · PASSWORD · HOST ACCESS, UID CUBE's
    * own id and GID the same, the user-private group chell's `id` projects),
    * the script's user lines CUBE does not hold yet and the new ones written
    * here as rows of their own; a press opens a row's editor; every edit is a
@@ -1292,10 +1292,13 @@ export class VmScreen extends ScriptScreen {
    * @param held - The accounts CUBE holds.
    * @param groups - CUBE's groups, or null when they were not read.
    * @param users - The script's user lines' seat.
+   * @param berths - Porter's berths as it answered, or null when they were not read.
+   * @param berthsWhy - Why they were not read, or null when they were.
+   * @param berthsOff - True when porter answered that it starts no berths: an answer, said as `berths are off`, not a failed read.
    * @returns The listing, the editor, + NEW USER, the change block and the user lines.
    */
-  private accounts_make(step: ScriptStep, held: ReadonlyArray<HeldAccount>, groups: ReadonlyArray<string> | null, users: ScriptStep | undefined): HTMLElement[] {
-    this.accountContext = { step, held, groups, users };
+  private accounts_make(step: ScriptStep, held: ReadonlyArray<HeldAccount>, groups: ReadonlyArray<string> | null, users: ScriptStep | undefined, berths: ReadonlyArray<ChrisBerthModel> | null, berthsWhy: string | null, berthsOff: boolean = false): HTMLElement[] {
+    this.accountContext = { step, held, groups, users, berths };
     // An edit CUBE now holds is spent: what it asked is what stands.
     for (const [name, edit] of [...this.accountEdits]) {
       const account: HeldAccount | undefined = held.find((one: HeldAccount): boolean => one.username === name);
@@ -1316,6 +1319,7 @@ export class VmScreen extends ScriptScreen {
           { key: 'groups', label: 'GROUPS', className: 'vm-cell-groups', width: 'minmax(10em, 1fr)', cell: (row: AccountRow): string => row.groups },
           { key: 'email', label: 'EMAIL', className: 'vm-cell-email', width: 'minmax(10em, 16em)', shed: 1, cell: (row: AccountRow): string => row.email },
           { key: 'password', label: 'PASSWORD', className: 'vm-cell-password', width: 'minmax(7em, 10em)', shed: 2, cell: (row: AccountRow): string => row.password },
+          { key: 'access', label: 'HOST ACCESS', className: 'vm-cell-access', width: 'minmax(9em, 16em)', shed: 5, cell: (row: AccountRow): string => row.access },
         ],
         key: (row: AccountRow): string => row.key,
         caps: 'root',
@@ -1356,7 +1360,9 @@ export class VmScreen extends ScriptScreen {
     this.accountChangeMount = el('div', 'vm-change vm-account-change');
     this.accountChange_fill();
     nodes.push(this.accountChangeMount);
-    nodes.push(el('p', 'tdc-prose tdc-quiet', 'Host access (berths, the per-user shells) is the next step: said here, not a control yet.'));
+    if (berthsOff) nodes.push(el('p', 'tdc-prose tdc-quiet vm-access-why', 'berths are off'));
+    else if (berthsWhy !== null) nodes.push(el('p', 'tdc-prose tdc-quiet vm-access-why', `HOST ACCESS was not read: ${berthsWhy}.`));
+    nodes.push(el('p', 'tdc-prose tdc-quiet vm-access-note', 'Starting a berth, stopping it and removing a person\'s home are not controls here yet.'));
     // The script's user lines, the accounts it declares; THE SCRIPT shows them as written.
     if (users !== undefined && users.lines.length > 0) {
       const lines: HTMLElement = el('div', 'vm-size-lines');
@@ -1388,6 +1394,7 @@ export class VmScreen extends ScriptScreen {
         groups: moved === '' ? account.groups.join(', ') : `${account.groups.filter((name: string): boolean => wanted?.includes(name) ?? true).join(', ')} · ${moved}`,
         email,
         password: this.passwordCell_words(account.username),
+        access: access_words(context.berths, account.username),
         pending: moved !== '' || email.includes('(was '),
       });
     }
@@ -1395,10 +1402,10 @@ export class VmScreen extends ScriptScreen {
     for (const line of context.users?.lines ?? []) {
       const name: string = line_parse(line.text).subject ?? '';
       if (name === '' || heldNames.has(name)) continue;
-      rows.push({ key: `line-${line.number}`, kind: 'lined', name: `${name} · its line adds it`, uid: '—', gid: '—', groups: [ALL_USERS_GROUP, ...(lineOption_get(line.text, '--groups') ?? '').split(',').filter((one: string): boolean => one !== '' && one !== ALL_USERS_GROUP)].join(', '), email: lineOption_get(line.text, '--email') ?? '—', password: 'asked when it runs', pending: true });
+      rows.push({ key: `line-${line.number}`, kind: 'lined', name: `${name} · its line adds it`, uid: '—', gid: '—', groups: [ALL_USERS_GROUP, ...(lineOption_get(line.text, '--groups') ?? '').split(',').filter((one: string): boolean => one !== '' && one !== ALL_USERS_GROUP)].join(', '), email: lineOption_get(line.text, '--email') ?? '—', password: 'asked when it runs', access: access_words(context.berths, name), pending: true });
     }
     for (const draft of this.accountDrafts) {
-      rows.push({ key: draft.key, kind: 'new', name: `${draft.name || '(no name yet)'} · new`, uid: '—', gid: '—', groups: [...new Set([ALL_USERS_GROUP, ...draft.groups])].join(', '), email: draft.email || '—', password: 'asked at APPLY', pending: true });
+      rows.push({ key: draft.key, kind: 'new', name: `${draft.name || '(no name yet)'} · new`, uid: '—', gid: '—', groups: [...new Set([ALL_USERS_GROUP, ...draft.groups])].join(', '), email: draft.email || '—', password: 'asked at APPLY', access: access_words(context.berths, draft.name), pending: true });
     }
     this.accountListing.rows_set([{ key: 'accounts', rows }], { field: 'accounts' });
     if (this.accountListingMount !== null) indexTrack_fold(this.accountListingMount);

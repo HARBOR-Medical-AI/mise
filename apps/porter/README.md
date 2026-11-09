@@ -43,3 +43,12 @@ PORTER_BERTHS=launcher PORTER_LAUNCHER=/run/mise/launcher.sock PORTER_LAUNCHER_S
 ```
 
 At a login it reads the person's CUBE id with their token, asks the launcher for their berth (uid and gid that id), and shows the berth's calypso through the door; a later login's token reaches the berth already up; a logout stops the berth and keeps its volumes. The secret file is mode 0600, and the launcher refuses one any other user can read.
+
+The operator reads every person's berth with `GET /berths`, asked with `Authorization: Token <CUBE token>` or the admin's Basic credentials:
+
+```sh
+curl -s -u chris:… https://porter.example.org/berths
+# {"at":"2026-11-09T10:00:00.000Z","berths":[{"user":"ana","state":"running","cohort":"none","cpuPercent":3,"memoryBytes":220200960,"memoryLimitBytes":2147483648},{"user":"benito","state":"stopped","cohort":null,"cpuPercent":null,"memoryBytes":null,"memoryLimitBytes":null}]}
+```
+
+porter hands the credentials to CUBE's API root and answers only a CUBE administrator (the root names its `admin` link to an administrator alone): 401 with no credentials or ones CUBE refuses, 403 for a CUBE user who is not an administrator, 502 when CUBE (or a redirect from it) or the launcher does not answer. A client address may ask ten times a minute; past that is a 429 with `Retry-After`, and CUBE is not asked. CUBE's verdict on one `Authorization` header (never the credentials; kept under its sha256) is remembered for 30 s. A running berth carries one sample of its CPU (a percent of one CPU) and memory; a stopped one is a person whose home volume stays; a person with neither is absent. The launcher reads the berths over its local API (`GET /berths/access?cubeUrl=…`), so porter never touches the container engine; it shows the people of this porter's CUBE only, by identity, so a berth or home left by an earlier CUBE URL is not shown, and a berth the engine does not sample within 3 s is running with its usage unread. A porter that starts no berths (`PORTER_BERTHS` unset) answers `{"berths": null, "why": "this porter starts no berths"}`, which stratus and ARGUS take as an answer (`berths are off`) and not a failed read. stratus reads this for `chris status`, and ARGUS shows it as HOST ACCESS in ITS USERS.

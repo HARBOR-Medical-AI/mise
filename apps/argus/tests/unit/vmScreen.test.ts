@@ -40,6 +40,11 @@ const WRITTEN: Map<string, string> = new Map();
 /** What the tenancy runs of store, as `vm status` reads it; a test moves it to stand for a build's effect. */
 /** CUBE's accounts as `chris status` reads them; a test may add one. */
 let ACCOUNTS: Array<{ username: string; email: string; id?: number; groups?: string[] }> = [{ username: 'chris', email: 'dev@babyMRI.org', id: 1, groups: ['all_users', 'pacs_users'] }, { username: 'jennings', email: 'j@example.org', id: 4, groups: ['all_users'] }];
+/** What porter's berths read as, spread into the live read: a test sets it to the older daemon's silence (`{}`) or to a porter that could not say. */
+let BERTHS: Record<string, unknown> = { berths: [
+  { user: 'chris', state: 'stopped', cohort: null, cpuPercent: null, memoryBytes: null, memoryLimitBytes: null },
+  { user: 'jennings', state: 'running', cohort: 'none', cpuPercent: 3.2, memoryBytes: 220200960, memoryLimitBytes: 2147483648 },
+], berthsWhy: null };
 let STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50, data: 50 };
 
 /** The session's answers: a library with store.mise, two machines kept (store from the script, lone from nothing). */
@@ -64,7 +69,7 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
   }
   if (line === 'vm limits') return envelope({ kind: 'stratus.vm.limits', data: LIMITS });
   if (line === 'chris status store') return envelope({ kind: 'stratus.chris.status', data: { chris: [{ vm: 'store', profile: 'minimal', compute: 'NERC', url: 'https://cube.chrisproject.org/api/v1/', host: 'cube.chrisproject.org', porter: 'porter.chrisproject.org', deployed: '2026-11-05T04:04:12.000Z', image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.9.10', berths: true, berthLimits: { cpus: 2, memoryGib: 4 },
-    live: { at: '2026-11-05T06:00:00.000Z', cube: { url: 'https://cube.chrisproject.org/api/v1/', status: 200, admin: true }, porter: { url: 'https://porter.chrisproject.org/healthz', status: 200, sessions: 2, version: '0.9.10' }, accounts: ACCOUNTS, accountsWhy: null, groups: ['all_users', 'pacs_users'] } }] } });
+    live: { at: '2026-11-05T06:00:00.000Z', cube: { url: 'https://cube.chrisproject.org/api/v1/', status: 200, admin: true }, porter: { url: 'https://porter.chrisproject.org/healthz', status: 200, sessions: 2, version: '0.9.10' }, accounts: ACCOUNTS, accountsWhy: null, groups: ['all_users', 'pacs_users'], ...BERTHS } }] } });
   if (line.startsWith('chris deploy store') && line.endsWith('--plan')) return envelope({ kind: 'stratus.chris.plan', data: { vm: 'store', changes: line.includes('cube2') ? ['host cube.chrisproject.org → cube2.chrisproject.org'] : [], restarts: ['porter (0.9.10 → 0.9.11): its open sessions end'], sessions: 2, asks: true } });
   if (line.startsWith('vm cost')) return envelope({ kind: 'stratus.vm.cost', data: { vms: [{ name: 'store', declared: true, spec: SPEC, cost: { machineHour: 0.052, dataHour: 0.003, currency: 'USD' }, changes: [], before: null }] } });
   return { envelopes: [{ rendered: '', status: 'ok' }] };
@@ -106,7 +111,7 @@ function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; a
 const button_named = (root: HTMLElement, text: string): HTMLButtonElement | undefined =>
   [...root.querySelectorAll('button')].find((button: HTMLButtonElement): boolean => (button.textContent ?? '').trim() === text);
 /** ITS USERS' rows, a cell each. */
-const accountRows = (root: HTMLElement): string[][] => [...root.querySelectorAll('.vm-account-listing .listing-row')].map((row) => ['name', 'uid', 'gid', 'groups', 'email', 'password'].map((key) => row.querySelector(`.vm-cell-${key}`)?.textContent ?? ''));
+const accountRows = (root: HTMLElement): string[][] => [...root.querySelectorAll('.vm-account-listing .listing-row')].map((row) => ['name', 'uid', 'gid', 'groups', 'email', 'password', 'access'].map((key) => row.querySelector(`.vm-cell-${key}`)?.textContent ?? ''));
 /** ITS USERS' change block, a line each. */
 const changeLines = (root: HTMLElement): string[] => [...root.querySelectorAll('.vm-account-change .vm-change-line')].map((line) => line.textContent ?? '');
 const settle = async (rounds: number = 8): Promise<void> => { for (let i: number = 0; i < rounds; i++) await new Promise((resolve) => { setTimeout(resolve, 0); }); };
@@ -249,10 +254,15 @@ describe('the VM controller', () => {
     expect(screen.root.querySelector('.vm-chip-edited')).toBeNull();
     // ITS USERS is an ARGUS listing: CUBE's accounts with their id, the user-private group, groups and email; the password never shown.
     expect(accountRows(screen.root)).toEqual([
-      ['chris · admin', '1', '1', 'all_users, pacs_users', 'dev@babyMRI.org', '•••• set'],
-      ['jennings', '4', '4', 'all_users', 'j@example.org', '•••• set'],
-      ['rudolph · its line adds it', '—', '—', 'all_users', 'rudolph@example.org', 'asked when it runs'],
+      ['chris · admin', '1', '1', 'all_users, pacs_users', 'dev@babyMRI.org', '•••• set', 'stopped · home kept'],
+      ['jennings', '4', '4', 'all_users', 'j@example.org', '•••• set', 'running · 3% · 210 MiB / 2 GiB'],
+      ['rudolph · its line adds it', '—', '—', 'all_users', 'rudolph@example.org', 'asked when it runs', 'none'],
     ]);
+    // HOST ACCESS is shown and never a control: the listing says so, and the old promise of a next step is gone.
+    expect(screen.root.querySelector('.vm-account-listing')?.textContent ?? '').toContain('HOST ACCESS');
+    expect(screen.root.querySelector('.vm-access-note')?.textContent).toBe('Starting a berth, stopping it and removing a person\'s home are not controls here yet.');
+    expect(screen.root.querySelector('.vm-access-why')).toBeNull();
+    expect(screen.root.querySelector('.vm-chris')?.textContent).not.toContain('is the next step');
     // The script's user line CUBE does not hold yet is a pending change of its own; APPLY names it.
     expect(changeLines(screen.root)).toEqual(['add user rudolph · its line in the script']);
     expect(screen.root.querySelector('.vm-account-apply')?.textContent).toBe('APPLY · add user rudolph · its line in the script');
@@ -260,6 +270,44 @@ describe('the VM controller', () => {
     expect(screen.steps_get().find((step) => step.label === 'USERS')?.state).not.toBe('done');
     screen.dispose();
     screen.root.remove();
+  });
+
+  it('HOST ACCESS reads — and one quiet line says why when porter\'s berths were not read: a porter that cannot say, or a daemon from before they were read', async () => {
+    const was = BERTHS;
+    try {
+      for (const [world, why] of [[{ berths: null, berthsWhy: 'porter 0.9.11 answers no berth status' }, 'HOST ACCESS was not read: porter 0.9.11 answers no berth status.'], [{}, 'HOST ACCESS was not read: the stratus daemon here does not read them.']] as const) {
+        BERTHS = world;
+        const { screen } = screen_make();
+        await screen.vm_open('store');
+        await settle(12);
+        screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
+        await settle(12);
+        expect(accountRows(screen.root).map((row) => row[6])).toEqual(['—', '—', '—']);
+        expect(screen.root.querySelector('.vm-access-why')?.textContent).toBe(why);
+        screen.dispose();
+        screen.root.remove();
+      }
+    } finally {
+      BERTHS = was;
+    }
+  });
+
+  it('HOST ACCESS says berths are off when porter answered that it starts none: an answer, not a failed read', async () => {
+    const was = BERTHS;
+    try {
+      BERTHS = { berths: null, berthsWhy: null, berthsOff: true };
+      const { screen } = screen_make();
+      await screen.vm_open('store');
+      await settle(12);
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
+      await settle(12);
+      expect(accountRows(screen.root).map((row) => row[6])).toEqual(['—', '—', '—']);
+      expect(screen.root.querySelector('.vm-access-why')?.textContent).toBe('berths are off');
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      BERTHS = was;
+    }
   });
 
   it('a user line reads done once CUBE holds its account, as its accounts were read from it: the receipt of ADD is CHRIS', async () => {
@@ -720,7 +768,7 @@ describe('the VM controller', () => {
     await settle();
     button_named(screen.root, 'pacs_users')?.click();
     await settle();
-    expect(accountRows(screen.root)[1]).toEqual(['jennings', '4', '4', 'all_users · + pacs_users', 'j@example.org', '•••• set']);
+    expect(accountRows(screen.root)[1]).toEqual(['jennings', '4', '4', 'all_users · + pacs_users', 'j@example.org', '•••• set', 'running · 3% · 210 MiB / 2 GiB']);
     expect(changeLines(screen.root)).toEqual([
       'add user rudolph · its line in the script',
       'add user ana.lima · groups all_users, pacs_users',

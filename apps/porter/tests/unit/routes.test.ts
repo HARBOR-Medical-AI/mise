@@ -9,10 +9,11 @@ import type { AddressInfo } from 'node:net';
 import { createServer, type Server } from 'node:http';
 import { SessionRegistry } from '../../src/registry.js';
 import { porterApp_build, upstreamPath_build, mountUrl_split, berthHttp_derive, type PorterApp } from '../../src/app.js';
-import type { Berth, BootListener, BootReport, SessionHost } from '../../src/host/sessionHost.js';
+import type { Berth, BerthAccess, BootListener, BootReport, SessionHost } from '../../src/host/sessionHost.js';
 import type { PorterConfig } from '../../src/config.js';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { TokenStore } from '../../src/tokens.js';
+import { cubeAdmin_check, type AdminAnswer, type AdminVerdict } from '../../src/cube/auth.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -684,5 +685,173 @@ describe('door tokens (chell auth)', () => {
     const wrongPassword = await built.app.inject({ method: 'POST', url: '/login', payload: `username=chris&password=wrong&code=${encodeURIComponent(code)}`, headers: { 'content-type': 'application/x-www-form-urlencoded' } });
     expect(wrongPassword.statusCode).toBe(303); // back to the page with the code field
     expect(String(wrongPassword.headers.location)).toMatch(/^\/device\?reason=/);
+  });
+});
+
+describe('GET /berths', () => {
+  const ROWS: BerthAccess[] = [
+    { user: 'ana', state: 'running', cohort: '42', cpuPercent: 3, memoryBytes: 210 * 1024 ** 2, memoryLimitBytes: 2 * 1024 ** 3 },
+    { user: 'benito', state: 'stopped', cohort: null, cpuPercent: null, memoryBytes: null, memoryLimitBytes: null },
+  ];
+  /** A host that starts berths and reports these rows. */
+  class AccessHost extends FakeHost {
+    public fails: boolean = false;
+    public readCube: string | null = null;
+    async access_read(cubeUrl: string): Promise<BerthAccess[]> {
+      this.readCube = cubeUrl;
+      if (this.fails) throw new Error('connect ENOENT /run/launcher.sock');
+      return ROWS;
+    }
+  }
+  /** CUBE as the check sees it: it asks with the header it was handed, and says who administers. */
+  const verdicts = (asked: string[]) => async (_cube: string, authorization: string): Promise<AdminVerdict> => {
+    asked.push(authorization);
+    return authorization === 'Token ADMIN' ? 'admin' : authorization === 'Token USER' ? 'not-admin' : authorization === 'Token DOWN' ? 'unreachable' : 'refused';
+  };
+  const app_make = async (over: SessionHost, asked: string[], now?: () => number): Promise<PorterApp> =>
+    porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'tokens-berths.json') }, host: over, adminCheck: verdicts(asked), log: (line: string): void => { said.push(line); }, ...(now !== undefined ? { now } : {}) });
+
+  it('refuses a caller with no credentials, or ones CUBE does not accept, before it asks the launcher', async () => {
+    const asked: string[] = [];
+    const made = await app_make(new AccessHost(), asked);
+    expect((await made.app.inject({ method: 'GET', url: '/berths' })).statusCode).toBe(401);
+    expect((await made.app.inject({ method: 'GET', url: '/berths', headers: { authorization: 'Bearer ADMIN' } })).statusCode).toBe(401);
+    expect(asked).toEqual([]);
+    const refused = await made.app.inject({ method: 'GET', url: '/berths', headers: { authorization: 'Token WRONG' } });
+    expect(refused.statusCode).toBe(401);
+    expect(refused.body).not.toContain('WRONG');
+    await made.app.close();
+  });
+
+  it('refuses a CUBE user who is not an administrator, and says so when CUBE does not answer', async () => {
+    const made = await app_make(new AccessHost(), []);
+    expect((await made.app.inject({ method: 'GET', url: '/berths', headers: { authorization: 'Token USER' } })).statusCode).toBe(403);
+    expect((await made.app.inject({ method: 'GET', url: '/berths', headers: { authorization: 'Token DOWN' } })).statusCode).toBe(502);
+    await made.app.close();
+  });
+
+  it('answers an administrator, by token or by Basic credentials, with each person\'s berth or kept home, and logs no credential', async () => {
+    const asked: string[] = [];
+    const made = await app_make(new AccessHost(), asked);
+    const basic: string = `Basic ${Buffer.from('chris:secret-password').toString('base64')}`;
+    const answer = await made.app.inject({ method: 'GET', url: '/berths', headers: { authorization: 'Token ADMIN' } });
+    expect(answer.statusCode).toBe(200);
+    const body = answer.json() as { at: string; berths: BerthAccess[] };
+    expect(Number.isNaN(Date.parse(body.at))).toBe(false);
+    expect(body.berths).toEqual(ROWS);
+    // Basic credentials reach CUBE as they came; CUBE here refuses them, and the refusal is a 401.
+    expect((await made.app.inject({ method: 'GET', url: '/berths', headers: { authorization: basic } })).statusCode).toBe(401);
+    expect(asked).toEqual(['Token ADMIN', basic]);
+    expect(said.join('\n')).not.toContain('secret-password');
+    expect(said.join('\n')).not.toContain('ADMIN');
+    await made.app.close();
+  });
+
+  it('asks the launcher about this door\'s CUBE', async () => {
+    const host = new AccessHost();
+    const made = await app_make(host, []);
+    await made.app.inject({ method: 'GET', url: '/berths', headers: { authorization: 'Token ADMIN' } });
+    expect(host.readCube).toBe(config.cubeUrl);
+    await made.app.close();
+  });
+
+  it('allows a client ten asks a minute, then answers 429 with Retry-After and does not ask CUBE; the minute passing lets it ask again', async () => {
+    const asked: string[] = [];
+    let at: number = 1_000_000;
+    const made = await app_make(new AccessHost(), asked, () => at);
+    const ask = (token: string) => made.app.inject({ method: 'GET', url: '/berths', headers: { authorization: `Token ${token}` } });
+    for (let one = 0; one < 10; one += 1) expect((await ask(`WRONG${one}`)).statusCode).toBe(401);
+    expect(asked).toHaveLength(10);
+    at += 20_000;
+    const over = await ask('WRONG10');
+    expect(over.statusCode).toBe(429);
+    expect(Number(over.headers['retry-after'])).toBe(40);
+    expect((await made.app.inject({ method: 'GET', url: '/berths' })).statusCode).toBe(429);
+    expect(asked).toHaveLength(10);
+    at += 41_000;
+    expect((await ask('ADMIN')).statusCode).toBe(200);
+    await made.app.close();
+  });
+
+  it('counts each client address on its own', async () => {
+    const made = await app_make(new AccessHost(), []);
+    const ask = (address: string) => made.app.inject({ method: 'GET', url: '/berths', remoteAddress: address, headers: { authorization: 'Token ADMIN' } });
+    for (let one = 0; one < 10; one += 1) await ask('10.0.0.1');
+    expect((await ask('10.0.0.1')).statusCode).toBe(429);
+    expect((await ask('10.0.0.2')).statusCode).toBe(200);
+    await made.app.close();
+  });
+
+  it('keeps CUBE\'s verdict on one header for 30 s, under a hash, and asks again after; a silent CUBE is not remembered', async () => {
+    const asked: string[] = [];
+    let at: number = 5_000_000;
+    const made = await app_make(new AccessHost(), asked, () => at);
+    const ask = (token: string) => made.app.inject({ method: 'GET', url: '/berths', headers: { authorization: `Token ${token}` } });
+    expect((await ask('ADMIN')).statusCode).toBe(200);
+    expect((await ask('ADMIN')).statusCode).toBe(200);
+    expect((await ask('USER')).statusCode).toBe(403);
+    expect((await ask('USER')).statusCode).toBe(403);
+    expect((await ask('WRONG')).statusCode).toBe(401);
+    expect((await ask('WRONG')).statusCode).toBe(401);
+    expect(asked).toEqual(['Token ADMIN', 'Token USER', 'Token WRONG']);
+    at += 31_000;
+    expect((await ask('ADMIN')).statusCode).toBe(200);
+    expect(asked).toHaveLength(4);
+    at += 1_000;
+    expect((await ask('DOWN')).statusCode).toBe(502);
+    expect((await ask('DOWN')).statusCode).toBe(502);
+    expect(asked.filter((one) => one === 'Token DOWN')).toHaveLength(2);
+    await made.app.close();
+  });
+
+  it('says a porter that starts no berths starts none', async () => {
+    const made = await app_make(new FakeHost(), []);
+    const answer = await made.app.inject({ method: 'GET', url: '/berths', headers: { authorization: 'Token ADMIN' } });
+    expect(answer.statusCode).toBe(200);
+    expect(answer.json()).toEqual({ berths: null, why: 'this porter starts no berths' });
+    await made.app.close();
+  });
+
+  it('says a launcher that does not answer, with a 502', async () => {
+    const down = new AccessHost();
+    down.fails = true;
+    const made = await app_make(down, []);
+    const answer = await made.app.inject({ method: 'GET', url: '/berths', headers: { authorization: 'Token ADMIN' } });
+    expect(answer.statusCode).toBe(502);
+    expect((answer.json() as { error: string }).error).toContain('the berth launcher did not answer');
+    await made.app.close();
+  });
+});
+
+describe('the admin check against CUBE', () => {
+  const root = (links: unknown, status: number = 200) => async (): Promise<AdminAnswer> => ({ status, json: async (): Promise<unknown> => ({ collection_links: links }) });
+  it('takes the admin link on CUBE\'s root as an administrator, and its absence as a user who is not one', async () => {
+    expect(await cubeAdmin_check('https://cube.example.org/api/v1/', 'Token T', root({ admin: 'https://cube.example.org/chris-admin/api/v1/', user: 'x' }))).toBe('admin');
+    expect(await cubeAdmin_check('https://cube.example.org/api/v1/', 'Token T', root({ user: 'x' }))).toBe('not-admin');
+    expect(await cubeAdmin_check('https://cube.example.org/api/v1/', 'Token T', root({ admin: null }))).toBe('not-admin');
+  });
+
+  it('hands CUBE the header as it came, asks for one item of the root, and tells a refusal from silence', async () => {
+    let seen: Record<string, string> = {};
+    let url: string = '';
+    await cubeAdmin_check('https://cube.example.org/api/v1/', 'Basic abc', async (asked, init) => { url = asked; seen = init.headers; return { status: 200, json: async () => ({}) }; });
+    expect(seen['Authorization']).toBe('Basic abc');
+    expect(url).toBe('https://cube.example.org/api/v1/?limit=1');
+    expect(await cubeAdmin_check('https://cube.example.org/api/v1/', 'Token T', root({}, 401))).toBe('refused');
+    expect(await cubeAdmin_check('https://cube.example.org/api/v1/', 'Token T', root({}, 403))).toBe('refused');
+    expect(await cubeAdmin_check('https://cube.example.org/api/v1/', 'Token T', root({}, 500))).toBe('unreachable');
+    expect(await cubeAdmin_check('https://cube.example.org/api/v1/', 'Token T', async () => { throw new Error('down'); })).toBe('unreachable');
+  });
+
+  it('does not follow a redirect, takes it as CUBE not answering, and lets go of the body of every answer it does not read', async () => {
+    let redirect: string = '';
+    let cancelled: number = 0;
+    const body = { cancel: async (): Promise<void> => { cancelled += 1; } };
+    const answer = (status: number) => async (_url: string, init: { redirect: 'manual' }): Promise<AdminAnswer> => { redirect = init.redirect; return { status, body, json: async () => ({}) }; };
+    expect(await cubeAdmin_check('https://cube.example.org/api/v1/', 'Token T', answer(302))).toBe('unreachable');
+    expect(redirect).toBe('manual');
+    expect(await cubeAdmin_check('https://cube.example.org/api/v1/', 'Token T', answer(401))).toBe('refused');
+    expect(await cubeAdmin_check('https://cube.example.org/api/v1/', 'Token T', answer(503))).toBe('unreachable');
+    expect(cancelled).toBe(3);
   });
 });

@@ -15,6 +15,24 @@ import type { Berth } from '@fnndsc/calypso/berth';
 
 export type { Berth };
 
+/**
+ * One person's berth as the operator reads it: whether it is up and what it
+ * uses, or that it is stopped and their home is kept. A person with neither
+ * a berth nor a home is absent.
+ */
+export interface BerthAccess {
+  readonly user: string;
+  readonly state: 'running' | 'stopped';
+  /** The cohort a running berth holds (`none` for no cohort); null when stopped. */
+  readonly cohort: string | null;
+  /** CPU use, as a percent of one CPU, from one engine sample; null when stopped. */
+  readonly cpuPercent: number | null;
+  /** Memory in use, less the page cache; null when stopped. */
+  readonly memoryBytes: number | null;
+  /** The memory the berth may use; null when stopped. */
+  readonly memoryLimitBytes: number | null;
+}
+
 /** How a person's stratus session is named, beside their ChRIS one. */
 const STRATUS_PREFIX: string = 'stratus:oci@';
 
@@ -209,6 +227,15 @@ export interface SessionHost {
    * @param token - The new token.
    */
   token_renew?(identity: string, user: string, cubeUrl: string, token: string): Promise<void>;
+  /**
+   * Every person's berth and what it uses, for the operator; a host that
+   * starts no berths has none to read.
+   *
+   * @param cubeUrl - This door's CUBE: only the berths and homes of its people are read, not leftovers of an earlier CUBE.
+   * @returns One row a person who has a berth up or a home kept.
+   * @throws {Error} When the berth launcher does not answer.
+   */
+  access_read?(cubeUrl: string): Promise<BerthAccess[]>;
 }
 
 /**

@@ -7,6 +7,7 @@
  *   POST /berths/start   {user, uid, gid, cubeUrl, token, cohort?}  → the berth, running
  *   POST /berths/stop    {user, cubeUrl}                   → {stopped}
  *   GET  /berths/status  [?user=…&cubeUrl=…]               → {berths: […]}
+ *   GET  /berths/access?cubeUrl=…                          → {berths: […]}, each person's berth or kept home with its usage
  *
  * @module
  */
@@ -113,7 +114,13 @@ export function launcherServer_create(launcher: BerthLauncher, secret: string, l
           answer(200, { berths: berths.map(berth_render), capacity: await launcher.capacity_get() });
           return;
         }
-        answer(404, { error: 'the launcher knows start, stop and status' });
+        if (req.method === 'GET' && url.pathname === '/berths/access') {
+          const cubeUrl: string | null = url.searchParams.get('cubeUrl');
+          if (cubeUrl === null || cubeUrl === '') throw new BerthRefusal(400, 'access wants ?cubeUrl=<the CUBE whose people are read>');
+          answer(200, { berths: await launcher.access_read(cubeUrl) });
+          return;
+        }
+        answer(404, { error: 'the launcher knows start, stop, status and access' });
       } catch (error: unknown) {
         const status: number = error instanceof BerthRefusal ? error.status : 500;
         const message: string = error instanceof Error ? error.message : String(error);

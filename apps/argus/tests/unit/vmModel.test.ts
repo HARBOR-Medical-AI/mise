@@ -7,7 +7,7 @@
 import { describe, it, expect } from '@jest/globals';
 import type { VmStatusRow } from '@fnndsc/menu';
 import { lines_build } from '../../src/features/script/model.js';
-import { berthsHold_words, lineBerthLimits_read, lineBerths_read, settingRows_derive, settingValue_why, vmCondition_derive, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from '../../src/features/vm/model.js';
+import { access_words, bytes_words, berthsHold_words, lineBerthLimits_read, lineBerths_read, settingRows_derive, settingValue_why, vmCondition_derive, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from '../../src/features/vm/model.js';
 
 const SCRIPT: string = [
   'net new n --cidr 10.20.0.0/16',
@@ -163,5 +163,35 @@ describe('the VM controller model', () => {
       expect(berthsHold_words({ vcpu: null, memory: 16 }, DEPLOY, RUNS, 'minimal')).toBeNull();
       expect(berthsHold_words({ vcpu: 6, memory: null }, DEPLOY, RUNS, 'minimal')).toBeNull();
     });
+  });
+});
+
+describe('HOST ACCESS', () => {
+  const GIB: number = 1024 ** 3;
+  const berths = [
+    { user: 'ana', state: 'running' as const, cohort: '42', cpuPercent: 3.2, memoryBytes: 210 * 1024 ** 2, memoryLimitBytes: 2 * GIB },
+    { user: 'quiet', state: 'running' as const, cohort: 'none', cpuPercent: 0.2, memoryBytes: 1.5 * GIB, memoryLimitBytes: 4 * GIB },
+    { user: 'blind', state: 'running' as const, cohort: 'none', cpuPercent: null, memoryBytes: null, memoryLimitBytes: null },
+    { user: 'benito', state: 'stopped' as const, cohort: null, cpuPercent: null, memoryBytes: null, memoryLimitBytes: null },
+  ];
+
+  it('words a running berth with its CPU and memory, a stopped one as the home kept, a person with neither as none, and an unread answer as a dash', () => {
+    expect(access_words(berths, 'ana')).toBe('running · 3% · 210 MiB / 2 GiB');
+    expect(access_words(berths, 'quiet')).toBe('running · <1% · 1.5 GiB / 4 GiB');
+    expect(access_words(berths, 'blind')).toBe('running');
+    expect(access_words(berths, 'benito')).toBe('stopped · home kept');
+    expect(access_words(berths, 'carla')).toBe('none');
+    expect(access_words([], 'carla')).toBe('none');
+    expect(access_words(null, 'ana')).toBe('—');
+  });
+
+  it('counts bytes in MiB under a GiB and in GiB above, a decimal only when it is not whole', () => {
+    expect(bytes_words(512 * 1024 ** 2)).toBe('512 MiB');
+    expect(bytes_words(2 * GIB)).toBe('2 GiB');
+    expect(bytes_words(1.5 * GIB)).toBe('1.5 GiB');
+    // Just short of a GiB: whole MiB that reach 1024 are a GiB, never `1024 MiB`.
+    expect(bytes_words(1023.4 * 1024 ** 2)).toBe('1023 MiB');
+    expect(bytes_words(1023.5 * 1024 ** 2)).toBe('1 GiB');
+    expect(bytes_words(GIB - 1)).toBe('1 GiB');
   });
 });
