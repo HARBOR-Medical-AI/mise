@@ -63,7 +63,7 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
     return envelope({ kind: 'manifest.status', data: { manifest: 'store', lines } });
   }
   if (line === 'vm limits') return envelope({ kind: 'stratus.vm.limits', data: LIMITS });
-  if (line === 'chris status store') return envelope({ kind: 'stratus.chris.status', data: { chris: [{ vm: 'store', profile: 'minimal', compute: 'NERC', url: 'https://cube.chrisproject.org/api/v1/', host: 'cube.chrisproject.org', porter: 'porter.chrisproject.org', deployed: '2026-11-05T04:04:12.000Z', image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.9.10',
+  if (line === 'chris status store') return envelope({ kind: 'stratus.chris.status', data: { chris: [{ vm: 'store', profile: 'minimal', compute: 'NERC', url: 'https://cube.chrisproject.org/api/v1/', host: 'cube.chrisproject.org', porter: 'porter.chrisproject.org', deployed: '2026-11-05T04:04:12.000Z', image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.9.10', berths: true, berthLimits: { cpus: 2, memoryGib: 4 },
     live: { at: '2026-11-05T06:00:00.000Z', cube: { url: 'https://cube.chrisproject.org/api/v1/', status: 200, admin: true }, porter: { url: 'https://porter.chrisproject.org/healthz', status: 200, sessions: 2, version: '0.9.10' }, accounts: ACCOUNTS, accountsWhy: null, groups: ['all_users', 'pacs_users'] } }] } });
   if (line.startsWith('chris deploy store') && line.endsWith('--plan')) return envelope({ kind: 'stratus.chris.plan', data: { vm: 'store', changes: line.includes('cube2') ? ['host cube.chrisproject.org → cube2.chrisproject.org'] : [], restarts: ['porter (0.9.10 → 0.9.11): its open sessions end'], sessions: 2, asks: true } });
   if (line.startsWith('vm cost')) return envelope({ kind: 'stratus.vm.cost', data: { vms: [{ name: 'store', declared: true, spec: SPEC, cost: { machineHour: 0.052, dataHour: 0.003, currency: 'USD' }, changes: [], before: null }] } });
@@ -857,6 +857,9 @@ describe('the VM controller', () => {
       ['COMPUTE', 'NERC', 'NERC'],
       ['HOST', 'cube.chrisproject.org', 'cube.chrisproject.org'],
       ['PORTER', 'none · changes', 'porter.chrisproject.org'],
+      ['BERTHS', 'off · changes', 'on'],
+      ['BERTH CPU', '—', '2'],
+      ['BERTH MEMORY', '—', '4 GiB'],
     ]);
     expect(screen.root.querySelectorAll('.vm-chris .tdc-name-row')).toHaveLength(0);
     const host = (): HTMLElement => [...screen.root.querySelectorAll<HTMLElement>('.vm-setting-listing .listing-row')][1] as HTMLElement;
@@ -883,5 +886,20 @@ describe('the VM controller', () => {
     expect(screen.root.querySelector('.vm-replay-quiet')).toBeNull();
     screen.dispose();
     screen.root.remove();
+  });
+  it('the CHRIS and SPEC bands say how many berths the machine holds: of the shape it stands in on CHRIS, of the shape the line declares on SPEC, and nothing when berths are off', async () => {
+    STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 6, memory: 16, disk: 50, data: 50 };
+    const { screen } = screen_make();
+    await screen.vm_open('store');
+    await settle(12);
+    // SPEC: the line declares 2 vCPU and 8 GiB, which holds none above the minimal profile's floor at 2 CPUs and 4 GiB a berth.
+    expect(screen.root.querySelector('.vm-size .tdc-section-aside')?.textContent).toBe('RUNS AS READ FROM THE TENANCY 04:48 UTC · HOLDS 0 BERTHS');
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
+    await settle(12);
+    // CHRIS: the machine stands at 6 vCPU and 16 GiB: (6-2)/2 and (16-4)/4 are 2 and 3.
+    expect(screen.root.querySelector('.vm-chris .tdc-section-aside')?.textContent).toBe('READ FROM IT 06:00 UTC · HOLDS 2 BERTHS');
+    screen.dispose();
+    screen.root.remove();
+    STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50, data: 50 };
   });
 });

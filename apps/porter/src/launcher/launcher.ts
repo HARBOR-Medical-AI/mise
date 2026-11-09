@@ -20,8 +20,9 @@
  * @module
  */
 import { berthKey_compute, identity_normalise } from '@fnndsc/calypso/berth';
+import { berthCapacity_derive, profileFloor_get, type HostSize } from '@fnndsc/menu';
 import type { DockerAnswer, DockerApi } from './docker.js';
-import { berthCapacity_derive, capacityRefusal_words, profileFloor_get, type BerthPolicy, type HostSize } from './policy.js';
+import { capacityRefusal_words, type BerthPolicy } from './policy.js';
 
 /**
  * The image a berth runs when the deployment names none: mise-berth, pinned

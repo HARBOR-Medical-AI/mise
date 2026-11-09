@@ -8,29 +8,18 @@
  */
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
-import { CHRIS_PROFILE_OFFERS, type ChrisProfileFloor } from '@fnndsc/menu';
+import type { BerthCapacityRule, BerthLimits as BerthSize } from '@fnndsc/menu';
 
 /** What one berth may use. */
-export interface BerthLimits {
-  /** CPUs. */
-  readonly cpus: number;
-  /** Memory, in GiB. */
-  readonly memoryGib: number;
+export interface BerthLimits extends BerthSize {
   /** Processes and threads. */
   readonly pids: number;
 }
 
 /** A spoke's berth policy: the limits per berth, and the number it holds when the policy names one. */
-export interface BerthPolicy {
+export interface BerthPolicy extends BerthCapacityRule {
+  /** What one berth may use, processes included. */
   readonly limits: BerthLimits;
-  /** The berths the spoke holds, when the policy says; null: as many as the host holds. */
-  readonly holds: number | null;
-}
-
-/** The host a spoke runs on, as its engine reports it. */
-export interface HostSize {
-  readonly cpus: number;
-  readonly memoryGib: number;
 }
 
 /** The limits a berth has when the policy names none: one CPU, 2 GiB, 1024 processes. */
@@ -59,29 +48,6 @@ export function berthPolicy_read(path: string | null): BerthPolicy {
     limits: { cpus: parsed.data.cpus ?? BERTH_LIMITS_DEFAULT.cpus, memoryGib: parsed.data.memoryGib ?? BERTH_LIMITS_DEFAULT.memoryGib, pids: parsed.data.pids ?? BERTH_LIMITS_DEFAULT.pids },
     holds: parsed.data.holds ?? null,
   };
-}
-
-/** The floor of the ChRIS profile a spoke runs: what CUBE takes before any berth. */
-export function profileFloor_get(profile: string = 'minimal'): ChrisProfileFloor {
-  const floor: ChrisProfileFloor | null | undefined = CHRIS_PROFILE_OFFERS.find((offer): boolean => offer.name === profile)?.floor;
-  return floor ?? { vcpu: 2, memory: 4, data: 50 };
-}
-
-/**
- * How many berths a host holds: what is left of it above the profile's
- * floor, divided by one berth's limits, the scarcer of CPU and memory
- * deciding; a policy's own number when it names a smaller one.
- *
- * @param host - The host's size.
- * @param floor - The profile's floor.
- * @param policy - The policy.
- * @returns The berths it holds, never less than none.
- */
-export function berthCapacity_derive(host: HostSize, floor: ChrisProfileFloor, policy: BerthPolicy): number {
-  const byCpu: number = Math.floor((host.cpus - floor.vcpu) / policy.limits.cpus);
-  const byMemory: number = Math.floor((host.memoryGib - floor.memory) / policy.limits.memoryGib);
-  const fits: number = Math.max(0, Math.min(byCpu, byMemory));
-  return policy.holds === null ? fits : Math.min(fits, policy.holds);
 }
 
 /**

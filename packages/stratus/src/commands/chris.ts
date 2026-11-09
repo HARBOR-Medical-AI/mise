@@ -129,7 +129,7 @@ async function chrisStatus_run(context: ChrisCommandContext, names: ReadonlyArra
     if (live !== null) lines.push(...chrisLive_lines(live));
     rows.push({
       vm: record.name, profile: chris.profile, compute: chris.compute, url: chris.url, host: chris.host, porter: chris.porter ?? null, deployed: chris.deployed,
-      image: chris.image ?? null, porterVersion: chris.porterVersion ?? null,
+      image: chris.image ?? null, porterVersion: chris.porterVersion ?? null, berths: chris.berths === 'launcher', berthLimits: chris.berthLimits ?? null,
       live: live === null ? null : { at: live.at, cube: live.cube, porter: live.porter, accounts: live.accounts === null ? null : live.accounts.map((one) => ({ ...one, groups: [...one.groups] })), accountsWhy: live.accountsWhy, groups: live.groups === null ? null : [...live.groups] },
     });
   }

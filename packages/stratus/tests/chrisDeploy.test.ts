@@ -600,6 +600,10 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
       const changed = await chris_run(context, [...line, '--berth-cpus', '2', '--berth-memory', '4', '--plan']);
       expect(plain(changed.rendered)).toBe('chris deploy store: berth limits 1 vCPU · 2 GiB → 2 vCPU · 4 GiB; restarts the berth launcher: running berths keep their limits until their next start, and each person logs in again\n');
       expect(changed.model).toMatchObject({ data: { asks: true } });
+      // `chris status` carries the berths and their limits, for a screen to set the line beside them.
+      expect((await chris_run(context, ['status'])).model).toMatchObject({ data: { chris: [{ vm: 'store', berths: true, berthLimits: null }] } });
+      vms.record_update('store', (record): void => { if (record.chris !== undefined) record.chris.berthLimits = { cpus: 2, memoryGib: 4 }; });
+      expect((await chris_run(context, ['status'])).model).toMatchObject({ data: { chris: [{ berths: true, berthLimits: { cpus: 2, memoryGib: 4 } }] } });
     });
   });
 
