@@ -102,7 +102,7 @@ The exception is a developer who logs in at the spoke's own door and works insid
 [[spoke-not-backend]]
 === Not a backend
 
-The spoke bastion is a host for a ChRIS session, not a world to mount. It would become a backend only if a tree of its own emerged, which would reopen the cross-backend question #977 deferred. OpenShift Dev Spaces ships a workspace container per developer on one cluster; it has no policy on mounts, no airlock, and is not multi-cluster aware (<<redhat-fl.adoc#survey,redhat-fl.adoc>>). Whether the spoke bastion is built on it or on a plain Deployment with our image is an implementation choice, and the plain one is smaller.
+The spoke bastion is a host for a ChRIS session, not a world to mount. It would become a backend only if a tree of its own emerged, which would reopen the cross-backend question #977 deferred. OpenShift Dev Spaces ships a workspace container per developer on one cluster; it has no policy on mounts, no airlock, and is not multi-cluster aware (<<redhat-fl.adoc#survey,redhat-fl.adoc>>). The spoke bastion is not built on it; <<dev-bastion.adoc#why-not-dev-spaces,dev-bastion.adoc>> gives the reasons.
 
 [[corrections]]
 == What this corrects
@@ -115,4 +115,4 @@ Two lines in stratus.adoc placed the bastion inside the tenancy it builds: the b
 * The Hub bastion as a container on the Hub cluster: its entrypoint, how the key files arrive (mounted Secrets), and who may reach its porter.
 * Who runs the sealed job in a spoke bastion: the same host with the mount hidden from the shell, or a job the session launches.
 * How source crosses the wire from the Hub dev bastion to a spoke bastion, and how the gate approves it.
-* Whether the spoke bastion is OpenShift Dev Spaces or a plain Deployment; one image family for the three bastions, or more.
+* One image family for the three bastions, or more.

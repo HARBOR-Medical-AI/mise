@@ -156,13 +156,36 @@ An earlier draft gave the spoke bastion `oc` and a project-scoped kubeconfig for
 
 Because the cohort is a feed and `/outgoing` becomes a node of it, every run under either posture is recorded by the mechanism ChRIS already has. Nothing is logged specially for the dev bastion, and nothing can run on the cohort outside that record. Reproducibility and audit fall out of the shape rather than being added to it.
 
+[[why-not-dev-spaces]]
+=== Why a berth, not a Dev Spaces workspace
+
+OpenShift Dev Spaces and a berth (<<stand-in>>) look alike from outside: a container per person, a home that persists, a browser front end, a controller that starts and stops them. They answer different questions. Dev Spaces puts the developer in the cluster: the workspace is where they live, the repo is cloned into it, the code runs there, and whatever the cluster's egress allows is in reach. The cluster is a convenience, not a trust boundary, and a workspace knows one cluster. A berth is the developer's stand-in inside a spoke they never enter: they log in at the Hub, and their presence in each spoke is a berth whose one line out is that spoke's CUBE. The spoke is the trust boundary, and the code goes to the data.
+
+[cols="1,2,2",options="header"]
+|===
+| | Dev Spaces workspace | Berth
+| Centred on | a repository | a cohort, which is a feed
+| Identity | an OpenShift user, a namespace, cluster RBAC | the spoke's CUBE token; the berth's uid is the CUBE id; no cluster account
+| Image | the developer's, from a devfile | the spoke's: one pinned image, limits set by the custodian
+| Way in | browser IDE, a local IDE over a tunnel, exposed routes | porter's door alone
+| Network | the cluster's egress | CUBE's API alone; no berth reaches another
+| Code in | `git clone` over egress | porter's door, or files in the spoke's CUBE
+| Data in | mounted volumes, anything egress reaches | a ChRIS copy of the cohort into `/incoming`
+| Results out | `git push`, anything egress reaches | `outgoing return`, a node of the cohort's feed
+| Scope | one cluster | one berth per spoke per person, reached from the Hub
+|===
+
+That difference decides the plumbing. A berth already stands one hop from its spoke's ChRIS: the cohort comes through the CUBE API, code comes the same way or through porter's door (<<wire>>), and results go back as a feed node (<<why-provenance>>), with no egress opened for any of it. A Dev Spaces workspace has none of these paths. Code in means opening egress to a git host or mirroring one into every spoke; data in means a CUBE connector the workspace does not have; results out with provenance means building the return a berth already uses; and the locked image, the CUBE-only network and the policy on the two mounts would each be imposed on a product made to let the developer choose them. That is work for the sake of reusing a controller, and the controller is the small part. On an OpenShift Trusted Domain the berth stays a berth: the launcher makes a pod per person from the one pinned image, under a NetworkPolicy that admits CUBE alone, as it makes a container per person on a VM.
+
+"Hub" has two scales here. Across HARBOR the hub is the Hub bastion, outside every tenancy (<<bastion.adoc#,bastion.adoc>>); inside one spoke, porter is the hub of that spoke's berths (<<berths.adoc#figure,berths.adoc>>). A developer at the first reaches a berth through the second.
+
 [[related]]
 == Related work
 
 * *Trusted research environments and the Five Safes.* The dev bastion's postures map onto the Five Safes, one mechanism per safe: safe projects (a cohort is gathered and recorded before code arrives), safe people (a door token per spoke per developer), safe settings (a container next to the data, one path in), safe data (open or sealed `/incoming`), safe outputs (`/outgoing` reviewed, de-identified, or whole). What TREs do with a desktop and an airlock, this does with a shell and two mounts, and it does it across a fleet.
 * *Federated learning frameworks* (Flower, OpenFL, NVIDIA FLARE) move one kind of code, a training client, to data and return one kind of artifact, model updates. They share one thing with the dev bastion, code goes to the data, and differ in execution model: a standing client at each site exchanging rounds with an aggregator, not an edit-run loop in a shell. In HARBOR such a client would ship as an app; the dev bastion is where its code gets written and tried.
 * *Code-to-data platforms* (DataSHIELD, the Personal Health Train) ship analysis to sites and return aggregates, with a vetted function library standing in for a gate. The dev bastion's gate plays a comparable role for arbitrary code; its loop is interactive where theirs is a request.
-* *OpenShift Dev Spaces and notebook workbenches* give one developer a container on one cluster with the data connected. They resemble the open posture on one spoke, a container with a shell beside the data, without the output review and without the fan-out (<<redhat-fl.adoc#survey,redhat-fl.adoc>>).
+* *OpenShift Dev Spaces and notebook workbenches* give one developer a container on one cluster with the data connected. They resemble the open posture on one spoke, a container with a shell beside the data, without the output review and without the fan-out (<<redhat-fl.adoc#survey,redhat-fl.adoc>>). <<why-not-dev-spaces>> says why the berth is not built on it.
 * *The ChRIS plugin* is one exit, not the model. Working code can later be packaged as a container for ChRIS to run across the fleet at release cadence; the dev bastion itself is a shell over a cohort, and runs nothing as a plugin.
 
 [[open]]
@@ -170,7 +193,6 @@ Because the cohort is a feed and `/outgoing` becomes a node of it, every run und
 
 * *Who runs the sealed job.* The same container with the mount hidden from the shell and visible to the run, or a job the session launches beside it. The figure differs on that one line; the posture does not.
 * *What the gate is.* A signature, a reviewed commit, a policy engine's verdict on the code, or the custodian's hand; and whether it is per run or per `src` revision.
-* *How source crosses the wire.* A file landing through the `tasks` tier, or a `run` verb that carries it; and how a run is cancelled across N spokes.
+* *How source crosses the wire.* A file landing through porter's door in the `tasks` tier, a `run` verb that carries it, or files placed in the spoke's CUBE that the berth fetches as it fetches the cohort; and how a run is cancelled across N spokes.
 * *What "reviewed" means for `/outgoing`.* A person at the spoke, a person at the Hub, or an automatic disclosure check with thresholds.
-* *Whether the spoke bastion is OpenShift Dev Spaces or a plain Deployment* with our image; the plain one is smaller.
 * *The gate blocks sealed everywhere.* Until it is designed, no spoke, the stand-in included, can run sealed; this is the architectural gap downstream of every posture decision.
