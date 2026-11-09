@@ -20,9 +20,9 @@
  * @module
  */
 import { berthKey_compute, identity_normalise } from '@fnndsc/calypso/berth';
-import { berthCapacity_derive, profileFloor_get, type HostSize } from '@fnndsc/menu';
+import { berthCapacity_derive, profileFloor_get, type ChrisProfileFloor, type HostSize } from '@fnndsc/menu';
 import type { DockerAnswer, DockerApi } from './docker.js';
-import { capacityRefusal_words, type BerthPolicy } from './policy.js';
+import { capacityRefusal_words, type BerthPolicy, type BerthRoom } from './policy.js';
 
 /**
  * The image a berth runs when the deployment names none: mise-berth, pinned
@@ -244,16 +244,25 @@ export class BerthLauncher {
    * Memory is rounded up to whole GiB: the engine reports what the kernel
    * leaves after its own reserve (about 7.7 GiB on an 8 GiB machine), and
    * the machine is sized, and counted by every surface, at its nominal GiB.
-   * CPUs are taken as reported.
+   * Memory alone decides; a berth's CPUs are a cap on CPUs it shares with
+   * CUBE, not counted.
    *
    * @returns The capacity.
    */
   public async capacity_get(): Promise<number> {
+    return berthCapacity_derive(await this.host_get(), profileFloor_get(this.options.profile), this.options.policy);
+  }
+
+  /**
+   * The host the engine reports, memory rounded up to whole GiB, CPUs as reported.
+   *
+   * @returns Its size.
+   */
+  private async host_get(): Promise<HostSize> {
     const info: DockerAnswer = await this.options.docker.call('GET', '/info');
     const cpus: unknown = field_get(info.body, 'NCPU');
     const memory: unknown = field_get(info.body, 'MemTotal');
-    const host: HostSize = { cpus: typeof cpus === 'number' ? cpus : 0, memoryGib: typeof memory === 'number' ? Math.ceil(memory / 1024 ** 3) : 0 };
-    return berthCapacity_derive(host, profileFloor_get(this.options.profile), this.options.policy);
+    return { cpus: typeof cpus === 'number' ? cpus : 0, memoryGib: typeof memory === 'number' ? Math.ceil(memory / 1024 ** 3) : 0 };
   }
 
   /**
@@ -398,8 +407,11 @@ export class BerthLauncher {
     }
     // The spoke's room, before anything is made.
     const others: BerthState[] = (await this.status(null)).filter((one: BerthState): boolean => one.state === 'running' && one.identity !== identity);
-    const capacity: number = await this.capacity_get();
-    if (others.length >= capacity) throw new BerthRefusal(409, capacityRefusal_words(capacity, others.map((one: BerthState): string => one.user)));
+    const host: HostSize = await this.host_get();
+    const floor: ChrisProfileFloor = profileFloor_get(this.options.profile);
+    const capacity: number = berthCapacity_derive(host, floor, this.options.policy);
+    const room: BerthRoom = { hostGib: host.memoryGib, floorGib: floor.memory, berthGib: this.options.policy.limits.memoryGib };
+    if (others.length >= capacity) throw new BerthRefusal(409, capacityRefusal_words(capacity, others.map((one: BerthState): string => one.user), room));
     await this.cubeNetwork_ensure();
     await this.wire_ensure(names.network, ask.user);
     await this.volumes_ensure(names, ask);

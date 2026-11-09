@@ -105,20 +105,23 @@ function launcher_make(docker: FakeDocker, policy: BerthPolicy = POLICY, porterC
 }
 
 describe('the berth policy', () => {
-  it('holds what is left of the host above the profile\'s floor, the scarcer of CPU and memory deciding', () => {
+  it('holds the memory left of the host above the profile\'s floor, divided by one berth\'s memory; CPUs do not count', () => {
     const floor = profileFloor_get('minimal');
     expect(floor).toEqual({ vcpu: 2, memory: 4, data: 50 });
-    expect(berthCapacity_derive({ cpus: 24, memoryGib: 62.7 }, floor, POLICY)).toBe(22);
-    expect(berthCapacity_derive({ cpus: 4, memoryGib: 16 }, floor, { limits: { cpus: 1, memoryGib: 4, pids: 512 }, holds: null })).toBe(2);
+    expect(berthCapacity_derive({ cpus: 24, memoryGib: 62.7 }, floor, POLICY)).toBe(29);
+    expect(berthCapacity_derive({ cpus: 4, memoryGib: 16 }, floor, { limits: { cpus: 1, memoryGib: 4, pids: 512 }, holds: null })).toBe(3);
     expect(berthCapacity_derive({ cpus: 2, memoryGib: 4 }, floor, POLICY)).toBe(0);
+    expect(berthCapacity_derive({ cpus: 2, memoryGib: 8 }, floor, POLICY)).toBe(2);
     expect(berthCapacity_derive({ cpus: 24, memoryGib: 62.7 }, floor, { limits: BERTH_LIMITS_DEFAULT, holds: 1 })).toBe(1);
     expect(berthCapacity_derive({ cpus: 4, memoryGib: 8 }, floor, { limits: BERTH_LIMITS_DEFAULT, holds: 10 })).toBe(2);
   });
 
   it('refuses a full spoke naming who holds it', () => {
-    expect(capacityRefusal_words(2, ['rudolph', 'ana'])).toBe('this ChRIS holds 2 berths, in use by ana, rudolph');
-    expect(capacityRefusal_words(1, ['ana'])).toBe('this ChRIS holds 1 berth, in use by ana');
-    expect(capacityRefusal_words(0, [])).toBe('this ChRIS holds no berth: its host has nothing above the profile\'s floor');
+    const room = { hostGib: 8, floorGib: 4, berthGib: 2 };
+    expect(capacityRefusal_words(2, ['rudolph', 'ana'], room)).toBe('this ChRIS holds 2 berths, in use by ana, rudolph');
+    expect(capacityRefusal_words(1, ['ana'], room)).toBe('this ChRIS holds 1 berth, in use by ana');
+    expect(capacityRefusal_words(0, [], { ...room, berthGib: 6 })).toBe('this ChRIS holds no berth: 6 GiB each does not fit above the profile\'s floor (8 GiB, the floor takes 4 GiB)');
+    expect(capacityRefusal_words(0, [], room)).toBe('this ChRIS holds no berth: its policy holds none');
   });
 
   it('reads a policy file, refusing one that is not', () => {
@@ -181,9 +184,11 @@ describe('the launcher over an engine', () => {
     expect(await launcher_make(docker).capacity_get()).toBe(2);
     docker.host = { cpus: 4, memory: 8 * 1024 ** 3 };
     expect(await launcher_make(docker).capacity_get()).toBe(2);
-    // CPUs stay as reported.
+    // CPUs do not count: a berth's are a cap on shared CPUs.
+    docker.host = { cpus: 2, memory: 8 * 1024 ** 3 };
+    expect(await launcher_make(docker).capacity_get()).toBe(2);
     docker.host = { cpus: 3, memory: Math.floor(15.6 * 1024 ** 3) };
-    expect(await launcher_make(docker).capacity_get()).toBe(1);
+    expect(await launcher_make(docker).capacity_get()).toBe(6);
   });
 
   it('with a cubeHost, reads cube-net\'s gateway from the engine and puts CUBE\'s name at it inside the berth; without one, adds no host', async () => {

@@ -147,9 +147,10 @@ export function profileFloor_get(profile: string = 'minimal'): ChrisProfileFloor
 }
 
 /**
- * How many berths a host holds: what is left of it above the profile's
- * floor, divided by one berth's limits, the scarcer of CPU and memory
- * deciding; a policy's own number when it names a smaller one.
+ * How many berths a host holds: the memory left of it above the profile's
+ * floor, divided by one berth's memory; a policy's own number when it names a
+ * smaller one. Memory alone decides: a berth's CPU is a cap on CPUs it shares
+ * with CUBE, not a reservation, so it does not count.
  *
  * @param host - The host's size.
  * @param floor - The profile's floor.
@@ -162,9 +163,7 @@ export function profileFloor_get(profile: string = 'minimal'): ChrisProfileFloor
  * ```
  */
 export function berthCapacity_derive(host: HostSize, floor: ChrisProfileFloor, rule: BerthCapacityRule): number {
-  const byCpu: number = Math.floor((host.cpus - floor.vcpu) / rule.limits.cpus);
-  const byMemory: number = Math.floor((host.memoryGib - floor.memory) / rule.limits.memoryGib);
-  const fits: number = Math.max(0, Math.min(byCpu, byMemory));
+  const fits: number = Math.max(0, Math.floor((host.memoryGib - floor.memory) / rule.limits.memoryGib));
   return rule.holds === null ? fits : Math.min(fits, rule.holds);
 }
 

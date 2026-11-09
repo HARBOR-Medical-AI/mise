@@ -632,7 +632,7 @@ export function berthsHold_words(host: { readonly vcpu: number | null; readonly 
 }
 
 /**
- * Why berths of the limits named cannot be held, as `chris deploy` refuses them: nothing is left of the machine above the profile's floor.
+ * Why berths of the limits named cannot be held, as `chris deploy` refuses them: a berth's CPUs above the machine's, or no berth's memory left above the profile's floor.
  *
  * @param shape - The machine's vCPUs and GiB of memory, or null when its shape is not known.
  * @param cpus - A berth's CPUs as the line has them (empty: the default).
@@ -644,9 +644,10 @@ function limitsFit_why(shape: { readonly vcpu: number | null; readonly memory: n
   if (shape === null || shape.vcpu === null || shape.memory === null) return null;
   const limits: BerthLimits = { cpus: cpus === '' ? BERTH_LIMITS_DEFAULT.cpus : Number(cpus), memoryGib: memory === '' ? BERTH_LIMITS_DEFAULT.memoryGib : Number(memory) };
   if (!(limits.cpus > 0) || !(limits.memoryGib > 0)) return null;
+  if (limits.cpus > shape.vcpu) return `--berth-cpus ${limits.cpus}: this machine has ${shape.vcpu} vCPU`;
   const floor: ChrisProfileFloor = profileFloor_get(profile === '' ? 'minimal' : profile);
   if (berthCapacity_derive({ cpus: shape.vcpu, memoryGib: shape.memory }, floor, { limits, holds: null }) > 0) return null;
-  return `berths of ${limits.cpus} vCPU · ${limits.memoryGib} GiB do not fit this machine above the ${profile === '' ? 'minimal' : profile} profile's floor (${shape.vcpu} vCPU, ${shape.memory} GiB; the floor takes ${floor.vcpu} vCPU, ${floor.memory} GiB)`;
+  return `berths of ${limits.memoryGib} GiB do not fit this machine above the ${profile === '' ? 'minimal' : profile} profile's floor (${shape.memory} GiB; the floor takes ${floor.memory} GiB)`;
 }
 
 /**

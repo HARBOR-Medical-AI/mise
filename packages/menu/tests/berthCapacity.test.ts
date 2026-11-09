@@ -18,10 +18,16 @@ describe('profileFloor_get', () => {
 describe('berthCapacity_derive', () => {
   const floor = profileFloor_get('minimal');
 
-  it('holds what is left of the host above the floor, the scarcer of CPU and memory deciding', () => {
-    expect(berthCapacity_derive({ cpus: 24, memoryGib: 62.7 }, floor, DEFAULT_RULE)).toBe(22);
-    expect(berthCapacity_derive({ cpus: 4, memoryGib: 16 }, floor, { limits: { cpus: 1, memoryGib: 4 }, holds: null })).toBe(2);
+  it('holds the memory left of the host above the floor, divided by one berth\'s memory', () => {
+    expect(berthCapacity_derive({ cpus: 24, memoryGib: 62.7 }, floor, DEFAULT_RULE)).toBe(29);
+    expect(berthCapacity_derive({ cpus: 4, memoryGib: 16 }, floor, { limits: { cpus: 1, memoryGib: 4 }, holds: null })).toBe(3);
     expect(berthCapacity_derive({ cpus: 8, memoryGib: 8 }, floor, DEFAULT_RULE)).toBe(2);
+  });
+
+  it('does not count CPUs: a berth\'s are a cap on shared CPUs, not a reservation', () => {
+    expect(berthCapacity_derive({ cpus: 2, memoryGib: 8 }, floor, DEFAULT_RULE)).toBe(2);
+    expect(berthCapacity_derive({ cpus: 2, memoryGib: 8 }, floor, { limits: { cpus: 4, memoryGib: 2 }, holds: null })).toBe(2);
+    expect(berthCapacity_derive({ cpus: 64, memoryGib: 4 }, floor, DEFAULT_RULE)).toBe(0);
   });
 
   it('holds none when the host has nothing above the floor', () => {
@@ -35,6 +41,6 @@ describe('berthCapacity_derive', () => {
   });
 
   it('counts fractional limits', () => {
-    expect(berthCapacity_derive({ cpus: 4, memoryGib: 16 }, floor, { limits: { cpus: 0.5, memoryGib: 1.5 }, holds: null })).toBe(4);
+    expect(berthCapacity_derive({ cpus: 4, memoryGib: 16 }, floor, { limits: { cpus: 0.5, memoryGib: 1.5 }, holds: null })).toBe(8);
   });
 });

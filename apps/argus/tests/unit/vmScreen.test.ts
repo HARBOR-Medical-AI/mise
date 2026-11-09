@@ -907,14 +907,14 @@ describe('the VM controller', () => {
       return input;
     };
     // The line puts no berths up, the machine runs them at 2 CPUs and 4 GiB: nothing to compare yet.
-    expect(aside()).toBe('READ FROM IT 06:00 UTC · HOLDS 2 BERTHS');
+    expect(aside()).toBe('READ FROM IT 06:00 UTC · HOLDS 3 BERTHS');
     await edit(2, 'porter', 'porter.chrisproject.org');
-    // Berths on at the defaults (1 CPU, 2 GiB): the count at those limits is 4 by CPU and 6 by memory.
-    expect(aside()).toBe('READ FROM IT 06:00 UTC · HOLDS 2 BERTHS · 4 AFTER THE CHANGE');
+    // Berths on at the defaults (1 CPU, 2 GiB): the count at those limits is 6 by memory.
+    expect(aside()).toBe('READ FROM IT 06:00 UTC · HOLDS 3 BERTHS · 6 AFTER THE CHANGE');
     // Limits the machine cannot hold above the floor are refused, never kept.
-    const refused = await edit(4, 'berth-cpus', '5');
+    const refused = await edit(4, 'berth-cpus', '7');
     expect(refused.classList.contains('vm-lever-wrong')).toBe(true);
-    expect(screen.root.querySelector('.vm-setting-edit .vm-lever-hint')?.textContent).toBe('berths of 5 vCPU · 2 GiB do not fit this machine above the minimal profile\'s floor (6 vCPU, 16 GiB; the floor takes 2 vCPU, 4 GiB)');
+    expect(screen.root.querySelector('.vm-setting-edit .vm-lever-hint')?.textContent).toBe('--berth-cpus 7: this machine has 6 vCPU');
     refused.value = '2';
     refused.dispatchEvent(new Event('input'));
     refused.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
@@ -932,12 +932,12 @@ describe('the VM controller', () => {
     const { screen } = screen_make();
     await screen.vm_open('store');
     await settle(12);
-    // SPEC: the line declares 2 vCPU and 8 GiB, which holds none above the minimal profile's floor at 2 CPUs and 4 GiB a berth.
-    expect(screen.root.querySelector('.vm-size .tdc-section-aside')?.textContent).toBe('RUNS AS READ FROM THE TENANCY 04:48 UTC · HOLDS 0 BERTHS');
+    // SPEC: the line declares 2 vCPU and 8 GiB, which holds one above the minimal profile's floor at 4 GiB a berth.
+    expect(screen.root.querySelector('.vm-size .tdc-section-aside')?.textContent).toBe('RUNS AS READ FROM THE TENANCY 04:48 UTC · HOLDS 1 BERTH');
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
     await settle(12);
-    // CHRIS: the machine stands at 6 vCPU and 16 GiB: (6-2)/2 and (16-4)/4 are 2 and 3.
-    expect(screen.root.querySelector('.vm-chris .tdc-section-aside')?.textContent).toBe('READ FROM IT 06:00 UTC · HOLDS 2 BERTHS');
+    // CHRIS: the machine stands at 6 vCPU and 16 GiB: (16-4)/4 is 3; the CPUs do not count.
+    expect(screen.root.querySelector('.vm-chris .tdc-section-aside')?.textContent).toBe('READ FROM IT 06:00 UTC · HOLDS 3 BERTHS');
     screen.dispose();
     screen.root.remove();
     STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50, data: 50 };

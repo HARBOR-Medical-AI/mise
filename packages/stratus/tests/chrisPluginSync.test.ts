@@ -30,7 +30,7 @@ import {
 import type { DeployDeps } from '../src/chris/deploy.js';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
-const VM_LINE: string[] = ['new', 'store', '--net', 'scratch', '--open', '80,443', '--vcpu', '4', '--memory', '8', '--disk', '50', '--data', '50', '--os', 'ubuntu-26.04'];
+const VM_LINE: string[] = ['new', 'store', '--net', 'scratch', '--open', '80,443', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--os', 'ubuntu-26.04'];
 const DEPLOY_LINE: string[] = ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org'];
 const QUESTION: string = `chris plugin sync store: adds 4 from chris-plugins @ 8c9a1f6 on store, 0 already there, 1 reported (invalid: pl-s3path). Nothing is removed or changed. Continue? [y/N]`;
 

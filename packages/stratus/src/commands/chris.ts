@@ -571,8 +571,10 @@ async function chrisDeploy_run(context: ChrisCommandContext, args: ReadonlyArray
   const vmSpec: VmSpec = spec.spec;
   const short: string[] = floor_short(profile, vmSpec);
   if (short.length > 0) return envelope_error('', undefined, `chris deploy: ${name} is below the ${profile.name} profile's floor: ${short.join('; ')}\n`);
+  // A berth's CPUs are a cap on CPUs it shares with CUBE: no more than the machine has; how many berths it holds is memory alone.
+  if (berths && berthLimits.cpus > vmSpec.vcpu) return envelope_error('', undefined, `chris deploy: --berth-cpus ${berthLimits.cpus}: ${name} has ${vmSpec.vcpu} vCPU\n`);
   if (berths && berthCapacity_derive({ cpus: vmSpec.vcpu, memoryGib: vmSpec.memory }, profile.floor, { limits: berthLimits, holds: null }) === 0) {
-    return envelope_error('', undefined, `chris deploy: berths of ${berthLimits_words(berthLimits)} do not fit ${name} above the ${profile.name} profile's floor (${vmSpec.vcpu} vCPU, ${vmSpec.memory} GiB; the floor takes ${profile.floor.vcpu} vCPU, ${profile.floor.memory} GiB)\n`);
+    return envelope_error('', undefined, `chris deploy: berths of ${berthLimits.memoryGib} GiB do not fit ${name} above the ${profile.name} profile's floor (${vmSpec.memory} GiB; the floor takes ${profile.floor.memory} GiB)\n`);
   }
   if (!vmSpec.open.includes(80) || (host !== null && !vmSpec.open.includes(443))) return envelope_error('', undefined, `chris deploy: ${name} does not open ${host !== null ? '80 and 443' : '80'} (vm new ${name} --open 80,443, then vm build ${name})\n`);
   const compute: string = read.options.get('--compute') ?? name;

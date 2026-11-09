@@ -39,7 +39,7 @@ import { LINE_DECLINED_MODEL_KIND } from '@fnndsc/menu';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 const SECRETS: ChrisSecrets = { djangoKey: 'dk', postgresPassword: 'pg', pfconSecretKey: 'ps', pfconPassword: 'pp', adminPassword: 'admin-pass' };
-const VM_LINE: string[] = ['new', 'store', '--net', 'scratch', '--open', '80,443', '--vcpu', '4', '--memory', '8', '--disk', '50', '--data', '50', '--os', 'ubuntu-26.04'];
+const VM_LINE: string[] = ['new', 'store', '--net', 'scratch', '--open', '80,443', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--os', 'ubuntu-26.04'];
 
 describe('a ChRIS profile and what it renders', () => {
   it('says by how much a target is below the floor', () => {
@@ -629,11 +629,13 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
       expect(vm.lines).toEqual([]);
     });
 
-    it('refuses berths its machine cannot hold above the profile\'s floor, naming the shape, the floor and the limits; berths off and limits that fit are not refused', async () => {
+    it('refuses berths its machine cannot hold, by memory above the profile\'s floor and by CPUs it has; berths off and limits that fit are not refused', async () => {
       const line: string[] = ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org', '--plan'];
-      // store is 4 vCPU, 8 GiB: the floor takes 2 vCPU, 4 GiB, leaving 2 and 4.
-      expect((await chris_run(context, [...line, '--berth-cpus', '3'])).renderedErr).toBe('chris deploy: berths of 3 vCPU · 2 GiB do not fit store above the minimal profile\'s floor (4 vCPU, 8 GiB; the floor takes 2 vCPU, 4 GiB)\n');
-      expect((await chris_run(context, [...line, '--berth-memory', '4.5'])).renderedErr).toContain('berths of 1 vCPU · 4.5 GiB do not fit store');
+      // store is 2 vCPU, 8 GiB: the floor takes 4 GiB, leaving 4; CPUs are a cap on shared ones, so they decide nothing but a limit above the machine's.
+      expect((await chris_run(context, [...line, '--berth-cpus', '3'])).renderedErr).toBe('chris deploy: --berth-cpus 3: store has 2 vCPU\n');
+      expect((await chris_run(context, [...line, '--berth-memory', '4.5'])).renderedErr).toBe('chris deploy: berths of 4.5 GiB do not fit store above the minimal profile\'s floor (8 GiB; the floor takes 4 GiB)\n');
+      expect((await chris_run(context, line)).renderedErr ?? '').toBe('');
+      expect(plain((await chris_run(context, line)).rendered)).toContain('1 vCPU · 2 GiB each');
       expect((await chris_run(context, [...line, '--berth-cpus', '2', '--berth-memory', '4'])).renderedErr ?? '').toBe('');
       expect((await chris_run(context, [...line.filter((word: string): boolean => word !== '--porter' && word !== 'porter.example.org')])).renderedErr ?? '').toBe('');
       expect((await chris_run(context, [...line, '--berths', 'off'])).renderedErr ?? '').toBe('');
@@ -671,7 +673,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(await read('net new other --cidr 10.60.0.0/16')).toBe('ready');
     expect(await read('net build other')).toBe('not yet (other: not declared (net new other))');
     expect(await read('net build scratch')).toMatch(/^done \(built \d{4}-\d\d-\d\d\)$/);
-    expect(await read('vm new store --net scratch --open 80,443 --vcpu 4 --memory 8 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
+    expect(await read('vm new store --net scratch --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
     expect(await read('vm new blt --net nowhere --vcpu 2 --memory 8 --disk 50 --data 50 --os ubuntu-26.04')).toBe('not yet (the network nowhere is not declared (net new nowhere))');
     expect(await read('vm build blt')).toBe('not yet (blt: not declared (vm new blt))');
     expect(await read('vm build store')).toMatch(/^done \(built /);
@@ -688,7 +690,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(await read('chris user add jorge --email j@example.org --on blt')).toBe('not yet (no ChRIS on blt (chris deploy blt))');
     // The spec moves under what was built: the build and the deploy have a change to plan.
     await vm_run(vmContext, ['new', 'store', '--memory', '16']);
-    expect(await read('vm new store --net scratch --open 80,443 --vcpu 4 --memory 16 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
+    expect(await read('vm new store --net scratch --open 80,443 --vcpu 2 --memory 16 --disk 50 --data 50 --os ubuntu-26.04')).toBe('done (unchanged)');
     // The record keeps what the build made, so the build line says what it would change.
     // What runs is read from the tenancy after the build, so the change is said against it, with its unit.
     expect(await read('vm build store')).toBe('changed (declared, not built: memory 8 → 16 GiB; the build plans and asks)');
