@@ -1,5 +1,18 @@
 # @fnndsc/argus
 
+## 0.58.0
+
+### Minor Changes
+
+- 6223aeb: A ChRIS's settings show BERTHS, BERTH CPU and BERTH MEMORY, edited in place like PORTER. The CHRIS and SPEC bands say how many berths the machine holds. porter reads the berth capacity rule from menu. The CHRIS band adds the count at the line's limits once they differ from what runs. porter counts the host's memory in whole GiB.
+- fe455c9: ITS USERS shows each person's HOST ACCESS: a berth running or a home kept, or none. A running berth shows its CPU and memory (`running · 3% · 210 MiB / 2 GiB`). The column shows a dash when there is nothing to show: one quiet line under the listing says `berths are off` for a porter that starts none, or why the berths were not read. The old line that host access is the next step now says that starting a berth, stopping it and removing a person's home are not controls here yet.
+
+### Patch Changes
+
+- Updated dependencies [6223aeb]
+- Updated dependencies [fe455c9]
+  - @fnndsc/menu@0.41.0
+
 ## 0.57.0
 
 ### Minor Changes
