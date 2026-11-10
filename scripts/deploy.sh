@@ -7,12 +7,12 @@
 #   make deploy SKIP_PUBLISH=1  published already: waits out main's release run, then installs
 #
 # Rules (2026-10-05, after a reinstall left both hosts empty for minutes):
-#   1. every bumped package is verified on npm — the exact version — before any
+#   1. every package is verified on npm — the exact version — before any
 #      install is touched; the registry lags the release run by a minute or two;
 #   2. install before remove: never `npm uninstall` first; npm replaces the tree;
 #   3. titan's root npm keeps its own packument cache: --prefer-online.
-# The bumped packages are read from the Version Packages merge on main, so the
-# list is never typed by hand.
+# The packages are porter's dependency closure in this checkout, so the list is
+# never typed by hand and a host gets everything main holds.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -50,11 +50,27 @@ fi
 
 git fetch -q origin && make --no-print-directory sync >/dev/null 2>&1 || true
 
-# The packages the last Version Packages merge bumped, as workspace dirs.
-bumped=$(git log -1 --first-parent --format=%H -- .changeset 2>/dev/null)
-# A merge commit: diff against its first parent (git show prints nothing for a merge without -m).
-dirs=$(git diff --name-only "$bumped^1" "$bumped" -- 'packages/*/package.json' 'apps/*/package.json' | xargs -rn1 dirname | sort -u)
-[ -n "$dirs" ] || die "no package.json moved in the last Version Packages merge ($bumped)"
+# Every workspace package porter runs (its dependency closure in this checkout),
+# as workspace dirs: a host gets what main holds, not only what the last release
+# bumped (2026-11-10: two releases in a row left pangea's argus and menu one
+# behind, because the second bumped stratus alone).
+dirs=$(node -e '
+const fs = require("fs"), path = require("path");
+const ws = {};
+for (const root of ["packages", "apps"]) for (const d of fs.readdirSync(root)) {
+  const f = path.join(root, d, "package.json");
+  if (fs.existsSync(f)) { const p = JSON.parse(fs.readFileSync(f, "utf8")); ws[p.name] = { dir: path.join(root, d), p }; }
+}
+const seen = new Set();
+(function walk(n) {
+  if (!ws[n] || seen.has(n)) return;
+  seen.add(n);
+  for (const k of Object.keys({ ...ws[n].p.dependencies, ...ws[n].p.optionalDependencies })) walk(k);
+})("@fnndsc/porter");
+seen.delete("@fnndsc/porter");
+console.log([...seen].sort().map((n) => ws[n].dir).join("\n"));
+')
+[ -n "$dirs" ] || die "porter has no workspace dependencies in this checkout"
 
 spec=""
 for d in $dirs; do
