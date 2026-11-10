@@ -84,7 +84,7 @@ A publish run before the Release run opened Version Packages finds nothing and t
 ## Open items, for the operator
 
 - **Two record folders on pangea**: `chris deploy store` is replayed from `~/.local/state/stratus`; the porter session's folder takes the vault's newer ChRIS record at its next VM listing (checked on a copy, 2026-11-10). The backup on `/neuro` matches `~/.local/state/stratus` as of 2026-11-10.
-- **`make deploy` on pangea** installs only what the last Version Packages merge bumped, so after two releases in a row it left argus and menu one behind; installed by hand 2026-11-10. `scripts/deploy.sh` should install everything main holds.
+- **`make deploy` on pangea** installs only what the last Version Packages merge bumped, so after two releases in a row it left argus and menu one behind; installed by hand 2026-11-10. #1456 makes `scripts/deploy.sh` install everything porter runs.
 - **Throwaway CUBE account** `mise-walk` on the store: remove it.
 - **Global `chell` on pangea** is npm-linked to `~/src/mise/packages/chell`, so it follows whatever branch that checkout last built; unlinking to the published install is the operator's call.
 - **FNNDSC org secret** `CHRISPROJECT_PASSWORD` and `~/.config/chrisproject/store/chris-password` hold the old `chris` password.
