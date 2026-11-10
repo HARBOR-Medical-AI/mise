@@ -343,7 +343,7 @@ publish: vp-approve
 	@echo "Confirm with: make verify-npm"
 
 # Publishes what main holds and puts it on the hosts, in the order that cannot
-# leave a host empty (scripts/deploy.sh): every bumped version proven on npm
+# leave a host empty (scripts/deploy.sh): every version porter runs proven on npm
 # first, install before remove, pangea then titan. HOSTS= narrows; SKIP_PUBLISH=1
 # installs a release already on npm.
 deploy:
