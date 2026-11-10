@@ -1,6 +1,6 @@
 {
   "name": "@fnndsc/stratus",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "description": "STRATUS: a mise session over the cloud substrate a Trusted Domain runs on — one backend, clouds as drivers, OCI first",
   "repository": {
     "type": "git",
