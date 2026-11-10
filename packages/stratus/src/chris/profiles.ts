@@ -28,7 +28,7 @@ export const CHRIS_IMAGES = {
 } as const;
 
 /** The porter a deploy with `--porter` installs, pinned, with the chell, calypso and ARGUS it brings. */
-export const PORTER_VERSION: string = '0.10.0';
+export const PORTER_VERSION: string = '0.11.0';
 
 /** What one berth may use when the deploy names none: the berth launcher's own defaults. */
 export const BERTH_LIMITS_DEFAULT: BerthLimits = { cpus: 1, memoryGib: 2 };
