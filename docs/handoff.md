@@ -1,6 +1,6 @@
 # Active project handoff: stratus, its VM screens, and berths
 
-- Last updated: 2026-11-09
+- Last updated: 2026-11-10
 - Read first in a new session. Then `docs/berths.adoc` (the active work) and, for anything on the VM screens, the top of the Status table in `apps/argus/docs/aegis.adoc`.
 
 This file is the handoff between sessions and between models. It says where the work stands and what to do next, with the facts a fresh context needs. The designs live elsewhere: [stratus.adoc](stratus.adoc) (the substrate, its verbs, profiles, ChRIS on any host), [berths.adoc](berths.adoc) (per-person containers), [dev-bastion.adoc](dev-bastion.adoc) (the cohort loop and the stand-in spoke), [bastion.adoc](bastion.adoc) (the Hub and spoke hosts).
@@ -9,18 +9,18 @@ This file is the handoff between sessions and between models. It says where the 
 
 **Live.** pangea and titan run porter 0.9.16, stratus 0.16.0, argus 0.57.0, chell 5.20.5, menu 0.40.0, salsa 4.5.1 (`make deploy`, 2026-11-07). The store (`cube.chrisproject.org`, OCI VM `store`, 2 vCPU / 8 GiB, porter at `porter.chrisproject.org`) runs CUBE 6.11.0, porter 0.9.13, boot disk 150 GB, data 150 GB, 178 plugins from FNNDSC/chris-plugins @ `c941fc0`. No launcher on the store yet: putting one there is a `chris deploy store` replay, the operator's word.
 
-**Published, not deployed.** porter 0.10.0 (the berth launcher) and stratus 0.17.1, which pins it and turns berths on with any `--porter` (`--berths off` to refuse). The gateway path (a berth on `cube-net` reaching CUBE's published ports at the bridge's gateway) is walked on Docker 29 on pangea and on the store (2026-11-08, throwaway network, removed).
+**Published, not deployed.** porter 0.11.0 (the launcher, `/berths`), stratus 0.18.0 (berth limits, the `/berths` read), argus 0.58.0, menu 0.41.0, chell 5.20.6 (2026-11-10). The stratus after 0.18.0 pins porter 0.11.0. The gateway path (a berth on `cube-net` reaching CUBE's published ports at the bridge's gateway) is walked on Docker 29 on pangea and on the store (2026-11-08, throwaway network, removed).
 
 **Berth stage 3 is done.**
 - 3a `chris deploy` puts the launcher up (#1434, #1435).
-- 3b limits as CHRIS settings (#1450, merged, not published): `--berth-cpus`, `--berth-memory`; rows BERTHS / BERTH CPU / BERTH MEMORY; `HOLDS N BERTHS` on CHRIS and SPEC. Capacity is memory alone, (host − profile floor) / memory per berth, in `@fnndsc/menu`, shared by porter, stratus and ARGUS; CPU is a cap on shared CPUs. The store holds 2 at the defaults.
-- 3c HOST ACCESS (`berth/access`, PR open): porter `GET /berths`, admin only (CUBE's root names `collection_links.admin` to staff), rate-limited, through the launcher's `GET /berths/access`; stratus reads it in `chris status` with the admin's Basic credentials; ARGUS shows `running · 3% · 210 MiB / 2 GiB`, `stopped · home kept`, `none`. Walked for real on pangea (throwaway `walk3c`).
+- 3b limits as CHRIS settings (#1450): `--berth-cpus`, `--berth-memory`; rows BERTHS / BERTH CPU / BERTH MEMORY; `HOLDS N BERTHS` on CHRIS and SPEC. Capacity is memory alone, (host − profile floor) / memory per berth, in `@fnndsc/menu`, shared by porter, stratus and ARGUS; CPU is a cap on shared CPUs. The store holds 2 at the defaults.
+- 3c HOST ACCESS (#1452): porter `GET /berths`, admin only (CUBE's root names `collection_links.admin` to staff), rate-limited, through the launcher's `GET /berths/access`; stratus reads it in `chris status` with the admin's Basic credentials; ARGUS shows `running · 3% · 210 MiB / 2 GiB`, `stopped · home kept`, `none`. Walked for real on pangea, before the review fixes (`walk3c`) and on merged main with the rate limit and the cache (`walk3d`).
 
 **Decided this session.** A berth, not a Dev Spaces workspace (dev-bastion.adoc `why-not-dev-spaces`, #1436): code reaches a berth one hop from the spoke's ChRIS.
 
 ## Next action
 
-1. Merge the 3c PR on the operator's word; `make publish` (porter minor carries `/berths`), then a pin PR moving stratus's `PORTER_VERSION` to it, then publish again.
+1. Close stage 3 on the hosts, each on the operator's word: publish the stratus that pins porter 0.11.0, `make deploy` (pangea, titan), then a `chris deploy store` replay (puts the launcher on the store; porter restarts, its open sessions end).
 2. The chell operand package from pl-freesurfer-b5 (operator's order: berths first, then this), each its own PR: reproduce #1439 on main; #1442+#1443 (one resolved record, resolve-then-act; `whatif` and the echo print it); #1439+#1449 (wildcards in every component, refuse on no match, several directory operands run once each, all checked first); #1440 (file operands from two feed nodes refuse); #1441 (`&&` and `||` supported); #1313 (the `./sub=01.nii` hint refusal); #1447 (`help operands` under `help Shell`, with the stem rule). Not #1444/#1445/#1448 (tabled on D1); #1446 closed. Read each issue's comments first. Background: FNNDSC/pfstack docs/chell_handling.adoc.
 3. Berth stage 4 (the cohort: a feed picker at the door, the copy into `/incoming` with progress, "no cohort"), stage 5 (`pl-berth` registered, `outgoing return`), stage 6 (HOST ACCESS controls: start, stop, remove a person's home, asked). Open in berths.adoc §open: live token refresh, the launcher forgetting tokens on restart, the 2 h idle stop, the root chown helper, a berth's disk not limited.
 

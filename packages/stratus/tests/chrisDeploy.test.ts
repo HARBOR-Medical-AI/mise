@@ -388,8 +388,8 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const secrets: ChrisSecrets | null = secrets_read(vms, 'store');
     expect(secrets?.porterSecret?.length).toBeGreaterThanOrEqual(32);
     const compose = yaml.load(vm.files.get('/srv/data/chris/compose.yml') ?? '') as { services: Record<string, Record<string, unknown>>; volumes: Record<string, unknown> };
-    expect(compose.services['porter']?.['image']).toBe('stratus/porter:0.10.0');
-    expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@0.10.0');
+    expect(compose.services['porter']?.['image']).toBe('stratus/porter:0.11.0');
+    expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@0.11.0');
     expect(compose.services['porter']?.['volumes']).toEqual(['porter:/var/lib/porter']);
     expect(compose.services['caddy']?.['networks']).toEqual({ default: { aliases: ['cube.example.org'] } });
     expect(Object.keys(compose.volumes)).toContain('porter');
@@ -401,7 +401,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org', '--berths', 'off']);
     expect(secrets_read(vms, 'store')).toEqual(secrets);
     // The deploy keeps what it put up; a replay as deployed restarts nothing and asks nothing.
-    expect(vms.record_read('store')?.chris).toMatchObject({ image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.10.0' });
+    expect(vms.record_read('store')?.chris).toMatchObject({ image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.11.0' });
     const line: string[] = ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org', '--berths', 'off'];
     const planned = await chris_run(context, [...line, '--plan']);
     expect(plain(planned.rendered)).toBe('chris deploy store: as deployed; nothing restarts\n');
@@ -409,12 +409,12 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     // A porter older than this stratus's: the replay plans porter's restart, reads the sessions it ends from porter, and asks first; no, and nothing changes.
     vms.record_update('store', (record): void => { if (record.chris !== undefined) record.chris.porterVersion = '0.9.10'; });
     const live: ChrisCommandContext = { ...context, http_get: async (url: string) => (url === 'https://porter.example.org/healthz' ? { status: 200, body: { ok: true, sessions: 2, version: '0.9.10' } } : null) };
-    expect(plain((await chris_run(live, [...line, '--plan'])).rendered)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.10.0): its open sessions end; 2 porter sessions open now end\n');
+    expect(plain((await chris_run(live, [...line, '--plan'])).rendered)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.11.0): its open sessions end; 2 porter sessions open now end\n');
     surface.asked = [];
     surface.answers = ['n'];
     const before: number = vm.lines.length;
     expect(plain((await chris_run(live, line)).rendered)).toContain('stopped before the deploy; nothing changed');
-    expect(surface.asked.at(-1)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.10.0): its open sessions end; 2 porter sessions open now end. A NO changes nothing. Continue? [y/N]');
+    expect(surface.asked.at(-1)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.11.0): its open sessions end; 2 porter sessions open now end. A NO changes nothing. Continue? [y/N]');
     expect(vm.lines.length).toBe(before);
     // status reads what runs from it, over HTTPS, under the deploy's record.
     const reading: ChrisCommandContext = { ...context, http_get: async (url: string, auth) => (url === 'https://porter.example.org/healthz' ? { status: 200, body: { sessions: 2, version: '0.9.11' } }
