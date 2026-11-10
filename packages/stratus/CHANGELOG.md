@@ -1,5 +1,11 @@
 # @fnndsc/stratus
 
+## 0.18.1
+
+### Patch Changes
+
+- 5b2eff4: A ChRIS deploy installs porter 0.11.0, so HOST ACCESS reads each person's berth from the deployed porter.
+
 ## 0.18.0
 
 ### Minor Changes
