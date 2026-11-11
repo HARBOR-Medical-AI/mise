@@ -7,7 +7,7 @@
  * @module
  */
 
-import { plugin_executeInPlace, plugins_list, PluginExecutionResult } from '@fnndsc/salsa';
+import { plugin_executeInPlace, plugins_list, syncSeams_cube, PluginExecutionResult } from '@fnndsc/salsa';
 import { Dictionary, procCache_get } from '@fnndsc/cumin';
 import { type ListingItem, envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
 import chalk from 'chalk';
@@ -21,7 +21,8 @@ import { sink_dataLine, sink_errLine } from '../core/sink.js';
 import { errorStack, Result, type StackMessage } from '@fnndsc/fond';
 import { exitCode_set } from '../core/handlerRun.js';
 import { path_resolve } from '../core/paths.js';
-import { OperandRefusal, operands_read, stage_lines, stage_make, stageMade_lines, type BinOperands, type Stage } from './operands.js';
+import { OperandRefusal, operands_read, stage_lines, stage_make, stageMade_lines, stageWriter_default, stageWriter_none, type BinOperands, type Stage } from './operands.js';
+import { echoNode_render, echoParameters_render, type DeclaredParameter } from './runEcho.js';
 import { operandRuns_split } from './operandRuns.js';
 
 /**
@@ -40,6 +41,28 @@ async function pluginKind_read(pluginName: string): Promise<string | null> {
 }
 
 /**
+ * Reads the parameters a plugin declares, for the echo of a run's defaults.
+ *
+ * @param pluginName - The `/bin` name, `<name>-v<version>`.
+ * @returns The parameters, or null when CUBE did not say.
+ */
+async function pluginParameters_read(pluginName: string): Promise<DeclaredParameter[] | null> {
+  const match: RegExpMatchArray | null = pluginName.match(/^(.+)-v(.+)$/);
+  if (match === null) return null;
+  try {
+    const descriptor: Record<string, unknown> | null = await syncSeams_cube.cubeDescriptor_read(match[1] as string, match[2] as string);
+    const rows: unknown = descriptor?.['parameters'];
+    if (!Array.isArray(rows)) return null;
+    return rows.flatMap((row: unknown): DeclaredParameter[] => {
+      const name: unknown = (row as { name?: unknown } | null)?.name;
+      return typeof name === 'string' ? [{ name, default: (row as { default?: unknown }).default }] : [];
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Executes a plugin in the current directory context.
  *
  * This function is called when the user types a plugin name that exists in /bin.
@@ -50,6 +73,7 @@ async function pluginKind_read(pluginName: string): Promise<string | null> {
  * @param place - Where the run stands instead of the session's cwd, so a
  *   caller can run off a node without moving the operator (`gather process`
  *   runs off its cohort's feed root).
+ * @param dry - Resolve the run and print it, creating and running nothing (`whatif`).
  * @returns Command envelope whose status matches parsing and execution.
  *
  * @example
@@ -64,8 +88,9 @@ export async function builtin_executePlugin(
   pluginName: string,
   args: string[],
   place?: string,
+  dry: boolean = false,
 ): Promise<CommandEnvelope> {
-  if (place !== undefined) return pluginRun_execute(pluginName, args, place);
+  if (place !== undefined) return pluginRun_execute(pluginName, args, place, dry);
   // Several directory operands are several runs, one each, and file operands
   // stand in one node; to an fs plugin every operand is its one `dir`,
   // untranslated, so that line is one run and its paths are not looked at.
@@ -79,7 +104,7 @@ export async function builtin_executePlugin(
     sink_errLine(chalk.red(`${pluginName}: ${error.message}`));
     return envelope_error('');
   }
-  if (runs.length === 1) return pluginRun_execute(pluginName, args);
+  if (runs.length === 1) return pluginRun_execute(pluginName, args, undefined, dry);
   // Every run is dispatched before any is waited for; then one wait holds the line for them all.
   const detach: boolean = args.includes('--detach');
   const instanceIDs: number[] = [];
@@ -87,7 +112,7 @@ export async function builtin_executePlugin(
   let failed: boolean = false;
   for (const words of runs) {
     sink_dataLine(chalk.gray(`${pluginName} ${words[0]}:`));
-    last = await pluginRun_execute(pluginName, detach ? words : [...words, '--detach']);
+    last = await pluginRun_execute(pluginName, detach ? words : [...words, '--detach'], undefined, dry);
     failed ||= last.status === 'error';
     const instanceID: unknown = last.model?.kind === 'run.scheduled' ? (last.model.data as { instanceId?: unknown }).instanceId : undefined;
     if (typeof instanceID === 'number') instanceIDs.push(instanceID);
@@ -106,12 +131,14 @@ export async function builtin_executePlugin(
  * @param pluginName - Full plugin name with version.
  * @param args - Array of command line arguments.
  * @param place - Where the run stands instead of the session's cwd.
+ * @param dry - Resolve the run and print it, creating and running nothing.
  * @returns Command envelope whose status matches parsing and execution.
  */
 async function pluginRun_execute(
   pluginName: string,
   args: string[],
   place?: string,
+  dry: boolean = false,
 ): Promise<CommandEnvelope> {
   try {
     // 0. `--detach` is the SESSION's flag, never the plugin's: it says the
@@ -154,12 +181,13 @@ async function pluginRun_execute(
           operandPlace = operands.directory;
         } else {
           try {
-            stage = await stage_make(operands.subjects, await path_resolve('~'));
+            stage = await stage_make(operands.subjects, await path_resolve('~'), dry ? stageWriter_none() : stageWriter_default());
           } catch (error: unknown) {
             if (!(error instanceof OperandRefusal)) throw error;
             sink_errLine(chalk.red(`${pluginName}: ${error.message}`));
             return envelope_error('');
           }
+          if (dry) sink_dataLine(chalk.cyan(`would stage under ${stage.path}`));
           for (const line of stage_lines(stage)) sink_dataLine(chalk.cyan(line));
           operandPlace = stage.path;
         }
@@ -221,6 +249,15 @@ async function pluginRun_execute(
     // 5. Convert plugin name from /bin format to ChRIS search format
     // Example: pl-dcm2niix-v1.0.2 → name_exact:pl-dcm2niix,version:1.0.2
     const pluginSearchString: string = pluginSelector_normalize(pluginName);
+
+    // 5b. The resolved call, said before it is dispatched: where the run
+    //     attaches and what it runs with. `whatif` stops here.
+    sink_dataLine(chalk.gray(echoNode_render(cwd, typeof contextParams.feed_title === 'string' ? contextParams.feed_title : '')));
+    sink_dataLine(chalk.gray(echoParameters_render(pluginParams, await pluginParameters_read(pluginName))));
+    if (dry) {
+      sink_dataLine(chalk.gray(`whatif: ${pluginName} was not run; nothing was created`));
+      return envelope_ok('');
+    }
 
     // 6. Execute via salsa
     const result: PluginExecutionResult | null = await plugin_executeInPlace(

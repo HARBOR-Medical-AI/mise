@@ -47,6 +47,7 @@ describe('a section by its word', () => {
     const shell = section_find('Shell', () => false);
     expect(strip(helpSection_render(shell as never, lookup([])))).toMatch(/handles +@SER3/);
     expect(strip(shellTopic_render('pipes') ?? '')).toContain('PIPES');
+    expect(strip(shellTopic_render('operands') ?? '')).toContain('whatif <line> prints that resolution');
     expect(shellTopic_render('grep')).toBeUndefined();
   });
 });
@@ -58,6 +59,9 @@ describe('apropos', () => {
     expect(hits.findIndex((line) => line.startsWith('dcm'))).toBeLessThan(hits.indexOf('also mentioned in:'));
     expect(hits[hits.length - 1]).toContain('wtf (Games)');
     expect(apropos_search('zzzq', lookup(['ls']))).toEqual([]);
+    for (const word of ['operand', 'subject', 'stage', 'whatif']) {
+      expect(apropos_search(word, lookup(['ls'])).map(strip).some((line: string): boolean => line.startsWith('operands (Shell)'))).toBe(true);
+    }
   });
 });
 

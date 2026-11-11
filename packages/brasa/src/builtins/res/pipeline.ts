@@ -25,8 +25,12 @@ import {
   pipeline_sourceGet,
   pipelineManifest_get,
   pipelineManifestBySlug_get,
+  pipelineInvocation_prepare,
   fileContent_get,
   type PipelineManifest,
+  type PipelineManifestNode,
+  type PreparedPipelineInvocation,
+  type PreparedWorkflowNode,
   type PipelineRunOptions,
   type WorkflowResult,
   procCache_refresh,
@@ -36,6 +40,7 @@ import { pipelineFields_fetch } from '@fnndsc/chili/commands/pipeline/fields.js'
 import { table_render } from '@fnndsc/chili/screen/screen.js';
 import { args_checkHasHelpFlag, help_render } from '../help.js';
 import { sink_get, sink_dataLine, sink_errLine } from '../../core/sink.js';
+import { echoValue_render } from '../runEcho.js';
 import { pipelineRunArgs_parse, type PipelineRunOverrides } from './pipeline.args.js';
 import { runs_awaitSettled, settlement_render, settlementStatus_derive, type RunSettlement } from './runWait.js';
 import type { PipelineNode, PipelineScheduled } from '../../api/models.js';
@@ -148,6 +153,40 @@ async function pipelineRun_previousInstId(previousOverride: number | undefined):
 }
 
 /**
+ * The resolved call of a pipeline run, one line per piping: the parameters
+ * the line changed from the registration, or every parameter with the
+ * unchanged ones marked `(default)` and the compute resource named.
+ *
+ * @param nameOrId - Pipeline name or numeric ID string.
+ * @param options - The overlays the run uses.
+ * @param full - Whether to list every parameter of every piping.
+ * @returns The lines, or null when the call cannot be prepared (detail on the error stack).
+ */
+async function pipelineEcho_build(nameOrId: string, options: PipelineRunOptions, full: boolean): Promise<string[] | null> {
+  const manifest: Result<PipelineManifest> = await pipelineManifest_get(nameOrId);
+  if (!manifest.ok) return null;
+  const prepared: Result<PreparedPipelineInvocation> = pipelineInvocation_prepare({
+    manifest: manifest.value,
+    globalCompute: options.globalCompute,
+    parameterFile: options.parameterFile,
+    cliBindings: options.cliBindings,
+  });
+  if (!prepared.ok) return null;
+  return prepared.value.nodeOverrides.map((node: PreparedWorkflowNode): string => {
+    const registered: PipelineManifestNode | undefined = manifest.value.nodes.find((one: PipelineManifestNode): boolean => one.pipingID === node.piping_id);
+    const words: string[] = [];
+    for (const parameter of node.plugin_parameter_defaults) {
+      const before: unknown = registered?.parameterDefaults.find((one): boolean => one.name === parameter.name)?.value;
+      const changed: boolean = JSON.stringify(before) !== JSON.stringify(parameter.default);
+      if (changed || full) words.push(`--${parameter.name} ${echoValue_render(parameter.default ?? '')}${changed ? '' : ' (default)'}`);
+    }
+    const computeChanged: boolean = registered !== undefined && registered.computeResourceName !== node.compute_resource_name;
+    const compute: string = full || computeChanged ? `  on ${node.compute_resource_name}` : '';
+    return `  with ${node.title}: ${words.length > 0 ? words.join('  ') : 'registered parameters'}${compute}`;
+  });
+}
+
+/**
  * Handles `pipeline run <name|id> [--compute <r>] [--previous <id>]`.
  *
  * @param args - Command arguments.
@@ -169,8 +208,9 @@ async function pipelineRun_handle(args: string[]): Promise<CommandEnvelope> {
     return envelope_error('');
   }
 
-  const previousInstId: number | null = await pipelineRun_previousInstId(previousOverride);
-  if (previousInstId === null) return envelope_error('');
+  // A dry run on a feed that would be rooted first has no node yet: the caller said where it would attach.
+  const previousInstId: number | null = parsed.dryNewFeed ? null : await pipelineRun_previousInstId(previousOverride);
+  if (previousInstId === null && !parsed.dryNewFeed) return envelope_error('');
 
   const pipelineResult: Result<PipelineRecord> = await pipeline_resolve(nameOrId);
   if (!pipelineResult.ok) {
@@ -180,7 +220,11 @@ async function pipelineRun_handle(args: string[]): Promise<CommandEnvelope> {
     return envelope_error('');
   }
 
-  sink_dataLine(chalk.gray(`Running pipeline '${pipelineResult.value.name}' on instance ${previousInstId}...`));
+  if (previousInstId !== null) {
+    sink_dataLine(chalk.gray(parsed.dry
+      ? `pipeline '${pipelineResult.value.name}' on instance ${previousInstId}`
+      : `Running pipeline '${pipelineResult.value.name}' on instance ${previousInstId}...`));
+  }
 
   let parameterFile: unknown;
   if (parsed.paramFile !== undefined) {
@@ -214,6 +258,19 @@ async function pipelineRun_handle(args: string[]): Promise<CommandEnvelope> {
     parameterFile,
     cliBindings: parsed.bindings,
   } : undefined;
+  // The resolved call, said before it is dispatched; `whatif` stops here.
+  const echo: string[] | null = await pipelineEcho_build(nameOrId, invocationOptions ?? {}, parsed.verbose || parsed.dry);
+  if (echo === null) {
+    const err: StackMessage | undefined = errorStack.stack_pop();
+    sink_errLine(chalk.red(`pipeline run: ${err?.message ?? 'the run cannot be prepared'}`));
+    exitCode_set(1);
+    return envelope_error('');
+  }
+  for (const line of echo) sink_dataLine(chalk.gray(line));
+  if (parsed.dry || previousInstId === null) {
+    sink_dataLine(chalk.gray(`whatif: ${pipelineResult.value.name} was not run; nothing was created`));
+    return envelope_ok('');
+  }
   const runResult: Result<WorkflowResult> = await pipeline_run(nameOrId, previousInstId, invocationOptions);
   if (!runResult.ok) {
     const err: StackMessage | undefined = errorStack.stack_pop();

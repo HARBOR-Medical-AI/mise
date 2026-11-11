@@ -448,6 +448,17 @@ export const chrisHelp: Record<string, CommandHelp> = {
     options: [...RESOURCE_LIST_OPTIONS],
     examples: ['dirs list', 'dirs search', 'dirs inspect'],
   },
+  whatif: {
+    category: 'Resources',
+    usage: 'whatif <plugin or Pipeline> [operands] [options]',
+    summary: 'Print what a plugin or Pipeline line would do, and run nothing',
+    description: 'Resolve the line as a run would and print it: the version picked, the operands as read, the stage, the node it would attach to or the feed it would root, and every parameter with defaults marked. Nothing is staged, no feed is made, no job starts. When the real line would refuse, whatif prints the same refusal and exits non-zero.',
+    options: [
+      'A prefix, as time and env are: every flag after a /bin name belongs to the plugin.',
+      'Several directory operands print one resolution per run.',
+    ],
+    examples: ['whatif pl-freesurfer ~/uploads/t1.nii as sub-01', 'whatif pl-dcm2niix ~/feeds/feed_12/pl-dircopy_40/data'],
+  },
   pipeline: {
     category: 'Resources',
     usage: 'pipeline <subcommand> [args]',

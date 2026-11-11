@@ -11,7 +11,8 @@ import { cuminMock_install } from './support/cuminMock.js';
 
 const mockExecuteInPlace = jest.fn();
 const mockPluginsList = jest.fn();
-jest.unstable_mockModule('@fnndsc/salsa', () => ({ plugin_executeInPlace: mockExecuteInPlace, plugins_list: mockPluginsList }));
+const mockDescriptorRead = jest.fn();
+jest.unstable_mockModule('@fnndsc/salsa', () => ({ plugin_executeInPlace: mockExecuteInPlace, plugins_list: mockPluginsList, syncSeams_cube: { cubeDescriptor_read: mockDescriptorRead } }));
 cuminMock_install(() => ({
   path_isInFeed: (path: string): boolean => path.includes('/feeds/feed_'),
   path_extractPluginInstanceID: (path: string): number | null => { const found = path.match(/\/pl-[^/]+_(\d+)(\/|$)/); return found ? Number(found[1]) : null; },
@@ -56,6 +57,7 @@ beforeEach(() => {
   for (const key of Object.keys(world)) delete world[key];
   Object.assign(world, { '/home/u/uploads/subjects': 'dir', '/home/u/uploads/t1.nii': 'file', '/home/u/uploads/t2.nii': 'file' });
   mockPluginsList.mockResolvedValue({ tableData: [{ id: 1, name: 'pl-freesurfer', version: '1.0.4', type: 'ds' }] });
+  mockDescriptorRead.mockResolvedValue({ name: 'pl-freesurfer', parameters: [{ name: 'threads', default: 1 }, { name: 'dirFilter', default: '' }] });
   mockExecuteInPlace.mockResolvedValue({ pluginInstanceID: 77, pluginName: 'pl-freesurfer', outputPath: '/home/u/feeds/feed_9/pl-dircopy_40/pl-freesurfer_77/data/', feedID: 9, dircopyInstanceID: 40, parentID: 40 });
 });
 
@@ -120,6 +122,49 @@ describe('builtin_executePlugin with an operand', () => {
     await builtin_executePlugin('pl-dircopy-v2.1.2', ['/home/u/uploads/subjects', '/home/u/uploads/sub-02']);
     expect(mockExecuteInPlace).toHaveBeenCalledTimes(1);
     expect(mockExecuteInPlace).toHaveBeenCalledWith('name_exact:pl-dircopy,version:2.1.2', { dir: '/home/u/uploads/subjects,/home/u/uploads/sub-02' }, { feed_title: 'uploads' }, '/home/u/uploads', ['pl-dircopy-v2.1.2']);
+  });
+
+  it('echoes the resolved call before dispatch: the node or the new feed, the parameters, defaults marked (#1443)', async () => {
+    await builtin_executePlugin('pl-freesurfer-v1.0.4', ['/home/u/uploads/subjects', '--threads', '2']);
+    expect(lines.map(strip)).toEqual(expect.arrayContaining([
+      '  on   a new feed, rooted by pl-dircopy of /home/u/uploads/subjects, titled "subjects"',
+      "  with --threads 2  --dirFilter '' (default)",
+    ]));
+    lines.length = 0;
+    world['/home/u/feeds/feed_3/pl-dircopy_12/data'] = 'dir';
+    await builtin_executePlugin('pl-freesurfer-v1.0.4', ['/home/u/feeds/feed_3/pl-dircopy_12/data']);
+    expect(lines.map(strip)).toEqual(expect.arrayContaining(['  on   feed_3 / pl-dircopy_12', "  with --threads 1 (default)  --dirFilter '' (default)"]));
+    // CUBE not saying the plugin's parameters costs the defaults, never the run.
+    lines.length = 0;
+    mockDescriptorRead.mockRejectedValue(new Error('down'));
+    await builtin_executePlugin('pl-freesurfer-v1.0.4', ['/home/u/uploads/subjects', '--threads', '2']);
+    expect(lines.map(strip)).toContain('  with --threads 2  (defaults not read)');
+    expect(mockExecuteInPlace).toHaveBeenCalledTimes(3);
+  });
+
+  it('resolves and prints under whatif, writing nothing and running nothing: a directory, files, a node, several runs, a refusal (#1442)', async () => {
+    world['/home/u/feeds/feed_3/pl-dircopy_12/data'] = 'dir';
+    world['/home/u/uploads/sub-02'] = 'dir';
+    const dry = (words: string[]) => builtin_executePlugin('pl-freesurfer-v1.0.4', words, undefined, true);
+    expect((await dry(['/home/u/uploads/subjects'])).status).toBe('ok');
+    expect((await dry(['/home/u/feeds/feed_3/pl-dircopy_12/data'])).status).toBe('ok');
+    expect((await dry(['/home/u/uploads/t1.nii', 'as', 'sub-01'])).status).toBe('ok');
+    expect((await dry(['/home/u/uploads/subjects', '/home/u/uploads/sub-02'])).status).toBe('ok');
+    const said: string[] = lines.map(strip);
+    expect(said).toEqual(expect.arrayContaining([
+      '  on   a new feed, rooted by pl-dircopy of /home/u/uploads/subjects, titled "subjects"',
+      '  on   feed_3 / pl-dircopy_12',
+      'subject sub-01 from /home/u/uploads/t1.nii',
+      'pl-freesurfer-v1.0.4 /home/u/uploads/sub-02:',
+      'whatif: pl-freesurfer-v1.0.4 was not run; nothing was created',
+    ]));
+    expect(said.some((line) => line.startsWith('would stage under /home/u/.mise/stage/'))).toBe(true);
+    const refused = await dry(['/home/u/uploads/none']);
+    expect(refused.status).toBe('error');
+    expect(errors.map(strip).join('\n')).toContain('/home/u/uploads/none: no such file or directory');
+    expect(made).toEqual([]);
+    expect(copied).toEqual([]);
+    expect(mockExecuteInPlace).not.toHaveBeenCalled();
   });
 
   it('runs nothing when the operand is refused, or the plugin kind cannot be read', async () => {

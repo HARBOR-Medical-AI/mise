@@ -14,6 +14,9 @@ describe('pipelineRunArgs_parse', () => {
       paramFile: undefined,
       bindings: [],
       detach: false,
+      verbose: false,
+      dry: false,
+      dryNewFeed: false,
       parseError: null,
     });
   });
@@ -24,6 +27,9 @@ describe('pipelineRunArgs_parse', () => {
       paramFile: undefined,
       bindings: [],
       detach: false,
+      verbose: false,
+      dry: false,
+      dryNewFeed: false,
       parseError: null,
     });
   });
@@ -47,6 +53,9 @@ describe('pipelineRunArgs_parse', () => {
         { node: 'segmentation', field: 'enabled', value: true },
       ],
       detach: false,
+      verbose: false,
+      dry: false,
+      dryNewFeed: false,
       parseError: null,
     });
   });
@@ -54,5 +63,13 @@ describe('pipelineRunArgs_parse', () => {
     expect(pipelineRunArgs_parse([
       'run', 'myPipe', '--paramFile', 'one.yaml', '--paramFile', 'two.yaml',
     ]).parseError).toBe('--paramFile may be supplied only once');
+  });
+});
+
+describe('pipelineRunArgs_parse echo and whatif words', () => {
+  it('reads --verbose, --whatif and the new-feed form of it', () => {
+    expect(pipelineRunArgs_parse(['run', 'myPipe', '--verbose'])).toMatchObject({ verbose: true, dry: false, parseError: null });
+    expect(pipelineRunArgs_parse(['run', 'myPipe', '--whatif'])).toMatchObject({ dry: true, dryNewFeed: false });
+    expect(pipelineRunArgs_parse(['run', 'myPipe', '--whatif-new-feed'])).toMatchObject({ dry: true, dryNewFeed: true });
   });
 });

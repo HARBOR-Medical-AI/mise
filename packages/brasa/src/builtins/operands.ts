@@ -224,6 +224,18 @@ export interface StageWriter {
   file_copy: (source: string, destination: string) => Promise<VfsOutcome>;
 }
 
+/**
+ * A writer that writes nothing: `stage_make` with it plans a stage, for `whatif`.
+ *
+ * @returns The writer.
+ */
+export function stageWriter_none(): StageWriter {
+  return {
+    folder_make: async (): Promise<VfsOutcome> => ({ ok: true, value: true }),
+    file_copy: async (): Promise<VfsOutcome> => ({ ok: true, value: true }),
+  };
+}
+
 /** The default writer: the VFS dispatcher. */
 export function stageWriter_default(): StageWriter {
   const dispatcher: VFSDispatcher = vfsDispatcher_get();

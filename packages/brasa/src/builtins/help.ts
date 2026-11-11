@@ -1035,6 +1035,9 @@ export function pipelineExecutableHelp_render(name: string): string {
       '  --paramFile <cfs-file>  Apply one sparse YAML invocation overlay',
       '  --<node>.<parameter> <value>  Override a hosted parameter',
       '  --<node>.<control> <value>    Override a node execution control',
+      '  --verbose               Echo every parameter of every piping before the run',
+      '',
+      'help operands for the full rules; whatif <line> prints a run and starts nothing.',
     ],
     examples: [
       `${name} --diagram`,
@@ -1072,6 +1075,8 @@ export function pluginExecutableHelp_render(name: string): string {
       '  --parameters   Show parameter definitions for this plugin version',
       '  --readme       Show the rendered plugin README',
       '  --readme --raw Output raw README markdown for piping',
+      '',
+      'help operands for the full rules; whatif <line> prints a run and starts nothing.',
     ],
     examples: [
       `${name} ~/uploads/subjects`,

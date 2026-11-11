@@ -39,6 +39,7 @@ const mockDiagramGet: jest.Mock = jest.fn();
 const mockManifestGet: jest.Mock = jest.fn();
 const mockManifestBySlugGet: jest.Mock = jest.fn();
 const mockFileContentGet: jest.Mock = jest.fn();
+const mockPrepare = jest.fn();
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
   // The wait for a run to settle asks for statuses in one batch.
   jobs_statusBatch: async (ids: number[]): Promise<Map<number, string>> =>
@@ -49,6 +50,7 @@ jest.unstable_mockModule('@fnndsc/salsa', () => ({
   procCache_refresh: mockProcRefresh,
   pipelineDiagram_get: mockDiagramGet,
   pipelineManifest_get: mockManifestGet,
+  pipelineInvocation_prepare: mockPrepare,
   pipelineManifestBySlug_get: mockManifestBySlugGet,
   fileContent_get: mockFileContentGet,
   context_getSingle: jest.fn(async () => ({ user: 'me' })),
@@ -94,6 +96,7 @@ beforeEach(() => {
   mockClientGet.mockResolvedValue(null);
   mockInstanceGet.mockReturnValue(undefined);
   mockFileContentGet.mockResolvedValue(err());
+  mockPrepare.mockReturnValue(ok({ pipelineID: 7, nodeOverrides: [] }));
   mockManifestGet.mockResolvedValue(ok({
     pipelineID: 7,
     name: 'MyPipe',
@@ -200,6 +203,40 @@ describe('builtin_pipeline', () => {
     expect(mockRun).toHaveBeenCalledWith('MyPipe', 5, undefined);
     expect(mockDataLine).toHaveBeenCalledWith(expect.stringContaining('Workflow 99 created'));
     expect(mockProcRefresh).toHaveBeenCalledWith(77);
+  });
+
+  it('echoes the resolved call before dispatch: a line per piping, the changed parameters, all of them under --verbose (#1443)', async () => {
+    mockCwd = '/home/me/feeds/feed_1/pl-dircopy_5/data';
+    mockResolve.mockResolvedValue(ok({ name: 'MyPipe' }));
+    mockRun.mockResolvedValue(ok({ workflowId: 99, pluginInstanceIds: [] }));
+    const root = { piping_id: 1, title: 'root', compute_resource_name: 'host', plugin_parameter_defaults: [{ name: 'threshold', default: 0.4 }] };
+    mockPrepare.mockReturnValue(ok({ pipelineID: 7, nodeOverrides: [root] }));
+    await builtin_pipeline(['run', 'MyPipe']);
+    expect(mockDataLine).toHaveBeenCalledWith(expect.stringContaining('with root: registered parameters'));
+    mockPrepare.mockReturnValue(ok({ pipelineID: 7, nodeOverrides: [{ ...root, plugin_parameter_defaults: [{ name: 'threshold', default: 0.9 }] }] }));
+    await builtin_pipeline(['run', 'MyPipe', '--root.threshold', '0.9']);
+    expect(mockDataLine).toHaveBeenCalledWith(expect.stringContaining('with root: --threshold 0.9'));
+    mockPrepare.mockReturnValue(ok({ pipelineID: 7, nodeOverrides: [root] }));
+    await builtin_pipeline(['run', 'MyPipe', '--verbose']);
+    expect(mockDataLine).toHaveBeenCalledWith(expect.stringContaining('with root: --threshold 0.4 (default)  on host'));
+    expect(mockRun).toHaveBeenCalledTimes(3);
+  });
+
+  it('resolves and prints under --whatif, creating no workflow; refuses as the run would (#1442)', async () => {
+    mockCwd = '/home/me/feeds/feed_1/pl-dircopy_5/data';
+    mockResolve.mockResolvedValue(ok({ name: 'MyPipe' }));
+    mockPrepare.mockReturnValue(ok({ pipelineID: 7, nodeOverrides: [{ piping_id: 1, title: 'root', compute_resource_name: 'host', plugin_parameter_defaults: [{ name: 'threshold', default: 0.4 }] }] }));
+    const dry = await builtin_pipeline(['run', 'MyPipe', '--whatif']);
+    expect(dry.status).toBe('ok');
+    expect(mockDataLine).toHaveBeenCalledWith(expect.stringContaining("pipeline 'MyPipe' on instance 5"));
+    expect(mockDataLine).toHaveBeenCalledWith(expect.stringContaining('--threshold 0.4 (default)  on host'));
+    expect(mockDataLine).toHaveBeenCalledWith(expect.stringContaining('was not run; nothing was created'));
+    // On a feed that would be rooted first there is no node to name; outside a node the plain form refuses.
+    mockCwd = '/home/me';
+    expect((await builtin_pipeline(['run', 'MyPipe', '--whatif-new-feed'])).status).toBe('ok');
+    expect((await builtin_pipeline(['run', 'MyPipe', '--whatif'])).status).toBe('error');
+    expect(mockRun).not.toHaveBeenCalled();
+    expect(mockProcRefresh).not.toHaveBeenCalled();
   });
 
   it('answers every node it made, with where each writes and the nodes nothing runs off', async () => {

@@ -24,6 +24,7 @@ import { builtin_tree } from '../builtins/fs/tree.js';
 import { builtin_record } from '../builtins/res/record.js';
 import { builtin_motd } from '../builtins/sys/motd.js';
 import { chrisHelp } from './help.js';
+import { builtin_whatif } from './commandFallback.js';
 
 const envelope: Record<string, EnvelopeHandler> = {
   setfacl: builtin_setfacl,
@@ -85,6 +86,7 @@ const envelope: Record<string, EnvelopeHandler> = {
   pacs: builtin_pacs,
   pull: builtin_pull,
   pipeline: builtin_pipeline,
+  whatif: builtin_whatif,
   pipelines: builtin_pipeline,
   file: builtin_file,
   xxd: builtin_xxd,
@@ -110,6 +112,7 @@ const plain: Record<string, CommandHandler> = {
   upload: envelopeHandler_wrap(builtin_upload),
   pacs: envelopeHandler_wrap(builtin_pacs),
   pipeline: envelopeHandler_wrap(builtin_pipeline),
+  whatif: envelopeHandler_wrap(builtin_whatif),
   pipelines: envelopeHandler_wrap(builtin_pipeline),
   pull: envelopeHandler_wrap(builtin_pull),
   query: envelopeHandler_wrap(builtin_query),
@@ -179,7 +182,7 @@ const plain: Record<string, CommandHandler> = {
 const holds: Record<string, readonly SessionPiece[]> = {
   ...Object.fromEntries([
     'du', 'feeds', 'file', 'getfacl', 'getfattr', 'groups', 'id', 'md5sum', 'motd', 'pacsservers',
-    'pipelines', 'plugininstances', 'plugins', 'sha256sum', 'strings', 'tree', 'whereami', 'whoami', 'xxd',
+    'pipelines', 'plugininstances', 'plugins', 'sha256sum', 'strings', 'tree', 'whatif', 'whereami', 'whoami', 'xxd',
   ].map((name: string): [string, readonly SessionPiece[]] => [name, []])),
   gather: ['cohort'],
 };
