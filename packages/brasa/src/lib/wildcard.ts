@@ -5,7 +5,7 @@
  *
  * @module
  */
-import { minimatch } from 'minimatch';
+import { Minimatch, minimatch } from 'minimatch';
 import { listingItemsFromVfs_make } from './vfs/listing.js';
 import { session } from '../session/index.js';
 import type { ListingItem } from '@fnndsc/menu';
@@ -33,11 +33,31 @@ export interface WildcardMatch {
 }
 
 /**
- * Expands a rendered pattern and its quote-aware minimatch pattern.
+ * Lists a directory for expansion, through a CFS link and the listing cache.
+ *
+ * @param logicalDir - The directory as the caller spells it.
+ * @returns Its items, or null when it cannot be listed.
+ */
+async function directoryItems_list(logicalDir: string): Promise<ListingItem[] | null> {
+  const physicalDir: string = (await backendInstalled_get()?.vfs?.path_physical?.(logicalDir)) ?? logicalDir;
+  const listCache: ListingCache = listingCache_get();
+  const cached = listCache.cache_get<ListingItem[]>(physicalDir);
+  if (cached) return cached.data;
+  const vfsResult = await vfsDispatcher_get().list(physicalDir);
+  if (!vfsResult.ok) return null;
+  const items: ListingItem[] = listingItemsFromVfs_make(vfsResult.value);
+  listCache.cache_set(physicalDir, items);
+  return items;
+}
+
+/**
+ * Expands a rendered pattern and its quote-aware minimatch pattern, one path
+ * component at a time, as POSIX `sh` does: a wildcard may stand in any component. The
+ * literal lead is listed once, then each match of each later component.
  *
  * @param value - Rendered shell-word value.
  * @param globPattern - Quote-aware minimatch pattern.
- * @returns A Promise resolving to Result<WildcardMatch[]>.
+ * @returns A Promise resolving to Result<WildcardMatch[]>, sorted by name at each level.
  *          Ok([]) = no matches (not an error).
  *          Err(...) = couldn't expand (API failure, permission denied, etc.).
  */
@@ -46,64 +66,44 @@ async function wildcardMatches_expand(
   globPattern: string,
 ): Promise<Result<WildcardMatch[]>> {
   try {
-    // Get current directory
     const cwd: string = await session.getCWD();
     const resolvedValue: string = await path_resolve(value);
     const resolvedPattern: string = await path_resolve(globPattern);
 
-    // Handle patterns with directory components (e.g., "data/*.txt")
-    let searchDir: string = cwd;
-    let physicalSearchDir: string = cwd;
-    let matchPattern: string = resolvedPattern;
+    // A word with no directory part is one component, matched in cwd. A path
+    // keeps its literal lead (`~/...` resolved, a quoted `*` as itself) and
+    // expands from the first component that holds a wildcard.
+    const valueParts: string[] = resolvedValue.includes('/') ? resolvedValue.split('/') : [resolvedValue];
+    const patternParts: string[] = resolvedValue.includes('/') ? resolvedPattern.split('/') : [resolvedPattern];
+    const magicIndex: number = patternParts.findIndex((part: string): boolean => new Minimatch(part).hasMagic());
+    const first: number = magicIndex === -1 ? patternParts.length - 1 : magicIndex;
+    const base: string = resolvedValue.includes('/') ? (valueParts.slice(0, first).join('/') || '/') : cwd;
 
-    // Resolve the non-wildcard parent directory before listing. This gives
-    // `~/...` its normal meaning and follows a CFS `.chrislink` parent while
-    // retaining the caller's logical spelling in the expanded result.
-    if (resolvedValue.includes('/')) {
-      const valueParts: string[] = resolvedValue.split('/');
-      const patternParts: string[] = resolvedPattern.split('/');
-      const lastPart: string = patternParts.pop() || '*';
-      valueParts.pop();
-      const dirPart: string = valueParts.join('/');
-
-      searchDir = dirPart || '/';
-      physicalSearchDir = (await backendInstalled_get()?.vfs?.path_physical?.(searchDir)) ?? searchDir;
-
-      matchPattern = lastPart;
-    }
-
-    // List files in the directory (check cache first)
-    let items: ListingItem[] = [];
-    const listCache: ListingCache = listingCache_get();
-    const cached = listCache.cache_get<ListingItem[]>(physicalSearchDir);
-
-    if (cached) {
-      items = cached.data;
-    } else {
-      const vfsResult = await vfsDispatcher_get().list(physicalSearchDir);
-      if (vfsResult.ok) {
-        items = listingItemsFromVfs_make(vfsResult.value);
-        listCache.cache_set(physicalSearchDir, items);
-      } else {
-        return Err();
+    let matches: WildcardMatch[] = [{ path: base, type: 'dir' }];
+    for (let index: number = first; index < patternParts.length; index++) {
+      const pattern: string = patternParts[index] || '*';
+      const literal: string | null = new Minimatch(pattern).hasMagic() ? null : (valueParts[index] ?? pattern);
+      const next: WildcardMatch[] = [];
+      for (const parent of matches) {
+        // Past the first level a match that is a file, or cannot be listed, has nothing under it.
+        if (index > first && parent.type === 'file') continue;
+        const items: ListingItem[] | null = await directoryItems_list(parent.path);
+        if (items === null) {
+          if (index === first) return Err();
+          continue;
+        }
+        const kept: ListingItem[] = items
+          .filter((item: ListingItem): boolean => literal !== null ? item.name === literal : minimatch(item.name, pattern))
+          .sort((a: ListingItem, b: ListingItem): number => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        for (const item of kept) next.push({ path: `${parent.path}/${item.name}`.replace(/\/+/g, '/'), type: item.type });
       }
+      matches = next;
     }
 
-    // Filter items by pattern
-    const matches: WildcardMatch[] = items
-      .filter((item: ListingItem) => minimatch(item.name, matchPattern))
-      .map((item: ListingItem) => {
-        // Return a full path if we searched a different directory.
-        const itemPath: string = searchDir !== cwd
-          ? `${searchDir}/${item.name}`.replace(/\/+/g, '/')
-          : item.name;
-        return {
-          path: itemPath,
-          type: item.type,
-        };
-      });
-
-    // Ok([]) for no matches (not an error)
+    // A match under cwd reads as the caller typed it: the bare name.
+    if (base === cwd) {
+      matches = matches.map((match: WildcardMatch): WildcardMatch => ({ ...match, path: match.path.slice(cwd.replace(/\/+$/, '').length + 1) }));
+    }
     return Ok(matches);
 
   } catch (error: unknown) {

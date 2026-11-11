@@ -63,6 +63,9 @@ jest.unstable_mockModule('../src/core/filesystem.js', () => ({
 let cwdNow: string = '/home/u/feeds/feed_3/pl-dircopy_12/data';
 jest.unstable_mockModule('../src/core/paths.js', () => ({ path_resolve: async (input: string) => (input === '~' ? '/home/u' : input === '.' ? cwdNow : input), path_resolveFrom: (input: string) => input }));
 const mockFeedCreate = jest.fn();
+jest.unstable_mockModule('../src/builtins/res/runWait.js', () => ({
+  runs_awaitSettled: async () => ({ outcome: 'settled', failed: 0 }), settlement_render: () => 'settled', settlementStatus_derive: () => 'finishedSuccessfully',
+}));
 jest.unstable_mockModule('@fnndsc/salsa', () => ({ feed_create: mockFeedCreate }));
 
 // Built-in command table. Every name is a jest.fn() so COMMAND_HANDLERS is
@@ -323,6 +326,63 @@ describe('command_dispatch', () => {
     expect(mockFeedCreate).not.toHaveBeenCalled();
     expect(mockPipeline).toHaveBeenLastCalledWith(['run', 'myPipe', '--previous', '5']);
     cwdNow = '/home/u/feeds/feed_3/pl-dircopy_12/data';
+  });
+
+  it('runs a /bin pipeline once per directory operand, each placed on its own, as a glob of directories arrives (#1439, #1449)', async () => {
+    mockDataGet.mockResolvedValue(Ok([{ name: 'myPipe', type: 'pipeline' }]));
+    mockPipeline.mockClear();
+    mockPipeline.mockResolvedValue({ status: 'ok', rendered: '' });
+    mockFeedCreate.mockClear();
+    for (const name of ['sub-01', 'sub-02', 'sub-03']) world[`/home/u/uploads/${name}`] = 'dir';
+    world['/home/u/feeds/feed_3/pl-dircopy_12'] = 'dir';
+    mockFeedCreate.mockResolvedValueOnce({ id: 9, name: 'sub-01', owner_username: 'u', pluginInstance: { data: { id: 40 } } })
+      .mockResolvedValueOnce({ id: 10, name: 'sub-02', owner_username: 'u', pluginInstance: { data: { id: 41 } } })
+      .mockResolvedValueOnce({ id: 11, name: 'sub-03', owner_username: 'u', pluginInstance: { data: { id: 42 } } });
+    // The shell hands the fallback the three words `~/uploads/sub-*` expanded to.
+    mockShellWordsExpand.mockResolvedValueOnce(Ok([
+      { value: '/home/u/uploads/sub-01', pathnameExpanded: true },
+      { value: '/home/u/uploads/sub-02', pathnameExpanded: true },
+      { value: '/home/u/uploads/sub-03', pathnameExpanded: true },
+    ]));
+    await command_executeToEnvelope('myPipe /home/u/uploads/sub-*', 0, false);
+    expect(mockFeedCreate.mock.calls.map((call) => call[1])).toEqual([{ title: 'sub-01' }, { title: 'sub-02' }, { title: 'sub-03' }]);
+    expect(mockPipeline.mock.calls.map((call) => call[0])).toEqual([
+      ['run', 'myPipe', '--previous', '40', '--detach'],
+      ['run', 'myPipe', '--previous', '41', '--detach'],
+      ['run', 'myPipe', '--previous', '42', '--detach'],
+    ]);
+    // A node inside the tree beside a folder outside it: one attaches, the other roots a feed.
+    mockPipeline.mockClear();
+    mockFeedCreate.mockClear();
+    mockFeedCreate.mockResolvedValue({ id: 12, name: 'sub-01', owner_username: 'u', pluginInstance: { data: { id: 43 } } });
+    await command_dispatch('myPipe', ['/home/u/feeds/feed_3/pl-dircopy_12', '/home/u/uploads/sub-01', '--detach']);
+    expect(mockPipeline.mock.calls.map((call) => call[0])).toEqual([
+      ['run', 'myPipe', '--previous', '12', '--detach'],
+      ['run', 'myPipe', '--previous', '43', '--detach'],
+    ]);
+  });
+
+  it('refuses a /bin pipeline line of several directories whole when one would refuse, creating nothing', async () => {
+    mockDataGet.mockResolvedValue(Ok([{ name: 'myPipe', type: 'pipeline' }]));
+    mockPipeline.mockClear();
+    mockFeedCreate.mockClear();
+    world['/home/u/uploads/sub-01'] = 'dir';
+    world['/home/u/feeds/feed_3/data'] = 'dir';
+    world['/home/u/uploads/t1.nii'] = 'file';
+    const { sink_get } = await import('../src/core/sink.js');
+    const errWrite = jest.spyOn(sink_get(), 'err_write').mockImplementation(() => undefined);
+    expect((await command_dispatchEnvelope('myPipe', ['/home/u/uploads/sub-01', '/home/u/uploads/none'])).status).toBe('error');
+    expect((await command_dispatchEnvelope('myPipe', ['/home/u/uploads/sub-01', '/home/u/feeds/feed_3/data'])).status).toBe('error');
+    expect((await command_dispatchEnvelope('myPipe', ['/home/u/uploads/sub-01', '/home/u/uploads/t1.nii'])).status).toBe('error');
+    expect((await command_dispatchEnvelope('myPipe', ['/home/u/uploads/sub-9*'])).status).toBe('error');
+    const said: string = errWrite.mock.calls.map((call) => String(call[0])).join('');
+    expect(said).toContain('/home/u/uploads/none: no such file or directory');
+    expect(said).toContain('/home/u/feeds/feed_3/data is in a feed but not at a node');
+    expect(said).toContain('do not mix');
+    expect(said).toContain('/home/u/uploads/sub-9*: no match');
+    expect(mockFeedCreate).not.toHaveBeenCalled();
+    expect(mockPipeline).not.toHaveBeenCalled();
+    errWrite.mockRestore();
   });
 
   it('refuses a /bin pipeline operand beside --previous, and a missing path, running nothing', async () => {

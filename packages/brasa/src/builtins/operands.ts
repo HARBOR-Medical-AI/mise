@@ -48,8 +48,10 @@ export interface OperandSubject {
 
 /** The operands of a line, split from the plugin's own words. */
 export interface BinOperands {
-  /** The directory operand, resolved, or null. */
+  /** The first directory operand, resolved, or null. */
   directory: string | null;
+  /** Every directory operand, resolved, in order: several are several runs, one each. */
+  directories: string[];
   /** The subjects the file operands make, in order; empty with a directory or nothing. */
   subjects: OperandSubject[];
   /** Every operand path as typed, in order. */
@@ -154,14 +156,14 @@ export async function pathKind_read(resolved: string): Promise<PathKind> {
  * @param args - The words after the executable's name.
  * @param kind_read - How a path is looked at (the dispatcher, or a test's).
  * @returns The operands and the plugin's rest.
- * @throws OperandRefusal for a missing path, a directory with `as`, more
- *   than one directory, a directory beside files, or two subjects of one name.
+ * @throws OperandRefusal for a missing path, a pattern matching nothing, a
+ *   directory with `as`, a directory beside files, or two subjects of one name.
  */
 export async function operands_read(args: readonly string[], kind_read: PathKind_read = pathKind_read): Promise<BinOperands> {
   const { clauses, rest } = operandTokens_split(args);
   const subjects: OperandSubject[] = [];
   let pending: Array<{ typed: string; resolved: string }> = [];
-  let directory: string | null = null;
+  const directories: string[] = [];
   const typed: string[] = [];
   const subject_add = (name: string, named: boolean, files: Array<{ typed: string; resolved: string }>): void => {
     const taken: OperandSubject | undefined = subjects.find((one: OperandSubject): boolean => one.name === name);
@@ -177,25 +179,25 @@ export async function operands_read(args: readonly string[], kind_read: PathKind
   };
   for (const clause of clauses) {
     if (clause.kind === 'as') {
-      if (directory !== null && pending.length === 0) throw new OperandRefusal(`${typed[typed.length - 1]} is a directory, and a tree is already named: as names a file's subject`);
+      if (directories.length > 0 && pending.length === 0) throw new OperandRefusal(`${typed[typed.length - 1]} is a directory, and a tree is already named: as names a file's subject`);
       subject_close(clause.name);
       continue;
     }
     const resolved: string = await path_resolve(clause.value);
     const kind: PathKind = await kind_read(resolved);
-    if (kind === 'missing') throw new OperandRefusal(`${clause.value}: no such file or directory`);
+    // A pattern the shell could not expand arrives as typed: it matched nothing.
+    if (kind === 'missing') throw new OperandRefusal(`${clause.value}: ${/[*?[\]]/.test(clause.value) ? 'no match' : 'no such file or directory'}`);
     typed.push(clause.value);
     if (kind === 'directory') {
-      if (directory !== null) throw new OperandRefusal(`${clause.value}: one directory operand is the input; ${typed[0]} already is`);
       if (subjects.length > 0 || pending.length > 0) throw new OperandRefusal(`${clause.value}: a directory and files do not mix; a directory is the whole input`);
-      directory = resolved;
+      directories.push(resolved);
       continue;
     }
-    if (directory !== null) throw new OperandRefusal(`${clause.value}: a directory and files do not mix; ${typed[0]} is the whole input`);
+    if (directories.length > 0) throw new OperandRefusal(`${clause.value}: a directory and files do not mix; ${typed[0]} is the whole input`);
     pending.push({ typed: clause.value, resolved });
   }
   subject_close(null);
-  return { directory, subjects, typed, rest };
+  return { directory: directories[0] ?? null, directories, subjects, typed, rest };
 }
 
 /** A stage made for file operands: where it is and what it holds. */

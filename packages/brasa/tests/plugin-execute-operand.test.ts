@@ -13,6 +13,8 @@ const mockExecuteInPlace = jest.fn();
 const mockPluginsList = jest.fn();
 jest.unstable_mockModule('@fnndsc/salsa', () => ({ plugin_executeInPlace: mockExecuteInPlace, plugins_list: mockPluginsList }));
 cuminMock_install(() => ({
+  path_isInFeed: (path: string): boolean => path.includes('/feeds/feed_'),
+  path_extractPluginInstanceID: (path: string): number | null => { const found = path.match(/\/pl-[^/]+_(\d+)(\/|$)/); return found ? Number(found[1]) : null; },
   procCache_get: () => ({ instance_get: () => null, instance_add: () => undefined, feed_add: () => undefined }),
   envelope_ok: (rendered: string, model?: unknown) => ({ status: 'ok', rendered, ...(model !== undefined ? { model } : {}) }),
   envelope_error: (rendered: string) => ({ status: 'error', rendered }),
@@ -83,6 +85,28 @@ describe('builtin_executePlugin with an operand', () => {
     const refused = await builtin_executePlugin('pl-dircopy-v2.1.2', ['/home/u/uploads/t1.nii', 'as', 'x']);
     expect(refused.status).toBe('error');
     expect(errors.map(strip).join('\n')).toContain('an fs plugin takes paths as its dir, not subjects');
+  });
+
+  it('runs once per directory when the line names several, and nothing when one of them is refused (#1449)', async () => {
+    world['/home/u/uploads/sub-02'] = 'dir';
+    const ran = await builtin_executePlugin('pl-freesurfer-v1.0.4', ['/home/u/uploads/subjects', '/home/u/uploads/sub-02', '--threads', '2']);
+    expect(ran.status).toBe('ok');
+    expect(mockExecuteInPlace).toHaveBeenCalledTimes(2);
+    expect(mockExecuteInPlace).toHaveBeenNthCalledWith(1, 'name_exact:pl-freesurfer,version:1.0.4', { threads: 2 }, { feed_title: 'subjects' }, '/home/u/uploads/subjects', ['pl-dircopy-v2.1.2']);
+    expect(mockExecuteInPlace).toHaveBeenNthCalledWith(2, 'name_exact:pl-freesurfer,version:1.0.4', { threads: 2 }, { feed_title: 'sub-02' }, '/home/u/uploads/sub-02', ['pl-dircopy-v2.1.2']);
+    expect(lines.map(strip)).toEqual(expect.arrayContaining(['pl-freesurfer-v1.0.4 /home/u/uploads/subjects:', 'pl-freesurfer-v1.0.4 /home/u/uploads/sub-02:']));
+    mockExecuteInPlace.mockClear();
+    const refused = await builtin_executePlugin('pl-freesurfer-v1.0.4', ['/home/u/uploads/subjects', '/home/u/uploads/none']);
+    expect(refused.status).toBe('error');
+    expect(mockExecuteInPlace).not.toHaveBeenCalled();
+  });
+
+  it('hands an fs plugin several directories as its one dir, in one run', async () => {
+    world['/home/u/uploads/sub-02'] = 'dir';
+    mockPluginsList.mockResolvedValue({ tableData: [{ id: 2, name: 'pl-dircopy', version: '2.1.2', type: 'fs' }] });
+    await builtin_executePlugin('pl-dircopy-v2.1.2', ['/home/u/uploads/subjects', '/home/u/uploads/sub-02']);
+    expect(mockExecuteInPlace).toHaveBeenCalledTimes(1);
+    expect(mockExecuteInPlace).toHaveBeenCalledWith('name_exact:pl-dircopy,version:2.1.2', { dir: '/home/u/uploads/subjects,/home/u/uploads/sub-02' }, { feed_title: 'uploads' }, '/home/u/uploads', ['pl-dircopy-v2.1.2']);
   });
 
   it('runs nothing when the operand is refused, or the plugin kind cannot be read', async () => {
