@@ -171,7 +171,7 @@ OpenShift Dev Spaces and a berth (<<stand-in>>) look alike from outside: a conta
 | Network | the cluster's egress | CUBE's API alone; no berth reaches another
 | Code in | `git clone` over egress | porter's door, or files in the spoke's CUBE
 | Data in | mounted volumes, anything egress reaches | a ChRIS copy of the cohort into `/incoming`
-| Results out | `git push`, anything egress reaches | `outgoing return`, a node of the cohort's feed
+| Results out | `git push`, anything egress reaches | `berth close`, a node of the feed the work was anchored in
 | Scope | one cluster | one berth per spoke per person, reached from the Hub
 |===
 
