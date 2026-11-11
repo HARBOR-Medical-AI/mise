@@ -1,5 +1,11 @@
 # @fnndsc/porter
 
+## 0.11.1
+
+### Patch Changes
+
+- 67ca707: A berth starts from the image built for porter 0.11.0, so its calypso and chell match the porter that opens it.
+
 ## 0.11.0
 
 ### Minor Changes
