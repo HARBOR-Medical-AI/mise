@@ -10,7 +10,7 @@ const mockCheckpointDrain = jest.fn((): { type: string; message: string }[] => [
 cuminMock_install(() => ({
   feedStatus_deriveFromCounts: (): string => 'finishedSuccessfully',
   path_isInFeed: (p: string): boolean => p.includes('/feeds/feed_'),
-  path_extractPluginInstanceID: (p: string): number | null => { const m = p.match(/_(\d+)$/); return m ? Number(m[1]) : null; },
+  path_extractPluginInstanceID: (p: string): number | null => { const m = [...p.matchAll(/\/pl-[^/]+_(\d+)(?=\/|$)/g)].pop(); return m ? Number(m[1]) : null; },
   envelope_ok: (rendered: string) => ({ status: 'ok', rendered }),
   envelope_error: (rendered: string, _errors?: unknown, renderedErr?: string) => (renderedErr !== undefined ? { status: 'error', rendered, renderedErr } : { status: 'error', rendered }),
   Ok,
@@ -380,6 +380,23 @@ describe('command_dispatch', () => {
     expect(said).toContain('/home/u/feeds/feed_3/data is in a feed but not at a node');
     expect(said).toContain('do not mix');
     expect(said).toContain('/home/u/uploads/sub-9*: no match');
+    expect(mockFeedCreate).not.toHaveBeenCalled();
+    expect(mockPipeline).not.toHaveBeenCalled();
+    errWrite.mockRestore();
+  });
+
+  it('refuses a /bin pipeline given files of two nodes, staging nothing and making no feed (#1440)', async () => {
+    mockDataGet.mockResolvedValue(Ok([{ name: 'myPipe', type: 'pipeline' }]));
+    mockPipeline.mockClear();
+    mockFeedCreate.mockClear();
+    world['/home/u/feeds/feed_3/pl-dircopy_12/a.nii'] = 'file';
+    world['/home/u/feeds/feed_3/pl-x_13/b.nii'] = 'file';
+    const { sink_get } = await import('../src/core/sink.js');
+    const errWrite = jest.spyOn(sink_get(), 'err_write').mockImplementation(() => undefined);
+    const refused = await command_dispatchEnvelope('myPipe', ['/home/u/feeds/feed_3/pl-dircopy_12/a.nii', '/home/u/feeds/feed_3/pl-x_13/b.nii']);
+    expect(refused.status).toBe('error');
+    expect(errWrite.mock.calls.map((call) => String(call[0])).join('')).toContain('the operands are in two nodes');
+    expect(Object.keys(world).some((path) => path.includes('/.mise/stage/'))).toBe(false);
     expect(mockFeedCreate).not.toHaveBeenCalled();
     expect(mockPipeline).not.toHaveBeenCalled();
     errWrite.mockRestore();

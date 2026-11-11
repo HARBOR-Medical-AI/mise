@@ -101,6 +101,19 @@ describe('builtin_executePlugin with an operand', () => {
     expect(mockExecuteInPlace).not.toHaveBeenCalled();
   });
 
+  it('refuses files of two nodes and stages nothing; an fs plugin takes them as its dir (#1440)', async () => {
+    Object.assign(world, { '/home/u/feeds/feed_3/pl-dircopy_12/data/a.nii': 'file', '/home/u/feeds/feed_3/pl-x_13/data/b.nii': 'file' });
+    const two: string[] = ['/home/u/feeds/feed_3/pl-dircopy_12/data/a.nii', '/home/u/feeds/feed_3/pl-x_13/data/b.nii'];
+    const refused = await builtin_executePlugin('pl-freesurfer-v1.0.4', two);
+    expect(refused.status).toBe('error');
+    expect(errors.map(strip).join('\n')).toContain('pl-freesurfer-v1.0.4: the operands are in two nodes, pl-dircopy_12 and pl-x_13; a run attaches at one');
+    expect(made).toEqual([]);
+    expect(mockExecuteInPlace).not.toHaveBeenCalled();
+    mockPluginsList.mockResolvedValue({ tableData: [{ id: 2, name: 'pl-dircopy', version: '2.1.2', type: 'fs' }] });
+    await builtin_executePlugin('pl-dircopy-v2.1.2', two);
+    expect(mockExecuteInPlace).toHaveBeenCalledTimes(1);
+  });
+
   it('hands an fs plugin several directories as its one dir, in one run', async () => {
     world['/home/u/uploads/sub-02'] = 'dir';
     mockPluginsList.mockResolvedValue({ tableData: [{ id: 2, name: 'pl-dircopy', version: '2.1.2', type: 'fs' }] });

@@ -68,6 +68,8 @@ export interface OperandTokens {
   /** `path` tokens and `as <name>` clauses, in order. */
   clauses: Array<{ kind: 'path'; value: string } | { kind: 'as'; name: string }>;
   rest: string[];
+  /** The bare `key=value` words among the operands: kept for the plugin, and looked at in case one names a file. */
+  assigned: string[];
 }
 
 /** Whether a token is a flag written with `=`, which may stand before an operand. */
@@ -95,6 +97,7 @@ function token_isAssignedFlag(token: string): boolean {
 export function operandTokens_split(args: readonly string[]): OperandTokens {
   const clauses: OperandTokens['clauses'] = [];
   const rest: string[] = [];
+  const assigned: string[] = [];
   let index: number = 0;
   while (index < args.length) {
     const token: string = args[index] as string;
@@ -102,7 +105,7 @@ export function operandTokens_split(args: readonly string[]): OperandTokens {
       if (token_isAssignedFlag(token)) { rest.push(token); index++; continue; }
       break;
     }
-    if (token_isAssignedFlag(token)) { rest.push(token); index++; continue; }
+    if (token_isAssignedFlag(token)) { rest.push(token); assigned.push(token); index++; continue; }
     const previous = clauses[clauses.length - 1];
     if (token === 'as' && previous !== undefined && previous.kind === 'path') {
       const name: string | undefined = args[index + 1];
@@ -116,7 +119,7 @@ export function operandTokens_split(args: readonly string[]): OperandTokens {
     index++;
   }
   rest.push(...args.slice(index));
-  return { clauses, rest };
+  return { clauses, rest, assigned };
 }
 
 /**
@@ -157,10 +160,16 @@ export async function pathKind_read(resolved: string): Promise<PathKind> {
  * @param kind_read - How a path is looked at (the dispatcher, or a test's).
  * @returns The operands and the plugin's rest.
  * @throws OperandRefusal for a missing path, a pattern matching nothing, a
- *   directory with `as`, a directory beside files, or two subjects of one name.
+ *   directory with `as`, a directory beside files, two subjects of one name,
+ *   or a `key=value` word that names a file.
  */
 export async function operands_read(args: readonly string[], kind_read: PathKind_read = pathKind_read): Promise<BinOperands> {
-  const { clauses, rest } = operandTokens_split(args);
+  const { clauses, rest, assigned } = operandTokens_split(args);
+  // A word with `=` and no `/` is an assignment, the plugin's; when a file of
+  // that name stands there, the line most likely meant the file.
+  for (const word of assigned) {
+    if (await kind_read(await path_resolve(word)) !== 'missing') throw new OperandRefusal(`${word} reads as an assignment; write ./${word} for the file`);
+  }
   const subjects: OperandSubject[] = [];
   let pending: Array<{ typed: string; resolved: string }> = [];
   const directories: string[] = [];

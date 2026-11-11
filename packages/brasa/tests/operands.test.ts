@@ -18,25 +18,31 @@ const world = (entries: Record<string, PathKind>) => async (resolved: string): P
 
 describe('operandTokens_split', () => {
   it('takes the leading words as operands and leaves the plugin its flags', () => {
-    expect(operandTokens_split(['~/uploads/subjects', '--threads', '2'])).toEqual({ clauses: [{ kind: 'path', value: '~/uploads/subjects' }], rest: ['--threads', '2'] });
-    expect(operandTokens_split(['--threads=2', 't1.nii', 'as', 'sub-01', '--verbose'])).toEqual({
+    expect(operandTokens_split(['~/uploads/subjects', '--threads', '2'])).toMatchObject({ clauses: [{ kind: 'path', value: '~/uploads/subjects' }], rest: ['--threads', '2'] });
+    expect(operandTokens_split(['--threads=2', 't1.nii', 'as', 'sub-01', '--verbose'])).toMatchObject({
       clauses: [{ kind: 'path', value: 't1.nii' }, { kind: 'as', name: 'sub-01' }], rest: ['--threads=2', '--verbose'],
     });
-    expect(operandTokens_split(['--verbose', 't1.nii'])).toEqual({ clauses: [], rest: ['--verbose', 't1.nii'] });
-    expect(operandTokens_split([])).toEqual({ clauses: [], rest: [] });
+    expect(operandTokens_split(['--verbose', 't1.nii'])).toMatchObject({ clauses: [], rest: ['--verbose', 't1.nii'] });
+    expect(operandTokens_split([])).toMatchObject({ clauses: [], rest: [] });
   });
 
   it('reads as as a keyword only after a path and before a name', () => {
-    expect(operandTokens_split(['as'])).toEqual({ clauses: [{ kind: 'path', value: 'as' }], rest: [] });
-    expect(operandTokens_split(['as', 't1.nii'])).toEqual({ clauses: [{ kind: 'path', value: 'as' }, { kind: 'path', value: 't1.nii' }], rest: [] });
+    expect(operandTokens_split(['as'])).toMatchObject({ clauses: [{ kind: 'path', value: 'as' }], rest: [] });
+    expect(operandTokens_split(['as', 't1.nii'])).toMatchObject({ clauses: [{ kind: 'path', value: 'as' }, { kind: 'path', value: 't1.nii' }], rest: [] });
     expect(() => operandTokens_split(['t1.nii', 'as'])).toThrow(OperandRefusal);
     expect(() => operandTokens_split(['t1.nii', 'as', '--verbose'])).toThrow('as needs a name');
     expect(() => operandTokens_split(['t1.nii', 'as', 'a/b'])).toThrow('no /');
   });
 
   it('keeps a bare key=value for the plugin unless its key is a path', () => {
-    expect(operandTokens_split(['x=1', 't1.nii'])).toEqual({ clauses: [{ kind: 'path', value: 't1.nii' }], rest: ['x=1'] });
-    expect(operandTokens_split(['~/a=b/t1.nii'])).toEqual({ clauses: [{ kind: 'path', value: '~/a=b/t1.nii' }], rest: [] });
+    expect(operandTokens_split(['x=1', 't1.nii'])).toMatchObject({ clauses: [{ kind: 'path', value: 't1.nii' }], rest: ['x=1'] });
+    expect(operandTokens_split(['~/a=b/t1.nii'])).toMatchObject({ clauses: [{ kind: 'path', value: '~/a=b/t1.nii' }], rest: [] });
+  });
+});
+
+describe('operandTokens_split assigned', () => {
+  it('lists the bare key=value words among the operands, never a flag or a word after one', () => {
+    expect(operandTokens_split(['a.nii', 'k=v', '--x=1', '--name', 'p=q']).assigned).toEqual(['k=v']);
   });
 });
 
@@ -79,6 +85,21 @@ describe('operands_read', () => {
     await expect(operands_read(['~/uploads/subjects', '~/uploads/t1.nii'], fs)).rejects.toThrow('do not mix');
     await expect(operands_read(['~/uploads/t1.nii', '~/uploads/subjects'], fs)).rejects.toThrow('do not mix');
     await expect(operands_read(['~/uploads/t1.nii', '~/uploads/t1.nii.gz'], fs)).rejects.toThrow('two subjects would be called t1');
+  });
+});
+
+describe('a key=value word that names a file (#1313)', () => {
+  const fs = world({ '/home/u/sub=01.nii': 'file', '/home/u/uploads/t1.nii': 'file' });
+
+  it('refuses with the ./ spelling when the file stands there, and reads ./sub=01.nii as the file', async () => {
+    await expect(operands_read(['sub=01.nii'], fs)).rejects.toThrow('sub=01.nii reads as an assignment; write ./sub=01.nii for the file');
+    const read = await operands_read(['/home/u/sub=01.nii'], fs);
+    expect(read.subjects.map((subject) => subject.files)).toEqual([['/home/u/sub=01.nii']]);
+  });
+
+  it('keeps an assignment that names no file for the plugin, and never looks at a word after the first flag', async () => {
+    expect((await operands_read(['~/uploads/t1.nii', 'threads=2'], fs)).rest).toEqual(['threads=2']);
+    expect((await operands_read(['--fileFilter', 'sub=01.nii'], fs)).rest).toEqual(['--fileFilter', 'sub=01.nii']);
   });
 });
 
