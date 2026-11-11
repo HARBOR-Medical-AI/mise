@@ -7,7 +7,7 @@ This file is the handoff between sessions and between models. It says where the 
 
 ## The truth, 2026-11-10
 
-**Live.** pangea and titan run porter 0.11.0, stratus 0.18.1, argus 0.58.0, chell 5.20.6, menu 0.41.0, salsa 4.5.1 (`make deploy`, 2026-11-10). The store (`cube.chrisproject.org`, OCI VM `store`, 2 vCPU / 8 GiB, porter at `porter.chrisproject.org`) runs CUBE 6.11.0, porter 0.11.0 and the berth launcher (`chris deploy store` replay, 2026-11-10; berths 1 CPU / 2 GiB, the store holds 2), boot disk 150 GB, data 150 GB, 178 plugins from FNNDSC/chris-plugins @ `c941fc0`. `chris status` reads `berths none`: no one has logged in through the store's porter since the replay, so no berth has started on the store yet.
+**Live.** pangea and titan run porter 0.11.1, stratus 0.18.2, argus 0.58.0, chell 5.20.6, menu 0.41.0, salsa 4.5.1 (`make deploy`, 2026-11-10). The store (`cube.chrisproject.org`, OCI VM `store`, 2 vCPU / 8 GiB, porter at `porter.chrisproject.org`) runs CUBE 6.11.0, porter 0.11.1 and the berth launcher (`chris deploy store` replay, 2026-11-11 UTC; berths 1 CPU / 2 GiB, the store holds 2; berth image `…@sha256:72c0f6e4…`, calypso 0.29.7 and chell 5.20.6), boot disk 150 GB, data 150 GB, 178 plugins from FNNDSC/chris-plugins @ `c941fc0`. `chris status` reads `berths none`: no one has logged in through the store's porter since the replay, so no berth has started on the store yet.
 
 **Published, not deployed.** Nothing. The gateway path (a berth on `cube-net` reaching CUBE's published ports at the bridge's gateway) is walked on Docker 29 on pangea and on the store (2026-11-08, throwaway network, removed).
 
@@ -20,7 +20,7 @@ This file is the handoff between sessions and between models. It says where the 
 
 ## Next action
 
-1. A first login through the store's porter (the operator's, or a throwaway account's on the operator's word): the first berth on the store, then HOST ACCESS read `running` from pangea's ARGUS. Before it, #1457 (the berth image built for porter 0.11.0; the store's berths run calypso 0.29.6 and chell 5.20.5 until a porter release carries it, stratus pins that porter, and the store is replayed).
+1. A first login through the store's porter (the operator's, or a throwaway account's on the operator's word): the first berth on the store, then HOST ACCESS read `running` from pangea's ARGUS.
 2. The chell operand package from pl-freesurfer-b5 (operator's order: berths first, then this), each its own PR: reproduce #1439 on main; #1442+#1443 (one resolved record, resolve-then-act; `whatif` and the echo print it); #1439+#1449 (wildcards in every component, refuse on no match, several directory operands run once each, all checked first); #1440 (file operands from two feed nodes refuse); #1441 (`&&` and `||` supported); #1313 (the `./sub=01.nii` hint refusal); #1447 (`help operands` under `help Shell`, with the stem rule). Not #1444/#1445/#1448 (tabled on D1); #1446 closed. Read each issue's comments first. Background: FNNDSC/pfstack docs/chell_handling.adoc.
 3. Berth stages 4 and 5, redesigned 2026-11-10 (berths.adoc §settled): no feed picker at the door and no `pl-berth`. `berth anchor <plugin instance>` downloads a node's output into `/incoming` from inside the session; pairs kept under `/pairs/<id>/`, `/incoming` and `/outgoing` links to the current one; `berth close` writes `berth.json`, uploads `/outgoing` to `/home/<user>/berth/<id>-<uuid>/` and runs `pl-dsdircopy` under the anchor (`pl-dircopy` and a new feed with no anchor); `berth drop`. The launcher mounts `/incoming` read-only today, so the mounts change first. Stage 6 (HOST ACCESS controls: start, stop, remove a person's home, asked) is as before. Open in berths.adoc §open: the image following the porter pin (decide: automate the two release rounds, or mount calypso and chell from porter), a berth node being a link to a folder its owner can remove, live token refresh, the launcher forgetting tokens on restart, the 2 h idle stop, the root chown helper, a berth's disk not limited.
 
@@ -83,8 +83,8 @@ A publish run before the Release run opened Version Packages finds nothing and t
 
 ## Open items, for the operator
 
-- **Two record folders on pangea**: `chris deploy store` is replayed from `~/.local/state/stratus`; the porter session's folder takes the vault's newer ChRIS record at its next VM listing (checked on a copy, 2026-11-10). The backup on `/neuro` matches `~/.local/state/stratus` as of 2026-11-10.
-- **`make deploy` on pangea** installs only what the last Version Packages merge bumped, so after two releases in a row it left argus and menu one behind; installed by hand 2026-11-10. #1456 makes `scripts/deploy.sh` install everything porter runs.
+- **Two record folders on pangea**: `chris deploy store` is replayed from `~/.local/state/stratus`; the porter session's folder takes the vault's newer ChRIS record at its next VM listing (checked on a copy, 2026-11-10). The backup on `/neuro` matches `~/.local/state/stratus` as of 2026-11-11.
+- **`make deploy` on pangea** installs only what the last Version Packages merge bumped, so after two releases in a row it left argus and menu one behind; installed by hand 2026-11-10. #1456 made `scripts/deploy.sh` install everything porter runs (used 2026-11-11: twelve packages, no hand fix).
 - **Throwaway CUBE account** `mise-walk` on the store: remove it.
 - **Global `chell` on pangea** is npm-linked to `~/src/mise/packages/chell`, so it follows whatever branch that checkout last built; unlinking to the published install is the operator's call.
 - **FNNDSC org secret** `CHRISPROJECT_PASSWORD` and `~/.config/chrisproject/store/chris-password` hold the old `chris` password.
