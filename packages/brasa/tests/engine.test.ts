@@ -502,6 +502,30 @@ describe('line_execute — control flow', () => {
     expect(envelopes).toEqual([{ status: 'ok', rendered: 'PLUGIN OUTPUT\n' }]);
   });
 
+  it('runs the command after && only when the one before succeeded, and after || only when it failed (#1441)', async () => {
+    // a && b, a succeeding: both run.
+    expect(await line_execute('whoami && whoami')).toHaveLength(2);
+    expect(mockWhoami).toHaveBeenCalledTimes(2);
+    // a && b, a failing: b never runs.
+    mockWhoami.mockClear();
+    mockWhoami.mockRejectedValueOnce(new Error('boom'));
+    const stopped = await line_execute('whoami && whoami');
+    expect(mockWhoami).toHaveBeenCalledTimes(1);
+    expect(stopped.map((envelope) => envelope.status)).toEqual(['error']);
+    // a || b: b runs only after a failure.
+    mockWhoami.mockClear();
+    expect(await line_execute('whoami || whoami')).toHaveLength(1);
+    expect(mockWhoami).toHaveBeenCalledTimes(1);
+    mockWhoami.mockRejectedValueOnce(new Error('boom'));
+    const recovered = await line_execute('whoami || whoami');
+    expect(recovered.map((envelope) => envelope.status)).toEqual(['error', 'ok']);
+    // A skipped command leaves the outcome as it was: a && b || c runs c when a failed; ; starts afresh.
+    mockWhoami.mockClear();
+    mockWhoami.mockRejectedValueOnce(new Error('boom'));
+    expect(await line_execute('whoami && whoami || whoami; whoami')).toHaveLength(3);
+    expect(mockWhoami).toHaveBeenCalledTimes(3);
+  });
+
   it('aborts a semicolon batch on error when stop-on-error is set', async () => {
     mockWhoami.mockRejectedValueOnce(new Error('boom'));
     stopOnError_set(true);
