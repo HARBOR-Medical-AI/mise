@@ -233,6 +233,8 @@ jest.unstable_mockModule('../src/builtins/fs/archive.js', () => ({
   directory_archive: archiveMock,
 }));
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
+  pipelineInvocation_prepare: jest.fn(() => ({ ok: true, value: { pipelineID: 1, nodeOverrides: [] } })),
+  syncSeams_cube: { cubeDescriptor_read: async () => null },
   PROC_TAGS_PREFIX: '/proc/tags',
   // The wait for a run to settle asks for statuses in one batch.
   jobs_statusBatch: async (ids: number[]): Promise<Map<number, string>> =>

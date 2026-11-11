@@ -402,6 +402,30 @@ describe('command_dispatch', () => {
     errWrite.mockRestore();
   });
 
+  it('whatif resolves a /bin line and creates nothing: no feed for a Pipeline, the dry flag for a plugin (#1442)', async () => {
+    const { builtin_whatif } = await import('../src/chris/commandFallback.js');
+    mockDataGet.mockResolvedValue(Ok([{ name: 'myPipe', type: 'pipeline' }]));
+    mockPipeline.mockClear();
+    mockPipeline.mockResolvedValue({ status: 'ok', rendered: '' });
+    mockFeedCreate.mockClear();
+    world['/home/u/uploads/subjects'] = 'dir';
+    world['/home/u/feeds/feed_3/pl-dircopy_12'] = 'dir';
+    await builtin_whatif(['myPipe', '/home/u/uploads/subjects', '--compute', 'host']);
+    expect(mockPipeline).toHaveBeenLastCalledWith(['run', 'myPipe', '--whatif-new-feed', '--compute', 'host']);
+    await builtin_whatif(['myPipe', '/home/u/feeds/feed_3/pl-dircopy_12']);
+    expect(mockPipeline).toHaveBeenLastCalledWith(['run', 'myPipe', '--previous', '12', '--whatif']);
+    expect(mockFeedCreate).not.toHaveBeenCalled();
+    mockDataGet.mockResolvedValue(Ok([{ name: 'pl-x-v1.0.0', type: 'plugin' }]));
+    mockExecutePlugin.mockResolvedValue({ status: 'ok', rendered: '' });
+    await builtin_whatif(['pl-x-v1.0.0', '--threads', '2']);
+    expect(mockExecutePlugin).toHaveBeenLastCalledWith('pl-x-v1.0.0', ['--threads', '2'], undefined, true);
+    const { sink_get } = await import('../src/core/sink.js');
+    const errWrite = jest.spyOn(sink_get(), 'err_write').mockImplementation(() => undefined);
+    expect((await builtin_whatif([])).status).toBe('error');
+    expect((await builtin_whatif(['nothing-here'])).status).toBe('error');
+    errWrite.mockRestore();
+  });
+
   it('refuses a /bin pipeline operand beside --previous, and a missing path, running nothing', async () => {
     mockDataGet.mockResolvedValue(Ok([{ name: 'myPipe', type: 'pipeline' }]));
     world['/home/u/uploads/subjects'] = 'dir';
