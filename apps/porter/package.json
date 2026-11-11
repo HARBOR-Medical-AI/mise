@@ -1,6 +1,6 @@
 {
   "name": "@fnndsc/porter",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "PORTER: the mise display manager — logs an operator in, finds or starts their calypso, and shows them to argus",
   "type": "module",
   "main": "dist/porter.js",
