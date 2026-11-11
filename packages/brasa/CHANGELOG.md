@@ -1,5 +1,14 @@
 # @fnndsc/brasa
 
+## 0.55.0
+
+### Minor Changes
+
+- a208b87: Commands on one line can now be joined by `&&` and `||`, as in `sh`. `a && b` runs `b` only when `a` succeeded, `a || b` only when it failed; before, `cd ~/uploads && pwd` was read as a `cd` into a folder named `~/uploads && pwd`. Inside quotes each is text, a skipped command leaves the outcome as it was, and `;` starts afresh. `help pipes` says so.
+- ed9d36b: A `/bin` run given files from two feed nodes now refuses, naming both nodes, instead of merging them into a new feed. Files of a node beside files outside the feeds tree refuse the same way; nothing is staged and no feed is made. A word such as `sub=01.nii` that reads as an assignment but names a file that exists refuses with the spelling to use: `write ./sub=01.nii for the file`.
+- 9a86ebe: A wildcard now expands in any part of a path, and a `/bin` line naming several directories runs once for each. `Mriconvert ~/uploads/sub-*` and `pl-x ~/feeds/feed_*/pl-dircopy_*/data` expand to every match, sorted, and each directory is its own run: outside the feeds tree it roots its own feed, inside it attaches at its node. Every operand is checked before any run starts, so one bad operand refuses the whole line; all runs are dispatched, then one wait holds the line for them all. A pattern matching nothing refuses as `<pattern>: no match`. To an fs plugin several directories are its one `dir`.
+- 021109c: A plugin or Pipeline run now says what it resolved to before it starts, and `whatif` prints that and runs nothing. Before dispatch a run names the node it attaches to (or the feed it roots) and its parameters with defaults marked; a Pipeline prints one line per piping, every parameter under `--verbose`. `whatif <line>` takes the same path and stops before the stage, the feed or the job is made, refusing as the real line would. `help operands` holds the operand rules in one place.
+
 ## 0.54.3
 
 ### Patch Changes
