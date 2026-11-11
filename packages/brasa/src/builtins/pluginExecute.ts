@@ -66,12 +66,14 @@ export async function builtin_executePlugin(
   place?: string,
 ): Promise<CommandEnvelope> {
   if (place !== undefined) return pluginRun_execute(pluginName, args, place);
-  // Several directory operands are several runs, one each; to an fs plugin
-  // they are its one `dir`, untranslated, so that line stays one run.
+  // Several directory operands are several runs, one each, and file operands
+  // stand in one node; to an fs plugin every operand is its one `dir`,
+  // untranslated, so that line is one run and its paths are not looked at.
   let runs: string[][];
   try {
-    runs = await operandRuns_split(args);
-    if (runs.length > 1 && await pluginKind_read(pluginName) === 'fs') runs = [args];
+    const operands: BinOperands = await operands_read(args);
+    const placed: boolean = operands.directories.length > 1 || operands.subjects.length > 0;
+    runs = placed && await pluginKind_read(pluginName) === 'fs' ? [args] : await operandRuns_split(args);
   } catch (error: unknown) {
     if (!(error instanceof OperandRefusal)) throw error;
     sink_errLine(chalk.red(`${pluginName}: ${error.message}`));

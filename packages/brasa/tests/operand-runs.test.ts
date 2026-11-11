@@ -51,3 +51,28 @@ describe('operandRuns_split', () => {
     await expect(operandRuns_split(['~/uploads/sub-01', '~/feeds/feed_3/data'], fs)).rejects.toThrow('~/feeds/feed_3/data is in a feed but not at a node');
   });
 });
+
+describe('operandNodes_check through operandRuns_split (#1440)', () => {
+  const fs = world({
+    '/home/u/feeds/feed_5620/pl-dircopy_741000/data/x/scan01.nii.gz': 'file', '/home/u/feeds/feed_5620/pl-dircopy_741000/data/x/scan02.nii.gz': 'file',
+    '/home/u/feeds/feed_5620/pl-dcm2niix_741005/data/scan09.nii.gz': 'file', '/home/u/feeds/feed_77/pl-dircopy_9/data/scan10.nii.gz': 'file',
+    '/home/u/uploads/t1.nii': 'file',
+  });
+
+  it('refuses files of two nodes, in one feed or two, naming both', async () => {
+    await expect(operandRuns_split(['~/feeds/feed_5620/pl-dircopy_741000/data/x/scan01.nii.gz', '~/feeds/feed_5620/pl-dcm2niix_741005/data/scan09.nii.gz'], fs))
+      .rejects.toThrow('the operands are in two nodes, pl-dircopy_741000 and pl-dcm2niix_741005; a run attaches at one');
+    await expect(operandRuns_split(['~/feeds/feed_5620/pl-dircopy_741000/data/x/scan01.nii.gz', '~/feeds/feed_77/pl-dircopy_9/data/scan10.nii.gz'], fs))
+      .rejects.toThrow('the operands are in two nodes, pl-dircopy_741000 and pl-dircopy_9');
+  });
+
+  it('refuses a file of a node beside a file outside the tree, naming the node and the outside path', async () => {
+    await expect(operandRuns_split(['~/feeds/feed_5620/pl-dircopy_741000/data/x/scan01.nii.gz', '~/uploads/t1.nii'], fs))
+      .rejects.toThrow('the operands are in the node pl-dircopy_741000 and outside the feeds tree (~/uploads/t1.nii); a run attaches at one');
+  });
+
+  it('lets files of one node, and files all outside the tree, through', async () => {
+    expect(await operandRuns_split(['~/feeds/feed_5620/pl-dircopy_741000/data/x/scan01.nii.gz', '~/feeds/feed_5620/pl-dircopy_741000/data/x/scan02.nii.gz'], fs)).toHaveLength(1);
+    expect(await operandRuns_split(['~/uploads/t1.nii'], fs)).toHaveLength(1);
+  });
+});
