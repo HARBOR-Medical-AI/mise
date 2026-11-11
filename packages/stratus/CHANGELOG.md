@@ -1,5 +1,11 @@
 # @fnndsc/stratus
 
+## 0.18.2
+
+### Patch Changes
+
+- 6770c9a: A ChRIS deploy installs porter 0.11.1, whose berths run the calypso and chell that porter depends on.
+
 ## 0.18.1
 
 ### Patch Changes
