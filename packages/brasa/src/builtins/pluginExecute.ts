@@ -22,6 +22,7 @@ import { errorStack, Result, type StackMessage } from '@fnndsc/fond';
 import { exitCode_set } from '../core/handlerRun.js';
 import { path_resolve } from '../core/paths.js';
 import { OperandRefusal, operands_read, stage_lines, stage_make, stageMade_lines, type BinOperands, type Stage } from './operands.js';
+import { operandRuns_split } from './operandRuns.js';
 
 /**
  * Reads a plugin's kind from CUBE: `fs`, `ds` or `ts`.
@@ -64,6 +65,52 @@ export async function builtin_executePlugin(
   args: string[],
   place?: string,
 ): Promise<CommandEnvelope> {
+  if (place !== undefined) return pluginRun_execute(pluginName, args, place);
+  // Several directory operands are several runs, one each; to an fs plugin
+  // they are its one `dir`, untranslated, so that line stays one run.
+  let runs: string[][];
+  try {
+    runs = await operandRuns_split(args);
+    if (runs.length > 1 && await pluginKind_read(pluginName) === 'fs') runs = [args];
+  } catch (error: unknown) {
+    if (!(error instanceof OperandRefusal)) throw error;
+    sink_errLine(chalk.red(`${pluginName}: ${error.message}`));
+    return envelope_error('');
+  }
+  if (runs.length === 1) return pluginRun_execute(pluginName, args);
+  // Every run is dispatched before any is waited for; then one wait holds the line for them all.
+  const detach: boolean = args.includes('--detach');
+  const instanceIDs: number[] = [];
+  let last: CommandEnvelope = envelope_ok('');
+  let failed: boolean = false;
+  for (const words of runs) {
+    sink_dataLine(chalk.gray(`${pluginName} ${words[0]}:`));
+    last = await pluginRun_execute(pluginName, detach ? words : [...words, '--detach']);
+    failed ||= last.status === 'error';
+    const instanceID: unknown = last.model?.kind === 'run.scheduled' ? (last.model.data as { instanceId?: unknown }).instanceId : undefined;
+    if (typeof instanceID === 'number') instanceIDs.push(instanceID);
+  }
+  if (!detach && instanceIDs.length > 0) {
+    const settlement: RunSettlement = await runs_awaitSettled(instanceIDs, pluginName);
+    sink_dataLine(settlement_render(settlement, pluginName));
+    if (settlement.outcome === 'settled' && settlement.failed > 0) exitCode_set(1);
+  }
+  return failed ? { ...last, status: 'error' } : last;
+}
+
+/**
+ * Executes one plugin run: at most one directory operand, or file operands.
+ *
+ * @param pluginName - Full plugin name with version.
+ * @param args - Array of command line arguments.
+ * @param place - Where the run stands instead of the session's cwd.
+ * @returns Command envelope whose status matches parsing and execution.
+ */
+async function pluginRun_execute(
+  pluginName: string,
+  args: string[],
+  place?: string,
+): Promise<CommandEnvelope> {
   try {
     // 0. `--detach` is the SESSION's flag, never the plugin's: it says the
     //    operator wants the handle now rather than the outcome later, so it
@@ -100,7 +147,7 @@ export async function builtin_executePlugin(
             sink_errLine(chalk.red(`${pluginName}: as ${named.name}: an fs plugin takes paths as its dir, not subjects`));
             return envelope_error('');
           }
-          operandDir = [...(operands.directory !== null ? [operands.directory] : []), ...operands.subjects.flatMap((subject): string[] => subject.files)].join(',');
+          operandDir = [...operands.directories, ...operands.subjects.flatMap((subject): string[] => subject.files)].join(',');
         } else if (operands.directory !== null) {
           operandPlace = operands.directory;
         } else {

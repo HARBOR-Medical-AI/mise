@@ -1028,6 +1028,7 @@ export function pipelineExecutableHelp_render(name: string): string {
       '',
       'EXECUTION:',
       '  <dir>                   The input: in a feed, that node; outside one, pl-dircopy roots a new feed of it',
+      '  <dir> <dir>…            Several directories: one run each; a wildcard expands in any part of a path',
       '  <file> [as <subject>]…  Files shaped into subjects and rooted as a new feed (operands first on the line)',
       '  --compute <resource>    Override the compute resource',
       '  --previous <inst_id>    Attach to an explicit plugin instance',
@@ -1061,6 +1062,7 @@ export function pluginExecutableHelp_render(name: string): string {
     options: [
       'INPUT (the operand, first on the line; a flag before it is written with =):',
       '  <dir>              That tree is the input: in a feed, that node; outside one, pl-dircopy roots a new feed of it',
+      '  <dir> <dir>…       Several directories: one run each; a wildcard expands in any part of a path',
       '  <file>             One subject named by the stem, the file in it; several files are several subjects',
       '  <file>… as <name>  The files since the last as, as one subject called <name>',
       '  (nothing)          The working directory, as before',

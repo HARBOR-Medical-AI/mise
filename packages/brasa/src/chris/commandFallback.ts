@@ -15,7 +15,8 @@ import type { ListingItem, CommandEnvelope } from '@fnndsc/menu';
 import type { Result } from '@fnndsc/fond';
 import type { BackendFallback } from '../core/backend.js';
 import { envelope_deliver, sink_get } from '../core/sink.js';
-import { exitCode_read, handler_runDirect } from '../core/handlerRun.js';
+import { exitCode_read, exitCode_set, handler_runDirect } from '../core/handlerRun.js';
+import { runs_awaitSettled, settlement_render, type RunSettlement } from '../builtins/res/runWait.js';
 import { binExecutableMatches_get, binPluginHighest_find, type BinExecutableMatches, type BinPluginHighest } from './binExecutables.js';
 import { builtin_pipeline } from '../builtins/res/pipeline.js';
 import type { PipelineScheduled } from '../api/models.js';
@@ -29,6 +30,7 @@ import path from 'path';
 import { path_resolve } from '../core/paths.js';
 import { newFeed_cacheAdd } from '../builtins/feedCreation.js';
 import { OperandRefusal, operands_read, stage_lines, stage_make, stageMade_lines, type BinOperands, type Stage } from '../builtins/operands.js';
+import { operandRuns_split } from '../builtins/operandRuns.js';
 
 /**
  * The node a pipeline run starts from, read from its operand (#1303): a
@@ -100,6 +102,62 @@ async function pipelineOperand_place(name: string, args: string[]): Promise<{ wo
 }
 
 /**
+ * Runs a pipeline once from the node its operand names.
+ *
+ * @param name - The pipeline's `/bin` name.
+ * @param args - The words after it: at most one directory operand.
+ * @returns The run's envelope; an error envelope after a refusal was said.
+ */
+async function pipelineRun_start(name: string, args: string[]): Promise<CommandEnvelope> {
+  // The operand says where the run starts (#1303); refused, nothing runs.
+  const placed: { words: string[]; rooted: boolean } | null = await pipelineOperand_place(name, args);
+  const envelope: CommandEnvelope = placed === null ? { status: 'error', rendered: '' } : await builtin_pipeline(['run', name, ...placed.words]);
+  // The model says when the run rooted a feed first: the fallback rooted it, so the fallback says so (the kind is
+  // `pipeline.scheduled`, PIPELINE_SCHEDULED_KIND; named here so a test's stub of the pipeline module need not carry it).
+  if (placed?.rooted === true && envelope.model?.kind === 'pipeline.scheduled') (envelope.model.data as PipelineScheduled).newFeed = true;
+  return envelope;
+}
+
+/**
+ * Runs a pipeline line: once, or once per directory operand when the line
+ * names several, each run headed by its operand.
+ *
+ * @param name - The pipeline's `/bin` name.
+ * @param args - The words after it.
+ * @returns The last run's envelope, an error when any run failed or the line was refused.
+ */
+async function pipelineRuns_start(name: string, args: string[]): Promise<CommandEnvelope> {
+  let runs: string[][];
+  try {
+    runs = await operandRuns_split(args);
+  } catch (error: unknown) {
+    if (!(error instanceof OperandRefusal)) throw error;
+    sink_get().err_write(chalk.red(`${name}: ${error.message}\n`));
+    return { status: 'error', rendered: '' };
+  }
+  if (runs.length === 1) return pipelineRun_start(name, args);
+  // Every run is dispatched before any is waited for; then one wait holds the line for them all.
+  const detach: boolean = args.includes('--detach');
+  const instanceIDs: number[] = [];
+  let last: CommandEnvelope = { status: 'ok', rendered: '' };
+  let failed: boolean = false;
+  for (const words of runs) {
+    sink_get().data_write(chalk.gray(`${name} ${words[0]}:\n`));
+    last = await pipelineRun_start(name, detach ? words : [...words, '--detach']);
+    failed ||= last.status === 'error';
+    if (last.model?.kind === 'pipeline.scheduled') {
+      instanceIDs.push(...(last.model.data as PipelineScheduled).instances.map((node): number => node.instanceId));
+    }
+  }
+  if (!detach && instanceIDs.length > 0) {
+    const settlement: RunSettlement = await runs_awaitSettled(instanceIDs, name);
+    sink_get().data_write(`${settlement_render(settlement, name)}\n`);
+    if (settlement.outcome === 'settled' && settlement.failed > 0) exitCode_set(1);
+  }
+  return failed ? { ...last, status: 'error' } : last;
+}
+
+/**
  * Handles a pipeline name invoked directly as an executable from /bin.
  * Routes flag combinations to the appropriate pipeline subcommand:
  *   --diagram             → pipeline diagram (preserving renderer flags)
@@ -131,12 +189,7 @@ async function pipelineExecutable_handle(name: string, args: string[]): Promise<
   } else if (args.includes('--source') || args.includes('--readme')) {
     envelope = await builtin_pipeline(['source', name]);
   } else {
-    // The operand says where the run starts (#1303); refused, nothing runs.
-    const placed: { words: string[]; rooted: boolean } | null = await pipelineOperand_place(name, args);
-    envelope = placed === null ? { status: 'error', rendered: '' } : await builtin_pipeline(['run', name, ...placed.words]);
-    // The model says when the run rooted a feed first: the fallback rooted it, so the fallback says so (the kind is
-    // `pipeline.scheduled`, PIPELINE_SCHEDULED_KIND; named here so a test's stub of the pipeline module need not carry it).
-    if (placed?.rooted === true && envelope.model?.kind === 'pipeline.scheduled') (envelope.model.data as PipelineScheduled).newFeed = true;
+    envelope = await pipelineRuns_start(name, args);
   }
   const result: CommandEnvelope = envelope ?? { status: 'ok', rendered: '' };
   const exitCodeAfter: number = exitCode_read();

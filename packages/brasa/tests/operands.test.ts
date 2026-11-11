@@ -54,10 +54,10 @@ describe('operands_read', () => {
   const fs = world({ '/home/u/uploads/subjects': 'directory', '/home/u/uploads/t1.nii': 'file', '/home/u/uploads/t2.nii': 'file', '/home/u/uploads/t1.nii.gz': 'file' });
 
   it('reads nothing as nothing, a directory as the input, and files as subjects named by their stems', async () => {
-    expect(await operands_read(['--threads', '2'], fs)).toEqual({ directory: null, subjects: [], typed: [], rest: ['--threads', '2'] });
-    expect(await operands_read(['~/uploads/subjects', '--threads', '2'], fs)).toEqual({ directory: '/home/u/uploads/subjects', subjects: [], typed: ['~/uploads/subjects'], rest: ['--threads', '2'] });
+    expect(await operands_read(['--threads', '2'], fs)).toEqual({ directory: null, directories: [], subjects: [], typed: [], rest: ['--threads', '2'] });
+    expect(await operands_read(['~/uploads/subjects', '--threads', '2'], fs)).toEqual({ directory: '/home/u/uploads/subjects', directories: ['/home/u/uploads/subjects'], subjects: [], typed: ['~/uploads/subjects'], rest: ['--threads', '2'] });
     expect(await operands_read(['~/uploads/t1.nii', 'uploads/t2.nii'], fs)).toEqual({
-      directory: null, typed: ['~/uploads/t1.nii', 'uploads/t2.nii'], rest: [],
+      directory: null, directories: [], typed: ['~/uploads/t1.nii', 'uploads/t2.nii'], rest: [],
       subjects: [
         { name: 't1', named: false, typed: ['~/uploads/t1.nii'], files: ['/home/u/uploads/t1.nii'] },
         { name: 't2', named: false, typed: ['uploads/t2.nii'], files: ['/home/u/uploads/t2.nii'] },
@@ -72,10 +72,10 @@ describe('operands_read', () => {
     expect(two.subjects.map((subject) => subject.name)).toEqual(['s1', 's2']);
   });
 
-  it('refuses a missing path, a directory with as, two directories, a directory beside files, and two subjects of one name', async () => {
+  it('refuses a missing path, a pattern matching nothing, a directory with as, a directory beside files, and two subjects of one name', async () => {
     await expect(operands_read(['~/uploads/nothing.nii'], fs)).rejects.toThrow('no such file or directory');
     await expect(operands_read(['~/uploads/subjects', 'as', 'x'], fs)).rejects.toThrow('a tree is already named');
-    await expect(operands_read(['~/uploads/subjects', '~/uploads/subjects'], fs)).rejects.toThrow('one directory operand');
+    await expect(operands_read(['~/feeds/feed_9*'], fs)).rejects.toThrow('~/feeds/feed_9*: no match');
     await expect(operands_read(['~/uploads/subjects', '~/uploads/t1.nii'], fs)).rejects.toThrow('do not mix');
     await expect(operands_read(['~/uploads/t1.nii', '~/uploads/subjects'], fs)).rejects.toThrow('do not mix');
     await expect(operands_read(['~/uploads/t1.nii', '~/uploads/t1.nii.gz'], fs)).rejects.toThrow('two subjects would be called t1');

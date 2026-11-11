@@ -99,6 +99,32 @@ describe('wildcard_expandMatches()', () => {
     });
   });
 
+  it('expands a wildcard in a middle component, and in two components, sorted at each level (#1439)', async () => {
+    const tree: Record<string, Array<{ name: string; type: string }>> = {
+      '/home/testuser/feeds': [{ name: 'feed_2', type: 'dir' }, { name: 'feed_1', type: 'dir' }, { name: 'notes.txt', type: 'file' }],
+      '/home/testuser/feeds/feed_1': [{ name: 'pl-dircopy_10', type: 'dir' }],
+      '/home/testuser/feeds/feed_2': [{ name: 'pl-dircopy_21', type: 'dir' }, { name: 'pl-dircopy_20', type: 'dir' }, { name: 'pl-other_22', type: 'dir' }],
+      '/home/testuser/feeds/feed_1/pl-dircopy_10': [{ name: 'data', type: 'dir' }],
+      '/home/testuser/feeds/feed_2/pl-dircopy_20': [{ name: 'data', type: 'dir' }],
+      '/home/testuser/feeds/feed_2/pl-dircopy_21': [],
+    };
+    mockVfsList.mockImplementation(async (dir: string) => (tree[dir] !== undefined ? { ok: true, value: tree[dir] } : { ok: false }));
+    const values = async (line: string): Promise<string[]> => {
+      const result = await shellWords_expand(shellWords_tokenize(line), (): boolean => true);
+      return result.ok ? result.value.map((word: { value: string }): string => word.value) : ['<error>'];
+    };
+
+    expect(await values('~/feeds/feed_*/pl-dircopy_10')).toEqual(['/home/testuser/feeds/feed_1/pl-dircopy_10']);
+    expect(await values('~/feeds/feed_*/pl-dircopy_*/data')).toEqual([
+      '/home/testuser/feeds/feed_1/pl-dircopy_10/data',
+      '/home/testuser/feeds/feed_2/pl-dircopy_20/data',
+    ]);
+    // A file matched on the way is not listed, and a pattern matching nothing stays as typed.
+    expect(mockVfsList).not.toHaveBeenCalledWith('/home/testuser/feeds/notes.txt');
+    expect(await values('~/feeds/feed_9*/pl-dircopy_*/data')).toEqual(['~/feeds/feed_9*/pl-dircopy_*/data']);
+    expect(await values('~/feeds/*/pl-nothing_*')).toEqual(['~/feeds/*/pl-nothing_*']);
+  });
+
   it('keeps quoted wildcard syntax literal', async () => {
     const result = await shellWords_expand(shellWords_tokenize("'scan-*.nii'"), (): boolean => true);
 

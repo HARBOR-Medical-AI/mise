@@ -148,6 +148,9 @@ const mockPathResolverRegister = jest.fn();
 const mockIsVirtual = jest.fn((path: string): boolean => path.startsWith('/proc/'));
 const mockReadBinary = jest.fn(async (_path: string): Promise<{ ok: boolean; value?: Buffer }> => ({ ok: false }));
 const mockLinkTarget = jest.fn(async (_path: string): Promise<{ ok: boolean; value?: string }> => ({ ok: false }));
+jest.unstable_mockModule('../src/builtins/res/runWait.js', () => ({
+  runs_awaitSettled: async () => ({ outcome: 'settled', failed: 0 }), settlement_render: () => 'settled', settlementStatus_derive: () => 'finishedSuccessfully',
+}));
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
   feed_create: jest.fn(),
   dicomSeries_summarize: jest.fn(),
