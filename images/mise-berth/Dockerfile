@@ -1,16 +1,15 @@
 # mise-berth: one ChRIS user's working container on a spoke (docs/dev-bastion.adoc, stand-in).
 #
-# Every pin comes from pins.mjs (the porter a stratus deploy puts up, its Node, the calypso and
-# chell that porter's release depends on, the latest Neovim with its recorded SHA-256):
+# Every version comes from pins.mjs, read at the build (the calypso and chell latest on npm,
+# the Node a stratus deploy runs porter on, the latest Neovim with its recorded SHA-256):
 #
 #   docker build $(node images/mise-berth/pins.mjs | sed 's/^/--build-arg /') images/mise-berth
 #
-# No argument has a default: a build without the pins fails rather than guess.
+# No argument has a default: a build without them fails rather than guess.
 
 ARG NODE_VERSION
 FROM docker.io/library/node:${NODE_VERSION}-bookworm-slim
 
-ARG PORTER_VERSION
 ARG CALYPSO_VERSION
 ARG CHELL_VERSION
 ARG NVIM_VERSION
@@ -18,15 +17,14 @@ ARG NVIM_SHA256_X86_64
 ARG NVIM_SHA256_ARM64
 ARG TARGETARCH
 
-RUN test -n "${PORTER_VERSION}" && test -n "${CALYPSO_VERSION}" && test -n "${CHELL_VERSION}" \
+RUN test -n "${CALYPSO_VERSION}" && test -n "${CHELL_VERSION}" \
     && test -n "${NVIM_VERSION}" && test -n "${NVIM_SHA256_X86_64}" && test -n "${NVIM_SHA256_ARM64}" \
-    || { echo 'mise-berth: build with the pins from images/mise-berth/pins.mjs' >&2; exit 1; }
+    || { echo 'mise-berth: build with the arguments images/mise-berth/pins.mjs prints' >&2; exit 1; }
 
 LABEL org.opencontainers.image.title="mise-berth" \
       org.opencontainers.image.description="One ChRIS user's working container: calypso and chell, Python with the imaging stack, compilers and editors; no Docker, no cloud CLIs, no keys." \
       org.opencontainers.image.source="https://github.com/HARBOR-Medical-AI/mise" \
       org.opencontainers.image.licenses="MIT" \
-      org.fnndsc.mise.porter="${PORTER_VERSION}" \
       org.fnndsc.mise.calypso="${CALYPSO_VERSION}" \
       org.fnndsc.mise.chell="${CHELL_VERSION}" \
       org.fnndsc.mise.nvim="${NVIM_VERSION}"
@@ -62,7 +60,7 @@ RUN case "${TARGETARCH:-amd64}" in \
     && ln -s "/opt/nvim-linux-${arch}/bin/nvim" /usr/local/bin/nvim \
     && rm /tmp/nvim.tar.gz
 
-# calypso and chell, the versions the porter beside the berth depends on, installed as porter
+# calypso and chell, the latest published when the image was built, installed as porter
 # installs them: one tree, so the session's chell and the calypso it starts share one brasa
 # (two global installs each carry their own, and the daemon finds no backend in its copy).
 RUN mkdir -p /opt/mise \

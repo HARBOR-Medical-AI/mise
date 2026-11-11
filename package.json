@@ -30,7 +30,6 @@
     "version-packages": "changeset version",
     "release": "npm run build && changeset publish",
     "lint:aegis": "node scripts/aegis-lint.mjs",
-    "lint:berth-pin": "node images/mise-berth/pin.mjs",
     "docs:keys": "node scripts/keys-doc.mjs",
     "lint:orrery": "node scripts/orrery-layers.mjs"
   },

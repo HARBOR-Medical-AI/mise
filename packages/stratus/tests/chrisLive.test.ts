@@ -7,11 +7,11 @@
 import { describe, it, expect } from '@jest/globals';
 import { chrisLive_read, type HttpGet } from '../src/chris/live.js';
 import { chrisPlan_derive, chrisPlan_words } from '../src/chris/plan.js';
-import { CHRIS_IMAGES, PORTER_VERSION } from '../src/chris/profiles.js';
+import { CHRIS_IMAGES } from '../src/chris/profiles.js';
 import type { VmRecord } from '../src/vm/state.js';
 import type { ChrisSecrets } from '../src/chris/compose.js';
 
-const CHRIS: NonNullable<VmRecord['chris']> = { profile: 'minimal', compute: 'NERC', host: 'cube.example.org', url: 'https://cube.example.org/api/v1/', deployed: '2026-11-04T20:00:00.000Z', porter: 'porter.example.org', image: CHRIS_IMAGES.cube, porterVersion: PORTER_VERSION };
+const CHRIS: NonNullable<VmRecord['chris']> = { profile: 'minimal', compute: 'NERC', host: 'cube.example.org', url: 'https://cube.example.org/api/v1/', deployed: '2026-11-04T20:00:00.000Z', porter: 'porter.example.org', image: CHRIS_IMAGES.cube, porterVersion: '0.12.0' };
 const SECRETS: ChrisSecrets = { djangoKey: 'd', postgresPassword: 'p', pfconSecretKey: 's', pfconPassword: 'f', adminPassword: 'right-password' };
 
 /** A CUBE and a porter as the public reaches them: two pages of accounts, the next page named on plain http (as behind the proxy). */
@@ -91,25 +91,33 @@ describe('what runs of a ChRIS', () => {
 describe('what a deploy would do', () => {
   const ask = { profile: 'minimal', compute: 'NERC', host: 'cube.example.org', porter: 'porter.example.org', berths: false };
 
-  it('a replay as deployed restarts nothing and does not ask; a first deploy puts it up and asks', () => {
-    expect(chrisPlan_derive(CHRIS, ask, null)).toEqual({ changes: [], restarts: [], sessions: null, asks: false, first: false });
+  it('a replay as deployed with no porter restarts nothing and does not ask; with a porter it rebuilds porter and asks; a first deploy puts it up and asks', () => {
+    const bare = { ...CHRIS };
+    delete bare.porter; delete bare.porterVersion;
+    expect(chrisPlan_derive(bare, { ...ask, porter: null }, null)).toEqual({ changes: [], restarts: [], sessions: null, asks: false, first: false });
+    // Every deploy with a porter builds it again from the latest release: porter restarts, and the deploy asks.
+    expect(chrisPlan_derive(CHRIS, ask, null)).toEqual({ changes: [], restarts: ['porter (rebuilt from the latest release; 0.12.0 runs now): its open sessions end'], sessions: null, asks: true, first: false });
     // A first deploy builds on the machine: it asks, with what it puts up.
     expect(chrisPlan_derive(undefined, ask, null)).toMatchObject({ restarts: [], asks: true, first: true });
   });
 
-  it('a new porter restarts porter and says the sessions it ends; a new host restarts CUBE; an old record says it may restart both', () => {
+  it('a porter is rebuilt and says the version that runs and the sessions it ends; a new host restarts CUBE; an old record says it may restart both', () => {
     const older = { ...CHRIS, porterVersion: '0.9.10' };
     const plan = chrisPlan_derive(older, ask, 3);
-    expect(plan.restarts).toEqual([`porter (0.9.10 → ${PORTER_VERSION}): its open sessions end`]);
+    expect(plan.restarts).toEqual(['porter (rebuilt from the latest release; 0.9.10 runs now): its open sessions end']);
     expect(plan.asks).toBe(true);
-    expect(chrisPlan_words('store', plan)).toBe(`chris deploy store: as deployed; restarts porter (0.9.10 → ${PORTER_VERSION}): its open sessions end; 3 porter sessions open now end`);
-    expect(chrisPlan_derive(CHRIS, { ...ask, host: 'cube2.example.org' }, null)).toMatchObject({ changes: ['host cube.example.org → cube2.example.org'], restarts: ['CUBE and its workers (their environment changes)'], asks: true });
+    expect(chrisPlan_words('store', plan)).toBe('chris deploy store: as deployed; restarts porter (rebuilt from the latest release; 0.9.10 runs now): its open sessions end; 3 porter sessions open now end');
+    // A record that kept the CUBE image and no porter version says the rebuild without one.
+    const unversioned = { ...CHRIS };
+    delete unversioned.porterVersion;
+    expect(chrisPlan_derive(unversioned, ask, null).restarts).toEqual(['porter (rebuilt from the latest release): its open sessions end']);
+    expect(chrisPlan_derive(CHRIS, { ...ask, host: 'cube2.example.org' }, null)).toMatchObject({ changes: ['host cube.example.org → cube2.example.org'], restarts: ['CUBE and its workers (their environment changes)', 'porter (rebuilt from the latest release; 0.12.0 runs now): its open sessions end'], asks: true });
     const unknown = { ...CHRIS, image: undefined, porterVersion: undefined };
     delete unknown.image; delete unknown.porterVersion;
     expect(chrisPlan_derive(unknown, ask, 1).restarts).toEqual(['CUBE and porter: their files are written again and Docker restarts what changed in them (this deploy\'s record keeps no versions to compare)']);
     expect(chrisPlan_words('store', chrisPlan_derive(unknown, ask, 0))).toBe('chris deploy store: as deployed; restarts CUBE and porter: their files are written again and Docker restarts what changed in them (this deploy\'s record keeps no versions to compare); no porter session is open now');
     // A compute changed alone is a registration: it changes the record and restarts nothing, and still asks with the change.
-    expect(chrisPlan_derive(CHRIS, { ...ask, compute: 'store' }, null)).toEqual({ changes: ['compute NERC → store'], restarts: [], sessions: null, asks: true, first: false });
+    expect(chrisPlan_derive(CHRIS, { ...ask, compute: 'store' }, null)).toEqual({ changes: ['compute NERC → store'], restarts: ['porter (rebuilt from the latest release; 0.12.0 runs now): its open sessions end'], sessions: null, asks: true, first: false });
   });
 
   it('berths: a first deploy says it puts a berth up for each person; off → on is a change and a porter restart, as deployed asks nothing', () => {
@@ -118,16 +126,16 @@ describe('what a deploy would do', () => {
     expect(chrisPlan_derive(undefined, { ...berthed, berthLimits: { cpus: 1.5, memoryGib: 4 } }, null).changes).toContain('a berth for each person behind porter, 1.5 vCPU · 4 GiB each (the berth launcher, the berth image pulled)');
     expect(chrisPlan_derive(undefined, ask, null).changes.some((one: string): boolean => one.includes('berth'))).toBe(false);
     const on = chrisPlan_derive(CHRIS, berthed, 2);
-    expect(on).toMatchObject({ changes: ['berths off → on'], restarts: ['porter (berths on): its open sessions end'], asks: true, first: false });
-    const had = { ...CHRIS, berths: 'launcher' as const, berthImage: 'ghcr.io/fnndsc/berth@sha256:' + 'a'.repeat(64) };
-    expect(chrisPlan_derive(had, berthed, null)).toEqual({ changes: [], restarts: [], sessions: null, asks: false, first: false });
+    expect(on).toMatchObject({ changes: ['berths off → on'], restarts: ['porter (rebuilt from the latest release; 0.12.0 runs now; berths on): its open sessions end'], asks: true, first: false });
+    const had = { ...CHRIS, berths: 'launcher' as const, berthImage: 'ghcr.io/fnndsc/berth:latest' };
+    expect(chrisPlan_derive(had, berthed, null)).toEqual({ changes: [], restarts: ['porter (rebuilt from the latest release; 0.12.0 runs now): its open sessions end'], sessions: null, asks: true, first: false });
     // Limits: a record without them ran the defaults; a change on a replay with berths on is a change and a launcher restart, not a porter restart.
-    expect(chrisPlan_derive(had, { ...berthed, berthLimits: { cpus: 1, memoryGib: 2 } }, null).asks).toBe(false);
+    expect(chrisPlan_derive(had, { ...berthed, berthLimits: { cpus: 1, memoryGib: 2 } }, null).changes).toEqual([]);
     const limited = { ...had, berthLimits: { cpus: 1, memoryGib: 2 } };
-    expect(chrisPlan_derive(limited, { ...berthed, berthLimits: { cpus: 2, memoryGib: 4 } }, 3)).toEqual({ changes: ['berth limits 1 vCPU · 2 GiB → 2 vCPU · 4 GiB'], restarts: ['the berth launcher: running berths keep their limits and sessions until their next start, which needs a fresh login'], sessions: 3, asks: true, first: false });
+    expect(chrisPlan_derive(limited, { ...berthed, berthLimits: { cpus: 2, memoryGib: 4 } }, 3)).toEqual({ changes: ['berth limits 1 vCPU · 2 GiB → 2 vCPU · 4 GiB'], restarts: ['porter (rebuilt from the latest release; 0.12.0 runs now): its open sessions end', 'the berth launcher: running berths keep their limits and sessions until their next start, which needs a fresh login'], sessions: 3, asks: true, first: false });
     expect(chrisPlan_derive({ ...had, berthLimits: { cpus: 0.5, memoryGib: 1.5 } }, berthed, null).changes).toEqual(['berth limits 0.5 vCPU · 1.5 GiB → 1 vCPU · 2 GiB']);
     // Berths turning on or off carry no limits change.
     expect(chrisPlan_derive(CHRIS, { ...berthed, berthLimits: { cpus: 2, memoryGib: 4 } }, null).changes).toEqual(['berths off → on']);
-    expect(chrisPlan_derive(had, ask, null)).toMatchObject({ changes: ['berths on → off'], restarts: ['porter (berths off): its open sessions end, and the running berths stop (their homes are kept)'], asks: true });
+    expect(chrisPlan_derive(had, ask, null)).toMatchObject({ changes: ['berths on → off'], restarts: ['porter (rebuilt from the latest release; 0.12.0 runs now; berths off): its open sessions end, and the running berths stop (their homes are kept)'], asks: true });
   });
 });

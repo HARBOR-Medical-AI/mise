@@ -166,7 +166,7 @@ OpenShift Dev Spaces and a berth (<<stand-in>>) look alike from outside: a conta
 | | Dev Spaces workspace | Berth
 | Centred on | a repository | a cohort, which is a feed
 | Identity | an OpenShift user, a namespace, cluster RBAC | the spoke's CUBE token; the berth's uid is the CUBE id; no cluster account
-| Image | the developer's, from a devfile | the spoke's: one pinned image, limits set by the custodian
+| Image | the developer's, from a devfile | the spoke's: one image, limits set by the custodian
 | Way in | browser IDE, a local IDE over a tunnel, exposed routes | porter's door alone
 | Network | the cluster's egress | CUBE's API alone; no berth reaches another
 | Code in | `git clone` over egress | porter's door, or files in the spoke's CUBE

@@ -7,8 +7,11 @@
  * CUBE, registers the compute resource the plugin uploads name, and checks
  * that `chris` sees the admin API. With a host, it then waits for public
  * DNS to show the VM's address and for the certificate; with a porter, for
- * porter's name and its certificate too. With berths, it pulls the berth
- * image porter's release pins and waits for the launcher's socket.
+ * porter's name and its certificate too. A porter is the latest release on
+ * npm at every deploy: its image is built without Docker's layer cache, and
+ * the version installed is read back from it for the record. With berths,
+ * it pulls the berth image that porter names (a tag that moves, so every
+ * deploy pulls) and waits for the launcher's socket.
  *
  * Every line CUBE is asked goes from the VM itself to 127.0.0.1:8000, the
  * admin password in curl's configuration on stdin, never on a command line.
@@ -23,8 +26,8 @@ import { pause, vmRemote_open, type RemoteAnswer, type VmRemote } from '../vm/re
 import { vmKept_write } from '../vm/keep.js';
 import { vm_read } from '../vm/build.js';
 import type { BerthLimits, VmRecord, VmStore } from '../vm/state.js';
-import { apiUrl_derive, BERTH_DIR, caddyfile_render, CHRIS_DIR, compose_render, cubeEnv_render, LAUNCHER_CONTAINER, launcherEnv_render, PFCON_HOST, PFCON_USER, pfconEnv_render, PORTER_UID, porterEnv_render, type ChrisSecrets, type ChrisTarget } from './compose.js';
-import { BERTH_LIMITS_DEFAULT, CHRIS_IMAGES, PORTER_VERSION, type ChrisProfile } from './profiles.js';
+import { apiUrl_derive, BERTH_DIR, caddyfile_render, CHRIS_DIR, compose_render, cubeEnv_render, LAUNCHER_CONTAINER, launcherEnv_render, PFCON_HOST, PFCON_USER, pfconEnv_render, PORTER_IMAGE, PORTER_IMAGE_LABEL, PORTER_UID, porterEnv_render, type ChrisSecrets, type ChrisTarget } from './compose.js';
+import { BERTH_LIMITS_DEFAULT, CHRIS_IMAGES, type ChrisProfile } from './profiles.js';
 import { berthLimits_equal } from './plan.js';
 import { adminHomeProgram_render, CUBE_PYTHON_LINE, HOME_MARK } from './users.js';
 
@@ -44,14 +47,20 @@ export interface DeployRequest {
   readonly secrets: ChrisSecrets;
 }
 
-/** Where porter's release keeps the berth image it pins, in porter's image. */
-const BERTH_PIN_MODULE: string = '/usr/local/lib/node_modules/@fnndsc/porter/dist/launcher/launcher.js';
+/** Where npm installed porter, in porter's image. */
+const PORTER_INSTALLED: string = '/usr/local/lib/node_modules/@fnndsc/porter';
+
+/** Where porter's release names the berth image its launcher starts berths from, in porter's image. */
+const BERTH_IMAGE_MODULE: string = `${PORTER_INSTALLED}/dist/launcher/launcher.js`;
+
+/** A version as npm publishes one, which is what porter's image is asked for. */
+const PORTER_VERSION_SHAPE: RegExp = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/;
 
 /** The label the launcher puts on every berth, wire and volume it makes. */
 const BERTH_LABEL: string = 'org.fnndsc.mise.berth';
 
-/** A berth image named by digest, as porter pins it. */
-const BERTH_IMAGE_PINNED: RegExp = /^[a-z0-9./-]+@sha256:[0-9a-f]{64}$/;
+/** An image's name, by tag or by digest: what a shell line can carry whole. */
+const BERTH_IMAGE_SHAPE: RegExp = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/;
 
 /** What a deploy runs over. */
 export interface DeployDeps {
@@ -156,6 +165,44 @@ async function berthLimits_read(remote: VmRemote): Promise<BerthLimits | null> {
 }
 
 /**
+ * Builds porter's image from the latest release on npm, and reads back the
+ * version it holds. The build uses none of Docker's layer cache: a cached
+ * `npm install` layer would keep the release an earlier deploy installed.
+ * The launcher runs the same image, so the one build serves both.
+ *
+ * @param remote - The VM.
+ * @param context - The job's log.
+ * @returns The porter version installed in the image.
+ * @throws Error - When the build fails or the image names no version.
+ */
+async function porterImage_build(remote: VmRemote, context: JobContext): Promise<string> {
+  await run_must(remote, `cd ${CHRIS_DIR} && docker compose build -q --no-cache porter`, 'building porter\'s image');
+  const read: RemoteAnswer = await run_must(remote, `docker run --rm --entrypoint node ${PORTER_IMAGE} -p "require('${PORTER_INSTALLED}/package.json').version"`, 'reading the porter version installed');
+  const version: string = read.stdout.trim().split('\n').pop() ?? '';
+  if (!PORTER_VERSION_SHAPE.test(version)) throw new Error(`reading the porter version installed: ${version || 'nothing'} is not a version`);
+  context.log_write(`porter ${version} installed, the latest release on npm`);
+  return version;
+}
+
+/**
+ * Pulls the berth image the porter just built names, before any login waits
+ * on it. The name is a tag that moves, so every deploy pulls it.
+ *
+ * @param remote - The VM.
+ * @param context - The job's log.
+ * @returns The image's name.
+ * @throws Error - When porter names none or the pull fails.
+ */
+async function berthImage_pull(remote: VmRemote, context: JobContext): Promise<string> {
+  const named: RemoteAnswer = await run_must(remote, `docker run --rm --entrypoint node ${PORTER_IMAGE} --input-type=module -e "console.log((await import('${BERTH_IMAGE_MODULE}')).BERTH_IMAGE_DEFAULT)"`, 'reading the berth image porter names');
+  const image: string = named.stdout.trim().split('\n').pop() ?? '';
+  if (!BERTH_IMAGE_SHAPE.test(image)) throw new Error(`reading the berth image porter names: ${image || 'nothing'} is not an image's name`);
+  context.log_write(`pulling the berth image ${image}`);
+  await run_must(remote, `docker pull -q ${image}`, 'pulling the berth image');
+  return image;
+}
+
+/**
  * The deploy's job.
  *
  * @param request - The VM, the profile, the compute, the host, the secrets.
@@ -206,18 +253,13 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
     }
 
     context.log_write(request.porter !== null ? 'pulling the images, building porter\'s, and starting the services' : 'pulling the images and starting the services');
-    await run_must(remote, `cd ${CHRIS_DIR} && docker compose pull -q --ignore-buildable${request.porter !== null ? ' && docker compose build -q' : ''}`, 'docker compose pull');
-    let berthImage: string | null = null;
-    if (berths) {
-      // The berth image is the one porter's release pins, read from the porter just built, and pulled before any login waits on it.
-      const pin: RemoteAnswer = await run_must(remote, `docker run --rm --entrypoint node stratus/porter:${PORTER_VERSION} --input-type=module -e "console.log((await import('${BERTH_PIN_MODULE}')).BERTH_IMAGE_DEFAULT)"`, 'reading the berth image porter pins');
-      const image: string = pin.stdout.trim().split('\n').pop() ?? '';
-      if (!BERTH_IMAGE_PINNED.test(image)) throw new Error(`reading the berth image porter pins: ${image || 'nothing'} is not an image by digest`);
-      context.log_write(`pulling the berth image ${image}`);
-      await run_must(remote, `docker pull -q ${image}`, 'pulling the berth image');
-      berthImage = image;
-    }
-    await run_must(remote, `cd ${CHRIS_DIR} && docker compose up -d --build --remove-orphans`, 'docker compose up');
+    await run_must(remote, `cd ${CHRIS_DIR} && docker compose pull -q --ignore-buildable`, 'docker compose pull');
+    const porterVersion: string | null = request.porter !== null ? await porterImage_build(remote, context) : null;
+    const berthImage: string | null = berths ? await berthImage_pull(remote, context) : null;
+    // Nothing is built here: porter's image is the one just built, which the launcher runs too.
+    await run_must(remote, `cd ${CHRIS_DIR} && docker compose up -d --remove-orphans`, 'docker compose up');
+    // Every deploy builds porter's image again; the one a newer build replaced is removed once nothing runs from it.
+    if (request.porter !== null) await remote.run(`docker image prune -f --filter label=${PORTER_IMAGE_LABEL}`);
     if (!berths && record.chris?.berths === 'launcher') {
       // Berths turned off: the launcher is gone with --remove-orphans; the berths and wires it made go too, the homes kept.
       await run_must(remote, `docker ps -aq --filter label=${BERTH_LABEL} | xargs -r docker rm -f && docker network ls -q --filter label=${BERTH_LABEL} | xargs -r docker network rm`, 'stopping the berths');
@@ -287,7 +329,7 @@ export function chrisDeployRun_make(request: DeployRequest, deps: DeployDeps): J
       }
     }
     deps.store.record_update(request.vm, (current: VmRecord): void => {
-      current.chris = { profile: request.profile.name, compute: request.compute, host: request.host, url, deployed: new Date().toISOString(), image: CHRIS_IMAGES.cube, ...(request.host !== null ? { dns: 'waiting' } : {}), ...(request.porter !== null ? { porter: request.porter, porterVersion: PORTER_VERSION } : {}), ...(berthImage !== null ? { berths: 'launcher' as const, berthImage, berthLimits: { cpus: berthLimits.cpus, memoryGib: berthLimits.memoryGib } } : {}) };
+      current.chris = { profile: request.profile.name, compute: request.compute, host: request.host, url, deployed: new Date().toISOString(), image: CHRIS_IMAGES.cube, ...(request.host !== null ? { dns: 'waiting' } : {}), ...(request.porter !== null && porterVersion !== null ? { porter: request.porter, porterVersion } : {}), ...(berthImage !== null ? { berths: 'launcher' as const, berthImage, berthLimits: { cpus: berthLimits.cpus, memoryGib: berthLimits.memoryGib } } : {}) };
     });
     await kept_write(deps, request.vm, context);
     if (request.host === null) {
