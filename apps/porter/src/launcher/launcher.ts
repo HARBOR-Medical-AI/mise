@@ -31,7 +31,7 @@ import { capacityRefusal_words, type BerthPolicy, type BerthRoom } from './polic
  * workflow pushed, and `lint:berth-pin` refuses a build where the image's
  * source changed and the pin did not.
  */
-export const BERTH_IMAGE_DEFAULT: string = 'ghcr.io/harbor-medical-ai/mise-berth@sha256:446b470b3fb8ab9ea237dc2e5ded76b0d33a476052d0eada8bb6e33951ddbe5d';
+export const BERTH_IMAGE_DEFAULT: string = 'ghcr.io/harbor-medical-ai/mise-berth@sha256:72c0f6e4e8915ac42325ba277a3f602acc5405b76534cf4f1e5dc77c5e08de64';
 
 /** The SHA-256 of `images/mise-berth`'s source the pin above was built from (pin.mjs writes it; lint:berth-pin checks it). */
 export const BERTH_IMAGE_SOURCE: string = '792832b25cbde139087b793eee103d8d0aa962b3106b9b8cefaf344876602394';
