@@ -48,6 +48,7 @@ describe('a section by its word', () => {
     expect(strip(helpSection_render(shell as never, lookup([])))).toMatch(/handles +@SER3/);
     expect(strip(shellTopic_render('pipes') ?? '')).toContain('PIPES');
     expect(strip(shellTopic_render('operands') ?? '')).toContain('whatif <line> prints that resolution');
+    expect(strip(shellTopic_render('pipes') ?? '')).toContain('a && b runs b');
     expect(shellTopic_render('grep')).toBeUndefined();
   });
 });

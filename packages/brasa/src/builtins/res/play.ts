@@ -30,7 +30,7 @@ import { backendInstalled_get, type LineState, type LineStatusProvider } from '.
 import { exitCode_read, exitCode_set } from '../../core/handlerRun.js';
 import { reference_changedBy, reference_isReserved, reference_resolve, unresolvedStands_run, type LinesPassed } from '../../core/expansion.js';
 import { pipes_parse } from '../../core/preprocess.js';
-import { semicolons_parse } from '../../lib/semicolonParser.js';
+import { commandList_parse, semicolons_parse, type ListCommand } from '../../lib/semicolonParser.js';
 import { VARIABLE_NAME, assignment_parse, variable_get, variableScope_run, type Assignment, type Variable } from '../../core/variables.js';
 import { shellWords_referencesExpand, shellWords_tokenize, type ReferenceExpansion, type ReferenceValue, type ShellWord } from '../../lib/parser.js';
 import { errorStack, type Result } from '@fnndsc/fond';
@@ -247,14 +247,16 @@ async function words_preview(text: string, passed: LinesPassed): Promise<string>
  * @returns The line with its references filled in.
  */
 async function line_preview(text: string, passed: LinesPassed): Promise<string> {
-  const parts: string[] = [];
-  for (const command of semicolons_parse(text.trim())) {
+  const JOINERS: Record<ListCommand['when'], string> = { always: '; ', success: ' && ', failure: ' || ' };
+  let preview: string = '';
+  for (const { command, when } of commandList_parse(text.trim())) {
     const assignment: Assignment | null = assignment_parse(command.trim());
-    parts.push(assignment !== null && 'capture' in assignment
+    const part: string = assignment !== null && 'capture' in assignment
       ? `${assignment.name}=$(${await words_preview(assignment.capture, passed)})`
-      : await words_preview(command, passed));
+      : await words_preview(command, passed);
+    preview += preview === '' ? part : `${JOINERS[when]}${part}`;
   }
-  return parts.join('; ');
+  return preview;
 }
 
 /**

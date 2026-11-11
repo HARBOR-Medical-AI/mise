@@ -1,5 +1,5 @@
 import { describe, it, expect } from '@jest/globals';
-import { semicolons_parse } from '../src/lib/semicolonParser.js';
+import { commandList_parse, semicolons_parse } from '../src/lib/semicolonParser.js';
 
 describe('semicolons_parse', () => {
   it('should return single command unchanged', () => {
@@ -86,5 +86,30 @@ describe('semicolons_parse', () => {
 
   it('reads an escaped semicolon outside quotes as text', () => {
     expect(semicolons_parse('echo a\\;b; pwd')).toEqual(['echo a\\;b', 'pwd']);
+  });
+});
+
+describe('commandList_parse', () => {
+  it('reads ;, && and || as joiners, each putting its condition on the command after it', () => {
+    expect(commandList_parse('cd ~/uploads && pwd')).toEqual([{ command: 'cd ~/uploads', when: 'always' }, { command: 'pwd', when: 'success' }]);
+    expect(commandList_parse('ls x || echo none; pwd')).toEqual([
+      { command: 'ls x', when: 'always' }, { command: 'echo none', when: 'failure' }, { command: 'pwd', when: 'always' },
+    ]);
+    expect(commandList_parse('a&&b||c')).toEqual([{ command: 'a', when: 'always' }, { command: 'b', when: 'success' }, { command: 'c', when: 'failure' }]);
+  });
+
+  it('keeps a quoted or escaped joiner as text', () => {
+    expect(commandList_parse("echo '&&' \"a || b\"")).toEqual([{ command: "echo '&&' \"a || b\"", when: 'always' }]);
+    expect(commandList_parse('echo a \\&& b')).toHaveLength(1);
+  });
+
+  it('leaves a pipe and a background mark to their own parsers', () => {
+    expect(commandList_parse('ls | grep x && pwd')).toEqual([{ command: 'ls | grep x', when: 'always' }, { command: 'pwd', when: 'success' }]);
+    expect(commandList_parse('pwd && ls | grep x')).toEqual([{ command: 'pwd', when: 'always' }, { command: 'ls | grep x', when: 'success' }]);
+    expect(commandList_parse('sleep 5 &')).toEqual([{ command: 'sleep 5 &', when: 'always' }]);
+  });
+
+  it('gives semicolons_parse every command of the list', () => {
+    expect(semicolons_parse('cd /tmp && ls; pwd || id')).toEqual(['cd /tmp', 'ls', 'pwd', 'id']);
   });
 });

@@ -32,7 +32,7 @@ import { taskWatch_set, taskWatch_release } from './taskWatch.js';
 import { ambient_listen } from './ambient.js';
 import { session } from '../session/index.js';
 import { cwdScope_run } from '../session/cwdScope.js';
-import { semicolons_parse } from '../lib/semicolonParser.js';
+import { commandList_parse, type ListCommand } from '../lib/semicolonParser.js';
 import {
   pipes_parse,
   redirect_parse,
@@ -300,32 +300,39 @@ async function shellEscape_execute(
 }
 
 /**
- * Executes a semicolon batch, one segment at a time, collecting each
- * segment's envelopes.
+ * Executes a command list, one segment at a time, collecting each
+ * segment's envelopes. A segment after `&&` runs only when the one run
+ * before it succeeded, after `||` only when it failed; a segment that is
+ * skipped leaves that outcome as it was, as POSIX `sh` does.
  *
  * A segment that throws yields an error envelope; the batch continues unless
  * stop-on-error is set, in which case the envelopes collected so far are
  * returned immediately (and no total time is printed, matching the shell's
  * historical behavior).
  *
- * @param commands - The batch segments in execution order.
+ * @param commands - The list's segments in execution order, each with its condition.
  * @param startTime - Timing reference from `performance.now()`.
  * @param timingEnabled - Whether to print the batch's total elapsed time.
  * @returns The envelopes of all executed segments, in execution order.
  */
 async function batch_execute(
-  commands: string[],
+  commands: ListCommand[],
   startTime: number,
   timingEnabled: boolean,
 ): Promise<CommandEnvelope[]> {
   const envelopes: CommandEnvelope[] = [];
-  for (const command of commands) {
+  let succeeded: boolean = true;
+  for (const { command, when } of commands) {
+    if ((when === 'success' && !succeeded) || (when === 'failure' && succeeded)) continue;
     try {
-      envelopes.push(...await line_execute(command));
+      const ran: CommandEnvelope[] = await line_execute(command);
+      succeeded = !ran.some((envelope: CommandEnvelope): boolean => envelope.status === 'error');
+      envelopes.push(...ran);
     } catch (error: unknown) {
       const msg: string = error instanceof Error ? error.message : String(error);
       sink_get().err_write(`${chalk.red(`Command error: ${msg}`)}\n`);
       envelopes.push({ status: 'error', rendered: '' });
+      succeeded = false;
       if (stopOnError) {
         return envelopes;
       }
@@ -418,7 +425,7 @@ async function line_execute_run(line: string, captured: boolean = false): Promis
     return shellEscape_execute(trimmedLine, startTime, timingEnabled);
   }
 
-  const batch: string[] = semicolons_parse(trimmedLine);
+  const batch: ListCommand[] = commandList_parse(trimmedLine);
   if (batch.length > 1) {
     return batch_execute(batch, startTime, timingEnabled);
   }

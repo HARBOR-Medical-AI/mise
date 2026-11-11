@@ -68,7 +68,7 @@ interface ShellTopic {
 export const SHELL_TOPICS: ReadonlyArray<ShellTopic> = [
   {
     name: 'pipes',
-    summary: 'cmd | cmd: text between programs, a numbered listing between builtins',
+    summary: 'cmd | cmd: text between programs, a numbered listing between builtins; also ; && ||',
     page: [
       'A pipe hands one command\'s output to the next: cat notes.txt | wc -l.',
       '',
@@ -84,6 +84,12 @@ export const SHELL_TOPICS: ReadonlyArray<ShellTopic> = [
       '  find /proc/jobs -plugin pl-dylld | wc -l',
       'A program that is not one runs where the surface runs programs: a chell',
       'on your machine, or a daemon started with --host-control pipes.',
+      '',
+      'Several commands on one line, as in sh: a ; b runs both; a && b runs b',
+      'only when a succeeded; a || b runs b only when a failed. Inside quotes',
+      'each is text.',
+      '  cd ~/uploads && ls',
+      '  ls ~/uploads/scans || mkdir ~/uploads/scans',
     ],
   },
   {
