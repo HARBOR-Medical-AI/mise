@@ -1,10 +1,11 @@
 name: Berth image
 
 # Builds and pushes mise-berth, one ChRIS user's working container (images/mise-berth),
-# when its folder or its pins' source changes on any branch (so a branch that changes the
-# image can carry its digest before it merges: `node images/mise-berth/pin.mjs <digest>`),
-# on a release, or by hand. Every pin comes from images/mise-berth/pins.mjs; the launcher
-# pins the pushed image by its digest, and `latest` follows main alone.
+# when its folder or the Node version's source changes on any branch (a branch's image is
+# `sha-<commit>`, for a launcher given it as BERTH_IMAGE), on a release, or by hand:
+# `make deploy` starts it on main after each publish, so the image holds the calypso and
+# chell just published. Every version comes from images/mise-berth/pins.mjs, read at the
+# build. Nothing pins the image: the launcher runs `latest`, which follows main alone.
 
 on:
   push:
@@ -41,8 +42,6 @@ jobs:
             cat pins.env
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
-          echo "porter=$(sed -n 's/^PORTER_VERSION=//p' pins.env)" >> "$GITHUB_OUTPUT"
-          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
           # GHCR names are lower case; the repository's owner is the namespace its token can push to.
           echo "image=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/mise-berth" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
@@ -61,12 +60,10 @@ jobs:
           build-args: ${{ steps.pins.outputs.args }}
           tags: |
             ${{ steps.pins.outputs.image }}:sha-${{ github.sha }}
-            ${{ github.ref == 'refs/heads/main' && format('{0}:{1}-{2}', steps.pins.outputs.image, steps.pins.outputs.porter, steps.pins.outputs.date) || '' }}
             ${{ github.ref == 'refs/heads/main' && format('{0}:latest', steps.pins.outputs.image) || '' }}
-      - name: The digest to pin
+      - name: The image pushed
         run: |
           echo "### mise-berth" >> "$GITHUB_STEP_SUMMARY"
           echo "\`${{ steps.pins.outputs.image }}@${{ steps.push.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "To pin it: \`node images/mise-berth/pin.mjs ${{ steps.pins.outputs.image }}@${{ steps.push.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
           sed 's/^/- /' pins.env >> "$GITHUB_STEP_SUMMARY"

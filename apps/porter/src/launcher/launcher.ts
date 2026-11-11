@@ -1,7 +1,8 @@
 /**
  * @file The berth launcher (docs/berths.adoc): starts, stops and reports one
  * person's berth, and fixes everything about it but who it is for and which
- * cohort it holds. The image is the pinned digest; the home is the person's
+ * cohort it holds. The image is mise-berth's latest, pulled before a berth
+ * is made from it; the home is the person's
  * own volume, one for life; `/incoming` and `/outgoing` are one volume per
  * person and cohort; the CUBE token is written to a tmpfs at
  * `/run/mise/token`, mode 0400 and owned by the person's uid, on stdin,
@@ -26,15 +27,12 @@ import type { DockerAnswer, DockerApi } from './docker.js';
 import { capacityRefusal_words, type BerthPolicy, type BerthRoom } from './policy.js';
 
 /**
- * The image a berth runs when the deployment names none: mise-berth, pinned
- * by digest. `images/mise-berth/pin.mjs` moves it to the digest the
- * workflow pushed, and `lint:berth-pin` refuses a build where the image's
- * source changed and the pin did not.
+ * The image a berth runs when the deployment names none: mise-berth's
+ * `latest`, a tag the Berth image workflow moves at every build on main. The
+ * launcher pulls it before it makes a berth, so a berth made after the tag
+ * moved runs the newer image.
  */
-export const BERTH_IMAGE_DEFAULT: string = 'ghcr.io/harbor-medical-ai/mise-berth@sha256:72c0f6e4e8915ac42325ba277a3f602acc5405b76534cf4f1e5dc77c5e08de64';
-
-/** The SHA-256 of `images/mise-berth`'s source the pin above was built from (pin.mjs writes it; lint:berth-pin checks it). */
-export const BERTH_IMAGE_SOURCE: string = '792832b25cbde139087b793eee103d8d0aa962b3106b9b8cefaf344876602394';
+export const BERTH_IMAGE_DEFAULT: string = 'ghcr.io/harbor-medical-ai/mise-berth:latest';
 
 /** The label every berth, its networks and its volumes carry: the launcher's prefix. */
 export const BERTH_LABEL: string = 'org.fnndsc.mise.berth';
@@ -94,7 +92,7 @@ export class BerthRefusal extends Error {
 export interface LauncherOptions {
   readonly docker: DockerApi;
   readonly policy: BerthPolicy;
-  /** The image, pinned by digest. */
+  /** The image a berth is made from: a tag that moves (pulled before each berth is made), or a digest. */
   readonly image: string;
   /** What every name and label begins with (`mise-berth`): one spoke's berths. */
   readonly prefix: string;
@@ -115,6 +113,10 @@ export interface LauncherOptions {
   readonly pollMs?: number;
   /** How long the engine has to give one container's usage for the operator's read, in ms; 3 s by default. */
   readonly statsMs?: number;
+  /** How long the engine has to pull the image before a berth is made from the copy the host holds, in ms; 120 s by default. */
+  readonly pullMs?: number;
+  /** One line per thing worth an operator's eye (a pull that failed, a newer image pulled); silent when absent. */
+  readonly log?: (line: string) => void;
 }
 
 /** The names a berth's container, wire and volumes take. */
@@ -272,6 +274,37 @@ async function answer_within(call: Promise<DockerAnswer>, ms: number): Promise<D
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** How long the engine has to pull the berth image, in ms, unless the launcher is set otherwise: within what porter gives a start. */
+const PULL_ANSWER_MS: number = 120_000;
+
+/** What the engine's pull stream says when the registry gave an image the host did not hold. */
+const PULL_NEWER_MARK: string = 'Downloaded newer image';
+
+/**
+ * Why a pull did not land, read from the engine's answer to `POST
+ * /images/create`: no answer, a status other than 200, or a 200 whose
+ * progress stream (one JSON object a line) carries an `error`.
+ *
+ * @param answer - The engine's answer; status 0 when it gave none in time.
+ * @returns The reason in words, or null when the pull landed.
+ *
+ * @example
+ * ```ts
+ * pullFailure_read({ status: 200, body: '{"status":"Pulling"}\r\n{"error":"manifest unknown"}\r\n' }); // 'manifest unknown'
+ * ```
+ */
+export function pullFailure_read(answer: DockerAnswer): string | null {
+  if (answer.status === 0) return 'the engine gave no answer in time';
+  if (answer.status !== 200) {
+    const message: unknown = field_get(answer.body, 'message');
+    return `the engine answered ${answer.status}${typeof message === 'string' ? `: ${message}` : ''}`;
+  }
+  // One progress line arrives parsed, as an object; several stay the text they came as, a JSON object a line.
+  const said: unknown[] = typeof answer.body === 'string' ? answer.body.split('\n').map((line: string): unknown => { try { return JSON.parse(line); } catch { return null; } }) : [answer.body];
+  const failed: unknown = said.map((one: unknown): unknown => field_get(one, 'error')).find((error: unknown): boolean => typeof error === 'string');
+  return typeof failed === 'string' ? failed : null;
 }
 
 /** A filter on the launcher's label, for the engine's list calls. */
@@ -480,7 +513,9 @@ export class BerthLauncher {
    * token; one on another cohort is stopped first; otherwise the spoke's
    * room is checked, the wires and volumes made, the container made and
    * started, porter joined to the wire, the token written, and the berth
-   * waited for.
+   * waited for. A berth made from the image is made from the newest one: the
+   * image is pulled first, and a pull that fails falls back on the copy the
+   * host holds.
    *
    * @param ask - The ask.
    * @param identity - Its identity.
@@ -513,6 +548,7 @@ export class BerthLauncher {
     const capacity: number = berthCapacity_derive(host, floor, this.options.policy);
     const room: BerthRoom = { hostGib: host.memoryGib, floorGib: floor.memory, berthGib: this.options.policy.limits.memoryGib };
     if (others.length >= capacity) throw new BerthRefusal(409, capacityRefusal_words(capacity, others.map((one: BerthState): string => one.user), room));
+    await this.image_pull();
     await this.cubeNetwork_ensure();
     await this.wire_ensure(names.network, ask.user);
     await this.volumes_ensure(names, ask);
@@ -525,6 +561,28 @@ export class BerthLauncher {
     this.held.set(identity, { token, uid: ask.uid, gid: ask.gid });
     const berth = await this.berth_wait(names, identity);
     return { identity, user: ask.user, state: 'running', url: berth.url, token: berth.token, container: names.container, cohort: cohort_word(ask.cohort) };
+  }
+
+  /**
+   * Pulls the image before a berth is made from it, so a tag that moved is
+   * followed without a redeploy. A pull that fails (the registry away, no
+   * answer in time) is said in the log and the copy the host holds is used;
+   * with no copy there is nothing to make a berth from.
+   *
+   * @throws {BerthRefusal} When the pull fails and the host holds no copy of the image.
+   */
+  private async image_pull(): Promise<void> {
+    const docker: DockerApi = this.options.docker;
+    const image: string = this.options.image;
+    const pulled: DockerAnswer = await answer_within(docker.call('POST', `/images/create?fromImage=${encodeURIComponent(image)}`), this.options.pullMs ?? PULL_ANSWER_MS);
+    const failure: string | null = pullFailure_read(pulled);
+    if (failure === null) {
+      if (typeof pulled.body === 'string' && pulled.body.includes(PULL_NEWER_MARK)) this.options.log?.(`pulled a newer berth image ${image}`);
+      return;
+    }
+    const held: DockerAnswer = await docker.call('GET', `/images/${image}/json`);
+    if (held.status !== 200) throw new BerthRefusal(502, `the berth image ${image} was not pulled (${failure}) and this host holds no copy of it`);
+    this.options.log?.(`the berth image ${image} was not pulled (${failure}): the copy this host holds is used`);
   }
 
   /**

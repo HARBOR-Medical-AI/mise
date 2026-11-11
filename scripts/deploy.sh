@@ -13,6 +13,9 @@
 #   3. titan's root npm keeps its own packument cache: --prefer-online.
 # The packages are porter's dependency closure in this checkout, so the list is
 # never typed by hand and a host gets everything main holds.
+# Between the npm check and the installs, the "Berth image" workflow builds the
+# berth image on main and is waited for, so mise-berth:latest holds the calypso
+# and chell the hosts are about to run.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -92,6 +95,23 @@ for d in $dirs; do
 done
 pv=$(node -pe "require('./apps/porter/package.json').version")
 say "porter $pv; installing:$spec"
+
+# The berth image is made from the calypso and chell npm names as latest
+# (images/mise-berth/pins.mjs). Built on main now that both are served, and
+# waited for, so mise-berth:latest holds this release before any host runs it.
+# The run is found by its id, above the newest one before the ask.
+berth_last=$(gh run list --workflow "Berth image" --limit 1 --json databaseId --jq '.[0].databaseId // 0' 2>/dev/null || true)
+gh workflow run "Berth image" --ref main >/dev/null 2>&1 || die "the Berth image workflow did not start (gh workflow run \"Berth image\" --ref main); nothing installed"
+berth_run=""
+for _ in $(seq 1 20); do
+  berth_run=$(gh run list --workflow "Berth image" --branch main --event workflow_dispatch --limit 5 --json databaseId --jq "[.[] | select(.databaseId > ${berth_last:-0})][-1].databaseId // empty" 2>/dev/null || true)
+  [ -n "$berth_run" ] && break
+  sleep 3
+done
+[ -n "$berth_run" ] || die "the Berth image run did not appear a minute after it was asked for; nothing installed"
+say "berth image run $berth_run: building mise-berth:latest on main, waiting for it to finish"
+gh run watch "$berth_run" --exit-status >/dev/null 2>&1 || die "Berth image run $berth_run did not succeed: mise-berth:latest is not this release's (gh run view $berth_run --log-failed); nothing installed"
+say "berth image run $berth_run: success; mise-berth:latest holds the calypso and chell just published"
 
 for host in $HOSTS; do
   case "$host" in

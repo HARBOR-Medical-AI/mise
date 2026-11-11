@@ -13,7 +13,7 @@ import { berthKey_compute, identity_normalise } from '@fnndsc/calypso/berth';
 import { berthCapacity_derive, profileFloor_get } from '@fnndsc/menu';
 import type { DockerAnswer, DockerApi, ExecAnswer } from '../../src/launcher/docker.js';
 import { dockerStream_demux } from '../../src/launcher/docker.js';
-import { BERTH_LABEL, BerthLauncher, berthContainer_spec, berthNames_derive, cohort_word, stats_digest } from '../../src/launcher/launcher.js';
+import { BERTH_IMAGE_DEFAULT, BERTH_LABEL, BerthLauncher, berthContainer_spec, berthNames_derive, cohort_word, pullFailure_read, stats_digest } from '../../src/launcher/launcher.js';
 import { BERTH_LIMITS_DEFAULT, berthPolicy_read, capacityRefusal_words, type BerthPolicy } from '../../src/launcher/policy.js';
 import { launcherServer_create, secret_matches } from '../../src/launcher/server.js';
 import { launcherSecret_read } from '../../src/launcher/secret.js';
@@ -41,12 +41,34 @@ class FakeDocker implements DockerApi {
   stats: Record<string, unknown> = {};
   /** Containers whose stats call the engine never answers. */
   hung: Set<string> = new Set();
+  /** The images the host holds a copy of. */
+  images: Set<string> = new Set(['mbw/mise-berth@sha256:abc']);
+  /** Each image a pull asked the registry for. */
+  pulls: string[] = [];
+  /** Why the registry refuses a pull, said in the progress stream; null: it gives the image. */
+  pullError: string | null = null;
+  /** The status the engine answers a pull with. */
+  pullStatus: number = 200;
+  /** Whether the engine never answers a pull. */
+  pullHangs: boolean = false;
+  /** What a pull that lands says last. */
+  pullSays: string = 'Status: Image is up to date for the image';
   private serial: number = 2;
 
   async call(method: string, path: string, body?: unknown): Promise<DockerAnswer> {
     const [route = '', query = ''] = path.split('?');
     const parts: string[] = route.split('/');
     const name: string = decodeURIComponent(parts[2] ?? '');
+    if (method === 'POST' && route === '/images/create') {
+      const image: string = new URLSearchParams(query).get('fromImage') ?? '';
+      this.pulls.push(image);
+      if (this.pullHangs) return new Promise<DockerAnswer>((): void => undefined);
+      if (this.pullStatus !== 200) return { status: this.pullStatus, body: { message: 'the registry is away' } };
+      if (this.pullError !== null) return { status: 200, body: `{"status":"Pulling from mise-berth"}\r\n${JSON.stringify({ errorDetail: { message: this.pullError }, error: this.pullError })}\r\n` };
+      this.images.add(image);
+      return { status: 200, body: `{"status":"Pulling from mise-berth"}\r\n${JSON.stringify({ status: this.pullSays })}\r\n` };
+    }
+    if (method === 'GET' && parts[1] === 'images') return { status: this.images.has(route.slice('/images/'.length, -'/json'.length)) ? 200 : 404, body: {} };
     if (method === 'GET' && route === '/info') return { status: 200, body: { NCPU: this.host.cpus, MemTotal: this.host.memory } };
     if (route === '/networks/create') { const spec = body as { Name: string; Options?: Record<string, string> }; this.networks.set(spec.Name, { options: spec.Options ?? {}, members: new Set() }); return { status: 201, body: {} }; }
     if (method === 'GET' && route === '/networks') return { status: 200, body: [...this.networks.keys()].map((one) => ({ Name: one })) };
@@ -244,6 +266,69 @@ describe('the launcher over an engine', () => {
     expect(docker.containers.size).toBe(1);
     expect(docker.execs.length).toBeGreaterThan(own);
     expect(docker.volumes.size).toBe(2);
+  });
+
+  it('pulls the image before it makes a berth from it, so a tag that moved is followed; a running berth is handed back with no pull', async () => {
+    const said: string[] = [];
+    const launcher: BerthLauncher = new BerthLauncher({ docker, policy: POLICY, image: BERTH_IMAGE_DEFAULT, prefix: 'mbw', cubeNetwork: 'mbw-cube-net', porterContainer: 'porter', bootMs: 300, pollMs: 10, log: (line: string): void => { said.push(line); } });
+    expect(BERTH_IMAGE_DEFAULT).toBe('ghcr.io/harbor-medical-ai/mise-berth:latest');
+    docker.images.clear();
+    docker.pullSays = `Status: Downloaded newer image for ${BERTH_IMAGE_DEFAULT}`;
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    const names = berthNames_derive('mbw', ANA, 'ana', null);
+    expect(docker.pulls).toEqual([BERTH_IMAGE_DEFAULT]);
+    expect(docker.containers.get(names.container)?.spec['Image']).toBe(BERTH_IMAGE_DEFAULT);
+    expect(said).toEqual([`pulled a newer berth image ${BERTH_IMAGE_DEFAULT}`]);
+    // The same berth asked for again is running: nothing is made, so nothing is pulled.
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token-2' });
+    expect(docker.pulls).toHaveLength(1);
+    // Made again (another cohort): pulled again; an image already the newest is not worth a line.
+    docker.pullSays = `Status: Image is up to date for ${BERTH_IMAGE_DEFAULT}`;
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: 9 });
+    expect(docker.pulls).toHaveLength(2);
+    expect(said).toHaveLength(1);
+  });
+
+  it('a pull that fails does not fail the start when the host holds the image: it is said in the log and the copy is used', async () => {
+    const said: string[] = [];
+    const launcher: BerthLauncher = new BerthLauncher({ docker, policy: POLICY, image: BERTH_IMAGE_DEFAULT, prefix: 'mbw', cubeNetwork: 'mbw-cube-net', porterContainer: 'porter', bootMs: 300, pollMs: 10, pullMs: 30, log: (line: string): void => { said.push(line); } });
+    docker.images.add(BERTH_IMAGE_DEFAULT);
+    docker.pullError = 'manifest unknown';
+    expect((await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' })).state).toBe('running');
+    docker.pullError = null;
+    docker.pullStatus = 500;
+    expect((await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: 2 })).state).toBe('running');
+    docker.pullStatus = 200;
+    docker.pullHangs = true;
+    expect((await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: 3 })).state).toBe('running');
+    expect(said).toEqual([
+      `the berth image ${BERTH_IMAGE_DEFAULT} was not pulled (manifest unknown): the copy this host holds is used`,
+      `the berth image ${BERTH_IMAGE_DEFAULT} was not pulled (the engine answered 500: the registry is away): the copy this host holds is used`,
+      `the berth image ${BERTH_IMAGE_DEFAULT} was not pulled (the engine gave no answer in time): the copy this host holds is used`,
+    ]);
+    // A launcher given no log says nothing and starts the berth all the same.
+    const quiet = new FakeDocker();
+    quiet.pullError = 'manifest unknown';
+    expect((await launcher_make(quiet).start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' })).state).toBe('running');
+  });
+
+  it('refuses a start when the pull fails and the host holds no copy of the image, making nothing', async () => {
+    docker.images.clear();
+    docker.pullError = 'denied';
+    await expect(launcher_make(docker).start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' })).rejects.toMatchObject({ status: 502, message: 'the berth image mbw/mise-berth@sha256:abc was not pulled (denied) and this host holds no copy of it' });
+    expect(docker.containers.size).toBe(0);
+    expect(docker.volumes.size).toBe(0);
+  });
+
+  it('reads why a pull did not land: no answer, a refusal, an error in the progress stream; a pull that landed has none', () => {
+    expect(pullFailure_read({ status: 0, body: null })).toBe('the engine gave no answer in time');
+    expect(pullFailure_read({ status: 404, body: { message: 'no such image' } })).toBe('the engine answered 404: no such image');
+    expect(pullFailure_read({ status: 500, body: 'oops' })).toBe('the engine answered 500');
+    expect(pullFailure_read({ status: 200, body: '{"status":"Pulling"}\r\nnot json\r\n{"error":"manifest unknown"}\r\n' })).toBe('manifest unknown');
+    expect(pullFailure_read({ status: 200, body: { error: 'denied' } })).toBe('denied');
+    expect(pullFailure_read({ status: 200, body: { status: 'Image is up to date' } })).toBeNull();
+    expect(pullFailure_read({ status: 200, body: '{"status":"Pulling"}\r\n{"status":"Downloaded newer image"}\r\n' })).toBeNull();
+    expect(pullFailure_read({ status: 200, body: null })).toBeNull();
   });
 
   it('joins porter to a running berth\'s wire again when porter was made again and left it, making nothing new', async () => {

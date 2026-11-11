@@ -15,7 +15,7 @@ import { BufferSink, HeadlessSurface, JobRunner, runner_get, runner_install, sin
 import type { CloudDriver, CloudPrice, ResourceCounts, ServicePrices } from '../src/cloud/driver.js';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
-import { CHRIS_IMAGES, CHRIS_PROFILES, floor_short, PORTER_VERSION, type ChrisProfile } from '../src/chris/profiles.js';
+import { CHRIS_IMAGES, CHRIS_PROFILES, floor_short, type ChrisProfile } from '../src/chris/profiles.js';
 import { BERTH_SOCKET, berths_has, caddyfile_render, compose_render, cubeEnv_render, launcherEnv_render, PORTER_CONTAINER, porterEnv_render, type ChrisSecrets, type ChrisTarget } from '../src/chris/compose.js';
 import { chrisDeployRun_make, curlQuote, type DeployDeps, type DeployRequest } from '../src/chris/deploy.js';
 import { launcherSecret_ensure, secrets_read } from '../src/chris/secrets.js';
@@ -84,7 +84,7 @@ describe('a ChRIS profile and what it renders', () => {
     expect(Object.keys(compose.services).slice(-3)).toEqual(['caddy', 'porter', 'berth-launcher']);
     const launcher: Service = compose.services['berth-launcher'] as Service;
     expect(launcher['command']).toEqual(['berth-launcher']);
-    expect(launcher['image']).toBe(`stratus/porter:${PORTER_VERSION}`);
+    expect(launcher['image']).toBe('stratus/porter:latest');
     expect(launcher['env_file']).toEqual(['launcher.env']);
     expect(launcher['group_add']).toEqual(['998']);
     expect(launcher['network_mode']).toBe('none');
@@ -196,8 +196,9 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect([...vm.files.keys()]).toEqual(['/srv/data/chris/compose.yml', '/srv/data/chris/cube.env', '/srv/data/chris/pfcon.env', '/srv/data/chris/Caddyfile']);
     expect(vm.files.get('/srv/data/chris/cube.env')).toContain(`CHRIS_SUPERUSER_PASSWORD=${secrets?.adminPassword}\n`);
     expect(vm.lines).toContain('cd /srv/data/chris && docker compose pull -q --ignore-buildable');
-    expect(vm.lines).toContain('cd /srv/data/chris && docker compose up -d --build --remove-orphans');
-    expect(vm.lines.some((line: string): boolean => line.includes('docker compose build'))).toBe(false);
+    expect(vm.lines).toContain('cd /srv/data/chris && docker compose up -d --remove-orphans');
+    // No porter: nothing is built, no version read, no image removed.
+    expect(vm.lines.some((line: string): boolean => line.includes('docker compose build') || line.startsWith('docker run ') || line.startsWith('docker image prune'))).toBe(false);
     expect(vm.files.get('/srv/data/chris/compose.yml')).not.toContain('porter');
     expect(vm.computes).toEqual(['NERC']);
     expect(vm.adminHome).toBe(true);
@@ -388,8 +389,8 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const secrets: ChrisSecrets | null = secrets_read(vms, 'store');
     expect(secrets?.porterSecret?.length).toBeGreaterThanOrEqual(32);
     const compose = yaml.load(vm.files.get('/srv/data/chris/compose.yml') ?? '') as { services: Record<string, Record<string, unknown>>; volumes: Record<string, unknown> };
-    expect(compose.services['porter']?.['image']).toBe('stratus/porter:0.11.1');
-    expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@0.11.1');
+    expect(compose.services['porter']?.['image']).toBe('stratus/porter:latest');
+    expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@latest');
     expect(compose.services['porter']?.['volumes']).toEqual(['porter:/var/lib/porter']);
     expect(compose.services['caddy']?.['networks']).toEqual({ default: { aliases: ['cube.example.org'] } });
     expect(Object.keys(compose.volumes)).toContain('porter');
@@ -398,23 +399,31 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(vm.lines.some((line: string): boolean => line.includes(secrets?.porterSecret ?? '?'))).toBe(false);
     expect(vms.record_read('store')?.chris).toMatchObject({ porter: 'porter.example.org', dns: 'seen' });
     expect(plain((await chris_run(context, ['status'])).rendered)).toContain('porter https://porter.example.org/');
+    // The deploy keeps what it put up: the porter version is the one read back from the image it built, without Docker's layer cache.
+    expect(vms.record_read('store')?.chris).toMatchObject({ image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.12.0' });
+    expect(vm.lines).toContain('cd /srv/data/chris && docker compose build -q --no-cache porter');
+    expect(vm.lines).toContain('docker run --rm --entrypoint node stratus/porter:latest -p "require(\'/usr/local/lib/node_modules/@fnndsc/porter/package.json\').version"');
+    expect(vm.lines).toContain('docker image prune -f --filter label=org.fnndsc.stratus.image=porter');
+    // A replay as deployed builds porter again from the latest release, so it asks; on a yes the record follows what npm gave.
+    vm.porterInstalled = '0.12.1';
+    surface.asked = [];
+    surface.answers = ['y'];
     await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org', '--berths', 'off']);
+    expect(surface.asked.at(-1)).toContain('restarts porter (rebuilt from the latest release; 0.12.0 runs now): its open sessions end');
     expect(secrets_read(vms, 'store')).toEqual(secrets);
-    // The deploy keeps what it put up; a replay as deployed restarts nothing and asks nothing.
-    expect(vms.record_read('store')?.chris).toMatchObject({ image: 'ghcr.io/fnndsc/cube:6.11.0', porterVersion: '0.11.1' });
+    expect(vms.record_read('store')?.chris).toMatchObject({ porterVersion: '0.12.1' });
     const line: string[] = ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org', '--berths', 'off'];
     const planned = await chris_run(context, [...line, '--plan']);
-    expect(plain(planned.rendered)).toBe('chris deploy store: as deployed; nothing restarts\n');
-    expect(planned.model).toMatchObject({ kind: 'stratus.chris.plan', data: { vm: 'store', changes: [], restarts: [], asks: false } });
-    // A porter older than this stratus's: the replay plans porter's restart, reads the sessions it ends from porter, and asks first; no, and nothing changes.
-    vms.record_update('store', (record): void => { if (record.chris !== undefined) record.chris.porterVersion = '0.9.10'; });
-    const live: ChrisCommandContext = { ...context, http_get: async (url: string) => (url === 'https://porter.example.org/healthz' ? { status: 200, body: { ok: true, sessions: 2, version: '0.9.10' } } : null) };
-    expect(plain((await chris_run(live, [...line, '--plan'])).rendered)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.11.1): its open sessions end; 2 porter sessions open now end\n');
+    expect(plain(planned.rendered)).toBe('chris deploy store: as deployed; restarts porter (rebuilt from the latest release; 0.12.1 runs now): its open sessions end\n');
+    expect(planned.model).toMatchObject({ kind: 'stratus.chris.plan', data: { vm: 'store', changes: [], restarts: ['porter (rebuilt from the latest release; 0.12.1 runs now): its open sessions end'], asks: true } });
+    // The replay reads the sessions porter's restart ends from porter, and asks first; no, and nothing changes.
+    const live: ChrisCommandContext = { ...context, http_get: async (url: string) => (url === 'https://porter.example.org/healthz' ? { status: 200, body: { ok: true, sessions: 2, version: '0.12.1' } } : null) };
+    expect(plain((await chris_run(live, [...line, '--plan'])).rendered)).toBe('chris deploy store: as deployed; restarts porter (rebuilt from the latest release; 0.12.1 runs now): its open sessions end; 2 porter sessions open now end\n');
     surface.asked = [];
     surface.answers = ['n'];
     const before: number = vm.lines.length;
     expect(plain((await chris_run(live, line)).rendered)).toContain('stopped before the deploy; nothing changed');
-    expect(surface.asked.at(-1)).toBe('chris deploy store: as deployed; restarts porter (0.9.10 → 0.11.1): its open sessions end; 2 porter sessions open now end. A NO changes nothing. Continue? [y/N]');
+    expect(surface.asked.at(-1)).toBe('chris deploy store: as deployed; restarts porter (rebuilt from the latest release; 0.12.1 runs now): its open sessions end; 2 porter sessions open now end. A NO changes nothing. Continue? [y/N]');
     expect(vm.lines.length).toBe(before);
     // status reads what runs from it, over HTTPS, under the deploy's record.
     const reading: ChrisCommandContext = { ...context, http_get: async (url: string, auth) => (url === 'https://porter.example.org/healthz' ? { status: 200, body: { sessions: 2, version: '0.9.11' } }
@@ -445,7 +454,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const request = (over: Partial<DeployRequest> = {}): DeployRequest => ({ vm: 'store', profile: CHRIS_PROFILES['minimal'] as ChrisProfile, compute: 'store', host: 'cube.example.org', porter: 'porter.example.org', berths: true, secrets: keyed, ...over });
     const deps = (): DeployDeps => ({ store: vms, nets: context.nets, builder: context.builder, resolve: async (): Promise<string[]> => ['203.0.113.10'], status_get: async (): Promise<number | null> => 200, remote_open: async (): Promise<VmRemote> => vm, tickMs: 0 });
 
-    it('reads the socket\'s group, writes the berth files as the image\'s node user, pulls the pinned image by digest, waits for the launcher, and records both', async () => {
+    it('reads the socket\'s group, writes the berth files as the image\'s node user, builds porter without the layer cache, pulls the berth image it names, waits for the launcher, and records both', async () => {
       vm.dockerGid = '119';
       const logged: string[] = [];
       await chrisDeployRun_make(request(), deps())(job(logged));
@@ -463,19 +472,22 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
       for (const line of written) expect(line).toMatch(/^sudo sh -c 'umask 077 && cat > \/srv\/data\/chris\/berth\/[a-z.]+\.new && chown 1000:1000 \/srv\/data\/chris\/berth\/[a-z.]+\.new && chmod 0\d{3} .* && mv /);
       expect(vm.lines.some((line: string): boolean => line.includes('launcher-s'))).toBe(false);
       const at = (needle: string): number => vm.lines.findIndex((line: string): boolean => line.includes(needle));
-      expect(vm.lines).toContain('cd /srv/data/chris && docker compose pull -q --ignore-buildable && docker compose build -q');
-      const pin: string = vm.lines.find((line: string): boolean => line.startsWith('docker run --rm --entrypoint node ')) ?? '';
-      expect(pin).toContain(`stratus/porter:${PORTER_VERSION}`);
-      expect(pin).toContain('BERTH_IMAGE_DEFAULT');
-      expect(pin).toContain('/usr/local/lib/node_modules/@fnndsc/porter/dist/launcher/launcher.js');
-      expect(vm.pulled).toEqual([vm.berthPin]);
-      // Built, then the pin read, the image pulled, the services up, the launcher's health asked, only then CUBE.
-      const order: number[] = ['docker compose build', 'docker run --rm', 'docker pull -q', 'docker compose up', 'Health.Status', 'http://127.0.0.1:8000/api/v1/'].map(at);
+      expect(vm.lines).toContain('cd /srv/data/chris && docker compose pull -q --ignore-buildable');
+      expect(vm.lines).toContain('cd /srv/data/chris && docker compose build -q --no-cache porter');
+      const named: string = vm.lines.find((line: string): boolean => line.startsWith('docker run --rm --entrypoint node ') && line.includes('BERTH_IMAGE_DEFAULT')) ?? '';
+      expect(named).toContain('stratus/porter:latest');
+      expect(named).toContain('/usr/local/lib/node_modules/@fnndsc/porter/dist/launcher/launcher.js');
+      // The image porter names is a tag that moves: pulled at this deploy, and at every one after.
+      expect(vm.berthImage).toBe('ghcr.io/fnndsc/berth:latest');
+      expect(vm.pulled).toEqual([vm.berthImage]);
+      expect(logged).toContain('porter 0.12.0 installed, the latest release on npm');
+      // Built, then the version and the berth image read, the image pulled, the services up, the launcher's health asked, only then CUBE.
+      const order: number[] = ['docker compose build', '/package.json', 'BERTH_IMAGE_DEFAULT', 'docker pull -q', 'docker compose up', 'Health.Status', 'http://127.0.0.1:8000/api/v1/'].map(at);
       expect(order.every((index: number): boolean => index >= 0)).toBe(true);
       expect(order).toEqual([...order].sort((a: number, b: number): number => a - b));
       expect(vm.lines).toContain('docker inspect -f \'{{.State.Health.Status}}\' chris-berth-launcher-1');
       expect(logged).toContain('the berth launcher answers on its socket: porter starts a berth for each person');
-      expect(vms.record_read('store')?.chris).toMatchObject({ porter: 'porter.example.org', berths: 'launcher', berthImage: vm.berthPin, berthLimits: { cpus: 1, memoryGib: 2 } });
+      expect(vms.record_read('store')?.chris).toMatchObject({ porter: 'porter.example.org', berths: 'launcher', porterVersion: '0.12.0', berthImage: vm.berthImage, berthLimits: { cpus: 1, memoryGib: 2 } });
       expect(vm.lines.some((line: string): boolean => line.includes('docker compose restart'))).toBe(false);
     });
 
@@ -554,7 +566,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
 
     it('without berths, reads no socket and writes no berth file, and records none', async () => {
       await chrisDeployRun_make(request({ berths: false }), deps())(job([]));
-      expect(vm.lines).toContain('cd /srv/data/chris && docker compose pull -q --ignore-buildable && docker compose build -q');
+      expect(vm.lines).toContain('cd /srv/data/chris && docker compose build -q --no-cache porter');
       expect(vm.lines.some((line: string): boolean => line.startsWith('stat ') || line.startsWith('docker pull') || line.startsWith('sudo sh'))).toBe(false);
       expect([...vm.files.keys()].some((file: string): boolean => file.includes('berth') || file.includes('launcher'))).toBe(false);
       expect(vms.record_read('store')?.chris?.berths).toBeUndefined();
@@ -576,10 +588,15 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
       expect(logged).toContain('berths off: the running berths and their wires are removed; every person\'s home is kept');
     });
 
-    it('refuses a pin that is not an image by digest, before anything is pulled or started', async () => {
-      for (const pin of ['ghcr.io/fnndsc/berth:latest', 'ghcr.io/fnndsc/berth@sha256:abc', '']) {
-        vm.berthPin = pin;
-        await expect(chrisDeployRun_make(request(), deps())(job([]))).rejects.toThrow(`reading the berth image porter pins: ${pin || 'nothing'} is not an image by digest`);
+    it('refuses a porter that names no berth image, or installed no version, before anything is pulled or started', async () => {
+      for (const image of ['', 'not an image; rm -rf']) {
+        vm.berthImage = image;
+        await expect(chrisDeployRun_make(request(), deps())(job([]))).rejects.toThrow(`reading the berth image porter names: ${image || 'nothing'} is not an image's name`);
+      }
+      vm.berthImage = 'ghcr.io/fnndsc/berth:latest';
+      for (const version of ['', 'latest']) {
+        vm.porterInstalled = version;
+        await expect(chrisDeployRun_make(request(), deps())(job([]))).rejects.toThrow(`reading the porter version installed: ${version || 'nothing'} is not a version`);
       }
       expect(vm.pulled).toEqual([]);
       expect(vm.lines.some((line: string): boolean => line.includes('docker compose up'))).toBe(false);
@@ -654,12 +671,12 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
       expect(vm.lines).toEqual([]);
     });
 
-    it('a replay with other limits plans the change and the launcher\'s restart, and asks; the same limits ask nothing', async () => {
+    it('a replay with other limits plans the change and the launcher\'s restart beside porter\'s rebuild, and asks', async () => {
       const line: string[] = ['deploy', 'store', '--profile', 'minimal', '--host', 'cube.example.org', '--porter', 'porter.example.org'];
-      vms.record_update('store', (record): void => { record.chris = { profile: 'minimal', compute: 'store', host: 'cube.example.org', url: 'https://cube.example.org/api/v1/', deployed: '2026-11-09T00:00:00.000Z', porter: 'porter.example.org', image: CHRIS_IMAGES.cube, porterVersion: PORTER_VERSION, berths: 'launcher', berthImage: vm.berthPin }; });
-      expect(plain((await chris_run(context, [...line, '--plan'])).rendered)).toBe('chris deploy store: as deployed; nothing restarts\n');
+      vms.record_update('store', (record): void => { record.chris = { profile: 'minimal', compute: 'store', host: 'cube.example.org', url: 'https://cube.example.org/api/v1/', deployed: '2026-11-09T00:00:00.000Z', porter: 'porter.example.org', image: CHRIS_IMAGES.cube, porterVersion: '0.12.0', berths: 'launcher', berthImage: vm.berthImage }; });
+      expect(plain((await chris_run(context, [...line, '--plan'])).rendered)).toBe('chris deploy store: as deployed; restarts porter (rebuilt from the latest release; 0.12.0 runs now): its open sessions end\n');
       const changed = await chris_run(context, [...line, '--berth-cpus', '2', '--berth-memory', '4', '--plan']);
-      expect(plain(changed.rendered)).toBe('chris deploy store: berth limits 1 vCPU · 2 GiB → 2 vCPU · 4 GiB; restarts the berth launcher: running berths keep their limits and sessions until their next start, which needs a fresh login\n');
+      expect(plain(changed.rendered)).toBe('chris deploy store: berth limits 1 vCPU · 2 GiB → 2 vCPU · 4 GiB; restarts porter (rebuilt from the latest release; 0.12.0 runs now): its open sessions end; the berth launcher: running berths keep their limits and sessions until their next start, which needs a fresh login\n');
       expect(changed.model).toMatchObject({ data: { asks: true } });
       // `chris status` carries the berths and their limits, for a screen to set the line beside them.
       expect((await chris_run(context, ['status'])).model).toMatchObject({ data: { chris: [{ vm: 'store', berths: true, berthLimits: null }] } });

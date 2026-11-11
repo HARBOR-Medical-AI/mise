@@ -8,7 +8,7 @@
  *   BERTH_LAUNCHER_SECRET_FILE  the secret porter carries (mode 0600; required)
  *   BERTH_LAUNCHER_LISTEN       a unix socket path, or host:port on loopback (required)
  *   BERTH_DOCKER_SOCKET         the engine's socket (/var/run/docker.sock)
- *   BERTH_IMAGE                 the berth image, pinned by digest (mise-berth's pin by default)
+ *   BERTH_IMAGE                 the berth image, pulled before each berth is made (mise-berth's latest by default)
  *   BERTH_PREFIX                what this spoke's berths are named with (mise-berth)
  *   BERTH_CUBE_NETWORK          cube-net, where every berth reaches the CUBE API (<prefix>-cube-net)
  *   BERTH_PORTER_CONTAINER      porter's container, joined to each berth's wire; unset when porter runs on the host
@@ -56,6 +56,7 @@ async function launcher_start(): Promise<void> {
     prefix,
     cubeNetwork: env['BERTH_CUBE_NETWORK'] ?? `${prefix}-cube-net`,
     porterContainer: env['BERTH_PORTER_CONTAINER'] !== undefined && env['BERTH_PORTER_CONTAINER'] !== '' ? env['BERTH_PORTER_CONTAINER'] : null,
+    log: (line: string): void => { console.log(`[+] ${line}`); },
     ...(env['BERTH_PROFILE'] !== undefined ? { profile: env['BERTH_PROFILE'] } : {}),
     ...(env['BERTH_CUBE_HOST'] !== undefined && env['BERTH_CUBE_HOST'] !== '' ? { cubeHost: env['BERTH_CUBE_HOST'] } : {}),
   });

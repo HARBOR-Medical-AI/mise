@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * @file The berth image's pins, from one source: the porter a stratus deploy
- * puts up (`PORTER_VERSION` in packages/stratus/src/chris/profiles.ts) and
- * the Node image it runs (`CHRIS_IMAGES.node` there). The calypso and chell
- * a berth runs are the ones that porter's release depends on, resolved
- * against the npm registry to exact versions, so a berth and its porter
- * speak the same wire. Neovim is the latest upstream release, with the
- * SHA-256 GitHub records for each Linux tarball, read here and checked
- * against the download in the build.
+ * @file What one build of the berth image is made from, read at the build:
+ * the calypso and chell latest published on npm (the ones the latest porter
+ * brings, so a berth and the porter a deploy installs speak the same wire),
+ * the Node image a stratus deploy runs porter on (`CHRIS_IMAGES.node` in
+ * packages/stratus/src/chris/profiles.ts), and the latest upstream Neovim
+ * with the SHA-256 GitHub records for each Linux tarball, checked against
+ * the download in the build. Nothing here is a version kept in source: each
+ * build takes what is latest, and names it exactly so the image records it.
  *
  * Prints `NAME=value` lines, one build argument each, for `--build-arg` or
  * `$GITHUB_OUTPUT`.
@@ -36,27 +36,22 @@ function profileValue_read(pattern, what) {
 }
 
 /**
- * The highest published version of a package that satisfies a range.
+ * The latest published version of a package: what npm's `latest` names.
  *
  * @param name - The package.
- * @param range - The range porter declares.
  * @returns The exact version.
  */
-function versionExact_resolve(name, range) {
-  const answer = JSON.parse(execFileSync('npm', ['view', `${name}@${range}`, 'version', '--json'], { encoding: 'utf-8' }));
-  const versions = Array.isArray(answer) ? answer : [answer];
-  const last = versions.at(-1);
-  if (typeof last !== 'string') throw new Error(`pins: no published ${name} satisfies ${range}`);
-  return last;
+function versionLatest_read(name) {
+  const answer = JSON.parse(execFileSync('npm', ['view', name, 'version', '--json'], { encoding: 'utf-8' }));
+  if (typeof answer !== 'string' || !/^\d+\.\d+\.\d+/.test(answer)) throw new Error(`pins: npm names no latest version of ${name}`);
+  return answer;
 }
 
-const porterVersion = profileValue_read(/PORTER_VERSION: string = '([^']+)'/, 'PORTER_VERSION');
 const nodeImage = profileValue_read(/node: '([^']+)'/, 'CHRIS_IMAGES.node');
 const nodeTag = /:([0-9.]+)-/.exec(nodeImage)?.[1];
 if (nodeTag === undefined) throw new Error(`pins: no Node version in ${nodeImage}`);
-const porterDeps = JSON.parse(execFileSync('npm', ['view', `@fnndsc/porter@${porterVersion}`, 'dependencies', '--json'], { encoding: 'utf-8' }));
-const calypsoVersion = versionExact_resolve('@fnndsc/calypso', porterDeps['@fnndsc/calypso']);
-const chellVersion = versionExact_resolve('@fnndsc/chell', porterDeps['@fnndsc/chell']);
+const calypsoVersion = versionLatest_read('@fnndsc/calypso');
+const chellVersion = versionLatest_read('@fnndsc/chell');
 // A token, when the environment has one (CI's), keeps GitHub's API from rate-limiting a shared runner.
 const auth = process.env['GH_TOKEN'] ? ['-H', `Authorization: Bearer ${process.env['GH_TOKEN']}`] : [];
 const nvimRelease = JSON.parse(execFileSync('curl', ['-fsSL', ...auth, 'https://api.github.com/repos/neovim/neovim/releases/latest'], { encoding: 'utf-8' }));
@@ -76,6 +71,6 @@ function nvimDigest_read(name) {
   return digest;
 }
 
-for (const [name, value] of [['NODE_VERSION', nodeTag], ['PORTER_VERSION', porterVersion], ['CALYPSO_VERSION', calypsoVersion], ['CHELL_VERSION', chellVersion], ['NVIM_VERSION', nvimVersion], ['NVIM_SHA256_X86_64', nvimDigest_read('nvim-linux-x86_64.tar.gz')], ['NVIM_SHA256_ARM64', nvimDigest_read('nvim-linux-arm64.tar.gz')]]) {
+for (const [name, value] of [['NODE_VERSION', nodeTag], ['CALYPSO_VERSION', calypsoVersion], ['CHELL_VERSION', chellVersion], ['NVIM_VERSION', nvimVersion], ['NVIM_SHA256_X86_64', nvimDigest_read('nvim-linux-x86_64.tar.gz')], ['NVIM_SHA256_ARM64', nvimDigest_read('nvim-linux-arm64.tar.gz')]]) {
   process.stdout.write(`${name}=${value}\n`);
 }

@@ -63,8 +63,10 @@ export class FakeChrisVm implements VmRemote {
   syncs: Array<{ kind: string; ask: PluginSyncAsk }> = [];
   /** The group that owns Docker's socket on this VM. */
   dockerGid: string = '998';
-  /** What porter's image prints for the berth image it pins. */
-  berthPin: string = `ghcr.io/fnndsc/berth@sha256:${'ab12'.repeat(16)}`;
+  /** What porter's image prints for the berth image it names. */
+  berthImage: string = 'ghcr.io/fnndsc/berth:latest';
+  /** The porter version porter's image prints: what npm's latest installed there. */
+  porterInstalled: string = '0.12.0';
   /** What the berth launcher's health reads, until it is `healthy`. */
   launcherHealth: string = 'healthy';
   /** Whether the berth launcher's container is up: made by `docker compose up` when the compose file has it, gone when it has not. */
@@ -94,7 +96,7 @@ export class FakeChrisVm implements VmRemote {
     if (this.failing.delete(line)) return { code: 1, stdout: '', stderr: 'it failed' };
     if (line === PLUGIN_SYNC_LINE) return this.pluginSync_answer(input ?? '', watch);
     if (line === 'stat -c %g /var/run/docker.sock') return { code: 0, stdout: `${this.dockerGid}\n`, stderr: '' };
-    if (line.startsWith('docker run --rm --entrypoint node ')) return { code: 0, stdout: `${this.berthPin}\n`, stderr: '' };
+    if (line.startsWith('docker run --rm --entrypoint node ')) return { code: 0, stdout: `${line.includes('/package.json') ? this.porterInstalled : this.berthImage}\n`, stderr: '' };
     if (line.startsWith('docker pull -q ')) { this.pulled.push(line.slice('docker pull -q '.length)); return { code: 0, stdout: '', stderr: '' }; }
     if (line.startsWith('sudo cat ') && line.endsWith('/policy.json 2>/dev/null')) {
       const policy: string | undefined = this.files.get(line.slice('sudo cat '.length, -' 2>/dev/null'.length));

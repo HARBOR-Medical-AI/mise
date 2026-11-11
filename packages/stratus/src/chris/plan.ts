@@ -2,8 +2,9 @@
  * @file What a `chris deploy` would do to the ChRIS it replays over, worked
  * out before it acts (AEGIS's a-change-is-a-loop, clauses 2 and 4): the
  * options that change against the deploy's record, the services that
- * restart and why (a new CUBE image, a new porter, a CUBE whose environment
- * changes), and what a porter restart ends (its open sessions, read from it).
+ * restart and why (a new CUBE image, a CUBE whose environment changes, and
+ * porter at every deploy that has one, since each rebuilds it from the latest
+ * release), and what a porter restart ends (its open sessions, read from it).
  * A first deploy asks, with what it puts up. A replay that restarts nothing
  * and changes nothing does not ask; one that does asks with all of it first. Twice on 2026-11-04 a replay restarted
  * porter and ended every session, asked by nothing and said by nothing.
@@ -11,7 +12,7 @@
  * @module
  */
 import type { BerthLimits, VmRecord } from '../vm/state.js';
-import { BERTH_LIMITS_DEFAULT, CHRIS_IMAGES, PORTER_VERSION } from './profiles.js';
+import { BERTH_LIMITS_DEFAULT, CHRIS_IMAGES } from './profiles.js';
 
 /** What a deploy is asked to put up. */
 export interface ChrisPlanAsk {
@@ -100,8 +101,12 @@ export function chrisPlan_derive(deployed: VmRecord['chris'], ask: ChrisPlanAsk,
   else if ((deployed.host ?? null) !== ask.host || (deployed.porter ?? null) !== ask.porter) restarts.push('CUBE and its workers (their environment changes)');
   if (known && ask.porter !== null) {
     if (deployed.porter === undefined) restarts.push('porter is put up');
-    else if (deployed.porterVersion !== PORTER_VERSION) restarts.push(`porter (${deployed.porterVersion ?? '?'} → ${PORTER_VERSION}): its open sessions end`);
-    else if (berthsWas !== ask.berths) restarts.push(`porter (berths ${ask.berths ? 'on' : 'off'}): its open sessions end${ask.berths ? '' : ', and the running berths stop (their homes are kept)'}`);
+    else {
+      // Every deploy with a porter builds it again from the latest release, so porter always restarts.
+      const runs: string = deployed.porterVersion !== undefined ? `; ${deployed.porterVersion} runs now` : '';
+      const berthsTurn: string = berthsWas !== ask.berths ? `; berths ${ask.berths ? 'on' : 'off'}` : '';
+      restarts.push(`porter (rebuilt from the latest release${runs}${berthsTurn}): its open sessions end${berthsWas && !ask.berths ? ', and the running berths stop (their homes are kept)' : ''}`);
+    }
   }
   if (limitsChange) restarts.push('the berth launcher: running berths keep their limits and sessions until their next start, which needs a fresh login');
   return { changes, restarts, sessions, asks: changes.length > 0 || restarts.length > 0, first: false };

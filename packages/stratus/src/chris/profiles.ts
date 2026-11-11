@@ -27,8 +27,8 @@ export const CHRIS_IMAGES = {
   node: 'docker.io/library/node:24.11.1-bookworm',
 } as const;
 
-/** The porter a deploy with `--porter` installs, pinned, with the chell, calypso and ARGUS it brings. */
-export const PORTER_VERSION: string = '0.11.1';
+/** The npm dist-tag a deploy with `--porter` installs porter from: the latest published, with the chell, calypso and ARGUS it brings. */
+export const PORTER_DIST_TAG: string = 'latest';
 
 /** What one berth may use when the deploy names none: the berth launcher's own defaults. */
 export const BERTH_LIMITS_DEFAULT: BerthLimits = { cpus: 1, memoryGib: 2 };

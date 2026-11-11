@@ -10,7 +10,7 @@
  * the deploy's own checks, never outside.
  *
  * With a porter, the door to mise (porter, its chell, calypso and ARGUS) runs
- * beside them, built on the VM from the pinned npm release, its session
+ * beside them, built on the VM from the latest npm release, its session
  * folders in a volume; Caddy serves its name too, and answers to CUBE's name
  * inside the network, so porter's sessions reach CUBE by its public name
  * without leaving the VM.
@@ -30,7 +30,7 @@
  * @module
  */
 import * as yaml from 'js-yaml';
-import { CHRIS_IMAGES, PORTER_VERSION, type ChrisProfile } from './profiles.js';
+import { CHRIS_IMAGES, PORTER_DIST_TAG, type ChrisProfile } from './profiles.js';
 
 /** What a deploy keeps secret, generated once and reused by every replay. */
 export interface ChrisSecrets {
@@ -239,10 +239,17 @@ export function caddyfile_render(target: ChrisTarget): string {
   return `${site} {\n\treverse_proxy chris:8000\n}\n${porter}`;
 }
 
-/** porter's image, built on the VM: Node, then the pinned release from npm. */
+/** The name porter's image has on the VM; each deploy builds it again under the same name. */
+export const PORTER_IMAGE: string = `stratus/porter:${PORTER_DIST_TAG}`;
+
+/** The label on porter's image, by which a deploy removes the builds a newer one replaced. */
+export const PORTER_IMAGE_LABEL: string = 'org.fnndsc.stratus.image=porter';
+
+/** porter's image, built on the VM: Node, then the latest release from npm. */
 const PORTER_DOCKERFILE: string = [
   `FROM ${CHRIS_IMAGES.node}`,
-  `RUN npm install -g @fnndsc/porter@${PORTER_VERSION} && npm cache clean --force`,
+  `LABEL ${PORTER_IMAGE_LABEL}`,
+  `RUN npm install -g @fnndsc/porter@${PORTER_DIST_TAG} && npm cache clean --force`,
   `RUN install -d -o node -g node -m 0750 ${PORTER_STATE}`,
   'USER node',
   'WORKDIR /home/node',
@@ -260,7 +267,7 @@ const PORTER_DOCKERFILE: string = [
 export function compose_render(profile: ChrisProfile, target: ChrisTarget | null = null): string {
   const porter: boolean = target !== null && target.host !== null && target.porter !== undefined && target.porter !== null;
   const berths: boolean = berths_has(target);
-  const porterBuild = { build: { context: '.', dockerfile_inline: PORTER_DOCKERFILE }, image: `stratus/porter:${PORTER_VERSION}` };
+  const porterBuild = { build: { context: '.', dockerfile_inline: PORTER_DOCKERFILE }, image: PORTER_IMAGE };
   const cube = (command: string[] | null, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
     image: CHRIS_IMAGES.cube,
     ...(command !== null ? { command } : {}),
