@@ -9,7 +9,7 @@ The container one ChRIS user works in on a spoke: their own calypso and chell, s
 - bash and zsh, bash-completion, tmux, manual pages.
 - ripgrep, fd, fzf, jq, bat, tree, htop, file, zip and unzip, rsync, wget.
 - dcmtk and dcm2niix.
-- gcc, g++, make, just, cmake, pkg-config, git with git-lfs, curl, the OpenSSH client (no key in the image).
+- gcc, g++, make, just, cmake, pkg-config, git with git-lfs, GitHub's CLI `gh`, curl, the OpenSSH client (no key and no login in the image).
 - The latest upstream Neovim (its tarball checked against the SHA-256 GitHub records), emacs-nox, vim, nano.
 
 It holds no Docker, no cloud CLI and no key. The only secret it ever sees is the user's CUBE token, which the launcher writes to `/run/mise/token` and the session reads on stdin.
