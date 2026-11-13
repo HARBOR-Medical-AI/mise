@@ -13,7 +13,7 @@ import { berthKey_compute, identity_normalise } from '@fnndsc/calypso/berth';
 import { berthCapacity_derive, profileFloor_get } from '@fnndsc/menu';
 import type { DockerAnswer, DockerApi, ExecAnswer } from '../../src/launcher/docker.js';
 import { dockerStream_demux } from '../../src/launcher/docker.js';
-import { BERTH_IMAGE_DEFAULT, BERTH_LABEL, BerthLauncher, berthContainer_spec, berthNames_derive, cohort_word, pullFailure_read, stats_digest } from '../../src/launcher/launcher.js';
+import { BERTH_IMAGE_DEFAULT, BERTH_LABEL, BerthLauncher, berthContainer_spec, berthName_matches, berthNames_derive, cohort_word, pullFailure_read, stats_digest } from '../../src/launcher/launcher.js';
 import { BERTH_LIMITS_DEFAULT, berthPolicy_read, capacityRefusal_words, type BerthPolicy } from '../../src/launcher/policy.js';
 import { launcherServer_create, secret_matches } from '../../src/launcher/server.js';
 import { launcherSecret_read } from '../../src/launcher/secret.js';
@@ -140,6 +140,13 @@ function launcher_make(docker: FakeDocker, policy: BerthPolicy = POLICY, porterC
   return new BerthLauncher({ docker, policy, image: 'mbw/mise-berth@sha256:abc', prefix: 'mbw', cubeNetwork: 'mbw-cube-net', porterContainer, bootMs: 300, pollMs: 10, ...(statsMs !== undefined ? { statsMs } : {}) });
 }
 
+/** A running berth under the legacy name, `<prefix>-<key>`, on its person's wire with porter. */
+function legacy_put(docker: FakeDocker, user: string, identity: string): void {
+  const names = berthNames_derive('mbw', identity, user, null);
+  docker.networks.set(names.network, { options: {}, members: new Set(['porter', names.containerLegacy]) });
+  docker.containers.set(names.containerLegacy, { spec: { User: '7:7', Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: identity, [`${BERTH_LABEL}.user`]: user, [`${BERTH_LABEL}.cohort`]: 'none' }, HostConfig: { NetworkMode: names.network } }, running: true, ip: '10.213.77.99', token: 'old-token' });
+}
+
 describe('the berth policy', () => {
   it('holds the memory left of the host above the profile\'s floor, divided by one berth\'s memory; CPUs do not count', () => {
     const floor = profileFloor_get('minimal');
@@ -175,12 +182,35 @@ describe('the berth policy', () => {
 describe('the names and the container a berth is', () => {
   it('names one home for life, one cohort volume per person and cohort, and one wire per person', () => {
     const key: string = berthKey_compute(ANA);
-    expect(berthNames_derive('mbw', ANA, 'ana', null)).toEqual({ container: `mbw-${key}`, network: 'mbw-net-ana', home: `mbw-${key}-home`, cohort: `mbw-${key}-cohort-none` });
+    expect(berthNames_derive('mbw', ANA, 'ana', null)).toEqual({ container: `mbw-ana-${key}`, containerLegacy: `mbw-${key}`, network: 'mbw-net-ana', home: `mbw-${key}-home`, cohort: `mbw-${key}-cohort-none` });
     expect(berthNames_derive('mbw', ANA, 'ana', 42).cohort).toBe(`mbw-${key}-cohort-42`);
     expect(berthNames_derive('mbw', ANA, 'ana', 42).home).toBe(`mbw-${key}-home`);
     expect(berthNames_derive('mbw', identity_normalise('a.b+c@x', CUBE), 'a.b+c@x', null).network).toBe('mbw-net-a.b-c-x');
     expect(cohort_word(undefined)).toBe('none');
     expect(cohort_word(7)).toBe('7');
+  });
+
+  it('names the container by the prefix, the user as the wire spells them, and the key: readable, and apart for the same user on two CUBEs', () => {
+    const odd: string = identity_normalise('a.b+c@x', CUBE);
+    expect(berthNames_derive('mbw', odd, 'a.b+c@x', null).container).toBe(`mbw-a.b-c-x-${berthKey_compute(odd)}`);
+    const elsewhere: string = identity_normalise('ana', 'http://other.example.org/api/v1/');
+    expect(berthNames_derive('mbw', elsewhere, 'ana', null).container).toBe(`mbw-ana-${berthKey_compute(elsewhere)}`);
+    expect(berthNames_derive('mbw', elsewhere, 'ana', null).container).not.toBe(berthNames_derive('mbw', ANA, 'ana', null).container);
+    // The volumes hold a person's data: named by the key alone, whatever the container is called.
+    expect(berthNames_derive('mbw', odd, 'a.b+c@x', 3)).toMatchObject({ home: `mbw-${berthKey_compute(odd)}-home`, cohort: `mbw-${berthKey_compute(odd)}-cohort-3` });
+  });
+
+  it('knows a berth by its name, the legacy one too, and a helper, porter or another prefix as none', () => {
+    const names = berthNames_derive('mise.berth', ANA, 'ana', null);
+    expect(berthName_matches('mise.berth', names.container)).toBe(true);
+    expect(berthName_matches('mise.berth', names.containerLegacy)).toBe(true);
+    expect(berthName_matches('mise.berth', berthNames_derive('mise.berth', identity_normalise('a.b+c@x', CUBE), 'a.b+c@x', null).container)).toBe(true);
+    expect(berthName_matches('mise.berth', `${names.container}-own`)).toBe(false);
+    expect(berthName_matches('mise.berth', `${names.containerLegacy}-own`)).toBe(false);
+    expect(berthName_matches('mise.berth', 'mise.berth-porter-standin')).toBe(false);
+    expect(berthName_matches('mise.berth', 'porter')).toBe(false);
+    // The prefix is read as written, never as a pattern.
+    expect(berthName_matches('mise.berth', names.container.replace('mise.berth', 'misexberth'))).toBe(false);
   });
 
   it('fixes everything but who it is for and which cohort: the image, the home and the cohort pair by subpath, the token tmpfs, the limits, no privilege, no engine, a read-only root, its own wire and cube-net', () => {
@@ -374,6 +404,53 @@ describe('the launcher over an engine', () => {
     expect(docker.volumes.size).toBe(2);
     expect((await launcher.start({ user: 'rudolph', uid: 3, gid: 3, cubeUrl: CUBE, token: 'r-token' })).state).toBe('running');
     expect(await launcher.stop('nobody', CUBE)).toBe(false);
+  });
+
+  it('a start removes the container left under the legacy name and makes the berth under its own; the home and the wire are the same', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const names = berthNames_derive('mbw', ANA, 'ana', null);
+    legacy_put(docker, 'ana', ANA);
+    expect((await launcher.status({ user: 'ana', cubeUrl: CUBE }))[0]).toMatchObject({ state: 'running', container: names.containerLegacy });
+    const berth = await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    expect(berth).toMatchObject({ state: 'running', container: names.container });
+    expect([...docker.containers.keys()]).toEqual([names.container]);
+    expect([...docker.networks.get(names.network)?.members ?? []].sort()).toEqual([names.container, 'porter']);
+    expect(docker.volumes.has(names.home)).toBe(true);
+    expect((await launcher.status(null)).map((one) => one.container)).toEqual([names.container]);
+  });
+
+  it('a berth under the legacy name holds its place on a full spoke until its person starts again', async () => {
+    const launcher: BerthLauncher = launcher_make(docker, { limits: BERTH_LIMITS_DEFAULT, holds: 1 });
+    legacy_put(docker, 'ana', ANA);
+    await expect(launcher.start({ user: 'rudolph', uid: 3, gid: 3, cubeUrl: CUBE, token: 'r-token' })).rejects.toThrow('this ChRIS holds 1 berth, in use by ana');
+    expect((await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' })).state).toBe('running');
+    expect(docker.containers.size).toBe(1);
+  });
+
+  it('a stop removes the container under the legacy name, alone or beside the one under its own, with the wire', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const names = berthNames_derive('mbw', ANA, 'ana', null);
+    legacy_put(docker, 'ana', ANA);
+    expect(await launcher.stop('ana', CUBE)).toBe(true);
+    expect(docker.containers.size).toBe(0);
+    expect(docker.networks.has(names.network)).toBe(false);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    legacy_put(docker, 'ana', ANA);
+    expect(await launcher.stop('ana', CUBE)).toBe(true);
+    expect(docker.containers.size).toBe(0);
+    expect(await launcher.stop('ana', CUBE)).toBe(false);
+  });
+
+  it('the sweep keeps a wire with a berth on it, under its name or the legacy one, and removes one with neither', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    const rudolph: string = identity_normalise('rudolph', CUBE);
+    legacy_put(docker, 'rudolph', rudolph);
+    docker.networks.set('mbw-net-ghost', { options: {}, members: new Set(['porter', `${berthNames_derive('mbw', ANA, 'ana', null).container}-own`]) });
+    expect(await launcher.orphans_clear()).toEqual(['mbw-net-ghost']);
+    expect(docker.networks.has('mbw-net-ana')).toBe(true);
+    expect(docker.networks.has('mbw-net-rudolph')).toBe(true);
+    expect(docker.containers.has(berthNames_derive('mbw', rudolph, 'rudolph', null).containerLegacy)).toBe(true);
   });
 
   it('refuses root, a name CUBE would not take, and a start with no token it holds', async () => {

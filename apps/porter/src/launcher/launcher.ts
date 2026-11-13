@@ -46,6 +46,9 @@ export const NO_COHORT: string = 'none';
 /** A CUBE user name, as CUBE takes one. */
 const USER_NAME: RegExp = /^[A-Za-z0-9_.@+-]{1,32}$/;
 
+/** What follows the prefix in a berth container's name: the user as the wire spells them and the identity's key, or, in the legacy name, the key alone. */
+const BERTH_NAME_TAIL: RegExp = /^(?:[A-Za-z0-9_.-]+-)?[0-9a-f]{16}$/;
+
 /** What porter asks a berth for. */
 export interface BerthAsk {
   readonly user: string;
@@ -121,7 +124,10 @@ export interface LauncherOptions {
 
 /** The names a berth's container, wire and volumes take. */
 export interface BerthNames {
+  /** The berth's container: the prefix, the user as the wire spells them, and the identity's key. */
   readonly container: string;
+  /** The legacy name of the same berth's container, the prefix and the key alone; one found under it is removed. */
+  readonly containerLegacy: string;
   /** The berth's own wire: porter and this berth. */
   readonly network: string;
   /** The person's home, one for life. */
@@ -142,18 +148,45 @@ export function cohort_word(cohort: number | null | undefined): string {
 
 /**
  * The names a berth's container, wire and volumes take: the prefix, the
- * identity's berth key, and the cohort for the pair of mounts.
+ * identity's berth key, and the cohort for the pair of mounts. The container
+ * carries the user too, so a person reads whose it is; the key after it keeps
+ * two identities apart whose user names are spelled alike (two people, or one
+ * person on two CUBEs), and keeps a name from ending in a helper's `-own`.
  *
  * @param prefix - The launcher's prefix.
  * @param identity - The normalised identity.
- * @param user - The CUBE user, for the wire's name.
+ * @param user - The CUBE user, for the wire's and the container's names.
  * @param cohort - The cohort, or null.
  * @returns The names.
  */
 export function berthNames_derive(prefix: string, identity: string, user: string, cohort: number | null | undefined): BerthNames {
   const key: string = berthKey_compute(identity);
   const wire: string = user.replace(/[^A-Za-z0-9_.-]/g, '-');
-  return { container: `${prefix}-${key}`, network: `${prefix}-net-${wire}`, home: `${prefix}-${key}-home`, cohort: `${prefix}-${key}-cohort-${cohort_word(cohort)}` };
+  return { container: `${prefix}-${wire}-${key}`, containerLegacy: `${prefix}-${key}`, network: `${prefix}-net-${wire}`, home: `${prefix}-${key}-home`, cohort: `${prefix}-${key}-cohort-${cohort_word(cohort)}` };
+}
+
+/**
+ * Whether a container's name is a berth's under a prefix: `<prefix>-<user>-<key>`,
+ * or the legacy `<prefix>-<key>`. A helper (`...-own`), porter, or anything
+ * else that shares the prefix is not one.
+ *
+ * @param prefix - The launcher's prefix.
+ * @param name - The container's name, without the engine's leading slash.
+ * @returns Whether it names a berth.
+ */
+export function berthName_matches(prefix: string, name: string): boolean {
+  return name.startsWith(`${prefix}-`) && BERTH_NAME_TAIL.test(name.slice(prefix.length + 1));
+}
+
+/**
+ * A container's name as the engine lists it, without the leading slash.
+ *
+ * @param row - One row of the engine's container list.
+ * @returns The name, or the empty string when the row has none.
+ */
+function containerName_read(row: unknown): string {
+  const names: unknown = field_get(row, 'Names');
+  return Array.isArray(names) && typeof names[0] === 'string' ? names[0].replace(/^\//, '') : '';
 }
 
 /**
@@ -366,8 +399,7 @@ export class BerthLauncher {
     await this.cubeNetwork_ensure();
     const helpers: DockerAnswer = await docker.call('GET', `/containers/json?all=true&filters=${labelFilter_build(this.options.prefix, { name: [`${this.options.prefix}-`] })}`);
     for (const row of Array.isArray(helpers.body) ? helpers.body : []) {
-      const names: unknown = field_get(row, 'Names');
-      const name: string = Array.isArray(names) && typeof names[0] === 'string' ? names[0].replace(/^\//, '') : '';
+      const name: string = containerName_read(row);
       if (!name.endsWith('-own')) continue;
       await docker.call('DELETE', `/containers/${name}?force=true`);
       removed.push(name);
@@ -378,10 +410,10 @@ export class BerthLauncher {
       if (typeof name !== 'string' || !name.startsWith(`${this.options.prefix}-net-`)) continue;
       const inspected: DockerAnswer = await docker.call('GET', `/networks/${name}`);
       const members: unknown = field_get(inspected.body, 'Containers');
-      // A berth is named by the prefix and its identity's key, nothing else; porter or a helper on the wire does not keep it.
+      // Only a berth keeps its wire, under its name or its legacy one; porter or a helper on the wire does not.
       const berthOn: boolean = typeof members === 'object' && members !== null && Object.values(members as Record<string, unknown>).some((member: unknown): boolean => {
         const memberName: unknown = field_get(member, 'Name');
-        return typeof memberName === 'string' && new RegExp(`^${this.options.prefix}-[0-9a-f]{16}$`).test(memberName);
+        return typeof memberName === 'string' && berthName_matches(this.options.prefix, memberName);
       });
       if (berthOn) continue;
       await this.porter_leave(name);
@@ -427,6 +459,7 @@ export class BerthLauncher {
     const identity: string = identity_normalise(user, cubeUrl);
     const names: BerthNames = berthNames_derive(this.options.prefix, identity, user, null);
     this.held.delete(identity);
+    const legacy: boolean = await this.legacy_remove(names);
     const found: DockerAnswer = await this.options.docker.call('GET', `/containers/${names.container}/json`);
     const was: boolean = found.status !== 404;
     if (was) {
@@ -435,7 +468,24 @@ export class BerthLauncher {
     }
     await this.porter_leave(names.network);
     await this.options.docker.call('DELETE', `/networks/${names.network}`);
-    return was;
+    return was || legacy;
+  }
+
+  /**
+   * Stops and removes the container a berth has under its legacy name,
+   * `<prefix>-<key>`, so one identity never has two containers; its wire and
+   * volumes, named the same either way, stay.
+   *
+   * @param names - The berth's names.
+   * @returns Whether there was one.
+   */
+  private async legacy_remove(names: BerthNames): Promise<boolean> {
+    const docker: DockerApi = this.options.docker;
+    const found: DockerAnswer = await docker.call('GET', `/containers/${names.containerLegacy}/json`);
+    if (found.status === 404) return false;
+    await docker.call('POST', `/containers/${names.containerLegacy}/stop?t=10`);
+    await docker.call('DELETE', `/containers/${names.containerLegacy}?force=true`);
+    return true;
   }
 
   /**
@@ -454,7 +504,10 @@ export class BerthLauncher {
       const user: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.user`);
       const cohort: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.cohort`);
       if (typeof identity !== 'string' || typeof user !== 'string' || (want !== null && identity !== want)) continue;
-      const names: BerthNames = berthNames_derive(this.options.prefix, identity, user, null);
+      const derived: BerthNames = berthNames_derive(this.options.prefix, identity, user, null);
+      // The container is read under the name the engine lists it by: one under its legacy name is still that person's berth.
+      const shown: string = containerName_read(row);
+      const names: BerthNames = shown === '' ? derived : { ...derived, container: shown };
       const up: boolean = field_get(row, 'State') === 'running';
       const berth = up ? await this.berth_read(names, identity).catch((): null => null) : null;
       states.push({ identity, user, state: up && berth !== null ? 'running' : 'stopped', url: berth?.url ?? null, token: berth?.token ?? null, container: names.container, cohort: typeof cohort === 'string' ? cohort : NO_COHORT });
@@ -482,8 +535,7 @@ export class BerthLauncher {
       const identity: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.identity`);
       const user: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.user`);
       const cohort: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.cohort`);
-      const names: unknown = field_get(row, 'Names');
-      const name: string = Array.isArray(names) && typeof names[0] === 'string' ? names[0].replace(/^\//, '') : '';
+      const name: string = containerName_read(row);
       if (typeof user !== 'string' || identity !== identity_normalise(user, cubeUrl) || name === '' || name.endsWith('-own') || field_get(row, 'State') !== 'running') continue;
       // Two running containers of one identity: the first by name is the one reported, whatever order the engine lists them in.
       const held = up.get(user);
@@ -509,7 +561,8 @@ export class BerthLauncher {
   }
 
   /**
-   * The start itself: a running berth on the same cohort gets the new
+   * The start itself: a container under the berth's legacy name is removed
+   * first; then a running berth on the same cohort gets the new
    * token; one on another cohort is stopped first; otherwise the spoke's
    * room is checked, the wires and volumes made, the container made and
    * started, porter joined to the wire, the token written, and the berth
@@ -526,6 +579,7 @@ export class BerthLauncher {
     const names: BerthNames = berthNames_derive(this.options.prefix, identity, ask.user, ask.cohort);
     const token: string | null = ask.token;
     if (token === null) throw new BerthRefusal(409, `${ask.user}: no token to start a berth on; log in again`);
+    await this.legacy_remove(names);
     const found: DockerAnswer = await docker.call('GET', `/containers/${names.container}/json`);
     const cohortHeld: unknown = field_get(found.body, 'Config', 'Labels', `${BERTH_LABEL}.cohort`);
     if (found.status === 200 && field_get(found.body, 'State', 'Running') === true && cohortHeld === cohort_word(ask.cohort)) {
