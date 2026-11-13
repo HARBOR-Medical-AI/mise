@@ -33,7 +33,9 @@ LABEL org.opencontainers.image.title="mise-berth" \
 # zsh), editors, the tools a working day reaches for, the DICOM tools, and tini as PID 1.
 # The slim base leaves manual pages out of every package; a berth is where they are read,
 # so that rule goes before anything is installed. Debian names fd `fdfind` and bat `batcat`;
-# both also answer to their own names.
+# both also answer to their own names. The prompt's tools (starship, atuin, broot, lsd) and a
+# login's small pleasures (fortune, cal, figlet) are here because a home's dotfiles ask for
+# them and a berth's user cannot install a package; fortune and its like live in /usr/games.
 # nss_wrapper gives an arbitrary uid a name without a writable /etc/passwd (entrypoint.sh).
 RUN rm -f /etc/dpkg/dpkg.cfg.d/docker \
     && apt-get update \
@@ -43,7 +45,9 @@ RUN rm -f /etc/dpkg/dpkg.cfg.d/docker \
        python3 python3-dev python3-pip python3-venv \
        zsh bash-completion tmux man-db \
        emacs-nox vim nano less procps htop tree file zip unzip \
-       ripgrep fd-find fzf jq bat \
+       ripgrep fd-find fzf jq bat lsd \
+       starship atuin broot zsh-autosuggestions zsh-syntax-highlighting \
+       fortune-mod fortunes-min ncal finger figlet toilet cpufetch fastfetch \
        dcmtk dcm2niix \
        libnss-wrapper tini \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
@@ -117,7 +121,7 @@ RUN chmod 0755 /usr/local/bin/mise-berth
 
 ENV LANG=C.UTF-8 \
     EDITOR=nvim \
-    PATH=/usr/local/bin:/usr/bin:/bin
+    PATH=/usr/local/bin:/usr/bin:/bin:/usr/games
 
 USER 65534:65534
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/mise-berth"]
