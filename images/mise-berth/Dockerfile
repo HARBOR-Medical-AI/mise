@@ -50,6 +50,14 @@ RUN rm -f /etc/dpkg/dpkg.cfg.d/docker \
     && ln -s /usr/bin/batcat /usr/local/bin/bat \
     && rm -rf /var/lib/apt/lists/*
 
+# GitHub's CLI, the latest from GitHub's own package archive (Debian's copy trails it).
+RUN curl -fsSL -o /usr/share/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && gh --version \
+    && rm -rf /var/lib/apt/lists/*
+
 # The image is the user's Python: its packages go in the system site, and a user's own
 # `pip install --user` lands in their persistent home. Debian's externally-managed marker
 # guards apt's Python from pip; nothing here installs Python packages through apt but pip itself.
