@@ -8,6 +8,7 @@ The container one ChRIS user works in on a spoke: their own calypso and chell, s
 - Debian trixie. Python 3.13 (Debian's, what `python3` runs) with pip and uv, and numpy, scipy, pandas, matplotlib, scikit-image, scikit-learn, nibabel, pydicom, SimpleITK, nilearn, chris_plugin, IPython and JupyterLab in the system site; a user's own `pip install --user` lands in their persistent home. `python3.12` and `python3.14` are uv's builds under `/opt/python`, bare, for a venv of the user's own.
 - bash and zsh, bash-completion, tmux, manual pages.
 - ripgrep, fd, fzf, jq, bat, tree, htop, file, zip and unzip, rsync, wget.
+- starship, atuin, broot, lsd, zsh-autosuggestions and zsh-syntax-highlighting, for a prompt a person brings in their dotfiles; fortune, cal, finger, figlet, toilet, cpufetch and fastfetch.
 - dcmtk and dcm2niix.
 - gcc, g++, make, just, cmake, pkg-config, git with git-lfs, GitHub's CLI `gh`, curl, the OpenSSH client (no key and no login in the image).
 - The latest upstream Neovim (its tarball checked against the SHA-256 GitHub records), emacs-nox, vim, nano.
