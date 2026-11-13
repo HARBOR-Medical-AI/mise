@@ -8,7 +8,7 @@
 # No argument has a default: a build without them fails rather than guess.
 
 ARG NODE_VERSION
-FROM docker.io/library/node:${NODE_VERSION}-bookworm-slim
+FROM docker.io/library/node:${NODE_VERSION}-trixie-slim
 
 ARG CALYPSO_VERSION
 ARG CHELL_VERSION
@@ -22,21 +22,32 @@ RUN test -n "${CALYPSO_VERSION}" && test -n "${CHELL_VERSION}" \
     || { echo 'mise-berth: build with the arguments images/mise-berth/pins.mjs prints' >&2; exit 1; }
 
 LABEL org.opencontainers.image.title="mise-berth" \
-      org.opencontainers.image.description="One ChRIS user's working container: calypso and chell, Python with the imaging stack, compilers and editors; no Docker, no cloud CLIs, no keys." \
+      org.opencontainers.image.description="One ChRIS user's working container: calypso and chell, Python with the imaging stack, compilers, editors and a developer's tools; no Docker, no cloud CLIs, no keys." \
       org.opencontainers.image.source="https://github.com/HARBOR-Medical-AI/mise" \
       org.opencontainers.image.licenses="MIT" \
       org.fnndsc.mise.calypso="${CALYPSO_VERSION}" \
       org.fnndsc.mise.chell="${CHELL_VERSION}" \
       org.fnndsc.mise.nvim="${NVIM_VERSION}"
 
-# The system: compilers (node-pty builds from source), Python, editors, and tini as PID 1.
+# The system: compilers (node-pty builds from source), Debian's Python, the shells (bash and
+# zsh), editors, the tools a working day reaches for, the DICOM tools, and tini as PID 1.
+# The slim base leaves manual pages out of every package; a berth is where they are read,
+# so that rule goes before anything is installed. Debian names fd `fdfind` and bat `batcat`;
+# both also answer to their own names.
 # nss_wrapper gives an arbitrary uid a name without a writable /etc/passwd (entrypoint.sh).
-RUN apt-get update \
+RUN rm -f /etc/dpkg/dpkg.cfg.d/docker \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates curl git gcc g++ make \
+       ca-certificates curl wget git git-lfs openssh-client rsync \
+       gcc g++ make just cmake pkg-config \
        python3 python3-dev python3-pip python3-venv \
-       emacs-nox vim nano less procps \
+       zsh bash-completion tmux man-db \
+       emacs-nox vim nano less procps htop tree file zip unzip \
+       ripgrep fd-find fzf jq bat \
+       dcmtk dcm2niix \
        libnss-wrapper tini \
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+    && ln -s /usr/bin/batcat /usr/local/bin/bat \
     && rm -rf /var/lib/apt/lists/*
 
 # The image is the user's Python: its packages go in the system site, and a user's own
@@ -45,7 +56,20 @@ RUN apt-get update \
 RUN rm -f /usr/lib/python3*/EXTERNALLY-MANAGED \
     && pip install --no-cache-dir uv \
     && uv pip install --system --no-cache \
-       numpy scipy pandas nibabel pydicom SimpleITK chris_plugin \
+       numpy scipy pandas matplotlib scikit-image scikit-learn \
+       nibabel pydicom SimpleITK nilearn chris_plugin \
+       ipython jupyterlab \
+    && rm -rf /root/.cache
+
+# Python 3.12, 3.13 and 3.14 by name. Debian's own is 3.13, the one `python3` runs and the
+# one that holds the packages above; 3.12 and 3.14 are uv's builds under /opt/python, bare,
+# for a venv of the user's own (`uv venv --python 3.14`, `python3.12 -m venv`).
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
+RUN test "$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" = "3.13" \
+    && uv python install --no-bin 3.12 3.14 \
+    && for v in 3.12 3.14; do ln -s "$(ls -d /opt/python/cpython-${v}.*/bin/python${v})" "/usr/local/bin/python${v}"; done \
+    && chmod -R a+rX /opt/python \
+    && python3.12 --version && python3.13 --version && python3.14 --version \
     && rm -rf /root/.cache
 
 # The latest upstream Neovim, its tarball checked against the SHA-256 GitHub records for it.

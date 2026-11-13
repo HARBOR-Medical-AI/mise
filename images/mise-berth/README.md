@@ -5,8 +5,11 @@ The container one ChRIS user works in on a spoke: their own calypso and chell, s
 ## What it holds
 
 - Node and the `@fnndsc/calypso` and `@fnndsc/chell` latest published on npm when the image was built, installed in one tree at `/opt/mise` as porter installs them.
-- Python 3 with pip and uv, and numpy, scipy, pandas, nibabel, pydicom, SimpleITK and chris_plugin in the system site; a user's own `pip install --user` lands in their persistent home.
-- gcc, g++, make, git, curl.
+- Debian trixie. Python 3.13 (Debian's, what `python3` runs) with pip and uv, and numpy, scipy, pandas, matplotlib, scikit-image, scikit-learn, nibabel, pydicom, SimpleITK, nilearn, chris_plugin, IPython and JupyterLab in the system site; a user's own `pip install --user` lands in their persistent home. `python3.12` and `python3.14` are uv's builds under `/opt/python`, bare, for a venv of the user's own.
+- bash and zsh, bash-completion, tmux, manual pages.
+- ripgrep, fd, fzf, jq, bat, tree, htop, file, zip and unzip, rsync, wget.
+- dcmtk and dcm2niix.
+- gcc, g++, make, just, cmake, pkg-config, git with git-lfs, curl, the OpenSSH client (no key in the image).
 - The latest upstream Neovim (its tarball checked against the SHA-256 GitHub records), emacs-nox, vim, nano.
 
 It holds no Docker, no cloud CLI and no key. The only secret it ever sees is the user's CUBE token, which the launcher writes to `/run/mise/token` and the session reads on stdin.
