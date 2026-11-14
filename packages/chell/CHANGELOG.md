@@ -1,5 +1,27 @@
 # @fnndsc/chell
 
+## 5.20.9
+
+### Patch Changes
+
+- 382c1a6: A question asked of a chell whose input is closed now fails at once instead of waiting forever.
+
+  Outside the REPL (`chell -c`, `chell --remote … -c`), a question on a standard input that has ended, or ends before a line is typed, fails with "no input to answer the question: standard input is closed", and the command that asked is told.
+
+- 8542e36: A chell that needs a password while its input is closed now says so and exits 1, instead of ending silently with 0.
+
+  `chell <user>@<url> --daemon` (or any login that asks) with standard input closed fails with "no password for <user>@<url> (no input to answer the question: standard input is closed)" and names `--saved-token`, `--auth-token-stdin` and `-p`.
+
+- 8542e36: A `chell --remote … -c` line now exits with the status it ended with on the daemon, not only 1 for an error answer.
+
+  The daemon's `result` message carries the line's `exitCode` (the status `$?` holds there), so a command that answers ok but ends with a status of its own, such as `berth close` that closed nothing, exits 1 through a door as it does run in place. With `-e` a segment ending with any status other than 0 stops the line. A daemon that sends no status is read as before.
+
+- Updated dependencies [382c1a6]
+- Updated dependencies [8542e36]
+  - @fnndsc/brasa@0.56.1
+  - @fnndsc/menu@0.41.1
+  - @fnndsc/calypso@0.29.12
+
 ## 5.20.8
 
 ### Patch Changes
