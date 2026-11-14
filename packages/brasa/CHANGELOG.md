@@ -1,5 +1,36 @@
 # @fnndsc/brasa
 
+## 0.56.2
+
+### Patch Changes
+
+- 6588983: A berth close leaves out the timeout or shell that only holds an attached chell, rather than asking about it as work.
+
+  A parent of an attached chell whose children are all the session's is the session's own; the walk upward stops at the first process that also runs the person's work, which is listed.
+
+- 3aa9d0e: A berth login is no longer refused while the berth is alive and still warming up.
+
+  A daemon session listens and writes its berth file once it has connected to CUBE and listed `/bin`; the person's feeds, `/PUBLIC`, `/SHARED`, the groups and the PACS query index warm with it already answering, and Engine Ready is said when the last of them settles. While they run, every prompt context names them (`warmupPending`): chell's prompt says `[warming: public queries]` and ARGUS's status strip `WARMING PUBLIC QUERIES`. The berth launcher waits for the berth file as long as the container runs and its log moves, refusing a berth that stopped (with its last lines), one whose log wrote nothing for 90 s, or one still starting after 240 s; a login while a berth runs with no berth file yet joins that wait instead of being refused with `no berth file yet`.
+
+  porter's login page shows a berth's own boot rows as it boots: the launcher follows the berth's log once, for its wait and for the page, and relays each line to porter (a start asked with `?follow=lines` is answered as NDJSON, the lines then the answer); the attach token is taken out by the launcher and again by porter, which settles an open `[PENDING]` row in place as it does for a session beside it. A launcher from before answers plainly and is read as before.
+
+- dc6d0f9: The pull summary says why each series ended unconfirmed instead of calling a silent PACS a lost connection. A series the PACS sent nothing of reads `NOT RECEIVED — re-run pull, or check with: pacs status`, with one line saying the PACS sent nothing and CUBE has none of it; a series whose watch on CUBE's progress dropped reads `WATCH ENDED — may still be arriving`, with one line saying its files may still arrive.
+- c6a97d4: Tab completes `berth`'s subcommands and paths; `ls`, `download` and `berth` refuse a bad option before running.
+
+  `ls`, `download` and `berth` are each declared in one record: name, grammar (subcommands, operands, options), the kind of every argument, handler, holds and help. The engine parses their lines against it with GNU `getopt_long` rules (bundled `-rf`, `--name x` and `--name=x`, `--`, options anywhere among the operands), expands only path operands that declare a glob, then checks values; a bad line is refused in plain words with a usage generated from the grammar. `help`, completion (subcommands, option names, values by kind) and a JSON Schema per command and subcommand read the same record. `ls dir -l` works; `download`'s destination never globs. Argument kinds come from the core, and a backend registers its own through `Backend.argumentKinds` (ChRIS: `anchor`). Two ratchets count the builtins not yet declared and the commands with an expression grammar of their own.
+
+- 0728336: A file in a run's output opens from RUNS through a link, as every pl-dircopy output holds: it reads where it is stored.
+
+  A path under a node's `data` in `/proc/jobs` that passes through a `.chrislink` was read at the feed path with the link unfollowed, so CUBE found no folder (`Failed to initialize ChRIS context for files`) while `ls` of the same folder listed the file. Every reader and lister now asks one resolver, `storePath_resolve` in brasa, where a path is stored: `~` and relative paths, a mount's own answer (`/proc/jobs/…/data` is the job's output folder, through fond's new `VFSProvider.storePath_resolve`), and the store's links at any depth, in turn. `cat`, `wc` and the other text filters, `ls` and the listings ARGUS draws, the `/vfs` byte route, `download`, `cp`, wildcards, `dcm` and the berth's reads go through it, and the per-command copies of the `/proc` mapping and the link walk (`file_read`'s, `download`'s and `dcm`'s, and the berth's link walk) are gone. `cp` out of a node's data, refused before as a read-only file system, copies.
+
+- Updated dependencies [3aa9d0e]
+- Updated dependencies [a1a900b]
+- Updated dependencies [0728336]
+- Updated dependencies [dc6d0f9]
+  - @fnndsc/menu@0.41.2
+  - @fnndsc/fond@0.6.1
+  - @fnndsc/salsa@4.5.3
+
 ## 0.56.1
 
 ### Patch Changes
