@@ -246,7 +246,7 @@ export class LauncherHost implements SessionHost {
         this.line_add(record, `[ OK ]    Identity     ${user} is CUBE user ${uid}`);
       }
       this.line_add(record, `[PENDING] Berth        starting ${user}'s berth`);
-      // No cohort yet: the picker at the door is a later stage; the berth starts with an empty pair.
+      // No cohort: it selects no volume, and what a berth works on is the anchors its session names (docs/berths.adoc).
       const answer = await launcher_call(this.reach, 'POST', '/berths/start', { user, uid: uid ?? 0, gid: uid ?? 0, cubeUrl, token, cohort: null }, LAUNCHER_START_MS);
       if (answer.status !== 200) throw new Error(typeof answer.body['error'] === 'string' ? answer.body['error'] : `the launcher answered ${answer.status}`);
       const berth: Berth | null = LauncherHost.berth_take(answer.body as unknown as LauncherBerth);

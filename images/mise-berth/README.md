@@ -1,6 +1,6 @@
 # mise-berth
 
-The container one ChRIS user works in on a spoke: their own calypso and chell, so `!` lands here and never on the host that runs CUBE (docs/dev-bastion.adoc, §stand-in). A berth launcher beside porter starts one per signed-in user, with the user's CUBE uid and gid, their cohort read-only at `/incoming`, their output at `/outgoing`, and their CUBE token on a tmpfs at `/run/mise/token`.
+The container one ChRIS user works in on a spoke: their own calypso and chell, so `!` lands here and never on the host that runs CUBE (docs/dev-bastion.adoc, §stand-in). A berth launcher beside porter starts one per signed-in user, with the user's CUBE uid and gid, the ChRIS data they anchor at `/anchors`, their results at `/outgoing` (both on one work volume the user owns, named to the session by `MISE_BERTH_ANCHORS` and `MISE_BERTH_OUTGOING`), and their CUBE token on a tmpfs at `/run/mise/token`.
 
 ## What it holds
 
@@ -38,9 +38,12 @@ The launcher runs it as the user, never as root:
 ```sh
 docker run --user 2001:2001 \
   -e MISE_USER=ana -e MISE_CUBE_URL=https://cube.example.org/api/v1/ \
+  -e MISE_BERTH_ANCHORS=/anchors -e MISE_BERTH_OUTGOING=/outgoing \
   --mount type=tmpfs,destination=/run/mise,tmpfs-mode=0700 \
-  -v ana-incoming:/incoming:ro -v ana-outgoing:/outgoing -v ana-home:/home/ana \
+  --mount type=volume,source=ana-work,destination=/anchors,volume-subpath=anchors \
+  --mount type=volume,source=ana-work,destination=/outgoing,volume-subpath=outgoing \
+  -v ana-home:/home/ana \
   ghcr.io/<owner>/mise-berth:latest
 ```
 
-The entrypoint (`entrypoint.sh`) names the uid it was given through nss_wrapper (a passwd entry in a file the user owns, so `/etc` stays read-only and nothing is setuid), makes `/home/<user>` if no volume is mounted there, waits for the token the launcher writes as the berth starts, and starts the session as porter starts one: `chell <user>@<cube> --daemon --auth-token-stdin --no-logo --host-control=shell`, the token on stdin and read at each start of the session, so a new login's token rewritten by the launcher is the one a restarted session signs in with. The session's runtime (its berth file, which the launcher reads back for porter) is on the same tmpfs, `/run/mise`. `MISE_HOST_CONTROL` sets other tiers; `CALYPSO_BIND` sets where calypso listens, and beyond loopback the shell is exposed on purpose (`--expose-host-control`): the attach token guards it, and the shell is the container's alone. The image runs with a read-only root; its writable places are the home, `/outgoing`, `/tmp` and `/run/mise`. Given a command, the entrypoint runs that as the user instead.
+The entrypoint (`entrypoint.sh`) names the uid it was given through nss_wrapper (a passwd entry in a file the user owns, so `/etc` stays read-only and nothing is setuid), makes `/home/<user>` if no volume is mounted there, waits for the token the launcher writes as the berth starts, and starts the session as porter starts one: `chell <user>@<cube> --daemon --auth-token-stdin --no-logo --host-control=shell`, the token on stdin and read at each start of the session, so a new login's token rewritten by the launcher is the one a restarted session signs in with. The session's runtime (its berth file, which the launcher reads back for porter) is on the same tmpfs, `/run/mise`. `MISE_HOST_CONTROL` sets other tiers; `CALYPSO_BIND` sets where calypso listens, and beyond loopback the shell is exposed on purpose (`--expose-host-control`): the attach token guards it, and the shell is the container's alone. The image runs with a read-only root; its writable places are the home, `/anchors`, `/outgoing`, `/tmp` and `/run/mise`. The volume behind `/anchors` and `/outgoing` holds `anchors/` and `outgoing/`, made and given to the user's uid by the launcher before the berth starts, so a subpath mount finds them. Given a command, the entrypoint runs that as the user instead.

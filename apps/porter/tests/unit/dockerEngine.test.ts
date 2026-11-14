@@ -170,10 +170,10 @@ describe('the engine over its socket', () => {
   it('carries a berth from start to stop through the real wire: the volumes, the helper, the wires, porter joined, the token on stdin, the berth read back; a berth that dies is refused with its last words', async () => {
     const launcher: BerthLauncher = new BerthLauncher({ docker, policy: { limits: BERTH_LIMITS_DEFAULT, holds: null }, image: 'img@sha256:abc', prefix: 'eng', cubeNetwork: 'eng-cube-net', porterContainer: 'porter', bootMs: 2000, pollMs: 20 });
     const identity: string = identity_normalise('ana', CUBE);
-    const names = berthNames_derive('eng', identity, 'ana', 5);
+    const names = berthNames_derive('eng', identity, 'ana');
     const berth = await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'cube-token', cohort: 5 });
     expect(berth).toMatchObject({ state: 'running', url: 'ws://10.9.0.2:40000', token: `attach-${names.container}`, cohort: '5' });
-    expect([...engine.volumes]).toEqual(expect.arrayContaining([names.home, names.cohort]));
+    expect([...engine.volumes]).toEqual(expect.arrayContaining([names.home, names.work]));
     expect([...engine.networks.get(names.network) ?? []].sort()).toEqual([names.container, 'porter']);
     expect(engine.networks.has('eng-cube-net')).toBe(true);
     const wrote = [...engine.execs.values()].find((one) => one.container === names.container && String(one.body['Cmd']).includes('.token.new'));
@@ -183,7 +183,7 @@ describe('the engine over its socket', () => {
     expect(await launcher.stop('ana', CUBE)).toBe(true);
     expect(engine.networks.has(names.network)).toBe(false);
     // A berth whose session dies as it starts: refused with what it last said.
-    const deadNames = berthNames_derive('eng', identity_normalise('dead', CUBE), 'dead', null);
+    const deadNames = berthNames_derive('eng', identity_normalise('dead', CUBE), 'dead');
     engine.dead.add(deadNames.container);
     await expect(launcher.start({ user: 'dead', uid: 8, gid: 8, cubeUrl: CUBE, token: 't' })).rejects.toThrow('the berth stopped as it started: starting / boom: the session died');
     expect(berthKey_compute(identity)).toHaveLength(16);

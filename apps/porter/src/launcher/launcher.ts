@@ -1,10 +1,11 @@
 /**
  * @file The berth launcher (docs/berths.adoc): starts, stops and reports one
- * person's berth, and fixes everything about it but who it is for and which
- * cohort it holds. The image is mise-berth's latest, pulled before a berth
- * is made from it; the home is the person's
- * own volume, one for life; `/incoming` and `/outgoing` are one volume per
- * person and cohort; the CUBE token is written to a tmpfs at
+ * person's berth, and fixes everything about it but who it is for. The
+ * image is mise-berth's latest, pulled before a berth is made from it; the
+ * home is the person's own volume, one for life; `/anchors` and `/outgoing`
+ * are one work volume per person, both the person's to write, named to the
+ * session by `MISE_BERTH_ANCHORS` and `MISE_BERTH_OUTGOING`; the cohort
+ * porter names is a label and selects no volume; the CUBE token is written to a tmpfs at
  * `/run/mise/token`, mode 0400 and owned by the person's uid, on stdin,
  * never a command line or the environment; the limits are the spoke's
  * policy and the spoke refuses when full; no Docker socket, no privilege,
@@ -40,7 +41,13 @@ export const BERTH_LABEL: string = 'org.fnndsc.mise.berth';
 /** Where the token lives inside a berth, on its tmpfs. */
 export const BERTH_TOKEN_DIR: string = '/run/mise';
 
-/** The cohort volume's name for a berth with no cohort. */
+/** Where a berth's anchors stand: the session downloads each into `/anchors/<name>/`. */
+export const BERTH_ANCHORS_DIR: string = '/anchors';
+
+/** Where a berth's results are written, and what `berth close` returns as one node. */
+export const BERTH_OUTGOING_DIR: string = '/outgoing';
+
+/** The cohort word for a berth porter named no cohort for. */
 export const NO_COHORT: string = 'none';
 
 /** A CUBE user name, as CUBE takes one. */
@@ -59,7 +66,12 @@ export interface BerthAsk {
   readonly cubeUrl: string;
   /** The user's CUBE token; null asks for the one the launcher holds from the last start. */
   readonly token: string | null;
-  /** The cohort (a feed's id) `/incoming` and `/outgoing` are for; null or absent for none. */
+  /**
+   * The cohort (a feed's id) porter names; null or absent for none. It is the berth's
+   * `cohort` label and `MISE_COHORT`, and selects no volume: what a berth works on is
+   * the anchors its session names. Kept in the API so a porter and a launcher of
+   * different releases still speak.
+   */
   readonly cohort?: number | null;
 }
 
@@ -132,12 +144,14 @@ export interface BerthNames {
   readonly network: string;
   /** The person's home, one for life. */
   readonly home: string;
-  /** `/incoming` and `/outgoing` for this person and cohort. */
-  readonly cohort: string;
+  /** The person's work volume, `anchors/` and `outgoing/`, mounted at `/anchors` and `/outgoing`. */
+  readonly work: string;
+  /** The cohort volume a launcher mounted `/incoming` and `/outgoing` from, `<prefix>-<key>-cohort-none`: its `outgoing/` is copied once into the work volume as that is made, and it is never removed. */
+  readonly cohortLegacy: string;
 }
 
 /**
- * A cohort as a volume's name carries it: a feed's id, or `none`.
+ * A cohort as the berth's label carries it: a feed's id, or `none`.
  *
  * @param cohort - The feed's id, or null.
  * @returns The word.
@@ -147,22 +161,78 @@ export function cohort_word(cohort: number | null | undefined): string {
 }
 
 /**
- * The names a berth's container, wire and volumes take: the prefix, the
- * identity's berth key, and the cohort for the pair of mounts. The container
- * carries the user too, so a person reads whose it is; the key after it keeps
- * two identities apart whose user names are spelled alike (two people, or one
- * person on two CUBEs), and keeps a name from ending in a helper's `-own`.
+ * The names a berth's container, wire and volumes take: the prefix and the
+ * identity's berth key. The container carries the user too, so a person
+ * reads whose it is; the key after it keeps two identities apart whose user
+ * names are spelled alike (two people, or one person on two CUBEs), and
+ * keeps a name from ending in a helper's `-own`. The volumes are named by
+ * the key alone: one home and one work volume per person.
  *
  * @param prefix - The launcher's prefix.
  * @param identity - The normalised identity.
  * @param user - The CUBE user, for the wire's and the container's names.
- * @param cohort - The cohort, or null.
  * @returns The names.
+ *
+ * @example
+ * ```ts
+ * berthNames_derive('mise-berth', identity, 'ana').work; // 'mise-berth-<key>-work'
+ * ```
  */
-export function berthNames_derive(prefix: string, identity: string, user: string, cohort: number | null | undefined): BerthNames {
+export function berthNames_derive(prefix: string, identity: string, user: string): BerthNames {
   const key: string = berthKey_compute(identity);
   const wire: string = user.replace(/[^A-Za-z0-9_.-]/g, '-');
-  return { container: `${prefix}-${wire}-${key}`, containerLegacy: `${prefix}-${key}`, network: `${prefix}-net-${wire}`, home: `${prefix}-${key}-home`, cohort: `${prefix}-${key}-cohort-${cohort_word(cohort)}` };
+  return { container: `${prefix}-${wire}-${key}`, containerLegacy: `${prefix}-${key}`, network: `${prefix}-net-${wire}`, home: `${prefix}-${key}-home`, work: `${prefix}-${key}-work`, cohortLegacy: `${prefix}-${key}-cohort-${NO_COHORT}` };
+}
+
+/**
+ * Whether a container's places are the work volume's: `/anchors` and
+ * `/outgoing` both mounted from it. A berth made on the cohort volume
+ * (`/incoming` and `/outgoing` from `…-cohort-<feed>`) is not, and is made
+ * again rather than handed back. The engine's inspect names a mount twice,
+ * as it was asked for (`HostConfig.Mounts`, by `Source` and `Target`) and as
+ * it stands (`Mounts`, by `Name` and `Destination`); either is read.
+ *
+ * @param inspected - The engine's `/containers/<name>/json` answer.
+ * @param work - The person's work volume.
+ * @returns Whether both places are on it.
+ *
+ * @example
+ * ```ts
+ * berthPlaces_check({ Mounts: [{ Name: 'w', Destination: '/anchors' }, { Name: 'w', Destination: '/outgoing' }] }, 'w'); // true
+ * ```
+ */
+export function berthPlaces_check(inspected: unknown, work: string): boolean {
+  const asked: unknown = field_get(inspected, 'HostConfig', 'Mounts');
+  const standing: unknown = field_get(inspected, 'Mounts');
+  const onWork: Set<string> = new Set();
+  for (const one of Array.isArray(asked) ? (asked as unknown[]) : []) if (field_get(one, 'Source') === work && typeof field_get(one, 'Target') === 'string') onWork.add(String(field_get(one, 'Target')));
+  for (const one of Array.isArray(standing) ? (standing as unknown[]) : []) if (field_get(one, 'Name') === work && typeof field_get(one, 'Destination') === 'string') onWork.add(String(field_get(one, 'Destination')));
+  return onWork.has(BERTH_ANCHORS_DIR) && onWork.has(BERTH_OUTGOING_DIR);
+}
+
+/**
+ * What the one-shot root container runs to give a person's volumes to them:
+ * `anchors/` and `outgoing/` made in the work volume (`/v/work`), the home
+ * (`/v/home`) and both given to the uid. With `copyOutgoing`, the cohort
+ * volume mounted read-only at `/v/old` has its `outgoing/` copied into the
+ * work volume's (symbolic links as links, never followed) and the copy given
+ * to the uid; a cohort volume with no `outgoing/` copies nothing.
+ *
+ * @param uid - The person's CUBE id.
+ * @param gid - Their group: CUBE's id again.
+ * @param copyOutgoing - Whether a cohort volume is mounted at `/v/old` to copy from.
+ * @returns The shell command.
+ *
+ * @example
+ * ```ts
+ * volumesOwnScript_build(7, 7, false); // 'mkdir -p /v/work/anchors /v/work/outgoing && chown 7:7 /v/home /v/work /v/work/anchors /v/work/outgoing'
+ * ```
+ */
+export function volumesOwnScript_build(uid: number, gid: number, copyOutgoing: boolean): string {
+  const owner: string = `${uid}:${gid}`;
+  const give: string = `mkdir -p /v/work/anchors /v/work/outgoing && chown ${owner} /v/home /v/work /v/work/anchors /v/work/outgoing`;
+  // cp without -p: the copy is made by root and given whole after, since a root with no FOWNER cannot set modes on a file it has given away.
+  return copyOutgoing ? `${give} && if [ -d /v/old/outgoing ]; then cp -R /v/old/outgoing/. /v/work/outgoing/ && chown -hR ${owner} /v/work/outgoing; fi` : give;
 }
 
 /**
@@ -190,16 +260,20 @@ function containerName_read(row: unknown): string {
 }
 
 /**
- * The container a berth is: everything fixed here but who it is for and
- * which cohort it holds.
+ * The container a berth is: everything fixed here but who it is for. Its
+ * places are the home and the work volume's two, `/anchors` and
+ * `/outgoing`, both the person's to write (the session downloads anchors and
+ * takes write permission from them itself), and the session is told where
+ * they are by `MISE_BERTH_ANCHORS` and `MISE_BERTH_OUTGOING`.
  *
  * @param options - The launcher's image, prefix, networks and policy.
  * @param ask - Who it is for.
  * @param identity - The normalised identity.
+ * @param hosts - Host lines for the engine's ExtraHosts; none by default.
  * @returns The engine's create body.
  */
 export function berthContainer_spec(options: Pick<LauncherOptions, 'image' | 'prefix' | 'cubeNetwork' | 'policy'>, ask: BerthAsk, identity: string, hosts: ReadonlyArray<string> = []): Record<string, unknown> {
-  const names: BerthNames = berthNames_derive(options.prefix, identity, ask.user, ask.cohort);
+  const names: BerthNames = berthNames_derive(options.prefix, identity, ask.user);
   const limits = options.policy.limits;
   const cohort: string = cohort_word(ask.cohort);
   // nocopy: an empty volume is not filled from the image's mount point, whose root ownership would undo the user's.
@@ -213,6 +287,9 @@ export function berthContainer_spec(options: Pick<LauncherOptions, 'image' | 'pr
       `MISE_USER=${ask.user}`,
       `MISE_CUBE_URL=${ask.cubeUrl}`,
       `MISE_COHORT=${cohort}`,
+      // The session's `berth` verbs read these two; absent, the session is not in a berth.
+      `MISE_BERTH_ANCHORS=${BERTH_ANCHORS_DIR}`,
+      `MISE_BERTH_OUTGOING=${BERTH_OUTGOING_DIR}`,
       'MISE_HOST_CONTROL=shell',
       // Porter reaches the session over the berth's wire, never loopback.
       'CALYPSO_BIND=0.0.0.0',
@@ -221,8 +298,8 @@ export function berthContainer_spec(options: Pick<LauncherOptions, 'image' | 'pr
     HostConfig: {
       Mounts: [
         mount(`/home/${ask.user}`, names.home, null, false),
-        mount('/incoming', names.cohort, 'incoming', true),
-        mount('/outgoing', names.cohort, 'outgoing', false),
+        mount(BERTH_ANCHORS_DIR, names.work, 'anchors', false),
+        mount(BERTH_OUTGOING_DIR, names.work, 'outgoing', false),
       ],
       Tmpfs: {
         [BERTH_TOKEN_DIR]: `rw,nosuid,nodev,noexec,size=1m,mode=0700,uid=${ask.uid},gid=${ask.gid}`,
@@ -457,7 +534,7 @@ export class BerthLauncher {
    */
   public async stop(user: string, cubeUrl: string): Promise<boolean> {
     const identity: string = identity_normalise(user, cubeUrl);
-    const names: BerthNames = berthNames_derive(this.options.prefix, identity, user, null);
+    const names: BerthNames = berthNames_derive(this.options.prefix, identity, user);
     this.held.delete(identity);
     const legacy: boolean = await this.legacy_remove(names);
     const found: DockerAnswer = await this.options.docker.call('GET', `/containers/${names.container}/json`);
@@ -504,7 +581,7 @@ export class BerthLauncher {
       const user: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.user`);
       const cohort: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.cohort`);
       if (typeof identity !== 'string' || typeof user !== 'string' || (want !== null && identity !== want)) continue;
-      const derived: BerthNames = berthNames_derive(this.options.prefix, identity, user, null);
+      const derived: BerthNames = berthNames_derive(this.options.prefix, identity, user);
       // The container is read under the name the engine lists it by: one under its legacy name is still that person's berth.
       const shown: string = containerName_read(row);
       const names: BerthNames = shown === '' ? derived : { ...derived, container: shown };
@@ -562,8 +639,9 @@ export class BerthLauncher {
 
   /**
    * The start itself: a container under the berth's legacy name is removed
-   * first; then a running berth on the same cohort gets the new
-   * token; one on another cohort is stopped first; otherwise the spoke's
+   * first; then a running berth on the same cohort label and on the work
+   * volume's places gets the new token; one on another cohort, or one whose
+   * `/outgoing` is the cohort volume's, is stopped first; otherwise the spoke's
    * room is checked, the wires and volumes made, the container made and
    * started, porter joined to the wire, the token written, and the berth
    * waited for. A berth made from the image is made from the newest one: the
@@ -576,13 +654,13 @@ export class BerthLauncher {
    */
   private async start_run(ask: BerthAsk, identity: string): Promise<BerthState> {
     const docker: DockerApi = this.options.docker;
-    const names: BerthNames = berthNames_derive(this.options.prefix, identity, ask.user, ask.cohort);
+    const names: BerthNames = berthNames_derive(this.options.prefix, identity, ask.user);
     const token: string | null = ask.token;
     if (token === null) throw new BerthRefusal(409, `${ask.user}: no token to start a berth on; log in again`);
     await this.legacy_remove(names);
     const found: DockerAnswer = await docker.call('GET', `/containers/${names.container}/json`);
     const cohortHeld: unknown = field_get(found.body, 'Config', 'Labels', `${BERTH_LABEL}.cohort`);
-    if (found.status === 200 && field_get(found.body, 'State', 'Running') === true && cohortHeld === cohort_word(ask.cohort)) {
+    if (found.status === 200 && field_get(found.body, 'State', 'Running') === true && cohortHeld === cohort_word(ask.cohort) && berthPlaces_check(found.body, names.work)) {
       // A porter made again since the berth started has left its wire: joined again before it is handed back.
       await this.porter_join(names.network);
       await this.token_write(names.container, ask, token);
@@ -590,7 +668,7 @@ export class BerthLauncher {
       const berth = await this.berth_read(names, identity);
       return { identity, user: ask.user, state: 'running', url: berth.url, token: berth.token, container: names.container, cohort: cohort_word(ask.cohort) };
     }
-    // A berth stopped, or on another cohort: made again from the image; the home stays.
+    // A berth stopped, on another cohort, or on the cohort volume's places: made again from the image; the home and the work volume stay.
     if (found.status === 200) {
       await docker.call('POST', `/containers/${names.container}/stop?t=10`);
       await docker.call('DELETE', `/containers/${names.container}?force=true`);
@@ -706,10 +784,13 @@ export class BerthLauncher {
   }
 
   /**
-   * The person's volumes, made when missing: the home, and the cohort's
-   * pair, given to the person's uid (with `incoming/` and `outgoing/` made in
-   * the pair) by a one-shot container that can change ownership and
-   * nothing else.
+   * The person's volumes, made when missing: the home, and the work volume
+   * (`anchors/` and `outgoing/`), given to the person's uid by a one-shot
+   * container that can change ownership and nothing else. When the work
+   * volume is made and the person has the cohort volume `/outgoing` was on
+   * before, that volume's `outgoing/` is copied into the work volume's once,
+   * by the same container; the cohort volume is mounted read-only and never
+   * removed.
    *
    * @param names - The volumes' names.
    * @param ask - Whose.
@@ -717,16 +798,17 @@ export class BerthLauncher {
   private async volumes_ensure(names: BerthNames, ask: BerthAsk): Promise<void> {
     const docker: DockerApi = this.options.docker;
     const fresh: string[] = [];
-    for (const [volume, kind] of [[names.home, 'home'], [names.cohort, 'cohort']] as const) {
+    for (const [volume, kind] of [[names.home, 'home'], [names.work, 'work']] as const) {
       const found: DockerAnswer = await docker.call('GET', `/volumes/${volume}`);
       if (found.status === 200) continue;
-      await docker.call('POST', '/volumes/create', { Name: volume, Labels: { [BERTH_LABEL]: this.options.prefix, [`${BERTH_LABEL}.identity`]: identity_normalise(ask.user, ask.cubeUrl), [`${BERTH_LABEL}.user`]: ask.user, [`${BERTH_LABEL}.volume`]: kind, ...(kind === 'cohort' ? { [`${BERTH_LABEL}.cohort`]: cohort_word(ask.cohort) } : {}) } });
+      await docker.call('POST', '/volumes/create', { Name: volume, Labels: { [BERTH_LABEL]: this.options.prefix, [`${BERTH_LABEL}.identity`]: identity_normalise(ask.user, ask.cubeUrl), [`${BERTH_LABEL}.user`]: ask.user, [`${BERTH_LABEL}.volume`]: kind } });
       fresh.push(volume);
     }
     if (fresh.length === 0) return;
-    // Volumes never given to the person are removed again, so the next start makes them and gives them anew.
+    const legacy: string | null = fresh.includes(names.work) && (await docker.call('GET', `/volumes/${names.cohortLegacy}`)).status === 200 ? names.cohortLegacy : null;
+    // Volumes never given to the person are removed again, so the next start makes them, gives them and copies anew.
     try {
-      await this.volumes_own(names, ask);
+      await this.volumes_own(names, ask, legacy);
     } catch (error: unknown) {
       for (const volume of fresh) await docker.call('DELETE', `/volumes/${volume}`);
       throw error;
@@ -734,22 +816,23 @@ export class BerthLauncher {
   }
 
   /**
-   * Gives the person's volumes to their uid, `incoming/` and `outgoing/` made in the cohort's pair.
+   * Gives the person's volumes to their uid, `anchors/` and `outgoing/` made in the work volume, and copies a cohort volume's `outgoing/` into it when one is named.
    *
    * @param names - The volumes' names.
    * @param ask - Whose.
+   * @param legacy - The cohort volume to copy `outgoing/` from, mounted read-only; null for none.
    * @throws {BerthRefusal} When the one-shot container is not made or does not succeed.
    */
-  private async volumes_own(names: BerthNames, ask: BerthAsk): Promise<void> {
+  private async volumes_own(names: BerthNames, ask: BerthAsk, legacy: string | null): Promise<void> {
     const docker: DockerApi = this.options.docker;
     const owner: string = `${names.container}-own`;
     await docker.call('DELETE', `/containers/${owner}?force=true`);
     const made: DockerAnswer = await docker.call('POST', `/containers/create?name=${owner}`, {
       Image: this.options.image,
       User: '0:0',
-      Entrypoint: ['sh', '-c', `mkdir -p /v/cohort/incoming /v/cohort/outgoing && chown ${ask.uid}:${ask.gid} /v/home /v/cohort /v/cohort/incoming /v/cohort/outgoing`],
+      Entrypoint: ['sh', '-c', volumesOwnScript_build(ask.uid, ask.gid, legacy !== null)],
       Labels: { [BERTH_LABEL]: this.options.prefix },
-      HostConfig: { Binds: [`${names.home}:/v/home`, `${names.cohort}:/v/cohort`], NetworkMode: 'none', CapDrop: ['ALL'], CapAdd: ['CHOWN', 'DAC_OVERRIDE'], SecurityOpt: ['no-new-privileges'], ReadonlyRootfs: true },
+      HostConfig: { Binds: [`${names.home}:/v/home`, `${names.work}:/v/work`, ...(legacy !== null ? [`${legacy}:/v/old:ro`] : [])], NetworkMode: 'none', CapDrop: ['ALL'], CapAdd: ['CHOWN', 'DAC_OVERRIDE'], SecurityOpt: ['no-new-privileges'], ReadonlyRootfs: true },
     });
     if (made.status !== 201) throw new BerthRefusal(502, `${ask.user}'s volumes were not given to them: ${JSON.stringify(made.body)}`);
     await docker.call('POST', `/containers/${owner}/start`);
