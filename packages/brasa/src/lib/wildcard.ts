@@ -10,8 +10,7 @@ import { listingItemsFromVfs_make } from './vfs/listing.js';
 import { session } from '../session/index.js';
 import type { ListingItem } from '@fnndsc/menu';
 import { ShellWord, shellWord_literal, shellWord_unquoted } from './parser.js';
-import { path_resolve } from '../core/paths.js';
-import { backendInstalled_get } from '../core/backend.js';
+import { path_resolve, storePath_resolve } from '../core/paths.js';
 import { listingCache_get, vfsDispatcher_get } from '../core/filesystem.js';
 import type { ListingCache } from '../core/backend.js';
 import { Result, Ok, Err, errorStack } from '@fnndsc/fond';
@@ -39,7 +38,7 @@ export interface WildcardMatch {
  * @returns Its items, or null when it cannot be listed.
  */
 async function directoryItems_list(logicalDir: string): Promise<ListingItem[] | null> {
-  const physicalDir: string = (await backendInstalled_get()?.vfs?.path_physical?.(logicalDir)) ?? logicalDir;
+  const physicalDir: string = await storePath_resolve(logicalDir);
   const listCache: ListingCache = listingCache_get();
   const cached = listCache.cache_get<ListingItem[]>(physicalDir);
   if (cached) return cached.data;

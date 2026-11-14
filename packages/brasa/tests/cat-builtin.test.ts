@@ -16,7 +16,7 @@ jest.unstable_mockModule('@fnndsc/salsa', () => ({
 const mockStackPop = jest.fn(() => undefined as { message: string } | undefined);
 const mockStackPush = jest.fn((_type: string, _message: string): void => undefined);
 cuminMock_install(() => ({
-  errorStack: { stack_pop: mockStackPop, stack_push: mockStackPush, stack_search: () => [] },
+  errorStack: { stack_pop: mockStackPop, stack_push: mockStackPush, stack_search: () => [], checkpoint_mark: () => 0, checkpoint_drain: () => [] },
   envelope_ok: (rendered: string, model?: unknown) =>
     model === undefined ? { status: 'ok', rendered } : { status: 'ok', rendered, model },
   envelope_error: (rendered: string, errors?: unknown, renderedErr?: string) => {
@@ -34,10 +34,16 @@ const mockCatBinary = jest.fn();
 // cat reads through the session's filesystem; its reads answer from the mocks above.
 const outcome_of = <T>(result: { ok: boolean; value?: T; errno?: string }): unknown =>
   (result.ok ? { ok: true, value: result.value } : { ok: false, errno: result.errno ?? 'ENOENT' });
+// `/proc/jobs` as a mount that stands for a run's output folder under a node's `data`, when a test turns it on.
+const proc: { mounted: boolean } = { mounted: false };
 jest.unstable_mockModule('../src/core/filesystem.js', () => ({
   vfsDispatcher_get: () => ({
     read: async (p: string) => outcome_of(await mockCat(p) as { ok: boolean; value?: string }),
     readBinary: async (p: string) => outcome_of(await mockCatBinary(p) as { ok: boolean; value?: Buffer }),
+    path_isVirtual: (p: string): boolean => proc.mounted && p.startsWith('/proc/'),
+    provider_get: () => ({
+      storePath_resolve: async (p: string) => ({ ok: true, value: p.replace('/proc/jobs/feed_5/pl-dircopy_10/data', '/home/chris/feeds/feed_5/pl-dircopy_10/data') }),
+    }),
   }),
 }));
 
@@ -307,5 +313,28 @@ describe('a read that throws is reported, not fatal', () => {
     mockCat.mockResolvedValue(ok('never reached'));
     const envelope = await builtin_cat(['/net/pacs/queries/nope']);
     expect(['ok', 'error']).toContain(envelope.status);
+  });
+});
+
+describe("a run's output read at the graph's own address", () => {
+  it('reads a file under a node data link, through the link in it, where the store keeps it', async () => {
+    // The operator's case (2026-11-14): `cat /proc/jobs/…/pl-dircopy_…/data/<link>/hello.txt`
+    // was read at the feed path with the `.chrislink` in it unfollowed, and CUBE found no folder.
+    const output: string = '/home/chris/feeds/feed_5/pl-dircopy_10/data';
+    proc.mounted = true;
+    const { backend_install } = await import('../src/core/backend.js');
+    backend_install({
+      id: 'test',
+      session: { home_get: async (): Promise<string> => '/home/chris' },
+      vfs: {
+        dispatcher: {} as never,
+        path_physical: async (p: string): Promise<string> => p.replace(`${output}/home_chris_uploads_set`, '/home/chris/uploads/set'),
+      },
+    } as never);
+    mockCat.mockResolvedValue(ok('hello'));
+    const envelope = await builtin_cat(['/proc/jobs/feed_5/pl-dircopy_10/data/home_chris_uploads_set/hello.txt']);
+    expect(mockCat).toHaveBeenCalledWith('/home/chris/uploads/set/hello.txt');
+    expect(envelope.rendered).toContain('hello');
+    proc.mounted = false;
   });
 });

@@ -87,7 +87,7 @@ const mockFollow = jest.fn();
 const mockInvalidate = jest.fn();
 const dataLines: string[] = [];
 
-jest.unstable_mockModule('../src/core/paths.js', () => ({ path_resolve: async (typed: string): Promise<string> => typed }));
+jest.unstable_mockModule('../src/core/paths.js', () => ({ path_resolve: async (typed: string): Promise<string> => typed, storePath_resolve: async (typed: string): Promise<string> => typed }));
 /** The home the session names; '/' with no session. */
 let homeNamed: string = '/home/alice';
 /** The ChRIS backend's argument kinds (an anchor's name), filled once its module loads. */

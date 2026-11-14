@@ -21,7 +21,7 @@ import { errno_words, type VfsOutcome } from '@fnndsc/fond';
 import { stdin_take } from '../games/stdin.js';
 import { surface_get } from '../../core/surface.js';
 import { vfsDispatcher_get } from '../../core/filesystem.js';
-import { path_resolve } from '../utils.js';
+import { storePath_resolve } from '../utils.js';
 import { exitCode_set } from '../../core/handlerRun.js';
 
 /** One text a filter reads: the pipe's, or a file's under its name. */
@@ -81,7 +81,7 @@ async function sources_read(command: string, operands: ReadonlyArray<string>): P
   let errors: string = '';
   for (const operand of operands) {
     if (operand === '-') { sources.push({ name: '-', text: piped ?? '' }); continue; }
-    const target: string = await path_resolve(operand);
+    const target: string = await storePath_resolve(operand);
     const read: VfsOutcome<string> = await vfsDispatcher_get().read(target);
     if (read.ok) sources.push({ name: operand, text: read.value });
     else errors += `${command}: ${operand}: ${read.reason ?? errno_words(read.errno)}\n`;

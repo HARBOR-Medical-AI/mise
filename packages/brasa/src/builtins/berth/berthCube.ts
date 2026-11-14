@@ -48,7 +48,7 @@ import { errorStack, type Result, type StackMessage, type VFSItem } from '@fnnds
 import { backendInstalled_get } from '../../core/backend.js';
 import { error_stripDebugPrefix } from '../../core/errorText.js';
 import { vfsDispatcher_get } from '../../core/filesystem.js';
-import { path_resolve } from '../../core/paths.js';
+import { path_resolve, storePath_resolve } from '../../core/paths.js';
 import { sink_get } from '../../core/sink.js';
 
 /** A `/proc/jobs` path at or under a job's `data` link: the link, and what follows it. */
@@ -138,17 +138,15 @@ export async function berthPath_resolve(typed: string): Promise<string> {
 }
 
 /**
- * The path CUBE stores a logical path at, links followed; the path as given
- * when it maps to nothing else.
+ * The path CUBE stores a logical path at, as every reader resolves it
+ * (`storePath_resolve`); the path as given when it maps to nothing else.
  *
  * @param logical - An absolute ChRIS path.
  * @returns The physical path.
  */
 async function physicalPath_get(logical: string): Promise<string> {
   try {
-    const { logicalPath_resolve } = await import('@fnndsc/chili/utils');
-    const physical: Result<string> = await logicalPath_resolve(logical);
-    return physical.ok ? physical.value : logical;
+    return await storePath_resolve(logical);
   } catch {
     return logical;
   }

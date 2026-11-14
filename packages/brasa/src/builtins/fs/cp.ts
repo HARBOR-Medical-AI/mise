@@ -4,7 +4,7 @@
  */
 import chalk from 'chalk';
 import path from 'path';
-import { ParsedArgs, commandArgs_process, optionsUnknown_refusal, path_resolve } from '../utils.js';
+import { ParsedArgs, commandArgs_process, optionsUnknown_refusal, path_resolve, storePath_resolve } from '../utils.js';
 import { listingCache_get, vfsDispatcher_get } from '../../core/filesystem.js';
 import type { ListingCache } from '../../core/backend.js';
 import { destination_ask, destination_missing, operands_fix } from './destination.js';
@@ -139,7 +139,8 @@ export async function cp_run(options: CpOptions): Promise<CommandEnvelope> {
       const finalDest: string = entry_isFolder(await pathEntry_find(dispatcher, destPath)) && !dispatcher.path_isVirtual(destPath)
         ? path.posix.join(destPath, path.posix.basename(srcPath))
         : destPath;
-      const copied: VfsOutcome = await dispatcher.cp(srcPath, finalDest, { recursive });
+      // Copied from where the store keeps it (a /proc data path, a link); named as it was asked.
+      const copied: VfsOutcome = await dispatcher.cp(await storePath_resolve(srcPath), finalDest, { recursive });
       const success: boolean = copied.ok;
 
       if (sources.length === 1) {

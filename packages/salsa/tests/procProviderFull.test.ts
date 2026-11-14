@@ -344,14 +344,18 @@ describe('ProcVfsProvider.list', () => {
     const listSpy = jest.spyOn(vfsDispatcher, 'list').mockResolvedValue(
       Ok([{ name: 'brain.mgz', type: 'file', size: 7, owner: 'alice', date: '' }]),
     );
-    // A file under the link is read through the door that knows both
-    // worlds: the target is a CFS file, and the dispatcher's own default
-    // provider is the HOST filesystem, which refuses it.
+    // A file under the link is the store's file, read through the
+    // dispatcher so the store's links on its path are followed.
     const files = await import('../src/files/index');
     const readSpy = jest.spyOn(files, 'fileContent_get').mockResolvedValue(Ok('bytes'));
     const binSpy = jest.spyOn(files, 'fileContent_getBinary').mockResolvedValue(Ok(Buffer.from('img')));
     const dispatcherBinSpy = jest.spyOn(vfsDispatcher, 'readBinary');
     try {
+      // The mount names the store path a data path stands for, and owns the rest.
+      expect(await provider.storePath_resolve('/proc/jobs/feed_5/pl-root_10/data/sub/a.txt')).toEqual(Ok('/home/alice/outputs/result-set/sub/a.txt'));
+      expect(await provider.storePath_resolve('/proc/jobs/feed_5/pl-root_10/data')).toEqual(Ok('/home/alice/outputs/result-set'));
+      expect(await provider.storePath_resolve('/proc/jobs/feed_5/pl-root_10/status')).toEqual(Ok(null));
+      expect(await provider.storePath_resolve('/proc/jobs/feed_5')).toEqual(Ok(null));
       const listing = await provider.list('/proc/jobs/feed_5/pl-root_10/data');
       expect(listSpy).toHaveBeenCalledWith('/home/alice/outputs/result-set', undefined);
       expect(listing.ok && listing.value[0]?.name).toBe('brain.mgz');
@@ -373,13 +377,51 @@ describe('ProcVfsProvider.list', () => {
       const synthesized = await provider.readBinary('/proc/jobs/feed_5/pl-root_10/status');
       expect(synthesized.ok && synthesized.value.toString('utf8')).toBe('finishedSuccessfully');
       expect(binSpy).toHaveBeenCalledTimes(1);
-      // Never back through the dispatcher: that is the bounce that refused
-      // every byte a node's data holds.
-      expect(dispatcherBinSpy).not.toHaveBeenCalled();
+      // The store path, never the /proc path, goes back to the dispatcher.
+      expect(dispatcherBinSpy).toHaveBeenCalledTimes(1);
+      expect(dispatcherBinSpy).toHaveBeenCalledWith('/home/alice/outputs/result-set/brain.mgz');
     } finally {
       listSpy.mockRestore();
       readSpy.mockRestore();
       dispatcherBinSpy.mockRestore();
+      binSpy.mockRestore();
+    }
+  });
+
+  it('reads a file through a link inside the data link at the file CUBE stores', async () => {
+    // A pl-dircopy's output holds a `.chrislink`: the file's logical name
+    // under the link has no folder for CUBE to find it in, so a read at
+    // the /proc path follows the link as a read at the feed path does.
+    cache.feed_add(feed({ id: 5 }));
+    cache.instance_add({
+      id: 10, feedID: 5, parentID: null, pluginName: 'pl-dircopy', params: null,
+      status: 'finishedSuccessfully', outputPath: '/home/alice/feeds/feed_5/pl-dircopy_10/data',
+    } as ProcInstance);
+    cache.topologyLoaded_mark(5);
+    const { vfsDispatcher } = await import('../src/vfs/dispatcher');
+    vfsDispatcher.pathResolver_register(async (logical: string): Promise<string> =>
+      logical.replace('/home/alice/feeds/feed_5/pl-dircopy_10/data/home_alice_uploads_set', '/home/alice/uploads/set'));
+    const files = await import('../src/files/index');
+    const readSpy = jest.spyOn(files, 'fileContent_get').mockResolvedValue(Ok('hello'));
+    const binSpy = jest.spyOn(files, 'fileContent_getBinary').mockResolvedValue(Ok(Buffer.from('img')));
+    try {
+      const text = await provider.read('/proc/jobs/feed_5/pl-dircopy_10/data/home_alice_uploads_set/hello.txt');
+      expect(text.ok && text.value).toBe('hello');
+      expect(readSpy).toHaveBeenCalledWith('/home/alice/uploads/set/hello.txt');
+
+      const bytes = await provider.readBinary('/proc/jobs/feed_5/pl-dircopy_10/data/home_alice_uploads_set/sphere.nii.gz');
+      expect(bytes.ok).toBe(true);
+      expect(binSpy).toHaveBeenCalledWith('/home/alice/uploads/set/sphere.nii.gz');
+
+      // A path that does not resolve is refused by name, never read at a guess.
+      vfsDispatcher.pathResolver_register(async (): Promise<string> => { throw new Error('no such link'); });
+      readSpy.mockClear();
+      const refused = await provider.read('/proc/jobs/feed_5/pl-dircopy_10/data/home_alice_uploads_set/hello.txt');
+      expect(refused.ok).toBe(false);
+      expect(readSpy).not.toHaveBeenCalled();
+    } finally {
+      vfsDispatcher.pathResolver_register(async (logical: string): Promise<string> => logical);
+      readSpy.mockRestore();
       binSpy.mockRestore();
     }
   });

@@ -28,7 +28,7 @@
  * @module
  */
 
-import { vfsOutcome_convertFromBoolean, vfsOutcome_convertFromResult, type VfsOutcome, type VFSSubtree, type VFSSubtreeEntry } from '@fnndsc/fond';
+import { vfsOutcome_convertFromBoolean, vfsOutcome_convertFromResult, vfsOutcome_convertToResult, type VfsOutcome, type VFSSubtree, type VFSSubtreeEntry } from '@fnndsc/fond';
 import { type ProcRosterSyncKind,
   chrisConnection,
   errorStack,
@@ -723,6 +723,23 @@ export class ProcVfsProvider implements VFSProvider {
   }
 
   /**
+   * The store path a `/proc/jobs` path stands for: under a job's `data`
+   * link, the job's output folder and the rest of the path in it; null for
+   * everything else, which this mount makes itself.
+   *
+   * @param pathStr - Absolute `/proc/jobs/...` path.
+   * @returns The store path, null when `/proc` holds the path, or Err when
+   *   the job has no output space.
+   */
+  async storePath_resolve(pathStr: string): Promise<Result<string | null>> {
+    await cacheFor_ensure(pathStr);
+    const clean: string = pathStr.replace(/\/$/, '');
+    const { feedID, instanceID, virtualFile, dataRemainder } = procPath_parse(clean);
+    if (instanceID === null || virtualFile !== 'data' || dataRemainder === null) return Ok(null);
+    return dataTarget_resolve(instanceID, dataRemainder, feedID);
+  }
+
+  /**
    * Everything beneath a `/proc/jobs` path from the cache, in the order its
    * listings give it (a feed's `status`, `title`, `note` and root jobs; a
    * job's `status`, `params`, `log`, `data` and children), so `find` asks
@@ -935,12 +952,13 @@ export class ProcVfsProvider implements VFSProvider {
     if (instanceID !== null && virtualFile === 'data' && dataRemainder !== null && dataRemainder !== '') {
       const target: Result<string> = await dataTarget_resolve(instanceID, dataRemainder, feedID);
       if (!target.ok) return Err();
-      // The target is a CFS file, and the dispatcher's default provider is
-      // the HOST filesystem — handing it back there refused every byte a
-      // node's data holds. `fileContent_getBinary` is the whole door: it
-      // routes a projection to its provider and a CFS path to CUBE.
-      const { fileContent_getBinary } = await import('../../files/index.js');
-      return fileContent_getBinary(target.value);
+      // The target is a store path, read through the dispatcher so the
+      // store's links on it are followed (a `pl-dircopy` output holds
+      // `.chrislink`s), as a read at the feed path follows them. A session
+      // resolves a path before it reads (brasa's storePath_resolve), so
+      // this is the door for a caller that hands a /proc path on as typed.
+      const { vfsDispatcher } = await import('../dispatcher.js');
+      return vfsOutcome_convertToResult(await vfsDispatcher.readBinary(target.value), 'readBinary', target.value);
     }
     const text: Result<string> = await this.read(pathStr);
     return text.ok ? Ok(Buffer.from(text.value, 'utf8')) : text;
@@ -957,12 +975,12 @@ export class ProcVfsProvider implements VFSProvider {
     const clean: string = pathStr.replace(/\/$/, '');
     const { feedID, instanceID, virtualFile, dataRemainder } = procPath_parse(clean);
 
-    // A file under the `data` link is the CFS target's file.
+    // A file under the `data` link is the store's file, its links followed.
     if (instanceID !== null && virtualFile === 'data' && dataRemainder !== null && dataRemainder !== '') {
       const target: Result<string> = await dataTarget_resolve(instanceID, dataRemainder, feedID);
       if (!target.ok) return Err();
-      const { fileContent_get } = await import('../../files/index.js');
-      return fileContent_get(target.value);
+      const { vfsDispatcher } = await import('../dispatcher.js');
+      return vfsOutcome_convertToResult(await vfsDispatcher.read(target.value), 'read', target.value);
     }
 
     // Feed-level virtual files

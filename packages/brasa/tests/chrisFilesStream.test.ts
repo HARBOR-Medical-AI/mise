@@ -7,21 +7,18 @@ import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { Readable } from 'node:stream';
 import { errorStack } from '@fnndsc/fond';
 
-const pathResolve_mock = jest.fn(async (p: string): Promise<string> => p);
+const storePath_mock = jest.fn(async (p: string): Promise<string> => p);
 const isVirtual_mock = jest.fn((_p: string): boolean => false);
-const linkTarget_mock = jest.fn(async (): Promise<{ ok: boolean; value?: string }> => ({ ok: false }));
 const readBinary_mock = jest.fn(async (): Promise<{ ok: true; value: Buffer }> => ({ ok: true, value: Buffer.from('status') }));
 const stream_mock = jest.fn(async (_p: string): Promise<unknown> => ({ ok: false }));
 const catBinary_mock = jest.fn(async (): Promise<unknown> => ({ ok: false }));
 
-jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: pathResolve_mock }));
+jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: async (p: string): Promise<string> => p, storePath_resolve: storePath_mock }));
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
-  vfsDispatcher: { path_isVirtual: isVirtual_mock, linkTarget_resolve: linkTarget_mock, readBinary: readBinary_mock },
+  vfsDispatcher: { path_isVirtual: isVirtual_mock, readBinary: readBinary_mock },
   fileContent_getBinaryStream: stream_mock,
 }));
-jest.unstable_mockModule('@fnndsc/chili/utils/cli.js', () => ({ path_resolveChrisFs: async (p: string): Promise<string> => p }));
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/cat.js', () => ({ files_catBinary: catBinary_mock }));
-jest.unstable_mockModule('@fnndsc/chili/utils', () => ({ logicalPath_resolve: async (p: string) => ({ ok: true, value: p }) }));
 
 const { chrisFiles } = await import('../src/chris/files.js');
 
@@ -34,6 +31,7 @@ async function drain(stream: NodeJS.ReadableStream): Promise<string> {
 beforeEach(() => {
   jest.clearAllMocks();
   isVirtual_mock.mockReturnValue(false);
+  storePath_mock.mockImplementation(async (p: string): Promise<string> => p);
 });
 
 describe('chrisFiles.stream', () => {
@@ -70,12 +68,14 @@ describe('chrisFiles.stream', () => {
     expect(stream_mock).not.toHaveBeenCalled();
   });
 
-  it("streams a node's data path through the file behind its link", async () => {
-    isVirtual_mock.mockReturnValue(true);
-    linkTarget_mock.mockResolvedValueOnce({ ok: true, value: '/home/s/feeds/feed_1/pl-x_7/data' });
+  it("streams a node's data path from the file its links lead to", async () => {
+    // A pl-dircopy's output holds a link: the bytes are where it points.
+    isVirtual_mock.mockImplementation((p: string): boolean => p.startsWith('/proc'));
+    storePath_mock.mockResolvedValueOnce('/home/s/uploads/set/a.dcm');
     stream_mock.mockResolvedValueOnce({ ok: true, value: { stream: Readable.from([Buffer.from('dcm')]), size: 3 } });
-    const opened = await chrisFiles.stream!('/proc/jobs/feed_1/pl-x_7/data/a.dcm');
+    const opened = await chrisFiles.stream!('/proc/jobs/feed_1/pl-dircopy_7/data/home_s_uploads_set/a.dcm');
     expect(await drain(opened.stream)).toBe('dcm');
-    expect(stream_mock).toHaveBeenCalledWith('/home/s/feeds/feed_1/pl-x_7/data/a.dcm');
+    expect(storePath_mock).toHaveBeenCalledWith('/proc/jobs/feed_1/pl-dircopy_7/data/home_s_uploads_set/a.dcm');
+    expect(stream_mock).toHaveBeenCalledWith('/home/s/uploads/set/a.dcm');
   });
 });

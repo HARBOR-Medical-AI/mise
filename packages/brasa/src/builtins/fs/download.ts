@@ -33,8 +33,7 @@ import {
 import { sink_get } from '../../core/sink.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
-import { path_resolve } from '../utils.js';
-import { vfsDispatcher_get } from '../../core/filesystem.js';
+import { storePath_resolve } from '../utils.js';
 import { surface_get, type Surface } from '../../core/surface.js';
 import { repl_confirm } from '../../core/question.js';
 import { files_path_isDirectory, files_listRecursive, type FsItem } from '@fnndsc/salsa';
@@ -43,24 +42,16 @@ import { type FileDeliverResult, type CommandEnvelope, envelope_ok, envelope_err
 import { errorStack } from '@fnndsc/fond';
 import { exitCode_set } from '../../core/handlerRun.js';
 
-/** A `/proc/jobs` path at or under a job's `data` link: the link, and what follows it. */
-const PROC_DATA_PATH: RegExp = /^(\/proc\/jobs\/feed_\d+(?:\/[^/]+_\d+)+\/data)(\/.*)?$/;
-
 /**
- * A source as the transfer reads it: a CFS path. A `/proc/jobs/.../data`
- * path, which `ls` and `cd` enter as the run's output, resolves through the
- * same link to that output (#1364); anything else is the path as resolved.
+ * A source as the transfer reads it: where the store keeps it, resolved as
+ * every reader resolves a path (a `/proc/jobs/.../data` path through the
+ * job's link to its output, #1364; the store's links at any depth).
  *
  * @param source - The source as typed.
- * @returns The CFS path.
+ * @returns The store path.
  */
 async function source_resolve(source: string): Promise<string> {
-  const resolved: string = await path_resolve(source);
-  const link: RegExpMatchArray | null = resolved.match(PROC_DATA_PATH);
-  if (link === null) return resolved;
-  const target = await vfsDispatcher_get().linkTarget_resolve(link[1] as string);
-  if (!target.ok) return resolved;
-  return `${target.value}${link[2] ?? ''}`;
+  return storePath_resolve(source);
 }
 
 /**

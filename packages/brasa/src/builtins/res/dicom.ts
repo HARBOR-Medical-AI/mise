@@ -36,7 +36,7 @@ import {
   type DicomTagGroup,
 } from '@fnndsc/salsa';
 import { DICOM_MODEL_KINDS, DICOM_TAG_GROUPS, type DicomSeriesModel, type DicomTagsModel, type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
-import { commandArgs_process, path_resolve, type ParsedArgs } from '../utils.js';
+import { commandArgs_process, path_resolve, storePath_resolve, type ParsedArgs } from '../utils.js';
 import { args_checkHasHelpFlag, help_render } from '../help.js';
 import type { Result } from '@fnndsc/fond';
 import { exitCode_set } from '../../core/handlerRun.js';
@@ -97,10 +97,9 @@ function usage_error(reason: string): CommandEnvelope {
  * same series read fine at its PACS address, and `cd` into the folder (which
  * does follow links) made the very same command work.
  *
- * So the address is resolved before anything is read: a projection through
- * the provider that owns it, then the link walk the rest of the file
- * commands already do. A path that resolves to nothing stands as it was, so
- * a bad path still refuses by its own name.
+ * So the address is resolved before anything is read, as every reader
+ * resolves it (`storePath_resolve`). A path that resolves to nothing stands
+ * as it was, so a bad path still refuses by its own name.
  *
  * @param input - The path as the operator or a surface gave it.
  * @returns The physical path, or the input when it resolves no further.
@@ -110,18 +109,7 @@ export async function path_physical(input: string): Promise<string> {
   // dispatcher, a path no link walk knows — leaves the address as it was,
   // and the command refuses by its own name rather than by an exception.
   try {
-    const { vfsDispatcher } = await import('@fnndsc/salsa');
-    let candidate: string = input;
-    if (vfsDispatcher?.path_isVirtual?.(input) === true) {
-      const link: RegExpExecArray | null = /^(\/proc\/jobs\/feed_\d+\/[^/]+\/data)(\/.*)?$/.exec(input);
-      if (link === null) return input;
-      const target: Result<string> = await vfsDispatcher.linkTarget_resolve(link[1] as string);
-      if (!target.ok) return input;
-      candidate = `${target.value}${link[2] ?? ''}`;
-    }
-    const { logicalPath_resolve } = await import('@fnndsc/chili/utils');
-    const physical: Result<string> = await logicalPath_resolve(candidate);
-    return physical.ok ? physical.value : candidate;
+    return await storePath_resolve(input);
   } catch {
     return input;
   }
