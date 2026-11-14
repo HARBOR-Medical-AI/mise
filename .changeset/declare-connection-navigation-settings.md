@@ -1,7 +1,0 @@
----
-"@fnndsc/brasa": patch
----
-
-Tab completes the options of `cd`, `du`, `tree`, `timing` and the other Navigation, Connection and Settings commands; a bad one is refused.
-
-`cd`, `pwd`, `tree`, `du`, `cubepath`, `netstat`, `connect`, `logout`, `context`, `whoami`, `id`, `whereami`, `timing`, `debug` and `physicalmode` are each declared in one record: grammar, argument kinds, handler, holds and help. Their lines parse with GNU `getopt_long` rules and are refused in the parser's words with a usage generated from the grammar; their help pages, completion and tool schema read the same record. `timing`, `debug` and `physicalmode` take `on` and `off` as subcommands. What changes on a line: `cd a b` is refused rather than joined into one path `a b`, and `cd` takes no option (a path starting with `-` follows `--`); `cd`, `tree` and `cubepath` refuse a wildcard that matches several folders where they take one; `tree` refuses a second path rather than ignoring it; `logout`, `context`, `whoami`, `id` and `whereami` refuse an operand rather than ignoring it; `cubepath` refuses an unknown `--` option rather than skipping it; `du -d` and `netstat -n` refuse a value that is not a whole number of 0 or more; `connect` without `--user` and `--password` is refused on the error channel with exit status 1, rather than printing its usage as output. `find` (an expression grammar, its own slice) and `clear` and `prompt` (the surface's own commands) are not declared here.
