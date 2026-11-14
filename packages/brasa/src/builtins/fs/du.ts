@@ -21,7 +21,7 @@
  */
 import chalk from 'chalk';
 import path from 'path';
-import { storePath_resolve } from '../utils.js';
+import { path_resolve, storePath_resolve } from '../utils.js';
 import { vfs } from '../../lib/vfs/vfs.js';
 import { spinner } from '../../lib/spinner.js';
 import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
@@ -251,10 +251,14 @@ async function du_run(pathArgs: readonly string[], opts: DuOptions): Promise<Com
 
   const rawTargets: string[] = pathArgs.length > 0 ? [...pathArgs] : ['.'];
 
+  // Sized where the store keeps it (a run's data path, a link on the line),
+  // and named as the session names it.
   const resolvedTargets: string[] = [];
+  const logicalTargets: Map<string, string> = new Map();
   for (const raw of rawTargets) {
-    // Sized where the store keeps it: a run's data path, a link on the line.
-    resolvedTargets.push(await storePath_resolve(raw));
+    const stored: string = await storePath_resolve(raw);
+    resolvedTargets.push(stored);
+    logicalTargets.set(stored, await path_resolve(raw));
   }
 
   let grandTotal: number = 0;
@@ -279,7 +283,7 @@ async function du_run(pathArgs: readonly string[], opts: DuOptions): Promise<Com
       if (!stat.isDirectory) {
         grandTotal += stat.fileSize;
         spinner.stop();
-        rendered += `${duSize_format(stat.fileSize, opts.humanReadable)}\t${targetPath}\n`;
+        rendered += `${duSize_format(stat.fileSize, opts.humanReadable)}\t${logicalTargets.get(targetPath) ?? targetPath}\n`;
         continue;
       }
 
@@ -307,7 +311,7 @@ async function du_run(pathArgs: readonly string[], opts: DuOptions): Promise<Com
       grandTotal += scanResult.totalSize;
       spinner.stop();
 
-      rendered += dirUsage_render(dirSizes, targetPath, opts);
+      rendered += usageNames_logical(dirUsage_render(dirSizes, targetPath, opts), targetPath, logicalTargets.get(targetPath) ?? targetPath);
     }
 
     if (opts.showTotal && rawTargets.length > 0) {
@@ -321,4 +325,24 @@ async function du_run(pathArgs: readonly string[], opts: DuOptions): Promise<Com
   } finally {
     spinner.stop();
   }
+}
+
+/**
+ * Names each row of a folder's usage as the session names it: the store
+ * folder it was read from gives way to the path asked.
+ *
+ * @param rows - The rows, `size<TAB>path` each.
+ * @param storeRoot - The store folder scanned.
+ * @param logicalRoot - The folder as the session names it.
+ * @returns The rows, renamed.
+ */
+function usageNames_logical(rows: string, storeRoot: string, logicalRoot: string): string {
+  if (storeRoot === logicalRoot) return rows;
+  return rows.split('\n').map((row: string): string => {
+    const tab: number = row.indexOf('\t');
+    if (tab === -1) return row;
+    const named: string = row.slice(tab + 1);
+    const shown: string = named === storeRoot ? logicalRoot : named.startsWith(`${storeRoot}/`) ? `${logicalRoot}${named.slice(storeRoot.length)}` : named;
+    return `${row.slice(0, tab)}\t${shown}`;
+  }).join('\n');
 }

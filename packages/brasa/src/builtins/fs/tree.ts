@@ -19,13 +19,16 @@
  * @module
  */
 import chalk from 'chalk';
-import { storePath_resolve, error_stripDebugPrefix } from '../utils.js';
+import { path_resolve, storePath_resolve, error_stripDebugPrefix } from '../utils.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
 import { vfs } from '../../lib/vfs/vfs.js';
 import { session } from '../../session/index.js';
 import { spinner } from '../../lib/spinner.js';
 import { scan_do, archyTree_create, type CLIscan, type ScanRecord } from '@fnndsc/chili/path/pathCommand.js';
+
+/** One entry a scan found. */
+type FileInfo = ScanRecord['fileInfo'][number];
 import { bytes_format } from '@fnndsc/chili/commands/fs/upload.js';
 import { errorStack } from '@fnndsc/fond';
 import { CommandEnvelope, envelope_ok, envelope_error, type ListingItem } from '@fnndsc/menu';
@@ -101,10 +104,12 @@ async function tree_run(args: CommandArguments<typeof TREE_GRAMMAR>): Promise<Co
   const pathMode: boolean = args.options.listPaths || dirpathMode;
   const dirsOnly: boolean = args.options.dirs || dirpathMode;
 
-  // Determine target path
+  // Read where the store keeps it (a run's data path, a link on the line),
+  // and shown as it was asked: the tree's root is the path as typed.
   let targetPath: string | undefined;
+  let logicalRoot: string | undefined;
   if (pathArg !== undefined) {
-    // Drawn where the store keeps it: a run's data path, a link on the line.
+    logicalRoot = await path_resolve(pathArg);
     targetPath = await storePath_resolve(pathArg);
     // A path that is not there is said to be not there, as tree says it,
     // rather than scanned into an empty tree.
@@ -142,13 +147,16 @@ async function tree_run(args: CommandArguments<typeof TREE_GRAMMAR>): Promise<Co
 
   let rendered: string = '';
   if (pathMode) {
-    // --path: emit one full chrisPath per entry — grep-friendly
+    // --path: emit one full path per entry — grep-friendly, under the path asked
     for (const item of scanResult.fileInfo) {
-      rendered += `${item.chrisPath}\n`;
+      rendered += `${shownPath_derive(item.chrisPath, targetPath, logicalRoot)}\n`;
     }
   } else if (scanResult.fileInfo.length === 0) {
     // An empty folder is its own tree: its name, and nothing under it.
-    rendered += `${targetPath ?? originalFolder}\n`;
+    rendered += `${pathArg ?? originalFolder}\n`;
+  } else if (targetPath !== undefined && pathArg !== undefined) {
+    // The tree hangs from the path as typed, its entries below it.
+    rendered += `${treeUnder_render(scanResult.fileInfo, targetPath, pathArg)}\n`;
   } else {
     // Default: ASCII tree
     rendered += `${archyTree_create(scanResult.fileInfo)}\n`;
@@ -158,4 +166,37 @@ async function tree_run(args: CommandArguments<typeof TREE_GRAMMAR>): Promise<Co
   rendered += `${chalk.green(`Total size: ${bytes_format(scanResult.totalSize)}`)}\n`;
   rendered += `${chalk.gray(`${scanResult.fileInfo.length} items`)}\n`;
   return envelope_ok(rendered);
+}
+
+/**
+ * A scanned path as the person asked for it: under the logical root in
+ * place of the store folder it was read from.
+ *
+ * @param chrisPath - The path the scan gave (a store path).
+ * @param storeRoot - The store folder scanned, when one was named.
+ * @param logicalRoot - The same folder as the session names it.
+ * @returns The path to show.
+ */
+function shownPath_derive(chrisPath: string, storeRoot: string | undefined, logicalRoot: string | undefined): string {
+  if (storeRoot === undefined || logicalRoot === undefined) return chrisPath;
+  if (chrisPath === storeRoot) return logicalRoot;
+  return chrisPath.startsWith(`${storeRoot}/`) ? `${logicalRoot}${chrisPath.slice(storeRoot.length)}` : chrisPath;
+}
+
+/**
+ * Draws a scanned folder's tree hanging from the path as typed: its entries
+ * relative to the store folder they were read from.
+ *
+ * @param files - What the scan found.
+ * @param storeRoot - The store folder scanned.
+ * @param shown - The root's label: the path as typed.
+ * @returns The tree.
+ */
+function treeUnder_render(files: FileInfo[], storeRoot: string, shown: string): string {
+  const under: FileInfo[] = files.map((file: FileInfo): FileInfo => (
+    file.chrisPath.startsWith(`${storeRoot}/`) ? { ...file, chrisPath: file.chrisPath.slice(storeRoot.length + 1) } : file
+  ));
+  // archy draws the root's own label first: an empty line, which the path takes.
+  const lines: string[] = archyTree_create(under).split('\n');
+  return [shown, ...lines.slice(1)].join('\n').replace(/\n+$/, '');
 }

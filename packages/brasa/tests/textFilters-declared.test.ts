@@ -113,4 +113,24 @@ describe('grep\'s system line', () => {
     await builtin_grep(['-c', '--', '-x y']);
     expect(surface.pipeSegment).toHaveBeenLastCalledWith("grep -c -e '-x y'", Buffer.from('x\n'));
   });
+
+  it('carries the text flags too: -n -l -o -h and the context counts', async () => {
+    surface.capabilities.pipeSegments = true;
+    stdin_set('x\n');
+    await builtin_grep(['-noh', '--after-context=2', '-B1', '-C', '3', 'x']);
+    expect(surface.pipeSegment).toHaveBeenLastCalledWith('grep -n -o -h -A 2 -B 1 -C 3 x', Buffer.from('x\n'));
+    stdin_set('x\n');
+    await builtin_grep(['-l', 'x']);
+    expect(surface.pipeSegment).toHaveBeenLastCalledWith('grep -l x', Buffer.from('x\n'));
+  });
+
+  it('carries -H and --color, bare or with its word', async () => {
+    surface.capabilities.pipeSegments = true;
+    stdin_set('x\n');
+    await builtin_grep(['-H', '--color=auto', 'x']);
+    expect(surface.pipeSegment).toHaveBeenLastCalledWith('grep -H --color=auto x', Buffer.from('x\n'));
+    stdin_set('x\n');
+    await builtin_grep(['--color', 'x']);
+    expect(surface.pipeSegment).toHaveBeenLastCalledWith('grep --color x', Buffer.from('x\n'));
+  });
 });

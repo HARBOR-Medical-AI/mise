@@ -54,11 +54,11 @@ describe('grep arguments', () => {
   });
 
   it('refuses another flag in the parser\'s words, before it runs', async () => {
-    const short = await builtin_grep(['-o', 'x']);
+    const short = await builtin_grep(['-Q', 'x']);
     expect(short.status).toBe('error');
-    expect(strip(short.renderedErr ?? '')).toContain("grep: invalid option -- 'o'; usage: grep");
+    expect(strip(short.renderedErr ?? '')).toContain("grep: invalid option -- 'Q'; usage: grep");
     expect(process.exitCode).toBe(1);
-    expect(strip((await builtin_grep(['--color', 'x'])).renderedErr ?? '')).toContain("grep: unrecognized option '--color'; usage: grep");
+    expect(strip((await builtin_grep(['--nosuch', 'x'])).renderedErr ?? '')).toContain("grep: unrecognized option '--nosuch'; usage: grep");
   });
 
   it('reads -- as the end of the options: a pattern may start with a dash', async () => {
@@ -129,5 +129,57 @@ describe('grep on text', () => {
     expect((await builtin_grep(['-i', 'b'])).rendered).toBe('Beta\n');
     stdin_set('alpha\nBeta\ngamma\n');
     expect((await builtin_grep(['-vc', 'a'])).rendered).toBe('0\n');
+  });
+
+  it('numbers lines (-n), keeps only the matching parts (-o), names the pipe (-l)', async () => {
+    const { stdin_set } = await import('../src/builtins/games/stdin.js');
+    stdin_set('a\nb\nc\n');
+    expect((await builtin_grep(['--line-number', 'b'])).rendered).toBe('2:b\n');
+    stdin_set('hello all\nnone\n');
+    expect((await builtin_grep(['-o', 'l\\+'])).rendered).toBe('ll\nll\n');
+    stdin_set('a\nb\n');
+    expect((await builtin_grep(['-l', 'b'])).rendered).toBe('(standard input)\n');
+    stdin_set('a\nb\n');
+    expect((await builtin_grep(['-h', 'b'])).rendered).toBe('b\n');
+  });
+
+  it('shows context as GNU does: -A, -B, -C, -- between groups apart, - after a context line\'s number', async () => {
+    const { stdin_set } = await import('../src/builtins/games/stdin.js');
+    const six: string = 'a\nb\nc\nd\ne\nf\n';
+    stdin_set(six);
+    expect((await builtin_grep(['-A', '1', '-e', 'b', '-e', 'e'])).rendered).toBe('b\nc\n--\ne\nf\n');
+    stdin_set(six);
+    expect((await builtin_grep(['-n', '--before-context=1', '-e', 'b', '-e', 'e'])).rendered).toBe('1-a\n2:b\n--\n4-d\n5:e\n');
+    stdin_set(six);
+    expect((await builtin_grep(['-C', '1', '-e', 'b', '-e', 'd'])).rendered).toBe('a\nb\nc\nd\ne\n');
+    expect(strip((await builtin_grep(['-A', 'x', 'b'])).renderedErr ?? '')).toContain("invalid argument 'x' for '--after-context'");
+  });
+});
+
+describe('grep over a listing refuses what a listing has no use for', () => {
+  it('says each flag by name, in one line, exit 1', async () => {
+    for (const [flags, words] of [
+      [['-o'], 'grep -o: a listing keeps whole rows'],
+      [['-n'], 'grep -n: a listing\'s rows wear their handles'],
+      [['-l'], 'grep -l: a listing is not files'],
+      [['-h'], 'grep -h: a listing has no file names'],
+      [['-r'], 'grep -r: a listing is not a folder to walk'],
+      [['-A', '1'], 'grep -A: a listing keeps a row with its group'],
+      [['-B', '1'], 'grep -B: '],
+      [['-C', '1'], 'grep -C: '],
+    ] as Array<[string[], string]>) {
+      listingIn_set({ kind: 'pacs.query', data: answer });
+      process.exitCode = 0;
+      const refused = await builtin_grep([...flags, 't1']);
+      expect(refused.status).toBe('error');
+      expect(refused.renderedErr).toContain(words);
+      expect(process.exitCode).toBe(1);
+    }
+  });
+
+  it('refuses them for the held listing too, and still counts with -c', async () => {
+    answer_note('pacs.query', answer, 'query PatientID:1');
+    expect((await builtin_grep(['-C', '1', 't1'])).renderedErr).toContain('grep -C: ');
+    expect((await builtin_grep(['-ci', 't1'])).rendered).toBe('2\n');
   });
 });

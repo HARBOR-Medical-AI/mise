@@ -15,7 +15,8 @@
  * Key components:
  * - wcCommand, headCommand, tailCommand, sortCommand, uniqCommand, cutCommand: the declarations.
  * - builtin_wc … builtin_cut: each declaration run over words already split.
- * - filter_run: reads the sources and answers them, for any filter (grep's files too).
+ * - filter_run: reads the sources and answers them, for any filter; filterFile_read,
+ *   filterSources_read and filterRead_answer are its parts, which grep's files use too.
  * - wc_render, head_lines, tail_lines, sort_lines, uniq_lines, cut_lines: the typed cores.
  *
  * Typical usage:
@@ -142,14 +143,52 @@ function filter_refuse(words: string): CommandEnvelope {
 }
 
 /**
+ * What a filter read: the sources, in order, and what could not be read.
+ *
+ * @example
+ * ```ts
+ * const read: FilterRead = { sources: [{ name: 'a.txt', text: 'a\n' }], errors: 'wc: b.txt: no such file\n' };
+ * ```
+ */
+export interface FilterRead {
+  /** The texts read. */
+  sources: FilterSource[];
+  /** A line per operand that could not be read; empty when all were. */
+  errors: string;
+}
+
+/**
+ * Reads one ChRIS file through the one store-path resolver, under its name as typed.
+ *
+ * @param command - The filter's name, for what it says.
+ * @param operand - The path as typed.
+ * @returns The source, or the line that says why it could not be read.
+ *
+ * @example
+ * ```ts
+ * await filterFile_read('wc', 'notes.txt'); // { name: 'notes.txt', text: '…' }
+ * ```
+ */
+export async function filterFile_read(command: string, operand: string): Promise<FilterSource | { error: string }> {
+  const target: string = await storePath_resolve(operand);
+  const read: VfsOutcome<string> = await vfsDispatcher_get().read(target);
+  return read.ok ? { name: operand, text: read.value } : { error: `${command}: ${operand}: ${read.reason ?? errno_words(read.errno)}\n` };
+}
+
+/**
  * Reads what a filter works on: the files named, in order (`-` is the
  * pipe), else what was piped in.
  *
  * @param command - The filter's name, for what it says.
  * @param operands - The file operands.
  * @returns The sources and what could not be read, or a refusal when there is nothing at all.
+ *
+ * @example
+ * ```ts
+ * await filterSources_read('wc', ['a.txt', '-']);
+ * ```
  */
-async function sources_read(command: string, operands: ReadonlyArray<string>): Promise<{ sources: FilterSource[]; errors: string } | { refusal: string }> {
+export async function filterSources_read(command: string, operands: ReadonlyArray<string>): Promise<FilterRead | { refusal: string }> {
   const piped: string | null = stdin_take();
   if (operands.length === 0) {
     if (piped === null) return { refusal: `${command}: nothing to read: pipe text in, or name a file` };
@@ -159,12 +198,30 @@ async function sources_read(command: string, operands: ReadonlyArray<string>): P
   let errors: string = '';
   for (const operand of operands) {
     if (operand === '-') { sources.push({ name: '-', text: piped ?? '' }); continue; }
-    const target: string = await storePath_resolve(operand);
-    const read: VfsOutcome<string> = await vfsDispatcher_get().read(target);
-    if (read.ok) sources.push({ name: operand, text: read.value });
-    else errors += `${command}: ${operand}: ${read.reason ?? errno_words(read.errno)}\n`;
+    const read: FilterSource | { error: string } = await filterFile_read(command, operand);
+    if ('error' in read) errors += read.error;
+    else sources.push(read);
   }
   return { sources, errors };
+}
+
+/**
+ * A filter's answer over what it read: the output, with what could not be
+ * read on the error channel (exit 1).
+ *
+ * @param read - What was read.
+ * @param answer - Turns the sources into the filter's output.
+ * @returns The envelope.
+ *
+ * @example
+ * ```ts
+ * filterRead_answer(read, (sources: FilterSource[]): string => wc_render(ask, sources));
+ * ```
+ */
+export function filterRead_answer(read: FilterRead, answer: (sources: FilterSource[]) => string): CommandEnvelope {
+  if (read.errors !== '') exitCode_set(1);
+  const out: string = read.sources.length > 0 || read.errors === '' ? answer(read.sources) : '';
+  return read.errors === '' ? envelope_ok(out) : { ...envelope_ok(out), status: out === '' ? 'error' : 'ok', renderedErr: chalk.red(read.errors) };
 }
 
 /**
@@ -182,11 +239,9 @@ async function sources_read(command: string, operands: ReadonlyArray<string>): P
  * ```
  */
 export async function filter_run(command: string, files: ReadonlyArray<string>, answer: (sources: FilterSource[]) => string): Promise<CommandEnvelope> {
-  const read = await sources_read(command, files);
+  const read: FilterRead | { refusal: string } = await filterSources_read(command, files);
   if ('refusal' in read) return filter_refuse(read.refusal);
-  if (read.errors !== '') exitCode_set(1);
-  const out: string = read.sources.length > 0 || read.errors === '' ? answer(read.sources) : '';
-  return read.errors === '' ? envelope_ok(out) : { ...envelope_ok(out), status: out === '' ? 'error' : 'ok', renderedErr: chalk.red(read.errors) };
+  return filterRead_answer(read, answer);
 }
 
 /**
@@ -359,20 +414,23 @@ export async function builtin_wc(args: string[]): Promise<CommandEnvelope> {
 // ── head / tail ──────────────────────────────────────────────────────────────
 
 /**
- * How many lines `head` or `tail` keeps: the first or last N, all but the last N, or from line N on.
+ * How much `head` or `tail` keeps: the first or last N lines (or bytes), all
+ * but the last N, or from line (or byte) N on.
  *
  * @example
  * ```ts
- * const ask: EndsAsk = { count: 5, butLast: false, fromLine: false };
+ * const ask: EndsAsk = { count: 5, butLast: false, fromLine: false, bytes: false };
  * ```
  */
 export interface EndsAsk {
   /** N. */
   count: number;
-  /** head -n -N: all but the last N. */
+  /** head -n -N (or -c -N): all but the last N. */
   butLast: boolean;
-  /** tail -n +N: from line N on. */
+  /** tail -n +N (or -c +N): from line (or byte) N on. */
   fromLine: boolean;
+  /** -c: N counts bytes, not lines. */
+  bytes: boolean;
 }
 
 /** What a `head` line may hold. */
@@ -383,6 +441,7 @@ const HEAD_GRAMMAR = {
       short: 'n', long: 'lines', numeral: true, value: { name: 'count', kind: 'word' },
       summary: 'The first N lines (-N says the same); -n -N: all but the last N',
     },
+    bytes: { short: 'c', long: 'bytes', value: { name: 'count', kind: 'word' }, summary: 'The first N bytes; -c -N: all but the last N' },
   },
 } as const satisfies CommandGrammar;
 
@@ -394,25 +453,36 @@ const TAIL_GRAMMAR = {
       short: 'n', long: 'lines', numeral: true, value: { name: 'count', kind: 'word' },
       summary: 'The last N lines (-N says the same); -n +N: from line N to the end',
     },
+    bytes: { short: 'c', long: 'bytes', value: { name: 'count', kind: 'word' }, summary: 'The last N bytes; -c +N: from byte N to the end' },
+    follow: { short: 'f', long: 'follow', summary: 'Taken: the text is read once and its last lines shown; a ChRIS file or a pipe is not followed' },
   },
 } as const satisfies CommandGrammar;
 
+/** What tail says of -f, which it takes but cannot do. */
+const FOLLOW_NOTE: string = 'tail: -f: a ChRIS file or a pipe is not followed; its last lines are shown once';
+
 /**
- * Reads `head`'s or `tail`'s count: N, and for head -N, for tail +N.
+ * Reads `head`'s or `tail`'s count: N, and for head -N, for tail +N, of
+ * lines (-n) or bytes (-c).
  *
  * @param command - Which of the two.
- * @param raw - The count as given, or undefined for none (ten).
- * @returns What it asks, or the refusal of a count that is not one.
+ * @param lines - The -n count as given, or undefined.
+ * @param bytes - The -c count as given, or undefined.
+ * @returns What it asks (ten lines when neither is given), or the refusal of a count that is not one.
  */
-function endsAsk_read(command: 'head' | 'tail', raw: string | undefined): AskRead<EndsAsk> {
-  if (raw === undefined) return { ask: { count: 10, butLast: false, fromLine: false } };
+function endsAsk_read(command: 'head' | 'tail', lines: string | undefined, bytes: string | undefined): AskRead<EndsAsk> {
+  if (lines !== undefined && bytes !== undefined) return { refused: `${command}: -n and -c do not mix; take one` };
+  const raw: string | undefined = bytes ?? lines;
+  const flag: string = bytes !== undefined ? '-c' : '-n';
+  if (raw === undefined) return { ask: { count: 10, butLast: false, fromLine: false, bytes: false } };
   const sign: string = raw.startsWith('-') || raw.startsWith('+') ? raw[0] as string : '';
   const n: number | null = count_parse(sign === '' ? raw : raw.slice(1));
   const signTaken: boolean = sign === '' || (command === 'head' && sign === '-') || (command === 'tail' && sign === '+');
   if (n === null || !signTaken) {
-    return { refused: `${command}: -n takes a number${command === 'head' ? ' (-N: all but the last N)' : ' (+N: from line N)'}, not '${raw}'` };
+    const unit: string = bytes !== undefined ? 'byte' : 'line';
+    return { refused: `${command}: ${flag} takes a number${command === 'head' ? ' (-N: all but the last N)' : ` (+N: from ${unit} N)`}, not '${raw}'` };
   }
-  return { ask: { count: n, butLast: command === 'head' && sign === '-', fromLine: command === 'tail' && sign === '+' } };
+  return { ask: { count: n, butLast: command === 'head' && sign === '-', fromLine: command === 'tail' && sign === '+', bytes: bytes !== undefined } };
 }
 
 /**
@@ -424,7 +494,7 @@ function endsAsk_read(command: 'head' | 'tail', raw: string | undefined): AskRea
  *
  * @example
  * ```ts
- * head_lines({ count: 1, butLast: false, fromLine: false }, 'a\nb\n'); // ['a']
+ * head_lines({ count: 1, butLast: false, fromLine: false, bytes: false }, 'a\nb\n'); // ['a']
  * ```
  */
 export function head_lines(ask: EndsAsk, text: string): string[] {
@@ -441,7 +511,7 @@ export function head_lines(ask: EndsAsk, text: string): string[] {
  *
  * @example
  * ```ts
- * tail_lines({ count: 1, butLast: false, fromLine: false }, 'a\nb\n'); // ['b']
+ * tail_lines({ count: 1, butLast: false, fromLine: false, bytes: false }, 'a\nb\n'); // ['b']
  * ```
  */
 export function tail_lines(ask: EndsAsk, text: string): string[] {
@@ -451,20 +521,60 @@ export function tail_lines(ask: EndsAsk, text: string): string[] {
 }
 
 /**
- * Each source's kept lines, under `==> name <==` when there is more than one.
+ * The bytes `head -c` keeps of a text, as text.
  *
- * @param keep - The lines one source keeps.
+ * @param ask - How many.
+ * @param text - The text.
+ * @returns The kept bytes.
+ *
+ * @example
+ * ```ts
+ * head_bytes({ count: 3, butLast: false, fromLine: false, bytes: true }, 'hello\n'); // 'hel'
+ * ```
+ */
+export function head_bytes(ask: EndsAsk, text: string): string {
+  const all: Buffer = Buffer.from(text, 'utf-8');
+  return (ask.butLast ? all.subarray(0, Math.max(0, all.length - ask.count)) : all.subarray(0, ask.count)).toString('utf-8');
+}
+
+/**
+ * The bytes `tail -c` keeps of a text, as text.
+ *
+ * @param ask - How many.
+ * @param text - The text.
+ * @returns The kept bytes.
+ *
+ * @example
+ * ```ts
+ * tail_bytes({ count: 3, butLast: false, fromLine: false, bytes: true }, 'hello\n'); // 'lo\n'
+ * ```
+ */
+export function tail_bytes(ask: EndsAsk, text: string): string {
+  const all: Buffer = Buffer.from(text, 'utf-8');
+  if (ask.fromLine) return all.subarray(Math.max(0, ask.count - 1)).toString('utf-8');
+  return (ask.count === 0 ? all.subarray(all.length) : all.subarray(-ask.count)).toString('utf-8');
+}
+
+/**
+ * Each source's kept part, under `==> name <==` when there is more than one.
+ *
+ * @param keepLines - The lines one source keeps.
+ * @param keepBytes - The bytes one source keeps.
  * @returns The answer over the sources.
  */
-function ends_render(keep: (ask: EndsAsk, text: string) => string[]): (ask: EndsAsk, sources: FilterSource[]) => string {
+function ends_render(
+  keepLines: (ask: EndsAsk, text: string) => string[],
+  keepBytes: (ask: EndsAsk, text: string) => string,
+): (ask: EndsAsk, sources: FilterSource[]) => string {
+  const keep = (ask: EndsAsk, text: string): string => (ask.bytes ? keepBytes(ask, text) : lines_join(keepLines(ask, text)));
   return (ask: EndsAsk, sources: FilterSource[]): string => {
-    if (sources.length === 1) return lines_join(keep(ask, (sources[0] as FilterSource).text));
-    return sources.map((s: FilterSource): string => `==> ${s.name === '-' ? 'standard input' : s.name ?? ''} <==\n${lines_join(keep(ask, s.text))}`).join('\n');
+    if (sources.length === 1) return keep(ask, (sources[0] as FilterSource).text);
+    return sources.map((s: FilterSource): string => `==> ${s.name === '-' ? 'standard input' : s.name ?? ''} <==\n${keep(ask, s.text)}`).join('\n');
   };
 }
 
 /**
- * `head [-n N | -N] [FILE]...`: the declaration.
+ * `head [-n N | -N | -c N] [FILE]...`: the declaration.
  *
  * @example
  * ```ts
@@ -476,18 +586,18 @@ export const headCommand = command_declare({
   grammar: HEAD_GRAMMAR,
   help: {
     summary: 'The first lines',
-    description: 'Prints the first ten lines of what is piped in, else of each file named (under ==> name <== for more than one). -N is -n N; -n -N prints all but the last N. It runs in the session, on every surface; a flag it does not take is refused, and command head runs the system head.',
+    description: 'Prints the first ten lines of what is piped in, else of each file named (under ==> name <== for more than one). -N is -n N; -n -N prints all but the last N; -c N prints the first N bytes. It runs in the session, on every surface; a flag it does not take is refused, and command head runs the system head.',
     category: 'Files',
     posix: { group: POSIX_GROUP, differs: 'as head; a FILE is a ChRIS path' },
-    examples: ['ls -l | head -n 5', 'head -3 notes.txt'],
+    examples: ['ls -l | head -n 5', 'head -3 notes.txt', 'head -c 100 notes.txt'],
   },
   holds: [],
   handler: async (args: CommandArguments<typeof HEAD_GRAMMAR>): Promise<CommandEnvelope> =>
-    askedFilter_run('head', endsAsk_read('head', args.options.lines), args.operands.files, ends_render(head_lines)),
+    askedFilter_run('head', endsAsk_read('head', args.options.lines, args.options.bytes), args.operands.files, ends_render(head_lines, head_bytes)),
 });
 
 /**
- * `tail [-n N | -N | -n +N] [FILE]...`: the declaration.
+ * `tail [-n N | -N | -n +N | -c N] [-f] [FILE]...`: the declaration.
  *
  * @example
  * ```ts
@@ -499,14 +609,19 @@ export const tailCommand = command_declare({
   grammar: TAIL_GRAMMAR,
   help: {
     summary: 'The last lines',
-    description: 'Prints the last ten lines of what is piped in, else of each file named (under ==> name <== for more than one). -N is -n N; -n +N prints from line N on. It runs in the session, on every surface; a flag it does not take (-f among them) is refused, and command tail runs the system tail.',
+    description: 'Prints the last ten lines of what is piped in, else of each file named (under ==> name <== for more than one). -N is -n N; -n +N prints from line N on; -c N prints the last N bytes, -c +N from byte N on. -f is taken but cannot follow: a ChRIS file or a pipe is read once and its last lines shown, and tail says so. It runs in the session, on every surface; a flag it does not take is refused, and command tail runs the system tail.',
     category: 'Files',
-    posix: { group: POSIX_GROUP, differs: 'as tail, without -f; a FILE is a ChRIS path' },
-    examples: ['cat /proc/jobs/feed_12/pl-dircopy_40/log | tail -n 20', 'tail -n +2 a.csv'],
+    posix: { group: POSIX_GROUP, differs: 'as tail; -f shows the last lines once, never follows; a FILE is a ChRIS path' },
+    examples: ['cat /proc/jobs/feed_12/pl-dircopy_40/log | tail -n 20', 'tail -n +2 a.csv', 'tail -c 64 notes.txt'],
   },
   holds: [],
-  handler: async (args: CommandArguments<typeof TAIL_GRAMMAR>): Promise<CommandEnvelope> =>
-    askedFilter_run('tail', endsAsk_read('tail', args.options.lines), args.operands.files, ends_render(tail_lines)),
+  handler: async (args: CommandArguments<typeof TAIL_GRAMMAR>): Promise<CommandEnvelope> => {
+    const envelope: CommandEnvelope = await askedFilter_run(
+      'tail', endsAsk_read('tail', args.options.lines, args.options.bytes), args.operands.files, ends_render(tail_lines, tail_bytes),
+    );
+    if (!args.options.follow || envelope.status !== 'ok') return envelope;
+    return { ...envelope, renderedErr: `${envelope.renderedErr ?? ''}${chalk.gray(FOLLOW_NOTE)}\n` };
+  },
 });
 
 /**
@@ -546,14 +661,14 @@ export async function builtin_tail(args: string[]): Promise<CommandEnvelope> {
  *
  * @example
  * ```ts
- * const ask: SortAsk = { reverse: false, numeric: true, fold: false, unique: false, key: { from: 2, to: null }, separator: ',' };
+ * const ask: SortAsk = { reverse: false, compare: 'numeric', fold: false, unique: false, key: { from: 2, to: null }, separator: ',' };
  * ```
  */
 export interface SortAsk {
   /** Reverse the order. */
   reverse: boolean;
-  /** Compare by number. */
-  numeric: boolean;
+  /** How two keys compare: as text, by number (-n), by human size (-h, 2K < 1M), or by version (-V, digit runs as numbers). */
+  compare: 'text' | 'numeric' | 'human' | 'version';
   /** Ignore case. */
   fold: boolean;
   /** One of each equal line. */
@@ -570,6 +685,8 @@ const SORT_GRAMMAR = {
   options: {
     reverse: { short: 'r', long: 'reverse', summary: 'Reverse the order' },
     numeric: { short: 'n', long: 'numeric-sort', summary: 'Compare by number' },
+    human: { short: 'h', long: 'human-numeric-sort', summary: 'Compare human sizes: 2K < 1M < 3G' },
+    version: { short: 'V', long: 'version-sort', summary: 'Compare versions: runs of digits as numbers (v2 < v10)' },
     fold: { short: 'f', long: 'ignore-case', summary: 'Ignore case' },
     unique: { short: 'u', long: 'unique', summary: 'One of each equal line' },
     key: { short: 'k', long: 'key', value: { name: 'N[,M]', kind: 'word' }, summary: 'Compare fields N to M (to the end without M)' },
@@ -577,14 +694,21 @@ const SORT_GRAMMAR = {
   },
 } as const satisfies CommandGrammar;
 
+/** The size suffixes `sort -h` reads, smallest first. */
+const HUMAN_SUFFIXES: string = 'KMGTPEZY';
+
 /**
  * Reads `sort`'s options: its switches, a key of whole fields, a one-character separator.
  *
  * @param options - The typed options.
- * @returns What they ask, or the refusal of a key or separator it does not take.
+ * @returns What they ask, or the refusal of a key, a separator or a mix of orders it does not take.
  */
 function sortAsk_read(options: CommandArguments<typeof SORT_GRAMMAR>['options']): AskRead<SortAsk> {
-  const ask: SortAsk = { reverse: options.reverse, numeric: options.numeric, fold: options.fold, unique: options.unique, key: null, separator: null };
+  const orders: SortAsk['compare'][] = [
+    ...(options.numeric ? ['numeric' as const] : []), ...(options.human ? ['human' as const] : []), ...(options.version ? ['version' as const] : []),
+  ];
+  if (orders.length > 1) return { refused: 'sort: -n, -h and -V do not mix; take one' };
+  const ask: SortAsk = { reverse: options.reverse, compare: orders[0] ?? 'text', fold: options.fold, unique: options.unique, key: null, separator: null };
   if (options.separator !== undefined) {
     if (options.separator.length !== 1) return { refused: `sort: -t takes one character, not '${options.separator}'` };
     ask.separator = options.separator;
@@ -613,8 +737,59 @@ function sortKey_extract(ask: SortAsk, line: string): string {
   return fields.slice(ask.key.from - 1, to).join(ask.separator ?? ' ');
 }
 
+/** A line's key, read once for every comparison. */
+interface SortKey {
+  /** The line. */
+  readonly line: string;
+  /** Its key's text (folded under -f). */
+  readonly key: string;
+  /** The key's leading number; 0 when it has none. */
+  readonly num: number;
+  /** Under -h, the suffix's rank: 0 for none, 1 for K, 2 for M …. */
+  readonly rank: number;
+}
+
 /**
- * The lines in `sort`'s order: stable, by key, numeric or text, then reversed, then unique by key.
+ * Compares two keys by version: runs of digits as numbers, the rest as text.
+ *
+ * @param a - One key.
+ * @param b - The other.
+ * @returns Negative, zero or positive.
+ */
+function version_compare(a: string, b: string): number {
+  const runsA: string[] = a.match(/\d+|\D+/g) ?? [];
+  const runsB: string[] = b.match(/\d+|\D+/g) ?? [];
+  for (let i: number = 0; i < Math.min(runsA.length, runsB.length); i++) {
+    const x: string = runsA[i] as string;
+    const y: string = runsB[i] as string;
+    if (x === y) continue;
+    const digits: boolean = /^\d/.test(x) && /^\d/.test(y);
+    if (digits) {
+      const delta: bigint = BigInt(x) - BigInt(y);
+      if (delta !== 0n) return delta < 0n ? -1 : 1;
+    }
+    return x < y ? -1 : 1;
+  }
+  return runsA.length - runsB.length;
+}
+
+/**
+ * Compares two keys as the sort asks.
+ *
+ * @param ask - How it orders.
+ * @param a - One key.
+ * @param b - The other.
+ * @returns Negative, zero or positive.
+ */
+function sortKeys_compare(ask: SortAsk, a: SortKey, b: SortKey): number {
+  if (ask.compare === 'version') return version_compare(a.key, b.key);
+  if (ask.compare === 'human' && a.rank !== b.rank) return a.rank - b.rank;
+  if (ask.compare !== 'text' && a.num !== b.num) return a.num - b.num;
+  return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+}
+
+/**
+ * The lines in `sort`'s order: stable, by key, as text, number, size or version, then reversed, then unique by key.
  *
  * @param ask - How it orders.
  * @param lines - The lines.
@@ -622,23 +797,21 @@ function sortKey_extract(ask: SortAsk, line: string): string {
  *
  * @example
  * ```ts
- * sort_lines({ reverse: false, numeric: true, fold: false, unique: false, key: null, separator: null }, ['10', '9']); // ['9', '10']
+ * sort_lines({ reverse: false, compare: 'human', fold: false, unique: false, key: null, separator: null }, ['1M', '2K']); // ['2K', '1M']
  * ```
  */
 export function sort_lines(ask: SortAsk, lines: ReadonlyArray<string>): string[] {
-  const keyed: Array<{ line: string; key: string; num: number }> = lines.map((line: string) => {
+  const keyed: SortKey[] = lines.map((line: string): SortKey => {
     const key: string = sortKey_extract(ask, line);
-    const num: number = Number(/^\s*-?\d+(?:\.\d+)?/.exec(key)?.[0] ?? 0);
-    return { line, key: ask.fold ? key.toLowerCase() : key, num };
+    const number: RegExpExecArray | null = /^\s*(-?\d+(?:\.\d+)?)([a-zA-Z]?)/.exec(key);
+    const rank: number = HUMAN_SUFFIXES.indexOf((number?.[2] ?? '').toUpperCase()) + 1;
+    return { line, key: ask.fold ? key.toLowerCase() : key, num: Number(number?.[1] ?? 0), rank: (number?.[2] ?? '') === '' ? 0 : rank };
   });
-  const compare = (a: { key: string; num: number }, b: { key: string; num: number }): number => {
-    if (ask.numeric && a.num !== b.num) return a.num - b.num;
-    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
-  };
-  keyed.sort((a, b): number => (ask.reverse ? compare(b, a) : compare(a, b)));
-  if (!ask.unique) return keyed.map((k): string => k.line);
+  const compare = (a: SortKey, b: SortKey): number => sortKeys_compare(ask, a, b);
+  keyed.sort((a: SortKey, b: SortKey): number => (ask.reverse ? compare(b, a) : compare(a, b)));
+  if (!ask.unique) return keyed.map((k: SortKey): string => k.line);
   const out: string[] = [];
-  let last: { key: string; num: number } | null = null;
+  let last: SortKey | null = null;
   for (const k of keyed) {
     if (last === null || compare(last, k) !== 0) out.push(k.line);
     last = k;
@@ -647,7 +820,7 @@ export function sort_lines(ask: SortAsk, lines: ReadonlyArray<string>): string[]
 }
 
 /**
- * `sort [-rnfu] [-k N[,M]] [-t C] [FILE]...`: the declaration.
+ * `sort [-rnhVfu] [-k N[,M]] [-t C] [FILE]...`: the declaration.
  *
  * @example
  * ```ts
@@ -659,10 +832,10 @@ export const sortCommand = command_declare({
   grammar: SORT_GRAMMAR,
   help: {
     summary: 'Lines in order',
-    description: 'Sorts the lines of what is piped in, else of the files named, stably. -k compares fields N to M (to the end without M), split at -t C or at runs of blanks. It runs in the session, on every surface; a flag it does not take, or a key with its own options (-k2n), is refused, and command sort runs the system sort.',
+    description: 'Sorts the lines of what is piped in, else of the files named, stably: as text, or by number (-n), by human size (-h: 2K < 1M < 3G) or by version (-V: v2 < v10). -k compares fields N to M (to the end without M), split at -t C or at runs of blanks. It runs in the session, on every surface; a flag it does not take, or a key with its own options (-k2n), is refused, and command sort runs the system sort.',
     category: 'Files',
     posix: { group: POSIX_GROUP, differs: 'as sort, a key by whole fields; a FILE is a ChRIS path' },
-    examples: ['find /proc/jobs -status finishedWithError | sort', 'cat a.csv | sort -t , -k 2 -n'],
+    examples: ['find /proc/jobs -status finishedWithError | sort', 'cat a.csv | sort -t , -k 2 -n', 'du -h | sort -h', 'ls | sort -V'],
   },
   holds: [],
   handler: async (args: CommandArguments<typeof SORT_GRAMMAR>): Promise<CommandEnvelope> =>

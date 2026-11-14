@@ -9,17 +9,20 @@
  * wore — `@SER41` stays `@SER41`. The kept rows become the held listing, so
  * `gather add @SER41` and `${listing}` read what grep left.
  *
- * It takes grep's own flags only, with grep's meanings: -i -v -w -E -F -c
- * and -e; it is declared in one record, so any other flag is refused by the
- * parser. A file named is a ChRIS path, read through the one store-path
- * resolver and filtered here, as the text filters read theirs. Plain text in
- * is the system grep where the surface can run it, its line written back
- * from the typed options; `command grep` skips this builtin altogether.
+ * It takes grep's flags with grep's meanings: -i -v -w -E -F -c -e, and for
+ * text and files -n -l -o -h -r -A -B -C, which a listing (whole rows) has no
+ * use for and refuses by name. It is declared in one record, so any other
+ * flag is refused by the parser. A file named is a ChRIS path, read through
+ * the one store-path resolver (a folder walked under -r) and filtered here,
+ * named as typed. Plain text in is the system grep where the surface can run
+ * it, its line written back from the typed options, and filtered here where
+ * it cannot; `command grep` skips this builtin altogether.
  *
  * Key components:
  * - grepCommand: the declaration.
  * - builtin_grep: the declaration run over words already split.
- * - grepMatcher_build: the test a line passes.
+ * - grepExpression_build, grepMatcher_build: the expression, and the test a line passes.
+ * - textSources_grep: the lines a grep over text writes, as GNU grep writes them.
  * - listingRows_grep: the rows a grep keeps of a listing.
  *
  * Typical usage:
@@ -37,7 +40,14 @@ import chalk from 'chalk';
 import { envelope_ok, envelope_error, type CommandEnvelope } from '@fnndsc/menu';
 
 import { stdin_take } from '../games/stdin.js';
-import { filter_run, FILES_OPERAND, lines_join, lines_split, word_quote, type FilterSource } from './textFilters.js';
+import { errorStack, errno_words, type Result, type VFSItem, type VfsOutcome } from '@fnndsc/fond';
+import {
+  filterFile_read, filterRead_answer, filterSources_read, FILES_OPERAND, lines_join, lines_split, word_quote,
+  type FilterRead, type FilterSource,
+} from './textFilters.js';
+import { storePath_resolve } from '../utils.js';
+import { vfsDispatcher_get } from '../../core/filesystem.js';
+import { itemType_isContainer } from '../../core/itemKinds.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
 import { listingIn_take, type ListingModel } from '../../core/listing.js';
@@ -50,7 +60,8 @@ import {
 import { exitCode_set } from '../../core/handlerRun.js';
 
 /**
- * What a grep line asks.
+ * What a grep line asks of a match: the flags that decide which lines (or
+ * rows) are kept, and the patterns.
  *
  * @example
  * ```ts
@@ -74,16 +85,84 @@ export interface GrepAsk {
   patterns: string[];
 }
 
+/**
+ * How a grep line over text writes what it kept: the flags that mean
+ * something for lines and files, and nothing for a numbered listing.
+ *
+ * @example
+ * ```ts
+ * const layout: GrepLayout = { ...GREP_LAYOUT_PLAIN, lineNumber: true, after: 2 };
+ * ```
+ */
+export interface GrepLayout {
+  /** -n: each line's number. */
+  lineNumber: boolean;
+  /** -l: only the names of files with a match. */
+  filesWithMatches: boolean;
+  /** -o: only the matching parts, one per line. */
+  onlyMatching: boolean;
+  /** -h: no file-name prefix. */
+  noFilename: boolean;
+  /** -H: the file-name prefix even for one file. */
+  withFilename: boolean;
+  /** --color[=WHEN], as given: the kernel writes no colour; the system grep is told. */
+  color: string | undefined;
+  /** -r: each folder operand walked for files. */
+  recursive: boolean;
+  /** -A N, as given. */
+  after: number | undefined;
+  /** -B N, as given. */
+  before: number | undefined;
+  /** -C N, as given. */
+  context: number | undefined;
+}
+
+/**
+ * The layout of a grep line that asks none: lines as they are.
+ *
+ * @example
+ * ```ts
+ * const layout: GrepLayout = { ...GREP_LAYOUT_PLAIN, onlyMatching: true };
+ * ```
+ */
+export const GREP_LAYOUT_PLAIN: GrepLayout = {
+  lineNumber: false, filesWithMatches: false, onlyMatching: false, noFilename: false, withFilename: false, recursive: false,
+  after: undefined, before: undefined, context: undefined, color: undefined,
+};
+
 /** The switches of a grep line, as the line writes them back. */
-const GREP_SWITCHES: ReadonlyArray<{ readonly letter: string; readonly key: 'insensitive' | 'invert' | 'word' | 'extended' | 'fixed' | 'count' }> = [
-  { letter: 'i', key: 'insensitive' }, { letter: 'v', key: 'invert' }, { letter: 'w', key: 'word' },
-  { letter: 'E', key: 'extended' }, { letter: 'F', key: 'fixed' }, { letter: 'c', key: 'count' },
+const GREP_SWITCHES: ReadonlyArray<{ readonly letter: string; readonly on: (ask: GrepAsk, layout: GrepLayout) => boolean }> = [
+  { letter: 'i', on: (ask: GrepAsk): boolean => ask.insensitive },
+  { letter: 'v', on: (ask: GrepAsk): boolean => ask.invert },
+  { letter: 'w', on: (ask: GrepAsk): boolean => ask.word },
+  { letter: 'E', on: (ask: GrepAsk): boolean => ask.extended },
+  { letter: 'F', on: (ask: GrepAsk): boolean => ask.fixed },
+  { letter: 'c', on: (ask: GrepAsk): boolean => ask.count },
+  { letter: 'n', on: (_ask: GrepAsk, layout: GrepLayout): boolean => layout.lineNumber },
+  { letter: 'l', on: (_ask: GrepAsk, layout: GrepLayout): boolean => layout.filesWithMatches },
+  { letter: 'o', on: (_ask: GrepAsk, layout: GrepLayout): boolean => layout.onlyMatching },
+  { letter: 'h', on: (_ask: GrepAsk, layout: GrepLayout): boolean => layout.noFilename },
+  { letter: 'H', on: (_ask: GrepAsk, layout: GrepLayout): boolean => layout.withFilename },
+  { letter: 'r', on: (_ask: GrepAsk, layout: GrepLayout): boolean => layout.recursive },
+];
+
+/** The layout flags a numbered listing has no use for, each with why, as grep says it. */
+const LISTING_REFUSALS: ReadonlyArray<{ readonly flag: string; readonly given: (layout: GrepLayout) => boolean; readonly why: string }> = [
+  { flag: '-n', given: (layout: GrepLayout): boolean => layout.lineNumber, why: 'a listing\'s rows wear their handles, not line numbers' },
+  { flag: '-l', given: (layout: GrepLayout): boolean => layout.filesWithMatches, why: 'a listing is not files to name' },
+  { flag: '-o', given: (layout: GrepLayout): boolean => layout.onlyMatching, why: 'a listing keeps whole rows' },
+  { flag: '-h', given: (layout: GrepLayout): boolean => layout.noFilename, why: 'a listing has no file names to drop' },
+  { flag: '-H', given: (layout: GrepLayout): boolean => layout.withFilename, why: 'a listing has no file names to show' },
+  { flag: '-r', given: (layout: GrepLayout): boolean => layout.recursive, why: 'a listing is not a folder to walk' },
+  { flag: '-A', given: (layout: GrepLayout): boolean => layout.after !== undefined, why: 'a listing keeps a row with its group, not lines after it' },
+  { flag: '-B', given: (layout: GrepLayout): boolean => layout.before !== undefined, why: 'a listing keeps a row with its group, not lines before it' },
+  { flag: '-C', given: (layout: GrepLayout): boolean => layout.context !== undefined, why: 'a listing keeps a row with its group, not lines around it' },
 ];
 
 /** What a `grep` line may hold. */
 const GREP_GRAMMAR = {
   operands: [
-    { name: 'pattern', kind: 'word', optional: true, summary: 'The pattern; with -e, the first file' },
+    { name: 'pattern', kind: 'word', optional: true, unless: 'regexp', summary: 'The pattern, unless -e gives it' },
     FILES_OPERAND,
   ],
   options: {
@@ -94,11 +173,21 @@ const GREP_GRAMMAR = {
     fixed: { short: 'F', long: 'fixed-strings', summary: 'Fixed strings' },
     count: { short: 'c', long: 'count', summary: 'Count only' },
     regexp: { short: 'e', long: 'regexp', repeat: true, value: { name: 'pattern', kind: 'word' }, summary: 'A pattern (repeatable: any of them matches)' },
+    lineNumber: { short: 'n', long: 'line-number', summary: 'Each line\'s number (text and files)' },
+    filesWithMatches: { short: 'l', long: 'files-with-matches', summary: 'Only the names of files with a match' },
+    onlyMatching: { short: 'o', long: 'only-matching', summary: 'Only the matching parts, one per line' },
+    noFilename: { short: 'h', long: 'no-filename', summary: 'No file-name prefix' },
+    withFilename: { short: 'H', long: 'with-filename', summary: 'The file-name prefix, even for one file' },
+    color: { long: 'color', value: { name: 'when', kind: 'word', optional: true }, summary: 'Colour the matches (always, never, auto): the system grep colours; the session\'s own grep writes plain text' },
+    recursive: { short: 'r', long: 'recursive', summary: 'Walk each folder for files (. when none is named)' },
+    after: { short: 'A', long: 'after-context', value: { name: 'N', kind: 'int', min: 0 }, summary: 'N lines after each match' },
+    before: { short: 'B', long: 'before-context', value: { name: 'N', kind: 'int', min: 0 }, summary: 'N lines before each match' },
+    context: { short: 'C', long: 'context', value: { name: 'N', kind: 'int', min: 0 }, summary: 'N lines around each match' },
   },
 } as const satisfies CommandGrammar;
 
 /**
- * `grep [-ivwEFc] [-e PATTERN]... [PATTERN] [FILE]...`: the declaration.
+ * `grep [-ivwEFcnlohr] [-A N] [-B N] [-C N] [-e PATTERN]... [PATTERN] [FILE]...`: the declaration.
  *
  * @example
  * ```ts
@@ -110,7 +199,7 @@ export const grepCommand = command_declare({
   grammar: GREP_GRAMMAR,
   help: {
     summary: 'Keep the lines, or the rows of a numbered listing, that match',
-    description: 'Filters text, or a numbered listing keeping its handles. Fed a numbered listing (piped in, or the held one when nothing is piped), grep keeps rows: a matching row stays with the rows above it, a matched group keeps all of its rows, and every kept row keeps its handle (@SER41 stays @SER41). What it kept becomes the listing @ and ${listing} name; -c counts and changes nothing. A pattern matches a study\'s and a patient\'s own text too: grep -i t1 meant for series descriptions keeps a WHOLE study whose description says t1, and grep -i "mri brain" picking whole studies is the same rule. A file named is a ChRIS path, read here (- is the pipe); with several, each line or count is under its file\'s name. Text piped in is the system grep where the surface runs one, else filtered here with the same flags. With -e, the first word after the options is a file, not a pattern. A flag it does not take is refused; command grep runs the system grep.',
+    description: 'Filters text, or a numbered listing keeping its handles. Fed a numbered listing (piped in, or the held one when nothing is piped), grep keeps rows: a matching row stays with the rows above it, a matched group keeps all of its rows, and every kept row keeps its handle (@SER41 stays @SER41). What it kept becomes the listing @ and ${listing} name; -c counts and changes nothing. A pattern matches a study\'s and a patient\'s own text too: grep -i t1 meant for series descriptions keeps a WHOLE study whose description says t1, and grep -i "mri brain" picking whole studies is the same rule. A file named is a ChRIS path, read here (- is the pipe; a wildcard matches paths); with several, each line or count is under its file\'s name as typed. -r walks each folder named (. when none is) for its files; links met on the way are not followed. -n numbers lines, -l names the files with a match, -o keeps only the matching parts, -h drops the names and -H keeps them for one file, --color colours the matches of the system grep (this one writes plain text), and -A, -B and -C show lines after, before and around each match, groups apart by --; a listing keeps whole rows, so these are refused for one. Text piped in is the system grep where the surface runs one, else filtered here with the same flags. With -e every word after the options is a file. A flag it does not take is refused; command grep runs the system grep.',
     category: 'Files',
     posix: { group: 'Files', differs: 'also filters numbered listings, keeping their handles (help grep)' },
     examples: [
@@ -119,6 +208,8 @@ export const grepCommand = command_declare({
       'gather list | grep -i sag | gather remove',
       'cat notes.txt | grep -c todo',
       'grep -c error a.log b.log',
+      'grep -rn TODO notes',
+      'grep -C 2 error run.log',
     ],
   },
   holds: [],
@@ -126,19 +217,27 @@ export const grepCommand = command_declare({
 });
 
 /**
- * A grep line written back from what it asks: its switches, then its
- * patterns (each under -e when there are several, or one starts with a dash).
+ * A grep line written back from what it asks: its switches, its context
+ * counts, then its patterns (each under -e when there are several, or one
+ * starts with a dash).
  *
- * @param ask - What the grep line asks.
- * @returns The line, `grep -i -v -e t1 -e t2`.
+ * @param ask - What the grep line asks of a match.
+ * @param layout - How it writes what it kept.
+ * @returns The line, `grep -i -v -n -A 2 -e t1 -e t2`.
  */
-function grepLine_render(ask: GrepAsk): string {
-  const switches: string[] = GREP_SWITCHES.filter(({ key }): boolean => ask[key]).map(({ letter }): string => `-${letter}`);
+function grepLine_render(ask: GrepAsk, layout: GrepLayout): string {
+  const switches: string[] = GREP_SWITCHES.filter(({ on }): boolean => on(ask, layout)).map(({ letter }): string => `-${letter}`);
+  const counts: string[] = [
+    ...(layout.after !== undefined ? ['-A', String(layout.after)] : []),
+    ...(layout.before !== undefined ? ['-B', String(layout.before)] : []),
+    ...(layout.context !== undefined ? ['-C', String(layout.context)] : []),
+    ...(layout.color === undefined ? [] : [layout.color === '' ? '--color' : `--color=${word_quote(layout.color)}`]),
+  ];
   const lone: string | undefined = ask.patterns.length === 1 ? ask.patterns[0] : undefined;
   const patterns: string[] = lone !== undefined && !lone.startsWith('-')
     ? [word_quote(lone)]
     : ask.patterns.flatMap((pattern: string): string[] => ['-e', word_quote(pattern)]);
-  return ['grep', ...switches, ...patterns].join(' ');
+  return ['grep', ...switches, ...counts, ...patterns].join(' ');
 }
 
 /**
@@ -165,22 +264,44 @@ function basic_convertToSource(pattern: string): string {
 }
 
 /**
- * Builds the test a line (or a row's text) passes.
+ * Builds the expression a line (or a row's text) is matched by: any of the
+ * patterns, read as grep reads them under -F, -E or neither, -w and -i.
  *
- * @param ask - What the grep line asks.
- * @returns The test, or a refusal when a pattern does not compile.
+ * @param ask - What the grep line asks of a match.
+ * @returns The expression (not global), or a refusal when a pattern does not compile.
+ *
+ * @example
+ * ```ts
+ * grepExpression_build({ ...ask, patterns: ['t1\\|t2'] }); // /(?:t1|t2)/
+ * ```
  */
-export function grepMatcher_build(ask: GrepAsk): ((text: string) => boolean) | { refused: string } {
+export function grepExpression_build(ask: GrepAsk): RegExp | { refused: string } {
   const sources: string[] = ask.patterns.map((pattern: string): string => {
     const source: string = ask.fixed ? pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : ask.extended ? pattern : basic_convertToSource(pattern);
     return ask.word ? `(?<![\\w])(?:${source})(?![\\w])` : `(?:${source})`;
   });
   try {
-    const expression: RegExp = new RegExp(sources.join('|'), ask.insensitive ? 'i' : '');
-    return (text: string): boolean => expression.test(text);
+    return new RegExp(sources.join('|'), ask.insensitive ? 'i' : '');
   } catch (error: unknown) {
     return { refused: `grep: ${error instanceof Error ? error.message : String(error)}` };
   }
+}
+
+/**
+ * Builds the test a line (or a row's text) passes.
+ *
+ * @param ask - What the grep line asks of a match.
+ * @returns The test, or a refusal when a pattern does not compile.
+ *
+ * @example
+ * ```ts
+ * const matches = grepMatcher_build({ ...ask, patterns: ['T1'], word: true });
+ * ```
+ */
+export function grepMatcher_build(ask: GrepAsk): ((text: string) => boolean) | { refused: string } {
+  const built: RegExp | { refused: string } = grepExpression_build(ask);
+  if (!(built instanceof RegExp)) return built;
+  return (text: string): boolean => built.test(text);
 }
 
 /**
@@ -287,62 +408,215 @@ function listing_grep(listing: ListingModel & { source: string }, ask: GrepAsk, 
   return envelope_ok(rendered, { kind: listing.kind, data: filtered });
 }
 
-/**
- * Plain grep on text: the system's, where the surface runs host programs;
- * otherwise this grep's own line filter, with the same flags.
- *
- * @param text - The text piped in.
- * @param ask - What the grep line asks.
- * @returns The envelope.
- */
-async function text_grep(text: string, ask: GrepAsk): Promise<CommandEnvelope> {
-  const surface = surface_get();
-  if (surface.capabilities.pipeSegments) {
-    const out: Buffer = await surface.pipeSegment(grepLine_render(ask), Buffer.from(text, 'utf-8'));
-    return envelope_ok(out.toString('utf-8'));
-  }
-  const built = grepMatcher_build(ask);
-  if (typeof built !== 'function') return envelope_error('', undefined, `${built.refused}\n`);
-  const lines: string[] = text.replace(/\n$/, '').split('\n').filter((line: string): boolean => built(line) !== ask.invert);
-  if (lines.length === 0) exitCode_set(1);
-  return envelope_ok(ask.count ? `${lines.length}\n` : lines.length > 0 ? `${lines.join('\n')}\n` : '');
+/** What a grep over text read: its sources, what could not be read, and whether a folder was walked. */
+interface GrepRead extends FilterRead {
+  /** A folder was walked (-r), so each line is under its file's name. */
+  walked: boolean;
+}
+
+/** What a grep over text wrote, and how many lines it kept. */
+interface GrepAnswer {
+  /** The output. */
+  readonly text: string;
+  /** Lines selected over every source, for the exit status. */
+  readonly selected: number;
 }
 
 /**
- * grep over ChRIS files: this grep's own line filter, each file read through
- * the one store-path resolver. With several files each line (or count) is
- * under its file's name, as grep writes it.
+ * The lines a grep over text writes for its sources, as GNU grep writes
+ * them: `name:` before each line when named, `N:` under -n (`-` for a
+ * context line), `--` between groups apart under -A, -B or -C; -l the
+ * names with a match, -c a count each, -o the matching parts.
  *
- * @param ask - What the grep line asks.
- * @param files - The files (`-` is the pipe).
+ * @param expression - The match, compiled.
+ * @param ask - What the line asks of a match.
+ * @param layout - How it writes what it kept.
+ * @param sources - The texts, under the names shown.
+ * @param named - Whether each line is under its file's name.
+ * @returns The output and how many lines were kept.
+ *
+ * @example
+ * ```ts
+ * textSources_grep(/b/, ask, GREP_LAYOUT_PLAIN, [{ name: null, text: 'a\nb\n' }], false).text; // 'b\n'
+ * ```
+ */
+export function textSources_grep(
+  expression: RegExp, ask: GrepAsk, layout: GrepLayout, sources: ReadonlyArray<FilterSource>, named: boolean,
+): GrepAnswer {
+  const after: number = layout.after ?? layout.context ?? 0;
+  const before: number = layout.before ?? layout.context ?? 0;
+  const grouped: boolean = (after > 0 || before > 0) && !layout.onlyMatching;
+  const every: RegExp = new RegExp(expression.source, `${expression.flags.replace('g', '')}g`);
+  const out: string[] = [];
+  let selected: number = 0;
+  let printedAny: boolean = false;
+  for (const source of sources) {
+    const name: string = source.name === '-' || source.name === null ? '(standard input)' : source.name;
+    const lines: string[] = lines_split(source.text);
+    const hits: boolean[] = lines.map((line: string): boolean => expression.test(line) !== ask.invert);
+    const kept: number = hits.filter((hit: boolean): boolean => hit).length;
+    selected += kept;
+    if (layout.filesWithMatches) { if (kept > 0) out.push(name); continue; }
+    if (ask.count) { out.push(named ? `${name}:${kept}` : String(kept)); continue; }
+    const prefix = (at: number, mark: string): string => `${named ? `${name}${mark}` : ''}${layout.lineNumber ? `${at + 1}${mark}` : ''}`;
+    if (layout.onlyMatching) {
+      // Under -v the kept lines are those with no match: no part to show.
+      if (ask.invert) continue;
+      lines.forEach((line: string, at: number): void => {
+        for (const match of line.matchAll(every)) if (match[0] !== '') out.push(`${prefix(at, ':')}${match[0]}`);
+      });
+      continue;
+    }
+    const shown: boolean[] = lines.map((): boolean => false);
+    hits.forEach((hit: boolean, at: number): void => {
+      if (!hit) return;
+      for (let near: number = Math.max(0, at - before); near <= Math.min(lines.length - 1, at + after); near++) shown[near] = true;
+    });
+    let last: number = -2;
+    lines.forEach((line: string, at: number): void => {
+      if (!shown[at]) return;
+      if (grouped && printedAny && at !== last + 1) out.push('--');
+      out.push(`${prefix(at, hits[at] === true ? ':' : '-')}${line}`);
+      printedAny = true;
+      last = at;
+    });
+  }
+  return { text: lines_join(out), selected };
+}
+
+/**
+ * Walks a folder for its files, depth first: each file read under its name
+ * as shown (the folder as typed, then the names below it). A link met on the
+ * way is not followed, as grep -r does not.
+ *
+ * @param store - The folder's store path.
+ * @param shown - The folder as the output names it; empty for the working directory unnamed.
+ * @param read - Where the files and the errors go.
+ */
+async function folder_walk(store: string, shown: string, read: FilterRead): Promise<void> {
+  const mark: number = errorStack.checkpoint_mark();
+  const listed: Result<VFSItem[]> = await vfsDispatcher_get().list(store);
+  errorStack.checkpoint_drain(mark);
+  if (!listed.ok) {
+    read.errors += `grep: ${shown || '.'}: cannot list the folder\n`;
+    return;
+  }
+  for (const item of listed.value) {
+    const childStore: string = store === '/' ? `/${item.name}` : `${store}/${item.name}`;
+    const childShown: string = shown === '' ? item.name : `${shown}/${item.name}`;
+    if (itemType_isContainer(item.type)) { await folder_walk(childStore, childShown, read); continue; }
+    if (item.type === 'link') continue;
+    const file: VfsOutcome<string> = await vfsDispatcher_get().read(childStore);
+    if (file.ok) read.sources.push({ name: childShown, text: file.value });
+    else read.errors += `grep: ${childShown}: ${file.reason ?? errno_words(file.errno)}\n`;
+  }
+}
+
+/**
+ * Reads what grep -r works on: each operand a file, or a folder walked for
+ * its files (`-` is the pipe); no operand walks the working directory, its
+ * files named below it.
+ *
+ * @param operands - The operands, as typed.
+ * @returns The files read, under the names shown, and whether a folder was walked.
+ */
+async function recursiveSources_read(operands: ReadonlyArray<string>): Promise<GrepRead> {
+  const piped: string | null = stdin_take();
+  const read: GrepRead = { sources: [], errors: '', walked: false };
+  if (operands.length === 0) {
+    read.walked = true;
+    await folder_walk(await storePath_resolve('.'), '', read);
+    return read;
+  }
+  for (const operand of operands) {
+    if (operand === '-') { read.sources.push({ name: '-', text: piped ?? '' }); continue; }
+    const file: FilterSource | { error: string } = await filterFile_read('grep', operand);
+    if (!('error' in file)) { read.sources.push(file); continue; }
+    const store: string = await storePath_resolve(operand);
+    const mark: number = errorStack.checkpoint_mark();
+    const listed: Result<VFSItem[]> = await vfsDispatcher_get().list(store);
+    errorStack.checkpoint_drain(mark);
+    if (!listed.ok) { read.errors += file.error; continue; }
+    read.walked = true;
+    await folder_walk(store, operand.length > 1 ? operand.replace(/\/+$/, '') : operand, read);
+  }
+  return read;
+}
+
+/**
+ * grep over text it filters itself: ChRIS files (each read through the one
+ * store-path resolver, a folder walked under -r) or the piped text, named
+ * as typed.
+ *
+ * @param ask - What the grep line asks of a match.
+ * @param layout - How it writes what it kept.
+ * @param files - The file operands (`-` is the pipe); none, with text piped, for the pipe alone.
  * @returns The envelope; exit 1 when no line was kept.
  */
-async function files_grep(ask: GrepAsk, files: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const built = grepMatcher_build(ask);
-  if (typeof built !== 'function') {
+async function sources_grep(ask: GrepAsk, layout: GrepLayout, files: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  const built: RegExp | { refused: string } = grepExpression_build(ask);
+  if (!(built instanceof RegExp)) {
     exitCode_set(1);
     return envelope_error('', undefined, `${built.refused}\n`);
   }
+  let read: GrepRead;
+  if (layout.recursive) {
+    read = await recursiveSources_read(files);
+  } else {
+    const plain: FilterRead | { refusal: string } = await filterSources_read('grep', files);
+    if ('refusal' in plain) return envelope_error('', undefined, `${plain.refusal}\n`);
+    read = { ...plain, walked: false };
+  }
   let selected: number = 0;
-  const envelope: CommandEnvelope = await filter_run('grep', files, (sources: FilterSource[]): string => {
-    const named: boolean = sources.length > 1;
-    const out: string[] = [];
-    for (const source of sources) {
-      const name: string = source.name === '-' || source.name === null ? '(standard input)' : source.name;
-      const kept: string[] = lines_split(source.text).filter((line: string): boolean => built(line) !== ask.invert);
-      selected += kept.length;
-      if (ask.count) out.push(named ? `${name}:${kept.length}` : String(kept.length));
-      else out.push(...kept.map((line: string): string => (named ? `${name}:${line}` : line)));
-    }
-    return lines_join(out);
+  const envelope: CommandEnvelope = filterRead_answer(read, (sources: FilterSource[]): string => {
+    const named: boolean = layout.withFilename || (!layout.noFilename && (sources.length > 1 || read.walked));
+    const answer: GrepAnswer = textSources_grep(built, ask, layout, sources, named);
+    selected = answer.selected;
+    return answer.text;
   });
   if (selected === 0) exitCode_set(1);
   return envelope;
 }
 
 /**
- * The typed grep line run: the files named, else a piped listing, else
- * piped text, else the held listing.
+ * Plain grep on piped text: the system's, its line written back from the
+ * typed options, where the surface runs host programs; otherwise this
+ * grep's own filter, with the same flags.
+ *
+ * @param text - The text piped in.
+ * @param ask - What the grep line asks of a match.
+ * @param layout - How it writes what it kept.
+ * @returns The envelope.
+ */
+async function text_grep(text: string, ask: GrepAsk, layout: GrepLayout): Promise<CommandEnvelope> {
+  const surface = surface_get();
+  if (surface.capabilities.pipeSegments) {
+    const out: Buffer = await surface.pipeSegment(grepLine_render(ask, layout), Buffer.from(text, 'utf-8'));
+    return envelope_ok(out.toString('utf-8'));
+  }
+  const built: RegExp | { refused: string } = grepExpression_build(ask);
+  if (!(built instanceof RegExp)) return envelope_error('', undefined, `${built.refused}\n`);
+  const answer: GrepAnswer = textSources_grep(built, ask, layout, [{ name: null, text }], false);
+  if (answer.selected === 0) exitCode_set(1);
+  return envelope_ok(answer.text);
+}
+
+/**
+ * The refusal of a layout flag a numbered listing has no use for, or null.
+ *
+ * @param layout - How the line asks to write what it kept.
+ * @returns The envelope that says so, or null when the line asks none.
+ */
+function listingLayout_refuse(layout: GrepLayout): CommandEnvelope | null {
+  const refused: { flag: string; why: string } | undefined = LISTING_REFUSALS.find(({ given }): boolean => given(layout));
+  if (refused === undefined) return null;
+  exitCode_set(1);
+  return envelope_error('', undefined, `grep ${refused.flag}: ${refused.why}\n`);
+}
+
+/**
+ * The typed grep line run: the files named (or walked under -r), else a
+ * piped listing, else piped text, else the held listing.
  *
  * @param args - The typed line.
  * @returns The envelope.
@@ -350,24 +624,30 @@ async function files_grep(ask: GrepAsk, files: ReadonlyArray<string>): Promise<C
 async function grep_run(args: CommandArguments<typeof GREP_GRAMMAR>): Promise<CommandEnvelope> {
   const given: string[] = args.options.regexp;
   const pattern: string | undefined = args.operands.pattern;
-  // With -e the patterns are said; the first word after the options is a file.
-  const files: string[] = given.length > 0 && pattern !== undefined ? [pattern, ...args.operands.files] : args.operands.files;
+  const files: string[] = args.operands.files;
   const ask: GrepAsk = {
     insensitive: args.options.insensitive, invert: args.options.invert, word: args.options.word,
     extended: args.options.extended, fixed: args.options.fixed, count: args.options.count,
     patterns: given.length > 0 ? given : pattern === undefined ? [] : [pattern],
   };
+  const layout: GrepLayout = {
+    lineNumber: args.options.lineNumber, filesWithMatches: args.options.filesWithMatches, onlyMatching: args.options.onlyMatching,
+    noFilename: args.options.noFilename, withFilename: args.options.withFilename, recursive: args.options.recursive,
+    after: args.options.after, before: args.options.before, context: args.options.context, color: args.options.color,
+  };
   if (ask.patterns.length === 0) return envelope_error('', undefined, 'grep: a pattern to keep: grep [-ivwEFc] [-e PATTERN] PATTERN\n');
   const piped: ListingModel | null = listingIn_take();
-  if (files.length > 0) return files_grep(ask, files);
+  if (piped !== null && files.length === 0) {
+    stdin_take();
+    return listingLayout_refuse(layout) ?? listing_grep({ ...piped, source: '' }, ask, grepLine_render(ask, layout));
+  }
+  if (files.length > 0 || layout.recursive) return sources_grep(ask, layout, files);
   const text: string | null = stdin_take();
-  const line: string = grepLine_render(ask);
-  if (piped !== null) return listing_grep({ ...piped, source: '' }, ask, line);
-  if (text !== null) return text_grep(text, ask);
+  if (text !== null) return text_grep(text, ask, layout);
   // Nothing piped: the held listing, as an index reads it.
   const held = answer_get();
   if (held === null) return envelope_error('', undefined, 'grep: nothing to filter: pipe text or a listing in, or list something first (query, ls, gather list)\n');
-  return listing_grep({ kind: held.kind, data: held.data, source: held.source }, ask, line);
+  return listingLayout_refuse(layout) ?? listing_grep({ kind: held.kind, data: held.data, source: held.source }, ask, grepLine_render(ask, layout));
 }
 
 /**

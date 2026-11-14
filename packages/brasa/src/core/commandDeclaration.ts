@@ -86,6 +86,12 @@ export interface OperandGrammar extends ArgumentGrammar {
   readonly optional?: boolean;
   /** It takes every word left over: at most one operand of a grammar repeats. */
   readonly repeat?: boolean;
+  /**
+   * It stands only when this option (by its property) is not given: grep's
+   * pattern operand is gone once `-e` gives the pattern, and every word is a
+   * file. Such an operand is optional.
+   */
+  readonly unless?: string;
 }
 
 /** An option's value: an argument with the word usage shows for it (`<field>`). */

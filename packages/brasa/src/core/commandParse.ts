@@ -445,7 +445,9 @@ export async function commandLine_parse(declaration: CommandDeclaration, words: 
   try {
     const shape: LineShape = lineShape_parse(grammar, words);
     const scope: SubcommandGrammar | null = shape.subcommand === null ? null : (grammar.subcommands?.[shape.subcommand] ?? null);
-    const operandGrammars: readonly OperandGrammar[] = scope !== null ? (scope.operands ?? []) : (grammar.operands ?? []);
+    // An operand that stands only without an option is gone when the option is given.
+    const operandGrammars: readonly OperandGrammar[] = (scope !== null ? (scope.operands ?? []) : (grammar.operands ?? []))
+      .filter((operand: OperandGrammar): boolean => operand.unless === undefined || !shape.options.has(operand.unless));
     const assigned: Map<string, ShellWord[]> = operandWords_assign(operandGrammars, shape.operands, shape.subcommand);
     const operands: Record<string, unknown> = {};
     const expanded: Record<string, boolean> = {};
