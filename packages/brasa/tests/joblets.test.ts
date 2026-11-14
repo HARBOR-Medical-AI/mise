@@ -25,6 +25,7 @@ const { sink_dataLine } = await import('../src/core/sink.js');
 const { surface_get, surface_set, HeadlessSurface } = await import('../src/core/surface.js');
 const { lineOrigin_run } = await import('../src/core/lineOrigin.js');
 const { commands_register } = await import('../src/core/commandRegistry.js');
+const { holdsStandIn_make } = await import('./support/declarationStandIns.js');
 const { builtin_fg, builtin_joblets } = await import('../src/builtins/sys/joblets.js');
 const { sinkScope_run, BufferSink } = await import('../src/core/sink.js');
 
@@ -45,7 +46,7 @@ beforeEach((): void => {
     return (): void => { holds.push('give'); };
   };
   surface_set(host);
-  commands_register({ holds: { look: [] } });
+  commands_register({ declarations: [holdsStandIn_make('look', [])] });
 });
 
 afterEach((): void => {

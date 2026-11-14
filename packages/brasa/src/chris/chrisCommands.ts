@@ -9,9 +9,10 @@
  *
  * @module
  */
-import { type CommandGroup, type CommandHandler, type EnvelopeHandler, type SessionPiece } from '../core/commandRegistry.js';
+import { type CommandGroup } from '../core/commandRegistry.js';
 import { chrisfetchCommand, pingCommand } from '../builtins/games/chrislab.js';
-import { builtin_pipeline, builtin_plugin } from '../builtins/index.js';
+import { pluginCommand } from '../builtins/res/plugin.js';
+import { pipelineCommand } from '../builtins/res/pipeline.js';
 import { chmodCommand, getfaclCommand, setfaclCommand } from '../builtins/fs/acl.js';
 import { getfattrCommand, setfattrCommand } from '../builtins/fs/xattr.js';
 import { pacsCommand } from '../builtins/net/pacs.js';
@@ -28,7 +29,6 @@ import { contextCommand } from '../builtins/sys/context.js';
 import { physicalmodeCommand } from '../builtins/sys/physicalmode.js';
 import { idCommand, whereamiCommand, whoamiCommand } from '../builtins/sys/whoami.js';
 import { procCommand } from '../builtins/proc.js';
-import { envelopeHandler_wrap } from '../core/sink.js';
 import { fileCommand, md5sumCommand, sha256sumCommand, stringsCommand, xxdCommand } from '../builtins/games/bytes.js';
 import { duCommand } from '../builtins/fs/du.js';
 import { editCommand } from '../builtins/fs/edit.js';
@@ -39,7 +39,6 @@ import { recordCommand } from '../builtins/res/record.js';
 import { gatherCommand } from '../builtins/res/gather.js';
 import { userCommand } from '../builtins/res/user.js';
 import { motdCommand } from '../builtins/sys/motd.js';
-import { chrisHelp } from './help.js';
 import { whatifCommand } from './commandFallback.js';
 import { berthCommand } from '../builtins/berth/berth.js';
 import { downloadCommand } from '../builtins/fs/download.js';
@@ -54,33 +53,6 @@ import { dirsCommand, filesCommand, linksCommand } from '../builtins/res/files.j
 import { parametersofpluginCommand } from '../builtins/parametersofplugin.js';
 import { storeCommand } from '../builtins/store.js';
 import type { AnyCommandDeclaration } from '../core/commandDeclaration.js';
-
-const envelope: Record<string, EnvelopeHandler> = {
-  plugin: builtin_plugin,
-  plugins: builtin_plugin,
-  pipeline: builtin_pipeline,
-  pipelines: builtin_pipeline,
-};
-
-const plain: Record<string, CommandHandler> = {
-  pipeline: envelopeHandler_wrap(builtin_pipeline),
-  pipelines: envelopeHandler_wrap(builtin_pipeline),
-  plugin: envelopeHandler_wrap(builtin_plugin),
-  plugins: envelopeHandler_wrap(builtin_plugin),
-};
-
-
-/** The ChRIS backend commands: their handlers. Their help is registered from `builtins/help.ts`, which holds it. */
-/**
- * What the ChRIS commands hold of the session: a read holds nothing and
- * runs beside anything. A command not named holds the whole session; a
- * declared command says in its declaration (`gather` holds the cohort).
- */
-const holds: Record<string, readonly SessionPiece[]> = {
-  ...Object.fromEntries([
-    'pipelines', 'plugins',
-  ].map((name: string): [string, readonly SessionPiece[]] => [name, []])),
-};
 
 /** The ChRIS commands declared in one record each: grammar, kinds, handler, holds and help together. */
 const declarations: ReadonlyArray<AnyCommandDeclaration> = [
@@ -98,12 +70,11 @@ const declarations: ReadonlyArray<AnyCommandDeclaration> = [
   xxdCommand, stringsCommand, sha256sumCommand, md5sumCommand, motdCommand, recordCommand,
   // Files.
   editCommand, configCommand, uploadCommand, fileCommand,
+  // Resources.
+  pluginCommand, pipelineCommand,
 ];
 
+/** The ChRIS backend's commands, every one declared in one record. */
 export const chrisCommands: CommandGroup = {
-  envelope,
-  plain,
-  help: chrisHelp,
-  holds,
   declarations,
 };

@@ -6,10 +6,12 @@
  * stand in here too (`declarationStandIns.ts`), as `everyVerb_install` stands
  * in handlers.
  */
-import { commands_register } from '../../src/core/commandRegistry.js';
-import { chrisHelp } from '../../src/chris/help.js';
+import { builtinCommand_has, commandHelpEntry_get, commands_register, type CommandHelp } from '../../src/core/commandRegistry.js';
+import type { AnyCommandDeclaration } from '../../src/core/commandDeclaration.js';
 import { HELP_ORDER } from '../../src/core/commandOrder.js';
-import { berthStandIn_make, CORE_STAND_IN_NAMES, downloadStandIn_make, FILES_STAND_INS, lsStandIn_make, NAVIGATION_STAND_INS, SHARING_PACS_IMAGING_STAND_INS } from './declarationStandIns.js';
+import {
+  berthStandIn_make, CORE_STAND_IN_NAMES, downloadStandIn_make, FILES_STAND_INS, lsStandIn_make, NAVIGATION_STAND_INS, RESOURCE_STAND_INS, SHARING_PACS_IMAGING_STAND_INS, wordsStandIn_make,
+} from './declarationStandIns.js';
 
 /** What a stand-in handler answers. */
 const ran = async (): Promise<{ status: 'ok'; rendered: string }> => ({ status: 'ok', rendered: '' });
@@ -23,19 +25,36 @@ export function declarations_install(): void {
   commands_register({ declarations: [downloadStandIn_make(ran), berthStandIn_make(ran), ...backend] }, 'backend');
 }
 
-/** Registers the ChRIS backend's help pages, and the declared commands whose help their declarations hold. */
+/** Registers the ChRIS backend's commands whose help their declarations hold, standing in. */
 export function chrisHelp_install(): void {
-  commands_register({ help: chrisHelp }, 'backend');
+  // plugin and pipeline, standing in: their pages are their declarations'.
+  commands_register({ declarations: Object.values(RESOURCE_STAND_INS).map((make) => make(ran)) }, 'backend');
   declarations_install();
   // The Sharing, PACS and Imaging commands' pages are their declarations'.
   commands_register({ declarations: Object.values(SHARING_PACS_IMAGING_STAND_INS).map((make) => make(ran)) }, 'backend');
 }
 
 /**
- * Registers a stand-in handler for every name with help, so a suite sees a
- * session that has every verb (as a ChRIS session does) without loading the
- * commands themselves.
+ * Registers a stand-in for every name with help that nothing answers yet,
+ * so a suite sees a session that has every verb (as a ChRIS session does)
+ * without loading the commands themselves. A name with a page keeps it.
  */
 export function everyVerb_install(): void {
-  commands_register({ envelope: Object.fromEntries(HELP_ORDER.map((name: string) => [name.split(' ')[0] as string, ran])) });
+  const names: string[] = [...new Set(HELP_ORDER.map((name: string): string => name.split(' ')[0] as string))];
+  const standIns: AnyCommandDeclaration[] = names.filter((name: string): boolean => !builtinCommand_has(name)).map((name: string): AnyCommandDeclaration => {
+    const page: CommandHelp | undefined = commandHelpEntry_get(name);
+    const standIn: AnyCommandDeclaration = wordsStandIn_make(name, ran);
+    if (page === undefined) return standIn;
+    return {
+      ...standIn,
+      help: {
+        usage: page.usage,
+        summary: page.summary ?? page.description,
+        description: page.description,
+        ...(page.category !== undefined ? { category: page.category } : {}),
+        ...(page.examples !== undefined ? { examples: page.examples } : {}),
+      },
+    } as AnyCommandDeclaration;
+  });
+  commands_register({ declarations: standIns });
 }

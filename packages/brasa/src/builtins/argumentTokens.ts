@@ -10,7 +10,19 @@
 /** Parsed executable option names and their scalar values. */
 export type ExecutableArguments = Record<string, string | boolean | number>;
 
-function argumentValue_parse(value: string): string | boolean | number {
+/**
+ * Reads one value as CUBE reads a scalar: `true` and `false`, a number, or
+ * the text as typed.
+ *
+ * @param value - The word.
+ * @returns The value.
+ *
+ * @example
+ * ```ts
+ * argumentValue_coerce('0.5'); // 0.5
+ * ```
+ */
+export function argumentValue_coerce(value: string): string | boolean | number {
   if (value === 'true') return true;
   if (value === 'false') return false;
   if (value.trim() !== '') {
@@ -39,13 +51,13 @@ export function executableArguments_parse(tokens: readonly string[]): Executable
     if (equalsIndex >= 0) {
       const name: string = option.slice(0, equalsIndex);
       if (!name) throw new Error(`Invalid option: ${token}`);
-      result[name] = argumentValue_parse(option.slice(equalsIndex + 1));
+      result[name] = argumentValue_coerce(option.slice(equalsIndex + 1));
       continue;
     }
     if (!option) throw new Error(`Invalid option: ${token}`);
     const next: string | undefined = tokens[index + 1];
     if (next !== undefined && (!next.startsWith('-') || /^-\d/.test(next))) {
-      result[option] = argumentValue_parse(next);
+      result[option] = argumentValue_coerce(next);
       index++;
     } else {
       result[option] = true;

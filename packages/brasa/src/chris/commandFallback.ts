@@ -3,23 +3,25 @@
  *
  * A plugin named with its version runs as that plugin. A word naming a
  * plugin or a pipeline in `/bin` runs it (a captured line runs only a
- * pipeline: a plugin's run prints live). Anything else goes to chili, when
- * chili has the command, with a notice ahead of its output.
+ * pipeline: a plugin's run prints live). Its line is parsed first against
+ * the declaration made from CUBE's parameters (`binDeclarations.ts`), and a
+ * bad line is refused before anything runs. Anything else goes to chili,
+ * when chili has the command, with a notice ahead of its output.
  *
  * @module
  */
 import chalk from 'chalk';
-import { CHRIS_BUILTIN_LINES } from './help.js';
 import { variablesPage_render } from '../builtins/variablesPage.js';
-import type { ListingItem, CommandEnvelope } from '@fnndsc/menu';
-import type { Result } from '@fnndsc/fond';
+import type { CommandEnvelope } from '@fnndsc/menu';
 import type { BackendFallback } from '../core/backend.js';
-import type { ExpressionDeclaration } from '../core/commandDeclaration.js';
+import type { CommandDeclaration, ExpressionDeclaration } from '../core/commandDeclaration.js';
 import { envelope_deliver, sink_get } from '../core/sink.js';
 import { exitCode_read, exitCode_set, handler_runDirect } from '../core/handlerRun.js';
 import { runs_awaitSettled, settlement_render, type RunSettlement } from '../builtins/res/runWait.js';
 import { binExecutableMatches_get, binPluginHighest_find, type BinExecutableMatches, type BinPluginHighest } from './binExecutables.js';
-import { builtin_pipeline } from '../builtins/res/pipeline.js';
+import {
+  pipelineDiagramCommand_handle, pipelineInfo_handle, pipelineManifestCommand_handle, pipelineRun_execute, pipelineSource_handle, type PipelineRunRequest,
+} from '../builtins/res/pipeline.js';
 import type { PipelineScheduled } from '../api/models.js';
 import { builtin_executePlugin } from '../builtins/pluginExecute.js';
 import { pluginExecutable_handle } from '../builtins/executable.js';
@@ -33,6 +35,28 @@ import { newFeed_cacheAdd } from '../builtins/feedCreation.js';
 import { OperandRefusal, operands_read, stage_lines, stage_make, stageMade_lines, stageWriter_default, stageWriter_none, type BinOperands, type Stage } from '../builtins/operands.js';
 import { echoNode_render } from '../builtins/runEcho.js';
 import { operandRuns_split } from '../builtins/operandRuns.js';
+import { shellWords_values, type ShellArguments, type ShellWord } from '../lib/parser.js';
+import {
+  binDeclaration_get, binEntry_resolve, pipelineDeclaration_get, pipelineWords_parse, pluginDeclaration_get,
+  type BinEntry, type PipelineLine, type PipelineLineParse,
+} from './binDeclarations.js';
+
+/** The built-in names the ChRIS session answers, for `help variables`. */
+export const CHRIS_BUILTIN_LINES: ReadonlyArray<string> = [
+  '  ${gather}        every gathered member, as operands (where it was gathered FROM); read live',
+  '  ${gather.series.folderPath}  the same members, where they LANDED in CUBE',
+  '  ${gather.name}  ${gather.feed.id}  any field of the cohort, as `gather` answers it',
+];
+
+/** Where a pipeline run starts: the instance it attaches to, or, dry, a feed that would be rooted first. */
+interface RunPlace {
+  /** The instance; absent, the feed node the session stands in. */
+  readonly previous?: number;
+  /** A dry run on a feed that would be rooted first. */
+  readonly dryNewFeed: boolean;
+  /** Whether the run rooted a feed first. */
+  readonly rooted: boolean;
+}
 
 /**
  * The node a pipeline run starts from, read from its operand (#1303): a
@@ -41,14 +65,14 @@ import { operandRuns_split } from '../builtins/operandRuns.js';
  * name (or the subjects') as its title, and the run goes on from that root.
  *
  * @param name - The pipeline's `/bin` name, for the refusal lines.
- * @param args - The words after it.
+ * @param line - The line, read.
  * @param dry - Say where the run would start, staging and rooting nothing (`whatif`).
- * @returns The words to run with (`--previous` set) and whether a feed was rooted, or null after a refusal was said.
+ * @returns Where the run starts, or null after a refusal was said.
  */
-async function pipelineOperand_place(name: string, args: string[], dry: boolean = false): Promise<{ words: string[]; rooted: boolean } | null> {
+async function pipelineOperand_place(name: string, line: PipelineLine, dry: boolean = false): Promise<RunPlace | null> {
   let operands: BinOperands;
   try {
-    operands = await operands_read(args);
+    operands = await operands_read(line.operands);
   } catch (error: unknown) {
     if (!(error instanceof OperandRefusal)) throw error;
     sink_get().err_write(chalk.red(`${name}: ${error.message}\n`));
@@ -58,12 +82,12 @@ async function pipelineOperand_place(name: string, args: string[], dry: boolean 
     // No operand: the working directory is the input, as it is for a plugin run from /bin. Inside a feed node the
     // run goes on from that node (`pipeline run` reads it); outside one, pl-dircopy roots a new feed on it first,
     // as the directory operand would (#1364).
-    if (operands.rest.some((word: string): boolean => word.split('=')[0] === '--previous')) return { words: args, rooted: false };
+    if (line.previous !== undefined) return { previous: line.previous, dryNewFeed: false, rooted: false };
     const cwd: string = await path_resolve('.');
-    if (path_isInFeed(cwd)) return { words: args, rooted: false };
+    if (path_isInFeed(cwd)) return { dryNewFeed: false, rooted: false };
     operands = { ...operands, directory: cwd, typed: [cwd] };
   }
-  if (operands.rest.some((word: string): boolean => word.split('=')[0] === '--previous')) {
+  if (line.previous !== undefined) {
     sink_get().err_write(chalk.red(`${name}: the operand and --previous say the input twice\n`));
     return null;
   }
@@ -73,7 +97,7 @@ async function pipelineOperand_place(name: string, args: string[], dry: boolean 
       sink_get().err_write(chalk.red(`${name}: ${operands.typed[0]} is in a feed but not at a node (…/feeds/feed_N/pl-x_ID)\n`));
       return null;
     }
-    return { words: ['--previous', String(here), ...operands.rest], rooted: false };
+    return { previous: here, dryNewFeed: false, rooted: false };
   }
   let stage: Stage | null = null;
   let root: string = operands.directory ?? '';
@@ -87,13 +111,13 @@ async function pipelineOperand_place(name: string, args: string[], dry: boolean 
       return null;
     }
     if (dry) sink_get().data_write(chalk.cyan(`would stage under ${stage.path}\n`));
-    for (const line of stage_lines(stage)) sink_get().data_write(chalk.cyan(`${line}\n`));
+    for (const stageLine of stage_lines(stage)) sink_get().data_write(chalk.cyan(`${stageLine}\n`));
     root = stage.path;
     title = stage.subjects.map((subject): string => subject.name).join(', ');
   }
   if (dry) {
     sink_get().data_write(chalk.gray(`${echoNode_render(root, title)}\n`));
-    return { words: ['--whatif-new-feed', ...operands.rest], rooted: false };
+    return { dryNewFeed: true, rooted: false };
   }
   const feed: FeedCreationResult | null = await feed_create([root], { title });
   if (feed === null) {
@@ -104,27 +128,38 @@ async function pipelineOperand_place(name: string, args: string[], dry: boolean 
   newFeed_cacheAdd({ feedID: feed.id, title, ownerUsername: feed.owner_username, rootInstanceID });
   sink_get().data_write(chalk.green(`Feed created: ${feed.id}\n`));
   if (stage !== null) {
-    for (const line of stageMade_lines(stage, `/home/${feed.owner_username}/feeds/feed_${feed.id}/pl-dircopy_${rootInstanceID}/data`)) sink_get().data_write(chalk.cyan(`${line}\n`));
+    for (const made of stageMade_lines(stage, `/home/${feed.owner_username}/feeds/feed_${feed.id}/pl-dircopy_${rootInstanceID}/data`)) sink_get().data_write(chalk.cyan(`${made}\n`));
   }
-  return { words: ['--previous', String(rootInstanceID), ...operands.rest], rooted: true };
+  return { previous: rootInstanceID, dryNewFeed: false, rooted: true };
 }
 
 /**
  * Runs a pipeline once from the node its operand names.
  *
  * @param name - The pipeline's `/bin` name.
- * @param args - The words after it: at most one directory operand.
+ * @param line - The line, read: at most one directory operand.
  * @param dry - Resolve the run and print it, creating and running nothing.
  * @returns The run's envelope; an error envelope after a refusal was said.
  */
-async function pipelineRun_start(name: string, args: string[], dry: boolean = false): Promise<CommandEnvelope> {
+async function pipelineRun_start(name: string, line: PipelineLine, dry: boolean = false): Promise<CommandEnvelope> {
   // The operand says where the run starts (#1303); refused, nothing runs.
-  const placed: { words: string[]; rooted: boolean } | null = await pipelineOperand_place(name, args, dry);
-  const words: string[] = placed === null || !dry || placed.words.includes('--whatif-new-feed') ? (placed?.words ?? []) : [...placed.words, '--whatif'];
-  const envelope: CommandEnvelope = placed === null ? { status: 'error', rendered: '' } : await builtin_pipeline(['run', name, ...words]);
+  const placed: RunPlace | null = await pipelineOperand_place(name, line, dry);
+  if (placed === null) return { status: 'error', rendered: '' };
+  const request: PipelineRunRequest = {
+    pipeline: name,
+    ...(line.compute !== undefined ? { compute: line.compute } : {}),
+    ...(placed.previous !== undefined ? { previous: placed.previous } : {}),
+    ...(line.paramFile !== undefined ? { paramFile: line.paramFile } : {}),
+    bindings: line.bindings.map((binding) => ({ node: binding.node, field: binding.field, value: binding.value })),
+    detach: line.detach,
+    verbose: line.verbose,
+    dry,
+    dryNewFeed: placed.dryNewFeed,
+  };
+  const envelope: CommandEnvelope = await pipelineRun_execute(request);
   // The model says when the run rooted a feed first: the fallback rooted it, so the fallback says so (the kind is
   // `pipeline.scheduled`, PIPELINE_SCHEDULED_KIND; named here so a test's stub of the pipeline module need not carry it).
-  if (placed?.rooted === true && envelope.model?.kind === 'pipeline.scheduled') (envelope.model.data as PipelineScheduled).newFeed = true;
+  if (placed.rooted && envelope.model?.kind === 'pipeline.scheduled') (envelope.model.data as PipelineScheduled).newFeed = true;
   return envelope;
 }
 
@@ -133,34 +168,33 @@ async function pipelineRun_start(name: string, args: string[], dry: boolean = fa
  * names several, each run headed by its operand.
  *
  * @param name - The pipeline's `/bin` name.
- * @param args - The words after it.
+ * @param line - The line, read.
  * @param dry - Resolve every run and print it, creating and running nothing.
  * @returns The last run's envelope, an error when any run failed or the line was refused.
  */
-async function pipelineRuns_start(name: string, args: string[], dry: boolean = false): Promise<CommandEnvelope> {
+async function pipelineRuns_start(name: string, line: PipelineLine, dry: boolean = false): Promise<CommandEnvelope> {
   let runs: string[][];
   try {
-    runs = await operandRuns_split(args);
+    runs = await operandRuns_split(line.operands);
   } catch (error: unknown) {
     if (!(error instanceof OperandRefusal)) throw error;
     sink_get().err_write(chalk.red(`${name}: ${error.message}\n`));
     return { status: 'error', rendered: '' };
   }
-  if (runs.length === 1) return pipelineRun_start(name, args, dry);
+  if (runs.length === 1) return pipelineRun_start(name, line, dry);
   // Every run is dispatched before any is waited for; then one wait holds the line for them all.
-  const detach: boolean = args.includes('--detach');
   const instanceIDs: number[] = [];
   let last: CommandEnvelope = { status: 'ok', rendered: '' };
   let failed: boolean = false;
   for (const words of runs) {
     sink_get().data_write(chalk.gray(`${name} ${words[0]}:\n`));
-    last = await pipelineRun_start(name, detach ? words : [...words, '--detach'], dry);
+    last = await pipelineRun_start(name, { ...line, operands: words, detach: true }, dry);
     failed ||= last.status === 'error';
     if (last.model?.kind === 'pipeline.scheduled') {
       instanceIDs.push(...(last.model.data as PipelineScheduled).instances.map((node): number => node.instanceId));
     }
   }
-  if (!detach && instanceIDs.length > 0) {
+  if (!line.detach && instanceIDs.length > 0) {
     const settlement: RunSettlement = await runs_awaitSettled(instanceIDs, name);
     sink_get().data_write(`${settlement_render(settlement, name)}\n`);
     if (settlement.outcome === 'settled' && settlement.failed > 0) exitCode_set(1);
@@ -169,44 +203,66 @@ async function pipelineRuns_start(name: string, args: string[], dry: boolean = f
 }
 
 /**
- * Handles a pipeline name invoked directly as an executable from /bin.
- * Routes flag combinations to the appropriate pipeline subcommand:
- *   --diagram             → pipeline diagram (preserving renderer flags)
- *   --signalflow          → pipeline diagram --signalflow
- *   --help / -h           → contextual pipeline-executable help
- *   --nodes / --parameters → pipeline info
- *   --manifest             → pipeline manifest
- *   --source / --readme    → pipeline source
- *   (bare or --compute)    → pipeline run
+ * Answers a pipeline line already read: the look it asks for, or its runs.
+ *   --diagram (with --withargs, or --signalflow) → the diagram
+ *   --signalflow             → SignalFlow YAML
+ *   --help / -h              → the pipeline's page
+ *   --nodes / --parameters   → pipeline info
+ *   --manifest               → pipeline manifest
+ *   --source / --readme      → pipeline source
+ *   otherwise                → a run
  *
- * @param name - The pipeline name as typed.
+ * @param name - The pipeline's `/bin` name.
+ * @param line - The line, read against its declaration.
+ * @param dry - Resolve a run and print it, creating and running nothing.
+ * @returns The answer's envelope.
+ *
+ * @example
+ * ```ts
+ * await pipelineParsed_run('PHI_detection_id12', line);
+ * ```
+ */
+export async function pipelineParsed_run(name: string, line: PipelineLine, dry: boolean = false): Promise<CommandEnvelope> {
+  const exitCodeBefore: number = exitCode_read();
+  let envelope: CommandEnvelope;
+  switch (line.look) {
+    case 'help': envelope = { status: 'ok', rendered: pipelineExecutableHelp_render(name, (await pipelineDeclaration_get(name)) ?? undefined) }; break;
+    case 'diagram': envelope = await pipelineDiagramCommand_handle(name, line.withArguments, line.signalflow); break;
+    case 'signalflow': envelope = await pipelineDiagramCommand_handle(name, false, true); break;
+    case 'manifest': envelope = await pipelineManifestCommand_handle(name); break;
+    case 'nodes': envelope = await pipelineInfo_handle(name); break;
+    case 'source': envelope = await pipelineSource_handle(name); break;
+    case null: envelope = await pipelineRuns_start(name, line, dry); break;
+  }
+  const exitCodeAfter: number = exitCode_read();
+  if (exitCodeAfter !== 0 && exitCodeAfter !== exitCodeBefore) envelope.status = 'error';
+  return envelope;
+}
+
+/**
+ * Handles a pipeline name invoked directly as an executable from /bin: its
+ * line parsed against the declaration made from its manifest, a bad line
+ * refused before anything runs.
+ *
+ * @param name - The pipeline's `/bin` name.
  * @param args - Arguments following the pipeline name.
  * @param dry - Resolve a run and print it, creating and running nothing.
- * @returns The pipeline builtin's envelope, preserving diagram models and text.
+ * @returns The answer's envelope; an error after a refusal.
  */
 async function pipelineExecutable_handle(name: string, args: string[], dry: boolean = false): Promise<CommandEnvelope> {
-  const exitCodeBefore: number = exitCode_read();
-  let envelope: CommandEnvelope | undefined;
-  if (args.includes('--help') || args.includes('-h')) {
-    envelope = { status: 'ok', rendered: pipelineExecutableHelp_render(name) };
-  } else if (args.includes('--diagram')) {
-    const diagramArgs: string[] = args.filter((argument: string): boolean => argument !== '--diagram');
-    envelope = await builtin_pipeline(['diagram', name, ...diagramArgs]);
-  } else if (args.includes('--signalflow')) {
-    envelope = await builtin_pipeline(['diagram', name, '--signalflow']);
-  } else if (args.includes('--manifest')) {
-    envelope = await builtin_pipeline(['manifest', name]);
-  } else if (args.includes('--nodes') || args.includes('--parameters')) {
-    envelope = await builtin_pipeline(['info', name]);
-  } else if (args.includes('--source') || args.includes('--readme')) {
-    envelope = await builtin_pipeline(['source', name]);
-  } else {
-    envelope = await pipelineRuns_start(name, args, dry);
+  const declaration: CommandDeclaration | null = await pipelineDeclaration_get(name);
+  if (declaration === null) {
+    sink_get().err_write(chalk.red(`${name}: could not read the pipeline's manifest from CUBE, so the line cannot be read\n`));
+    exitCode_set(1);
+    return { status: 'error', rendered: '' };
   }
-  const result: CommandEnvelope = envelope ?? { status: 'ok', rendered: '' };
-  const exitCodeAfter: number = exitCode_read();
-  if (exitCodeAfter !== 0 && exitCodeAfter !== exitCodeBefore) result.status = 'error';
-  return result;
+  const parsed: PipelineLineParse = await pipelineWords_parse(declaration, args);
+  if (!parsed.ok) {
+    sink_get().err_write(`${chalk.red(parsed.refusal)}\n`);
+    exitCode_set(1);
+    return { status: 'error', rendered: '' };
+  }
+  return pipelineParsed_run(name, parsed.line, dry);
 }
 
 /**
@@ -229,7 +285,9 @@ async function chili_delegate(command: string, args: string[]): Promise<CommandE
  * `whatif <plugin or Pipeline line>`: resolves the line as a run would, to
  * the version, the operands, the stage, the node and the parameters, prints
  * that, and stops before anything is created or run. A prefix, as `time`
- * and `env` are, since every flag after a `/bin` name is the plugin's.
+ * and `env` are, since every flag after a `/bin` name is the plugin's: the
+ * line after it is parsed against that plugin's or pipeline's declaration,
+ * and refused as the real line would be.
  *
  * @param args - The line: the `/bin` name and its words.
  * @returns An ok envelope when the real line would be accepted; an error after the refusal the real line would give.
@@ -240,17 +298,20 @@ export async function builtin_whatif(args: string[]): Promise<CommandEnvelope> {
     sink_get().err_write(chalk.red('whatif: usage: whatif <plugin or Pipeline> [operands] [options]\n'));
     return { status: 'error', rendered: '' };
   }
+  // The words after the /bin name keep the shell words the line carried, so its operands glob by kind.
+  const carried: readonly ShellWord[] | undefined = (args as ShellArguments).words;
+  const lineWords: string[] = carried !== undefined && carried.length === args.length ? shellWords_values(carried.slice(1)) : words;
   const binMatches: BinExecutableMatches = await binExecutableMatches_get(command);
-  if (binMatches.plugin) return builtin_executePlugin(command, words, undefined, true);
+  if (binMatches.plugin) return builtin_executePlugin(command, lineWords, undefined, true);
   if (binMatches.pipeline) {
-    const envelope: CommandEnvelope = await pipelineExecutable_handle(binMatches.pipeline.name, words, true);
+    const envelope: CommandEnvelope = await pipelineExecutable_handle(binMatches.pipeline.name, lineWords, true);
     envelope_deliver(envelope);
     return { ...envelope, rendered: '' };
   }
   const highest: BinPluginHighest | null = await binPluginHighest_find(command);
   if (highest !== null) {
     sink_get().data_write(chalk.gray(`running ${highest.executable} (highest of ${highest.versions.join(', ')})\n`));
-    return builtin_executePlugin(highest.executable, words, undefined, true);
+    return builtin_executePlugin(highest.executable, lineWords, undefined, true);
   }
   sink_get().err_write(chalk.red(`whatif: ${command}: not a plugin or a Pipeline in /bin\n`));
   return { status: 'error', rendered: '' };
@@ -258,30 +319,30 @@ export async function builtin_whatif(args: string[]): Promise<CommandEnvelope> {
 
 /**
  * Completes a word of a `whatif` line as the line after it completes: its
- * first word a plugin `/bin` lists, an option the plugin or pipeline takes,
- * and an operand a path when the `/bin` entry takes paths.
+ * first word a plugin or pipeline `/bin` lists, then the rest from that
+ * entry's declaration (its options, and its input paths).
  *
  * @param words - The words after `whatif`, before the one completed.
  * @param word - The word typed so far.
  * @returns The candidates.
  */
 async function whatifWord_complete(words: readonly string[], word: string): Promise<string[]> {
-  const { chrisCompletion } = await import('./completion.js');
   const first: string | undefined = words[0];
   if (first === undefined) {
-    const names: string[] = (await chrisCompletion.commandWords?.()) ?? [];
-    return names.filter((name: string): boolean => name.startsWith(word));
+    const { binNames_list } = await import('./completion.js');
+    return (await binNames_list()).filter((name: string): boolean => name.startsWith(word));
   }
-  if (word.startsWith('-')) return (await chrisCompletion.options?.([...words], word)) ?? [];
-  if (words[words.length - 1] === 'as' || !(await chrisCompletion.pathArguments?.(first))) return [];
-  const { cfsPaths_complete } = await import('../lib/completer/cfsPaths.js');
-  return cfsPaths_complete(word);
+  const declaration: CommandDeclaration | null = await binDeclaration_get(first);
+  if (declaration === null) return [];
+  const { declaredWord_complete } = await import('../lib/completer/declared.js');
+  return declaredWord_complete(declaration, words.slice(1), word);
 }
 
 /**
  * `whatif <plugin or Pipeline line>`: the declaration. Its words are a whole
- * line of another command, whose flags are that command's, so it parses
- * them itself (an expression grammar), as `time` and `env` would.
+ * line of another command, whose grammar is that command's (the declaration
+ * CUBE's parameters make), so it hands them on as they came, as `time` and
+ * `env` would.
  *
  * @example
  * ```ts
@@ -294,7 +355,7 @@ export const whatifCommand: ExpressionDeclaration = {
   help: {
     usage: 'whatif <plugin or Pipeline> [operands] [options]',
     summary: 'Print what a plugin or Pipeline line would do, and run nothing',
-    description: 'Resolve the line as a run would and print it: the version picked, the operands as read, the stage, the node it would attach to or the feed it would root, and every parameter with defaults marked. Nothing is staged, no feed is made, no job starts. When the real line would refuse, whatif prints the same refusal and exits non-zero. A prefix, as time and env are: every flag after a /bin name belongs to the plugin, and several directory operands print one resolution per run.',
+    description: 'Resolve the line as a run would and print it: the version picked, the operands as read, the stage, the node it would attach to or the feed it would root, and every parameter with defaults marked. Nothing is staged, no feed is made, no job starts. When the real line would refuse, whatif prints the same refusal and exits non-zero: the line is parsed against the plugin\'s or Pipeline\'s own declaration, made from CUBE\'s parameters. A prefix, as time and env are: every flag after a /bin name belongs to the plugin, and several directory operands print one resolution per run.',
     category: 'Resources',
     examples: ['whatif pl-freesurfer ~/uploads/t1.nii as sub-01', 'whatif pl-dcm2niix ~/feeds/feed_12/pl-dircopy_40/data'],
   },
@@ -303,9 +364,27 @@ export const whatifCommand: ExpressionDeclaration = {
   complete: whatifWord_complete,
 };
 
+/**
+ * The page of a `/bin` entry, its usage and every option from the
+ * declaration CUBE's parameters make.
+ *
+ * @param entry - The entry.
+ * @returns The page.
+ */
+async function binEntryHelp_render(entry: BinEntry): Promise<string> {
+  if (entry.kind === 'plugin') return pluginExecutableHelp_render(entry.executable, (await pluginDeclaration_get(entry.executable)) ?? undefined);
+  return pipelineExecutableHelp_render(entry.name, (await pipelineDeclaration_get(entry.name)) ?? undefined);
+}
+
 /** The ChRIS backend's fallback. */
 export const chrisFallback: BackendFallback = {
-  claim: pluginExecutable_handle,
+  claim: async (command: string, args: string[]): Promise<CommandEnvelope | null> => {
+    // A plugin version's page is its declaration's, read from CUBE.
+    if (/-v[^/]+$/.test(command) && (args.includes('--help') || args.includes('-h'))) {
+      return { status: 'ok', rendered: pluginExecutableHelp_render(command, (await pluginDeclaration_get(command)) ?? undefined) };
+    }
+    return pluginExecutable_handle(command, args);
+  },
   unknown: async (command: string, args: string[], captured: boolean): Promise<CommandEnvelope | null> => {
     const binMatches: BinExecutableMatches = await binExecutableMatches_get(command);
     // A bare /bin plugin name runs the plugin, and a run is a CUBE job: typed
@@ -342,11 +421,10 @@ export const chrisFallback: BackendFallback = {
     // The variables page: the core's, with this backend's built-in lines.
     if (command === 'variables') return variablesPage_render(CHRIS_BUILTIN_LINES);
     // A plugin version (`pl-dircopy-v2.1.2`) is its own executable.
-    if (/-v[^/]+$/.test(command)) return pluginExecutableHelp_render(command);
-    const binMatches: BinExecutableMatches = await binExecutableMatches_get(command);
-    if (binMatches.pipeline) return pipelineExecutableHelp_render(binMatches.pipeline.name);
-    // A bare plugin name's help is its highest version's.
-    const highest: BinPluginHighest | null = await binPluginHighest_find(command);
-    return highest === null ? null : pluginExecutableHelp_render(highest.executable);
+    if (/-v[^/]+$/.test(command)) return pluginExecutableHelp_render(command, (await pluginDeclaration_get(command)) ?? undefined);
+    // A pipeline, or a bare plugin name (its highest version's page).
+    const entry: BinEntry | null = await binEntry_resolve(command);
+    return entry === null ? null : binEntryHelp_render(entry);
   },
+  declaration: binDeclaration_get,
 };

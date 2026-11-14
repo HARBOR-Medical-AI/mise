@@ -72,6 +72,7 @@ import { exitCode_set } from '../../core/handlerRun.js';
 import { repl_confirm } from '../../core/question.js';
 import { sink_dataLine } from '../../core/sink.js';
 import { path_resolve, type ParsedArgs } from '../utils.js';
+import { storePath_resolve } from '../../core/paths.js';
 
 /** salsa, loaded when a verb runs (the engine's other builtins never need it). */
 type Salsa = typeof import('@fnndsc/salsa');
@@ -403,14 +404,15 @@ async function syncSource_resolve(parsed: ParsedArgs, salsa: Salsa): Promise<Plu
 }
 
 /**
- * Makes a CUBE source's path absolute against where the session stands.
+ * Makes a CUBE source's path absolute against where the session stands,
+ * resolved where the store keeps it (a link in a feed followed).
  *
  * @param source - The parsed source.
  * @returns The source, its CUBE path resolved.
  */
 async function sourcePath_resolve(source: PluginIndexSource | null): Promise<PluginIndexSource | null> {
   if (source === null || source.kind !== 'cube') return source;
-  return { kind: 'cube', path: await path_resolve(source.path) };
+  return { kind: 'cube', path: await storePath_resolve(source.path) };
 }
 
 /**
@@ -436,7 +438,7 @@ async function singleFileIndex_read(word: string, salsa: Salsa): Promise<Result<
  */
 async function fileText_read(word: string, salsa: Salsa): Promise<string | null> {
   if (word.startsWith('cube:')) {
-    const text: Result<string> = await salsa.fileContent_get(await path_resolve(word.slice('cube:'.length)));
+    const text: Result<string> = await salsa.fileContent_get(await storePath_resolve(word.slice('cube:'.length)));
     return text.ok ? text.value : null;
   }
   const path: string = word.startsWith('host:') ? word.slice('host:'.length) : word;

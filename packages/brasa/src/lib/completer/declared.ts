@@ -38,6 +38,8 @@ interface LineReach {
   pending: OptionGrammar | null;
   /** How many operands stand before the word being typed. */
   operands: number;
+  /** The operand words before the word being typed, in order. */
+  operandWords: string[];
 }
 
 /**
@@ -78,7 +80,7 @@ function shortValue_pending(options: readonly OptionGrammar[], word: string): Op
  * @returns Where the line stands.
  */
 function lineReach_walk(grammar: CommandGrammar, prior: readonly string[]): LineReach {
-  const reach: LineReach = { subcommand: null, optionsEnded: false, pending: null, operands: 0 };
+  const reach: LineReach = { subcommand: null, optionsEnded: false, pending: null, operands: 0, operandWords: [] };
   for (const word of prior) {
     const options: OptionGrammar[] = optionsInReach_list(grammar, reach.subcommand);
     if (reach.pending !== null) {
@@ -86,7 +88,9 @@ function lineReach_walk(grammar: CommandGrammar, prior: readonly string[]): Line
     } else if (!reach.optionsEnded && word === '--') {
       reach.optionsEnded = true;
     } else if (!reach.optionsEnded && word.startsWith('--')) {
-      const option: OptionGrammar | undefined = options.find((one: OptionGrammar): boolean => one.long === word.slice(2));
+      const name: string = word.slice(2);
+      const option: OptionGrammar | undefined = options.find((one: OptionGrammar): boolean => one.family === undefined && one.long === name)
+        ?? options.find((one: OptionGrammar): boolean => one.family?.pattern.test(name) === true);
       // An optional value is in the option's own word, so the next word is not it.
       reach.pending = option?.value !== undefined && option.value.optional !== true && !word.includes('=') ? option : null;
     } else if (!reach.optionsEnded && word.startsWith('-') && word.length > 1 && !NEGATIVE_NUMBER.test(word)) {
@@ -95,6 +99,7 @@ function lineReach_walk(grammar: CommandGrammar, prior: readonly string[]): Line
       reach.subcommand = grammar.subcommands[word] ?? null;
     } else {
       reach.operands += 1;
+      reach.operandWords.push(word);
     }
   }
   return reach;
@@ -136,19 +141,30 @@ async function value_complete(argument: ArgumentGrammar, partial: string): Promi
 }
 
 /**
- * The option names in reach that start with a word: `-l` and `--long` alike.
+ * The option names in reach that start with a word: `-l` and `--long`
+ * alike, and the names of a family the line can take.
  *
  * @param options - The options.
  * @param word - The word typed.
+ * @param operands - The operand words before it, which a family's names may depend on.
  * @returns The names.
  */
-function optionNames_complete(options: readonly OptionGrammar[], word: string): string[] {
+async function optionNames_complete(options: readonly OptionGrammar[], word: string, operands: readonly string[]): Promise<string[]> {
   const names: string[] = [];
   for (const option of options) {
     if (option.short !== undefined) names.push(`-${option.short}`);
   }
   for (const option of options) {
-    if (option.long !== undefined) names.push(`--${option.long}`);
+    if (option.long !== undefined && option.family === undefined) names.push(`--${option.long}`);
+  }
+  // A family's names are the line's to say: a pipeline's fields, once the line names it.
+  for (const option of options) {
+    if (option.family?.names_list === undefined) continue;
+    try {
+      names.push(...(await option.family.names_list(operands)).map((name: string): string => `--${name}`));
+    } catch {
+      // A family that cannot say its names completes none.
+    }
   }
   return candidates_filter([...new Set(names)], word);
 }
@@ -179,7 +195,7 @@ export async function declaredWord_complete(declaration: AnyCommandDeclaration, 
     const head: string = word.slice(0, word.indexOf('=') + 1);
     return (await value_complete(option.value, word.slice(head.length))).map((value: string): string => `${head}${value}`);
   }
-  if (!reach.optionsEnded && word.startsWith('-') && !NEGATIVE_NUMBER.test(word)) return optionNames_complete(options, word);
+  if (!reach.optionsEnded && word.startsWith('-') && !NEGATIVE_NUMBER.test(word)) return optionNames_complete(options, word, reach.operandWords);
   const subcommands: Readonly<Record<string, SubcommandGrammar>> | undefined = grammar.subcommands;
   const operands: readonly OperandGrammar[] = reach.subcommand?.operands ?? grammar.operands ?? [];
   const candidates: string[] = [];

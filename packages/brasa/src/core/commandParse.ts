@@ -38,7 +38,7 @@ import { envelope_error, type CommandEnvelope } from '@fnndsc/menu';
 import type { ShellArguments, ShellWord } from '../lib/parser.js';
 import { argumentKind_get, argumentWord_check, type ArgumentCheck, type ArgumentExpansion, type ArgumentKind } from './argumentKinds.js';
 import type {
-  ArgumentGrammar, CommandArguments, CommandDeclaration, CommandGrammar, OperandGrammar, OptionGrammar, OptionsGrammar, SubcommandGrammar,
+  ArgumentGrammar, CommandArguments, CommandDeclaration, CommandGrammar, FamilyValue, OperandGrammar, OptionGrammar, OptionsGrammar, SubcommandGrammar,
 } from './commandDeclaration.js';
 import { commandUsage_render } from './commandUsage.js';
 import { exitCode_set } from './handlerRun.js';
@@ -74,8 +74,14 @@ interface OptionEntry {
   readonly option: OptionGrammar;
 }
 
-/** What a line gave an option: a switch's `true`, a value option's words, or null when one that asks was given none. */
-type OptionHeld = true | string[] | null;
+/** Every option of a family a line gave, in order. */
+interface FamilyHeld {
+  /** The names and values given. */
+  readonly given: FamilyValue[];
+}
+
+/** What a line gave an option: a switch's `true`, a value option's words, null when one that asks was given none, or a family's options. */
+type OptionHeld = true | string[] | null | FamilyHeld;
 
 /** The line's shape: the subcommand, the options' words, and the operands' words. */
 interface LineShape {
@@ -184,8 +190,12 @@ function longOption_read(words: readonly ShellWord[], at: number, walk: ShapeWal
   const equals: number = text.indexOf('=');
   const name: string = equals === -1 ? text : text.slice(0, equals);
   const inline: string | null = equals === -1 ? null : text.slice(equals + 1);
-  const entry: OptionEntry | undefined = walk.entries.find((one: OptionEntry): boolean => one.option.long === name);
-  if (entry === undefined) throw new LineRefusal(`unrecognized option '--${name}'`, walk.subcommand);
+  const entry: OptionEntry | undefined = walk.entries.find((one: OptionEntry): boolean => one.option.family === undefined && one.option.long === name);
+  if (entry === undefined) {
+    const family: OptionEntry | undefined = walk.entries.find((one: OptionEntry): boolean => one.option.family?.pattern.test(name) === true);
+    if (family === undefined) throw new LineRefusal(`unrecognized option '--${name}'`, walk.subcommand);
+    return familyOption_read(words, at, family, name, inline, options);
+  }
   if (entry.option.value === undefined) {
     if (inline !== null) throw new LineRefusal(`option '--${name}' takes no value`, walk.subcommand);
     option_record(options, entry, null);
@@ -204,6 +214,28 @@ function longOption_read(words: readonly ShellWord[], at: number, walk: ShapeWal
   }
   option_record(options, entry, (next as ShellWord).value);
   return at + 2;
+}
+
+/**
+ * Reads one option of a family: its value in the same word after `=`, else
+ * the next word unless that is a long option, else `true` (a switch, as
+ * CUBE writes one).
+ *
+ * @param words - The line's words.
+ * @param at - Where the option stands.
+ * @param entry - The family.
+ * @param name - The name typed, without the dashes.
+ * @param inline - The value after `=`, or null.
+ * @param options - The options so far.
+ * @returns Where the next word stands.
+ */
+function familyOption_read(words: readonly ShellWord[], at: number, entry: OptionEntry, name: string, inline: string | null, options: Map<string, OptionHeld>): number {
+  const held: OptionHeld | undefined = options.get(entry.key);
+  const given: FamilyValue[] = held !== undefined && held !== null && held !== true && !Array.isArray(held) ? held.given : [];
+  const next: ShellWord | undefined = words[at + 1];
+  const takesNext: boolean = inline === null && next !== undefined && (!next.value.startsWith('--') || NEGATIVE_NUMBER.test(next.value));
+  options.set(entry.key, { given: [...given, { name, value: inline ?? (takesNext ? (next as ShellWord).value : true) }] });
+  return takesNext ? at + 2 : at + 1;
 }
 
 /**
@@ -412,6 +444,10 @@ function optionValues_check(entries: readonly OptionEntry[], given: Map<string, 
   const values: Record<string, unknown> = {};
   for (const { key, option } of entries) {
     const held: OptionHeld | undefined = given.get(key);
+    if (option.family !== undefined) {
+      values[key] = held !== undefined && held !== null && held !== true && !Array.isArray(held) ? held.given : [];
+      continue;
+    }
     if (option.value === undefined) {
       values[key] = held === true;
       continue;
@@ -473,8 +509,13 @@ export async function commandLine_parse(declaration: CommandDeclaration, words: 
  *
  * @param args - The arguments.
  * @returns The words.
+ *
+ * @example
+ * ```ts
+ * const words: ShellWord[] = lineWords_read(args); // a line's own words, or literals
+ * ```
  */
-function argumentWords_read(args: readonly string[]): ShellWord[] {
+export function lineWords_read(args: readonly string[]): ShellWord[] {
   const carried: readonly ShellWord[] | undefined = (args as ShellArguments).words;
   if (carried !== undefined && carried.length === args.length) return [...carried];
   return args.map((value: string): ShellWord => ({ value, globPattern: value.replace(/[\\*?[\]]/g, '\\$&'), pathnameExpansion: false, pathnameExpanded: false }));
@@ -494,7 +535,7 @@ function argumentWords_read(args: readonly string[]): ShellWord[] {
  * ```
  */
 export async function declaredCommand_run(declaration: CommandDeclaration, args: readonly string[]): Promise<CommandEnvelope> {
-  const parsed: LineParse = await commandLine_parse(declaration, argumentWords_read(args));
+  const parsed: LineParse = await commandLine_parse(declaration, lineWords_read(args));
   if (!parsed.ok) {
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red(parsed.refusal)}\n`);

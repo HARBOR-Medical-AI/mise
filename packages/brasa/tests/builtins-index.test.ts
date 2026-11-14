@@ -1121,13 +1121,13 @@ describe('Builtins - Core Functions', () => {
       const envelope = await builtin_plugin(['delete', 'id:123']);
 
       expect(mockChiliCommandRun).not.toHaveBeenCalled();
-      expect(envelope.renderedErr).toContain('Unknown subcommand');
+      expect(envelope.renderedErr).toContain("plugin: unknown subcommand 'delete'");
     });
 
     it('should error with no subcommand', async () => {
       const envelope = await builtin_plugin([]);
 
-      expect(envelope.rendered).toContain('Usage:');
+      expect(envelope.renderedErr).toContain('plugin: missing subcommand');
     });
   });
 

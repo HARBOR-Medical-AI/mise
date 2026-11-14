@@ -82,9 +82,10 @@ jest.unstable_mockModule('../src/session/index.js', () => ({
   session: { connection: { client_get: mockClientGet }, getCWD: jest.fn(async () => mockCwd) },
 }));
 
-const { builtin_pipeline } = await import('../src/builtins/res/pipeline.js');
+const { builtin_pipeline, pipelineCommand, pipelineRun_execute } = await import('../src/builtins/res/pipeline.js');
+const { declarationHelp_derive } = await import('../src/core/commandUsage.js');
 // `~` is the session's home, read from the context this file mocks.
-await (await import('./support/chrisPieces.js')).chrisPieces_install({ home_get: async (): Promise<string> => { const { context_getSingle } = await import('@fnndsc/salsa'); const user: string | null = (await context_getSingle()).user; return user ? `/home/${user}` : '/'; } });
+await (await import('./support/chrisPieces.js')).chrisPieces_install({ kinds: true, home_get: async (): Promise<string> => { const { context_getSingle } = await import('@fnndsc/salsa'); const user: string | null = (await context_getSingle()).user; return user ? `/home/${user}` : '/'; } });
 
 const ok = <T>(value: T) => ({ ok: true as const, value });
 const err = () => ({ ok: false as const });
@@ -148,12 +149,39 @@ describe('builtin_pipeline', () => {
     expect(mockDataLine).toHaveBeenCalledWith(expect.stringContaining('instance 42'));
   });
 
-  it('returns help for --help', async () => {
-    const env = await builtin_pipeline(['--help']);
-    expect(env.rendered).toContain('USAGE');
-    expect(env.rendered).toContain('--paramFile');
-    expect(env.rendered).toContain('--<node>.<parameter>');
-    expect(env.rendered).toContain('manifest <name|id|slug>');
+  it('has its page and its usage from its declaration: the run\'s options and the node overrides among them', async () => {
+    const page = declarationHelp_derive(pipelineCommand);
+    expect(page.usage).toContain('run [--detach] [--verbose] [--compute <resource>] [--previous <instance>] [--paramFile <file>] [--<node>.<field> <value>] <pipeline>');
+    expect(page.usage).toContain('manifest <pipeline…>');
+    expect(page.options?.join('\n')).toContain('--paramFile <file>');
+    expect(page.description).toContain('--<node>.<field> <value>');
+  });
+
+  it('is described as one tool per subcommand; pipeline run\'s node overrides a list of names and values', async () => {
+    const { commandTools_derive } = await import('../src/core/commandSchema.js');
+    const tools = commandTools_derive(pipelineCommand);
+    expect(tools.map((tool) => tool.name)).toEqual(['pipeline', 'pipeline_list', 'pipeline_search', 'pipeline_inspect', 'pipeline_info', 'pipeline_manifest', 'pipeline_run', 'pipeline_source', 'pipeline_diagram']);
+    const run = tools.find((tool) => tool.name === 'pipeline_run')?.inputSchema as { properties: Record<string, { type?: string; items?: { properties?: Record<string, { pattern?: string }> } }> };
+    expect(run.properties['bindings']?.type).toBe('array');
+    expect(run.properties['bindings']?.items?.properties?.['name']?.pattern).toBe('^[^.=\\s]+\\.[^.=\\s]+$');
+    expect(run.properties['previous']?.type).toBe('integer');
+  });
+
+  it('takes a node override as one of a family: every --<node>.<field>, each with its value or true', async () => {
+    mockCwd = '/home/me/feeds/feed_1/pl-dircopy_5/data';
+    mockResolve.mockResolvedValue(ok({ name: 'MyPipe' }));
+    mockRun.mockResolvedValue(ok({ workflowId: 99, pluginInstanceIds: [] }));
+    await builtin_pipeline(['run', 'MyPipe', '--root.threshold', '0.9', '--@1.verbose', '--root.label=T1 weighted', '--detach']);
+    expect(mockRun).toHaveBeenCalledWith('MyPipe', 5, expect.objectContaining({
+      cliBindings: [
+        { node: 'root', field: 'threshold', value: 0.9 },
+        { node: '@1', field: 'verbose', value: true },
+        { node: 'root', field: 'label', value: 'T1 weighted' },
+      ],
+    }));
+    // A word that is no option and no node override is refused before anything runs.
+    const refused: CommandEnvelope = await builtin_pipeline(['run', 'MyPipe', '--nosuch']);
+    expect(refused.renderedErr).toContain("pipeline: run: unrecognized option '--nosuch'");
   });
 
   it('lists registered pipelines', async () => {
@@ -169,8 +197,8 @@ describe('builtin_pipeline', () => {
   });
 
   it('requires a name for info', async () => {
-    await builtin_pipeline(['info']);
-    expect(mockErrLine).toHaveBeenCalledWith(expect.stringContaining('Usage: pipeline info'));
+    const result: CommandEnvelope = await builtin_pipeline(['info']);
+    expect(result.renderedErr).toContain('pipeline: info: missing operand <pipeline>; usage: pipeline info <pipeline>');
     expect(process.exitCode).toBe(1);
   });
 
@@ -190,8 +218,8 @@ describe('builtin_pipeline', () => {
   });
 
   it('requires a name for run', async () => {
-    await builtin_pipeline(['run']);
-    expect(mockErrLine).toHaveBeenCalledWith(expect.stringContaining('Usage: pipeline run'));
+    const result: CommandEnvelope = await builtin_pipeline(['run']);
+    expect(result.renderedErr).toContain('pipeline: run: missing operand <pipeline>');
   });
 
   it('runs a pipeline on the feed node cwd is in', async () => {
@@ -222,19 +250,20 @@ describe('builtin_pipeline', () => {
     expect(mockRun).toHaveBeenCalledTimes(3);
   });
 
-  it('resolves and prints under --whatif, creating no workflow; refuses as the run would (#1442)', async () => {
+  it('resolves and prints a dry run (whatif), creating no workflow; refuses as the run would (#1442)', async () => {
     mockCwd = '/home/me/feeds/feed_1/pl-dircopy_5/data';
     mockResolve.mockResolvedValue(ok({ name: 'MyPipe' }));
     mockPrepare.mockReturnValue(ok({ pipelineID: 7, nodeOverrides: [{ piping_id: 1, title: 'root', compute_resource_name: 'host', plugin_parameter_defaults: [{ name: 'threshold', default: 0.4 }] }] }));
-    const dry = await builtin_pipeline(['run', 'MyPipe', '--whatif']);
+    const request = { pipeline: 'MyPipe', bindings: [], detach: false, verbose: false, dry: true, dryNewFeed: false };
+    const dry = await pipelineRun_execute(request);
     expect(dry.status).toBe('ok');
     expect(mockDataLine).toHaveBeenCalledWith(expect.stringContaining("pipeline 'MyPipe' on instance 5"));
     expect(mockDataLine).toHaveBeenCalledWith(expect.stringContaining('--threshold 0.4 (default)  on host'));
     expect(mockDataLine).toHaveBeenCalledWith(expect.stringContaining('was not run; nothing was created'));
     // On a feed that would be rooted first there is no node to name; outside a node the plain form refuses.
     mockCwd = '/home/me';
-    expect((await builtin_pipeline(['run', 'MyPipe', '--whatif-new-feed'])).status).toBe('ok');
-    expect((await builtin_pipeline(['run', 'MyPipe', '--whatif'])).status).toBe('error');
+    expect((await pipelineRun_execute({ ...request, dryNewFeed: true })).status).toBe('ok');
+    expect((await pipelineRun_execute(request)).status).toBe('error');
     expect(mockRun).not.toHaveBeenCalled();
     expect(mockProcRefresh).not.toHaveBeenCalled();
   });
@@ -317,7 +346,7 @@ describe('builtin_pipeline', () => {
     const result: CommandEnvelope = await builtin_pipeline(['manifest']);
 
     expect(result.status).toBe('error');
-    expect(result.renderedErr).toContain('Usage: pipeline manifest');
+    expect(result.renderedErr).toContain('pipeline: manifest: missing operand <pipeline>');
   });
 
   it('emits delayed semantic progress for a slow pipeline manifest read', async () => {
@@ -481,8 +510,8 @@ describe('builtin_pipeline', () => {
   });
 
   it('rejects an unknown subcommand', async () => {
-    await builtin_pipeline(['frobnicate']);
-    expect(mockErrLine).toHaveBeenCalledWith(expect.stringContaining("unknown subcommand 'frobnicate'"));
+    const result: CommandEnvelope = await builtin_pipeline(['frobnicate']);
+    expect(result.renderedErr).toContain("pipeline: unknown subcommand 'frobnicate'");
     expect(process.exitCode).toBe(1);
   });
 
@@ -553,7 +582,7 @@ describe('builtin_pipeline', () => {
 
   it('requires a name for source', async () => {
     const result = await builtin_pipeline(['source']);
-    expect(mockErrLine).toHaveBeenCalledWith(expect.stringContaining('Usage: pipeline source'));
+    expect(result.renderedErr).toContain('pipeline: source: missing operand <pipeline>');
     expect(process.exitCode).toBe(1);
     expect(result.status).toBe('error');
   });

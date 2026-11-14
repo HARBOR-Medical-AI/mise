@@ -2,24 +2,25 @@
  * @file The command registry: every name the engine answers in-process, and the
  * handler that answers it.
  *
- * A command registers as an envelope handler (it returns its outcome as an
- * envelope) or a plain handler (it may print, and returns an envelope or
- * nothing). Dispatch, the capture path and the pipe's "is this a builtin" test
- * read the registry, never a table of their own. So do `help`, the `/bin`
- * builtin list and command completion, through the help a command registers.
+ * A command registers its declaration (`commandDeclaration.ts`): one record
+ * holding its grammar, kinds, handler, holds and help prose. The registry
+ * answers its name, and each alias, with a handler that parses the line
+ * against the grammar first, in two forms: an envelope handler (it returns
+ * its outcome as an envelope) and a plain one (it delivers that envelope).
+ * Its help is generated from the same record, so help and behaviour cannot
+ * drift apart. Dispatch, the capture path and the pipe's "is this a builtin"
+ * test read the registry, never a table of their own; so do `help`, the
+ * `/bin` builtin list and command completion, and completion and the tool
+ * schema read the declaration itself (`commandDeclaration_get`).
  *
- * Handlers are kept in plain records and looked up by index, exactly as the
- * dispatch tables were: a name is a builtin when it is `in` a record. A record
- * inherits from `Object.prototype`, so a name such as `toString` counts as a
- * builtin too; that is how the tables behaved, and changing it is a decision of
- * its own, not a side effect of moving the lookup here.
+ * The words the shell or its surface answers before the registry (`sudo`,
+ * `exit`, `!`, `clear`, `prompt`) have no handler here, only the page their
+ * declaration in `shellWords.ts` gives.
  *
- * A command may instead register its declaration (`commandDeclaration.ts`):
- * one record holding its grammar, kinds, handler, holds and help prose. The
- * registry answers its name with a handler that parses the line against the
- * grammar first, and its help is generated from the same record, so help and
- * behaviour cannot drift apart. Completion and the tool schema read the
- * declaration itself (`commandDeclaration_get`).
+ * Handlers are kept in plain records and looked up by index: a name is a
+ * builtin when it is `in` a record. A record inherits from
+ * `Object.prototype`, so a name such as `toString` counts as a builtin too;
+ * that is how the tables behaved, and changing it is a decision of its own.
  *
  * Listing order is kept explicitly (`commandOrder_set`), apart from which
  * group registered a name, so the core's and a backend's commands registering
@@ -34,6 +35,7 @@ import type { CommandEnvelope } from '@fnndsc/menu';
 import { commandAliases_list, declaration_isParsed, type AnyCommandDeclaration } from './commandDeclaration.js';
 import { declaredHandler_make } from './commandParse.js';
 import { declarationHelp_derive } from './commandUsage.js';
+import type { ShellWordDeclaration } from './shellWords.js';
 
 /** A builtin that returns its outcome as an envelope. */
 export type EnvelopeHandler = (args: string[]) => Promise<CommandEnvelope>;
@@ -65,25 +67,9 @@ export interface CommandHelp {
 
 /** A group of commands registered together. */
 export interface CommandGroup {
-  /** Commands answered by an envelope handler. */
-  envelope?: Record<string, EnvelopeHandler>;
-  /** Commands answered by a plain handler. */
-  plain?: Record<string, CommandHandler>;
-  /**
-   * Help, by name. Its names are the builtins `/bin` lists and the shell
-   * completes, in registration order.
-   */
-  help?: Record<string, CommandHelp>;
-  /**
-   * What each command changes of the session, by name: the pieces it holds
-   * while it runs, so lines that change different pieces (or nothing) run
-   * side by side. A command not named here holds the whole session.
-   */
-  holds?: Record<string, readonly SessionPiece[]>;
-  /**
-   * Commands declared in one record each: handler, help and holds come from
-   * the declaration, so a declared name appears in none of the records above.
-   */
+  /** The words the shell answers before the registry: their pages, which `help` shows and `/bin` lists. */
+  shellWords?: ReadonlyArray<ShellWordDeclaration>;
+  /** Commands declared in one record each: handler, help and holds come from the declaration. */
   declarations?: ReadonlyArray<AnyCommandDeclaration>;
 }
 
@@ -163,18 +149,31 @@ function names_ordered(record: Record<string, unknown>, order: string[]): string
  */
 export function commands_register(group: CommandGroup, owner: CommandOwner = 'core'): void {
   const declared: string[] = (group.declarations ?? []).flatMap((declaration: AnyCommandDeclaration): string[] => [declaration.name, ...declarationAliases_list(declaration).map((alias: AnyCommandDeclaration): string => alias.name)]);
-  const names: string[] = [...Object.keys(group.envelope ?? {}), ...Object.keys(group.plain ?? {}), ...declared];
+  const names: string[] = [...(group.shellWords ?? []).map((word: ShellWordDeclaration): string => word.name), ...declared];
   if (owner === 'backend') {
     const taken: string[] = names.filter((name: string): boolean => coreNames.has(name));
     if (taken.length > 0) throw new Error(`a backend cannot replace the core's commands: ${[...new Set(taken)].join(', ')}`);
   } else {
     for (const name of names) coreNames.add(name);
   }
-  if (group.envelope !== undefined) Object.assign(envelopeHandlers, group.envelope);
-  if (group.plain !== undefined) Object.assign(plainHandlers, group.plain);
-  if (group.help !== undefined) Object.assign(helpEntries, group.help);
-  for (const [name, pieces] of Object.entries(group.holds ?? {})) holdsEntries.set(name, pieces);
+  for (const word of group.shellWords ?? []) helpEntries[word.name] = shellWordHelp_derive(word);
   for (const declaration of group.declarations ?? []) declaration_register(declaration);
+}
+
+/**
+ * A shell word's help record, from its declaration.
+ *
+ * @param word - The shell word.
+ * @returns The record `help` renders.
+ */
+function shellWordHelp_derive(word: ShellWordDeclaration): CommandHelp {
+  return {
+    usage: word.usage,
+    summary: word.help.summary,
+    description: word.help.description,
+    ...(word.help.category !== undefined ? { category: word.help.category } : {}),
+    ...(word.help.examples !== undefined ? { examples: [...word.help.examples] } : {}),
+  };
 }
 
 /**
@@ -242,7 +241,7 @@ function declaredName_register(declaration: AnyCommandDeclaration): void {
  * A command's declaration, when it has one, by its name or an alias.
  *
  * @param name - The command name, or an alias of it (`feeds`).
- * @returns The declaration (an alias's named as the alias), or undefined for a command not yet declared in one record.
+ * @returns The declaration (an alias's named as the alias), or undefined for a word the registry does not answer (a shell word, or a `/bin` entry, whose declaration the backend makes).
  *
  * @example
  * ```ts

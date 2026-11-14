@@ -7,6 +7,7 @@
  * pieces that read them, and the module under test meets its mocks as before.
  */
 import type { Backend } from '../../src/core/backend.js';
+import type { CommandDeclaration } from '../../src/core/commandDeclaration.js';
 
 /** The pieces a test may install. */
 export interface ChrisPieces {
@@ -15,6 +16,10 @@ export interface ChrisPieces {
   vfs?: boolean;
   completion?: boolean;
   listingLook?: boolean;
+  /** The argument kinds the ChRIS backend registers (`feed`, `plugin`, `pipeline`, …). */
+  kinds?: boolean;
+  /** The declaration of a word the backend answers (a `/bin` entry's), as the fallback makes it. */
+  declaration?: (command: string) => Promise<CommandDeclaration | null>;
 }
 
 /**
@@ -39,6 +44,8 @@ export async function chrisPieces_install(pieces: ChrisPieces, user: string | nu
     ...(pieces.vfs ? { vfs: (await import('../../src/chris/filesystem.js')).chrisFilesystem } : {}),
     ...(pieces.completion ? { completion: (await import('../../src/chris/completion.js')).chrisCompletion } : {}),
     ...(pieces.listingLook ? { listingLook: (await import('@fnndsc/chili/views/ls.js')).chrisListingLook } : {}),
+    ...(pieces.kinds ? { argumentKinds: (await import('../../src/chris/kinds.js')).chrisArgumentKinds } : {}),
+    ...(pieces.declaration ? { fallback: { declaration: pieces.declaration } } : {}),
   };
   backend_install(backend);
 }

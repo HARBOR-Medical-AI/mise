@@ -18,6 +18,7 @@ import type { ReferenceValue } from '../lib/parser.js';
 import type { ListingLook, VFSDispatcher } from '@fnndsc/fond';
 import type { ListingItem } from '@fnndsc/menu';
 import type { ArgumentKind } from './argumentKinds.js';
+import type { CommandDeclaration } from './commandDeclaration.js';
 
 /**
  * Who a session is and where: the input a host keys the session by (calypso's
@@ -170,6 +171,13 @@ export interface BackendFallback {
   readonly unknown?: (command: string, args: string[], captured: boolean) => Promise<CommandEnvelope | null>;
   /** Help for a word the registry has no page for, or null to let the core say it has none. */
   readonly help?: (command: string) => Promise<string | null>;
+  /**
+   * The declaration of a word the backend answers, made from what the
+   * backend owns (ChRIS: a `/bin` plugin's or pipeline's, from CUBE's
+   * parameters), or null for a word it does not: completion reads it as it
+   * reads a builtin's.
+   */
+  readonly declaration?: (command: string) => Promise<CommandDeclaration | null>;
 }
 
 /** A listing cache: listings kept for a while, each saying whether it is still current. */
@@ -236,14 +244,13 @@ export interface BackendFilesystem {
   readonly segment_title?: (segment: string) => Promise<string | null>;
 }
 
-/** What a backend adds to completion. */
+/**
+ * What a backend adds to completion: its command words. A line of one of
+ * them completes from its declaration (`BackendFallback.declaration`).
+ */
 export interface BackendCompletion {
   /** Command words beyond the registry's (ChRIS: its plugins). */
   readonly commandWords?: () => Promise<string[]>;
-  /** The `--option` words for a line, or null when the line is not one the backend completes. */
-  readonly options?: (args: string[], word: string) => Promise<string[] | null>;
-  /** Whether a command word of the backend's takes paths as its arguments (ChRIS: a `/bin` entry, whose operand is a path, #1305). */
-  readonly pathArguments?: (command: string) => Promise<boolean>;
   /** Names completed at `/` even when the root's listing lacks them; absent, the core's `usr`. */
   readonly rootWords?: ReadonlyArray<string>;
 }

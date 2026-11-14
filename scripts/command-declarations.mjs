@@ -1,25 +1,20 @@
 /**
- * @file Declaration ratchet — every builtin must declare itself.
+ * @file Declaration check — every command is declared in one record.
  *
- * A builtin is currently declared in two unlinked places: its group's envelope
- * table (`core/coreCommands.ts`, `chris/chrisCommands.ts`), which maps a name
- * to a function and carries no metadata, and its group's help (`helpText` in the
- * help builtin, `chrisHelp` in `chris/help.ts`), which carries usage and
- * description. Nothing keeps them in step, and they have drifted.
+ * A command declares itself with `command_declare`
+ * (packages/brasa/src/core/commandDeclaration.ts): its name, grammar, kinds,
+ * handler, holds and help in one record, registered through its group's
+ * `declarations`. The registry answers a name only from a declaration, and
+ * the words the shell answers before it (`sudo`, `exit`, `!`, `clear`,
+ * `prompt`) have only a page, declared in `core/shellWords.ts`.
  *
- * Aliases are resolved before counting. Several commands are registered under
- * both a singular and a plural name bound to the same handler (`compute` and
- * `computes`, `user` and `users`, `pipeline` and `pipelines`), and an alias is
- * not a separate command: it is declared if any name sharing its handler is
- * declared. Counting alias names separately inflates the baseline, and an
- * inflated baseline is slack a real violation can hide in.
- *
- * This counts commands with no corresponding help entry under any of their
- * names. The count is zero, so the check is effectively hard: a new builtin
- * arriving without help fails immediately. The baseline is retained because
- * the underlying duplication is unresolved — one declaration per command
- * (issue #222) is still the real fix — and a future refactor may legitimately
- * need to park a number here.
+ * This holds that shape in the source, a hard check at zero: a command
+ * group (`core/coreCommands.ts`, `chris/chrisCommands.ts`) holds nothing
+ * but `declarations` and `shellWords`, and the registry's `CommandGroup`
+ * has no record that binds a name to a handler of raw words or a page of
+ * its own beside a declaration. The runtime side, that every name the
+ * engine answers has a declaration behind it, is
+ * packages/brasa/tests/helpCategories.test.ts.
  *
  * Enforces "One declaration per command" in docs/principles.adoc. Run via
  * `npm run lint:commands`.
@@ -29,105 +24,59 @@
 
 import { readFileSync } from 'node:fs';
 
-/** Commands with a handler but no declaration, aliases resolved. Lower whenever it drops. */
-const BASELINE = 0;
-
-// The engine's commands register in groups: the core's and the ChRIS backend's.
+/** The engine's command groups: the core's and the ChRIS backend's. */
 const groupPaths = [
   new URL('../packages/brasa/src/core/coreCommands.ts', import.meta.url).pathname,
   new URL('../packages/brasa/src/chris/chrisCommands.ts', import.meta.url).pathname,
 ];
-/** Each group's help: the core's, and the ChRIS backend's beside its commands. */
-const helpSources = [
-  [new URL('../packages/brasa/src/builtins/help.ts', import.meta.url).pathname, /helpText: Record<string, CommandHelp> = \{/],
-  [new URL('../packages/brasa/src/chris/help.ts', import.meta.url).pathname, /chrisHelp: Record<string, CommandHelp> = \{/],
+
+/** The registry, whose `CommandGroup` says what a group may hold. */
+const registryPath = new URL('../packages/brasa/src/core/commandRegistry.ts', import.meta.url).pathname;
+
+/** What a group may hold. */
+const GROUP_KEYS = new Set(['declarations', 'shellWords']);
+
+/** The records that once bound a name beside a declaration. */
+const RETIRED_RECORDS = [
+  /const envelope: Record<string, EnvelopeHandler> = \{/,
+  /const plain: Record<string, CommandHandler> = \{/,
+  /const holds: Record<string, readonly SessionPiece\[\]> = \{/,
+  /Record<string, CommandHelp> = \{/,
 ];
 
-/**
- * Extracts the keys of an object literal assigned to a named constant.
- *
- * @param {string} text - The source file's contents.
- * @param {RegExp} opener - Matches the declaration up to its opening brace.
- * @returns {Set<string>} The literal's top-level keys.
- */
-function literalKeys_extract(text, opener) {
-  const start = text.match(opener);
-  if (start === null) {
-    console.error(`command-declarations: could not locate ${opener} — has the source moved?`);
-    process.exit(1);
+const problems = [];
+
+for (const path of groupPaths) {
+  const text = readFileSync(path, 'utf8');
+  for (const record of RETIRED_RECORDS) {
+    if (record.test(text)) problems.push(`${path}: binds names outside a declaration (${record.source})`);
   }
-  const body = text.slice(start.index + start[0].length);
-  const end = body.indexOf('\n};');
-  const block = end === -1 ? body : body.slice(0, end);
-  return new Set(
-    [...block.matchAll(/^\s{2}'?([a-z][\w-]*)'?:/gm)].map((match) => match[1]),
-  );
-}
-
-/**
- * Maps each command name to the handler function it is bound to, so that names
- * sharing a handler can be recognised as aliases of one command.
- *
- * @param {string} text - The dispatch source.
- * @param {RegExp} opener - Matches the declaration up to its opening brace.
- * @returns {Map<string, string>} Command name to handler expression.
- */
-function handlerBindings_extract(text, opener) {
-  const start = text.match(opener);
-  if (start === null) {
-    console.error(`command-declarations: could not locate ${opener} — has the source moved?`);
-    process.exit(1);
+  const group = text.match(/export const \w+: CommandGroup = \{([^}]*)\};/);
+  if (group === null) {
+    problems.push(`${path}: could not locate its CommandGroup — has the source moved?`);
+    continue;
   }
-  const body = text.slice(start.index + start[0].length);
-  const end = body.indexOf('\n};');
-  const block = end === -1 ? body : body.slice(0, end);
-  return new Map(
-    [...block.matchAll(/^\s{2}'?([a-z][\w-]*)'?:\s*(.+?),\s*$/gm)].map(
-      (match) => [match[1], match[2].trim()],
-    ),
-  );
+  const keys = [...group[1].matchAll(/^\s*(\w+)\s*(?::|,)/gm)].map((match) => match[1]);
+  for (const key of keys) {
+    if (!GROUP_KEYS.has(key)) problems.push(`${path}: its group holds '${key}', which is not a declaration`);
+  }
 }
 
-const bindings = new Map(groupPaths.flatMap((path) => [...handlerBindings_extract(
-  readFileSync(path, 'utf8'),
-  /const envelope: Record<string, EnvelopeHandler> = \{/,
-)]));
-const declared = new Set(helpSources.flatMap(([path, opener]) => [...literalKeys_extract(readFileSync(path, 'utf8'), opener)]));
-
-// Group names by the handler they bind, then judge each group once: a command
-// is declared if any of its names carries help.
-const byHandler = new Map();
-for (const [name, handler] of bindings) {
-  const names = byHandler.get(handler) ?? [];
-  names.push(name);
-  byHandler.set(handler, names);
+const registry = readFileSync(registryPath, 'utf8');
+const groupType = registry.match(/export interface CommandGroup \{([\s\S]*?)\n\}/);
+if (groupType === null) {
+  problems.push(`${registryPath}: could not locate CommandGroup — has the source moved?`);
+} else {
+  for (const field of ['envelope', 'plain', 'help', 'holds']) {
+    if (new RegExp(`^\\s*${field}\\?:`, 'm').test(groupType[1])) problems.push(`${registryPath}: CommandGroup takes '${field}', a name bound outside a declaration`);
+  }
 }
 
-const undeclared = [...byHandler.values()]
-  .filter((names) => !names.some((name) => declared.has(name)))
-  .map((names) => names.join('/'))
-  .sort();
-const total = undeclared.length;
-
-if (total > BASELINE) {
-  console.error(`command-declarations: ${total} builtin(s) have a handler and no declaration, baseline is ${BASELINE}.`);
-  console.error('A command declares itself in one place. A new handler needs its usage and');
-  console.error('description alongside it — the same metadata help, completion and any');
-  console.error('future assistant all read. See "One declaration per command" in');
-  console.error('docs/principles.adoc, and issue #222 for the unification.');
-  console.error(undeclared.map((name) => `  ${name}`).join('\n'));
+if (problems.length > 0) {
+  console.error('command-declarations: a command must be declared in one record (command_declare, core/commandDeclaration.ts)');
+  console.error('and registered through its group\'s declarations. See "One declaration per command" in docs/principles.adoc.');
+  console.error(problems.map((problem) => `  ${problem}`).join('\n'));
   process.exit(1);
 }
 
-if (total < BASELINE) {
-  console.error(`command-declarations: undeclared count fell to ${total} (baseline ${BASELINE}) — good.`);
-  console.error(`Lower BASELINE to ${total} in scripts/command-declarations.mjs as part of this`);
-  console.error('change so the improvement locks in.');
-  process.exit(1);
-}
-
-const commandCount = new Set(bindings.values()).size;
-console.log(
-  `command-declarations: ${commandCount} commands (${bindings.size} names incl. aliases), ` +
-    `${total} undeclared, at baseline.`,
-);
+console.log(`command-declarations: every command group binds names only through declarations (${groupPaths.length} groups).`);

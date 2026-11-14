@@ -8,6 +8,7 @@
 import type { CommandEnvelope } from '@fnndsc/menu';
 
 import { command_declare, type AnyCommandDeclaration, type CommandGrammar } from '../../src/core/commandDeclaration.js';
+import type { SessionPiece } from '../../src/core/commandRegistry.js';
 
 /** A stand-in's handler: what the suite records the typed line with. */
 export type StandInHandler = (args: never) => Promise<CommandEnvelope | void> | unknown;
@@ -117,6 +118,18 @@ export function wordsStandIn_make(name: string, handler: StandInHandler, aliases
 }
 
 /**
+ * A command that takes any words and holds what it says: a name for a
+ * suite that asks what a line holds.
+ *
+ * @param name - The command's name.
+ * @param holds - What it holds of the session.
+ * @returns The declaration.
+ */
+export function holdsStandIn_make(name: string, holds: readonly SessionPiece[]): AnyCommandDeclaration {
+  return { ...wordsStandIn_make(name, async () => undefined), holds };
+}
+
+/**
  * A stand-in maker for a command of a simple grammar: its name, its grammar
  * and its help section, whatever the suite's handler.
  *
@@ -162,6 +175,7 @@ export const NAVIGATION_STAND_INS: Readonly<Record<string, (handler: StandInHand
     operands: [{ name: 'path', kind: 'cfsPath', optional: true, repeat: true, glob: true, summary: 'What' }],
     options: { humanReadable: { short: 'h', long: 'human-readable', summary: 'Human' }, summarize: { short: 's', long: 'summarize', summary: 'Summary' } },
   }, 'Navigation'),
+  urlCommand: standIn_maker('url', { operands: [{ name: 'path', kind: 'cfsPath', optional: true, summary: 'Where' }] }, 'Sharing', 'Print a link (a web address) that opens ARGUS at a path, to send to a colleague'),
   cubepathCommand: standIn_maker('cubepath', {
     operands: [{ name: 'path', kind: 'cfsPath', repeat: true, glob: true, summary: 'PACS paths' }],
     options: { pacsserver: { long: 'pacsserver', summary: 'Server', value: { name: 'id', kind: 'word' } }, retry: { long: 'retry', summary: 'Retry' } },
@@ -190,6 +204,18 @@ export const SHARING_PACS_IMAGING_STAND_INS: Readonly<Record<string, (handler: S
   pacsretrieveCommand: standIn_maker('pacsretrieve', { subcommands: { report: { summary: 'Report' } } }, 'PACS'),
   dcmCommand: standIn_maker('dcm', { subcommands: { series: { summary: 'Series', operands: [{ name: 'folder', kind: 'cfsPath', summary: 'Folder' }] } } }, 'Imaging', 'DICOM as the kernel sees it'),
   imageCommand: standIn_maker('image', { operands: [{ name: 'path', kind: 'cfsPath', optional: true, summary: 'What' }] }, 'Imaging', 'Show a DICOM series or a volume — a browser draws it, a terminal reflects it'),
+};
+
+/** The Resources commands not declared beside the others, standing in, by the name each module exports. */
+export const RESOURCE_STAND_INS: Readonly<Record<string, (handler: StandInHandler) => AnyCommandDeclaration>> = {
+  pluginCommand: (handler: StandInHandler): AnyCommandDeclaration => ({
+    ...standIn_maker('plugin', { subcommands: { list: { summary: 'List' }, info: { summary: 'Info', operands: [{ name: 'plugin', kind: 'word', summary: 'Plugin' }] }, add: { summary: 'Add' } } }, 'Resources', 'The plugins registered in CUBE')(handler),
+    aliases: [{ name: 'plugins', holds: [] }],
+  }),
+  pipelineCommand: (handler: StandInHandler): AnyCommandDeclaration => ({
+    ...standIn_maker('pipeline', { bare: { summary: 'Usage' }, subcommands: { list: { summary: 'List' }, run: { summary: 'Run', operands: [{ name: 'pipeline', kind: 'word', summary: 'Pipeline' }] } } }, 'Resources', 'The registered ChRIS pipelines')(handler),
+    aliases: [{ name: 'pipelines', holds: [] }],
+  }),
 };
 
 /** Paths that glob, one or more. */
@@ -231,7 +257,7 @@ export const STAND_IN_MAKERS: Readonly<Record<string, (handler: StandInHandler) 
 
 /** The core's stand-ins among them, by the name each module exports; the rest are the ChRIS backend's. */
 export const CORE_STAND_IN_NAMES: ReadonlyArray<string> = [
-  'cdCommand', 'pwdCommand', 'timingCommand', 'debugCommand',
+  'cdCommand', 'pwdCommand', 'timingCommand', 'debugCommand', 'urlCommand',
   'catCommand', 'cpCommand', 'mvCommand', 'rmCommand', 'rmdirCommand', 'mkdirCommand', 'touchCommand', 'findCommand',
   'grepCommand', 'wcCommand', 'headCommand', 'tailCommand', 'sortCommand', 'uniqCommand', 'cutCommand',
 ];

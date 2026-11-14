@@ -1,6 +1,7 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { coreBuiltins_mock } from './support/coreBuiltins.js';
 import { wordsStandIn_make } from './support/declarationStandIns.js';
+import { pipelineManifest_standIn, pipelineModule_standIn } from './support/pipelineStandIn.js';
 import { cuminMock_install } from './support/cuminMock.js';
 import type { CommandEnvelope } from '@fnndsc/cumin';
 
@@ -67,7 +68,11 @@ const mockFeedCreate = jest.fn();
 jest.unstable_mockModule('../src/builtins/res/runWait.js', () => ({
   runs_awaitSettled: async () => ({ outcome: 'settled', failed: 0 }), settlement_render: () => 'settled', settlementStatus_derive: () => 'finishedSuccessfully',
 }));
-jest.unstable_mockModule('@fnndsc/salsa', () => ({ feed_create: mockFeedCreate }));
+// A pipeline's manifest, which its /bin line is parsed against: no nodes, so the session's options alone.
+jest.unstable_mockModule('@fnndsc/salsa', () => ({
+  feed_create: mockFeedCreate,
+  pipelineManifest_get: pipelineManifest_standIn,
+}));
 
 // Built-in command table. Every name is a jest.fn() so COMMAND_HANDLERS is
 // fully populated; the ones asserted on are captured by reference.
@@ -103,7 +108,7 @@ function builtinStubs_make(): Record<string, unknown> {
 }
 jest.unstable_mockModule('../src/builtins/index.js', builtinStubs_make);
 coreBuiltins_mock(builtinStubs_make());
-jest.unstable_mockModule('../src/builtins/res/pipeline.js', () => ({ builtin_pipeline: mockPipeline }));
+jest.unstable_mockModule('../src/builtins/res/pipeline.js', () => pipelineModule_standIn(mockPipeline));
 
 const mockExecutePlugin = jest.fn();
 jest.unstable_mockModule('../src/builtins/pluginExecute.js', () => ({ builtin_executePlugin: mockExecutePlugin }));
@@ -145,6 +150,7 @@ const { chrisCommands } = await import('../src/chris/chrisCommands.js');
   fallback: (await import('../src/chris/commandFallback.js')).chrisFallback,
   watch: (await import('../src/chris/watch.js')).chrisWatch,
   files: (await import('../src/chris/files.js')).chrisFiles,
+  argumentKinds: (await import('../src/chris/kinds.js')).chrisArgumentKinds,
 });
 
 
@@ -520,7 +526,7 @@ describe('command_dispatch', () => {
     const envelope: CommandEnvelope | null = await command_executeToEnvelope('myPipe --help', 0, false);
 
     expect(envelope?.rendered).toBe('PIPELINE HELP:myPipe\n');
-    expect(mockPipelineExecutableHelpRender).toHaveBeenCalledWith('myPipe');
+    expect(mockPipelineExecutableHelpRender).toHaveBeenCalledWith('myPipe', expect.objectContaining({ name: 'myPipe' }));
     expect(mockPipeline).not.toHaveBeenCalled();
   });
 

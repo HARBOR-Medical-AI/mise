@@ -5,10 +5,9 @@
 import { jest, describe, it, expect } from '@jest/globals';
 import { cuminMock_install } from './support/cuminMock.js';
 import { GAMES_SHELF, gamesShelf_names, gamesShelf_render } from '../src/builtins/games/shelf.js';
-import { builtin_help, commandSummary_get, helpText } from '../src/builtins/help.js';
-import { chrisHelp } from '../src/chris/help.js';
+import { builtin_help, commandSummary_get } from '../src/builtins/help.js';
 import { chrisHelp_install } from './support/chrisHelp.js';
-import { commandDeclaration_get, commands_register } from '../src/core/commandRegistry.js';
+import { commandHelpEntry_get, commands_register } from '../src/core/commandRegistry.js';
 import { dateCommand } from '../src/builtins/sys/date.js';
 import { fortuneCommand } from '../src/builtins/sys/fortune.js';
 import { calCommand } from '../src/builtins/sys/cal.js';
@@ -35,7 +34,7 @@ describe('the games shelf', () => {
 
   it('lists only commands with a help entry, and lists every one of those it names', () => {
     const names: string[] = gamesShelf_names(commandSummary_get);
-    for (const name of names) expect(helpText[name] ?? chrisHelp[name] ?? commandDeclaration_get(name)?.help).toBeDefined();
+    for (const name of names) expect(commandHelpEntry_get(name)).toBeDefined();
     const shelved: Set<string> = new Set(GAMES_SHELF.flatMap((c) => [...c.commands]));
     for (const name of ['fortune', 'cal', 'date', 'weather', 'motd']) {
       expect(shelved.has(name)).toBe(true);

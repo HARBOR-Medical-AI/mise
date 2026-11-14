@@ -63,9 +63,10 @@ beforeEach(() => {
 });
 
 describe('builtin_plugin', () => {
-  it('renders usage with no subcommand', async () => {
+  it('refuses a line with no subcommand, naming them', async () => {
     const env = await builtin_plugin([]);
-    expect(env.rendered).toContain('Usage: plugin');
+    expect(env.status).toBe('error');
+    expect(env.renderedErr).toContain('plugin: missing subcommand (list, search, inspect, info, add, sync, validate, index, run)');
   });
 
   it('lists plugins and shows a pagination hint', async () => {
@@ -104,7 +105,7 @@ describe('builtin_plugin', () => {
   it('returns an error envelope for an unknown subcommand', async () => {
     const env = await builtin_plugin(['frobnicate']);
     expect(mockChiliRun).not.toHaveBeenCalled();
-    expect(env.renderedErr).toContain('Unknown subcommand');
+    expect(env.renderedErr).toContain("plugin: unknown subcommand 'frobnicate'");
   });
 
   it('reports an error from a handler', async () => {
@@ -166,3 +167,30 @@ describe('the registering subcommands', () => {
   });
 });
 
+describe('the plugin declaration', () => {
+  it('reads add\'s options typed and hands them on, the sudo line rebuilt from them', async () => {
+    mockAdd.mockResolvedValue({ outcome: 'failed' });
+    mockAllOfType.mockImplementation((type: string) => type === 'error' ? ['Request failed with status code 403'] : []);
+    const env = await builtin_plugin(['add', 'pl-x', '--store', 'https://peer/api/v1/', '--publicRepo', 'https://github.com/o/pl-x']);
+    expect(mockAdd).toHaveBeenCalledWith('pl-x', expect.objectContaining({ store: 'https://peer/api/v1/', publicRepo: 'https://github.com/o/pl-x' }), expect.any(Function));
+    expect(env.renderedErr).toContain('Try: sudo plugin add pl-x --store https://peer/api/v1/ --publicRepo https://github.com/o/pl-x');
+  });
+
+  it('refuses an option a subcommand does not take, before anything runs', async () => {
+    const env = await builtin_plugin(['list', '--nosuch']);
+    expect(env.renderedErr).toContain("plugin: list: unrecognized option '--nosuch'");
+    expect(mockFetchList).not.toHaveBeenCalled();
+  });
+
+  it('is described as one tool per subcommand, each typed', async () => {
+    const { pluginCommand } = await import('../src/builtins/res/plugin.js');
+    const { commandTools_derive } = await import('../src/core/commandSchema.js');
+    const { backend_install } = await import('../src/core/backend.js');
+    const { chrisArgumentKinds } = await import('../src/chris/kinds.js');
+    backend_install({ id: 'chris', session: {} as never, argumentKinds: chrisArgumentKinds });
+    const tools = commandTools_derive(pluginCommand);
+    expect(tools.map((tool) => tool.name)).toEqual(['plugin_list', 'plugin_search', 'plugin_inspect', 'plugin_info', 'plugin_add', 'plugin_sync', 'plugin_validate', 'plugin_index', 'plugin_run']);
+    const info = tools.find((tool) => tool.name === 'plugin_info')?.inputSchema as { required?: string[] };
+    expect(info.required).toEqual(['plugin']);
+  });
+});

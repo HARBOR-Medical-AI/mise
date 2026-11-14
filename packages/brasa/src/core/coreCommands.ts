@@ -11,7 +11,8 @@
  *
  * @module
  */
-import { type CommandGroup, type CommandHandler, type EnvelopeHandler, type SessionPiece } from './commandRegistry.js';
+import { type CommandGroup } from './commandRegistry.js';
+import { SHELL_WORDS } from './shellWords.js';
 import type { AnyCommandDeclaration } from './commandDeclaration.js';
 import { leaveCommand, stopwatchCommand, timerCommand } from '../builtins/games/chimes.js';
 import { cowsayCommand, cowthinkCommand } from '../builtins/games/cowsay.js';
@@ -45,7 +46,7 @@ import { lsCommand } from '../builtins/fs/ls.js';
 import { mkdirCommand } from '../builtins/fs/mkdir.js';
 import { mvCommand } from '../builtins/fs/mv.js';
 import { pwdCommand } from '../builtins/fs/pwd.js';
-import { builtin_url } from '../builtins/fs/url.js';
+import { urlCommand } from '../builtins/fs/url.js';
 import { rmCommand } from '../builtins/fs/rm.js';
 import { rmdirCommand } from '../builtins/fs/rmdir.js';
 import { touchCommand } from '../builtins/fs/touch.js';
@@ -58,25 +59,6 @@ import { timingCommand } from '../builtins/sys/timing.js';
 import { versionCommand } from '../builtins/sys/version.js';
 import { weatherCommand } from '../builtins/sys/weather.js';
 import { notesCommand } from '../builtins/sys/notes.js';
-import { envelopeHandler_wrap } from './sink.js';
-
-const envelope: Record<string, EnvelopeHandler> = {
-  url: builtin_url,
-};
-
-const plain: Record<string, CommandHandler> = {
-  url:envelopeHandler_wrap((args: string[]) => builtin_url(args)),
-};
-
-
-/** The core commands: their handlers. Their help is registered from `builtins/help.ts`, which holds it. */
-/**
- * What the core's commands hold of the session: a read holds nothing and
- * runs beside anything. A command not named holds the whole session (a
- * game, a play, anything that asks); a declared command says in its
- * declaration (`cd` holds the working directory).
- */
-const holds: Record<string, readonly SessionPiece[]> = {};
 
 /** The core commands declared in one record each: grammar, kinds, handler, holds and help together. */
 const declarations: ReadonlyArray<AnyCommandDeclaration> = [
@@ -94,11 +76,12 @@ const declarations: ReadonlyArray<AnyCommandDeclaration> = [
   // Files.
   catCommand, findCommand, cpCommand, mvCommand, rmCommand, mkdirCommand, rmdirCommand, touchCommand,
   grepCommand, wcCommand, headCommand, tailCommand, sortCommand, uniqCommand, cutCommand,
+  // Sharing.
+  urlCommand,
 ];
 
+/** The core's commands: the shell's own words, and every command declared in one record. */
 export const coreCommands: CommandGroup = {
-  envelope,
-  plain,
-  holds,
+  shellWords: SHELL_WORDS,
   declarations,
 };

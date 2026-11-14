@@ -6,6 +6,7 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { coreBuiltins_mock } from './support/coreBuiltins.js';
 import { wordsStandIn_make } from './support/declarationStandIns.js';
+import { pipelineManifest_standIn, pipelineModule_standIn } from './support/pipelineStandIn.js';
 import { cuminMock_install } from './support/cuminMock.js';
 
 // Minimal cumin surface used by the dispatch layer (Result helpers + error stack).
@@ -111,7 +112,7 @@ function builtinStubs_make(): Record<string, unknown> {
 }
 jest.unstable_mockModule('../src/builtins/index.js', builtinStubs_make);
 coreBuiltins_mock(builtinStubs_make());
-jest.unstable_mockModule('../src/builtins/res/pipeline.js', () => ({ builtin_pipeline: mockPipeline }));
+jest.unstable_mockModule('../src/builtins/res/pipeline.js', () => pipelineModule_standIn(mockPipeline));
 
 const mockExecutePlugin = jest.fn();
 jest.unstable_mockModule('../src/builtins/pluginExecute.js', () => ({ builtin_executePlugin: mockExecutePlugin }));
@@ -154,6 +155,7 @@ jest.unstable_mockModule('../src/builtins/res/runWait.js', () => ({
 }));
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
   feed_create: jest.fn(),
+  pipelineManifest_get: pipelineManifest_standIn,
   dicomSeries_summarize: jest.fn(),
   dicomFolder_list: jest.fn(),
   dicomHeader_get: jest.fn(),
