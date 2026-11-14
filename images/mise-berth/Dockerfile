@@ -109,12 +109,14 @@ RUN mkdir -p /opt/mise \
     && rm -rf /root/.cache /root/.npm
 
 # The user's places: a home made at start under /home (sticky and open, as /tmp is, so any
-# uid can make its own), the cohort read-only at /incoming, their output at /outgoing, the
-# token at /run/mise/token (a tmpfs the launcher writes). The node user the base image
-# carries is removed: the berth's one user is the one the launcher names.
+# uid can make its own), the ChRIS data they anchor at /anchors and their results at
+# /outgoing (two mount points the launcher fills from one work volume the user owns, named
+# to the session by MISE_BERTH_ANCHORS and MISE_BERTH_OUTGOING), the token at
+# /run/mise/token (a tmpfs the launcher writes). The node user the base image carries is
+# removed: the berth's one user is the one the launcher names.
 RUN userdel -r node 2>/dev/null || true \
     && chmod 1777 /home \
-    && mkdir -p /incoming /outgoing /run/mise
+    && mkdir -p /anchors /outgoing /run/mise
 
 COPY entrypoint.sh /usr/local/bin/mise-berth
 RUN chmod 0755 /usr/local/bin/mise-berth

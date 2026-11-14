@@ -8,6 +8,8 @@
 #   MISE_CUBE_URL        the CUBE API the session signs in to (https://…/api/v1/)
 #   MISE_HOST_CONTROL    the session's host-control tiers (default: shell — `!` lands here)
 #   CALYPSO_BIND         where calypso listens, when porter reaches it over the berth network
+#   MISE_BERTH_ANCHORS   where the session's anchors stand (/anchors), read by its `berth` verbs
+#   MISE_BERTH_OUTGOING  where the berth's results are written (/outgoing), returned by `berth close`
 # and writes the user's CUBE token to /run/mise/token (a tmpfs, readable by the uid alone) as
 # the berth starts; the entrypoint waits for it.
 #
