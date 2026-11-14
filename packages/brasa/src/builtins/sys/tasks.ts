@@ -8,11 +8,15 @@
  * its current operation does, and a second `kill` says so rather than
  * forcing it, because a cloud job cut short can leave its state locked.
  * `wait` follows a job's log until it ends, and its status is the job's:
- * Ctrl-C stops following, never the job.
+ * Ctrl-C stops following, never the job. Declared in one record each
+ * (`killCommand`, `waitCommand`); neither takes an option, so `kill -9` is
+ * refused before it runs.
  *
  * @module
  */
 import { envelope_error, envelope_ok, taskState_isOver, type CommandEnvelope } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import { runner_get, type JobRecord, type JobRunner, type JobStopResult } from '../../core/runner.js';
 import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
 import { sink_dataLine } from '../../core/sink.js';
@@ -53,16 +57,106 @@ const STOP_WORDS: Record<Exclude<JobStopResult, 'stopping'>, (record: JobRecord 
   unknown: (): string => 'no such task',
 };
 
+/** What a `kill` line may hold. */
+const KILL_GRAMMAR = {
+  operands: [
+    { name: 'task', kind: 'word', repeat: true, summary: 'Each task: /proc/<source>/<id>, <source>/<id>, %N, or its name' },
+  ],
+} as const satisfies CommandGrammar;
+
+/** What a `wait` line may hold. */
+const WAIT_GRAMMAR = {
+  operands: [
+    { name: 'task', kind: 'word', optional: true, repeat: true, summary: 'Each task, as kill names it; bare, every running task' },
+  ],
+} as const satisfies CommandGrammar;
+
 /**
- * `kill <task>…`: asks each job to stop.
+ * `kill <task>…`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [killCommand] });
+ * ```
+ */
+export const killCommand = command_declare({
+  name: 'kill',
+  grammar: KILL_GRAMMAR,
+  help: {
+    summary: 'Ask a running task to stop',
+    description: 'Asks each task to stop: /proc/<source>/<id>, <source>/<id>, a joblet\'s %N, or its name alone when one source has it. Quiet when it is asked, as kill is. The task ends when its current operation does: a cloud job cut short can leave its state locked, so a task is never forced, there is no -9, and a second kill says so instead.',
+    category: 'General',
+    posix: { group: 'System', differs: 'stops a session task (/proc/<source>/<id>), never a process; asks, never forces' },
+    examples: ['kill /proc/steps/trial-build', 'kill trial-build', 'kill %1'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof KILL_GRAMMAR>): Promise<CommandEnvelope> => kill_run(args.operands.task),
+});
+
+/**
+ * `wait [<task>…]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [waitCommand] });
+ * ```
+ */
+export const waitCommand = command_declare({
+  name: 'wait',
+  grammar: WAIT_GRAMMAR,
+  help: {
+    summary: 'Follow a task until it ends',
+    description: 'Follows each task\'s log until it ends, then says how it ended; bare, every running task. The status is the tasks\': 0 when all ended done. Ctrl-C stops following and leaves the task running; wait again picks it up.',
+    category: 'General',
+    posix: { group: 'System', differs: 'waits on session tasks, following each one\'s log' },
+    examples: ['wait trial-build', 'wait %1', 'wait'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof WAIT_GRAMMAR>): Promise<CommandEnvelope> => wait_run(args.operands.task),
+});
+
+/**
+ * `kill` over words already split: the declaration's parse and handler.
  *
  * @param args - The words after `kill`.
- * @returns The envelope: quiet on success, a line per job that could not be asked.
+ * @returns Quiet on success, a line per job that could not be asked, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_kill(['%1']);
+ * ```
  */
 export async function builtin_kill(args: string[]): Promise<CommandEnvelope> {
-  const flag: string | undefined = args.find((word: string): boolean => word.startsWith('-'));
-  if (flag !== undefined) return envelope_error('', undefined, `kill: ${flag}: a task is never forced; kill asks it to stop\n`);
-  if (args.length === 0) return envelope_error('', undefined, 'kill: usage: kill <task>…\n');
+  return declaredCommand_run(killCommand, args);
+}
+
+/**
+ * `wait` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `wait`.
+ * @returns Failed when a job did not end done or following was stopped, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_wait(['trial-build']);
+ * ```
+ */
+export async function builtin_wait(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(waitCommand, args);
+}
+
+/**
+ * Asks each job to stop.
+ *
+ * @param args - The tasks, as words name them.
+ * @returns The envelope: quiet on success, a line per job that could not be asked.
+ *
+ * @example
+ * ```ts
+ * await kill_run(['/proc/steps/trial-build']);
+ * ```
+ */
+export async function kill_run(args: readonly string[]): Promise<CommandEnvelope> {
   const runner: JobRunner | null = runner_get();
   if (runner === null) return envelope_error('', undefined, 'kill: this session runs no tasks\n');
   const complaints: string[] = [];
@@ -80,14 +174,17 @@ export async function builtin_kill(args: string[]): Promise<CommandEnvelope> {
 }
 
 /**
- * `wait [<task>…]`: follows each job's log until it ends; bare, every running job.
+ * Follows each job's log until it ends; bare, every running job.
  *
- * @param args - The words after `wait`.
+ * @param args - The tasks, as words name them; none for every running one.
  * @returns The envelope: failed when a job did not end done, or following was stopped.
+ *
+ * @example
+ * ```ts
+ * await wait_run([]);
+ * ```
  */
-export async function builtin_wait(args: string[]): Promise<CommandEnvelope> {
-  const flag: string | undefined = args.find((word: string): boolean => word.startsWith('-'));
-  if (flag !== undefined) return envelope_error('', undefined, `wait: ${flag}: unknown option\n`);
+export async function wait_run(args: readonly string[]): Promise<CommandEnvelope> {
   const runner: JobRunner | null = runner_get();
   if (runner === null) return args.length === 0 ? envelope_ok('') : envelope_error('', undefined, 'wait: this session runs no tasks\n');
   const names: Array<JobName | { error: string; word: string }> = args.length === 0

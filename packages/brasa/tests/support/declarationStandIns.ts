@@ -95,6 +95,25 @@ export function berthStandIn_make(handler: StandInHandler): AnyCommandDeclaratio
   });
 }
 
+/**
+ * Any other declared command, standing in: its words handed to the suite's
+ * handler as they came, as the command's name in a group's records was
+ * handed them, for a suite that meets the command only by name.
+ *
+ * @param name - The command's name.
+ * @param handler - What runs it.
+ * @returns The declaration.
+ */
+export function wordsStandIn_make(name: string, handler: StandInHandler): AnyCommandDeclaration {
+  const run: (args: unknown) => Promise<CommandEnvelope> = handler_wrap(handler);
+  return {
+    name,
+    grammar: 'expression',
+    help: { usage: name, summary: name, description: name, category: 'General' },
+    handler: (args: string[]): Promise<CommandEnvelope> => run(args),
+  };
+}
+
 /** Each declared command's stand-in maker, by the name its module exports it under. */
 export const STAND_IN_MAKERS: Readonly<Record<string, (handler: StandInHandler) => AnyCommandDeclaration>> = {
   lsCommand: lsStandIn_make,

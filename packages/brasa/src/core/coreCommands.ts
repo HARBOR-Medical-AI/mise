@@ -27,14 +27,14 @@ import { builtin_asciiquarium, builtin_cmatrix, builtin_rain, builtin_sl, builti
 import { builtin_ddate, builtin_pom, builtin_stardate, builtin_sunrise } from '../builtins/games/sky.js';
 import { builtin_grep } from '../builtins/sys/grep.js';
 import { builtin_cut, builtin_head, builtin_sort, builtin_tail, builtin_uniq, builtin_wc } from '../builtins/sys/textFilters.js';
-import { builtin_command } from '../builtins/sys/command.js';
-import { builtin_kill, builtin_wait } from '../builtins/sys/tasks.js';
-import { builtin_fg, builtin_joblets } from '../builtins/sys/joblets.js';
-import { builtin_set, builtin_unset } from '../builtins/sys/variables.js';
-import { builtin_echo, builtin_printf } from '../builtins/sys/echo.js';
+import { commandCommand } from '../builtins/sys/command.js';
+import { killCommand, waitCommand } from '../builtins/sys/tasks.js';
+import { fgCommand, jobletsCommand } from '../builtins/sys/joblets.js';
+import { setCommand, unsetCommand } from '../builtins/sys/variables.js';
+import { echoCommand, printfCommand } from '../builtins/sys/echo.js';
 import { builtin_expect } from '../builtins/res/expect.js';
 import { builtin_play } from '../builtins/res/play.js';
-import { builtin_apropos, builtin_man } from '../builtins/sys/apropos.js';
+import { aproposCommand, manCommand } from '../builtins/sys/apropos.js';
 import { builtin_rev, builtin_rot13, builtin_seq, builtin_shuf, builtin_tac, builtin_yes } from '../builtins/games/text.js';
 import { builtin_wtf } from '../builtins/games/wtf.js';
 import { builtin_debug } from '../builtins/debug.js';
@@ -50,14 +50,14 @@ import { builtin_rm } from '../builtins/fs/rm.js';
 import { builtin_rmdir } from '../builtins/fs/rmdir.js';
 import { builtin_touch } from '../builtins/fs/touch.js';
 import { builtin_find } from '../builtins/fs/find.js';
-import { builtin_help } from '../builtins/help.js';
+import { helpCommand } from '../builtins/help.js';
 import { builtin_cal } from '../builtins/sys/cal.js';
-import { builtin_date } from '../builtins/sys/date.js';
+import { dateCommand } from '../builtins/sys/date.js';
 import { builtin_fortune } from '../builtins/sys/fortune.js';
 import { builtin_timing } from '../builtins/sys/timing.js';
-import { builtin_version } from '../builtins/sys/version.js';
+import { versionCommand } from '../builtins/sys/version.js';
 import { builtin_weather } from '../builtins/sys/weather.js';
-import { builtin_notes } from '../builtins/sys/notes.js';
+import { notesCommand } from '../builtins/sys/notes.js';
 import { envelopeHandler_wrap } from './sink.js';
 
 const envelope: Record<string, EnvelopeHandler> = {
@@ -74,7 +74,6 @@ const envelope: Record<string, EnvelopeHandler> = {
   url: builtin_url,
   timing: builtin_timing,
   debug: builtin_debug,
-  version: builtin_version,
   fortune: builtin_fortune,
   cowsay: builtin_cowsay,
   cowthink: builtin_cowthink,
@@ -90,9 +89,6 @@ const envelope: Record<string, EnvelopeHandler> = {
   sort: builtin_sort,
   uniq: builtin_uniq,
   cut: builtin_cut,
-  command: builtin_command,
-  apropos: builtin_apropos,
-  man: builtin_man,
   yes: builtin_yes,
   seq: builtin_seq,
   factor: builtin_factor,
@@ -113,16 +109,8 @@ const envelope: Record<string, EnvelopeHandler> = {
   ddate: builtin_ddate,
   sunrise: builtin_sunrise,
   timer: builtin_timer,
-  kill: builtin_kill,
-  wait: builtin_wait,
-  fg: builtin_fg,
-  joblets: builtin_joblets,
-  set: builtin_set,
-  echo: builtin_echo,
-  printf: builtin_printf,
   expect: builtin_expect,
   play: builtin_play,
-  unset: builtin_unset,
   leave: builtin_leave,
   stopwatch: builtin_stopwatch,
   sl: builtin_sl,
@@ -136,10 +124,7 @@ const envelope: Record<string, EnvelopeHandler> = {
   trek: builtin_trek,
   '2048': builtin_2048,
   weather: builtin_weather,
-  notes: builtin_notes,
-  date: builtin_date,
   cal: builtin_cal,
-  help: builtin_help,
 };
 
 const plain: Record<string, CommandHandler> = {
@@ -171,9 +156,6 @@ const plain: Record<string, CommandHandler> = {
   sort: envelopeHandler_wrap(builtin_sort),
   uniq: envelopeHandler_wrap(builtin_uniq),
   cut: envelopeHandler_wrap(builtin_cut),
-  command: envelopeHandler_wrap(builtin_command),
-  apropos: envelopeHandler_wrap(builtin_apropos),
-  man: envelopeHandler_wrap(builtin_man),
   yes: envelopeHandler_wrap(builtin_yes),
   seq: envelopeHandler_wrap(builtin_seq),
   factor: envelopeHandler_wrap(builtin_factor),
@@ -194,16 +176,8 @@ const plain: Record<string, CommandHandler> = {
   ddate: envelopeHandler_wrap(builtin_ddate),
   sunrise: envelopeHandler_wrap(builtin_sunrise),
   timer: envelopeHandler_wrap(builtin_timer),
-  kill: envelopeHandler_wrap(builtin_kill),
-  wait: envelopeHandler_wrap(builtin_wait),
-  fg: envelopeHandler_wrap(builtin_fg),
-  joblets: envelopeHandler_wrap(builtin_joblets),
-  set: envelopeHandler_wrap(builtin_set),
-  echo: envelopeHandler_wrap(builtin_echo),
-  printf: envelopeHandler_wrap(builtin_printf),
   expect: envelopeHandler_wrap(builtin_expect),
   play: envelopeHandler_wrap(builtin_play),
-  unset: envelopeHandler_wrap(builtin_unset),
   leave: envelopeHandler_wrap(builtin_leave),
   stopwatch: envelopeHandler_wrap(builtin_stopwatch),
   sl: envelopeHandler_wrap(builtin_sl),
@@ -217,10 +191,7 @@ const plain: Record<string, CommandHandler> = {
   trek: envelopeHandler_wrap(builtin_trek),
   '2048': envelopeHandler_wrap(builtin_2048),
   weather: envelopeHandler_wrap(builtin_weather),
-  notes: envelopeHandler_wrap(builtin_notes),
-  date: envelopeHandler_wrap(builtin_date),
   cal: envelopeHandler_wrap(builtin_cal),
-  help: envelopeHandler_wrap(builtin_help),
 };
 
 
@@ -232,18 +203,21 @@ const plain: Record<string, CommandHandler> = {
  */
 const holds: Record<string, readonly SessionPiece[]> = {
   ...Object.fromEntries([
-    'apropos', 'banner', 'cal', 'calc', 'cat', 'cowsay', 'cowthink', 'cut', 'date', 'ddate', 'echo', 'factor',
-    'figlet', 'find', 'fortune', 'grep', 'head', 'help', 'lolcat', 'man', 'morse', 'notes', 'pom',
-    'primes', 'printf', 'pwd', 'qr', 'rev', 'rot13', 'seq', 'sort', 'stardate', 'tac', 'tail', 'uniq',
-    'units', 'uptime', 'version', 'wc', 'who',
-    // Following or stopping a task changes nothing of the session.
-    'fg', 'joblets', 'kill', 'wait',
+    'banner', 'cal', 'calc', 'cat', 'cowsay', 'cowthink', 'cut', 'ddate', 'factor',
+    'figlet', 'find', 'fortune', 'grep', 'head', 'lolcat', 'morse', 'pom',
+    'primes', 'pwd', 'qr', 'rev', 'rot13', 'seq', 'sort', 'stardate', 'tac', 'tail', 'uniq',
+    'units', 'uptime', 'wc', 'who',
   ].map((name: string): [string, readonly SessionPiece[]] => [name, []])),
   cd: ['cwd'],
 };
 
 /** The core commands declared in one record each: grammar, kinds, handler, holds and help together. */
-const declarations: ReadonlyArray<AnyCommandDeclaration> = [lsCommand];
+const declarations: ReadonlyArray<AnyCommandDeclaration> = [
+  lsCommand,
+  // General, in the order their handlers listed before they were declared.
+  commandCommand, aproposCommand, manCommand, killCommand, waitCommand, fgCommand, jobletsCommand,
+  setCommand, echoCommand, printfCommand, unsetCommand, versionCommand, notesCommand, dateCommand, helpCommand,
+];
 
 export const coreCommands: CommandGroup = {
   envelope,

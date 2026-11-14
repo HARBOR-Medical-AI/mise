@@ -1,4 +1,3 @@
-import { CommandEnvelope, envelope_ok } from '@fnndsc/menu';
 /**
  * @file Builtin date.
  *
@@ -7,9 +6,14 @@ import { CommandEnvelope, envelope_ok } from '@fnndsc/menu';
  * strings. Pure computation — no host `date` binary, no subprocess — so it
  * behaves the same in a local shell, over a CALYPSO daemon, and in the
  * standalone binary. It reports the time only; it never sets the clock.
+ * Declared in one record (`dateCommand`).
  *
  * @module
  */
+import { CommandEnvelope, envelope_error, envelope_ok } from '@fnndsc/menu';
+import { exitCode_set } from '../../core/handlerRun.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 const DAYS_LONG: readonly string[] = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const DAYS_SHORT: readonly string[] = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -111,20 +115,73 @@ export function date_format(date: Date, format: string, utc: boolean): string {
   return expanded.replace(/%([A-Za-z%])/g, (m: string, code: string): string => (code in simple ? simple[code] : m));
 }
 
+/** What a `date` line may hold. */
+const DATE_GRAMMAR = {
+  operands: [
+    { name: 'format', kind: 'word', optional: true, summary: '+ and a strftime-style format (e.g. +%Y-%m-%d, +%H:%M:%S)' },
+  ],
+  options: {
+    utc: { short: 'u', long: 'utc', summary: 'Print (or interpret) time in UTC' },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * Reports the current date/time as a command envelope.
+ * `date [-u] [+format]`: the declaration.
  *
- * Supports `-u`/`--utc` for UTC and a `+FORMAT` strftime-style argument;
- * otherwise the default `date` format is used.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [dateCommand] });
+ * ```
+ */
+export const dateCommand = command_declare({
+  name: 'date',
+  grammar: DATE_GRAMMAR,
+  help: {
+    summary: 'Print the current date and time',
+    description: 'Prints the current date and time, in the spirit of UNIX date. Use -u for UTC and +FORMAT for a strftime-style format string. Reports the time only; it never sets the clock.',
+    category: 'General',
+    posix: { group: 'System', differs: 'as date, with its + formats' },
+    examples: ['date', 'date -u', 'date +%Y-%m-%d', 'date "+%A, %B %e %Y"'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof DATE_GRAMMAR>): Promise<CommandEnvelope> => date_run(args.operands.format, args.options.utc),
+});
+
+/**
+ * `date` over words already split: the declaration's parse and handler.
  *
- * @param args - Command arguments.
- * @returns An envelope carrying the formatted date and an ISO/unix model.
+ * @param args - The words after `date`.
+ * @returns The date, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_date(['-u', '+%Y']);
+ * ```
  */
 export async function builtin_date(args: string[]): Promise<CommandEnvelope> {
-  const utc: boolean = args.includes('-u') || args.includes('--utc');
-  const formatArg: string | undefined = args.find((a: string) => a.startsWith('+'));
+  return declaredCommand_run(dateCommand, args);
+}
+
+/**
+ * Reports the current date/time as a command envelope: under a `+FORMAT`
+ * strftime-style format when one is given, otherwise the default `date` format.
+ *
+ * @param format - The format, its `+` included, or undefined for the default.
+ * @param utc - Whether to report the time in UTC.
+ * @returns An envelope carrying the formatted date and an ISO/unix model, or a refusal for a format without its `+`.
+ *
+ * @example
+ * ```ts
+ * await date_run('+%Y-%m-%d', true);
+ * ```
+ */
+export async function date_run(format: string | undefined, utc: boolean): Promise<CommandEnvelope> {
+  if (format !== undefined && !format.startsWith('+')) {
+    exitCode_set(1);
+    return envelope_error('', undefined, `date: '${format}': a format starts with +, as +%Y-%m-%d; date never sets the clock\n`);
+  }
   const now: Date = new Date();
-  const rendered: string = date_format(now, formatArg ? formatArg.slice(1) : DEFAULT_FORMAT, utc);
+  const rendered: string = date_format(now, format !== undefined ? format.slice(1) : DEFAULT_FORMAT, utc);
   return envelope_ok(`${rendered}\n`, {
     kind: 'sys.date',
     data: { iso: now.toISOString(), unix: Math.floor(now.getTime() / 1000) },

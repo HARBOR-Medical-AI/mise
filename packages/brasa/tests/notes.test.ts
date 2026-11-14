@@ -11,7 +11,9 @@ cuminMock_install(() => ({
   envelope_error: (rendered: string, _errors?: unknown, renderedErr?: string) => (renderedErr !== undefined ? { status: 'error', rendered, renderedErr } : { status: 'error', rendered }),
 }));
 
-const { notes_gather, notes_select, notesArgs_parse, notes_render, release_title, builtin_notes, news_text, package_short, NOTES_PACKAGES, notes_load } = await import('../src/builtins/sys/notes.js');
+const { notes_gather, notes_select, notesAsk_make, notesCommand, notes_render, release_title, builtin_notes, news_text, package_short, NOTES_PACKAGES, notes_load } = await import('../src/builtins/sys/notes.js');
+const { commandLine_parse } = await import('../src/core/commandParse.js');
+const { shellWord_literal } = await import('../src/lib/parser.js');
 type PackageNotes = import('../src/builtins/sys/notes.js').PackageNotes;
 
 const plain = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, '');
@@ -44,14 +46,19 @@ describe('notes', () => {
     expect(notes_load('@fnndsc/not-a-package')).toBeNull();
   });
 
-  it('reads the flags and refuses the unknown by name', () => {
-    expect(notesArgs_parse([])).toEqual({ since: 1, all: false, long: false });
-    expect(notesArgs_parse(['--since', '3', '--all', '--long'])).toEqual({ since: 3, all: true, long: true });
-    expect(notesArgs_parse(['-s', '2026-10-01'])).toMatchObject({ since: '2026-10-01' });
-    expect(notesArgs_parse(['--since'])).toMatchObject({ refusal: expect.stringContaining('--since wants') });
-    expect(notesArgs_parse(['--since', 'soon'])).toMatchObject({ refusal: expect.stringContaining("'soon'") });
-    expect(notesArgs_parse(['--verbose'])).toMatchObject({ refusal: expect.stringContaining("'--verbose'") });
-    expect(notesArgs_parse(['argus'])).toMatchObject({ refusal: expect.stringContaining("'argus'") });
+  it('reads the flags and refuses the unknown by name', async () => {
+    // The line parsed against the declaration, then its options read as an ask.
+    const notesArgs_parse = async (words: string[]): Promise<unknown> => {
+      const parsed = await commandLine_parse(notesCommand, words.map(shellWord_literal));
+      return parsed.ok ? notesAsk_make(parsed.args.options as Parameters<typeof notesAsk_make>[0]) : { refusal: parsed.refusal };
+    };
+    expect(await notesArgs_parse([])).toEqual({ since: 1, all: false, long: false });
+    expect(await notesArgs_parse(['--since', '3', '--all', '--long'])).toEqual({ since: 3, all: true, long: true });
+    expect(await notesArgs_parse(['-s', '2026-10-01'])).toMatchObject({ since: '2026-10-01' });
+    expect(await notesArgs_parse(['--since'])).toMatchObject({ refusal: expect.stringContaining("'--since' wants") });
+    expect(await notesArgs_parse(['--since', 'soon'])).toMatchObject({ refusal: expect.stringContaining("'soon'") });
+    expect(await notesArgs_parse(['--verbose'])).toMatchObject({ refusal: expect.stringContaining("'--verbose'") });
+    expect(await notesArgs_parse(['argus'])).toMatchObject({ refusal: expect.stringContaining("'argus'") });
   });
 
   it('selects by count or by date, and hides internal changes unless asked', () => {

@@ -10,7 +10,7 @@
 import { jest } from '@jest/globals';
 import { readFileSync } from 'node:fs';
 
-import { STAND_IN_MAKERS, type StandInHandler } from './declarationStandIns.js';
+import { STAND_IN_MAKERS, wordsStandIn_make, type StandInHandler } from './declarationStandIns.js';
 
 const groupSource: string = ['../../src/core/coreCommands.ts', '../../src/chris/chrisCommands.ts']
   .map((group: string): string => readFileSync(new URL(group, import.meta.url), 'utf8'))
@@ -45,10 +45,10 @@ const CORE_MODULES: ReadonlyArray<[string, string[]]> = [...new Set([...groupSou
 function export_stub(name: string, stubs: Record<string, unknown>): unknown {
   if (stubs[name] !== undefined) return stubs[name];
   const standIn = STAND_IN_MAKERS[name];
-  if (standIn !== undefined) {
-    const builtin: unknown = stubs[`builtin_${name.replace(/Command$/, '')}`];
-    return standIn((builtin as StandInHandler | undefined) ?? jest.fn());
-  }
+  const builtin: unknown = stubs[`builtin_${name.replace(/Command$/, '')}`];
+  if (standIn !== undefined) return standIn((builtin as StandInHandler | undefined) ?? jest.fn());
+  // Any other declaration (`echoCommand`) stands in by its name, its words handed to the test's stub.
+  if (/^[a-z]\w*Command$/.test(name)) return wordsStandIn_make(name.replace(/Command$/, ''), (builtin as StandInHandler | undefined) ?? jest.fn());
   return jest.fn();
 }
 

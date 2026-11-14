@@ -58,8 +58,8 @@ describe('kill and wait', () => {
     expect(second.status).toBe('error');
     expect(second.renderedErr).toBe('kill: /proc/steps/a: already asked to stop; it ends when its current operation does\nkill: zz: no such task\n');
     expect((await builtin_kill(['a'])).renderedErr).toBe('kill: a: not running (cancelled)\n');
-    expect((await builtin_kill(['-9', 'a'])).renderedErr).toBe('kill: -9: a task is never forced; kill asks it to stop\n');
-    expect((await builtin_kill([])).renderedErr).toBe('kill: usage: kill <task>…\n');
+    expect((await builtin_kill(['-9', 'a'])).renderedErr).toBe("kill: invalid option -- '9'; usage: kill <task…>\n");
+    expect((await builtin_kill([])).renderedErr).toBe('kill: missing operand <task>; usage: kill <task…>\n');
   });
 
   it('wait follows the log to the end and takes the job\'s status', async () => {
@@ -72,7 +72,7 @@ describe('kill and wait', () => {
     await runner.job_start('steps', 'f', 'F', async () => { throw new Error('quota'); }).finished;
     expect((await builtin_wait(['f'])).renderedErr).toBe('wait: /proc/steps/f: failed (quota)\n');
     expect((await builtin_wait(['zz'])).renderedErr).toBe('wait: zz: no such task\n');
-    expect((await builtin_wait(['-n'])).renderedErr).toBe('wait: -n: unknown option\n');
+    expect((await builtin_wait(['-n'])).renderedErr).toBe("wait: invalid option -- 'n'; usage: wait [task…]\n");
   });
 
   it('bare wait waits for every running job', async () => {

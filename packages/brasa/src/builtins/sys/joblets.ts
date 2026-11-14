@@ -6,11 +6,14 @@
  * ChRIS backend's, for plugin instances). `fg %1` brings one to the front:
  * it asks the question the joblet waits on, here, then follows its log
  * until it ends. Ctrl-C stops following, never the joblet; `kill %1` stops
- * it.
+ * it. Declared in one record each (`jobletsCommand`, `fgCommand`): `fg`'s
+ * operand is a `job`, which completes from the joblets running.
  *
  * @module
  */
 import { envelope_error, envelope_ok, taskState_isOver, type CommandEnvelope } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import { runner_get, type JobRecord, type JobRunner } from '../../core/runner.js';
 import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
 import { sink_dataLine } from '../../core/sink.js';
@@ -31,14 +34,101 @@ function jobletState_word(record: JobRecord): string {
   return record.outcome === 'ended by restart' ? 'Ended by restart' : `Failed (exit ${typeof exit === 'number' ? exit : 1})`;
 }
 
+/** What a `joblets` line may hold: nothing. */
+const JOBLETS_GRAMMAR = {} as const satisfies CommandGrammar;
+
+/** What an `fg` line may hold. */
+const FG_GRAMMAR = {
+  operands: [
+    { name: 'job', kind: 'job', optional: true, summary: 'The joblet: %N; bare, the most recent' },
+  ],
+} as const satisfies CommandGrammar;
+
 /**
- * `joblets`: every joblet the session has kept, by number.
+ * `joblets`: the declaration.
  *
- * @param args - The words after `joblets`.
- * @returns The listing.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [jobletsCommand] });
+ * ```
+ */
+export const jobletsCommand = command_declare({
+  name: 'joblets',
+  grammar: JOBLETS_GRAMMAR,
+  help: {
+    summary: 'List the lines run in the background',
+    description: 'Lists every joblet the session keeps, by number: a line ended with & runs as one, at /proc/joblets/<N>, its output in /proc/joblets/<N>/log. Each reads Running, Waiting for an answer, Done, Failed (with its exit status), Stopped, or Ended by restart. A joblet stands where its line was typed and starts with its variables; its own cd and assignments stay inside it. fg %N follows one, kill %N stops one.',
+    category: 'General',
+    posix: { group: 'Shell', differs: 'is jobs: the word jobs lists CUBE plugin instances' },
+    examples: ['pull pacs PatientID:1234 &', 'joblets', 'fg %1', 'kill %1', 'cat /proc/joblets/1/log'],
+  },
+  holds: [],
+  handler: async (): Promise<CommandEnvelope> => joblets_run(),
+});
+
+/**
+ * `fg [%N]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [fgCommand] });
+ * ```
+ */
+export const fgCommand = command_declare({
+  name: 'fg',
+  grammar: FG_GRAMMAR,
+  help: {
+    summary: 'Bring a joblet to the front',
+    description: 'Asks the question the joblet waits on here, then follows its log until it ends; bare, the most recent joblet. Any surface of the session may bring any joblet forward. The status is the joblet\'s: 0 when it ended done. Ctrl-C stops following and leaves it running; kill %N stops it.',
+    category: 'General',
+    posix: { group: 'Shell', differs: 'follows a joblet\'s log; Ctrl-C stops following, not the joblet' },
+    examples: ['fg', 'fg %2'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof FG_GRAMMAR>): Promise<CommandEnvelope> => fg_run(args.operands.job),
+});
+
+/**
+ * `joblets` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `joblets` (none).
+ * @returns The listing, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_joblets([]);
+ * ```
  */
 export async function builtin_joblets(args: string[]): Promise<CommandEnvelope> {
-  if (args.length > 0) return envelope_error('', undefined, `joblets: ${args[0]}: takes no operands; ls /proc/joblets/<N> reads one\n`);
+  return declaredCommand_run(jobletsCommand, args);
+}
+
+/**
+ * `fg` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `fg`.
+ * @returns The joblet's status, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_fg(['%1']);
+ * ```
+ */
+export async function builtin_fg(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(fgCommand, args);
+}
+
+/**
+ * Every joblet the session has kept, by number.
+ *
+ * @returns The listing.
+ *
+ * @example
+ * ```ts
+ * (await joblets_run()).model?.kind; // 'joblets.list'
+ * ```
+ */
+export async function joblets_run(): Promise<CommandEnvelope> {
   const runner: JobRunner | null = runner_get();
   const records: JobRecord[] = (runner?.jobs_list(JOBLETS_SOURCE_ID) ?? [])
     .sort((a: JobRecord, b: JobRecord): number => Number(a.id) - Number(b.id));
@@ -50,18 +140,23 @@ export async function builtin_joblets(args: string[]): Promise<CommandEnvelope> 
 }
 
 /**
- * `fg [%N]`: brings a joblet to the front: answers what it waits on here,
- * and follows its log until it ends.
+ * Brings a joblet to the front: answers what it waits on here, and follows
+ * its log until it ends.
  *
- * @param args - The words after `fg`.
+ * @param job - The joblet as a word names it (`%1`), or undefined for the most recent.
  * @returns The joblet's status: 0 when it ended done.
+ *
+ * @example
+ * ```ts
+ * await fg_run('%1');
+ * ```
  */
-export async function builtin_fg(args: string[]): Promise<CommandEnvelope> {
-  if (args.length > 1) return envelope_error('', undefined, 'fg: usage: fg [%N]\n');
+export async function fg_run(job: string | undefined): Promise<CommandEnvelope> {
+  const word: string = job ?? '%%';
   const runner: JobRunner | null = runner_get();
-  const number: number | null = jobletWord_parse(args[0] ?? '%%');
+  const number: number | null = jobletWord_parse(word);
   const record: JobRecord | undefined = number === null || runner === null ? undefined : runner.job_get(JOBLETS_SOURCE_ID, String(number));
-  if (runner === null || number === null || record === undefined) return envelope_error('', undefined, `fg: ${args[0] ?? '%%'}: no such joblet\n`);
+  if (runner === null || number === null || record === undefined) return envelope_error('', undefined, `fg: ${word}: no such joblet\n`);
   commandCancellation_enable();
   const signal: AbortSignal | undefined = commandCancellation_signalGet();
   sink_dataLine(record.label);

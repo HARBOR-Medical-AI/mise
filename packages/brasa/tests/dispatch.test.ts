@@ -1,5 +1,6 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { coreBuiltins_mock } from './support/coreBuiltins.js';
+import { wordsStandIn_make } from './support/declarationStandIns.js';
 import { cuminMock_install } from './support/cuminMock.js';
 import type { CommandEnvelope } from '@fnndsc/cumin';
 
@@ -117,6 +118,7 @@ const mockPipelineExecutableHelpRender = jest.fn((name: string): string => `PIPE
 const mockPluginExecutableHelpRender = jest.fn((name: string): string => `PLUGIN HELP:${name}\n`);
 jest.unstable_mockModule('../src/builtins/help.js', () => ({
   builtin_help: jest.fn(),
+  helpCommand: wordsStandIn_make('help', jest.fn()),
   help_render: mockHelpRender,
   args_checkHasHelpFlag: mockHasHelpFlag,
   commandHelp_get: mockCommandHelpGet,

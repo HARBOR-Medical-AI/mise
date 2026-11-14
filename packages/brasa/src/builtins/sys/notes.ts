@@ -9,7 +9,7 @@
  * disk the daemon runs from (a-readout-names-the-release-it-reads), groups
  * them by the day they were released, and answers a `session.notes` model
  * beneath the text. A change written "Internal: …" is ours alone and is
- * hidden unless `--all` asks.
+ * hidden unless `--all` asks. Declared in one record (`notesCommand`).
  *
  * @module
  */
@@ -18,6 +18,8 @@ import * as fs from 'node:fs';
 import path from 'node:path';
 import { SESSION_NOTES_MODEL_KIND, type NotesChange, type NotesEntry, type NotesRelease, type SessionNotes, CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import chalk from 'chalk';
+import { command_declare, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** The packages whose notes an operator reads, in the order a release lists them. */
 export const NOTES_PACKAGES: ReadonlyArray<string> = ['@fnndsc/argus', '@fnndsc/brasa', '@fnndsc/chell', '@fnndsc/calypso', '@fnndsc/porter'];
@@ -99,24 +101,69 @@ export interface NotesAsk {
   long: boolean;
 }
 
-/** Reads the flags; a refusal names the flag. */
-export function notesArgs_parse(args: string[]): NotesAsk | { refusal: string } {
-  const ask: NotesAsk = { since: 1, all: false, long: false };
-  for (let i: number = 0; i < args.length; i++) {
-    const a: string = args[i] as string;
-    if (a === '--all' || a === '-a') ask.all = true;
-    else if (a === '--long' || a === '-l') ask.long = true;
-    else if (a === '--since' || a === '-s') {
-      const v: string | undefined = args[++i];
-      if (v === undefined) return { refusal: 'notes: --since wants a count or a date (YYYY-MM-DD)' };
-      if (/^\d+$/.test(v)) ask.since = Number(v);
-      else if (/^\d{4}-\d{2}-\d{2}$/.test(v)) ask.since = v;
-      else return { refusal: `notes: --since wants a count or a date (YYYY-MM-DD), not '${v}'` };
-    } else if (a.startsWith('-')) return { refusal: `notes: unknown flag '${a}' (--since N|DATE, --all, --long)` };
-    else return { refusal: `notes: takes no argument '${a}' (--since N|DATE, --all, --long)` };
-  }
-  return ask;
+/** What a `notes` line may hold. */
+const NOTES_GRAMMAR = {
+  options: {
+    since: { short: 's', long: 'since', summary: 'The last N releases, or every release from a day (YYYY-MM-DD) on', value: { name: 'N|DATE', kind: 'word' } },
+    all: { short: 'a', long: 'all', summary: 'The changes marked Internal too' },
+    long: { short: 'l', long: 'long', summary: 'Each change unfolded beneath its first sentence' },
+  },
+} as const satisfies CommandGrammar;
+
+/** The options a `notes` line gave. */
+type NotesOptions = CommandArguments<typeof NOTES_GRAMMAR>['options'];
+
+/**
+ * What the options ask for: `--since` read as a count or a day; a refusal
+ * names a value that is neither.
+ *
+ * @param options - The line's options.
+ * @returns The ask, or the refusal.
+ *
+ * @example
+ * ```ts
+ * notesAsk_make({ since: '3', all: true, long: false }); // { since: 3, all: true, long: false }
+ * ```
+ */
+export function notesAsk_make(options: NotesOptions): NotesAsk | { refusal: string } {
+  const ask: NotesAsk = { since: 1, all: options.all, long: options.long };
+  const since: string | undefined = options.since;
+  if (since === undefined) return ask;
+  if (/^\d+$/.test(since)) return { ...ask, since: Number(since) };
+  if (/^\d{4}-\d{2}-\d{2}$/.test(since)) return { ...ask, since };
+  return { refusal: `notes: --since wants a count or a date (YYYY-MM-DD), not '${since}'` };
 }
+
+/**
+ * The `notes` declaration, reading the notes with a loader.
+ *
+ * @param loader - Reads one package's notes.
+ * @returns The declaration.
+ */
+function notesDeclaration_make(loader: NotesLoader): CommandDeclaration<typeof NOTES_GRAMMAR> {
+  return command_declare({
+    name: 'notes',
+    grammar: NOTES_GRAMMAR,
+    help: {
+      summary: 'What the installed releases changed, for the operator',
+      description: 'Reads the release notes shipped with the packages installed where this session runs — argus, brasa, chell, calypso, porter — and lists the newest release: one row per change, the package tagged. --since N shows the last N releases, --since DATE everything from a day on; --long unfolds each change beneath its first sentence; --all includes the changes marked Internal. help notes is the same. In ARGUS the WHAT\'S NEW block opens them as a listing.',
+      category: 'General',
+      examples: ['notes', 'notes --since 3', 'notes --since 2026-10-01 --long', 'notes --all'],
+    },
+    holds: [],
+    handler: async (args: CommandArguments<typeof NOTES_GRAMMAR>): Promise<CommandEnvelope> => notes_run(args.options, loader),
+  });
+}
+
+/**
+ * `notes [--since N|DATE] [--all] [--long]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [notesCommand] });
+ * ```
+ */
+export const notesCommand: CommandDeclaration<typeof NOTES_GRAMMAR> = notesDeclaration_make(notes_load);
 
 /** The releases the ask selects, internal changes dropped unless asked for. */
 export function notes_select(releases: NotesRelease[], ask: NotesAsk): NotesRelease[] {
@@ -157,9 +204,36 @@ export function notes_render(releases: NotesRelease[], ask: NotesAsk): string {
   return `${lines.join('\n')}\n`;
 }
 
-/** `notes [--since N|DATE] [--all] [--long]` */
+/**
+ * `notes` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `notes`.
+ * @param loader - Reads one package's notes; the installed packages' by default.
+ * @returns The notes, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_notes(['--since', '3']);
+ * ```
+ */
 export async function builtin_notes(args: string[], loader: NotesLoader = notes_load): Promise<CommandEnvelope> {
-  const ask: NotesAsk | { refusal: string } = notesArgs_parse(args);
+  return declaredCommand_run(loader === notes_load ? notesCommand : notesDeclaration_make(loader), args);
+}
+
+/**
+ * The notes the options ask for, as text over a `session.notes` model.
+ *
+ * @param options - The line's options.
+ * @param loader - Reads one package's notes.
+ * @returns The notes, or the refusal of a `--since` that is neither a count nor a day.
+ *
+ * @example
+ * ```ts
+ * await notes_run({ since: undefined, all: false, long: false }, notes_load);
+ * ```
+ */
+export async function notes_run(options: NotesOptions, loader: NotesLoader): Promise<CommandEnvelope> {
+  const ask: NotesAsk | { refusal: string } = notesAsk_make(options);
   if ('refusal' in ask) return envelope_error('', undefined, `${ask.refusal}\n`);
   const gathered = notes_gather(loader);
   const shown: NotesRelease[] = notes_select(gathered.releases, ask);
