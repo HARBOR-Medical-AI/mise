@@ -263,6 +263,7 @@ export class CornerstoneEngine implements ImageEngine {
     this.field = field;
     this.opening = true;
     this.host.readout_set(`LOADING 1 OF ${this.imageIds.length}`);
+    this.host.progress_set({ label: this.firstSliceLabel_get(), done: 0, total: 0 });
     try {
       this.libraries = await cornerstone_load();
       if (this.disposed) return;
@@ -291,8 +292,16 @@ export class CornerstoneEngine implements ImageEngine {
     this.stopped = !this.filled;
     this.stopSaid = false;
     this.requests_abandon();
-    if (this.opening) this.host.readout_set(this.stoppedReadout_get());
+    if (this.opening) {
+      this.host.progress_set({ label: this.firstSliceLabel_get(), done: 0, total: 0 });
+      this.host.readout_set(this.stoppedReadout_get());
+    }
     return true;
+  }
+
+  /** The field's words while the first slice is on its way: reading, or stopped and letting that one land. */
+  private firstSliceLabel_get(): string {
+    return this.stopped ? 'STOPPED · FIRST SLICE ARRIVING' : `READING ${this.imageIds.length} SLICES`;
   }
 
   /** Aborts every request on the wire and ends the fetch loop that made them. */
@@ -341,6 +350,7 @@ export class CornerstoneEngine implements ImageEngine {
     const onScreen: string | undefined = this.imageIds[Math.max(0, this.slice - 1)];
     this.partial = ids.length !== this.imageIds.length;
     await viewport.setStack(ids, Math.max(0, onScreen === undefined ? 0 : ids.indexOf(onScreen)));
+    if (this.disposed || this.stackViewport_get() !== viewport) return;
     viewport.render();
     if (this.filled || ids.length > 1) this.scroll_unlock();
   }
@@ -1004,13 +1014,16 @@ export class CornerstoneEngine implements ImageEngine {
     // scrolled to, so the wait here is one file — but it is a file over a
     // wire, and an empty black field says nothing about whether anything
     // is happening.
-    this.host.progress_set({ label: `READING ${this.imageIds.length} SLICES`, done: 0, total: 0 });
+    this.host.progress_set({ label: this.firstSliceLabel_get(), done: 0, total: 0 });
     const ids: string[] = this.stackIds_get();
     this.partial = ids.length !== this.imageIds.length;
     await viewport.setStack(ids, Math.max(0, ids.indexOf(this.imageIds[this.startAt - 1] ?? '')));
+    // The frame may have closed, or the layout changed, while the slice
+    // arrived: its rendering engine is then destroyed, and a render of the
+    // viewport it held throws.
+    if (this.disposed || this.stackViewport_get() !== viewport) return;
     viewport.render();
     this.host.progress_set(null);
-    if (this.disposed) return;
     this.host.note(`image: ${this.imageIds.length} slices, first on screen in ${Math.round(performance.now() - started)} ms`);
     const group = tools.ToolGroupManager.getToolGroup(this.toolGroupId_get()) ?? tools.ToolGroupManager.createToolGroup(this.toolGroupId_get());
     if (group === undefined) return;

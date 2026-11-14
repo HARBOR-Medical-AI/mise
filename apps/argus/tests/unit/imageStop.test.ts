@@ -26,6 +26,7 @@ import type { ExecuteOutcome } from '../../src/calypso/client.js';
 /** The guest engine, faked: a load the test starts, stops and ends. */
 class FakeEngine {
   public static last: FakeEngine | null = null;
+  public static made: number = 0;
   public readonly name = 'cornerstone' as const;
   public loading: boolean = false;
   public stopped: boolean = false;
@@ -43,6 +44,7 @@ class FakeEngine {
 
   constructor(public readonly host: ImageEngineHost, public readonly series: DicomSeriesModel) {
     FakeEngine.last = this;
+    FakeEngine.made += 1;
   }
 
   public open(): Promise<void> {
@@ -125,7 +127,7 @@ class FakeEngine {
 
 jest.unstable_mockModule('../../src/features/image/cornerstoneEngine.js', () => ({ CornerstoneEngine: FakeEngine }));
 
-const { ImagePanel, STOP_LABEL, RESUME_LABEL, OPENING_STOPPED_READOUT } = await import('../../src/features/image/panel.js');
+const { ImagePanel, STOP_LABEL, RESUME_LABEL, REOPEN_LABEL, OPENING_STOPPED_READOUT } = await import('../../src/features/image/panel.js');
 const { chrisDicom_make } = await import('../../src/compositions/chris/dicom.js');
 const { PanelRoster } = await import('../../src/app/panes.js');
 const { keys_wire } = await import('../../src/app/keys.js');
@@ -200,7 +202,143 @@ function refusal_find(stage: Stage): boolean {
     || /REFUSED|NOT A READABLE/.test(stage.state.textContent ?? '');
 }
 
-beforeEach((): void => { FakeEngine.last = null; });
+beforeEach((): void => { FakeEngine.last = null; FakeEngine.made = 0; });
+
+/** The capsules a person can see on the field, by their words. */
+function fieldControls_read(stage: Stage): string[] {
+  return [...stage.field.querySelectorAll<HTMLButtonElement>('.image-field-stop')]
+    .filter((capsule: HTMLButtonElement): boolean => !capsule.hidden)
+    .map((capsule: HTMLButtonElement): string => capsule.textContent ?? '');
+}
+
+/** The capsule on the field with these words. */
+function fieldControl_find(stage: Stage, words: string): HTMLButtonElement {
+  const found: HTMLButtonElement | undefined = [...stage.field.querySelectorAll<HTMLButtonElement>('.image-field-stop')]
+    .find((capsule: HTMLButtonElement): boolean => !capsule.hidden && capsule.textContent === words);
+  if (found === undefined) throw new Error(`no ${words} on the field`);
+  return found;
+}
+
+describe('the control a person sees on the field', () => {
+  it('is a capsule in the working notice, under its track, while the frame is OPENING', () => {
+    const stage: Stage = stage_make();
+    let ended: number = 0;
+    stage.panel.opening_show('/home/someone/uploads/series-a', (): void => { ended += 1; });
+    const notice: HTMLElement = stage.field.querySelector('.image-working') as HTMLElement;
+    const capsule: HTMLButtonElement = fieldControl_find(stage, STOP_LABEL);
+    expect(capsule.tagName).toBe('BUTTON');
+    expect(capsule.className).toBe('pacs-capsule image-field-stop');
+    expect(capsule.parentElement).toBe(notice);
+    expect([...notice.children].map((child: Element): string => child.className)).toEqual(
+      ['image-working-label', 'image-working-track', 'image-working-count', 'pacs-capsule image-field-stop']);
+    capsule.click();
+    expect(ended).toBe(1);
+    expect(stage.state.textContent).toBe(OPENING_STOPPED_READOUT);
+  });
+
+  it('is not drawn on a notice whose wait cannot be stopped, nor on one that failed', () => {
+    const stage: Stage = stage_make();
+    stage.panel.opening_show('/home/someone/uploads/volume.nii.gz');
+    expect(fieldControls_read(stage)).toEqual([]);
+    stage.panel.opening_show('/home/someone/uploads/series-a', (): void => undefined);
+    stage.panel.opening_fail('/home/someone/uploads/series-a', 'NOT A READABLE SERIES');
+    expect(fieldControls_read(stage)).toEqual([]);
+  });
+
+  it('stands in the notice while the frame is LOADING; pressed, the corner says how far and offers LOAD REST', async () => {
+    const stage: Stage = stage_make();
+    const engine: FakeEngine = await loading_reach(stage);
+    engine.slices_land(36);
+    expect(fieldControls_read(stage)).toEqual([STOP_LABEL]);
+    expect(stage.field.querySelector('.image-stopped-note')).toBeNull();
+    fieldControl_find(stage, STOP_LABEL).click();
+    await settle();
+    expect(engine.stops).toBe(1);
+    const corner: HTMLElement = stage.field.querySelector('.image-stopped-note') as HTMLElement;
+    expect(corner.querySelector('.image-stopped-words')?.textContent).toBe('STOPPED AT 37 OF 120');
+    expect(fieldControls_read(stage)).toEqual([RESUME_LABEL]);
+    expect(fieldControl_find(stage, RESUME_LABEL).className).toBe('pacs-capsule image-field-stop');
+    expect(fieldControl_find(stage, RESUME_LABEL).parentElement).toBe(corner);
+    fieldControl_find(stage, RESUME_LABEL).click();
+    await settle();
+    expect(engine.fills).toBe(2);
+    expect(stage.field.querySelector('.image-stopped-note')).toBeNull();
+    expect(fieldControls_read(stage)).toEqual([STOP_LABEL]);
+    engine.slices_land(83);
+    expect(fieldControls_read(stage)).toEqual([]);
+    expect(stage.field.querySelector('.image-stopped-note')).toBeNull();
+  });
+
+  it('puts the corner note back when the engine clears the field', async () => {
+    const stage: Stage = stage_make();
+    const engine: FakeEngine = await loading_reach(stage);
+    engine.slices_land(5);
+    fieldControl_find(stage, STOP_LABEL).click();
+    await settle();
+    stage.field.replaceChildren();
+    engine.host.readout_set('SLICE 2 OF 120 · STOPPED AT 6 OF 120');
+    expect(stage.field.querySelector('.image-stopped-words')?.textContent).toBe('STOPPED AT 6 OF 120');
+    expect(fieldControls_read(stage)).toEqual([RESUME_LABEL]);
+  });
+
+  it('a stopped open keeps its notice and offers OPEN AGAIN, which asks again', async () => {
+    const stage: Stage = stage_make();
+    const panels = new PanelRoster();
+    panels.set('image', 'image-1', stage.panel);
+    const asked: Array<{ line: string; answer: (outcome: ExecuteOutcome) => void }> = [];
+    const noted: string[] = [];
+    const ctx = {
+      client: () => ({
+        line_execute: (line: string): Promise<ExecuteOutcome> => new Promise<ExecuteOutcome>((resolve): void => { asked.push({ line, answer: resolve }); }),
+      }),
+      panels: () => panels,
+      terminal: () => ({ line_note: (line: string): void => { noted.push(line); } }),
+      launcher_yield: (): void => undefined,
+      vfsUrl_build: (file: string): string => `/vfs?path=${encodeURIComponent(file)}`,
+    } as unknown as ChrisDicomContext;
+    const opening: Promise<string> = chrisDicom_make(ctx).image_open('image-1', '/home/someone/uploads/series-a');
+    await settle();
+    fieldControl_find(stage, STOP_LABEL).click();
+    asked[0]?.answer({ envelopes: [], liveChannels: new Set() } as unknown as ExecuteOutcome);
+    await opening;
+    expect(fieldControls_read(stage)).toEqual([REOPEN_LABEL]);
+    expect(stage.field.querySelector('.image-working-label')?.textContent).toBe('STOPPED');
+    fieldControl_find(stage, REOPEN_LABEL).click();
+    await settle();
+    expect(asked.map((ask): string => ask.line)).toEqual(['dcm series "/home/someone/uploads/series-a"', 'dcm series "/home/someone/uploads/series-a"']);
+    expect(stage.panel.wait_get()).toBe('opening');
+    expect(fieldControls_read(stage)).toEqual([STOP_LABEL]);
+    asked[1]?.answer({ envelopes: [{ status: 'ok', rendered: '', model: { kind: 'dicom.series', data: series_make(4) } }], liveChannels: new Set() } as unknown as ExecuteOutcome);
+    await settle();
+    expect(FakeEngine.made).toBe(1);
+    expect(noted.at(-1)).toBe('image /home/someone/uploads/series-a');
+  });
+});
+
+describe('several opens of one frame', () => {
+  it('only the latest puts a series on the field: an earlier answer builds no engine to tear down', async () => {
+    const stage: Stage = stage_make();
+    const panels = new PanelRoster();
+    panels.set('image', 'image-1', stage.panel);
+    const answers: Array<(outcome: ExecuteOutcome) => void> = [];
+    const ctx = {
+      client: () => ({ line_execute: (): Promise<ExecuteOutcome> => new Promise<ExecuteOutcome>((resolve): void => { answers.push(resolve); }) }),
+      panels: () => panels,
+      launcher_yield: (): void => undefined,
+      vfsUrl_build: (file: string): string => `/vfs?path=${encodeURIComponent(file)}`,
+    } as unknown as ChrisDicomContext;
+    const dicom = chrisDicom_make(ctx);
+    const opens: Array<Promise<string>> = [1, 2, 3].map((): Promise<string> => dicom.image_open('image-1', '/home/someone/uploads/series-a'));
+    await settle();
+    const series = { envelopes: [{ status: 'ok', rendered: '', model: { kind: 'dicom.series', data: series_make(4) } }], liveChannels: new Set() } as unknown as ExecuteOutcome;
+    for (const answer of answers) answer(series);
+    const lines: string[] = await Promise.all(opens);
+    await settle();
+    expect(FakeEngine.made).toBe(1);
+    expect(lines.filter((line: string): boolean => line.includes('a later open took the pane'))).toHaveLength(2);
+    expect(lines.at(-1)).toBe('image /home/someone/uploads/series-a');
+  });
+});
 
 describe('the STOP block', () => {
   it('reuses the frame\'s own block markup, hidden on a frame at rest', () => {

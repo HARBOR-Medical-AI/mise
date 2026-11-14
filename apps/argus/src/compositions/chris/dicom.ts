@@ -262,7 +262,11 @@ async function image_open(ctx: ChrisDicomContext, fromId: string | null, path: s
   // cancelled, no further one is sent, and a late answer is not shown.
   const asking: AbortController = new AbortController();
   const stopped_say = (): string => `image: ${path}: stopped`;
-  panel.opening_show(folder, (): void => asking.abort());
+  const superseded_say = (): string => `image ${path}: a later open took the pane`;
+  const serial: number = panel.opening_show(folder, (): void => asking.abort(), (): void => {
+    // OPEN AGAIN on the stopped notice: the same open, on the same pane.
+    void image_open(ctx, openedId ?? fromId, path, options).then((line: string): void => ctx.terminal().line_note(line));
+  });
   let series: DicomSeriesModel | null = await series_ask(ctx, folder, asking.signal);
   if (asking.signal.aborted) return stopped_say();
   let siblings: SeriesChoice[] = [];
@@ -279,6 +283,7 @@ async function image_open(ctx: ChrisDicomContext, fromId: string | null, path: s
     }
   }
   if (asking.signal.aborted) return stopped_say();
+  if (!panel.opening_checkIsLatest(serial)) return superseded_say();
   if (series === null) {
     panel.opening_fail(path, 'NOT A READABLE SERIES');
     return `image: ${path}: not a readable DICOM series, study, or volume`;

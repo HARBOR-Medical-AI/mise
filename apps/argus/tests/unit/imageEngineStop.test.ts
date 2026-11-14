@@ -41,25 +41,34 @@ interface StackCall { ids: string[]; index: number }
 const stacks: StackCall[] = [];
 const wheelBound: string[] = [];
 
+/** Holds the first slice of a stack on the wire until the test lets it land; null lets it land at once. */
+let firstSlice: Promise<void> | null = null;
+
 class FakeViewport {
-  constructor(private readonly element: HTMLElement) {}
+  constructor(private readonly element: HTMLElement, private readonly owner: FakeRenderingEngine) {}
   public async setStack(ids: string[], index: number): Promise<void> {
+    if (firstSlice !== null) await firstSlice;
     stacks.push({ ids: [...ids], index });
     cached.add(ids[index] as string);
     this.element.dispatchEvent(new CustomEvent('STACK_NEW_IMAGE', { detail: { imageIdIndex: index, imageId: ids[index] } }));
   }
-  public render(): void { /* nothing to draw */ }
+  /** As the library's: the viewport looks its engine up, and a destroyed engine is not there. */
+  public render(): void {
+    const engine: { renderViewport: () => void } | undefined = this.owner.destroyed ? undefined : { renderViewport: (): void => undefined };
+    (engine as { renderViewport: () => void }).renderViewport();
+  }
   public async setImageIdIndex(): Promise<void> { /* nothing to draw */ }
 }
 
 class FakeRenderingEngine {
+  public destroyed: boolean = false;
   private readonly viewports: Map<string, FakeViewport> = new Map<string, FakeViewport>();
   public enableElement(input: { viewportId: string; element: HTMLElement }): void {
-    this.viewports.set(input.viewportId, new FakeViewport(input.element));
+    this.viewports.set(input.viewportId, new FakeViewport(input.element, this));
   }
   public getViewport(id: string): FakeViewport | undefined { return this.viewports.get(id); }
   public getViewports(): FakeViewport[] { return []; }
-  public destroy(): void { this.viewports.clear(); }
+  public destroy(): void { this.destroyed = true; this.viewports.clear(); }
   public resize(): void { /* nothing to size */ }
 }
 
@@ -142,8 +151,8 @@ interface Bench {
   notes: string[];
 }
 
-/** An engine opened on a made-up series: its first slice on the field. */
-async function engine_open(slices: number): Promise<Bench> {
+/** An engine on a made-up series, its open under way: the caller awaits `opened`. */
+function engine_start(slices: number): Bench & { opened: Promise<void> } {
   const readouts: string[] = [];
   const progress: Array<ImageProgress | null> = [];
   const notes: string[] = [];
@@ -158,8 +167,14 @@ async function engine_open(slices: number): Promise<Bench> {
   const engine: Engine = new CornerstoneEngine(host, series_make(slices));
   const field: HTMLElement = document.createElement('section');
   document.body.replaceChildren(field);
-  await engine.open(field);
-  return { engine, readouts, progress, notes };
+  return { engine, readouts, progress, notes, opened: engine.open(field) };
+}
+
+/** An engine opened on a made-up series: its first slice on the field. */
+async function engine_open(slices: number): Promise<Bench> {
+  const bench = engine_start(slices);
+  await bench.opened;
+  return bench;
 }
 
 const settle = async (): Promise<void> => {
@@ -181,6 +196,7 @@ beforeEach((): void => {
   wheelBound.length = 0;
   cached.clear();
   groups.clear();
+  firstSlice = null;
 });
 
 describe('a stack fill, stopped', () => {
@@ -298,6 +314,49 @@ describe('a volume layout\'s slices, stopped', () => {
     expect(state.held).toBe(4);
     expect(bench.readouts.at(-1)).toBe('SLICE 1 OF 20 · STOPPED AT 4 OF 20');
     expect(stacks.at(-1)?.ids).toHaveLength(4);
+  });
+});
+
+describe('the first slice, still arriving', () => {
+  /** Holds the first slice; the returned function lets it land. */
+  const firstSlice_hold = (): (() => void) => {
+    let land: () => void = (): void => undefined;
+    firstSlice = new Promise<void>((resolve): void => { land = resolve; });
+    return land;
+  };
+
+  it('a frame that closes meanwhile opens no further and throws nothing: its viewport is not rendered', async () => {
+    const land: () => void = firstSlice_hold();
+    const bench = engine_start(20);
+    await settle();
+    bench.engine.dispose();
+    land();
+    await expect(bench.opened).resolves.toBeUndefined();
+    expect(bench.notes.some((line: string): boolean => line.includes('first on screen'))).toBe(false);
+  });
+
+  it('stopped meanwhile, lands and says so on the field and the bar', async () => {
+    const land: () => void = firstSlice_hold();
+    const bench = engine_start(20);
+    await settle();
+    expect(bench.progress.at(-1)?.label).toBe('READING 20 SLICES');
+    expect(bench.engine.load_stop()).toBe(true);
+    expect(bench.progress.at(-1)?.label).toBe('STOPPED · FIRST SLICE ARRIVING');
+    expect(bench.readouts.at(-1)).toBe('STOPPED AT 0 OF 20');
+    land();
+    await bench.opened;
+    expect(bench.readouts.at(-1)).toBe('SLICE 1 OF 20 · STOPPED AT 1 OF 20');
+    expect(flights).toHaveLength(0);
+    const state = bench.engine.state_get();
+    expect(state.stopped).toBe(true);
+    expect(state.loading).toBe(false);
+    // LOAD REST: the other nineteen, and the stack ends whole.
+    const rest: Promise<boolean> = bench.engine.slices_fill();
+    await settle();
+    while (flying().length > 0) await slices_land(8);
+    expect(await rest).toBe(true);
+    expect(flights).toHaveLength(19);
+    expect(bench.readouts.at(-1)).toBe('SLICE 1 OF 20');
   });
 });
 

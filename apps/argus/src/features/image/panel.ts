@@ -13,11 +13,14 @@
  * Focus stays in the field: a click there takes it, keys stay there, Esc
  * gives it back. The FOCUS mark says who has the keyboard.
  *
- * A wait can be stopped from the frame: the STOP block stands only while a
- * series is OPENING (the kernel is being asked what the path is) or LOADING
- * (slices are arriving), and Esc on the frame presses it. A stopped load
- * keeps what arrived and the block reads LOAD REST. Stopped is a state the
- * person chose, said in the frame's own voice, never as a refusal.
+ * A wait can be stopped where the person is looking: the field's working
+ * notice carries a STOP capsule under its track while a series is OPENING
+ * (the kernel is being asked what the path is) or LOADING (slices are
+ * arriving), and Esc on the frame presses it. A stopped load keeps what
+ * arrived and a note in the field's corner says how far it got, with LOAD
+ * REST; a stopped open keeps its notice, with OPEN AGAIN. The rail carries
+ * the same STOP block. Stopped is a state the person chose, said in the
+ * frame's own voice, never as a refusal.
  *
  * @module
  */
@@ -92,6 +95,8 @@ export type ImageWait = 'opening' | 'loading' | 'stopped';
 export const STOP_LABEL: string = 'STOP';
 /** The STOP block's words once a load was stopped: pressing it fetches what had not arrived. */
 export const RESUME_LABEL: string = 'LOAD REST';
+/** The notice's capsule after an open was stopped: pressing it asks again. */
+export const REOPEN_LABEL: string = 'OPEN AGAIN';
 /** The bar's word for an open the person stopped. */
 export const OPENING_STOPPED_READOUT: string = 'STOPPED';
 
@@ -138,6 +143,14 @@ export class ImagePanel {
   private openingStop: (() => void) | null = null;
   /** What the frame is OPENING, for the words of a stop. */
   private openingPath: string = '';
+  /** Counts the opens this frame was asked for: only the latest may put a series on the field. */
+  private openingSerial: number = 0;
+  /** Asks again for what the frame was OPENING; null when nothing can. */
+  private openingAgain: (() => void) | null = null;
+  /** The person stopped the open whose notice stands on the field. */
+  private openingStopped: boolean = false;
+  /** The corner note of a stopped load: how far it got, and LOAD REST. */
+  private stoppedNote: HTMLElement | null = null;
   private readonly presetPill: HTMLButtonElement;
   private readonly focusMark: HTMLElement;
   /** Bytes a series may reach before MPR or 3D waits for LOAD; null turns the guard off. */
@@ -256,6 +269,7 @@ export class ImagePanel {
    */
   public async series_show(model: DicomSeriesModel, options: { siblings?: SeriesChoice[]; startAt?: number; force?: boolean } = {}): Promise<void> {
     this.openingStop = null;
+    this.openingStopped = false;
     this.engine_dispose();
     this.series = model;
     this.forced = options.force === true;
@@ -326,6 +340,7 @@ export class ImagePanel {
    */
   public async volume_show(path: string): Promise<void> {
     this.openingStop = null;
+    this.openingStopped = false;
     this.engine_dispose();
     this.series = null;
     this.siblings = [];
@@ -376,14 +391,32 @@ export class ImagePanel {
    *
    * @param path - What is being opened.
    * @param stop - Ends the ask behind the open; given, the frame offers STOP while it waits.
+   * @param again - Asks again; given, a stopped open offers OPEN AGAIN.
+   * @returns This open's number, for {@link opening_checkIsLatest}.
    */
-  public opening_show(path: string, stop?: () => void): void {
+  public opening_show(path: string, stop?: () => void, again?: () => void): number {
     const name: string = path.replace(/\/$/, '').split('/').pop() ?? path;
+    this.openingSerial += 1;
     this.openingStop = stop ?? null;
+    this.openingAgain = again ?? null;
+    this.openingStopped = false;
     this.openingPath = path;
     this.stateSpan.textContent = 'OPENING';
     this.progress_show({ label: `OPENING ${name}`, done: 0, total: 0 });
     this.stopPill_paint();
+    return this.openingSerial;
+  }
+
+  /**
+   * Whether an open is still the frame's latest. An answer to an earlier one
+   * is dropped: showing it would build an engine the later open tears down
+   * while its first slice is still arriving.
+   *
+   * @param serial - What {@link opening_show} returned.
+   * @returns True when no later open was asked for.
+   */
+  public opening_checkIsLatest(serial: number): boolean {
+    return serial === this.openingSerial;
   }
 
   /**
@@ -395,6 +428,7 @@ export class ImagePanel {
    * @param path - What was being opened.
    */
   private opening_stopped(path: string): void {
+    this.openingStopped = true;
     this.stateSpan.textContent = OPENING_STOPPED_READOUT;
     this.progress_show({ label: OPENING_STOPPED_READOUT, done: 0, total: 0 });
     const note: HTMLElement | null = this.progressNote;
@@ -413,7 +447,8 @@ export class ImagePanel {
     if (this.openingStop !== null) return 'opening';
     if (this.engine?.load_stop === undefined) return null;
     const state: ImageEngineState = this.engine.state_get();
-    if (state.loading) return 'loading';
+    // A stop already taken, while the first slice still lands, is no wait to stop.
+    if (state.loading) return state.stopped ? null : 'loading';
     return state.stopped ? 'stopped' : null;
   }
 
@@ -446,6 +481,49 @@ export class ImagePanel {
     if (this.wait_get() === 'stopped') await this.load_press();
   }
 
+  /** The notice's capsule: OPEN AGAIN on a stopped open, STOP on a wait. */
+  private notice_press(): void {
+    if (this.openingStopped && this.openingStop === null) {
+      this.openingAgain?.();
+      return;
+    }
+    void this.stop_press();
+  }
+
+  /**
+   * Paints the controls a person sees on the field without opening anything:
+   * the working notice's capsule (STOP on a wait, OPEN AGAIN on a stopped
+   * open) and the corner note of a stopped load (the count, and LOAD REST).
+   *
+   * @param wait - The wait the frame is in.
+   */
+  private fieldControls_paint(wait: ImageWait | null): void {
+    const capsule: HTMLButtonElement | null = this.progressNote?.querySelector<HTMLButtonElement>('.image-field-stop') ?? null;
+    if (capsule !== null) {
+      const reopen: boolean = this.openingStopped && this.openingStop === null && this.openingAgain !== null;
+      capsule.hidden = !reopen && wait !== 'opening' && wait !== 'loading';
+      capsule.textContent = reopen ? REOPEN_LABEL : STOP_LABEL;
+      capsule.title = reopen ? 'ask again for what was stopped' : 'stop this wait; what has arrived stays (Esc on the frame does the same)';
+    }
+    if (wait !== 'stopped' || this.engine === null) {
+      this.stoppedNote?.remove();
+      this.stoppedNote = null;
+      return;
+    }
+    // The engine clears the field when it changes what it draws: the note is put back.
+    if (this.stoppedNote === null || this.stoppedNote.parentElement === null) {
+      const note: HTMLElement = document.createElement('div');
+      note.className = 'image-stopped-note';
+      note.innerHTML = '<span class="image-stopped-words"></span><button class="pacs-capsule image-field-stop" title="fetch the slices that had not arrived"></button>';
+      (note.querySelector('.image-field-stop') as HTMLButtonElement).addEventListener('click', (): void => void this.stop_press());
+      this.field.appendChild(note);
+      this.stoppedNote = note;
+    }
+    const state: ImageEngineState = this.engine.state_get();
+    (this.stoppedNote.querySelector('.image-stopped-words') as HTMLElement).textContent = `STOPPED AT ${state.held} OF ${state.slices}`;
+    (this.stoppedNote.querySelector('.image-field-stop') as HTMLElement).textContent = RESUME_LABEL;
+  }
+
   /** Shows the STOP block only while a wait can be stopped or a stopped load can be resumed, with the words for which. */
   private stopPill_paint(): void {
     const wait: ImageWait | null = this.wait_get();
@@ -456,6 +534,7 @@ export class ImagePanel {
       : 'stop this wait; what has arrived stays (Esc on the frame does the same)';
     if (wait === null) delete this.pane.dataset['wait'];
     else this.pane.dataset['wait'] = wait;
+    this.fieldControls_paint(wait);
   }
 
   /**
@@ -471,6 +550,7 @@ export class ImagePanel {
    */
   public opening_fail(path: string, reason: string): void {
     this.openingStop = null;
+    this.openingStopped = false;
     this.stopPill_paint();
     this.stateSpan.textContent = reason;
     this.progress_show({ label: reason, done: 0, total: 0 });
@@ -724,6 +804,7 @@ export class ImagePanel {
     this.progressNote = null;
     this.overlayNote = null;
     this.probeNote = null;
+    this.stoppedNote = null;
     this.field.replaceChildren();
     this.stateSpan.textContent = '';
     this.stopPill_paint();
@@ -819,7 +900,8 @@ export class ImagePanel {
     if (this.progressNote === null || this.progressNote.parentElement === null) {
       const note: HTMLElement = document.createElement('div');
       note.className = 'image-working';
-      note.innerHTML = '<span class="image-working-label"></span><span class="image-working-track"><span class="image-working-fill"></span></span><span class="image-working-count"></span>';
+      note.innerHTML = '<span class="image-working-label"></span><span class="image-working-track"><span class="image-working-fill"></span></span><span class="image-working-count"></span><button class="pacs-capsule image-field-stop" hidden></button>';
+      (note.querySelector('.image-field-stop') as HTMLButtonElement).addEventListener('click', (): void => this.notice_press());
       this.field.appendChild(note);
       this.progressNote = note;
     }
