@@ -154,7 +154,9 @@ export function daemonSurface_create(daemon: CalypsoDaemon, policy: HostControlP
  *
  * @param engine - The engine to host (already created and connected by boot).
  * @param beforeListen - Optional host preparation run after the duplicate guard
- *   and before the socket binds or the berth is published.
+ *   and before the socket binds or the berth is published. It holds the berth
+ *   file, which a door waits on, so it is the boot gate alone: a warm-up a
+ *   surface can work beside runs after this resolves, with the daemon answering.
  * @returns The launched daemon's addresses and handle, once it is listening;
  *   the process then stays alive on the WebSocket server.
  */

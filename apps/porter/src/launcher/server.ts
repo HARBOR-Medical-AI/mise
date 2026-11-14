@@ -5,16 +5,24 @@
  * fixes everything else.
  *
  *   POST /berths/start   {user, uid, gid, cubeUrl, token, cohort?}  → the berth, running
+ *   POST /berths/start?follow=lines                        → the berth's log as it boots, then the answer (NDJSON)
  *   POST /berths/stop    {user, cubeUrl}                   → {stopped}
  *   GET  /berths/status  [?user=…&cubeUrl=…]               → {berths: […]}
  *   GET  /berths/access?cubeUrl=…                          → {berths: […]}, each person's berth or kept home with its usage
+ *
+ * A start asked with `?follow=lines` is answered 200 at once with
+ * `application/x-ndjson`: one `{"line", "channel"}` object a line of the
+ * berth's log while it is waited for (its attach token taken out), then
+ * `{"answer": {"status", "body"}}`, the answer a plain start gives. A porter
+ * that does not ask gets the plain answer, as a launcher that does not know
+ * the query gives it.
  *
  * @module
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import { BerthRefusal, type BerthLauncher, type BerthState } from './launcher.js';
+import { BerthRefusal, type BerthAsk, type BerthLauncher, type BerthState } from './launcher.js';
 
 const startSchema = z.object({
   user: z.string().min(1),
@@ -74,6 +82,30 @@ function body_read(req: IncomingMessage): Promise<unknown> {
 }
 
 /**
+ * A start answered as the berth boots: its log a line at a time, then the answer.
+ *
+ * @param launcher - The launcher.
+ * @param ask - The start.
+ * @param res - The response, taken over here.
+ * @param log - One line per act.
+ */
+async function start_follow(launcher: BerthLauncher, ask: BerthAsk, res: ServerResponse, log: (line: string) => void): Promise<void> {
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+  const send = (body: unknown): void => { if (!res.writableEnded) res.write(`${JSON.stringify(body)}\n`); };
+  try {
+    const berth: BerthState = await launcher.start(ask, (line: string, channel: 'out' | 'err'): void => { send({ line, channel }); });
+    log(`${berth.user}: berth running at ${berth.url ?? '?'} (cohort ${berth.cohort})`);
+    send({ answer: { status: 200, body: berth_render(berth) } });
+  } catch (error: unknown) {
+    const status: number = error instanceof BerthRefusal ? error.status : 500;
+    const message: string = error instanceof Error ? error.message : String(error);
+    log(`refused: ${message}`);
+    send({ answer: { status, body: { error: message } } });
+  }
+  res.end();
+}
+
+/**
  * The launcher's API server.
  *
  * @param launcher - The launcher.
@@ -94,6 +126,7 @@ export function launcherServer_create(launcher: BerthLauncher, secret: string, l
         if (req.method === 'POST' && url.pathname === '/berths/start') {
           const ask = startSchema.safeParse(await body_read(req));
           if (!ask.success) throw new BerthRefusal(400, 'start wants {user, uid, gid, cubeUrl, token} and at most a cohort');
+          if (url.searchParams.get('follow') === 'lines') { await start_follow(launcher, ask.data, res, log); return; }
           const berth: BerthState = await launcher.start(ask.data);
           log(`${berth.user}: berth running at ${berth.url ?? '?'} (cohort ${berth.cohort})`);
           answer(200, berth_render(berth));

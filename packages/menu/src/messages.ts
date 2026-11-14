@@ -805,6 +805,11 @@ export const promptContextSchema = z.object({
     label: z.string(),
     message: z.string(),
   })).optional(),
+  /**
+   * Warm-up steps still running behind the prompt, by label: the daemon
+   * listens before its warm-up ends. Optional, so an older daemon still parses here.
+   */
+  warmupPending: z.array(z.string()).optional(),
   /** How many questions are open in the session, on any surface. Optional, so an older daemon still parses here. */
   questions: z.number().optional(),
   /**

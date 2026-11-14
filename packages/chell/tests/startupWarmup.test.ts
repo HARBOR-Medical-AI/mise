@@ -69,6 +69,8 @@ jest.unstable_mockModule('@fnndsc/brasa', () => ({
   procUniverseModel_build: jest.fn(() => ({ feeds: [], whole: true })),
   universeLayouts_warm: mockUniverseLayoutsWarm,
   warmupFailure_clear: mockWarmupFailureClear,
+  warmupPending_note: mockWarmupPendingNote,
+  warmupPending_clear: mockWarmupPendingClear,
   session: mockSession,
   vfs: { data_get: mockDataGet },
   prefetch_path: mockPrefetchPath,
@@ -106,6 +108,12 @@ const mockWarmupFailureNote = jest.fn<(label: string, message: string) => void>(
 
 /** Clears a held failure when a later attempt succeeds. */
 const mockWarmupFailureClear = jest.fn<(label: string) => void>();
+
+/** Holds a deferred step as still warming, from its start. */
+const mockWarmupPendingNote = jest.fn<(label: string) => void>();
+
+/** Lets a deferred step go once it settles, whatever its outcome. */
+const mockWarmupPendingClear = jest.fn<(label: string) => void>();
 
 /** Records the folders a roster arrival or departure changes. */
 const mockRosterFoldersSet = jest.fn<(folders: Record<string, string>) => void>();
@@ -259,18 +267,58 @@ describe('daemonSession_run', () => {
       surfaceLaunch: { exec: 'node', prefixArgs: ['chell.js'] },
     });
 
-    const readyOrder: number = report.mock.invocationCallOrder[report.mock.calls.findIndex((call: unknown[]) => call[1] === 'Engine')];
-    expect(readyOrder).toBeLessThan(mockDaemonListen.mock.invocationCallOrder[0]);
+    // The gate says the engine listens with steps still warming, before it
+    // listens; Engine Ready comes once they settle, after it.
+    const gateOrder: number = report.mock.invocationCallOrder[report.mock.calls.findIndex((call: unknown[]) => call[0] === 'pending' && call[1] === 'Engine')];
+    const readyOrder: number = report.mock.invocationCallOrder[report.mock.calls.findIndex((call: unknown[]) => call[0] === 'ok' && call[1] === 'Engine')];
+    expect(gateOrder).toBeLessThan(mockDaemonListen.mock.invocationCallOrder[0]);
+    expect(readyOrder).toBeGreaterThan(mockDaemonListen.mock.invocationCallOrder[0]);
 
-    // Every deferred step settled before Engine Ready: the boot waits the
-    // behind-the-prompt warm-ups out so the login sees no open pending row.
-    for (const label of ['Groups', 'Feeds', 'Public', 'Shared']) {
+    // Every deferred step settled before Engine Ready, and before the
+    // login: the console sees no open pending row.
+    expect(mockConsole.mock.invocationCallOrder[0]).toBeGreaterThan(readyOrder);
+    for (const label of ['Groups', 'Feeds', 'Public', 'Shared', 'Queries']) {
       const settled: number = report.mock.calls.findIndex(
         (call: unknown[]): boolean => (call[0] === 'ok' || call[0] === 'fail') && call[1] === label,
       );
       expect(settled).toBeGreaterThanOrEqual(0);
       expect(report.mock.invocationCallOrder[settled]).toBeLessThan(readyOrder);
     }
+  });
+
+  it('listens and writes its berth before a slow /PUBLIC warm-up ends, and holds the step as warming meanwhile', async () => {
+    let publicDone: ((result: { ok: boolean; count: number }) => void) | undefined;
+    mockPrefetchPath.mockImplementation(async (path: string) => (
+      path === '/PUBLIC'
+        ? new Promise<{ ok: boolean; count: number }>((resolve) => { publicDone = resolve; })
+        : { ok: true, count: 4 }
+    ));
+    const report = jest.fn<StartupWarmupReporter['log']>();
+    const engine: BrasaEngine = {
+      line_execute: jest.fn(async () => []),
+      line_complete: jest.fn(async (prefix: string) => ({ candidates: [], prefix })),
+      sink_install: jest.fn(),
+      surface_install: jest.fn(),
+    };
+
+    const booted: Promise<void> = daemonSession_run(engine, 'rudolph', { plugins: true, feeds: true, publicFeeds: true, jobs: false }, false, { log: report });
+    for (let turn: number = 0; turn < 50 && mockDaemonListen.mock.calls.length === 0; turn++) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    // Listening, with /PUBLIC still out: the berth file is not held by it.
+    expect(mockDaemonListen).toHaveBeenCalledTimes(1);
+    expect(mockWarmupPendingNote).toHaveBeenCalledWith('Public');
+    expect(mockWarmupPendingClear).not.toHaveBeenCalledWith('Public');
+    expect(report).toHaveBeenCalledWith('pending', 'Engine', '5 steps warming behind the prompt; the daemon answers meanwhile');
+    expect(report).not.toHaveBeenCalledWith('ok', 'Engine', 'Ready');
+
+    publicDone?.({ ok: true, count: 9 });
+    await booted;
+    expect(mockWarmupPendingClear).toHaveBeenCalledWith('Public');
+    expect(report).toHaveBeenCalledWith('ok', 'Public', 'Cached 9 items from /PUBLIC');
+    expect(report).toHaveBeenCalledWith('ok', 'Engine', 'Ready');
+    expect(mockDaemonListen).toHaveBeenCalledTimes(1);
   });
 
   it('says that a checkpoint was refused, and why, instead of reading like a first boot', async () => {

@@ -24,7 +24,8 @@
 import { berthKey_compute, identity_normalise } from '@fnndsc/calypso/berth';
 import { berthCapacity_derive, profileFloor_get, type ChrisProfileFloor, type HostSize } from '@fnndsc/menu';
 import type { BerthAccess } from '../host/sessionHost.js';
-import type { DockerAnswer, DockerApi } from './docker.js';
+import { bootLine_redact } from '../host/bootLines.js';
+import type { DockerAnswer, DockerApi, LogFollow, LogLineSink } from './docker.js';
 import { capacityRefusal_words, type BerthPolicy, type BerthRoom } from './policy.js';
 
 /**
@@ -122,8 +123,13 @@ export interface LauncherOptions {
   readonly cubeHost?: string;
   /** The ChRIS profile the spoke runs, for its floor. */
   readonly profile?: string;
-  /** How long a berth has to answer, in ms. */
+  /**
+   * How long a berth that has not answered may go without writing a line to its log, in ms; 90 s by default.
+   * A berth whose log still moves is waited for, up to `bootCeilingMs`.
+   */
   readonly bootMs?: number;
+  /** How long a berth whose log still moves is waited for in all, in ms; 240 s by default. */
+  readonly bootCeilingMs?: number;
   /** How often its berth file is looked for, in ms. */
   readonly pollMs?: number;
   /** How long the engine has to give one container's usage for the operator's read, in ms; 3 s by default. */
@@ -413,6 +419,48 @@ async function answer_within(call: Promise<DockerAnswer>, ms: number): Promise<D
 /** How long the engine has to pull the berth image, in ms, unless the launcher is set otherwise: within what porter gives a start. */
 const PULL_ANSWER_MS: number = 120_000;
 
+/** How long a berth that has not answered may leave its log silent, in ms, unless the launcher is set otherwise. */
+const BOOT_SILENCE_MS: number = 90_000;
+
+/**
+ * How long a berth whose log still moves is waited for in all, in ms, unless the launcher is set otherwise: under
+ * the 300 s porter gives a start, so the refusal is the launcher's and says why; a pull that took long leaves less.
+ */
+const BOOT_CEILING_MS: number = 240_000;
+
+/**
+ * A span as a refusal says it.
+ *
+ * @param ms - The span, in ms.
+ * @returns Whole seconds, `90 s`.
+ *
+ * @example
+ * seconds_say(90_000); // '90 s'
+ */
+function seconds_say(ms: number): string {
+  return `${Math.round(ms / 1000)} s`;
+}
+
+/** How many of a booting berth's latest log lines are kept for a refusal's words. */
+const LAST_WORDS_KEPT: number = 6;
+
+/** How long a berth that stopped has for its last log lines to arrive, in ms. */
+const LAST_WORDS_WAIT_MS: number = 1_000;
+
+/**
+ * A berth's last words, as a refusal says them: its last three lines with words in them.
+ *
+ * @param lines - Its latest lines, oldest first.
+ * @returns The lines, joined, or `no words`.
+ *
+ * @example
+ * lastWords_join(['[ OK ] CUBE', '', '[FAIL] Plugins none']); // '[ OK ] CUBE / [FAIL] Plugins none'
+ */
+export function lastWords_join(lines: ReadonlyArray<string>): string {
+  // eslint-disable-next-line no-control-regex
+  return lines.map((line: string): string => line.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').trim()).filter((line: string): boolean => line !== '').slice(-3).join(' / ') || 'no words';
+}
+
 /** What the engine's pull stream says when the registry gave an image the host did not hold. */
 const PULL_NEWER_MARK: string = 'Downloaded newer image';
 
@@ -528,10 +576,13 @@ export class BerthLauncher {
    * Starts a person's berth, or rewrites the token of the one running.
    *
    * @param given - Who it is for, their token, and the cohort.
+   * @param onLine - Told each line the berth's log writes while it is waited for, its attach token taken out: a
+   *   berth made here from its first line, one found running from the next. A start that joins one already under
+   *   way is told none.
    * @returns The berth, running.
    * @throws {BerthRefusal} When the ask is not one, the spoke is full, or the berth does not come up.
    */
-  public start(given: BerthAsk): Promise<BerthState> {
+  public start(given: BerthAsk, onLine?: LogLineSink): Promise<BerthState> {
     if (!USER_NAME.test(given.user)) return Promise.reject(new BerthRefusal(400, `${given.user}: not a CUBE user name`));
     try { new URL(given.cubeUrl); } catch { return Promise.reject(new BerthRefusal(400, `${given.cubeUrl}: not a URL`)); }
     if (given.cohort !== null && given.cohort !== undefined && (!Number.isInteger(given.cohort) || given.cohort <= 0)) return Promise.reject(new BerthRefusal(400, `${String(given.cohort)}: a cohort is a feed's id`));
@@ -543,7 +594,7 @@ export class BerthLauncher {
     const identity: string = identity_normalise(ask.user, ask.cubeUrl);
     const running: Promise<BerthState> | undefined = this.starting.get(identity);
     if (running !== undefined) return running;
-    const started: Promise<BerthState> = this.start_run(ask, identity).finally((): void => { this.starting.delete(identity); });
+    const started: Promise<BerthState> = this.start_run(ask, identity, onLine).finally((): void => { this.starting.delete(identity); });
     this.starting.set(identity, started);
     return started;
   }
@@ -674,9 +725,10 @@ export class BerthLauncher {
    *
    * @param ask - The ask.
    * @param identity - Its identity.
+   * @param onLine - Told each line of the berth's log while it is waited for.
    * @returns The berth.
    */
-  private async start_run(ask: BerthAsk, identity: string): Promise<BerthState> {
+  private async start_run(ask: BerthAsk, identity: string, onLine?: LogLineSink): Promise<BerthState> {
     const docker: DockerApi = this.options.docker;
     const names: BerthNames = berthNames_derive(this.options.prefix, identity, ask.user);
     const token: string | null = ask.token;
@@ -689,7 +741,8 @@ export class BerthLauncher {
       await this.porter_join(names.network);
       await this.token_write(names.container, ask, token);
       this.held.set(identity, { token, uid: ask.uid, gid: ask.gid });
-      const berth = await this.berth_read(names, identity);
+      // A berth still booting has no berth file yet: this login joins the wait the first one began.
+      const berth = await this.berth_wait(names, identity, false, onLine);
       return { identity, user: ask.user, state: 'running', url: berth.url, token: berth.token, container: names.container, cohort: cohort_word(ask.cohort) };
     }
     // A berth stopped, on another cohort, or on the cohort volume's places: made again from the image; the home and the work volume stay.
@@ -715,7 +768,7 @@ export class BerthLauncher {
     await this.porter_join(names.network);
     await this.token_write(names.container, ask, token);
     this.held.set(identity, { token, uid: ask.uid, gid: ask.gid });
-    const berth = await this.berth_wait(names, identity);
+    const berth = await this.berth_wait(names, identity, true, onLine);
     return { identity, user: ask.user, state: 'running', url: berth.url, token: berth.token, container: names.container, cohort: cohort_word(ask.cohort) };
   }
 
@@ -902,24 +955,67 @@ export class BerthLauncher {
   }
 
   /**
-   * Waits for the session to write its berth file; a berth that exits first is refused with its last words.
+   * Waits for the session to write its berth file, for as long as the berth runs and its log moves.
+   *
+   * The log is followed once, as the engine writes it: each line moves the wait on and is told to `onLine`, and the
+   * last of them are the refusal's words. A berth that exits first is refused with its last words; one whose log is
+   * silent for `bootMs` is refused as silent; one still writing at `bootCeilingMs` is refused as never answering. A
+   * boot is as long as its host makes it (a first home, a scanner holding the process), so no fixed time is given to
+   * a berth that is plainly still at work.
    *
    * @param names - The berth's names.
    * @param identity - Whose.
+   * @param fromStart - Whether its log is followed from its first line (a berth just made) or from now (one found running).
+   * @param onLine - Told each line, its attach token taken out.
    * @returns Its address and attach token.
+   * @throws {BerthRefusal} When the berth stops, goes silent, or never answers.
    */
-  private async berth_wait(names: BerthNames, identity: string): Promise<{ url: string; token: string }> {
-    const deadline: number = Date.now() + (this.options.bootMs ?? 90_000);
-    while (Date.now() < deadline) {
-      const inspected: DockerAnswer = await this.options.docker.call('GET', `/containers/${names.container}/json`);
-      if (field_get(inspected.body, 'State', 'Running') !== true) {
-        const said: string = await this.logsTail_read(names.container);
-        throw new BerthRefusal(502, `the berth stopped as it started: ${said}`);
+  private async berth_wait(names: BerthNames, identity: string, fromStart: boolean, onLine?: LogLineSink): Promise<{ url: string; token: string }> {
+    const silenceMs: number = this.options.bootMs ?? BOOT_SILENCE_MS;
+    const ceilingMs: number = this.options.bootCeilingMs ?? BOOT_CEILING_MS;
+    const began: number = Date.now();
+    let movedAt: number = began;
+    const recent: string[] = [];
+    const line_take: LogLineSink = (line: string, channel: 'out' | 'err'): void => {
+      movedAt = Date.now();
+      const said: string = bootLine_redact(line);
+      recent.push(said);
+      if (recent.length > LAST_WORDS_KEPT) recent.shift();
+      onLine?.(said, channel);
+    };
+    let follow: LogFollow = this.options.docker.logs_follow(names.container, fromStart, line_take);
+    let followEnded: boolean = false;
+    const followEnd_watch = (one: LogFollow): void => { void one.ended.then((): void => { if (one === follow) followEnded = true; }); };
+    followEnd_watch(follow);
+    const words = (): string => lastWords_join(recent);
+    try {
+      for (;;) {
+        const inspected: DockerAnswer = await this.options.docker.call('GET', `/containers/${names.container}/json`);
+        if (field_get(inspected.body, 'State', 'Running') !== true) {
+          // The engine ends the stream with the container; its last lines are let land first, briefly.
+          await answer_within(follow.ended.then((): DockerAnswer => ({ status: 200, body: null })), LAST_WORDS_WAIT_MS);
+          const said: string = recent.length > 0 ? words() : await this.logsTail_read(names.container);
+          throw new BerthRefusal(502, `the berth stopped as it started: ${said}`);
+        }
+        try { return await this.berth_read(names, identity); } catch { /* not yet */ }
+        // A stream the engine ended while the berth runs is followed again from now.
+        if (followEnded) {
+          followEnded = false;
+          follow = this.options.docker.logs_follow(names.container, false, line_take);
+          followEnd_watch(follow);
+        }
+        const now: number = Date.now();
+        if (now - movedAt >= silenceMs) {
+          throw new BerthRefusal(502, `the berth wrote nothing for ${seconds_say(silenceMs)} and did not answer: ${words()}`);
+        }
+        if (now - began >= ceilingMs) {
+          throw new BerthRefusal(502, `the berth was still starting after ${seconds_say(ceilingMs)} and did not answer: ${words()}`);
+        }
+        await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, this.options.pollMs ?? 500); });
       }
-      try { return await this.berth_read(names, identity); } catch { /* not yet */ }
-      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, this.options.pollMs ?? 500); });
+    } finally {
+      follow.stop();
     }
-    throw new BerthRefusal(502, `the berth did not answer within ${Math.round((this.options.bootMs ?? 90_000) / 1000)} s`);
   }
 
   /**

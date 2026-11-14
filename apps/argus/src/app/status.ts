@@ -233,6 +233,12 @@ export class StatusBar {
         ? `+FEED ${warmup.arrived.join(' ')}`
         : `+${warmup.arrived.length} FEEDS`);
     }
+    // A session still warming behind the prompt: the daemon answers before
+    // its warm-up ends, and the bar says what is still on its way.
+    const warming: string[] = context.warmupPending ?? [];
+    if (warming.length > 0) {
+      parts.push(`WARMING ${warming.map((label: string): string => label.toUpperCase()).join(' ')}`);
+    }
     // A warm-up that failed behind the prompt has no boot readout left to
     // be printed to. It stays here, named, until a later attempt clears
     // it: a message that vanishes is one nobody acts on.
@@ -246,7 +252,9 @@ export class StatusBar {
       ? failed.map((f) => `${f.label}: ${f.message}`).join('\n')
       : walks.length > 0
         ? 'A feed is being indexed on its first visit; it opens when the walk completes.'
-        : '';
+        : warming.length > 0
+          ? 'The session answers while these warm; a listing they cover may take a moment longer the first time.'
+          : '';
 
     this.fields.latency.textContent = context.lastCommandDurationMs > 0
       ? `${context.lastCommandDurationMs}MS`

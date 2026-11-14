@@ -4,7 +4,8 @@
  * Warms the VFS and process caches, reports each outcome through a small host
  * seam, and starts non-blocking job-topology warming after the jobs index is
  * available. Daemon startup waits for the blocking cache indexes before
- * publishing its listening berth, then reports topology settlement separately.
+ * publishing its listening berth; the steps warming behind the prompt settle
+ * after it, with the daemon already answering, and so does the topology.
  *
  * @module
  */
@@ -17,6 +18,8 @@ import {
   vfs,
   warmupFailure_clear,
   warmupFailure_note,
+  warmupPending_clear,
+  warmupPending_note,
   type BrasaEngine,
   type PrefetchResult,
   procUniverseModel_build,
@@ -79,7 +82,8 @@ export interface StartupWarmupCache {
   /** Steps that blocked boot and exhausted their retries; these gate. */
   failures: string[];
   /** Steps warming behind the prompt. These do not gate: their outcome
-   * arrives after the berth is published, so a failure is announced. */
+   * arrives after the berth is published, so a failure is announced, and
+   * while they run the prompt context names them as still warming. */
   deferred: DeferredWarmup[];
 }
 
@@ -207,7 +211,9 @@ export interface DeferredWarmup {
  * that could already have been theirs.
  *
  * A deferred step leaves the boot failure gate with this call, so its
- * failure is announced afterwards rather than holding the daemon.
+ * failure is announced afterwards rather than holding the daemon. From its
+ * start to its outcome it is held as still warming, which every surface
+ * reads from the prompt context.
  *
  * The pending row is the only thing printed here. The attempts themselves
  * run without the spinner helper: its plain-log stand-in printed the same
@@ -233,6 +239,7 @@ function warmup_defer(
   describe: (outcome: PrefetchResult) => string,
 ): DeferredWarmup {
   reporter?.log('pending', label, message);
+  warmupPending_note(label);
   const outcomes: StartupWarmupReporter | null = settlement ? reporter : null;
   // A deferred step keeps the bounded retry policy a blocking one had: a
   // transient failure should be retried before it is announced.
@@ -242,6 +249,7 @@ function warmup_defer(
       message: error instanceof Error ? error.message : String(error),
     }))
     .then((outcome: PrefetchResult): PrefetchResult => {
+      warmupPending_clear(label);
       // A failure is held until a later attempt succeeds, so a surface
       // whose readout has scrolled away still announces it at the prompt.
       if (outcome.ok) {
@@ -668,7 +676,15 @@ export async function startupWarmup_run(
 }
 
 /**
- * Warms a connected engine, reports readiness, then publishes its daemon.
+ * Warms a connected engine, publishes its daemon, then reports readiness.
+ *
+ * The blocking warm-up (`/bin`, the job index's first step) gates the
+ * daemon: its failure is the operator's to decide on before anything binds.
+ * The steps warming behind the prompt do not: the daemon listens and writes
+ * its berth file while they run, so a door waiting on that file is not held
+ * by a `/PUBLIC` listing or a cold PACS query index, and a surface that
+ * attaches meanwhile is answered and told what is still warming. Engine
+ * Ready is said when the last of them settles.
  *
  * @param engine - Connected BRASA engine to host.
  * @param user - Authenticated username used for feed warming.
@@ -703,21 +719,24 @@ export async function daemonSession_run(
       reporter.log('fail', 'Daemon', parsedPolicy.error);
       throw new DaemonWarmupAbortedError();
     }
+    // What the gate leaves behind it: the steps still warming, and whether
+    // the gate already said how the engine starts.
+    const boot: { deferred: DeferredWarmup[]; gated: boolean } = { deferred: [], gated: false };
     const info: DaemonLaunchInfo = await daemon_launch(engine, async (): Promise<void> => {
       const cache: StartupWarmupCache = await startupWarmup_run(flags, user, interactive, reporter, true);
-      // The steps warming behind the prompt settle on the readout before the
-      // login takes the terminal. They ran in parallel with the blocking
-      // warm-up; the boot now waits out whatever has not yet landed, so every
-      // row the operator is left looking at reads [ OK ] or [FAIL], never an
-      // open [PENDING] the console would cage before it could finish. The
-      // wait is bounded — each step carries its own retry budget — and the
-      // daemon is moments from listening, so nothing reaches it any sooner
-      // for the wait.
-      await Promise.allSettled(cache.deferred.map((step: DeferredWarmup): Promise<PrefetchResult> => step.settled));
+      boot.deferred = cache.deferred;
       if (cache.failures.length === 0) {
-        reporter.log('ok', 'Engine', 'Ready');
+        // The steps behind the prompt go on with the daemon listening.
+        const warming: number = boot.deferred.length;
+        reporter.log(
+          warming === 0 ? 'ok' : 'pending',
+          'Engine',
+          warming === 0 ? 'Ready' : `${count_noun(warming, 'step')} warming behind the prompt; the daemon answers meanwhile`,
+        );
         return;
       }
+
+      boot.gated = true;
 
       if (await recovery(cache.failures) === 'exit') {
         reporter.log('fail', 'Engine', `Startup aborted after incomplete warm-up: ${cache.failures.join(', ')}`);
@@ -732,13 +751,24 @@ export async function daemonSession_run(
       surfaceLaunch: CHELL_LAUNCH,
     });
 
+    // The addresses are printed: the pulse halts without a final repaint,
+    // since its row arithmetic drifts over them, while the steps still
+    // warming settle their rows beneath.
+    if (interactive) logo_animateHalt();
+
+    // The steps warming behind the prompt settle on the readout with the
+    // daemon already answering. The login waits them out before it takes
+    // the terminal, so every row the operator is left looking at reads
+    // [ OK ] or [FAIL], never an open [PENDING] the console would cage
+    // before it could finish. The wait is bounded: each step carries its
+    // own retry budget.
+    await Promise.allSettled(boot.deferred.map((step: DeferredWarmup): Promise<PrefetchResult> => step.settled));
+    if (!boot.gated && boot.deferred.length > 0) reporter.log('ok', 'Engine', 'Ready');
+
     if (interactive) {
-      // Boot is over. The pulse halts without a final repaint — its row
-      // arithmetic drifts over the addresses just printed — and the boot
-      // ends the way a boot should: at a login. The identity is already
-      // resolved, so the login is the attach, and this terminal becomes
-      // the daemon's first surface.
-      logo_animateHalt();
+      // Boot is over, and ends the way a boot should: at a login. The
+      // identity is already resolved, so the login is the attach, and this
+      // terminal becomes the daemon's first surface.
       await console({ identity: info.identity, url: info.url, token: info.token });
     }
   } catch (error: unknown) {
