@@ -1,7 +1,9 @@
 /**
- * @file What `berth anchor` asks of ChRIS: a path resolved as the session
+ * @file What the `berth` verbs ask of ChRIS: a path resolved as the session
  * resolves it, what stands there, every file beneath it with its size, a
- * plugin instance's status, and one file's bytes.
+ * plugin instance's status and one file's bytes, for an anchor; and for a
+ * close, a local folder uploaded into the person's files, a ds plugin run as
+ * a child of a node, and a feed started from an fs plugin over some paths.
  *
  * Every read goes through the session's own kernel (salsa, with the
  * session's token), so an anchor reads only what ChRIS lets that person
@@ -18,6 +20,11 @@
  * - remoteTree_list: every file under a folder, with its size and where to read it.
  * - nodeStatus_get: a plugin instance's status, as CUBE reports it.
  * - remoteFile_open: one file's bytes, a stream or a Buffer.
+ * - folderContents_upload: everything inside a local folder, into a ChRIS folder.
+ * - pluginChild_run: a registered plugin run by name as a child of a plugin instance.
+ * - feedRoot_create: a new feed whose root is `pl-dircopy` over some paths.
+ * - feedName_set: a feed named.
+ * - AttachOutcome, UploadOutcome: what those answer.
  *
  * Typical usage:
  * ```ts
@@ -27,17 +34,22 @@
  * ```
  *
  * Dependencies: a connected ChRIS session (salsa); the session's dispatcher
- * and path mapper. Sizes are bytes.
+ * and path mapper; chili's folder upload, the one `upload` runs. Sizes are
+ * bytes. A run or a feed CUBE refuses answers with CUBE's reason, as the
+ * kernel stacked it.
  *
  * @module
  */
-import { posix } from 'node:path';
+import { readdirSync } from 'node:fs';
+import { join, posix } from 'node:path';
 
-import type { Result, VFSItem } from '@fnndsc/fond';
+import { errorStack, type Result, type StackMessage, type VFSItem } from '@fnndsc/fond';
 
 import { backendInstalled_get } from '../../core/backend.js';
+import { error_stripDebugPrefix } from '../../core/errorText.js';
 import { vfsDispatcher_get } from '../../core/filesystem.js';
 import { path_resolve } from '../../core/paths.js';
+import { sink_get } from '../../core/sink.js';
 
 /** A `/proc/jobs` path at or under a job's `data` link: the link, and what follows it. */
 const PROC_DATA_PATH: RegExp = /^(\/proc\/jobs\/feed_\d+(?:\/[^/]+_\d+)+\/data)(\/.*)?$/;
@@ -274,4 +286,178 @@ export async function remoteFile_open(source: string): Promise<RemoteBytes> {
   const stream: unknown = opened.value.stream;
   if (Buffer.isBuffer(stream)) return { stream };
   return { stream: stream as NodeJS.ReadableStream };
+}
+
+/**
+ * What a plugin run or a feed's start answered: the plugin instance made, or
+ * CUBE's reason for making none.
+ *
+ * @example
+ * ```ts
+ * const made: AttachOutcome = { ok: true, instance: 57, feed: 5, pluginName: 'pl-dsdircopy' };
+ * const refused: AttachOutcome = { ok: false, reason: 'No matching plugins found' };
+ * ```
+ */
+export type AttachOutcome = AttachMade | AttachRefused;
+
+/** A plugin instance made. */
+export interface AttachMade {
+  /** The instance was made. */
+  readonly ok: true;
+  /** Its id. */
+  readonly instance: number;
+  /** The feed it is in; null when CUBE did not say. */
+  readonly feed: number | null;
+  /** The plugin's name, as CUBE gave it. */
+  readonly pluginName: string;
+}
+
+/** No plugin instance made, and why. */
+export interface AttachRefused {
+  /** No instance was made. */
+  readonly ok: false;
+  /** CUBE's reason, as the kernel stacked it. */
+  readonly reason: string;
+}
+
+/**
+ * What an upload of a folder's contents did.
+ *
+ * @example
+ * ```ts
+ * const sent: UploadOutcome = { files: 3, bytes: 1024, failed: 0 };
+ * ```
+ */
+export interface UploadOutcome {
+  /** The files that reached ChRIS. */
+  readonly files: number;
+  /** Their bytes. */
+  readonly bytes: number;
+  /** The files that did not. */
+  readonly failed: number;
+}
+
+/**
+ * CUBE's reason for a refusal: what the kernel stacked since a mark, taken off the stack.
+ *
+ * @param mark - The stack's mark before the call.
+ * @param fallback - The words when nothing was stacked.
+ * @returns The reason.
+ */
+function cubeReason_take(mark: number, fallback: string): string {
+  const stacked: StackMessage[] = errorStack.checkpoint_drain(mark);
+  const words: string[] = stacked.map((message: StackMessage): string => error_stripDebugPrefix(message.message).trim()).filter((message: string): boolean => message !== '');
+  return words.length > 0 ? words.join('; ') : fallback;
+}
+
+/**
+ * Uploads everything inside a local folder into a ChRIS folder: each entry
+ * keeps its name under the target, a folder with all it holds, hidden files
+ * too. It is the upload `upload` runs, with its progress, entry by entry, so
+ * the local folder's own name is not added to the target.
+ *
+ * @param local - The local folder.
+ * @param target - The ChRIS folder, absolute; the upload makes it.
+ * @returns What reached ChRIS and what did not.
+ * @throws {Error} When the upload cannot start (a local entry that cannot be read).
+ *
+ * @example
+ * ```ts
+ * await folderContents_upload('/outgoing', '/home/alice/berth/0b6c…'); // { files: 3, bytes: 1024, failed: 0 }
+ * ```
+ */
+export async function folderContents_upload(local: string, target: string): Promise<UploadOutcome> {
+  const { files_uploadWithProgress } = await import('@fnndsc/chili/commands/fs/upload.js');
+  let files: number = 0;
+  let bytes: number = 0;
+  let failed: number = 0;
+  for (const name of readdirSync(local).sort()) {
+    const summary: { transferredCount: number; transferSize: number; failedCount: number } = await files_uploadWithProgress(join(local, name), target, {
+      expandLocalGlob: false,
+      force: true,
+      onNotice: (message: string, channel: 'status' | 'err'): void => {
+        if (channel === 'err') sink_get().err_write(`${message}\n`);
+      },
+      onProgress: (event): void => sink_get().progress_write({ ...event, label: name }),
+    });
+    files += summary.transferredCount;
+    bytes += summary.transferSize;
+    failed += summary.failedCount;
+  }
+  const { listCache_get } = await import('@fnndsc/cumin');
+  listCache_get().cache_invalidateTree(target);
+  listCache_get().cache_invalidate(posix.dirname(target));
+  return { files, bytes, failed };
+}
+
+/**
+ * Runs a registered plugin by name as a child of a plugin instance, as a
+ * line run in that node's folder does: the version CUBE lists first under
+ * that exact name.
+ *
+ * @param plugin - The plugin's name, `pl-dsdircopy`.
+ * @param parent - The plugin instance it runs after.
+ * @param parameters - Its parameters by name (`dir`), and `title` for the node.
+ * @returns The instance made, or CUBE's reason.
+ *
+ * @example
+ * ```ts
+ * await pluginChild_run('pl-dsdircopy', 41, { dir: '/home/alice/berth/0b6c…', title: 'berth work' });
+ * ```
+ */
+export async function pluginChild_run(plugin: string, parent: number, parameters: Readonly<Record<string, string>>): Promise<AttachOutcome> {
+  const { plugin_run } = await import('@fnndsc/salsa');
+  const mark: number = errorStack.checkpoint_mark();
+  const made: Record<string, unknown> | null = await plugin_run(`name_exact:${plugin}`, { ...parameters, previous_id: parent });
+  const instance: unknown = made?.['id'];
+  if (made === null || typeof instance !== 'number') return { ok: false, reason: cubeReason_take(mark, `CUBE made no ${plugin} instance`) };
+  errorStack.checkpoint_drain(mark);
+  const feed: unknown = made['feed_id'];
+  const pluginName: unknown = made['plugin_name'];
+  return { ok: true, instance, feed: typeof feed === 'number' ? feed : null, pluginName: typeof pluginName === 'string' ? pluginName : plugin };
+}
+
+/**
+ * Starts a new feed from `pl-dircopy` over some ChRIS paths: its `dir` is
+ * the paths joined by commas, as the fs plugin takes several, and its title
+ * names the feed, as CUBE names a feed after its root.
+ *
+ * @param paths - The ChRIS paths, absolute.
+ * @param name - The feed's name, the root node's title.
+ * @returns The root instance made with its feed, or CUBE's reason.
+ *
+ * @example
+ * ```ts
+ * await feedRoot_create(['/home/alice/uploads/weights', '/PUBLIC/atlas'], 'berth work');
+ * ```
+ */
+export async function feedRoot_create(paths: readonly string[], name: string): Promise<AttachOutcome> {
+  const { feed_create } = await import('@fnndsc/salsa');
+  const mark: number = errorStack.checkpoint_mark();
+  const made: { id: number; pluginInstance: { data: { id: number } } } | null = await feed_create([...paths], { title: name });
+  const instance: unknown = made?.pluginInstance.data.id;
+  if (made === null || typeof instance !== 'number') return { ok: false, reason: cubeReason_take(mark, 'CUBE made no feed') };
+  errorStack.checkpoint_drain(mark);
+  return { ok: true, instance, feed: made.id, pluginName: 'pl-dircopy' };
+}
+
+/**
+ * Names a feed.
+ *
+ * @param feed - The feed's id.
+ * @param name - Its name.
+ * @returns Null when CUBE took it; else CUBE's reason.
+ *
+ * @example
+ * ```ts
+ * await feedName_set(12, 'seg run'); // null
+ * ```
+ */
+export async function feedName_set(feed: number, name: string): Promise<string | null> {
+  const { feed_rename } = await import('@fnndsc/cumin');
+  const mark: number = errorStack.checkpoint_mark();
+  const renamed: Result<boolean> = await feed_rename(feed, name);
+  if (!renamed.ok) return cubeReason_take(mark, `CUBE did not name feed ${feed}`);
+  errorStack.checkpoint_drain(mark);
+  return null;
 }

@@ -1,7 +1,9 @@
 /**
  * @file `berth`: the anchors of the berth a session runs in. `berth` lists
- * them, `berth anchor` downloads a ChRIS path into one, `berth drop` removes
- * one, and `berth clear` removes them all and empties the outgoing folder.
+ * them, `berth anchor` downloads a ChRIS path into one, `berth close` returns
+ * the outgoing folder to ChRIS as one node (berthClose.ts), `berth drop`
+ * removes one anchor, and `berth clear` removes them all and empties the
+ * outgoing folder.
  *
  * An anchor is a mount in the shell's sense: any ChRIS path the person can
  * read, downloaded through the CUBE API with the session's token into
@@ -45,14 +47,16 @@ import {
   berthHome_get, berthPath_resolve, nodeStatus_get, remoteEntry_read, remoteFile_locate, remoteFile_open, remoteTree_list,
   type RemoteBytes, type RemoteEntry, type RemoteFile,
 } from './berthCube.js';
+import { close_run } from './berthClose.js';
 import { freeBytes_get } from './berthDisk.js';
 import {
   BERTH_STATE_FILE, berthPlaces_read, berthState_read, berthState_update,
   type AnchoredFile, type BerthAnchor, type BerthPlaces, type BerthState,
 } from './berthState.js';
+import { anchorNode_show, BerthRefusal, bytes_sum, columns_render, count_say } from './berthWords.js';
 
 /** The verb's usage line. */
-export const BERTH_USAGE: string = 'berth [anchor <path> [name] [--refresh] [--yes] | drop <name> | clear]';
+export const BERTH_USAGE: string = 'berth [anchor <path> [name] [--refresh] [--yes] | close [--infeed <anchor> | --newfeed] [--name <feed>] [--title <text>] [--force] | drop <name> | clear]';
 
 /** The anchor subcommand's usage line. */
 const ANCHOR_USAGE: string = 'berth anchor <path> [name] [--refresh] [--yes]';
@@ -68,17 +72,6 @@ const PARTIAL_PREFIX: string = '.partial-';
 
 /** The write bits a downloaded file loses. */
 const WRITE_BITS: number = 0o222;
-
-/** A refusal: the verb's words for it, and an exit status of 1. */
-class BerthRefusal extends Error {
-  /**
-   * @param message - The words after `berth: `.
-   */
-  constructor(message: string) {
-    super(message);
-    this.name = 'BerthRefusal';
-  }
-}
 
 /** What `berth anchor` was asked. */
 interface AnchorRequest {
@@ -206,27 +199,6 @@ async function nodeFinished_check(source: AnchorSource): Promise<void> {
   if (status !== NODE_FINISHED) {
     throw new BerthRefusal(`anchor: ${source.nodeName ?? source.node} is ${status}, not ${NODE_FINISHED}; its output may still change`);
   }
-}
-
-/**
- * The sum of the sizes of some files.
- *
- * @param files - The files.
- * @returns Their bytes.
- */
-function bytes_sum(files: ReadonlyArray<{ readonly size: number }>): number {
-  return files.reduce((total: number, file: { readonly size: number }): number => total + file.size, 0);
-}
-
-/**
- * A count with its noun, `1 file`, `3 files`.
- *
- * @param count - The count.
- * @param noun - The noun, singular.
- * @returns The words.
- */
-function count_say(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }
 
 /**
@@ -398,28 +370,6 @@ function time_show(iso: string): string {
 }
 
 /**
- * The node column for an anchor: the node's folder name from its path, or none.
- *
- * @param anchor - The anchor.
- * @returns `pl-fshack_41`, or `none`.
- */
-function anchorNode_show(anchor: BerthAnchor): string {
-  if (anchor.node === null) return 'none';
-  return anchor.path.split('/').reverse().find((segment: string): boolean => segment.endsWith(`_${anchor.node}`)) ?? String(anchor.node);
-}
-
-/**
- * Lays rows out in columns, each as wide as its widest cell.
- *
- * @param rows - The rows, the header first.
- * @returns The lines.
- */
-function columns_render(rows: readonly (readonly string[])[]): string[] {
-  const widths: number[] = (rows[0] ?? []).map((_cell: string, at: number): number => Math.max(...rows.map((row: readonly string[]): number => (row[at] ?? '').length)));
-  return rows.map((row: readonly string[]): string => row.map((cell: string, at: number): string => (at === row.length - 1 ? cell : cell.padEnd(widths[at] ?? 0))).join('  ').trimEnd());
-}
-
-/**
  * `berth`: every anchor with its path, node, files, size and time, and when
  * the berth last closed; on a host, that the session runs there.
  *
@@ -521,7 +471,7 @@ async function clear_run(args: readonly string[]): Promise<CommandEnvelope> {
 }
 
 /**
- * `berth [anchor … | drop <name> | clear]`: the anchors of this session's berth.
+ * `berth [anchor … | close … | drop <name> | clear]`: the anchors of this session's berth, and its close.
  *
  * @param args - The words after `berth`.
  * @returns The answer, or a refusal in POSIX tone.
@@ -539,6 +489,7 @@ export async function builtin_berth(args: string[]): Promise<CommandEnvelope> {
     if (subcommand === 'anchor') return await anchor_run(rest);
     if (subcommand === 'drop') return drop_run(rest);
     if (subcommand === 'clear') return await clear_run(rest);
+    if (subcommand === 'close') return await close_run(places_require('close'), rest);
     if (berthPlaces_read() === null) return berth_refuse(`${subcommand}: this session runs on the host, not in a berth`);
     return berth_refuse(`${subcommand}: unknown subcommand; usage: ${BERTH_USAGE}`);
   } catch (error: unknown) {
