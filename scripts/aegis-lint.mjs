@@ -217,15 +217,12 @@ LINT_CHECKS['surface-never-shadows-the-session'] = () => {
       if (m[2] !== 'null') sharedNames.push(m[1]);
     }
   }
-  // The session's own vocabulary, from the command groups that declare it.
-  const commands = new Set();
-  for (const group of ['packages/brasa/src/core/coreCommands.ts', 'packages/brasa/src/chris/chrisCommands.ts']) {
-    const text = readFileSync(group, 'utf8');
-    const start = text.indexOf('const envelope: Record<string, EnvelopeHandler> = {');
-    if (start < 0) { fail('surface-never-shadows-the-session', `${group}: envelope table not found`); return; }
-    const block = text.slice(start);
-    for (const m of block.slice(0, block.indexOf('\n};')).matchAll(/^\s{2}'?([a-z][\w-]*)'?:/gm)) commands.add(m[1]);
-  }
+  // The session's own vocabulary: every name the engine answers, declared or
+  // not, as the generated command surface records it (the registry's own
+  // listing, so a command that moved from a group's records into a
+  // declaration is still counted).
+  const surface = JSON.parse(readFileSync('packages/brasa/tests/commandSurface/commandSurface.json', 'utf8'));
+  const commands = new Set([...(surface.envelopeCommands ?? []), ...(surface.plainCommands ?? [])]);
   if (commands.size < 100) { fail('surface-never-shadows-the-session', `session vocabulary read only ${commands.size} names`); return; }
   for (const name of names) {
     if (!commands.has(name)) continue;
