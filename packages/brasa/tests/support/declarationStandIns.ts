@@ -123,11 +123,11 @@ export function wordsStandIn_make(name: string, handler: StandInHandler): AnyCom
  * @param category - Its help section.
  * @returns The maker.
  */
-function standIn_maker(name: string, grammar: CommandGrammar, category: string): (handler: StandInHandler) => AnyCommandDeclaration {
+function standIn_maker(name: string, grammar: CommandGrammar, category: string, summary: string = name): (handler: StandInHandler) => AnyCommandDeclaration {
   return (handler: StandInHandler): AnyCommandDeclaration => command_declare({
     name,
     grammar,
-    help: { summary: name, description: name, category },
+    help: { summary, description: summary, category },
     handler: handler_wrap(handler),
   });
 }
@@ -164,6 +164,30 @@ export const NAVIGATION_STAND_INS: Readonly<Record<string, (handler: StandInHand
     operands: [{ name: 'path', kind: 'cfsPath', repeat: true, glob: true, summary: 'PACS paths' }],
     options: { pacsserver: { long: 'pacsserver', summary: 'Server', value: { name: 'id', kind: 'word' } }, retry: { long: 'retry', summary: 'Retry' } },
   }, 'Navigation'),
+};
+
+/** The feeds a Sharing command takes. */
+const FEEDS_STAND_IN = [{ name: 'path', kind: 'cfsPath', repeat: true, glob: true, summary: 'Feeds' }] as const;
+
+/**
+ * The Sharing, PACS and Imaging commands, standing in for the help a suite
+ * reads (their modules are stubbed by name elsewhere, their words handed on),
+ * by the name each module exports.
+ */
+export const SHARING_PACS_IMAGING_STAND_INS: Readonly<Record<string, (handler: StandInHandler) => AnyCommandDeclaration>> = {
+  setfaclCommand: standIn_maker('setfacl', { operands: FEEDS_STAND_IN, options: { modify: { short: 'm', summary: 'Grant', value: { name: 'entry', kind: 'word' } } } }, 'Sharing'),
+  getfaclCommand: standIn_maker('getfacl', { operands: FEEDS_STAND_IN }, 'Sharing'),
+  chmodCommand: standIn_maker('chmod', { operands: [{ name: 'mode', kind: 'enum', values: ['o+r', 'o-r'], summary: 'Mode' }, ...FEEDS_STAND_IN] }, 'Sharing'),
+  setfattrCommand: standIn_maker('setfattr', { operands: FEEDS_STAND_IN, options: { name: { short: 'n', summary: 'Name', value: { name: 'name', kind: 'enum', values: ['tag', 'user.tag'] } } } }, 'Sharing'),
+  getfattrCommand: standIn_maker('getfattr', { operands: FEEDS_STAND_IN }, 'Sharing'),
+  pacsCommand: standIn_maker('pacs', { bare: { summary: 'Active' }, subcommands: { connect: { summary: 'Connect' }, list: { summary: 'List' } } }, 'PACS'),
+  queryCommand: standIn_maker('query', { operands: [{ name: 'expression', kind: 'word', optional: true, repeat: true, summary: 'Question' }] }, 'PACS'),
+  pullCommand: standIn_maker('pull', { operands: [{ name: 'target', kind: 'cfsPath', repeat: true, summary: 'Targets' }] }, 'PACS'),
+  pacsserversCommand: standIn_maker('pacsservers', { subcommands: { list: { summary: 'List' } } }, 'PACS'),
+  pacsqueriesCommand: standIn_maker('pacsqueries', { subcommands: { list: { summary: 'List' } } }, 'PACS'),
+  pacsretrieveCommand: standIn_maker('pacsretrieve', { subcommands: { report: { summary: 'Report' } } }, 'PACS'),
+  dcmCommand: standIn_maker('dcm', { subcommands: { series: { summary: 'Series', operands: [{ name: 'folder', kind: 'cfsPath', summary: 'Folder' }] } } }, 'Imaging', 'DICOM as the kernel sees it'),
+  imageCommand: standIn_maker('image', { operands: [{ name: 'path', kind: 'cfsPath', optional: true, summary: 'What' }] }, 'Imaging', 'Show a DICOM series or a volume — a browser draws it, a terminal reflects it'),
 };
 
 /** Each declared command's stand-in maker, by the name its module exports it under. */

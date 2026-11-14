@@ -137,7 +137,14 @@ jest.unstable_mockModule('../src/builtins/res/gather.store.js', () => ({
 const published: Array<{ kind: string; envelope?: { model?: { kind: string } } }> = [];
 jest.unstable_mockModule('../src/core/ambient.js', () => ({ ambient_publish: (event: (typeof published)[number]): void => { published.push(event); } }));
 
-const { builtin_pull } = await import('../src/builtins/fs/pull.js');
+const { builtin_pull, pullCommand } = await import('../src/builtins/fs/pull.js');
+const { commandUsage_render } = await import('../src/core/commandUsage.js');
+const { commandLine_parse } = await import('../src/core/commandParse.js');
+const { shellWords_tokenize } = await import('../src/lib/parser.js');
+// A pull's targets are of a kind the ChRIS backend registers.
+const { backend_install } = await import('../src/core/backend.js');
+const { chrisArgumentKinds } = await import('../src/chris/kinds.js');
+backend_install({ id: 'chris', session: {} as never, argumentKinds: chrisArgumentKinds });
 const { jobletScope_run } = await import('../src/core/jobletScope.js');
 const { surface_set, HeadlessSurface } = await import('../src/core/surface.js');
 
@@ -224,16 +231,30 @@ afterEach(() => {
 });
 
 describe('builtin_pull guards and path resolution', () => {
-  it('returns help for --help', async () => {
-    const env = await builtin_pull(['--help']);
-    expect(env.rendered).toContain('USAGE');
-    expect(env.rendered).toContain('--new-feed <title>');
-    expect(mockCollect).not.toHaveBeenCalled();
+  it('takes its usage from its declaration', async () => {
+    expect(commandUsage_render(pullCommand)).toBe('pull [--detach] [--nowait] [--retry <N>] [--new-feed <title>] <target…>');
   });
 
-  it('requires at least one path', async () => {
-    await builtin_pull([]);
-    expect(sinkErr).toContain('No paths specified');
+  it('parses its targets and options as pull always read them; a retry count that is not one is refused', async () => {
+    const parsed = await commandLine_parse(pullCommand, shellWords_tokenize('/net/pacs/x --retry 3 AccessionNumber:A1 --new-feed "Brain MRI"'));
+    expect(parsed.ok && parsed.args.operands).toEqual({ target: ['/net/pacs/x', 'AccessionNumber:A1'] });
+    expect(parsed.ok && parsed.args.options).toEqual({ detach: false, nowait: false, retry: 3, newFeed: ['Brain MRI'] });
+    const nowait = await commandLine_parse(pullCommand, shellWords_tokenize('--nowait p'));
+    expect(nowait.ok && nowait.args.options['nowait']).toBe(true);
+    for (const line of ['--retry -1 p', '--retry abc p']) {
+      const refused = await commandLine_parse(pullCommand, shellWords_tokenize(line));
+      expect(!refused.ok && refused.refusal).toMatch(/^pull: invalid argument '(-1|abc)' for '--retry' \((at least 0|not a whole number)\)/);
+    }
+    const retired = await commandLine_parse(pullCommand, shellWords_tokenize('p --plugin pl-x'));
+    expect(!retired.ok && retired.refusal).toMatch(/^pull: unrecognized option '--plugin'/);
+    expect(pullCommand.help.category).toBe('PACS');
+  });
+
+  it('requires at least one path, refused by the parser before anything is asked', async () => {
+    const env = await builtin_pull([]);
+    expect(env.status).toBe('error');
+    expect(env.renderedErr).toContain('pull: missing operand <target>');
+    expect(mockCollect).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
   });
 
@@ -288,9 +309,13 @@ describe('builtin_pull guards and path resolution', () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it('rejects --new-feed without a title', async () => {
-    await builtin_pull([QUERY_PATH, '--new-feed']);
+  it('rejects --new-feed without a title, or with an empty one, or given twice', async () => {
+    expect((await builtin_pull([QUERY_PATH, '--new-feed'])).renderedErr).toContain("option '--new-feed' wants a value (<title>)");
+    await builtin_pull([QUERY_PATH, '--new-feed', ' ']);
     expect(sinkErr).toContain('--new-feed requires a title');
+    await builtin_pull([QUERY_PATH, '--new-feed', 'a', '--new-feed', 'b']);
+    expect(sinkErr).toContain('--new-feed may only be specified once');
+    expect(mockCollect).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
   });
 

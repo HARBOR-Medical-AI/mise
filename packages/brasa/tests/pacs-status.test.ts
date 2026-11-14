@@ -37,12 +37,8 @@ jest.unstable_mockModule('../src/lib/spinner.js', () => ({
   spinner: { start: jest.fn(), stop: jest.fn(), updateMessage: jest.fn() },
 }));
 
-jest.unstable_mockModule('../src/builtins/help.js', () => ({
-  args_checkHasHelpFlag: (args: string[]): boolean => args.includes('--help'),
-  help_render: (): string => 'HELP',
-}));
 
-const { builtin_pacsStatus } = await import('../src/builtins/net/status.js');
+const { pacsStatus_run } = await import('../src/builtins/net/status.js');
 
 /** A two-series report: one landed, one absent. */
 const report = {
@@ -84,45 +80,33 @@ beforeEach(() => {
   mockCreateAndWait.mockResolvedValue(null);
 });
 
-describe('builtin_pacsStatus target resolution', () => {
-  it('returns help for --help', async () => {
-    const env = await builtin_pacsStatus(['--help']);
-    expect(env.rendered).toBe('HELP');
-  });
-
-  it('requires a target', async () => {
-    const env = await builtin_pacsStatus([]);
-    expect(env.status).toBe('error');
-    expect(env.renderedErr).toContain('Missing target');
-    expect(process.exitCode).toBe(1);
-  });
-
+describe('pacs status target resolution', () => {
   it('requires an available PACS server', async () => {
     mockServerResolve.mockResolvedValue(null);
-    const env = await builtin_pacsStatus(['2833']);
+    const env = await pacsStatus_run('2833');
     expect(env.status).toBe('error');
     expect(env.renderedErr).toContain('No PACS server available');
   });
 
   it('accepts a bare numeric query id', async () => {
-    const env = await builtin_pacsStatus(['2833']);
+    const env = await pacsStatus_run('2833');
     expect(env.status).toBe('ok');
     expect(mockStatusForQuery).toHaveBeenCalledWith(2833);
   });
 
   it('extracts the query id from a /net/pacs path', async () => {
-    await builtin_pacsStatus(['/net/pacs/queries/AccessionNumber:22119730_qid:2833']);
+    await pacsStatus_run('/net/pacs/queries/AccessionNumber:22119730_qid:2833');
     expect(mockStatusForQuery).toHaveBeenCalledWith(2833);
   });
 
   it('rejects a path without a qid marker', async () => {
-    const env = await builtin_pacsStatus(['/net/pacs/queries/nonsense']);
+    const env = await pacsStatus_run('/net/pacs/queries/nonsense');
     expect(env.status).toBe('error');
     expect(env.renderedErr).toContain('Cannot parse a query id');
   });
 
   it('rejects a target that is neither id, path, nor expression', async () => {
-    const env = await builtin_pacsStatus(['nonsense']);
+    const env = await pacsStatus_run('nonsense');
     expect(env.status).toBe('error');
     expect(env.renderedErr).toContain('Not a query id, PACS path, or query expression');
   });
@@ -140,35 +124,35 @@ describe('builtin_pacsStatus target resolution', () => {
         ],
       },
     });
-    await builtin_pacsStatus(['AccessionNumber:22119730']);
+    await pacsStatus_run('AccessionNumber:22119730');
     expect(mockStatusForQuery).toHaveBeenCalledWith(2833);
     expect(mockCreateAndWait).not.toHaveBeenCalled();
   });
 
   it('runs a fresh query when no existing one matches the expression', async () => {
     mockCreateAndWait.mockResolvedValue({ queryId: 4000, vfsPath: '/net/pacs/queries/x_qid:4000', decoded: { raw: '' } });
-    await builtin_pacsStatus(['AccessionNumber:99999999']);
+    await pacsStatus_run('AccessionNumber:99999999');
     expect(mockCreateAndWait).toHaveBeenCalled();
     expect(mockStatusForQuery).toHaveBeenCalledWith(4000);
   });
 
   it('errors when the fallback query fails', async () => {
-    const env = await builtin_pacsStatus(['AccessionNumber:99999999']);
+    const env = await pacsStatus_run('AccessionNumber:99999999');
     expect(env.status).toBe('error');
     expect(env.renderedErr).toContain('Query failed');
   });
 
   it('errors when the status report cannot be built', async () => {
     mockStatusForQuery.mockResolvedValue({ ok: false });
-    const env = await builtin_pacsStatus(['2833']);
+    const env = await pacsStatus_run('2833');
     expect(env.status).toBe('error');
     expect(env.renderedErr).toContain('Failed to build status report');
   });
 });
 
-describe('builtin_pacsStatus rendering', () => {
+describe('pacs status rendering', () => {
   it('renders bars, counts, states, folder paths, and the summary', async () => {
-    const env = await builtin_pacsStatus(['2833']);
+    const env = await pacsStatus_run('2833');
     expect(env.status).toBe('ok');
     expect(env.rendered).toContain('Query 2833');
     expect(env.rendered).toContain('Study: MR-Brain w/o Contrast');
@@ -196,7 +180,7 @@ describe('builtin_pacsStatus rendering', () => {
       }],
     };
     mockStatusForQuery.mockResolvedValue({ ok: true, value: complete });
-    const env = await builtin_pacsStatus(['2833']);
+    const env = await pacsStatus_run('2833');
     expect(env.rendered).toContain('1/1 series fully in CUBE');
     expect(env.rendered).not.toContain('Re-run pull');
   });

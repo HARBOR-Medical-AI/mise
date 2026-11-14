@@ -22,7 +22,7 @@ describe('help categories', () => {
   it('places the workflow verbs that went missing from help', () => {
     const of = (name: string): string | undefined => ({ ...helpText, ...chrisHelp })[name]?.category;
     expect([of('play'), of('gather'), of('record'), of('expect')]).toEqual(['Workflows', 'Workflows', 'Workflows', 'Workflows']);
-    expect([of('query'), of('pull')]).toEqual(['PACS', 'PACS']);
+    // query and pull declare theirs in their declarations (query-builtin, pull-builtin).
     expect(of('url')).toBe('Sharing');
   });
 

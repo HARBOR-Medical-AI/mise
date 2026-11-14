@@ -1,12 +1,13 @@
 /**
- * @file Unit tests for the `setfacl` / `getfacl` / `chmod` grammar: user,
- * group and other entries; `-x` for a user or a group; `chmod o±r`; the
- * targets a feed is named by; getfacl's block.
+ * @file Unit tests for the words of a feed's access list: user, group and
+ * other entries; `-x` for a user or a group; the targets a feed is named
+ * by; getfacl's block. The lines themselves are parsed against their
+ * declarations (`acl-builtin.test.ts`).
  */
 
 import { describe, it, expect } from '@jest/globals';
 import {
-  aclEntry_parse, aclRemoval_parse, aclTarget_resolve, acl_render, chmodArgs_parse, setfaclArgs_parse,
+  aclEntry_parse, aclRemoval_parse, aclTarget_resolve, acl_render,
 } from '../src/builtins/fs/acl.args.js';
 
 describe('access control entries', () => {
@@ -33,38 +34,6 @@ describe('access control entries', () => {
     expect(aclRemoval_parse('g:grantlab')).toEqual({ kind: 'group', name: 'grantlab' });
     expect(aclRemoval_parse('o')).toContain('setfacl -m o::-');
     expect(aclRemoval_parse('o::')).toContain('cannot be removed');
-  });
-});
-
-describe('setfacl arguments', () => {
-  it('reads a grant and its paths', () => {
-    const parsed = setfaclArgs_parse(['-m', 'g:grantlab:r', '/home/me/feeds/feed_12', 'feed_13']);
-    expect(parsed.error).toBeNull();
-    expect(parsed.modify).toEqual({ kind: 'group', name: 'grantlab', perms: 'r' });
-    expect(parsed.paths).toEqual(['/home/me/feeds/feed_12', 'feed_13']);
-  });
-
-  it('reads -x as a removal', () => {
-    expect(setfaclArgs_parse(['-x', 'u:someone', 'feed_1']).remove).toEqual({ kind: 'user', name: 'someone' });
-    expect(setfaclArgs_parse(['-x', 'g:lab', 'feed_1']).remove).toEqual({ kind: 'group', name: 'lab' });
-    expect(setfaclArgs_parse(['-x', 'o', 'feed_1']).error).toContain('o::-');
-  });
-
-  it('asks for an entry and a path rather than guessing, and names an option it lacks', () => {
-    expect(setfaclArgs_parse([]).error).toContain('usage');
-    expect(setfaclArgs_parse(['-m', 'u:someone:r']).error).toContain('usage');
-    expect(setfaclArgs_parse(['/home/me/feeds/feed_12']).error).toContain('usage');
-    expect(setfaclArgs_parse(['-R', '-m', 'u:s:r', 'feed_1']).error).toContain("'-R'");
-    expect(setfaclArgs_parse(['-m', 'nonsense', 'feed_1']).error).toContain('is not an entry');
-  });
-});
-
-describe('chmod arguments', () => {
-  it('reads o+r and o-r as the other entry, and refuses any other mode by name', () => {
-    expect(chmodArgs_parse(['o+r', 'feed_1'])).toEqual({ entry: { kind: 'other', name: '', perms: 'r' }, paths: ['feed_1'] });
-    expect(chmodArgs_parse(['o-r', 'feed_1', 'feed_2'])).toEqual({ entry: { kind: 'other', name: '', perms: '-' }, paths: ['feed_1', 'feed_2'] });
-    expect(chmodArgs_parse(['u+x', 'feed_1'])).toContain("mode 'u+x' is not one a feed has");
-    expect(chmodArgs_parse(['o+r'])).toContain('usage');
   });
 });
 

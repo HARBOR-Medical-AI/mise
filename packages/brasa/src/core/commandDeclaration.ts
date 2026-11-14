@@ -113,6 +113,12 @@ export interface OptionGrammar {
   readonly value?: OptionValueGrammar;
   /** A value option given more than once keeps every value; otherwise the last one counts. */
   readonly repeat?: boolean;
+  /**
+   * A value option given no value (last on the line, or before another
+   * option) is a question, not a refusal: the handler reads `null` and asks
+   * for the value (`query … --csv-to`).
+   */
+  readonly asks?: boolean;
 }
 
 /** A grammar's options, by the property the handler reads them as. */
@@ -222,9 +228,11 @@ type GlobNamesOf<G> = G extends { readonly operands: readonly (infer O)[] }
 /** Whether each globbing operand's words came from pathname expansion. */
 type ExpandedOf<G> = { readonly [N in GlobNamesOf<G>]: boolean };
 
-/** An option's value: a switch is a boolean; a value option its value, or every value when it repeats. */
+/** An option's value: a switch is a boolean; a value option its value, or every value when it repeats; null when it asks. */
 type OptionValue<O> = O extends { readonly value: infer V }
-  ? O extends { readonly repeat: true } ? KindValue<V>[] : KindValue<V> | undefined
+  ? O extends { readonly repeat: true }
+    ? KindValue<V>[]
+    : KindValue<V> | undefined | (O extends { readonly asks: true } ? null : never)
   : boolean;
 
 /** The options a grammar declares, by property. */

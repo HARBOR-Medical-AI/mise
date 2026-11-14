@@ -9,7 +9,7 @@
 import { commands_register } from '../../src/core/commandRegistry.js';
 import { chrisHelp } from '../../src/chris/help.js';
 import { HELP_ORDER } from '../../src/core/commandOrder.js';
-import { berthStandIn_make, CORE_STAND_IN_NAMES, downloadStandIn_make, lsStandIn_make, NAVIGATION_STAND_INS } from './declarationStandIns.js';
+import { berthStandIn_make, CORE_STAND_IN_NAMES, downloadStandIn_make, lsStandIn_make, NAVIGATION_STAND_INS, SHARING_PACS_IMAGING_STAND_INS } from './declarationStandIns.js';
 
 /** What a stand-in handler answers. */
 const ran = async (): Promise<{ status: 'ok'; rendered: string }> => ({ status: 'ok', rendered: '' });
@@ -27,6 +27,8 @@ export function declarations_install(): void {
 export function chrisHelp_install(): void {
   commands_register({ help: chrisHelp }, 'backend');
   declarations_install();
+  // The Sharing, PACS and Imaging commands' pages are their declarations'.
+  commands_register({ declarations: Object.values(SHARING_PACS_IMAGING_STAND_INS).map((make) => make(ran)) }, 'backend');
 }
 
 /**

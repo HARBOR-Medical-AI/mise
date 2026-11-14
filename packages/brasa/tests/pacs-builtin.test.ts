@@ -19,10 +19,10 @@ cuminMock_install(() => ({
 const mockQuery = jest.fn(async () => ({ status: 'ok', rendered: '' }));
 const mockPull = jest.fn(async () => ({ status: 'ok', rendered: '' }));
 const mockStatus = jest.fn(async () => ({ status: 'ok', rendered: '' }));
-jest.unstable_mockModule('../src/builtins/net/query.js', () => ({ builtin_query: mockQuery }));
-jest.unstable_mockModule('../src/builtins/fs/pull.js', () => ({ builtin_pull: mockPull }));
+jest.unstable_mockModule('../src/builtins/net/query.js', () => ({ queryLine_run: mockQuery }));
+jest.unstable_mockModule('../src/builtins/fs/pull.js', () => ({ pullLine_run: mockPull }));
 jest.unstable_mockModule('../src/builtins/utils.js', () => ({ error_stripDebugPrefix: (m: string) => m.replace(/^\[[^\]]+\]\s*\|\s*/, '') }));
-jest.unstable_mockModule('../src/builtins/net/status.js', () => ({ builtin_pacsStatus: mockStatus }));
+jest.unstable_mockModule('../src/builtins/net/status.js', () => ({ pacsStatus_run: mockStatus }));
 
 // pacs streams its output through the sink line writers.
 const mockDataLine = jest.fn();
@@ -35,7 +35,12 @@ jest.unstable_mockModule('../src/core/sink.js', () => ({
 
 const ok = <T>(value: T) => ({ ok: true as const, value });
 
-const { builtin_pacs } = await import('../src/builtins/net/pacs.js');
+const { builtin_pacs, pacsCommand } = await import('../src/builtins/net/pacs.js');
+const { commandUsage_render } = await import('../src/core/commandUsage.js');
+// `pacs pull` and `pacs status` take a kind the ChRIS backend registers.
+const { backend_install } = await import('../src/core/backend.js');
+const { chrisArgumentKinds } = await import('../src/chris/kinds.js');
+backend_install({ id: 'chris', session: {} as never, argumentKinds: chrisArgumentKinds });
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -45,9 +50,21 @@ beforeEach(() => {
 });
 
 describe('builtin_pacs', () => {
-  it('returns help for --help', async () => {
-    const env = await builtin_pacs(['--help']);
-    expect(env.rendered).toContain('USAGE');
+  it('has a page for pacs query that is query\'s line, and completes its subcommands and their options', async () => {
+    const { subcommandHelp_derive } = await import('../src/core/commandUsage.js');
+    const { declaredWord_complete } = await import('../src/lib/completer/declared.js');
+    const page = subcommandHelp_derive(pacsCommand, 'query');
+    expect(page?.usage).toContain('pacs query [--csv] [--force] [--table] [--series] [--anon] [--fresh] [--title <title>]');
+    expect(page?.examples).toEqual(['pacs query PatientID:1234         # Query PACS']);
+    expect(await declaredWord_complete(pacsCommand, [], 'p')).toEqual(['pull']);
+    expect(await declaredWord_complete(pacsCommand, ['pull'], '--d')).toEqual(['--detach']);
+    expect(pacsCommand.help.category).toBe('PACS');
+  });
+
+  it('takes its usage from its declaration: bare, or one subcommand', () => {
+    expect(commandUsage_render(pacsCommand, 'connect')).toBe('pacs connect [server]');
+    expect(commandUsage_render(pacsCommand, 'status')).toBe('pacs status <target>');
+    expect(commandUsage_render(pacsCommand)).toMatch(/^pacs \[connect \[server\] \| disconnect \| list \| query /);
   });
 
   it('shows the active server with no subcommand', async () => {
@@ -132,19 +149,35 @@ describe('builtin_pacs', () => {
     expect(mockServersList).toHaveBeenCalled();
   });
 
-  it('routes query to builtin_query', async () => {
-    await builtin_pacs(['query', 'PatientID:X']);
-    expect(mockQuery).toHaveBeenCalledWith(['PatientID:X']);
+  it('routes query to the query handler, with the line query parses', async () => {
+    await builtin_pacs(['query', 'PatientID:X', '--table']);
+    expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({
+      subcommand: 'query',
+      operands: { expression: ['PatientID:X'] },
+      options: expect.objectContaining({ table: true, csvTo: undefined, fresh: false }),
+    }));
   });
 
-  it('routes pull to builtin_pull', async () => {
-    await builtin_pacs(['pull', '/net/pacs/queries/x']);
-    expect(mockPull).toHaveBeenCalledWith(['/net/pacs/queries/x']);
+  it('routes pull to the pull handler, with the line pull parses', async () => {
+    await builtin_pacs(['pull', '--detach', '/net/pacs/queries/x']);
+    expect(mockPull).toHaveBeenCalledWith(expect.objectContaining({
+      subcommand: 'pull',
+      operands: { target: ['/net/pacs/queries/x'] },
+      options: expect.objectContaining({ detach: true, retry: undefined, newFeed: [] }),
+    }));
   });
 
-  it('rejects an unknown subcommand', async () => {
-    await builtin_pacs(['frobnicate']);
-    expect(mockErrLine).toHaveBeenCalledWith(expect.stringContaining("Unknown subcommand 'frobnicate'"));
+  it('routes status to the status report, with its one target', async () => {
+    await builtin_pacs(['status', '2833']);
+    expect(mockStatus).toHaveBeenCalledWith('2833');
+  });
+
+  it('rejects an unknown subcommand, a subcommand\'s option it lacks, and status without a target', async () => {
+    const unknown = await builtin_pacs(['frobnicate']);
+    expect(unknown.renderedErr).toContain("pacs: unknown subcommand 'frobnicate' (connect, disconnect, list, query, pull, status)");
+    expect((await builtin_pacs(['connect', '--table'])).renderedErr).toContain("pacs: connect: unrecognized option '--table'");
+    expect((await builtin_pacs(['status'])).renderedErr).toContain('pacs: status: missing operand <target>; usage: pacs status <target>');
+    expect(mockStatus).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
   });
 });

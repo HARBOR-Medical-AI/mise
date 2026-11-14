@@ -13,7 +13,8 @@
  *
  * The path resolves to a series (via the same reader `dcm series` uses) or a
  * volume file; anything else is refused by name. `--force` rides through the
- * volume-size guard a graphical surface would otherwise hold at.
+ * volume-size guard a graphical surface would otherwise hold at. The line is
+ * declared in one record (`imageCommand`).
  *
  * A stop is honoured between the reads: after the path resolves, after the
  * series' listing and header, and before the thumbnail's slice. A read
@@ -24,8 +25,10 @@
 import { context_getSingle, dicomSeries_summarize, dicomSlice_gray, type DicomSeriesSummary, type DicomGrayOutcome } from '@fnndsc/salsa';
 import { IMAGE_MODEL_KINDS, type DicomSeriesModel, type ImageViewModel, type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import chalk from 'chalk';
-import { commandArgs_process, path_resolve, type ParsedArgs } from '../utils.js';
-import { args_checkHasHelpFlag, help_render } from '../help.js';
+import { path_resolve } from '../utils.js';
+import { help_render } from '../help.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import { surface_get } from '../../core/surface.js';
 import { series_render } from './dicom.js';
 import { thumbnail_render } from './thumbnail.js';
@@ -47,18 +50,71 @@ function stopped_answer(): CommandEnvelope {
   return envelope_error('', undefined, 'image: stopped\n');
 }
 
+/** What an `image` line may hold. */
+const IMAGE_GRAMMAR = {
+  operands: [{ name: 'path', kind: 'cfsPath', optional: true, glob: true, summary: 'A series folder, a .dcm file (its folder is the series), or a NIfTI/MGZ volume' }],
+  options: {
+    force: { long: 'force', summary: 'Ride through the volume-size guard a graphical surface would hold at' },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * Handles `image [--force] <path>`.
+ * `image [--force] [path]`: the declaration. Given no path, it shows its help.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [imageCommand] }, 'backend');
+ * ```
+ */
+export const imageCommand = command_declare({
+  name: 'image',
+  grammar: IMAGE_GRAMMAR,
+  help: {
+    summary: 'Show a DICOM series or a volume — a browser draws it, a terminal reflects it',
+    description: 'Open an image as the kernel sees it. `image <path>` resolves what the path is — a series '
+      + 'folder, a `.dcm` file (its folder is the series), or a NIfTI/MGZ volume — and emits an image.view '
+      + 'intent every attached surface renders in its own way: a graphical surface (ARGUS) opens a rendered '
+      + 'pane; a text surface (a shared TTY) prints a reflection — the same facts `dcm series` shows, under an '
+      + '`image` line, with a small ASCII or truecolour thumbnail of the middle slice. So the same `image` line '
+      + 'works from a browser and from a terminal sharing one CALYPSO session.',
+    category: 'Imaging',
+    examples: [
+      'image ~/uploads/sag-anon                      # A series folder',
+      'image /SERVICES/PACS/PACSDCM/patient/study/00005-T1-abcdef0',
+      'image scan.dcm                                # A single file; its folder is the series',
+      'image brain.nii.gz --force                    # A volume, past the size guard',
+    ],
+  },
+  // `image` answers with an intent a surface draws, and changes nothing of the session.
+  holds: [],
+  handler: (args: CommandArguments<typeof IMAGE_GRAMMAR>): Promise<CommandEnvelope> => image_run(args.operands.path, args.options.force),
+});
+
+/**
+ * `image` over words already split: the declaration's parse and handler.
  *
  * @param args - The command arguments.
- * @returns An envelope carrying the reflection text and the `image.view` intent.
+ * @returns An envelope carrying the reflection text and the `image.view` intent, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_image(['--force', 'brain.nii.gz']);
+ * ```
  */
 export async function builtin_image(args: string[]): Promise<CommandEnvelope> {
-  if (args_checkHasHelpFlag(args, 'image')) return envelope_ok(help_render('image'));
-  const parsed: ParsedArgs = commandArgs_process(args, { booleanLongOptions: ['force'] });
-  const target: string | undefined = (parsed._ as string[])[0];
+  return declaredCommand_run(imageCommand, args);
+}
+
+/**
+ * Shows the image a path names: a volume's intent, or a series' reflection
+ * and intent; its help when no path is given.
+ *
+ * @param target - The path, or undefined.
+ * @param force - Ride through a surface's volume-size guard.
+ * @returns An envelope carrying the reflection text and the `image.view` intent.
+ */
+async function image_run(target: string | undefined, force: boolean): Promise<CommandEnvelope> {
   if (target === undefined) return envelope_ok(help_render('image'));
-  const force: boolean = parsed.force === true;
   commandCancellation_enable();
   const signal: AbortSignal | undefined = commandCancellation_signalGet();
   // Read afresh at each step: the signal changes while a read is awaited.

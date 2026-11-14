@@ -16,6 +16,9 @@
  * there are, and which could not be read. Long values are shortened on
  * screen and say by how much; the model carries them whole.
  *
+ * Declared in one record (`dcmCommand`): two subcommands, each a path
+ * operand that globs to one path.
+ *
  * @module
  */
 import chalk from 'chalk';
@@ -36,10 +39,11 @@ import {
   type DicomTagGroup,
 } from '@fnndsc/salsa';
 import { DICOM_MODEL_KINDS, DICOM_TAG_GROUPS, type DicomSeriesModel, type DicomTagsModel, type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
-import { commandArgs_process, path_resolve, storePath_resolve, type ParsedArgs } from '../utils.js';
-import { args_checkHasHelpFlag, help_render } from '../help.js';
+import { path_resolve, storePath_resolve } from '../utils.js';
 import type { Result } from '@fnndsc/fond';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** The most files a folder's tags are read from before sampling evenly. */
 export const DCM_TAGS_FILE_CAP: number = 512;
@@ -56,31 +60,82 @@ interface TagsRenderOptions {
   filter: string | undefined;
 }
 
+/** What a `dcm` line may hold. */
+const DCM_GRAMMAR = {
+  subcommands: {
+    series: {
+      summary: 'The folder as a series (one header read, order from file names)',
+      operands: [{ name: 'folder', kind: 'cfsPath', glob: true, summary: 'The series folder' }],
+    },
+    tags: {
+      summary: 'Every tag of a file; constant versus varying across a folder',
+      operands: [{ name: 'path', kind: 'cfsPath', glob: true, summary: 'A DICOM file, or a folder of them' }],
+      options: {
+        all: { long: 'all', summary: 'Show meta and private groups too' },
+        filter: { long: 'filter', summary: 'Only tags whose tag, name, value or decoding contains <text>', value: { name: 'text', kind: 'word' } },
+      },
+    },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * Handles `dcm <series|tags> ...`.
+ * Runs `dcm series` or `dcm tags`.
  *
- * @param args - Subcommand and its arguments.
+ * @param args - The line, parsed.
  * @returns An envelope with the rendered text and the typed model.
  */
-export async function builtin_dcm(args: string[]): Promise<CommandEnvelope> {
-  if (args_checkHasHelpFlag(args, 'dcm')) return envelope_ok(help_render('dcm'));
-  const subcommand: string | undefined = args[0];
-  switch (subcommand) {
-    case 'series':
-      return dcmSeries_handle(args.slice(1));
-    case 'tags':
-      return dcmTags_handle(args.slice(1));
-    default:
-      return usage_error(subcommand === undefined ? 'dcm: a subcommand is required' : `dcm: unknown subcommand '${subcommand}'`);
-  }
+async function dcm_run(args: CommandArguments<typeof DCM_GRAMMAR>): Promise<CommandEnvelope> {
+  if (args.subcommand === 'series') return dcmSeries_handle(args.operands.folder);
+  return dcmTags_handle(args.operands.path, { all: args.options.all, filter: args.options.filter });
 }
 
 /**
- * An error envelope carrying the usage line.
+ * `dcm <series <folder> | tags [--all] [--filter <text>] <path>>`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [dcmCommand] }, 'backend');
+ * ```
  */
-function usage_error(reason: string): CommandEnvelope {
-  exitCode_set(1);
-  return envelope_error('', undefined, `${chalk.red(reason)}\n${chalk.gray('Usage: dcm series <folder> | dcm tags <file|folder> [--all] [--filter <text>]')}\n`);
+export const dcmCommand = command_declare({
+  name: 'dcm',
+  grammar: DCM_GRAMMAR,
+  help: {
+    summary: 'DICOM as the kernel sees it: a folder as a series, a file or folder as tags',
+    description: 'Read DICOM without leaving the session. `dcm series` answers what a folder is as a series: '
+      + 'identity, modality, instance count, stack order, geometry, transfer syntax, bytes, and any '
+      + 'annotations saved for its UID. `dcm tags` lists every element of a file, or what a folder\'s '
+      + 'files share against what changes across them. Identifying tags are marked PHI and shown; '
+      + 'a shared surface redacts them by that mark. A folder\'s tags are read from every file up to '
+      + `${DCM_TAGS_FILE_CAP}, then from an even sample; the listing says how many were read of how many there are.`,
+    category: 'Imaging',
+    examples: [
+      'dcm series .                                  # This folder as a series',
+      'dcm series /SERVICES/PACS/PACSDCM/patient/study/00005-T1-abcdef0',
+      'dcm tags 0001-1.2.840.113619.2.55.3.1.dcm      # One file, grouped by module',
+      'dcm tags . --filter Position                   # Position tags across the folder',
+      'dcm tags . --all                               # Meta and private groups included',
+    ],
+  },
+  // Reading a series' listing and header, or a file's tags, changes nothing
+  // of the session: `dcm` answers with a model.
+  holds: [],
+  handler: dcm_run,
+});
+
+/**
+ * `dcm` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The subcommand and its words.
+ * @returns An envelope with the rendered text and the typed model, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_dcm(['series', '.']);
+ * ```
+ */
+export async function builtin_dcm(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(dcmCommand, args);
 }
 
 /**
@@ -117,11 +172,11 @@ export async function path_physical(input: string): Promise<string> {
 
 /**
  * `dcm series <folder>`: the folder as a series.
+ *
+ * @param target - The folder, as the line named it.
+ * @returns The series' text and model, or the refusal.
  */
-async function dcmSeries_handle(args: string[]): Promise<CommandEnvelope> {
-  const parsed: ParsedArgs = commandArgs_process(args);
-  const target: string | undefined = (parsed._ as string[])[0];
-  if (target === undefined) return usage_error('dcm series: a folder is required');
+async function dcmSeries_handle(target: string): Promise<CommandEnvelope> {
   // A stop is honoured between the reads; one already on its way to CUBE
   // runs to its answer, which is then dropped.
   commandCancellation_enable();
@@ -152,15 +207,12 @@ async function annotationRoot_get(): Promise<string | undefined> {
 
 /**
  * `dcm tags <file|folder> [--all] [--filter <text>]`.
+ *
+ * @param target - The file or folder, as the line named it.
+ * @param options - Whether hidden groups show, and the filter.
+ * @returns The tags' text and model, or the refusal.
  */
-async function dcmTags_handle(args: string[]): Promise<CommandEnvelope> {
-  const parsed: ParsedArgs = commandArgs_process(args, { booleanLongOptions: ['all'] });
-  const target: string | undefined = (parsed._ as string[])[0];
-  if (target === undefined) return usage_error('dcm tags: a file or folder is required');
-  const options: TagsRenderOptions = {
-    all: parsed.all === true,
-    filter: typeof parsed.filter === 'string' ? parsed.filter : undefined,
-  };
+async function dcmTags_handle(target: string, options: TagsRenderOptions): Promise<CommandEnvelope> {
   const resolved: string = await path_physical(await path_resolve(target));
   const model: Result<DicomTagsModel> = await tagsModel_read(resolved);
   if (!model.ok) {

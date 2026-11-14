@@ -70,25 +70,32 @@ beforeEach(() => {
 });
 
 describe('builtin_dcm grammar', () => {
-  it('returns help for --help', async () => {
-    const envelope: CommandEnvelope = await builtin_dcm(['--help']);
-    expect(envelope.status).toBe('ok');
-    expect(envelope.rendered).toContain('USAGE');
-  });
-
   it('refuses a missing or unknown subcommand by name with the usage line', async () => {
     const none: CommandEnvelope = await builtin_dcm([]);
     expect(none.status).toBe('error');
-    expect(none.renderedErr).toContain('a subcommand is required');
+    expect(none.renderedErr).toContain('dcm: missing subcommand (series, tags)');
     const unknown: CommandEnvelope = await builtin_dcm(['view', 'x']);
-    expect(unknown.renderedErr).toContain("unknown subcommand 'view'");
-    expect(unknown.renderedErr).toContain('Usage: dcm series');
+    expect(unknown.renderedErr).toContain("dcm: unknown subcommand 'view' (series, tags)");
+    expect(unknown.renderedErr).toContain('usage: dcm <series <folder> | tags [--all] [--filter <text>] <path>>');
     expect(process.exitCode).toBe(1);
   });
 
-  it('requires a path for each subcommand', async () => {
-    expect((await builtin_dcm(['series'])).renderedErr).toContain('a folder is required');
-    expect((await builtin_dcm(['tags'])).renderedErr).toContain('a file or folder is required');
+  it('completes its subcommands and tags\' options, holds nothing, and writes a tool per subcommand', async () => {
+    const { dcmCommand } = await import('../src/builtins/res/dicom.js');
+    const { declaredWord_complete } = await import('../src/lib/completer/declared.js');
+    const { commandTools_derive } = await import('../src/core/commandSchema.js');
+    expect(await declaredWord_complete(dcmCommand, [], '')).toEqual(['series', 'tags']);
+    expect(await declaredWord_complete(dcmCommand, ['tags', '.'], '--')).toEqual(['--all', '--filter']);
+    expect(dcmCommand.holds).toEqual([]);
+    expect(dcmCommand.help.category).toBe('Imaging');
+    expect(commandTools_derive(dcmCommand).map((tool) => tool.name)).toEqual(['dcm_series', 'dcm_tags']);
+  });
+
+  it('requires a path for each subcommand, and takes --filter and --all only on tags', async () => {
+    expect((await builtin_dcm(['series'])).renderedErr).toContain('dcm: series: missing operand <folder>; usage: dcm series <folder>');
+    expect((await builtin_dcm(['tags'])).renderedErr).toContain('dcm: tags: missing operand <path>');
+    expect((await builtin_dcm(['series', '.', '--all'])).renderedErr).toContain("dcm: series: unrecognized option '--all'");
+    expect(mockSeries).not.toHaveBeenCalled();
   });
 });
 

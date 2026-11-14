@@ -100,7 +100,9 @@ function toolInput_make(grammar: ToolGrammar): z.ZodObject {
 function optionValue_schema(option: OptionGrammar): z.ZodType {
   if (option.value === undefined) return z.boolean().describe(option.summary);
   const value: z.ZodType = argument_schema(option.value, option.summary);
-  return option.repeat === true ? z.array(value).describe(option.summary) : value;
+  if (option.repeat === true) return z.array(value).describe(option.summary);
+  // One that asks takes null for "ask me".
+  return option.asks === true ? value.nullable() : value;
 }
 
 /**
