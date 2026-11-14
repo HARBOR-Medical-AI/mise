@@ -14,6 +14,13 @@
  * builtin too; that is how the tables behaved, and changing it is a decision of
  * its own, not a side effect of moving the lookup here.
  *
+ * A command may instead register its declaration (`commandDeclaration.ts`):
+ * one record holding its grammar, kinds, handler, holds and help prose. The
+ * registry answers its name with a handler that parses the line against the
+ * grammar first, and its help is generated from the same record, so help and
+ * behaviour cannot drift apart. Completion and the tool schema read the
+ * declaration itself (`commandDeclaration_get`).
+ *
  * Listing order is kept explicitly (`commandOrder_set`), apart from which
  * group registered a name, so the core's and a backend's commands registering
  * separately do not reorder what the shell offers; an unlisted name lists
@@ -23,6 +30,10 @@
  * @module
  */
 import type { CommandEnvelope } from '@fnndsc/menu';
+
+import { declaration_isParsed, type AnyCommandDeclaration } from './commandDeclaration.js';
+import { declaredHandler_make } from './commandParse.js';
+import { declarationHelp_derive } from './commandUsage.js';
 
 /** A builtin that returns its outcome as an envelope. */
 export type EnvelopeHandler = (args: string[]) => Promise<CommandEnvelope>;
@@ -69,6 +80,11 @@ export interface CommandGroup {
    * side by side. A command not named here holds the whole session.
    */
   holds?: Record<string, readonly SessionPiece[]>;
+  /**
+   * Commands declared in one record each: handler, help and holds come from
+   * the declaration, so a declared name appears in none of the records above.
+   */
+  declarations?: ReadonlyArray<AnyCommandDeclaration>;
 }
 
 /**
@@ -88,6 +104,7 @@ const envelopeHandlers: Record<string, EnvelopeHandler> = {};
 const plainHandlers: Record<string, CommandHandler> = {};
 const helpEntries: Record<string, CommandHelp> = {};
 const holdsEntries: Map<string, readonly SessionPiece[]> = new Map();
+const declarationEntries: Map<string, AnyCommandDeclaration> = new Map();
 
 /** The listing order, by kind; empty until set. */
 const listingOrder: { envelope: string[]; plain: string[]; help: string[] } = { envelope: [], plain: [], help: [] };
@@ -143,17 +160,82 @@ function names_ordered(record: Record<string, unknown>, order: string[]): string
  * @throws {Error} When a backend's group names a core command.
  */
 export function commands_register(group: CommandGroup, owner: CommandOwner = 'core'): void {
+  const declared: string[] = (group.declarations ?? []).map((declaration: AnyCommandDeclaration): string => declaration.name);
+  const names: string[] = [...Object.keys(group.envelope ?? {}), ...Object.keys(group.plain ?? {}), ...declared];
   if (owner === 'backend') {
-    const taken: string[] = [...Object.keys(group.envelope ?? {}), ...Object.keys(group.plain ?? {})]
-      .filter((name: string): boolean => coreNames.has(name));
+    const taken: string[] = names.filter((name: string): boolean => coreNames.has(name));
     if (taken.length > 0) throw new Error(`a backend cannot replace the core's commands: ${[...new Set(taken)].join(', ')}`);
   } else {
-    for (const name of [...Object.keys(group.envelope ?? {}), ...Object.keys(group.plain ?? {})]) coreNames.add(name);
+    for (const name of names) coreNames.add(name);
   }
   if (group.envelope !== undefined) Object.assign(envelopeHandlers, group.envelope);
   if (group.plain !== undefined) Object.assign(plainHandlers, group.plain);
   if (group.help !== undefined) Object.assign(helpEntries, group.help);
   for (const [name, pieces] of Object.entries(group.holds ?? {})) holdsEntries.set(name, pieces);
+  for (const declaration of group.declarations ?? []) declaration_register(declaration);
+}
+
+/**
+ * Registers one declared command: its name answered by a handler that parses
+ * the line against the grammar (an expression grammar's handler takes the
+ * words), its help generated from the record, and what it holds.
+ *
+ * @param declaration - The command's declaration.
+ */
+function declaration_register(declaration: AnyCommandDeclaration): void {
+  const handler: EnvelopeHandler = declaration_isParsed(declaration)
+    ? declaredHandler_make(declaration)
+    : (args: string[]): Promise<CommandEnvelope> => declaration.handler(args);
+  declarationEntries.set(declaration.name, declaration);
+  envelopeHandlers[declaration.name] = handler;
+  // The plain form delivers what the handler answers, as envelopeHandler_wrap
+  // does; the sink is loaded when it runs, so the registry loads no output path.
+  plainHandlers[declaration.name] = async (args: string[]): Promise<void> => {
+    const envelope: CommandEnvelope | undefined = await handler(args);
+    if (envelope === undefined) return;
+    const { envelope_deliver } = await import('./sink.js');
+    envelope_deliver(envelope);
+  };
+  helpEntries[declaration.name] = declaration_isParsed(declaration)
+    ? declarationHelp_derive(declaration)
+    : {
+      usage: declaration.help.usage,
+      summary: declaration.help.summary,
+      description: declaration.help.description,
+      ...(declaration.help.category !== undefined ? { category: declaration.help.category } : {}),
+      ...(declaration.help.posix !== undefined ? { posix: { ...declaration.help.posix } } : {}),
+      ...(declaration.help.examples !== undefined ? { examples: [...declaration.help.examples] } : {}),
+    };
+  if (declaration.holds !== undefined) holdsEntries.set(declaration.name, declaration.holds);
+}
+
+/**
+ * A command's declaration, when it has one.
+ *
+ * @param name - The command name.
+ * @returns The declaration, or undefined for a command not yet declared in one record.
+ *
+ * @example
+ * ```ts
+ * commandDeclaration_get('ls')?.grammar;
+ * ```
+ */
+export function commandDeclaration_get(name: string): AnyCommandDeclaration | undefined {
+  return declarationEntries.get(name);
+}
+
+/**
+ * Every declared command, in registration order.
+ *
+ * @returns The declarations.
+ *
+ * @example
+ * ```ts
+ * commandDeclarations_list().map((declaration) => declaration.name);
+ * ```
+ */
+export function commandDeclarations_list(): AnyCommandDeclaration[] {
+  return [...declarationEntries.values()];
 }
 
 /**

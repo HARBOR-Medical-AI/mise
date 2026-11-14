@@ -15,9 +15,13 @@
  * their write permission, and the state file keeps what was downloaded, for
  * the close.
  *
+ * Declared in one record (`berthCommand`): the subcommands, their operands
+ * and options, an anchor's name a ChRIS argument kind (`anchor`) that
+ * completes from the berth's state.
+ *
  * Key components:
- * - builtin_berth: the verb and its subcommands.
- * - BERTH_USAGE: its usage line.
+ * - berthCommand: the declaration: the verb and its subcommands.
+ * - builtin_berth: the declaration run over words already split.
  * - ANCHOR_ASK_BYTES: the size above which an anchor asks first.
  *
  * Typical usage:
@@ -40,6 +44,9 @@ import chalk from 'chalk';
 import { size_format } from '@fnndsc/fond';
 import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
 
+import { command_declare, type CommandArguments, type CommandGrammar, type SubcommandArguments } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
+import { commandUsage_render } from '../../core/commandUsage.js';
 import { exitCode_set } from '../../core/handlerRun.js';
 import { repl_confirm } from '../../core/question.js';
 import { sink_dataLine, sink_get } from '../../core/sink.js';
@@ -47,19 +54,13 @@ import {
   berthHome_get, berthPath_resolve, nodeStatus_get, remoteEntry_read, remoteFile_locate, remoteFile_open, remoteTree_list,
   type RemoteBytes, type RemoteEntry, type RemoteFile,
 } from './berthCube.js';
-import { close_run } from './berthClose.js';
+import { close_run, WORK_TITLE } from './berthClose.js';
 import { freeBytes_get } from './berthDisk.js';
 import {
   BERTH_STATE_FILE, berthPlaces_read, berthState_read, berthState_update,
   type AnchoredFile, type BerthAnchor, type BerthPlaces, type BerthState,
 } from './berthState.js';
 import { anchorNode_show, BerthRefusal, bytes_sum, columns_render, count_say } from './berthWords.js';
-
-/** The verb's usage line. */
-export const BERTH_USAGE: string = 'berth [anchor <path> [name] [--refresh] [--yes] | close [--infeed <anchor> | --newfeed] [--name <feed>] [--title <text>] [--force] | drop <name> | clear]';
-
-/** The anchor subcommand's usage line. */
-const ANCHOR_USAGE: string = 'berth anchor <path> [name] [--refresh] [--yes]';
 
 /** The size above which an anchor asks before it downloads: 10 GB. */
 export const ANCHOR_ASK_BYTES: number = 10 * 1024 ** 3;
@@ -73,16 +74,16 @@ const PARTIAL_PREFIX: string = '.partial-';
 /** The write bits a downloaded file loses. */
 const WRITE_BITS: number = 0o222;
 
-/** What `berth anchor` was asked. */
-interface AnchorRequest {
-  /** The path as typed. */
-  readonly typed: string;
-  /** The name given, if one was. */
-  readonly name: string | undefined;
-  /** Download again an anchor that stands. */
-  readonly refresh: boolean;
-  /** Answer the size question yes. */
-  readonly yes: boolean;
+/** What a `berth anchor` line holds. */
+type AnchorRequest = SubcommandArguments<typeof BERTH_GRAMMAR, 'anchor'>;
+
+/**
+ * The anchor subcommand's usage line, from the declaration.
+ *
+ * @returns The line.
+ */
+function anchorUsage_get(): string {
+  return commandUsage_render(berthCommand, 'anchor');
 }
 
 /** Where an anchor's path stands: what is downloaded, and its node. */
@@ -121,27 +122,6 @@ function places_require(subcommand: string): BerthPlaces {
   const places: BerthPlaces | null = berthPlaces_read();
   if (places === null) throw new BerthRefusal(`${subcommand}: this session runs on the host, not in a berth`);
   return places;
-}
-
-/**
- * Reads `berth anchor`'s words.
- *
- * @param args - The words after `anchor`.
- * @returns The request.
- * @throws {BerthRefusal} For an unknown option, or a missing or extra operand.
- */
-function anchorRequest_parse(args: readonly string[]): AnchorRequest {
-  const operands: string[] = [];
-  let refresh: boolean = false;
-  let yes: boolean = false;
-  for (const arg of args) {
-    if (arg === '--refresh') refresh = true;
-    else if (arg === '--yes' || arg === '-y') yes = true;
-    else if (arg.startsWith('-') && arg !== '-') throw new BerthRefusal(`anchor: unknown option ${arg}; ${ANCHOR_USAGE}`);
-    else operands.push(arg);
-  }
-  if (operands.length === 0 || operands.length > 2) throw new BerthRefusal(`anchor: usage: ${ANCHOR_USAGE}`);
-  return { typed: operands[0] as string, name: operands[1], refresh, yes };
 }
 
 /**
@@ -270,9 +250,9 @@ async function sourceFiles_list(source: AnchorSource, typed: string): Promise<Re
 function anchorName_claim(places: BerthPlaces, name: string, source: AnchorSource, request: AnchorRequest): BerthAnchor | null {
   const standing: BerthAnchor | undefined = berthState_read(places.anchors).anchors.find((anchor: BerthAnchor): boolean => anchor.name === name);
   if (standing !== undefined && standing.path !== source.path) {
-    throw new BerthRefusal(`anchor: the anchor ${name} holds ${standing.path}; name this one: ${ANCHOR_USAGE.replace('[name]', '<name>')}`);
+    throw new BerthRefusal(`anchor: the anchor ${name} holds ${standing.path}; name this one: ${anchorUsage_get().replace('[name]', '<name>')}`);
   }
-  if (standing !== undefined && !request.refresh) {
+  if (standing !== undefined && !request.options.refresh) {
     throw new BerthRefusal(`anchor: ${name} is anchored already; --refresh downloads it again`);
   }
   if (standing === undefined && existsSync(join(places.anchors, name))) {
@@ -308,22 +288,22 @@ async function anchorSize_settle(places: BerthPlaces, name: string, files: reado
  * `berth anchor <path> [name] [--refresh] [--yes]`: downloads a ChRIS path
  * into `<anchors>/<name>/` and records it.
  *
- * @param args - The words after `anchor`.
+ * @param request - The line.
  * @returns What was anchored, or the refusal.
  * @throws {BerthRefusal} As the steps refuse.
  */
-async function anchor_run(args: readonly string[]): Promise<CommandEnvelope> {
+async function anchor_run(request: AnchorRequest): Promise<CommandEnvelope> {
   const places: BerthPlaces = places_require('anchor');
-  const request: AnchorRequest = anchorRequest_parse(args);
-  const resolved: string = await berthPath_resolve(request.typed);
+  const typed: string = request.operands.path;
+  const resolved: string = await berthPath_resolve(typed);
   const source: AnchorSource = await anchorSource_find(resolved, await berthHome_get());
-  const name: string = request.name ?? source.defaultName;
+  const name: string = request.operands.name ?? source.defaultName;
   anchorName_check(name);
   const standing: BerthAnchor | null = anchorName_claim(places, name, source, request);
   await nodeFinished_check(source);
-  const files: RemoteFile[] = await sourceFiles_list(source, request.typed);
+  const files: RemoteFile[] = await sourceFiles_list(source, typed);
   const freed: number = standing === null ? 0 : bytes_sum(standing.files);
-  if (!await anchorSize_settle(places, name, files, freed, request.yes)) {
+  if (!await anchorSize_settle(places, name, files, freed, request.options.yes)) {
     exitCode_set(1);
     return envelope_ok(`berth: anchor: ${name}: nothing downloaded\n`);
   }
@@ -381,7 +361,7 @@ function berth_list(): CommandEnvelope {
   const state: BerthState = berthState_read(places.anchors);
   const closed: string = `last close: ${state.lastClosedAt === null ? 'never' : time_show(state.lastClosedAt)}`;
   if (state.anchors.length === 0) {
-    return envelope_ok(`no anchors in ${places.anchors}; ${ANCHOR_USAGE} downloads one\n${chalk.gray(closed)}\n`);
+    return envelope_ok(`no anchors in ${places.anchors}; ${anchorUsage_get()} downloads one\n${chalk.gray(closed)}\n`);
   }
   const rows: string[][] = [
     ['NAME', 'PATH', 'NODE', 'FILES', 'SIZE', 'ANCHORED'],
@@ -396,14 +376,12 @@ function berth_list(): CommandEnvelope {
 /**
  * `berth drop <name>`: removes one anchor, with no question, since ChRIS still holds it.
  *
- * @param args - The words after `drop`.
+ * @param name - The anchor's name.
  * @returns What was dropped.
- * @throws {BerthRefusal} For no name, or no anchor of that name.
+ * @throws {BerthRefusal} For no anchor of that name.
  */
-function drop_run(args: readonly string[]): CommandEnvelope {
+function drop_run(name: string): CommandEnvelope {
   const places: BerthPlaces = places_require('drop');
-  if (args.length !== 1) throw new BerthRefusal('drop: usage: berth drop <name>');
-  const name: string = args[0] as string;
   const anchor: BerthAnchor | undefined = berthState_read(places.anchors).anchors.find((one: BerthAnchor): boolean => one.name === name);
   if (anchor === undefined) throw new BerthRefusal(`drop: no anchor named ${name}`);
   rmSync(join(places.anchors, name), { recursive: true, force: true });
@@ -445,13 +423,10 @@ function folder_empty(folder: string): void {
  * `berth clear`: removes every anchor and empties the outgoing folder, asking
  * first only when the outgoing folder holds files not yet closed.
  *
- * @param args - The words after `clear`.
  * @returns What was removed, or that nothing was.
- * @throws {BerthRefusal} For any word after clear.
  */
-async function clear_run(args: readonly string[]): Promise<CommandEnvelope> {
+async function clear_run(): Promise<CommandEnvelope> {
   const places: BerthPlaces = places_require('clear');
-  if (args.length !== 0) throw new BerthRefusal('clear: usage: berth clear');
   const state: BerthState = berthState_read(places.anchors);
   const since: number | null = state.lastClosedAt === null ? null : Date.parse(state.lastClosedAt);
   const unclosed: string[] = filesChanged_list(places.outgoing, since);
@@ -470,8 +445,104 @@ async function clear_run(args: readonly string[]): Promise<CommandEnvelope> {
   return envelope_ok(`${chalk.gray(`cleared ${count_say(state.anchors.length, 'anchor')} and emptied ${places.outgoing}`)}\n`);
 }
 
+/** What a `berth` line may hold. */
+const BERTH_GRAMMAR = {
+  bare: { summary: 'List the anchors: name, ChRIS path, node or none, files, size, when anchored; and when the berth last closed' },
+  subcommands: {
+    anchor: {
+      summary: 'Download a ChRIS path you can read into <anchors>/<name>/, named by its last part unless a name is given',
+      operands: [
+        { name: 'path', kind: 'cfsPath', glob: true, summary: 'The ChRIS path: a file or folder you can read' },
+        { name: 'name', kind: 'word', optional: true, summary: "The anchor's name; the path's last part when none is given" },
+      ],
+      options: {
+        refresh: { long: 'refresh', summary: 'Download an anchor that stands again' },
+        yes: { short: 'y', long: 'yes', summary: 'Answer yes to the question above 10 GB' },
+      },
+    },
+    close: {
+      summary: 'Upload the outgoing folder, with berth.json, to ~/berth/<uuid>/ and make it one node (pl-dsdircopy): a child of the node every anchor is under, or a new feed when none is',
+      options: {
+        infeed: { long: 'infeed', summary: "A child of that anchor's node", value: { name: 'anchor', kind: 'anchor' } },
+        newfeed: { long: 'newfeed', summary: 'A new feed over every anchor' },
+        name: { long: 'name', summary: "The new feed's name", value: { name: 'feed', kind: 'word' } },
+        title: { long: 'title', summary: `The node's title (${WORK_TITLE})`, value: { name: 'text', kind: 'word' } },
+        force: { short: 'f', long: 'force', summary: 'Answer yes when your processes still run' },
+      },
+    },
+    drop: {
+      summary: 'Remove one anchor; ChRIS still holds it',
+      operands: [{ name: 'name', kind: 'anchor', summary: 'The anchor' }],
+    },
+    clear: { summary: 'Remove every anchor and empty the outgoing folder; asks first when it holds files not yet closed' },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * `berth [anchor … | close … | drop <name> | clear]`: the anchors of this session's berth, and its close.
+ * Runs one `berth` line, saying a refusal in POSIX tone.
+ *
+ * @param args - The line, parsed.
+ * @returns The answer, or the refusal.
+ */
+async function berth_run(args: CommandArguments<typeof BERTH_GRAMMAR>): Promise<CommandEnvelope> {
+  try {
+    switch (args.subcommand) {
+      case null: return berth_list();
+      case 'anchor': return await anchor_run(args);
+      case 'drop': return drop_run(args.operands.name);
+      case 'clear': return await clear_run();
+      case 'close': return await close_run(places_require('close'), {
+        infeed: args.options.infeed ?? null,
+        newfeed: args.options.newfeed,
+        name: args.options.name ?? null,
+        title: args.options.title ?? WORK_TITLE,
+        force: args.options.force,
+      });
+    }
+  } catch (error: unknown) {
+    if (error instanceof BerthRefusal) return berth_refuse(error.message);
+    const reason: string = error instanceof Error ? error.message : String(error);
+    return berth_refuse(args.subcommand === null ? reason : `${args.subcommand}: ${reason}`);
+  }
+}
+
+/**
+ * `berth [anchor … | close … | drop <name> | clear]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [berthCommand] }, 'backend');
+ * ```
+ */
+export const berthCommand = command_declare({
+  name: 'berth',
+  grammar: BERTH_GRAMMAR,
+  help: {
+    summary: "The ChRIS paths downloaded into this session's berth, and the work returned: anchor, list, close, drop, clear",
+    description: "Anchor ChRIS paths in this session's berth: download each into the anchors folder, list them, return the outgoing folder to ChRIS as one node, drop one, or clear them all. Under your own ~/feeds an anchor has a node, the plugin instance its path runs through, which must be finishedSuccessfully; anywhere else (uploads, PACS, /PUBLIC, /SHARED) it has none. Anchors of two nodes, or of a node and of none, want --infeed or --newfeed to close, never both. A close removes nothing. help anchors says more. On a host, not in a berth, berth says so and refuses the subcommands.",
+    category: 'Workflows',
+    examples: [
+      'berth',
+      'berth anchor ~/feeds/feed_5/pl-dircopy_7/pl-fshack_41/data/sub-01',
+      'berth anchor ~/uploads/weights',
+      'berth anchor /PUBLIC/atlas/weights atlas-weights',
+      'berth anchor ~/uploads/weights --refresh',
+      'berth close',
+      'berth close --title "sub-01 segmentation"',
+      'berth close --infeed sub-01',
+      'berth close --newfeed --name "unet weights"',
+      'berth drop sub-01',
+      'berth clear',
+    ],
+  },
+  // A berth's anchors are the berth's own disk: anchoring reads CUBE and
+  // writes there, and changes no piece of the session.
+  holds: [],
+  handler: berth_run,
+});
+
+/**
+ * `berth` over words already split: the declaration's parse and handler.
  *
  * @param args - The words after `berth`.
  * @returns The answer, or a refusal in POSIX tone.
@@ -483,18 +554,5 @@ async function clear_run(args: readonly string[]): Promise<CommandEnvelope> {
  * ```
  */
 export async function builtin_berth(args: string[]): Promise<CommandEnvelope> {
-  const [subcommand, ...rest] = args;
-  try {
-    if (subcommand === undefined) return berth_list();
-    if (subcommand === 'anchor') return await anchor_run(rest);
-    if (subcommand === 'drop') return drop_run(rest);
-    if (subcommand === 'clear') return await clear_run(rest);
-    if (subcommand === 'close') return await close_run(places_require('close'), rest);
-    if (berthPlaces_read() === null) return berth_refuse(`${subcommand}: this session runs on the host, not in a berth`);
-    return berth_refuse(`${subcommand}: unknown subcommand; usage: ${BERTH_USAGE}`);
-  } catch (error: unknown) {
-    if (error instanceof BerthRefusal) return berth_refuse(error.message);
-    const reason: string = error instanceof Error ? error.message : String(error);
-    return berth_refuse(subcommand === undefined ? reason : `${subcommand}: ${reason}`);
-  }
+  return declaredCommand_run(berthCommand, args);
 }

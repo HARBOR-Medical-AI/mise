@@ -90,7 +90,9 @@ const dataLines: string[] = [];
 jest.unstable_mockModule('../src/core/paths.js', () => ({ path_resolve: async (typed: string): Promise<string> => typed }));
 /** The home the session names; '/' with no session. */
 let homeNamed: string = '/home/alice';
-jest.unstable_mockModule('../src/core/backend.js', () => ({ backendInstalled_get: () => ({ session: { home_get: async (): Promise<string> => homeNamed } }) }));
+/** The ChRIS backend's argument kinds (an anchor's name), filled once its module loads. */
+const backendKinds: { kinds: ReadonlyArray<unknown> } = { kinds: [] };
+jest.unstable_mockModule('../src/core/backend.js', () => ({ backendInstalled_get: () => ({ session: { home_get: async (): Promise<string> => homeNamed }, argumentKinds: backendKinds.kinds }) }));
 jest.unstable_mockModule('../src/core/filesystem.js', () => ({ vfsDispatcher_get: () => ({ list: async (folder: string) => cubeFolder_list(folder) }) }));
 jest.unstable_mockModule('@fnndsc/chili/utils', () => ({ logicalPath_resolve: async (logical: string) => ({ ok: true, value: logical }) }));
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/upload.js', () => ({ files_uploadWithProgress: mockUpload }));
@@ -111,6 +113,7 @@ jest.unstable_mockModule('../src/builtins/berth/berthProcesses.js', () => ({ pro
 jest.unstable_mockModule('../src/builtins/feedCreation.js', () => ({ newFeed_cacheAdd: mockCacheAdd, run_follow: mockFollow }));
 
 const { errorStack } = await import('@fnndsc/fond');
+backendKinds.kinds = (await import('../src/chris/kinds.js')).chrisArgumentKinds;
 const { builtin_berth } = await import('../src/builtins/berth/berth.js');
 const { berthState_read, berthState_write } = await import('../src/builtins/berth/berthState.js');
 const { anchorChanges_compare, berthSource_read } = await import('../src/builtins/berth/berthRecord.js');
@@ -236,9 +239,9 @@ describe('berth close: the outgoing folder', () => {
   });
 
   it('refuses words it does not know', async () => {
-    expect(strip((await builtin_berth(['close', '--yes'])).renderedErr)).toBe('berth: close: unknown option --yes; berth close [--infeed <anchor> | --newfeed] [--name <feed>] [--title <text>] [--force]\n');
-    expect(strip((await builtin_berth(['close', 'now'])).renderedErr)).toBe('berth: close: takes no operand (now); berth close [--infeed <anchor> | --newfeed] [--name <feed>] [--title <text>] [--force]\n');
-    expect(strip((await builtin_berth(['close', '--title'])).renderedErr)).toBe('berth: close: --title wants a value; berth close [--infeed <anchor> | --newfeed] [--name <feed>] [--title <text>] [--force]\n');
+    expect(strip((await builtin_berth(['close', '--yes'])).renderedErr)).toBe("berth: close: unrecognized option '--yes'; usage: berth close [-f] [--newfeed] [--infeed <anchor>] [--name <feed>] [--title <text>]\n");
+    expect(strip((await builtin_berth(['close', 'now'])).renderedErr)).toBe("berth: close: unexpected operand 'now'; usage: berth close [-f] [--newfeed] [--infeed <anchor>] [--name <feed>] [--title <text>]\n");
+    expect(strip((await builtin_berth(['close', '--title'])).renderedErr)).toBe("berth: close: option '--title' wants a value (<text>); usage: berth close [-f] [--newfeed] [--infeed <anchor>] [--name <feed>] [--title <text>]\n");
     expect(mockUpload).not.toHaveBeenCalled();
   });
 });

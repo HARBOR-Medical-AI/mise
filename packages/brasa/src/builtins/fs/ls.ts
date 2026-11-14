@@ -1,75 +1,112 @@
 /**
- * @file Builtin ls command.
- * Lists directory contents.
+ * @file `ls`: lists folders and files of ChRIS's filesystem (CFS).
+ *
+ * Declared in one record (`lsCommand`): its grammar, its help and its
+ * handler. Paths glob; options may stand anywhere among them.
+ *
+ * Key components:
+ * - lsCommand: the declaration.
+ * - builtin_ls: the declaration run over words already split.
+ * - ls_run: the typed core behind both, and the typed API.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_ls(['-l', 'docs']);
+ * await ls_run({ paths: ['docs'], long: true });
+ * ```
+ *
+ * Dependencies: the session's filesystem, its listing cache and its cwd.
+ *
+ * @module
  */
 import { answerNumbering_derive, handle_word, numberedFooter_render, type NumberedHandle } from '../../session/answer.js';
 import chalk from 'chalk';
-import { ParsedArgs, commandArgs_process, optionsUnknown_refusal, path_resolve } from '../utils.js';
+import { path_resolve } from '../utils.js';
 import { listingCache_get, vfsDispatcher_get } from '../../core/filesystem.js';
 import { itemType_isContainer } from '../../core/itemKinds.js';
 import { errorStack, type Result, type VFSItem } from '@fnndsc/fond';
 import type { ListingCache } from '../../core/backend.js';
 import { session } from '../../session/index.js';
 import { vfs, type VfsListing } from '../../lib/vfs/vfs.js';
-import { envelope_error, type ListingItem, type CommandEnvelope } from '@fnndsc/menu';
+import { type ListingItem, type CommandEnvelope } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** Valid sort fields for ls. */
 type LsSortField = 'name' | 'size' | 'date' | 'owner';
 
-/** The sort fields `--sort` takes. */
-const LS_SORT_FIELDS: ReadonlyArray<LsSortField> = ['name', 'size', 'date', 'owner'];
+/** What an `ls` line may hold. `-a` and `-A` are taken and already hold: nothing in a listing is hidden. */
+const LS_GRAMMAR = {
+  operands: [
+    { name: 'path', kind: 'cfsPath', optional: true, repeat: true, glob: true, summary: 'What to list; the working directory when none is given' },
+  ],
+  options: {
+    long: { short: 'l', summary: 'Long format: detail, feed and plugin titles, each row numbered' },
+    oneColumn: { short: '1', summary: 'One entry per line' },
+    human: { short: 'h', summary: 'Human-readable sizes (with -l)' },
+    refresh: { short: 'f', long: 'refresh', summary: 'Read afresh, past the cache' },
+    reverse: { short: 'r', long: 'reverse', summary: 'Reverse the sort' },
+    directory: { short: 'd', summary: 'List a folder itself, not its contents' },
+    all: { short: 'a', long: 'all', summary: 'Taken: nothing in a listing is hidden' },
+    almostAll: { short: 'A', long: 'almost-all', summary: 'Taken: nothing in a listing is hidden' },
+    sort: { long: 'sort', summary: 'Sort by', value: { name: 'field', kind: 'enum', values: ['name', 'size', 'date', 'owner'] } },
+  },
+} as const satisfies CommandGrammar;
 
 /**
- * The options ls reads. `-a` and `-A` are taken and already hold: nothing
- * in the listing is hidden.
- */
-const LS_OPTIONS: ReadonlyArray<string> = ['l', 'h', '1', 'r', 'reverse', 'd', 'f', 'refresh', 'sort', 'a', 'A', 'all', 'almost-all'];
-
-/** ls's long options that are switches, so the word after one is a path, never its value. */
-const LS_SWITCHES: ReadonlyArray<string> = ['refresh', 'reverse', 'all', 'almost-all'];
-
-/**
- * An ls refusal, said before anything is listed.
+ * `ls [-l1hfrdaA] [--sort <field>] [path…]`: the declaration.
  *
- * @param line - The refusal.
- * @returns The error envelope.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [lsCommand] });
+ * ```
  */
-function ls_refusal(line: string): CommandEnvelope {
-  return envelope_error('', undefined, `${chalk.red(line)}\n`);
-}
+export const lsCommand = command_declare({
+  name: 'ls',
+  grammar: LS_GRAMMAR,
+  help: {
+    summary: 'List directory contents',
+    description: "List the folders and files of ChRIS's filesystem: the working directory, or each path given (a wildcard matches paths). Several paths list files first, together, then each folder under its own name. The long format shows feed and plugin instance titles, and numbers each row with the handle an index names it by (@FIL2).",
+    category: 'Navigation',
+    posix: { group: 'Files', differs: "lists ChRIS's filesystem (CFS), not this machine's; -l numbers rows" },
+    examples: [
+      'ls                    # List current directory',
+      'ls -l                 # Long format with titles',
+      'ls -lh                # Long format with human sizes',
+      'ls -f                 # Force refresh from server',
+      'ls /home/user/data    # List specific directory',
+      'ls *.txt              # List matching files (wildcard)',
+      'ls --sort=size -r     # Sort by size, reversed',
+      'ls data -l            # Options may follow the paths',
+      '',
+      '# Long format shows feed and plugin instance titles:',
+      '# d user 0  2025-05-18  feed_875           Brain MRI Analysis',
+      '# d user 0  2025-05-18  pl-dircopy_33314   pl-dircopy v2.1.2',
+    ],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof LS_GRAMMAR>): Promise<CommandEnvelope> => ls_run({
+    paths: args.operands.path,
+    long: args.options.long,
+    human: args.options.human,
+    oneColumn: args.options.oneColumn,
+    sort: args.options.sort ?? 'name',
+    reverse: args.options.reverse,
+    directory: args.options.directory,
+    refresh: args.options.refresh,
+  }),
+});
 
 /**
- * Lists the contents of the current or specified directory/files in the ChRIS filesystem context.
- * Supports a virtual `/bin` directory for plugins and multiple paths (e.g., from wildcard expansion).
+ * `ls` over words already split: the declaration's parse and handler, for a
+ * caller holding words rather than a line.
  *
- * @param args - An array containing target paths (optional).
- * @returns A Promise that resolves when the directory contents are listed.
+ * @param args - The words after `ls`.
+ * @returns The listing, or the refusal of a bad line.
  */
 export async function builtin_ls(args: string[]): Promise<CommandEnvelope> {
-  const parsed: ParsedArgs = commandArgs_process(args, { booleanLongOptions: LS_SWITCHES });
-  const unknown: string | null = optionsUnknown_refusal('ls', parsed, LS_OPTIONS);
-  if (unknown !== null) return ls_refusal(unknown);
-
-  let sortBy: LsSortField = 'name';
-  if (parsed['sort'] !== undefined) {
-    const sortValue: string = String(parsed['sort']);
-    if (!LS_SORT_FIELDS.includes(sortValue as LsSortField)) {
-      return ls_refusal(`ls: invalid argument '${sortValue}' for '--sort' (valid: ${LS_SORT_FIELDS.join(', ')})`);
-    }
-    sortBy = sortValue as LsSortField;
-  }
-
-  return ls_run({
-    paths: parsed._ as string[],
-    long: !!parsed['l'],
-    human: !!parsed['h'],
-    oneColumn: !!parsed['1'],
-    sort: sortBy,
-    reverse: !!parsed['reverse'] || !!parsed['r'],
-    directory: !!parsed['d'],
-    refresh: !!parsed['refresh'] || !!parsed['f'],
-  });
+  return declaredCommand_run(lsCommand, args);
 }
 
 /**

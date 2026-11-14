@@ -166,30 +166,38 @@ beforeEach(() => {
 });
 
 describe('command_dispatch', () => {
-  it('passes shell-expanded operands to a builtin without a command allow-list', async () => {
+  it('expands a declared command\'s globbing operand after its line is parsed, and hands the handler the typed line', async () => {
     mockExecutePlugin.mockResolvedValueOnce(null);
-    mockShellWordsExpand.mockResolvedValueOnce(Ok([
-      { value: '/home/chris/a.nii', pathnameExpanded: true },
-      { value: '/home/chris/b.nii', pathnameExpanded: true },
-    ]));
-
-    await command_executeToEnvelope('ls *.nii', 0, false);
-
-    expect(mockShellWordsExpand).toHaveBeenCalled();
-    expect(mockLs).toHaveBeenCalledWith(['/home/chris/a.nii', '/home/chris/b.nii']);
-  });
-
-  it('preserves pathname-expansion provenance through normal dispatch', async () => {
     mockShellWordsExpand.mockResolvedValueOnce(Ok([
       { value: '/home/chris/a.nii', pathnameExpansion: false, pathnameExpanded: true },
       { value: '/home/chris/b.nii', pathnameExpansion: false, pathnameExpanded: true },
-      { value: '/tmp/out', pathnameExpansion: false, pathnameExpanded: false },
     ]));
 
-    await command_executeToEnvelope('download *.nii /tmp/out', 0, false);
+    await command_executeToEnvelope('ls *.nii -l', 0, false);
 
-    expect((mockDownload.mock.calls[0][0] as { pathnameExpanded?: readonly boolean[] }).pathnameExpanded)
-      .toEqual([true, true, false]);
+    // Only the operand reached expansion: the option word never globs.
+    expect(mockShellWordsExpand).toHaveBeenCalledTimes(1);
+    expect((mockShellWordsExpand.mock.calls[0][0] as Array<{ value: string }>).map((word) => word.value)).toEqual(['*.nii']);
+    expect(mockLs).toHaveBeenCalledWith(expect.objectContaining({
+      operands: { path: ['/home/chris/a.nii', '/home/chris/b.nii'] },
+      options: expect.objectContaining({ long: true }),
+      expanded: { path: true },
+    }));
+  });
+
+  it('expands download\'s sources and never its destination, and says the sources were matched', async () => {
+    mockShellWordsExpand.mockResolvedValueOnce(Ok([
+      { value: '/home/chris/a.nii', pathnameExpansion: false, pathnameExpanded: true },
+      { value: '/home/chris/b.nii', pathnameExpansion: false, pathnameExpanded: true },
+    ]));
+
+    await command_executeToEnvelope('download *.nii /tmp/out*', 0, false);
+
+    expect((mockShellWordsExpand.mock.calls[0][0] as Array<{ value: string }>).map((word) => word.value)).toEqual(['*.nii']);
+    expect(mockDownload).toHaveBeenCalledWith(expect.objectContaining({
+      operands: { source: ['/home/chris/a.nii', '/home/chris/b.nii'], destination: '/tmp/out*' },
+      expanded: { source: true },
+    }));
   });
 
   it('routes sudo through the scoped-elevation command seam', async () => {
@@ -228,28 +236,33 @@ describe('command_dispatch', () => {
     }
   });
 
-  it('applies transfer pathname policy beneath sudo', async () => {
-    mockShellWordsExpand.mockResolvedValueOnce(Ok([
-      { value: '/remote/a.nii', pathnameExpansion: false, pathnameExpanded: true },
-      { value: '/remote/b.nii', pathnameExpansion: false, pathnameExpanded: true },
-      { value: '/tmp/out', pathnameExpansion: false, pathnameExpanded: false },
-    ]));
-
+  it('hands a declared command\'s words to sudo unglobbed, quoting kept, so its grammar parses them beneath sudo', async () => {
     await command_executeToEnvelope('sudo download *.nii /tmp/out', 0, false);
 
-    const call = mockShellWordsExpand.mock.calls[0];
-    expect(call[0]).toHaveLength(2);
-    const eligible = call[1] as (_word: unknown, index: number) => boolean;
-    expect(eligible({}, 0)).toBe(true);
-    expect(eligible({}, 1)).toBe(false);
-    const elevatedArgs = mockSudoCommandRun.mock.calls[0][0] as { pathnameExpanded?: readonly boolean[] };
-    expect(elevatedArgs.pathnameExpanded).toEqual([false, true, true, false]);
+    expect(mockShellWordsExpand).not.toHaveBeenCalled();
+    const elevatedArgs = mockSudoCommandRun.mock.calls[0][0] as string[] & { words?: ReadonlyArray<{ value: string; pathnameExpansion: boolean }> };
+    expect([...elevatedArgs]).toEqual(['download', '*.nii', '/tmp/out']);
+    expect(elevatedArgs.words?.map((word) => word.pathnameExpansion)).toEqual([false, true, false]);
   });
 
   it('routes a known command to its built-in handler', async () => {
     await command_dispatch('ls', ['-l']);
-    expect(mockLs).toHaveBeenCalledWith(['-l']);
+    expect(mockLs).toHaveBeenCalledWith(expect.objectContaining({ operands: { path: [] }, options: expect.objectContaining({ long: true }) }));
     expect(mockChiliRun).not.toHaveBeenCalled();
+  });
+
+  it('refuses a declared command\'s bad line before its handler runs', async () => {
+    const { sink_get } = await import('../src/core/sink.js');
+    const errWrite = jest.spyOn(sink_get(), 'err_write').mockImplementation(() => undefined);
+    try {
+      const envelope: CommandEnvelope = await command_dispatchEnvelope('ls', ['--nosuch']);
+      expect(envelope.status).toBe('error');
+      expect(String(errWrite.mock.calls[0]?.[0])).toContain("ls: unrecognized option '--nosuch'; usage: ls ");
+      expect(mockLs).not.toHaveBeenCalled();
+    } finally {
+      errWrite.mockRestore();
+      process.exitCode = 0;
+    }
   });
 
   it('routes id to the identity builtin', async () => {
@@ -264,7 +277,8 @@ describe('command_dispatch', () => {
   // references.
   it('takes already-expanded words without expanding again', async () => {
     await command_dispatch('ls', ['/home/chris/data with spaces', '-l']);
-    expect(mockLs).toHaveBeenCalledWith(['/home/chris/data with spaces', '-l']);
+    expect(mockShellWordsExpand).not.toHaveBeenCalled();
+    expect(mockLs).toHaveBeenCalledWith(expect.objectContaining({ operands: { path: ['/home/chris/data with spaces'] }, options: expect.objectContaining({ long: true }) }));
   });
 
   it('runs an exact /bin plugin match via builtin_executePlugin', async () => {

@@ -2,7 +2,7 @@ import { jest, describe, it, expect, beforeEach, afterEach, beforeAll } from '@j
 import type { CommandEnvelope } from '@fnndsc/menu';
 import { commands_register } from '../src/core/commandRegistry.js';
 import { backend_install } from '../src/core/backend.js';
-import { chrisHelp_install, everyVerb_install } from './support/chrisHelp.js';
+import { chrisHelp_install, declarations_install, everyVerb_install } from './support/chrisHelp.js';
 import {
   text_boxFormat,
   commandHelp_get,
@@ -14,6 +14,9 @@ import {
   builtinCommands_list,
   builtinCommand_descriptionGet,
 } from '../src/builtins/help.js';
+
+// The core's declared commands (ls) carry their help in their declarations.
+declarations_install();
 
 let logSpy: jest.SpiedFunction<typeof console.log>;
 beforeEach(() => {
@@ -111,7 +114,8 @@ describe('builtin_help in a session with nothing of its own', () => {
     expect(envelope.rendered).toContain('chell — the ChRIS shell');
     expect(envelope.rendered).not.toContain('sudo');
     expect(envelope.rendered).not.toContain('Imaging');
-    expect((await builtin_help(['ls'])).rendered).toContain("No help available for 'ls'");
+    // cd has a help entry and no handler here (ls, declared, brings both).
+    expect((await builtin_help(['cd'])).rendered).toContain("No help available for 'cd'");
   });
 });
 

@@ -21,12 +21,12 @@
  *
  * Key components:
  * - close_run: the subcommand.
- * - CLOSE_USAGE: its usage line.
+ * - CloseRequest: what it was asked.
  * - WORK_PLUGIN, WORK_TITLE: the plugin the work's node runs, and the node's title unless one is given.
  *
  * Typical usage:
  * ```ts
- * await close_run(places, ['--title', 'seg run']);
+ * await close_run(places, { infeed: null, newfeed: false, name: null, title: 'seg run', force: false });
  * ```
  *
  * Dependencies: the berth's places and state (berthState.ts); ChRIS through
@@ -59,9 +59,6 @@ import {
 import { berthState_read, berthState_update, type AnchoredFile, type BerthAnchor, type BerthPlaces, type BerthState } from './berthState.js';
 import { anchorNode_show, BerthRefusal, count_say, columns_render } from './berthWords.js';
 
-/** The subcommand's usage line. */
-export const CLOSE_USAGE: string = 'berth close [--infeed <anchor> | --newfeed] [--name <feed>] [--title <text>] [--force]';
-
 /** The registered ds plugin the work's node runs: it copies its `dir` and does nothing else. */
 export const WORK_PLUGIN: string = 'pl-dsdircopy';
 
@@ -74,11 +71,16 @@ const BERTH_IMAGE_ENV: string = 'MISE_BERTH_IMAGE';
 /** The folder under the person's home the work is uploaded into, one folder per close. */
 const BERTH_FILES_FOLDER: string = 'berth';
 
-/** The options that take a value. */
-const VALUE_OPTIONS: ReadonlySet<string> = new Set(['--infeed', '--name', '--title']);
-
-/** What `berth close` was asked. */
-interface CloseRequest {
+/**
+ * What `berth close` was asked: its options, as the declaration's parse
+ * gave them (berth.ts).
+ *
+ * @example
+ * ```ts
+ * const request: CloseRequest = { infeed: null, newfeed: true, name: 'seg run', title: WORK_TITLE, force: false };
+ * ```
+ */
+export interface CloseRequest {
   /** The anchor whose node the work is a child of (`--infeed`); null when not given. */
   readonly infeed: string | null;
   /** A new feed whatever the anchors (`--newfeed`). */
@@ -89,64 +91,6 @@ interface CloseRequest {
   readonly title: string;
   /** Answer the running-process question yes (`--force`). */
   readonly force: boolean;
-}
-
-/** One option's word and its value, as typed. */
-interface OptionWord {
-  /** The option, `--name`. */
-  readonly option: string;
-  /** Its value, or null for a flag. */
-  readonly value: string | null;
-}
-
-/**
- * Reads the option words of a close: `--opt value` and `--opt=value` alike.
- *
- * @param args - The words after `close`.
- * @returns The options in order.
- * @throws {BerthRefusal} For an operand, an unknown option, or an option missing its value.
- */
-function closeWords_read(args: readonly string[]): OptionWord[] {
-  const words: OptionWord[] = [];
-  for (let at: number = 0; at < args.length; at += 1) {
-    const arg: string = args[at] as string;
-    const equals: number = arg.indexOf('=');
-    const option: string = arg.startsWith('--') && equals !== -1 ? arg.slice(0, equals) : arg;
-    if (VALUE_OPTIONS.has(option)) {
-      const value: string | undefined = equals !== -1 && arg.startsWith('--') ? arg.slice(equals + 1) : args[(at += 1)];
-      if (value === undefined || value === '') throw new BerthRefusal(`close: ${option} wants a value; ${CLOSE_USAGE}`);
-      words.push({ option, value });
-    } else if (arg === '--newfeed' || arg === '--force' || arg === '-f') {
-      words.push({ option: arg === '-f' ? '--force' : arg, value: null });
-    } else if (arg.startsWith('-')) {
-      throw new BerthRefusal(`close: unknown option ${arg}; ${CLOSE_USAGE}`);
-    } else {
-      throw new BerthRefusal(`close: takes no operand (${arg}); ${CLOSE_USAGE}`);
-    }
-  }
-  return words;
-}
-
-/**
- * Reads `berth close`'s words.
- *
- * @param args - The words after `close`.
- * @returns The request.
- * @throws {BerthRefusal} As {@link closeWords_read} does, and for `--infeed` with `--newfeed`.
- */
-function closeRequest_parse(args: readonly string[]): CloseRequest {
-  const words: OptionWord[] = closeWords_read(args);
-  const last = (option: string): string | null => words.filter((word: OptionWord): boolean => word.option === option).at(-1)?.value ?? null;
-  const has = (option: string): boolean => words.some((word: OptionWord): boolean => word.option === option);
-  const request: CloseRequest = {
-    infeed: last('--infeed'),
-    newfeed: has('--newfeed'),
-    name: last('--name'),
-    title: last('--title') ?? WORK_TITLE,
-    force: has('--force'),
-  };
-  if (request.infeed !== null && request.newfeed) throw new BerthRefusal('close: --infeed and --newfeed are two places; give one');
-  return request;
 }
 
 /**
@@ -447,17 +391,17 @@ function closeRecord_build(places: BerthPlaces, who: string, anchors: readonly R
  * returns the outgoing folder to ChRIS as one node.
  *
  * @param places - The berth's places.
- * @param args - The words after `close`.
+ * @param request - Its options.
  * @returns Where the work went and its files folder, or that nothing closed.
- * @throws {BerthRefusal} For an empty outgoing folder, a placement the anchors do not decide, and an upload that fails.
+ * @throws {BerthRefusal} For `--infeed` with `--newfeed`, an empty outgoing folder, a placement the anchors do not decide, and an upload that fails.
  *
  * @example
  * ```ts
- * await close_run({ anchors: '/anchors', outgoing: '/outgoing' }, ['--newfeed', '--name', 'seg run']);
+ * await close_run({ anchors: '/anchors', outgoing: '/outgoing' }, { infeed: null, newfeed: true, name: 'seg run', title: WORK_TITLE, force: false });
  * ```
  */
-export async function close_run(places: BerthPlaces, args: readonly string[]): Promise<CommandEnvelope> {
-  const request: CloseRequest = closeRequest_parse(args);
+export async function close_run(places: BerthPlaces, request: CloseRequest): Promise<CommandEnvelope> {
+  if (request.infeed !== null && request.newfeed) throw new BerthRefusal('close: --infeed and --newfeed are two places; give one');
   const work: AnchoredFile[] = outgoingFiles_list(places.outgoing);
   if (work.length === 0) throw new BerthRefusal(`close: ${places.outgoing} is empty; nothing to close`);
   const state: BerthState = berthState_read(places.anchors);

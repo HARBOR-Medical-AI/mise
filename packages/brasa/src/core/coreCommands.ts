@@ -12,6 +12,7 @@
  * @module
  */
 import { type CommandGroup, type CommandHandler, type EnvelopeHandler, type SessionPiece } from './commandRegistry.js';
+import type { AnyCommandDeclaration } from './commandDeclaration.js';
 import { builtin_leave, builtin_stopwatch, builtin_timer } from '../builtins/games/chimes.js';
 import { builtin_cowsay, builtin_cowthink } from '../builtins/games/cowsay.js';
 import { builtin_banner, builtin_figlet } from '../builtins/games/figlet.js';
@@ -40,7 +41,7 @@ import { builtin_debug } from '../builtins/debug.js';
 import { builtin_cat } from '../builtins/fs/cat.js';
 import { builtin_cd } from '../builtins/fs/cd.js';
 import { builtin_cp } from '../builtins/fs/cp.js';
-import { builtin_ls } from '../builtins/fs/ls.js';
+import { lsCommand } from '../builtins/fs/ls.js';
 import { builtin_mkdir } from '../builtins/fs/mkdir.js';
 import { builtin_mv } from '../builtins/fs/mv.js';
 import { builtin_pwd } from '../builtins/fs/pwd.js';
@@ -138,13 +139,11 @@ const envelope: Record<string, EnvelopeHandler> = {
   notes: builtin_notes,
   date: builtin_date,
   cal: builtin_cal,
-  ls: builtin_ls,
   help: builtin_help,
 };
 
 const plain: Record<string, CommandHandler> = {
   cd: envelopeHandler_wrap(builtin_cd),
-  ls: envelopeHandler_wrap(builtin_ls),
   pwd: envelopeHandler_wrap(builtin_pwd),
   url: envelopeHandler_wrap((args: string[]) => builtin_url(args)),
   cat: envelopeHandler_wrap(builtin_cat),
@@ -234,7 +233,7 @@ const plain: Record<string, CommandHandler> = {
 const holds: Record<string, readonly SessionPiece[]> = {
   ...Object.fromEntries([
     'apropos', 'banner', 'cal', 'calc', 'cat', 'cowsay', 'cowthink', 'cut', 'date', 'ddate', 'echo', 'factor',
-    'figlet', 'find', 'fortune', 'grep', 'head', 'help', 'lolcat', 'ls', 'man', 'morse', 'notes', 'pom',
+    'figlet', 'find', 'fortune', 'grep', 'head', 'help', 'lolcat', 'man', 'morse', 'notes', 'pom',
     'primes', 'printf', 'pwd', 'qr', 'rev', 'rot13', 'seq', 'sort', 'stardate', 'tac', 'tail', 'uniq',
     'units', 'uptime', 'version', 'wc', 'who',
     // Following or stopping a task changes nothing of the session.
@@ -243,8 +242,12 @@ const holds: Record<string, readonly SessionPiece[]> = {
   cd: ['cwd'],
 };
 
+/** The core commands declared in one record each: grammar, kinds, handler, holds and help together. */
+const declarations: ReadonlyArray<AnyCommandDeclaration> = [lsCommand];
+
 export const coreCommands: CommandGroup = {
   envelope,
   plain,
   holds,
+  declarations,
 };

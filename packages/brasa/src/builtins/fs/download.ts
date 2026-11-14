@@ -1,6 +1,22 @@
 /**
- * @file Builtin download command.
- * Downloads files from ChRIS to the local filesystem with progress.
+ * @file `download`: ChRIS files and folders to the local filesystem, with
+ * progress; under a daemon, handed to the surface instead.
+ *
+ * Declared in one record (`downloadCommand`): a CFS path operand that globs
+ * and a host path operand on one line, never globbed.
+ *
+ * Key components:
+ * - downloadCommand: the declaration.
+ * - builtin_download: the declaration run over words already split.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_download(['/home/chris/uploads/a.nii', './data/']);
+ * ```
+ *
+ * Dependencies: chili's transfer, salsa's file listing, the session's surface.
+ *
+ * @module
  */
 import path from 'path';
 
@@ -15,7 +31,8 @@ import {
   bytes_format
 } from '@fnndsc/chili/commands/fs/download.js';
 import { sink_get } from '../../core/sink.js';
-import { shellArguments_pathnameExpanded } from '../../lib/parser.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import { path_resolve } from '../utils.js';
 import { vfsDispatcher_get } from '../../core/filesystem.js';
 import { surface_get, type Surface } from '../../core/surface.js';
@@ -165,30 +182,63 @@ async function surfaceDownload_run(
   return failed.length === 0 ? envelope_ok(rendered) : envelope_error(rendered, undefined, '');
 }
 
+/** What a `download` line may hold: ChRIS paths (a wildcard matches them), then one place on this machine. */
+const DOWNLOAD_GRAMMAR = {
+  operands: [
+    { name: 'source', kind: 'cfsPath', repeat: true, glob: true, summary: 'What to download: a ChRIS file or folder; a wildcard matches paths' },
+    { name: 'destination', kind: 'hostPath', summary: "Where it goes on this machine's disk; several sources go into one folder" },
+  ],
+  options: {
+    force: { short: 'f', long: 'force', summary: 'Overwrite local paths that exist' },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * Downloads a remote ChRIS file or directory to the local filesystem, or hands
- * it to the surface when the engine's disk is not the operator's.
+ * `download [-f] <source…> <destination>`: the declaration.
  *
- * @param args - [remotePathOrGlob, localPath] plus optional -f/--force to overwrite.
- * @returns An envelope carrying the download summary.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [downloadCommand] }, 'backend');
+ * ```
+ */
+export const downloadCommand = command_declare({
+  name: 'download',
+  grammar: DOWNLOAD_GRAMMAR,
+  help: {
+    summary: 'Download ChRIS files or folders to this machine',
+    description: 'Download a ChRIS file, folder, or the paths a wildcard matches to the local filesystem with progress tracking: files, ETA, bytes transferred. Several sources, typed or matched, go together into one folder. Under a daemon the files are handed to the surface, which puts them on its own disk or in a browser\'s downloads.',
+    category: 'Files',
+    examples: [
+      'download /home/user/data ./data',
+      'download /home/user/results/*.nii ./results/',
+      'download /feeds/feed_123 ./downloads -f',
+    ],
+  },
+  handler: async (args: CommandArguments<typeof DOWNLOAD_GRAMMAR>): Promise<CommandEnvelope> =>
+    download_run(args.operands.source, args.operands.destination, args.options.force, args.expanded.source),
+});
+
+/**
+ * `download` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `download`.
+ * @returns The download summary, or the refusal of a bad line.
  */
 export async function builtin_download(args: string[]): Promise<CommandEnvelope> {
-  const force: boolean = args.includes('-f') || args.includes('--force');
-  const positionalIndexes: number[] = args.reduce((indexes: number[], arg: string, index: number): number[] => {
-    if (arg !== '-f' && arg !== '--force') indexes.push(index);
-    return indexes;
-  }, []);
-  const cleanArgs: string[] = positionalIndexes.map((index: number): string => args[index]);
+  return declaredCommand_run(downloadCommand, args);
+}
 
-  if (cleanArgs.length < 2) {
-    return envelope_ok(`${chalk.red('Usage: download <remote_path_or_glob> <local_path> [-f|--force]')}\n`);
-  }
-
-  const localPathArg: string = cleanArgs[cleanArgs.length - 1];
-  const sourceArgs: string[] = cleanArgs.slice(0, -1);
-  const sourceWasExpanded: boolean = positionalIndexes
-    .slice(0, -1)
-    .some((index: number): boolean => shellArguments_pathnameExpanded(args, index));
+/**
+ * Downloads remote ChRIS files or folders to the local filesystem, or hands
+ * them to the surface when the engine's disk is not the operator's.
+ *
+ * @param sourceArgs - The ChRIS paths, as typed or matched.
+ * @param localPathArg - Where they go.
+ * @param force - Overwrite local paths that exist.
+ * @param sourceWasExpanded - The sources came from a wildcard, so even one goes into a folder.
+ * @returns An envelope carrying the download summary.
+ */
+async function download_run(sourceArgs: string[], localPathArg: string, force: boolean, sourceWasExpanded: boolean): Promise<CommandEnvelope> {
 
   // A path resolved here is a path on the *engine's* disk. That is the
   // operator's disk only when a local shell hosts the engine in its own
