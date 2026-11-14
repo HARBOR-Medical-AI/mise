@@ -1,5 +1,0 @@
----
-'@fnndsc/porter': minor
----
-
-A berth has a place of its own to write ChRIS data into, `/anchors`, beside one `/outgoing` for its results. Both are on one work volume per person, `<prefix>-<key>-work`, labelled `org.fnndsc.mise.berth.volume=work` and given to the person's uid by the launcher's root helper, which makes `anchors/` and `outgoing/` in it; the berth mounts them by subpath, both writable, and has no `/incoming`. The berth names the two places to its session as `MISE_BERTH_ANCHORS=/anchors` and `MISE_BERTH_OUTGOING=/outgoing`. The cohort porter names selects no volume: it is the berth's label and `MISE_COHORT`, and stays in the launcher's API so a porter and a launcher of different releases still speak. A person's `…-cohort-none` volume is kept, and its `outgoing/` is copied into the work volume once, as that is made. A berth running on the cohort volume's mounts is made again at its next start rather than handed back. `berthNames_derive` takes no cohort and returns `work` and `cohortLegacy` in place of `cohort`; `berthPlaces_check` says whether a container's places are the work volume's, and `volumesOwnScript_build` is the helper's command.
