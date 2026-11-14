@@ -6190,6 +6190,43 @@ body[data-zoom] #header-restore {
   letter-spacing: 0.04em;
 }
 
+/* A wait the person stopped, said where the image would have been, in the
+ * frame's own colour: a chosen state, not a refusal. No track, since nothing
+ * is on its way. The count line carries the path that was asked for. */
+.image-working-stopped .image-working-track {
+  display: none;
+}
+
+.image-working-stopped .image-working-count {
+  letter-spacing: 0.04em;
+}
+
+/* The wait's own control, on the notice a person is already reading: the
+ * notice lets the pointer through to the image, the capsule takes it. */
+.image-field-stop {
+  pointer-events: auto;
+}
+
+/* A load the person stopped: how far it got and the way to the rest, in the
+ * field's corner so the image keeps the middle. */
+.image-stopped-note {
+  position: absolute;
+  right: 0.8rem;
+  bottom: 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.3rem 0.5rem 0.3rem 0.7rem;
+  background: rgb(0 0 0 / 72%);
+  border-radius: 0.4rem;
+  font-family: var(--face-label);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  color: var(--harvestgold);
+  pointer-events: none;
+  z-index: 3;
+}
+
 /* ------------------------------------------------ the header, on the image */
 
 /* What a clinical viewer writes in the corner. Small, quiet, and off by

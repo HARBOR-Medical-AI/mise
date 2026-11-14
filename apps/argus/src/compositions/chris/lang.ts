@@ -37,7 +37,7 @@ export type ChrisLangHost = ArgusHost & ChrisHostVerbs;
  * field. Opening an image (`image <path>`, `image --help`, `image` alone) is
  * the kernel's `image` command, so those lines fall through to the session.
  */
-const IMAGE_SURFACE_VERBS: ReadonlySet<string> = new Set(['layout', 'slice', 'series', 'wl', 'colormap', 'save', 'tags', 'load', 'guard', 'ghost', 'state']);
+const IMAGE_SURFACE_VERBS: ReadonlySet<string> = new Set(['layout', 'slice', 'series', 'wl', 'colormap', 'save', 'tags', 'load', 'stop', 'guard', 'ghost', 'state']);
 
 /**
  * The `dag` verbs: the RUNS pane's mode frame and physics.
@@ -142,7 +142,7 @@ export function chrisLanguage(host: () => ChrisLangHost): LanguageExtension {
       { after: 'view', line: 'node enter · immerse · back · clear (the indicated node)' },
       { after: 'view', line: 'dag [@id] layout ranked|molecule · projection 2d|3d · scale time|size · hue status|compute · draw spheres|stars · pulse [on|off] · census [on|off] · gravity [on|off] · select <feed or job> · enter <job> · physics charge|link|collide|gravity on|off · physics reset · refresh' },
       { after: 'file', line: 'pacs sort <col> [asc|desc] · filter <text>|off   (the results listing; every other pacs verb is the session\'s)' },
-      { after: 'file', line: 'image [@id] [--force] <path> · layout single|mpr|3d|slab · slice <n> · series <n> · wl <lo> <hi> · wl preset <name> · colormap gray|hot|jet|cool · save · tags · load · guard <bytes>|off · ghost <0..1>|off · state' },
+      { after: 'file', line: 'image [@id] [--force] <path> · layout single|mpr|3d|slab · slice <n> · series <n> · wl <lo> <hi> · wl preset <name> · colormap gray|hot|jet|cool · save · tags · load · stop · guard <bytes>|off · ghost <0..1>|off · state' },
       { after: 'file', line: 'tags [@id] redact on|off · filter <text>|off   (the pane that follows an image pane\'s slice)' },
     ],
     run: (_frame: ArgusHost, sentence: { subject: string; target: string | null; words: string[] }, pane: () => string | null): Promise<string | null> | string | null | undefined => {

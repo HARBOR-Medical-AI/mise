@@ -76,3 +76,30 @@ describe('lines in this surface\'s own language', () => {
     expect(claims.find((claim) => claim.subject === 'file')?.verbs).toContain('open');
   });
 });
+
+describe('a line sent with a signal', () => {
+  beforeEach((): void => { FakeSocket.last = null; });
+
+  it('is cancelled on the wire by its own id when the signal aborts, and settles with the daemon\'s answer', async () => {
+    const { socket, client } = await client_attach({});
+    const asking: AbortController = new AbortController();
+    const outcome = client.line_execute('dcm series "/home/someone/uploads/series-a"', { silent: true, observe: false, signal: asking.signal });
+    const id: unknown = socket.sent[0]?.['id'];
+    expect(socket.sent).toEqual([{ type: 'execute', id, line: 'dcm series "/home/someone/uploads/series-a"', instrument: true }]);
+    asking.abort();
+    expect(socket.sent[1]).toEqual({ type: 'cancel', id });
+    socket.deliver({ type: 'result', id, envelopes: [{ status: 'error', rendered: '', renderedErr: 'dcm series: stopped\n' }] });
+    expect((await outcome).envelopes[0]?.status).toBe('error');
+  });
+
+  it('sends no cancel for a line that has already been answered', async () => {
+    const { socket, client } = await client_attach({});
+    const asking: AbortController = new AbortController();
+    const outcome = client.line_execute('dcm series "/home/someone/uploads/series-a"', { silent: true, observe: false, signal: asking.signal });
+    const id: unknown = socket.sent[0]?.['id'];
+    socket.deliver({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] });
+    await outcome;
+    asking.abort();
+    expect(socket.sent).toHaveLength(1);
+  });
+});

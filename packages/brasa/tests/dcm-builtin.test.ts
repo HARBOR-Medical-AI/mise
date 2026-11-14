@@ -92,6 +92,20 @@ describe('builtin_dcm grammar', () => {
   });
 });
 
+describe('dcm series, stopped', () => {
+  it('ends after the read in flight and answers no model', async () => {
+    const { commandCancellation_run, commandCancellation_abort } = await import('../src/core/cancellation.js');
+    mockSeries.mockImplementation(async () => {
+      commandCancellation_abort('line-stop');
+      return ok(seriesSummary);
+    });
+    const envelope: CommandEnvelope = await commandCancellation_run((): Promise<CommandEnvelope> => builtin_dcm(['series', '.']), 'line-stop');
+    expect(envelope.status).toBe('error');
+    expect(envelope.renderedErr).toBe('dcm series: stopped\n');
+    expect(envelope.model).toBeUndefined();
+  });
+});
+
 describe('dcm series', () => {
   it('resolves the folder against the cwd, looks for annotations under the user home, and carries the model', async () => {
     mockSeries.mockResolvedValue(ok(seriesSummary));

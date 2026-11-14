@@ -183,6 +183,10 @@ const holds: Record<string, readonly SessionPiece[]> = {
   ...Object.fromEntries([
     'du', 'feeds', 'file', 'getfacl', 'getfattr', 'groups', 'id', 'md5sum', 'motd', 'pacsservers',
     'pipelines', 'plugininstances', 'plugins', 'sha256sum', 'strings', 'tree', 'whatif', 'whereami', 'whoami', 'xxd',
+    // Reading a series' listing and header, or a file's tags, changes nothing
+    // of the session: `image` answers with an intent a surface draws, `dcm`
+    // with a model.
+    'dcm', 'image',
   ].map((name: string): [string, readonly SessionPiece[]] => [name, []])),
   gather: ['cohort'],
 };

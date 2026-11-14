@@ -15,6 +15,10 @@
  * volume file; anything else is refused by name. `--force` rides through the
  * volume-size guard a graphical surface would otherwise hold at.
  *
+ * A stop is honoured between the reads: after the path resolves, after the
+ * series' listing and header, and before the thumbnail's slice. A read
+ * already on its way to CUBE runs to its answer, which is then dropped.
+ *
  * @module
  */
 import { context_getSingle, dicomSeries_summarize, dicomSlice_gray, type DicomSeriesSummary, type DicomGrayOutcome } from '@fnndsc/salsa';
@@ -27,11 +31,21 @@ import { series_render } from './dicom.js';
 import { thumbnail_render } from './thumbnail.js';
 import type { Result } from '@fnndsc/fond';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
 
 /** Path endings a volume renderer answers to. */
 const VOLUME_PATTERN: RegExp = /\.(nii|nii\.gz|mgz|mgh)$/i;
 /** One DICOM file; its folder is the series. */
 const DICOM_FILE_PATTERN: RegExp = /\.dcm$/i;
+
+/**
+ * The answer of an `image` that was stopped before it had one.
+ *
+ * @returns An error envelope saying so, with no intent for a surface to draw.
+ */
+function stopped_answer(): CommandEnvelope {
+  return envelope_error('', undefined, 'image: stopped\n');
+}
 
 /**
  * Handles `image [--force] <path>`.
@@ -45,7 +59,12 @@ export async function builtin_image(args: string[]): Promise<CommandEnvelope> {
   const target: string | undefined = (parsed._ as string[])[0];
   if (target === undefined) return envelope_ok(help_render('image'));
   const force: boolean = parsed.force === true;
+  commandCancellation_enable();
+  const signal: AbortSignal | undefined = commandCancellation_signalGet();
+  // Read afresh at each step: the signal changes while a read is awaited.
+  const stop_isAsked = (): boolean => signal?.aborted === true;
   const resolved: string = await path_resolve(target);
+  if (stop_isAsked()) return stopped_answer();
 
   // A volume file: the intent names it; a text surface has no volume to draw.
   if (VOLUME_PATTERN.test(resolved)) {
@@ -61,6 +80,7 @@ export async function builtin_image(args: string[]): Promise<CommandEnvelope> {
   const folder: string = DICOM_FILE_PATTERN.test(resolved) ? resolved.slice(0, resolved.lastIndexOf('/')) : resolved;
   const annotationRoot: string | undefined = await annotationRoot_get();
   const summary: Result<DicomSeriesSummary> = await dicomSeries_summarize(folder, annotationRoot !== undefined ? { annotationRoot } : {});
+  if (stop_isAsked()) return stopped_answer();
   if (!summary.ok) {
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red(`image: ${target}: not a readable DICOM series, study, or volume`)}\n`);

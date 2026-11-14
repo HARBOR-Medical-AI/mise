@@ -13,6 +13,15 @@
  * Focus stays in the field: a click there takes it, keys stay there, Esc
  * gives it back. The FOCUS mark says who has the keyboard.
  *
+ * A wait can be stopped where the person is looking: the field's working
+ * notice carries a STOP capsule under its track while a series is OPENING
+ * (the kernel is being asked what the path is) or LOADING (slices are
+ * arriving), and Esc on the frame presses it. A stopped load keeps what
+ * arrived and a note in the field's corner says how far it got, with LOAD
+ * REST; a stopped open keeps its notice, with OPEN AGAIN. The rail carries
+ * the same STOP block. Stopped is a state the person chose, said in the
+ * frame's own voice, never as a refusal.
+ *
  * @module
  */
 import { STALE_PAGE_READOUT, stalePage_is } from '../../app/stalePage.js';
@@ -79,6 +88,18 @@ export interface SeriesChoice {
   label: string;
 }
 
+/** The wait a frame is in, as its STOP block reads it: none is null. */
+export type ImageWait = 'opening' | 'loading' | 'stopped';
+
+/** The STOP block's words while a wait can be stopped. */
+export const STOP_LABEL: string = 'STOP';
+/** The STOP block's words once a load was stopped: pressing it fetches what had not arrived. */
+export const RESUME_LABEL: string = 'LOAD REST';
+/** The notice's capsule after an open was stopped: pressing it asks again. */
+export const REOPEN_LABEL: string = 'OPEN AGAIN';
+/** The bar's word for an open the person stopped. */
+export const OPENING_STOPPED_READOUT: string = 'STOPPED';
+
 /** Bytes a series may reach before a volume layout waits for LOAD. */
 export const VOLUME_GUARD_BYTES: number = 256 * 1024 * 1024;
 
@@ -116,6 +137,20 @@ export class ImagePanel {
   private readonly loadPill: HTMLButtonElement;
   /** Asks again for the slices a network dropped; shown only while some are refused. */
   private readonly retryPill: HTMLButtonElement;
+  /** Stops the wait in flight, then offers the rest; shown only while there is one or the other. */
+  private readonly stopPill: HTMLButtonElement;
+  /** Ends the kernel ask behind an open, while the frame is OPENING; null otherwise. */
+  private openingStop: (() => void) | null = null;
+  /** What the frame is OPENING, for the words of a stop. */
+  private openingPath: string = '';
+  /** Counts the opens this frame was asked for: only the latest may put a series on the field. */
+  private openingSerial: number = 0;
+  /** Asks again for what the frame was OPENING; null when nothing can. */
+  private openingAgain: (() => void) | null = null;
+  /** The person stopped the open whose notice stands on the field. */
+  private openingStopped: boolean = false;
+  /** The corner note of a stopped load: how far it got, and LOAD REST. */
+  private stoppedNote: HTMLElement | null = null;
   private readonly presetPill: HTMLButtonElement;
   private readonly focusMark: HTMLElement;
   /** Bytes a series may reach before MPR or 3D waits for LOAD; null turns the guard off. */
@@ -170,6 +205,7 @@ export class ImagePanel {
     this.savePill = element_find(mount, '.image-save') as HTMLButtonElement;
     this.loadPill = element_find(mount, '.image-load') as HTMLButtonElement;
     this.retryPill = element_find(mount, '.image-retry') as HTMLButtonElement;
+    this.stopPill = element_find(mount, '.image-stop') as HTMLButtonElement;
     this.presetPill = element_find(mount, '.image-preset') as HTMLButtonElement;
     this.focusMark = element_find(mount, '.image-focus');
     this.field.tabIndex = 0;
@@ -178,6 +214,7 @@ export class ImagePanel {
     this.savePill.addEventListener('click', (): void => void this.annotations_save());
     this.loadPill.addEventListener('click', (): void => void this.load_press());
     this.retryPill.addEventListener('click', (): void => void this.retry_press());
+    this.stopPill.addEventListener('click', (): void => void this.stop_press());
     this.presetPill.addEventListener('click', (): void => this.preset_cycle());
     element_find(mount, '.image-tags').addEventListener('click', (): void => this.handlers.tags_open());
     for (const tool of IMAGE_TOOLS) {
@@ -202,7 +239,8 @@ export class ImagePanel {
     });
     this.field.addEventListener('keydown', (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
-        this.field_release();
+        // A wait in flight is stopped first; the next Esc gives the keyboard back.
+        if (!this.wait_stop()) this.field_release();
         event.stopPropagation();
         return;
       }
@@ -230,6 +268,8 @@ export class ImagePanel {
    * @param options - Sibling series for a study folder, and the slice to start at.
    */
   public async series_show(model: DicomSeriesModel, options: { siblings?: SeriesChoice[]; startAt?: number; force?: boolean } = {}): Promise<void> {
+    this.openingStop = null;
+    this.openingStopped = false;
     this.engine_dispose();
     this.series = model;
     this.forced = options.force === true;
@@ -260,9 +300,11 @@ export class ImagePanel {
       this.loadPill.hidden = false;
       this.stateSpan.textContent = `SERIES ${bytes_format(model.bytes)} · LOAD FOR STACK`;
       this.handlers.note(`image: ${bytes_format(model.bytes)} to fetch before the stack scrolls; press LOAD, image load, or image --force <path>`);
-    } else {
+    } else if (!engine.state_get().stopped) {
+      // Stopped while the first slice arrived: the rest waits for LOAD REST.
       void engine.slices_fill();
     }
+    this.stopPill_paint();
     await this.annotations_reload(engine, model);
   }
 
@@ -297,6 +339,8 @@ export class ImagePanel {
    * @param path - The volume's CFS path.
    */
   public async volume_show(path: string): Promise<void> {
+    this.openingStop = null;
+    this.openingStopped = false;
     this.engine_dispose();
     this.series = null;
     this.siblings = [];
@@ -346,11 +390,151 @@ export class ImagePanel {
    * takes over from this one when the series arrives.
    *
    * @param path - What is being opened.
+   * @param stop - Ends the ask behind the open; given, the frame offers STOP while it waits.
+   * @param again - Asks again; given, a stopped open offers OPEN AGAIN.
+   * @returns This open's number, for {@link opening_checkIsLatest}.
    */
-  public opening_show(path: string): void {
+  public opening_show(path: string, stop?: () => void, again?: () => void): number {
     const name: string = path.replace(/\/$/, '').split('/').pop() ?? path;
+    this.openingSerial += 1;
+    this.openingStop = stop ?? null;
+    this.openingAgain = again ?? null;
+    this.openingStopped = false;
+    this.openingPath = path;
     this.stateSpan.textContent = 'OPENING';
     this.progress_show({ label: `OPENING ${name}`, done: 0, total: 0 });
+    this.stopPill_paint();
+    return this.openingSerial;
+  }
+
+  /**
+   * Whether an open is still the frame's latest. An answer to an earlier one
+   * is dropped: showing it would build an engine the later open tears down
+   * while its first slice is still arriving.
+   *
+   * @param serial - What {@link opening_show} returned.
+   * @returns True when no later open was asked for.
+   */
+  public opening_checkIsLatest(serial: number): boolean {
+    return serial === this.openingSerial;
+  }
+
+  /**
+   * Says on the field that the person stopped an open.
+   *
+   * A chosen state, not a refusal: the frame's own colour, no track (nothing
+   * is on its way), and whatever was on the field before stays beneath it.
+   *
+   * @param path - What was being opened.
+   */
+  private opening_stopped(path: string): void {
+    this.openingStopped = true;
+    this.stateSpan.textContent = OPENING_STOPPED_READOUT;
+    this.progress_show({ label: OPENING_STOPPED_READOUT, done: 0, total: 0 });
+    const note: HTMLElement | null = this.progressNote;
+    if (note === null) return;
+    note.classList.add('image-working-stopped');
+    (note.querySelector('.image-working-fill') as HTMLElement).classList.remove('image-working-pacing');
+    (note.querySelector('.image-working-count') as HTMLElement).textContent = path;
+  }
+
+  /**
+   * The wait this frame is in: OPENING, LOADING, a load the person stopped, or none.
+   *
+   * @returns The wait, or null when the frame is at rest.
+   */
+  public wait_get(): ImageWait | null {
+    if (this.openingStop !== null) return 'opening';
+    if (this.engine?.load_stop === undefined) return null;
+    const state: ImageEngineState = this.engine.state_get();
+    // A stop already taken, while the first slice still lands, is no wait to stop.
+    if (state.loading) return state.stopped ? null : 'loading';
+    return state.stopped ? 'stopped' : null;
+  }
+
+  /**
+   * Stops the wait in flight, as STOP and Esc both do.
+   *
+   * OPENING: the kernel ask is ended and the frame says it was stopped.
+   * LOADING: no further slice is asked for and what arrived stays.
+   *
+   * @returns Whether there was a wait to stop.
+   */
+  public wait_stop(): boolean {
+    const stop: (() => void) | null = this.openingStop;
+    if (stop !== null) {
+      this.openingStop = null;
+      stop();
+      this.opening_stopped(this.openingPath);
+      this.stopPill_paint();
+      return true;
+    }
+    if (this.wait_get() !== 'loading' || this.engine?.load_stop === undefined) return false;
+    const stopped: boolean = this.engine.load_stop();
+    this.stopPill_paint();
+    return stopped;
+  }
+
+  /** The STOP block's press: stops the wait in flight, or fetches the rest of a stopped load. */
+  private async stop_press(): Promise<void> {
+    if (this.wait_stop()) return;
+    if (this.wait_get() === 'stopped') await this.load_press();
+  }
+
+  /** The notice's capsule: OPEN AGAIN on a stopped open, STOP on a wait. */
+  private notice_press(): void {
+    if (this.openingStopped && this.openingStop === null) {
+      this.openingAgain?.();
+      return;
+    }
+    void this.stop_press();
+  }
+
+  /**
+   * Paints the controls a person sees on the field without opening anything:
+   * the working notice's capsule (STOP on a wait, OPEN AGAIN on a stopped
+   * open) and the corner note of a stopped load (the count, and LOAD REST).
+   *
+   * @param wait - The wait the frame is in.
+   */
+  private fieldControls_paint(wait: ImageWait | null): void {
+    const capsule: HTMLButtonElement | null = this.progressNote?.querySelector<HTMLButtonElement>('.image-field-stop') ?? null;
+    if (capsule !== null) {
+      const reopen: boolean = this.openingStopped && this.openingStop === null && this.openingAgain !== null;
+      capsule.hidden = !reopen && wait !== 'opening' && wait !== 'loading';
+      capsule.textContent = reopen ? REOPEN_LABEL : STOP_LABEL;
+      capsule.title = reopen ? 'ask again for what was stopped' : 'stop this wait; what has arrived stays (Esc on the frame does the same)';
+    }
+    if (wait !== 'stopped' || this.engine === null) {
+      this.stoppedNote?.remove();
+      this.stoppedNote = null;
+      return;
+    }
+    // The engine clears the field when it changes what it draws: the note is put back.
+    if (this.stoppedNote === null || this.stoppedNote.parentElement === null) {
+      const note: HTMLElement = document.createElement('div');
+      note.className = 'image-stopped-note';
+      note.innerHTML = '<span class="image-stopped-words"></span><button class="pacs-capsule image-field-stop" title="fetch the slices that had not arrived"></button>';
+      (note.querySelector('.image-field-stop') as HTMLButtonElement).addEventListener('click', (): void => void this.stop_press());
+      this.field.appendChild(note);
+      this.stoppedNote = note;
+    }
+    const state: ImageEngineState = this.engine.state_get();
+    (this.stoppedNote.querySelector('.image-stopped-words') as HTMLElement).textContent = `STOPPED AT ${state.held} OF ${state.slices}`;
+    (this.stoppedNote.querySelector('.image-field-stop') as HTMLElement).textContent = RESUME_LABEL;
+  }
+
+  /** Shows the STOP block only while a wait can be stopped or a stopped load can be resumed, with the words for which. */
+  private stopPill_paint(): void {
+    const wait: ImageWait | null = this.wait_get();
+    this.stopPill.hidden = wait === null;
+    this.stopPill.textContent = wait === 'stopped' ? RESUME_LABEL : STOP_LABEL;
+    this.stopPill.title = wait === 'stopped'
+      ? 'fetch the slices that had not arrived'
+      : 'stop this wait; what has arrived stays (Esc on the frame does the same)';
+    if (wait === null) delete this.pane.dataset['wait'];
+    else this.pane.dataset['wait'] = wait;
+    this.fieldControls_paint(wait);
   }
 
   /**
@@ -365,6 +549,9 @@ export class ImagePanel {
    * @param reason - Why it could not open, in the frame's voice.
    */
   public opening_fail(path: string, reason: string): void {
+    this.openingStop = null;
+    this.openingStopped = false;
+    this.stopPill_paint();
     this.stateSpan.textContent = reason;
     this.progress_show({ label: reason, done: 0, total: 0 });
     const note: HTMLElement | null = this.progressNote;
@@ -410,7 +597,21 @@ export class ImagePanel {
     this.layoutPills_paint(layout);
     this.modeSpan.textContent = layout === 'single' ? '' : layout.toUpperCase();
     this.overlay_hide();
-    const ok: boolean = await this.engine.layout_set(layout);
+    const engine: ImageEngine = this.engine;
+    const ok: boolean = await engine.layout_set(layout);
+    // Another series took the field while this one built: nothing here is its to paint.
+    if (this.engine !== engine) return false;
+    if (!ok && engine.state_get().stopped) {
+      // Stopped while its slices arrived: the layout waits, and LOAD REST builds it.
+      const standing: ImageLayout = engine.state_get().layout;
+      this.pendingLayout = layout;
+      this.layoutPills_paint(standing);
+      this.modeSpan.textContent = standing === 'single' ? '' : standing.toUpperCase();
+      this.overlay_paint();
+      this.toolPills_paint();
+      this.stopPill_paint();
+      return false;
+    }
     if (!ok) {
       this.progress_show(null);
       this.layoutPills_paint(previous);
@@ -603,8 +804,10 @@ export class ImagePanel {
     this.progressNote = null;
     this.overlayNote = null;
     this.probeNote = null;
+    this.stoppedNote = null;
     this.field.replaceChildren();
     this.stateSpan.textContent = '';
+    this.stopPill_paint();
   }
 
   /** Shows RETRY with the count while slices are refused and the engine can ask again. */
@@ -634,8 +837,12 @@ export class ImagePanel {
       readout_set: (text: string): void => {
         this.stateSpan.textContent = text;
         this.retryPill_paint();
+        this.stopPill_paint();
       },
-      progress_set: (progress: ImageProgress | null): void => this.progress_show(progress),
+      progress_set: (progress: ImageProgress | null): void => {
+        this.progress_show(progress);
+        this.stopPill_paint();
+      },
       note: this.handlers.note,
       regard: (path: string): void => {
         this.handlers.regard(path);
@@ -693,13 +900,14 @@ export class ImagePanel {
     if (this.progressNote === null || this.progressNote.parentElement === null) {
       const note: HTMLElement = document.createElement('div');
       note.className = 'image-working';
-      note.innerHTML = '<span class="image-working-label"></span><span class="image-working-track"><span class="image-working-fill"></span></span><span class="image-working-count"></span>';
+      note.innerHTML = '<span class="image-working-label"></span><span class="image-working-track"><span class="image-working-fill"></span></span><span class="image-working-count"></span><button class="pacs-capsule image-field-stop" hidden></button>';
+      (note.querySelector('.image-field-stop') as HTMLButtonElement).addEventListener('click', (): void => this.notice_press());
       this.field.appendChild(note);
       this.progressNote = note;
     }
     const note: HTMLElement = this.progressNote;
     // A notice that failed is not working; a fresh report is.
-    note.classList.remove('image-working-failed');
+    note.classList.remove('image-working-failed', 'image-working-stopped');
     const counted: boolean = progress.total > 0;
     const fraction: number = counted ? Math.min(1, progress.done / progress.total) : 0;
     (note.querySelector('.image-working-label') as HTMLElement).textContent = progress.label;
