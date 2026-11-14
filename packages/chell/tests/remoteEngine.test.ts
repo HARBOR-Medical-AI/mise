@@ -254,6 +254,31 @@ describe('RemoteEngine live output', () => {
     expect(remote.line_cancel()).toBe(false);
   });
 
+  it('keeps the exit status a result names until it is taken, and says it from the envelopes when the daemon names none', async () => {
+    const statuses: Array<number | undefined> = [1, undefined, undefined];
+    const answers = [[{ status: 'ok', rendered: 'nothing closed\n' }], [{ status: 'error', rendered: '' }], [{ status: 'ok', rendered: '' }]];
+    let call: number = 0;
+    scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+      if (sent.type !== 'execute') return;
+      const id = String(sent.id);
+      const at: number = call++;
+      const exitCode: number | undefined = statuses[at];
+      process.nextTick(() => {
+        ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: answers[at], ...(exitCode !== undefined ? { exitCode } : {}) })));
+      });
+    };
+    remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token' });
+    await remote.line_execute('berth close');
+    expect(remote.exitCode_take()).toBe(1);
+    // Taken: it is forgotten.
+    expect(remote.exitCode_take()).toBe(0);
+    // An older daemon names no status: an error envelope is 1, all ok is 0.
+    await remote.line_execute('cd nowhere');
+    expect(remote.exitCode_take()).toBe(1);
+    await remote.line_execute('pwd');
+    expect(remote.exitCode_take()).toBe(0);
+  });
+
   it('runs a daemon-requested shell command on the attached surface', async () => {
     const shell = jest.fn(async (_command: string): Promise<number> => 0);
     scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {

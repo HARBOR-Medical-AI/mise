@@ -36,11 +36,11 @@ export interface HostedEngine {
    *
    * @param line - The raw input line.
    * @param options - The surface the line came from (what it lists is that
-   *   surface's answer), and the daemon's name for the line, which its STOP
-   *   names.
+   *   surface's answer), the daemon's name for the line, which its STOP
+   *   names, and who hears the line's exit status when it ends.
    * @returns The envelopes of the executed commands, in order.
    */
-  line_execute(line: string, options?: { origin?: string; id?: string }): Promise<CommandEnvelope[]>;
+  line_execute(line: string, options?: { origin?: string; id?: string; ended?: (code: number) => void }): Promise<CommandEnvelope[]>;
 
   /**
    * Requests cancellation of a running command when it supports it.

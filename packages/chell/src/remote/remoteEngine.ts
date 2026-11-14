@@ -95,6 +95,10 @@ export class RemoteEngine implements BrasaEngine {
   public hostControl: string[] = [];
   private nextId: number = 0;
   private activeExecuteId: string | undefined;
+  /** Exit statuses the daemon sent with results, by request id, until the request reads them. */
+  private readonly resultExits: Map<string, number> = new Map();
+  /** The exit status of the last line run, until it is taken. */
+  private lastExit: number = 0;
   private readonly liveEnvelopeChannels: Map<string, Set<'data' | 'err'>> = new Map<string, Set<'data' | 'err'>>();
   /**
    * The sink each running line was sent from. A line's live output arrives
@@ -193,6 +197,8 @@ export class RemoteEngine implements BrasaEngine {
     this.requestSinks.set(id, sink_get());
     try {
       const envelopes: CommandEnvelope[] = await this.request<CommandEnvelope[]>('execute', { line }, id);
+      // A daemon that names no status leaves the envelopes to say it.
+      this.lastExit = this.resultExits.get(id) ?? (envelopes.some((envelope: CommandEnvelope): boolean => envelope.status === 'error') ? 1 : 0);
       const liveChannels: Set<'data' | 'err'> | undefined = this.liveEnvelopeChannels.get(id);
       this.liveEnvelopeChannels.delete(id);
       // Deliver to the active sink exactly as the in-process engine delivers
@@ -208,7 +214,21 @@ export class RemoteEngine implements BrasaEngine {
     } finally {
       if (this.activeExecuteId === id) this.activeExecuteId = undefined;
       this.requestSinks.delete(id);
+      this.resultExits.delete(id);
     }
+  }
+
+  /**
+   * The exit status of the last line this surface ran on the daemon, as
+   * `$?` holds it there, and forgets it: a line run on this machine instead
+   * (a surface command) then reads 0, not an earlier line's status.
+   *
+   * @returns The status; 0 when no line has run since it was last taken.
+   */
+  public exitCode_take(): number {
+    const code: number = this.lastExit;
+    this.lastExit = 0;
+    return code;
   }
 
   /** @inheritdoc */
@@ -294,6 +314,7 @@ export class RemoteEngine implements BrasaEngine {
     const message: ServerMessage = parsed.value;
     switch (message.type) {
       case 'result':
+        if (message.exitCode !== undefined) this.resultExits.set(message.id, message.exitCode);
         this.requests.settle(this.ws, message.id, message.envelopes);
         break;
       case 'complete':
