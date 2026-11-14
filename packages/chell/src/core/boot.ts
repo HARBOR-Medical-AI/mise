@@ -11,11 +11,9 @@
  *
  * @module
  */
-import * as readline from 'readline';
 import * as os from 'os';
 import { existsSync } from 'fs';
 import path from 'path';
-import { Writable } from 'stream';
 import chalk from 'chalk';
 import { REPL } from './repl.js';
 import { session, homePath_derive } from '@fnndsc/brasa';
@@ -39,7 +37,7 @@ import { sessionFromSaved_connect, sessionWithToken_connect, type SavedSessionRe
 import { stdinLine_read } from '../lib/stdinLine.js';
 import type { DaemonConsoleTarget } from './daemonConsole.js';
 import { surface_set } from '@fnndsc/brasa';
-import { cliSurface_create } from './cliSurface.js';
+import { cliSurface_create, oneShotPrompt_ask } from './cliSurface.js';
 import { surfaceLine_execute } from './surfaceDispatch.js';
 import { game_play, gameShow_find, gameTerminal_is, type GameShow } from './gamePlayer.js';
 import { greeting_print } from './greeting.js';
@@ -54,45 +52,18 @@ import {
 } from './startupWarmup.js';
 
 /**
- * Extended Writable stream with muted property for password input.
- */
-interface MutableWritable extends Writable {
-  muted?: boolean;
-}
-
-/**
- * Prompts the user for a password without echoing input.
+ * Prompts the user for a password without echoing input. A standard input
+ * that is closed (a service, `docker exec` without `-i`, `</dev/null`) has
+ * no one to type it, and fails the prompt rather than leaving the process to
+ * end with nothing said.
  *
  * @param user - The username.
  * @param url - The CUBE URL.
  * @returns A Promise resolving to the password string.
+ * @throws {Error} When standard input is closed, or closes before a line is typed.
  */
 async function password_prompt(user: string, url: string): Promise<string> {
-  return new Promise((resolve) => {
-    const mutableStdout: MutableWritable = new Writable({
-      write: function(chunk, encoding, callback) {
-        if (!(this as MutableWritable).muted)
-          process.stdout.write(chunk, encoding);
-        callback();
-      }
-    });
-
-    const rl: readline.Interface = readline.createInterface({
-      input: process.stdin,
-      output: mutableStdout,
-      terminal: true
-    });
-
-    mutableStdout.muted = false;
-    process.stdout.write(`Password for ${user}@${url}: `);
-    mutableStdout.muted = true;
-
-    rl.question('', (password: string) => {
-      rl.close();
-      console.log(''); // Add newline after entry
-      resolve(password);
-    });
-  });
+  return oneShotPrompt_ask({ message: `Password for ${user}@${url}: `, hidden: true });
 }
 
 /**
@@ -217,7 +188,13 @@ async function connectionFromArgs_open(
   }
 
   if (!password && url && config.mode !== 'execute' && config.mode !== 'script') {
-    password = await password_prompt(user, url);
+    try {
+      password = await password_prompt(user, url);
+    } catch (error: unknown) {
+      const reason: string = error instanceof Error ? error.message : String(error);
+      console.error(chalk.red(`Error: no password for ${user}@${url} (${reason}); log in with --saved-token, --auth-token-stdin or -p.`));
+      return Err();
+    }
   }
 
   if (!password && config.mode === 'execute') {

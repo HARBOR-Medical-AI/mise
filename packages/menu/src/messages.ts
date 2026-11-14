@@ -502,6 +502,12 @@ export const resultMessageSchema = z.object({
   type: z.literal('result'),
   id: z.string(),
   envelopes: z.array(commandEnvelopeSchema),
+  /**
+   * The line's exit status, as `$?` would hold it: a command can end with a
+   * status of its own while every envelope it answered is ok (`berth close`
+   * that closed nothing). Absent from a daemon that does not send it.
+   */
+  exitCode: z.number().int().optional(),
 });
 
 /** The reply to a completion request. */

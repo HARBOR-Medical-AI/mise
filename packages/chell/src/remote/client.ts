@@ -216,15 +216,41 @@ export function commands_split(line: string): string[] {
   return segments.map((segment: string): string => segment.trim()).filter((segment: string): boolean => segment.length > 0);
 }
 
-/** Runs a line segment by segment, stopping at the first error envelope. */
-async function segments_execute(engine: RemoteEngine, line: string): Promise<CommandEnvelope[]> {
+/** What a one-shot line through a door answered, and the status it ended with. */
+interface LineRun {
+  /** The envelopes, in order. */
+  readonly envelopes: CommandEnvelope[];
+  /** The exit status, as `$?` would hold it. */
+  readonly exitCode: number;
+}
+
+/**
+ * Runs one segment and reads the status it ended with: the daemon's, or 1
+ * for an error envelope it named no status for.
+ *
+ * @param engine - The attached engine.
+ * @param segment - The line.
+ * @returns What it answered and its status.
+ */
+async function segment_run(engine: RemoteEngine, segment: string): Promise<LineRun> {
+  engine.exitCode_take();
+  const envelopes: CommandEnvelope[] = await surfaceLine_execute(engine, segment);
+  const said: number = engine.exitCode_take();
+  const failed: boolean = envelopes.some((envelope: CommandEnvelope): boolean => envelope.status === 'error');
+  return { envelopes, exitCode: said !== 0 ? said : (failed ? 1 : 0) };
+}
+
+/** Runs a line segment by segment, stopping at the first that fails (an error envelope or a status other than 0). */
+async function segments_execute(engine: RemoteEngine, line: string): Promise<LineRun> {
   const envelopes: CommandEnvelope[] = [];
+  let exitCode: number = 0;
   for (const segment of commands_split(line)) {
-    const answered: CommandEnvelope[] = await surfaceLine_execute(engine, segment);
-    envelopes.push(...answered);
-    if (answered.some((envelope: CommandEnvelope): boolean => envelope.status === 'error')) break;
+    const answered: LineRun = await segment_run(engine, segment);
+    envelopes.push(...answered.envelopes);
+    exitCode = answered.exitCode;
+    if (exitCode !== 0) break;
   }
-  return envelopes;
+  return { envelopes, exitCode };
 }
 
 /**
@@ -329,10 +355,12 @@ export async function remote_run(
       // `-e` through a door: the daemon's own stop-on-error is not this
       // process's, so the line is run a segment at a time here and stops at
       // the first whose answer is an error (`cd nowhere; rm -r x` removes nothing).
-      const envelopes: CommandEnvelope[] = options.stopOnError === true
+      const run: LineRun = options.stopOnError === true
         ? await segments_execute(engine, commandToExecute)
-        : await surfaceLine_execute(engine, commandToExecute);
-      process.exitCode = envelopes.some((envelope: CommandEnvelope): boolean => envelope.status === 'error') ? 1 : 0;
+        : await segment_run(engine, commandToExecute);
+      const envelopes: CommandEnvelope[] = run.envelopes;
+      // The line's own status, as the daemon's `$?` holds it.
+      process.exitCode = run.exitCode;
       // `chell --remote -c cmatrix` on a terminal plays it here.
       const show: GameShow | null = gameShow_find(envelopes);
       if (show !== null && gameTerminal_is()) await game_play(show);

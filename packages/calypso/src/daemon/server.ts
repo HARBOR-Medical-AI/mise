@@ -198,6 +198,29 @@ interface CommandSlot {
 }
 
 /**
+ * A line's exit status, as `$?` holds it and a remote `chell -c` exits with.
+ * A line that threw, or answered an error, fails with its own status when it
+ * set one and 1 otherwise; a line whose answers are all ok still ends with
+ * the status it set (`berth close` that closed nothing ends 1).
+ *
+ * @param envelopes - What the line answered; undefined when it threw.
+ * @param failureReason - Why it threw, when it did.
+ * @param lineExit - The status the engine left when the line ended.
+ * @returns The status.
+ *
+ * @example
+ * ```ts
+ * lineExit_derive([{ status: 'ok', rendered: 'nothing closed\n' }], undefined, 1); // 1
+ * lineExit_derive([{ status: 'error', rendered: '' }], undefined, 0); // 1
+ * ```
+ */
+export function lineExit_derive(envelopes: CommandEnvelope[] | undefined, failureReason: string | undefined, lineExit: number | undefined): number {
+  const failed: boolean = failureReason !== undefined || (envelopes?.some((envelope: CommandEnvelope): boolean => envelope.status === 'error') ?? false);
+  if (lineExit !== undefined && lineExit !== 0) return lineExit;
+  return failed ? 1 : 0;
+}
+
+/**
  * Whether a surface is a browser: it speaks a language of its own (claims)
  * and runs no shell.
  *
@@ -1500,6 +1523,8 @@ export class CalypsoDaemon {
     const origin: Surface = slot.origin;
     let envelopes: CommandEnvelope[] | undefined;
     let failureReason: string | undefined;
+    // The line's own exit status, as the engine leaves it when the line ends.
+    let lineExit: number | undefined;
     const startedAt: number = slot.startedAt;
     {
       // A STOP pressed while this command waited its turn ends it unrun.
@@ -1516,26 +1541,23 @@ export class CalypsoDaemon {
         });
         // The line counts against its surface's own last answer: a terminal
         // a surface shows is that surface (#1273).
-        envelopes = await Promise.race([this.engine.line_execute(message.line, { origin: stopper.id, id: slot.key }), abandoned]);
+        envelopes = await Promise.race([this.engine.line_execute(message.line, { origin: stopper.id, id: slot.key, ended: (code: number): void => { lineExit = code; } }), abandoned]);
       } catch (err: unknown) {
         failureReason = err instanceof Error ? err.message : String(err);
       } finally {
         slot.abandon = null;
       }
+      const exitCode: number = lineExit_derive(envelopes, failureReason, lineExit);
       this.lastCommand = {
         durationMs: Math.round(performance.now() - startedAt),
-        exitCode:
-          failureReason !== undefined ||
-          (envelopes?.some((envelope): boolean => envelope.status === 'error') ?? false)
-            ? 1
-            : 0,
+        exitCode,
       };
       // A remote REPL draws its next prompt as soon as `result` resolves the
       // command. Push the refreshed context first so that prompt cannot lag
       // one command behind state changes such as `cd`.
       await this.promptline_push();
       if (envelopes !== undefined) {
-        this.send(origin.socket, { type: 'result', id: message.id, envelopes });
+        this.send(origin.socket, { type: 'result', id: message.id, envelopes, exitCode });
         // Instrument traffic (a panel's silent refresh, an ambient cycler)
         // is surface-internal: it never enters the session bus or the
         // scrollback, so siblings and reattach replays carry only what the

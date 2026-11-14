@@ -1,5 +1,5 @@
 import { WebSocket } from 'ws';
-import { CalypsoDaemon } from '../src/daemon/server';
+import { CalypsoDaemon, lineExit_derive } from '../src/daemon/server';
 import type { HostedEngine } from '../src/daemon/engine';
 import { CONTRACT_VERSION } from '@fnndsc/menu';
 import type { CommandEnvelope } from '@fnndsc/cumin';
@@ -296,6 +296,38 @@ describe('CalypsoDaemon', () => {
     expect(msg.id).toBe('42');
     expect(msg.envelopes).toEqual([{ status: 'ok', rendered: 'ran: pwd' }]);
     expect(engine.executed).toEqual(['pwd']);
+  });
+
+  it('sends the line\'s exit status with its result, though every envelope was ok', async () => {
+    const statusEngine: HostedEngine = {
+      line_execute: async (line: string, options?: { ended?: (code: number) => void }): Promise<CommandEnvelope[]> => {
+        // As `berth close` that closed nothing: an ok answer, status 1.
+        options?.ended?.(line === 'berth close' ? 1 : 0);
+        return [{ status: 'ok', rendered: line === 'berth close' ? 'berth: close: nothing closed\n' : '' }];
+      },
+      line_complete: async (prefix: string) => ({ candidates: [], prefix }),
+    };
+    await daemon.stop();
+    daemon = new CalypsoDaemon({ engine: statusEngine, token: TOKEN });
+    port = await daemon.start();
+    const ws = await client_attach(port);
+    clients.push(ws);
+    let replied = message_next(ws);
+    send(ws, { type: 'execute', id: 'x1', line: 'berth close' });
+    expect(await replied).toEqual(expect.objectContaining({ type: 'result', id: 'x1', exitCode: 1 }));
+    replied = message_next(ws);
+    send(ws, { type: 'execute', id: 'x2', line: 'pwd' });
+    expect(await replied).toEqual(expect.objectContaining({ type: 'result', id: 'x2', exitCode: 0 }));
+  });
+
+  it('derives a line\'s exit status from what it set, what it answered, and whether it threw', () => {
+    expect(lineExit_derive([{ status: 'ok', rendered: '' }], undefined, 1)).toBe(1);
+    expect(lineExit_derive([{ status: 'error', rendered: '' }], undefined, 2)).toBe(2);
+    expect(lineExit_derive([{ status: 'error', rendered: '' }], undefined, 0)).toBe(1);
+    expect(lineExit_derive([{ status: 'error', rendered: '' }], undefined, undefined)).toBe(1);
+    expect(lineExit_derive(undefined, 'the engine threw', undefined)).toBe(1);
+    expect(lineExit_derive([{ status: 'ok', rendered: '' }], undefined, undefined)).toBe(0);
+    expect(lineExit_derive([], undefined, 0)).toBe(0);
   });
 
   it('forwards progress from the running command to the origin surface', async () => {

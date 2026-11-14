@@ -25,6 +25,8 @@ interface TestRemoteEngine {
 }
 
 const remoteClose_mock = jest.fn<() => void>();
+/** The status the daemon sent with the last line; 0 unless a test says otherwise. */
+const exitTake_mock = jest.fn<() => number>(() => 0);
 const remoteConnect_mock = jest.fn<(options: RemoteEngineOptions) => Promise<TestRemoteEngine>>();
 const replStart_mock = jest.fn(async (): Promise<void> => undefined);
 const surfaceLineExecute_mock = jest.fn<(engine: unknown, line: string) => Promise<CommandEnvelope[]>>();
@@ -139,6 +141,7 @@ describe('remote_run', () => {
     resolverList_mock.mockResolvedValue([berth]);
     remoteConnect_mock.mockResolvedValue({
       close: remoteClose_mock,
+      exitCode_take: exitTake_mock,
       promptLine: jest.fn((): string => ''),
       daemonStack: jest.fn(() => undefined),
     });
@@ -153,6 +156,7 @@ describe('remote_run', () => {
   it('says the daemon is out of date when it attaches to one, and again when the daemon says so mid-session', async () => {
     remoteConnect_mock.mockResolvedValue({
       close: remoteClose_mock,
+      exitCode_take: exitTake_mock,
       promptLine: jest.fn((): string => ''),
       daemonStack: jest.fn(() => undefined),
       daemonStale: true,
@@ -199,6 +203,7 @@ describe('remote_run', () => {
     const run = async (backend: string): Promise<string[]> => {
       remoteConnect_mock.mockResolvedValue({
         close: remoteClose_mock,
+      exitCode_take: exitTake_mock,
         promptLine: jest.fn((): string => ''),
         daemonStack: jest.fn(() => undefined),
         backend_get: jest.fn((): string => backend),
@@ -267,6 +272,32 @@ describe('remote_run', () => {
     surfaceLineExecute_mock.mockResolvedValue([{ status: 'ok', rendered: '' }]);
     await remote_run(berth.identity, 'pwd; cd nowhere; rm -r "a;b"', undefined, { stopOnError: false });
     expect(surfaceLineExecute_mock.mock.calls.map((call: unknown[]) => call[1])).toEqual(['pwd; cd nowhere; rm -r "a;b"']);
+  });
+
+  it('exits with the status the daemon sent, though every envelope was ok, as `berth close` that closed nothing ends', async () => {
+    surfaceLineExecute_mock.mockResolvedValue([{ status: 'ok', rendered: 'berth: close: nothing closed\n' }]);
+    // Taken once to clear what an earlier line left, once for this line.
+    exitTake_mock.mockReturnValueOnce(0).mockReturnValueOnce(1);
+    await remote_run(berth.identity, 'berth close');
+    expect(process.exitCode).toBe(1);
+    // A status of its own travels as it is.
+    exitTake_mock.mockReturnValueOnce(0).mockReturnValueOnce(2);
+    await remote_run(berth.identity, 'cd "a');
+    expect(process.exitCode).toBe(2);
+    // An error envelope with no status sent is still a failure.
+    surfaceLineExecute_mock.mockResolvedValue([{ status: 'error', rendered: '' }]);
+    await remote_run(berth.identity, 'cd nowhere');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('with -e, stops at a segment that ends with a status other than 0 though it answered ok', async () => {
+    surfaceLineExecute_mock.mockImplementation(async (_engine: unknown, line: string): Promise<CommandEnvelope[]> => [{ status: 'ok', rendered: `${line}\n` }]);
+    exitTake_mock.mockImplementation(((): (() => number) => { let calls: number = 0; return (): number => { calls += 1; return calls === 4 ? 1 : 0; }; })());
+    await remote_run(berth.identity, 'pwd; berth close; ls', undefined, { stopOnError: true });
+    expect(surfaceLineExecute_mock.mock.calls.map((call: unknown[]) => call[1])).toEqual(['pwd', 'berth close']);
+    expect(process.exitCode).toBe(1);
+    exitTake_mock.mockReset();
+    exitTake_mock.mockReturnValue(0);
   });
 
   it('splits a line on semicolons outside quotes', () => {
@@ -341,6 +372,7 @@ describe('remote_run', () => {
     const log_spy = jest.spyOn(console, 'log').mockImplementation((): void => undefined);
     remoteConnect_mock.mockResolvedValue({
       close: remoteClose_mock,
+      exitCode_take: exitTake_mock,
       promptLine: jest.fn((): string => ''),
       daemonStack: jest.fn(() => ({
         chell: '5.3.0', calypso: '0.5.0', build: 'abc123',
