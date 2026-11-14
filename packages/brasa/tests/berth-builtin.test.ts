@@ -75,8 +75,12 @@ jest.unstable_mockModule('../src/core/paths.js', () => ({
     if (typed.startsWith('~/')) return `/home/alice/${typed.slice(2)}`;
     return typed.startsWith('/') ? typed : `/home/alice/${typed}`;
   },
-  // The session's one resolver (its rules pinned in storePath.test.ts): the store's links followed.
-  storePath_resolve: async (logical: string): Promise<string> => {
+  // The session's one resolver (its rules pinned in storePath.test.ts): /proc/jobs
+  // standing for each run's output, then the store's links followed unless told not to.
+  storePath_resolve: async (typed: string, options: { links?: boolean } = {}): Promise<string> => {
+    const proc: string = '/proc/jobs/feed_5/pl-dircopy_7/pl-fshack_41/data';
+    const logical: string = typed.startsWith(proc) ? `/home/alice/feeds/feed_5/pl-dircopy_7/pl-fshack_41/data${typed.slice(proc.length)}` : typed;
+    if (options.links === false) return logical;
     for (const [link, target] of cubeLinks) {
       if (logical === link || logical.startsWith(`${link}/`)) return `${target}${logical.slice(link.length)}`;
     }
@@ -89,16 +93,7 @@ jest.unstable_mockModule('../src/core/backend.js', () => ({ backendInstalled_get
 jest.unstable_mockModule('../src/core/filesystem.js', () => ({
   vfsDispatcher_get: () => ({
     list: async (folder: string) => cubeFolder_list(folder),
-    linkTarget_resolve: async (link: string) => ({ ok: true, value: link.replace('/proc/jobs/feed_5/pl-dircopy_7/pl-fshack_41/data', '/home/alice/feeds/feed_5/pl-dircopy_7/pl-fshack_41/data') }),
   }),
-}));
-jest.unstable_mockModule('@fnndsc/chili/utils', () => ({
-  logicalPath_resolve: async (logical: string) => {
-    for (const [link, target] of cubeLinks) {
-      if (logical === link || logical.startsWith(`${link}/`)) return { ok: true, value: `${target}${logical.slice(link.length)}` };
-    }
-    return { ok: true, value: logical };
-  },
 }));
 // cumin's own rule for a node: the last `<name>_<ID>` after `feed_N`, the
 // walk stopping at the first `data`, so a folder inside an output is never a node.

@@ -23,8 +23,10 @@ cuminMock_install(() => ({
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/edit.js', () => ({
   file_replaceContent: replaceContent,
 }));
+const pathMock_resolve = async (raw: string): Promise<string> => (raw.startsWith('/') ? raw : `/home/tester/${raw.replace(/^~\//, '')}`);
 jest.unstable_mockModule('../src/builtins/utils.js', () => ({
-  path_resolve: async (raw: string): Promise<string> => `/home/tester/${raw.replace(/^~\//, '')}`,
+  path_resolve: pathMock_resolve,
+  storePath_resolve: pathMock_resolve,
 }));
 
 const { builtin_config } = await import('../src/builtins/fs/configWrite.js');
@@ -40,7 +42,7 @@ describe('config write', () => {
   });
 
   it('uploads the decoded document to the resolved CFS path', async () => {
-    const env = await builtin_config(['config', 'write', '~/.config/argus/desktops/trio.desk', encode('view files\n')]);
+    const env = await builtin_config(['write', '~/.config/argus/desktops/trio.desk', encode('view files\n')]);
     expect(env.status).toBe('ok');
     const [localPath, remotePath] = uploadPath.mock.calls[0] ?? [];
     expect(remotePath).toBe('/home/tester/.config/argus/desktops/trio.desk');
@@ -50,7 +52,7 @@ describe('config write', () => {
 
   it('replaces in place when a fresh upload is refused (an existing file)', async () => {
     uploadPath.mockResolvedValue(false);
-    const env = await builtin_config(['config', 'write', '/home/t/x.desk', encode('a')]);
+    const env = await builtin_config(['write', '/home/t/x.desk', encode('a')]);
     expect(env.status).toBe('ok');
     expect(replaceContent).toHaveBeenCalledWith('/home/t/x.desk', expect.stringContaining('chell-config-'));
   });
@@ -58,20 +60,22 @@ describe('config write', () => {
   it('reports failure when both paths refuse', async () => {
     uploadPath.mockResolvedValue(false);
     replaceContent.mockResolvedValue({ success: false });
-    const env = await builtin_config(['config', 'write', '/home/t/x.desk', encode('a')]);
+    const env = await builtin_config(['write', '/home/t/x.desk', encode('a')]);
     expect(env.status).toBe('error');
     expect(process.exitCode).toBe(1);
   });
 
   it('refuses a document past the note-sized limit', async () => {
     const big: string = encode('x'.repeat(300 * 1024));
-    const env = await builtin_config(['config', 'write', '/home/t/x', big]);
+    const env = await builtin_config(['write', '/home/t/x', big]);
     expect(env.status).toBe('error');
     expect(uploadPath).not.toHaveBeenCalled();
   });
 
   it('demands its arguments and knows only write', async () => {
-    expect((await builtin_config(['config', 'write'])).status).toBe('error');
-    expect((await builtin_config(['config', 'read', 'x'])).status).toBe('error');
+    expect((await builtin_config(['write'])).renderedErr).toContain('config: write: missing operand <path>');
+    expect((await builtin_config(['read', 'x'])).renderedErr).toContain("config: unknown subcommand 'read' (write)");
+    expect((await builtin_config([])).renderedErr).toContain('config: missing subcommand (write)');
+    expect(uploadPath).not.toHaveBeenCalled();
   });
 });

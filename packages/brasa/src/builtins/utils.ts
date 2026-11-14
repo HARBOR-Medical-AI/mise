@@ -5,7 +5,6 @@
 import * as path from 'path';
 import { session } from '../session/index.js';
 import { path_resolveFrom } from '../core/paths.js';
-import type { ListingItem } from '@fnndsc/menu';
 import { CLIoptions } from '@fnndsc/chili/utils/cli.js';
 
 /**
@@ -149,50 +148,5 @@ export function path_resolvePure(inputPath: string, context: PathContext): strin
 
 // A path argument as the session means it: `~` and relative paths resolved.
 export { path_resolve, storePath_resolve } from '../core/paths.js';
-
-/**
- * Resolves links in a path without using PathMapper (for physical mode).
- * Checks each component to see if it's a link and follows it.
- *
- * @param targetPath - The path to resolve.
- * @returns The resolved path with links followed.
- */
-export async function path_resolveLinks(targetPath: string): Promise<string> {
-  // We need to dynamically import files_list to avoid circular dependency
-  // because builtins/fs/ls.ts imports path_resolve from here
-  const { files_list } = await import('@fnndsc/chili/commands/fs/ls.js');
-
-  const components: string[] = targetPath.split('/').filter(c => c);
-  let currentPath: string = '';
-
-  for (const component of components) {
-    const parentPath: string = currentPath || '/';
-    currentPath = `${currentPath}/${component}`;
-
-    try {
-      // List parent directory to check if component is a link
-      const items: ListingItem[] = await files_list({ path: parentPath }, parentPath);
-
-      // Find the component in the listing
-      const item: ListingItem | undefined = items.find((i: ListingItem) => i.name === component);
-
-      if (item && item.type === 'link' && item.target) {
-        // Component is a link - resolve it
-        if (item.target.startsWith('/')) {
-          // Absolute link target
-          currentPath = item.target;
-        } else {
-          // Relative link target
-          currentPath = `${parentPath}/${item.target}`.replace('//', '/');
-        }
-      }
-    } catch (_error: unknown) {
-      // If we can't list the directory, continue with the current path
-      continue;
-    }
-  }
-
-  return currentPath || '/';
-}
 
 export { error_stripDebugPrefix } from '../core/errorText.js';

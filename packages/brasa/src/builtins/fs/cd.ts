@@ -26,7 +26,7 @@ import { command_declare, type CommandArguments, type CommandGrammar } from '../
 import { declaredCommand_run } from '../../core/commandParse.js';
 import path from 'path';
 import { session } from '../../session/index.js';
-import { path_resolve, error_stripDebugPrefix } from '../utils.js';
+import { path_resolve, storePath_resolve, error_stripDebugPrefix } from '../utils.js';
 import { Ok, Err, type Result, type StackMessage, type VFSItem } from '@fnndsc/fond';
 import { backendInstalled_get, type FolderEntry } from '../../core/backend.js';
 import { listingCache_get, vfsDispatcher_get } from '../../core/filesystem.js';
@@ -86,19 +86,19 @@ async function parentListing_get(parentPath: string): Promise<Result<VFSItem[]>>
 }
 
 /**
- * The target of a CFS link at a path, from its parent's listing; null when
- * the path is not a link (or its parent cannot be listed).
+ * Where a CFS path's last part leads when it is a link: the store path the
+ * one resolver gives for the whole path, when that differs from the entry
+ * the path names (its folder resolved, its own name kept). Null when the
+ * last part is no link.
  *
  * @param cleanPath - The normalized absolute path.
  * @returns The absolute target path, or null.
  */
 export async function cfsLink_target(cleanPath: string): Promise<string | null> {
   if (cleanPath === '/' || !cleanPath.startsWith('/')) return null;
-  const parentResult: Result<VFSItem[]> = await parentListing_get(path.posix.dirname(cleanPath));
-  if (!parentResult.ok) return null;
-  const entryName: string = path.posix.basename(cleanPath);
-  const entry: VFSItem | undefined = parentResult.value.find((item: VFSItem): boolean => item.name === entryName);
-  return entry?.type === 'link' && entry.target ? entry.target : null;
+  const entry: string = await storePath_resolve(cleanPath, { entry: true });
+  const target: string = await storePath_resolve(cleanPath);
+  return target === entry ? null : target;
 }
 
 /**

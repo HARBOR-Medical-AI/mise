@@ -1,8 +1,8 @@
 /**
  * @file Unit tests for the extracted `rm` helpers.
  *
- * Covers the pure flag/path parser and the multi-target summary formatter
- * carved out of `builtin_rm`. Heavy IO/cross-package deps are mocked.
+ * Covers rm's line as its declaration parses it and the multi-target
+ * summary formatter. Heavy IO/cross-package deps are mocked.
  *
  * @module
  */
@@ -15,7 +15,7 @@ jest.unstable_mockModule('../src/core/filesystem.js', () => ({
   listingCache_get: () => ({ cache_invalidate: jest.fn(), cache_invalidateTree: jest.fn() }),
 }));
 const mockResolve = jest.fn(async (p: string): Promise<string> => (p.startsWith('/') ? p : `/home/me/${p}`));
-jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: mockResolve }));
+jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: mockResolve, storePath_resolve: mockResolve }));
 const mockConfirm = jest.fn(async (): Promise<boolean> => true);
 jest.unstable_mockModule('../src/core/question.js', () => ({ repl_confirm: mockConfirm }));
 const mockSinkWrite = jest.fn();
@@ -23,7 +23,18 @@ jest.unstable_mockModule('../src/core/sink.js', () => ({
   sink_get: (): unknown => ({ data_write: mockSinkWrite, err_write: mockSinkWrite }),
 }));
 
-const { rmArgs_parse, rmSummary_format, rm_run, builtin_rm } = await import('../src/builtins/fs/rm.js');
+const { rmCommand, rmSummary_format, rm_run, builtin_rm } = await import('../src/builtins/fs/rm.js');
+const { commandLine_parse } = await import('../src/core/commandParse.js');
+const { shellWords_tokenize } = await import('../src/lib/parser.js');
+
+/** What an `rm` line parses to: its switches and paths, or the refusal. */
+async function rmLine_parse(line: string): Promise<Record<string, unknown> | string> {
+  const parsed = await commandLine_parse(rmCommand, shellWords_tokenize(line));
+  return parsed.ok ? { ...parsed.args.options, paths: parsed.args.operands['paths'] } : parsed.refusal;
+}
+
+/** The switches of an `rm` line with nothing set. */
+const NONE: Record<string, boolean> = { recursive: false, recursiveAlias: false, force: false, interactive: false, once: false };
 
 /** What /home/me lists, by name. */
 async function home_names(folder: string = '/home/me'): Promise<string[]> {
@@ -50,24 +61,27 @@ beforeEach(() => {
   filesystem_reset();
 });
 
-describe('rmArgs_parse', () => {
-  it('parses combined short flags and paths', () => {
-    expect(rmArgs_parse(['-rf', 'a', 'b'])).toEqual({ recursive: true, force: true, interactive: false, once: false, paths: ['a', 'b'] });
+describe("rm's line", () => {
+  it('parses combined short flags and paths', async () => {
+    expect(await rmLine_parse('-rf a b')).toEqual({ ...NONE, recursive: true, force: true, paths: ['a', 'b'] });
   });
-  it('handles fully-combined flags in any order', () => {
-    expect(rmArgs_parse(['-rfi'])).toEqual({ recursive: true, force: true, interactive: true, once: false, paths: [] });
-    expect(rmArgs_parse(['-iR'])).toEqual({ recursive: true, force: false, interactive: true, once: false, paths: [] });
+  it('handles fully-combined flags in any order', async () => {
+    expect(await rmLine_parse('-rfi x')).toEqual({ ...NONE, recursive: true, force: true, interactive: true, paths: ['x'] });
+    expect(await rmLine_parse('-iR x')).toEqual({ ...NONE, recursiveAlias: true, interactive: true, paths: ['x'] });
   });
-  it('treats everything after -- as a path', () => {
-    expect(rmArgs_parse(['--', '-weird-name', '-r'])).toEqual({ recursive: false, force: false, interactive: false, once: false, paths: ['-weird-name', '-r'] });
+  it('treats everything after -- as a path', async () => {
+    expect(await rmLine_parse('-- -weird-name -r')).toEqual({ ...NONE, paths: ['-weird-name', '-r'] });
   });
-  it('refuses an unknown option by name', () => {
-    expect(rmArgs_parse(['-x', 'foo']).refused).toBe("rm: invalid option -- 'x'");
-    expect(rmArgs_parse(['--verbose', 'foo']).refused).toBe("rm: unrecognized option '--verbose'");
+  it('refuses an unknown option by name', async () => {
+    expect(await rmLine_parse('-x foo')).toMatch(/^rm: invalid option -- 'x'; usage: /);
+    expect(await rmLine_parse('--verbose foo')).toMatch(/^rm: unrecognized option '--verbose'; usage: /);
   });
-  it('reads long options whole, never letter by letter', () => {
-    expect(rmArgs_parse(['--force', 'a'])).toEqual({ recursive: false, force: true, interactive: false, once: false, paths: ['a'] });
-    expect(rmArgs_parse(['--recursive', 'a']).recursive).toBe(true);
+  it('reads long options whole, never letter by letter', async () => {
+    expect(await rmLine_parse('--force a')).toEqual({ ...NONE, force: true, paths: ['a'] });
+    expect(await rmLine_parse('--recursive a')).toEqual({ ...NONE, recursive: true, paths: ['a'] });
+  });
+  it('refuses a line with no path', async () => {
+    expect(await rmLine_parse('-rf')).toMatch(/^rm: missing operand <paths>; usage: /);
   });
   it('builtin_rm removes nothing when an option is refused', async () => {
     const envelope = await builtin_rm(['-v', 'a']);
@@ -76,9 +90,9 @@ describe('rmArgs_parse', () => {
     expect(await home_names()).toContain('a');
   });
 
-  it('reads -I as one question for the whole list, distinct from -i', () => {
-    expect(rmArgs_parse(['-I', 'a', 'b'])).toEqual({ recursive: false, force: false, interactive: false, once: true, paths: ['a', 'b'] });
-    expect(rmArgs_parse(['-rI', 'a'])).toEqual({ recursive: true, force: false, interactive: false, once: true, paths: ['a'] });
+  it('reads -I as one question for the whole list, distinct from -i', async () => {
+    expect(await rmLine_parse('-I a b')).toEqual({ ...NONE, once: true, paths: ['a', 'b'] });
+    expect(await rmLine_parse('-rI a')).toEqual({ ...NONE, recursive: true, once: true, paths: ['a'] });
   });
 });
 

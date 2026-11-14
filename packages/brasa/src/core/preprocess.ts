@@ -17,22 +17,21 @@ import { backslash_escapesNext } from '../lib/quoting.js';
  * which operands glob (core/commandParse.ts), and each command leaves this
  * table as it is declared.
  *
- * Ordinary ChELL words expand before dispatch. `upload` marks its host-local
- * operands as a different realm and owns host-source expansion.
+ * Every word of such a command is a CFS/VFS word, expanded before dispatch.
  *
- * @param command - Command word being executed.
+ * @param _command - Command word being executed.
  * @param _index - Zero-based argument position before expansion.
  * @param _argumentCount - Number of arguments before expansion.
  * @param _args - Argument values before expansion.
  * @returns True if the word is eligible for CFS/VFS pathname expansion.
  */
 export function pathnameExpansion_isEligible(
-  command: string,
+  _command: string,
   _index: number,
   _argumentCount: number,
   _args: readonly string[] = [],
 ): boolean {
-  return command !== 'upload';
+  return true;
 }
 
 /**

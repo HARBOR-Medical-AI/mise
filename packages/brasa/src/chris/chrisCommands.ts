@@ -11,7 +11,7 @@
  */
 import { type CommandGroup, type CommandHandler, type EnvelopeHandler, type SessionPiece } from '../core/commandRegistry.js';
 import { chrisfetchCommand, pingCommand } from '../builtins/games/chrislab.js';
-import { builtin_config, builtin_pipeline, builtin_plugin, builtin_upload } from '../builtins/index.js';
+import { builtin_pipeline, builtin_plugin } from '../builtins/index.js';
 import { chmodCommand, getfaclCommand, setfaclCommand } from '../builtins/fs/acl.js';
 import { getfattrCommand, setfattrCommand } from '../builtins/fs/xattr.js';
 import { pacsCommand } from '../builtins/net/pacs.js';
@@ -29,9 +29,11 @@ import { physicalmodeCommand } from '../builtins/sys/physicalmode.js';
 import { idCommand, whereamiCommand, whoamiCommand } from '../builtins/sys/whoami.js';
 import { procCommand } from '../builtins/proc.js';
 import { envelopeHandler_wrap } from '../core/sink.js';
-import { builtin_file, md5sumCommand, sha256sumCommand, stringsCommand, xxdCommand } from '../builtins/games/bytes.js';
+import { fileCommand, md5sumCommand, sha256sumCommand, stringsCommand, xxdCommand } from '../builtins/games/bytes.js';
 import { duCommand } from '../builtins/fs/du.js';
-import { builtin_edit } from '../builtins/fs/edit.js';
+import { editCommand } from '../builtins/fs/edit.js';
+import { uploadCommand } from '../builtins/fs/upload.js';
+import { configCommand } from '../builtins/fs/configWrite.js';
 import { treeCommand } from '../builtins/fs/tree.js';
 import { recordCommand } from '../builtins/res/record.js';
 import { gatherCommand } from '../builtins/res/gather.js';
@@ -56,23 +58,15 @@ import type { AnyCommandDeclaration } from '../core/commandDeclaration.js';
 const envelope: Record<string, EnvelopeHandler> = {
   plugin: builtin_plugin,
   plugins: builtin_plugin,
-  upload: builtin_upload,
-  config: builtin_config,
   pipeline: builtin_pipeline,
   pipelines: builtin_pipeline,
-  file: builtin_file,
-  edit: builtin_edit,
 };
 
 const plain: Record<string, CommandHandler> = {
-  upload: envelopeHandler_wrap(builtin_upload),
   pipeline: envelopeHandler_wrap(builtin_pipeline),
   pipelines: envelopeHandler_wrap(builtin_pipeline),
-  config: envelopeHandler_wrap(builtin_config),
   plugin: envelopeHandler_wrap(builtin_plugin),
   plugins: envelopeHandler_wrap(builtin_plugin),
-  edit: envelopeHandler_wrap(builtin_edit),
-  file: envelopeHandler_wrap(builtin_file),
 };
 
 
@@ -84,7 +78,7 @@ const plain: Record<string, CommandHandler> = {
  */
 const holds: Record<string, readonly SessionPiece[]> = {
   ...Object.fromEntries([
-    'file', 'pipelines', 'plugins',
+    'pipelines', 'plugins',
   ].map((name: string): [string, readonly SessionPiece[]] => [name, []])),
 };
 
@@ -102,6 +96,8 @@ const declarations: ReadonlyArray<AnyCommandDeclaration> = [
   // Admin, Monitoring, Workflows and the lab's games, in the order their handlers listed before they were declared.
   pingCommand, chrisfetchCommand, procCommand, gatherCommand, userCommand,
   xxdCommand, stringsCommand, sha256sumCommand, md5sumCommand, motdCommand, recordCommand,
+  // Files.
+  editCommand, configCommand, uploadCommand, fileCommand,
 ];
 
 export const chrisCommands: CommandGroup = {

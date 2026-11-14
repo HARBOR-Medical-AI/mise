@@ -1,14 +1,35 @@
 /**
- * @file Builtin mkdir command.
- * Creates directories, reported as a command envelope.
+ * @file `mkdir`: makes folders in ChRIS's filesystem (CFS).
+ *
+ * Declared in one record (`mkdirCommand`): folders, which glob, and `-p`.
+ * A path through a link is made where the link points; a path a projection
+ * holds itself (a tag under /proc/tags) is the projection's to make.
+ *
+ * Key components:
+ * - mkdirCommand: the declaration.
+ * - builtin_mkdir: the declaration run over words already split.
+ * - mkdir_run: the typed core behind both, and the typed API.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_mkdir(['-p', 'experiments/run1']);
+ * await mkdir_run({ paths: ['experiments/run1'], parents: true });
+ * ```
+ *
+ * Dependencies: the session's filesystem and listing cache, the store-path
+ * resolver, and the error stack (a provider's reason).
+ *
+ * @module
  */
-import { vfsOutcome_convertToResult, mkdir_render, type VFSDispatcher, type VFSItem, type VfsOutcome } from '@fnndsc/fond';
+import { errno_words, vfsOutcome_convertToResult, mkdir_render, type VFSDispatcher, type VFSItem, type VfsOutcome } from '@fnndsc/fond';
 import chalk from 'chalk';
-import { path_resolve, error_stripDebugPrefix } from '../utils.js';
+import { path_resolve, storePath_resolve, error_stripDebugPrefix } from '../utils.js';
 import { listingCache_get, vfsDispatcher_get } from '../../core/filesystem.js';
 import { pathEntry_find, entry_isFolder, folderTree_make } from './entries.js';
 import { errorStack, type Result, type StackMessage } from '@fnndsc/fond';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** Outcome of one mkdir target, for the envelope model. */
 export interface MkdirOutcome {
@@ -63,9 +84,6 @@ function refusal_said(doing: string): string {
   return said.startsWith('mkdir:') ? said : `${doing}: ${said.replace(/^[^:]*: /, '')}`;
 }
 
-/** Parsed `mkdir` arguments, or the option it refuses. */
-export type MkdirArgs = MkdirOptions | { refused: string };
-
 /**
  * Forgets every listing above a folder `-p` made that does not yet hold the
  * folder it leads to: the store makes missing parents in one step and names
@@ -91,37 +109,65 @@ function ancestors_invalidate(targetPath: string): void {
 }
 
 /**
- * Parses `mkdir` arguments: `-p` / `--parents`, and `--` to end options.
- * Any other option is refused by name rather than taken for a path — a
- * `-p` the session did not know once became a folder named `-p`.
+ * Forgets the listings a made folder changed, by the session's path and by
+ * the store's: its parent's, or under `-p` every one above it that is behind.
  *
- * @param args - Raw command arguments.
- * @returns The options, or the refusal line for the first unknown option.
+ * @param shown - The folder as the session names it.
+ * @param targetPath - The folder in the store.
+ * @param parents - Whether `-p` was given.
  */
-export function mkdirArgs_parse(args: string[]): MkdirArgs {
-  let parents: boolean = false;
-  const paths: string[] = [];
-  let endOfOptions: boolean = false;
-  for (const arg of args) {
-    if (endOfOptions || arg === '-' || !arg.startsWith('-')) {
-      paths.push(arg);
-      continue;
-    }
-    if (arg === '--') {
-      endOfOptions = true;
-      continue;
-    }
-    if (arg === '--parents') {
-      parents = true;
-      continue;
-    }
-    if (arg.startsWith('--')) return { refused: `mkdir: unrecognized option '${arg}'` };
-    for (const flag of arg.substring(1)) {
-      if (flag !== 'p') return { refused: `mkdir: invalid option -- '${flag}'` };
-      parents = true;
-    }
+function listings_forget(shown: string, targetPath: string, parents: boolean): void {
+  for (const at of new Set([shown, targetPath])) {
+    if (parents) ancestors_invalidate(at);
+    else listingCache_get().cache_invalidate?.(at.substring(0, at.lastIndexOf('/')) || '/');
   }
-  return { paths, parents };
+}
+
+/** What an `mkdir` line may hold. */
+const MKDIR_GRAMMAR = {
+  operands: [
+    { name: 'paths', kind: 'cfsPath', repeat: true, glob: true, summary: 'The folders to make' },
+  ],
+  options: {
+    parents: { short: 'p', long: 'parents', summary: 'Make missing parents too, and take a folder already there as done' },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * `mkdir [-p] <directory…>`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [mkdirCommand] });
+ * ```
+ */
+export const mkdirCommand = command_declare({
+  name: 'mkdir',
+  grammar: MKDIR_GRAMMAR,
+  help: {
+    summary: 'Create directories',
+    description: 'Makes each folder in ChRIS\'s filesystem. Without -p, as on Linux: a missing parent is "No such file or directory" and an existing folder is "File exists". A path through a link is made where the link points. Under /proc/tags a folder is a tag.',
+    category: 'Files',
+    posix: { group: 'Files', differs: 'makes CFS folders; -p for parents' },
+    examples: [
+      'mkdir newdir               # Create single directory',
+      'mkdir dir1 dir2            # Create multiple directories',
+      'mkdir -p experiments/run1  # Create nested directory, parents included',
+      'mkdir /proc/tags/urgent    # Make a tag (setfattr hangs it on a feed)',
+    ],
+  },
+  handler: async (args: CommandArguments<typeof MKDIR_GRAMMAR>): Promise<CommandEnvelope> =>
+    mkdir_run({ paths: args.operands.paths, parents: args.options.parents }),
+});
+
+/**
+ * `mkdir` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `mkdir`.
+ * @returns The envelope from {@link mkdir_run}, or the refusal of a bad line.
+ */
+export async function builtin_mkdir(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(mkdirCommand, args);
 }
 
 /**
@@ -145,50 +191,50 @@ export async function mkdir_run(options: MkdirOptions): Promise<CommandEnvelope>
 
   for (const pathArg of args) {
     try {
-      const targetPath: string = await path_resolve(pathArg);
-      const parentDir: string = targetPath.substring(0, targetPath.lastIndexOf('/')) || '/';
+      const shown: string = await path_resolve(pathArg);
+      const targetPath: string = await storePath_resolve(pathArg);
       // A projection that makes folders (a tag under /proc/tags) makes them
       // itself; one that makes none refuses by name.
       const dispatcher: VFSDispatcher = vfsDispatcher_get();
       if (dispatcher.path_isVirtual(targetPath)) {
         const made: MkdirOutcome = await virtualFolder_make(targetPath, parents);
-        if (made.created) rendered += `${mkdir_render(targetPath, true)}\n`;
+        if (made.created) rendered += `${mkdir_render(shown, true)}\n`;
         else if (made.existed !== true) renderedErr += `${chalk.red(refusal_said(`mkdir: cannot create directory '${pathArg}'`))}\n`;
-        outcomes.push(made);
-        if (made.created) listingCache_get().cache_invalidate?.(parentDir);
+        outcomes.push({ ...made, path: shown });
+        if (made.created) listings_forget(shown, targetPath, false);
         continue;
       }
       const made: VfsOutcome = parents ? await folderTree_make(dispatcher, targetPath) : await dispatcher.mkdir(targetPath);
       if (made.ok) {
-        rendered += `${mkdir_render(targetPath, true)}\n`;
-        outcomes.push({ path: targetPath, created: true });
-        if (parents) ancestors_invalidate(targetPath);
-        else listingCache_get().cache_invalidate?.(parentDir);
+        rendered += `${mkdir_render(shown, true)}\n`;
+        outcomes.push({ path: shown, created: true });
+        listings_forget(shown, targetPath, parents);
         continue;
       }
       if (made.errno === 'EEXIST') {
         if (parents && entry_isFolder(await pathEntry_find(dispatcher, targetPath))) {
-          outcomes.push({ path: targetPath, created: false, existed: true });
+          outcomes.push({ path: shown, created: false, existed: true });
         } else {
           renderedErr += `${chalk.red(`mkdir: cannot create directory '${pathArg}': File exists`)}\n`;
-          outcomes.push({ path: targetPath, created: false });
+          outcomes.push({ path: shown, created: false });
         }
         continue;
       }
       if (made.errno === 'ENOENT') {
         renderedErr += `${chalk.red(`mkdir: cannot create directory '${pathArg}': No such file or directory`)}\n`;
-        outcomes.push({ path: targetPath, created: false });
+        outcomes.push({ path: shown, created: false });
         continue;
       }
       if (made.errno === 'ENOTDIR') {
         // A file above the target: CUBE would otherwise have made a folder over it.
         renderedErr += `${chalk.red(`mkdir: cannot create directory '${pathArg}': Not a directory`)}\n`;
-        outcomes.push({ path: targetPath, created: false });
+        outcomes.push({ path: shown, created: false });
         continue;
       }
-      rendered += `${mkdir_render(targetPath, false)}\n`;
-      if (made.reason !== undefined) renderedErr += `${chalk.red(made.reason)}\n`;
-      outcomes.push({ path: targetPath, created: false });
+      rendered += `${mkdir_render(shown, false)}\n`;
+      // A refusal with no words of its own (a store that will not, EACCES) still says why.
+      renderedErr += `${chalk.red(made.reason ?? `mkdir: cannot create directory '${pathArg}': ${errno_words(made.errno)}`)}\n`;
+      outcomes.push({ path: shown, created: false });
     } catch (e: unknown) {
       const msg: string = e instanceof Error ? e.message : String(e);
       renderedErr += `${chalk.red(`mkdir: ${pathArg}: ${msg}`)}\n`;
@@ -204,17 +250,4 @@ export async function mkdir_run(options: MkdirOptions): Promise<CommandEnvelope>
     return envelope;
   }
   return envelope_ok(rendered, model);
-}
-
-/**
- * Creates directories from parsed command-line arguments.
- *
- * @param args - Command line arguments (`-p` and directory paths).
- * @returns The envelope from {@link mkdir_run}, or the refusal of an
- *   option mkdir does not have.
- */
-export async function builtin_mkdir(args: string[]): Promise<CommandEnvelope> {
-  const parsed: MkdirArgs = mkdirArgs_parse(args);
-  if ('refused' in parsed) return envelope_error('', undefined, `${chalk.red(parsed.refused)}\n`);
-  return mkdir_run(parsed);
 }

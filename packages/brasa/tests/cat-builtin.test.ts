@@ -66,7 +66,7 @@ describe('builtin_cat', (): void => {
   it('reports usage with no file argument', async (): Promise<void> => {
     const envelope = await builtin_cat([]);
     expect(envelope.status).toBe('error');
-    expect(envelope.renderedErr).toContain('Usage: cat');
+    expect(envelope.renderedErr).toContain('cat: missing operand <files>; usage: cat');
   });
 
   it('renders a text file', async (): Promise<void> => {

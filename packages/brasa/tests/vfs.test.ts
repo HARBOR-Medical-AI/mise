@@ -118,6 +118,7 @@ const mockVfsDispatcher = {
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
   plugins_listAll: mockPlugins_listAll,
   vfsDispatcher: mockVfsDispatcher,
+  pathMapper_get: () => ({ blindParents_take: mockBlindParentsTake }),
   context_getSingle: jest.fn(() => ({
     user: 'testuser',
     URL: 'http://localhost:8000'
@@ -129,9 +130,6 @@ jest.unstable_mockModule('@fnndsc/chili/commands/fs/ls.js', () => ({
 }));
 
 const mockBlindParentsTake = jest.fn((): string[] => []);
-jest.unstable_mockModule('@fnndsc/chili/utils', () => ({
-  pathMapper_get: () => ({ blindParents_take: mockBlindParentsTake }),
-}));
 
 
 // Mock console methods

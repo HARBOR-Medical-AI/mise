@@ -1,7 +1,8 @@
 /**
  * @file grep (#1100): grep's flags with grep's meanings; over a numbered
  * listing it keeps rows with their parents, matched groups whole, and the
- * handles they wore; text and foreign flags are the system grep's.
+ * handles they wore; text is the system grep's, and another flag is refused
+ * by the parser.
  */
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
@@ -16,7 +17,8 @@ const { answer_note, answer_get, answerHandles_get, answer_forget } = await impo
 const { answerAdapters_register } = await import('../src/session/answerAdapters.js');
 const { chrisReferences, chrisAnswerKinds, chrisVerbTakes } = await import('../src/chris/references.js');
 (await import('../src/core/backend.js')).backend_install({ id: 'chris', session: {} as never, references: chrisReferences, answerKinds: chrisAnswerKinds, verbTakes: chrisVerbTakes });
-const { grepArgs_parse, grepMatcher_build, builtin_grep } = await import('../src/builtins/sys/grep.js');
+const { grepCommand, grepMatcher_build, builtin_grep } = await import('../src/builtins/sys/grep.js');
+const { commandLine_parse } = await import('../src/core/commandParse.js');
 const { listingIn_set } = await import('../src/core/listing.js');
 answerAdapters_register();
 
@@ -34,27 +36,44 @@ const answer = {
 
 beforeEach(() => { answer_forget(); listingIn_set(null); process.exitCode = 0; });
 
+/** The words as a literal line. */
+const words = (args: string[]) => args.map((value: string) => ({ value, globPattern: value, pathnameExpansion: false, pathnameExpanded: false }));
+/** What a line asks, as the declaration hands it on. */
+const ask = (patterns: string[], flags: Partial<{ insensitive: boolean; invert: boolean; word: boolean; extended: boolean; fixed: boolean; count: boolean }> = {}) => ({
+  insensitive: false, invert: false, word: false, extended: false, fixed: false, count: false, patterns, ...flags,
+});
+
 describe('grep arguments', () => {
-  it('takes grep\'s own flags, clustered or long, and -e patterns', () => {
-    expect(grepArgs_parse(['-vi', 't1'])).toMatchObject({ invert: true, insensitive: true, patterns: ['t1'], foreign: null });
-    expect(grepArgs_parse(['--ignore-case', '-e', 'a', '-eb', '--regexp=c'])).toMatchObject({ insensitive: true, patterns: ['a', 'b', 'c'] });
-    expect(grepArgs_parse(['-wEFc', 'x'])).toMatchObject({ word: true, extended: true, fixed: true, count: true });
+  it('takes grep\'s own flags, clustered or long, and -e patterns', async () => {
+    const vi = await commandLine_parse(grepCommand, words(['-vi', 't1']));
+    expect(vi.ok && vi.args).toMatchObject({ options: { invert: true, insensitive: true }, operands: { pattern: 't1' } });
+    const e = await commandLine_parse(grepCommand, words(['--ignore-case', '-e', 'a', '-eb', '--regexp=c']));
+    expect(e.ok && e.args).toMatchObject({ options: { insensitive: true, regexp: ['a', 'b', 'c'] } });
+    const cluster = await commandLine_parse(grepCommand, words(['-wEFc', 'x']));
+    expect(cluster.ok && cluster.args).toMatchObject({ options: { word: true, extended: true, fixed: true, count: true } });
   });
 
-  it('marks anything else as the system grep\'s: another flag, or a file', () => {
-    expect(grepArgs_parse(['-o', 'x']).foreign).toBe('-o');
-    expect(grepArgs_parse(['--color', 'x']).foreign).toBe('--color');
-    expect(grepArgs_parse(['x', 'notes.txt']).foreign).toBe('notes.txt');
+  it('refuses another flag in the parser\'s words, before it runs', async () => {
+    const short = await builtin_grep(['-Q', 'x']);
+    expect(short.status).toBe('error');
+    expect(strip(short.renderedErr ?? '')).toContain("grep: invalid option -- 'Q'; usage: grep");
+    expect(process.exitCode).toBe(1);
+    expect(strip((await builtin_grep(['--nosuch', 'x'])).renderedErr ?? '')).toContain("grep: unrecognized option '--nosuch'; usage: grep");
+  });
+
+  it('reads -- as the end of the options: a pattern may start with a dash', async () => {
+    const dashed = await commandLine_parse(grepCommand, words(['--', '-v']));
+    expect(dashed.ok && dashed.args).toMatchObject({ options: { invert: false }, operands: { pattern: '-v', files: [] } });
   });
 
   it('reads a basic regex as grep does: \\| alternates, a bare | is literal', () => {
-    const basic = grepMatcher_build(grepArgs_parse(['t1\\|t2']));
+    const basic = grepMatcher_build(ask(['t1\\|t2']));
     expect(typeof basic === 'function' && basic('a t2 b')).toBe(true);
-    const literal = grepMatcher_build(grepArgs_parse(['a|b']));
+    const literal = grepMatcher_build(ask(['a|b']));
     expect(typeof literal === 'function' && literal('a|b') && !literal('a')).toBe(true);
-    const word = grepMatcher_build(grepArgs_parse(['-w', 'T1']));
+    const word = grepMatcher_build(ask(['T1'], { word: true }));
     expect(typeof word === 'function' && word('T1 SAG') && !word('T1C')).toBe(true);
-    expect(grepMatcher_build(grepArgs_parse(['-E', '(']))).toHaveProperty('refused');
+    expect(grepMatcher_build(ask(['('], { extended: true }))).toHaveProperty('refused');
   });
 });
 
@@ -110,9 +129,57 @@ describe('grep on text', () => {
     expect((await builtin_grep(['-i', 'b'])).rendered).toBe('Beta\n');
     stdin_set('alpha\nBeta\ngamma\n');
     expect((await builtin_grep(['-vc', 'a'])).rendered).toBe('0\n');
-    stdin_set('alpha\n');
-    const foreign = await builtin_grep(['-o', 'a']);
-    expect(foreign.status).toBe('error');
-    expect(`${foreign.renderedErr ?? ''}`).toContain('grep -o: this surface has no system grep');
+  });
+
+  it('numbers lines (-n), keeps only the matching parts (-o), names the pipe (-l)', async () => {
+    const { stdin_set } = await import('../src/builtins/games/stdin.js');
+    stdin_set('a\nb\nc\n');
+    expect((await builtin_grep(['--line-number', 'b'])).rendered).toBe('2:b\n');
+    stdin_set('hello all\nnone\n');
+    expect((await builtin_grep(['-o', 'l\\+'])).rendered).toBe('ll\nll\n');
+    stdin_set('a\nb\n');
+    expect((await builtin_grep(['-l', 'b'])).rendered).toBe('(standard input)\n');
+    stdin_set('a\nb\n');
+    expect((await builtin_grep(['-h', 'b'])).rendered).toBe('b\n');
+  });
+
+  it('shows context as GNU does: -A, -B, -C, -- between groups apart, - after a context line\'s number', async () => {
+    const { stdin_set } = await import('../src/builtins/games/stdin.js');
+    const six: string = 'a\nb\nc\nd\ne\nf\n';
+    stdin_set(six);
+    expect((await builtin_grep(['-A', '1', '-e', 'b', '-e', 'e'])).rendered).toBe('b\nc\n--\ne\nf\n');
+    stdin_set(six);
+    expect((await builtin_grep(['-n', '--before-context=1', '-e', 'b', '-e', 'e'])).rendered).toBe('1-a\n2:b\n--\n4-d\n5:e\n');
+    stdin_set(six);
+    expect((await builtin_grep(['-C', '1', '-e', 'b', '-e', 'd'])).rendered).toBe('a\nb\nc\nd\ne\n');
+    expect(strip((await builtin_grep(['-A', 'x', 'b'])).renderedErr ?? '')).toContain("invalid argument 'x' for '--after-context'");
+  });
+});
+
+describe('grep over a listing refuses what a listing has no use for', () => {
+  it('says each flag by name, in one line, exit 1', async () => {
+    for (const [flags, words] of [
+      [['-o'], 'grep -o: a listing keeps whole rows'],
+      [['-n'], 'grep -n: a listing\'s rows wear their handles'],
+      [['-l'], 'grep -l: a listing is not files'],
+      [['-h'], 'grep -h: a listing has no file names'],
+      [['-r'], 'grep -r: a listing is not a folder to walk'],
+      [['-A', '1'], 'grep -A: a listing keeps a row with its group'],
+      [['-B', '1'], 'grep -B: '],
+      [['-C', '1'], 'grep -C: '],
+    ] as Array<[string[], string]>) {
+      listingIn_set({ kind: 'pacs.query', data: answer });
+      process.exitCode = 0;
+      const refused = await builtin_grep([...flags, 't1']);
+      expect(refused.status).toBe('error');
+      expect(refused.renderedErr).toContain(words);
+      expect(process.exitCode).toBe(1);
+    }
+  });
+
+  it('refuses them for the held listing too, and still counts with -c', async () => {
+    answer_note('pacs.query', answer, 'query PatientID:1');
+    expect((await builtin_grep(['-C', '1', 't1'])).renderedErr).toContain('grep -C: ');
+    expect((await builtin_grep(['-ci', 't1'])).rendered).toBe('2\n');
   });
 });

@@ -15,6 +15,7 @@ jest.mock('@fnndsc/cumin', () => {
 
 describe('files_list', () => {
   beforeEach(() => {
+    (salsa.logicalPath_resolve as jest.Mock).mockImplementation(async (p: string) => ({ ok: true, value: p }));
     jest.clearAllMocks();
 
     // Mock salsa.files_getGroup to return a structure that contains an 'asset' with 'resources_listAndFilterByOptions'

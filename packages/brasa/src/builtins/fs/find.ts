@@ -6,7 +6,10 @@
  * The walk reads every folder through the listing cache (`vfs.listing_get`),
  * the same listings `ls` reads, so a tree already seen is walked without a
  * word to CUBE; only a folder never listed, or one whose listing expired, is
- * fetched. Links are not followed (POSIX's default). A long walk says how far
+ * fetched. A starting point is walked where the store keeps it
+ * (`storePath_resolve`: a run's `data` path, a link named on the line, as
+ * POSIX's `-H`), and links met below it are not followed (POSIX's default),
+ * the paths printed as the starting point was typed. A long walk says how far
  * it has got, and Ctrl-C stops it, saying where; a folder that cannot be read
  * is named and the command fails, as POSIX `find` does, without stopping the
  * walk.
@@ -17,11 +20,16 @@
  * `-mindepth N`; actions `-print` (the default) and `-print0`. Anything else
  * is refused by name.
  *
+ * Declared in one record (`findCommand`) as an expression grammar: its words
+ * are tests and operators, not options, so it parses them itself and
+ * completes them itself (`find_complete`).
+ *
  * @module
  */
 import chalk from 'chalk';
 import path from 'path';
-import { path_resolve } from '../utils.js';
+import { path_resolve, storePath_resolve } from '../utils.js';
+import type { ExpressionDeclaration } from '../../core/commandDeclaration.js';
 import { vfs, type VfsListing } from '../../lib/vfs/vfs.js';
 import { vfsDispatcher_get } from '../../core/filesystem.js';
 import { spinner } from '../../lib/spinner.js';
@@ -293,8 +301,10 @@ export async function builtin_find(args: string[]): Promise<CommandEnvelope> {
 
   try {
     for (const start of query.starts) {
-      const resolved: string = await path_resolve(start);
-      const shownRoot: string = start.startsWith('~') ? resolved : start;
+      // Walked where the store keeps it: a run's data path, a link on the line.
+      const resolved: string = await storePath_resolve(start);
+      const logical: string = await path_resolve(start);
+      const shownRoot: string = start.startsWith('~') ? logical : start;
       const self: Result<VfsListing> = await vfs.listing_get(resolved, { directory: true });
       const entry: ListingItem | undefined = self.ok ? self.value.items[0] : undefined;
       if (entry === undefined) {
@@ -303,7 +313,7 @@ export async function builtin_find(args: string[]): Promise<CommandEnvelope> {
         continue;
       }
       const rootType: 'f' | 'd' | 'l' = itemType_derive(entry);
-      visit({ shown: shownRoot, name: path.posix.basename(resolved) || resolved, type: rootType, date: entry.date || undefined, depth: 0 });
+      visit({ shown: shownRoot, name: path.posix.basename(logical) || logical, type: rootType, date: entry.date || undefined, depth: 0 });
       if (rootType !== 'd') continue;
       // Depth first, in listing order: an entry, then everything beneath it.
       const walk = async (real: string, shown: string, depth: number, judge: (node: FindNode) => FindNode = (node: FindNode): FindNode => node): Promise<boolean> => {
@@ -400,3 +410,66 @@ export async function builtin_find(args: string[]): Promise<CommandEnvelope> {
   const failed: boolean = failures !== unjudgedNote;
   return { status: failed ? 'error' : 'ok', rendered: out.join(''), renderedErr: failures === '' ? undefined : (failed ? chalk.red(failures) : chalk.yellow(failures)) };
 }
+
+/** find's tests, operators and actions, as completion offers them. */
+const FIND_PRIMARIES: ReadonlyArray<string> = [
+  '-name', '-iname', '-path', '-ipath', '-type', '-newermt', '-status', '-plugin', '-pipeline', '-workflow',
+  '-maxdepth', '-mindepth', '-print', '-print0', '-true', '-false', '-not', '-o', '-or', '-a', '-and',
+];
+
+/** The tests that take the next word as their argument. */
+const FIND_TAKES_ARGUMENT: ReadonlySet<string> = new Set([
+  '-name', '-iname', '-path', '-ipath', '-wholename', '-type', '-newermt', '-status', '-plugin', '-pipeline', '-workflow', '-maxdepth', '-mindepth',
+]);
+
+/** The statuses `-status` most often asks for. */
+const FIND_STATUSES: ReadonlyArray<string> = ['finishedSuccessfully', 'finishedWithError', 'started', 'scheduled', 'waiting', 'cancelled'];
+
+/**
+ * Completes one word of a `find` line: a path among the starting points, a
+ * test or operator once the expression has begun (or when a dash is typed),
+ * and `-type`'s and `-status`'s words.
+ *
+ * @param words - The words before the one completed.
+ * @param word - The word typed so far.
+ * @returns The candidates.
+ *
+ * @example
+ * ```ts
+ * await find_complete(['.', '-type'], ''); // ['f', 'd', 'l']
+ * ```
+ */
+export async function find_complete(words: readonly string[], word: string): Promise<string[]> {
+  const previous: string | undefined = words.at(-1);
+  if (previous === '-type') return ['f', 'd', 'l'].filter((kind: string): boolean => kind.startsWith(word));
+  if (previous === '-status') return FIND_STATUSES.filter((status: string): boolean => status.startsWith(word));
+  if (previous !== undefined && FIND_TAKES_ARGUMENT.has(previous)) return [];
+  const begun: boolean = words.some((one: string): boolean => /^[-!(]/.test(one));
+  if (begun || word.startsWith('-')) return FIND_PRIMARIES.filter((primary: string): boolean => primary.startsWith(word));
+  const { cfsPaths_complete } = await import('../../lib/completer/cfsPaths.js');
+  return cfsPaths_complete(word);
+}
+
+/**
+ * `find [path...] [expression]`: the declaration, an expression grammar.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [findCommand] });
+ * ```
+ */
+export const findCommand: ExpressionDeclaration = {
+  name: 'find',
+  grammar: 'expression',
+  help: {
+    usage: 'find [path...] [expression]',
+    summary: 'Walk folders and print the paths an expression selects',
+    description: "Walk from each path (. when none) and print the paths the expression selects. Tests and actions join by implicit AND, -o, ! (or -not) and parentheses. A starting point is walked where the store keeps it, so a run's data path and a link named on the line are walked at their target; links met below it are not followed. Folders are read from the listing cache, so a tree already seen is walked without asking CUBE; /proc/jobs is answered whole from the session's job index. A long walk says how far it has got; Ctrl-C stops it and says where. Tests: -name PATTERN and -iname PATTERN (the entry's name matches a shell pattern; -iname ignores case); -path PATTERN and -ipath PATTERN (the printed path matches; * crosses /); -type f|d|l (a file, a folder, a link); -newermt DATE (changed after DATE: 2026-10-10, or an ISO time); -status PATTERN (a job's or feed's status in /proc/jobs: finishedWithError, started, ...); -plugin PATTERN (the plugin a job ran in /proc/jobs: pl-dircopy, 'pl-dy*'); -pipeline PATTERN (the pipeline whose run made a job in /proc/jobs; '' is a direct run); -workflow ID (the pipeline run that made a job in /proc/jobs). Options: -maxdepth N and -mindepth N (descend at most N levels; test only from level N). Actions: -print (the default) and -print0 (end each path with NUL).",
+    category: 'Files',
+    posix: { group: 'Files', differs: 'walks the namespace through the listing cache; a starting point is walked at its target, links below it are not followed' },
+    examples: ["find ~ -name '*.nii'", 'find ~/feeds -maxdepth 2 -type d', "find . -name '*.json' -o -name '*.csv'", 'find /proc/jobs -plugin pl-dircopy -status finishedWithError', 'find /proc/jobs -maxdepth 1 -newermt 2026-10-10'],
+  },
+  holds: [],
+  handler: (args: string[]): Promise<CommandEnvelope> => builtin_find(args),
+  complete: find_complete,
+};

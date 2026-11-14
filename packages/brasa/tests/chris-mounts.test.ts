@@ -19,7 +19,8 @@ jest.unstable_mockModule('@fnndsc/salsa', () => ({
   plugins_listAll: pluginsListAll,
   pipelines_getAll: pipelinesGetAll,
 }));
-jest.unstable_mockModule('@fnndsc/chili/utils', () => ({ logicalPath_resolve: logicalToPhysical }));
+// The dispatcher's hook is the one store-path resolver every file command asks.
+jest.unstable_mockModule('../src/core/paths.js', () => ({ storePath_resolve: logicalToPhysical }));
 jest.unstable_mockModule('../src/session/index.js', () => ({ session: { physicalMode_get: (): boolean => physical } }));
 jest.unstable_mockModule('../src/builtins/res/plugin.info.js', () => ({
   pluginInfo_build: jest.fn(), pluginInfoText_render: jest.fn(), pluginSpecifier_parse: jest.fn(),
@@ -37,10 +38,9 @@ describe('the ChRIS mounts', () => {
     expect(pathResolverRegister).toHaveBeenCalledTimes(1);
 
     const resolve = pathResolverRegister.mock.calls[0][0] as (path: string) => Promise<string>;
-    logicalToPhysical.mockResolvedValueOnce({ ok: true, value: '/home/chris/uploads' } as never);
+    logicalToPhysical.mockResolvedValueOnce('/home/chris/uploads' as never);
     await expect(resolve('/home/chris/up')).resolves.toBe('/home/chris/uploads');
-    logicalToPhysical.mockResolvedValueOnce({ ok: false } as never);
-    await expect(resolve('/nowhere')).rejects.toThrow('Logical-to-physical resolution failed for path: /nowhere');
+    expect(logicalToPhysical).toHaveBeenCalledWith('/home/chris/up');
     physical = true;
     await expect(resolve('/as/typed')).resolves.toBe('/as/typed');
     physical = false;

@@ -1,10 +1,30 @@
 /**
- * @file Builtin rm command.
- * Removes files or directories, reported as a command envelope.
+ * @file `rm`: removes files and folders of ChRIS's filesystem (CFS).
+ *
+ * Declared in one record (`rmCommand`): paths, which glob, and the switches
+ * `-r`/`-R`, `-f`, `-i` and `-I`. Each path names the entry itself: `rm` of
+ * a link removes the link, never what it points at.
+ *
+ * Key components:
+ * - rmCommand: the declaration.
+ * - builtin_rm: the declaration run over words already split.
+ * - rm_run: the typed core behind both, and the typed API.
+ * - rmSummary_format: the line that sums up several removals.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_rm(['-r', 'scratch']);
+ * await rm_run({ recursive: true, force: false, interactive: false, once: false, paths: ['scratch'] });
+ * ```
+ *
+ * Dependencies: the session's filesystem and listing cache, the store-path
+ * resolver, and the surface (which asks `-i` and `-I`'s questions).
+ *
+ * @module
  */
 import chalk from 'chalk';
 import path from 'path';
-import { path_resolve } from '../utils.js';
+import { path_resolve, storePath_resolve } from '../utils.js';
 import { repl_confirm } from '../../core/question.js';
 import { listingCache_get, vfsDispatcher_get } from '../../core/filesystem.js';
 import type { ListingCache } from '../../core/backend.js';
@@ -12,6 +32,8 @@ import { pathEntry_find, entry_isFolder, folderTree_remove } from './entries.js'
 import { errno_words, rm_render, vfs_fail, vfs_ok, type VFSDispatcher, type VFSItem, type VfsOutcome } from '@fnndsc/fond';
 import { sink_get } from '../../core/sink.js';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /**
  * Prompts the user for confirmation.
@@ -45,11 +67,19 @@ function unanswered_reason(error: unknown): string {
 }
 
 /**
- * Parsed `rm` arguments: flags plus the resolved list of path operands.
+ * What `rm` is asked to do: its switches, and its operands as typed.
+ *
+ * @example
+ * ```ts
+ * const args: RmArgs = { recursive: true, force: false, interactive: false, once: false, paths: ['scratch'] };
+ * ```
  */
 export interface RmArgs {
+  /** Remove folders with all they hold (`-r`, `-R`). */
   recursive: boolean;
+  /** Nothing there is fine (`-f`). */
   force: boolean;
+  /** Ask before each removal (`-i`). */
   interactive: boolean;
   /**
    * Ask ONCE for the whole list rather than once per target (`-I`), which
@@ -57,68 +87,8 @@ export interface RmArgs {
    * confirmation an operator learns to dismiss without reading.
    */
   once: boolean;
+  /** The operands, as typed. */
   paths: string[];
-  /** The refusal line for an option rm does not have, when one was given. */
-  refused?: string;
-}
-
-/** The long options rm knows, and the short flag each one is. */
-const RM_LONG_OPTIONS: Readonly<Record<string, string>> = {
-  '--recursive': 'r',
-  '--force': 'f',
-  '--interactive': 'i',
-};
-
-/**
- * Parses `rm` arguments, supporting combined short flags (`-rf`, `-rfi`),
- * the long forms (`--recursive`, `--force`, `--interactive`) and the `--`
- * end-of-options separator. An option rm does not have is refused by name
- * — never skipped, and never read letter by letter (`--force` once turned
- * recursion on through its `r`).
- *
- * @param args - Raw command arguments.
- * @returns The parsed flags and path operands, with `refused` set for the
- *   first unknown option.
- */
-export function rmArgs_parse(args: string[]): RmArgs {
-  let recursive: boolean = false;
-  let force: boolean = false;
-  let interactive: boolean = false;
-  let once: boolean = false;
-  const paths: string[] = [];
-  let endOfOptions: boolean = false;
-
-  for (const arg of args) {
-    if (arg === '--') {
-      endOfOptions = true;
-      continue;
-    }
-    if (endOfOptions) {
-      paths.push(arg);
-      continue;
-    }
-    if (arg.startsWith('-') && arg.length > 1) {
-      let flags: string = arg.substring(1);
-      if (arg.startsWith('--')) {
-        const short: string | undefined = RM_LONG_OPTIONS[arg];
-        if (short === undefined) {
-          return { recursive, force, interactive, once, paths, refused: `rm: unrecognized option '${arg}'` };
-        }
-        flags = short;
-      }
-      for (const ch of flags) {
-        if (ch === 'r' || ch === 'R') recursive = true;
-        else if (ch === 'f') force = true;
-        else if (ch === 'i') interactive = true;
-        else if (ch === 'I') once = true;
-        else return { recursive, force, interactive, once, paths, refused: `rm: invalid option -- '${ch}'` };
-      }
-    } else {
-      paths.push(arg);
-    }
-  }
-
-  return { recursive, force, interactive, once, paths };
 }
 
 /**
@@ -176,25 +146,98 @@ async function entry_remove(dispatcher: VFSDispatcher, target: string, recursive
   return { type: entry.type === 'link' ? 'link' : 'file', outcome: await dispatcher.rm(target) };
 }
 
+/** What an `rm` line may hold. */
+const RM_GRAMMAR = {
+  operands: [
+    { name: 'paths', kind: 'cfsPath', repeat: true, glob: true, summary: 'What to remove: files, or folders with -r; a wildcard matches paths' },
+  ],
+  options: {
+    recursive: { short: 'r', long: 'recursive', summary: 'Remove folders and all they hold (without it a folder is "Is a directory")' },
+    recursiveAlias: { short: 'R', summary: 'The same as -r' },
+    force: { short: 'f', long: 'force', summary: 'Force removal: a path not there is fine' },
+    interactive: { short: 'i', long: 'interactive', summary: 'Ask before every removal' },
+    once: { short: 'I', summary: 'Ask ONCE for the whole list, naming how many' },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * Removes one or more files or directories.
+ * `rm [-rRfiI] <path…>`: the declaration.
  *
- * In interactive mode (-i) output is streamed live through the sink so each
- * confirmation prompt appears in sequence with its result; the envelope then
- * carries only the model. Otherwise output is buffered into the envelope.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [rmCommand] });
+ * ```
+ */
+export const rmCommand = command_declare({
+  name: 'rm',
+  grammar: RM_GRAMMAR,
+  help: {
+    summary: 'Remove files or directories',
+    description: "Removes each path from ChRIS's filesystem (a wildcard matches paths). A folder goes only with -r, with all it holds. A link is removed itself, never what it points at. With -i each removal is asked first; with -I one question covers the whole list. Every target is fixed before any question, so a cd while one is open moves nothing.",
+    category: 'Files',
+    posix: { group: 'Files', differs: 'removes from CFS; -r for folders, -i asks' },
+    examples: [
+      'rm file.txt           # Remove single file',
+      'rm file1 file2        # Remove multiple files',
+      'rm *.json             # Remove all .json files (wildcard)',
+      'rm -i *.log           # Prompt before removing each .log file',
+      'rm -r directory/      # Remove directory recursively',
+      'rm -rf temp_*         # Force remove all temp_* dirs',
+      'rm -- --weird-name    # Remove file starting with --',
+      'rm -- -dash-file      # Remove file starting with -',
+    ],
+  },
+  handler: async (args: CommandArguments<typeof RM_GRAMMAR>): Promise<CommandEnvelope> => rm_run({
+    recursive: args.options.recursive || args.options.recursiveAlias,
+    force: args.options.force,
+    interactive: args.options.interactive,
+    once: args.options.once,
+    paths: args.operands.paths,
+  }),
+});
+
+/**
+ * `rm` over words already split: the declaration's parse and handler.
  *
- * @param args - Command line arguments (flags and paths).
- * @returns An envelope whose model lists per-target outcomes.
+ * @param args - The words after `rm`.
+ * @returns An envelope whose model lists per-target outcomes, or the refusal of a bad line.
  */
 export async function builtin_rm(args: string[]): Promise<CommandEnvelope> {
-  const parsed: RmArgs = rmArgs_parse(args);
-  if (parsed.refused !== undefined) return envelope_error('', undefined, `${chalk.red(parsed.refused)}\n`);
-  return rm_run(parsed);
+  return declaredCommand_run(rmCommand, args);
+}
+
+/** One operand fixed before any question: where it is shown, and the store entry acted on. */
+interface FixedTarget {
+  /** The path as the session names it, for what rm says. */
+  shown: string;
+  /** The entry itself in the store: a link, not what it points at. */
+  target: string;
+}
+
+/**
+ * Forgets the listings a removal changed: the folder that held the entry and
+ * everything cached beneath it, by the session's path and by the store's.
+ *
+ * @param fixed - The operand, as shown and in the store.
+ */
+function listings_forget(fixed: FixedTarget): void {
+  const listCache: ListingCache = listingCache_get();
+  for (const at of new Set([fixed.shown, fixed.target])) {
+    listCache.cache_invalidate?.(path.posix.dirname(at));
+    // Also drop the removed target and any listings cached beneath it:
+    // a later re-upload to the same path must not inherit still-fresh
+    // nested listings from the deleted tree.
+    listCache.cache_invalidateTree?.(at);
+  }
 }
 
 /**
  * Removes files or directories: the shared typed core behind the parsed
  * builtin and the typed API.
+ *
+ * In interactive mode (-i, -I) output is streamed live through the sink so
+ * each confirmation prompt appears in sequence with its result; the envelope
+ * then carries only the model. Otherwise output is buffered into the envelope.
  *
  * @param runArgs - Flags and target paths.
  * @returns An envelope whose model lists per-target outcomes.
@@ -210,10 +253,10 @@ export async function rm_run(runArgs: RmArgs): Promise<CommandEnvelope> {
   // open the session runs other commands, and a `cd` among them must not
   // turn the answer into a removal somewhere else. A path that does not
   // resolve keeps its failure, reported in its place below.
-  const fixed: Array<{ target: string } | { failure: unknown }> = [];
+  const fixed: Array<FixedTarget | { failure: unknown }> = [];
   for (const pathArg of paths) {
     try {
-      fixed.push({ target: await path_resolve(pathArg) });
+      fixed.push({ shown: await path_resolve(pathArg), target: await storePath_resolve(pathArg, { entry: true }) });
     } catch (failure: unknown) {
       fixed.push({ failure });
     }
@@ -288,7 +331,7 @@ export async function rm_run(runArgs: RmArgs): Promise<CommandEnvelope> {
   for (let index: number = 0; index < paths.length; index++) {
     const pathArg: string = paths[index] as string;
     try {
-      const resolution: { target: string } | { failure: unknown } = fixed[index] as { target: string } | { failure: unknown };
+      const resolution: FixedTarget | { failure: unknown } = fixed[index] as FixedTarget | { failure: unknown };
       if ('failure' in resolution) throw resolution.failure;
       const target: string = resolution.target;
 
@@ -323,17 +366,11 @@ export async function rm_run(runArgs: RmArgs): Promise<CommandEnvelope> {
         if (paths.length > 1) {
           out_emit(chalk.gray(`removed '${pathArg}'`));
         } else {
-          out_emit(rm_render({ success: true, path: target, type: removed.type }));
+          out_emit(rm_render({ success: true, path: resolution.shown, type: removed.type }));
         }
         outcomes.push({ path: pathArg, removed: true, skipped: false });
         successCount++;
-
-        const listCache: ListingCache = listingCache_get();
-        listCache.cache_invalidate?.(path.posix.dirname(target));
-        // Also drop the removed target and any listings cached beneath it:
-        // a later re-upload to the same path must not inherit still-fresh
-        // nested listings from the deleted tree.
-        listCache.cache_invalidateTree?.(target);
+        listings_forget(resolution);
       } else {
         const reason: string = removed.outcome.reason ?? errno_words(removed.outcome.errno);
         err_emit(chalk.red(`rm: cannot remove '${pathArg}': ${reason}`));

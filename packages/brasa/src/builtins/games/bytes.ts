@@ -6,16 +6,19 @@
  * the session's filesystem, so a path is a CFS path. `xxd` and `strings`
  * are bounded and say what they showed.
  *
+ * Each is declared in one record (`fileCommand`, `xxdCommand`, …); `file`
+ * reads where the store keeps a path (`storePath_resolve`), through any link.
+ *
  * @module
  */
 import { createHash } from 'node:crypto';
 import { files_cat, files_catBinary } from '@fnndsc/chili/commands/fs/cat.js';
 import chalk from 'chalk';
-import { path_resolve, error_stripDebugPrefix } from '../utils.js';
-import { errorStack, type Result, type StackMessage } from '@fnndsc/fond';
-import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { path_resolve, storePath_resolve, error_stripDebugPrefix } from '../utils.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
+import { errorStack, type Result, type StackMessage } from '@fnndsc/fond';
+import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 
 /** Bytes `xxd` shows when not told. */
 export const XXD_DEFAULT: number = 256;
@@ -89,9 +92,21 @@ export function strings_find(bytes: Buffer, min: number = 4): string[] {
   return out;
 }
 
-/** Reads a CFS file's bytes, or answers why not. */
-async function bytes_read(pathArg: string, name: string): Promise<{ path: string; bytes: Buffer } | { error: CommandEnvelope }> {
-  const target: string = await path_resolve(pathArg);
+/**
+ * Reads a CFS file's bytes, or answers why not.
+ *
+ * @param pathArg - The path as typed.
+ * @param name - The command, for the refusal.
+ * @param resolve - Where the path is read: the session's path by default;
+ *   `file` reads where the store keeps it, through any link.
+ * @returns The path read and its bytes, or the refusal.
+ */
+async function bytes_read(
+  pathArg: string,
+  name: string,
+  resolve: (path: string) => Promise<string> = path_resolve,
+): Promise<{ path: string; bytes: Buffer } | { error: CommandEnvelope }> {
+  const target: string = await resolve(pathArg);
   const result: Result<Buffer> = await files_catBinary(target);
   if (result.ok) return { path: target, bytes: result.value };
   // A projected file (/etc/cube, a /proc log) has words but no bytes of its
@@ -105,13 +120,56 @@ async function bytes_read(pathArg: string, name: string): Promise<{ path: string
   return { error: envelope_error('', undefined, `${name}: ${pathArg}: ${why}\n`) };
 }
 
-/** `file <path>...` */
+/** What a `file` line may hold: ChRIS paths, a wildcard matching them. */
+const FILE_GRAMMAR = {
+  operands: [
+    { name: 'path', kind: 'cfsPath', repeat: true, glob: true, summary: 'The ChRIS files to name; a wildcard matches paths' },
+  ],
+} as const satisfies CommandGrammar;
+
+/**
+ * `file <path…>`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [fileCommand] }, 'backend');
+ * ```
+ */
+export const fileCommand = command_declare({
+  name: 'file',
+  grammar: FILE_GRAMMAR,
+  help: {
+    summary: 'What a file is, by its first bytes',
+    description: 'Reads a CFS file\'s head and names it by its magic: DICOM, NIfTI, gzip, PNG, JPEG, PDF, ZIP, JSON, text and more, with its size.',
+    category: 'Files',
+    posix: { group: 'Files', differs: 'names a CFS file by its first bytes (DICOM, NIfTI, …)' },
+    examples: ['file 0001.dcm', 'file ~/data/*'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof FILE_GRAMMAR>): Promise<CommandEnvelope> => file_run(args.operands.path),
+});
+
+/**
+ * `file` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `file`.
+ * @returns What each file is, or the refusal of a bad line.
+ */
 export async function builtin_file(args: string[]): Promise<CommandEnvelope> {
-  if (args.length === 0) return envelope_error('', undefined, 'file: usage: file <path>...\n');
+  return declaredCommand_run(fileCommand, args);
+}
+
+/**
+ * Names each file by its first bytes, reading it where the store keeps it.
+ *
+ * @param paths - The paths, as typed or matched.
+ * @returns A line per file, and the model; the first unreadable one's refusal.
+ */
+async function file_run(paths: readonly string[]): Promise<CommandEnvelope> {
   const lines: string[] = [];
   const data: Array<{ path: string; kind: string; bytes: number }> = [];
-  for (const arg of args) {
-    const read = await bytes_read(arg, 'file');
+  for (const arg of paths) {
+    const read = await bytes_read(arg, 'file', storePath_resolve);
     if ('error' in read) return read.error;
     const kind: string = magic_derive(read.bytes, read.path);
     lines.push(`${arg}: ${kind}${read.bytes.length > 0 ? chalk.gray(`  (${read.bytes.length.toLocaleString('en-US')} bytes)`) : ''}`);

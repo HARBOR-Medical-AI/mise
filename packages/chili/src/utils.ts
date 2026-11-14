@@ -7,10 +7,6 @@
  * @module
  */
 
-export { logicalPath_resolve } from './utils/cli.js';
-export { PathMapper, pathMapper_get } from './path/pathMapper.js';
-export type { CacheStats } from './path/pathMapper.js';
-
 /**
  * Re-exports connection initialization from cumin to align duplicate package boundaries.
  */

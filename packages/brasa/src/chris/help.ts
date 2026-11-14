@@ -38,50 +38,6 @@ export const CHRIS_BUILTIN_LINES: ReadonlyArray<string> = [
 ];
 
 export const chrisHelp: Record<string, CommandHelp> = {
-  edit: {
-    category: 'Files',
-    usage: 'edit <file>',
-    description: 'Edit a ChRIS file in $EDITOR — fetches, opens, saves back on write',
-    options: [
-      'Uses $EDITOR (or $VISUAL, or vi as fallback)',
-      'No-ops if file is unchanged on exit',
-      'On save: deletes original and re-uploads — file path preserved, ID changes',
-      'On upload failure: edited content preserved in /tmp',
-    ],
-    examples: [
-      'edit /home/chris/uploads/config.yaml',
-      'edit notes.txt',
-      'EDITOR=nano edit report.json',
-    ],
-  },
-  config: {
-    category: 'Files',
-    usage: 'config write <cfs-path> <base64-content>',
-    description: 'Write a small configuration document into the user\'s CUBE home (the durable layer: argus desktops, surface preferences). Reads travel the ordinary cat. Documents are notes, not datasets: 256KB limit.',
-    options: [],
-    examples: [
-      'config write ~/.config/argus/desktops/quad.desk dmlldyBmaWxlcwo=   # a saved argus desktop',
-      'cat ~/.config/argus/desktops/quad.desk                             # reading one back',
-    ],
-  },
-  upload: {
-    category: 'Files',
-    usage: 'upload <local_path_or_glob> <chris_path>',
-    description: 'Upload local files, directories, or glob matches to ChRIS with progress tracking',
-    options: [
-      'Displays progress bar showing:',
-      '  - File count and percentage complete',
-      '  - Estimated time remaining (ETA)',
-      '  - Data transfer progress',
-      'Shows summary statistics after upload',
-    ],
-    examples: [
-      'upload ~/data/file.csv /home/user/uploads/',
-      'upload ~/Pictures/earthandmoon* .',
-      'upload ./results/ ~/data/',
-      'upload ~/experiment/data /home/user/projects/',
-    ],
-  },
   plugin: {
     category: 'Resources',
     usage: 'plugin <subcommand> [options]',
@@ -280,13 +236,5 @@ export const chrisHelp: Record<string, CommandHelp> = {
       'PHI_detection --signalflow             # Emit SignalFlow YAML',
       'cat /bin/PHI_detection                 # Cached executable summary',
     ],
-  },
-  file: {
-    posix: { group: 'Files', differs: 'names a CFS file by its first bytes (DICOM, NIfTI, …)' },
-    category: 'Files',
-    usage: 'file <path>...',
-    summary: 'What a file is, by its first bytes',
-    description: 'Reads a CFS file\'s head and names it by its magic: DICOM, NIfTI, gzip, PNG, JPEG, PDF, ZIP, JSON, text and more, with its size.',
-    examples: ['file 0001.dcm', 'file ~/data/*'],
   },
 };

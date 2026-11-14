@@ -73,11 +73,6 @@ const Ok = (val: any) => ({ ok: true, value: val });
 const Err = (err: any) => ({ ok: false, error: err });
 const errorStack = { stack_push: jest.fn(), stack_pop: jest.fn(), checkpoint_mark: jest.fn(() => 0), checkpoint_drain: jest.fn(() => []) };
 
-// Mock chili utils
-jest.unstable_mockModule('@fnndsc/chili/utils', () => ({
-  logicalPath_resolve: jest.fn().mockResolvedValue({ ok: true, value: '/resolved/path' }),
-  pathMapper_get: jest.fn()
-}));
 
 // Mock chili screen
 jest.unstable_mockModule('@fnndsc/chili/screen/screen.js', () => ({
@@ -233,6 +228,9 @@ jest.unstable_mockModule('../src/builtins/fs/archive.js', () => ({
   directory_archive: archiveMock,
 }));
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
+  // CUBE's link walk, which the store-path resolver asks for every path.
+  logicalPath_resolve: jest.fn(async (path: string) => ({ ok: true, value: path })),
+  pathMapper_get: () => ({ blindParents_take: (): string[] => [] }),
   pipelineInvocation_prepare: jest.fn(() => ({ ok: true, value: { pipelineID: 1, nodeOverrides: [] } })),
   syncSeams_cube: { cubeDescriptor_read: async () => null },
   PROC_TAGS_PREFIX: '/proc/tags',
@@ -544,7 +542,7 @@ describe('Builtins - Core Functions', () => {
     it('should change to home directory when no args', async () => {
       mockUserGet.mockResolvedValue('testuser');
       mockClientGet.mockResolvedValue({ getFileBrowserFolderByPath: mockGetFileBrowserFolderByPath });
-      mockGetFileBrowserFolderByPath.mockResolvedValue({ path: '/resolved/path' });
+      mockGetFileBrowserFolderByPath.mockImplementation(async (at: string) => ({ path: at }));
 
       await builtin_cd([]);
 
@@ -623,20 +621,20 @@ describe('Builtins - Core Functions', () => {
         value: '/home/alice/outputs/result-set',
       });
       mockClientGet.mockResolvedValue({ getFileBrowserFolderByPath: mockGetFileBrowserFolderByPath });
-      mockGetFileBrowserFolderByPath.mockResolvedValue({ path: '/resolved/path' });
+      mockGetFileBrowserFolderByPath.mockImplementation(async (at: string) => ({ path: at }));
 
       const envelope: CommandEnvelope = await builtin_cd(['/proc/jobs/feed_5/pl-root_10/data']);
 
       expect(envelope.status).toBe('ok');
       expect(mockVfsDispatcherLinkTargetResolve)
         .toHaveBeenCalledWith('/proc/jobs/feed_5/pl-root_10/data');
-      expect(mockGetFileBrowserFolderByPath).toHaveBeenCalledWith('/resolved/path');
+      expect(mockGetFileBrowserFolderByPath).toHaveBeenCalledWith('/home/alice/outputs/result-set');
       expect(mockSetCWD).toHaveBeenCalledWith('/home/alice/outputs/result-set');
     });
 
     it('should change to valid ChRIS directory', async () => {
       mockClientGet.mockResolvedValue({ getFileBrowserFolderByPath: mockGetFileBrowserFolderByPath });
-      mockGetFileBrowserFolderByPath.mockResolvedValue({ path: '/resolved/path' });
+      mockGetFileBrowserFolderByPath.mockImplementation(async (at: string) => ({ path: at }));
 
       await builtin_cd(['/home/user/data']);
 
@@ -843,7 +841,7 @@ describe('Builtins - Core Functions', () => {
     it('should error with insufficient args', async () => {
       const envelope = await builtin_upload(['local.txt']);
 
-      expect(envelope.rendered).toContain('Usage:');
+      expect(envelope.renderedErr).toContain('upload: missing operand <destination>');
     });
 
     it('should handle upload errors', async () => {
@@ -1217,7 +1215,7 @@ describe('Builtins - Core Functions', () => {
       const envelope: CommandEnvelope = await builtin_cat([]);
 
       expect(envelope.status).toBe('error');
-      expect(envelope.renderedErr).toContain('Usage:');
+      expect(envelope.renderedErr).toContain('cat: missing operand <files>; usage: cat');
     });
 
     it('should error on /bin files', async () => {

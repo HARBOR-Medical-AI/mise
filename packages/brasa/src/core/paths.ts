@@ -59,6 +59,28 @@ export async function path_resolve(inputPath: string): Promise<string> {
 const STORE_HOPS_MAX: number = 8;
 
 /**
+ * How far `storePath_resolve` goes.
+ *
+ * @example
+ * ```ts
+ * const forRemoval: StorePathOptions = { entry: true };
+ * ```
+ */
+export interface StorePathOptions {
+  /**
+   * Follow the store's own links (the default). Without, only the mounts
+   * answer: a run's `data` path names the folder in its feed, and a node
+   * under it stays a node.
+   */
+  readonly links?: boolean;
+  /**
+   * The last part names the entry itself, where its folder is kept: `rm`,
+   * `rmdir` and `mv` act on a link, not on what it points at, as POSIX's do.
+   */
+  readonly entry?: boolean;
+}
+
+/**
  * Where a path lives in the backend's store: the one answer every reader
  * and lister asks before it goes to the dispatcher.
  *
@@ -73,18 +95,30 @@ const STORE_HOPS_MAX: number = 8;
  * Best effort by design: a path that resolves no further stands as it is,
  * and the read that follows refuses it by its own name.
  *
+ * Every file command asks it, readers and writers alike; so does the
+ * dispatcher, for any path it is handed for the store (`chris/mounts.ts`).
+ *
  * @param inputPath - The path as typed or as a surface gave it.
+ * @param options - Whether links are followed, and whether the last part
+ *   names the entry itself (see {@link StorePathOptions}).
  * @returns The store path; a path a mount holds itself (a file it makes),
  *   as resolved in the namespace.
  * @example
  * await storePath_resolve('/proc/jobs/feed_7/pl-dircopy_12/data/home_alice_uploads_set/a.txt');
  * // '/home/alice/uploads/set/a.txt', the dircopy's output holding a link to ~/uploads/set
+ * await storePath_resolve('/proc/jobs/feed_7/pl-dircopy_12/data/home_alice_uploads_set', { entry: true });
+ * // '/home/alice/feeds/feed_7/pl-dircopy_12/data/home_alice_uploads_set', the link itself
  */
-export async function storePath_resolve(inputPath: string): Promise<string> {
+export async function storePath_resolve(inputPath: string, options: StorePathOptions = {}): Promise<string> {
   // An absolute path needs no session to stand where it is.
   let at: string = inputPath.startsWith('/') ? path_resolveFrom(inputPath, '/', '/') : await path_resolve(inputPath);
+  if (options.entry === true) {
+    if (at === '/') return at;
+    const parent: string = await storePath_resolve(path.posix.dirname(at), { links: options.links });
+    return path.posix.join(parent, path.posix.basename(at));
+  }
   const dispatcher: VFSDispatcher = vfsDispatcher_get();
-  const links: ((path: string) => Promise<string>) | undefined = backendInstalled_get()?.vfs?.path_physical;
+  const links: ((path: string) => Promise<string>) | undefined = options.links === false ? undefined : backendInstalled_get()?.vfs?.path_physical;
   // A dispatcher that cannot say where its mounts are holds none.
   const mounted = (candidate: string): boolean => typeof dispatcher.path_isVirtual === 'function' && dispatcher.path_isVirtual(candidate);
   for (let hop: number = 0; hop < STORE_HOPS_MAX; hop++) {

@@ -17,7 +17,15 @@ jest.unstable_mockModule('../src/core/filesystem.js', () => ({
   listingCache_get: () => ({ cache_invalidate: jest.fn() }),
 }));
 
-const { builtin_rmdir, rmdirArgs_parse } = await import('../src/builtins/fs/rmdir.js');
+const { builtin_rmdir, rmdirCommand } = await import('../src/builtins/fs/rmdir.js');
+const { commandLine_parse } = await import('../src/core/commandParse.js');
+const { shellWords_tokenize } = await import('../src/lib/parser.js');
+
+/** What an `rmdir` line parses to: its paths, or the refusal. */
+async function rmdirLine_parse(line: string): Promise<{ paths: unknown } | string> {
+  const parsed = await commandLine_parse(rmdirCommand, shellWords_tokenize(line));
+  return parsed.ok ? { paths: parsed.args.operands['paths'] } : parsed.refusal;
+}
 
 /** What a folder lists, by name. */
 async function itemNames_list(folder: string): Promise<string[]> {
@@ -58,13 +66,13 @@ describe('rmdir', () => {
     expect((await builtin_rmdir(['/proc/tags/urgent'])).renderedErr).toContain("rmdir: failed to remove '/proc/tags/urgent': Directory not empty (2 feeds wear it)");
   });
 
-  it('takes paths only, refusing any option by name', () => {
-    expect(rmdirArgs_parse(['-p', 'x'])).toEqual({ refused: "rmdir: invalid option -- 'p'" });
-    expect(rmdirArgs_parse(['--parents'])).toEqual({ refused: "rmdir: unrecognized option '--parents'" });
-    expect(rmdirArgs_parse(['--', '-odd'])).toEqual({ paths: ['-odd'] });
+  it('takes paths only, refusing any option by name', async () => {
+    expect(await rmdirLine_parse('-p x')).toMatch(/^rmdir: invalid option -- 'p'; usage: /);
+    expect(await rmdirLine_parse('--parents')).toMatch(/^rmdir: unrecognized option '--parents'; usage: /);
+    expect(await rmdirLine_parse('-- -odd')).toEqual({ paths: ['-odd'] });
   });
 
-  it('reports usage with nothing to remove', async () => {
-    expect((await builtin_rmdir([])).renderedErr).toContain('Usage: rmdir');
+  it('refuses a line with nothing to remove', async () => {
+    expect((await builtin_rmdir([])).renderedErr).toContain('rmdir: missing operand <paths>');
   });
 });

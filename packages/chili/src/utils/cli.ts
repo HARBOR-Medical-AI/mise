@@ -7,7 +7,7 @@
 import { ListOptions, chrisContext, Context, errorStack, Result, Ok, Err } from "@fnndsc/cumin";
 import { keyPairParams_apply } from "@fnndsc/cumin";
 import path from "path"; // Node.js path module for joining paths
-import { pathMapper_get } from "../path/pathMapper.js";
+import { logicalPath_resolve } from "@fnndsc/salsa";
 
 /**
  * Common CLI option flags shared across chili commands.
@@ -122,29 +122,3 @@ export async function path_resolveChrisFs(
   return physicalResult.value;
 }
 
-/**
- * Resolves a logical path to its physical path by following links.
- *
- * This function delegates to the PathMapper singleton, which uses
- * hierarchical caching to optimize repeated resolutions with common prefixes.
- *
- * Example:
- *   Logical:  /home/user/public/data
- *   Where:    public -> /PUBLIC
- *   Physical: /PUBLIC/data
- *
- * @param logicalPath - The logical (apparent) path the user sees/navigates
- * @returns A Result containing the physical path, or Err if path is invalid
- */
-export async function logicalPath_resolve(logicalPath: string): Promise<Result<string>> {
-  const mapper = pathMapper_get();
-  return mapper.logicalPath_resolve(logicalPath);
-}
-
-/**
- * Clears the path mapping cache. Useful when links are created/deleted.
- */
-export function linkCache_clear(): void {
-  const mapper = pathMapper_get();
-  mapper.cache_clear();
-}

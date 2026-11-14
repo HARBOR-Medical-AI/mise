@@ -94,7 +94,6 @@ let homeNamed: string = '/home/alice';
 const backendKinds: { kinds: ReadonlyArray<unknown> } = { kinds: [] };
 jest.unstable_mockModule('../src/core/backend.js', () => ({ backendInstalled_get: () => ({ session: { home_get: async (): Promise<string> => homeNamed }, argumentKinds: backendKinds.kinds }) }));
 jest.unstable_mockModule('../src/core/filesystem.js', () => ({ vfsDispatcher_get: () => ({ list: async (folder: string) => cubeFolder_list(folder) }) }));
-jest.unstable_mockModule('@fnndsc/chili/utils', () => ({ logicalPath_resolve: async (logical: string) => ({ ok: true, value: logical }) }));
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/upload.js', () => ({ files_uploadWithProgress: mockUpload }));
 cuminMock_install(() => ({
   path_extractFeedID: (): number | null => null,

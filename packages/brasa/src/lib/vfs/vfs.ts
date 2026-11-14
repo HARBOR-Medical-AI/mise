@@ -172,7 +172,8 @@ export class VFS {
 
   /**
    * Returns the directory entry for `absolutePath` itself (not its contents).
-   * Looks up the entry in the parent's listing — used to implement `ls -d`.
+   * Looks up the entry in the parent's listing, read where the store keeps
+   * it (`storePath_resolve`) — used to implement `ls -d`.
    *
    * @param absolutePath - The fully resolved path of the target.
    * @param options - Sort options forwarded to the parent listing.
@@ -198,7 +199,7 @@ export class VFS {
     } else {
       // The parent is read only to find one name; what it could not read is not this answer's.
       const parentMark: number = errorStack.checkpoint_mark();
-      const parentResult = await vfsDispatcher_get().list(parentPath, options);
+      const parentResult = await vfsDispatcher_get().list(await storePath_resolve(parentPath), options);
       errorStack.checkpoint_drain(parentMark);
       if (parentResult.ok) {
         parentItems = listingItemsFromVfs_make(parentResult.value);
@@ -216,7 +217,7 @@ export class VFS {
     // is not there, and saying so is the answer: a folder made up from the
     // path's name read as one that exists, to `ls -d` and to `du` alike.
     const mark: number = errorStack.checkpoint_mark();
-    const itself = await vfsDispatcher_get().list(absolutePath, options);
+    const itself = await vfsDispatcher_get().list(await storePath_resolve(absolutePath), options);
     errorStack.checkpoint_drain(mark);
     if (itself.ok) {
       return Ok([{ name: baseName, type: 'dir', size: 0, owner: 'system', date: '' }]);
@@ -240,7 +241,7 @@ export class VFS {
     let parentItems: ListingItem[] | null = listingCache_get().cache_get<ListingItem[]>(parentPath)?.data ?? null;
     if (parentItems === null) {
       const parentMark: number = errorStack.checkpoint_mark();
-      const parent = await vfsDispatcher_get().list(parentPath, {});
+      const parent = await vfsDispatcher_get().list(await storePath_resolve(parentPath), {});
       // The parent was only asked to find one name; what it could not read is not this listing's.
       errorStack.checkpoint_drain(parentMark);
       if (!parent.ok) return null;

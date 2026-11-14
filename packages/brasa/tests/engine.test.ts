@@ -170,12 +170,9 @@ jest.unstable_mockModule('@fnndsc/salsa', () => ({
   context_getSingle: jest.fn(() => ({ user: 'u', URL: 'http://x' })),
 }));
 
-// The two doors `file_read` reaches for: ChILI's binary cat, and the link
-// walk that turns a logical path into the file CUBE actually stores.
+// The door `file_read` reaches for: ChILI's binary cat.
 const mockCatBinary = jest.fn(async (_path: string): Promise<{ ok: boolean; value?: Buffer }> => ({ ok: false }));
-const mockToPhysical = jest.fn(async (path: string): Promise<{ ok: boolean; value?: string }> => ({ ok: true, value: path }));
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/cat.js', () => ({ files_cat: jest.fn(), files_catBinary: mockCatBinary }));
-jest.unstable_mockModule('@fnndsc/chili/utils', () => ({ logicalPath_resolve: mockToPhysical }));
 
 // The path a caller gave, already absolute in these cases; where the store
 // keeps it is the session's one resolver, pinned in storePath.test.ts.

@@ -10,11 +10,16 @@
  *
  * This eliminates redundant tree walking and API calls for paths with common prefixes.
  *
+ * It is CUBE's own mechanics (a `.chrislink` is a file CUBE lists among a
+ * folder's links), so it lives with the file reads. The kernel asks it
+ * through one door: the ChRIS backend's link walk, which brasa's
+ * `storePath_resolve` calls for every file command.
+ *
  * @module
  */
 
 import { Result, Ok, Err, errorStack, type StackMessage } from '@fnndsc/cumin';
-import { files_listAll } from '@fnndsc/salsa';
+import { files_listAll } from './index.js';
 import * as path from 'path';
 import { listCache_get } from '@fnndsc/cumin';
 
@@ -532,4 +537,34 @@ export class PathMapper {
  */
 export function pathMapper_get(): PathMapper {
   return PathMapper.instance_get();
+}
+
+/**
+ * Resolves a logical path to its physical path by following links.
+ *
+ * Delegates to the PathMapper singleton, which uses hierarchical caching to
+ * optimize repeated resolutions with common prefixes.
+ *
+ * @param logicalPath - The logical (apparent) path the user sees/navigates.
+ * @returns A Result containing the physical path, or Err if path is invalid.
+ *
+ * @example
+ * ```ts
+ * await logicalPath_resolve('/home/user/public/data'); // Ok('/PUBLIC/data') where public -> /PUBLIC
+ * ```
+ */
+export async function logicalPath_resolve(logicalPath: string): Promise<Result<string>> {
+  return pathMapper_get().logicalPath_resolve(logicalPath);
+}
+
+/**
+ * Clears the path mapping cache. Useful when links are created/deleted.
+ *
+ * @example
+ * ```ts
+ * linkCache_clear();
+ * ```
+ */
+export function linkCache_clear(): void {
+  pathMapper_get().cache_clear();
 }

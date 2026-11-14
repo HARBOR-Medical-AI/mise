@@ -13,9 +13,8 @@ jest.unstable_mockModule('../src/session/index.js', () => ({
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
   vfsDispatcher: { list: mockVfsList },
   context_getSingle: jest.fn(async () => ({ user: 'testuser' })),
-}));
-jest.unstable_mockModule('@fnndsc/chili/utils/cli.js', () => ({
-  path_resolveChrisFs: mockResolveChrisFs,
+  // CUBE's link walk, which the store-path resolver asks.
+  logicalPath_resolve: async (path: string) => ({ ok: true, value: await mockResolveChrisFs(path) }),
 }));
 cuminMock_install(() => ({
   feedTags_readByFeed: jest.fn(),

@@ -65,7 +65,7 @@ function optionsInReach_list(grammar: CommandGrammar, subcommand: SubcommandGram
 function shortValue_pending(options: readonly OptionGrammar[], word: string): OptionGrammar | null {
   for (let index: number = 1; index < word.length; index += 1) {
     const option: OptionGrammar | undefined = options.find((one: OptionGrammar): boolean => one.short === word[index]);
-    if (option?.value !== undefined) return index === word.length - 1 ? option : null;
+    if (option?.value !== undefined) return index === word.length - 1 && option.value.optional !== true ? option : null;
   }
   return null;
 }
@@ -87,7 +87,8 @@ function lineReach_walk(grammar: CommandGrammar, prior: readonly string[]): Line
       reach.optionsEnded = true;
     } else if (!reach.optionsEnded && word.startsWith('--')) {
       const option: OptionGrammar | undefined = options.find((one: OptionGrammar): boolean => one.long === word.slice(2));
-      reach.pending = option?.value !== undefined ? option : null;
+      // An optional value is in the option's own word, so the next word is not it.
+      reach.pending = option?.value !== undefined && option.value.optional !== true && !word.includes('=') ? option : null;
     } else if (!reach.optionsEnded && word.startsWith('-') && word.length > 1 && !NEGATIVE_NUMBER.test(word)) {
       reach.pending = shortValue_pending(options, word);
     } else if (grammar.subcommands !== undefined && reach.subcommand === null && reach.operands === 0 && !reach.optionsEnded && Object.hasOwn(grammar.subcommands, word)) {

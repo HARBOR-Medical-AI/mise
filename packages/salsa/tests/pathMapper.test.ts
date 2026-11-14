@@ -12,12 +12,12 @@
  * @module
  */
 
-import { PathMapper, pathMapper_get } from '../src/path/pathMapper';
-import { files_listAll } from '@fnndsc/salsa';
+import { PathMapper, pathMapper_get, logicalPath_resolve, linkCache_clear } from '../src/files/pathMapper';
+import { files_listAll } from '../src/files/index';
 import { Ok, Err, errorStack } from '@fnndsc/cumin';
 
-// Mock the salsa files_listAll function
-jest.mock('@fnndsc/salsa');
+// Mock the store's link listing
+jest.mock('../src/files/index');
 
 describe('PathMapper', () => {
   let mapper: PathMapper;
@@ -690,8 +690,6 @@ describe('PathMapper', () => {
 
   describe('Integration with logicalPath_resolve wrapper', () => {
     it('should be callable via wrapper function', async () => {
-      const { logicalPath_resolve } = await import('../src/utils/cli');
-
       mockFilesListAll.mockResolvedValue({
         tableData: [],
         selectedFields: []
@@ -702,6 +700,14 @@ describe('PathMapper', () => {
       if (result.ok) {
         expect(result.value).toBe('/home/user/files');
       }
+    });
+
+    it('clears every mapping through linkCache_clear', async () => {
+      mockFilesListAll.mockResolvedValue({ tableData: [], selectedFields: [] });
+      await logicalPath_resolve('/home/user/files');
+      expect(pathMapper_get().stats_get().size).toBeGreaterThan(0);
+      linkCache_clear();
+      expect(pathMapper_get().stats_get().size).toBe(0);
     });
   });
 });

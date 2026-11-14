@@ -68,8 +68,8 @@ beforeEach(() => {
 });
 
 describe('touch', () => {
-  it('reports usage with no file argument, and refuses an option it does not have', async () => {
-    expect((await builtin_touch([])).renderedErr).toContain('Usage: touch');
+  it('refuses a line with no file argument, and an option it does not have', async () => {
+    expect((await builtin_touch([])).renderedErr).toContain('touch: missing operand <paths>');
     expect((await builtin_touch(['-p', 'a'])).renderedErr).toContain("touch: invalid option -- 'p'");
   });
 
@@ -132,7 +132,7 @@ describe('touch', () => {
 
 describe('mv', () => {
   it('reports usage with nothing given, and refuses an option it does not have', async () => {
-    expect((await builtin_mv([])).rendered).toContain('Usage: mv');
+    expect((await builtin_mv([])).renderedErr).toContain('mv: missing operand <paths>; usage: mv');
     expect((await builtin_mv(['--force', 'a', 'b'])).renderedErr).toContain("mv: unrecognized option '--force'");
   });
 
@@ -191,7 +191,7 @@ describe('mv', () => {
 
 describe('cp', () => {
   it('reports usage with nothing given, and refuses an option it does not have', async () => {
-    expect((await builtin_cp([])).rendered).toContain('Usage: cp');
+    expect((await builtin_cp([])).renderedErr).toContain('cp: missing operand <paths>; usage: cp');
     expect((await builtin_cp(['-x', 'a', 'b'])).renderedErr).toContain("cp: invalid option -- 'x'");
   });
 

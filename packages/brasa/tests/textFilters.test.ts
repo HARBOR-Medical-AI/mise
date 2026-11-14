@@ -1,8 +1,7 @@
 /**
  * @file The text filters a pipe ends in (wc, head, tail, sort, uniq, cut):
  * POSIX's flags with POSIX's meanings, run in the kernel on what was piped in
- * or on ChRIS files, and a flag not taken handed to the system program where
- * the surface runs one, refused by name where it does not.
+ * or on ChRIS files; a flag not taken is refused by the parser.
  */
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
@@ -102,19 +101,49 @@ describe('sort, uniq and cut', () => {
 });
 
 describe('a flag the builtin does not take', () => {
-  it('goes to the system program with the piped text where the surface runs one', async () => {
+  it('is refused by the parser, never handed to a system program (command sort asks for one)', async () => {
     surface.capabilities.pipeSegments = true;
-    const passed = await piped(builtin_sort, 'b\na\n', ['-V']);
-    expect(surface.pipeSegment).toHaveBeenCalledWith('sort -V', Buffer.from('b\na\n'));
-    expect(passed.rendered).toBe('system:b\na\n');
+    const refused = await piped(builtin_sort, 'b\na\n', ['-Q']);
+    expect(refused.status).toBe('error');
+    expect(refused.renderedErr).toContain("sort: invalid option -- 'Q'; usage: sort");
+    expect(surface.pipeSegment).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
   });
 
-  it('is refused by name where the surface runs none, or when the input is a ChRIS file', async () => {
-    const browser = await piped(builtin_tail, 'a\n', ['-f']);
-    expect(browser.renderedErr).toContain('tail: -f: the builtin does not take it, and this surface runs no system tail');
+  it('is refused the same on any surface, and with a ChRIS file', async () => {
+    const browser = await piped(builtin_tail, 'a\n', ['-Q']);
+    expect(browser.renderedErr).toContain("tail: invalid option -- 'Q'; usage: tail");
     surface.capabilities.pipeSegments = true;
     const file = await builtin_wc(['-L', 'a.csv']);
-    expect(file.renderedErr).toContain("wc: -L: the builtin does not take it, and a system wc cannot read the session's files");
+    expect(file.renderedErr).toContain("wc: invalid option -- 'L'; usage: wc");
     expect(surface.pipeSegment).not.toHaveBeenCalled();
+  });
+});
+
+describe('the flags a person used, run in the kernel on every surface', () => {
+  it('sort -h orders human sizes, -V versions, and refuses a mix', async () => {
+    expect((await piped(builtin_sort, '1M\n2K\n3G\n10K\n', ['-h'])).rendered).toBe('2K\n10K\n1M\n3G\n');
+    expect((await piped(builtin_sort, 'v10\nv2\nv1.10\nv1.9\n', ['--version-sort'])).rendered).toBe('v1.9\nv1.10\nv2\nv10\n');
+    expect((await piped(builtin_sort, '1\n', ['-nh'])).renderedErr).toContain('sort: -n, -h and -V do not mix');
+  });
+
+  it('head -c and tail -c keep bytes: the first N, all but the last N, the last N, from byte N', async () => {
+    expect((await piped(builtin_head, 'hello\n', ['-c', '3'])).rendered).toBe('hel');
+    expect((await piped(builtin_head, 'hello\n', ['--bytes=-2'])).rendered).toBe('hell');
+    expect((await piped(builtin_tail, 'hello\n', ['-c3'])).rendered).toBe('lo\n');
+    expect((await piped(builtin_tail, 'hello\n', ['-c', '+2'])).rendered).toBe('ello\n');
+    expect((await piped(builtin_head, 'hello\n', ['-n', '1', '-c', '1'])).renderedErr).toContain('head: -n and -c do not mix');
+  });
+
+  it('tail -f shows the last lines once and says it does not follow', async () => {
+    const followed = await builtin_tail(['-f', '-n', '1', 'b.txt']);
+    expect(followed.status).toBe('ok');
+    expect(followed.rendered).toBe('two\n');
+    expect(followed.renderedErr).toContain('tail: -f: a ChRIS file or a pipe is not followed');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('uniq -i folds case', async () => {
+    expect((await piped(builtin_uniq, 'a\nA\nb\n', ['-i'])).rendered).toBe('a\nb\n');
   });
 });

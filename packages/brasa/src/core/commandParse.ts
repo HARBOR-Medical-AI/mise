@@ -5,7 +5,9 @@
  * 1. The line's shape is parsed, GNU `getopt_long` for every command: `-f`,
  *    bundled short switches (`-rf`), `--force`; `--name x` and `--name=x`;
  *    `--` ends the options; options may stand anywhere among the operands;
- *    a word like `-3` is an operand when an operand of the line is numeric;
+ *    a word like `-3` is an operand when an operand of the line is numeric,
+ *    or the value of the option that says `numeral` (`head -3`); a value
+ *    that may be left out (`--highlight[=lang]`) is only in its own word;
  *    a value option that `asks`, given no value, is a question (null).
  *    Subcommand words and option names are literal and never globbed.
  * 2. Operands expand by kind: only a path operand that declares `glob` has
@@ -43,6 +45,9 @@ import { exitCode_set } from './handlerRun.js';
 
 /** A word that reads as a negative number. */
 const NEGATIVE_NUMBER: RegExp = /^-\d+(?:\.\d+)?$/;
+
+/** A dash and digits: an option that says `numeral` with that value (`head -5`). */
+const DASH_DIGITS: RegExp = /^-\d+$/;
 
 /** What parsing a line came to: the handler's argument, or the refusal. */
 export type LineParse =
@@ -186,8 +191,9 @@ function longOption_read(words: readonly ShellWord[], at: number, walk: ShapeWal
     option_record(options, entry, null);
     return at + 1;
   }
-  if (inline !== null) {
-    option_record(options, entry, inline);
+  if (inline !== null || entry.option.value.optional === true) {
+    // An optional value is only ever in the option's own word.
+    option_record(options, entry, inline ?? '');
     return at + 1;
   }
   const next: ShellWord | undefined = words[at + 1];
@@ -222,7 +228,7 @@ function shortOptions_read(words: readonly ShellWord[], at: number, walk: ShapeW
       continue;
     }
     const rest: string = text.slice(index + 1);
-    if (rest !== '') {
+    if (rest !== '' || entry.option.value.optional === true) {
       option_record(options, entry, rest);
       return at + 1;
     }
@@ -300,6 +306,9 @@ function lineShape_parse(grammar: CommandGrammar, words: readonly ShellWord[]): 
       at += 1;
     } else if (text.startsWith('--')) {
       at = longOption_read(words, at, walk, options);
+    } else if (DASH_DIGITS.test(text) && walk.entries.some((entry: OptionEntry): boolean => entry.option.numeral === true)) {
+      option_record(options, walk.entries.find((entry: OptionEntry): boolean => entry.option.numeral === true) as OptionEntry, text.slice(1));
+      at += 1;
     } else if (text.startsWith('-') && text.length > 1 && !(NEGATIVE_NUMBER.test(text) && operands_takeNumbers(reach))) {
       at = shortOptions_read(words, at, walk, options);
     } else {
@@ -436,7 +445,9 @@ export async function commandLine_parse(declaration: CommandDeclaration, words: 
   try {
     const shape: LineShape = lineShape_parse(grammar, words);
     const scope: SubcommandGrammar | null = shape.subcommand === null ? null : (grammar.subcommands?.[shape.subcommand] ?? null);
-    const operandGrammars: readonly OperandGrammar[] = scope !== null ? (scope.operands ?? []) : (grammar.operands ?? []);
+    // An operand that stands only without an option is gone when the option is given.
+    const operandGrammars: readonly OperandGrammar[] = (scope !== null ? (scope.operands ?? []) : (grammar.operands ?? []))
+      .filter((operand: OperandGrammar): boolean => operand.unless === undefined || !shape.options.has(operand.unless));
     const assigned: Map<string, ShellWord[]> = operandWords_assign(operandGrammars, shape.operands, shape.subcommand);
     const operands: Record<string, unknown> = {};
     const expanded: Record<string, boolean> = {};

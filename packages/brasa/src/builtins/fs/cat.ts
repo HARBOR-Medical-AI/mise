@@ -1,10 +1,26 @@
 /**
- * @file Text and binary implementation of the `cat` builtin.
+ * @file `cat`: prints files of ChRIS's filesystem (CFS), text or binary.
  *
- * Reads ChRIS files through ChILI, streams binary bytes through the active
- * output sink, and returns text in command envelopes. Text highlighting uses
- * cli-highlight with a forced-color theme only after argument/TTY policy has
- * allowed ANSI; ordinary pipe and redirect sinks strip ANSI downstream.
+ * Declared in one record (`catCommand`): one or more files, each a path
+ * that may be a wildcard, read where the store keeps it
+ * (`storePath_resolve`: a path through a link reads what it points at).
+ * Binary bytes stream through the active output sink; text returns in the
+ * envelope. Text highlighting uses cli-highlight with a forced-color theme
+ * only after option/TTY policy has allowed ANSI; ordinary pipe and redirect
+ * sinks strip ANSI downstream.
+ *
+ * Key components:
+ * - catCommand: the declaration.
+ * - builtin_cat: the declaration run over words already split.
+ * - cat_run: the typed core behind both, and the typed API.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_cat(['--highlight=python', 'source']);
+ * await cat_run({ filePaths: ['notes.txt'], binaryMode: false, highlightMode: 'never' });
+ * ```
+ *
+ * Dependencies: the session's filesystem and output sink, and cli-highlight.
  *
  * @module
  */
@@ -14,9 +30,10 @@ import { highlight, supportsLanguage, type Theme } from 'cli-highlight';
 import { vfsDispatcher_get } from '../../core/filesystem.js';
 import { path_resolve, storePath_resolve, error_stripDebugPrefix } from '../utils.js';
 import { sink_get } from '../../core/sink.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import {
   CAT_USAGE,
-  catArguments_parse,
   type CatArguments,
   type CatHighlightMode,
 } from './cat.args.js';
@@ -313,8 +330,72 @@ async function textFile_read(target: string): Promise<Result<string>> {
   }
 }
 
+/** What a `cat` line may hold. */
+const CAT_GRAMMAR = {
+  operands: [
+    { name: 'files', kind: 'cfsPath', repeat: true, glob: true, summary: 'The files to print, in order' },
+  ],
+  options: {
+    binary: { long: 'binary', summary: 'Force byte-for-byte binary output' },
+    highlight: {
+      long: 'highlight',
+      summary: 'Force highlighting: in a cli-highlight language such as python, typescript, or sql; given none, inferred from the filename or content',
+      value: { name: 'language', kind: 'word', optional: true },
+    },
+    noHighlight: { long: 'no-highlight', summary: 'Disable automatic syntax highlighting (wins over --highlight)' },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * Displays the content of one or more files.
+ * Runs a parsed `cat` line: its options as the typed core's presentation.
+ * `--no-highlight` wins over `--highlight`; a bare `--highlight` (the
+ * empty value) infers the language.
+ *
+ * @param args - The typed line.
+ * @returns The files' envelope.
+ */
+async function cat_handle(args: CommandArguments<typeof CAT_GRAMMAR>): Promise<CommandEnvelope> {
+  const language: string | undefined = args.options.highlight;
+  const highlightMode: CatHighlightMode = args.options.noHighlight ? 'never' : language !== undefined ? 'always' : 'auto';
+  return cat_run({
+    filePaths: args.operands.files,
+    binaryMode: args.options.binary,
+    highlightMode,
+    ...(highlightMode === 'always' && language !== '' ? { highlightLanguage: language } : {}),
+  });
+}
+
+/**
+ * `cat [--binary] [--highlight[=<language>]] [--no-highlight] <files…>`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [catCommand] });
+ * ```
+ */
+export const catCommand = command_declare({
+  name: 'cat',
+  grammar: CAT_GRAMMAR,
+  help: {
+    summary: 'Display file contents',
+    description: 'Display file contents, with terminal syntax highlighting for recognized text formats. Several files print in order, one after another. A file with a binary extension (.dcm, .png, .zip, ...) is written byte for byte; a path through a link reads what it points at.',
+    category: 'Files',
+    posix: { group: 'Files', differs: 'reads CFS files' },
+    examples: [
+      'cat file.txt                    # Display single file',
+      'cat analysis.py                 # Auto-highlight Python in a terminal',
+      'cat source --highlight=python   # Force Python highlighting without filename inference',
+      'cat config.json --no-highlight  # Display raw text',
+      'cat file1 file2                 # Display multiple files',
+    ],
+  },
+  holds: [],
+  handler: cat_handle,
+});
+
+/**
+ * Displays the content of one or more files: the declaration's parse and
+ * handler over words already split.
  *
  * Supports multiple files and concatenates their output. Binary mode is applied
  * per recognized file, or consistently to all files when `--binary` is specified.
@@ -323,12 +404,12 @@ async function textFile_read(target: string): Promise<Result<string>> {
  * and the binary auto-detection notice is emitted live on the err channel so it
  * precedes the bytes it describes.
  *
- * @param args - File paths plus optional binary/highlight flags.
+ * @param args - The words after `cat`.
  * @returns An envelope whose rendered text carries the (highlighted) file
- *   contents and whose model lists per-file outcomes.
+ *   contents and whose model lists per-file outcomes, or the refusal of a bad line.
  */
 export async function builtin_cat(args: string[]): Promise<CommandEnvelope> {
-  return cat_run(catArguments_parse(args));
+  return declaredCommand_run(catCommand, args);
 }
 
 /**

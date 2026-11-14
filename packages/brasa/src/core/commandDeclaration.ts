@@ -86,12 +86,24 @@ export interface OperandGrammar extends ArgumentGrammar {
   readonly optional?: boolean;
   /** It takes every word left over: at most one operand of a grammar repeats. */
   readonly repeat?: boolean;
+  /**
+   * It stands only when this option (by its property) is not given: grep's
+   * pattern operand is gone once `-e` gives the pattern, and every word is a
+   * file. Such an operand is optional.
+   */
+  readonly unless?: string;
 }
 
 /** An option's value: an argument with the word usage shows for it (`<field>`). */
 export interface OptionValueGrammar extends ArgumentGrammar {
   /** The word usage shows: `--sort <field>`. */
   readonly name: string;
+  /**
+   * The value may be left out (GNU's `optional_argument`): it is given only
+   * in the same word, `--highlight=python` or `-hpython`, and the option
+   * alone (`--highlight`) reads as the empty value.
+   */
+  readonly optional?: boolean;
 }
 
 /**
@@ -119,6 +131,11 @@ export interface OptionGrammar {
    * for the value (`query … --csv-to`).
    */
   readonly asks?: boolean;
+  /**
+   * A word of digits after a dash (`-5`) is this option with that value, as
+   * `head -5` is `head -n 5`. At most one option of a line says so.
+   */
+  readonly numeral?: boolean;
 }
 
 /** A grammar's options, by the property the handler reads them as. */

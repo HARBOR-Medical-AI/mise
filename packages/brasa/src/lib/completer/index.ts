@@ -149,7 +149,8 @@ function declaredLine_complete(line: string, args: string[], declaration: AnyCom
 }
 
 /**
- * Completes an argument: a path, for the commands that take one.
+ * Completes an argument of a command not declared: a path, for a /bin
+ * entry that takes one (a declared command's kinds complete its words).
  *
  * @param line - The input line.
  * @param args - Its words.
@@ -172,10 +173,6 @@ function argumentCompletion_run(line: string, args: string[], callback: Complete
   // first on the line. An option word is not one, and the word after `as`
   // is a subject's name, so neither completes.
   const pathArguments: ((command: string) => Promise<boolean>) | undefined = backendInstalled_get()?.completion?.pathArguments;
-  if (PATH_COMMANDS.includes(cmd)) {
-    pathWord_complete();
-    return;
-  }
   if (pathArguments !== undefined) {
     const word: CompletionWord = completionWord_get(line);
     const previous: string | undefined = line.endsWith(' ') ? args[args.length - 1] : args[args.length - 2];
@@ -188,9 +185,6 @@ function argumentCompletion_run(line: string, args: string[], callback: Complete
   }
   callback(null, [[], line]);
 }
-
-/** The commands not yet declared whose arguments are paths; a declared command leaves it, its kinds saying which words are paths. */
-const PATH_COMMANDS: ReadonlyArray<string> = ['mkdir', 'rmdir', 'touch', 'cat', 'edit', 'cp', 'mv', 'rm', 'upload', 'find', 'wc', 'head', 'tail', 'sort', 'uniq', 'cut'];
 
 /**
  * Command words beyond the registry's, from the backend (ChRIS: its plugins).

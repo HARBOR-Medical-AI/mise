@@ -80,11 +80,8 @@ describe('pathnameExpansion_isEligible', () => {
     expect(pathnameExpansion_isEligible('connect', 0, 1)).toBe(true);
   });
 
-  // download is declared: its grammar says which operands glob, so the
-  // table is never asked about it (commandDeclarations.test.ts).
-  it('keeps upload\'s host operands out of CFS/VFS expansion', () => {
-    expect(pathnameExpansion_isEligible('upload', 0, 2)).toBe(false);
-  });
+  // download and upload are declared: their grammars say which operands
+  // glob, so the table is never asked about them (commandDeclarations.test.ts).
 });
 
 describe('command_shellEscape_detect', () => {
