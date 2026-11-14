@@ -13,7 +13,7 @@ import { berthKey_compute, identity_normalise } from '@fnndsc/calypso/berth';
 import { berthCapacity_derive, profileFloor_get } from '@fnndsc/menu';
 import type { DockerAnswer, DockerApi, ExecAnswer } from '../../src/launcher/docker.js';
 import { dockerStream_demux } from '../../src/launcher/docker.js';
-import { BERTH_ANCHORS_DIR, BERTH_IMAGE_DEFAULT, BERTH_LABEL, BERTH_OUTGOING_DIR, BerthLauncher, type BerthNames, berthContainer_spec, berthName_matches, berthNames_derive, berthPlaces_check, cohort_word, pullFailure_read, stats_digest, volumesOwnScript_build } from '../../src/launcher/launcher.js';
+import { BERTH_ANCHORS_DIR, BERTH_IMAGE_DEFAULT, BERTH_LABEL, BERTH_OUTGOING_DIR, BerthLauncher, type BerthNames, berthContainer_spec, berthName_matches, berthNames_derive, berthPlaces_check, cohort_word, imageRecord_read, pullFailure_read, stats_digest, volumesOwnScript_build } from '../../src/launcher/launcher.js';
 import { BERTH_LIMITS_DEFAULT, berthPolicy_read, capacityRefusal_words, type BerthPolicy } from '../../src/launcher/policy.js';
 import { launcherServer_create, secret_matches } from '../../src/launcher/server.js';
 import { launcherSecret_read } from '../../src/launcher/secret.js';
@@ -70,7 +70,11 @@ class FakeDocker implements DockerApi {
       this.images.add(image);
       return { status: 200, body: `{"status":"Pulling from mise-berth"}\r\n${JSON.stringify({ status: this.pullSays })}\r\n` };
     }
-    if (method === 'GET' && parts[1] === 'images') return { status: this.images.has(route.slice('/images/'.length, -'/json'.length)) ? 200 : 404, body: {} };
+    if (method === 'GET' && parts[1] === 'images') {
+      const image: string = route.slice('/images/'.length, -'/json'.length);
+      // As the engine names a pulled tag: by its repository and the digest it holds.
+      return this.images.has(image) ? { status: 200, body: { RepoDigests: [`${image.replace(/:[^/:@]+$/, '')}@sha256:feed`] } } : { status: 404, body: {} };
+    }
     if (method === 'GET' && route === '/info') return { status: 200, body: { NCPU: this.host.cpus, MemTotal: this.host.memory } };
     if (route === '/networks/create') { const spec = body as { Name: string; Options?: Record<string, string> }; this.networks.set(spec.Name, { options: spec.Options ?? {}, members: new Set() }); return { status: 201, body: {} }; }
     if (method === 'GET' && route === '/networks') return { status: 200, body: [...this.networks.keys()].map((one) => ({ Name: one })) };
@@ -238,7 +242,7 @@ describe('the names and the container a berth is', () => {
     expect(spec['Image']).toBe('img@sha256:abc');
     expect(spec['User']).toBe('7:7');
     expect(spec['Env']).toContain('MISE_COHORT=42');
-    expect(spec['Env']).toEqual(expect.arrayContaining(['MISE_BERTH_ANCHORS=/anchors', 'MISE_BERTH_OUTGOING=/outgoing']));
+    expect(spec['Env']).toEqual(expect.arrayContaining(['MISE_BERTH_ANCHORS=/anchors', 'MISE_BERTH_OUTGOING=/outgoing', 'MISE_BERTH_IMAGE=img@sha256:abc']));
     expect(BERTH_ANCHORS_DIR).toBe('/anchors');
     expect(BERTH_OUTGOING_DIR).toBe('/outgoing');
     expect(host['Mounts']).toEqual([
@@ -337,6 +341,8 @@ describe('the launcher over an engine', () => {
     const names = berthNames_derive('mbw', ANA, 'ana');
     expect(docker.pulls).toEqual([BERTH_IMAGE_DEFAULT]);
     expect(docker.containers.get(names.container)?.spec['Image']).toBe(BERTH_IMAGE_DEFAULT);
+    // The berth is told the build it runs: the tag with the digest the host holds for it.
+    expect(docker.containers.get(names.container)?.spec['Env']).toContain(`MISE_BERTH_IMAGE=${BERTH_IMAGE_DEFAULT}@sha256:feed`);
     expect(said).toEqual([`pulled a newer berth image ${BERTH_IMAGE_DEFAULT}`]);
     // The same berth asked for again is running: nothing is made, so nothing is pulled.
     await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token-2' });
@@ -346,6 +352,15 @@ describe('the launcher over an engine', () => {
     await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: 9 });
     expect(docker.pulls).toHaveLength(2);
     expect(said).toHaveLength(1);
+  });
+
+  it('names the image a close records: the tag with the digest the engine holds, or the tag alone', () => {
+    expect(imageRecord_read('ghcr.io/x/mise-berth:latest', { RepoDigests: ['ghcr.io/x/mise-berth@sha256:abc'] })).toBe('ghcr.io/x/mise-berth:latest@sha256:abc');
+    expect(imageRecord_read('ghcr.io/x/mise-berth:latest', { RepoDigests: [] })).toBe('ghcr.io/x/mise-berth:latest');
+    expect(imageRecord_read('ghcr.io/x/mise-berth:latest', { message: 'no such image' })).toBe('ghcr.io/x/mise-berth:latest');
+    expect(imageRecord_read('ghcr.io/x/mise-berth:latest', null)).toBe('ghcr.io/x/mise-berth:latest');
+    // An image already named by its digest is recorded as it is.
+    expect(imageRecord_read('img@sha256:abc', { RepoDigests: ['img@sha256:other'] })).toBe('img@sha256:abc');
   });
 
   it('a pull that fails does not fail the start when the host holds the image: it is said in the log and the copy is used', async () => {

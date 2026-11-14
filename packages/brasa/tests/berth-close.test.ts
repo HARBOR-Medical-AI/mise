@@ -417,6 +417,17 @@ describe('berth close: processes still running', () => {
     expect(berthState_read(anchors).lastClosedAt).toBeNull();
   });
 
+  it('a question nobody can answer (a surface with its input closed) is a no, and says how to go on', async () => {
+    mockProcesses.mockReturnValueOnce(RUNNING);
+    mockConfirm.mockRejectedValueOnce(new Error('no input to answer the question: standard input is closed'));
+    const result = await builtin_berth(['close']);
+    expect(dataLines).toContain('berth: close: not answered (no input to answer the question: standard input is closed); --force returns the work while they run');
+    expect(strip(result.rendered)).toBe('berth: close: nothing closed\n');
+    expect(process.exitCode).toBe(1);
+    expect(mockUpload).not.toHaveBeenCalled();
+    expect(berthState_read(anchors).lastClosedAt).toBeNull();
+  });
+
   it('yes goes on', async () => {
     mockProcesses.mockReturnValueOnce([RUNNING[0]!]);
     expect((await builtin_berth(['close'])).status).toBe('ok');

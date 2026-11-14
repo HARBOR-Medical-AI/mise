@@ -260,19 +260,42 @@ function containerName_read(row: unknown): string {
 }
 
 /**
+ * The image as a close records it: the tag the launcher runs, with the
+ * digest the engine's inspect names for it, so a moving tag such as `latest`
+ * still says which build ran.
+ *
+ * @param image - The launcher's image.
+ * @param inspect - The engine's `GET /images/<image>/json` body.
+ * @returns `ghcr.io/x/mise-berth:latest@sha256:…`, or the image alone when no digest is named.
+ *
+ * @example
+ * ```ts
+ * imageRecord_read('img:latest', { RepoDigests: ['img@sha256:abc'] }); // 'img:latest@sha256:abc'
+ * ```
+ */
+export function imageRecord_read(image: string, inspect: unknown): string {
+  if (image.includes('@')) return image;
+  const digests: unknown = field_get(inspect, 'RepoDigests');
+  const first: unknown = Array.isArray(digests) ? digests.find((one: unknown): boolean => typeof one === 'string' && one.includes('@sha256:')) : undefined;
+  return typeof first === 'string' ? `${image}${first.slice(first.indexOf('@'))}` : image;
+}
+
+/**
  * The container a berth is: everything fixed here but who it is for. Its
  * places are the home and the work volume's two, `/anchors` and
  * `/outgoing`, both the person's to write (the session downloads anchors and
  * takes write permission from them itself), and the session is told where
- * they are by `MISE_BERTH_ANCHORS` and `MISE_BERTH_OUTGOING`.
+ * they are by `MISE_BERTH_ANCHORS` and `MISE_BERTH_OUTGOING`. The image it
+ * runs is named to it by `MISE_BERTH_IMAGE`, so a close can record it.
  *
  * @param options - The launcher's image, prefix, networks and policy.
  * @param ask - Who it is for.
  * @param identity - The normalised identity.
  * @param hosts - Host lines for the engine's ExtraHosts; none by default.
+ * @param imageRecord - The image as a close records it (the tag with its digest, when known); the launcher's image by default.
  * @returns The engine's create body.
  */
-export function berthContainer_spec(options: Pick<LauncherOptions, 'image' | 'prefix' | 'cubeNetwork' | 'policy'>, ask: BerthAsk, identity: string, hosts: ReadonlyArray<string> = []): Record<string, unknown> {
+export function berthContainer_spec(options: Pick<LauncherOptions, 'image' | 'prefix' | 'cubeNetwork' | 'policy'>, ask: BerthAsk, identity: string, hosts: ReadonlyArray<string> = [], imageRecord: string = options.image): Record<string, unknown> {
   const names: BerthNames = berthNames_derive(options.prefix, identity, ask.user);
   const limits = options.policy.limits;
   const cohort: string = cohort_word(ask.cohort);
@@ -290,6 +313,7 @@ export function berthContainer_spec(options: Pick<LauncherOptions, 'image' | 'pr
       // The session's `berth` verbs read these two; absent, the session is not in a berth.
       `MISE_BERTH_ANCHORS=${BERTH_ANCHORS_DIR}`,
       `MISE_BERTH_OUTGOING=${BERTH_OUTGOING_DIR}`,
+      `MISE_BERTH_IMAGE=${imageRecord}`,
       'MISE_HOST_CONTROL=shell',
       // Porter reaches the session over the berth's wire, never loopback.
       'CALYPSO_BIND=0.0.0.0',
@@ -680,11 +704,11 @@ export class BerthLauncher {
     const capacity: number = berthCapacity_derive(host, floor, this.options.policy);
     const room: BerthRoom = { hostGib: host.memoryGib, floorGib: floor.memory, berthGib: this.options.policy.limits.memoryGib };
     if (others.length >= capacity) throw new BerthRefusal(409, capacityRefusal_words(capacity, others.map((one: BerthState): string => one.user), room));
-    await this.image_pull();
+    const imageRecord: string = await this.image_pull();
     await this.cubeNetwork_ensure();
     await this.wire_ensure(names.network, ask.user);
     await this.volumes_ensure(names, ask);
-    const made: DockerAnswer = await docker.call('POST', `/containers/create?name=${names.container}`, berthContainer_spec(this.options, ask, identity, await this.cubeHosts_read()));
+    const made: DockerAnswer = await docker.call('POST', `/containers/create?name=${names.container}`, berthContainer_spec(this.options, ask, identity, await this.cubeHosts_read(), imageRecord));
     if (made.status !== 201) throw new BerthRefusal(502, `${ask.user}'s berth was not made: ${JSON.stringify(made.body)}`);
     const started: DockerAnswer = await docker.call('POST', `/containers/${names.container}/start`);
     if (started.status !== 204 && started.status !== 304) throw new BerthRefusal(502, `${ask.user}'s berth did not start: ${JSON.stringify(started.body)}`);
@@ -701,20 +725,22 @@ export class BerthLauncher {
    * answer in time) is said in the log and the copy the host holds is used;
    * with no copy there is nothing to make a berth from.
    *
+   * @returns The image as a close records it: its tag with the digest the host holds, or the tag alone when the host names none.
    * @throws {BerthRefusal} When the pull fails and the host holds no copy of the image.
    */
-  private async image_pull(): Promise<void> {
+  private async image_pull(): Promise<string> {
     const docker: DockerApi = this.options.docker;
     const image: string = this.options.image;
     const pulled: DockerAnswer = await answer_within(docker.call('POST', `/images/create?fromImage=${encodeURIComponent(image)}`), this.options.pullMs ?? PULL_ANSWER_MS);
     const failure: string | null = pullFailure_read(pulled);
     if (failure === null) {
       if (typeof pulled.body === 'string' && pulled.body.includes(PULL_NEWER_MARK)) this.options.log?.(`pulled a newer berth image ${image}`);
-      return;
+      return imageRecord_read(image, (await docker.call('GET', `/images/${image}/json`)).body);
     }
     const held: DockerAnswer = await docker.call('GET', `/images/${image}/json`);
     if (held.status !== 200) throw new BerthRefusal(502, `the berth image ${image} was not pulled (${failure}) and this host holds no copy of it`);
     this.options.log?.(`the berth image ${image} was not pulled (${failure}): the copy this host holds is used`);
+    return imageRecord_read(image, held.body);
   }
 
   /**
