@@ -329,7 +329,7 @@ async function anchorSize_settle(places: BerthPlaces, name: string, files: reado
     throw new BerthRefusal(`anchor: ${name} does not fit: ${size_format(bytes)} with ${size_format(room)} free; anchor a folder inside it`);
   }
   if (bytes <= ANCHOR_ASK_BYTES || yes) return true;
-  return repl_confirm(`berth: anchor: download ${size_format(bytes)} into ${join(places.anchors, name)}? [y/N] `);
+  return repl_confirm(`berth: anchor: download ${size_format(bytes)} into ${join(places.anchors, name)}?`);
 }
 
 /**
@@ -506,7 +506,7 @@ async function clear_run(args: readonly string[]): Promise<CommandEnvelope> {
   const since: number | null = state.lastClosedAt === null ? null : Date.parse(state.lastClosedAt);
   const unclosed: string[] = filesChanged_list(places.outgoing, since);
   if (unclosed.length > 0) {
-    const asked: string = `berth: clear: ${places.outgoing} holds ${count_say(unclosed.length, 'file')} not yet closed; remove them and every anchor? [y/N] `;
+    const asked: string = `berth: clear: ${places.outgoing} holds ${count_say(unclosed.length, 'file')} not yet closed; remove them and every anchor?`;
     if (!await repl_confirm(asked)) {
       exitCode_set(1);
       return envelope_ok('berth: clear: nothing removed\n');

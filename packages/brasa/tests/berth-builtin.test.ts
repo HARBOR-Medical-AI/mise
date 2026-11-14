@@ -310,7 +310,7 @@ describe('berth anchor: the size', () => {
     cubeFile_put('/home/alice/uploads/big/huge.bin', 'BIG', ANCHOR_ASK_BYTES + 1);
     mockConfirm.mockResolvedValueOnce(false);
     const declined = await builtin_berth(['anchor', '~/uploads/big']);
-    expect(mockConfirm).toHaveBeenCalledWith(`berth: anchor: download 10 GB into ${join(anchors, 'big')}? [y/N] `);
+    expect(mockConfirm).toHaveBeenCalledWith(`berth: anchor: download 10 GB into ${join(anchors, 'big')}?`);
     expect(strip(declined.rendered)).toBe('berth: anchor: big: nothing downloaded\n');
     expect(process.exitCode).toBe(1);
     expect(existsSync(join(anchors, 'big'))).toBe(false);
@@ -466,7 +466,7 @@ describe('berth clear', () => {
     writeFileSync(join(outgoing, 'results', 'seg.nii'), 'SEG');
     mockConfirm.mockResolvedValueOnce(false);
     const declined = await builtin_berth(['clear']);
-    expect(mockConfirm).toHaveBeenCalledWith(`berth: clear: ${outgoing} holds 1 file not yet closed; remove them and every anchor? [y/N] `);
+    expect(mockConfirm).toHaveBeenCalledWith(`berth: clear: ${outgoing} holds 1 file not yet closed; remove them and every anchor?`);
     expect(strip(declined.rendered)).toBe('berth: clear: nothing removed\n');
     expect(process.exitCode).toBe(1);
     expect(existsSync(join(outgoing, 'results', 'seg.nii'))).toBe(true);
