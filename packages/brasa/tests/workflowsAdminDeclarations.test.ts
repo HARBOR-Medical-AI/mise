@@ -21,7 +21,7 @@ const { commandTools_derive } = await import('../src/core/commandSchema.js');
 const { CORE_KIND_NAMES } = await import('../src/core/argumentKinds.js');
 const { declaredWord_complete } = await import('../src/lib/completer/declared.js');
 const { shellWords_tokenize } = await import('../src/lib/parser.js');
-const { commands_register, commandDeclaration_get, commandHolds_get, commandHelpEntry_get, envelopeHandler_get } = await import('../src/core/commandRegistry.js');
+const { commands_register, commandDeclaration_get, commandHolds_get, commandHelpEntry_get, commandDeclarations_list, envelopeHandler_get } = await import('../src/core/commandRegistry.js');
 const { playCommand, playArgs_parse } = await import('../src/builtins/res/play.js');
 const { expectCommand } = await import('../src/builtins/res/expect.js');
 const { recordCommand } = await import('../src/builtins/res/record.js');
@@ -166,12 +166,16 @@ describe('the registry answers them as their records say', () => {
     for (const name of ['play', 'expect', 'record', 'user', 'proc']) expect(commandHolds_get(name)).toBeNull();
   });
 
-  it('answers users as user: one declaration, one handler, no help entry of its own', () => {
+  it('answers users as user: one declaration, its grammar and handler, its usage saying the word typed', () => {
     commands_register({ declarations: [userCommand] });
-    expect(commandDeclaration_get('users')).toBe(userCommand);
-    expect(envelopeHandler_get('users')).toBe(envelopeHandler_get('user'));
-    expect(commandHelpEntry_get('users')).toBeUndefined();
+    const users = commandDeclaration_get('users');
+    expect(users?.name).toBe('users');
+    expect(users?.grammar).toBe(userCommand.grammar);
+    expect(users?.handler).toBe(userCommand.handler);
+    expect(envelopeHandler_get('users')).toBeDefined();
+    expect(commandHelpEntry_get('users')?.usage).toMatch(/^users </);
     expect(commandHelpEntry_get('user')?.category).toBe('Admin');
+    expect(commandDeclarations_list().filter((one) => one.name === 'users')).toEqual([]);
   });
 
   it('completes subcommands, options and enum values from the grammar', async () => {

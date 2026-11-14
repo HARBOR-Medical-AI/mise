@@ -41,13 +41,13 @@ import { chrisHelp } from './help.js';
 import { whatifCommand } from './commandFallback.js';
 import { berthCommand } from '../builtins/berth/berth.js';
 import { downloadCommand } from '../builtins/fs/download.js';
-import { feedCommand, feedsCommand } from '../builtins/res/feed.js';
-import { computeCommand, computesCommand } from '../builtins/res/compute.js';
-import { tagCommand, tagsCommand } from '../builtins/res/tag.js';
-import { groupCommand, groupsCommand } from '../builtins/res/group.js';
-import { metaCommand, metasCommand, pluginmetaCommand, pluginmetasCommand } from '../builtins/res/pluginmeta.js';
-import { instanceCommand, instancesCommand, jobCommand, jobsCommand, plugininstanceCommand, plugininstancesCommand } from '../builtins/res/plugininstance.js';
-import { workflowCommand, workflowsCommand } from '../builtins/res/workflow.js';
+import { feedCommand } from '../builtins/res/feed.js';
+import { computeCommand } from '../builtins/res/compute.js';
+import { tagCommand } from '../builtins/res/tag.js';
+import { groupCommand } from '../builtins/res/group.js';
+import { pluginmetaCommand } from '../builtins/res/pluginmeta.js';
+import { plugininstanceCommand } from '../builtins/res/plugininstance.js';
+import { workflowCommand } from '../builtins/res/workflow.js';
 import { dirsCommand, filesCommand, linksCommand } from '../builtins/res/files.js';
 import { parametersofpluginCommand } from '../builtins/parametersofplugin.js';
 import { storeCommand } from '../builtins/store.js';
@@ -93,10 +93,8 @@ const declarations: ReadonlyArray<AnyCommandDeclaration> = [
   downloadCommand, berthCommand,
   netstatCommand, connectCommand, logoutCommand, contextCommand, whoamiCommand, idCommand, whereamiCommand,
   physicalmodeCommand, treeCommand, duCommand, cubepathCommand,
-  feedCommand, feedsCommand, computeCommand, computesCommand, tagCommand, tagsCommand, groupCommand, groupsCommand,
-  pluginmetaCommand, pluginmetasCommand, metaCommand, metasCommand,
-  plugininstanceCommand, plugininstancesCommand, instanceCommand, instancesCommand, jobCommand, jobsCommand,
-  workflowCommand, workflowsCommand, filesCommand, linksCommand, dirsCommand,
+  feedCommand, computeCommand, tagCommand, groupCommand, pluginmetaCommand, plugininstanceCommand,
+  workflowCommand, filesCommand, linksCommand, dirsCommand,
   parametersofpluginCommand, storeCommand, whatifCommand,
   setfaclCommand, getfaclCommand, chmodCommand, setfattrCommand, getfattrCommand,
   pacsCommand, queryCommand, pullCommand, pacsserversCommand, pacsqueriesCommand, pacsretrieveCommand,

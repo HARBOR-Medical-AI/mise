@@ -3,11 +3,11 @@
  * metas, each a plugin's identity across its versions, listed, searched, and
  * their fields named.
  *
- * Declared in one record (`pluginmetaCommand`, and its other names): the
+ * Declared in one record (`pluginmetaCommand`, its other names as aliases): the
  * subcommands and the listing options every resource command reads.
  *
  * Key components:
- * - pluginmetaCommand / pluginmetasCommand / metaCommand / metasCommand: the declaration, under each name.
+ * - pluginmetaCommand: the declaration, answered under each of its names.
  * - builtin_pluginmeta: the declaration run over words already split.
  *
  * @module
@@ -21,7 +21,7 @@ import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
-import { RESOURCE_LIST_OPTIONS_GRAMMAR, commandAlias_make, resourceListBag_build } from './resourceList.js';
+import { RESOURCE_LIST_OPTIONS_GRAMMAR, resourceListBag_build } from './resourceList.js';
 
 /**
  * Lists the plugin metas a listing's options ask for.
@@ -87,11 +87,12 @@ async function pluginmeta_run(args: CommandArguments<typeof PLUGINMETA_GRAMMAR>)
  *
  * @example
  * ```ts
- * commands_register({ declarations: [pluginmetaCommand, metasCommand] }, 'backend');
+ * commands_register({ declarations: [pluginmetaCommand] }, 'backend');
  * ```
  */
 export const pluginmetaCommand = command_declare({
   name: 'pluginmeta',
+  aliases: ['pluginmetas', 'meta', 'metas'],
   grammar: PLUGINMETA_GRAMMAR,
   help: {
     summary: "CUBE's plugin metas, each a plugin across its versions: list them, search them, name their fields",
@@ -101,15 +102,6 @@ export const pluginmetaCommand = command_declare({
   },
   handler: pluginmeta_run,
 });
-
-/** `pluginmetas`: the same command as `pluginmeta`. */
-export const pluginmetasCommand = commandAlias_make(pluginmetaCommand, 'pluginmetas');
-
-/** `meta`: the same command as `pluginmeta`. */
-export const metaCommand = commandAlias_make(pluginmetaCommand, 'meta');
-
-/** `metas`: the same command as `pluginmeta`. */
-export const metasCommand = commandAlias_make(pluginmetaCommand, 'metas');
 
 /**
  * `pluginmeta` over words already split: the declaration's parse and handler.

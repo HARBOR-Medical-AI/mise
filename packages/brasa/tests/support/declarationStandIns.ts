@@ -102,12 +102,14 @@ export function berthStandIn_make(handler: StandInHandler): AnyCommandDeclaratio
  *
  * @param name - The command's name.
  * @param handler - What runs it.
+ * @param aliases - The other words it answers to, as its declaration names them.
  * @returns The declaration.
  */
-export function wordsStandIn_make(name: string, handler: StandInHandler): AnyCommandDeclaration {
+export function wordsStandIn_make(name: string, handler: StandInHandler, aliases: readonly string[] = []): AnyCommandDeclaration {
   const run: (args: unknown) => Promise<CommandEnvelope> = handler_wrap(handler);
   return {
     name,
+    aliases,
     grammar: 'expression',
     help: { usage: name, summary: name, description: name, category: 'General' },
     handler: (args: string[]): Promise<CommandEnvelope> => run(args),

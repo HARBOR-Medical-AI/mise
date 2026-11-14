@@ -287,14 +287,16 @@ describe('builtin_feed', () => {
 
 describe('the feed declaration', () => {
   it('names a feed by the ChRIS kind feed, and every other word by a core kind', async () => {
-    const { feedCommand, feedsCommand } = await import('../src/builtins/res/feed.js');
+    const { feedCommand } = await import('../src/builtins/res/feed.js');
+    const { commandAliases_list } = await import('../src/core/commandDeclaration.js');
+    const feedsCommand = commandAliases_list(feedCommand).find((one) => one.name === 'feeds');
     const { CORE_KIND_NAMES } = await import('../src/core/argumentKinds.js');
     const kinds: string[] = Object.values(feedCommand.grammar.subcommands).flatMap((sub: { operands?: ReadonlyArray<{ kind: string }>; options?: Record<string, { value?: { kind: string } }> }): string[] => [
       ...(sub.operands ?? []).map((operand) => operand.kind),
       ...Object.values(sub.options ?? {}).flatMap((option) => (option.value === undefined ? [] : [option.value.kind])),
     ]);
     expect(kinds.filter((kind: string): boolean => !CORE_KIND_NAMES.includes(kind))).toEqual(['feed', 'feed', 'feed']);
-    expect(feedsCommand.holds).toEqual([]);
+    expect(feedsCommand?.holds).toEqual([]);
     expect(feedCommand.holds).toBeUndefined();
   });
 

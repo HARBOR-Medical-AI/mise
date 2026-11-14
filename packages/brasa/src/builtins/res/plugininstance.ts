@@ -4,11 +4,11 @@
  * searched, and their fields named. A job is worked where it lives, in
  * /proc/jobs; the verbs that would do it here say how instead.
  *
- * Declared in one record (`plugininstanceCommand`, and its other names): the
+ * Declared in one record (`plugininstanceCommand`, its other names as aliases): the
  * subcommands and the listing options every resource command reads.
  *
  * Key components:
- * - plugininstanceCommand and its aliases: the declaration, under each name.
+ * - plugininstanceCommand: the declaration, answered under each of its names.
  * - builtin_plugininstance: the declaration run over words already split.
  *
  * @module
@@ -23,7 +23,7 @@ import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
-import { RESOURCE_LIST_OPTIONS_GRAMMAR, commandAlias_make, resourceListBag_build } from './resourceList.js';
+import { RESOURCE_LIST_OPTIONS_GRAMMAR, resourceListBag_build } from './resourceList.js';
 
 /**
  * Projects a listed row onto the wire's instance model: the fields the
@@ -158,11 +158,12 @@ async function plugininstance_run(args: CommandArguments<typeof PLUGININSTANCE_G
  *
  * @example
  * ```ts
- * commands_register({ declarations: [plugininstanceCommand, jobsCommand] }, 'backend');
+ * commands_register({ declarations: [plugininstanceCommand] }, 'backend');
  * ```
  */
 export const plugininstanceCommand = command_declare({
   name: 'plugininstance',
+  aliases: [{ name: 'plugininstances', holds: [] }, 'instance', 'instances', 'job', 'jobs'],
   grammar: PLUGININSTANCE_GRAMMAR,
   help: {
     summary: "CUBE's plugin instances, the jobs: list them, search them, name their fields",
@@ -172,21 +173,6 @@ export const plugininstanceCommand = command_declare({
   },
   handler: plugininstance_run,
 });
-
-/** `plugininstances`: the same command as `plugininstance`; a read, which holds nothing of the session. */
-export const plugininstancesCommand = commandAlias_make(plugininstanceCommand, 'plugininstances', []);
-
-/** `instance`: the same command as `plugininstance`. */
-export const instanceCommand = commandAlias_make(plugininstanceCommand, 'instance');
-
-/** `instances`: the same command as `plugininstance`. */
-export const instancesCommand = commandAlias_make(plugininstanceCommand, 'instances');
-
-/** `job`: the same command as `plugininstance`. */
-export const jobCommand = commandAlias_make(plugininstanceCommand, 'job');
-
-/** `jobs`: the same command as `plugininstance`. */
-export const jobsCommand = commandAlias_make(plugininstanceCommand, 'jobs');
 
 /**
  * `plugininstance` over words already split: the declaration's parse and handler.

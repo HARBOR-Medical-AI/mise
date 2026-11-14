@@ -61,11 +61,33 @@ jest.unstable_mockModule('@fnndsc/chili/commands/compute/list.js', () => ({ comp
 jest.unstable_mockModule('@fnndsc/chili/commands/compute/fields.js', () => ({ computeFields_fetch: mockComputeFields }));
 jest.unstable_mockModule('@fnndsc/chili/views/compute.js', () => ({ computeList_render: mockComputeRender }));
 
-const { builtin_tag, tagsCommand } = await import('../src/builtins/res/tag.js');
-const { builtin_group, groupsCommand } = await import('../src/builtins/res/group.js');
-const { builtin_workflow, workflowsCommand } = await import('../src/builtins/res/workflow.js');
-const { builtin_pluginmeta, pluginmetasCommand, metasCommand } = await import('../src/builtins/res/pluginmeta.js');
-const { builtin_plugininstance, plugininstancesCommand, jobsCommand } = await import('../src/builtins/res/plugininstance.js');
+const { commandAliases_list } = await import('../src/core/commandDeclaration.js');
+const { builtin_tag, tagCommand } = await import('../src/builtins/res/tag.js');
+const { builtin_group, groupCommand } = await import('../src/builtins/res/group.js');
+const { builtin_workflow, workflowCommand } = await import('../src/builtins/res/workflow.js');
+const { builtin_pluginmeta, pluginmetaCommand } = await import('../src/builtins/res/pluginmeta.js');
+const { builtin_plugininstance, plugininstanceCommand } = await import('../src/builtins/res/plugininstance.js');
+
+/**
+ * A command under one of its aliases, as the registry answers that word.
+ *
+ * @param declaration - The command.
+ * @param name - The alias.
+ * @returns The command named as the alias.
+ */
+function alias_get<D extends Parameters<typeof commandAliases_list>[0]>(declaration: D, name: string): D {
+  const found = commandAliases_list(declaration).find((one) => one.name === name);
+  if (found === undefined) throw new Error(`${declaration.name} has no alias ${name}`);
+  return found as D;
+}
+
+const tagsCommand = alias_get(tagCommand, 'tags');
+const groupsCommand = alias_get(groupCommand, 'groups');
+const workflowsCommand = alias_get(workflowCommand, 'workflows');
+const pluginmetasCommand = alias_get(pluginmetaCommand, 'pluginmetas');
+const metasCommand = alias_get(pluginmetaCommand, 'metas');
+const plugininstancesCommand = alias_get(plugininstanceCommand, 'plugininstances');
+const jobsCommand = alias_get(plugininstanceCommand, 'jobs');
 const { builtin_compute, computeCommand } = await import('../src/builtins/res/compute.js');
 
 let logSpy: jest.SpiedFunction<typeof console.log>;

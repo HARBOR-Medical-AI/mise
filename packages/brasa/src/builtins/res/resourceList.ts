@@ -13,13 +13,11 @@
  * - RESOURCE_LIST_OPTIONS_GRAMMAR: the listing options, as grammar.
  * - ResourceListOptions: what a handler reads of them.
  * - resourceListBag_build: those options as the bag chili's listings read.
- * - commandAlias_make: the same declaration under a second name.
  *
  * Typical usage:
  * ```ts
  * const TAG_GRAMMAR = { options: { ...RESOURCE_LIST_OPTIONS_GRAMMAR }, … } as const satisfies CommandGrammar;
  * await tags_fetchList(resourceListBag_build(args.options));
- * export const tagsCommand = commandAlias_make(tagCommand, 'tags');
  * ```
  *
  * Dependencies: types only.
@@ -28,8 +26,7 @@
  */
 import type { CLIoptions } from '@fnndsc/chili/utils/cli.js';
 
-import type { CommandDeclaration, CommandGrammar, OptionsGrammar } from '../../core/commandDeclaration.js';
-import type { SessionPiece } from '../../core/commandRegistry.js';
+import type { OptionsGrammar } from '../../core/commandDeclaration.js';
 
 /** The options every resource listing reads: paging, columns, the filter, the order, and the shape. */
 export const RESOURCE_LIST_OPTIONS_GRAMMAR = {
@@ -100,23 +97,4 @@ export function resourceListBag_build(options: ResourceListOptions, search?: str
   const filter: string | undefined = search ?? options.search;
   if (filter !== undefined) bag.search = filter;
   return bag;
-}
-
-/**
- * The same command under a second name (`tags` beside `tag`): one grammar,
- * one handler and one help, each name its own declaration, so usage and every
- * refusal say the name typed.
- *
- * @param declaration - The command.
- * @param name - The second name.
- * @param holds - What the name holds of the session, when it differs.
- * @returns The declaration under that name.
- *
- * @example
- * ```ts
- * export const tagsCommand = commandAlias_make(tagCommand, 'tags');
- * ```
- */
-export function commandAlias_make<G extends CommandGrammar>(declaration: CommandDeclaration<G>, name: string, holds?: readonly SessionPiece[]): CommandDeclaration<G> {
-  return { ...declaration, name, ...(holds !== undefined ? { holds } : {}) };
 }

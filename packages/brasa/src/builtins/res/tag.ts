@@ -2,11 +2,11 @@
  * @file `tag` and `tags`: CUBE's tags, listed, searched, and their fields
  * named. A feed wears a tag through `setfattr`; this lists the tags there are.
  *
- * Declared in one record (`tagCommand`, and `tagsCommand` its second name):
+ * Declared in one record (`tagCommand`, `tags` among its aliases):
  * the subcommands and the listing options every resource command reads.
  *
  * Key components:
- * - tagCommand / tagsCommand: the declaration, under each name.
+ * - tagCommand: the declaration, answered as `tag` and `tags`.
  * - builtin_tag: the declaration run over words already split.
  *
  * @module
@@ -20,7 +20,7 @@ import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
-import { RESOURCE_LIST_OPTIONS_GRAMMAR, commandAlias_make, resourceListBag_build } from './resourceList.js';
+import { RESOURCE_LIST_OPTIONS_GRAMMAR, resourceListBag_build } from './resourceList.js';
 
 /**
  * Lists the tags a listing's options ask for.
@@ -86,11 +86,12 @@ async function tag_run(args: CommandArguments<typeof TAG_GRAMMAR>): Promise<Comm
  *
  * @example
  * ```ts
- * commands_register({ declarations: [tagCommand, tagsCommand] }, 'backend');
+ * commands_register({ declarations: [tagCommand] }, 'backend');
  * ```
  */
 export const tagCommand = command_declare({
   name: 'tag',
+  aliases: ['tags'],
   grammar: TAG_GRAMMAR,
   help: {
     summary: "CUBE's tags: list them, search them, name their fields",
@@ -100,9 +101,6 @@ export const tagCommand = command_declare({
   },
   handler: tag_run,
 });
-
-/** `tags`: the same command as `tag`. */
-export const tagsCommand = commandAlias_make(tagCommand, 'tags');
 
 /**
  * `tag` over words already split: the declaration's parse and handler.
