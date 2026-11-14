@@ -1,7 +1,7 @@
 /**
  * @file The person's processes in a berth, read from a fake `/proc`: the
  * session's own left out (this process, its parents, its console terminals,
- * the chells attached to it, and the shells those start), everything else listed with the files it holds
+ * the chells attached to it, what only holds those chells, and the shells those start), everything else listed with the files it holds
  * open under the outgoing folder.
  */
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
@@ -95,6 +95,26 @@ describe('the person\'s processes in a berth', () => {
     expect(pids).toContain(525);
     expect(pids).toContain(526);
     expect(pids).toContain(527);
+  });
+
+  it('leaves out the processes that only hold an attached chell, as the walk on pangea had them, and stops at one that holds work', () => {
+    // `zsh -c 'timeout 60 chell --remote … -c "berth close"'` typed in a terminal of the berth.
+    process_put(600, 1, 'zsh', ['zsh', '-c', 'timeout 60 chell --remote alice -c "berth close"']);
+    process_put(601, 600, 'timeout', ['timeout', '60', 'chell', '--remote', 'alice', '-c', 'berth close']);
+    process_put(602, 601, 'node', ['node', '/usr/local/bin/chell', '--remote', 'alice', '-c', 'berth close']);
+    // A shell that runs work beside its attached chell holds work: it is listed, and so is the work.
+    process_put(610, 1, 'zsh', ['zsh', '-i']);
+    process_put(611, 610, 'node', ['node', '/usr/local/bin/chell', '--remote', 'alice']);
+    process_put(612, 610, 'python3', ['python3', 'train.py']);
+    const pids: number[] = processesOwn_list(OUTGOING, procRoot, SELF, UID).map((one) => one.pid);
+    expect(pids).not.toContain(600);
+    expect(pids).not.toContain(601);
+    expect(pids).not.toContain(602);
+    expect(pids).not.toContain(611);
+    expect(pids).toContain(610);
+    expect(pids).toContain(612);
+    // PID 1 holds the person's vim, so the walk never reaches past the shell.
+    expect(pids).toContain(30);
   });
 
   it('knows an attached chell by its name and --remote, under any path or script suffix', () => {
