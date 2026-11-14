@@ -14,6 +14,14 @@ import { errorStack } from "../error/errorStack.js";
 import { Result, Ok, Err } from "../utils/result.js";
 
 /**
+ * How long a PACS file's bytes may take to arrive, whole. CUBE serves a PACS
+ * file only whole (the client has no stream for one), and the client's own
+ * 30 s default failed every X-ray over about 9 MB on a CUBE that sends at
+ * 0.3 MB/s. Ten minutes holds a 180 MB file at that rate.
+ */
+export const PACS_FILE_FETCH_MS: number = 10 * 60 * 1000;
+
+/**
  * Downloads a PACS file (DICOM) by file ID and returns the raw binary content.
  *
  * PACS files must be downloaded using the PACSFile API instead of regular
@@ -48,7 +56,7 @@ export async function pacsFile_getBlob(fileId: number): Promise<Result<Buffer>> 
     }
 
     // Download the file blob using the PACS-specific method
-    const blob: unknown = await pacsFile.getFileBlob();
+    const blob: unknown = await pacsFile.getFileBlob(PACS_FILE_FETCH_MS);
 
     if (!blob) {
       errorStack.stack_push("error", `PACS file ID ${fileId} exists but returned no content/blob.`);

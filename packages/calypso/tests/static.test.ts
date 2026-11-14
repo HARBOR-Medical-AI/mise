@@ -433,6 +433,63 @@ describe('CalypsoDaemon /vfs route', () => {
     }
   });
 
+  describe('a file the engine hands over whole (a PACS file)', () => {
+    /** A daemon whose one file comes back as `bytes` in the stream's place. */
+    const wholeDaemon_start = async (bytes: unknown): Promise<{ daemon: CalypsoDaemon; port: number; lines: string[] }> => {
+      const lines: string[] = [];
+      const whole = new CalypsoDaemon({
+        engine: { ...vfsEngine_create(), file_stream: async () => ({ stream: bytes as NodeJS.ReadableStream, size: 11 }) },
+        token: TOKEN,
+        log: (line: string): void => { lines.push(line); },
+      });
+      return { daemon: whole, port: await whole.start(), lines };
+    };
+
+    it('serves a Buffer whole, and the session lives on', async () => {
+      const { daemon: whole, port: wholePort, lines } = await wholeDaemon_start(Buffer.from('dicom-bytes'));
+      try {
+        const url: string = `http://127.0.0.1:${wholePort}/vfs?path=${encodeURIComponent('/SERVICES/PACS/a/scan.dcm')}&token=${TOKEN}`;
+        const first = await http_get(url);
+        expect(first.status).toBe(200);
+        expect(first.body).toBe('dicom-bytes');
+        const again = await http_get(url);
+        expect(again.status).toBe(200);
+        expect(lines).toEqual([]);
+      } finally {
+        await whole.stop();
+      }
+    });
+
+    it('serves a byte array and a web stream as they are', async () => {
+      const { ReadableStream } = await import('node:stream/web');
+      for (const bytes of [new Uint8Array(Buffer.from('dicom-bytes')), new ReadableStream({ start(controller): void { controller.enqueue(Buffer.from('dicom-bytes')); controller.close(); } })]) {
+        const { daemon: whole, port: wholePort } = await wholeDaemon_start(bytes);
+        try {
+          const reply = await http_get(`http://127.0.0.1:${wholePort}/vfs?path=${encodeURIComponent('/home/demo/scan.dcm')}&token=${TOKEN}`);
+          expect(reply.status).toBe(200);
+          expect(reply.body).toBe('dicom-bytes');
+        } finally {
+          await whole.stop();
+        }
+      }
+    });
+
+    it('answers what is no stream with a 500 and a log line, and keeps serving', async () => {
+      const { daemon: whole, port: wholePort, lines } = await wholeDaemon_start(42);
+      try {
+        const reply = await http_get(`http://127.0.0.1:${wholePort}/vfs?path=${encodeURIComponent('/home/demo/scan.dcm')}&token=${TOKEN}`);
+        expect(reply.status).toBe(500);
+        expect(reply.body).toMatch(/which is no stream/);
+        expect(lines[0]).toMatch(/^\[!\] vfs: \/home\/demo\/scan\.dcm: the engine gave a file's bytes as number/);
+        const again = await http_get(`http://127.0.0.1:${wholePort}/vfs?path=${encodeURIComponent('/home/demo/scan.dcm')}&token=${TOKEN}`);
+        expect(again.status).toBe(500);
+        expect(lines).toHaveLength(2);
+      } finally {
+        await whole.stop();
+      }
+    });
+  });
+
   describe('a stream from CUBE that breaks', () => {
     /** A daemon whose one file streams `first` (when given) and then fails with `cause`. */
     const breakingDaemon_start = async (first: Buffer | null, cause: Error): Promise<{ daemon: CalypsoDaemon; port: number; lines: string[] }> => {

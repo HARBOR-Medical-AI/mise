@@ -90,3 +90,34 @@ export function errorFacts_read(error: unknown): ErrorFacts {
   const code: unknown = (error as { code?: unknown } | null)?.code;
   return typeof code === 'string' ? { message, code } : { message };
 }
+
+/**
+ * A file's bytes as one async-iterable stream, whatever form the engine
+ * handed them in: a Node stream, a web stream, a stream of the older kind
+ * with only `on` and `pipe`, or the whole file already in memory (a Buffer,
+ * a byte array or a string), which a PACS file arrives as.
+ *
+ * @param source - What the engine's `file_stream` gave as `stream`.
+ * @returns A stream the daemon can iterate chunk by chunk.
+ * @throws {TypeError} When the source is none of those.
+ */
+export async function byteStream_normalise(source: unknown): Promise<AsyncIterable<unknown> & NodeJS.ReadableStream> {
+  const { Readable } = await import('node:stream');
+  if (Buffer.isBuffer(source) || source instanceof Uint8Array || typeof source === 'string') {
+    // Readable.from hands a Buffer or a string over whole, as one chunk.
+    return Readable.from([typeof source === 'string' ? Buffer.from(source, 'binary') : Buffer.from(source as Uint8Array)]);
+  }
+  if (source instanceof ArrayBuffer) return Readable.from([Buffer.from(source)]);
+  if (source !== null && typeof source === 'object') {
+    if (typeof (source as AsyncIterable<unknown>)[Symbol.asyncIterator] === 'function') {
+      return source as AsyncIterable<unknown> & NodeJS.ReadableStream;
+    }
+    if (typeof (source as { getReader?: unknown }).getReader === 'function') {
+      return Readable.fromWeb(source as import('node:stream/web').ReadableStream);
+    }
+    if (typeof (source as { on?: unknown }).on === 'function') {
+      return new Readable().wrap(source as NodeJS.ReadableStream);
+    }
+  }
+  throw new TypeError(`the engine gave a file's bytes as ${source === null ? 'null' : typeof source}, which is no stream`);
+}

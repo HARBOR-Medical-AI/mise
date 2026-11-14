@@ -11,7 +11,7 @@ jest.mock('../src/connect/chrisConnection', () => ({
 import { chrisConnection } from '../src/connect/chrisConnection';
 import { ChRISFileBrowser, BrowserType } from '../src/filebrowser/chrisFileBrowser';
 import { ChRISinode, ChRISinode_create } from '../src/filebrowser/chrisFiles';
-import { pacsFile_getBlob, pacsFile_getText } from '../src/filebrowser/chrisPACS';
+import { PACS_FILE_FETCH_MS, pacsFile_getBlob, pacsFile_getText } from '../src/filebrowser/chrisPACS';
 import { pipelineFile_getByPath, pipelineFile_getTextByPath } from '../src/filebrowser/chrisPipeline';
 import { errorStack } from '../src/error/errorStack';
 
@@ -102,6 +102,14 @@ describe('pacsFile_getBlob / pacsFile_getText', () => {
     const result = await pacsFile_getBlob(1);
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.subarray(0, 4).toString('binary')).toBe('DICM');
+  });
+
+  it('gives a PACS file ten minutes to arrive, not the client\'s 30 s', async () => {
+    const getFileBlob = jest.fn(async () => Buffer.from('DICM'));
+    mockClientGet.mockResolvedValue({ getPACSFile: jest.fn(async () => ({ getFileBlob })) });
+    expect((await pacsFile_getBlob(1)).ok).toBe(true);
+    expect(getFileBlob).toHaveBeenCalledWith(PACS_FILE_FETCH_MS);
+    expect(PACS_FILE_FETCH_MS).toBe(600_000);
   });
 
   it('converts ArrayBuffer, Blob and Buffer responses', async () => {

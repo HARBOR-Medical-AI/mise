@@ -42,7 +42,7 @@ import type { Terminals, TerminalViewer } from './terminals.js';
 import { Lane, LOCKS_ALL, type Hold, type LockSet } from './lane.js';
 import { claim_match, claimCandidates_list, type SurfaceClaim } from './claims.js';
 import { DownloadLedger, downloadId_valid, type DownloadReport, type OpenedFile } from './downloads.js';
-import { errorFacts_read, vfsBreak_format } from './vfsBreak.js';
+import { byteStream_normalise, errorFacts_read, vfsBreak_format } from './vfsBreak.js';
 
 /**
  * The largest file `POST /vfs` will take, in bytes.
@@ -498,7 +498,16 @@ export class CalypsoDaemon {
         (request: IncomingMessage, response: ServerResponse) => {
           const requestPath: string = (request.url ?? '/').split('?')[0] ?? '/';
           if (requestPath === '/vfs') {
-            void this.vfs_serve(request, response);
+            // A file route that throws is answered and said, never left to end the session.
+            this.vfs_serve(request, response).catch((error: unknown): void => {
+              this.log(`[!] vfs: ${request.url?.split('?')[0] ?? '/vfs'}: ${errorFacts_read(error).message}`);
+              if (!response.headersSent) {
+                response.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+                response.end(`the session could not serve that file: ${errorFacts_read(error).message}`);
+              } else {
+                response.destroy();
+              }
+            });
             return;
           }
           if (requestPath === '/backend') {
@@ -749,7 +758,16 @@ export class CalypsoDaemon {
       response.end();
       return;
     }
-    const stream: NodeJS.ReadableStream = opened.stream;
+    let stream: AsyncIterable<unknown> & NodeJS.ReadableStream;
+    try {
+      stream = await byteStream_normalise(opened.stream);
+    } catch (error: unknown) {
+      const { message } = errorFacts_read(error);
+      this.log(`[!] vfs: ${filePath}: ${message}`);
+      if (dl !== null) this.downloads.fail(dl, message);
+      refuse(500, message);
+      return;
+    }
     const statedBytes: number | undefined = opened.size;
     let browserLeft: boolean = false;
     // The browser left (a cancelled download): stop pulling from CUBE.
@@ -758,7 +776,7 @@ export class CalypsoDaemon {
       browserLeft = true;
       (stream as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
     });
-    const chunks: AsyncIterator<unknown> = (stream as AsyncIterable<unknown>)[Symbol.asyncIterator]();
+    const chunks: AsyncIterator<unknown> = stream[Symbol.asyncIterator]();
     let sentBytes: number = 0;
     const break_log = (error: unknown): void => {
       if (browserLeft) return;
