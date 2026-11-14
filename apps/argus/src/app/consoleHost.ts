@@ -130,6 +130,8 @@ export function argusHost_build(context: Pick<HostContext, 'layout' | 'panels' |
     }
     if (verb === 'save') return (await panel.annotations_save()) ? 'image save' : 'image save: nothing saved (the console says why)';
     if (verb === 'load') return (await panel.load_press()) ? 'image load' : 'image load: nothing was waiting';
+    // The frame's STOP block, as a line: the wait in flight on this pane.
+    if (verb === 'stop') return panel.wait_stop() ? 'image stop' : 'image stop: nothing is opening or loading';
     if (verb === 'guard') {
       const word: string = (args[0] ?? '').toLowerCase();
       if (word === 'off') {

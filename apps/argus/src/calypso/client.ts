@@ -358,15 +358,19 @@ export class ArgusClient {
    *   answer); `operator` marks a silent command as the operator's own act
    *   (a button press that changes state), so it is not instrument traffic
    *   and may ask the operator a question; `observe: false` keeps the
-   *   envelopes from the observers.
+   *   envelopes from the observers; `signal`, aborted while the line runs,
+   *   asks the daemon to cancel this one line (the session stops it, or
+   *   abandons it when it does not end), and the promise settles with what
+   *   the daemon then answers.
    * @returns The line's envelopes and which channels already streamed live.
    * @throws {Error} When the daemon reports an execution error.
    */
   public line_execute(
     line: string,
-    options?: { silent?: boolean; observe?: boolean; operator?: boolean },
+    options?: { silent?: boolean; observe?: boolean; operator?: boolean; signal?: AbortSignal },
   ): Promise<ExecuteOutcome> {
     const id: string = `argus-${this.nextId++}`;
+    options?.signal?.addEventListener('abort', (): void => this.line_cancel(id), { once: true });
     if (options?.silent === true) {
       // A silent command feeds instruments (the files panel, a viewer), not
       // the transcript: its live output is swallowed on arrival.
@@ -395,6 +399,17 @@ export class ArgusClient {
         }),
       );
     });
+  }
+
+  /**
+   * Cancels one line this surface sent, while it runs: the wire's `cancel`,
+   * which reaches that line alone and nothing else the session is doing.
+   *
+   * @param id - The line's id.
+   */
+  private line_cancel(id: string): void {
+    if (!this.pending.has(id)) return;
+    this.socket.send(JSON.stringify({ type: 'cancel', id }));
   }
 
   /**

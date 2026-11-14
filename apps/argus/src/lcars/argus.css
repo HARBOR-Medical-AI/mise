@@ -6190,6 +6190,17 @@ body[data-zoom] #header-restore {
   letter-spacing: 0.04em;
 }
 
+/* A wait the person stopped, said where the image would have been, in the
+ * frame's own colour: a chosen state, not a refusal. No track, since nothing
+ * is on its way. The count line carries the path that was asked for. */
+.image-working-stopped .image-working-track {
+  display: none;
+}
+
+.image-working-stopped .image-working-count {
+  letter-spacing: 0.04em;
+}
+
 /* ------------------------------------------------ the header, on the image */
 
 /* What a clinical viewer writes in the corner. Small, quiet, and off by

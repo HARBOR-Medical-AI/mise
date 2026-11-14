@@ -132,6 +132,12 @@ export interface ImageEngineState {
    * that appears in pieces is not a series.
    */
   filled: boolean;
+  /** Slices are being fetched by the engine's own hand: the wait a person can stop. */
+  loading: boolean;
+  /** The person stopped a fetch before the last slice; the field shows what arrived and the rest waits to be asked for. */
+  stopped: boolean;
+  /** Slices on hand. */
+  held: number;
 }
 
 /** A guest engine behind the field. */
@@ -157,6 +163,13 @@ export interface ImageEngine {
    * refused. Absent on an engine that reads one file.
    */
   refused_retry?(): Promise<number>;
+  /**
+   * Stops the fetch in flight: no further slice is asked for, the requests on
+   * the wire are abandoned, and what arrived stays on the field. False when
+   * nothing was being fetched. `slices_fill` (or the layout that was
+   * building) asks for the rest. Absent on an engine that reads one file.
+   */
+  load_stop?(): boolean;
   /** One-based. Refused while the stack is still arriving. */
   slice_set(slice: number): boolean;
   wl_set(lower: number, upper: number): boolean;

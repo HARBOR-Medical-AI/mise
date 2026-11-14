@@ -19,6 +19,7 @@
  * @module
  */
 import chalk from 'chalk';
+import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
 import {
   context_getSingle,
   dicomSeries_summarize,
@@ -133,9 +134,18 @@ async function dcmSeries_handle(args: string[]): Promise<CommandEnvelope> {
   const parsed: ParsedArgs = commandArgs_process(args);
   const target: string | undefined = (parsed._ as string[])[0];
   if (target === undefined) return usage_error('dcm series: a folder is required');
+  // A stop is honoured between the reads; one already on its way to CUBE
+  // runs to its answer, which is then dropped.
+  commandCancellation_enable();
+  const signal: AbortSignal | undefined = commandCancellation_signalGet();
+  // Read afresh at each step: the signal changes while a read is awaited.
+  const stop_isAsked = (): boolean => signal?.aborted === true;
+  const stopped = (): CommandEnvelope => envelope_error('', undefined, 'dcm series: stopped\n');
   const folder: string = await path_physical(await path_resolve(target));
+  if (stop_isAsked()) return stopped();
   const annotationRoot: string | undefined = await annotationRoot_get();
   const summary: Result<DicomSeriesSummary> = await dicomSeries_summarize(folder, annotationRoot !== undefined ? { annotationRoot } : {});
+  if (stop_isAsked()) return stopped();
   if (!summary.ok) {
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red(`dcm series: ${folder}: not a readable DICOM folder`)}\n`);

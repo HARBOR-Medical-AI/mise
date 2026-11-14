@@ -148,11 +148,12 @@ function tagsPane_open(ctx: ChrisDicomContext, imageId: string): string {
 
 /**
  * Asks the kernel what a folder is as a series. Silent: an instrument's
- * question, not a command the operator issued.
+ * question, not a command the operator issued. A signal, aborted, cancels
+ * the line in the session, and the answer is then no series.
  */
-async function series_ask(ctx: ChrisDicomContext, path: string): Promise<DicomSeriesModel | null> {
+async function series_ask(ctx: ChrisDicomContext, path: string, signal?: AbortSignal): Promise<DicomSeriesModel | null> {
   try {
-    const outcome: ExecuteOutcome = await ctx.client().line_execute(`dcm series "${path}"`, { silent: true, observe: false });
+    const outcome: ExecuteOutcome = await ctx.client().line_execute(`dcm series "${path}"`, { silent: true, observe: false, ...(signal !== undefined ? { signal } : {}) });
     for (const envelope of outcome.envelopes) {
       if (envelope.model?.kind !== DICOM_MODEL_KINDS.series) continue;
       const parsed = dicomSeriesModelSchema.safeParse(envelope.model.data);
@@ -165,9 +166,9 @@ async function series_ask(ctx: ChrisDicomContext, path: string): Promise<DicomSe
 }
 
 /** The folders under a path, from a silent listing. */
-async function subfolders_ask(ctx: ChrisDicomContext, path: string): Promise<string[]> {
+async function subfolders_ask(ctx: ChrisDicomContext, path: string, signal?: AbortSignal): Promise<string[]> {
   try {
-    const outcome: ExecuteOutcome = await ctx.client().line_execute(`ls "${path}"`, { silent: true, observe: false });
+    const outcome: ExecuteOutcome = await ctx.client().line_execute(`ls "${path}"`, { silent: true, observe: false, ...(signal !== undefined ? { signal } : {}) });
     for (const envelope of outcome.envelopes) {
       if (envelope.model?.kind !== 'fs.listing') continue;
       // One listing per path asked for, its entries under `items` — as the
@@ -257,20 +258,27 @@ async function image_open(ctx: ChrisDicomContext, fromId: string | null, path: s
   }
   const isFile: boolean = DICOM_FILE_PATTERN.test(path);
   const folder: string = isFile ? path.slice(0, path.lastIndexOf('/')) : path.replace(/\/$/, '');
-  panel.opening_show(folder);
-  let series: DicomSeriesModel | null = await series_ask(ctx, folder);
+  // The frame's STOP ends the ask: the line running in the session is
+  // cancelled, no further one is sent, and a late answer is not shown.
+  const asking: AbortController = new AbortController();
+  const stopped_say = (): string => `image: ${path}: stopped`;
+  panel.opening_show(folder, (): void => asking.abort());
+  let series: DicomSeriesModel | null = await series_ask(ctx, folder, asking.signal);
+  if (asking.signal.aborted) return stopped_say();
   let siblings: SeriesChoice[] = [];
   if (series === null && !isFile) {
     // A study folder: hang its first series, list the rest.
-    const folders: string[] = (await subfolders_ask(ctx, folder)).slice(0, 32);
+    const folders: string[] = (await subfolders_ask(ctx, folder, asking.signal)).slice(0, 32);
     for (const candidate of folders) {
-      const found: DicomSeriesModel | null = await series_ask(ctx, candidate);
+      if (asking.signal.aborted) break;
+      const found: DicomSeriesModel | null = await series_ask(ctx, candidate, asking.signal);
       if (found === null) continue;
       siblings = folders.map((sibling: string): SeriesChoice => ({ path: sibling, label: sibling.split('/').pop() ?? sibling }));
       series = found;
       break;
     }
   }
+  if (asking.signal.aborted) return stopped_say();
   if (series === null) {
     panel.opening_fail(path, 'NOT A READABLE SERIES');
     return `image: ${path}: not a readable DICOM series, study, or volume`;

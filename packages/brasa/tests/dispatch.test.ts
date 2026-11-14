@@ -649,5 +649,16 @@ describe('command_dispatch', () => {
   });
 });
 
+describe('what the imaging reads hold', () => {
+  it('image and dcm hold nothing of the session, so a slow open runs beside any other line', async () => {
+    const { lineHolds_get } = await import('../src/core/holds.js');
+    expect(chrisCommands.holds?.image).toEqual([]);
+    expect(chrisCommands.holds?.dcm).toEqual([]);
+    expect(lineHolds_get('image /home/someone/uploads/series-a')).toEqual([]);
+    expect(lineHolds_get('dcm series "/home/someone/uploads/series-a"')).toEqual([]);
+    expect(lineHolds_get('pull pacs x')).toBe('all');
+  });
+});
+
 // Line-level orchestration (shell escape, semicolon batching, redirects,
 // pipes) is tested through the engine facade in engine.test.ts.

@@ -45,6 +45,34 @@ interface Loaded {
 
 let loaded: Promise<Loaded> | null = null;
 
+/** The request each slice file is arriving on, by its URL, so a stop can abandon it. */
+const requestByUrl: Map<string, XMLHttpRequest> = new Map<string, XMLHttpRequest>();
+
+/**
+ * The URL a slice's bytes arrive from: the image id without its scheme and
+ * frame, since every frame of one file rides one request.
+ *
+ * @param imageId - The `wadouri:` image id.
+ * @returns The key its request is kept under.
+ */
+function requestUrl_derive(imageId: string): string {
+  return imageId.replace(/^wadouri:/, '').replace(/&frame=\d+$/, '');
+}
+
+/**
+ * Keeps a slice's request while it is on the wire.
+ *
+ * @param xhr - The loader's request.
+ * @param imageId - The slice it fetches.
+ */
+function request_keep(xhr: XMLHttpRequest, imageId: string): void {
+  const url: string = requestUrl_derive(imageId);
+  requestByUrl.set(url, xhr);
+  xhr.addEventListener('loadend', (): void => {
+    if (requestByUrl.get(url) === xhr) requestByUrl.delete(url);
+  });
+}
+
 /** Loads and initialises Cornerstone3D once for the page. */
 function cornerstone_load(): Promise<Loaded> {
   if (loaded === null) {
@@ -60,8 +88,9 @@ function cornerstone_load(): Promise<Loaded> {
       // loader for good. Past the timeout it is refused, and asked again.
       loader.init({
         maxWebWorkers: 2,
-        beforeSend: async (xhr: XMLHttpRequest): Promise<Record<string, string>> => {
+        beforeSend: async (xhr: XMLHttpRequest, imageId: string): Promise<Record<string, string>> => {
           xhr.timeout = SLICE_TIMEOUT_MS;
+          request_keep(xhr, imageId);
           return {};
         },
       });
@@ -172,6 +201,24 @@ export class CornerstoneEngine implements ImageEngine {
   /** Every slice fetched; the wheel is honoured only then. A one-slice series is whole at once. */
   private filled: boolean = false;
   private filling: Promise<boolean> | null = null;
+  /** Slices on hand: fetched by a fill, or drawn by the stack. */
+  private readonly held: Set<string> = new Set<string>();
+  /** The first slice is on its way to the field. */
+  private opening: boolean = false;
+  /** Fetches running by this engine's hand. */
+  private fetching: number = 0;
+  /** The stop of each fetch loop in flight: a layout can start building while the stack still fills. */
+  private readonly halts: Set<AbortController> = new Set<AbortController>();
+  /** The console has been told of the stop in force. */
+  private stopSaid: boolean = false;
+  /** Slices on the wire, each with how many fetch loops wait on it. */
+  private readonly inFlight: Map<string, number> = new Map<string, number>();
+  /** Slices whose request a stop abandoned: their failure is the person's choice, not a refusal. */
+  private readonly abandoned: Set<string> = new Set<string>();
+  /** The person stopped a fetch before the last slice. */
+  private stopped: boolean = false;
+  /** The stack on the field holds only the slices on hand. */
+  private partial: boolean = false;
   /** Keeps the canvas the size of the field: the frame opening beside it must not stretch the pixels. */
   private resizeObserver: ResizeObserver | null = null;
   /** The probe's listeners on the stack viewport, while the probe is the tool. */
@@ -214,13 +261,88 @@ export class CornerstoneEngine implements ImageEngine {
 
   public async open(field: HTMLElement): Promise<void> {
     this.field = field;
+    this.opening = true;
     this.host.readout_set(`LOADING 1 OF ${this.imageIds.length}`);
-    this.libraries = await cornerstone_load();
+    try {
+      this.libraries = await cornerstone_load();
+      if (this.disposed) return;
+      this.metadata_register();
+      this.loadFailures_watch();
+      this.field_observe(field);
+      await this.stack_show();
+    } finally {
+      this.opening = false;
+    }
+    if (!this.disposed && this.stopped) this.host.readout_set(this.sliceReadout_get());
+  }
+
+  /**
+   * Stops the fetch in flight and keeps what arrived.
+   *
+   * No further slice is asked for and each request on the wire is aborted.
+   * The first slice of an opening series is one file and is let land, so the
+   * field is never left black. A slice already downloaded and being decoded
+   * finishes in the loader's cache and is counted when the rest is asked for.
+   *
+   * @returns Whether a fetch was running.
+   */
+  public load_stop(): boolean {
+    if (this.disposed || (!this.opening && this.fetching === 0)) return false;
+    this.stopped = !this.filled;
+    this.stopSaid = false;
+    this.requests_abandon();
+    if (this.opening) this.host.readout_set(this.stoppedReadout_get());
+    return true;
+  }
+
+  /** Aborts every request on the wire and ends the fetch loop that made them. */
+  private requests_abandon(): void {
+    for (const imageId of this.inFlight.keys()) {
+      this.abandoned.add(imageId);
+      requestByUrl.get(requestUrl_derive(imageId))?.abort();
+    }
+    for (const halt of this.halts) halt.abort();
+  }
+
+  /** The bar's words for a stopped fetch: how many slices are on hand, of how many. */
+  private stoppedReadout_get(): string {
+    return `STOPPED AT ${this.held.size} OF ${this.imageIds.length}`;
+  }
+
+  /**
+   * Puts a stopped fetch on the field: the stack of the slices on hand, the
+   * wheel turning through them, and the count in the bar and the console.
+   */
+  private async stopped_show(): Promise<void> {
+    this.host.progress_set(null);
+    if (this.layout === 'single') await this.stack_refit();
     if (this.disposed) return;
-    this.metadata_register();
-    this.loadFailures_watch();
-    this.field_observe(field);
-    await this.stack_show();
+    this.host.readout_set(this.sliceReadout_get());
+    if (this.stopSaid) return;
+    this.stopSaid = true;
+    this.host.note(`image: stopped at ${this.held.size} of ${this.imageIds.length} slices; LOAD REST or image load fetches the rest`);
+  }
+
+  /** The slices the stack shows: every one, or only those on hand after a stop. */
+  private stackIds_get(): string[] {
+    if (this.filled || !this.stopped) return this.imageIds;
+    const onHand: string[] = this.imageIds.filter((imageId: string): boolean => this.held.has(imageId));
+    return onHand.length > 0 ? onHand : this.imageIds;
+  }
+
+  /**
+   * Sets the stack on the field to the slices it may show, keeping the slice
+   * on screen: the slices on hand after a stop, every slice once whole.
+   */
+  private async stack_refit(): Promise<void> {
+    const viewport = this.stackViewport_get();
+    if (viewport === null) return;
+    const ids: string[] = this.stackIds_get();
+    const onScreen: string | undefined = this.imageIds[Math.max(0, this.slice - 1)];
+    this.partial = ids.length !== this.imageIds.length;
+    await viewport.setStack(ids, Math.max(0, onScreen === undefined ? 0 : ids.indexOf(onScreen)));
+    viewport.render();
+    if (this.filled || ids.length > 1) this.scroll_unlock();
   }
 
   /**
@@ -235,23 +357,32 @@ export class CornerstoneEngine implements ImageEngine {
     if (this.filled) return true;
     if (this.filling !== null) return this.filling;
     if (this.libraries === null || this.renderingEngine === null) return false;
-    const { core } = this.libraries;
     const total: number = this.imageIds.length;
     const started: number = performance.now();
+    this.stopped = false;
+    this.abandoned.clear();
     this.filling = (async (): Promise<boolean> => {
-      let done: number = 0;
+      // A fill after a stop asks only for what is not on hand.
+      const wanted: string[] = this.imageIds.filter((imageId: string): boolean => !this.held.has(imageId));
+      let done: number = total - wanted.length;
       const say = (): void => {
         this.host.readout_set(`LOADING ${done} OF ${total}`);
         this.host.progress_set({ label: 'READING SLICES', done, total });
       };
       say();
-      await this.images_load(this.imageIds, (): void => {
+      const whole: boolean = await this.images_load(wanted, (): void => {
         done++;
         if (!this.disposed) say();
       });
+      this.filling = null;
       if (this.disposed) return false;
+      if (!whole) {
+        await this.stopped_show();
+        return false;
+      }
       this.filled = true;
       this.host.progress_set(null);
+      if (this.partial && this.layout === 'single') await this.stack_refit();
       this.scroll_unlock();
       this.host.readout_set(this.sliceReadout_get());
       this.host.note(`image: ${total} slices on hand in ${Math.round(performance.now() - started)} ms${this.refused.size > 0 ? `, ${this.refused.size} refused` : ''}`);
@@ -267,12 +398,8 @@ export class CornerstoneEngine implements ImageEngine {
       await this.stack_show();
       return true;
     }
-    if (layout === 'slab') {
-      await this.slab_show();
-      return true;
-    }
-    await this.volume_show(layout);
-    return true;
+    if (layout === 'slab') return this.slab_show();
+    return this.volume_show(layout);
   }
 
   /**
@@ -307,42 +434,71 @@ export class CornerstoneEngine implements ImageEngine {
    * that was sent every slice of a series at once dropped most of them;
    * a few at a time, and a second and third try, rides out a weak signal.
    *
+   * A stop ends the loop where it stands: no slice is asked for after it,
+   * and one whose request was abandoned is neither counted nor refused.
+   *
    * @param imageIds - The slices.
    * @param landed - Told as each one arrives or is given up on.
+   * @returns Whether the loop reached its last slice; false when it was stopped.
    */
-  private async images_load(imageIds: ReadonlyArray<string>, landed: () => void): Promise<void> {
-    if (this.libraries === null) return;
+  private async images_load(imageIds: ReadonlyArray<string>, landed: () => void): Promise<boolean> {
+    if (this.libraries === null) return false;
     const { core } = this.libraries;
+    const halt: AbortController = new AbortController();
+    const halted: Promise<false> = new Promise<false>((resolve): void => {
+      halt.signal.addEventListener('abort', (): void => resolve(false), { once: true });
+    });
     const load_one = async (imageId: string): Promise<void> => {
       for (let attempt = 0; attempt <= SLICE_RETRY_PAUSES_MS.length; attempt++) {
-        if (this.disposed || this.unsupported.has(imageId)) return;
-        if (attempt > 0) await new Promise<void>((resolve): void => { window.setTimeout(resolve, SLICE_RETRY_PAUSES_MS[attempt - 1]); });
+        if (this.disposed || halt.signal.aborted || this.unsupported.has(imageId)) return;
+        if (attempt > 0) {
+          await Promise.race([new Promise<void>((resolve): void => { window.setTimeout(resolve, SLICE_RETRY_PAUSES_MS[attempt - 1]); }), halted]);
+          if (halt.signal.aborted) return;
+        }
+        this.inFlight.set(imageId, (this.inFlight.get(imageId) ?? 0) + 1);
         try {
-          await core.imageLoader.loadAndCacheImage(imageId);
+          const arrived: boolean = await Promise.race([core.imageLoader.loadAndCacheImage(imageId).then((): true => true), halted]);
+          if (!arrived) return;
           this.refused.delete(imageId);
+          this.held.add(imageId);
           return;
         } catch {
           // Refused this time: counted by the load-failure watch, asked again.
+        } finally {
+          const waiting: number = (this.inFlight.get(imageId) ?? 1) - 1;
+          if (waiting > 0) this.inFlight.set(imageId, waiting);
+          else this.inFlight.delete(imageId);
         }
       }
     };
     let next: number = 0;
     const worker = async (): Promise<void> => {
-      while (next < imageIds.length && !this.disposed) {
+      while (next < imageIds.length && !this.disposed && !halt.signal.aborted) {
         const imageId: string = imageIds[next++] as string;
         await load_one(imageId);
-        landed();
+        if (!halt.signal.aborted) landed();
       }
     };
-    await Promise.all(Array.from({ length: Math.min(SLICES_IN_FLIGHT, imageIds.length) }, worker));
+    this.halts.add(halt);
+    this.fetching++;
+    try {
+      await Promise.all(Array.from({ length: Math.min(SLICES_IN_FLIGHT, imageIds.length) }, worker));
+    } finally {
+      this.fetching--;
+      this.halts.delete(halt);
+    }
+    return !halt.signal.aborted;
   }
 
   public slice_set(slice: number): boolean {
     if (this.layout === 'slab') return this.slabSlice_set(slice - 1);
-    if (this.layout !== 'single' || this.renderingEngine === null || !this.filled) return false;
+    if (this.layout !== 'single' || this.renderingEngine === null || (!this.filled && !this.partial)) return false;
     const viewport = this.stackViewport_get();
     if (viewport === null) return false;
-    const index: number = Math.max(0, Math.min(slice - 1, this.imageIds.length - 1));
+    const wanted: number = Math.max(0, Math.min(slice - 1, this.imageIds.length - 1));
+    // A stack of the slices on hand answers only for those.
+    const index: number = this.partial ? this.stackIds_get().indexOf(this.imageIds[wanted] ?? '') : wanted;
+    if (index < 0) return false;
     void viewport.setImageIdIndex(index);
     return true;
   }
@@ -572,6 +728,9 @@ export class CornerstoneEngine implements ImageEngine {
       refused: this.refused.size,
       annotations,
       filled: this.filled,
+      loading: this.opening || this.fetching > 0,
+      stopped: this.stopped,
+      held: this.held.size,
       voi: this.lastVoi,
       viewports: this.viewports_read(),
       ghost: this.layout === 'slab' ? this.ghostLevel : undefined,
@@ -599,6 +758,7 @@ export class CornerstoneEngine implements ImageEngine {
 
   public dispose(): void {
     this.disposed = true;
+    this.requests_abandon();
     this.probe_disarm();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
@@ -634,7 +794,7 @@ export class CornerstoneEngine implements ImageEngine {
 
   /** The bar's line for the slice on screen. */
   private sliceReadout_get(): string {
-    return `SLICE ${Math.max(1, this.slice)} OF ${this.imageIds.length}${this.refused.size > 0 ? ` · REFUSED ${this.refused.size}` : ''}`;
+    return `SLICE ${Math.max(1, this.slice)} OF ${this.imageIds.length}${this.refused.size > 0 ? ` · REFUSED ${this.refused.size}` : ''}${this.stopped ? ` · ${this.stoppedReadout_get()}` : ''}`;
   }
 
   /** Binds the wheel to the stack. Called once every slice is on hand. */
@@ -780,6 +940,8 @@ export class CornerstoneEngine implements ImageEngine {
     core.eventTarget.addEventListener(core.Enums.Events.IMAGE_LOAD_FAILED, (event: Event): void => {
       const detail: { imageId?: string; error?: { message?: string } } = (event as CustomEvent).detail ?? {};
       if (detail.imageId === undefined || !this.pathByImageId.has(detail.imageId)) return;
+      // A request the person stopped did not fail: it is neither counted nor explained.
+      if (this.abandoned.delete(detail.imageId)) return;
       this.refused.add(detail.imageId);
       const message: string = detail.error?.message ?? '';
       const syntax: string | undefined = /transfer syntax[^0-9]*([0-9.]+)/i.exec(message)?.[1];
@@ -829,9 +991,12 @@ export class CornerstoneEngine implements ImageEngine {
     const viewport = this.renderingEngine.getViewport(viewportId) as import('@cornerstonejs/core').Types.IStackViewport;
     element.addEventListener(core.Enums.Events.STACK_NEW_IMAGE, (event: Event): void => {
       const detail: { imageIdIndex: number; imageId: string } = (event as CustomEvent).detail;
-      this.slice = detail.imageIdIndex + 1;
+      // The slice's place in the series, whichever stack is on the field.
+      const place: number = this.imageIds.indexOf(detail.imageId);
+      this.slice = (place >= 0 ? place : detail.imageIdIndex) + 1;
+      this.held.add(detail.imageId);
       const path: string = this.pathByImageId.get(detail.imageId) ?? '';
-      this.host.readout_set(`SLICE ${this.slice} OF ${this.imageIds.length}${this.refused.size > 0 ? ` · REFUSED ${this.refused.size}` : ''}`);
+      this.host.readout_set(this.sliceReadout_get());
       this.host.regard(path);
     });
     const started: number = performance.now();
@@ -840,7 +1005,9 @@ export class CornerstoneEngine implements ImageEngine {
     // wire, and an empty black field says nothing about whether anything
     // is happening.
     this.host.progress_set({ label: `READING ${this.imageIds.length} SLICES`, done: 0, total: 0 });
-    await viewport.setStack(this.imageIds, this.startAt - 1);
+    const ids: string[] = this.stackIds_get();
+    this.partial = ids.length !== this.imageIds.length;
+    await viewport.setStack(ids, Math.max(0, ids.indexOf(this.imageIds[this.startAt - 1] ?? '')));
     viewport.render();
     this.host.progress_set(null);
     if (this.disposed) return;
@@ -852,7 +1019,7 @@ export class CornerstoneEngine implements ImageEngine {
     group.addViewport(viewportId, engineId);
     const bindings = tools.Enums.MouseBindings;
     // The wheel turns the stack only once the stack is whole.
-    if (this.filled) group.setToolActive(tools.StackScrollTool.toolName, { bindings: [{ mouseButton: bindings.Wheel }, { numTouchPoints: 2 }] });
+    if (this.filled || (this.partial && ids.length > 1)) group.setToolActive(tools.StackScrollTool.toolName, { bindings: [{ mouseButton: bindings.Wheel }, { numTouchPoints: 2 }] });
     this.primary = this.tool;
     if (this.tool === 'probe') this.probe_arm();
     else group.setToolActive(TOOL_NAMES[this.tool], { bindings: [{ mouseButton: bindings.Primary }] });
@@ -861,8 +1028,8 @@ export class CornerstoneEngine implements ImageEngine {
   }
 
   /** Three linked planes, or one 3D render, over a volume streamed slice by slice. */
-  private async volume_show(layout: 'mpr' | '3d'): Promise<void> {
-    if (this.libraries === null || this.field === null) return;
+  private async volume_show(layout: 'mpr' | '3d'): Promise<boolean> {
+    if (this.libraries === null || this.field === null) return false;
     const { core, tools } = this.libraries;
     const started: number = performance.now();
     const total: number = this.imageIds.length;
@@ -875,15 +1042,7 @@ export class CornerstoneEngine implements ImageEngine {
     this.host.progress_set({ label: `BUILDING ${layout.toUpperCase()}`, done: 0, total });
     // A volume exists only once every header is known; the loader learns
     // them by loading. This is the cost the LOAD guard stands in front of.
-    let loaded: number = 0;
-    await Promise.all(this.imageIds.map((imageId: string): Promise<unknown> =>
-      core.imageLoader.loadAndCacheImage(imageId)
-        .catch((): null => null)
-        .finally((): void => {
-          loaded++;
-          this.host.progress_set({ label: `BUILDING ${layout.toUpperCase()}`, done: loaded, total });
-        })));
-    if (this.disposed) return;
+    if (!(await this.layoutSlices_load(`BUILDING ${layout.toUpperCase()}`))) return false;
     const engineId: string = this.engineId_get();
     const volumeId: string = `cornerstoneStreamingImageVolume:${engineId}`;
     const grid: HTMLElement = document.createElement('div');
@@ -930,7 +1089,7 @@ export class CornerstoneEngine implements ImageEngine {
       render?.resetCamera?.();
     }
     const group = tools.ToolGroupManager.getToolGroup(this.toolGroupId_get()) ?? tools.ToolGroupManager.createToolGroup(this.toolGroupId_get());
-    if (group === undefined) return;
+    if (group === undefined) return true;
     const bindings = tools.Enums.MouseBindings;
     for (const viewportId of viewportIds) group.addViewport(viewportId, engineId);
     if (layout === 'mpr') {
@@ -970,6 +1129,34 @@ export class CornerstoneEngine implements ImageEngine {
     // The layout is the bar's mode annunciation; the state reads the count.
     this.host.readout_set(`${this.imageIds.length} SLICES${this.refused.size > 0 ? ` · REFUSED ${this.refused.size}` : ''}`);
     this.host.note(`image: ${layout} up in ${Math.round(performance.now() - started)} ms`);
+    return true;
+  }
+
+  /**
+   * Fetches every slice a volume layout is built from, through the same
+   * loop the stack fills by, so the same stop reaches it. Stopped, the field
+   * goes back to the stack of the slices on hand.
+   *
+   * @param label - The field's words while the slices arrive.
+   * @returns Whether every slice was asked for; false when stopped or disposed.
+   */
+  private async layoutSlices_load(label: string): Promise<boolean> {
+    const total: number = this.imageIds.length;
+    this.stopped = false;
+    this.abandoned.clear();
+    let loaded: number = 0;
+    const whole: boolean = await this.images_load(this.imageIds, (): void => {
+      loaded++;
+      if (!this.disposed) this.host.progress_set({ label, done: loaded, total });
+    });
+    if (this.disposed || this.field === null) return false;
+    if (!whole) {
+      await this.stack_show();
+      await this.stopped_show();
+      return false;
+    }
+    this.filled = true;
+    return true;
   }
 
   /**
@@ -1021,8 +1208,8 @@ export class CornerstoneEngine implements ImageEngine {
    * compose fine. Cornerstone still loads the pixels; they are handed to the
    * scene as one `vtkImageData`. See `slabScene.ts`.
    */
-  private async slab_show(): Promise<void> {
-    if (this.libraries === null || this.field === null) return;
+  private async slab_show(): Promise<boolean> {
+    if (this.libraries === null || this.field === null) return false;
     const { core } = this.libraries;
     const started: number = performance.now();
     const total: number = this.imageIds.length;
@@ -1030,12 +1217,7 @@ export class CornerstoneEngine implements ImageEngine {
     this.field_clear();
     this.layout = 'slab';
     this.host.progress_set({ label: 'BUILDING SLAB', done: 0, total });
-    let loaded: number = 0;
-    await Promise.all(this.imageIds.map((imageId: string): Promise<unknown> =>
-      core.imageLoader.loadAndCacheImage(imageId)
-        .catch((): null => null)
-        .finally((): void => { loaded++; this.host.progress_set({ label: 'BUILDING SLAB', done: loaded, total }); })));
-    if (this.disposed || this.field === null) return;
+    if (!(await this.layoutSlices_load('BUILDING SLAB'))) return false;
     // A Cornerstone volume is the easiest way to stack the slices with the
     // right geometry; its pixels and geometry are copied into a fresh
     // vtkImageData for the scene, so nothing Cornerstone renders is touched.
@@ -1046,7 +1228,7 @@ export class CornerstoneEngine implements ImageEngine {
     }
     const volume = await core.volumeLoader.createAndCacheVolume(volumeId, { imageIds: this.imageIds });
     await (volume as { load: () => Promise<void> | void }).load();
-    if (this.disposed || this.field === null) return;
+    if (this.disposed || this.field === null) return false;
     const volAny = volume as unknown as {
       voxelManager?: { getCompleteScalarDataArray?: () => ArrayLike<number>; scalarData?: ArrayLike<number> };
       dimensions?: number[]; spacing?: number[]; origin?: number[]; direction?: number[];
@@ -1058,7 +1240,7 @@ export class CornerstoneEngine implements ImageEngine {
     if (sd === undefined || volAny.dimensions === undefined) {
       this.host.progress_set(null);
       this.host.readout_set('SLAB: could not read the volume');
-      return;
+      return true;
     }
     const da = vtkDataArray.newInstance({ numberOfComponents: 1, values: sd });
     this.slabRange = da.getRange() as [number, number];
@@ -1078,7 +1260,7 @@ export class CornerstoneEngine implements ImageEngine {
     for (let i = 0; i < 60 && element.offsetWidth === 0; i++) {
       await new Promise<void>((resolve): void => { requestAnimationFrame((): void => resolve()); });
     }
-    if (this.disposed) return;
+    if (this.disposed) return false;
     const { slabScene_open } = await import('./slabScene.js');
     this.slabScene = slabScene_open(element, {
       imageData,
@@ -1096,6 +1278,7 @@ export class CornerstoneEngine implements ImageEngine {
     this.host.note(`image: slab up in ${Math.round(performance.now() - started)} ms`);
     const path: string = this.imageIds[startK] !== undefined ? (this.pathByImageId.get(this.imageIds[startK] ?? '') ?? '') : '';
     if (path !== '') this.host.regard(path);
+    return true;
   }
 
   /** Called by the scene when the wheel sweeps: update the bar and the regard. */

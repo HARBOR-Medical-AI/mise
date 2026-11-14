@@ -53,7 +53,8 @@ Each row says what the sentence lowers to. "Drawer" means the pane's drawer caps
 | `image colormap gray\|hot\|jet\|cool` | frame COLORMAP block |
 | `image save` | frame SAVE block | The measurements on the field as a DICOM SR at `~/annotations/<SeriesInstanceUID>/measurements.dcm`, through the surface's own route.
 | `image --force <path>` | the same, past the guard | Opens the series with the volume guard already consented to.
-| `image load` | frame LOAD block | Consents for the series on the field: applies the waiting layout, or fetches the rest of a stack held over the guard.
+| `image load` | frame LOAD block, and LOAD REST | Consents for the series on the field: applies the waiting layout, or fetches the rest of a stack held over the guard. After a stop it fetches the slices that had not arrived, or builds the layout that was waiting.
+| `image stop` | frame STOP block | Stops the wait in flight on the pane: an open's ask of the kernel, or the slices arriving. What arrived stays on the field; `image load` fetches the rest.
 | `image layout slab` | frame SLAB block | A crisp acquisition slice sweeping through a ghost of the volume; the wheel sweeps, left-drag rotates.
 | `image ghost <0..1>\|off` | (SLAB only) | The ghost volume's opacity behind the crisp slice; `off` hides it.
 | `image guard <bytes>\|off` | the pane's threshold | The bytes a series may reach before MPR or 3D wait for LOAD; default 256 MB.

@@ -51,6 +51,7 @@ jest.unstable_mockModule('../src/session/index.js', () => ({
 }));
 
 const { builtin_image } = await import('../src/builtins/res/image.js');
+const { commandCancellation_run, commandCancellation_abort, commandCancellation_request } = await import('../src/core/cancellation.js');
 
 const ok = <T>(value: T) => ({ ok: true as const, value });
 const err = () => ({ ok: false as const });
@@ -176,5 +177,30 @@ describe('image thumbnail in the reflection', () => {
   it('reads no pixels for a volume', async () => {
     await builtin_image(['/data/brain.nii.gz']);
     expect(mockGray).not.toHaveBeenCalled();
+  });
+});
+
+describe('image, stopped', () => {
+  it('ends after the read in flight: no intent, no thumbnail read, and it says it was stopped', async () => {
+    mockSeries.mockImplementation(async () => {
+      commandCancellation_abort('line-stop');
+      return ok(seriesSummary);
+    });
+    const envelope: CommandEnvelope = await commandCancellation_run((): Promise<CommandEnvelope> => builtin_image(['sag-anon']), 'line-stop');
+    expect(envelope.status).toBe('error');
+    expect(envelope.renderedErr).toBe('image: stopped\n');
+    expect(envelope.model).toBeUndefined();
+    expect(mockGray).not.toHaveBeenCalled();
+  });
+
+  it('answers a Ctrl-C as it does a STOP', async () => {
+    let honoured: boolean = false;
+    mockSeries.mockImplementation(async () => {
+      honoured = commandCancellation_request('line-ctrl-c');
+      return ok(seriesSummary);
+    });
+    const envelope: CommandEnvelope = await commandCancellation_run((): Promise<CommandEnvelope> => builtin_image(['sag-anon']), 'line-ctrl-c');
+    expect(honoured).toBe(true);
+    expect(envelope.renderedErr).toBe('image: stopped\n');
   });
 });

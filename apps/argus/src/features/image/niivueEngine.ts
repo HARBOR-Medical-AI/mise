@@ -185,7 +185,7 @@ export class NiivueEngine implements ImageEngine {
   }
 
   public state_get(): ImageEngineState {
-    return { engine: 'niivue', layout: this.layout, slice: this.slice, slices: this.slices, tool: this.tool, primaryTool: this.tool, refused: this.refused, annotations: 0, filled: this.nv !== null, colormap: this.colormap };
+    return { engine: 'niivue', layout: this.layout, slice: this.slice, slices: this.slices, tool: this.tool, primaryTool: this.tool, refused: this.refused, annotations: 0, filled: this.nv !== null, loading: false, stopped: false, held: this.nv !== null ? this.slices : 0, colormap: this.colormap };
   }
 
   public dispose(): void {

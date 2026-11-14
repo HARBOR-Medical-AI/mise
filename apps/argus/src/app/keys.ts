@@ -13,6 +13,7 @@ import { DRAWER_CHORDS, focus_move, type ArgusHost, type DrawerChord } from '../
 import { paneAsk_abandon } from '../features/ask/paneAsk.js';
 import type { DagPanel } from '../features/dag/panel.js';
 import type { FilesPanel } from '../features/files/panel.js';
+import type { ImagePanel } from '../features/image/panel.js';
 import type { HostContext } from './hostContext.js';
 import type { PaneVerbs } from './paneVerbs.js';
 import { SIDES, side_findByArrow, type Side } from './sides.js';
@@ -94,7 +95,8 @@ export function keys_wire(context: Pick<HostContext, 'layout' | 'panels' | 'pane
    * Esc, one level a press: the topmost transient first (the command line,
    * then any question — the console's, a pane's, an errand's — since
    * retreating past a question would leave a command waiting on an answer
-   * nobody is being asked for), then the chrome (an image field holding the
+   * nobody is being asked for), then a wait on the focused image frame
+   * (stopped where it stands), then the chrome (an image field holding the
    * keyboard, SELECT mode, drawers and frames), then the zoom (yielded to
    * its own listener), then one navigation pop (a /bin dive, a node overlay,
    * a camera held inside a node, a content view back to its listing, the
@@ -113,6 +115,14 @@ export function keys_wire(context: Pick<HostContext, 'layout' | 'panels' | 'pane
       if (active.closest('.workspace-pane') === null || active.closest('#terminal') !== null) return 'passed';
       active.blur();
       return 'claimed';
+    },
+    // A wait on the focused image frame (OPENING, LOADING) is stopped where
+    // it stands, before anything gives ground.
+    (): Retreat => {
+      const focusedId: string | null = layout.focused_get();
+      const waiting: [string, ImagePanel] | undefined = panels.entries('image')
+        .find(([id, panel]: [string, ImagePanel]): boolean => id === focusedId || panel.field_hasFocus());
+      return waiting?.[1].wait_stop() === true ? 'claimed' : 'passed';
     },
     // An image field holding the keyboard gives it back first (focus-stays-in-the-field).
     (): Retreat => (panels.values('image').some((panel): boolean => panel.field_release()) ? 'claimed' : 'passed'),
