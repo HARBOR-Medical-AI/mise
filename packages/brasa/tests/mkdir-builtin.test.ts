@@ -35,7 +35,15 @@ jest.unstable_mockModule('../src/core/filesystem.js', () => ({
   }),
 }));
 
-const { builtin_mkdir, mkdirArgs_parse } = await import('../src/builtins/fs/mkdir.js');
+const { builtin_mkdir, mkdirCommand } = await import('../src/builtins/fs/mkdir.js');
+const { commandLine_parse } = await import('../src/core/commandParse.js');
+const { shellWords_tokenize } = await import('../src/lib/parser.js');
+
+/** What an `mkdir` line parses to: its paths and `-p`, or the refusal. */
+async function mkdirLine_parse(line: string): Promise<{ paths: unknown; parents: unknown } | string> {
+  const parsed = await commandLine_parse(mkdirCommand, shellWords_tokenize(line));
+  return parsed.ok ? { paths: parsed.args.operands['paths'], parents: parsed.args.options['parents'] } : parsed.refusal;
+}
 
 /**
  * A fresh session filesystem.
@@ -65,10 +73,10 @@ beforeEach(() => {
 });
 
 describe('mkdir', () => {
-  it('reports usage with no arguments', async () => {
+  it('refuses a line with no arguments', async () => {
     const envelope: CommandEnvelope = await builtin_mkdir([]);
     expect(envelope.status).toBe('error');
-    expect(envelope.renderedErr).toContain('Usage: mkdir');
+    expect(envelope.renderedErr).toContain('mkdir: missing operand <paths>');
   });
 
   it('makes a folder and invalidates its parent\'s listing', async () => {
@@ -91,14 +99,14 @@ describe('mkdir', () => {
   it('refuses an option it does not have by name, making nothing', async () => {
     const envelope: CommandEnvelope = await builtin_mkdir(['-v', 'x']);
     expect(envelope.renderedErr).toContain("mkdir: invalid option -- 'v'");
-    expect((await builtin_mkdir(['--mode=700', 'x'])).renderedErr).toContain("mkdir: unrecognized option '--mode=700'");
+    expect((await builtin_mkdir(['--mode=700', 'x'])).renderedErr).toContain("mkdir: unrecognized option '--mode'");
     expect(await itemNames_list('/home/chris')).not.toContain('x:dir');
   });
 
-  it('never takes -p for a folder name', () => {
-    expect(mkdirArgs_parse(['-p', 'a/b'])).toEqual({ paths: ['a/b'], parents: true });
-    expect(mkdirArgs_parse(['--parents', 'a'])).toEqual({ paths: ['a'], parents: true });
-    expect(mkdirArgs_parse(['--', '-p'])).toEqual({ paths: ['-p'], parents: false });
+  it('never takes -p for a folder name', async () => {
+    expect(await mkdirLine_parse('-p a/b')).toEqual({ paths: ['a/b'], parents: true });
+    expect(await mkdirLine_parse('--parents a')).toEqual({ paths: ['a'], parents: true });
+    expect(await mkdirLine_parse('-- -p')).toEqual({ paths: ['-p'], parents: false });
   });
 
   it('without -p, a missing parent is No such file or directory', async () => {

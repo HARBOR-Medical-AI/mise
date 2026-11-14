@@ -52,7 +52,7 @@ describe('what the commands declare', () => {
   it('the core\'s reads hold nothing and cd holds the working directory', () => {
     // ls holds what its declaration says.
     expect(coreCommands.declarations?.find((declaration) => declaration.name === 'ls')?.holds).toEqual([]);
-    expect(coreCommands.holds?.cat).toEqual([]);
+    expect(coreCommands.declarations?.find((declaration) => declaration.name === 'cat')?.holds).toEqual([]);
     expect(coreCommands.declarations?.find((declaration) => declaration.name === 'cd')?.holds).toEqual(['cwd']);
     expect(coreCommands.holds?.play).toBeUndefined();
   });

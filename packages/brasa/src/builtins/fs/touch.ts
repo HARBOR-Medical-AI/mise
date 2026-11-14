@@ -1,15 +1,37 @@
 /**
- * @file Builtin touch command.
- * Creates files, reported as a command envelope.
+ * @file `touch`: makes files in ChRIS's filesystem (CFS), empty or with text.
+ *
+ * Declared in one record (`touchCommand`): files, which glob, and the text
+ * to write, given inline (`--withContents`) or from a file on this machine
+ * (`--withContentsFromFile`). A path through a link is written where the
+ * link points.
+ *
+ * Key components:
+ * - touchCommand: the declaration.
+ * - builtin_touch: the declaration run over words already split.
+ * - touch_run: the typed core behind both, and the typed API.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_touch(['--withContents', 'Hello!', 'greeting.txt']);
+ * await touch_run({ paths: ['greeting.txt'], contents: 'Hello!' });
+ * ```
+ *
+ * Dependencies: the session's filesystem and listing cache, the store-path
+ * resolver, and this machine's disk (for `--withContentsFromFile`).
+ *
+ * @module
  */
 import chalk from 'chalk';
 import fs from 'fs';
 import path from 'path';
-import { ParsedArgs, commandArgs_process, optionsUnknown_refusal, path_resolve } from '../utils.js';
+import { path_resolve, storePath_resolve } from '../utils.js';
 import { listingCache_get, vfsDispatcher_get } from '../../core/filesystem.js';
 import { pathEntry_find, entry_isFolder } from './entries.js';
 import { errno_words, touch_render, vfs_fail, type VFSDispatcher, type VFSItem, type VfsOutcome } from '@fnndsc/fond';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** Outcome of one touch target, for the envelope model. */
 export interface TouchOutcome {
@@ -22,9 +44,9 @@ export interface TouchRunOptions {
   /** File paths to create or update, absolute or relative to the session cwd. */
   paths: string[];
   /** Literal content to write into the (single) target file. */
-  contents?: string;
+  contents?: string | undefined;
   /** Local file whose content is uploaded into the (single) target file. */
-  contentsFromFile?: string;
+  contentsFromFile?: string | undefined;
 }
 
 /**
@@ -69,6 +91,67 @@ async function file_touch(dispatcher: VFSDispatcher, targetPath: string, content
 }
 
 /**
+ * Forgets the listing of the folder that holds a touched file, by the
+ * session's path and by the store's.
+ *
+ * @param shown - The file as the session names it.
+ * @param targetPath - The file in the store.
+ */
+function parentListings_forget(shown: string, targetPath: string): void {
+  for (const at of new Set([shown, targetPath])) listingCache_get().cache_invalidate?.(path.posix.dirname(at));
+}
+
+/** What a `touch` line may hold. */
+const TOUCH_GRAMMAR = {
+  operands: [
+    { name: 'paths', kind: 'cfsPath', repeat: true, glob: true, summary: 'The files to make; with text, only the first takes it' },
+  ],
+  options: {
+    withContents: { long: 'withContents', summary: 'Create the file with this text inline', value: { name: 'string', kind: 'word' } },
+    withContentsFromFile: { long: 'withContentsFromFile', summary: 'Create the file with the text of a file on this machine', value: { name: 'file', kind: 'hostPath' } },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * `touch [--withContents <string>] [--withContentsFromFile <file>] <file…>`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [touchCommand] });
+ * ```
+ */
+export const touchCommand = command_declare({
+  name: 'touch',
+  grammar: TOUCH_GRAMMAR,
+  help: {
+    summary: 'Create empty files or files with content',
+    description: "Makes each file in ChRIS's filesystem: a file already there is left as it is, a missing one is made empty. With --withContents or --withContentsFromFile the first file is written whole with that text. A path through a link is written where the link points. touch makes no folders (mkdir -p does).",
+    category: 'Files',
+    posix: { group: 'Files', differs: 'makes a CFS file; --withContents writes text into it' },
+    examples: [
+      'touch file.txt                                   # Create empty file',
+      'touch --withContents "Hello!" greeting.txt       # Create file with string',
+      'touch --withContentsFromFile template.json config.json  # Create from local file',
+    ],
+  },
+  handler: async (args: CommandArguments<typeof TOUCH_GRAMMAR>): Promise<CommandEnvelope> => touch_run({
+    paths: args.operands.paths,
+    contents: args.options.withContents,
+    contentsFromFile: args.options.withContentsFromFile,
+  }),
+});
+
+/**
+ * `touch` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `touch`.
+ * @returns The envelope from {@link touch_run}, or the refusal of a bad line.
+ */
+export async function builtin_touch(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(touchCommand, args);
+}
+
+/**
  * Creates empty files or updates timestamps: the shared typed core behind
  * the parsed builtin and the typed API.
  *
@@ -99,7 +182,7 @@ export async function touch_run(runOptions: TouchRunOptions): Promise<CommandEnv
   const wrote: boolean = content !== undefined;
 
   // Only the first path takes content.
-  const filesToTouch: string[] = wrote ? [pathArgs[0]] : pathArgs;
+  const filesToTouch: string[] = wrote ? pathArgs.slice(0, 1) : pathArgs;
 
   let rendered: string = '';
   let renderedErr: string = '';
@@ -108,17 +191,18 @@ export async function touch_run(runOptions: TouchRunOptions): Promise<CommandEnv
 
   for (const pathArg of filesToTouch) {
     try {
-      const targetPath: string = await path_resolve(pathArg);
+      const shown: string = await path_resolve(pathArg);
+      const targetPath: string = await storePath_resolve(pathArg);
       const done: VfsOutcome = await file_touch(dispatcher, targetPath, content);
 
       if (done.ok) {
-        rendered += `${touch_render(targetPath, true, wrote)}\n`;
-        outcomes.push({ path: targetPath, created: true });
-        listingCache_get().cache_invalidate?.(path.posix.dirname(targetPath));
+        rendered += `${touch_render(shown, true, wrote)}\n`;
+        outcomes.push({ path: shown, created: true });
+        parentListings_forget(shown, targetPath);
       } else {
-        renderedErr += `${chalk.red(`Failed to create file: ${targetPath}`)}\n`;
+        renderedErr += `${chalk.red(`Failed to create file: ${shown}`)}\n`;
         renderedErr += `${chalk.gray(`  ${done.reason ?? errno_words(done.errno)}`)}\n`;
-        outcomes.push({ path: targetPath, created: false });
+        outcomes.push({ path: shown, created: false });
       }
     } catch (e: unknown) {
       const msg: string = e instanceof Error ? e.message : String(e);
@@ -135,21 +219,4 @@ export async function touch_run(runOptions: TouchRunOptions): Promise<CommandEnv
     return envelope;
   }
   return envelope_ok(rendered, model);
-}
-
-/**
- * Creates files from parsed command-line arguments.
- *
- * @param args - Command line arguments (paths and --withContents flags).
- * @returns The envelope from {@link touch_run}.
- */
-export async function builtin_touch(args: string[]): Promise<CommandEnvelope> {
-  const parsed: ParsedArgs = commandArgs_process(args);
-  const refusal: string | null = optionsUnknown_refusal('touch', parsed, ['withContents', 'withContentsFromFile']);
-  if (refusal !== null) return envelope_error('', undefined, `${chalk.red(refusal)}\n`);
-  return touch_run({
-    paths: parsed._ as string[],
-    contents: parsed['withContents'] !== undefined ? String(parsed['withContents']) : undefined,
-    contentsFromFile: parsed['withContentsFromFile'] !== undefined ? String(parsed['withContentsFromFile']) : undefined,
-  });
 }

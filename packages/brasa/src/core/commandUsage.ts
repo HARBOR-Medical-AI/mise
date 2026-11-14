@@ -54,8 +54,21 @@ function optionNames_render(option: OptionGrammar): string {
   const names: string[] = [];
   if (option.short !== undefined) names.push(`-${option.short}`);
   if (option.long !== undefined) names.push(`--${option.long}`);
-  const value: string = option.value === undefined ? '' : option.asks === true ? ` [<${option.value.name}>]` : ` <${option.value.name}>`;
-  return `${names.join(', ')}${value}`;
+  return `${names.join(', ')}${optionValue_render(option)}`;
+}
+
+/**
+ * An option's value as usage writes it: ` <field>`, `[=<language>]` for one
+ * that may be left out, ` [<file>]` for one that asks when it has none,
+ * nothing for a switch.
+ *
+ * @param option - The option.
+ * @returns The value's words.
+ */
+function optionValue_render(option: OptionGrammar): string {
+  if (option.value === undefined) return '';
+  if (option.value.optional === true) return `[=<${option.value.name}>]`;
+  return option.asks === true ? ` [<${option.value.name}>]` : ` <${option.value.name}>`;
 }
 
 /**
@@ -80,7 +93,7 @@ function lineTail_render(line: LineGrammar): string {
   for (const option of options) {
     if (option.value === undefined) continue;
     const name: string = option.long !== undefined ? `--${option.long}` : `-${option.short ?? ''}`;
-    parts.push(option.asks === true ? `[${name} [<${option.value.name}>]]` : `[${name} <${option.value.name}>]`);
+    parts.push(`[${name}${optionValue_render(option)}]`);
   }
   for (const operand of line.operands ?? []) parts.push(operand_usage(operand));
   return parts.join(' ');

@@ -1,7 +1,8 @@
 /**
  * @file The filesystem of a ChRIS session, as the core's listings read it:
  * salsa's dispatcher (CUBE's mounts, and `/bin` from `mounts.ts`), cumin's
- * listing cache, a feed's tags, and the link-aware path walk.
+ * listing cache, a feed's tags, and CUBE's link walk (salsa's path mapper),
+ * which `storePath_resolve` asks for every file command.
  *
  * @module
  */
@@ -47,13 +48,14 @@ export const chrisFilesystem: BackendFilesystem = {
   // /proc is backed by the process cache, which keeps its own freshness.
   cache_holds: (path: string): boolean => !path.startsWith('/proc'),
   longRows_annotate: feedTags_annotate,
-  // chili's path walk is loaded when a listing first asks, not with the backend.
-  unreadLinks_take: async (): Promise<string[]> => (await import('@fnndsc/chili/utils')).pathMapper_get().blindParents_take(),
+  // The link walk is read when a listing first asks, not with the backend.
+  unreadLinks_take: async (): Promise<string[]> => (await import('@fnndsc/salsa')).pathMapper_get().blindParents_take(),
   structural: CHRIS_STRUCTURAL_PATHS,
   folder_enter: chrisFolder_enter,
   segment_title: chrisSegment_title,
+  // CUBE's link walk (salsa): a path that does not resolve stands as asked.
   path_physical: async (path: string): Promise<string> => {
-    const { path_resolveChrisFs } = await import('@fnndsc/chili/utils/cli.js');
-    return path_resolveChrisFs(path, {});
+    const followed: Result<string> = await (await import('@fnndsc/salsa')).logicalPath_resolve(path);
+    return followed.ok ? followed.value : path;
   },
 };

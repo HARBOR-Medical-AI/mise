@@ -92,6 +92,12 @@ export interface OperandGrammar extends ArgumentGrammar {
 export interface OptionValueGrammar extends ArgumentGrammar {
   /** The word usage shows: `--sort <field>`. */
   readonly name: string;
+  /**
+   * The value may be left out (GNU's `optional_argument`): it is given only
+   * in the same word, `--highlight=python` or `-hpython`, and the option
+   * alone (`--highlight`) reads as the empty value.
+   */
+  readonly optional?: boolean;
 }
 
 /**
@@ -119,6 +125,11 @@ export interface OptionGrammar {
    * for the value (`query … --csv-to`).
    */
   readonly asks?: boolean;
+  /**
+   * A word of digits after a dash (`-5`) is this option with that value, as
+   * `head -5` is `head -n 5`. At most one option of a line says so.
+   */
+  readonly numeral?: boolean;
 }
 
 /** A grammar's options, by the property the handler reads them as. */

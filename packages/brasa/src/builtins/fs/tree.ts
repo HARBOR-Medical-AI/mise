@@ -19,7 +19,7 @@
  * @module
  */
 import chalk from 'chalk';
-import { path_resolve, error_stripDebugPrefix } from '../utils.js';
+import { storePath_resolve, error_stripDebugPrefix } from '../utils.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
 import { vfs } from '../../lib/vfs/vfs.js';
@@ -104,7 +104,8 @@ async function tree_run(args: CommandArguments<typeof TREE_GRAMMAR>): Promise<Co
   // Determine target path
   let targetPath: string | undefined;
   if (pathArg !== undefined) {
-    targetPath = await path_resolve(pathArg);
+    // Drawn where the store keeps it: a run's data path, a link on the line.
+    targetPath = await storePath_resolve(pathArg);
     // A path that is not there is said to be not there, as tree says it,
     // rather than scanned into an empty tree.
     const entry: Result<ListingItem[]> = await vfs.data_get(targetPath, { directory: true });

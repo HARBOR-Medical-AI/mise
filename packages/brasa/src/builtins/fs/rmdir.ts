@@ -1,5 +1,9 @@
 /**
- * @file Builtin rmdir: removes empty folders, as on Linux.
+ * @file `rmdir`: removes empty folders, as on Linux.
+ *
+ * Declared in one record (`rmdirCommand`): folders only, which glob; it
+ * has no options. Each path names the entry itself: `rmdir` of a link is
+ * asked of the link, never of the folder it points at.
  *
  * Inside a projection that holds folders a user makes (a tag under
  * /proc/tags) the projection removes it, and a tag still worn by a feed is
@@ -7,36 +11,36 @@
  * refused by name and an empty one is removed; a projection that removes
  * no folders refuses by name.
  *
+ * Key components:
+ * - rmdirCommand: the declaration.
+ * - builtin_rmdir: the declaration run over words already split.
+ * - rmdir_run: the typed core behind both.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_rmdir(['scratch']);
+ * await rmdir_run(['scratch', '/proc/tags/old']);
+ * ```
+ *
+ * Dependencies: the session's filesystem and listing cache, and the
+ * store-path resolver.
+ *
  * @module
  */
 import chalk from 'chalk';
-import { path_resolve } from '../utils.js';
+import path from 'path';
+import { path_resolve, storePath_resolve } from '../utils.js';
 import { listingCache_get, vfsDispatcher_get } from '../../core/filesystem.js';
 import { vfsRefusal_text, type VfsErrno, type VfsOutcome } from '@fnndsc/fond';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** Outcome of one rmdir target, for the envelope model. */
 export interface RmdirOutcome {
   path: string;
   removed: boolean;
-}
-
-/**
- * Parses rmdir's arguments: paths only; any flag is refused by name.
- *
- * @param args - Raw argument tokens.
- * @returns The paths, or the refusal.
- */
-export function rmdirArgs_parse(args: string[]): { paths: string[] } | { refused: string } {
-  const paths: string[] = [];
-  let endOfOptions: boolean = false;
-  for (const arg of args) {
-    if (endOfOptions || arg === '-' || !arg.startsWith('-')) { paths.push(arg); continue; }
-    if (arg === '--') { endOfOptions = true; continue; }
-    return { refused: arg.startsWith('--') ? `rmdir: unrecognized option '${arg}'` : `rmdir: invalid option -- '${arg.slice(1, 2)}'` };
-  }
-  return { paths };
 }
 
 /**
@@ -55,27 +59,83 @@ function rmdirRefusal_text(refused: { errno: VfsErrno; reason?: string }, pathAr
   return `rmdir: failed to remove '${pathArg}': ${refused.reason.replace(/^[^:]*: /, '')}`;
 }
 
+/** What an `rmdir` line may hold. */
+const RMDIR_GRAMMAR = {
+  operands: [
+    { name: 'paths', kind: 'cfsPath', repeat: true, glob: true, summary: 'The empty folders to remove; a wildcard matches paths' },
+  ],
+} as const satisfies CommandGrammar;
+
 /**
- * Removes empty folders.
+ * `rmdir <directory…>`: the declaration.
  *
- * @param args - The folders.
- * @returns An envelope whose model lists each folder's outcome; silent on success.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [rmdirCommand] });
+ * ```
+ */
+export const rmdirCommand = command_declare({
+  name: 'rmdir',
+  grammar: RMDIR_GRAMMAR,
+  help: {
+    summary: 'Remove empty directories',
+    description: 'Removes each folder only when it is empty, as on Linux: one that holds anything is "Directory not empty". Under /proc/tags a folder is a tag: rmdir deletes a tag no feed wears.',
+    category: 'Files',
+    posix: { group: 'Files', differs: 'removes empty CFS folders' },
+    examples: [
+      'rmdir scratch              # Remove an empty folder',
+      'rmdir /proc/tags/old       # Delete a tag no feed wears',
+    ],
+  },
+  handler: async (args: CommandArguments<typeof RMDIR_GRAMMAR>): Promise<CommandEnvelope> => rmdir_run(args.operands.paths),
+});
+
+/**
+ * `rmdir` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `rmdir`.
+ * @returns An envelope whose model lists each folder's outcome, or the refusal of a bad line.
  */
 export async function builtin_rmdir(args: string[]): Promise<CommandEnvelope> {
-  const parsed = rmdirArgs_parse(args);
-  if ('refused' in parsed) return envelope_error('', undefined, `${chalk.red(parsed.refused)}\n`);
-  if (parsed.paths.length === 0) return envelope_error('', undefined, `${chalk.red('Usage: rmdir <directory> [directory...]')}\n`);
+  return declaredCommand_run(rmdirCommand, args);
+}
+
+/**
+ * Forgets the listing of the folder that held a removed one, by the
+ * session's path and by the store's.
+ *
+ * @param shown - The folder as the session names it.
+ * @param target - The folder's entry in the store.
+ */
+function parentListings_forget(shown: string, target: string): void {
+  for (const at of new Set([shown, target])) listingCache_get().cache_invalidate?.(path.posix.dirname(at));
+}
+
+/**
+ * Removes empty folders: the typed core behind the declaration.
+ *
+ * @param paths - The folders, as typed.
+ * @returns An envelope whose model lists each folder's outcome; silent on success.
+ *
+ * @example
+ * ```ts
+ * const envelope: CommandEnvelope = await rmdir_run(['scratch']);
+ * ```
+ */
+export async function rmdir_run(paths: readonly string[]): Promise<CommandEnvelope> {
+  if (paths.length === 0) return envelope_error('', undefined, `${chalk.red('Usage: rmdir <directory> [directory...]')}\n`);
   let renderedErr: string = '';
   const outcomes: RmdirOutcome[] = [];
-  for (const pathArg of parsed.paths) {
-    const targetPath: string = await path_resolve(pathArg);
+  for (const pathArg of paths) {
+    const shown: string = await path_resolve(pathArg);
+    const target: string = await storePath_resolve(pathArg, { entry: true });
     // Every mount says why it will not: a folder that is not there, that
     // holds something, or a tag a feed still wears.
-    const removed: VfsOutcome = await vfsDispatcher_get().rmdir(targetPath);
+    const removed: VfsOutcome = await vfsDispatcher_get().rmdir(target);
     const refusal: string | null = removed.ok ? null : rmdirRefusal_text(removed, pathArg);
     if (refusal !== null) renderedErr += `${chalk.red(refusal)}\n`;
-    else listingCache_get().cache_invalidate?.(targetPath.slice(0, targetPath.lastIndexOf('/')) || '/');
-    outcomes.push({ path: targetPath, removed: refusal === null });
+    else parentListings_forget(shown, target);
+    outcomes.push({ path: shown, removed: refusal === null });
   }
   const model: { kind: string; data: RmdirOutcome[] } = { kind: 'fs.rmdir', data: outcomes };
   if (renderedErr !== '') {

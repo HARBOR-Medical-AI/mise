@@ -22,7 +22,7 @@ cuminMock_install(() => ({
   }),
 }));
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/cat.js', () => ({ files_catBinary: mockCatBinary, files_cat: jest.fn(async () => ({ ok: false })) }));
-jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: async (p: string): Promise<string> => p, error_stripDebugPrefix: (s: string): string => s }));
+jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: async (p: string): Promise<string> => p, storePath_resolve: async (p: string): Promise<string> => p, error_stripDebugPrefix: (s: string): string => s }));
 jest.unstable_mockModule('../src/core/surface.js', () => ({ surface_get: () => ({ peers: () => [{ id: 's1', kind: 'browser', you: true }, { id: 's2', kind: 'chell', you: false, asking: 'Another game: ' }] }) }));
 jest.unstable_mockModule('../src/chris/jobsState.js', () => ({ jobsState_derive: () => ({ running: 0, scheduled: 0 }) }));
 jest.unstable_mockModule('../src/builtins/sys/fortune.js', () => ({ fortune_random: () => 'a fortune' }));

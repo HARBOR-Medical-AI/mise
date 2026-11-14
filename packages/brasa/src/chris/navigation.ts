@@ -7,7 +7,6 @@
  */
 import chalk from 'chalk';
 import type { Client, FilteredResourceData } from '@fnndsc/cumin';
-import type { Result } from '@fnndsc/fond';
 import type { FolderEntry } from '../core/backend.js';
 import { session } from '../session/index.js';
 
@@ -45,9 +44,8 @@ export function folder_verifyPathMatch(folder: FileBrowserFolder | null | undefi
 }
 
 /**
- * Enters a CUBE folder (`cd`): the logical path is mapped to the one CUBE
- * stores (or its links followed, in physical mode) and CUBE is asked for
- * that folder; the session stands at the logical path, or the physical one
+ * Enters a CUBE folder (`cd`): the path is mapped to the one CUBE stores
+ * (`storePath_resolve`) and CUBE is asked for that folder; the session stands at the logical path, or the physical one
  * in physical mode.
  *
  * @param logicalPath - The folder, as the session names it.
@@ -63,22 +61,10 @@ export async function chrisFolder_enter(logicalPath: string, pathArg: string): P
   const debugEnabled: boolean = session.connection.config?.debug === true;
   let rendered: string = '';
 
-  let validationPath: string;
-  if (session.physicalMode_get()) {
-    const { path_resolveLinks } = await import('../builtins/utils.js');
-    validationPath = await path_resolveLinks(logicalPath);
-  } else {
-    const { logicalPath_resolve } = await import('@fnndsc/chili/utils');
-    const physicalResult: Result<string> = await logicalPath_resolve(logicalPath);
-    if (!physicalResult.ok) {
-      let renderedErr: string = `${chalk.red(`cd: ${pathArg}: No such file or directory`)}\n`;
-      if (debugEnabled) {
-        renderedErr += `${chalk.gray(`  Logical path: ${logicalPath}`)}\n`;
-      }
-      return { cwd: null, rendered: '', renderedErr };
-    }
-    validationPath = physicalResult.value;
-  }
+  // Where the store keeps the folder: the one resolver every file command
+  // asks, links followed at any depth.
+  const { storePath_resolve } = await import('../core/paths.js');
+  const validationPath: string = await storePath_resolve(logicalPath);
 
   if (debugEnabled) {
     rendered += `${chalk.gray(`cd: ${pathArg} → logical: ${logicalPath} → validation: ${validationPath}`)}\n`;

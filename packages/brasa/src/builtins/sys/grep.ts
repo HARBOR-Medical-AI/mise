@@ -10,16 +10,36 @@
  * `gather add @SER41` and `${listing}` read what grep left.
  *
  * It takes grep's own flags only, with grep's meanings: -i -v -w -E -F -c
- * and -e. Anything else (or a file operand) is the system grep's business,
- * and the whole line goes there as text, said in one line. Plain text in is
- * always the system grep where the surface can run it; `command grep` skips
- * this builtin altogether.
+ * and -e; it is declared in one record, so any other flag is refused by the
+ * parser. A file named is a ChRIS path, read through the one store-path
+ * resolver and filtered here, as the text filters read theirs. Plain text in
+ * is the system grep where the surface can run it, its line written back
+ * from the typed options; `command grep` skips this builtin altogether.
+ *
+ * Key components:
+ * - grepCommand: the declaration.
+ * - builtin_grep: the declaration run over words already split.
+ * - grepMatcher_build: the test a line passes.
+ * - listingRows_grep: the rows a grep keeps of a listing.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_grep(['-i', 't1']);
+ * await builtin_grep(['-c', 'todo', 'notes.txt']);
+ * ```
+ *
+ * Dependencies: the held and piped listings, the session's filesystem (via
+ * the text filters' reader), and the surface's system grep.
  *
  * @module
  */
 import chalk from 'chalk';
-import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { envelope_ok, envelope_error, type CommandEnvelope } from '@fnndsc/menu';
+
 import { stdin_take } from '../games/stdin.js';
+import { filter_run, FILES_OPERAND, lines_join, lines_split, word_quote, type FilterSource } from './textFilters.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import { listingIn_take, type ListingModel } from '../../core/listing.js';
 import { answerKinds_get } from '../../core/answerKinds.js';
 import { surface_get } from '../../core/surface.js';
@@ -29,83 +49,96 @@ import {
 } from '../../session/answer.js';
 import { exitCode_set } from '../../core/handlerRun.js';
 
-/** What a grep line asks. */
+/**
+ * What a grep line asks.
+ *
+ * @example
+ * ```ts
+ * const ask: GrepAsk = { insensitive: true, invert: false, word: false, extended: false, fixed: false, count: false, patterns: ['t1'] };
+ * ```
+ */
 export interface GrepAsk {
+  /** -i: ignore case. */
   insensitive: boolean;
+  /** -v: keep what does not match. */
   invert: boolean;
+  /** -w: whole words. */
   word: boolean;
+  /** -E: extended regular expressions. */
   extended: boolean;
+  /** -F: fixed strings. */
   fixed: boolean;
+  /** -c: count only. */
   count: boolean;
+  /** The patterns: any of them matches. */
   patterns: string[];
-  /** A flag or operand this grep does not take: the line is the system grep's. */
-  foreign: string | null;
 }
 
-/** grep's long flags this grep takes, to their short form. */
-const LONG_FLAGS: Readonly<Record<string, string>> = {
-  '--ignore-case': 'i', '--invert-match': 'v', '--word-regexp': 'w',
-  '--extended-regexp': 'E', '--fixed-strings': 'F', '--count': 'c',
-};
+/** The switches of a grep line, as the line writes them back. */
+const GREP_SWITCHES: ReadonlyArray<{ readonly letter: string; readonly key: 'insensitive' | 'invert' | 'word' | 'extended' | 'fixed' | 'count' }> = [
+  { letter: 'i', key: 'insensitive' }, { letter: 'v', key: 'invert' }, { letter: 'w', key: 'word' },
+  { letter: 'E', key: 'extended' }, { letter: 'F', key: 'fixed' }, { letter: 'c', key: 'count' },
+];
+
+/** What a `grep` line may hold. */
+const GREP_GRAMMAR = {
+  operands: [
+    { name: 'pattern', kind: 'word', optional: true, summary: 'The pattern; with -e, the first file' },
+    FILES_OPERAND,
+  ],
+  options: {
+    insensitive: { short: 'i', long: 'ignore-case', summary: 'Ignore case' },
+    invert: { short: 'v', long: 'invert-match', summary: 'Keep what does not match' },
+    word: { short: 'w', long: 'word-regexp', summary: 'Whole words' },
+    extended: { short: 'E', long: 'extended-regexp', summary: 'Extended regular expressions' },
+    fixed: { short: 'F', long: 'fixed-strings', summary: 'Fixed strings' },
+    count: { short: 'c', long: 'count', summary: 'Count only' },
+    regexp: { short: 'e', long: 'regexp', repeat: true, value: { name: 'pattern', kind: 'word' }, summary: 'A pattern (repeatable: any of them matches)' },
+  },
+} as const satisfies CommandGrammar;
 
 /**
- * Reads a grep line's words.
+ * `grep [-ivwEFc] [-e PATTERN]... [PATTERN] [FILE]...`: the declaration.
  *
- * @param args - The words after `grep`.
- * @returns What they ask.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [grepCommand] });
+ * ```
  */
-export function grepArgs_parse(args: ReadonlyArray<string>): GrepAsk {
-  const ask: GrepAsk = { insensitive: false, invert: false, word: false, extended: false, fixed: false, count: false, patterns: [], foreign: null };
-  const operands: string[] = [];
-  const flag = (letter: string): boolean => {
-    if (letter === 'i') ask.insensitive = true;
-    else if (letter === 'v') ask.invert = true;
-    else if (letter === 'w') ask.word = true;
-    else if (letter === 'E') ask.extended = true;
-    else if (letter === 'F') ask.fixed = true;
-    else if (letter === 'c') ask.count = true;
-    else return false;
-    return true;
-  };
-  for (let at: number = 0; at < args.length; at++) {
-    const word: string = args[at] ?? '';
-    if (word === '--') { operands.push(...args.slice(at + 1)); break; }
-    if (word === '-e' || word === '--regexp') {
-      const pattern: string | undefined = args[at + 1];
-      if (pattern === undefined) { ask.foreign = word; break; }
-      ask.patterns.push(pattern);
-      at += 1;
-      continue;
-    }
-    if (word.startsWith('--regexp=')) { ask.patterns.push(word.slice('--regexp='.length)); continue; }
-    if (word.startsWith('--')) {
-      const short: string | undefined = LONG_FLAGS[word];
-      if (short === undefined) { ask.foreign ??= word; continue; }
-      flag(short);
-      continue;
-    }
-    if (word.startsWith('-') && word.length > 1) {
-      // Clustered short flags: -vi. An -e inside a cluster takes the rest.
-      const letters: string = word.slice(1);
-      for (let index: number = 0; index < letters.length; index++) {
-        const letter: string = letters[index] ?? '';
-        if (letter === 'e') {
-          const rest: string = letters.slice(index + 1);
-          const pattern: string | undefined = rest !== '' ? rest : args[++at];
-          if (pattern === undefined) ask.foreign ??= word;
-          else ask.patterns.push(pattern);
-          break;
-        }
-        if (!flag(letter)) { ask.foreign ??= `-${letter}`; break; }
-      }
-      continue;
-    }
-    operands.push(word);
-  }
-  if (ask.patterns.length === 0 && operands.length > 0) ask.patterns.push(operands.shift() as string);
-  // A file to read is the system grep's: this one reads a listing or a pipe.
-  if (operands.length > 0) ask.foreign ??= operands[0] ?? null;
-  return ask;
+export const grepCommand = command_declare({
+  name: 'grep',
+  grammar: GREP_GRAMMAR,
+  help: {
+    summary: 'Keep the lines, or the rows of a numbered listing, that match',
+    description: 'Filters text, or a numbered listing keeping its handles. Fed a numbered listing (piped in, or the held one when nothing is piped), grep keeps rows: a matching row stays with the rows above it, a matched group keeps all of its rows, and every kept row keeps its handle (@SER41 stays @SER41). What it kept becomes the listing @ and ${listing} name; -c counts and changes nothing. A pattern matches a study\'s and a patient\'s own text too: grep -i t1 meant for series descriptions keeps a WHOLE study whose description says t1, and grep -i "mri brain" picking whole studies is the same rule. A file named is a ChRIS path, read here (- is the pipe); with several, each line or count is under its file\'s name. Text piped in is the system grep where the surface runs one, else filtered here with the same flags. With -e, the first word after the options is a file, not a pattern. A flag it does not take is refused; command grep runs the system grep.',
+    category: 'Files',
+    posix: { group: 'Files', differs: 'also filters numbered listings, keeping their handles (help grep)' },
+    examples: [
+      'query PatientID:1234567,Modality:MR | grep -i t1 | grep -vi gadavist',
+      'grep -i -e t1 -e mprage',
+      'gather list | grep -i sag | gather remove',
+      'cat notes.txt | grep -c todo',
+      'grep -c error a.log b.log',
+    ],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof GREP_GRAMMAR>): Promise<CommandEnvelope> => grep_run(args),
+});
+
+/**
+ * A grep line written back from what it asks: its switches, then its
+ * patterns (each under -e when there are several, or one starts with a dash).
+ *
+ * @param ask - What the grep line asks.
+ * @returns The line, `grep -i -v -e t1 -e t2`.
+ */
+function grepLine_render(ask: GrepAsk): string {
+  const switches: string[] = GREP_SWITCHES.filter(({ key }): boolean => ask[key]).map(({ letter }): string => `-${letter}`);
+  const lone: string | undefined = ask.patterns.length === 1 ? ask.patterns[0] : undefined;
+  const patterns: string[] = lone !== undefined && !lone.startsWith('-')
+    ? [word_quote(lone)]
+    : ask.patterns.flatMap((pattern: string): string[] => ['-e', word_quote(pattern)]);
+  return ['grep', ...switches, ...patterns].join(' ');
 }
 
 /**
@@ -260,16 +293,14 @@ function listing_grep(listing: ListingModel & { source: string }, ask: GrepAsk, 
  *
  * @param text - The text piped in.
  * @param ask - What the grep line asks.
- * @param args - The words after `grep`, for the system grep.
  * @returns The envelope.
  */
-async function text_grep(text: string, ask: GrepAsk, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
+async function text_grep(text: string, ask: GrepAsk): Promise<CommandEnvelope> {
   const surface = surface_get();
   if (surface.capabilities.pipeSegments) {
-    const out: Buffer = await surface.pipeSegment(`grep ${args.map(word_quote).join(' ')}`, Buffer.from(text, 'utf-8'));
+    const out: Buffer = await surface.pipeSegment(grepLine_render(ask), Buffer.from(text, 'utf-8'));
     return envelope_ok(out.toString('utf-8'));
   }
-  if (ask.foreign !== null) return envelope_error('', undefined, `grep ${ask.foreign}: this surface has no system grep to pass it to\n`);
   const built = grepMatcher_build(ask);
   if (typeof built !== 'function') return envelope_error('', undefined, `${built.refused}\n`);
   const lines: string[] = text.replace(/\n$/, '').split('\n').filter((line: string): boolean => built(line) !== ask.invert);
@@ -277,35 +308,79 @@ async function text_grep(text: string, ask: GrepAsk, args: ReadonlyArray<string>
   return envelope_ok(ask.count ? `${lines.length}\n` : lines.length > 0 ? `${lines.join('\n')}\n` : '');
 }
 
-/** A word as a POSIX shell reads it back. */
-function word_quote(word: string): string {
-  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
+/**
+ * grep over ChRIS files: this grep's own line filter, each file read through
+ * the one store-path resolver. With several files each line (or count) is
+ * under its file's name, as grep writes it.
+ *
+ * @param ask - What the grep line asks.
+ * @param files - The files (`-` is the pipe).
+ * @returns The envelope; exit 1 when no line was kept.
+ */
+async function files_grep(ask: GrepAsk, files: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  const built = grepMatcher_build(ask);
+  if (typeof built !== 'function') {
+    exitCode_set(1);
+    return envelope_error('', undefined, `${built.refused}\n`);
+  }
+  let selected: number = 0;
+  const envelope: CommandEnvelope = await filter_run('grep', files, (sources: FilterSource[]): string => {
+    const named: boolean = sources.length > 1;
+    const out: string[] = [];
+    for (const source of sources) {
+      const name: string = source.name === '-' || source.name === null ? '(standard input)' : source.name;
+      const kept: string[] = lines_split(source.text).filter((line: string): boolean => built(line) !== ask.invert);
+      selected += kept.length;
+      if (ask.count) out.push(named ? `${name}:${kept.length}` : String(kept.length));
+      else out.push(...kept.map((line: string): string => (named ? `${name}:${line}` : line)));
+    }
+    return lines_join(out);
+  });
+  if (selected === 0) exitCode_set(1);
+  return envelope;
 }
 
 /**
- * `grep [-ivwEFc] [-e PATTERN]... [PATTERN]`
+ * The typed grep line run: the files named, else a piped listing, else
+ * piped text, else the held listing.
  *
- * @param args - The words after `grep`.
+ * @param args - The typed line.
  * @returns The envelope.
  */
-export async function builtin_grep(args: string[]): Promise<CommandEnvelope> {
-  const ask: GrepAsk = grepArgs_parse(args);
-  const line: string = `grep ${args.map(word_quote).join(' ')}`.trim();
-  const piped: ListingModel | null = listingIn_take();
-  const text: string | null = stdin_take();
-  // A flag or a file this grep does not take: the system grep's, as text.
-  if (ask.foreign !== null) {
-    const answered: CommandEnvelope = await text_grep(text ?? '', ask, args);
-    if (answered.status === 'ok') {
-      return { ...answered, renderedErr: `${chalk.gray(`grep ${ask.foreign}: passed to the system grep; the held listing is unchanged`)}\n` };
-    }
-    return answered;
-  }
+async function grep_run(args: CommandArguments<typeof GREP_GRAMMAR>): Promise<CommandEnvelope> {
+  const given: string[] = args.options.regexp;
+  const pattern: string | undefined = args.operands.pattern;
+  // With -e the patterns are said; the first word after the options is a file.
+  const files: string[] = given.length > 0 && pattern !== undefined ? [pattern, ...args.operands.files] : args.operands.files;
+  const ask: GrepAsk = {
+    insensitive: args.options.insensitive, invert: args.options.invert, word: args.options.word,
+    extended: args.options.extended, fixed: args.options.fixed, count: args.options.count,
+    patterns: given.length > 0 ? given : pattern === undefined ? [] : [pattern],
+  };
   if (ask.patterns.length === 0) return envelope_error('', undefined, 'grep: a pattern to keep: grep [-ivwEFc] [-e PATTERN] PATTERN\n');
+  const piped: ListingModel | null = listingIn_take();
+  if (files.length > 0) return files_grep(ask, files);
+  const text: string | null = stdin_take();
+  const line: string = grepLine_render(ask);
   if (piped !== null) return listing_grep({ ...piped, source: '' }, ask, line);
-  if (text !== null) return text_grep(text, ask, args);
+  if (text !== null) return text_grep(text, ask);
   // Nothing piped: the held listing, as an index reads it.
   const held = answer_get();
   if (held === null) return envelope_error('', undefined, 'grep: nothing to filter: pipe text or a listing in, or list something first (query, ls, gather list)\n');
   return listing_grep({ kind: held.kind, data: held.data, source: held.source }, ask, line);
+}
+
+/**
+ * `grep` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `grep`.
+ * @returns The envelope, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_grep(['-i', 't1']);
+ * ```
+ */
+export async function builtin_grep(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(grepCommand, args);
 }

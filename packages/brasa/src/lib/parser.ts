@@ -134,18 +134,6 @@ export function shellArguments_pathnameExpanded(args: readonly string[], index: 
 }
 
 /**
- * Checks whether one compatibility argument contained unquoted wildcard syntax.
- *
- * @param args - String arguments created by {@link shellWords_values}.
- * @param index - Argument position to inspect.
- * @returns True when the source word allowed pathname expansion.
- */
-export function shellArguments_pathnameExpansion(args: readonly string[], index: number): boolean {
-  const expansion: readonly boolean[] | undefined = (args as ShellArguments).pathnameExpansion;
-  return expansion?.[index] === true;
-}
-
-/**
  * Applies environment substitution without discarding shell-word provenance.
  *
  * @param args - Compatibility arguments with pathname metadata.

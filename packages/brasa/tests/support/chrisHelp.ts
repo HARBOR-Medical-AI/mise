@@ -9,14 +9,14 @@
 import { commands_register } from '../../src/core/commandRegistry.js';
 import { chrisHelp } from '../../src/chris/help.js';
 import { HELP_ORDER } from '../../src/core/commandOrder.js';
-import { berthStandIn_make, CORE_STAND_IN_NAMES, downloadStandIn_make, lsStandIn_make, NAVIGATION_STAND_INS, SHARING_PACS_IMAGING_STAND_INS } from './declarationStandIns.js';
+import { berthStandIn_make, CORE_STAND_IN_NAMES, downloadStandIn_make, FILES_STAND_INS, lsStandIn_make, NAVIGATION_STAND_INS, SHARING_PACS_IMAGING_STAND_INS } from './declarationStandIns.js';
 
 /** What a stand-in handler answers. */
 const ran = async (): Promise<{ status: 'ok'; rendered: string }> => ({ status: 'ok', rendered: '' });
 
 /** Registers the declared commands' stand-ins: the core's, and the ChRIS backend's. */
 export function declarations_install(): void {
-  const navigation: Array<[string, (typeof NAVIGATION_STAND_INS)[string]]> = Object.entries(NAVIGATION_STAND_INS);
+  const navigation: Array<[string, (typeof NAVIGATION_STAND_INS)[string]]> = Object.entries({ ...NAVIGATION_STAND_INS, ...FILES_STAND_INS });
   const core = navigation.filter(([name]) => CORE_STAND_IN_NAMES.includes(name)).map(([, make]) => make(ran));
   const backend = navigation.filter(([name]) => !CORE_STAND_IN_NAMES.includes(name)).map(([, make]) => make(ran));
   commands_register({ declarations: [lsStandIn_make(ran), ...core] });

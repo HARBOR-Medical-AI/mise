@@ -63,7 +63,7 @@ beforeEach(() => {
 describe('builtin_edit', () => {
   it('reports usage with no file', async () => {
     const env = await builtin_edit([]);
-    expect(env.renderedErr).toContain('Usage: edit');
+    expect(env.renderedErr).toContain('edit: missing operand <file>');
     expect(process.exitCode).toBe(1);
   });
 

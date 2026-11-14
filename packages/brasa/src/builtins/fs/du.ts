@@ -21,7 +21,7 @@
  */
 import chalk from 'chalk';
 import path from 'path';
-import { path_resolve } from '../utils.js';
+import { storePath_resolve } from '../utils.js';
 import { vfs } from '../../lib/vfs/vfs.js';
 import { spinner } from '../../lib/spinner.js';
 import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
@@ -253,7 +253,8 @@ async function du_run(pathArgs: readonly string[], opts: DuOptions): Promise<Com
 
   const resolvedTargets: string[] = [];
   for (const raw of rawTargets) {
-    resolvedTargets.push(await path_resolve(raw));
+    // Sized where the store keeps it: a run's data path, a link on the line.
+    resolvedTargets.push(await storePath_resolve(raw));
   }
 
   let grandTotal: number = 0;

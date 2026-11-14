@@ -1,8 +1,7 @@
 /**
  * @file The text filters a pipe ends in (wc, head, tail, sort, uniq, cut):
  * POSIX's flags with POSIX's meanings, run in the kernel on what was piped in
- * or on ChRIS files, and a flag not taken handed to the system program where
- * the surface runs one, refused by name where it does not.
+ * or on ChRIS files; a flag not taken is refused by the parser.
  */
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
@@ -102,19 +101,21 @@ describe('sort, uniq and cut', () => {
 });
 
 describe('a flag the builtin does not take', () => {
-  it('goes to the system program with the piped text where the surface runs one', async () => {
+  it('is refused by the parser, never handed to a system program (command sort asks for one)', async () => {
     surface.capabilities.pipeSegments = true;
-    const passed = await piped(builtin_sort, 'b\na\n', ['-V']);
-    expect(surface.pipeSegment).toHaveBeenCalledWith('sort -V', Buffer.from('b\na\n'));
-    expect(passed.rendered).toBe('system:b\na\n');
+    const refused = await piped(builtin_sort, 'b\na\n', ['-V']);
+    expect(refused.status).toBe('error');
+    expect(refused.renderedErr).toContain("sort: invalid option -- 'V'; usage: sort");
+    expect(surface.pipeSegment).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
   });
 
-  it('is refused by name where the surface runs none, or when the input is a ChRIS file', async () => {
+  it('is refused the same on any surface, and with a ChRIS file', async () => {
     const browser = await piped(builtin_tail, 'a\n', ['-f']);
-    expect(browser.renderedErr).toContain('tail: -f: the builtin does not take it, and this surface runs no system tail');
+    expect(browser.renderedErr).toContain("tail: invalid option -- 'f'; usage: tail");
     surface.capabilities.pipeSegments = true;
     const file = await builtin_wc(['-L', 'a.csv']);
-    expect(file.renderedErr).toContain("wc: -L: the builtin does not take it, and a system wc cannot read the session's files");
+    expect(file.renderedErr).toContain("wc: invalid option -- 'L'; usage: wc");
     expect(surface.pipeSegment).not.toHaveBeenCalled();
   });
 });

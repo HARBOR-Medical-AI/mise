@@ -1,10 +1,11 @@
 /**
- * @file Shared `cat` command-line grammar.
+ * @file What of `cat`'s line other modules read without loading cat.
  *
- * Defines the typed result used by the builtin, the usage text shown in help
- * and errors, and the option predicate used by redirect filename inference.
- * This module is intentionally dependency-free so preprocessing can consume
- * the grammar without loading the file reader or syntax highlighter.
+ * Defines the typed options the core reads, the usage text, and the option
+ * predicate redirect filename inference uses. The line itself is parsed
+ * against `catCommand`'s grammar (`cat.ts`). This module is intentionally
+ * dependency-free so preprocessing can consume it without loading the file
+ * reader or syntax highlighter.
  *
  * @module
  */
@@ -12,7 +13,7 @@
 /** Whether syntax highlighting follows TTY detection, is forced, or is disabled. */
 export type CatHighlightMode = 'auto' | 'always' | 'never';
 
-/** Parsed `cat` command-line arguments. */
+/** The typed core's options: which files, and how they are presented. */
 export interface CatArguments {
   binaryMode: boolean;
   highlightMode: CatHighlightMode;
@@ -20,7 +21,7 @@ export interface CatArguments {
   filePaths: string[];
 }
 
-/** Canonical usage shared by builtin errors and interactive help. */
+/** Canonical usage shared by the typed core's refusal and interactive help. */
 export const CAT_USAGE: string =
   'cat [--binary] [--highlight[=language] | --no-highlight] <file> [file...]';
 
@@ -34,43 +35,16 @@ const NO_HIGHLIGHT_OPTION: string = '--no-highlight';
  *
  * @param argument - One token from the command line.
  * @returns True for a recognized binary or highlight option.
+ *
+ * @example
+ * ```ts
+ * catArgument_isOption('--highlight=python'); // true
+ * catArgument_isOption('notes.txt');          // false
+ * ```
  */
 export function catArgument_isOption(argument: string): boolean {
   return argument === BINARY_OPTION
     || argument === HIGHLIGHT_OPTION
     || argument === NO_HIGHLIGHT_OPTION
     || argument.startsWith(HIGHLIGHT_LANGUAGE_PREFIX);
-}
-
-/**
- * Parses file paths and presentation options for the `cat` builtin.
- * Later highlight flags take precedence over earlier highlight flags.
- *
- * @param args - Tokens following the `cat` command name.
- * @returns Typed binary, highlighting, language, and file-path selections.
- */
-export function catArguments_parse(args: string[]): CatArguments {
-  let binaryMode: boolean = false;
-  let highlightMode: CatHighlightMode = 'auto';
-  let highlightLanguage: string | undefined;
-  const filePaths: string[] = [];
-
-  for (const argument of args) {
-    if (argument === BINARY_OPTION) {
-      binaryMode = true;
-    } else if (argument === HIGHLIGHT_OPTION) {
-      highlightMode = 'always';
-      highlightLanguage = undefined;
-    } else if (argument.startsWith(HIGHLIGHT_LANGUAGE_PREFIX)) {
-      highlightMode = 'always';
-      highlightLanguage = argument.slice(HIGHLIGHT_LANGUAGE_PREFIX.length);
-    } else if (argument === NO_HIGHLIGHT_OPTION) {
-      highlightMode = 'never';
-      highlightLanguage = undefined;
-    } else {
-      filePaths.push(argument);
-    }
-  }
-
-  return { binaryMode, highlightMode, highlightLanguage, filePaths };
 }

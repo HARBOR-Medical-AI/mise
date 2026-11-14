@@ -5,6 +5,7 @@ const mockDispatcherList = jest.fn();
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
   plugins_listAll: jest.fn(),
   vfsDispatcher: { list: mockDispatcherList },
+  pathMapper_get: () => ({ blindParents_take: mockBlindParentsTake }),
 }));
 
 const mockGetCWD = jest.fn(async () => '/home/chris');
@@ -44,9 +45,6 @@ cuminMock_install(() => ({
 
 jest.unstable_mockModule('@fnndsc/chili/models/listing.js', () => ({}));
 const mockBlindParentsTake = jest.fn((): string[] => []);
-jest.unstable_mockModule('@fnndsc/chili/utils', () => ({
-  pathMapper_get: () => ({ blindParents_take: mockBlindParentsTake }),
-}));
 
 const mockSpinner = { start: jest.fn(), stop: jest.fn(), updateMessage: jest.fn() };
 jest.unstable_mockModule('../src/lib/spinner.js', () => ({ spinner: mockSpinner }));

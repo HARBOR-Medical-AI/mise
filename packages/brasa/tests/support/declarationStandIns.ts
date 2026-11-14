@@ -192,13 +192,46 @@ export const SHARING_PACS_IMAGING_STAND_INS: Readonly<Record<string, (handler: S
   imageCommand: standIn_maker('image', { operands: [{ name: 'path', kind: 'cfsPath', optional: true, summary: 'What' }] }, 'Imaging', 'Show a DICOM series or a volume — a browser draws it, a terminal reflects it'),
 };
 
+/** Paths that glob, one or more. */
+const PATHS: CommandGrammar['operands'] = [{ name: 'paths', kind: 'cfsPath', repeat: true, glob: true, summary: 'Paths' }];
+/** Files that glob, none or more (a pipe when none). */
+const FILES: CommandGrammar['operands'] = [{ name: 'files', kind: 'cfsPath', optional: true, repeat: true, glob: true, summary: 'Files' }];
+
+/** The Files commands, standing in, by the name each module exports. */
+export const FILES_STAND_INS: Readonly<Record<string, (handler: StandInHandler) => AnyCommandDeclaration>> = {
+  catCommand: standIn_maker('cat', { operands: FILES, options: { binary: { long: 'binary', summary: 'Bytes' }, noHighlight: { long: 'no-highlight', summary: 'Plain' } } }, 'Files'),
+  cpCommand: standIn_maker('cp', { operands: PATHS, options: { recursive: { short: 'r', long: 'recursive', summary: 'Folders' }, askTarget: { short: 't', summary: 'Ask where' } } }, 'Files'),
+  mvCommand: standIn_maker('mv', { operands: PATHS, options: { askTarget: { short: 't', summary: 'Ask where' } } }, 'Files'),
+  rmCommand: standIn_maker('rm', { operands: PATHS, options: { recursive: { short: 'r', long: 'recursive', summary: 'Folders' }, force: { short: 'f', long: 'force', summary: 'Force' } } }, 'Files'),
+  rmdirCommand: standIn_maker('rmdir', { operands: PATHS }, 'Files'),
+  mkdirCommand: standIn_maker('mkdir', { operands: PATHS, options: { parents: { short: 'p', long: 'parents', summary: 'Parents' } } }, 'Files'),
+  touchCommand: standIn_maker('touch', { operands: PATHS, options: { withContents: { long: 'withContents', summary: 'Text', value: { name: 'text', kind: 'word' } } } }, 'Files'),
+  grepCommand: standIn_maker('grep', { operands: [{ name: 'pattern', kind: 'word', optional: true, summary: 'Pattern' }, ...(FILES ?? [])], options: { insensitive: { short: 'i', summary: 'Case' } } }, 'Files'),
+  wcCommand: standIn_maker('wc', { operands: FILES, options: { lines: { short: 'l', long: 'lines', summary: 'Lines' } } }, 'Files'),
+  headCommand: standIn_maker('head', { operands: FILES, options: { lines: { short: 'n', long: 'lines', summary: 'Count', value: { name: 'count', kind: 'word' }, numeral: true } } }, 'Files'),
+  tailCommand: standIn_maker('tail', { operands: FILES, options: { lines: { short: 'n', long: 'lines', summary: 'Count', value: { name: 'count', kind: 'word' }, numeral: true } } }, 'Files'),
+  sortCommand: standIn_maker('sort', { operands: FILES, options: { reverse: { short: 'r', long: 'reverse', summary: 'Reverse' } } }, 'Files'),
+  uniqCommand: standIn_maker('uniq', { operands: [{ name: 'file', kind: 'cfsPath', optional: true, glob: true, summary: 'File' }], options: { count: { short: 'c', long: 'count', summary: 'Count' } } }, 'Files'),
+  cutCommand: standIn_maker('cut', { operands: FILES, options: { fields: { short: 'f', long: 'fields', summary: 'Fields', value: { name: 'list', kind: 'word' } } } }, 'Files'),
+  findCommand: (handler: StandInHandler): AnyCommandDeclaration => ({ ...wordsStandIn_make('find', handler), help: { usage: 'find [path...] [expression]', summary: 'find', description: 'find', category: 'Files' } }),
+  editCommand: standIn_maker('edit', { operands: [{ name: 'file', kind: 'cfsPath', glob: true, summary: 'File' }] }, 'Files'),
+  configCommand: standIn_maker('config', { subcommands: { write: { summary: 'Write', operands: [{ name: 'path', kind: 'cfsPath', summary: 'Path' }, { name: 'content', kind: 'word', summary: 'Content' }] } } }, 'Files'),
+  uploadCommand: standIn_maker('upload', { operands: [{ name: 'source', kind: 'hostPath', summary: 'Source' }, { name: 'destination', kind: 'cfsPath', summary: 'Destination' }] }, 'Files'),
+  fileCommand: standIn_maker('file', { operands: PATHS }, 'Files'),
+};
+
 /** Each declared command's stand-in maker, by the name its module exports it under. */
 export const STAND_IN_MAKERS: Readonly<Record<string, (handler: StandInHandler) => AnyCommandDeclaration>> = {
   lsCommand: lsStandIn_make,
   downloadCommand: downloadStandIn_make,
   berthCommand: berthStandIn_make,
   ...NAVIGATION_STAND_INS,
+  ...FILES_STAND_INS,
 };
 
 /** The core's stand-ins among them, by the name each module exports; the rest are the ChRIS backend's. */
-export const CORE_STAND_IN_NAMES: ReadonlyArray<string> = ['cdCommand', 'pwdCommand', 'timingCommand', 'debugCommand'];
+export const CORE_STAND_IN_NAMES: ReadonlyArray<string> = [
+  'cdCommand', 'pwdCommand', 'timingCommand', 'debugCommand',
+  'catCommand', 'cpCommand', 'mvCommand', 'rmCommand', 'rmdirCommand', 'mkdirCommand', 'touchCommand', 'findCommand',
+  'grepCommand', 'wcCommand', 'headCommand', 'tailCommand', 'sortCommand', 'uniqCommand', 'cutCommand',
+];

@@ -51,9 +51,6 @@ import { vfsDispatcher_get } from '../../core/filesystem.js';
 import { path_resolve, storePath_resolve } from '../../core/paths.js';
 import { sink_get } from '../../core/sink.js';
 
-/** A `/proc/jobs` path at or under a job's `data` link: the link, and what follows it. */
-const PROC_DATA_PATH: RegExp = /^(\/proc\/jobs\/feed_\d+(?:\/[^/]+_\d+)+\/data)(\/.*)?$/;
-
 /** Listing kinds that are folders to walk into. */
 const FOLDER_KINDS: ReadonlySet<string> = new Set(['dir', 'vfs']);
 
@@ -118,8 +115,9 @@ export async function berthHome_get(): Promise<string> {
 
 /**
  * A typed path as an absolute ChRIS path: relative to the working directory,
- * `~` for the home, and a `/proc/jobs/…/data` path through the job's link
- * to the output it names, as `ls` and `download` enter it.
+ * `~` for the home, and a `/proc/jobs/…/data` path as the folder in its
+ * feed that it stands for (`storePath_resolve`, the mounts alone: a link
+ * inside the output is not followed, so a path under a node stays under it).
  *
  * @param typed - The path as typed.
  * @returns The absolute path.
@@ -130,11 +128,8 @@ export async function berthHome_get(): Promise<string> {
  * ```
  */
 export async function berthPath_resolve(typed: string): Promise<string> {
-  const resolved: string = await path_resolve(typed);
-  const link: RegExpMatchArray | null = resolved.match(PROC_DATA_PATH);
-  if (link === null) return resolved;
-  const target: Result<string> = await vfsDispatcher_get().linkTarget_resolve(link[1] as string);
-  return target.ok ? `${target.value}${link[2] ?? ''}` : resolved;
+  // The mounts alone: a link inside a run's output stays under its node.
+  return storePath_resolve(await path_resolve(typed), { links: false });
 }
 
 /**

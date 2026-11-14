@@ -35,7 +35,7 @@ The `PathMapper` singleton class implements hierarchical path mapping from logic
 ### Core Methods
 
 ```typescript
-import { pathMapper_get } from '@fnndsc/chili';
+import { pathMapper_get } from '@fnndsc/salsa';
 
 const mapper = pathMapper_get();
 
@@ -168,7 +168,7 @@ The existing `logicalPath_resolve()` function now delegates to PathMapper:
 
 ```typescript
 // Old code continues to work unchanged
-import { logicalPath_resolve } from '@fnndsc/chili';
+import { logicalPath_resolve } from '@fnndsc/salsa';
 
 const result = await logicalPath_resolve('/home/user/files');
 // Automatically uses PathMapper under the hood
@@ -179,7 +179,7 @@ const result = await logicalPath_resolve('/home/user/files');
 For advanced scenarios requiring cache control:
 
 ```typescript
-import { pathMapper_get } from '@fnndsc/chili';
+import { pathMapper_get } from '@fnndsc/salsa';
 
 const mapper = pathMapper_get();
 
@@ -220,22 +220,21 @@ Potential improvements:
 ## Files
 
 ```
-chili/
+salsa/
 ├── src/
-│   ├── path/
-│   │   └── pathMapper.ts       # PathMapper implementation (new)
-│   ├── utils/
-│   │   └── cli.ts              # Updated to use PathMapper
-│   └── utils.ts                # Exports PathMapper
+│   ├── files/
+│   │   └── pathMapper.ts       # PathMapper, logicalPath_resolve, linkCache_clear
+│   └── index.ts                # Exports them
 ├── tests/
-│   └── pathMapper.test.ts      # Comprehensive test suite (new)
+│   └── pathMapper.test.ts      # Comprehensive test suite
 └── docs/
     └── pathMapper.md           # This document
 ```
 
+brasa reaches it through one door: the ChRIS backend's link walk (`packages/brasa/src/chris/filesystem.ts`, `path_physical`), which `storePath_resolve` asks for every file command.
+
 ## References
 
-- Original implementation: `chili/src/utils/cli.ts` (lines 133-258, now replaced)
 - Issue: Unacceptable lag in path resolution due to repeated tree walking
 - Solution: Hierarchical prefix caching with singleton pattern
 

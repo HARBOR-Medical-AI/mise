@@ -80,4 +80,3 @@ main().catch((error) => {
 });
 
 // Re-export library utilities for consumers that import the package root.
-export { logicalPath_resolve } from "./utils/cli.js";

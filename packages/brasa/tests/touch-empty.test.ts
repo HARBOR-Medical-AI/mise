@@ -18,9 +18,10 @@ cuminMock_install(() => ({
 jest.unstable_mockModule('@fnndsc/chili/models/listing.js', () => ({}));
 jest.unstable_mockModule('../src/session/index.js', () => ({ session: { getCWD: jest.fn(async () => '/home/chris') } }));
 // touch writes through the session's filesystem; its writes are recorded here.
+// The /proc mount stands for no store folder, so the store-path resolver leaves its paths as they are.
 const mockWrite = jest.fn(async (_path: string, _content: string) => ({ ok: true as const, value: true as const }));
 jest.unstable_mockModule('../src/core/filesystem.js', () => ({
-  vfsDispatcher_get: () => ({ path_isVirtual: (p: string): boolean => p.startsWith('/proc'), write: mockWrite }),
+  vfsDispatcher_get: () => ({ path_isVirtual: (p: string): boolean => p.startsWith('/proc'), provider_get: () => ({ prefix: '/proc' }), write: mockWrite }),
   listingCache_get: () => ({ cache_invalidate: jest.fn() }),
 }));
 

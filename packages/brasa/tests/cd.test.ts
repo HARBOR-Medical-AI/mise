@@ -37,7 +37,16 @@ cuminMock_install(() => ({
 }));
 jest.unstable_mockModule('../src/builtins/utils.js', () => ({
   path_resolve: jest.fn(async (p: string): Promise<string> => p),
-  path_resolveLinks: jest.fn(async (p: string): Promise<string> => p),
+  // The one store-path resolver, over one link: the run's output holds a link to ~/uploads/x.
+  storePath_resolve: jest.fn(async (p: string, options: { entry?: boolean } = {}): Promise<string> => {
+    const link: string = '/home/u/feeds/feed_1/pl-dircopy_2/data/home_u_uploads_x';
+    const follow = (at: string): string => (at === link || at.startsWith(`${link}/`) ? `/home/u/uploads/x${at.slice(link.length)}` : at);
+    if (options.entry === true) {
+      const slash: number = p.lastIndexOf('/');
+      return `${follow(p.slice(0, slash) || '/')}${p.slice(slash)}`.replace(/^\/\//, '/');
+    }
+    return follow(p);
+  }),
   error_stripDebugPrefix: jest.fn((m: string): string => m),
 }));
 const vfsList = jest.fn<(path: string) => Promise<{ ok: boolean; value?: unknown[] }>>();
@@ -89,23 +98,16 @@ describe('cd through a CFS link', () => {
 });
 
 describe('cfsLink_target', () => {
-  it('names the target of a link in its parent listing, and nothing for a directory', async () => {
-    vfsList.mockResolvedValue({ ok: true, value: [
-      { name: 'data', type: 'dir', size: 0, owner: 'u', date: '' },
-      { name: 'home_u_uploads_x', type: 'link', size: 48, owner: 'u', date: '', target: '/home/u/uploads/x' },
-      { name: 'dangling', type: 'link', size: 0, owner: 'u', date: '' },
-    ] });
+  it('names the target of a link as the store-path resolver gives it, and nothing for a folder', async () => {
     expect(await cfsLink_target('/home/u/feeds/feed_1/pl-dircopy_2/data/home_u_uploads_x')).toBe('/home/u/uploads/x');
     expect(await cfsLink_target('/home/u/feeds/feed_1/pl-dircopy_2/data/data')).toBeNull();
-    expect(await cfsLink_target('/home/u/feeds/feed_1/pl-dircopy_2/data/dangling')).toBeNull();
+    // A folder behind the link is no link itself: its entry and its store path are one.
+    expect(await cfsLink_target('/home/u/feeds/feed_1/pl-dircopy_2/data/home_u_uploads_x/sub')).toBeNull();
     expect(await cfsLink_target('/home/u/feeds/feed_1/pl-dircopy_2/data/absent')).toBeNull();
-    expect(vfsList).toHaveBeenCalledWith('/home/u/feeds/feed_1/pl-dircopy_2/data');
   });
-  it('is nothing for the root, a relative path, or an unlistable parent', async () => {
+  it('is nothing for the root or a relative path', async () => {
     expect(await cfsLink_target('/')).toBeNull();
     expect(await cfsLink_target('relative/x')).toBeNull();
-    vfsList.mockResolvedValue({ ok: false });
-    expect(await cfsLink_target('/home/u/x')).toBeNull();
   });
 });
 
