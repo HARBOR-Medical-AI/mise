@@ -18,7 +18,7 @@ import {
   type AnyCommandDeclaration, type CommandArguments, type CommandGrammar, type OptionGrammar, type OptionsGrammar, type SubcommandGrammar,
 } from '../core/commandDeclaration.js';
 import { declaredCommand_run } from '../core/commandParse.js';
-import { declarationHelp_derive } from '../core/commandUsage.js';
+import { declarationHelp_derive, subcommandHelp_derive } from '../core/commandUsage.js';
 import { backendInstalled_get } from '../core/backend.js';
 import type { CommandEnvelope } from '@fnndsc/menu';
 
@@ -793,8 +793,21 @@ export function commandHelp_get(command: string): string | undefined {
   const declaration: AnyCommandDeclaration | undefined = commandDeclaration_get(command);
   const help: CommandHelp | undefined = declaration !== undefined && declaration_isParsed(declaration)
     ? declarationHelp_derive(declaration)
-    : commandHelpEntry_get(command);
+    : commandHelpEntry_get(command) ?? subcommandHelp_get(command);
   return help ? commandHelp_render(command, help) : undefined;
+}
+
+/**
+ * A declared command's subcommand's help, for a topic of two words (`pacs query`).
+ *
+ * @param topic - The topic.
+ * @returns The help, or undefined when the topic names no declared subcommand.
+ */
+function subcommandHelp_get(topic: string): CommandHelp | undefined {
+  const words: string[] = topic.split(' ');
+  if (words.length !== 2) return undefined;
+  const declaration: AnyCommandDeclaration | undefined = commandDeclaration_get(words[0] as string);
+  return declaration !== undefined && declaration_isParsed(declaration) ? subcommandHelp_derive(declaration, words[1] as string) : undefined;
 }
 
 /**

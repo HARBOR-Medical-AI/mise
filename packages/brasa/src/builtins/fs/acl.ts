@@ -7,62 +7,153 @@
  * a group's grant, and `chmod o±r` is the other entry spelled as a mode.
  * `share X with Y` is a sentence; it lands nowhere in a terminal.
  *
- * The capability itself lives in the kernel (cumin `feed_share`,
+ * Each is declared in one record: the feeds are path operands that glob,
+ * `setfacl`'s entry an option's value, `chmod`'s mode one of two words. The
+ * capability itself lives in the kernel (cumin `feed_share`,
  * `feedShare_group`, `feedShare_revoke`, `feedAccess_read`,
  * `feed_makePublic`, `feed_makePrivate`). This is its shell face.
+ *
+ * Key components:
+ * - setfaclCommand, getfaclCommand, chmodCommand: the declarations.
+ * - builtin_setfacl, builtin_getfacl, builtin_chmod: each declaration run over words already split.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_setfacl(['-m', 'u:someone:r', 'feed_12']);
+ * ```
+ *
+ * Dependencies: cumin's sharing calls; the words of an entry and of a feed (`acl.args.ts`).
  *
  * @module
  */
 import { feed_share, feedShare_group, feedShare_revoke, feedAccess_read, feed_makePublic, feed_makePrivate, type FeedAccess } from '@fnndsc/cumin';
 import {
-  aclTarget_resolve, acl_render, chmodArgs_parse, setfaclArgs_parse,
-  GETFACL_USAGE, type AclEntry, type AclRemoval, type SetfaclArgs,
+  aclEntry_parse, aclRemoval_parse, aclTarget_resolve, acl_render,
+  type AclEntry, type AclRemoval,
 } from './acl.args.js';
 import { errorStack, type Result, type StackMessage } from '@fnndsc/fond';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
+
+/** The feeds a line names, as each of these commands takes them. */
+const FEEDS_OPERAND = {
+  name: 'path',
+  kind: 'cfsPath',
+  repeat: true,
+  glob: true,
+  summary: 'The feeds: an id, feed_N, any path through /feeds/, or /proc/jobs/feed_N',
+} as const;
+
+/** What a `setfacl` line may hold. */
+const SETFACL_GRAMMAR = {
+  operands: [FEEDS_OPERAND],
+  options: {
+    modify: { short: 'm', long: 'modify', summary: 'Add an entry: u:<user>:r, g:<group>:r, o::r (public) or o::- (private)', value: { name: 'entry', kind: 'word' } },
+    remove: { short: 'x', long: 'remove', summary: 'Withdraw a grant: u:<user> or g:<group>', value: { name: 'entry', kind: 'word' } },
+  },
+} as const satisfies CommandGrammar;
 
 /**
- * Adds or modifies an access control entry on a feed.
+ * The feeds some targets name, in order.
  *
- * @param args - Raw argument tokens.
- * @returns An envelope naming what was granted.
+ * @param verb - The command, for its refusal.
+ * @param paths - The targets as the line gave them.
+ * @param distinct - Whether a feed named twice counts once.
+ * @returns The feed ids, or the refusal of the first target that names none.
  */
-export async function builtin_setfacl(args: string[]): Promise<CommandEnvelope> {
-  let parsed: SetfaclArgs = setfaclArgs_parse(args);
+function feedIDs_resolve(verb: string, paths: readonly string[], distinct: boolean): number[] | CommandEnvelope {
+  const feedIDs: number[] = [];
+  for (const path of paths) {
+    const feedID: number | null = aclTarget_resolve(path);
+    if (feedID === null) return envelope_error(`${verb}: '${path}' does not name a feed\n`);
+    if (!distinct || !feedIDs.includes(feedID)) feedIDs.push(feedID);
+  }
+  return feedIDs;
+}
+
+/**
+ * Adds or modifies an access control entry on feeds, or withdraws a grant;
+ * given feeds and no entry, asks whom to share them with.
+ *
+ * @param args - The line, parsed.
+ * @returns An envelope naming what was granted or withdrawn.
+ */
+async function setfacl_run(args: CommandArguments<typeof SETFACL_GRAMMAR>): Promise<CommandEnvelope> {
+  const { modify, remove } = args.options;
+  if (remove !== undefined) {
+    const removal: AclRemoval | string = aclRemoval_parse(remove);
+    if (typeof removal === 'string') return envelope_error(`${removal}\n`);
+    const feedIDs: number[] | CommandEnvelope = feedIDs_resolve('setfacl', args.operands.path, false);
+    return Array.isArray(feedIDs) ? acl_remove(removal, feedIDs) : feedIDs;
+  }
+  if (modify !== undefined) {
+    const entry: AclEntry | null = aclEntry_parse(modify);
+    if (entry === null) return envelope_error(`setfacl: '${modify}' is not an entry (want u:<user>:r, g:<group>:r, o::r or o::-)\n`);
+    const feedIDs: number[] | CommandEnvelope = feedIDs_resolve('setfacl', args.operands.path, false);
+    return Array.isArray(feedIDs) ? acl_apply(entry, feedIDs, 'setfacl') : feedIDs;
+  }
   // A path and no entry names WHAT to share and not WITH WHOM, which is a
   // question rather than a usage error (an-absent-value-is-a-question). The
   // grant CUBE offers is read on a feed, so the only thing missing is the
-  // identity: ask for it, and refuse as before when it is not answered.
-  if (parsed.error !== null && entryless_is(args)) {
-    const paths: string[] = args.filter((token: string): boolean => !token.startsWith('-'));
-    const feedIDs: number[] = [];
-    for (const path of paths) {
-      const feedID: number | null = aclTarget_resolve(path);
-      if (feedID === null) {
-        return envelope_error(`setfacl: '${path}' does not name a feed\n`);
-      }
-      if (!feedIDs.includes(feedID)) feedIDs.push(feedID);
-    }
-    // One question for the whole set: a grant is per identity, and asking
-    // who once for twenty feeds is the same answer twenty times.
-    const who: string = (await who_ask(feedIDs)).trim();
-    if (who === '') {
-      const named: string = feedIDs.map((id: number): string => `feed_${id}`).join(' ');
-      return envelope_error(`setfacl: nobody named; ${named} shared with no one new\n`);
-    }
-    parsed = setfaclArgs_parse(['-m', `u:${who}:r`, ...paths]);
+  // identity: ask for it, and refuse when it is not answered.
+  const feedIDs: number[] | CommandEnvelope = feedIDs_resolve('setfacl', args.operands.path, true);
+  if (!Array.isArray(feedIDs)) return feedIDs;
+  // One question for the whole set: a grant is per identity, and asking
+  // who once for twenty feeds is the same answer twenty times.
+  const who: string = (await who_ask(feedIDs)).trim();
+  if (who === '') {
+    const named: string = feedIDs.map((id: number): string => `feed_${id}`).join(' ');
+    return envelope_error(`setfacl: nobody named; ${named} shared with no one new\n`);
   }
-  if (parsed.error !== null) return envelope_error(`${parsed.error}\n`);
+  return acl_apply({ kind: 'user', name: who, perms: 'r' }, feedIDs, 'setfacl');
+}
 
-  const feedIDs: number[] = [];
-  for (const path of parsed.paths) {
-    const feedID: number | null = aclTarget_resolve(path);
-    if (feedID === null) return envelope_error(`setfacl: '${path}' does not name a feed\n`);
-    feedIDs.push(feedID);
-  }
-  if (parsed.remove !== null) return acl_remove(parsed.remove, feedIDs);
-  if (parsed.modify === null) return envelope_error(`${parsed.error ?? 'setfacl: nothing to do'}\n`);
-  return acl_apply(parsed.modify, feedIDs, 'setfacl');
+/**
+ * `setfacl [-m <entry>] [-x <entry>] <path>…`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [setfaclCommand] }, 'backend');
+ * ```
+ */
+export const setfaclCommand = command_declare({
+  name: 'setfacl',
+  grammar: SETFACL_GRAMMAR,
+  help: {
+    summary: 'Share a feed with a user, a group or everyone, or stop sharing it',
+    description:
+      'A feed\'s access list, as POSIX ACL entries. -m u:<user>:r shares it with a user, -m g:<group>:r '
+      + 'with a group, -m o::r with everyone (a public feed) and -m o::- makes it private again. '
+      + '-x u:<user> or -x g:<group> withdraws that grant. A feed is named by id, by the feed_N a '
+      + 'listing shows, by any path through /feeds/, or by /proc/jobs/feed_N. Given a feed and no '
+      + 'entry, it asks which user to share it with.',
+    category: 'Sharing',
+    posix: { group: 'Files', differs: 'ChRIS sharing, as ACL entries' },
+    examples: [
+      'setfacl -m u:someone:r /home/me/feeds/feed_12',
+      'setfacl -m g:grantlab:r feed_12 feed_13',
+      'setfacl -m o::r feed_12                  # public',
+      'setfacl -x u:someone feed_12',
+      'setfacl feed_12                          # asks who to share it with',
+    ],
+  },
+  handler: setfacl_run,
+});
+
+/**
+ * `setfacl` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `setfacl`.
+ * @returns An envelope naming what was granted, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_setfacl(['-x', 'u:someone', 'feed_12']);
+ * ```
+ */
+export async function builtin_setfacl(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(setfaclCommand, args);
 }
 
 /**
@@ -128,37 +219,65 @@ async function acl_remove(removal: AclRemoval, feedIDs: number[]): Promise<Comma
   return envelope_ok(`${lines.join('\n')}\n`, { kind: 'fs.acl.removed', data: { kind: removal.kind, name: removal.name, targets: removed } });
 }
 
+/** What a `chmod` line may hold: a feed's one mode, then the feeds. */
+const CHMOD_GRAMMAR = {
+  operands: [
+    { name: 'mode', kind: 'enum', values: ['o+r', 'o-r'], summary: 'o+r makes the feeds public, o-r private: no other mode is one a feed has' },
+    FEEDS_OPERAND,
+  ],
+} as const satisfies CommandGrammar;
+
 /**
  * `chmod o+r` / `o-r` on feeds: the other entry, public or private, as
- * `setfacl -m o::r` / `o::-` writes it. No other mode is one a feed has.
+ * `setfacl -m o::r` / `o::-` writes it.
  *
- * @param args - Raw argument tokens.
+ * @param args - The line, parsed.
  * @returns An envelope naming what changed.
  */
-export async function builtin_chmod(args: string[]): Promise<CommandEnvelope> {
-  const parsed = chmodArgs_parse(args);
-  if (typeof parsed === 'string') return envelope_error(`${parsed}\n`);
-  const feedIDs: number[] = [];
-  for (const path of parsed.paths) {
-    const feedID: number | null = aclTarget_resolve(path);
-    if (feedID === null) return envelope_error(`chmod: '${path}' does not name a feed\n`);
-    feedIDs.push(feedID);
-  }
-  return acl_apply(parsed.entry, feedIDs, 'chmod');
+async function chmod_run(args: CommandArguments<typeof CHMOD_GRAMMAR>): Promise<CommandEnvelope> {
+  const feedIDs: number[] | CommandEnvelope = feedIDs_resolve('chmod', args.operands.path, false);
+  if (!Array.isArray(feedIDs)) return feedIDs;
+  return acl_apply({ kind: 'other', name: '', perms: args.operands.mode === 'o+r' ? 'r' : '-' }, feedIDs, 'chmod');
 }
 
 /**
- * Whether an invocation names paths but no entry to apply to them.
+ * `chmod <o+r|o-r> <path>…`: the declaration.
  *
- * @param args - Raw argument tokens.
- * @returns True when there is something to share and nobody to share with.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [chmodCommand] }, 'backend');
+ * ```
  */
-function entryless_is(args: string[]): boolean {
-  const flagged: boolean = args.some(
-    (token: string): boolean => token === '-m' || token === '-x' || token.startsWith('--'),
-  );
-  const paths: string[] = args.filter((token: string): boolean => !token.startsWith('-'));
-  return !flagged && paths.length >= 1;
+export const chmodCommand = command_declare({
+  name: 'chmod',
+  grammar: CHMOD_GRAMMAR,
+  help: {
+    summary: 'Make a feed public, or private again',
+    description: 'The other entry of a feed\'s access list spelled as a mode: o+r makes it public, o-r private, '
+      + 'exactly as setfacl -m o::r and o::- do. No other mode is one a feed has.',
+    category: 'Sharing',
+    posix: { group: 'Files', differs: 'sets who may see a feed or folder (ChRIS sharing)' },
+    examples: [
+      'chmod o+r feed_12',
+      'chmod o-r /proc/jobs/feed_12',
+    ],
+  },
+  handler: chmod_run,
+});
+
+/**
+ * `chmod` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `chmod`.
+ * @returns An envelope naming what changed, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_chmod(['o+r', 'feed_12']);
+ * ```
+ */
+export async function builtin_chmod(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(chmodCommand, args);
 }
 
 /**
@@ -181,19 +300,21 @@ async function who_ask(feedIDs: number[]): Promise<string> {
   }
 }
 
+/** What a `getfacl` line may hold. */
+const GETFACL_GRAMMAR = {
+  operands: [FEEDS_OPERAND],
+} as const satisfies CommandGrammar;
+
 /**
  * Reports a feed's access list, in `getfacl`'s own shape.
  *
- * @param args - Raw argument tokens.
+ * @param args - The line, parsed.
  * @returns An envelope carrying the rendered list.
  */
-export async function builtin_getfacl(args: string[]): Promise<CommandEnvelope> {
-  const paths: string[] = args.filter((token: string): boolean => !token.startsWith('-'));
-  if (paths.length === 0) return envelope_error(`${GETFACL_USAGE}\n`);
-
+async function getfacl_run(args: CommandArguments<typeof GETFACL_GRAMMAR>): Promise<CommandEnvelope> {
   const blocks: string[] = [];
   const model: Array<{ path: string; usernames: string[]; groups: string[]; public: boolean }> = [];
-  for (const path of paths) {
+  for (const path of args.operands.path) {
     const feedID: number | null = aclTarget_resolve(path);
     if (feedID === null) {
       return envelope_error(`getfacl: '${path}' does not name a feed\n`);
@@ -208,4 +329,47 @@ export async function builtin_getfacl(args: string[]): Promise<CommandEnvelope> 
   }
 
   return envelope_ok(`${blocks.join('\n\n')}\n`, { kind: 'fs.acl', data: model });
+}
+
+/**
+ * `getfacl <path>…`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [getfaclCommand] }, 'backend');
+ * ```
+ */
+export const getfaclCommand = command_declare({
+  name: 'getfacl',
+  grammar: GETFACL_GRAMMAR,
+  help: {
+    summary: 'Show who can read a feed: users, groups, and whether it is public',
+    description:
+      'Show who can read a feed, in the familiar block: a # file: line, the owner\'s user:: entry, '
+      + 'one user: line per user and one group: line per group holding access, then other:: '
+      + '(r-- when the feed is public).',
+    category: 'Sharing',
+    posix: { group: 'Files', differs: 'who a feed or folder is shared with, as ACL entries' },
+    examples: [
+      'getfacl /home/me/feeds/feed_12',
+    ],
+  },
+  // Reading an access list changes nothing of the session.
+  holds: [],
+  handler: getfacl_run,
+});
+
+/**
+ * `getfacl` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `getfacl`.
+ * @returns The access lists, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_getfacl(['feed_12']);
+ * ```
+ */
+export async function builtin_getfacl(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(getfaclCommand, args);
 }

@@ -52,6 +52,6 @@ describe('the compute kind', () => {
 
 describe('the ChRIS kinds', () => {
   it('are registered through the backend seam, by name', () => {
-    expect(chrisArgumentKinds.map((kind) => kind.name)).toEqual(['anchor', 'feed', 'compute']);
+    expect(chrisArgumentKinds.map((kind) => kind.name)).toEqual(['anchor', 'feed', 'compute', 'pacsQuery']);
   });
 });

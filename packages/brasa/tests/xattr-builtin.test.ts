@@ -16,7 +16,7 @@ cuminMock_install(() => ({
   feedTag_remove: mockRemove,
   errorStack: { stack_pop: mockStackPop, stack_search: () => [] },
   envelope_ok: (rendered: string, model?: unknown) => ({ status: 'ok', rendered, model }),
-  envelope_error: (rendered: string) => ({ status: 'error', rendered }),
+  envelope_error: (rendered: string, _errors?: unknown, renderedErr?: string) => ({ status: 'error', rendered, renderedErr }),
   CommandEnvelope: class {},
 }));
 
@@ -24,7 +24,38 @@ jest.unstable_mockModule('../src/builtins/utils.js', () => ({
   error_stripDebugPrefix: (message: string): string => message.replace(/^\[[^\]]*\]\s*\|\s*/, ''),
 }));
 
-const { builtin_getfattr, builtin_setfattr } = await import('../src/builtins/fs/xattr.js');
+const { builtin_getfattr, builtin_setfattr, getfattrCommand, setfattrCommand } = await import('../src/builtins/fs/xattr.js');
+const { commandLine_parse } = await import('../src/core/commandParse.js');
+const { commandUsage_render } = await import('../src/core/commandUsage.js');
+const { declaredWord_complete } = await import('../src/lib/completer/declared.js');
+const { shellWords_tokenize } = await import('../src/lib/parser.js');
+
+describe('the tag lines, parsed against their declarations', () => {
+  it('setfattr: -n or -x naming tag, -v its value, then the feeds; another attribute refused naming tag', async () => {
+    const parsed = await commandLine_parse(setfattrCommand, shellWords_tokenize('-n user.tag -v review feed_12 feed_13'));
+    expect(parsed.ok && parsed.args.options).toEqual({ name: 'user.tag', value: 'review', remove: undefined });
+    expect(parsed.ok && parsed.args.operands).toEqual({ path: ['feed_12', 'feed_13'] });
+    const refused = await commandLine_parse(setfattrCommand, shellWords_tokenize('-n color -v red feed_12'));
+    expect(!refused.ok && refused.refusal).toBe("setfattr: invalid argument 'color' for '--name' (valid: tag, user.tag); usage: setfattr [--name <name>] [--value <value>] [--remove <name>] <path…>");
+    const bad = await commandLine_parse(setfattrCommand, shellWords_tokenize('-n tag -v x -q feed_12'));
+    expect(!bad.ok && bad.refusal).toMatch(/^setfattr: invalid option -- 'q'/);
+  });
+
+  it('setfattr: a line that neither sets nor removes, both, or sets without a value, is refused with the usage', async () => {
+    expect((await builtin_setfattr(['feed_12'])).renderedErr).toContain('setfattr: -n tag or -x tag is needed; usage: setfattr ');
+    expect((await builtin_setfattr(['-n', 'tag', '-x', 'tag', 'feed_12'])).renderedErr).toContain('-n sets and -x removes; give one');
+    expect((await builtin_setfattr(['-n', 'tag', 'feed_12'])).renderedErr).toContain('-n tag needs -v <value>');
+    expect(mockAdd).not.toHaveBeenCalled();
+  });
+
+  it('getfattr: -n tag and -d, then the feeds; completes the one attribute and holds nothing', async () => {
+    expect(commandUsage_render(getfattrCommand)).toBe('getfattr [-d] [--name <name>] <path…>');
+    expect(await declaredWord_complete(getfattrCommand, ['-n'], '')).toEqual(['tag', 'user.tag']);
+    expect(getfattrCommand.holds).toEqual([]);
+    expect(setfattrCommand.holds).toBeUndefined();
+    expect(getfattrCommand.help.category).toBe('Sharing');
+  });
+});
 
 const tag = (name: string) => ({ id: 1, name, color: '#888888' });
 
@@ -48,7 +79,9 @@ describe('getfattr', () => {
 
   it('refuses a path that names no feed, a bad invocation, and says the kernel\'s words on failure', async () => {
     expect((await builtin_getfattr(['nowhere'])).rendered).toBe("getfattr: 'nowhere' does not name a feed\n");
-    expect((await builtin_getfattr([])).rendered).toMatch(/usage/);
+    // A line with no feed is refused by the parser, before anything is read.
+    expect((await builtin_getfattr([])).status).toBe('error');
+    expect(mockList).not.toHaveBeenCalled();
     mockList.mockResolvedValueOnce({ ok: false });
     mockStackPop.mockReturnValueOnce({ type: 'error', message: 'Not connected to ChRIS.' });
     expect((await builtin_getfattr(['feed_12'])).rendered).toBe('Not connected to ChRIS.\n');
@@ -78,7 +111,9 @@ describe('setfattr', () => {
 
   it("refuses a bad target, a bad invocation, and passes the kernel's refusal on", async () => {
     expect((await builtin_setfattr(['-n', 'tag', '-v', 'x', 'nowhere'])).rendered).toBe("setfattr: 'nowhere' does not name a feed\n");
-    expect((await builtin_setfattr(['-n', 'color', '-v', 'x', 'feed_12'])).rendered).toMatch(/Operation not supported/);
+    // An attribute a feed lacks is refused by the parser, naming the one it has.
+    expect((await builtin_setfattr(['-n', 'color', '-v', 'x', 'feed_12'])).status).toBe('error');
+    expect(mockAdd).not.toHaveBeenCalled();
     mockAdd.mockResolvedValueOnce({ ok: false });
     expect((await builtin_setfattr(['-n', 'tag', '-v', 'x', 'feed_12'])).rendered).toBe('setfattr: feed_12: could not add tag x\n');
     // A tag that is not in the vocabulary: the kernel's words, the cure named.

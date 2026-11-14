@@ -27,7 +27,6 @@ import {
   type RetrieveProgressStatus,
 } from '@fnndsc/salsa';
 import { session } from '../../session/index.js';
-import { args_checkHasHelpFlag, help_render } from '../help.js';
 import { pacsQuery_createAndWait, queryExpr_parse } from '../net/query.js';
 import { spinner } from '../../lib/spinner.js';
 import { path_resolve } from '../utils.js';
@@ -37,7 +36,9 @@ import {
   pacsServer_resolve,
 } from '../net/pacsUtils.js';
 import { builtin_cubepath } from '../net/cubepath.js';
-import { pullArgs_parse, type PullArgs } from './pull.args.js';
+import { PULL_GRAMMAR, type PullLine } from './pull.args.js';
+import { command_declare } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import { sink_get, sink_dataLine, sink_errLine } from '../../core/sink.js';
 import { repl_confirm } from '../../core/question.js';
 import { jobletCurrent_get } from '../../core/jobletScope.js';
@@ -434,38 +435,97 @@ async function pulledFeed_create(
  * With `--retry N`: re-fires retrieves for [NO LONK] series up to N additional times.
  * With `--new-feed TITLE`: creates one feed from the exact successfully retrieved set.
  *
+ * The declaration's parse and handler, over words already split.
+ *
  * @param args - Command arguments (VFS paths, optional flags).
+ * @returns The outcome, or the refusal of a bad line.
  * @example
  * pull /net/pacs/queries/42_AccessionNumber:12345678
  * pull --retry 3 /net/pacs/queries/42_AccessionNumber:12345678/Study_1.2.3_US-Hips
  */
 export async function builtin_pull(args: string[]): Promise<CommandEnvelope> {
-  if (args_checkHasHelpFlag(args, 'pull')) {
-    return envelope_ok(help_render('pull'));
-  }
+  return declaredCommand_run(pullCommand, args);
+}
 
-  const parsed: PullArgs = pullArgs_parse(args);
-  const { nowait, retryMax, newFeedTitle, parseError, paths } = parsed;
+/**
+ * Refuses a pull line on the error channel, before anything is fired.
+ *
+ * @param reason - What is wrong, as a sentence.
+ * @returns The error envelope.
+ */
+function pullLine_refuse(reason: string): CommandEnvelope {
+  sink_errLine(chalk.red(`pull: ${reason}`));
+  exitCode_set(1);
+  return envelope_error('');
+}
 
-  if (parseError !== null) {
-    sink_errLine(chalk.red(`pull: ${parseError}.`));
-    exitCode_set(1);
-    return envelope_error('');
-  }
+/**
+ * `pull [options] <target>…`: the declaration. `pacs pull` takes the same
+ * line (`PULL_GRAMMAR`) and runs the same handler.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [pullCommand] }, 'backend');
+ * ```
+ */
+export const pullCommand = command_declare({
+  name: 'pull',
+  grammar: PULL_GRAMMAR,
+  help: {
+    summary: 'Pull PACS series into ChRIS storage; accepts VFS paths or query expressions (blocking)',
+    description: 'Pull PACS series into ChRIS storage, blocking, with LONK progress per series: every series under a '
+      + '/net/pacs/queries/… path (a query, a study or a series), or under the answer to a Key:Value question, '
+      + 'which is asked first. A series already in CUBE is skipped. --detach fires the retrieves and returns '
+      + 'their handles at once; --new-feed makes one feed of the complete retrieved selection.',
+    category: 'PACS',
+    examples: [
+      '# Pull all series in a query (blocking)',
+      'pull /net/pacs/queries/42_AccessionNumber:12345678',
+      '',
+      '# Pull a single study',
+      'pull /net/pacs/queries/42_AccessionNumber:12345678/Study_1.2.3_US-Hips_DDH',
+      '',
+      '# Pull a specific series',
+      'pull /net/pacs/queries/42_AccessionNumber:12345678/Study_1.2.3_US-Hips_DDH/Series_1.2.3.4_XR',
+      '',
+      '# Pull multiple paths in one blocking call',
+      'pull /net/pacs/queries/42_AccessionNumber:12345678 /net/pacs/queries/43_PatientID:P001',
+      '',
+      '# Pull directly from a query expression (creates query, waits, then pulls)',
+      'pull PatientID:1234',
+      'pull AccessionNumber:12345678',
+      'pull AccessionNumber:12345678 --new-feed "Brain MRI"',
+      '',
+      '# Detached: take the handles and carry on',
+      'pull --detach /net/pacs/queries/42_AccessionNumber:12345678',
+      '# Output: <seriesUID> <retrieveId>  (one per series, in tree-walk order)',
+    ],
+  },
+  handler: pullLine_run,
+});
 
-  if (nowait && newFeedTitle !== null) {
-    sink_errLine(chalk.red('pull: --new-feed cannot be combined with --detach.'));
-    exitCode_set(1);
-    return envelope_error('');
-  }
+/**
+ * Pulls the series a line names: the handler of `pull` and of `pacs pull`.
+ *
+ * @param args - The line, parsed.
+ * @returns The outcome; the progress and the CUBE paths stream as it runs.
+ *
+ * @example
+ * ```ts
+ * await pullLine_run({ operands: { target: ['/net/pacs/queries/42_AccessionNumber:1'] }, options: { detach: true, … } });
+ * ```
+ */
+export async function pullLine_run(args: PullLine): Promise<CommandEnvelope> {
+  const nowait: boolean = args.options.detach || args.options.nowait;
+  const retryMax: number = args.options.retry ?? 0;
+  const paths: string[] = args.operands.target;
+  const titles: string[] = args.options.newFeed;
 
-  if (paths.length === 0) {
-    sink_errLine(chalk.red(
-      'pull: No paths specified. Usage: pull [--detach] [--retry N] [--new-feed <title>] <vfs-path> [...]',
-    ));
-    exitCode_set(1);
-    return envelope_error('');
-  }
+  if (titles.length > 1) return pullLine_refuse('--new-feed may only be specified once.');
+  const newFeedTitle: string | null = titles[0] === undefined ? null : titles[0].trim();
+  if (newFeedTitle === '') return pullLine_refuse('--new-feed requires a title.');
+
+  if (nowait && newFeedTitle !== null) return pullLine_refuse('--new-feed cannot be combined with --detach.');
 
   const pacsIdentifier: string | null = await pacsServer_resolve();
   if (!pacsIdentifier) {

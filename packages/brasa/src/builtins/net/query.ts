@@ -30,8 +30,10 @@ import { csvFile_write, pacsAnswer_renderCsv, pacsAnswer_renderTable, type CsvWr
 import { series_cubePathGet } from './pacsUtils.js';
 import { screen } from '@fnndsc/chili/screen/screen.js';
 import { spinner } from '../../lib/spinner.js';
-import { args_checkHasHelpFlag, help_render } from '../help.js';
 import { pacsRefusal_hint, pacsRefusal_is } from './pacsAccess.js';
+import { QUERY_GRAMMAR, type QueryLine } from './query.args.js';
+import { command_declare } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import { errorStack, type Result, type StackMessage } from '@fnndsc/fond';
 import { exitCode_set } from '../../core/handlerRun.js';
 
@@ -977,82 +979,98 @@ async function cohort_answer(
 }
 
 /**
- * Creates a PACS query, waits for results, displays findings, and prints the VFS path.
+ * `query <Key:Value…> [options]`: the declaration. `pacs query` takes the
+ * same line (`QUERY_GRAMMAR`) and runs the same handler.
  *
- * @param args - `<queryExpression> [--title <title>] [--pacsserver <id>] [--table] [--help]`
  * @example
- * query PatientID:1234
- * query 'PatientID:1234,StudyDate:20240101' --title 'Hip DDH Jan 2024'
- * query AccessionNumber:12345678 --table
+ * ```ts
+ * commands_register({ declarations: [queryCommand] }, 'backend');
+ * ```
+ */
+export const queryCommand = command_declare({
+  name: 'query',
+  grammar: QUERY_GRAMMAR,
+  help: {
+    summary: 'Create a PACS query, wait for results, and print the VFS path',
+    description: 'Create a PACS query, wait for its answer, show it, and print the VFS path a pull or a cd takes. '
+      + 'A question already answered is replayed from the index, its age said; --fresh asks again. '
+      + 'A PACS matches one patient at a time, so several MRNs (PatientID:1,2,3 or --patients) is several queries, one table. '
+      + 'Some PACS ignore keys: PACSDCM answers SeriesDescription and StudyDescription as if they were not asked (query says so); '
+      + 'narrow the answer with grep. The keys each server ignores are in ~/.config/mise/pacs.json, as '
+      + '{"ignoredKeys": {"PACSDCM": ["SeriesDescription", "StudyDescription"]}}.',
+    category: 'PACS',
+    examples: [
+      'query PatientID:1234',
+      'query PatientID:1234 --fresh           # ignore the stored answer',
+      'query AccessionNumber:12345678 --title "Hip DDH workup"',
+      'query PatientID:1234,StudyDate:20240101',
+      'query PatientID:1234567,Modality:MR | grep -i t1 | grep -vi gadavist',
+      '',
+      '# A PACS matches one patient at a time, so several MRNs is several queries',
+      'query PatientID:1234,4532,6654         # three questions, one table',
+      'query --patients @~/cohorts/ddh.txt    # a cohort from a file in ChRIS',
+      'query StudyDate:20240101 --patients 1234,4532   # narrowed, per patient',
+      'query PatientID:1234 --pacsserver PACSDCM,ORTHANC   # ask both, one listing',
+      '',
+      '# A cohort audit, as a table a spreadsheet reads',
+      'query --patients @~/cohorts/ddh.txt --csv > audit.csv    # a local terminal',
+      'query --patients @~/cohorts/ddh.txt --csv-to ~/audits/ddh.csv   # any surface',
+      'query PatientID:1234 --csv-to ~/audit.csv --table --series',
+      '',
+      '# Use output path directly with pull',
+      'pull $(query PatientID:1234 | grep "VFS path" | awk \'{print $3}\')',
+    ],
+  },
+  handler: queryLine_run,
+});
+
+/**
+ * `query` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `query`.
+ * @returns The answer, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_query(['PatientID:1234', '--table']);
+ * ```
  */
 export async function builtin_query(args: string[]): Promise<CommandEnvelope> {
-  if (args_checkHasHelpFlag(args, 'query')) {
-    return envelope_ok(help_render('query'));
-  }
+  return declaredCommand_run(queryCommand, args);
+}
 
-  let title: string = `Query ${Date.now()}`;
-  let pacsserverOverride: string | null = null;
-  let tableMode: boolean = false;
-  let fresh: boolean = false;
-  let patientsArg: string | null = null;
-  let csv: boolean = false;
-  let csvTo: string | null = null;
-  /** True when `--csv-to` was given no value: the destination is asked for. */
-  let csvToAsk: boolean = false;
-  /** True when the operator said to overwrite a table that already exists. */
-  let force: boolean = false;
-  /**
-   * True to stand in for what the answer says about a person.
-   *
-   * For demonstrating against a live hospital PACS, where every answer
-   * carries somebody's name and record number onto the screen.
-   */
-  let anon: boolean = false;
-  /** One row per study (the default), or per series (`--series`). */
-  let level: PacsAnswerLevel = 'study';
-  const positional: string[] = [];
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--title' && i + 1 < args.length) {
-      title = args[++i];
-    } else if (args[i] === '--pacsserver' && i + 1 < args.length) {
-      pacsserverOverride = args[++i];
-    } else if (args[i] === '--table') {
-      tableMode = true;
-    } else if (args[i] === '--patients' && i + 1 < args.length) {
-      patientsArg = args[++i];
-    } else if (args[i] === '--csv') {
-      csv = true;
-    } else if (args[i] === '--csv-to') {
-      // A value-taking flag given no value is an ASK. `--csv-to` with
-      // nothing after it means "ask me where", which is how a graphical
-      // surface opens its errand and how a terminal gets a prompt. Given
-      // nothing and treated as nothing — which is what happened before —
-      // the operator asked for a CSV and silently got none.
-      const value: string | undefined = args[i + 1];
-      if (value !== undefined && !value.startsWith('--')) {
-        csvTo = args[++i];
-      } else {
-        csvToAsk = true;
-      }
-    } else if (args[i] === '--force') {
-      force = true;
-    } else if (args[i] === '--fresh') {
-      fresh = true;
-    } else if (args[i] === '--anon') {
-      anon = true;
-    } else if (args[i] === '--series') {
-      level = 'series';
-    } else if (args[i].startsWith('--')) {
-      // A flag this command does not know is refused by name. Dropped in
-      // silence, `--series` on a build without it answered at the study
-      // level and looked like it had been heard.
-      exitCode_set(1);
-      return envelope_error('', undefined, `${chalk.red(`query: unknown flag ${args[i]} (see pacs query --help)`)}\n`);
-    } else {
-      positional.push(args[i]);
-    }
-  }
+/**
+ * Creates a PACS query, waits for results, displays findings, and prints the
+ * VFS path: the handler of `query` and of `pacs query`.
+ *
+ * @param args - The line, parsed.
+ * @returns The answer, its model beside it.
+ *
+ * @example
+ * ```ts
+ * await queryLine_run({ operands: { expression: ['PatientID:1234'] }, options: { …, table: true } });
+ * ```
+ */
+export async function queryLine_run(args: QueryLine): Promise<CommandEnvelope> {
+  const { options } = args;
+  const title: string = options.title ?? `Query ${Date.now()}`;
+  const pacsserverOverride: string | null = options.pacsserver ?? null;
+  let tableMode: boolean = options.table;
+  const fresh: boolean = options.fresh;
+  const patientsArg: string | null = options.patients ?? null;
+  const csv: boolean = options.csv;
+  // A value-taking flag given no value is an ASK: `--csv-to` with nothing
+  // after it means "ask me where", which is how a graphical surface opens
+  // its errand and how a terminal gets a prompt.
+  const csvTo: string | null = options.csvTo ?? null;
+  const csvToAsk: boolean = options.csvTo === null;
+  const force: boolean = options.force;
+  // Standing in for what the answer says about a person is for
+  // demonstrating against a live hospital PACS, where every answer carries
+  // somebody's name and record number onto the screen.
+  const anon: boolean = options.anon;
+  const level: PacsAnswerLevel = options.series ? 'series' : 'study';
+  const positional: string[] = args.operands.expression;
 
   // Two renderings for one screen: CSV is the answer's text, the table is
   // its rows aligned. Asked for both, neither is guessed; writing the CSV

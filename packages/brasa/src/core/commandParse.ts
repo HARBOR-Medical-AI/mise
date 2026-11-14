@@ -5,7 +5,8 @@
  * 1. The line's shape is parsed, GNU `getopt_long` for every command: `-f`,
  *    bundled short switches (`-rf`), `--force`; `--name x` and `--name=x`;
  *    `--` ends the options; options may stand anywhere among the operands;
- *    a word like `-3` is an operand when an operand of the line is numeric.
+ *    a word like `-3` is an operand when an operand of the line is numeric;
+ *    a value option that `asks`, given no value, is a question (null).
  *    Subcommand words and option names are literal and never globbed.
  * 2. Operands expand by kind: only a path operand that declares `glob` has
  *    its wildcards matched.
@@ -68,12 +69,15 @@ interface OptionEntry {
   readonly option: OptionGrammar;
 }
 
+/** What a line gave an option: a switch's `true`, a value option's words, or null when one that asks was given none. */
+type OptionHeld = true | string[] | null;
+
 /** The line's shape: the subcommand, the options' words, and the operands' words. */
 interface LineShape {
   /** The subcommand, or null. */
   readonly subcommand: string | null;
-  /** Each option given: a switch's `true`, or a value option's words in order. */
-  readonly options: Map<string, true | string[]>;
+  /** Each option given: a switch's `true`, a value option's words in order, or null for one that asks. */
+  readonly options: Map<string, OptionHeld>;
   /** The words that are operands, in order. */
   readonly operands: ShellWord[];
 }
@@ -125,13 +129,26 @@ function operands_takeNumbers(operands: readonly OperandGrammar[]): boolean {
  * @param entry - The option.
  * @param value - Its value, or null for a switch.
  */
-function option_record(options: Map<string, true | string[]>, entry: OptionEntry, value: string | null): void {
+function option_record(options: Map<string, OptionHeld>, entry: OptionEntry, value: string | null): void {
   if (value === null) {
     options.set(entry.key, true);
     return;
   }
-  const held: true | string[] | undefined = options.get(entry.key);
+  const held: OptionHeld | undefined = options.get(entry.key);
   options.set(entry.key, [...(Array.isArray(held) ? held : []), value]);
+}
+
+/**
+ * Whether a value option stands with no value: nothing follows it, or, for
+ * one that asks, another option does.
+ *
+ * @param option - The option.
+ * @param next - The word after it, if any.
+ * @returns True when it has no value.
+ */
+function value_isAbsent(option: OptionGrammar, next: ShellWord | undefined): boolean {
+  if (next === undefined) return true;
+  return option.asks === true && next.value.startsWith('-') && next.value.length > 1;
 }
 
 /** Where a parse stands as it walks the words. */
@@ -157,7 +174,7 @@ interface ShapeWalk {
  * @returns Where the next word stands.
  * @throws {LineRefusal} For an unknown option, a missing value, or a value given to a switch.
  */
-function longOption_read(words: readonly ShellWord[], at: number, walk: ShapeWalk, options: Map<string, true | string[]>): number {
+function longOption_read(words: readonly ShellWord[], at: number, walk: ShapeWalk, options: Map<string, OptionHeld>): number {
   const text: string = (words[at] as ShellWord).value.slice(2);
   const equals: number = text.indexOf('=');
   const name: string = equals === -1 ? text : text.slice(0, equals);
@@ -174,8 +191,12 @@ function longOption_read(words: readonly ShellWord[], at: number, walk: ShapeWal
     return at + 1;
   }
   const next: ShellWord | undefined = words[at + 1];
-  if (next === undefined) throw new LineRefusal(`option '--${name}' wants a value (<${entry.option.value.name}>)`, walk.subcommand);
-  option_record(options, entry, next.value);
+  if (value_isAbsent(entry.option, next)) {
+    if (entry.option.asks !== true) throw new LineRefusal(`option '--${name}' wants a value (<${entry.option.value.name}>)`, walk.subcommand);
+    options.set(entry.key, null);
+    return at + 1;
+  }
+  option_record(options, entry, (next as ShellWord).value);
   return at + 2;
 }
 
@@ -190,7 +211,7 @@ function longOption_read(words: readonly ShellWord[], at: number, walk: ShapeWal
  * @returns Where the next word stands.
  * @throws {LineRefusal} For an unknown option or a missing value.
  */
-function shortOptions_read(words: readonly ShellWord[], at: number, walk: ShapeWalk, options: Map<string, true | string[]>): number {
+function shortOptions_read(words: readonly ShellWord[], at: number, walk: ShapeWalk, options: Map<string, OptionHeld>): number {
   const text: string = (words[at] as ShellWord).value;
   for (let index: number = 1; index < text.length; index += 1) {
     const letter: string = text[index] as string;
@@ -206,8 +227,12 @@ function shortOptions_read(words: readonly ShellWord[], at: number, walk: ShapeW
       return at + 1;
     }
     const next: ShellWord | undefined = words[at + 1];
-    if (next === undefined) throw new LineRefusal(`option '-${letter}' wants a value (<${entry.option.value.name}>)`, walk.subcommand);
-    option_record(options, entry, next.value);
+    if (value_isAbsent(entry.option, next)) {
+      if (entry.option.asks !== true) throw new LineRefusal(`option '-${letter}' wants a value (<${entry.option.value.name}>)`, walk.subcommand);
+      options.set(entry.key, null);
+      return at + 1;
+    }
+    option_record(options, entry, (next as ShellWord).value);
     return at + 2;
   }
   return at + 1;
@@ -224,7 +249,7 @@ function shortOptions_read(words: readonly ShellWord[], at: number, walk: ShapeW
  * @param options - The options so far, which a chosen subcommand must take.
  * @throws {LineRefusal} For a word that names no subcommand of a command that takes no bare operand, or a subcommand that does not take an option given before it.
  */
-function plainWord_take(grammar: CommandGrammar, word: ShellWord, walk: ShapeWalk, operands: ShellWord[], options: Map<string, true | string[]>): void {
+function plainWord_take(grammar: CommandGrammar, word: ShellWord, walk: ShapeWalk, operands: ShellWord[], options: Map<string, OptionHeld>): void {
   const subcommands: Readonly<Record<string, SubcommandGrammar>> | undefined = grammar.subcommands;
   if (subcommands !== undefined && walk.subcommand === null && operands.length === 0 && !walk.optionsEnded) {
     const chosen: SubcommandGrammar | undefined = Object.hasOwn(subcommands, word.value) ? subcommands[word.value] : undefined;
@@ -260,7 +285,7 @@ function plainWord_take(grammar: CommandGrammar, word: ShellWord, walk: ShapeWal
  */
 function lineShape_parse(grammar: CommandGrammar, words: readonly ShellWord[]): LineShape {
   const walk: ShapeWalk = { subcommand: null, scope: null, entries: optionEntries_list(grammar, null), optionsEnded: false };
-  const options: Map<string, true | string[]> = new Map();
+  const options: Map<string, OptionHeld> = new Map();
   const operands: ShellWord[] = [];
   let at: number = 0;
   while (at < words.length) {
@@ -374,12 +399,16 @@ function word_check(argument: ArgumentGrammar, word: string, where: string, subc
  * @returns The values, by property.
  * @throws {LineRefusal} For a value not of its kind.
  */
-function optionValues_check(entries: readonly OptionEntry[], given: Map<string, true | string[]>, subcommand: string | null): Record<string, unknown> {
+function optionValues_check(entries: readonly OptionEntry[], given: Map<string, OptionHeld>, subcommand: string | null): Record<string, unknown> {
   const values: Record<string, unknown> = {};
   for (const { key, option } of entries) {
-    const held: true | string[] | undefined = given.get(key);
+    const held: OptionHeld | undefined = given.get(key);
     if (option.value === undefined) {
       values[key] = held === true;
+      continue;
+    }
+    if (held === null) {
+      values[key] = option.repeat === true ? [] : null;
       continue;
     }
     const where: string = option.long !== undefined ? `'--${option.long}'` : `'-${option.short ?? ''}'`;

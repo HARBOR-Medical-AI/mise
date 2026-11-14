@@ -31,7 +31,63 @@ cuminMock_install(() => ({
 const mockQuestion = jest.fn<(prompt: string) => Promise<string>>();
 jest.unstable_mockModule('../src/core/question.js', () => ({ repl_question: mockQuestion }));
 
-const { builtin_setfacl, builtin_getfacl, builtin_chmod } = await import('../src/builtins/fs/acl.js');
+const { builtin_setfacl, builtin_getfacl, builtin_chmod, setfaclCommand, getfaclCommand, chmodCommand } = await import('../src/builtins/fs/acl.js');
+const { commandLine_parse } = await import('../src/core/commandParse.js');
+const { commandUsage_render } = await import('../src/core/commandUsage.js');
+const { commandTools_derive } = await import('../src/core/commandSchema.js');
+const { declaredWord_complete } = await import('../src/lib/completer/declared.js');
+const { shellWords_tokenize } = await import('../src/lib/parser.js');
+
+/**
+ * The refusal of a line, or a failure when it parses.
+ *
+ * @param declaration - The command.
+ * @param line - The words after the command.
+ * @returns The refusal.
+ */
+async function refusal_get(declaration: Parameters<typeof commandLine_parse>[0], line: string): Promise<string> {
+  const parsed = await commandLine_parse(declaration, shellWords_tokenize(line));
+  if (parsed.ok) throw new Error(`expected a refusal for: ${line}`);
+  return parsed.refusal;
+}
+
+describe('the Sharing lines, parsed against their declarations', () => {
+  it('setfacl: -m or -x with its entry, anywhere among one or more feeds; none refused, an option it lacks named', async () => {
+    const parsed = await commandLine_parse(setfaclCommand, shellWords_tokenize('feed_12 -m g:lab:r feed_13'));
+    expect(parsed.ok && parsed.args.operands).toEqual({ path: ['feed_12', 'feed_13'] });
+    expect(parsed.ok && parsed.args.options).toEqual({ modify: 'g:lab:r', remove: undefined });
+    const long = await commandLine_parse(setfaclCommand, shellWords_tokenize('--remove=u:ann feed_1'));
+    expect(long.ok && long.args.options['remove']).toBe('u:ann');
+    expect(await refusal_get(setfaclCommand, '-m u:s:r')).toBe('setfacl: missing operand <path>; usage: setfacl [--modify <entry>] [--remove <entry>] <path…>');
+    expect(await refusal_get(setfaclCommand, '-R -m u:s:r feed_1')).toBe("setfacl: invalid option -- 'R'; usage: setfacl [--modify <entry>] [--remove <entry>] <path…>");
+    expect(await refusal_get(setfaclCommand, 'feed_1 -m')).toContain("option '-m' wants a value (<entry>)");
+  });
+
+  it('chmod: o+r or o-r, then the feeds; any other mode refused naming the two', async () => {
+    const parsed = await commandLine_parse(chmodCommand, shellWords_tokenize('o-r feed_1 feed_2'));
+    expect(parsed.ok && parsed.args.operands).toEqual({ mode: 'o-r', path: ['feed_1', 'feed_2'] });
+    expect(await refusal_get(chmodCommand, 'u+x feed_1')).toBe("chmod: invalid argument 'u+x' for <mode> (valid: o+r, o-r); usage: chmod <mode> <path…>");
+    expect(await refusal_get(chmodCommand, 'o+r')).toBe('chmod: missing operand <path>; usage: chmod <mode> <path…>');
+  });
+
+  it('getfacl: one or more feeds, and no option', async () => {
+    expect(commandUsage_render(getfaclCommand)).toBe('getfacl <path…>');
+    expect(await refusal_get(getfaclCommand, '-R feed_1')).toBe("getfacl: invalid option -- 'R'; usage: getfacl <path…>");
+  });
+
+  it('complete their options and modes, hold what the tables held, and write a tool each', async () => {
+    expect(await declaredWord_complete(setfaclCommand, [], '-')).toEqual(['-m', '-x', '--modify', '--remove']);
+    expect(await declaredWord_complete(chmodCommand, [], 'o')).toEqual(['o+r', 'o-r']);
+    expect(getfaclCommand.holds).toEqual([]);
+    expect(setfaclCommand.holds).toBeUndefined();
+    expect(chmodCommand.holds).toBeUndefined();
+    for (const declaration of [setfaclCommand, getfaclCommand, chmodCommand]) {
+      expect(declaration.help.category).toBe('Sharing');
+      expect(declaration.help.posix?.group).toBe('Files');
+      expect(commandTools_derive(declaration).map((tool) => tool.name)).toEqual([declaration.name]);
+    }
+  });
+});
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -97,7 +153,10 @@ describe('chmod', () => {
   it('makes a feed public with o+r and private with o-r, and refuses any other mode', async () => {
     expect((await builtin_chmod(['o+r', 'feed_12'])).rendered).toBe('feed_12 public\n');
     expect((await builtin_chmod(['o-r', 'feed_12'])).rendered).toBe('feed_12 private\n');
-    expect((await builtin_chmod(['u+x', 'feed_12'])).rendered).toContain("mode 'u+x'");
+    // A mode a feed lacks is refused by the parser, naming the two it has.
+    expect((await builtin_chmod(['u+x', 'feed_12'])).status).toBe('error');
+    expect(process.exitCode).toBe(1);
+    expect(mockPublic).toHaveBeenCalledTimes(1);
     expect((await builtin_chmod(['o+r', '/home/me/uploads'])).rendered).toContain('does not name a feed');
   });
 });

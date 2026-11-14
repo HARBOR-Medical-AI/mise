@@ -7,6 +7,7 @@
  * - ANCHOR_KIND: an anchor of this session's berth, by name.
  * - FEED_KIND: a feed, by id, feed_N or title.
  * - COMPUTE_KIND: a compute resource, by name.
+ * - PACS_QUERY_KIND: a PACS query, by id, by path, or as a question.
  * - chrisArgumentKinds: every kind the ChRIS backend registers.
  *
  * Typical usage:
@@ -16,13 +17,17 @@
  *
  * Dependencies: zod for the value schemas; the berth's state for an
  * anchor's completion; the session's feed index and CUBE (loaded when a
- * word is completed) for a feed's and a compute resource's.
+ * word is completed) for a feed's and a compute resource's; the session's
+ * PACS query index for a query's, loaded when asked.
  *
  * @module
  */
 import { z } from 'zod';
+import type { QueryIndexEntry } from '@fnndsc/cumin';
+import type { Result } from '@fnndsc/fond';
 
-import { candidates_filter, type ArgumentCheck, type ArgumentKind } from '../core/argumentKinds.js';
+import type { ShellWord } from '../lib/parser.js';
+import { candidates_filter, type ArgumentCheck, type ArgumentExpansion, type ArgumentKind } from '../core/argumentKinds.js';
 import { berthPlaces_read, berthState_read, type BerthAnchor, type BerthPlaces } from '../builtins/berth/berthState.js';
 
 /**
@@ -85,5 +90,71 @@ export const COMPUTE_KIND: ArgumentKind = {
   },
 };
 
+/** Where the PACS provider keeps its queries. */
+const PACS_QUERIES_ROOT: string = '/net/pacs/queries/';
+
+/** A query asked as a question, `Key:Value[,…]` or JSON, rather than named. */
+const QUESTION_WORD: RegExp = /^(?:[A-Za-z][A-Za-z0-9]*:|\{)/;
+
+/**
+ * The queries the session's index holds, as the paths and ids that name
+ * them. The index is the session's own record of what was asked; reading it
+ * asks CUBE nothing.
+ *
+ * @returns The query folders under /net/pacs/queries, and the ids, each in the index's order.
+ */
+async function indexedQueries_list(): Promise<{ paths: string[]; ids: string[] }> {
+  const { queryIndex_get } = await import('@fnndsc/cumin');
+  const { queryFolderName_build } = await import('@fnndsc/salsa');
+  const entries: QueryIndexEntry[] = queryIndex_get().entries_all();
+  return {
+    paths: entries.map((entry: QueryIndexEntry): string => `${PACS_QUERIES_ROOT}${queryFolderName_build({ queryId: entry.queryId, queryObj: entry.criteria, username: entry.owner || undefined, hasResult: entry.hasResult })}/`),
+    ids: entries.map((entry: QueryIndexEntry): string => String(entry.queryId)),
+  };
+}
+
+/**
+ * Completes a PACS query: its id from the index while digits are typed; its
+ * folder under /net/pacs/queries from the index; a study or series inside
+ * one as CFS lists it; nothing for a question being typed.
+ *
+ * @param partial - The word typed so far.
+ * @returns The candidates.
+ */
+async function pacsQuery_complete(partial: string): Promise<string[]> {
+  if (QUESTION_WORD.test(partial)) return [];
+  if (/^\d+$/.test(partial)) return candidates_filter([...new Set((await indexedQueries_list()).ids)], partial);
+  const inFolder: boolean = partial.startsWith(PACS_QUERIES_ROOT) && partial.indexOf('/', PACS_QUERIES_ROOT.length) !== -1;
+  if (partial === '' || (partial.startsWith('/') && !inFolder)) {
+    if (!PACS_QUERIES_ROOT.startsWith(partial) && !partial.startsWith(PACS_QUERIES_ROOT)) return [];
+    return candidates_filter([...new Set((await indexedQueries_list()).paths)], partial);
+  }
+  const { cfsPaths_complete } = await import('../lib/completer/cfsPaths.js');
+  return cfsPaths_complete(partial);
+}
+
+/**
+ * A PACS query, as `pull`, `pacs pull` and `pacs status` take one: its id,
+ * its path under /net/pacs/queries (or a study or series inside it), or a
+ * question (`AccessionNumber:12345678`) that is asked first. It completes
+ * from the session's query index; a path's wildcard is matched, a
+ * question's is the PACS's to read.
+ */
+export const PACS_QUERY_KIND: ArgumentKind = {
+  name: 'pacsQuery',
+  summary: 'a PACS query: its id, its path under /net/pacs/queries, or a Key:Value question',
+  path: true,
+  word_read: (word: string): ArgumentCheck => (word === '' ? { ok: false, reason: 'an empty word names no query' } : { ok: true, value: word }),
+  schema_make: (): z.ZodType => z.string().min(1),
+  words_complete: pacsQuery_complete,
+  words_expand: async (words: readonly ShellWord[]): Promise<ArgumentExpansion> => {
+    const { shellWords_expand } = await import('../lib/wildcard.js');
+    const { errorStack } = await import('@fnndsc/fond');
+    const expanded: Result<ShellWord[]> = await shellWords_expand(words, (word: ShellWord): boolean => !QUESTION_WORD.test(word.value));
+    if (expanded.ok) return { ok: true, words: expanded.value };
+    return { ok: false, reason: errorStack.stack_pop()?.message ?? 'a wildcard could not be expanded' };
+  },
+};
+
 /** Every argument kind the ChRIS backend registers. */
-export const chrisArgumentKinds: ReadonlyArray<ArgumentKind> = [ANCHOR_KIND, FEED_KIND, COMPUTE_KIND];
+export const chrisArgumentKinds: ReadonlyArray<ArgumentKind> = [ANCHOR_KIND, FEED_KIND, COMPUTE_KIND, PACS_QUERY_KIND];

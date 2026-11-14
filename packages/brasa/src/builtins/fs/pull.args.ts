@@ -1,76 +1,40 @@
 /**
- * @file Pure argument parsing for the `pull` builtin.
+ * @file What a pull's line may hold, as `pull` and `pacs pull` both take it:
+ * the queries, studies or series to pull, and how to wait for them.
  *
- * Dependency-free so it is trivially unit-testable.
+ * One grammar, so the standalone verb and the subcommand cannot drift. It
+ * lives apart from the pull verb so `pacs` reads it without loading that
+ * verb's graph.
+ *
+ * Key components:
+ * - PULL_GRAMMAR: the operands and options.
+ * - PullLine: what a handler of either line reads.
+ *
+ * Dependencies: the declaration types only.
  *
  * @module
  */
+import type { CommandArguments, CommandGrammar } from '../../core/commandDeclaration.js';
 
 /**
- * Parsed `pull` arguments.
- */
-export interface PullArgs {
-  nowait: boolean;
-  retryMax: number;
-  newFeedTitle: string | null;
-  parseError: string | null;
-  paths: string[];
-}
-
-/**
- * Parses `pull` arguments: `--detach` (`--nowait`), `--retry N`, `--new-feed TITLE`, and
- * path operands.
+ * A pull's operands and options.
  *
- * @param args - Raw command arguments.
- * @returns The parsed flags and paths.
+ * @example
+ * ```ts
+ * const pullCommand = command_declare({ name: 'pull', grammar: PULL_GRAMMAR, help, handler });
+ * ```
  */
-export function pullArgs_parse(args: string[]): PullArgs {
-  const commandArgs: string[] = args;
-  // `--detach` is the language's word for it; `--nowait` is what pull
-  // called it first and still answers to.
-  const nowait: boolean = commandArgs.includes('--nowait') || commandArgs.includes('--detach');
-  let retryMax: number = 0;
-  let newFeedTitle: string | null = null;
-  let parseError: string | null = null;
-  const paths: string[] = [];
+export const PULL_GRAMMAR = {
+  operands: [
+    { name: 'target', kind: 'pacsQuery', repeat: true, glob: true, summary: 'A /net/pacs/queries/… path (a query, a study or a series), or a Key:Value question asked first' },
+  ],
+  options: {
+    detach: { long: 'detach', summary: 'Fire the retrieves and return the handles at once: <seriesUID> <retrieveId> per line' },
+    nowait: { long: 'nowait', summary: 'The older spelling of --detach' },
+    retry: { long: 'retry', summary: 'Re-fire retrieves for [NO LONK] series up to N more times', value: { name: 'N', kind: 'int', min: 0 } },
+    newFeed: { long: 'new-feed', repeat: true, summary: 'Create one named feed from the complete retrieved selection', value: { name: 'title', kind: 'word' } },
+  },
+} as const satisfies CommandGrammar;
 
-  for (let i: number = 0; i < commandArgs.length; i++) {
-    if (commandArgs[i] === '--nowait' || commandArgs[i] === '--detach') {
-      continue;
-    } else if (commandArgs[i] === '--retry') {
-      const value: string | undefined = commandArgs[i + 1];
-      if (value === undefined || value.startsWith('--')) {
-        parseError ??= '--retry requires a non-negative integer';
-        continue;
-      }
-      i++;
-      const n: number = Number(value);
-      if (Number.isInteger(n) && n >= 0) {
-        retryMax = n;
-      } else {
-        parseError ??= '--retry requires a non-negative integer';
-      }
-    } else if (commandArgs[i] === '--new-feed') {
-      if (newFeedTitle !== null) {
-        parseError = '--new-feed may only be specified once';
-      }
-      const title: string | undefined = commandArgs[i + 1];
-      if (title === undefined || title.startsWith('--') || title.trim().length === 0) {
-        parseError ??= '--new-feed requires a title';
-      } else {
-        newFeedTitle = title.trim();
-        i++;
-      }
-    } else if (commandArgs[i] === '--plugin' || commandArgs[i] === '--pipeline') {
-      // Pulling lands data; running over it is `gather process`, or a run
-      // by name where the pull's feed stands.
-      parseError ??= `${commandArgs[i]} is retired: pull lands the data; run over it with gather process <name>, or cd into the feed and run by name`;
-    } else if (commandArgs[i].startsWith('--')) {
-      parseError ??= `unsupported option: ${commandArgs[i]}`;
-    } else {
-      paths.push(commandArgs[i]);
-    }
-  }
-
-  return { nowait, retryMax, newFeedTitle, parseError, paths };
-}
+/** What a handler of a pull line reads: the targets and the options, from `pull` or `pacs pull`. */
+export type PullLine = Pick<CommandArguments<typeof PULL_GRAMMAR>, 'operands' | 'options'>;

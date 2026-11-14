@@ -50,7 +50,10 @@ jest.unstable_mockModule('../src/session/index.js', () => ({
   session: { getCWD: jest.fn(async () => '/home/chris/uploads') },
 }));
 
-const { builtin_image } = await import('../src/builtins/res/image.js');
+const { builtin_image, imageCommand } = await import('../src/builtins/res/image.js');
+// Its help is its declaration's, so the declaration is registered as the ChRIS backend registers it.
+const { commands_register } = await import('../src/core/commandRegistry.js');
+commands_register({ declarations: [imageCommand] }, 'backend');
 const { commandCancellation_run, commandCancellation_abort, commandCancellation_request } = await import('../src/core/cancellation.js');
 
 const ok = <T>(value: T) => ({ ok: true as const, value });
@@ -82,16 +85,22 @@ beforeEach(() => {
 });
 
 describe('builtin_image grammar', () => {
-  it('returns help for --help', async () => {
-    const envelope: CommandEnvelope = await builtin_image(['--help']);
-    expect(envelope.status).toBe('ok');
-    expect(envelope.rendered).toContain('USAGE');
+  it('refuses an option it lacks, and a second path, before anything is read', async () => {
+    expect((await builtin_image(['--bogus', 'x'])).renderedErr).toContain("image: unrecognized option '--bogus'; usage: image [--force] [path]");
+    expect((await builtin_image(['a', 'b'])).renderedErr).toContain("image: unexpected operand 'b'");
+    expect(mockSeries).not.toHaveBeenCalled();
   });
 
   it('returns help when no path is given', async () => {
     const envelope: CommandEnvelope = await builtin_image([]);
     expect(envelope.status).toBe('ok');
     expect(envelope.rendered).toContain('USAGE');
+    expect(envelope.rendered).toContain('image [--force] [path]');
+  });
+
+  it('holds nothing of the session, so a slow open runs beside any other line', () => {
+    expect(imageCommand.holds).toEqual([]);
+    expect(imageCommand.help.category).toBe('Imaging');
   });
 });
 

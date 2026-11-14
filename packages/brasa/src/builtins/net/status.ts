@@ -18,7 +18,6 @@
  */
 import chalk from 'chalk';
 import { pacsQueries_list, pacsRetrieve_statusForQuery, type PACSQueryStatusReport, type SeriesRetrieveStatus, type FilteredResourceData } from '@fnndsc/cumin';
-import { args_checkHasHelpFlag, help_render } from '../help.js';
 import { spinner } from '../../lib/spinner.js';
 import { pacsQuery_createAndWait, queryExpr_parse } from './query.js';
 import { queryId_extractFromFolder } from '@fnndsc/salsa';
@@ -189,24 +188,17 @@ function statusReport_render(report: PACSQueryStatusReport): string {
  * Reports per-series pull status for a PACS query: expected vs registered
  * file counts, derived state, and the in-CUBE storage path.
  *
- * @param args - `[target]` where target is a query expression, a
- *   `/net/pacs/queries/...` path, or a numeric query id.
+ * `pacs status` parses its line against the `pacs` declaration; this runs it.
+ *
+ * @param target - A query expression, a `/net/pacs/queries/...` path, or a
+ *   numeric query id.
  * @returns An envelope carrying the rendered report and a typed model of it.
  * @example
  * pacs status AccessionNumber:22119730
  * pacs status /net/pacs/queries/AccessionNumber:22119730_qid:2833
  * pacs status 2833
  */
-export async function builtin_pacsStatus(args: string[]): Promise<CommandEnvelope> {
-  if (args_checkHasHelpFlag(args, 'pacs')) {
-    return envelope_ok(help_render('pacs'));
-  }
-
-  const target: string | undefined = args.find((a: string) => !a.startsWith('--'));
-  if (!target) {
-    exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red('pacs status: Missing target. Usage: pacs status <expression | path | queryId>')}\n`);
-  }
+export async function pacsStatus_run(target: string): Promise<CommandEnvelope> {
 
   const pacsserver: string | null = await pacsServer_resolve(null);
   if (!pacsserver) {

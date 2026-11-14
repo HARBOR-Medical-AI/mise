@@ -54,7 +54,7 @@ function optionNames_render(option: OptionGrammar): string {
   const names: string[] = [];
   if (option.short !== undefined) names.push(`-${option.short}`);
   if (option.long !== undefined) names.push(`--${option.long}`);
-  const value: string = option.value === undefined ? '' : ` <${option.value.name}>`;
+  const value: string = option.value === undefined ? '' : option.asks === true ? ` [<${option.value.name}>]` : ` <${option.value.name}>`;
   return `${names.join(', ')}${value}`;
 }
 
@@ -80,7 +80,7 @@ function lineTail_render(line: LineGrammar): string {
   for (const option of options) {
     if (option.value === undefined) continue;
     const name: string = option.long !== undefined ? `--${option.long}` : `-${option.short ?? ''}`;
-    parts.push(`[${name} <${option.value.name}>]`);
+    parts.push(option.asks === true ? `[${name} [<${option.value.name}>]]` : `[${name} <${option.value.name}>]`);
   }
   for (const operand of line.operands ?? []) parts.push(operand_usage(operand));
   return parts.join(' ');
@@ -228,5 +228,38 @@ export function declarationHelp_derive(declaration: CommandDeclaration): Command
     ...(declaration.help.posix !== undefined ? { posix: { ...declaration.help.posix } } : {}),
     ...(options.length > 0 ? { options } : {}),
     ...(declaration.help.examples !== undefined ? { examples: [...declaration.help.examples] } : {}),
+  };
+}
+
+/**
+ * The help record of one subcommand of a declared command (`help pacs
+ * query`): its usage, its summary, and its operands and options with the
+ * command's own beside them; the command's examples that run it.
+ *
+ * @param declaration - The command.
+ * @param subcommand - The subcommand's word.
+ * @returns The record, or undefined when the command has no such subcommand.
+ *
+ * @example
+ * ```ts
+ * subcommandHelp_derive(berthCommand, 'drop')?.usage; // 'berth drop <name>'
+ * ```
+ */
+export function subcommandHelp_derive(declaration: CommandDeclaration, subcommand: string): CommandHelp | undefined {
+  const subcommands: Readonly<Record<string, SubcommandGrammar>> | undefined = declaration.grammar.subcommands;
+  if (subcommands === undefined || !Object.hasOwn(subcommands, subcommand)) return undefined;
+  const chosen: SubcommandGrammar = subcommands[subcommand] as SubcommandGrammar;
+  const options: string[] = lineRows_render({
+    ...(chosen.operands !== undefined ? { operands: chosen.operands } : {}),
+    options: { ...(chosen.options ?? {}), ...(declaration.grammar.options ?? {}) },
+  }, '');
+  const lead: string = `${declaration.name} ${subcommand}`;
+  const examples: string[] = (declaration.help.examples ?? []).filter((line: string): boolean => line === lead || line.startsWith(`${lead} `));
+  return {
+    usage: commandUsage_render(declaration, subcommand),
+    summary: chosen.summary,
+    description: chosen.summary,
+    ...(options.length > 0 ? { options } : {}),
+    ...(examples.length > 0 ? { examples } : {}),
   };
 }

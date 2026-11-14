@@ -71,7 +71,10 @@ jest.unstable_mockModule('../src/builtins/utils.js', () => ({
 const ok = <T>(value: T) => ({ ok: true as const, value });
 const err = () => ({ ok: false as const });
 
-const { pacsQuery_createAndWait, builtin_query } = await import('../src/builtins/net/query.js');
+const { pacsQuery_createAndWait, builtin_query, queryCommand } = await import('../src/builtins/net/query.js');
+const { commandUsage_render } = await import('../src/core/commandUsage.js');
+const { commandLine_parse } = await import('../src/core/commandParse.js');
+const { shellWords_tokenize } = await import('../src/lib/parser.js');
 
 let logSpy: jest.SpiedFunction<typeof console.log>;
 let errSpy: jest.SpiedFunction<typeof console.error>;
@@ -178,10 +181,22 @@ describe('pacsQuery_createAndWait', () => {
 });
 
 describe('builtin_query', () => {
-  it('shows help for --help', async () => {
-    const envelope = await builtin_query(['--help']);
-    expect(envelope.rendered).toContain('USAGE');
-    expect(mockCreate).not.toHaveBeenCalled();
+  it('takes its usage from its declaration, --csv-to\'s path optional', async () => {
+    expect(commandUsage_render(queryCommand)).toContain('[--csv-to [<cfs-path>]]');
+    expect(commandUsage_render(queryCommand)).toMatch(/\[expression…\]$/);
+  });
+
+  it('parses its question and options anywhere on the line; a value option needs its value', async () => {
+    const parsed = await commandLine_parse(queryCommand, shellWords_tokenize('--title "a b" PatientID:X --pacsserver=SYNTH --series'));
+    expect(parsed.ok && parsed.args.operands).toEqual({ expression: ['PatientID:X'] });
+    expect(parsed.ok && parsed.args.options).toEqual(expect.objectContaining({ title: 'a b', pacsserver: 'SYNTH', series: true, csvTo: undefined }));
+    const refused = await commandLine_parse(queryCommand, shellWords_tokenize('PatientID:X --title'));
+    expect(!refused.ok && refused.refusal).toMatch(/^query: option '--title' wants a value \(<title>\); usage: query /);
+    // A wildcard in a question is the PACS's to read: it is never matched against CFS.
+    const wild = await commandLine_parse(queryCommand, shellWords_tokenize('PatientName:SMITH*'));
+    expect(wild.ok && wild.args.operands).toEqual({ expression: ['PatientName:SMITH*'] });
+    expect(queryCommand.help.category).toBe('PACS');
+    expect(queryCommand.holds).toBeUndefined();
   });
 
   it('requires a query expression', async () => {
@@ -247,7 +262,7 @@ describe('builtin_query', () => {
   it('refuses a flag it does not know, by name', async () => {
     const envelope = await builtin_query(['PatientID:X', '--sereis']);
     expect(envelope.status).toBe('error');
-    expect(envelope.renderedErr ?? envelope.rendered).toContain('unknown flag --sereis');
+    expect(envelope.renderedErr ?? envelope.rendered).toContain("query: unrecognized option '--sereis'");
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
@@ -672,6 +687,18 @@ describe('a flag given no value asks', () => {
 
     const asked = mockPrompt.mock.calls[0][0] as { path?: { anchor?: string } };
     expect(asked.path?.anchor).toBe('/home/chris/feeds');
+  });
+
+  it('asks as well when another option follows the flag', async () => {
+    mockCreate.mockResolvedValue(ok({ id: 403, owner_username: 'chris' }));
+    mockQueryGet.mockResolvedValue(ok({ status: 'succeeded' }));
+    mockDecode.mockResolvedValue(ok({ json: [studyPayload[0]] }));
+    mockPrompt.mockResolvedValue('/home/chris/y.csv');
+
+    await builtin_query(['PatientID:1234', '--csv-to', '--series']);
+
+    expect(mockPrompt).toHaveBeenCalledTimes(1);
+    expect(mockFilesCreate).toHaveBeenCalledWith(expect.any(String), '/home/chris/y.csv');
   });
 
   it('takes a value that follows the flag, and asks nothing', async () => {

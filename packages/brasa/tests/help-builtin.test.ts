@@ -122,7 +122,7 @@ describe('builtin_help in a session with nothing of its own', () => {
 describe('builtin_help in a session that has the verbs', () => {
   beforeAll(() => {
     const ran = async (): Promise<CommandEnvelope> => ({ status: 'ok', rendered: '' });
-    commands_register({ envelope: { ls: ran, image: ran, dcm: ran } });
+    commands_register({ envelope: { ls: ran } });
     chrisHelp_install();
     backend_install({
       id: 'test',

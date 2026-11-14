@@ -647,16 +647,19 @@ describe('command_dispatch', () => {
     writeSpy.mockRestore();
   });
 
-  it('delegates the pacsservers alias to chili', async () => {
-    await command_dispatch('pacsservers', ['--query', 'x']);
-    expect(mockChiliRun).toHaveBeenCalledWith(['pacsservers', '-s', '--query', 'x']);
+  it('delegates the pacsservers alias to chili, its line parsed first', async () => {
+    await command_dispatch('pacsservers', ['list', '--table']);
+    expect(mockChiliRun).toHaveBeenCalledWith(['pacsservers', '-s', 'list', '--table']);
   });
 
-  it('delegates the pacsqueries and pacsretrieve aliases to chili', async () => {
-    await command_dispatch('pacsqueries', ['a']);
-    expect(mockChiliRun).toHaveBeenCalledWith(['pacsqueries', '-s', 'a']);
+  it('delegates the pacsqueries and pacsretrieve aliases to chili, and refuses a bad line before it', async () => {
+    await command_dispatch('pacsqueries', ['decode', '7']);
+    expect(mockChiliRun).toHaveBeenCalledWith(['pacsqueries', '-s', 'decode', '7']);
+    await command_dispatch('pacsretrieve', ['report', '8']);
+    expect(mockChiliRun).toHaveBeenCalledWith(['pacsretrieve', '-s', 'report', '8']);
+    mockChiliRun.mockClear();
     await command_dispatch('pacsretrieve', ['b']);
-    expect(mockChiliRun).toHaveBeenCalledWith(['pacsretrieve', '-s', 'b']);
+    expect(mockChiliRun).not.toHaveBeenCalled();
   });
 
   it('exits the process on "exit"', async () => {
@@ -666,12 +669,11 @@ describe('command_dispatch', () => {
 });
 
 describe('what the imaging reads hold', () => {
-  it('image and dcm hold nothing of the session, so a slow open runs beside any other line', async () => {
+  // image and dcm hold nothing of the session, so a slow open runs beside
+  // any other line: their declarations say so (image-builtin, dcm-builtin).
+  it('a pull, which names nothing it holds, holds the whole session', async () => {
     const { lineHolds_get } = await import('../src/core/holds.js');
-    expect(chrisCommands.holds?.image).toEqual([]);
-    expect(chrisCommands.holds?.dcm).toEqual([]);
-    expect(lineHolds_get('image /home/someone/uploads/series-a')).toEqual([]);
-    expect(lineHolds_get('dcm series "/home/someone/uploads/series-a"')).toEqual([]);
+    expect(chrisCommands.holds?.image).toBeUndefined();
     expect(lineHolds_get('pull pacs x')).toBe('all');
   });
 });

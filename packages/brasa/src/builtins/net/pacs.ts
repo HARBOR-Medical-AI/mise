@@ -2,23 +2,39 @@
  * @file Compound `pacs` command.
  *
  * Entry point for all PACS operations: server context management, querying,
- * and series retrieval. `pacs query` and `pacs pull` delegate to the standalone
- * builtins, which remain registered as permanent top-level aliases.
+ * and series retrieval. Declared in one record (`pacsCommand`) with a
+ * subcommand each; `pacs query` and `pacs pull` take the very lines of the
+ * standalone `query` and `pull` (one grammar each) and run their handlers.
+ *
+ * Key components:
+ * - pacsCommand: the declaration.
+ * - builtin_pacs: the declaration run over words already split.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_pacs(['connect', 'PACSDCM']);
+ * ```
+ *
+ * Dependencies: cumin's context and server listing; the query, pull and
+ * status verbs.
  *
  * @module
  */
 
 import chalk from 'chalk';
-import { chrisContext, pacsServers_list, PACSServer } from '@fnndsc/cumin';
+import { chrisContext, pacsServers_list } from '@fnndsc/cumin';
 import { PACS_SERVERS_MODEL_KIND, type PacsServer, type PacsServersModel, type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
-import { builtin_query } from './query.js';
+import { queryLine_run } from './query.js';
+import { QUERY_GRAMMAR } from './query.args.js';
 import { pacsRefusal_hint, pacsRefusal_is } from './pacsAccess.js';
-import { builtin_pacsStatus } from './status.js';
-import { builtin_pull } from '../fs/pull.js';
-import { args_checkHasHelpFlag, help_render } from '../help.js';
+import { pacsStatus_run } from './status.js';
+import { pullLine_run } from '../fs/pull.js';
+import { PULL_GRAMMAR } from '../fs/pull.args.js';
 import { sink_dataLine, sink_errLine } from '../../core/sink.js';
 import { errorStack } from '@fnndsc/fond';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /**
  * Streams the list of registered PACS servers, marking the active one.
@@ -89,32 +105,82 @@ async function serversModel_build(active: string | null): Promise<PacsServersMod
   return servers.length > 0 ? { servers } : null;
 }
 
+/** What a `pacs` line may hold: a subcommand, or none for the active server. */
+const PACS_GRAMMAR = {
+  bare: { summary: 'Show the active PACS server' },
+  subcommands: {
+    connect: {
+      summary: 'List the registered PACS servers with the active one marked; given one, make it active',
+      operands: [{ name: 'server', kind: 'word', optional: true, summary: 'The server, by identifier or by id' }],
+    },
+    disconnect: { summary: 'Clear the active PACS server' },
+    list: { summary: 'List the registered PACS servers with the active one marked' },
+    query: { summary: 'Create a PACS query and wait for its answer, as query does (help query)', operands: QUERY_GRAMMAR.operands, options: QUERY_GRAMMAR.options },
+    pull: { summary: 'Pull DICOM series into ChRIS storage, as pull does (help pull)', operands: PULL_GRAMMAR.operands, options: PULL_GRAMMAR.options },
+    status: {
+      summary: 'Per series, what has landed in CUBE and what is missing, with in-CUBE paths',
+      operands: [{ name: 'target', kind: 'pacsQuery', glob: true, summary: 'A query id, a /net/pacs/queries/… path, or a Key:Value question' }],
+    },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * `pacs [connect [server] | disconnect | list | query … | pull … | status <target>]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [pacsCommand] }, 'backend');
+ * ```
+ */
+export const pacsCommand = command_declare({
+  name: 'pacs',
+  grammar: PACS_GRAMMAR,
+  help: {
+    summary: 'PACS subsystem — server context, query, and series retrieval',
+    description: 'PACS subsystem — server context, query, and series retrieval. Bare, it names the active server. '
+      + 'pacs query and pacs pull take the lines query and pull take; their pages say more.',
+    category: 'PACS',
+    examples: [
+      'pacs                              # Show active server',
+      'pacs connect                      # List all servers',
+      'pacs connect PACSDCM              # Set active server by identifier',
+      'pacs connect 1                    # Set active server by numeric ID',
+      'pacs disconnect                   # Clear active server',
+      'pacs list                         # List all servers',
+      'pacs query PatientID:1234         # Query PACS',
+      'pacs pull /net/pacs/queries/42_AccessionNumber:12345678',
+      'pacs status AccessionNumber:22119730   # What has landed in CUBE, what is missing',
+    ],
+  },
+  handler: pacs_run,
+});
+
+/**
+ * `pacs` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The subcommand and its words.
+ * @returns An envelope; streaming subcommands carry empty rendered text and
+ *   emit their output live, while query/pull return their own envelopes.
+ *
+ * @example
+ * ```ts
+ * await builtin_pacs(['list']);
+ * ```
+ */
+export async function builtin_pacs(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(pacsCommand, args);
+}
+
 /**
  * PACS subsystem command — server context management, query, and pull.
  *
- * Subcommands:
- *   pacs                      — show active server
- *   pacs connect              — list servers with active marked
- *   pacs connect <name|id>    — set active PACS server
- *   pacs disconnect           — clear active PACS server
- *   pacs list                 — list servers (alias for: pacs connect)
- *   pacs query <Key:Value...> — create PACS query and wait for results
- *   pacs pull <vfs-path...>   — pull DICOM series into ChRIS storage
- *   pacs status <target>      — per-series pulled/pending report with CUBE paths
- *
- * @param args - Command arguments (subcommand + its own args).
+ * @param args - The line, parsed.
  * @returns An envelope; streaming subcommands carry empty rendered text and
  *   emit their output live, while query/pull return their own envelopes.
  */
-export async function builtin_pacs(args: string[]): Promise<CommandEnvelope> {
-  if (args_checkHasHelpFlag(args, 'pacs')) {
-    return envelope_ok(help_render('pacs'));
-  }
-
-  const subcommand: string | undefined = args[0];
-
+async function pacs_run(args: CommandArguments<typeof PACS_GRAMMAR>): Promise<CommandEnvelope> {
   // No subcommand — show active server
-  if (!subcommand) {
+  if (args.subcommand === null) {
     const active: string | null = await chrisContext.PACSserver_get();
     if (active) {
       sink_dataLine(`Active PACS server: ${chalk.cyan(active)}`);
@@ -128,9 +194,9 @@ export async function builtin_pacs(args: string[]): Promise<CommandEnvelope> {
     return envelope_ok('');
   }
 
-  switch (subcommand) {
+  switch (args.subcommand) {
     case 'connect': {
-      const target: string | undefined = args[1];
+      const target: string | undefined = args.operands.server;
       if (!target) {
         const active: string | null = await chrisContext.PACSserver_get();
         if (!(await servers_print(active))) {
@@ -177,19 +243,12 @@ export async function builtin_pacs(args: string[]): Promise<CommandEnvelope> {
     }
 
     case 'query':
-      return builtin_query(args.slice(1));
+      return queryLine_run(args);
 
     case 'pull':
-      return builtin_pull(args.slice(1));
+      return pullLine_run(args);
 
     case 'status':
-      return builtin_pacsStatus(args.slice(1));
-
-    default:
-      sink_errLine(chalk.red(`pacs: Unknown subcommand '${subcommand}'`));
-      sink_dataLine(chalk.gray('  Subcommands: connect, disconnect, list, query, pull, status'));
-      sink_dataLine(chalk.gray('  Try: help pacs'));
-      exitCode_set(1);
-      return envelope_error('');
+      return pacsStatus_run(args.operands.target);
   }
 }
