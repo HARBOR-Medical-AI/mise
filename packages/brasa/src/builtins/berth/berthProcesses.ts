@@ -6,8 +6,10 @@
  * matter to a close are all of them but the session's own: this process,
  * its parents up to PID 1, the terminals it runs for the console (a child
  * whose environment carries `CHELL_TERMINAL` or `CHELL_CONSOLE`, as calypso
- * starts them), and a shell such a terminal starts directly (`!`). Whatever
- * runs under that shell is the person's work and is listed. A process of
+ * starts them), every chell attached to the session from elsewhere in the
+ * berth (`chell --remote`, the surface a `berth close` may itself be typed
+ * at), and a shell such a terminal or surface starts directly (`!`).
+ * Whatever runs under that shell is the person's work and is listed. A process of
  * another user, or with no command line (a kernel thread, a zombie), is not
  * listed.
  *
@@ -63,6 +65,27 @@ interface ProcEntry {
   readonly argv: readonly string[];
   /** Whether its environment carries a console terminal's mark. */
   readonly terminal: boolean;
+  /** Whether it is a chell attached to a session (`chell --remote`). */
+  readonly surface: boolean;
+}
+
+/**
+ * Whether a command line is a chell attached to a session: a word naming
+ * chell (`/usr/local/bin/chell`, `chell.js`, or a script of chell's own
+ * package, `…/chell/dist/index.js`) and the word `--remote`.
+ *
+ * @param argv - The command line's words.
+ * @returns True for an attached chell.
+ *
+ * @example
+ * ```ts
+ * surface_is(['node', '/usr/local/bin/chell', '--remote', 'ana@http://cube/api/v1/', '-c', 'berth close']); // true
+ * surface_is(['node', '/usr/local/bin/chell', 'ana@http://cube/api/v1/', '--daemon']); // false
+ * ```
+ */
+export function surface_is(argv: readonly string[]): boolean {
+  const named: boolean = argv.some((word: string): boolean => /^chell(\.[cm]?js)?$/.test(word.slice(word.lastIndexOf('/') + 1)) || /\/chell\/dist\/[^/]+\.[cm]?js$/.test(word));
+  return named && argv.includes('--remote');
 }
 
 /**
@@ -98,12 +121,14 @@ function procEntry_read(procRoot: string, pid: number): ProcEntry | null {
   const ppid: number = Number(fields[1]);
   const cmdline: string = procFile_read(join(procRoot, String(pid), 'cmdline')) ?? '';
   const environ: string = procFile_read(join(procRoot, String(pid), 'environ')) ?? '';
+  const argv: string[] = cmdline.split('\0').filter((word: string): boolean => word !== '');
   return {
     pid,
     ppid: Number.isFinite(ppid) ? ppid : 0,
     name: stat.slice(open + 1, close),
-    argv: cmdline.split('\0').filter((word: string): boolean => word !== ''),
+    argv,
     terminal: environ.split('\0').some((pair: string): boolean => TERMINAL_MARKS.some((mark: string): boolean => pair.startsWith(mark))),
+    surface: surface_is(argv),
   };
 }
 
@@ -129,7 +154,8 @@ function procEntries_read(procRoot: string, uid: number): Map<number, ProcEntry>
 
 /**
  * The session's own processes: this one, its parents up to PID 1, the
- * console terminals it runs, and the shells those terminals start.
+ * console terminals it runs, the chells attached to it, and the shells
+ * those terminals and chells start.
  *
  * @param entries - The user's processes.
  * @param procRoot - The `/proc` folder, for parents of another user.
@@ -144,7 +170,7 @@ function sessionPids_find(entries: ReadonlyMap<number, ProcEntry>, procRoot: str
     parent = entries.get(parent)?.ppid ?? procEntry_read(procRoot, parent)?.ppid ?? 0;
   }
   const terminals: number[] = [...entries.values()]
-    .filter((entry: ProcEntry): boolean => entry.ppid === self && entry.terminal)
+    .filter((entry: ProcEntry): boolean => (entry.ppid === self && entry.terminal) || entry.surface)
     .map((entry: ProcEntry): number => entry.pid);
   for (const terminal of terminals) session.add(terminal);
   for (const entry of entries.values()) {

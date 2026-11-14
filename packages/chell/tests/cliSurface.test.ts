@@ -5,21 +5,28 @@
  */
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 
 /** A controllable fake of a readline interface. */
 interface FakeInterface {
   question: jest.Mock;
   close: jest.Mock;
+  once: jest.Mock;
 }
 
 let lastCreated: FakeInterface | undefined;
 let lastCreateOptions: { output?: unknown; terminal?: boolean } | undefined;
+/** Whether a fake interface answers its question; false, it waits as on an input that ends. */
+let fakeAnswers: boolean = true;
 const mockCreateInterface = jest.fn((opts: { output?: unknown; terminal?: boolean }): FakeInterface => {
   lastCreateOptions = opts;
+  const closers: Array<() => void> = [];
   const rl: FakeInterface = {
     // Answer immediately with an untrimmed value to prove trimming.
-    question: jest.fn((_prompt: string, cb: (answer: string) => void) => cb('  typed  ')),
-    close: jest.fn(),
+    question: jest.fn((_prompt: string, cb: (answer: string) => void) => { if (fakeAnswers) cb('  typed  '); }),
+    // As readline's own: closing says 'close' to whoever listens.
+    close: jest.fn(() => { for (const closer of closers.splice(0)) closer(); }),
+    once: jest.fn((event: string, listener: () => void) => { if (event === 'close') closers.push(listener); }),
   };
   lastCreated = rl;
   return rl;
@@ -45,7 +52,7 @@ jest.unstable_mockModule('@fnndsc/brasa', () => ({
   file_read: fileReadMock,
 }));
 
-const { cliSurface_create, promptLine_render, promptAnswer_take } =
+const { cliSurface_create, promptLine_render, promptAnswer_take, oneShotPrompt_ask, INPUT_ENDED_REASON } =
   await import('../src/core/cliSurface.js');
 const { typeahead_push, typeahead_clear, typeahead_count, question_isOpen, interrupt_set } = await import('../src/core/lineDiscipline.js');
 
@@ -54,6 +61,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   lastCreated = undefined;
   lastCreateOptions = undefined;
+  fakeAnswers = true;
   writeSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
 });
 
@@ -101,6 +109,29 @@ describe('one-shot prompting (no REPL interface)', () => {
     expect(lastCreateOptions!.output).not.toBe(process.stdout);
     expect(writeSpy).toHaveBeenCalledWith('Password: ');
     expect(answer).toBe('typed');
+  });
+
+  it('fails a question asked on an input that has already ended, without waiting on it', async () => {
+    const ended = new PassThrough();
+    ended.end();
+    ended.resume();
+    await new Promise((resolve) => ended.once('end', resolve));
+    await expect(oneShotPrompt_ask({ message: 'go on? ', wants: 'confirm' }, ended)).rejects.toThrow(INPUT_ENDED_REASON);
+    await expect(oneShotPrompt_ask({ message: 'Password: ', hidden: true }, ended)).rejects.toThrow(INPUT_ENDED_REASON);
+    expect(mockCreateInterface).not.toHaveBeenCalled();
+  });
+
+  it('fails a question whose input ends before a line is typed, visible or hidden', async () => {
+    fakeAnswers = false;
+    const open = new PassThrough();
+    const visible = oneShotPrompt_ask({ message: 'go on? ', wants: 'confirm' }, open);
+    lastCreated!.close();
+    await expect(visible).rejects.toThrow(INPUT_ENDED_REASON);
+    // The question's line is ended, so the command's next words start a line of their own.
+    expect(writeSpy).toHaveBeenLastCalledWith('\n');
+    const hidden = oneShotPrompt_ask({ message: 'Password: ', hidden: true }, open);
+    lastCreated!.close();
+    await expect(hidden).rejects.toThrow(INPUT_ENDED_REASON);
   });
 });
 

@@ -248,11 +248,12 @@ function anchorsPlacement_decide(anchors: readonly BerthAnchor[], name: string, 
 
 /**
  * Says the person's processes still running in the berth and asks whether
- * to return the work while they run; `--force` answers yes.
+ * to return the work while they run; `--force` answers yes. A question
+ * nobody can answer (a surface whose input is closed) is a no, and says so.
  *
  * @param outgoing - The outgoing folder.
  * @param force - Whether the question is answered already.
- * @returns True to go on, false when the person said no.
+ * @returns True to go on, false when the person said no or could not answer.
  */
 async function processes_settle(outgoing: string, force: boolean): Promise<boolean> {
   const running: BerthProcess[] = processesOwn_list(outgoing);
@@ -264,7 +265,13 @@ async function processes_settle(outgoing: string, force: boolean): Promise<boole
   sink_dataLine(`berth: close: ${running.length} ${running.length === 1 ? 'process' : 'processes'} of yours still ${running.length === 1 ? 'runs' : 'run'} in the berth:`);
   for (const line of columns_render(rows)) sink_dataLine(`  ${line}`);
   if (force) return true;
-  return repl_confirm(`berth: close: return ${outgoing} while ${running.length === 1 ? 'it runs' : 'they run'}?`);
+  try {
+    return await repl_confirm(`berth: close: return ${outgoing} while ${running.length === 1 ? 'it runs' : 'they run'}?`);
+  } catch (error: unknown) {
+    const reason: string = error instanceof Error ? error.message : String(error);
+    sink_dataLine(`berth: close: not answered (${reason}); --force returns the work while they run`);
+    return false;
+  }
 }
 
 /**

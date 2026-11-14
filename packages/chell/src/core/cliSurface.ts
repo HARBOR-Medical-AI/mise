@@ -141,47 +141,81 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
   });
 }
 
+/** Why a question asked on an input that has ended fails. */
+export const INPUT_ENDED_REASON: string = 'no input to answer the question: standard input is closed';
+
+/**
+ * Whether an input stream has ended, so nothing more can be read from it.
+ *
+ * @param input - The stream.
+ * @returns True once it has ended or been destroyed.
+ */
+function input_ended(input: NodeJS.ReadableStream): boolean {
+  const stream: { readableEnded?: boolean; destroyed?: boolean } = input as { readableEnded?: boolean; destroyed?: boolean };
+  return stream.readableEnded === true || stream.destroyed === true;
+}
+
+/**
+ * Asks one question on a readline interface made for it, and fails, rather
+ * than waits, when the input ends before a line is typed: an attached
+ * surface run with its input closed (`docker exec` without `-i`, a pipe that
+ * ran dry) has no one to answer, and the command that asked is told so.
+ *
+ * @param rl - The interface, made for this one question.
+ * @param message - The line to print.
+ * @param done - What to do with the line typed, before it is resolved.
+ * @returns The line typed.
+ */
+function oneShotLine_read(rl: readline.Interface, message: string, done: () => void): Promise<string> {
+  return new Promise((resolve: (answer: string) => void, reject: (error: Error) => void) => {
+    let answered: boolean = false;
+    rl.once('close', (): void => {
+      if (answered) return;
+      // The question's line ends here, so what the command says next starts on a line of its own.
+      process.stdout.write('\n');
+      reject(new Error(INPUT_ENDED_REASON));
+    });
+    rl.question(message, (answer: string): void => {
+      answered = true;
+      done();
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
 /**
  * Prompts on a one-shot readline interface created for this call, used
  * outside the REPL (execute and script modes). Hidden input is read through
- * a muted output stream so the entry is not echoed.
+ * a muted output stream so the entry is not echoed. An input that has
+ * ended, or ends before a line is typed, fails the question.
  *
  * @param request - The prompt message and whether to hide input.
+ * @param input - Where the answer is read; the process's standard input by default.
  * @returns The entered line, trimmed.
+ * @throws {Error} When the input has ended, or ends before a line is typed.
  */
-function oneShotPrompt_ask(request: PromptRequest): Promise<string> {
+export async function oneShotPrompt_ask(request: PromptRequest, input: NodeJS.ReadableStream = process.stdin): Promise<string> {
+  if (input_ended(input)) {
+    process.stdout.write(`${request.message}\n`);
+    throw new Error(INPUT_ENDED_REASON);
+  }
   if (!request.hidden) {
     const shown: { message: string; fallback: string } = promptLine_render(request);
-    return new Promise((resolve: (answer: string) => void) => {
-      const rl: readline.Interface = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-      });
-      rl.question(shown.message, (answer: string) => {
-        rl.close();
-        resolve(promptAnswer_take(answer, shown.fallback));
-      });
-    });
+    const rl: readline.Interface = readline.createInterface({ input, output: process.stdout });
+    const answer: string = await oneShotLine_read(rl, shown.message, (): void => undefined);
+    return promptAnswer_take(answer, shown.fallback);
   }
 
-  return new Promise((resolve: (answer: string) => void) => {
-    const muted: Writable = new Writable({
-      write(_chunk: unknown, _encoding: unknown, callback: () => void): void {
-        callback();
-      },
-    });
-    const rl: readline.Interface = readline.createInterface({
-      input: process.stdin,
-      output: muted,
-      terminal: true,
-    });
-    process.stdout.write(request.message);
-    rl.question('', (answer: string) => {
-      process.stdout.write('\n');
-      rl.close();
-      resolve(answer.trim());
-    });
+  const muted: Writable = new Writable({
+    write(_chunk: unknown, _encoding: unknown, callback: () => void): void {
+      callback();
+    },
   });
+  const rl: readline.Interface = readline.createInterface({ input, output: muted, terminal: true });
+  process.stdout.write(request.message);
+  const secret: string = await oneShotLine_read(rl, '', (): void => { process.stdout.write('\n'); });
+  return secret.trim();
 }
 
 /**

@@ -1,7 +1,7 @@
 /**
  * @file The person's processes in a berth, read from a fake `/proc`: the
- * session's own left out (this process, its parents, its console terminals
- * and the shells they start), everything else listed with the files it holds
+ * session's own left out (this process, its parents, its console terminals,
+ * the chells attached to it, and the shells those start), everything else listed with the files it holds
  * open under the outgoing folder.
  */
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const { processesOwn_list } = await import('../src/builtins/berth/berthProcesses.js');
+const { processesOwn_list, surface_is } = await import('../src/builtins/berth/berthProcesses.js');
 
 /** This test's user, who owns every fake process. */
 const UID: number = process.getuid?.() ?? 0;
@@ -79,6 +79,35 @@ describe('the person\'s processes in a berth', () => {
     expect(pids).toContain(23);
     expect(pids).toContain(40);
     expect(pids).not.toContain(21);
+  });
+
+  it('leaves out a chell attached from elsewhere in the berth, as the walk on titan had it, and the shell it starts; the work under that shell is listed', () => {
+    // `docker exec <berth> chell --remote … -c berth close`: no parent in the berth, the surface the close is typed at.
+    process_put(523, 0, 'node', ['node', '/usr/local/bin/chell', '--remote', 'alice@http://cube:8000/api/v1/', '-c', 'berth close --title titan-walk']);
+    process_put(524, 523, 'zsh', ['zsh', '-c', 'nvim notes.md']);
+    process_put(525, 524, 'nvim', ['nvim', 'notes.md'], [], { 3: `${OUTGOING}/notes.md` });
+    // A chell that is not attached to anything, and a word that only looks like chell, are the person's.
+    process_put(526, 1, 'node', ['node', '/opt/mise/chell/dist/index.js', 'alice@http://cube:8000/api/v1/']);
+    process_put(527, 1, 'less', ['less', 'chell.txt', '--remote']);
+    const pids: number[] = processesOwn_list(OUTGOING, procRoot, SELF, UID).map((one) => one.pid);
+    expect(pids).not.toContain(523);
+    expect(pids).not.toContain(524);
+    expect(pids).toContain(525);
+    expect(pids).toContain(526);
+    expect(pids).toContain(527);
+  });
+
+  it('knows an attached chell by its name and --remote, under any path or script suffix', () => {
+    expect(surface_is(['node', '/usr/local/bin/chell', '--remote', 'alice@http://cube/api/v1/', '-c', 'berth close'])).toBe(true);
+    expect(surface_is(['/usr/bin/node', '/opt/mise/node_modules/.bin/chell.js', '--remote', 'alice', '--attach', 'ws://x'])).toBe(true);
+    expect(surface_is(['chell', '--remote'])).toBe(true);
+    // Run from a checkout or an npm install, by chell's package entry.
+    expect(surface_is(['node', '/home/ana/src/mise/packages/chell/dist/index.js', '--remote', 'alice'])).toBe(true);
+    expect(surface_is(['node', '/opt/mise/node_modules/@fnndsc/chell/dist/index.js', '--remote', 'alice'])).toBe(true);
+    expect(surface_is(['node', '/opt/mise/node_modules/@fnndsc/calypso/dist/index.js', '--remote'])).toBe(false);
+    expect(surface_is(['node', '/usr/local/bin/chell', 'alice@http://cube/api/v1/', '--daemon'])).toBe(false);
+    expect(surface_is(['less', 'chell.txt', '--remote'])).toBe(false);
+    expect(surface_is(['node', 'mychell', '--remote'])).toBe(false);
   });
 
   it('lists nothing of another user, and nothing where there is no /proc', () => {
