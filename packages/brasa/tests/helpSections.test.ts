@@ -49,6 +49,7 @@ describe('a section by its word', () => {
     expect(strip(shellTopic_render('pipes') ?? '')).toContain('PIPES');
     expect(strip(shellTopic_render('operands') ?? '')).toContain('whatif <line> prints that resolution');
     expect(strip(shellTopic_render('pipes') ?? '')).toContain('a && b runs b');
+    expect(strip(shellTopic_render('anchors') ?? '')).toContain('a node that is not finishedSuccessfully, with its status');
     expect(shellTopic_render('grep')).toBeUndefined();
   });
 });
