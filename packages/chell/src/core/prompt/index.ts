@@ -63,6 +63,11 @@ export interface PromptContext {
    */
   warmupFailures?: Array<{ label: string; message: string }>;
   /**
+   * Warm-up steps still running behind the prompt, by label: a daemon
+   * listens before its warm-up ends, and the prompt says what is still warming.
+   */
+  warmupPending?: string[];
+  /**
    * Backend-neutral segments a backend fills in display order (stratus: the
    * cloud, the tenancy, the region, the user, the domain, the working
    * directory). When present a theme draws them in place of the ChRIS-shaped

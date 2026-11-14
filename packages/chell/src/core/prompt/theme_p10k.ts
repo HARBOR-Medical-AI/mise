@@ -287,6 +287,15 @@ export class ThemeP10k implements PromptTheme {
       }
     }
 
+    // A session still warming says so: a surface can attach before the
+    // daemon's warm-up ends, and its lines are answered meanwhile.
+    if (ctx.warmupPending && ctx.warmupPending.length > 0) {
+      procSegments.push({
+        text: `${ICON_REFRESH} warming: ${ctx.warmupPending.map((label: string): string => label.toLowerCase()).join(' ')}`,
+        color: PROMPT_PALETTE.TIME,
+      });
+    }
+
     const rightSegments: SegmentSpec[] = [...procSegments, ...trailing];
 
     // Compute path budget: terminal limit minus fixed + trailing segment overhead + dir overhead

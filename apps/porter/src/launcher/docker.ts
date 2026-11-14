@@ -28,6 +28,17 @@ export interface ExecAnswer {
   readonly stderr: string;
 }
 
+/** A container's log being followed: stopped by the launcher, or ended by the engine (the container gone). */
+export interface LogFollow {
+  /** Stops following. */
+  stop(): void;
+  /** Settles when the engine ends the stream, or the follow is stopped. */
+  readonly ended: Promise<void>;
+}
+
+/** Told each line of a followed log, without its ending, and the stream it came off. */
+export type LogLineSink = (line: string, channel: 'out' | 'err') => void;
+
 /** What the launcher needs of an engine; a test gives a fake. */
 export interface DockerApi {
   /**
@@ -49,6 +60,62 @@ export interface DockerApi {
    * @returns Its exit code and output.
    */
   exec(container: string, cmd: ReadonlyArray<string>, user: string, stdin: string | null): Promise<ExecAnswer>;
+  /**
+   * Follows a container's log, a line at a time, as it is written.
+   *
+   * @param container - The container's name or id.
+   * @param fromStart - Every line the log holds first, then each new one; false: only the lines written from now.
+   * @param onLine - Told each line.
+   * @returns The follow.
+   */
+  logs_follow(container: string, fromStart: boolean, onLine: LogLineSink): LogFollow;
+}
+
+/**
+ * Splits Docker's multiplexed stream into lines as its chunks arrive: a frame may be cut across chunks, and a line
+ * across frames, so both are held until whole. A berth runs without a TTY, so its log always comes framed.
+ */
+export class DockerLogLines {
+  private pending: Buffer = Buffer.alloc(0);
+  private readonly partial: { out: string; err: string } = { out: '', err: '' };
+
+  /**
+   * @param onLine - Told each whole line.
+   */
+  constructor(private readonly onLine: LogLineSink) {}
+
+  /**
+   * Takes one chunk of the stream.
+   *
+   * @param chunk - The bytes as they came.
+   *
+   * @example
+   * new DockerLogLines((line) => console.log(line)).chunk_take(frame);
+   */
+  public chunk_take(chunk: Buffer): void {
+    this.pending = this.pending.length === 0 ? chunk : Buffer.concat([this.pending, chunk]);
+    while (this.pending.length >= 8) {
+      const size: number = this.pending.readUInt32BE(4);
+      if (this.pending.length < 8 + size) break;
+      const channel: 'out' | 'err' = this.pending[0] === 2 ? 'err' : 'out';
+      this.text_take(channel, this.pending.subarray(8, 8 + size).toString('utf-8'));
+      this.pending = this.pending.subarray(8 + size);
+    }
+  }
+
+  /** Hands over what is left of a line that never ended, at the stream's end. */
+  public end(): void {
+    for (const channel of ['out', 'err'] as const) {
+      if (this.partial[channel] !== '') this.onLine(this.partial[channel], channel);
+      this.partial[channel] = '';
+    }
+  }
+
+  private text_take(channel: 'out' | 'err', text: string): void {
+    const lines: string[] = (this.partial[channel] + text).split('\n');
+    this.partial[channel] = lines.pop() ?? '';
+    for (const line of lines) this.onLine(line.replace(/\r$/, ''), channel);
+  }
 }
 
 /**
@@ -123,6 +190,23 @@ export class DockerSocket implements DockerApi {
       req.on('error', reject);
       req.end();
     });
+  }
+
+  /** @inheritdoc */
+  public logs_follow(container: string, fromStart: boolean, onLine: LogLineSink): LogFollow {
+    const lines: DockerLogLines = new DockerLogLines(onLine);
+    let settle: () => void = (): void => undefined;
+    const ended: Promise<void> = new Promise<void>((resolve: () => void): void => { settle = resolve; });
+    const req: ClientRequest = httpRequest({ socketPath: this.socketPath, method: 'GET', path: `${DOCKER_API}/containers/${encodeURIComponent(container)}/logs?follow=true&stdout=true&stderr=true&tail=${fromStart ? 'all' : '0'}` }, (res: IncomingMessage): void => {
+      if (res.statusCode !== 200) { res.resume(); settle(); return; }
+      res.on('data', (chunk: Buffer): void => { lines.chunk_take(chunk); });
+      res.on('end', (): void => { lines.end(); settle(); });
+      res.on('error', (): void => { settle(); });
+    });
+    req.on('error', (): void => { settle(); });
+    req.on('close', (): void => { settle(); });
+    req.end();
+    return { stop: (): void => { req.destroy(); settle(); }, ended };
   }
 
   /** @inheritdoc */

@@ -568,8 +568,8 @@ describe('CalypsoDaemon', () => {
 });
 
 /** Polls until a predicate holds, or throws after ~2s. */
-async function until(predicate: () => boolean): Promise<void> {
-  for (let i = 0; i < 100; i++) {
+async function until(predicate: () => boolean, withinMs: number = 2000): Promise<void> {
+  for (let i = 0; i < withinMs / 20; i++) {
     if (predicate()) return;
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -650,6 +650,45 @@ describe('CalypsoDaemon prompt line push', () => {
       });
       const last = prompts[prompts.length - 1] as { context: { procWarmup?: { loaded: number } } };
       expect(last.context.procWarmup?.loaded).toBeGreaterThan(0);
+      ws.terminate();
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('pushes the promptline from the heartbeat while a step still warms, and the settled context once it ends', async () => {
+    // A daemon listens before its warm-up ends: a surface attached meanwhile
+    // is told what is warming, and told again when it is not, with no
+    // command to carry either and the counts standing still.
+    let warming: string[] = ['Public', 'Queries'];
+    const engine = stubEngine_create();
+    const promptContext = () => ({
+      user: 'chris', uri: 'http://cube/', cwd: '~', pacsserver: null,
+      physicalMode: false, lastExitCode: 0, lastCommandDurationMs: 0,
+      ...(warming.length > 0 ? { warmupPending: [...warming] } : {}),
+    });
+    const daemon = new CalypsoDaemon({
+      engine,
+      token: TOKEN,
+      promptProvider: promptContext,
+      telemetryProvider: (): { jobs: number; feeds: number } => ({ jobs: 7, feeds: 3 }),
+    });
+    const port = await daemon.start();
+    try {
+      const ws = await client_open(port);
+      const prompts: Array<{ context: { warmupPending?: string[] } }> = [];
+      ws.on('message', (d) => {
+        const msg = JSON.parse(d.toString()) as Record<string, unknown>;
+        if (msg['type'] === 'promptline') prompts.push(msg as unknown as { context: { warmupPending?: string[] } });
+      });
+      send(ws, { type: 'attach', protocolVersion: CONTRACT_VERSION, token: TOKEN });
+      await until(() => prompts.length >= 1);
+      expect(prompts[0]?.context.warmupPending).toEqual(['Public', 'Queries']);
+      // The heartbeat keeps the warming step in front of the surface...
+      await until(() => prompts.length >= 3, 4000);
+      warming = [];
+      // ...and carries its settling, which no count would have shown.
+      await until(() => prompts.some((one) => one.context.warmupPending === undefined), 4000);
       ws.terminate();
     } finally {
       await daemon.stop();
