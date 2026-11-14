@@ -165,8 +165,14 @@ async function file_stream(filePath: string): Promise<FileByteStream> {
   const opened = await fileContent_getBinaryStream(physical);
   const notes: string[] = errorStack.checkpoint_drain(since).map((note: { message: string }): string => note.message);
   if (!opened.ok) throw fileRefusal_name(filePath, notes);
-  const value = opened.value as { stream: NodeJS.ReadableStream; size?: number };
-  return { stream: value.stream, ...(value.size !== undefined ? { size: value.size } : {}) };
+  const value = opened.value as { stream: unknown; size?: number };
+  // A PACS file comes back whole, as a Buffer in the stream's place: it is
+  // handed on as a stream of that one chunk, which is what a reader expects.
+  if (Buffer.isBuffer(value.stream)) {
+    const { Readable } = await import('node:stream');
+    return { stream: Readable.from(value.stream), size: value.size ?? value.stream.length };
+  }
+  return { stream: value.stream as NodeJS.ReadableStream, ...(value.size !== undefined ? { size: value.size } : {}) };
 }
 
 /** The ChRIS backend's files. */

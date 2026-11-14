@@ -46,6 +46,14 @@ describe('chrisFiles.stream', () => {
     expect(catBinary_mock).not.toHaveBeenCalled();
   });
 
+  it('hands a PACS file, which arrives whole, on as a stream of its bytes', async () => {
+    stream_mock.mockResolvedValueOnce({ ok: true, value: { stream: Buffer.from('DICM-pacs'), size: 9 } });
+    const opened = await chrisFiles.stream!('/SERVICES/PACS/PACSDCM/a/scan.dcm');
+    expect(typeof (opened.stream as AsyncIterable<Buffer>)[Symbol.asyncIterator]).toBe('function');
+    expect(opened.size).toBe(9);
+    expect(await drain(opened.stream)).toBe('DICM-pacs');
+  });
+
   it("refuses with CUBE's status when the file cannot be opened", async () => {
     stream_mock.mockImplementationOnce(async () => {
       errorStack.stack_push('error', 'File ID 12: CUBE refused access (403). It is listed but not readable by this identity.');
