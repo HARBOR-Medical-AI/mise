@@ -52,6 +52,7 @@ import {
   type ListingAction, type ListingProgress, type ListingTrait,
 } from '../roster/row.js';
 import { PACS_LEAD_TRACKS } from './tracks.js';
+import { word_quote } from '../edit/line.js';
 
 /** What the workspace asks of its host. */
 export interface PacsPanelHandlers {
@@ -447,6 +448,23 @@ export function pullEndReason_derive(end: JobEnd): string {
  */
 function jobletLine_derive(line: string): string {
   return line.trimEnd().replace(/&$/, '').trim();
+}
+
+/**
+ * The line a PULL sends: every path quoted as one word, then `&`, since a
+ * retrieve runs as a joblet (#1273). A series' path carries its description,
+ * which holds spaces, quotes and `$` as often as not (`SAG T1`).
+ *
+ * @param paths - The VFS paths to pull.
+ * @returns The line.
+ *
+ * @example
+ * ```ts
+ * pullLine_compose(['/net/pacs/queries/q_qid:7/study/SAG T1']); // "pull '/net/pacs/queries/q_qid:7/study/SAG T1' &"
+ * ```
+ */
+export function pullLine_compose(paths: ReadonlyArray<string>): string {
+  return `pull ${paths.map((path: string): string => word_quote(path)).join(' ')} &`;
 }
 
 /** A pull pressed for in this pane, held from the press to its end. */
@@ -1298,7 +1316,7 @@ export class PacsPanel {
           const queued: string[] = row.study.series
             .filter((series: PacsSeries): boolean => series.vfsPath !== undefined && series.pulled !== true)
             .map((series: PacsSeries): string => series.seriesUID);
-          this.pull_press(`pull ${vfsPath} &`, queued);
+          this.pull_press([vfsPath], queued);
         },
       },
       {
@@ -1972,7 +1990,7 @@ export class PacsPanel {
    */
   private seriesPull_press(series: PacsSeries): void {
     if (series.vfsPath === undefined) return;
-    this.pull_press(`pull ${series.vfsPath} &`, [series.seriesUID]);
+    this.pull_press([series.vfsPath], [series.seriesUID]);
   }
 
   /**
@@ -1986,10 +2004,11 @@ export class PacsPanel {
    * series (a CUBE error, no PACS chosen, a `kill`), would otherwise leave
    * that series QUEUED with its bar pacing, for good.
    *
-   * @param line - The line, ending `&`.
+   * @param paths - What to pull: the VFS paths of a study or of series.
    * @param seriesUIDs - The series it queues.
    */
-  private pull_press(line: string, seriesUIDs: ReadonlyArray<string>): void {
+  private pull_press(paths: ReadonlyArray<string>, seriesUIDs: ReadonlyArray<string>): void {
+    const line: string = pullLine_compose(paths);
     // A fetch, not a choice: the badges queue, the cohort is untouched.
     for (const seriesUID of seriesUIDs) this.badgeState_set(seriesUID, { status: 'queued' });
     const press: PullPress = { line: jobletLine_derive(line), seriesUIDs: new Set(seriesUIDs) };
@@ -2256,10 +2275,10 @@ export class PacsPanel {
   private shown_pull(): void {
     const taking: PacsSeries[] = this.shown_pullable();
     if (taking.length === 0) return;
-    const paths: string = taking
-      .map((series: PacsSeries): string => `"${series.vfsPath as string}"`)
-      .join(' ');
-    this.pull_press(`pull ${paths} &`, taking.map((series: PacsSeries): string => series.seriesUID));
+    this.pull_press(
+      taking.map((series: PacsSeries): string => series.vfsPath as string),
+      taking.map((series: PacsSeries): string => series.seriesUID),
+    );
     this.handlers.note(`pull: ${taking.length} series asked for`);
     this.shownPull_render();
   }

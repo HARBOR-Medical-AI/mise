@@ -21,7 +21,7 @@ import type { PacsQueryModel, PacsSeries, WireEnvelope } from '@fnndsc/menu';
 import type { ProgressMessage } from '../../src/calypso/client.js';
 import {
   PacsPanel, badgeState_settle, badgeText_compose, badge_checkIsFault, badge_checkIsInFlight, badge_paint, jobEnd_parse,
-  pullEndReason_derive, seriesVerbs_offered,
+  pullEndReason_derive, pullLine_compose, seriesVerbs_offered,
   type BadgeState,
 } from '../../src/features/pacs/panel.js';
 import { PACS_STUDY_ROSTER, verbRule_get } from '../../src/features/roster/verbs.js';
@@ -125,6 +125,14 @@ describe('badge_checkIsFault', () => {
     expect(badge.hasAttribute('data-fault')).toBe(false);
     const sheet: string = fs.readFileSync(path.join(process.cwd(), 'src/lcars/argus.css'), 'utf-8');
     expect(sheet).toMatch(/\.pacs-badge\[data-fault\] \{[^}]*color: var\(--state-error\);[^}]*\}/);
+  });
+});
+
+describe('pullLine_compose', () => {
+  it('quotes every path as one word, keeping spaces, a single quote and a $ as they are', () => {
+    expect(pullLine_compose(["/net/pacs/queries/q_qid:7/study/O'BRIEN $HOME T1", '/net/pacs/queries/q_qid:7/study/AX T2']))
+      .toBe("pull '/net/pacs/queries/q_qid:7/study/O'\\''BRIEN $HOME T1' '/net/pacs/queries/q_qid:7/study/AX T2' &");
+    expect(pullLine_compose(['/net/pacs/queries/q_qid:7/study'])).toBe("pull '/net/pacs/queries/q_qid:7/study' &");
   });
 });
 
@@ -252,7 +260,7 @@ describe('the PACS pane, following a pull', () => {
     expect(pull.textContent).toBe('PULL 1');
 
     pull.click();
-    expect(lines).toEqual(['pull "/net/pacs/queries/q_qid:7/study/SAG T1" &']);
+    expect(lines).toEqual(["pull '/net/pacs/queries/q_qid:7/study/SAG T1' &"]);
     expect(badge_find('9.9.1').textContent).toBe('QUEUED');
     expect(badge_find('9.9.1').hasAttribute('title')).toBe(false);
   });
@@ -284,7 +292,7 @@ describe('the PACS pane, following a pull', () => {
   describe('a pull that ends before it reports on a series it queued', () => {
     /** The PULL N block over the listing. */
     const pullShown_find = (): HTMLElement => document.getElementById('pacs-pull-shown') as HTMLElement;
-    const LINE: string = 'pull "/net/pacs/queries/q_qid:7/study/SAG T1" "/net/pacs/queries/q_qid:7/study/AX T2"';
+    const LINE: string = "pull '/net/pacs/queries/q_qid:7/study/SAG T1' '/net/pacs/queries/q_qid:7/study/AX T2'";
 
     it('settles every series it queued as NOT RECEIVED, with the pull\'s own error, when its joblet fails', async () => {
       pullShown_find().click();
@@ -325,7 +333,7 @@ describe('the PACS pane, following a pull', () => {
     });
 
     it('settles them when the pull is stopped, and when it ends having said nothing', async () => {
-      const row: string = 'pull /net/pacs/queries/q_qid:7/study/SAG T1';
+      const row: string = "pull '/net/pacs/queries/q_qid:7/study/SAG T1'";
       panel.progress_observe(progress_make('9.9.1', { status: 'stalled', current: 0, total: 1 }));
       await settle();
       rowPull_find('9.9.1')?.click();
@@ -356,7 +364,7 @@ describe('the PACS pane, following a pull', () => {
     });
 
     it('leaves a series another press still has queued, and ignores ends that are not its own', async () => {
-      const row: string = 'pull /net/pacs/queries/q_qid:7/study/SAG T1';
+      const row: string = "pull '/net/pacs/queries/q_qid:7/study/SAG T1'";
       panel.progress_observe(progress_make('9.9.1', { status: 'stalled', current: 0, total: 1 }));
       await settle();
       rowPull_find('9.9.1')?.click();
@@ -389,7 +397,7 @@ describe('the PACS pane, following a pull', () => {
       expect(pull?.textContent).toBe('PULL');
 
       pull?.click();
-      expect(lines).toEqual(['pull /net/pacs/queries/q_qid:7/study/SAG T1 &']);
+      expect(lines).toEqual(["pull '/net/pacs/queries/q_qid:7/study/SAG T1' &"]);
       expect(badge_find('9.9.1').textContent).toBe('QUEUED');
       expect(badge_find('9.9.1').hasAttribute('data-fault')).toBe(false);
       expect(rowPull_find('9.9.1')).toBeNull();
@@ -410,6 +418,23 @@ describe('the PACS pane, following a pull', () => {
       await settle();
       expect(badgeText_read('9.9.2')).toBe('TIMED OUT AT 12/40');
       expect(rowPull_find('9.9.2')).not.toBeNull();
+    });
+
+    it('sends a path with spaces, a single quote and a $ quoted, from every press', async () => {
+      const awkward: PacsQueryModel = model_make();
+      const study: PacsQueryModel['studies'][number] = awkward.studies[0] as PacsQueryModel['studies'][number];
+      const odd: PacsSeries = { ...(study.series[0] as PacsSeries), vfsPath: "/net/pacs/queries/q_qid:8/study/O'BRIEN $HOME T1" };
+      awkward.queryId = 8;
+      study.series = [odd];
+      panel.envelope_observe({ status: 'ok', rendered: '', model: { kind: 'pacs.query', data: awkward } } as never);
+      await settle();
+      const quoted: string = "pull '/net/pacs/queries/q_qid:8/study/O'\\''BRIEN $HOME T1' &";
+
+      (document.getElementById('pacs-pull-shown') as HTMLElement).click();
+      panel.progress_observe(progress_make('9.9.1', { status: 'unconfirmed', current: 0, total: 1 }));
+      await settle();
+      rowPull_find('9.9.1')?.click();
+      expect(lines).toEqual([quoted, quoted]);
     });
 
     it('carries no PULL when the series came home', async () => {

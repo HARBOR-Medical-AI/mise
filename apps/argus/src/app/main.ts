@@ -1530,12 +1530,14 @@ async function surface_start(token: string): Promise<void> {
     command_show: (line: string): void => {
       terminal.line_run(line);
     },
-    // A pull pressed for is the operator's act, echoed, then run silently as
-    // a joblet; its start notice (`[1] pull … &`) or its refusal is said in
-    // the console as a shell says it, and handed back to the pane, which
-    // holds the press until the joblet's end.
+    // A pull pressed for is the operator's act, echoed into the transcript
+    // and the console's history (the up arrow brings it back, as it did when
+    // PULL N ran through the console), then run silently as a joblet; its
+    // start notice (`[1] pull … &`) or its refusal is said in the console as
+    // a shell says it, and handed back to the pane, which holds the press
+    // until the joblet's end.
     pull_run: async (line: string): Promise<ReadonlyArray<WireEnvelope>> => {
-      terminal.line_echo(line);
+      terminal.line_echo(line, true);
       const outcome: ExecuteOutcome = await client.line_execute(line, { silent: true, operator: true });
       for (const envelope of outcome.envelopes) {
         const said: string = `${envelope.rendered}${envelope.renderedErr ?? ''}`.trim();
