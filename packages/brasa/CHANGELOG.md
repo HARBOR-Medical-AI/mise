@@ -1,5 +1,13 @@
 # @fnndsc/brasa
 
+## 0.55.3
+
+### Patch Changes
+
+- 839520f: A PACS file opened as a stream is handed on as a stream of its bytes, not as the Buffer it arrives in.
+- Updated dependencies [839520f]
+  - @fnndsc/cumin@3.30.5
+
 ## 0.55.2
 
 ### Patch Changes
