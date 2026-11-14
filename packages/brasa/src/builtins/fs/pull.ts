@@ -40,6 +40,7 @@ import { builtin_cubepath } from '../net/cubepath.js';
 import { pullArgs_parse, type PullArgs } from './pull.args.js';
 import { sink_get, sink_dataLine, sink_errLine } from '../../core/sink.js';
 import { repl_confirm } from '../../core/question.js';
+import { jobletCurrent_get } from '../../core/jobletScope.js';
 import type { ProgressStatus } from '../../core/progress.js';
 import { newFeed_cacheAdd, run_follow } from '../feedCreation.js';
 import { cohort_read, cohortFolders_note, cohortModel_wrap } from '../res/gather.store.js';
@@ -120,25 +121,42 @@ async function cohortFolders_noteFromTasks(allTasks: RetrieveTask[]): Promise<nu
   return await cohortFolders_note(landed);
 }
 
+/** How long a pull with nobody to ask waits on a silent PACS, in seconds. */
+const UNASKED_WAIT_S: number = 60;
+
+/**
+ * Asks whether to keep waiting on a silent PACS.
+ *
+ * A silent PACS is the operator's call, not a timer's: CUBE has been
+ * checked already, and the question says what it found.
+ *
+ * @param waiting - The series still waiting on a first file.
+ * @param waitedS - How long the PACS has been silent, in seconds.
+ * @returns True to keep waiting.
+ */
+async function stillWaiting_ask(waiting: RetrieveTask[], waitedS: number): Promise<boolean> {
+  const which: string = waiting.length === 1 ? (waiting[0] as RetrieveTask).label : `${waiting.length} series`;
+  try {
+    return await repl_confirm(`No files from the PACS yet for ${which} after ${waitedS}s, and none in CUBE. Keep waiting? (y/n)`);
+  } catch {
+    // Nobody to ask (a script, a pipe): wait the longer window, then stop.
+    return waitedS < UNASKED_WAIT_S;
+  }
+}
+
 /**
  * Engine progress events rendered onto this surface's structured sink, plus
  * the retry-round banner line.
  *
+ * @param detached - Whether the pull runs in the background (a joblet). A
+ *   question asked there waits for an `fg` nobody knows to type while every
+ *   silent series goes on reading as in flight, so a detached pull asks
+ *   nothing: the engine waits its long window and ends the silent series.
  * @returns Event callbacks for the retrieve engine.
  */
-function pullEvents_make(): RetrieveWatchEvents {
+function pullEvents_make(detached: boolean): RetrieveWatchEvents {
   return {
-    // A silent PACS is the operator's call, not a timer's: CUBE has been
-    // checked already, and the question says what it found.
-    stillWaiting: async (waiting: RetrieveTask[], waitedS: number): Promise<boolean> => {
-      const which: string = waiting.length === 1 ? (waiting[0] as RetrieveTask).label : `${waiting.length} series`;
-      try {
-        return await repl_confirm(`No files from the PACS yet for ${which} after ${waitedS}s, and none in CUBE. Keep waiting? (y/n)`);
-      } catch {
-        // Nobody to ask (a script, a pipe): wait the longer window, then stop.
-        return waitedS < 60;
-      }
-    },
+    ...(detached ? {} : { stillWaiting: stillWaiting_ask }),
     task: (task: RetrieveTask, status: RetrieveProgressStatus, phase: 'watching' | 'retrying'): void =>
       pullProgress_emit(task, status, phase),
     retryRound: (attempt: number, retryMax: number, count: number): void =>
@@ -278,6 +296,7 @@ function pullSummary_print(allTasks: RetrieveTask[], totalFiringErrors: number):
     }
     for (const u of unconfirmed) {
       sink_dataLine(chalk.gray(`  ? ${u.label} [WATCH ENDED — may still be arriving; check with: pacs status]`));
+      if (u.reason !== undefined) sink_dataLine(chalk.gray(`      ${u.reason}`));
     }
     if (unconfirmed.length > 0) {
       sink_dataLine(chalk.gray(
@@ -477,7 +496,7 @@ export async function builtin_pull(args: string[]): Promise<CommandEnvelope> {
     return envelope_ok('');
   }
 
-  const events: RetrieveWatchEvents = pullEvents_make();
+  const events: RetrieveWatchEvents = pullEvents_make(jobletCurrent_get() !== null);
   let totalFiringErrors: number = toFetch.length > 0
     ? await retrieve_fireAndWatch(toFetch, pacsserver, client, events)
     : 0;

@@ -243,16 +243,96 @@ const FORM_TERMS: ReadonlyArray<{ id: string; term: string }> = [
   { id: 'pacs-f-modality', term: 'Modality' },
 ];
 
-/** Progress statuses worth a badge, mapped to badge text. */
+/**
+ * Badge text for the states that read the same whatever was counted. A pull
+ * that ended without its files reads by what did arrive, which
+ * {@link badgeText_compose} says.
+ */
 const BADGE_TEXT: Readonly<Record<string, string>> = {
   running: 'RETRIEVING',
   done: '✓ PULLED',
   error: '✗ ERROR',
-  unconfirmed: '? UNCONFIRMED',
-  stalled: 'STALLED',
   queued: 'QUEUED',
   idle: 'NOT RETRIEVED',
 };
+
+/** What a series reads when its pull ended and none of its files came. */
+const NOT_RECEIVED_TEXT: string = 'NOT RECEIVED';
+
+/** Why a series was settled by its pull's end rather than by its own last word. */
+const PULL_ENDED_REASON: string = 'the pull ended without saying what became of this series';
+
+/**
+ * Whether a pull is in flight for a series: asked for and waiting its turn,
+ * or being sent. A bar moves for these two states and for no other, since
+ * motion on a row says something is still coming.
+ *
+ * @param state - The series' state.
+ * @returns True while the pull is queued or running.
+ *
+ * @example
+ * ```ts
+ * badge_checkIsInFlight({ status: 'queued' }); // true
+ * badge_checkIsInFlight({ status: 'unconfirmed' }); // false
+ * ```
+ */
+export function badge_checkIsInFlight(state: BadgeState): boolean {
+  return state.status === 'running' || state.status === 'queued';
+}
+
+/**
+ * The words a series reads once its pull has ended without its files.
+ *
+ * Each says what was seen, never more: none of the files came (`NOT
+ * RECEIVED`), some came and then stopped (`STOPPED AT 12/40`), they came for
+ * too long without ending (`TIMED OUT AT 12/40`), the watch lost sight of a
+ * series that was arriving (`? UNCONFIRMED 12/40`), or the retrieve failed
+ * (`✗ ERROR`). The tick belongs to files in CUBE alone.
+ *
+ * @param state - The series' state, which is not in flight and not done.
+ * @returns The badge's text. A status with no words of its own reads as its
+ *   name in capitals.
+ *
+ * @example
+ * ```ts
+ * badgeText_compose({ status: 'unconfirmed', current: 0, total: 1 }); // 'NOT RECEIVED'
+ * badgeText_compose({ status: 'stalled', current: 12, total: 40 }); // 'STOPPED AT 12/40'
+ * ```
+ */
+export function badgeText_compose(state: BadgeState): string {
+  const received: number = state.current ?? 0;
+  const counted: string = state.total !== undefined && state.total > 0 ? `${received}/${state.total}` : String(received);
+  switch (state.status) {
+    case 'unconfirmed': return received === 0 ? NOT_RECEIVED_TEXT : `? UNCONFIRMED ${counted}`;
+    case 'stalled': return received === 0 ? NOT_RECEIVED_TEXT : `STOPPED AT ${counted}`;
+    case 'timeout': return received === 0 ? NOT_RECEIVED_TEXT : `TIMED OUT AT ${counted}`;
+    default: return BADGE_TEXT[state.status] ?? state.status.toUpperCase();
+  }
+}
+
+/**
+ * What a series still in flight becomes when its pull ends without a last
+ * word on it: ended, with whatever count it had reached, and a reason.
+ *
+ * @param held - The series' state when the pull's end arrived.
+ * @returns The ended state, or null when the series was not in flight and
+ *   its own last word stands.
+ *
+ * @example
+ * ```ts
+ * badgeState_settle({ status: 'queued' }); // { status: 'unconfirmed', current: 0, reason: '…' }
+ * badgeState_settle({ status: 'done', total: 40 }); // null
+ * ```
+ */
+export function badgeState_settle(held: BadgeState): BadgeState | null {
+  if (!badge_checkIsInFlight(held)) return null;
+  return {
+    status: 'unconfirmed',
+    current: held.current ?? 0,
+    ...(held.total !== undefined ? { total: held.total } : {}),
+    reason: PULL_ENDED_REASON,
+  };
+}
 
 /** What re-asking lowers to. */
 const FRESH_FLAG: string = '--fresh';
@@ -366,10 +446,19 @@ const badgeStateLast: Map<string, BadgeState> = new Map();
  * PULLED alone, so a series the operator had just watched fill read unlike
  * the one above it that had been home all along.
  *
+ * A pull that ended without its files is one statement with no bar, its
+ * reason on the badge's title: only a pull in flight has a bar that moves.
+ *
  * @param badge - The badge element.
  * @param state - The series' state.
+ *
+ * @example
+ * ```ts
+ * badge_paint(badge, { status: 'unconfirmed', current: 0, total: 1, reason: 'the PACS sent nothing' });
+ * badge.textContent; // 'NOT RECEIVED'
+ * ```
  */
-function badge_paint(badge: HTMLElement, state: BadgeState): void {
+export function badge_paint(badge: HTMLElement, state: BadgeState): void {
   badge.replaceChildren();
   badge.dataset['state'] = state.status;
   if (state.reason !== undefined) badge.title = state.reason;
@@ -389,8 +478,8 @@ function badge_paint(badge: HTMLElement, state: BadgeState): void {
     badge.append(bar, note);
     return;
   }
-  if (state.status !== 'running' && state.status !== 'queued') {
-    badge.textContent = BADGE_TEXT[state.status] ?? state.status.toUpperCase();
+  if (!badge_checkIsInFlight(state)) {
+    badge.textContent = badgeText_compose(state);
     return;
   }
   // A running pull shows how far it has got, not just that it is going.
@@ -541,6 +630,8 @@ export class PacsPanel {
   private litFolders: Map<string, { viewer: boolean; browser: boolean }> = new Map();
 
   private readonly badgeStates: Map<string, BadgeState> = new Map();
+  /** The series each pull in flight has reported on, by the pull's command id. */
+  private readonly pullSeries: Map<string, Set<string>> = new Map();
   /** Per-series progress, seeded from the model and driven by the wire. */
   private readonly seriesProgress: Map<string, ListingProgress> = new Map();
   /** Each study's progress mount and the series it sums over. */
@@ -1567,7 +1658,11 @@ export class PacsPanel {
    * @param message - A progress message; pull messages carry the series UID.
    */
   public progress_observe(message: ProgressMessage): void {
-    if (message.operation !== 'pull' || message.itemId === undefined) return;
+    if (message.operation !== 'pull') return;
+    if (message.itemId === undefined) {
+      this.pullEnd_observe(message);
+      return;
+    }
     // Per-series messages stay in the 'watching' phase for their whole
     // life; the terminal states arrive in `status`, so that is the truth
     // the badge follows.
@@ -1576,6 +1671,10 @@ export class PacsPanel {
     if (message.current !== undefined) state.current = message.current;
     if (message.total !== undefined) state.total = message.total;
     if (message.reason !== undefined) state.reason = message.reason;
+    const followed: Set<string> = this.pullSeries.get(message.id) ?? new Set();
+    followed.add(message.itemId);
+    this.pullSeries.set(message.id, followed);
+    this.end_note(message.itemId, state);
     this.badgeState_set(message.itemId, state);
     // A retrieve that finished has changed what the row can do. Repaint it
     // now rather than waiting for the operator to ask the same question
@@ -1585,6 +1684,51 @@ export class PacsPanel {
       && seriesPulled_mark(this.model, message.itemId, message.current ?? message.total, message.path)) {
       this.results_repaint();
     }
+  }
+
+  /**
+   * Takes a pull's own end: the message that carries no series.
+   *
+   * Every series a pull followed has its own last word by then. One the
+   * pane still holds as in flight has not, and nothing further will come
+   * for it, so it is settled as ended here: a bar never moves for a pull
+   * that is over.
+   *
+   * @param message - A pull progress message with no series.
+   */
+  private pullEnd_observe(message: ProgressMessage): void {
+    if (message.phase !== 'complete' && message.phase !== 'failed') return;
+    const followed: Set<string> | undefined = this.pullSeries.get(message.id);
+    if (followed === undefined) return;
+    this.pullSeries.delete(message.id);
+    for (const seriesUID of followed) {
+      const held: BadgeState | undefined = this.badgeStates.get(seriesUID);
+      const settled: BadgeState | null = held === undefined ? null : badgeState_settle(held);
+      if (settled === null) continue;
+      this.end_note(seriesUID, settled);
+      this.badgeState_set(seriesUID, settled);
+    }
+  }
+
+  /**
+   * Says in the console why a series' pull ended without its files, once:
+   * a badge's title is out of reach of a finger, and the reason is the
+   * operator's next move.
+   *
+   * @param seriesUID - The series.
+   * @param state - The state about to be recorded for it.
+   */
+  private end_note(seriesUID: string, state: BadgeState): void {
+    if (state.reason === undefined || state.status === 'done' || badge_checkIsInFlight(state)) return;
+    const held: BadgeState | undefined = this.badgeStates.get(seriesUID);
+    if (held !== undefined && held.status === state.status && held.reason === state.reason) return;
+    let described: string = seriesUID;
+    for (const study of this.model?.studies ?? []) {
+      for (const series of study.series) {
+        if (series.seriesUID === seriesUID && series.description !== '') described = series.description;
+      }
+    }
+    this.handlers.note(`pull: ${described}: ${badgeText_compose(state)}, ${state.reason}`);
   }
 
   /**

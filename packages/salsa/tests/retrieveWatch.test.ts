@@ -287,6 +287,44 @@ describe('retrieve_fireAndWatch', () => {
     expect(t.reason).toMatch(/stopped waiting/);
   });
 
+  it('says the whole silence each time it asks, so an asker counting to a limit reaches it', async () => {
+    jest.useFakeTimers();
+    const t = task();
+    const asked: number[] = [];
+    // The policy of a caller that cannot put the question to anyone.
+    const run = retrieve_fireAndWatch([t], 'PACSDCM', fakeClient, {
+      stillWaiting: async (_waiting, waitedS) => { asked.push(waitedS); return waitedS < 60; },
+    });
+    await flush();
+    await jest.advanceTimersByTimeAsync(80_000);
+    await run;
+    expect(asked.length).toBe(3);
+    expect(asked[0]).toBeLessThan(asked[1] as number);
+    expect(asked[2]).toBeGreaterThanOrEqual(60);
+    expect(t.status).toBe('unconfirmed');
+  });
+
+  it('with nobody to ask, ends every silent series after the long window and never waits on an answer', async () => {
+    jest.useFakeTimers();
+    const first = task('1.1');
+    const second = task('2.2');
+    const seen: string[] = [];
+    const events = { task: (t: RetrieveTask, status: string): void => { seen.push(`${t.seriesUID} ${status}`); } };
+    const run = retrieve_fireAndWatch([first, second], 'PACSDCM', fakeClient, events);
+    await flush();
+    await jest.advanceTimersByTimeAsync(58_000);
+    expect(seen).toEqual(['1.1 running', '2.2 running']);
+    await jest.advanceTimersByTimeAsync(6_000);
+    await run;
+    await retrieve_confirmLoop([first, second], 0, 'PACSDCM', fakeClient, events);
+    for (const t of [first, second]) {
+      expect(t.status).toBe('unconfirmed');
+      expect(t.reason).toBe('the PACS sent nothing for 60 s and CUBE has none of it');
+    }
+    // Each series ends with a word of its own, last.
+    expect(seen.slice(-2)).toEqual(['1.1 unconfirmed', '2.2 unconfirmed']);
+  });
+
   it('a series CUBE already has when the silence is noticed is done, and nobody is asked', async () => {
     jest.useFakeTimers();
     const t = task();
@@ -395,13 +433,25 @@ describe('retrieve_confirmLoop', () => {
 
   it('with no retries, a series not yet in CUBE is unconfirmed with a reason, never an error', async () => {
     const t = task();
+    t.status = 'unconfirmed';
+    t.actualFiles = 1;
+    mockStorageResolve.mockResolvedValue(ok({ fileCount: 0, folderPath: null }));
+    const seen: string[] = [];
+    await retrieve_confirmLoop([t], 0, 'PACSDCM', fakeClient, { task: (_t, status) => { seen.push(status); } });
+    expect(t.status).toBe('unconfirmed');
+    expect(t.reason).toMatch(/may still be sending/);
+    expect(seen).toEqual(['unconfirmed']);
+  });
+
+  it('a series the PACS sent nothing of, and CUBE has none of, ends saying so', async () => {
+    const t = task();
     t.status = 'pulled';
     t.lonkConfirmed = false;
     mockStorageResolve.mockResolvedValue(ok({ fileCount: 0, folderPath: null }));
     const seen: string[] = [];
     await retrieve_confirmLoop([t], 0, 'PACSDCM', fakeClient, { task: (_t, status) => { seen.push(status); } });
     expect(t.status).toBe('unconfirmed');
-    expect(t.reason).toMatch(/may still be sending/);
+    expect(t.reason).toBe('the PACS sent nothing for 60 s and CUBE has none of it');
     expect(seen).toEqual(['unconfirmed']);
   });
 });

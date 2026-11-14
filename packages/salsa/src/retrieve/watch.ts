@@ -132,11 +132,13 @@ export interface RetrieveWatchEvents {
   /**
    * The PACS has sent nothing for a while and CUBE does not have these
    * series either: whether to keep waiting. A surface that can be asked
-   * answers it (the operator decides, never a timer); with no answerer the
-   * watch waits its longer window and calls the series unconfirmed.
+   * answers it (the operator decides, never a timer). A caller with nobody
+   * to ask (a script, a line in the background) leaves this out: the watch
+   * waits its longer window and calls the silent series unconfirmed.
    *
    * @param waiting - The series still waiting on a first file.
-   * @param waitedS - How long the PACS has been silent, in seconds.
+   * @param waitedS - How long the PACS has been silent, in seconds: the whole
+   *   silence, however many times the answer was to keep waiting.
    * @returns True to keep waiting another window.
    */
   stillWaiting?: (waiting: RetrieveTask[], waitedS: number) => Promise<boolean>;
@@ -371,6 +373,10 @@ export async function retrieve_fireAndWatch(
     // sending the first series has not gone silent on the ten queued
     // behind it, and they cannot report files they have not been sent yet.
     let lastActivityAt: number = Date.now();
+    // When the PACS last sent anything. A yes to "keep waiting?" restarts
+    // the clock above, which times the next question; it does not make
+    // the PACS any less silent, and this is the silence the question says.
+    let quietSince: number = lastActivityAt;
     // While the operator is being asked, the silence rule holds its tongue.
     let asking: boolean = false;
     const done = (): void => {
@@ -421,6 +427,7 @@ export async function retrieve_fireAndWatch(
           // A reconnection is a new view, not new silence: charging the
           // gap to the PACS would declare the study dead on reconnect.
           lastActivityAt = Date.now();
+          quietSince = lastActivityAt;
           socket_listen();
         })
         .catch((): void => socket_replace());
@@ -491,7 +498,7 @@ export async function retrieve_fireAndWatch(
           const waiting: RetrieveTask[] = silent.filter((t: RetrieveTask) => t.status === 'pending');
           // Files arrived while CUBE was asked: the question is moot.
           if (waiting.length === 0 || lastActivityAt !== silenceStart || resolved) { asking = false; return; }
-          const keep: boolean = await ask(waiting, Math.round((Date.now() - silenceStart) / 1000)).catch((): boolean => false);
+          const keep: boolean = await ask(waiting, Math.round((Date.now() - quietSince) / 1000)).catch((): boolean => false);
           if (resolved) return;
           if (keep || lastActivityAt !== silenceStart) {
             lastActivityAt = Date.now();
@@ -521,6 +528,7 @@ export async function retrieve_fireAndWatch(
         if (!t) return;
 
         lastActivityAt = Date.now();
+        quietSince = lastActivityAt;
         if ('ndicom' in message && typeof message.ndicom === 'number') {
           const n: number = message.ndicom;
           t.actualFiles = n;
@@ -585,6 +593,12 @@ export async function retrieve_confirmLoop(
   let retryCandidates: RetrieveTask[] = allTasks.filter(
     (t: RetrieveTask) => (t.status === 'pulled' && !t.lonkConfirmed) || t.status === 'unconfirmed',
   );
+  // The series the watch gave up on because the PACS sent nothing at all,
+  // as distinct from the ones it lost sight of: each ends differently in
+  // words.
+  const silent: Set<RetrieveTask> = new Set(
+    retryCandidates.filter((t: RetrieveTask) => t.status === 'pulled' && t.actualFiles === 0),
+  );
 
   /** Asks CUBE about each candidate; a series found there arrived. */
   const storage_ask = async (tasks: RetrieveTask[]): Promise<void> => {
@@ -644,7 +658,9 @@ export async function retrieve_confirmLoop(
       // Not seen to finish and not in CUBE yet: unknown, not failed. A
       // PACS slow to begin keeps sending after the watch ends.
       t.status = 'unconfirmed';
-      t.reason ??= 'the watch ended before any file arrived; the PACS may still be sending (check with pacs status)';
+      t.reason ??= silent.has(t)
+        ? `the PACS sent nothing for ${NO_ACTIVITY_TIMEOUT_MS / 1_000} s and CUBE has none of it`
+        : 'the watch ended before any file arrived; the PACS may still be sending (check with pacs status)';
       events.task?.(t, 'unconfirmed', 'retrying');
     }
   }

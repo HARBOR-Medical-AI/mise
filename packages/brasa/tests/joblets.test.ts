@@ -103,6 +103,17 @@ describe('a joblet', () => {
     expect(runner_get()!.job_get(JOBLETS_SOURCE_ID, '1')?.progress).toEqual({ current: 3, total: 3 });
   });
 
+  it('lets its line read that it runs in a joblet, which a line in front does not', async () => {
+    const { jobletCurrent_get } = await import('../src/core/jobletScope.js');
+    let inside: number | null = null;
+    fake = async (): Promise<CommandEnvelope[]> => { await Promise.resolve(); inside = jobletCurrent_get(); return []; };
+    expect(jobletCurrent_get()).toBeNull();
+    await lineOrigin_run('surface-a', () => joblet_start('look x'));
+    expect((await ended(1)).state).toBe('done');
+    expect(inside).toBe(1);
+    expect(jobletCurrent_get()).toBeNull();
+  });
+
   it('fails with its exit status and its last error line', async () => {
     fake = async (_line: string, options: { ended?: (code: number) => void }): Promise<CommandEnvelope[]> => {
       options.ended?.(2);

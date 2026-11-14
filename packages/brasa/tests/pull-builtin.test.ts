@@ -136,6 +136,21 @@ const published: Array<{ kind: string; envelope?: { model?: { kind: string } } }
 jest.unstable_mockModule('../src/core/ambient.js', () => ({ ambient_publish: (event: (typeof published)[number]): void => { published.push(event); } }));
 
 const { builtin_pull } = await import('../src/builtins/fs/pull.js');
+const { jobletScope_run } = await import('../src/core/jobletScope.js');
+const { surface_set, HeadlessSurface } = await import('../src/core/surface.js');
+
+/** The engine callbacks a pull hands over, as far as these tests read them. */
+interface WatchEvents {
+  stillWaiting?: (waiting: TestTask[], waitedS: number) => Promise<boolean>;
+  task?: (t: TestTask, s: string, p: string) => void;
+}
+
+/** A surface with someone at it, answering every question through `answer`. */
+function surface_make(answer: (message: string) => Promise<string>): InstanceType<typeof HeadlessSurface> {
+  const surface: InstanceType<typeof HeadlessSurface> = new HeadlessSurface();
+  surface.prompt = (request: { message: string }): Promise<string> => answer(request.message);
+  return surface;
+}
 
 const QUERY_PATH: string = '/net/pacs/queries/q_qid:1';
 const info = (seriesUID: string = '1.2.3', expectedFiles: number = 2) => ({
@@ -378,6 +393,69 @@ describe('builtin_pull engine consumption', () => {
     expect(sinkData).toContain('not a failed retrieve');
     expect(sinkData).not.toContain('FAILED TO FIRE');
     expect(process.exitCode).toBe(0);
+  });
+
+  it('in front, asks whether to keep waiting on a silent PACS, and takes the answer', async () => {
+    const asked: string[] = [];
+    const answers: string[] = ['y', 'n'];
+    const previous = surface_set(surface_make(async (message: string): Promise<string> => { asked.push(message); return answers.shift() ?? 'n'; }));
+    try {
+      await builtin_pull([QUERY_PATH]);
+      const events = mockFireAndWatch.mock.calls[0]?.[3] as WatchEvents;
+      const waiting: TestTask[] = mockFireAndWatch.mock.calls[0]?.[0] as TestTask[];
+      expect(asked).toEqual([]);
+      expect(await events.stillWaiting?.(waiting, 22)).toBe(true);
+      expect(await events.stillWaiting?.(waiting, 44)).toBe(false);
+    } finally {
+      surface_set(previous);
+    }
+    expect(asked).toEqual([
+      'No files from the PACS yet for q|study|series-1.2.3 after 22s, and none in CUBE. Keep waiting? (y/n)',
+      'No files from the PACS yet for q|study|series-1.2.3 after 44s, and none in CUBE. Keep waiting? (y/n)',
+    ]);
+  });
+
+  it('in front with nobody to ask, waits the long window and then stops', async () => {
+    await builtin_pull([QUERY_PATH]);
+    const events = mockFireAndWatch.mock.calls[0]?.[3] as WatchEvents;
+    const waiting: TestTask[] = mockFireAndWatch.mock.calls[0]?.[0] as TestTask[];
+    expect(await events.stillWaiting?.(waiting, 44)).toBe(true);
+    expect(await events.stillWaiting?.(waiting, 66)).toBe(false);
+  });
+
+  it('as a joblet, never asks: the engine is handed no question, in the watch or the confirm loop', async () => {
+    const asked: string[] = [];
+    const previous = surface_set(surface_make(async (message: string): Promise<string> => { asked.push(message); return 'y'; }));
+    try {
+      await jobletScope_run(1, async (): Promise<unknown> => await builtin_pull([QUERY_PATH]));
+    } finally {
+      surface_set(previous);
+    }
+    const watchEvents = mockFireAndWatch.mock.calls[0]?.[3] as WatchEvents;
+    const confirmEvents = mockConfirmLoop.mock.calls[0]?.[4] as WatchEvents;
+    expect(watchEvents.stillWaiting).toBeUndefined();
+    expect(confirmEvents.stillWaiting).toBeUndefined();
+    expect(watchEvents.task).toBeDefined();
+    expect(asked).toEqual([]);
+  });
+
+  it('carries the reason a silent series ended with to the surface and the summary', async () => {
+    const reason: string = 'the PACS sent nothing for 60 s and CUBE has none of it';
+    mockFireAndWatch.mockImplementation(async (tasks: TestTask[]) => { tasks[0].status = 'pulled'; tasks[0].lonkConfirmed = false; return 0; });
+    mockConfirmLoop.mockImplementation(async (tasks: TestTask[], _retry: unknown, _srv: unknown, _c: unknown, events?: WatchEvents) => {
+      const t = tasks[0] as TestTask & { reason?: string };
+      t.status = 'unconfirmed';
+      t.reason = reason;
+      events?.task?.(t, 'unconfirmed', 'retrying');
+      return 0;
+    });
+    await jobletScope_run(1, async (): Promise<unknown> => await builtin_pull([QUERY_PATH]));
+    const last = progressEvents.filter((e: ProgressEvent) => e.itemId === '1.2.3').pop();
+    expect(last).toMatchObject({ status: 'unconfirmed', current: 0, reason });
+    expect(sinkData).toContain(reason);
+    // The pull's own end follows every series' last word.
+    expect(progressEvents[progressEvents.length - 1]).toMatchObject({ operation: 'pull', phase: 'complete', status: 'unconfirmed' });
+    expect(progressEvents[progressEvents.length - 1]?.itemId).toBeUndefined();
   });
 
   it('skips series already fully registered and fires only the missing', async () => {
