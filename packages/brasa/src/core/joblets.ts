@@ -16,7 +16,10 @@
  * A joblet that needs an answer pauses and says so (`[1]+ Waiting for an
  * answer: … · fg %1 to answer`), as a POSIX background job that reads the
  * terminal is stopped: a question asked out of the blue in a console would
- * be answered by accident. `fg %1`, from any surface, asks it there.
+ * be answered by accident. `fg %1`, from any surface, asks it there. A verb
+ * that can decide without the answer reads that it runs in a joblet
+ * (`./jobletScope.js`) and does not ask: a pull on a silent PACS waits its
+ * long window and ends, where in front it would ask whether to keep waiting.
  *
  * Joblets belong to the session: they outlive the surface that started them,
  * and a daemon restart ends them, their logs kept ("ended by restart").
@@ -32,6 +35,7 @@ import type { ProgressEvent, TaskProgress } from '@fnndsc/menu';
 import { ambient_publish } from './ambient.js';
 import { commandCancellation_abort } from './cancellation.js';
 import { lineHolds_get } from './holds.js';
+import { jobletScope_run } from './jobletScope.js';
 import { lineOrigin_get } from './lineOrigin.js';
 import { JobRefusal, runner_get, type JobContext, type JobRecord, type JobRunner, type JobSource } from './runner.js';
 import { ansi_strip, sinkScope_run } from './sink.js';
@@ -256,9 +260,9 @@ async function joblet_run(joblet: Joblet, context: JobContext, cwd: string): Pro
   await hold_take();
   let envelopes: CommandEnvelope[];
   try {
-    envelopes = await sinkScope_run(sink, (): Promise<CommandEnvelope[]> => surfaceScope_run(standIn, (): Promise<CommandEnvelope[]> =>
+    envelopes = await jobletScope_run(joblet.number, (): Promise<CommandEnvelope[]> => sinkScope_run(sink, (): Promise<CommandEnvelope[]> => surfaceScope_run(standIn, (): Promise<CommandEnvelope[]> =>
       variableScope_fork((): Promise<CommandEnvelope[]> => cwdScope_run((): Promise<CommandEnvelope[]> =>
-        line_execute(joblet.line, { origin: `joblet:${joblet.number}`, id: key, ended: (code: number): void => { exit = code; } }), cwd))));
+        line_execute(joblet.line, { origin: `joblet:${joblet.number}`, id: key, ended: (code: number): void => { exit = code; } }), cwd)))));
   } finally {
     hold_give();
   }
