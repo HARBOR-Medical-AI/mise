@@ -1154,7 +1154,7 @@ describe('Builtins - Core Functions', () => {
       const envelope = await builtin_feed(['delete', 'id:456']);
 
       expect(mockChiliCommandRun).not.toHaveBeenCalled();
-      expect(envelope.renderedErr).toContain('Unknown subcommand');
+      expect(envelope.renderedErr).toContain("feed: unknown subcommand 'delete'");
     });
   });
 

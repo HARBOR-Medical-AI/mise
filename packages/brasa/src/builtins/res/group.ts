@@ -1,12 +1,20 @@
 /**
- * @file Builtin group command.
+ * @file `group` and `groups`: CUBE's groups, listed, searched, and their
+ * members listed, added and removed. Changing a membership needs an
+ * administrator (`sudo group adduser …`).
  *
- * Subcommands: list, search, inspect, members, adduser, removeuser
- * [admin]: create, delete, adduser, removeuser
- * Singular/plural aliases: group / groups
+ * Declared in one record (`groupCommand`, and `groupsCommand` its second
+ * name): the subcommands, their operands, and the listing options every
+ * resource command reads.
+ *
+ * Key components:
+ * - groupCommand / groupsCommand: the declaration, under each name.
+ * - builtin_group: the declaration run over words already split.
+ * - groupSync_note: the caveat an add carries.
+ *
+ * @module
  */
 import chalk from 'chalk';
-import { commandArgs_process, ParsedArgs, cliOptions_extract, resourceListOptions_refusal, resourceSearchTerm_refusal, resourceSearch_args } from '../utils.js';
 import { groups_fetchList, GroupListResult } from '@fnndsc/chili/commands/groups/list.js';
 import { groupFields_fetch } from '@fnndsc/chili/commands/groups/fields.js';
 import {
@@ -19,10 +27,13 @@ import {
   GroupMembershipResult,
 } from '@fnndsc/chili/commands/groups/membership.js';
 import { table_render } from '@fnndsc/chili/screen/screen.js';
-import { CLIoptions } from '@fnndsc/chili/utils/cli.js';
+import type { CLIoptions } from '@fnndsc/chili/utils/cli.js';
 import { authorizationFailure_is, sudoHint_build } from '../../core/elevation.js';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
+import { RESOURCE_LIST_OPTIONS_GRAMMAR, commandAlias_make, resourceListBag_build } from './resourceList.js';
 
 /**
  * Renders an error for a failed group membership operation.
@@ -135,94 +146,159 @@ export function groupSync_note(): string {
 }
 
 /**
- * Builtin handler for the `group` command.
+ * Lists the groups a listing's options ask for.
  *
- * @param args - Parsed command arguments for the group command.
- * @returns An envelope carrying a group listing, membership result, or usage error.
+ * @param options - The bag chili's listing reads.
+ * @returns The table, or that there are none, or the error.
  */
-export async function builtin_group(args: string[]): Promise<CommandEnvelope> {
-  const parsed: ParsedArgs = commandArgs_process(args);
-  const subcommand: string | undefined = parsed._[0];
-
-  if (!subcommand || subcommand === 'list') {
-    const refusal: string | null = resourceListOptions_refusal('group', parsed);
-    if (refusal !== null) {
-      exitCode_set(1);
-      return envelope_error('', undefined, `${chalk.red(refusal)}\n`);
-    }
-    try {
-      const { groups, selectedFields, totalCount }: GroupListResult = await groups_fetchList(cliOptions_extract(parsed));
-      if (groups.length === 0) { return envelope_ok(`${chalk.gray('No groups found.')}\n`); }
-      return envelope_ok(table_render(groups, selectedFields, { title: { title: 'Groups', justification: 'center' }, pagination: totalCount !== undefined ? { shown: groups.length, total: totalCount } : undefined }));
-    } catch (e: unknown) {
-      exitCode_set(1);
-      return envelope_error('', undefined, `${chalk.red(`group error: ${e instanceof Error ? e.message : String(e)}`)}\n`);
-    }
+async function groupList_render(options: CLIoptions): Promise<CommandEnvelope> {
+  try {
+    const { groups, selectedFields, totalCount }: GroupListResult = await groups_fetchList(options);
+    if (groups.length === 0) { return envelope_ok(`${chalk.gray('No groups found.')}\n`); }
+    return envelope_ok(table_render(groups, selectedFields, { title: { title: 'Groups', justification: 'center' }, pagination: totalCount !== undefined ? { shown: groups.length, total: totalCount } : undefined }));
+  } catch (e: unknown) {
+    exitCode_set(1);
+    return envelope_error('', undefined, `${chalk.red(`group error: ${e instanceof Error ? e.message : String(e)}`)}\n`);
   }
+}
 
-  if (subcommand === 'search') {
-    const refusal: string | null = resourceSearchTerm_refusal('group', parsed);
-    if (refusal !== null) {
-      exitCode_set(1);
-      return envelope_error('', undefined, `${chalk.red(refusal)}\n`);
-    }
-    const query: string = String(parsed._[1]);
-    const search: string = query.includes(':') ? query : `name_icontains:${query}`;
-    return builtin_group(resourceSearch_args(parsed, search));
-  }
-
-  if (subcommand === 'inspect') {
-    const reference: string | undefined = parsed._[1];
-    if (reference !== undefined) {
-      const resolved = await groupReference_resolve(reference);
-      if (!resolved.ok) return group_error(resolved.error);
-      return envelope_ok(table_render(
-        [{ id: resolved.value.id, name: resolved.value.name }],
-        ['id', 'name'],
-        { title: { title: `Group ${group_label(resolved.value)}`, justification: 'center' } },
-      ));
-    }
-    const fields: string[] | null = await groupFields_fetch();
-    if (fields && fields.length > 0) {
-      return envelope_ok(table_render(fields.map((f: string) => ({ field: f })), ['field'], { title: { title: 'Group fields', justification: 'center' } }));
-    }
-    return envelope_ok(`${chalk.gray('No fields found for groups.')}\n`);
-  }
-
-  if (subcommand === 'members') {
-    const reference: string | undefined = parsed._[1];
-    if (reference === undefined) return group_error('Usage: group members <group>');
+/**
+ * `group inspect [<group>]`: one group's identity, or the fields a group has.
+ *
+ * @param reference - The group's name or id, or none for the fields.
+ * @returns The identity or the fields, or the error.
+ */
+async function groupInspect_render(reference: string | undefined): Promise<CommandEnvelope> {
+  if (reference !== undefined) {
     const resolved = await groupReference_resolve(reference);
     if (!resolved.ok) return group_error(resolved.error);
-    const result: GroupMembershipResult<GroupMember[]> = await groupMembers_fetch(resolved.value.id);
-    if (!result.ok) return group_error(result.error);
-    if (result.value.length === 0) {
-      return envelope_ok(`${chalk.gray(`Group ${group_label(resolved.value)} has no users.`)}\n`);
-    }
-    const rows: Record<string, unknown>[] = result.value.map(
-      (member: GroupMember): Record<string, unknown> => ({
-        id: member.id,
-        username: member.username,
-      }),
-    );
     return envelope_ok(table_render(
-      rows,
-      ['id', 'username'],
-      { title: { title: `Group ${group_label(resolved.value)} users`, justification: 'center' } },
+      [{ id: resolved.value.id, name: resolved.value.name }],
+      ['id', 'name'],
+      { title: { title: `Group ${group_label(resolved.value)}`, justification: 'center' } },
     ));
   }
-
-  if (subcommand === 'adduser' || subcommand === 'removeuser') {
-    const reference: string | undefined = parsed._[1];
-    const usernames: string[] = parsed._.slice(2);
-    if (reference === undefined || usernames.length === 0) {
-      return group_error(`Usage: group ${subcommand} <group> <username...>`);
-    }
-    const resolved = await groupReference_resolve(reference);
-    if (!resolved.ok) return group_error(resolved.error);
-    return groupMembership_batch(resolved.value, usernames, subcommand === 'adduser' ? 'add' : 'remove');
+  const fields: string[] | null = await groupFields_fetch();
+  if (fields && fields.length > 0) {
+    return envelope_ok(table_render(fields.map((f: string) => ({ field: f })), ['field'], { title: { title: 'Group fields', justification: 'center' } }));
   }
+  return envelope_ok(`${chalk.gray('No fields found for groups.')}\n`);
+}
 
-  exitCode_set(1);
-  return envelope_error(`${chalk.red(`Unknown subcommand: ${subcommand}. Usage: groups <list|search|inspect|members|adduser|removeuser>`)}\n`);
+/**
+ * `group members <group>`: the users in one group.
+ *
+ * @param reference - The group's name or id.
+ * @returns The members' table, or that it has none, or the error.
+ */
+async function groupMembers_render(reference: string): Promise<CommandEnvelope> {
+  const resolved = await groupReference_resolve(reference);
+  if (!resolved.ok) return group_error(resolved.error);
+  const result: GroupMembershipResult<GroupMember[]> = await groupMembers_fetch(resolved.value.id);
+  if (!result.ok) return group_error(result.error);
+  if (result.value.length === 0) {
+    return envelope_ok(`${chalk.gray(`Group ${group_label(resolved.value)} has no users.`)}\n`);
+  }
+  const rows: Record<string, unknown>[] = result.value.map(
+    (member: GroupMember): Record<string, unknown> => ({
+      id: member.id,
+      username: member.username,
+    }),
+  );
+  return envelope_ok(table_render(
+    rows,
+    ['id', 'username'],
+    { title: { title: `Group ${group_label(resolved.value)} users`, justification: 'center' } },
+  ));
+}
+
+/**
+ * `group adduser|removeuser <group> <user…>`: one membership change for
+ * every user named.
+ *
+ * @param reference - The group's name or id.
+ * @param usernames - The users, in the order given.
+ * @param operation - Whether they are added or removed.
+ * @returns The batch's outcome, or the error.
+ */
+async function groupMembership_change(reference: string, usernames: string[], operation: 'add' | 'remove'): Promise<CommandEnvelope> {
+  const resolved = await groupReference_resolve(reference);
+  if (!resolved.ok) return group_error(resolved.error);
+  return groupMembership_batch(resolved.value, usernames, operation);
+}
+
+/** What a `group` line may hold. */
+const GROUP_GRAMMAR = {
+  bare: { summary: 'List the first page of groups' },
+  subcommands: {
+    list: { summary: 'List the groups, 20 to a page', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
+    search: {
+      summary: 'List the groups a filter matches: field:value, or a name fragment (list --search <term>)',
+      operands: [{ name: 'term', kind: 'word', summary: 'The filter, field:value, or part of a name' }],
+      options: RESOURCE_LIST_OPTIONS_GRAMMAR,
+    },
+    inspect: { summary: "One group's name and id, or, with none named, the fields a group has", operands: [{ name: 'group', kind: 'word', optional: true, summary: "The group's name or id" }] },
+    members: { summary: 'List the users in a group', operands: [{ name: 'group', kind: 'word', summary: "The group's name or id" }] },
+    adduser: { summary: 'Add users to a group (an administrator: sudo group adduser …)', operands: [{ name: 'group', kind: 'word', summary: "The group's name or id" }, { name: 'users', kind: 'word', repeat: true, summary: 'The usernames' }] },
+    removeuser: { summary: 'Remove users from a group (an administrator: sudo group removeuser …)', operands: [{ name: 'group', kind: 'word', summary: "The group's name or id" }, { name: 'users', kind: 'word', repeat: true, summary: 'The usernames' }] },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * Runs one `group` line.
+ *
+ * @param args - The line, parsed.
+ * @returns The listing, the group, its members, or what a change did.
+ */
+async function group_run(args: CommandArguments<typeof GROUP_GRAMMAR>): Promise<CommandEnvelope> {
+  switch (args.subcommand) {
+    case null: return groupList_render({});
+    case 'list': return groupList_render(resourceListBag_build(args.options));
+    case 'search': {
+      const term: string = args.operands.term;
+      return groupList_render(resourceListBag_build(args.options, term.includes(':') ? term : `name_icontains:${term}`));
+    }
+    case 'inspect': return groupInspect_render(args.operands.group);
+    case 'members': return groupMembers_render(args.operands.group);
+    case 'adduser': return groupMembership_change(args.operands.group, args.operands.users, 'add');
+    case 'removeuser': return groupMembership_change(args.operands.group, args.operands.users, 'remove');
+  }
+}
+
+/**
+ * `group [list | search <term> | inspect [group] | members <group> | adduser|removeuser <group> <user…>]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [groupCommand, groupsCommand] }, 'backend');
+ * ```
+ */
+export const groupCommand = command_declare({
+  name: 'group',
+  grammar: GROUP_GRAMMAR,
+  help: {
+    summary: "CUBE's groups: list them, search them, list and change their members",
+    description: "List the groups in CUBE, a page at a time or every page, filtered by a search (field:value, or part of a name) and in the columns asked for; inspect names one group's id, or the fields a group has. members lists a group's users; adduser and removeuser change them, each user in turn, and need an administrator (sudo group adduser …). Where CUBE takes its groups from a directory (Authentik, LDAP), a membership added here is undone at the user's next login. group and groups are one command.",
+    category: 'Resources',
+    examples: ['groups list', 'groups search pacs', 'group inspect pacs_users', 'group members pacs_users', 'sudo group adduser pacs_users peter.hong joe.schmo', 'sudo group removeuser pacs_users joe.schmo'],
+  },
+  handler: group_run,
+});
+
+/** `groups`: the same command as `group`; a read, which holds nothing of the session. */
+export const groupsCommand = commandAlias_make(groupCommand, 'groups', []);
+
+/**
+ * `group` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `group`.
+ * @returns The answer, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_group(['members', 'pacs_users']);
+ * ```
+ */
+export async function builtin_group(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(groupCommand, args);
 }

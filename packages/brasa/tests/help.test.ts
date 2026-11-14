@@ -3,14 +3,11 @@ import { chrisHelp, RESOURCE_LIST_OPTIONS } from '../src/chris/help.js';
 
 
 /**
- * Resources that must implement the full Resource Contract:
- * list, search, inspect via RESOURCE_LIST_OPTIONS.
+ * Resources not yet declared in one record, whose help pages carry the
+ * Resource Contract: list, search, inspect via RESOURCE_LIST_OPTIONS. A
+ * declared resource carries it in its grammar (res-builtins.test.ts).
  */
-const RESOURCE_COMMANDS = [
-  'plugins', 'feeds', 'files', 'links', 'dirs',
-  'pipeline', 'compute',
-  'tags', 'groups', 'pluginmetas', 'plugininstances', 'workflows',
-];
+const RESOURCE_COMMANDS = ['plugins', 'pipeline'];
 
 describe('RESOURCE_LIST_OPTIONS', () => {
   it('contains standard subcommands', () => {
@@ -60,7 +57,6 @@ describe('chrisHelp resource entries', () => {
   it('[admin] marker present on privileged subcommands', () => {
     const adminCommands: Record<string, string[]> = {
       plugins: ['add', 'delete'],
-      groups: ['create', 'delete', 'adduser', 'removeuser'],
     };
     for (const [cmd, subs] of Object.entries(adminCommands)) {
       const entry = chrisHelp[cmd];

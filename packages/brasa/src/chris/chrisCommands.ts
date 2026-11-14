@@ -11,7 +11,7 @@
  */
 import { type CommandGroup, type CommandHandler, type EnvelopeHandler, type SessionPiece } from '../core/commandRegistry.js';
 import { builtin_chrisfetch, builtin_ping } from '../builtins/games/chrislab.js';
-import { builtin_chmod, builtin_compute, builtin_config, builtin_dcm, builtin_dirs, builtin_feed, builtin_files, builtin_gather, builtin_getfacl, builtin_getfattr, builtin_group, builtin_image, builtin_links, builtin_pacs, builtin_parametersofplugin, builtin_pipeline, builtin_plugin, builtin_plugininstance, builtin_pluginmeta, builtin_pull, builtin_query, builtin_setfacl, builtin_setfattr, builtin_store, builtin_tag, builtin_upload, builtin_user, builtin_workflow } from '../builtins/index.js';
+import { builtin_chmod, builtin_config, builtin_dcm, builtin_gather, builtin_getfacl, builtin_getfattr, builtin_image, builtin_pacs, builtin_pipeline, builtin_plugin, builtin_pull, builtin_query, builtin_setfacl, builtin_setfattr, builtin_upload, builtin_user } from '../builtins/index.js';
 import { netstatCommand } from '../builtins/net/netstat.js';
 import { connectCommand } from '../builtins/net/connect.js';
 import { logoutCommand } from '../builtins/net/logout.js';
@@ -30,9 +30,19 @@ import { treeCommand } from '../builtins/fs/tree.js';
 import { builtin_record } from '../builtins/res/record.js';
 import { builtin_motd } from '../builtins/sys/motd.js';
 import { chrisHelp } from './help.js';
-import { builtin_whatif } from './commandFallback.js';
+import { whatifCommand } from './commandFallback.js';
 import { berthCommand } from '../builtins/berth/berth.js';
 import { downloadCommand } from '../builtins/fs/download.js';
+import { feedCommand, feedsCommand } from '../builtins/res/feed.js';
+import { computeCommand, computesCommand } from '../builtins/res/compute.js';
+import { tagCommand, tagsCommand } from '../builtins/res/tag.js';
+import { groupCommand, groupsCommand } from '../builtins/res/group.js';
+import { metaCommand, metasCommand, pluginmetaCommand, pluginmetasCommand } from '../builtins/res/pluginmeta.js';
+import { instanceCommand, instancesCommand, jobCommand, jobsCommand, plugininstanceCommand, plugininstancesCommand } from '../builtins/res/plugininstance.js';
+import { workflowCommand, workflowsCommand } from '../builtins/res/workflow.js';
+import { dirsCommand, filesCommand, linksCommand } from '../builtins/res/files.js';
+import { parametersofpluginCommand } from '../builtins/parametersofplugin.js';
+import { storeCommand } from '../builtins/store.js';
 import type { AnyCommandDeclaration } from '../core/commandDeclaration.js';
 
 const envelope: Record<string, EnvelopeHandler> = {
@@ -47,45 +57,19 @@ const envelope: Record<string, EnvelopeHandler> = {
   dcm: builtin_dcm,
   image: builtin_image,
   query: builtin_query,
-  feed: builtin_feed,
-  feeds: builtin_feed,
-  compute: builtin_compute,
-  computes: builtin_compute,
-  tag: builtin_tag,
-  tags: builtin_tag,
   gather: builtin_gather,
-  group: builtin_group,
-  groups: builtin_group,
   user: builtin_user,
   users: builtin_user,
-  pluginmeta: builtin_pluginmeta,
-  pluginmetas: builtin_pluginmeta,
-  meta: builtin_pluginmeta,
-  metas: builtin_pluginmeta,
-  plugininstance: builtin_plugininstance,
-  plugininstances: builtin_plugininstance,
-  instance: builtin_plugininstance,
-  instances: builtin_plugininstance,
-  job: builtin_plugininstance,
-  jobs: builtin_plugininstance,
-  workflow: builtin_workflow,
-  workflows: builtin_workflow,
-  files: builtin_files,
-  links: builtin_links,
-  dirs: builtin_dirs,
-  parametersofplugin: builtin_parametersofplugin,
   plugin: builtin_plugin,
   plugins: builtin_plugin,
   pacsservers: (args: string[]): Promise<CommandEnvelope> => chiliCommand_run('pacsservers', ['-s', ...args]),
   pacsqueries: (args: string[]): Promise<CommandEnvelope> => chiliCommand_run('pacsqueries', ['-s', ...args]),
   pacsretrieve: (args: string[]): Promise<CommandEnvelope> => chiliCommand_run('pacsretrieve', ['-s', ...args]),
   upload: builtin_upload,
-  store: builtin_store,
   config: builtin_config,
   pacs: builtin_pacs,
   pull: builtin_pull,
   pipeline: builtin_pipeline,
-  whatif: builtin_whatif,
   pipelines: builtin_pipeline,
   file: builtin_file,
   xxd: builtin_xxd,
@@ -106,44 +90,18 @@ const plain: Record<string, CommandHandler> = {
   upload: envelopeHandler_wrap(builtin_upload),
   pacs: envelopeHandler_wrap(builtin_pacs),
   pipeline: envelopeHandler_wrap(builtin_pipeline),
-  whatif: envelopeHandler_wrap(builtin_whatif),
   pipelines: envelopeHandler_wrap(builtin_pipeline),
   pull: envelopeHandler_wrap(builtin_pull),
   query: envelopeHandler_wrap(builtin_query),
   dcm:envelopeHandler_wrap(builtin_dcm),
   image: envelopeHandler_wrap(builtin_image),
   config: envelopeHandler_wrap(builtin_config),
-  parametersofplugin: envelopeHandler_wrap(builtin_parametersofplugin),
-  ping:envelopeHandler_wrap(builtin_ping),
+  ping: envelopeHandler_wrap(builtin_ping),
   chrisfetch: envelopeHandler_wrap(builtin_chrisfetch),
   proc: envelopeHandler_wrap(builtin_proc),
-  store: envelopeHandler_wrap(builtin_store),
   plugin: envelopeHandler_wrap(builtin_plugin),
   plugins: envelopeHandler_wrap(builtin_plugin),
-  feed: envelopeHandler_wrap(builtin_feed),
-  feeds: envelopeHandler_wrap(builtin_feed),
-  compute: envelopeHandler_wrap(builtin_compute),
-  computes: envelopeHandler_wrap(builtin_compute),
-  tag: envelopeHandler_wrap(builtin_tag),
-  tags: envelopeHandler_wrap(builtin_tag),
   gather: envelopeHandler_wrap(builtin_gather),
-  group: envelopeHandler_wrap(builtin_group),
-  groups: envelopeHandler_wrap(builtin_group),
-  pluginmeta: envelopeHandler_wrap(builtin_pluginmeta),
-  pluginmetas: envelopeHandler_wrap(builtin_pluginmeta),
-  meta: envelopeHandler_wrap(builtin_pluginmeta),
-  metas: envelopeHandler_wrap(builtin_pluginmeta),
-  plugininstance: envelopeHandler_wrap(builtin_plugininstance),
-  plugininstances: envelopeHandler_wrap(builtin_plugininstance),
-  instance: envelopeHandler_wrap(builtin_plugininstance),
-  instances: envelopeHandler_wrap(builtin_plugininstance),
-  job: envelopeHandler_wrap(builtin_plugininstance),
-  jobs: envelopeHandler_wrap(builtin_plugininstance),
-  workflow: envelopeHandler_wrap(builtin_workflow),
-  workflows: envelopeHandler_wrap(builtin_workflow),
-  files: envelopeHandler_wrap(builtin_files),
-  links: envelopeHandler_wrap(builtin_links),
-  dirs: envelopeHandler_wrap(builtin_dirs),
   pacsservers: envelopeHandler_wrap((args: string[]): Promise<CommandEnvelope> => chiliCommand_run('pacsservers', ['-s', ...args])),
   pacsqueries: envelopeHandler_wrap((args: string[]): Promise<CommandEnvelope> => chiliCommand_run('pacsqueries', ['-s', ...args])),
   pacsretrieve: envelopeHandler_wrap((args: string[]): Promise<CommandEnvelope> => chiliCommand_run('pacsretrieve', ['-s', ...args])),
@@ -166,8 +124,8 @@ const plain: Record<string, CommandHandler> = {
  */
 const holds: Record<string, readonly SessionPiece[]> = {
   ...Object.fromEntries([
-    'feeds', 'file', 'getfacl', 'getfattr', 'groups', 'md5sum', 'motd', 'pacsservers',
-    'pipelines', 'plugininstances', 'plugins', 'sha256sum', 'strings', 'whatif', 'xxd',
+    'file', 'getfacl', 'getfattr', 'md5sum', 'motd', 'pacsservers', 'pipelines', 'plugins',
+    'sha256sum', 'strings', 'xxd',
     // Reading a series' listing and header, or a file's tags, changes nothing
     // of the session: `image` answers with an intent a surface draws, `dcm`
     // with a model.
@@ -181,6 +139,11 @@ const declarations: ReadonlyArray<AnyCommandDeclaration> = [
   downloadCommand, berthCommand,
   netstatCommand, connectCommand, logoutCommand, contextCommand, whoamiCommand, idCommand, whereamiCommand,
   physicalmodeCommand, treeCommand, duCommand, cubepathCommand,
+  feedCommand, feedsCommand, computeCommand, computesCommand, tagCommand, tagsCommand, groupCommand, groupsCommand,
+  pluginmetaCommand, pluginmetasCommand, metaCommand, metasCommand,
+  plugininstanceCommand, plugininstancesCommand, instanceCommand, instancesCommand, jobCommand, jobsCommand,
+  workflowCommand, workflowsCommand, filesCommand, linksCommand, dirsCommand,
+  parametersofpluginCommand, storeCommand, whatifCommand,
 ];
 
 export const chrisCommands: CommandGroup = {
