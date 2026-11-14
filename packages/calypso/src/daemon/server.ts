@@ -42,6 +42,7 @@ import type { Terminals, TerminalViewer } from './terminals.js';
 import { Lane, LOCKS_ALL, type Hold, type LockSet } from './lane.js';
 import { claim_match, claimCandidates_list, type SurfaceClaim } from './claims.js';
 import { DownloadLedger, downloadId_valid, type DownloadReport, type OpenedFile } from './downloads.js';
+import { errorFacts_read, vfsBreak_format } from './vfsBreak.js';
 
 /**
  * The largest file `POST /vfs` will take, in bytes.
@@ -235,6 +236,11 @@ export interface DaemonOptions {
    * through `stale_set`. Omitted, the daemon never calls itself stale.
    */
   codeCheck?: () => void;
+  /**
+   * Where the daemon writes an operational line of its own (a file whose
+   * bytes stopped coming from CUBE); standard error by default.
+   */
+  log?: (line: string) => void;
 }
 
 /**
@@ -287,6 +293,8 @@ export class CalypsoDaemon {
   /** The terminals this daemon offers, or null when it offers none (no pty here). */
   private terminals: Terminals | null = null;
   private readonly codeCheck: (() => void) | undefined;
+  /** Where the daemon's own operational lines go. */
+  private readonly log: (line: string) => void;
   private readonly hostControl: string[];
   private readonly elevation: ElevationDoor | undefined;
   /** The one session all surfaces share; returned in each attach ack. */
@@ -384,6 +392,7 @@ export class CalypsoDaemon {
     this.hostControl = options.hostControl ?? [];
     this.elevation = options.elevation;
     this.codeCheck = options.codeCheck;
+    this.log = options.log ?? ((line: string): void => { console.error(line); });
   }
 
   /**
@@ -679,10 +688,13 @@ export class CalypsoDaemon {
    * Serves one file's bytes as they arrive: the length in the header when
    * the store gave one (so a browser draws its own progress), the body
    * piped, nothing held whole. A 3.7 GB DICOM used to be read into one
-   * buffer behind a 30 s deadline and answered 404. A failure before the
-   * first byte answers with the kernel's status and reason; one after it
-   * ends the response early, which the browser reports as a failed
-   * download rather than a short file.
+   * buffer behind a 30 s deadline and answered 404. A failure to open the
+   * file answers with the kernel's status and reason. The status waits for
+   * CUBE's first byte, so a file whose bytes never start is a 502 that says
+   * why. A break after bytes have gone cuts the socket, which the porter and
+   * the browser see as a body that stopped rather than a short file. Either
+   * break is one line in the daemon's log (vfsBreak.ts): the path, the bytes
+   * sent of the size CUBE stated, the time taken and the cause.
    *
    * @param open - The engine's stream seam.
    * @param filePath - The file asked for.
@@ -701,6 +713,7 @@ export class CalypsoDaemon {
     response: ServerResponse,
     refuse: (status: number, message: string) => void,
   ): Promise<void> {
+    const startedAt: number = Date.now();
     const dl: string | null = downloadId_valid(query.get('dl')) ? query.get('dl') : null;
     const probe: boolean = dl !== null && query.get('probe') === '1';
     // The browser's save takes the file its probe opened, when one is held.
@@ -737,18 +750,51 @@ export class CalypsoDaemon {
       return;
     }
     const stream: NodeJS.ReadableStream = opened.stream;
-    response.writeHead(200, headers);
+    const statedBytes: number | undefined = opened.size;
+    let browserLeft: boolean = false;
     // The browser left (a cancelled download): stop pulling from CUBE.
     response.on('close', (): void => {
-      if (!response.writableFinished) (stream as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+      if (response.writableFinished) return;
+      browserLeft = true;
+      (stream as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
     });
+    const chunks: AsyncIterator<unknown> = (stream as AsyncIterable<unknown>)[Symbol.asyncIterator]();
+    let sentBytes: number = 0;
+    const break_log = (error: unknown): void => {
+      if (browserLeft) return;
+      this.log(vfsBreak_format({ path: filePath, sentBytes, statedBytes, elapsedMs: Date.now() - startedAt, ...errorFacts_read(error) }));
+    };
+    // The status waits for CUBE's first byte: a file that never starts is
+    // still a refusal with its reason, not a 200 cut off before its body.
+    let first: IteratorResult<unknown>;
+    try {
+      first = await chunks.next();
+    } catch (error: unknown) {
+      break_log(error);
+      const { message } = errorFacts_read(error);
+      if (dl !== null) this.downloads.fail(dl, `the file did not arrive from CUBE: ${message}`);
+      if (!browserLeft) refuse(502, `the file did not arrive from CUBE: ${message}`);
+      return;
+    }
+    response.writeHead(200, headers);
+    const rest = async function* (): AsyncGenerator<Buffer> {
+      let step: IteratorResult<unknown> = first;
+      while (step.done !== true) {
+        const chunk: Buffer = Buffer.isBuffer(step.value) ? step.value : Buffer.from(step.value as Uint8Array);
+        sentBytes += chunk.length;
+        yield chunk;
+        step = await chunks.next();
+      }
+    };
     try {
       const { pipeline } = await import('node:stream/promises');
-      if (dl !== null) await pipeline(stream, this.downloads.counter(dl, response), response);
-      else await pipeline(stream, response);
-    } catch {
-      // Headers are gone; ending the socket early is the only honest answer.
-      if (dl !== null) this.downloads.fail(dl, 'the stream from CUBE broke');
+      if (dl !== null) await pipeline(rest, this.downloads.counter(dl, response), response);
+      else await pipeline(rest, response);
+    } catch (error: unknown) {
+      break_log(error);
+      // The status is sent and cannot change: the socket is cut, so the
+      // porter and the browser see a body that stopped, never a whole short file.
+      if (dl !== null) this.downloads.fail(dl, `the file stopped arriving from CUBE: ${errorFacts_read(error).message}`);
       response.destroy();
     }
   }

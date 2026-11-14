@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { AddressInfo } from 'node:net';
-import { createServer, type Server } from 'node:http';
+import { createServer, get as httpGet, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { SessionRegistry } from '../../src/registry.js';
 import { porterApp_build, upstreamPath_build, mountUrl_split, berthHttp_derive, type PorterApp } from '../../src/app.js';
 import type { Berth, BerthAccess, BootListener, BootReport, SessionHost } from '../../src/host/sessionHost.js';
@@ -542,6 +542,132 @@ describe('a session whose daemon is gone', () => {
     expect(response.statusCode).toBe(303);
     expect(response.headers.location).toMatch(/^\/login\?reason=your%20session%20ended/);
     expect((await built.app.inject({ method: 'GET', url: `/s/${key}/`, headers: { cookie } })).statusCode).toBe(404);
+  });
+});
+
+describe('the relay to the session', () => {
+  const identity: string = 'chris@https://cube.example.org/api/v1/';
+  let upstream: Server;
+  let upstreamPort: number;
+  /** What the fake daemon does with each request. */
+  let handle: (request: IncomingMessage, response: ServerResponse) => void;
+
+  beforeEach(async () => {
+    handle = (_request, response) => { response.end('ok'); };
+    upstream = createServer((request, response) => handle(request, response));
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    upstreamPort = (upstream.address() as AddressInfo).port;
+  });
+  afterEach(async () => {
+    upstream.closeAllConnections();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    await built.app.close();
+  });
+
+  /** Logs in while the host reports the fake daemon (or `url`), and returns the cookie and key. */
+  const attach = async (url: string = `ws://127.0.0.1:${upstreamPort}`): Promise<{ cookie: string; key: string }> => {
+    host.found = { identity, url, token: 'ATTACH' };
+    const response = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    return { cookie: cookie_of(response), key: (response.json() as { key: string }).key };
+  };
+
+  it('forwards a posted body larger than 1 MiB whole, whatever its type, and never answers 413', async () => {
+    const seen: Array<{ url: string; bytes: number; type: string }> = [];
+    handle = (request, response) => {
+      let bytes: number = 0;
+      request.on('data', (chunk: Buffer) => { bytes += chunk.length; });
+      request.on('end', () => {
+        seen.push({ url: request.url ?? '', bytes, type: String(request.headers['content-type'] ?? '') });
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ bytes }));
+      });
+    };
+    const { cookie, key } = await attach();
+    const body: Buffer = Buffer.alloc(3 * 1024 * 1024, 7);
+    for (const type of ['application/octet-stream', 'application/x-www-form-urlencoded', 'application/json', undefined]) {
+      const headers: Record<string, string> = { cookie, ...(type === undefined ? {} : { 'content-type': type }) };
+      const answer = await built.app.inject({ method: 'POST', url: `/s/${key}/vfs?path=%2Fhome%2Fchris%2Fbig.bin`, headers, payload: body });
+      expect(answer.statusCode).toBe(200);
+      expect(answer.json()).toEqual({ bytes: body.length });
+    }
+    expect(seen.map((one) => one.bytes)).toEqual([body.length, body.length, body.length, body.length]);
+    expect(seen[0]?.url).toBe('/vfs?path=%2Fhome%2Fchris%2Fbig.bin&token=ATTACH');
+    expect(seen[0]?.type).toBe('application/octet-stream');
+  });
+
+  it('passes the daemon\'s own refusal of a body on as it is', async () => {
+    handle = (_request, response) => {
+      response.writeHead(413, { 'content-type': 'text/plain; charset=utf-8' });
+      response.end('file too large: this route takes at most 268435456 bytes');
+    };
+    const { cookie, key } = await attach();
+    const answer = await built.app.inject({ method: 'POST', url: `/s/${key}/vfs?path=%2Fx`, headers: { cookie, 'content-type': 'application/octet-stream' }, payload: Buffer.alloc(16) });
+    expect(answer.statusCode).toBe(413);
+    expect(answer.body).toBe('file too large: this route takes at most 268435456 bytes');
+  });
+
+  it('a file that stops part way after its 200: the browser\'s body is cut, and the porter says how far it got', async () => {
+    handle = (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/dicom', 'content-length': 11 });
+      response.write('part1-');
+      setTimeout(() => { response.socket?.destroy(); }, 30);
+    };
+    const { cookie, key } = await attach();
+    await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const porterPort: number = (built.app.server.address() as AddressInfo).port;
+    const outcome = await new Promise<{ status: number; received: number; broke: boolean }>((resolve) => {
+      httpGet({ host: '127.0.0.1', port: porterPort, path: `/s/${key}/vfs?path=%2Fhome%2Fchris%2Fscan.dcm`, headers: { cookie } }, (response: IncomingMessage) => {
+        let received: number = 0;
+        response.on('data', (chunk: Buffer) => { received += chunk.length; });
+        response.on('end', () => resolve({ status: response.statusCode ?? 0, received, broke: false }));
+        response.on('error', () => resolve({ status: response.statusCode ?? 0, received, broke: true }));
+        response.on('aborted', () => resolve({ status: response.statusCode ?? 0, received, broke: true }));
+      });
+    });
+    expect(outcome).toEqual({ status: 200, received: 6, broke: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const line: string | undefined = said.find((one: string) => one.includes('stopped arriving'));
+    expect(line).toMatch(/^chris's session: the file stopped arriving part way: \/vfs \/home\/chris\/scan\.dcm after 6 bytes of 11 \(.+\)$/);
+    expect(said.some((one: string) => one.includes('did not answer'))).toBe(false);
+  });
+
+  it('a browser that leaves part way is not a break', async () => {
+    handle = (_request, response) => {
+      response.writeHead(200, { 'content-length': 1_000_000 });
+      response.write(Buffer.alloc(1000));
+    };
+    const { cookie, key } = await attach();
+    await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const porterPort: number = (built.app.server.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => {
+      const asked = httpGet({ host: '127.0.0.1', port: porterPort, path: `/s/${key}/vfs?path=%2Fa`, headers: { cookie } }, (response: IncomingMessage) => {
+        response.once('data', () => { asked.destroy(); resolve(); });
+      });
+      asked.on('error', () => undefined);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(said.some((one: string) => one.includes('stopped arriving'))).toBe(false);
+  });
+
+  it('a socket closed before any answer is said so, not called a session that did not answer', async () => {
+    handle = (request) => { request.socket.destroy(); };
+    const { cookie, key } = await attach();
+    const answer = await built.app.inject({ method: 'GET', url: `/s/${key}/vfs?path=%2Fhome%2Fchris%2Fscan.dcm`, headers: { cookie } });
+    expect(answer.statusCode).toBe(502);
+    const error: string = (answer.json() as { error: string }).error;
+    expect(error).toMatch(/^the session closed the connection before it answered \(.+\)$/);
+    expect(said).toContain(`chris's session: ${error}: GET /vfs /home/chris/scan.dcm`);
+  });
+
+  it('a refused connection, the session still on record there, is a session that did not answer', async () => {
+    const probe: Server = createServer();
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const deadPort: number = (probe.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    const { cookie, key } = await attach(`ws://127.0.0.1:${deadPort}`);
+    const answer = await built.app.inject({ method: 'GET', url: `/s/${key}/vfs?path=%2Fa`, headers: { cookie } });
+    expect(answer.statusCode).toBe(502);
+    expect((answer.json() as { error: string }).error).toMatch(/^the session did not answer: .*ECONNREFUSED/);
   });
 });
 

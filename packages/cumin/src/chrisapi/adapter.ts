@@ -8,7 +8,9 @@
  * lifecycle (`authToken_get`, `client_create`), payload extractors
  * (`listData_get`, `itemData_get`, `items_get`, `collectionItems_get`),
  * dynamic dispatch for methods absent from the typings (`resource_call`),
- * and client-shape helpers (`client_authGet`, `client_adminUrlEnsure`).
+ * client-shape helpers (`client_authGet`, `client_adminUrlEnsure`), and the
+ * multipart posts chrisapi cannot stream (`client_adminPluginUpload`,
+ * `client_userFileUpload`).
  *
  * Domain modules pass their own target type `T`; the adapter performs the
  * cast. This keeps the unsafe surface auditable in one file and gives tests
@@ -285,6 +287,47 @@ export async function client_adminPluginUpload(
   });
   const text: string = await response.text();
   if (!response.ok) throw new Error(`CUBE refused the plugin (HTTP ${response.status}): ${refusalReason_extract(text)}`);
+  return collectionItemFields_decode(text);
+}
+
+/**
+ * Posts one file to CUBE's user files, the multipart form chrisapi's
+ * `uploadFile` sends, over fetch.
+ *
+ * fetch reads a form's file only as the connection takes its bytes, so a
+ * file whose reads are watched (cumin's `upload_watchStalls`) shows the
+ * upload's real progress; chrisapi's own client reads the whole file before
+ * it is sent, and holds a fixed 30 s deadline over the whole request.
+ *
+ * @param client - Connected CUBE client whose token authorizes the upload.
+ * @param uploadPath - The file's full CUBE path, without a leading slash.
+ * @param file - The bytes, under the name they are sent as.
+ * @param signal - Abandons the request (and its socket) when aborted; the
+ *   abort's reason is what the returned promise rejects with.
+ * @returns The new file's fields (`id`, `fname`, …), decoded from the Collection+JSON item.
+ * @throws {Error} When CUBE refuses (its reason in the message), or the signal's reason.
+ */
+export async function client_userFileUpload(
+  client: Client,
+  uploadPath: string,
+  file: File,
+  signal: AbortSignal,
+): Promise<Record<string, unknown>> {
+  if (!client.userFilesUrl) await client.setUrls();
+  const form: FormData = new FormData();
+  form.append('upload_path', uploadPath);
+  form.append('fname', file);
+  const response: Response = await fetch(client.userFilesUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Token ${client_authGet(client).token}`,
+      Accept: 'application/vnd.collection+json',
+    },
+    body: form,
+    signal,
+  });
+  const text: string = await response.text();
+  if (!response.ok) throw new Error(`CUBE refused the upload (HTTP ${response.status}): ${refusalReason_extract(text)}`);
   return collectionItemFields_decode(text);
 }
 

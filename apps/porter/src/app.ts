@@ -44,7 +44,10 @@
  * - `/s/<key>/…` — the session itself: the argus page and its assets, the
  *   `/vfs` byte route, and the WebSocket wire, proxied to the daemon on
  *   loopback. The attach token is put on the proxied `/vfs` query and the
- *   proxied upgrade URL by the porter; the browser never holds it.
+ *   proxied upgrade URL by the porter; the browser never holds it. A body
+ *   goes on as it arrives, never parsed, held or refused by size (the
+ *   daemon's own limit on `POST /vfs` is the only one), and an answer that
+ *   stops part way is a line in the porter's log (relay.ts).
  *
  * The cookie gates everything under `/s/` and `/boot/`: a browser reaches
  * only the session its cookie names, and a request with none is sent to the
@@ -64,7 +67,7 @@ import { connect as net_connect, type Socket } from 'node:net';
 import { readFile, readdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { IncomingMessage } from 'node:http';
-import type { Duplex } from 'node:stream';
+import type { Duplex, Readable } from 'node:stream';
 import { identity_normalise } from '@fnndsc/calypso/berth';
 import type { PorterConfig } from './config.js';
 import { identity_isStratus, owner_extract, stratusIdentity_derive, user_extract, type SessionHost, type Berth, type BootLine } from './host/sessionHost.js';
@@ -78,6 +81,7 @@ import { loginPage_render, greetPage_render, authorisedPage_render } from './gre
 import { DeviceCodes, TokenStore, token_looksLike, type DeviceGrant, type DoorToken, type TokenCheck } from './tokens.js';
 import { idleSweep_run } from './sweep.js';
 import { HitLimit, VerdictCache } from './limit.js';
+import { answer_watch, bodyStream_pass, relayBreak_format, relayFailure_describe, relayTarget_name, relayTimeout_derive } from './relay.js';
 
 /** What the routes are built over. */
 export interface PorterAppOptions {
@@ -751,35 +755,53 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     request.raw.once('close', (): void => followed.release());
   });
 
-  // The session itself, over HTTP: the page, its assets, and /vfs.
-  app.all('/s/:key/*', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
-    const split = mountUrl_split(request.url);
-    if (split === null || requestKey_read(request) !== split.key) {
-      return reply.redirect('/login', 302);
-    }
-    const entry: SessionEntry | null = registry.get(split.key);
-    if (entry === null) {
-      return reply.code(404).send({ error: 'no session behind that key' });
-    }
-    registry.activity_note(entry.key);
-    // The deployment's own beeps, when it keeps them, in place of the page's.
-    const sound = await soundOverride_read(config.soundsDir, split.rest);
-    if (sound !== null) return reply.type(sound.type).header('cache-control', 'private, max-age=3600').send(sound.bytes);
-    return reply.from(upstreamPath_build(split.rest, entry.berth.token), {
-      getUpstream: (): string => berthHttp_derive(entry.berth),
-      // The daemon behind the entry did not answer: ask the host who is up
-      // now instead of handing the browser a bare 500 for a dead port.
-      onError: (_failed: unknown, error: { error: Error }): void => {
-        void entry_recover(entry).then((outcome: 'moved' | 'same' | 'gone'): void => {
-          if (outcome === 'moved') {
-            void reply.redirect(request.url, 307);
-          } else if (outcome === 'gone') {
-            void reply.redirect(`/login?reason=${encodeURIComponent(SESSION_ENDED)}`, 303);
-          } else {
-            void reply.code(502).send({ error: `the session did not answer: ${error.error.message}` });
-          }
-        });
-      },
+  // The session itself, over HTTP: the page, its assets, and /vfs. Its own
+  // scope, whose bodies go on as streams (relay.ts): a file posted to /vfs
+  // is never parsed, held or refused by size here.
+  await app.register(async (scope: FastifyInstance): Promise<void> => {
+    bodyStream_pass(scope);
+    scope.all('/s/:key/*', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      const split = mountUrl_split(request.url);
+      if (split === null || requestKey_read(request) !== split.key) {
+        return reply.redirect('/login', 302);
+      }
+      const entry: SessionEntry | null = registry.get(split.key);
+      if (entry === null) {
+        return reply.code(404).send({ error: 'no session behind that key' });
+      }
+      registry.activity_note(entry.key);
+      // The deployment's own beeps, when it keeps them, in place of the page's.
+      const sound = await soundOverride_read(config.soundsDir, split.rest);
+      if (sound !== null) return reply.type(sound.type).header('cache-control', 'private, max-age=3600').send(sound.bytes);
+      const target: string = relayTarget_name(split.rest);
+      const timeout: number | undefined = relayTimeout_derive(request.method);
+      return reply.from(upstreamPath_build(split.rest, entry.berth.token), {
+        getUpstream: (): string => berthHttp_derive(entry.berth),
+        ...(timeout === undefined ? {} : { timeout }),
+        // The status is sent once the answer begins; a stop after that can
+        // only be counted and said here, in the porter's own log.
+        onResponse: (_request: unknown, _reply: unknown, res: { stream: Readable }): void => {
+          const stated: number = Number(reply.getHeader('content-length'));
+          void reply.send(answer_watch(res.stream, (sentBytes: number, cause: string): void => {
+            options.log?.(`${entry.user}'s session: ${relayBreak_format({ target, sentBytes, statedBytes: Number.isFinite(stated) ? stated : undefined, cause })}`);
+          }));
+        },
+        // The daemon behind the entry did not answer: ask the host who is up
+        // now instead of handing the browser a bare 500 for a dead port.
+        onError: (_failed: unknown, error: { error: Error }): void => {
+          void entry_recover(entry).then((outcome: 'moved' | 'same' | 'gone'): void => {
+            if (outcome === 'moved') {
+              void reply.redirect(request.url, 307);
+            } else if (outcome === 'gone') {
+              void reply.redirect(`/login?reason=${encodeURIComponent(SESSION_ENDED)}`, 303);
+            } else {
+              const said: string = relayFailure_describe(error.error);
+              options.log?.(`${entry.user}'s session: ${said}: ${request.method} ${target}`);
+              void reply.code(502).send({ error: said });
+            }
+          });
+        },
+      });
     });
   });
   app.all('/s/:key', async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
