@@ -82,6 +82,18 @@ describe('hostPty_start', () => {
     expect(out).toEqual(['\u001b[?1049h']);
   });
 
+  it('the program\'s last output, read off the pty after its exit, still reaches the surface before the line ends', async () => {
+    const { spawn, ptys } = fakeSpawn_create();
+    let out: string = '';
+    const run = hostPty_start(spawn, 'echo got hello', { terminal: { term: 'xterm', cols: 80, rows: 24 }, cwd: '/', env: {}, data: (chunk: string): void => { out += chunk; } });
+    const pty: FakePty = ptys[0] as FakePty;
+    pty.say('hello\r\n');
+    pty.end(4);
+    pty.say('got hello\r\n');
+    expect(await run.done).toBe(4);
+    expect(out).toBe('hello\r\ngot hello\r\n');
+  });
+
   it('a program ended by a signal ends with 128 and the signal', async () => {
     const { spawn, ptys } = fakeSpawn_create();
     const run = hostPty_start(spawn, 'sleep 9', { terminal: { term: 'xterm', cols: 80, rows: 24 }, cwd: '/', env: {}, data: () => undefined });

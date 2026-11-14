@@ -27,6 +27,12 @@
 import { HOST_KILL_GRACE_MS } from './hostControl.js';
 import { size_clamp, type PtyProcess, type PtySpawn } from './terminals.js';
 
+/** How long a pty stays quiet after its program exits before the line ends, in ms. */
+const HOST_PTY_DRAIN_QUIET_MS: number = 40;
+
+/** The longest a line waits for a program's last output after it exits, in ms. */
+const HOST_PTY_DRAIN_CEILING_MS: number = 500;
+
 /** The terminal a surface declared: its type and size in cells. */
 export interface HostPtyTerminal {
   term: string;
@@ -118,18 +124,35 @@ export function hostPty_start(spawn: PtySpawn, command: string, options: HostPty
     hard.unref?.();
   };
 
+  // The pty can report the exit before the program's last bytes have been
+  // read off it: output keeps flowing until the line ends, and the line ends
+  // once the pty has been quiet for a moment after the exit (or a ceiling
+  // passes), so a program's final line is never dropped.
+  let ended: boolean = false;
+  let lastData: number = Date.now();
   const done: Promise<number> = new Promise((resolve: (code: number) => void): void => {
-    pty.onData((chunk: string): void => { if (!exited) options.data(chunk); });
+    pty.onData((chunk: string): void => {
+      if (ended) return;
+      lastData = Date.now();
+      options.data(chunk);
+    });
     pty.onExit((event: { exitCode: number; signal?: number }): void => {
       exited = true;
       if (hard !== null) clearTimeout(hard);
       options.signal?.removeEventListener('abort', stop);
-      if (stopped) {
-        options.data(`\r\n${command}: stopped\r\n`);
-        resolve(130);
-        return;
-      }
-      resolve(event.signal !== undefined && event.signal > 0 ? 128 + event.signal : event.exitCode);
+      const code: number = stopped ? 130 : event.signal !== undefined && event.signal > 0 ? 128 + event.signal : event.exitCode;
+      const exitedAt: number = Date.now();
+      const drain = (): void => {
+        const now: number = Date.now();
+        if (now - lastData < HOST_PTY_DRAIN_QUIET_MS && now - exitedAt < HOST_PTY_DRAIN_CEILING_MS) {
+          setTimeout(drain, HOST_PTY_DRAIN_QUIET_MS).unref?.();
+          return;
+        }
+        ended = true;
+        if (stopped) options.data(`\r\n${command}: stopped\r\n`);
+        resolve(code);
+      };
+      setTimeout(drain, HOST_PTY_DRAIN_QUIET_MS).unref?.();
     });
   });
   if (options.signal?.aborted === true) stop();
