@@ -9,6 +9,7 @@
 
 import { chrisConnection } from "../connect/chrisConnection.js";
 import {
+  client_userFileUpload,
   filebrowserFile_get,
   itemData_get,
   resource_call,
@@ -20,7 +21,7 @@ import {
 import { errorStack } from "../error/errorStack.js";
 import { IStorageProvider } from "./io.js";
 import { Err, Ok, Result } from "../utils/result.js";
-import { STREAM_STALL_MS, stream_watchStalls } from "./streamWatch.js";
+import { STREAM_STALL_MS, stream_watchStalls, upload_watchStalls, type UploadWatch } from "./streamWatch.js";
 import type { Readable } from "node:stream";
 
 /**
@@ -375,6 +376,10 @@ export class ChrisIO {
 
   /**
    * Uploads a file to ChRIS.
+   *
+   * The upload has no deadline as a whole; it fails when it has made no
+   * progress for `STREAM_STALL_MS`, with a sentence saying how far it got.
+   *
    * @param fileBlob - The file content as a Blob.
    * @param uploadDir - The directory path in ChRIS to upload to.
    * @param filename - The name of the file to create.
@@ -395,23 +400,18 @@ export class ChrisIO {
         ? normalizedUploadDir + filename
         : normalizedUploadDir + '/' + filename;
 
-      const data: { upload_path: string } = {
-        upload_path: fullPath,
-      };
-
-      let fileObj: Blob | File = fileBlob;
-      if (typeof File !== 'undefined') {
-        fileObj = new File([fileBlob], filename);
+      // No deadline on the whole upload (CUBE takes bytes at about 0.4 MB/s,
+      // so any fixed one fails a healthy large file): the watch fails it when
+      // it stops moving, abandons the request, and says how far it got.
+      const watch: UploadWatch = upload_watchStalls(fileBlob, filename, STREAM_STALL_MS);
+      const abandon: AbortController = new AbortController();
+      watch.stalled.catch((stall: unknown): void => { abandon.abort(stall); });
+      let uploaded: Record<string, unknown>;
+      try {
+        uploaded = await client_userFileUpload(client, fullPath, watch.file, abandon.signal);
+      } finally {
+        watch.stop();
       }
-
-      const uploadFileObj: { fname: Blob | File } = { fname: fileObj };
-
-      const uploadPromise: Promise<UserFile> = client.uploadFile(data, uploadFileObj);
-      const timeoutPromise: Promise<never> = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Upload timeout after 30s')), 30000)
-      );
-
-      const userFile: UserFile = await Promise.race([uploadPromise, timeoutPromise]);
 
       // ChRIS may rename the file to avoid collisions (e.g. world.txt → world_XXXXXXX.txt)
       // when the path was recently deleted and not yet committed. Renaming
@@ -422,7 +422,7 @@ export class ChrisIO {
       // only when the wanted path is free, and a check that cannot answer
       // counts as occupied — the safe reading, since the cost of guessing
       // wrong is the operator's folder.
-      const actualFname: string = itemData_get<UserFileData>(userFile)?.fname ?? '';
+      const actualFname: string = typeof uploaded.fname === 'string' ? uploaded.fname : '';
       const normalizedActual: string = actualFname.startsWith('/') ? actualFname.substring(1) : actualFname;
       if (normalizedActual && normalizedActual !== fullPath) {
         const free: boolean = await this.path_isFree(client, fullPath, normalizedActual);
@@ -433,6 +433,8 @@ export class ChrisIO {
           );
         } else {
           try {
+            const userFile: UserFile | null = typeof uploaded.id === 'number' ? await client.getUserFile(uploaded.id) : null;
+            if (userFile === null) throw new Error('CUBE did not name the uploaded file');
             await userFile.put({ upload_path: fullPath });
           } catch (renameErr: unknown) {
             const renameMsg: string = renameErr instanceof Error ? renameErr.message : String(renameErr);

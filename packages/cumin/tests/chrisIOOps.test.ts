@@ -2,7 +2,7 @@
  * @file Tests for ChRIS file IO: download (stream and blob), upload with
  * collision-rename, folder create/move, recursive local upload. Connection
  * mocked at the client boundary; a fake storage provider drives local IO.
- * Fake timers neutralise the 30s upload timeout race.
+ * Fake timers drive the upload's stall watch.
  */
 
 jest.mock('../src/connect/chrisConnection', () => ({
@@ -24,6 +24,8 @@ beforeEach(() => {
 afterEach(() => {
   jest.useRealTimers();
   pushSpy.mockRestore();
+  fetchSpy?.mockRestore();
+  fetchSpy = undefined;
 });
 
 const io = (): ChrisIO => new ChrisIO();
@@ -175,25 +177,92 @@ describe('file_download', () => {
   });
 });
 
-describe('file_upload', () => {
-  it('uploads and leaves a correctly-named file alone', async () => {
-    const put = jest.fn();
-    mockClientGet.mockResolvedValue({
-      uploadFile: jest.fn(async () => ({ data: { fname: 'home/chris/up/a.txt' }, put })),
+/** What the fake CUBE does with one posted file: read it at a pace, then answer, hang, or refuse. */
+interface FakeUpload {
+  pauseMs?: number;
+  slices?: number;
+  fname?: (uploadPath: string) => string;
+  status?: number;
+}
+
+/** The posts the fake CUBE saw: the path asked for and the bytes it read. */
+let posted: Array<{ url: string; uploadPath: string; bytes: number; authorization: string }> = [];
+let fetchSpy: jest.SpyInstance | undefined;
+
+/**
+ * Stands in for CUBE's `POST /userfiles/`: reads the form's file a slice at a
+ * time as a connection would, honours the request's abort, and answers with a
+ * Collection+JSON item as CUBE does.
+ */
+function cube_fake(upload: FakeUpload = {}): jest.SpyInstance {
+  fetchSpy?.mockRestore();
+  fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const form: FormData = init?.body as FormData;
+    const uploadPath: string = String(form.get('upload_path'));
+    const file: File = form.get('fname') as File;
+    const seen = { url: String(input), uploadPath, bytes: 0, authorization: String((init?.headers as Record<string, string>).Authorization) };
+    posted.push(seen);
+    const aborted: Promise<never> = new Promise<never>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
     });
-    expect(await io().file_upload(new Blob(['x']), '/home/chris/up', 'a.txt')).toBe(true);
-    expect(put).not.toHaveBeenCalled();
+    aborted.catch(() => undefined);
+    const reader: ReadableStreamDefaultReader<Uint8Array> = file.stream().getReader();
+    for (let read: number = 0; upload.slices === undefined || read < upload.slices; read++) {
+      const step: ReadableStreamReadResult<Uint8Array> = await Promise.race([reader.read(), aborted]);
+      if (step.done) {
+        const fname: string = upload.fname?.(uploadPath) ?? uploadPath;
+        const body: string = JSON.stringify({ collection: { items: [{ data: [{ name: 'id', value: 41 }, { name: 'fname', value: fname }] }] } });
+        return new Response(upload.status === undefined ? body : 'nope', { status: upload.status ?? 201 });
+      }
+      seen.bytes += step.value.byteLength;
+      if (upload.pauseMs !== undefined && upload.pauseMs > 0) {
+        await Promise.race([new Promise((resolve) => setTimeout(resolve, upload.pauseMs)), aborted]);
+      }
+    }
+    return aborted;
+  });
+  return fetchSpy;
+}
+
+/** A connected client as the upload uses it: its user-files address and token, and the file lookup a rename needs. */
+const uploadClient = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+  userFilesUrl: 'https://cube.example.org/api/v1/userfiles/',
+  auth: { token: 'T0K' },
+  ...extra,
+});
+
+describe('file_upload', () => {
+  beforeEach(() => { posted = []; });
+  afterEach(() => { fetchSpy?.mockRestore(); fetchSpy = undefined; });
+
+  it('posts the bytes to the user files with the token, and leaves a correctly-named file alone', async () => {
+    cube_fake();
+    const getUserFile = jest.fn();
+    mockClientGet.mockResolvedValue(uploadClient({ getUserFile }));
+    expect(await io().file_upload(new Blob(['xyz']), '/home/chris/up', 'a.txt')).toBe(true);
+    expect(posted).toEqual([{ url: 'https://cube.example.org/api/v1/userfiles/', uploadPath: 'home/chris/up/a.txt', bytes: 3, authorization: 'Token T0K' }]);
+    expect(getUserFile).not.toHaveBeenCalled();
+  });
+
+  it('asks the client for its addresses when it has none yet', async () => {
+    cube_fake();
+    const client: Record<string, unknown> = { auth: { token: 'T0K' } };
+    client.setUrls = jest.fn(async () => { client.userFilesUrl = 'https://cube.example.org/api/v1/userfiles/'; });
+    mockClientGet.mockResolvedValue(client);
+    expect(await io().file_upload(new Blob(['x']), 'up', 'a.txt')).toBe(true);
+    expect(client.setUrls).toHaveBeenCalled();
+    expect(posted[0]?.url).toBe('https://cube.example.org/api/v1/userfiles/');
   });
 
   it('renames a collision-renamed upload back when the wanted path is FREE', async () => {
     // The case the rename-back exists for: CUBE suffixed a name whose path
     // had been deleted and not yet committed, so nothing holds it now.
+    cube_fake({ fname: () => 'home/chris/up/a_XYZ.txt' });
     const put = jest.fn(async () => ({}));
-    mockClientGet.mockResolvedValue({
-      uploadFile: jest.fn(async () => ({ data: { fname: 'home/chris/up/a_XYZ.txt' }, put })),
-      getUserFiles: jest.fn(async () => ({ getItems: () => [] })),
-    });
+    const getUserFile = jest.fn(async () => ({ put }));
+    mockClientGet.mockResolvedValue(uploadClient({ getUserFile, getUserFiles: jest.fn(async () => ({ getItems: () => [] })) }));
     expect(await io().file_upload(new Blob(['x']), 'home/chris/up/', 'a.txt')).toBe(true);
+    expect(getUserFile).toHaveBeenCalledWith(41);
     expect(put).toHaveBeenCalledWith({ upload_path: 'home/chris/up/a.txt' });
   });
 
@@ -201,51 +270,79 @@ describe('file_upload', () => {
     // The write that damages a folder: a PUT onto an occupied path leaves a
     // row CUBE cannot serve afterwards (docs/CUBE-gaps.adoc). The upload
     // keeps the name it was given, and says so.
-    const put = jest.fn(async () => ({}));
-    mockClientGet.mockResolvedValue({
-      uploadFile: jest.fn(async () => ({ data: { fname: 'home/chris/up/a_XYZ.txt' }, put })),
-      getUserFiles: jest.fn(async () => ({
-        getItems: () => [{ data: { fname: 'home/chris/up/a.txt' } }],
-      })),
-    });
+    cube_fake({ fname: () => 'home/chris/up/a_XYZ.txt' });
+    const getUserFile = jest.fn();
+    mockClientGet.mockResolvedValue(uploadClient({
+      getUserFile,
+      getUserFiles: jest.fn(async () => ({ getItems: () => [{ data: { fname: 'home/chris/up/a.txt' } }] })),
+    }));
     expect(await io().file_upload(new Blob(['x']), 'home/chris/up/', 'a.txt')).toBe(true);
-    expect(put).not.toHaveBeenCalled();
+    expect(getUserFile).not.toHaveBeenCalled();
     expect(pushSpy).toHaveBeenCalledWith('warning', expect.stringContaining('already exists'));
   });
 
   it('treats a probe that cannot answer as occupied', async () => {
-    const put = jest.fn(async () => ({}));
-    mockClientGet.mockResolvedValue({
-      uploadFile: jest.fn(async () => ({ data: { fname: 'home/chris/up/a_XYZ.txt' }, put })),
-      getUserFiles: jest.fn(async () => { throw new Error('500'); }),
-    });
+    cube_fake({ fname: () => 'home/chris/up/a_XYZ.txt' });
+    const getUserFile = jest.fn();
+    mockClientGet.mockResolvedValue(uploadClient({ getUserFile, getUserFiles: jest.fn(async () => { throw new Error('500'); }) }));
     expect(await io().file_upload(new Blob(['x']), 'home/chris/up/', 'a.txt')).toBe(true);
-    expect(put).not.toHaveBeenCalled();
+    expect(getUserFile).not.toHaveBeenCalled();
   });
 
   it('keeps the upload successful when a legitimate rename-back fails', async () => {
-    mockClientGet.mockResolvedValue({
-      uploadFile: jest.fn(async () => ({
-        data: { fname: 'home/chris/up/a_XYZ.txt' },
-        put: jest.fn(async () => { throw new Error('403'); }),
-      })),
+    cube_fake({ fname: () => 'home/chris/up/a_XYZ.txt' });
+    mockClientGet.mockResolvedValue(uploadClient({
+      getUserFile: jest.fn(async () => ({ put: jest.fn(async () => { throw new Error('403'); }) })),
       getUserFiles: jest.fn(async () => ({ getItems: () => [] })),
-    });
+    }));
     expect(await io().file_upload(new Blob(['x']), 'home/chris/up', 'a.txt')).toBe(true);
     expect(pushSpy).toHaveBeenCalledWith('warning', expect.stringContaining('rename to'));
   });
 
-  it('fails when the upload times out', async () => {
-    mockClientGet.mockResolvedValue({ uploadFile: jest.fn(() => new Promise(() => undefined)) });
-    const pending: Promise<boolean> = io().file_upload(new Blob(['x']), 'up', 'a.txt');
-    await jest.advanceTimersByTimeAsync(30_000);
-    expect(await pending).toBe(false);
-    expect(pushSpy).toHaveBeenCalledWith('error', expect.stringContaining('Upload timeout'));
+  // Eight slices of 64 KiB.
+  const big = (): Blob => new Blob([new Uint8Array(8 * 64 * 1024)]);
+
+  it('keeps a slow upload that keeps moving, however long it takes in all', async () => {
+    cube_fake({ pauseMs: 20_000 });
+    mockClientGet.mockResolvedValue(uploadClient());
+    const pending: Promise<boolean> = io().file_upload(big(), 'up', 'a.txt');
+    await jest.advanceTimersByTimeAsync(200_000);
+    expect(await pending).toBe(true);
+    expect(posted[0]?.bytes).toBe(524288);
+    expect(pushSpy).not.toHaveBeenCalledWith('error', expect.anything());
   });
 
-  it('fails when the upload throws or the client is missing', async () => {
-    mockClientGet.mockResolvedValue({ uploadFile: jest.fn(async () => { throw new Error('500'); }) });
+  it('fails an upload that stops moving, saying how far it got, and abandons the request', async () => {
+    const spy: jest.SpyInstance = cube_fake({ pauseMs: 1_000, slices: 3 });
+    mockClientGet.mockResolvedValue(uploadClient());
+    const pending: Promise<boolean> = io().file_upload(big(), 'up', 'a.txt');
+    await jest.advanceTimersByTimeAsync(60_000);
+    await jest.advanceTimersByTimeAsync(70_000);
+    expect(await pending).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', 'Failed to upload file a.txt to up: CUBE stopped taking a.txt after 196608 of 524288 bytes (nothing for 120 s)');
+    expect((spy.mock.calls[0]?.[1] as RequestInit).signal?.aborted).toBe(true);
+  });
+
+  it('fails an upload CUBE took whole and never answered, and one it took nothing of', async () => {
+    cube_fake({ slices: 8 });
+    mockClientGet.mockResolvedValue(uploadClient());
+    const answerless: Promise<boolean> = io().file_upload(big(), 'up', 'a.txt');
+    await jest.advanceTimersByTimeAsync(121_000);
+    expect(await answerless).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', expect.stringContaining('CUBE took all 524288 bytes of a.txt and did not answer for 120 s'));
+
+    cube_fake({ slices: 0 });
+    const untouched: Promise<boolean> = io().file_upload(new Blob(['x']), 'up', 'b.txt');
+    await jest.advanceTimersByTimeAsync(121_000);
+    expect(await untouched).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', expect.stringContaining('CUBE took none of the 1 bytes of b.txt for 120 s'));
+  });
+
+  it('fails with CUBE\'s refusal, or when the client is missing', async () => {
+    cube_fake({ status: 400 });
+    mockClientGet.mockResolvedValue(uploadClient());
     expect(await io().file_upload(new Blob(['x']), 'up', 'a.txt')).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', expect.stringContaining('CUBE refused the upload (HTTP 400)'));
 
     mockClientGet.mockResolvedValue(null);
     expect(await io().file_upload(new Blob(['x']), 'up', 'a.txt')).toBe(false);
@@ -317,9 +414,9 @@ describe('uploadLocalPath', () => {
   const connectedIO = (): ChrisIO => {
     const chrisIO: ChrisIO = io();
     chrisIO.storageProvider_set(storage as never);
-    mockClientGet.mockResolvedValue({
-      uploadFile: jest.fn(async (data: { upload_path: string }) => ({ data: { fname: data.upload_path } })),
-    });
+    posted = [];
+    cube_fake();
+    mockClientGet.mockResolvedValue(uploadClient());
     return chrisIO;
   };
 

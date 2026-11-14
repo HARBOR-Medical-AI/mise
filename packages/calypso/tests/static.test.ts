@@ -433,6 +433,60 @@ describe('CalypsoDaemon /vfs route', () => {
     }
   });
 
+  describe('a stream from CUBE that breaks', () => {
+    /** A daemon whose one file streams `first` (when given) and then fails with `cause`. */
+    const breakingDaemon_start = async (first: Buffer | null, cause: Error): Promise<{ daemon: CalypsoDaemon; port: number; lines: string[] }> => {
+      const { Readable } = await import('node:stream');
+      const lines: string[] = [];
+      const breaking = new CalypsoDaemon({
+        engine: {
+          ...vfsEngine_create(),
+          file_stream: async () => {
+            const source = new Readable({ read(): void { /* pushed by hand */ } });
+            if (first !== null) source.push(first);
+            setTimeout((): void => { source.destroy(cause); }, 20);
+            return { stream: source, size: 11 };
+          },
+        },
+        token: TOKEN,
+        log: (line: string): void => { lines.push(line); },
+      });
+      return { daemon: breaking, port: await breaking.start(), lines };
+    };
+
+    it('before its first byte: a 502 with the reason, and one log line', async () => {
+      const { daemon: breaking, port: breakPort, lines } = await breakingDaemon_start(null, Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }));
+      try {
+        const reply = await http_get(`http://127.0.0.1:${breakPort}/vfs?path=${encodeURIComponent('/home/demo/scan.dcm')}&token=${TOKEN}`);
+        expect(reply.status).toBe(502);
+        expect(reply.body).toBe('the file did not arrive from CUBE: socket hang up');
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toMatch(/^\[!\] vfs: \/home\/demo\/scan\.dcm: the file stopped arriving from CUBE after 0 bytes of 11, \d+ ms in: socket hang up \[ECONNRESET\]$/);
+      } finally {
+        await breaking.stop();
+      }
+    });
+
+    it('part way: the 200 is cut short, and the log line says how far it got', async () => {
+      const { daemon: breaking, port: breakPort, lines } = await breakingDaemon_start(Buffer.from('part1-'), new Error('aborted'));
+      try {
+        const outcome = await new Promise<{ status: number; received: number; broke: boolean }>((resolve) => {
+          get(`http://127.0.0.1:${breakPort}/vfs?path=${encodeURIComponent('/home/demo/scan.dcm')}&token=${TOKEN}`, (response: IncomingMessage) => {
+            let received: number = 0;
+            response.on('data', (chunk: Buffer) => { received += chunk.length; });
+            response.on('end', () => resolve({ status: response.statusCode ?? 0, received, broke: false }));
+            response.on('error', () => resolve({ status: response.statusCode ?? 0, received, broke: true }));
+          });
+        });
+        expect(outcome).toEqual({ status: 200, received: 6, broke: true });
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toMatch(/^\[!\] vfs: \/home\/demo\/scan\.dcm: the file stopped arriving from CUBE after 6 bytes of 11, \d+ ms in: aborted$/);
+      } finally {
+        await breaking.stop();
+      }
+    });
+  });
+
   it('404s a read failure', async () => {
     const reply = await http_get(
       `http://127.0.0.1:${port}/vfs?path=${encodeURIComponent('/nope')}&token=${TOKEN}`,
