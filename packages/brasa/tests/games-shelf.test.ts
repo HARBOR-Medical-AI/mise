@@ -7,9 +7,13 @@ import { GAMES_SHELF, gamesShelf_names, gamesShelf_render } from '../src/builtin
 import { builtin_help, commandSummary_get, helpText } from '../src/builtins/help.js';
 import { chrisHelp } from '../src/chris/help.js';
 import { chrisHelp_install } from './support/chrisHelp.js';
+import { commandDeclaration_get, commands_register } from '../src/core/commandRegistry.js';
+import { dateCommand } from '../src/builtins/sys/date.js';
 
 // The shelf as a ChRIS session has it: `motd` and the lab's tools are ChRIS's.
 chrisHelp_install();
+// `date`, on the shelf, is declared: its help is its declaration's.
+commands_register({ declarations: [dateCommand] });
 
 const plain = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, '');
 
@@ -21,7 +25,7 @@ describe('the games shelf', () => {
 
   it('lists only commands with a help entry, and lists every one of those it names', () => {
     const names: string[] = gamesShelf_names(commandSummary_get);
-    for (const name of names) expect(helpText[name] ?? chrisHelp[name]).toBeDefined();
+    for (const name of names) expect(helpText[name] ?? chrisHelp[name] ?? commandDeclaration_get(name)?.help).toBeDefined();
     const shelved: Set<string> = new Set(GAMES_SHELF.flatMap((c) => [...c.commands]));
     for (const name of ['fortune', 'cal', 'date', 'weather', 'motd']) {
       expect(shelved.has(name)).toBe(true);

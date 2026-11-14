@@ -22,8 +22,12 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
-/** Commands that declare an expression grammar. Lower it whenever it drops. */
-const BASELINE = 0;
+/**
+ * Commands that declare an expression grammar. Lower it whenever it drops.
+ * `echo` (a dash-word past the front is a word) and `command` (its words are
+ * the host program's line, options and all) take their words as they come.
+ */
+const BASELINE = 2;
 
 /** A declaration's grammar given as an expression language. */
 const PATTERN = /(?<!readonly )\bgrammar:\s*'expression'/g;

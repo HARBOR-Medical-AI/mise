@@ -8,12 +8,18 @@
  * `command -v` as it always does), reading whatever was piped in:
  * `query … | command grep -i t1` is plain text grep, no listing logic.
  *
+ * Declared in one record (`commandCommand`). Its words after the name are
+ * the host program's own line, options and all, so it declares them its own
+ * (`grammar: 'expression'`): the GNU option grammar would take `grep -i` for
+ * an option of `command`.
+ *
  * @module
  */
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { stdin_take } from '../games/stdin.js';
 import { listingIn_take } from '../../core/listing.js';
 import { surface_get } from '../../core/surface.js';
+import type { ExpressionDeclaration } from '../../core/commandDeclaration.js';
 
 /** A word as a POSIX shell reads it back. */
 function word_quote(word: string): string {
@@ -21,10 +27,37 @@ function word_quote(word: string): string {
 }
 
 /**
+ * `command <name> [args...]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [commandCommand] });
+ * ```
+ */
+export const commandCommand: ExpressionDeclaration = {
+  name: 'command',
+  grammar: 'expression',
+  help: {
+    usage: 'command <name> [args...]',
+    summary: 'Run the system program of a name, not the builtin',
+    description: 'Run the system program of a name, skipping the chell builtin of the same name. The whole line goes to the host shell as command <name> <args>, reading whatever was piped in: query … | command grep -i t1 is plain text grep. command -v <name> answers as the host shell does.',
+    category: 'General',
+    posix: { group: 'Shell', differs: 'as in any POSIX shell: runs the system\'s program, not the builtin' },
+    examples: ['query PatientID:1234567 | command grep -i t1', 'command -v grep'],
+  },
+  handler: (args: string[]): Promise<CommandEnvelope> => builtin_command(args),
+};
+
+/**
  * `command <name> [args...]`
  *
  * @param args - The program and its words.
  * @returns What the program wrote, or why it could not run.
+ *
+ * @example
+ * ```ts
+ * await builtin_command(['grep', '-i', 't1']);
+ * ```
  */
 export async function builtin_command(args: string[]): Promise<CommandEnvelope> {
   // What was piped in is the program's input; a listing has no meaning there.

@@ -12,10 +12,17 @@
  * Both answer with text and no model, as the text filters do, so
  * `A=$(echo …)` holds what was written.
  *
+ * Each is declared in one record (`echoCommand`, `printfCommand`). `printf`
+ * parses its line as every declared command does; `echo` declares its words
+ * its own (`grammar: 'expression'`), since a dash-word past the front is a
+ * word to it, never an option.
+ *
  * @module
  */
 import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { command_declare, type CommandArguments, type CommandGrammar, type ExpressionDeclaration } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** The options other echos take at the front of the line, which this one refuses so a word is never silently eaten. */
 const ECHO_OPTIONS: ReadonlySet<string> = new Set(['-n', '-e', '-E']);
@@ -26,11 +33,71 @@ const CONVERSION: RegExp = /^%([-+ 0#]*)(\d*|\*)(?:\.(\d*|\*))?([a-zA-Z%])/;
 /** What a format turned into, or why it could not be. */
 type Formatted = { text: string } | { refused: string };
 
+/** What a `printf` line may hold. */
+const PRINTF_GRAMMAR = {
+  operands: [
+    { name: 'format', kind: 'word', summary: 'The format: %s, %d, %i and %% with flags, width and precision; the escapes \\n, \\t and \\\\' },
+    { name: 'argument', kind: 'word', optional: true, repeat: true, summary: 'The values the format takes, in turn' },
+  ],
+} as const satisfies CommandGrammar;
+
+/**
+ * `echo [WORD]…`: the declaration. Its grammar is its own: every word is a
+ * word, dashes and all, so the GNU option grammar would take `echo use -n
+ * here` for an option; only `-n`, `-e` or `-E` at the front is refused.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [echoCommand] });
+ * ```
+ */
+export const echoCommand: ExpressionDeclaration = {
+  name: 'echo',
+  grammar: 'expression',
+  help: {
+    usage: 'echo [WORD]…',
+    summary: 'Write words on a line',
+    description: 'Writes its words joined by a space and ends the line. It takes no option and reads no escape, since the System V and BSD echos disagree on both; -n, -e or -E as the first word is refused by name rather than obeyed; later it is a word. A field of a variable is a word like any other: echo ${R.feedId}. It answers with text, so A=$(echo …) holds what it wrote. To see a variable whole, set NAME.',
+    category: 'General',
+    posix: { group: 'Text', differs: 'no options and no escapes: the words, joined by a space, on one line; printf writes anything else' },
+    examples: ['echo hello', 'echo feed ${R.feedId}', 'X=$(echo t1 cohort)'],
+  },
+  holds: [],
+  handler: (args: string[]): Promise<CommandEnvelope> => builtin_echo(args),
+};
+
+/**
+ * `printf FORMAT [ARG]…`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [printfCommand] });
+ * ```
+ */
+export const printfCommand = command_declare({
+  name: 'printf',
+  grammar: PRINTF_GRAMMAR,
+  help: {
+    summary: 'Write arguments under a format',
+    description: 'Writes each argument under the format, as POSIX printf does: %s a word, %d and %i a whole number, %% a percent sign, each with the flags - 0 + and space, a width and a precision (%-12s, %05d, %.3s). With more arguments than the format takes, the format is written again until they run out; one missing is empty for %s and 0 for %d. The escapes are \\n, \\t and \\\\; a backslash in quotes reaches printf as written, so \'%s\\n\' or "%s\\n" writes a newline. Any other conversion or escape is refused by name. A session writes whole lines, so the text always ends its line. It answers with text, so A=$(printf …) holds what it wrote. An argument that starts with a dash (-5) follows --: printf -- \'%d\' -5.',
+    category: 'General',
+    posix: { group: 'Text', differs: 'POSIX\'s subset: %s, %d, %i, %%, flags, width and precision; the escapes \\n, \\t and \\\\; always ends the line' },
+    examples: ['printf "feed %s: %s" ${R.feedId} done', "printf '%-8s %5d\\n' a 1 bb 22", 'NAME=$(printf "%s-%03d" scan 7)'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof PRINTF_GRAMMAR>): Promise<CommandEnvelope> => printf_run(args.operands.format, args.operands.argument),
+});
+
 /**
  * `echo [WORD]…`: the words, joined by a space, on one line.
  *
  * @param args - The words after `echo`.
  * @returns The line.
+ *
+ * @example
+ * ```ts
+ * (await builtin_echo(['feed', '5596'])).rendered; // 'feed 5596\n'
+ * ```
  */
 export async function builtin_echo(args: string[]): Promise<CommandEnvelope> {
   const option: string | undefined = args[0];
@@ -150,18 +217,34 @@ export function printf_format(format: string, args: string[]): Formatted {
 }
 
 /**
- * `printf FORMAT [ARG]…`: the arguments written under the format.
+ * `printf` over words already split: the declaration's parse and handler.
  *
  * @param args - The format, then its arguments.
- * @returns The text, its line ended.
+ * @returns The text, its line ended, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * (await builtin_printf(['%s-%03d', 'scan', '7'])).rendered; // 'scan-007\n'
+ * ```
  */
 export async function builtin_printf(args: string[]): Promise<CommandEnvelope> {
-  const [format, ...rest] = args;
-  if (format === undefined) {
-    exitCode_set(1);
-    return envelope_error('', undefined, 'printf: give a format: printf FORMAT [ARG]…\n');
-  }
-  const formatted: Formatted = printf_format(format, rest);
+  return declaredCommand_run(printfCommand, args);
+}
+
+/**
+ * The arguments written under the format.
+ *
+ * @param format - The format.
+ * @param rest - Its arguments.
+ * @returns The text, its line ended, or the refusal of what printf here does not read.
+ *
+ * @example
+ * ```ts
+ * await printf_run('%s=%d', ['a', '1']);
+ * ```
+ */
+export async function printf_run(format: string, rest: readonly string[]): Promise<CommandEnvelope> {
+  const formatted: Formatted = printf_format(format, [...rest]);
   if ('refused' in formatted) {
     exitCode_set(1);
     return envelope_error('', undefined, `${formatted.refused}\n`);

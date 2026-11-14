@@ -5,6 +5,7 @@
  */
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { coreBuiltins_mock } from './support/coreBuiltins.js';
+import { wordsStandIn_make } from './support/declarationStandIns.js';
 import { cuminMock_install } from './support/cuminMock.js';
 
 // Minimal cumin surface used by the dispatch layer (Result helpers + error stack).
@@ -121,6 +122,7 @@ const mockHelpRender = jest.fn((cmd: string) => `HELP:${cmd}\n`);
 const mockHasHelpFlag = jest.fn(() => false);
 jest.unstable_mockModule('../src/builtins/help.js', () => ({
   builtin_help: jest.fn(),
+  helpCommand: wordsStandIn_make('help', jest.fn()),
   help_render: mockHelpRender,
   commandHelp_get: jest.fn(() => 'known help'),
   pipelineExecutableHelp_render: jest.fn((name: string): string => `PIPELINE HELP:${name}\n`),

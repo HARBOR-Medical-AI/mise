@@ -1,7 +1,9 @@
 /**
  * @file Command help system.
  *
- * Provides help text for shell commands.
+ * Provides help text for shell commands, and the `help` command itself,
+ * declared in one record (`helpCommand`). A declared command's page comes
+ * from its declaration; `helpText` holds the pages of the rest.
  *
  * @module
  */
@@ -11,7 +13,11 @@ import { gamesShelf_render, gamesShelf_names } from './games/shelf.js';
 import chalk from 'chalk';
 import { CAT_USAGE } from './fs/cat.args.js';
 import { commands_register, commandDeclaration_get, commandHelpEntry_get, helpTopic_names, builtinCommand_has, type CommandHelp } from '../core/commandRegistry.js';
-import { declaration_isParsed, type AnyCommandDeclaration, type OptionGrammar, type OptionsGrammar, type SubcommandGrammar } from '../core/commandDeclaration.js';
+import {
+  command_declare, declaration_isParsed,
+  type AnyCommandDeclaration, type CommandArguments, type CommandGrammar, type OptionGrammar, type OptionsGrammar, type SubcommandGrammar,
+} from '../core/commandDeclaration.js';
+import { declaredCommand_run } from '../core/commandParse.js';
 import { declarationHelp_derive } from '../core/commandUsage.js';
 import { backendInstalled_get } from '../core/backend.js';
 import type { CommandEnvelope } from '@fnndsc/menu';
@@ -48,37 +54,6 @@ export const helpText: Record<string, CommandHelp> = {
       'cd ~                  # Home directory',
       'cd                    # Show current directory',
     ],
-  },
-  apropos: {
-    posix: { group: 'Shell', differs: 'as apropos: searches every command\'s line and description' },
-    category: 'General',
-    usage: 'apropos <word>',
-    summary: 'Find commands by a word in their name, summary or description',
-    description: 'Search every command, section and Shell topic for a word, in any case',
-    options: ['Nothing found is exit 1, as apropos is. man -k <word> is the same.'],
-    examples: ['apropos dicom', 'apropos link', 'man -k pull'],
-  },
-  man: {
-    posix: { group: 'Shell', differs: 'man <name> is help <name>; man -k is apropos' },
-    category: 'General',
-    usage: 'man <command|Section|topic>  |  man -k <word>',
-    summary: 'The page for a command, a section or a Shell topic (help, by its Unix name)',
-    description: 'man <name> is help <name>; man -k <word> is apropos <word>',
-    options: [],
-    examples: ['man grep', 'man PACS', 'man -k dicom'],
-  },
-  command: {
-    posix: { group: 'Shell', differs: 'as in any POSIX shell: runs the system\'s program, not the builtin' },
-    category: 'General',
-    usage: 'command <name> [args...]',
-    summary: 'Run the system program of a name, not the builtin',
-    description: 'Run the system program of a name, skipping the chell builtin of the same name',
-    options: [
-      'The whole line goes to the host shell as command <name> <args>, reading',
-      'whatever was piped in: query … | command grep -i t1 is plain text grep.',
-      'command -v <name> answers as the host shell does.',
-    ],
-    examples: ['query PatientID:1234567 | command grep -i t1', 'command -v grep'],
   },
   grep: {
     posix: { group: 'Files', differs: 'also filters numbered listings, keeping their handles (help grep)' },
@@ -300,12 +275,6 @@ export const helpText: Record<string, CommandHelp> = {
     usage: 'exit',
     description: 'Exit the shell',
     examples: ['exit'],
-  },
-  version: {
-    category: 'General',
-    usage: 'version',
-    description: 'Report the versions of the mise stack layers running this session',
-    examples: ['version'],
   },
   fortune: {
     category: 'Games',
@@ -593,70 +562,6 @@ export const helpText: Record<string, CommandHelp> = {
       'expect path ~/results count --matching "*.nii*" --deep gt 0',
     ],
   },
-  set: {
-    posix: { group: 'System', differs: 'lists and shows variables only: no options, no positional parameters; a variable holds a command\'s typed answer' },
-    category: 'General',
-    usage: 'set [NAME]',
-    summary: 'List the variables, or show one',
-    description: 'Bare, lists every variable in scope: its name, the kind of answer it holds, and what it expands to; a manifest\'s parameters are marked read-only. With a name, shows that variable\'s answer whole (JSON for a model) and answers with it, so it can be captured again. A variable is set by a line of its own: NAME=$(command) holds what the command answered (its model, or the text it printed when it has none), NAME=word holds one word. ${NAME} expands to its rows; ${NAME.field} to a field of its model. See help variables.',
-    examples: ['set', 'set A', 'A=$(ls ~/uploads)', 'LABEL=\'sag cohort\''],
-  },
-  unset: {
-    posix: { group: 'System', differs: 'removes session variables; a manifest\'s parameters and the session\'s built-ins refuse' },
-    category: 'General',
-    usage: 'unset NAME…',
-    summary: 'Remove variables',
-    description: 'Removes each named variable from the scope the line runs in. Quiet when it removes, as unset is. A manifest\'s parameter and the session\'s own names (cwd, listing, gather) are read-only and refuse by name.',
-    examples: ['unset A', 'unset A B'],
-  },
-  echo: {
-    posix: { group: 'Text', differs: 'no options and no escapes: the words, joined by a space, on one line; printf writes anything else' },
-    category: 'General',
-    usage: 'echo [WORD]…',
-    summary: 'Write words on a line',
-    description: 'Writes its words joined by a space and ends the line. It takes no option and reads no escape, since the System V and BSD echos disagree on both; -n, -e or -E as the first word is refused by name rather than obeyed; later it is a word. A field of a variable is a word like any other: echo ${R.feedId}. It answers with text, so A=$(echo …) holds what it wrote. To see a variable whole, set NAME.',
-    examples: ['echo hello', 'echo feed ${R.feedId}', 'X=$(echo t1 cohort)'],
-  },
-  printf: {
-    posix: { group: 'Text', differs: 'POSIX\'s subset: %s, %d, %i, %%, flags, width and precision; the escapes \\n, \\t and \\\\; always ends the line' },
-    category: 'General',
-    usage: 'printf FORMAT [ARG]…',
-    summary: 'Write arguments under a format',
-    description: 'Writes each argument under the format, as POSIX printf does: %s a word, %d and %i a whole number, %% a percent sign, each with the flags - 0 + and space, a width and a precision (%-12s, %05d, %.3s). With more arguments than the format takes, the format is written again until they run out; one missing is empty for %s and 0 for %d. The escapes are \\n, \\t and \\\\; a backslash in quotes reaches printf as written, so \'%s\\n\' or "%s\\n" writes a newline. Any other conversion or escape is refused by name. A session writes whole lines, so the text always ends its line. It answers with text, so A=$(printf …) holds what it wrote.',
-    examples: ['printf "feed %s: %s" ${R.feedId} done', "printf '%-8s %5d\\n' a 1 bb 22", 'NAME=$(printf "%s-%03d" scan 7)'],
-  },
-  kill: {
-    posix: { group: 'System', differs: 'stops a session task (/proc/<source>/<id>), never a process; asks, never forces' },
-    category: 'General',
-    usage: 'kill <task>…',
-    summary: 'Ask a running task to stop',
-    description: 'Asks each task to stop: /proc/<source>/<id>, <source>/<id>, a joblet\'s %N, or its name alone when one source has it. Quiet when it is asked, as kill is. The task ends when its current operation does: a cloud job cut short can leave its state locked, so a task is never forced, there is no -9, and a second kill says so instead.',
-    examples: ['kill /proc/steps/trial-build', 'kill trial-build', 'kill %1'],
-  },
-  wait: {
-    posix: { group: 'System', differs: 'waits on session tasks, following each one\'s log' },
-    category: 'General',
-    usage: 'wait [<task>…]',
-    summary: 'Follow a task until it ends',
-    description: 'Follows each task\'s log until it ends, then says how it ended; bare, every running task. The status is the tasks\': 0 when all ended done. Ctrl-C stops following and leaves the task running; wait again picks it up.',
-    examples: ['wait trial-build', 'wait %1', 'wait'],
-  },
-  joblets: {
-    posix: { group: 'Shell', differs: 'is jobs: the word jobs lists CUBE plugin instances' },
-    category: 'General',
-    usage: 'joblets',
-    summary: 'List the lines run in the background',
-    description: 'Lists every joblet the session keeps, by number: a line ended with & runs as one, at /proc/joblets/<N>, its output in /proc/joblets/<N>/log. Each reads Running, Waiting for an answer, Done, Failed (with its exit status), Stopped, or Ended by restart. A joblet stands where its line was typed and starts with its variables; its own cd and assignments stay inside it. fg %N follows one, kill %N stops one.',
-    examples: ['pull pacs PatientID:1234 &', 'joblets', 'fg %1', 'kill %1', 'cat /proc/joblets/1/log'],
-  },
-  fg: {
-    posix: { group: 'Shell', differs: 'follows a joblet\'s log; Ctrl-C stops following, not the joblet' },
-    category: 'General',
-    usage: 'fg [%N]',
-    summary: 'Bring a joblet to the front',
-    description: 'Asks the question the joblet waits on here, then follows its log until it ends; bare, the most recent joblet. Any surface of the session may bring any joblet forward. The status is the joblet\'s: 0 when it ended done. Ctrl-C stops following and leaves it running; kill %N stops it.',
-    examples: ['fg', 'fg %2'],
-  },
   timer: {
     usage: 'timer <duration> [words] | timer | timer cancel [id|all]',
     summary: 'A chime after a while: timer 5m tea',
@@ -735,13 +640,6 @@ export const helpText: Record<string, CommandHelp> = {
     description: 'The 4×4 board, a move per answer: w a s d (or h j k l) slide, q stops. Two tiles alike join; reach 2048.',
     examples: ['2048'],
   },
-  notes: {
-    category: 'General',
-    usage: 'notes [--since N|YYYY-MM-DD] [--all] [--long]',
-    summary: 'What the installed releases changed, for the operator',
-    description: 'Reads the release notes shipped with the packages installed where this session runs — argus, brasa, chell, calypso, porter — and lists the newest release: one row per change, the package tagged. --since N shows the last N releases, --since DATE everything from a day on; --long unfolds each change beneath its first sentence; --all includes the changes marked Internal. help notes is the same. In ARGUS the WHAT\'S NEW block opens them as a listing.',
-    examples: ['notes', 'notes --since 3', 'notes --since 2026-10-01 --long', 'notes --all'],
-  },
   weather: {
     category: 'Games',
     usage: 'weather [place] [-u|--units metric|imperial] [-d|--days N]',
@@ -752,18 +650,6 @@ export const helpText: Record<string, CommandHelp> = {
       '  -d, --days N      Days of forecast to show (default 3, at most 16)',
     ],
     examples: ['weather', 'weather Cape Town', 'weather Boston --units imperial', 'weather Paris -d 7'],
-  },
-  date: {
-    posix: { group: 'System', differs: 'as date, with its + formats' },
-    category: 'General',
-    usage: 'date [-u] [+FORMAT]',
-    summary: 'Print the current date and time',
-    description: 'Prints the current date and time, in the spirit of UNIX date. Use -u for UTC and +FORMAT for a strftime-style format string. Reports the time only; it never sets the clock.',
-    options: [
-      '  -u, --utc         Print (or interpret) time in UTC',
-      '  +FORMAT           strftime-style format (e.g. +%Y-%m-%d, +%H:%M:%S)',
-    ],
-    examples: ['date', 'date -u', 'date +%Y-%m-%d', 'date "+%A, %B %e %Y"'],
   },
   cal: {
     posix: { group: 'System', differs: 'as cal' },
@@ -820,17 +706,6 @@ export const helpText: Record<string, CommandHelp> = {
       'debug                 # Show current status',
       'debug on              # Enable debug mode',
       'debug off             # Disable debug mode',
-    ],
-  },
-  help: {
-    category: 'General',
-    usage: 'help [command]',
-    description: 'Display help information',
-    examples: [
-      'help                  # List all commands',
-      'help games            # The /usr/games shelf, by category',
-      'help ls               # Show help for ls',
-      'help timing           # Show help for timing',
     ],
   },
   '!': {
@@ -1151,13 +1026,68 @@ export function args_checkHasHelpFlag(args: string[], command?: string): boolean
   return args.includes('-h');
 }
 
+/** What a `help` line may hold. */
+const HELP_GRAMMAR = {
+  operands: [
+    { name: 'topic', kind: 'word', optional: true, repeat: true, summary: 'A command, a section or a Shell topic; help pacs query, a subcommand' },
+  ],
+} as const satisfies CommandGrammar;
+
 /**
- * Builtin help command - displays command list or specific command help.
+ * `help [topic…]`: the declaration.
  *
- * @param args - Command arguments (optional command name).
+ * @example
+ * ```ts
+ * commands_register({ declarations: [helpCommand] });
+ * ```
+ */
+export const helpCommand = command_declare({
+  name: 'help',
+  grammar: HELP_GRAMMAR,
+  help: {
+    summary: 'Display help information',
+    description: 'Display help information',
+    category: 'General',
+    examples: [
+      'help                  # List all commands',
+      'help games            # The /usr/games shelf, by category',
+      'help ls               # Show help for ls',
+      'help timing           # Show help for timing',
+    ],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof HELP_GRAMMAR>): Promise<CommandEnvelope> => help_answer(args.operands.topic),
+});
+
+/**
+ * `help` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `help`.
+ * @returns The page, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_help(['ls']);
+ * ```
  */
 export async function builtin_help(args: string[]): Promise<CommandEnvelope> {
-  const commandName: string | undefined = args.length > 0 ? args.join(' ') : undefined;
+  return declaredCommand_run(helpCommand, args);
+}
+
+/**
+ * The help page a topic names: bare, the table of contents; else a section,
+ * a Shell topic, a command, or what the backend answers for the name.
+ *
+ * @param topic - The words naming it (two for a subcommand: `pacs query`).
+ * @returns The page.
+ *
+ * @example
+ * ```ts
+ * await help_answer(['PACS']);
+ * ```
+ */
+export async function help_answer(topic: readonly string[]): Promise<CommandEnvelope> {
+  const commandName: string | undefined = topic.length > 0 ? topic.join(' ') : undefined;
 
   // The variables: the core's page, with whatever the backend keeps too.
   if (commandName === 'variables') {
