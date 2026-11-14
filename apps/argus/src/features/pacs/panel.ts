@@ -60,6 +60,14 @@ export interface PacsPanelHandlers {
   /** Runs a command visibly in the console (the big, auditable actions). */
   command_show: (line: string) => void;
   /**
+   * Runs a pull the operator pressed for, in the background (`pull … &`),
+   * echoed in the console. Resolves with what the line answered: the
+   * joblet's start notice, or why it could not start. Its end arrives later
+   * as the session's job notice, which the host hands to
+   * {@link PacsPanel.jobEnd_observe}.
+   */
+  pull_run: (line: string) => Promise<ReadonlyArray<WireEnvelope>>;
+  /**
    * Says something in the transcript that is not a command: what a set act
    * did, member by member. A readout on the frame would be wiped by the
    * repaint the act itself causes, and what became of a set is worth
@@ -262,6 +270,12 @@ const NOT_RECEIVED_TEXT: string = 'NOT RECEIVED';
 /** Why a series was settled by its pull's end rather than by its own last word. */
 const PULL_ENDED_REASON: string = 'the pull ended without saying what became of this series';
 
+/** The model a session's notice of a job's end carries (brasa's `JOB_MODEL_KIND`). */
+const JOB_MODEL_KIND: string = 'tasks.job';
+
+/** The jobs a line sent to the background runs as (brasa's `JOBLETS_SOURCE_ID`). */
+const JOBLETS_SOURCE: string = 'joblets';
+
 /**
  * Whether a pull is in flight for a series: asked for and waiting its turn,
  * or being sent. A bar moves for these two states and for no other, since
@@ -311,27 +325,147 @@ export function badgeText_compose(state: BadgeState): string {
 }
 
 /**
+ * Whether a series' pull ended in a fault: none of its files came (`NOT
+ * RECEIVED`), they began and stopped (`STOPPED AT 12/40`), they came too long
+ * without ending (`TIMED OUT AT 12/40`), or the retrieve failed (`✗ ERROR`).
+ * A fault is drawn in the surface's alert hue and carries its own PULL. A
+ * series the watch lost sight of while its files were arriving (`?
+ * UNCONFIRMED 12/40`) is not one: its files may still be coming.
+ *
+ * @param state - The series' state.
+ * @returns True for an end that left the series without its files.
+ *
+ * @example
+ * ```ts
+ * badge_checkIsFault({ status: 'unconfirmed', current: 0, total: 1 }); // true
+ * badge_checkIsFault({ status: 'unconfirmed', current: 12, total: 40 }); // false
+ * ```
+ */
+export function badge_checkIsFault(state: BadgeState): boolean {
+  switch (state.status) {
+    case 'error':
+    case 'stalled':
+    case 'timeout': return true;
+    case 'unconfirmed': return (state.current ?? 0) === 0;
+    default: return false;
+  }
+}
+
+/**
  * What a series still in flight becomes when its pull ends without a last
  * word on it: ended, with whatever count it had reached, and a reason.
  *
  * @param held - The series' state when the pull's end arrived.
+ * @param reason - Why it ended: the pull's own error when it had one.
  * @returns The ended state, or null when the series was not in flight and
  *   its own last word stands.
  *
  * @example
  * ```ts
  * badgeState_settle({ status: 'queued' }); // { status: 'unconfirmed', current: 0, reason: '…' }
+ * badgeState_settle({ status: 'queued' }, 'the pull could not start: no PACS'); // reason is the pull's
  * badgeState_settle({ status: 'done', total: 40 }); // null
  * ```
  */
-export function badgeState_settle(held: BadgeState): BadgeState | null {
+export function badgeState_settle(held: BadgeState, reason: string = PULL_ENDED_REASON): BadgeState | null {
   if (!badge_checkIsInFlight(held)) return null;
   return {
     status: 'unconfirmed',
     current: held.current ?? 0,
     ...(held.total !== undefined ? { total: held.total } : {}),
-    reason: PULL_ENDED_REASON,
+    reason,
   };
+}
+
+/**
+ * A job's end as the session announces it (`tasks.job`), as far as a pull's
+ * press reads it.
+ *
+ * @example
+ * ```ts
+ * const end: JobEnd = { source: 'joblets', label: 'pull /net/pacs/q', state: 'failed', outcome: 'exit 1' };
+ * ```
+ */
+export interface JobEnd {
+  /** The kind of job: `joblets` for a line sent to the background. */
+  readonly source: string;
+  /** What ran: a joblet's line, without its `&`. */
+  readonly label: string;
+  /** How it ended: `done`, `failed` or `cancelled`. */
+  readonly state: string;
+  /** Its last word: the error a failed line ended with. */
+  readonly outcome?: string;
+}
+
+/**
+ * Reads a job's end out of a session notice.
+ *
+ * @param envelope - An ambient envelope.
+ * @returns The end, or null when the envelope is not a job's end.
+ *
+ * @example
+ * ```ts
+ * jobEnd_parse({ status: 'ok', rendered: '[1]+ Done  pull /q\n', model: { kind: 'tasks.job', data: { source: 'joblets', label: 'pull /q', state: 'done' } } });
+ * // { source: 'joblets', label: 'pull /q', state: 'done' }
+ * ```
+ */
+export function jobEnd_parse(envelope: WireEnvelope): JobEnd | null {
+  if (envelope.model?.kind !== JOB_MODEL_KIND) return null;
+  const data: unknown = envelope.model.data;
+  if (typeof data !== 'object' || data === null) return null;
+  const record: Record<string, unknown> = data as Record<string, unknown>;
+  const { source, label, state, outcome } = record;
+  if (typeof source !== 'string' || typeof label !== 'string' || typeof state !== 'string') return null;
+  return { source, label, state, ...(typeof outcome === 'string' ? { outcome } : {}) };
+}
+
+/**
+ * Why the series a pull queued ended, from how the pull's joblet ended: the
+ * pull's own error when it failed.
+ *
+ * @param end - The joblet's end.
+ * @returns The reason each series still in flight is settled with.
+ *
+ * @example
+ * ```ts
+ * pullEndReason_derive({ source: 'joblets', label: 'pull /q', state: 'failed', outcome: 'pull: no PACS server chosen' });
+ * // 'the pull failed: pull: no PACS server chosen'
+ * ```
+ */
+export function pullEndReason_derive(end: JobEnd): string {
+  if (end.state === 'failed') return `the pull failed: ${end.outcome ?? 'it gave no reason'}`;
+  if (end.state === 'cancelled') return 'the pull was stopped before it said what became of this series';
+  return PULL_ENDED_REASON;
+}
+
+/**
+ * The line a joblet runs for a background line: without its `&`, as the
+ * session records it and names it when it ends.
+ *
+ * @param line - The line as sent (`pull "/net/pacs/…" &`).
+ * @returns The joblet's line.
+ */
+function jobletLine_derive(line: string): string {
+  return line.trimEnd().replace(/&$/, '').trim();
+}
+
+/** A pull pressed for in this pane, held from the press to its end. */
+interface PullPress {
+  /** The joblet's line, as the session names it when it ends. */
+  readonly line: string;
+  /** The series the press queued. */
+  readonly seriesUIDs: ReadonlySet<string>;
+}
+
+/**
+ * A line's text without its colour codes.
+ *
+ * @param text - Text as the kernel printed it.
+ * @returns The text alone.
+ */
+function ansi_strip(text: string): string {
+  // eslint-disable-next-line no-control-regex -- the escape is what is being removed
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
 /** What re-asking lowers to. */
@@ -461,6 +595,7 @@ const badgeStateLast: Map<string, BadgeState> = new Map();
 export function badge_paint(badge: HTMLElement, state: BadgeState): void {
   badge.replaceChildren();
   badge.dataset['state'] = state.status;
+  delete badge.dataset['fault'];
   if (state.reason !== undefined) badge.title = state.reason;
   else badge.removeAttribute('title');
   const note: HTMLSpanElement = document.createElement('span');
@@ -479,7 +614,9 @@ export function badge_paint(badge: HTMLElement, state: BadgeState): void {
     return;
   }
   if (!badge_checkIsInFlight(state)) {
-    badge.textContent = badgeText_compose(state);
+    note.textContent = badgeText_compose(state);
+    if (badge_checkIsFault(state)) badge.dataset['fault'] = '';
+    badge.append(note);
     return;
   }
   // A running pull shows how far it has got, not just that it is going.
@@ -632,6 +769,10 @@ export class PacsPanel {
   private readonly badgeStates: Map<string, BadgeState> = new Map();
   /** The series each pull in flight has reported on, by the pull's command id. */
   private readonly pullSeries: Map<string, Set<string>> = new Map();
+  /** The pulls pressed here that have not ended, oldest first. */
+  private readonly pullPresses: PullPress[] = [];
+  /** The badges this pane built for its own rows: the ones a fault's PULL rides. */
+  private readonly ownBadges: WeakSet<HTMLElement> = new WeakSet();
   /** Per-series progress, seeded from the model and driven by the wire. */
   private readonly seriesProgress: Map<string, ListingProgress> = new Map();
   /** Each study's progress mount and the series it sums over. */
@@ -1152,15 +1293,12 @@ export class PacsPanel {
         run: (row: StudyRow): void => {
           const vfsPath: string | undefined = row.study.vfsPath;
           if (vfsPath === undefined) return;
-          // A retrieve runs as a joblet: the session is the operator's meanwhile (#1273).
-          this.handlers.command_run(`pull ${vfsPath} &`);
           // Pulling FETCHES; it does not choose. The series are queued on
           // their badges and nothing enters the cohort — that is GATHER's.
-          for (const series of row.study.series) {
-            if (series.vfsPath !== undefined && series.pulled !== true) {
-              this.badgeState_set(series.seriesUID, { status: 'queued' });
-            }
-          }
+          const queued: string[] = row.study.series
+            .filter((series: PacsSeries): boolean => series.vfsPath !== undefined && series.pulled !== true)
+            .map((series: PacsSeries): string => series.seriesUID);
+          this.pull_press(`pull ${vfsPath} &`, queued);
         },
       },
       {
@@ -1269,13 +1407,7 @@ export class PacsPanel {
         label: verbRule_get(PACS_SERIES_ROSTER, 'pull').label({ inCube: false, folderKnown: false, addressable: true }),
         offered: (row: SeriesRow): boolean => seriesVerbs_offered(row.series).pull,
         disabled: (row: SeriesRow): boolean => row.series.vfsPath === undefined,
-        run: (row: SeriesRow): void => {
-          const vfsPath: string | undefined = row.series.vfsPath;
-          if (vfsPath === undefined) return;
-          this.handlers.command_run(`pull ${vfsPath} &`);
-          // A fetch, not a choice: the badge queues, the cohort is untouched.
-          this.badgeState_set(row.series.seriesUID, { status: 'queued' });
-        },
+        run: (row: SeriesRow): void => this.seriesPull_press(row.series),
       },
     ];
   }
@@ -1747,7 +1879,7 @@ export class PacsPanel {
     badgeStateLast.set(seriesUID, state);
     this.seriesProgress.set(seriesUID, progress_deriveFromState(state, this.seriesProgress.get(seriesUID)));
     // Every badge for this series, in every pane showing it.
-    badgeElements_paint(seriesUID, (badge: HTMLElement): void => this.badge_paint(badge, state));
+    badgeElements_paint(seriesUID, (badge: HTMLElement): void => this.badge_paint(badge, state, seriesUID));
     for (const [key, track] of this.studyTracks) {
       if (track.uids.includes(seriesUID)) this.studyTrack_paint(key);
     }
@@ -1779,16 +1911,143 @@ export class PacsPanel {
       return badge;
     }
     badgeElement_register(series.seriesUID, badge);
+    this.ownBadges.add(badge);
     // A series nothing has been asked of still gets a track, dimmed. An
     // empty cell reads as a column that does not apply here; a dim track
     // reads as nothing has happened yet, which is the truth.
-    this.badge_paint(badge, this.badgeStates.get(series.seriesUID) ?? { status: 'idle' });
+    this.badge_paint(badge, this.badgeStates.get(series.seriesUID) ?? { status: 'idle' }, series.seriesUID);
     return badge;
   }
 
-  /** Paints a badge from what its series is doing (the module's painter). */
-  private badge_paint(badge: HTMLElement, state: BadgeState): void {
+  /**
+   * Paints a badge from what its series is doing (the module's painter),
+   * and gives a fault on one of this pane's own rows its PULL.
+   *
+   * The fault is the row's news and PULL its way on, so the two stand
+   * together: the row's verbs are in the frame's row zone, a reach away
+   * from the row, and a NOT RECEIVED read as quietly as a row in progress.
+   * The capsule is the row's own PULL, offered only where that is. A
+   * cohort's row of the same series is painted but given no PULL: the
+   * cohort pulls its own way.
+   *
+   * @param badge - The badge element.
+   * @param state - The series' state.
+   * @param seriesUID - The series.
+   */
+  private badge_paint(badge: HTMLElement, state: BadgeState, seriesUID: string): void {
     badge_paint(badge, state);
+    if (!this.ownBadges.has(badge) || !badge_checkIsFault(state)) return;
+    const series: PacsSeries | undefined = this.series_find(seriesUID);
+    if (series === undefined || series.vfsPath === undefined || !seriesVerbs_offered(series).pull) return;
+    const capsule: HTMLButtonElement = document.createElement('button');
+    capsule.className = 'listing-action';
+    capsule.textContent = verbRule_get(PACS_SERIES_ROSTER, 'pull').label({ inCube: false, folderKnown: false, addressable: true });
+    capsule.title = 'Pull this series again';
+    capsule.addEventListener('click', (event: Event): void => {
+      // The row's own activation is a different gesture from its verb.
+      event.stopPropagation();
+      this.seriesPull_press(series);
+    });
+    badge.append(capsule);
+  }
+
+  /**
+   * The series the answer holds under a UID.
+   *
+   * @param seriesUID - The series.
+   * @returns It, or undefined when the answer on stage does not hold it.
+   */
+  private series_find(seriesUID: string): PacsSeries | undefined {
+    for (const study of this.model?.studies ?? []) {
+      const found: PacsSeries | undefined = study.series.find((series: PacsSeries): boolean => series.seriesUID === seriesUID);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  /**
+   * Pulls one series: its row's PULL, and a fault's.
+   *
+   * @param series - The series.
+   */
+  private seriesPull_press(series: PacsSeries): void {
+    if (series.vfsPath === undefined) return;
+    this.pull_press(`pull ${series.vfsPath} &`, [series.seriesUID]);
+  }
+
+  /**
+   * Sends a pull the operator pressed for and queues its series, and holds
+   * the press until the pull ends so that every series it queued is given
+   * an end.
+   *
+   * A pull is a joblet (#1273): the press answers at once with its start,
+   * and the pull's end is the session's notice of the joblet's end. A pull
+   * refused at its start, or one that ended before it said a word of a
+   * series (a CUBE error, no PACS chosen, a `kill`), would otherwise leave
+   * that series QUEUED with its bar pacing, for good.
+   *
+   * @param line - The line, ending `&`.
+   * @param seriesUIDs - The series it queues.
+   */
+  private pull_press(line: string, seriesUIDs: ReadonlyArray<string>): void {
+    // A fetch, not a choice: the badges queue, the cohort is untouched.
+    for (const seriesUID of seriesUIDs) this.badgeState_set(seriesUID, { status: 'queued' });
+    const press: PullPress = { line: jobletLine_derive(line), seriesUIDs: new Set(seriesUIDs) };
+    this.pullPresses.push(press);
+    void this.handlers.pull_run(line).then(
+      (envelopes: ReadonlyArray<WireEnvelope>): void => {
+        const refused: WireEnvelope | undefined = envelopes.find((envelope: WireEnvelope): boolean => envelope.status === 'error');
+        if (refused === undefined) return;
+        const said: string = ansi_strip(`${refused.renderedErr ?? ''}${refused.rendered}`).trim();
+        this.press_end(press, `the pull could not start: ${said !== '' ? said : 'the session refused it'}`);
+      },
+      (error: unknown): void => {
+        this.press_end(press, `the pull could not start: ${error instanceof Error ? error.message : String(error)}`);
+      },
+    );
+  }
+
+  /**
+   * Takes a job's end: when it is the joblet of a pull pressed here, every
+   * series that press queued is given an end.
+   *
+   * @param envelope - The session's notice of a job's end (`tasks.job`).
+   *
+   * @example
+   * ```ts
+   * panel.jobEnd_observe({ status: 'ok', rendered: '[1]+ Failed (exit 1): no PACS\n', model: { kind: 'tasks.job', data: { source: 'joblets', label: 'pull /q', state: 'failed', outcome: 'no PACS' } } });
+   * ```
+   */
+  public jobEnd_observe(envelope: WireEnvelope): void {
+    const end: JobEnd | null = jobEnd_parse(envelope);
+    if (end === null || end.source !== JOBLETS_SOURCE) return;
+    // Two presses of one line are two joblets of the same series; whichever
+    // ends first stands for the older press, since both queued the same rows.
+    const press: PullPress | undefined = this.pullPresses.find((held: PullPress): boolean => held.line === end.label);
+    if (press === undefined) return;
+    this.press_end(press, pullEndReason_derive(end));
+  }
+
+  /**
+   * Ends a press: every series it queued that is still in flight, and that
+   * no later press still open has queued, is settled with the reason.
+   *
+   * @param press - The press.
+   * @param reason - Why its series ended: the pull's own error when it had one.
+   */
+  private press_end(press: PullPress, reason: string): void {
+    const at: number = this.pullPresses.indexOf(press);
+    if (at < 0) return;
+    this.pullPresses.splice(at, 1);
+    for (const seriesUID of press.seriesUIDs) {
+      if (this.pullPresses.some((open: PullPress): boolean => open.seriesUIDs.has(seriesUID))) continue;
+      const held: BadgeState | undefined = this.badgeStates.get(seriesUID);
+      const settled: BadgeState | null = held === undefined ? null : badgeState_settle(held, reason);
+      if (settled === null) continue;
+      this.end_note(seriesUID, settled);
+      this.badgeState_set(seriesUID, settled);
+    }
+    this.shownPull_render();
   }
 
   /**
@@ -2000,8 +2259,7 @@ export class PacsPanel {
     const paths: string = taking
       .map((series: PacsSeries): string => `"${series.vfsPath as string}"`)
       .join(' ');
-    this.handlers.command_show(`pull ${paths} &`);
-    for (const series of taking) this.badgeState_set(series.seriesUID, { status: 'queued' });
+    this.pull_press(`pull ${paths} &`, taking.map((series: PacsSeries): string => series.seriesUID));
     this.handlers.note(`pull: ${taking.length} series asked for`);
     this.shownPull_render();
   }

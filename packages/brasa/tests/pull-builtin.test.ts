@@ -42,6 +42,8 @@ interface TestTask {
   startTime: number;
   lonkConfirmed: boolean;
   cubePathDir: string | null;
+  reason?: string;
+  endCause?: 'pacsSilent' | 'watchLost';
 }
 
 const mockFeedCreate = jest.fn();
@@ -382,6 +384,7 @@ describe('builtin_pull engine consumption', () => {
       tasks[0].status = 'pulled';
       tasks[0].lonkConfirmed = true;
       tasks[1].status = 'unconfirmed';
+      tasks[1].endCause = 'watchLost';
       return 0;
     });
     process.exitCode = 0;
@@ -389,10 +392,56 @@ describe('builtin_pull engine consumption', () => {
     await builtin_pull([QUERY_PATH]);
 
     expect(sinkData).toContain('1/2 series confirmed');
-    expect(sinkData).toContain('WATCH ENDED');
-    expect(sinkData).toContain('not a failed retrieve');
+    expect(sinkData).toContain('? q|study|series-4.5.6 [WATCH ENDED — may still be arriving; check with: pacs status]');
+    expect(sinkData).toContain("The watch on CUBE's progress dropped before 1 series finished; its files may still arrive. Check with: pacs status.");
+    expect(sinkData).not.toContain('NOT RECEIVED');
+    expect(sinkData).not.toContain('lost connection');
     expect(sinkData).not.toContain('FAILED TO FIRE');
     expect(process.exitCode).toBe(0);
+  });
+
+  it('says a series the PACS sent nothing of was not received, and that pulling again is the way on', async () => {
+    const reason: string = 'the PACS sent nothing for 60 s and CUBE has none of it';
+    mockCollect.mockResolvedValue([info('1.2.3'), info('4.5.6')]);
+    mockFireAndWatch.mockImplementation(async (tasks: TestTask[]) => {
+      for (const t of tasks) {
+        t.status = 'unconfirmed';
+        t.endCause = 'pacsSilent';
+        t.reason = reason;
+      }
+      return 0;
+    });
+    process.exitCode = 0;
+
+    await builtin_pull([QUERY_PATH]);
+
+    expect(sinkData).toContain('0/2 series confirmed');
+    expect(sinkData).toContain('? q|study|series-1.2.3 [NOT RECEIVED — re-run pull, or check with: pacs status]');
+    expect(sinkData).toContain(`      ${reason}`);
+    expect(sinkData).toContain('The PACS sent nothing of 2 series, and CUBE has none of them. Re-run pull to ask for them again, or check with: pacs status.');
+    expect(sinkData).not.toContain('WATCH ENDED');
+    expect(sinkData).not.toContain('watch on CUBE');
+    expect(sinkData).not.toContain('lost connection');
+    // Nothing here knows the retrieve failed, so the command does not fail.
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('says each cause in its own words when a pull ends with both', async () => {
+    mockCollect.mockResolvedValue([info('1.2.3'), info('4.5.6')]);
+    mockFireAndWatch.mockImplementation(async (tasks: TestTask[]) => {
+      tasks[0].status = 'unconfirmed';
+      tasks[0].endCause = 'pacsSilent';
+      tasks[1].status = 'unconfirmed';
+      return 0;
+    });
+
+    await builtin_pull([QUERY_PATH]);
+
+    expect(sinkData).toContain('? q|study|series-1.2.3 [NOT RECEIVED');
+    expect(sinkData).toContain('The PACS sent nothing of 1 series, and CUBE has none of it. Re-run pull to ask for it again');
+    // A series that carries no cause is one the watch lost: its files may still come.
+    expect(sinkData).toContain('? q|study|series-4.5.6 [WATCH ENDED');
+    expect(sinkData).toContain("dropped before 1 series finished");
   });
 
   it('in front, asks whether to keep waiting on a silent PACS, and takes the answer', async () => {
@@ -443,8 +492,9 @@ describe('builtin_pull engine consumption', () => {
     const reason: string = 'the PACS sent nothing for 60 s and CUBE has none of it';
     mockFireAndWatch.mockImplementation(async (tasks: TestTask[]) => { tasks[0].status = 'pulled'; tasks[0].lonkConfirmed = false; return 0; });
     mockConfirmLoop.mockImplementation(async (tasks: TestTask[], _retry: unknown, _srv: unknown, _c: unknown, events?: WatchEvents) => {
-      const t = tasks[0] as TestTask & { reason?: string };
+      const t = tasks[0] as TestTask;
       t.status = 'unconfirmed';
+      t.endCause = 'pacsSilent';
       t.reason = reason;
       events?.task?.(t, 'unconfirmed', 'retrying');
       return 0;

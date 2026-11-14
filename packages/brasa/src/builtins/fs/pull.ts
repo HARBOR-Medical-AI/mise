@@ -263,6 +263,44 @@ async function paths_resolveToVfs(
 }
 
 /**
+ * Says what became of the series a pull ended without confirming, by why
+ * each ended: a line per series, its reason under it, then one line for all
+ * of a cause with the next step.
+ *
+ * The two causes call for different words and different next steps. A
+ * series the PACS sent nothing of, while CUBE has none of it, reads
+ * `NOT RECEIVED`, as its row in ARGUS does: nothing was seen to come, and
+ * the way on is to ask again. A series whose watch on CUBE's progress
+ * dropped reads `WATCH ENDED`: its files may still be landing, and
+ * `pacs status` says whether they did.
+ *
+ * @param unconfirmed - The series that ended unconfirmed.
+ */
+function unconfirmedLines_print(unconfirmed: RetrieveTask[]): void {
+  const silent: RetrieveTask[] = unconfirmed.filter((t: RetrieveTask): boolean => t.endCause === 'pacsSilent');
+  const lost: RetrieveTask[] = unconfirmed.filter((t: RetrieveTask): boolean => t.endCause !== 'pacsSilent');
+  const line_print = (t: RetrieveTask, words: string): void => {
+    sink_dataLine(chalk.gray(`  ? ${t.label} [${words}]`));
+    if (t.reason !== undefined) sink_dataLine(chalk.gray(`      ${t.reason}`));
+  };
+  for (const t of silent) line_print(t, 'NOT RECEIVED — re-run pull, or check with: pacs status');
+  for (const t of lost) line_print(t, 'WATCH ENDED — may still be arriving; check with: pacs status');
+  if (silent.length > 0) {
+    const them: string = silent.length === 1 ? 'it' : 'them';
+    sink_dataLine(chalk.gray(
+      `  The PACS sent nothing of ${silent.length} series, and CUBE has none of ${them}. ` +
+      `Re-run pull to ask for ${them} again, or check with: pacs status.`,
+    ));
+  }
+  if (lost.length > 0) {
+    sink_dataLine(chalk.gray(
+      `  The watch on CUBE's progress dropped before ${lost.length} series finished; ` +
+      `${lost.length === 1 ? 'its' : 'their'} files may still arrive. Check with: pacs status.`,
+    ));
+  }
+}
+
+/**
  * Prints the pull summary and sets a non-zero exit code on any failure.
  *
  * @param allTasks - All pull tasks.
@@ -294,16 +332,7 @@ function pullSummary_print(allTasks: RetrieveTask[], totalFiringErrors: number):
         if (f.reason !== undefined) sink_dataLine(chalk.yellow(`      ${f.reason}`));
       }
     }
-    for (const u of unconfirmed) {
-      sink_dataLine(chalk.gray(`  ? ${u.label} [WATCH ENDED — may still be arriving; check with: pacs status]`));
-      if (u.reason !== undefined) sink_dataLine(chalk.gray(`      ${u.reason}`));
-    }
-    if (unconfirmed.length > 0) {
-      sink_dataLine(chalk.gray(
-        `  The retrieve watch ended before ${unconfirmed.length} series finished. ` +
-        'That is a lost connection, not a failed retrieve.',
-      ));
-    }
+    unconfirmedLines_print(unconfirmed);
     // Only a real failure fails the command.
     if (failures.length > 0) {
       exitCode_set(1);
