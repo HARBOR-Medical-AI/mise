@@ -23,9 +23,25 @@ const groupSource: string = ['../../src/core/coreCommands.ts', '../../src/chris/
  * @returns Its exported names.
  */
 function moduleFunctions_read(module: string): string[] {
-  const source: string = readFileSync(new URL(`../../src/builtins/${module.replace(/\.js$/, '.ts')}`, import.meta.url), 'utf8');
+  const source: string = moduleSource_read(module);
+  for (const match of source.matchAll(/^export const (\w+Command) = command_declare\(\{\s*name: '[^']+',\s*aliases: (\[.*\]),$/gm)) {
+    DECLARED_ALIASES[match[1] as string] = [...(match[2] as string).matchAll(/'([\w-]+)'/g)].map((word: RegExpMatchArray): string => word[1] as string);
+  }
   return [...source.matchAll(/^export (?:async function|function|const) (\w+)/gm)].map((match: RegExpMatchArray): string => match[1]);
 }
+
+/**
+ * A builtin module's source.
+ *
+ * @param module - The module's path under `src/builtins`, as imported (`.js`).
+ * @returns Its text.
+ */
+function moduleSource_read(module: string): string {
+  return readFileSync(new URL(`../../src/builtins/${module.replace(/\.js$/, '.ts')}`, import.meta.url), 'utf8');
+}
+
+/** Each declaration's aliases, by the name its module exports it under, as its source declares them. */
+const DECLARED_ALIASES: Record<string, string[]> = {};
 
 /** Each builtin module a group imports by name (not the barrel), with what it exports. */
 const CORE_MODULES: ReadonlyArray<[string, string[]]> = [...new Set([...groupSource.matchAll(/import \{[^}]*\} from '\.\.\/builtins\/([^']+)';/g)]
@@ -45,12 +61,16 @@ const CORE_MODULES: ReadonlyArray<[string, string[]]> = [...new Set([...groupSou
 function export_stub(name: string, stubs: Record<string, unknown>): unknown {
   if (stubs[name] !== undefined) return stubs[name];
   const standIn = STAND_IN_MAKERS[name];
-  const builtin: unknown = stubs[`builtin_${name.replace(/Command$/, '')}`];
+  const command: string = COMMAND_NAMES[name] ?? name.replace(/Command$/, '');
+  const builtin: unknown = stubs[`builtin_${command}`];
   if (standIn !== undefined) return standIn((builtin as StandInHandler | undefined) ?? jest.fn());
   // Any other declaration (`echoCommand`) stands in by its name, its words handed to the test's stub.
-  if (/^[a-z]\w*Command$/.test(name)) return wordsStandIn_make(name.replace(/Command$/, ''), (builtin as StandInHandler | undefined) ?? jest.fn());
+  if (/^[a-z]\w*Command$/.test(name)) return wordsStandIn_make(command, (builtin as StandInHandler | undefined) ?? jest.fn(), DECLARED_ALIASES[name] ?? []);
   return jest.fn();
 }
+
+/** A declaration whose export cannot spell its command's name (`2048` is no identifier). */
+const COMMAND_NAMES: Readonly<Record<string, string>> = { game2048Command: '2048' };
 
 /**
  * Mocks every builtin module the core group imports: a function the test

@@ -5,11 +5,10 @@
  * CUBE answers every compute resource in one read, so the listing takes no
  * paging; a search filters what that read answered.
  *
- * Declared in one record (`computeCommand`, and `computesCommand` its second
- * name).
+ * Declared in one record (`computeCommand`, `computes` among its aliases).
  *
  * Key components:
- * - computeCommand / computesCommand: the declaration, under each name.
+ * - computeCommand: the declaration, answered as `compute` and `computes`.
  * - builtin_compute: the declaration run over words already split.
  *
  * @module
@@ -25,7 +24,6 @@ import type { ComputeResource } from '@fnndsc/cumin';
 import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
-import { commandAlias_make } from './resourceList.js';
 
 /** How a listing is drawn. */
 interface ComputeListShape {
@@ -130,11 +128,12 @@ async function compute_run(args: CommandArguments<typeof COMPUTE_GRAMMAR>): Prom
  *
  * @example
  * ```ts
- * commands_register({ declarations: [computeCommand, computesCommand] }, 'backend');
+ * commands_register({ declarations: [computeCommand] }, 'backend');
  * ```
  */
 export const computeCommand = command_declare({
   name: 'compute',
+  aliases: ['computes'],
   grammar: COMPUTE_GRAMMAR,
   help: {
     summary: 'The compute resources registered with CUBE, where jobs run',
@@ -144,9 +143,6 @@ export const computeCommand = command_declare({
   },
   handler: compute_run,
 });
-
-/** `computes`: the same command as `compute`. */
-export const computesCommand = commandAlias_make(computeCommand, 'computes');
 
 /**
  * `compute` over words already split: the declaration's parse and handler.

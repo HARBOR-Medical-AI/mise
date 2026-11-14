@@ -39,7 +39,10 @@ jest.unstable_mockModule('../src/builtins/fs/pull.js', () => ({ builtin_pull: mo
 const lines: string[] = [];
 jest.unstable_mockModule('../src/core/sink.js', () => ({ sink_dataLine: (line: string): void => { lines.push(line); } }));
 
-const { gather_process, gatherProcessArgs_parse, cohortFeed_make } = await import('../src/builtins/res/gather.process.js');
+const { gather_process, cohortFeed_make } = await import('../src/builtins/res/gather.process.js');
+
+/** A `gather process` request: a name, and what else the line gave. */
+const asked = (name: string, more: { title?: string | null; detach?: boolean; forwarded?: string[] } = {}) => ({ name, title: null, detach: false, forwarded: [], ...more });
 
 const RUN = { kind: 'run.scheduled', data: { pluginName: 'pl-x', instanceId: 9, feedId: 300, newFeed: false, outputPath: '/o', status: 'finishedSuccessfully' } };
 
@@ -65,23 +68,9 @@ beforeEach(() => {
   process.exitCode = 0;
 });
 
-describe('gatherProcessArgs_parse', () => {
-  it('takes a name, a title and --detach, and hands what follows -- to the run', () => {
-    expect(gatherProcessArgs_parse(['pl-x', '--title', 'T', '--detach', '--', '--threshold', '0.5'])).toEqual({
-      name: 'pl-x', title: 'T', detach: true, forwarded: ['--threshold', '0.5'], error: null,
-    });
-  });
-
-  it('refuses no name, a second name, and an option of the run given before --', () => {
-    expect(gatherProcessArgs_parse([]).error).toContain('name the plugin or pipeline');
-    expect(gatherProcessArgs_parse(['pl-x', 'pl-y']).error).toContain('one plugin or pipeline at a time');
-    expect(gatherProcessArgs_parse(['pl-x', '--threshold', '1']).error).toContain("--threshold: unknown option; the run's own arguments go after --");
-  });
-});
-
 describe('gather process', () => {
   it('makes one feed holding every member, notes it on the cohort, and runs the plugin once off its root', async () => {
-    const envelope = await gather_process(['pl-x', '--', '--threshold', '0.5']);
+    const envelope = await gather_process(asked('pl-x', { forwarded: ['--threshold', '0.5'] }));
     expect(mockFeedCreate).toHaveBeenCalledWith(['/home/u/SERVICES/PACS/s1', '/home/u/uploads/brain'], { title: 'sag cohort' });
     expect(written).toEqual([{ ...cohort, feed: { feedId: 300, rootInstanceId: 400, path: '/home/u/feeds/feed_300/pl-dircopy_400/data' } }]);
     expect(mockExecutePlugin).toHaveBeenCalledWith('pl-x', ['--threshold', '0.5'], '/home/u/feeds/feed_300/pl-dircopy_400/data');
@@ -90,7 +79,7 @@ describe('gather process', () => {
   });
 
   it('sends the cohort with its new feed on the session bus, and keeps the run as the line\'s answer (#1252)', async () => {
-    const envelope = await gather_process(['pl-x']);
+    const envelope = await gather_process(asked('pl-x'));
     // R=$(gather process …) holds the line's last model: the run, never the cohort.
     expect(envelope.model?.kind).toBe('run.scheduled');
     expect(published).toHaveLength(1);
@@ -102,7 +91,7 @@ describe('gather process', () => {
 
   it("runs off the cohort's own feed when it has one, copying nothing", async () => {
     cohort.feed = { feedId: 77, rootInstanceId: 78, path: '/home/u/feeds/feed_77/pl-dircopy_78/data' };
-    const envelope = await gather_process(['pl-x', '--detach']);
+    const envelope = await gather_process(asked('pl-x', { detach: true }));
     expect(mockFeedCreate).not.toHaveBeenCalled();
     expect(written).toEqual([]);
     expect(mockExecutePlugin).toHaveBeenCalledWith('pl-x', ['--detach'], '/home/u/feeds/feed_77/pl-dircopy_78/data');
@@ -112,13 +101,13 @@ describe('gather process', () => {
   it('runs a pipeline off the root by --previous', async () => {
     bin = { pipeline: { name: 'dcm-pipe' } };
     cohort.feed = { feedId: 77, rootInstanceId: 78, path: '/p' };
-    await gather_process(['dcm-pipe', '--', '--x.memory_limit=8Gi']);
+    await gather_process(asked('dcm-pipe', { forwarded: ['--x.memory_limit=8Gi'] }));
     expect(mockPipeline).toHaveBeenCalledWith(['run', 'dcm-pipe', '--previous', '78', '--x.memory_limit=8Gi']);
   });
 
   it('refuses an unpulled series by name, before it makes anything', async () => {
     cohort.series.push({ vfsPath: '/net/pacs/q/S2', kind: 'series', description: 'SAG T1' });
-    const envelope = await gather_process(['pl-x']);
+    const envelope = await gather_process(asked('pl-x'));
     expect(envelope.status).toBe('error');
     expect(envelope.renderedErr).toContain('1 series is not pulled yet (SAG T1); pull ${gather} first');
     expect(mockFeedCreate).not.toHaveBeenCalled();
@@ -126,25 +115,25 @@ describe('gather process', () => {
 
   it('runs a pipeline named by its CUBE name under its /bin name, which names the id', async () => {
     bin = { pipeline: { name: 'FreeSurfer_8_2_0_mri_convert_id291', title: 'FreeSurfer 8.2.0 mri_convert' } };
-    await gather_process(['FreeSurfer 8.2.0 mri_convert']);
+    await gather_process(asked('FreeSurfer 8.2.0 mri_convert'));
     expect(mockPipeline).toHaveBeenCalledWith(['run', 'FreeSurfer_8_2_0_mri_convert_id291', '--previous', '400']);
   });
 
   it('refuses an empty cohort, a name /bin lacks, and a name that is both', async () => {
     cohort.series = [];
-    expect((await gather_process(['pl-x'])).renderedErr).toContain('the cohort is empty');
+    expect((await gather_process(asked('pl-x'))).renderedErr).toContain('the cohort is empty');
     cohort.series = [{ vfsPath: '/d', kind: 'dir' }];
     bin = {};
-    expect((await gather_process(['pl-nope'])).renderedErr).toContain('no plugin or pipeline named pl-nope in /bin');
+    expect((await gather_process(asked('pl-nope'))).renderedErr).toContain('no plugin or pipeline named pl-nope in /bin');
     bin = { plugin: { name: 'x' }, pipeline: { name: 'x' } };
-    expect((await gather_process(['x'])).renderedErr).toContain('names both a plugin and a pipeline');
+    expect((await gather_process(asked('x'))).renderedErr).toContain('names both a plugin and a pipeline');
     expect(mockFeedCreate).not.toHaveBeenCalled();
   });
 });
 
 describe('gather feed', () => {
   it('roots one feed on every member, titled by the cohort, and notes it on the cohort', async () => {
-    const made = await cohortFeed_make([]);
+    const made = await cohortFeed_make(null);
     expect(mockFeedCreate).toHaveBeenCalledWith(['/home/u/SERVICES/PACS/s1', '/home/u/uploads/brain'], { title: 'sag cohort' });
     expect(made).toEqual({ state: expect.objectContaining({ feed: { feedId: 300, rootInstanceId: 400, path: '/home/u/feeds/feed_300/pl-dircopy_400/data' } }), made: true });
     expect(written).toHaveLength(1);
@@ -153,7 +142,7 @@ describe('gather feed', () => {
 
   it('pulls the series still at the PACS first, in one pull, then roots the feed on them all', async () => {
     cohort.series.push({ vfsPath: '/net/pacs/q/S2', kind: 'series' });
-    await cohortFeed_make(['--title', 'T']);
+    await cohortFeed_make('T');
     expect(mockPull).toHaveBeenCalledWith(['/net/pacs/q/S2']);
     expect(mockFeedCreate).toHaveBeenCalledWith(['/home/u/SERVICES/PACS/s1', '/home/u/uploads/brain', '/home/u/SERVICES/PACS/S2'], { title: 'T' });
   });
@@ -161,20 +150,19 @@ describe('gather feed', () => {
   it('makes nothing when a series did not land, and says which', async () => {
     cohort.series.push({ vfsPath: '/net/pacs/q/S2', kind: 'series', description: 'SAG T1' });
     mockPull.mockImplementationOnce(async () => ({ status: 'error', rendered: '' }));
-    expect(await cohortFeed_make([])).toBe('1 series did not land (SAG T1); no feed was made');
+    expect(await cohortFeed_make(null)).toBe('1 series did not land (SAG T1); no feed was made');
     expect(mockFeedCreate).not.toHaveBeenCalled();
   });
 
   it('answers the feed the cohort has, making none', async () => {
     cohort.feed = { feedId: 77, rootInstanceId: 78, path: '/p' };
-    expect(await cohortFeed_make([])).toEqual({ state: cohort, made: false });
+    expect(await cohortFeed_make(null)).toEqual({ state: cohort, made: false });
     expect(mockFeedCreate).not.toHaveBeenCalled();
   });
 
-  it('refuses an empty cohort and words it does not take', async () => {
-    expect(await cohortFeed_make(['--title'])).toBe('--title needs a title');
-    expect(await cohortFeed_make(['pl-x'])).toContain('pl-x: not understood');
+  it('refuses an empty cohort and an empty title', async () => {
+    expect(await cohortFeed_make(' ')).toBe('--title needs a title');
     cohort.series = [];
-    expect(await cohortFeed_make([])).toContain('the cohort is empty');
+    expect(await cohortFeed_make(null)).toContain('the cohort is empty');
   });
 });

@@ -1,4 +1,6 @@
 import { CommandEnvelope, envelope_error, envelope_ok } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 /**
  * @file Builtin weather.
  *
@@ -152,13 +154,6 @@ interface ForecastAnswer {
   };
 }
 
-/** The words a call line was parsed into. */
-interface WeatherArgs {
-  place: string;
-  units: WeatherUnits;
-  days: number;
-}
-
 /**
  * Words a WMO weather code.
  *
@@ -198,42 +193,6 @@ function number_read(value: unknown): number | null {
  */
 function string_read(value: unknown): string {
   return typeof value === 'string' ? value : '';
-}
-
-/**
- * Parses the call line: a place in as many words as it takes, `--units`
- * for the system, `-d N` for the days shown. Any other flag is refused by
- * name.
- *
- * @param args - The words after `weather`.
- * @returns The parsed call, or the refusal to print.
- */
-export function weatherArgs_parse(args: string[]): WeatherArgs | string {
-  const words: string[] = [];
-  let units: WeatherUnits = WEATHER_UNITS_DEFAULT;
-  let days: number = DAYS_DEFAULT;
-  for (let i: number = 0; i < args.length; i++) {
-    const arg: string = args[i];
-    if (arg === '-u' || arg === '--units' || arg.startsWith('--units=')) {
-      const value: string = arg.startsWith('--units=') ? arg.slice('--units='.length) : (args[++i] ?? '');
-      if (value !== 'metric' && value !== 'imperial') {
-        return `weather: --units takes metric or imperial, not '${value}'`;
-      }
-      units = value;
-    } else if (arg === '-d' || arg === '--days') {
-      const value: number = parseInt(args[i + 1] ?? '', 10);
-      if (!Number.isFinite(value) || value < 1 || value > DAYS_MAX) {
-        return `weather: ${arg} takes a number of days, 1 to ${DAYS_MAX}`;
-      }
-      days = value;
-      i++;
-    } else if (arg.startsWith('-')) {
-      return `weather: unknown option '${arg}' (usage: weather [place] [-u|--units metric|imperial] [-d|--days N])`;
-    } else {
-      words.push(arg);
-    }
-  }
-  return { place: words.length > 0 ? words.join(' ') : WEATHER_DEFAULT_PLACE, units, days };
 }
 
 /**
@@ -372,6 +331,52 @@ export function report_render(report: WeatherReport): string {
   return `${lines.join('\n')}\n`;
 }
 
+
+/** What a `weather` line may hold. */
+const WEATHER_GRAMMAR = {
+  operands: [{ name: 'place', kind: 'word', optional: true, repeat: true, summary: 'The place, in as many words as it takes (default Boston)' }],
+  options: {
+    units: { short: 'u', long: 'units', summary: 'metric (default: °C, km/h) or imperial (°F, mph)', value: { name: 'system', kind: 'enum', values: ['metric', 'imperial'] } },
+    days: { short: 'd', long: 'days', summary: 'Days of forecast to show (default 3, at most 16)', value: { name: 'N', kind: 'int', min: 1, max: DAYS_MAX } },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * `weather [place] [-u|--units metric|imperial] [-d|--days N]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [weatherCommand] });
+ * ```
+ */
+export const weatherCommand = command_declare({
+  name: 'weather',
+  grammar: WEATHER_GRAMMAR,
+  help: {
+    summary: 'The weather at a place, now and the next few days',
+    description: 'Reports the current conditions and a short forecast for a place, from Open-Meteo (no key, no account). The place is found by name; with none given it is Boston. Metric (°C, km/h) unless --units imperial asks for °F and mph. The call is made from the session host, so it needs that host to reach the internet.',
+    examples: ['weather', 'weather Cape Town', 'weather Boston --units imperial', 'weather Paris -d 7'],
+    category: 'Games',
+  },
+  handler: async (args: CommandArguments<typeof WEATHER_GRAMMAR>): Promise<CommandEnvelope> => weather_run(args, fetch_global),
+});
+
+/**
+ * The global fetch, as the report goes through it unless a test hands in its own.
+ *
+ * @param url - What to ask.
+ * @param init - The request's options.
+ * @returns The answer.
+ *
+ * @example
+ * ```ts
+ * const answer: Response = await fetch_global('https://example.org');
+ * ```
+ */
+function fetch_global(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, init);
+}
+
 /**
  * Reports the weather at a place.
  *
@@ -381,17 +386,36 @@ export function report_render(report: WeatherReport): string {
  * @returns An envelope carrying the rendered report and the typed report
  *   beneath it; an error envelope when a flag is unknown, the place is not
  *   found, or the service cannot be reached.
+ *
+ * @example
+ * ```ts
+ * await builtin_weather(['Paris', '-d', '7']);
+ * ```
  */
-export async function builtin_weather(
-  args: string[],
-  fetchFn: WeatherFetch = (url: string, init?: RequestInit): Promise<Response> => fetch(url, init),
-): Promise<CommandEnvelope> {
-  const parsed: WeatherArgs | string = weatherArgs_parse(args);
-  if (typeof parsed === 'string') return envelope_error(`${parsed}\n`);
+export async function builtin_weather(args: string[], fetchFn: WeatherFetch = fetch_global): Promise<CommandEnvelope> {
+  return declaredCommand_run({ ...weatherCommand, handler: (typed: CommandArguments<typeof WEATHER_GRAMMAR>): Promise<CommandEnvelope> => weather_run(typed, fetchFn) }, args);
+}
+
+/**
+ * Reports the weather for a line already parsed.
+ *
+ * @param args - The typed line.
+ * @param fetchFn - The fetch to go through.
+ * @returns The report, or an error envelope when the place is not found or the service cannot be reached.
+ *
+ * @example
+ * ```ts
+ * await weather_run({ subcommand: null, operands: { place: ['Paris'] }, options: { units: undefined, days: 7 }, expanded: {} }, fetch);
+ * ```
+ */
+export async function weather_run(args: CommandArguments<typeof WEATHER_GRAMMAR>, fetchFn: WeatherFetch): Promise<CommandEnvelope> {
+  const placeName: string = args.operands.place.length > 0 ? args.operands.place.join(' ') : WEATHER_DEFAULT_PLACE;
+  const units: WeatherUnits = args.options.units ?? WEATHER_UNITS_DEFAULT;
+  const days: number = args.options.days ?? DAYS_DEFAULT;
   try {
-    const place: WeatherPlace | null = await place_find(fetchFn, parsed.place);
-    if (place === null) return envelope_error(`weather: no such place '${parsed.place}'\n`);
-    const report: WeatherReport = await report_fetch(fetchFn, place, parsed.units, parsed.days);
+    const place: WeatherPlace | null = await place_find(fetchFn, placeName);
+    if (place === null) return envelope_error(`weather: no such place '${placeName}'\n`);
+    const report: WeatherReport = await report_fetch(fetchFn, place, units, days);
     return envelope_ok(report_render(report), { kind: 'sys.weather', data: report });
   } catch (error: unknown) {
     const reason: string = error instanceof Error ? error.message : String(error);

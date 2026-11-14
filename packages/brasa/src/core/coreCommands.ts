@@ -13,18 +13,18 @@
  */
 import { type CommandGroup, type CommandHandler, type EnvelopeHandler, type SessionPiece } from './commandRegistry.js';
 import type { AnyCommandDeclaration } from './commandDeclaration.js';
-import { builtin_leave, builtin_stopwatch, builtin_timer } from '../builtins/games/chimes.js';
-import { builtin_cowsay, builtin_cowthink } from '../builtins/games/cowsay.js';
-import { builtin_banner, builtin_figlet } from '../builtins/games/figlet.js';
-import { builtin_say, builtin_uptime, builtin_who } from '../builtins/games/lab.js';
-import { builtin_lolcat } from '../builtins/games/lolcat.js';
-import { builtin_morse } from '../builtins/games/morse.js';
-import { builtin_calc, builtin_factor, builtin_primes, builtin_roll, builtin_units } from '../builtins/games/numbers.js';
-import { builtin_2048, builtin_hangman, builtin_quiz } from '../builtins/games/play.js';
-import { builtin_trek } from '../builtins/games/trek.js';
-import { builtin_qr } from '../builtins/games/qr.js';
-import { builtin_asciiquarium, builtin_cmatrix, builtin_rain, builtin_sl, builtin_snake, builtin_tetris } from '../builtins/games/show.js';
-import { builtin_ddate, builtin_pom, builtin_stardate, builtin_sunrise } from '../builtins/games/sky.js';
+import { leaveCommand, stopwatchCommand, timerCommand } from '../builtins/games/chimes.js';
+import { cowsayCommand, cowthinkCommand } from '../builtins/games/cowsay.js';
+import { bannerCommand, figletCommand } from '../builtins/games/figlet.js';
+import { sayCommand, uptimeCommand, whoCommand } from '../builtins/games/lab.js';
+import { lolcatCommand } from '../builtins/games/lolcat.js';
+import { morseCommand } from '../builtins/games/morse.js';
+import { calcCommand, factorCommand, primesCommand, rollCommand, unitsCommand } from '../builtins/games/numbers.js';
+import { game2048Command, hangmanCommand, quizCommand } from '../builtins/games/play.js';
+import { trekCommand } from '../builtins/games/trek.js';
+import { qrCommand } from '../builtins/games/qr.js';
+import { asciiquariumCommand, cmatrixCommand, rainCommand, slCommand, snakeCommand, tetrisCommand } from '../builtins/games/show.js';
+import { ddateCommand, pomCommand, stardateCommand, sunriseCommand } from '../builtins/games/sky.js';
 import { builtin_grep } from '../builtins/sys/grep.js';
 import { builtin_cut, builtin_head, builtin_sort, builtin_tail, builtin_uniq, builtin_wc } from '../builtins/sys/textFilters.js';
 import { commandCommand } from '../builtins/sys/command.js';
@@ -32,11 +32,11 @@ import { killCommand, waitCommand } from '../builtins/sys/tasks.js';
 import { fgCommand, jobletsCommand } from '../builtins/sys/joblets.js';
 import { setCommand, unsetCommand } from '../builtins/sys/variables.js';
 import { echoCommand, printfCommand } from '../builtins/sys/echo.js';
-import { builtin_expect } from '../builtins/res/expect.js';
-import { builtin_play } from '../builtins/res/play.js';
+import { expectCommand } from '../builtins/res/expect.js';
+import { playCommand } from '../builtins/res/play.js';
 import { aproposCommand, manCommand } from '../builtins/sys/apropos.js';
-import { builtin_rev, builtin_rot13, builtin_seq, builtin_shuf, builtin_tac, builtin_yes } from '../builtins/games/text.js';
-import { builtin_wtf } from '../builtins/games/wtf.js';
+import { revCommand, rot13Command, seqCommand, shufCommand, tacCommand, yesCommand } from '../builtins/games/text.js';
+import { wtfCommand } from '../builtins/games/wtf.js';
 import { debugCommand } from '../builtins/debug.js';
 import { builtin_cat } from '../builtins/fs/cat.js';
 import { cdCommand } from '../builtins/fs/cd.js';
@@ -51,12 +51,12 @@ import { builtin_rmdir } from '../builtins/fs/rmdir.js';
 import { builtin_touch } from '../builtins/fs/touch.js';
 import { builtin_find } from '../builtins/fs/find.js';
 import { helpCommand } from '../builtins/help.js';
-import { builtin_cal } from '../builtins/sys/cal.js';
+import { calCommand } from '../builtins/sys/cal.js';
 import { dateCommand } from '../builtins/sys/date.js';
-import { builtin_fortune } from '../builtins/sys/fortune.js';
+import { fortuneCommand } from '../builtins/sys/fortune.js';
 import { timingCommand } from '../builtins/sys/timing.js';
 import { versionCommand } from '../builtins/sys/version.js';
-import { builtin_weather } from '../builtins/sys/weather.js';
+import { weatherCommand } from '../builtins/sys/weather.js';
 import { notesCommand } from '../builtins/sys/notes.js';
 import { envelopeHandler_wrap } from './sink.js';
 
@@ -70,14 +70,6 @@ const envelope: Record<string, EnvelopeHandler> = {
   rmdir: builtin_rmdir,
   touch: builtin_touch,
   url: builtin_url,
-  fortune: builtin_fortune,
-  cowsay: builtin_cowsay,
-  cowthink: builtin_cowthink,
-  figlet: builtin_figlet,
-  banner: builtin_banner,
-  lolcat: builtin_lolcat,
-  rev: builtin_rev,
-  tac: builtin_tac,
   grep: builtin_grep,
   wc: builtin_wc,
   head: builtin_head,
@@ -85,42 +77,6 @@ const envelope: Record<string, EnvelopeHandler> = {
   sort: builtin_sort,
   uniq: builtin_uniq,
   cut: builtin_cut,
-  yes: builtin_yes,
-  seq: builtin_seq,
-  factor: builtin_factor,
-  primes: builtin_primes,
-  shuf: builtin_shuf,
-  roll: builtin_roll,
-  rot13: builtin_rot13,
-  morse: builtin_morse,
-  calc: builtin_calc,
-  units: builtin_units,
-  who: builtin_who,
-  uptime: builtin_uptime,
-  say: builtin_say,
-  wtf: builtin_wtf,
-  qr: builtin_qr,
-  pom: builtin_pom,
-  stardate: builtin_stardate,
-  ddate: builtin_ddate,
-  sunrise: builtin_sunrise,
-  timer: builtin_timer,
-  expect: builtin_expect,
-  play: builtin_play,
-  leave: builtin_leave,
-  stopwatch: builtin_stopwatch,
-  sl: builtin_sl,
-  cmatrix: builtin_cmatrix,
-  rain: builtin_rain,
-  asciiquarium: builtin_asciiquarium,
-  tetris: builtin_tetris,
-  snake: builtin_snake,
-  quiz: builtin_quiz,
-  hangman: builtin_hangman,
-  trek: builtin_trek,
-  '2048': builtin_2048,
-  weather: builtin_weather,
-  cal: builtin_cal,
 };
 
 const plain: Record<string, CommandHandler> = {
@@ -133,14 +89,6 @@ const plain: Record<string, CommandHandler> = {
   touch: envelopeHandler_wrap(builtin_touch),
   mkdir: envelopeHandler_wrap(builtin_mkdir),
   rmdir: envelopeHandler_wrap(builtin_rmdir),
-  fortune:envelopeHandler_wrap(builtin_fortune),
-  cowsay: envelopeHandler_wrap(builtin_cowsay),
-  cowthink: envelopeHandler_wrap(builtin_cowthink),
-  figlet: envelopeHandler_wrap(builtin_figlet),
-  banner: envelopeHandler_wrap(builtin_banner),
-  lolcat: envelopeHandler_wrap(builtin_lolcat),
-  rev: envelopeHandler_wrap(builtin_rev),
-  tac: envelopeHandler_wrap(builtin_tac),
   grep: envelopeHandler_wrap(builtin_grep),
   wc: envelopeHandler_wrap(builtin_wc),
   head: envelopeHandler_wrap(builtin_head),
@@ -148,42 +96,6 @@ const plain: Record<string, CommandHandler> = {
   sort: envelopeHandler_wrap(builtin_sort),
   uniq: envelopeHandler_wrap(builtin_uniq),
   cut: envelopeHandler_wrap(builtin_cut),
-  yes: envelopeHandler_wrap(builtin_yes),
-  seq: envelopeHandler_wrap(builtin_seq),
-  factor: envelopeHandler_wrap(builtin_factor),
-  primes: envelopeHandler_wrap(builtin_primes),
-  shuf: envelopeHandler_wrap(builtin_shuf),
-  roll: envelopeHandler_wrap(builtin_roll),
-  rot13: envelopeHandler_wrap(builtin_rot13),
-  morse: envelopeHandler_wrap(builtin_morse),
-  calc: envelopeHandler_wrap(builtin_calc),
-  units: envelopeHandler_wrap(builtin_units),
-  who: envelopeHandler_wrap(builtin_who),
-  uptime: envelopeHandler_wrap(builtin_uptime),
-  say: envelopeHandler_wrap(builtin_say),
-  wtf: envelopeHandler_wrap(builtin_wtf),
-  qr: envelopeHandler_wrap(builtin_qr),
-  pom: envelopeHandler_wrap(builtin_pom),
-  stardate: envelopeHandler_wrap(builtin_stardate),
-  ddate: envelopeHandler_wrap(builtin_ddate),
-  sunrise: envelopeHandler_wrap(builtin_sunrise),
-  timer: envelopeHandler_wrap(builtin_timer),
-  expect: envelopeHandler_wrap(builtin_expect),
-  play: envelopeHandler_wrap(builtin_play),
-  leave: envelopeHandler_wrap(builtin_leave),
-  stopwatch: envelopeHandler_wrap(builtin_stopwatch),
-  sl: envelopeHandler_wrap(builtin_sl),
-  cmatrix: envelopeHandler_wrap(builtin_cmatrix),
-  rain: envelopeHandler_wrap(builtin_rain),
-  asciiquarium: envelopeHandler_wrap(builtin_asciiquarium),
-  tetris: envelopeHandler_wrap(builtin_tetris),
-  snake: envelopeHandler_wrap(builtin_snake),
-  quiz: envelopeHandler_wrap(builtin_quiz),
-  hangman: envelopeHandler_wrap(builtin_hangman),
-  trek: envelopeHandler_wrap(builtin_trek),
-  '2048': envelopeHandler_wrap(builtin_2048),
-  weather: envelopeHandler_wrap(builtin_weather),
-  cal: envelopeHandler_wrap(builtin_cal),
 };
 
 
@@ -196,10 +108,7 @@ const plain: Record<string, CommandHandler> = {
  */
 const holds: Record<string, readonly SessionPiece[]> = {
   ...Object.fromEntries([
-    'banner', 'cal', 'calc', 'cat', 'cowsay', 'cowthink', 'cut', 'ddate', 'factor',
-    'figlet', 'find', 'fortune', 'grep', 'head', 'lolcat', 'morse', 'pom',
-    'primes', 'qr', 'rev', 'rot13', 'seq', 'sort', 'stardate', 'tac', 'tail', 'uniq',
-    'units', 'uptime', 'wc', 'who',
+    'cat', 'cut', 'find', 'grep', 'head', 'sort', 'tail', 'uniq', 'wc',
   ].map((name: string): [string, readonly SessionPiece[]] => [name, []])),
 };
 
@@ -209,6 +118,13 @@ const declarations: ReadonlyArray<AnyCommandDeclaration> = [
   // General, in the order their handlers listed before they were declared.
   commandCommand, aproposCommand, manCommand, killCommand, waitCommand, fgCommand, jobletsCommand,
   setCommand, echoCommand, printfCommand, unsetCommand, versionCommand, notesCommand, dateCommand, helpCommand,
+  // The games shelf and the workflows, in the order their handlers listed before they were declared.
+  fortuneCommand, cowsayCommand, cowthinkCommand, figletCommand, bannerCommand, lolcatCommand, revCommand, tacCommand,
+  yesCommand, seqCommand, factorCommand, primesCommand, shufCommand, rollCommand, rot13Command, morseCommand,
+  calcCommand, unitsCommand, whoCommand, uptimeCommand, sayCommand, wtfCommand, qrCommand, pomCommand,
+  stardateCommand, ddateCommand, sunriseCommand, timerCommand, expectCommand, playCommand, leaveCommand, stopwatchCommand,
+  slCommand, cmatrixCommand, rainCommand, asciiquariumCommand, tetrisCommand, snakeCommand, quizCommand, hangmanCommand,
+  trekCommand, game2048Command, weatherCommand, calCommand,
 ];
 
 export const coreCommands: CommandGroup = {

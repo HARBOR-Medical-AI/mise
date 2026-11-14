@@ -2,12 +2,11 @@
  * @file `workflow` and `workflows`: CUBE's workflows, a pipeline's runs,
  * listed, searched, and their fields named. A pipeline runs with `pipeline run`.
  *
- * Declared in one record (`workflowCommand`, and `workflowsCommand` its
- * second name): the subcommands and the listing options every resource
+ * Declared in one record (`workflowCommand`, `workflows` among its aliases): the subcommands and the listing options every resource
  * command reads.
  *
  * Key components:
- * - workflowCommand / workflowsCommand: the declaration, under each name.
+ * - workflowCommand: the declaration, answered as `workflow` and `workflows`.
  * - builtin_workflow: the declaration run over words already split.
  *
  * @module
@@ -21,7 +20,7 @@ import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
-import { RESOURCE_LIST_OPTIONS_GRAMMAR, commandAlias_make, resourceListBag_build } from './resourceList.js';
+import { RESOURCE_LIST_OPTIONS_GRAMMAR, resourceListBag_build } from './resourceList.js';
 
 /**
  * Lists the workflows a listing's options ask for.
@@ -87,11 +86,12 @@ async function workflow_run(args: CommandArguments<typeof WORKFLOW_GRAMMAR>): Pr
  *
  * @example
  * ```ts
- * commands_register({ declarations: [workflowCommand, workflowsCommand] }, 'backend');
+ * commands_register({ declarations: [workflowCommand] }, 'backend');
  * ```
  */
 export const workflowCommand = command_declare({
   name: 'workflow',
+  aliases: ['workflows'],
   grammar: WORKFLOW_GRAMMAR,
   help: {
     summary: "CUBE's workflows, a pipeline's runs: list them, search them, name their fields",
@@ -101,9 +101,6 @@ export const workflowCommand = command_declare({
   },
   handler: workflow_run,
 });
-
-/** `workflows`: the same command as `workflow`. */
-export const workflowsCommand = commandAlias_make(workflowCommand, 'workflows');
 
 /**
  * `workflow` over words already split: the declaration's parse and handler.

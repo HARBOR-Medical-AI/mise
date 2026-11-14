@@ -2,18 +2,28 @@
  * @file The games shelf: `help games` lists the commands that exist, by
  * category, and never one that has not landed.
  */
-import { describe, it, expect } from '@jest/globals';
+import { jest, describe, it, expect } from '@jest/globals';
+import { cuminMock_install } from './support/cuminMock.js';
 import { GAMES_SHELF, gamesShelf_names, gamesShelf_render } from '../src/builtins/games/shelf.js';
 import { builtin_help, commandSummary_get, helpText } from '../src/builtins/help.js';
 import { chrisHelp } from '../src/chris/help.js';
 import { chrisHelp_install } from './support/chrisHelp.js';
 import { commandDeclaration_get, commands_register } from '../src/core/commandRegistry.js';
 import { dateCommand } from '../src/builtins/sys/date.js';
+import { fortuneCommand } from '../src/builtins/sys/fortune.js';
+import { calCommand } from '../src/builtins/sys/cal.js';
+import { weatherCommand } from '../src/builtins/sys/weather.js';
+
+// `motd` reads the session's index, which this suite never reaches.
+cuminMock_install(() => ({ procCache_get: jest.fn() }));
+jest.unstable_mockModule('@fnndsc/salsa', () => ({ context_getSingle: jest.fn() }));
+const { motdCommand } = await import('../src/builtins/sys/motd.js');
 
 // The shelf as a ChRIS session has it: `motd` and the lab's tools are ChRIS's.
 chrisHelp_install();
-// `date`, on the shelf, is declared: its help is its declaration's.
-commands_register({ declarations: [dateCommand] });
+// The shelf's commands are declared: their help is their declarations'.
+commands_register({ declarations: [dateCommand, fortuneCommand, calCommand, weatherCommand] });
+commands_register({ declarations: [motdCommand] }, 'backend');
 
 const plain = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, '');
 

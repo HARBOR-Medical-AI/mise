@@ -12,6 +12,8 @@ import chalk from 'chalk';
 import { repl_question } from '../../core/question.js';
 import { sink_dataLine } from '../../core/sink.js';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /* ---------------------------------------------------------------- quiz */
 
@@ -47,8 +49,54 @@ export function answer_matches(given: string, accepted: ReadonlyArray<string>): 
   return g.length > 0 && accepted.some((a: string): boolean => norm(a) === g);
 }
 
-/** `quiz`: five questions from the bank; the score at the end. */
-export async function builtin_quiz(_args: string[]): Promise<CommandEnvelope> {
+/** `quiz` takes nothing. */
+const QUIZ_GRAMMAR = {} as const satisfies CommandGrammar;
+
+/**
+ * `quiz`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [quizCommand] });
+ * ```
+ */
+export const quizCommand = command_declare({
+  name: 'quiz',
+  grammar: QUIZ_GRAMMAR,
+  help: {
+    summary: 'Five questions about the lab and its words',
+    description: "Asks five questions from the lab's own book — CUBE, DICOM, plugins, the services — one at a time; answer, or q to stop. Plays anywhere a question can be answered: a terminal or the ARGUS console.",
+    examples: ['quiz'],
+  },
+  handler: async (): Promise<CommandEnvelope> => quiz_run(),
+});
+
+/**
+ * `quiz` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `quiz`: none.
+ * @returns The game's end, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_quiz([]);
+ * ```
+ */
+export async function builtin_quiz(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(quizCommand, args);
+}
+
+/**
+ * Plays `quiz`: five questions from the bank, the score at the end.
+ *
+ * @returns The score.
+ *
+ * @example
+ * ```ts
+ * await quiz_run();
+ * ```
+ */
+export async function quiz_run(): Promise<CommandEnvelope> {
   const asked: QuizItem[] = [...QUIZ_BANK].sort((): number => Math.random() - 0.5).slice(0, QUIZ_ROUND);
   let right: number = 0;
   const results: Array<{ q: string; right: boolean }> = [];
@@ -89,8 +137,54 @@ export function word_mask(word: string, guessed: ReadonlySet<string>): string {
   return [...word].map((c: string): string => (guessed.has(c) ? c : '_')).join(' ');
 }
 
-/** `hangman`: a word from the lab, six misses allowed. */
-export async function builtin_hangman(_args: string[]): Promise<CommandEnvelope> {
+/** `hangman` takes nothing. */
+const HANGMAN_GRAMMAR = {} as const satisfies CommandGrammar;
+
+/**
+ * `hangman`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [hangmanCommand] });
+ * ```
+ */
+export const hangmanCommand = command_declare({
+  name: 'hangman',
+  grammar: HANGMAN_GRAMMAR,
+  help: {
+    summary: "Hangman, with the lab's words",
+    description: 'A word from the lab, six misses allowed: a letter a turn, the whole word when you know it, q to give up.',
+    examples: ['hangman'],
+  },
+  handler: async (): Promise<CommandEnvelope> => hangman_run(),
+});
+
+/**
+ * `hangman` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `hangman`: none.
+ * @returns The game's end, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_hangman([]);
+ * ```
+ */
+export async function builtin_hangman(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(hangmanCommand, args);
+}
+
+/**
+ * Plays `hangman`: a word from the lab, six misses allowed.
+ *
+ * @returns How it ended.
+ *
+ * @example
+ * ```ts
+ * await hangman_run();
+ * ```
+ */
+export async function hangman_run(): Promise<CommandEnvelope> {
   const word: string = HANGMAN_WORDS[Math.floor(Math.random() * HANGMAN_WORDS.length)] as string;
   const guessed: Set<string> = new Set();
   let misses: number = 0;
@@ -183,8 +277,54 @@ export function board_render(board: Board, score: number): string {
   return `${board.map((row: number[]): string => row.map(cell).join('')).join('\n')}\n  score ${score}`;
 }
 
-/** `2048`: w/a/s/d (or h/j/k/l) by question, q to stop. */
-export async function builtin_2048(_args: string[]): Promise<CommandEnvelope> {
+/** `2048` takes nothing. */
+const GAME2048_GRAMMAR = {} as const satisfies CommandGrammar;
+
+/**
+ * `2048`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [game2048Command] });
+ * ```
+ */
+export const game2048Command = command_declare({
+  name: '2048',
+  grammar: GAME2048_GRAMMAR,
+  help: {
+    summary: 'Slide the tiles, join the powers of two',
+    description: 'The 4×4 board, a move per answer: w a s d (or h j k l) slide, q stops. Two tiles alike join; reach 2048.',
+    examples: ['2048'],
+  },
+  handler: async (): Promise<CommandEnvelope> => game2048_run(),
+});
+
+/**
+ * `2048` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `2048`: none.
+ * @returns The game's end, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_2048([]);
+ * ```
+ */
+export async function builtin_2048(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(game2048Command, args);
+}
+
+/**
+ * Plays `2048`: w/a/s/d (or h/j/k/l) by question, q to stop.
+ *
+ * @returns The final score.
+ *
+ * @example
+ * ```ts
+ * await game2048_run();
+ * ```
+ */
+export async function game2048_run(): Promise<CommandEnvelope> {
   let board: Board = Array.from({ length: 4 }, (): number[] => [0, 0, 0, 0]);
   board_spawn(board); board_spawn(board);
   let score: number = 0;

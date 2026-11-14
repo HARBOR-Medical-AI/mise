@@ -13,7 +13,9 @@
  */
 import chalk from 'chalk';
 import { CommandEnvelope, envelope_error, envelope_ok } from '@fnndsc/menu';
-import { TREK_CREDITS, trek_play, trekArgs_parse, type TrekDump, type TrekState, type TrekTerminal } from 'bsd-trek';
+import { TREK_CREDITS, trek_play, type TrekDump, type TrekState, type TrekTerminal } from 'bsd-trek';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import { repl_question } from '../../core/question.js';
 import { sink_get } from '../../core/sink.js';
 
@@ -39,19 +41,74 @@ const SESSION_TERMINAL: TrekTerminal = {
   state_show: (state: TrekState): void => { sink_get().event_write?.('games.trek.state', state); },
 };
 
+/** What a `trek` line may hold: the look, the pace, the galaxy's seed, the credits. */
+const TREK_GRAMMAR = {
+  options: {
+    classic: { long: 'classic', summary: 'Show the scans as printed in 1976, without glyphs or colour' },
+    fast: { short: 'f', summary: 'The original fast mode' },
+    slow: { short: 's', summary: 'The original slow mode' },
+    seed: { long: 'seed', summary: 'Replay the galaxy of this seed', value: { name: 'N', kind: 'int' } },
+    credits: { long: 'credits', summary: 'Name who made the game, instead of playing it' },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * `trek [--classic] [-f | -s] [--seed N]`.
+ * `trek [--classic] [-f | -s] [--seed N] [--credits]`: the declaration.
  *
- * @param args - The words after the command.
- * @returns The game's end.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [trekCommand] });
+ * ```
+ */
+export const trekCommand = command_declare({
+  name: 'trek',
+  grammar: TREK_GRAMMAR,
+  help: {
+    summary: 'The 1976 Berkeley space war game (BSD trek)',
+    description: 'Command a starship against an invading fleet across an 8×8 galaxy of quadrants, by question: srscan, lrscan, move, phasers, torpedo, shield, dock, computer and the rest (? at any prompt lists the answers it takes). Answers can be typed ahead on one line, as in the original. The scans wear glyphs and colours; --classic shows them as printed in 1976. -f and -s are the original fast and slow modes; --seed N replays a galaxy; --credits (or credits in the game) names who made it. terminate ends a game; answer no to Another game to leave.',
+    examples: ['trek', 'trek --classic', 'trek --seed 42', 'trek --credits'],
+  },
+  handler: async (args: CommandArguments<typeof TREK_GRAMMAR>): Promise<CommandEnvelope> => trek_run(args.options),
+});
+
+/**
+ * `trek` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `trek`.
+ * @returns The game's end, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_trek(['--seed', '42']);
+ * ```
  */
 export async function builtin_trek(args: string[]): Promise<CommandEnvelope> {
-  const asked = trekArgs_parse(args);
-  if ('refusal' in asked) return envelope_error('', undefined, `${asked.refusal}\n`);
-  if (asked.credits) return envelope_ok(TREK_CREDITS, { kind: 'games.trek.credits', data: {} });
+  return declaredCommand_run(trekCommand, args);
+}
+
+/**
+ * Plays `trek`, or names who made it.
+ *
+ * @param options - The line's options.
+ * @param options.classic - The original look.
+ * @param options.fast - The original fast mode.
+ * @param options.slow - The original slow mode (it wins over fast).
+ * @param options.seed - The galaxy's seed; absent, the clock's.
+ * @param options.credits - Name the makers instead of playing.
+ * @returns The game's end.
+ *
+ * @example
+ * ```ts
+ * await trek_run({ classic: true, fast: false, slow: false, seed: 42, credits: false });
+ * ```
+ */
+export async function trek_run(options: { readonly classic: boolean; readonly fast: boolean; readonly slow: boolean; readonly seed: number | undefined; readonly credits: boolean }): Promise<CommandEnvelope> {
+  if (options.credits) return envelope_ok(TREK_CREDITS, { kind: 'games.trek.credits', data: {} });
+  const seed: number = options.seed ?? Math.floor(Date.now() / 1000);
+  const fast: number = options.slow ? 0 : options.fast ? 2 : 1;
   try {
-    const code: number = await trek_play(SESSION_TERMINAL, { seed: asked.seed, fast: asked.fast, trace: 0, styled: !asked.classic && chalk.level > 0 }, TREK_DUMP);
-    return envelope_ok('', { kind: 'games.trek', data: { seed: asked.seed, exit: code } });
+    const code: number = await trek_play(SESSION_TERMINAL, { seed, fast, trace: 0, styled: !options.classic && chalk.level > 0 }, TREK_DUMP);
+    return envelope_ok('', { kind: 'games.trek', data: { seed, exit: code } });
   } catch (error: unknown) {
     return envelope_error('', undefined, `trek: cannot ask here (${error instanceof Error ? error.message : String(error)})\n`);
   }

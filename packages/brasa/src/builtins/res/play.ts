@@ -17,6 +17,22 @@
  * and a manifest that named panes would fork into a browser version and a
  * headless one.
  *
+ * Declared in one record (`playCommand`).
+ *
+ * Key components:
+ * - playCommand: the declaration.
+ * - builtin_play: the declaration run over words already split.
+ * - playArgs_parse: a line's words to the request it makes.
+ * - manifest_parse, line_expand: a manifest's text and its lines.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_play(['~/flows/battery.mise', '--param', 'MRN=1234567']);
+ * ```
+ *
+ * Dependencies: the engine's line path (`line_execute`), the session's
+ * variables and filesystem, and the backend's line-status providers.
+ *
  * @module
  */
 import chalk from 'chalk';
@@ -32,10 +48,12 @@ import { reference_changedBy, reference_isReserved, reference_resolve, unresolve
 import { pipes_parse } from '../../core/preprocess.js';
 import { commandList_parse, semicolons_parse, type ListCommand } from '../../lib/semicolonParser.js';
 import { VARIABLE_NAME, assignment_parse, variable_get, variableScope_run, type Assignment, type Variable } from '../../core/variables.js';
-import { shellWords_referencesExpand, shellWords_tokenize, type ReferenceExpansion, type ReferenceValue, type ShellWord } from '../../lib/parser.js';
+import { shellWord_literal, shellWords_referencesExpand, shellWords_tokenize, type ReferenceExpansion, type ReferenceValue, type ShellWord } from '../../lib/parser.js';
 import { errorStack, type Result } from '@fnndsc/fond';
 import { CommandEnvelope, envelope_ok, envelope_error, LINE_DECLINED_MODEL_KIND, MANIFEST_STATUS_MODEL_KIND } from '@fnndsc/menu';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { commandLine_parse, declaredCommand_run, type LineParse } from '../../core/commandParse.js';
 
 /** The model kind under which a played manifest's outcome travels. */
 export const PLAY_MODEL_KIND: string = 'manifest.played';
@@ -296,81 +314,100 @@ interface PlayArgs {
 }
 
 /**
- * Parses `play`'s own arguments.
- *
- * Hand-parsed because `--param` repeats, and a generic parser keeps only the
- * last of a repeated option — which would silently drop every parameter but
- * one and play the manifest with the wrong values.
- *
- * @param args - The tokens after `play`.
- * @returns What was asked for.
+ * What a `play` line may hold. `--param` repeats and keeps every value, so
+ * no parameter is dropped for the one given after it.
  */
-export function playArgs_parse(args: string[]): PlayArgs {
-  const params: Map<string, string> = new Map();
-  let manifest: string | null = null;
-  let paceMs: number = 0;
-  let dryRun: boolean = false;
-  let status: boolean = false;
-  let text: string | null = null;
-  let parseError: string | null = null;
+const PLAY_GRAMMAR = {
+  operands: [
+    { name: 'manifest', kind: 'cfsPath', glob: true, summary: "The manifest: read from the session's filesystem first, the engine's disk second" },
+  ],
+  options: {
+    param: { long: 'param', repeat: true, summary: 'Supply a parameter the manifest declares (repeatable)', value: { name: 'NAME=value', kind: 'word' } },
+    pace: { long: 'pace', summary: 'Wait between lines, for watching a play at a surface', value: { name: 'duration', kind: 'word' } },
+    dryRun: { long: 'dry-run', summary: 'Expand the lines and show them without running any' },
+    status: { long: 'status', summary: 'Run nothing: say where each line stands, from what the backend keeps' },
+    text: { long: 'text', summary: "With --status: the script's text, read in place of the file's", value: { name: 'script', kind: 'word' } },
+    step: { long: 'step', summary: 'Refused: a keypress needs a terminal; at a surface, play with --pace' },
+  },
+} as const satisfies CommandGrammar;
 
-  for (let index = 0; index < args.length; index++) {
-    const token: string = args[index];
-    if (token === '--param') {
-      const pair: string | undefined = args[index + 1];
-      const equals: number = pair === undefined ? -1 : pair.indexOf('=');
-      if (pair === undefined || equals <= 0) {
-        parseError = '--param takes NAME=value';
-        break;
-      }
-      params.set(pair.slice(0, equals), pair.slice(equals + 1));
-      index++;
-    } else if (token === '--pace') {
-      // One duration reader for the language: `expect --within` and
-      // `play --pace` are the same notion of time, and a second parser
-      // beside it is a second set of durations that mean something else.
-      const value: string | undefined = args[index + 1];
-      const ms: number | null = value === undefined ? null : duration_parse(value);
-      if (ms === null || ms < 0) {
-        parseError = '--pace takes a duration such as 2s';
-        break;
-      }
-      paceMs = ms;
-      index++;
-    } else if (token === '--dry-run') {
-      dryRun = true;
-    } else if (token === '--status') {
-      status = true;
-    } else if (token.startsWith('--text=')) {
-      // The `=` form: a script whose text begins with `-` is the option's value, never another option.
-      text = token.slice('--text='.length);
-    } else if (token === '--text') {
-      const given: string | undefined = args[index + 1];
-      if (given === undefined) {
-        parseError = '--text takes the script\'s text';
-        break;
-      }
-      text = given;
-      index++;
-    } else if (token === '--step') {
-      // A keypress needs a terminal, and the daemon has none. Refusing by
-      // name beats pausing forever on a surface that cannot answer.
-      parseError = '--step needs a terminal; at a surface, play with --pace';
-      break;
-    } else if (token.startsWith('--')) {
-      parseError = `unknown option ${token}`;
-      break;
-    } else if (manifest === null) {
-      manifest = token;
-    } else {
-      parseError = `unexpected argument ${token}`;
-      break;
-    }
+/** The typed `play` line. */
+type PlayArguments = CommandArguments<typeof PLAY_GRAMMAR>;
+
+/**
+ * `play <manifest> [--param NAME=value]… [--pace <duration>] [--dry-run] [--status [--text <script>]]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [playCommand] });
+ * ```
+ */
+export const playCommand = command_declare({
+  name: 'play',
+  grammar: PLAY_GRAMMAR,
+  help: {
+    summary: 'Run a manifest: the lines an operator could have typed',
+    description: 'Plays a manifest (a script is one): its lines run in order in a scope of their own, each shown as it runs, and the first refused line stops it, non-zero. When it ends, however it ends, the session is back in the directory the play began in, so a manifest that cds into a feed does not leave every surface there. The manifest is read from the session\'s filesystem first and from the engine\'s disk second. --status runs nothing: each line is expanded as a dry run expands it and its verb says, from what the backend keeps and never from the cloud, where it stands (not yet, with what is missing; ready; done; changed, with what changed), one row per line and a count at the end; a verb that keeps nothing reads as a dash. A manifest holds a comment (# …), @name (what this workflow is), @description (one line about it), @param NAME (a parameter it needs) or @param LABEL = draft (one with a default), @answers C (the variable X=$(play f) holds), and any kernel line, C=$(…) naming what a line made. The variables a line may use (${C.field}, ${cwd} …) are in help variables. See docs/manifest.adoc.',
+    category: 'Workflows',
+    examples: [
+      'play ~/flows/battery.mise',
+      'play ~/flows/battery.mise --dry-run',
+      'play ~/flows/battery.mise --pace 2s',
+      'play ~/flows/battery.mise --param MRN=1234567 --param LABEL=draft',
+    ],
+  },
+  handler: async (args: PlayArguments): Promise<CommandEnvelope> => play_run(playRequest_check(args)),
+});
+
+/**
+ * Checks what the parse cannot: each `--param` is NAME=value, `--pace` is a
+ * duration, `--text` comes with `--status`, and `--step` is refused by name.
+ *
+ * @param args - The typed `play` line.
+ * @returns What was asked for, `parseError` set when it cannot be played.
+ */
+function playRequest_check(args: PlayArguments): PlayArgs {
+  const request: PlayArgs = {
+    manifest: args.operands.manifest, params: new Map(), paceMs: 0, dryRun: args.options.dryRun,
+    status: args.options.status, text: args.options.text ?? null, parseError: null,
+  };
+  // A keypress needs a terminal, and the daemon has none. Refusing by
+  // name beats pausing forever on a surface that cannot answer.
+  if (args.options.step) return { ...request, parseError: '--step needs a terminal; at a surface, play with --pace' };
+  for (const pair of args.options.param) {
+    const equals: number = pair.indexOf('=');
+    if (equals <= 0) return { ...request, parseError: '--param takes NAME=value' };
+    request.params.set(pair.slice(0, equals), pair.slice(equals + 1));
   }
-
+  if (args.options.pace !== undefined) {
+    // One duration reader for the language: `expect --within` and
+    // `play --pace` are the same notion of time, and a second parser
+    // beside it is a second set of durations that mean something else.
+    const ms: number | null = duration_parse(args.options.pace);
+    if (ms === null || ms < 0) return { ...request, parseError: '--pace takes a duration such as 2s' };
+    request.paceMs = ms;
+  }
   // A text given in place of the file is read, never played: what runs is always a file someone can read after.
-  if (parseError === null && text !== null && !status) parseError = '--text reads a script\'s standing only: with --status';
-  return { manifest, params, paceMs, dryRun, status, text, parseError };
+  if (request.text !== null && !request.status) return { ...request, parseError: '--text reads a script\'s standing only: with --status' };
+  return request;
+}
+
+/**
+ * Reads `play`'s own words as its declaration parses them, with the checks
+ * the parse cannot make: the request a line makes, or why it makes none.
+ *
+ * @param args - The words after `play`, as literals.
+ * @returns What was asked for; `parseError` holds a refusal, the parser's or a check's.
+ *
+ * @example
+ * ```ts
+ * (await playArgs_parse(['f.mise', '--param', 'MRN=1'])).params.get('MRN'); // '1'
+ * ```
+ */
+export async function playArgs_parse(args: string[]): Promise<PlayArgs> {
+  const parsed: LineParse = await commandLine_parse(playCommand, args.map(shellWord_literal));
+  if (!parsed.ok) return { manifest: null, params: new Map(), paceMs: 0, dryRun: false, status: false, text: null, parseError: parsed.refusal };
+  return playRequest_check(parsed.args as PlayArguments);
 }
 
 /** The word a state is shown as, and its colour. */
@@ -430,13 +467,28 @@ async function manifestStatus_read(manifest: Manifest, name: string, values: Map
 }
 
 /**
- * Builtin handler for the `play` command.
+ * `play` over words already split: the declaration's parse and handler.
  *
- * @param args - Parsed command arguments.
+ * @param args - The words after `play`.
  * @returns An envelope carrying what the play did, or the refusal that stopped it.
+ *
+ * @example
+ * ```ts
+ * await builtin_play(['~/flows/battery.mise', '--dry-run']);
+ * ```
  */
 export async function builtin_play(args: string[]): Promise<CommandEnvelope> {
-  const parsed: PlayArgs = playArgs_parse(args);
+  return declaredCommand_run(playCommand, args);
+}
+
+/**
+ * Plays a manifest as asked: reads it, settles its parameters before any
+ * line runs, then runs (or, with `--status`, reads) its lines in order.
+ *
+ * @param parsed - What was asked for.
+ * @returns An envelope carrying what the play did, or the refusal that stopped it.
+ */
+async function play_run(parsed: PlayArgs): Promise<CommandEnvelope> {
   if (parsed.parseError !== null) {
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red(`play: ${parsed.parseError}`)}\n`);

@@ -37,12 +37,12 @@ describe('rev, tac, rot13, seq, shuf, yes', () => {
   });
 
   it('counts as seq does, and refuses nonsense', () => {
-    expect(seq_numbers(['3'])).toEqual({ numbers: [1, 2, 3] });
-    expect(seq_numbers(['2', '5'])).toEqual({ numbers: [2, 3, 4, 5] });
-    expect(seq_numbers(['10', '-5', '0'])).toEqual({ numbers: [10, 5, 0] });
-    expect(seq_numbers(['0', '0.5', '1'])).toEqual({ numbers: [0, 0.5, 1] });
-    expect('refusal' in seq_numbers(['a'])).toBe(true);
-    expect('refusal' in seq_numbers(['1', '0', '5'])).toBe(true);
+    expect(seq_numbers([3])).toEqual({ numbers: [1, 2, 3] });
+    expect(seq_numbers([2, 5])).toEqual({ numbers: [2, 3, 4, 5] });
+    expect(seq_numbers([10, -5, 0])).toEqual({ numbers: [10, 5, 0] });
+    expect(seq_numbers([0, 0.5, 1])).toEqual({ numbers: [0, 0.5, 1] });
+    expect('refusal' in seq_numbers([])).toBe(true);
+    expect('refusal' in seq_numbers([1, 0, 5])).toBe(true);
   });
 
   it('shuffles with a given chance, keeping every line', () => {

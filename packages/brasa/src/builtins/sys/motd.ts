@@ -17,6 +17,8 @@
 import { procCache_get, type ProcFeed, type ProcWarmupProgress, type SingleContext } from '@fnndsc/cumin';
 import { context_getSingle } from '@fnndsc/salsa';
 import { SESSION_MOTD_MODEL_KIND, type SessionMotd, type MotdIndex, CommandEnvelope, envelope_ok } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import { jobsState_derive, type JobsState } from '../../chris/jobsState.js';
 import { fortune_random } from './fortune.js';
 
@@ -120,23 +122,65 @@ export function motd_render(motd: SessionMotd): string {
   return `${lines.join('\n')}\n`;
 }
 
+/** What a `motd` line may hold: where the operator arrived. */
+const MOTD_GRAMMAR = {
+  operands: [{ name: 'surface', kind: 'word', optional: true, repeat: true, summary: 'Where you arrived (e.g. ARGUS, chell)' }],
+} as const satisfies CommandGrammar;
+
+/**
+ * `motd [surface]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [motdCommand] });
+ * ```
+ */
+export const motdCommand = command_declare({
+  name: 'motd',
+  grammar: MOTD_GRAMMAR,
+  help: {
+    summary: 'The greeting a session gives on arrival',
+    description: "Says who you are, how many feeds you hold, how many jobs have run and what share of them failed, and what is running now — from the session's own index, at no cost. While the index is still warming it says what it holds so far. A surface may name itself (motd ARGUS) and the greeting says where you arrived. Ends with a short fortune.",
+    category: 'Games',
+    examples: ['motd', 'motd ARGUS'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof MOTD_GRAMMAR>): Promise<CommandEnvelope> => motd_run(args.operands.surface),
+});
+
+/**
+ * `motd` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `motd`.
+ * @returns The greeting, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_motd(['ARGUS']);
+ * ```
+ */
+export async function builtin_motd(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(motdCommand, args);
+}
+
 /**
  * Greets the operator.
  *
- * @param args - Optionally where the operator arrived, e.g. `ARGUS` or
- *   `chell`; the word goes into the greeting as given. No flags.
+ * @param surface - The words naming where the operator arrived, e.g. `ARGUS`
+ *   or `chell`; they go into the greeting as given.
  * @returns An envelope carrying the greeting and the `session.motd` model.
+ *
+ * @example
+ * ```ts
+ * await motd_run(['ARGUS']);
+ * ```
  */
-export async function builtin_motd(args: string[]): Promise<CommandEnvelope> {
-  const flag: string | undefined = args.find((arg: string): boolean => arg.startsWith('-'));
-  if (flag !== undefined) {
-    return envelope_ok(`motd: unknown option '${flag}' (usage: motd [surface])\n`);
-  }
+export async function motd_run(surface: readonly string[]): Promise<CommandEnvelope> {
   const context: SingleContext = await context_getSingle();
   const user: string = context.user ?? '';
   if (user.length === 0) {
     return envelope_ok('Welcome. You are not connected: connect --user <user> --password <pwd> <url>\n');
   }
-  const motd: SessionMotd = motd_gather(user, args.join(' '));
+  const motd: SessionMotd = motd_gather(user, surface.join(' '));
   return envelope_ok(motd_render(motd), { kind: SESSION_MOTD_MODEL_KIND, data: motd });
 }

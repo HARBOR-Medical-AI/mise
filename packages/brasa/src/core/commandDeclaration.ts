@@ -298,6 +298,18 @@ export type CommandArguments<G extends CommandGrammar> = BareLine<G> | Subcomman
 export type SubcommandArguments<G extends CommandGrammar, K extends string> = Extract<CommandArguments<G>, { readonly subcommand: K }>;
 
 /**
+ * Another word that runs a command: the word alone, holding what the command
+ * holds, or the word with what it holds when that differs (`feeds`, a read,
+ * holds nothing while `feed` may create one).
+ *
+ * @example
+ * ```ts
+ * const aliases: readonly CommandAlias[] = [{ name: feeds, holds: [] }, job];
+ * ```
+ */
+export type CommandAlias = string | { readonly name: string; readonly holds: readonly SessionPiece[] };
+
+/**
  * A command parsed against its grammar: the one record that is its help,
  * its completion, its schema and its dispatch.
  *
@@ -313,6 +325,8 @@ export interface CommandDeclaration<G extends CommandGrammar = CommandGrammar> {
   readonly grammar: G;
   /** What `help` says of it. */
   readonly help: CommandProse;
+  /** Other words that run it (`feeds` for `feed`): parsed, completed, listed and described as the command, usage and refusals saying the word typed. */
+  readonly aliases?: readonly CommandAlias[];
   /** The pieces of the session it changes while it runs; absent, it holds the whole session. */
   readonly holds?: readonly SessionPiece[];
   /**
@@ -341,6 +355,8 @@ export interface ExpressionDeclaration {
   readonly grammar: 'expression';
   /** What `help` says of it; its usage is its own. */
   readonly help: CommandProse & { readonly usage: string };
+  /** Other words that run it, answered as the command. */
+  readonly aliases?: readonly CommandAlias[];
   /** The pieces of the session it changes while it runs. */
   readonly holds?: readonly SessionPiece[];
   /**
@@ -377,6 +393,28 @@ export type AnyCommandDeclaration = CommandDeclaration | ExpressionDeclaration;
  */
 export function command_declare<const G extends CommandGrammar>(declaration: CommandDeclaration<G>): CommandDeclaration<G> {
   return declaration;
+}
+
+/**
+ * The command under each of its other words: the same grammar, help and
+ * handler, named as typed, holding what that word holds. The registry
+ * answers each word with one of these; the schema and the migration count
+ * read the command once.
+ *
+ * @param declaration - The command.
+ * @returns One record per alias, in the order declared; none without aliases.
+ *
+ * @example
+ * ```ts
+ * commandAliases_list(feedCommand).map((alias) => alias.name); // [feeds]
+ * ```
+ */
+export function commandAliases_list<D extends AnyCommandDeclaration>(declaration: D): D[] {
+  return (declaration.aliases ?? []).map((alias: CommandAlias): D => {
+    const { aliases: _aliases, ...command } = declaration;
+    // The same record under another word: only the name and the holds differ.
+    return (typeof alias === 'string' ? { ...command, name: alias } : { ...command, name: alias.name, holds: alias.holds }) as D;
+  });
 }
 
 /**

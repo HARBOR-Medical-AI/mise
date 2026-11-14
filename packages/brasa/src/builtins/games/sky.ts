@@ -11,6 +11,8 @@
 import chalk from 'chalk';
 import { WEATHER_DEFAULT_PLACE, place_find, type WeatherFetch, type WeatherPlace } from '../sys/weather.js';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /* --------------------------------------------------------------- moon */
 
@@ -73,10 +75,70 @@ export function moon_draw(phase: MoonPhase): string[] {
   return rows;
 }
 
-/** `pom [YYYY-MM-DD]` */
+/**
+ * Reads a date out of the words a command was given.
+ *
+ * @param words - The date's words, none for today.
+ * @returns The date; invalid when the words are not one.
+ */
+function date_read(words: readonly string[]): Date {
+  return words.length > 0 ? new Date(words.join(' ')) : new Date();
+}
+
+/** What `pom` takes: a date, in as many words as it is written. */
+const POM_GRAMMAR = {
+  operands: [{ name: 'date', kind: 'word', optional: true, repeat: true, summary: 'The date to look at (default: today)' }],
+} as const satisfies CommandGrammar;
+
+/**
+ * `pom [date]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [pomCommand] });
+ * ```
+ */
+export const pomCommand = command_declare({
+  name: 'pom',
+  grammar: POM_GRAMMAR,
+  help: {
+    summary: 'The phase of the moon',
+    description: "BSD's pom: the Moon's phase today (or on a date), how much of it is lit, the days to the next full and new moons, and a small moon drawn as it looks.",
+    examples: ['pom', 'pom 2026-12-25'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof POM_GRAMMAR>): Promise<CommandEnvelope> => pom_run(args.operands.date),
+});
+
+/**
+ * `pom` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `pom`.
+ * @returns The answer, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_pom(['2026-12-25']);
+ * ```
+ */
 export async function builtin_pom(args: string[]): Promise<CommandEnvelope> {
-  const date: Date = args.length > 0 ? new Date(args.join(' ')) : new Date();
-  if (Number.isNaN(date.getTime())) return envelope_error('', undefined, `pom: '${args.join(' ')}' is not a date (try pom 2026-12-25)\n`);
+  return declaredCommand_run(pomCommand, args);
+}
+
+/**
+ * Runs `pom` on a date.
+ *
+ * @param words - The date's words, none for today.
+ * @returns The answer, or a refusal for words that are not a date.
+ *
+ * @example
+ * ```ts
+ * await pom_run(['2026-12-25']);
+ * ```
+ */
+export async function pom_run(words: readonly string[]): Promise<CommandEnvelope> {
+  const date: Date = date_read(words);
+  if (Number.isNaN(date.getTime())) return envelope_error('', undefined, `pom: '${words.join(' ')}' is not a date (try pom 2026-12-25)\n`);
   const moon: MoonPhase = moon_phase(date);
   const percent: number = Math.round(moon.illumination * 100);
   const trend: string = moon.name === 'Full Moon' || moon.name === 'New Moon' ? '' : moon.phase < 0.5 ? ' (waxing)' : ' (waning)';
@@ -108,10 +170,60 @@ export function stardate_derive(date: Date): { kelvin: string; tng: string } {
   return { kelvin, tng: tng.toFixed(1) };
 }
 
-/** `stardate` */
+/** What `stardate` takes: a date, in as many words as it is written. */
+const STARDATE_GRAMMAR = {
+  operands: [{ name: 'date', kind: 'word', optional: true, repeat: true, summary: 'The date to reckon (default: today)' }],
+} as const satisfies CommandGrammar;
+
+/**
+ * `stardate [date]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [stardateCommand] });
+ * ```
+ */
+export const stardateCommand = command_declare({
+  name: 'stardate',
+  grammar: STARDATE_GRAMMAR,
+  help: {
+    summary: 'The stardate, two ways',
+    description: "The day as a stardate: by the Kelvin films' reckoning (the year, then the day of it), with TNG's thousand-a-year count from 2323 beside it.",
+    examples: ['stardate', 'stardate 2366-01-01'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof STARDATE_GRAMMAR>): Promise<CommandEnvelope> => stardate_run(args.operands.date),
+});
+
+/**
+ * `stardate` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `stardate`.
+ * @returns The answer, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_stardate(['2366-01-01']);
+ * ```
+ */
 export async function builtin_stardate(args: string[]): Promise<CommandEnvelope> {
-  const date: Date = args.length > 0 ? new Date(args.join(' ')) : new Date();
-  if (Number.isNaN(date.getTime())) return envelope_error('', undefined, `stardate: '${args.join(' ')}' is not a date\n`);
+  return declaredCommand_run(stardateCommand, args);
+}
+
+/**
+ * Runs `stardate` on a date.
+ *
+ * @param words - The date's words, none for today.
+ * @returns The answer, or a refusal for words that are not a date.
+ *
+ * @example
+ * ```ts
+ * await stardate_run(['2366-01-01']);
+ * ```
+ */
+export async function stardate_run(words: readonly string[]): Promise<CommandEnvelope> {
+  const date: Date = date_read(words);
+  if (Number.isNaN(date.getTime())) return envelope_error('', undefined, `stardate: '${words.join(' ')}' is not a date\n`);
   const sd = stardate_derive(date);
   const lines: string[] = [
     `Stardate ${chalk.bold(sd.kelvin)}`,
@@ -159,10 +271,60 @@ export function ordinal_format(n: number): string {
   return `${n}${['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'}`;
 }
 
-/** `ddate [YYYY-MM-DD]` */
+/** What `ddate` takes: a date, in as many words as it is written. */
+const DDATE_GRAMMAR = {
+  operands: [{ name: 'date', kind: 'word', optional: true, repeat: true, summary: 'The date to convert (default: today)' }],
+} as const satisfies CommandGrammar;
+
+/**
+ * `ddate [date]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [ddateCommand] });
+ * ```
+ */
+export const ddateCommand = command_declare({
+  name: 'ddate',
+  grammar: DDATE_GRAMMAR,
+  help: {
+    summary: 'The Discordian date',
+    description: "Today in the Discordian calendar: five seasons of 73 days, a five-day week, St. Tib's Day in a leap year, and the holy days called out. Hail Eris.",
+    examples: ['ddate', 'ddate 2028-02-29'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof DDATE_GRAMMAR>): Promise<CommandEnvelope> => ddate_run(args.operands.date),
+});
+
+/**
+ * `ddate` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `ddate`.
+ * @returns The answer, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_ddate(['2028-02-29']);
+ * ```
+ */
 export async function builtin_ddate(args: string[]): Promise<CommandEnvelope> {
-  const date: Date = args.length > 0 ? new Date(args.join(' ')) : new Date();
-  if (Number.isNaN(date.getTime())) return envelope_error('', undefined, `ddate: '${args.join(' ')}' is not a date\n`);
+  return declaredCommand_run(ddateCommand, args);
+}
+
+/**
+ * Runs `ddate` on a date.
+ *
+ * @param words - The date's words, none for today.
+ * @returns The answer, or a refusal for words that are not a date.
+ *
+ * @example
+ * ```ts
+ * await ddate_run(['2028-02-29']);
+ * ```
+ */
+export async function ddate_run(words: readonly string[]): Promise<CommandEnvelope> {
+  const date: Date = date_read(words);
+  if (Number.isNaN(date.getTime())) return envelope_error('', undefined, `ddate: '${words.join(' ')}' is not a date\n`);
   const d: DiscordianDate = ddate_derive(date);
   const line: string = d.tibs
     ? `Today is St. Tib's Day in the YOLD ${d.yold}`
@@ -201,12 +363,78 @@ export async function sun_fetch(fetchFn: WeatherFetch, place: WeatherPlace): Pro
 /** `HH:MM` out of an ISO local time. */
 const clock_format = (iso: string): string => iso.slice(11, 16) || '?';
 
-/** `sunrise [place]` */
-export async function builtin_sunrise(
-  args: string[],
-  fetchFn: WeatherFetch = (url: string, init?: RequestInit): Promise<Response> => fetch(url, init),
-): Promise<CommandEnvelope> {
-  const name: string = args.length > 0 ? args.join(' ') : WEATHER_DEFAULT_PLACE;
+/** What `sunrise` takes: a place, in as many words as it is named. */
+const SUNRISE_GRAMMAR = {
+  operands: [{ name: 'place', kind: 'word', optional: true, repeat: true, summary: 'The place (default: Boston)' }],
+} as const satisfies CommandGrammar;
+
+/** The fetch `sunrise` uses unless handed another. */
+const defaultFetch: WeatherFetch = (url: string, init?: RequestInit): Promise<Response> => fetch(url, init);
+
+/**
+ * Declares `sunrise` over a fetch (a test hands in its own).
+ *
+ * @param fetchFn - The fetch the command asks Open-Meteo with.
+ * @returns The declaration.
+ *
+ * @example
+ * ```ts
+ * const command = sunriseCommand_make(fakeFetch);
+ * ```
+ */
+export function sunriseCommand_make(fetchFn: WeatherFetch): CommandDeclaration<typeof SUNRISE_GRAMMAR> {
+  return command_declare({
+    name: 'sunrise',
+    grammar: SUNRISE_GRAMMAR,
+    help: {
+      summary: 'When the sun rises and sets at a place',
+      description: "Asks Open-Meteo (the service weather uses; no key) for sunrise, sunset and the length of the day at a place, today and tomorrow, in the place's own time. Boston when no place is named. Needs the session host to reach the internet.",
+      examples: ['sunrise', 'sunrise Cape Town', 'sunrise Tromsø'],
+    },
+    handler: async (args: CommandArguments<typeof SUNRISE_GRAMMAR>): Promise<CommandEnvelope> => sunrise_run(args.operands.place, fetchFn),
+  });
+}
+
+/**
+ * `sunrise [place]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [sunriseCommand] });
+ * ```
+ */
+export const sunriseCommand: CommandDeclaration<typeof SUNRISE_GRAMMAR> = sunriseCommand_make(defaultFetch);
+
+/**
+ * `sunrise` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `sunrise`.
+ * @param fetchFn - The fetch to use.
+ * @returns The sun's days, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_sunrise(['Cape', 'Town']);
+ * ```
+ */
+export async function builtin_sunrise(args: string[], fetchFn: WeatherFetch = defaultFetch): Promise<CommandEnvelope> {
+  return declaredCommand_run(fetchFn === defaultFetch ? sunriseCommand : sunriseCommand_make(fetchFn), args);
+}
+
+/**
+ * When the sun rises and sets at a place, today and tomorrow.
+ *
+ * @param words - The place's words, none for the default place.
+ * @param fetchFn - The fetch to use.
+ * @returns The sun's days, or a refusal.
+ *
+ * @example
+ * ```ts
+ * await sunrise_run(['Tromsø'], fetch);
+ * ```
+ */
+export async function sunrise_run(words: readonly string[], fetchFn: WeatherFetch): Promise<CommandEnvelope> {
+  const name: string = words.length > 0 ? words.join(' ') : WEATHER_DEFAULT_PLACE;
   try {
     const place: WeatherPlace | null = await place_find(fetchFn, name);
     if (place === null) return envelope_error('', undefined, `sunrise: no place called '${name}' that open-meteo knows\n`);

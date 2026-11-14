@@ -11,6 +11,8 @@
  */
 import chalk from 'chalk';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 const MONTHS_LONG: readonly string[] = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -95,29 +97,79 @@ function calendar_year(year: number, today: Today): string {
   return `${lines.join('\n')}\n`;
 }
 
+
+/** What a `cal` line may hold. */
+const CAL_GRAMMAR = {
+  operands: [
+    { name: 'month', kind: 'int', optional: true, summary: 'The month, 1 to 12; with no year after it, the year' },
+    { name: 'year', kind: 'int', optional: true, summary: 'The year, 1 to 9999' },
+  ],
+} as const satisfies CommandGrammar;
+
+/**
+ * `cal [[month] year]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [calCommand] });
+ * ```
+ */
+export const calCommand = command_declare({
+  name: 'cal',
+  grammar: CAL_GRAMMAR,
+  help: {
+    summary: 'Print a calendar',
+    description: 'Prints a month or year calendar with today highlighted, in the spirit of UNIX cal.',
+    examples: ['cal', 'cal 2026', 'cal 7 2026'],
+    category: 'Games',
+    posix: { group: 'System', differs: 'as cal' },
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof CAL_GRAMMAR>): Promise<CommandEnvelope> =>
+    args.operands.year === undefined ? cal_run(undefined, args.operands.month) : cal_run(args.operands.month, args.operands.year),
+});
+
+/**
+ * `cal` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `cal`.
+ * @returns The calendar, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_cal(['7', '2026']);
+ * ```
+ */
+export async function builtin_cal(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(calCommand, args);
+}
+
 /**
  * Reports a calendar as a command envelope.
  *
- * `cal` shows the current month; `cal <year>` a whole year; `cal <month> <year>`
- * a specific month.
+ * With neither, the current month; with a year alone, the whole year; with
+ * both, that month.
  *
- * @param args - Command arguments.
- * @returns An envelope carrying the calendar, or an error envelope on bad input.
+ * @param month - The month, 1 to 12, or undefined for none.
+ * @param year - The year, 1 to 9999, or undefined for none.
+ * @returns An envelope carrying the calendar, or an error envelope on a month or year out of range.
+ *
+ * @example
+ * ```ts
+ * await cal_run(7, 2026);
+ * ```
  */
-export async function builtin_cal(args: string[]): Promise<CommandEnvelope> {
+export async function cal_run(month: number | undefined, year: number | undefined): Promise<CommandEnvelope> {
   const now: Date = new Date();
   const today: Today = { year: now.getFullYear(), month: now.getMonth(), day: now.getDate() };
-  const nums: number[] = args.filter((a: string) => /^\d+$/.test(a)).map(Number);
 
-  if (nums.length === 0) {
+  if (year === undefined) {
     return envelope_ok(calendar_month(today.year, today.month, today), { kind: 'sys.cal', data: { year: today.year, month: today.month + 1 } });
   }
-  if (nums.length === 1) {
-    const year: number = nums[0];
+  if (month === undefined) {
     if (year < 1 || year > 9999) return envelope_error(`${chalk.red(`cal: year ${year} out of range (1..9999)`)}\n`);
     return envelope_ok(calendar_year(year, today), { kind: 'sys.cal', data: { year } });
   }
-  const [month, year]: number[] = nums;
   if (month < 1 || month > 12) return envelope_error(`${chalk.red(`cal: ${month} is not a month number (1..12)`)}\n`);
   if (year < 1 || year > 9999) return envelope_error(`${chalk.red(`cal: year ${year} out of range (1..9999)`)}\n`);
   return envelope_ok(calendar_month(year, month - 1, today), { kind: 'sys.cal', data: { year, month } });

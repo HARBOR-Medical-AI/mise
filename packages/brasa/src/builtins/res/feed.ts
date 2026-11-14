@@ -3,13 +3,12 @@
  * created, its note and comments read and written, its DAG drawn, and the
  * feed removed.
  *
- * Declared in one record (`feedCommand`, and `feedsCommand` its second
- * name): the subcommands, their operands and options, and the listing
+ * Declared in one record (`feedCommand`, `feeds` among its aliases): the subcommands, their operands and options, and the listing
  * options every resource command reads. A feed named on the line is the
  * ChRIS argument kind `feed`, which completes the feeds the session knows.
  *
  * Key components:
- * - feedCommand / feedsCommand: the declaration, under each name.
+ * - feedCommand: the declaration, answered as `feed` and `feeds`.
  * - builtin_feed: the declaration run over words already split.
  *
  * @module
@@ -36,7 +35,7 @@ import { type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu'
 import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar, type SubcommandArguments } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
-import { RESOURCE_LIST_OPTIONS_GRAMMAR, commandAlias_make, resourceListBag_build } from './resourceList.js';
+import { RESOURCE_LIST_OPTIONS_GRAMMAR, resourceListBag_build } from './resourceList.js';
 
 /**
  * Resolves an explicit feed specifier or, when omitted, the `feed_N` segment of
@@ -382,11 +381,12 @@ async function feed_run(args: CommandArguments<typeof FEED_GRAMMAR>): Promise<Co
  *
  * @example
  * ```ts
- * commands_register({ declarations: [feedCommand, feedsCommand] }, 'backend');
+ * commands_register({ declarations: [feedCommand] }, 'backend');
  * ```
  */
 export const feedCommand = command_declare({
   name: 'feed',
+  aliases: [{ name: 'feeds', holds: [] }],
   grammar: FEED_GRAMMAR,
   help: {
     summary: "CUBE's feeds: list and search them; create one, note and comment on it, draw its DAG, remove it",
@@ -409,9 +409,6 @@ export const feedCommand = command_declare({
   },
   handler: feed_run,
 });
-
-/** `feeds`: the same command as `feed`; a read, which holds nothing of the session. */
-export const feedsCommand = commandAlias_make(feedCommand, 'feeds', []);
 
 /**
  * `feed` over words already split: the declaration's parse and handler.

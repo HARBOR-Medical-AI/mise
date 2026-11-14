@@ -3,12 +3,11 @@
  * members listed, added and removed. Changing a membership needs an
  * administrator (`sudo group adduser …`).
  *
- * Declared in one record (`groupCommand`, and `groupsCommand` its second
- * name): the subcommands, their operands, and the listing options every
+ * Declared in one record (`groupCommand`, `groups` among its aliases): the subcommands, their operands, and the listing options every
  * resource command reads.
  *
  * Key components:
- * - groupCommand / groupsCommand: the declaration, under each name.
+ * - groupCommand: the declaration, answered as `group` and `groups`.
  * - builtin_group: the declaration run over words already split.
  * - groupSync_note: the caveat an add carries.
  *
@@ -33,7 +32,7 @@ import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
-import { RESOURCE_LIST_OPTIONS_GRAMMAR, commandAlias_make, resourceListBag_build } from './resourceList.js';
+import { RESOURCE_LIST_OPTIONS_GRAMMAR, resourceListBag_build } from './resourceList.js';
 
 /**
  * Renders an error for a failed group membership operation.
@@ -270,11 +269,12 @@ async function group_run(args: CommandArguments<typeof GROUP_GRAMMAR>): Promise<
  *
  * @example
  * ```ts
- * commands_register({ declarations: [groupCommand, groupsCommand] }, 'backend');
+ * commands_register({ declarations: [groupCommand] }, 'backend');
  * ```
  */
 export const groupCommand = command_declare({
   name: 'group',
+  aliases: [{ name: 'groups', holds: [] }],
   grammar: GROUP_GRAMMAR,
   help: {
     summary: "CUBE's groups: list them, search them, list and change their members",
@@ -284,9 +284,6 @@ export const groupCommand = command_declare({
   },
   handler: group_run,
 });
-
-/** `groups`: the same command as `group`; a read, which holds nothing of the session. */
-export const groupsCommand = commandAlias_make(groupCommand, 'groups', []);
 
 /**
  * `group` over words already split: the declaration's parse and handler.
