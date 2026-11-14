@@ -25,6 +25,7 @@ import { builtin_record } from '../builtins/res/record.js';
 import { builtin_motd } from '../builtins/sys/motd.js';
 import { chrisHelp } from './help.js';
 import { builtin_whatif } from './commandFallback.js';
+import { builtin_berth } from '../builtins/berth/berth.js';
 
 const envelope: Record<string, EnvelopeHandler> = {
   setfacl: builtin_setfacl,
@@ -98,6 +99,7 @@ const envelope: Record<string, EnvelopeHandler> = {
   du: builtin_du,
   record: builtin_record,
   edit: builtin_edit,
+  berth: builtin_berth,
 };
 
 const plain: Record<string, CommandHandler> = {
@@ -170,6 +172,7 @@ const plain: Record<string, CommandHandler> = {
   tree: envelopeHandler_wrap(builtin_tree),
   du: envelopeHandler_wrap(builtin_du),
   record: envelopeHandler_wrap(builtin_record),
+  berth: envelopeHandler_wrap(builtin_berth),
 };
 
 
@@ -187,6 +190,9 @@ const holds: Record<string, readonly SessionPiece[]> = {
     // of the session: `image` answers with an intent a surface draws, `dcm`
     // with a model.
     'dcm', 'image',
+    // A berth's anchors are the berth's own disk: anchoring reads CUBE and
+    // writes there, and changes no piece of the session.
+    'berth',
   ].map((name: string): [string, readonly SessionPiece[]] => [name, []])),
   gather: ['cohort'],
 };
