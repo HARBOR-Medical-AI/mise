@@ -30,7 +30,7 @@ import type { ClosingCause } from '@fnndsc/menu';
 import { attachFile_write, attachFile_remove } from './attachFile.js';
 import { CHELL_ON_PATH, chellLaunch_find, type SurfaceLaunch } from './consoleSession.js';
 import { Terminals, ptySpawn_load, type PtySpawn } from './terminals.js';
-import { HOST_CONTROL_OFF, hostControl_describe, hostControl_guard, hostControl_tiers, hostPipe_run, hostShell_run, type HostControlPolicy } from './hostControl.js';
+import { HOST_CONTROL_OFF, hostControl_describe, hostControl_guard, hostControl_tiers, hostPipe_run, hostShell_run, hostShellTerminal_refusal, type HostControlPolicy } from './hostControl.js';
 
 /** What a launched daemon hands back to its host (the console face's feed). */
 export interface DaemonLaunchInfo {
@@ -131,13 +131,19 @@ export function daemonSurface_create(daemon: CalypsoDaemon, policy: HostControlP
     pipeSegment: (command: string, input: Buffer, signal?: AbortSignal): Promise<Buffer> =>
       policy.tiers.has('pipes') ? hostPipe_run(command, input, signal) : daemon.pipe_current(command, input),
     // A terminal's chell is on this host: under host control it runs `!` in
-    // its own pty, so a full-screen program gets a terminal (#1096).
-    shellCommand: (command: string, signal?: AbortSignal): Promise<number> =>
-      !policy.tiers.has('shell')
-        ? daemon.shell_current(command)
-        : daemon.current_isTerminal()
-          ? daemon.shell_current(command, true)
-          : hostShell_run(command, (channel: 'data' | 'err', chunk: string): void => { daemon.output_current(channel, chunk); }, signal),
+    // its own pty, so a full-screen program gets a terminal (#1096). A
+    // surface that is a terminal elsewhere (a remote chell in ssh) gets a pty
+    // of the daemon's, relayed to it; any other gets pipes, and a program
+    // that would wait forever for a terminal there is refused by name.
+    shellCommand: (command: string, signal?: AbortSignal): Promise<number> => {
+      if (!policy.tiers.has('shell')) return daemon.shell_current(command);
+      if (daemon.current_isTerminal()) return daemon.shell_current(command, true);
+      const onPty: Promise<number> | null = daemon.hostPty_current(command, signal);
+      if (onPty !== null) return onPty;
+      const refusal: string | null = hostShellTerminal_refusal(command);
+      if (refusal !== null) return Promise.reject(new Error(refusal));
+      return hostShell_run(command, (channel: 'data' | 'err', chunk: string): void => { daemon.output_current(channel, chunk); }, signal);
+    },
     localEdit: (request: LocalEditRequest): Promise<LocalEditResult> =>
       daemon.edit_current(request.content, request.extension, request.path),
     fileDeliver: (request: FileDeliverRequest): Promise<FileDeliverResult> =>
@@ -322,6 +328,8 @@ export async function daemon_launch(
   // back to the transcript console (deprecated). CALYPSO_NO_PTY=1 makes a
   // daemon that machine, so the fallback can be exercised where a pty builds.
   const ptySpawn: PtySpawn | null = process.env['CALYPSO_NO_PTY'] === '1' ? null : await ptySpawn_load();
+  // The same ptys run a terminal surface's `!` under host control.
+  daemon.ptySpawn_set(ptySpawn);
   if (ptySpawn !== null) {
     const terminalHost: string = bindHost === '0.0.0.0' ? '127.0.0.1' : bindHost;
     daemon.terminals_set(new Terminals({

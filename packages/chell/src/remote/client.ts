@@ -327,6 +327,10 @@ export async function remote_run(
       onDeliver: (request: FileDeliverRequest): Promise<FileDeliverResult> =>
         // A downloaded file lands on this machine's disk, never the daemon's.
         surface_get().fileDeliver(request),
+      // A `!` the daemon runs under host control draws here, on a pty of its own.
+      ...(process.stdin.isTTY === true && process.stdout.isTTY === true
+        ? { terminal: { input: process.stdin, output: process.stdout, term: process.env['TERM'] ?? '' } }
+        : {}),
       onClosing: (cause: ClosingCause): void => { closing = cause; },
       // The daemon's code moved on disk mid-session: say so where the operator is looking.
       onStale: (stale: boolean): void => {

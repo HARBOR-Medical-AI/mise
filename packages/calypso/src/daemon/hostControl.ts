@@ -21,6 +21,8 @@
  * @module
  */
 import { spawn, type ChildProcess } from 'child_process';
+import { accessSync, constants as fsConstants, realpathSync } from 'node:fs';
+import * as path from 'node:path';
 
 /** The tiers the policy can grant, in the order they are told. */
 export const HOST_CONTROL_TIERS: readonly HostControlTier[] = ['shell', 'files', 'pipes', 'tasks'];
@@ -162,6 +164,70 @@ export function hostShell_run(command: string, write: (channel: 'data' | 'err', 
       resolve(code ?? (signal?.aborted === true ? 130 : 1));
     });
   });
+}
+
+/**
+ * Programs that, given no terminal on any descriptor, wait forever rather
+ * than fail: Neovim reads its closed input to the end and then runs with no
+ * user interface, waiting for one to attach. On pipes such a `!` would hold
+ * the session's lane with nothing drawn, so it is refused by name. Programs
+ * that fail on their own without a terminal (vim, nano, top, tmux) or work
+ * on pipes (less, man) are not listed.
+ */
+const TERMINAL_WAITERS: ReadonlySet<string> = new Set<string>(['nvim']);
+
+/** Arguments with which a terminal waiter runs, and ends, without a terminal. */
+const TERMINAL_WAITER_HEADLESS: ReadonlySet<string> = new Set<string>([
+  '--headless', '--embed', '-es', '-Es', '-l', '-v', '--version', '-h', '--help', '--api-info',
+]);
+
+/**
+ * A program's own name, through symbolic links: `vi` that is Neovim is `nvim`.
+ *
+ * @param word - The command's first word.
+ * @param env - The environment whose `PATH` is searched.
+ * @returns The real file's basename, or the word's own when it is not found.
+ */
+function programName_resolve(word: string, env: NodeJS.ProcessEnv): string {
+  const candidates: string[] = word.includes('/')
+    ? [word]
+    : (env['PATH'] ?? '').split(':').filter((dir: string): boolean => dir.length > 0).map((dir: string): string => path.join(dir, word));
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      return path.basename(realpathSync(candidate));
+    } catch {
+      // Not here.
+    }
+  }
+  return path.basename(word);
+}
+
+/**
+ * The refusal for a `!` command that would wait forever on pipes: a program
+ * that needs a terminal, run for a surface that has none.
+ *
+ * Only the command's first program is read (after any `NAME=value`
+ * assignments); a headless flag anywhere in the line lets it through.
+ *
+ * @param command - The command without its leading `!`.
+ * @param env - The environment the command would run in.
+ * @returns The refusal, or null when the command may run on pipes.
+ * @example
+ * hostShellTerminal_refusal('nvim notes.txt'); // 'nvim needs a terminal, ...'
+ * hostShellTerminal_refusal('nvim --headless +q'); // null
+ * hostShellTerminal_refusal('ls -l'); // null
+ */
+export function hostShellTerminal_refusal(command: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const words: string[] = command.trim().split(/\s+/).filter((word: string): boolean => word.length > 0);
+  const first: string | undefined = words.find((word: string): boolean => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+  if (first === undefined) return null;
+  if (words.some((word: string): boolean => TERMINAL_WAITER_HEADLESS.has(word))) return null;
+  const typed: string = path.basename(first);
+  const real: string = programName_resolve(first, env);
+  const waiter: string | undefined = [typed, real].find((name: string): boolean => TERMINAL_WAITERS.has(name));
+  if (waiter === undefined) return null;
+  return `${typed} needs a terminal, and this surface has none: attach chell --remote from a terminal to run it here`;
 }
 
 /** How long a cancelled host process has to end after SIGTERM before SIGKILL. */

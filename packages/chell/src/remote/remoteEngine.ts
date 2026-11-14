@@ -20,6 +20,7 @@ import { envelope_deliver, sink_get, sink_set, surface_set, type OutputSink, typ
 import { promptFromContext_render } from '../core/prompt/session.js';
 import { output_above } from '../core/lineDiscipline.js';
 import { terminalId_parse } from '../core/terminalId.js';
+import { HostPtyRelay, hostPtyTerminal_describe, type HostPtyDeclared, type HostPtyOutgoing, type HostPtyTerminal } from './hostPty.js';
 
 /** Options for connecting a remote engine. */
 export interface RemoteEngineOptions {
@@ -42,6 +43,11 @@ export interface RemoteEngineOptions {
   /** Opens content in this machine's editor and returns the edited result. */
   onEdit?: (content: string, extension: string | undefined) => Promise<{ content: string; changed: boolean }>;
   onDeliver?: (request: FileDeliverRequest) => Promise<FileDeliverResult>;
+  /**
+   * This chell's terminal, when it has one: declared on attach, so a `!` the
+   * daemon runs under host control gets a pty of its own drawn here.
+   */
+  terminal?: HostPtyTerminal;
   /** Called when the connection closes unexpectedly. */
   onClose?: () => void;
   /** Told why, when the daemon says it is going away before it does. */
@@ -86,6 +92,8 @@ export class RemoteEngine implements BrasaEngine {
   private readonly onDeliver: ((request: FileDeliverRequest) => Promise<FileDeliverResult>) | undefined;
   private readonly onClosing: ((cause: ClosingCause) => void) | undefined;
   private readonly onStale: ((stale: boolean) => void) | undefined;
+  /** Hands this terminal to a program on the daemon's pty, when this chell is in one. */
+  private readonly hostPty: HostPtyRelay | null;
   /** Whether the daemon said, at attach, that its code on disk had moved. */
   public daemonStale: boolean = false;
   private latestPrompt: string = '';
@@ -122,6 +130,9 @@ export class RemoteEngine implements BrasaEngine {
     this.onDeliver = options.onDeliver;
     this.onClosing = options.onClosing;
     this.onStale = options.onStale;
+    this.hostPty = hostPtyTerminal_describe(options.terminal) !== undefined
+      ? new HostPtyRelay(options.terminal as HostPtyTerminal, (message: HostPtyOutgoing): void => { this.ws.send(JSON.stringify(message)); })
+      : null;
   }
 
   /**
@@ -139,6 +150,7 @@ export class RemoteEngine implements BrasaEngine {
       ws.once('error', (err: Error) => reject(err));
 
       ws.once('open', () => {
+        const tty: HostPtyDeclared | undefined = hostPtyTerminal_describe(options.terminal);
         ws.send(JSON.stringify({
           type: 'attach',
           protocolVersion: CONTRACT_VERSION,
@@ -155,6 +167,8 @@ export class RemoteEngine implements BrasaEngine {
             // A browser's terminal names itself, so the daemon knows whose
             // console this chell is (the daemon sets CHELL_TERMINAL).
             ...(terminalId_parse(process.env['CHELL_TERMINAL']) !== null ? { terminal: terminalId_parse(process.env['CHELL_TERMINAL']) as string } : {}),
+            // A terminal of its own: a `!` the daemon runs gets a pty drawn here.
+            ...(tty !== undefined ? { tty } : {}),
           },
         }));
         ws.once('message', (data: Buffer) => {
@@ -371,6 +385,15 @@ export class RemoteEngine implements BrasaEngine {
         break;
       case 'closing':
         this.onClosing?.(message.cause);
+        break;
+      case 'hostPtyStart':
+        this.hostPty?.start(message.ptyId);
+        break;
+      case 'hostPtyData':
+        this.hostPty?.data(message.ptyId, message.data);
+        break;
+      case 'hostPtyExit':
+        this.hostPty?.exit(message.ptyId);
         break;
       case 'consoleNote':
         // A note from the browser this console belongs to: above the line

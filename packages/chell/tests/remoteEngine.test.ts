@@ -311,6 +311,44 @@ describe('RemoteEngine live output', () => {
     });
   });
 
+  it('a chell in a terminal declares it on attach, and a ! on the daemon\'s pty draws here', async () => {
+    const input = Object.assign(new EventEmitter(), { isTTY: true, isRaw: false, setRawMode(mode: boolean): void { input.isRaw = mode; }, resume(): void { /* flowing */ } });
+    const written: string[] = [];
+    const output = Object.assign(new EventEmitter(), { isTTY: true, columns: 120, rows: 40, write(chunk: string): boolean { written.push(chunk); return true; } });
+    scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+      if (sent.type !== 'execute') return;
+      const id = String(sent.id);
+      process.nextTick(() => {
+        ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p1' })));
+        ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyData', ptyId: 'p1', data: '/dev/pts/7\r\n' })));
+        input.emit('data', Buffer.from('hello\r'));
+        ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyExit', ptyId: 'p1', code: 0 })));
+        ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }], exitCode: 0 })));
+      });
+    };
+    remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: async (): Promise<number> => 0, terminal: { input, output, term: 'xterm-kitty' } });
+    const ws = FakeWebSocket.instances[0];
+    expect((ws.sent[0]?.capabilities as Record<string, unknown>)['tty']).toEqual({ term: 'xterm-kitty', cols: 120, rows: 40 });
+    await remote.line_execute('!tty; read x');
+    expect(written).toEqual(['/dev/pts/7\r\n']);
+    expect(ws.sent).toContainEqual({ type: 'hostPtyResize', ptyId: 'p1', cols: 120, rows: 40 });
+    expect(ws.sent).toContainEqual({ type: 'hostPtyInput', ptyId: 'p1', data: 'hello\r' });
+    expect(input.isRaw).toBe(false);
+    expect(remote.exitCode_take()).toBe(0);
+  });
+
+  it('a chell on pipes declares no terminal and ignores a host pty', async () => {
+    const input = Object.assign(new EventEmitter(), { isTTY: false, setRawMode(): void { throw new Error('not a terminal'); }, resume(): void { /* flowing */ } });
+    const output = Object.assign(new EventEmitter(), { isTTY: false, write(): boolean { throw new Error('not drawn'); } });
+    remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', terminal: { input, output, term: 'dumb' } });
+    const ws = FakeWebSocket.instances[0];
+    expect((ws.sent[0]?.capabilities as Record<string, unknown>)['tty']).toBeUndefined();
+    ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p1' })));
+    ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyData', ptyId: 'p1', data: 'x' })));
+    ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyExit', ptyId: 'p1', code: 0 })));
+    expect(ws.sent).toHaveLength(1);
+  });
+
   it('reports promptError, pipeError, and editError when it has no handlers', async () => {
     // A surface without handlers must report inability rather than fabricate
     // an empty answer, a pass-through pipe, or an unchanged "successful" edit.

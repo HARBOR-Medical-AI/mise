@@ -29,14 +29,16 @@ import type { DaemonConsoleTarget, SurfaceLaunch } from './consoleSession.js';
 export interface PtyProcess {
   /** Calls back with each chunk the program writes. */
   onData: (listener: (data: string) => void) => unknown;
-  /** Calls back once when the program exits. */
-  onExit: (listener: (event: { exitCode: number }) => void) => unknown;
+  /** Calls back once when the program exits: its status, and the signal that ended it (0 for none). */
+  onExit: (listener: (event: { exitCode: number; signal?: number }) => void) => unknown;
   /** Types into the program. */
   write: (data: string) => void;
   /** Tells the program its new size. */
   resize: (cols: number, rows: number) => void;
-  /** Ends the program. */
-  kill: () => void;
+  /** Ends the program: SIGHUP, or the signal named. */
+  kill: (signal?: string) => void;
+  /** The program's process id, which leads its own session and process group. */
+  pid?: number;
 }
 
 /** Starts a program under a pseudo-terminal: node-pty's `spawn`. */
@@ -104,8 +106,10 @@ export interface TerminalOpened {
  *
  * @param n - The size asked for.
  * @returns The size used.
+ * @example
+ * size_clamp(5000); // 1000
  */
-function size_clamp(n: number): number {
+export function size_clamp(n: number): number {
   if (!Number.isFinite(n)) return 80;
   return Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.round(n)));
 }
