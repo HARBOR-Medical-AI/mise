@@ -1833,6 +1833,38 @@ main {
 .pacs-badge[data-state='error'] { color: var(--state-error); }
 .pacs-badge[data-state='unconfirmed'] { color: var(--honey); }
 
+/* A pull that ended without its files is a fault (NOT RECEIVED, STOPPED AT
+ * n/N, TIMED OUT AT n/N, ✗ ERROR) and wears the surface's alert hue, as
+ * every other fault does; `? UNCONFIRMED n/N` is not one (its files may
+ * still be arriving) and keeps honey. The fault carries the row's own PULL
+ * beside it, a `.listing-action` as every row verb is, so the statement
+ * takes the track and the capsule stands at its end. */
+.pacs-badge[data-fault] {
+  container-type: inline-size;
+  color: var(--state-error);
+}
+
+.pacs-badge:has(> .listing-action) {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.pacs-badge > .listing-action {
+  --listing-action-height: 1.1rem;
+
+  padding-block: 0;
+  font-size: 0.6rem;
+}
+
+/* The statement comes first. Where STATE narrows (the frame's row zone
+ * open beside the listing, a narrow pane) the capsule stands down rather
+ * than cutting `NOT RECEIVED` to `NOT REC…`; the indicated row's PULL is in
+ * the row zone then. 15em is the longest fault's words (the track a
+ * retrieve's note is measured to, 9.5em) with a capsule and the gap beside
+ * them. */
+@container (max-width: 15em) {
+  .pacs-badge > .listing-action { display: none; }
+}
+
 /* The GATHER pane: a cohort as a listing, framed like the roster (a rule
  * turning through an elbow into the spine, the mode frame on the spine). */
 .pane-gather {

@@ -48,6 +48,20 @@ export type RetrieveStatus =
 /** Progress classification reported to event consumers. */
 export type RetrieveProgressStatus = 'running' | 'done' | 'unconfirmed' | 'error' | 'stalled' | 'timeout';
 
+/**
+ * Why a series ended `unconfirmed`, as a fact a surface can choose its words
+ * by: the PACS sent nothing of it while it was waited on (`pacsSilent`), or
+ * the watch on CUBE's progress was lost while it was in flight
+ * (`watchLost`). The first is a series nothing is known to be coming for;
+ * the second is one whose files may still be arriving.
+ *
+ * @example
+ * ```ts
+ * const cause: RetrieveEndCause = 'pacsSilent';
+ * ```
+ */
+export type RetrieveEndCause = 'pacsSilent' | 'watchLost';
+
 /** Concurrent retrieve creations; more overloads CUBE and loses retrieves. */
 const FIRE_CONCURRENCY: number = 4;
 /** Retry attempts for one retrieve creation, with backoff between them. */
@@ -95,6 +109,8 @@ const CHECKER_INTERVAL_MS: number = 2_000;
  * @property cubePathDir - CUBE folder the series landed in (resolved post-pull).
  * @property reason - Why a series ended badly, in words a surface can show
  *   (an ERROR that cannot say why is the defect this field closes).
+ * @property endCause - Why a series ended `unconfirmed`; absent for any
+ *   other end.
  */
 export interface RetrieveTask {
   label: string;
@@ -113,6 +129,7 @@ export interface RetrieveTask {
   lonkConfirmed: boolean;
   cubePathDir: string | null;
   reason?: string;
+  endCause?: RetrieveEndCause;
 }
 
 /**
@@ -410,6 +427,7 @@ export async function retrieve_fireAndWatch(
       if (reconnectsLeft <= 0) {
         for (const t of remaining) {
           t.status = 'unconfirmed';
+          t.endCause = 'watchLost';
           emit(t, 'unconfirmed');
         }
         done();
@@ -468,6 +486,7 @@ export async function retrieve_fireAndWatch(
         if (events.stillWaiting === undefined && t.startTime > 0 && t.actualFiles === 0 && now - lastActivityAt > NO_ACTIVITY_TIMEOUT_MS) {
           t.status = 'pulled';
           t.lonkConfirmed = false;
+          t.endCause = 'pacsSilent';
           emit(t, 'unconfirmed');
           continue;
         }
@@ -507,6 +526,7 @@ export async function retrieve_fireAndWatch(
               if (t.status !== 'pending') continue;
               t.status = 'unconfirmed';
               t.reason = 'stopped waiting: the PACS had sent nothing and CUBE had none of it';
+              t.endCause = 'pacsSilent';
               emit(t, 'unconfirmed');
             }
           }
@@ -636,6 +656,7 @@ export async function retrieve_confirmLoop(
       t.lonkConfirmed = false;
       t.syntheticQueryId = null;
       t.retrieveId = null;
+      delete t.endCause;
       events.task?.(t, 'running', 'retrying');
     }
 
@@ -652,12 +673,14 @@ export async function retrieve_confirmLoop(
     if (refired) {
       // Fired again and still nowhere in CUBE: that is a failure observed.
       t.status = 'error';
+      delete t.endCause;
       t.reason = `nothing reached CUBE after ${retryMax} more ${retryMax === 1 ? 'try' : 'tries'}`;
       events.task?.(t, 'error', 'retrying');
     } else {
       // Not seen to finish and not in CUBE yet: unknown, not failed. A
       // PACS slow to begin keeps sending after the watch ends.
       t.status = 'unconfirmed';
+      t.endCause ??= silent.has(t) ? 'pacsSilent' : 'watchLost';
       t.reason ??= silent.has(t)
         ? `the PACS sent nothing for ${NO_ACTIVITY_TIMEOUT_MS / 1_000} s and CUBE has none of it`
         : 'the watch ended before any file arrived; the PACS may still be sending (check with pacs status)';

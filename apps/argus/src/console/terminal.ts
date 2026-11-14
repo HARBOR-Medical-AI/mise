@@ -537,12 +537,16 @@ export class ArgusTerminal {
    * long retrieve does not lock the prompt), and this is only the echo.
    *
    * @param line - The command line to show.
+   * @param remembered - Whether the line also joins the console's history,
+   *   as a line run through {@link line_run} does: a button's act the
+   *   operator may want back with the up arrow (a PULL).
    */
-  public line_echo(line: string): void {
+  public line_echo(line: string, remembered: boolean = false): void {
     // The line's own answer starts beneath it, not in the block an earlier line streamed into.
     this.stream_close();
     this.block_append('argus-echo', `<span class="prompt-glyph">❯</span> <span class="user-input">${html_escape(line)}</span>`);
     this.mirrorEcho_emit(line);
+    if (remembered) this.history_push(line);
     this.size_fit();
   }
 

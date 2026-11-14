@@ -285,6 +285,7 @@ describe('retrieve_fireAndWatch', () => {
     expect(asked.length).toBe(2);
     expect(t.status).toBe('unconfirmed');
     expect(t.reason).toMatch(/stopped waiting/);
+    expect(t.endCause).toBe('pacsSilent');
   });
 
   it('says the whole silence each time it asks, so an asker counting to a limit reaches it', async () => {
@@ -320,6 +321,7 @@ describe('retrieve_fireAndWatch', () => {
     for (const t of [first, second]) {
       expect(t.status).toBe('unconfirmed');
       expect(t.reason).toBe('the PACS sent nothing for 60 s and CUBE has none of it');
+      expect(t.endCause).toBe('pacsSilent');
     }
     // Each series ends with a word of its own, last.
     expect(seen.slice(-2)).toEqual(['1.1 unconfirmed', '2.2 unconfirmed']);
@@ -386,6 +388,7 @@ describe('retrieve_fireAndWatch', () => {
 
     // Still not a failure: nothing here knows the retrieve failed.
     expect(t.status).toBe('unconfirmed');
+    expect(t.endCause).toBe('watchLost');
     expect(wsInstances.length).toBe(4);
   });
 });
@@ -440,6 +443,7 @@ describe('retrieve_confirmLoop', () => {
     await retrieve_confirmLoop([t], 0, 'PACSDCM', fakeClient, { task: (_t, status) => { seen.push(status); } });
     expect(t.status).toBe('unconfirmed');
     expect(t.reason).toMatch(/may still be sending/);
+    expect(t.endCause).toBe('watchLost');
     expect(seen).toEqual(['unconfirmed']);
   });
 
@@ -452,6 +456,25 @@ describe('retrieve_confirmLoop', () => {
     await retrieve_confirmLoop([t], 0, 'PACSDCM', fakeClient, { task: (_t, status) => { seen.push(status); } });
     expect(t.status).toBe('unconfirmed');
     expect(t.reason).toBe('the PACS sent nothing for 60 s and CUBE has none of it');
+    expect(t.endCause).toBe('pacsSilent');
     expect(seen).toEqual(['unconfirmed']);
+  });
+
+  it('a series refired after it ended unconfirmed carries no cause from before', async () => {
+    jest.useFakeTimers();
+    const t = task();
+    t.status = 'unconfirmed';
+    t.endCause = 'watchLost';
+    mockStorageResolve.mockResolvedValue(ok({ fileCount: 0, folderPath: null }));
+    const causes: Array<string | undefined> = [];
+    const run = retrieve_confirmLoop([t], 1, 'PACSDCM', fakeClient, {
+      task: (seen: RetrieveTask, status: string): void => { if (status === 'running') causes.push(seen.endCause ?? 'none'); },
+    });
+    await flush();
+    await jest.advanceTimersByTimeAsync(70_000);
+    await run;
+    expect(causes[0]).toBe('none');
+    expect(t.status).toBe('error');
+    expect(t.endCause).toBeUndefined();
   });
 });

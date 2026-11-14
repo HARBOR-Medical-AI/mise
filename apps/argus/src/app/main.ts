@@ -1530,6 +1530,22 @@ async function surface_start(token: string): Promise<void> {
     command_show: (line: string): void => {
       terminal.line_run(line);
     },
+    // A pull pressed for is the operator's act, echoed into the transcript
+    // and the console's history (the up arrow brings it back, as it did when
+    // PULL N ran through the console), then run silently as a joblet; its
+    // start notice (`[1] pull … &`) or its refusal is said in the console as
+    // a shell says it, and handed back to the pane, which holds the press
+    // until the joblet's end.
+    pull_run: async (line: string): Promise<ReadonlyArray<WireEnvelope>> => {
+      terminal.line_echo(line, true);
+      const outcome: ExecuteOutcome = await client.line_execute(line, { silent: true, operator: true });
+      for (const envelope of outcome.envelopes) {
+        const said: string = `${envelope.rendered}${envelope.renderedErr ?? ''}`.trim();
+        if (said !== '') terminal.line_note(said);
+        pacsPanel.envelope_observe(envelope);
+      }
+      return outcome.envelopes;
+    },
     note: (text: string): void => terminal.line_note(text),
     image_open: (folderPath: string): void => {
       void image_open(null, folderPath).then((line: string): void => terminal.line_note(line));
@@ -2576,8 +2592,9 @@ async function surface_start(token: string): Promise<void> {
         if (envelope.model?.kind === 'tasks.job' || envelope.model?.kind === 'joblet.waiting') {
           const text: string = envelope.rendered.trim();
           if (text !== '') terminal.line_note(text);
-          // A step's task ending is what the script screen's seats wait on.
-          if (envelope.model.kind === 'tasks.job') { scriptScreen.task_ended(); vmController.task_ended(); }
+          // A step's task ending is what the script screen's seats wait on;
+          // a pull's joblet ending gives every series its press queued an end.
+          if (envelope.model.kind === 'tasks.job') { scriptScreen.task_ended(); vmController.task_ended(); pacsPanel.jobEnd_observe(envelope); }
           return;
         }
         if (envelope.model?.kind === 'fs.listing') {
