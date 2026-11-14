@@ -1,5 +1,20 @@
 # @fnndsc/porter
 
+## 0.13.1
+
+### Patch Changes
+
+- 382c1a6: A berth now knows which image it runs, so `berth close` records it in `berth.json`.
+
+  The launcher sets `MISE_BERTH_IMAGE` on each berth it makes: the tag it runs with the digest the host holds for it (`…/mise-berth:latest@sha256:…`), or the tag alone when the engine names no digest. A berth already running keeps no such name until it is made again.
+
+- Updated dependencies [382c1a6]
+- Updated dependencies [8542e36]
+- Updated dependencies [8542e36]
+  - @fnndsc/chell@5.20.9
+  - @fnndsc/menu@0.41.1
+  - @fnndsc/calypso@0.29.12
+
 ## 0.13.0
 
 ### Minor Changes
