@@ -1,5 +1,25 @@
 # @fnndsc/calypso
 
+## 0.29.14
+
+### Patch Changes
+
+- a0ec35b: A program run with `!` on a terminal keeps its last output on a busy host, where it can arrive well after the exit.
+
+  The host pty waits for 150 ms of quiet after the exit (at most 2 s) before it ends the line; 40 ms was too short on a loaded machine.
+
+- 18aaffd: A program run with `!` on a terminal keeps its last line of output, which arrived after its exit and was dropped.
+
+  The daemon's host pty went on relaying output until the pty was quiet for a moment after the exit, with a ceiling of half a second, before it ended the line.
+
+- Updated dependencies [3f49bbb]
+- Updated dependencies [d820228]
+- Updated dependencies [d95c0b2]
+- Updated dependencies [876812b]
+- Updated dependencies [79be032]
+- Updated dependencies [eea93e9]
+  - @fnndsc/brasa@0.56.3
+
 ## 0.29.13
 
 ### Patch Changes
