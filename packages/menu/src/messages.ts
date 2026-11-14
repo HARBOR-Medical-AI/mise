@@ -56,6 +56,14 @@ export const surfaceCapabilitiesMessageSchema = z.object({
   claims: z.array(z.object({ subject: z.string(), verbs: z.array(z.string()).optional() })).optional(),
   /** Set by a terminal's chell: the terminal it draws, so the daemon knows which browser it belongs to. */
   terminal: z.string().optional(),
+  /**
+   * Set by a surface that is itself a terminal (a chell whose input and
+   * output are both one): its terminal type and size, in cells. Under host
+   * control the daemon runs `!` on a pseudo-terminal of its own for such a
+   * surface and relays the bytes (`hostPty*`); a surface without it gets
+   * pipes.
+   */
+  tty: z.object({ term: z.string(), cols: z.number().int(), rows: z.number().int() }).optional(),
 });
 
 /** Attach to a session: declares the contract version, token, and surface capabilities. */
@@ -289,6 +297,24 @@ export const terminalCloseMessageSchema = z.object({
   terminalId: z.string(),
 });
 
+/** Keystrokes for the program the daemon runs on a pseudo-terminal for this surface (`hostPtyStart`), raw. */
+export const hostPtyInputMessageSchema = z.object({
+  type: z.literal('hostPtyInput'),
+  ptyId: z.string(),
+  data: z.string(),
+});
+
+/**
+ * This surface's terminal has a new size, in cells: the size a later `!`
+ * starts at, and, with `ptyId`, the new size of the program running now.
+ */
+export const hostPtyResizeMessageSchema = z.object({
+  type: z.literal('hostPtyResize'),
+  ptyId: z.string().optional(),
+  cols: z.number().int(),
+  rows: z.number().int(),
+});
+
 /** The answer to a `surfaceLine`: what the surface's own language said, as text to print. */
 export const surfaceLineResultMessageSchema = z.object({
   type: z.literal('surfaceLineResult'),
@@ -446,6 +472,8 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
   terminalInputMessageSchema,
   terminalResizeMessageSchema,
   terminalCloseMessageSchema,
+  hostPtyInputMessageSchema,
+  hostPtyResizeMessageSchema,
   surfaceLineResultMessageSchema,
   surfaceLineErrorMessageSchema,
   noteMessageSchema,
@@ -971,6 +999,31 @@ export const terminalExitMessageSchema = z.object({
 });
 
 /**
+ * A `!` command of this surface's line is running on a pseudo-terminal on
+ * the daemon host (the surface declared `tty`): the terminal is the
+ * program's until `hostPtyExit` with the same id. The surface hands its keys
+ * over raw (`hostPtyInput`) and its size (`hostPtyResize`).
+ */
+export const hostPtyStartMessageSchema = z.object({
+  type: z.literal('hostPtyStart'),
+  ptyId: z.string(),
+});
+
+/** Output the program on the daemon's pseudo-terminal wrote, raw (escape sequences and all). */
+export const hostPtyDataMessageSchema = z.object({
+  type: z.literal('hostPtyData'),
+  ptyId: z.string(),
+  data: z.string(),
+});
+
+/** The program on the daemon's pseudo-terminal has ended: the surface takes its terminal back. */
+export const hostPtyExitMessageSchema = z.object({
+  type: z.literal('hostPtyExit'),
+  ptyId: z.string(),
+  code: z.number().int(),
+});
+
+/**
  * A line typed in a chell whose subject this surface claims: run it in the
  * surface's own language and answer with `surfaceLineResult`. `terminal` names
  * the terminal it was typed in, when it was one of this surface's.
@@ -1014,6 +1067,9 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   terminalOpenedMessageSchema,
   terminalDataMessageSchema,
   terminalExitMessageSchema,
+  hostPtyStartMessageSchema,
+  hostPtyDataMessageSchema,
+  hostPtyExitMessageSchema,
   surfaceLineMessageSchema,
   consoleNoteMessageSchema,
 ]);

@@ -38,7 +38,8 @@ import { CONTRACT_VERSION } from '@fnndsc/menu';
 import { clientMessage_parse, attach_parse } from '@fnndsc/menu';
 import type { ServerMessage, executeMessageSchema, completeRequestSchema, cancelMessageSchema, stopMessageSchema, ProgressEvent, PromptContext, PromptKind, PromptPath, FileDeliverRequest, Regard, WatchState, AmbientEvent, ClosingCause } from '@fnndsc/menu';
 import type { z } from 'zod';
-import type { Terminals, TerminalViewer } from './terminals.js';
+import type { PtySpawn, Terminals, TerminalViewer } from './terminals.js';
+import { hostPty_start, type HostPtyRun, type HostPtyTerminal } from './hostPty.js';
 import { Lane, LOCKS_ALL, type Hold, type LockSet } from './lane.js';
 import { claim_match, claimCandidates_list, type SurfaceClaim } from './claims.js';
 import { DownloadLedger, downloadId_valid, type DownloadReport, type OpenedFile } from './downloads.js';
@@ -102,6 +103,8 @@ interface Surface {
     claims: SurfaceClaim[];
     /** The terminal it draws, when it is a terminal's chell. */
     terminal?: string;
+    /** Its own terminal's type and size, when the surface is one (a chell in a real terminal). */
+    tty?: HostPtyTerminal;
     /** Raised to MANAGE with the person's password (`elevate`): its lines may start tasks, as the daemon's own `tasks` tier would let them. */
     tasksGranted: boolean;
   };
@@ -315,6 +318,10 @@ export class CalypsoDaemon {
   private stale: boolean = false;
   /** The terminals this daemon offers, or null when it offers none (no pty here). */
   private terminals: Terminals | null = null;
+  /** Starts host ptys for a terminal surface's `!` under host control; null when node-pty is not built here. */
+  private ptySpawn: PtySpawn | null = null;
+  /** The `!` commands running on host ptys, by id, with the surface they draw on. */
+  private readonly hostPtys: Map<string, { surface: Surface; run: HostPtyRun }> = new Map();
   private readonly codeCheck: (() => void) | undefined;
   /** Where the daemon's own operational lines go. */
   private readonly log: (line: string) => void;
@@ -426,6 +433,18 @@ export class CalypsoDaemon {
    */
   public terminals_set(terminals: Terminals | null): void {
     this.terminals = terminals;
+  }
+
+  /**
+   * Lets a terminal surface's `!` run on a pty of the daemon's own under host
+   * control (hostPty.ts).
+   *
+   * @param spawn - node-pty's spawn, or null to run every `!` on pipes.
+   * @example
+   * daemon.ptySpawn_set(await ptySpawn_load());
+   */
+  public ptySpawn_set(spawn: PtySpawn | null): void {
+    this.ptySpawn = spawn;
   }
 
   /**
@@ -568,8 +587,10 @@ export class CalypsoDaemon {
    * @returns A promise resolving when the server has closed.
    */
   public stop(): Promise<void> {
-    // A terminal's chell is a child of this process: it goes with it.
+    // A terminal's chell is a child of this process: it goes with it, and so
+    // does a program running on a host pty.
     this.terminals?.stop();
+    for (const held of this.hostPtys.values()) held.run.stop();
     if (this.telemetryTimer !== null) {
       clearInterval(this.telemetryTimer);
       this.telemetryTimer = null;
@@ -1005,6 +1026,14 @@ export class CalypsoDaemon {
         this.terminals?.resize(viewer, value.terminalId, value.cols, value.rows);
       } else if (value.type === 'terminalClose') {
         this.terminals?.close(viewer, value.terminalId);
+      } else if (value.type === 'hostPtyInput') {
+        const held = this.hostPtys.get(value.ptyId);
+        if (held !== undefined && held.surface === attached) held.run.write(value.data);
+      } else if (value.type === 'hostPtyResize') {
+        // The size a later `!` starts at, and the running one's, when it is this surface's.
+        if (attached.capabilities.tty !== undefined) attached.capabilities.tty = { ...attached.capabilities.tty, cols: value.cols, rows: value.rows };
+        const held = value.ptyId === undefined ? undefined : this.hostPtys.get(value.ptyId);
+        if (held !== undefined && held.surface === attached) held.run.resize(value.cols, value.rows);
       } else if (value.type === 'surfaceLineResult') {
         this.surfaceLines.settle(socket, value.lineId, { rendered: value.rendered, status: value.status });
       } else if (value.type === 'surfaceLineError') {
@@ -1022,6 +1051,8 @@ export class CalypsoDaemon {
     socket.on('close', () => {
       // Its terminals keep running, unwatched, for a reattach.
       this.terminals?.detach(viewer);
+      // A program drawing on a terminal that went away hears the hang-up.
+      for (const held of this.hostPtys.values()) if (held.surface === surface) held.run.stop();
       // A shell that goes away hangs up on its command, as a terminal's
       // SIGHUP does: one still running is stopped, or nothing could stop it.
       // A browser is not a shell (it reloads and reattaches), and its
@@ -1293,6 +1324,7 @@ export class CalypsoDaemon {
         color: attach.value.capabilities?.color ?? false,
         claims: attach.value.capabilities?.claims ?? [],
         ...(attach.value.capabilities?.terminal !== undefined ? { terminal: attach.value.capabilities.terminal } : {}),
+        ...(attach.value.capabilities?.tty !== undefined ? { tty: { ...attach.value.capabilities.tty } } : {}),
         tasksGranted: false,
       },
     };
@@ -1795,6 +1827,49 @@ export class CalypsoDaemon {
     }
     return this.shells.open(origin.socket, (shellId: string): void => {
       this.send(origin.socket, { type: 'shell', shellId, command });
+    });
+  }
+
+  /**
+   * Runs a host-shell command on a pseudo-terminal of the daemon's own, for a
+   * surface that is a terminal (it declared `tty`): sized and typed as that
+   * terminal, the daemon's working directory, output relayed raw to that
+   * surface alone (`hostPtyStart`, `hostPtyData`, `hostPtyExit`), its keys
+   * and sizes taken back (`hostPtyInput`, `hostPtyResize`). The caller has
+   * already decided the host runs `!` (the `shell` tier).
+   *
+   * @param command - The shell command without the leading `!`.
+   * @param signal - Stops the program when the line is cancelled.
+   * @returns The exit status, or null when the surface is not a terminal or
+   *   this daemon has no ptys (the command then runs on pipes).
+   * @example
+   * const code: number | null = await daemon.hostPty_current('nvim notes.txt', signal);
+   */
+  public hostPty_current(command: string, signal?: AbortSignal): Promise<number> | null {
+    const origin: Surface | null = this.currentOrigin;
+    if (origin === null || origin.capabilities.tty === undefined || this.ptySpawn === null) return null;
+    if (origin.socket.readyState !== WebSocket.OPEN) return null;
+    const ptyId: string = randomBytes(8).toString('hex');
+    // The surface takes its terminal over to the program before any byte arrives.
+    this.send(origin.socket, { type: 'hostPtyStart', ptyId });
+    let run: HostPtyRun;
+    try {
+      run = hostPty_start(this.ptySpawn, command, {
+        terminal: origin.capabilities.tty,
+        cwd: process.cwd(),
+        env: process.env,
+        data: (data: string): void => this.send(origin.socket, { type: 'hostPtyData', ptyId, data }),
+        ...(signal !== undefined ? { signal } : {}),
+      });
+    } catch (error: unknown) {
+      this.send(origin.socket, { type: 'hostPtyExit', ptyId, code: 1 });
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+    this.hostPtys.set(ptyId, { surface: origin, run });
+    return run.done.then((code: number): number => {
+      this.hostPtys.delete(ptyId);
+      this.send(origin.socket, { type: 'hostPtyExit', ptyId, code });
+      return code;
     });
   }
 

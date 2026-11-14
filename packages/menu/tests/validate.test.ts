@@ -51,6 +51,32 @@ describe('clientMessage_parse', () => {
     }).ok).toBe(true);
   });
 
+  it('a surface that is a terminal declares its type and size; one that is not declares nothing', () => {
+    const declared = clientMessage_parse({
+      type: 'attach',
+      protocolVersion: CONTRACT_VERSION,
+      token: 't',
+      capabilities: { shellCommands: true, tty: { term: 'xterm-256color', cols: 120, rows: 40 } },
+    });
+    expect(declared.ok && declared.value?.type === 'attach' ? declared.value.capabilities?.tty : null).toEqual({ term: 'xterm-256color', cols: 120, rows: 40 });
+    expect(clientMessage_parse({
+      type: 'attach', protocolVersion: CONTRACT_VERSION, token: 't', capabilities: { shellCommands: true, tty: { term: 'xterm', cols: 1.5, rows: 40 } },
+    }).ok).toBe(false);
+  });
+
+  it('carries a host pty\'s keys and sizes up, and its start, bytes and end down', () => {
+    expect(clientMessage_parse({ type: 'hostPtyInput', ptyId: 'a1', data: ':q\r' }).ok).toBe(true);
+    expect(clientMessage_parse({ type: 'hostPtyInput', ptyId: 'a1' }).ok).toBe(false);
+    expect(clientMessage_parse({ type: 'hostPtyResize', ptyId: 'a1', cols: 100, rows: 30 }).ok).toBe(true);
+    // A size with no program running: the size the next one starts at.
+    expect(clientMessage_parse({ type: 'hostPtyResize', cols: 100, rows: 30 }).ok).toBe(true);
+    expect(clientMessage_parse({ type: 'hostPtyResize', cols: '100', rows: 30 }).ok).toBe(false);
+    expect(serverMessage_parse({ type: 'hostPtyStart', ptyId: 'a1' }).ok).toBe(true);
+    expect(serverMessage_parse({ type: 'hostPtyData', ptyId: 'a1', data: '\u001b[?1049h' }).ok).toBe(true);
+    expect(serverMessage_parse({ type: 'hostPtyExit', ptyId: 'a1', code: 0 }).ok).toBe(true);
+    expect(serverMessage_parse({ type: 'hostPtyExit', ptyId: 'a1' }).ok).toBe(false);
+  });
+
   it('rejects an unknown message type with a reason', () => {
     const r = clientMessage_parse({ type: 'nope', id: '1' });
     expect(r.ok).toBe(false);

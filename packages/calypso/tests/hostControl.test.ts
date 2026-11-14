@@ -12,7 +12,11 @@ import {
   hostControl_tiers,
   hostShell_run,
   hostPipe_run,
+  hostShellTerminal_refusal,
 } from '../src/daemon/hostControl.js';
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 
 describe('hostControl_build', () => {
   it('is off by default, all tiers when bare, the listed tiers otherwise', () => {
@@ -100,5 +104,35 @@ describe('the readout and the runners', () => {
   it('runs a pipe segment on the host with the input on stdin', async () => {
     const output: Buffer = await hostPipe_run('tr a-z A-Z', Buffer.from('hello'));
     expect(output.toString('utf8')).toBe('HELLO');
+  });
+});
+
+describe('a program that waits forever without a terminal', () => {
+  // A PATH of its own: an `nvim`, a `vi` that is that nvim, and a `vim` that is not.
+  const bin: string = mkdtempSync(path.join(tmpdir(), 'calypso-bin-'));
+  writeFileSync(path.join(bin, 'nvim'), '#!/bin/sh\n');
+  chmodSync(path.join(bin, 'nvim'), 0o755);
+  symlinkSync(path.join(bin, 'nvim'), path.join(bin, 'vi'));
+  writeFileSync(path.join(bin, 'vim'), '#!/bin/sh\n');
+  chmodSync(path.join(bin, 'vim'), 0o755);
+  const env: NodeJS.ProcessEnv = { PATH: bin };
+  afterAll((): void => { rmSync(bin, { recursive: true, force: true }); });
+
+  it('is refused by name on pipes, through its links and after assignments', () => {
+    expect(hostShellTerminal_refusal('nvim notes.txt', env)).toBe('nvim needs a terminal, and this surface has none: attach chell --remote from a terminal to run it here');
+    expect(hostShellTerminal_refusal('  vi notes.txt', env)).toMatch(/^vi needs a terminal/);
+    expect(hostShellTerminal_refusal('TERM=xterm nvim', env)).toMatch(/^nvim needs a terminal/);
+    expect(hostShellTerminal_refusal(`${path.join(bin, 'vi')} x`, env)).toMatch(/needs a terminal/);
+  });
+
+  it('runs when headless, and anything else runs', () => {
+    expect(hostShellTerminal_refusal('nvim --headless +q', env)).toBeNull();
+    expect(hostShellTerminal_refusal('nvim -es -c q', env)).toBeNull();
+    expect(hostShellTerminal_refusal('nvim --version', env)).toBeNull();
+    expect(hostShellTerminal_refusal('vim notes.txt', env)).toBeNull();
+    expect(hostShellTerminal_refusal('ls -l', env)).toBeNull();
+    expect(hostShellTerminal_refusal('FOO=1', env)).toBeNull();
+    expect(hostShellTerminal_refusal('', {})).toBeNull();
+    expect(hostShellTerminal_refusal('nvim x', {})).toMatch(/needs a terminal/);
   });
 });
