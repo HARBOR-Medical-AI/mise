@@ -7,7 +7,7 @@
  */
 import type { CommandEnvelope } from '@fnndsc/menu';
 
-import { command_declare, type AnyCommandDeclaration } from '../../src/core/commandDeclaration.js';
+import { command_declare, type AnyCommandDeclaration, type CommandGrammar } from '../../src/core/commandDeclaration.js';
 
 /** A stand-in's handler: what the suite records the typed line with. */
 export type StandInHandler = (args: never) => Promise<CommandEnvelope | void> | unknown;
@@ -114,9 +114,65 @@ export function wordsStandIn_make(name: string, handler: StandInHandler): AnyCom
   };
 }
 
+/**
+ * A stand-in maker for a command of a simple grammar: its name, its grammar
+ * and its help section, whatever the suite's handler.
+ *
+ * @param name - The command's name.
+ * @param grammar - Its grammar, as the real one has it in shape.
+ * @param category - Its help section.
+ * @returns The maker.
+ */
+function standIn_maker(name: string, grammar: CommandGrammar, category: string): (handler: StandInHandler) => AnyCommandDeclaration {
+  return (handler: StandInHandler): AnyCommandDeclaration => command_declare({
+    name,
+    grammar,
+    help: { summary: name, description: name, category },
+    handler: handler_wrap(handler),
+  });
+}
+
+/** `on` and `off`, or neither: the switches of a setting. */
+const SETTING_GRAMMAR: CommandGrammar = { bare: { summary: 'Show it' }, subcommands: { on: { summary: 'On' }, off: { summary: 'Off' } } };
+
+/** The Connection, Navigation and Settings commands, standing in, by the name each module exports. */
+export const NAVIGATION_STAND_INS: Readonly<Record<string, (handler: StandInHandler) => AnyCommandDeclaration>> = {
+  cdCommand: standIn_maker('cd', { operands: [{ name: 'path', kind: 'cfsPath', optional: true, glob: true, summary: 'Where' }] }, 'Navigation'),
+  pwdCommand: standIn_maker('pwd', { options: { title: { long: 'title', summary: 'Titles' } } }, 'Navigation'),
+  timingCommand: standIn_maker('timing', SETTING_GRAMMAR, 'Settings'),
+  debugCommand: standIn_maker('debug', SETTING_GRAMMAR, 'Settings'),
+  physicalmodeCommand: standIn_maker('physicalmode', SETTING_GRAMMAR, 'Settings'),
+  netstatCommand: standIn_maker('netstat', { options: { reset: { short: 'r', long: 'reset', summary: 'Reset' }, count: { short: 'n', summary: 'Count', value: { name: 'count', kind: 'int' } } } }, 'Connection'),
+  connectCommand: standIn_maker('connect', {
+    operands: [{ name: 'url', kind: 'word', summary: 'The URL' }],
+    options: { user: { long: 'user', summary: 'User', value: { name: 'username', kind: 'word' } }, password: { long: 'password', summary: 'Password', value: { name: 'password', kind: 'word' } } },
+  }, 'Connection'),
+  logoutCommand: standIn_maker('logout', {}, 'Connection'),
+  contextCommand: standIn_maker('context', {}, 'Connection'),
+  whoamiCommand: standIn_maker('whoami', {}, 'Connection'),
+  idCommand: standIn_maker('id', {}, 'Connection'),
+  whereamiCommand: standIn_maker('whereami', {}, 'Connection'),
+  treeCommand: standIn_maker('tree', {
+    operands: [{ name: 'path', kind: 'cfsPath', optional: true, glob: true, summary: 'Where' }],
+    options: { follow: { long: 'follow', summary: 'Follow' }, listPaths: { long: 'path', summary: 'Paths' }, dirs: { long: 'dirs', summary: 'Dirs' }, dirpath: { long: 'dirpath', summary: 'Dir paths' } },
+  }, 'Navigation'),
+  duCommand: standIn_maker('du', {
+    operands: [{ name: 'path', kind: 'cfsPath', optional: true, repeat: true, glob: true, summary: 'What' }],
+    options: { humanReadable: { short: 'h', long: 'human-readable', summary: 'Human' }, summarize: { short: 's', long: 'summarize', summary: 'Summary' } },
+  }, 'Navigation'),
+  cubepathCommand: standIn_maker('cubepath', {
+    operands: [{ name: 'path', kind: 'cfsPath', repeat: true, glob: true, summary: 'PACS paths' }],
+    options: { pacsserver: { long: 'pacsserver', summary: 'Server', value: { name: 'id', kind: 'word' } }, retry: { long: 'retry', summary: 'Retry' } },
+  }, 'Navigation'),
+};
+
 /** Each declared command's stand-in maker, by the name its module exports it under. */
 export const STAND_IN_MAKERS: Readonly<Record<string, (handler: StandInHandler) => AnyCommandDeclaration>> = {
   lsCommand: lsStandIn_make,
   downloadCommand: downloadStandIn_make,
   berthCommand: berthStandIn_make,
+  ...NAVIGATION_STAND_INS,
 };
+
+/** The core's stand-ins among them, by the name each module exports; the rest are the ChRIS backend's. */
+export const CORE_STAND_IN_NAMES: ReadonlyArray<string> = ['cdCommand', 'pwdCommand', 'timingCommand', 'debugCommand'];

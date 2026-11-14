@@ -269,7 +269,7 @@ describe('command_dispatch', () => {
 
   it('routes id to the identity builtin', async () => {
     await command_dispatch('id', []);
-    expect(mockId).toHaveBeenCalledWith([]);
+    expect(mockId).toHaveBeenCalledWith({ subcommand: null, operands: {}, options: {}, expanded: {} });
     expect(mockChiliRun).not.toHaveBeenCalled();
   });
 

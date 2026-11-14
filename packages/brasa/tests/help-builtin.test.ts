@@ -114,8 +114,8 @@ describe('builtin_help in a session with nothing of its own', () => {
     expect(envelope.rendered).toContain('chell — the ChRIS shell');
     expect(envelope.rendered).not.toContain('sudo');
     expect(envelope.rendered).not.toContain('Imaging');
-    // cd has a help entry and no handler here (ls, declared, brings both).
-    expect((await builtin_help(['cd'])).rendered).toContain("No help available for 'cd'");
+    // cat has a help entry and no handler here (cd and ls, declared, bring both).
+    expect((await builtin_help(['cat'])).rendered).toContain("No help available for 'cat'");
   });
 });
 

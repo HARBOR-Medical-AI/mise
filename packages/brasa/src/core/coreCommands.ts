@@ -37,14 +37,14 @@ import { builtin_play } from '../builtins/res/play.js';
 import { aproposCommand, manCommand } from '../builtins/sys/apropos.js';
 import { builtin_rev, builtin_rot13, builtin_seq, builtin_shuf, builtin_tac, builtin_yes } from '../builtins/games/text.js';
 import { builtin_wtf } from '../builtins/games/wtf.js';
-import { builtin_debug } from '../builtins/debug.js';
+import { debugCommand } from '../builtins/debug.js';
 import { builtin_cat } from '../builtins/fs/cat.js';
-import { builtin_cd } from '../builtins/fs/cd.js';
+import { cdCommand } from '../builtins/fs/cd.js';
 import { builtin_cp } from '../builtins/fs/cp.js';
 import { lsCommand } from '../builtins/fs/ls.js';
 import { builtin_mkdir } from '../builtins/fs/mkdir.js';
 import { builtin_mv } from '../builtins/fs/mv.js';
-import { builtin_pwd } from '../builtins/fs/pwd.js';
+import { pwdCommand } from '../builtins/fs/pwd.js';
 import { builtin_url } from '../builtins/fs/url.js';
 import { builtin_rm } from '../builtins/fs/rm.js';
 import { builtin_rmdir } from '../builtins/fs/rmdir.js';
@@ -54,7 +54,7 @@ import { helpCommand } from '../builtins/help.js';
 import { builtin_cal } from '../builtins/sys/cal.js';
 import { dateCommand } from '../builtins/sys/date.js';
 import { builtin_fortune } from '../builtins/sys/fortune.js';
-import { builtin_timing } from '../builtins/sys/timing.js';
+import { timingCommand } from '../builtins/sys/timing.js';
 import { versionCommand } from '../builtins/sys/version.js';
 import { builtin_weather } from '../builtins/sys/weather.js';
 import { notesCommand } from '../builtins/sys/notes.js';
@@ -63,17 +63,13 @@ import { envelopeHandler_wrap } from './sink.js';
 const envelope: Record<string, EnvelopeHandler> = {
   cat: builtin_cat,
   find: builtin_find,
-  cd: builtin_cd,
   cp: builtin_cp,
   mv: builtin_mv,
   rm: builtin_rm,
   mkdir: builtin_mkdir,
   rmdir: builtin_rmdir,
   touch: builtin_touch,
-  pwd: builtin_pwd,
   url: builtin_url,
-  timing: builtin_timing,
-  debug: builtin_debug,
   fortune: builtin_fortune,
   cowsay: builtin_cowsay,
   cowthink: builtin_cowthink,
@@ -128,9 +124,7 @@ const envelope: Record<string, EnvelopeHandler> = {
 };
 
 const plain: Record<string, CommandHandler> = {
-  cd: envelopeHandler_wrap(builtin_cd),
-  pwd: envelopeHandler_wrap(builtin_pwd),
-  url: envelopeHandler_wrap((args: string[]) => builtin_url(args)),
+  url:envelopeHandler_wrap((args: string[]) => builtin_url(args)),
   cat: envelopeHandler_wrap(builtin_cat),
   find: envelopeHandler_wrap(builtin_find),
   rm: envelopeHandler_wrap(builtin_rm),
@@ -139,9 +133,7 @@ const plain: Record<string, CommandHandler> = {
   touch: envelopeHandler_wrap(builtin_touch),
   mkdir: envelopeHandler_wrap(builtin_mkdir),
   rmdir: envelopeHandler_wrap(builtin_rmdir),
-  timing: envelopeHandler_wrap(builtin_timing),
-  debug: envelopeHandler_wrap(builtin_debug),
-  fortune: envelopeHandler_wrap(builtin_fortune),
+  fortune:envelopeHandler_wrap(builtin_fortune),
   cowsay: envelopeHandler_wrap(builtin_cowsay),
   cowthink: envelopeHandler_wrap(builtin_cowthink),
   figlet: envelopeHandler_wrap(builtin_figlet),
@@ -198,22 +190,22 @@ const plain: Record<string, CommandHandler> = {
 /** The core commands: their handlers. Their help is registered from `builtins/help.ts`, which holds it. */
 /**
  * What the core's commands hold of the session: a read holds nothing and
- * runs beside anything; `cd` holds the working directory. A command not
- * named holds the whole session (a game, a play, anything that asks).
+ * runs beside anything. A command not named holds the whole session (a
+ * game, a play, anything that asks); a declared command says in its
+ * declaration (`cd` holds the working directory).
  */
 const holds: Record<string, readonly SessionPiece[]> = {
   ...Object.fromEntries([
     'banner', 'cal', 'calc', 'cat', 'cowsay', 'cowthink', 'cut', 'ddate', 'factor',
     'figlet', 'find', 'fortune', 'grep', 'head', 'lolcat', 'morse', 'pom',
-    'primes', 'pwd', 'qr', 'rev', 'rot13', 'seq', 'sort', 'stardate', 'tac', 'tail', 'uniq',
+    'primes', 'qr', 'rev', 'rot13', 'seq', 'sort', 'stardate', 'tac', 'tail', 'uniq',
     'units', 'uptime', 'wc', 'who',
   ].map((name: string): [string, readonly SessionPiece[]] => [name, []])),
-  cd: ['cwd'],
 };
 
 /** The core commands declared in one record each: grammar, kinds, handler, holds and help together. */
 const declarations: ReadonlyArray<AnyCommandDeclaration> = [
-  lsCommand,
+  lsCommand, cdCommand, pwdCommand, timingCommand, debugCommand,
   // General, in the order their handlers listed before they were declared.
   commandCommand, aproposCommand, manCommand, killCommand, waitCommand, fgCommand, jobletsCommand,
   setCommand, echoCommand, printfCommand, unsetCommand, versionCommand, notesCommand, dateCommand, helpCommand,

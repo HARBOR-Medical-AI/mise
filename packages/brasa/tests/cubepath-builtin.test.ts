@@ -34,7 +34,8 @@ jest.unstable_mockModule('../src/builtins/net/pacsUtils.js', () => ({
   series_cubePathGet: mockCubePathGet,
 }));
 
-const { builtin_cubepath } = await import('../src/builtins/net/cubepath.js');
+const { builtin_cubepath, cubepathCommand } = await import('../src/builtins/net/cubepath.js');
+const { declarationHelp_derive } = await import('../src/core/commandUsage.js');
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -43,16 +44,16 @@ beforeEach(() => {
 });
 
 describe('builtin_cubepath', () => {
-  it('returns help for --help', async () => {
-    const envelope: CommandEnvelope = await builtin_cubepath(['--help']);
-    expect(envelope.status).toBe('ok');
-    expect(envelope.rendered).toContain('USAGE');
+  it('has its help from its declaration (the shell answers --help before the command runs)', () => {
+    const help = declarationHelp_derive(cubepathCommand);
+    expect(help.usage).toBe('cubepath [--retry] [--pacsserver <id>] <path…>');
+    expect(help.options).toContainEqual(expect.stringMatching(/^--pacsserver <id>\s+Override PACS server/));
   });
 
   it('requires at least one path', async () => {
     const envelope: CommandEnvelope = await builtin_cubepath([]);
     expect(envelope.status).toBe('error');
-    expect(envelope.renderedErr).toContain('Missing path');
+    expect(envelope.renderedErr).toContain('cubepath: missing operand <path>');
     expect(process.exitCode).toBe(1);
   });
 

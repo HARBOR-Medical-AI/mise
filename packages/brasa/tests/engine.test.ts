@@ -323,13 +323,15 @@ describe('line_execute', () => {
   });
 
   it('runs a line whose quotes all close, an apostrophe written the POSIX way included', async () => {
-    await line_execute("whoami 'it'\\''s' \"a\\\"b\" it\\'s");
-    expect(mockWhoami).toHaveBeenCalledTimes(1);
+    // whoami takes no operand, so the words go to ls, whose operands they are.
+    await line_execute("ls 'it'\\''s' \"a\\\"b\" it\\'s");
+    expect(mockLs).toHaveBeenCalledTimes(1);
+    expect(mockLs).toHaveBeenCalledWith(expect.objectContaining({ operands: { path: ["it's", 'a"b', "it's"] } }));
   });
 
   it('dispatches a plain command end-to-end and returns one envelope', async () => {
     const envelopes = await line_execute('whoami');
-    expect(mockWhoami).toHaveBeenCalledWith([]);
+    expect(mockWhoami).toHaveBeenCalledWith({ subcommand: null, operands: {}, options: {}, expanded: {} });
     expect(envelopes).toHaveLength(1);
     expect(envelopes[0].status).toBe('ok');
   });
@@ -555,7 +557,7 @@ describe('line_execute — control flow', () => {
 describe('command_handle', () => {
   it('executes a line without exposing envelopes', async () => {
     await command_handle('whoami');
-    expect(mockWhoami).toHaveBeenCalledWith([]);
+    expect(mockWhoami).toHaveBeenCalledWith({ subcommand: null, operands: {}, options: {}, expanded: {} });
   });
 });
 
@@ -657,7 +659,7 @@ describe('an assignment line', () => {
   it("holds the command's model, and returns the command's own envelopes", async () => {
     mockWhoami.mockResolvedValue({ status: 'ok', rendered: 'Job scheduled\n', model: RUN });
     const envelopes = await line_execute('A=$(whoami)');
-    expect(mockWhoami).toHaveBeenCalledWith([]);
+    expect(mockWhoami).toHaveBeenCalledWith({ subcommand: null, operands: {}, options: {}, expanded: {} });
     expect(envelopes).toEqual([{ status: 'ok', rendered: 'Job scheduled\n', model: RUN }]);
     expect(variable_get('A')?.answer).toMatchObject({ kind: 'run.scheduled', data: RUN.data, source: 'whoami' });
   });

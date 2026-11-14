@@ -24,7 +24,7 @@
 import { readFileSync } from 'node:fs';
 
 /** Commands not yet declared in one record, aliases resolved. Lower it whenever it drops. */
-const BASELINE = 118;
+const BASELINE = 103;
 
 /** The engine's command groups: the core's and the ChRIS backend's. */
 const groupPaths = [

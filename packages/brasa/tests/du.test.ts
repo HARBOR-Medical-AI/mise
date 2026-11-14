@@ -1,7 +1,7 @@
 /**
  * @file Unit tests for the extracted `du` helpers.
  *
- * Covers the pure logic carved out of `builtin_du`: flag parsing, size
+ * Covers the pure logic carved out of `builtin_du`: flag parsing against its declaration, size
  * formatting, and the per-directory size attribution walk. Cross-package and
  * IO dependencies are mocked so the module loads in isolation.
  *
@@ -23,10 +23,38 @@ jest.unstable_mockModule('../src/session/index.js', () => ({
 jest.unstable_mockModule('../src/lib/vfs/vfs.js', () => ({ vfs: { data_get: jest.fn() } }));
 jest.unstable_mockModule('../src/lib/spinner.js', () => ({ spinner: { start: jest.fn(), stop: jest.fn() } }));
 
-const { duSize_format, duOptions_parse, dirSizes_compute, depthOption_normalize } = await import('../src/builtins/fs/du.js');
+const { duSize_format, dirSizes_compute, duCommand } = await import('../src/builtins/fs/du.js');
+const { commandLine_parse } = await import('../src/core/commandParse.js');
+const { shellWord_literal } = await import('../src/lib/parser.js');
 
-function parsed(flags: Record<string, unknown>): any {
-  return { _: [], ...flags };
+/**
+ * Parses du's words against its declaration.
+ *
+ * @param words - The words after `du`.
+ * @returns The parse.
+ */
+function line_parse(words: string[]): ReturnType<typeof commandLine_parse> {
+  return commandLine_parse(duCommand, words.map(shellWord_literal));
+}
+
+/**
+ * du's options as its handler hands them to the walk.
+ *
+ * @param words - The words after `du`.
+ * @returns The options.
+ */
+async function options_parse(words: string[]): Promise<DuOptions> {
+  const parsed = await line_parse(words);
+  if (!parsed.ok) throw new Error(parsed.refusal);
+  const options = parsed.args.options as Record<string, unknown>;
+  return {
+    humanReadable: options['humanReadable'] as boolean,
+    summarize: options['summarize'] as boolean,
+    showAll: options['all'] as boolean,
+    showTotal: options['total'] as boolean,
+    separateDirs: options['separateDirs'] as boolean,
+    maxDepth: options['maxDepth'] as number | undefined,
+  };
 }
 function file(chrisPath: string, size: number) {
   return { id: 0, hostPath: '', chrisPath, size, isLink: false, linkTarget: '', isDirectory: false };
@@ -59,17 +87,17 @@ describe('duSize_format', () => {
   });
 });
 
-describe('duOptions_parse', () => {
-  it('defaults all flags to false / undefined', () => {
-    expect(duOptions_parse(parsed({}))).toEqual(DEFAULTS);
+describe('du\'s options, parsed against its declaration', () => {
+  it('defaults all flags to false / undefined', async () => {
+    expect(await options_parse([])).toEqual(DEFAULTS);
   });
-  it('reads short flags', () => {
-    expect(duOptions_parse(parsed({ h: true, s: true, a: true, c: true, S: true, d: '3' }))).toEqual({
+  it('reads short flags', async () => {
+    expect(await options_parse(['-h', '-s', '-a', '-c', '-S', '-d', '3'])).toEqual({
       humanReadable: true, summarize: true, showAll: true, showTotal: true, separateDirs: true, maxDepth: 3,
     });
   });
-  it('reads long-form aliases', () => {
-    const o = duOptions_parse(parsed({ 'human-readable': true, 'max-depth': '2', summarize: true }));
+  it('reads long-form aliases', async () => {
+    const o = await options_parse(['--human-readable', '--max-depth', '2', '--summarize']);
     expect(o.humanReadable).toBe(true);
     expect(o.maxDepth).toBe(2);
     expect(o.summarize).toBe(true);
@@ -103,10 +131,13 @@ describe('dirSizes_compute', () => {
   });
 });
 
-describe('depthOption_normalize', () => {
-  it('spells -d N and -dN as --max-depth=N, and leaves the rest alone', () => {
-    expect(depthOption_normalize(['-d', '1', '~/csv'])).toEqual(['--max-depth=1', '~/csv']);
-    expect(depthOption_normalize(['-d0', '-h', 'x'])).toEqual(['--max-depth=0', '-h', 'x']);
-    expect(depthOption_normalize(['--', '-d', '1'])).toEqual(['--', '-d', '1']);
+describe('du\'s depth', () => {
+  it('takes -d N and -dN as --max-depth=N, and after -- a word is a path', async () => {
+    const spaced = await line_parse(['-d', '1', '~/csv']);
+    expect(spaced.ok && [spaced.args.options['maxDepth'], spaced.args.operands['path']]).toEqual([1, ['~/csv']]);
+    const glued = await line_parse(['-d0', '-h', 'x']);
+    expect(glued.ok && [glued.args.options['maxDepth'], glued.args.options['humanReadable'], glued.args.operands['path']]).toEqual([0, true, ['x']]);
+    const ended = await line_parse(['--', '-d', '1']);
+    expect(ended.ok && [ended.args.options['maxDepth'], ended.args.operands['path']]).toEqual([undefined, ['-d', '1']]);
   });
 });

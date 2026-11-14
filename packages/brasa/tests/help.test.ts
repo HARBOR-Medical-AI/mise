@@ -73,11 +73,4 @@ describe('chrisHelp resource entries', () => {
   });
 });
 
-describe('id help', () => {
-  it('documents the Unix-style ChRIS identity projection', () => {
-    expect(chrisHelp.id).toMatchObject({ usage: 'id' });
-    expect(chrisHelp.id?.description).toContain('UID');
-    expect(chrisHelp.id?.description).toContain('GID');
-    expect(chrisHelp.id?.description).toContain('memberships');
-  });
-});
+// id's help is its declaration's: commandDeclarations-navigation.test.ts.

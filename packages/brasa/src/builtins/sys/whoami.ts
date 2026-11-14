@@ -1,6 +1,22 @@
 /**
- * @file Builtins id, whoami, and whereami.
- * Quick single-line identity queries, reported as command envelopes.
+ * @file `id`, `whoami` and `whereami`: who the session is on CUBE, and
+ * which CUBE, each in a line.
+ *
+ * Declared in one record each (`idCommand`, `whoamiCommand`,
+ * `whereamiCommand`): none takes an operand or an option.
+ *
+ * Key components:
+ * - idCommand, whoamiCommand, whereamiCommand: the declarations.
+ * - builtin_id, builtin_whoami, builtin_whereami: each declaration run over words already split.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_whoami([]);
+ * ```
+ *
+ * Dependencies: the session's context and identity (salsa, cumin).
+ *
+ * @module
  */
 import chalk from 'chalk';
 import { context_getSingle } from '@fnndsc/salsa';
@@ -8,6 +24,11 @@ import { currentIdentity_get, type ChrisGroup, type ChrisIdentity, type SingleCo
 import type { Result } from '@fnndsc/fond';
 import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { command_declare, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
+
+/** What an `id`, `whoami` or `whereami` line may hold: nothing after the command. */
+const IDENTITY_GRAMMAR = {} as const satisfies CommandGrammar;
 
 /** A Unix-style group entry projected from CUBE identity data. */
 interface PosixGroupIdentity {
@@ -22,11 +43,10 @@ interface PosixGroupIdentity {
  * uses the same POSIX projection as `/etc/passwd`: the primary GID and group
  * name equal the user's ID and username.
  *
- * @param _args - Unused.
  * @returns An envelope carrying numeric UID/GID identity and every CUBE group
  *   membership, or an error envelope when identity cannot be resolved.
  */
-export async function builtin_id(_args: string[]): Promise<CommandEnvelope> {
+async function id_run(): Promise<CommandEnvelope> {
   const result: Result<ChrisIdentity> = await currentIdentity_get();
   if (!result.ok) {
     exitCode_set(1);
@@ -71,11 +91,10 @@ export async function builtin_id(_args: string[]): Promise<CommandEnvelope> {
 /**
  * Reports the current authenticated ChRIS username.
  *
- * @param _args - Unused.
  * @returns An envelope carrying the username, or an error envelope with a
  *   not-connected notice when no user is authenticated.
  */
-export async function builtin_whoami(_args: string[]): Promise<CommandEnvelope> {
+async function whoami_run(): Promise<CommandEnvelope> {
   const context: SingleContext = await context_getSingle();
   if (context.user) {
     return envelope_ok(`${chalk.cyan(context.user)}\n`, {
@@ -90,11 +109,10 @@ export async function builtin_whoami(_args: string[]): Promise<CommandEnvelope> 
 /**
  * Reports the current CUBE URI.
  *
- * @param _args - Unused.
  * @returns An envelope carrying the CUBE URL, or an error envelope with a
  *   not-connected notice when no connection exists.
  */
-export async function builtin_whereami(_args: string[]): Promise<CommandEnvelope> {
+async function whereami_run(): Promise<CommandEnvelope> {
   const context: SingleContext = await context_getSingle();
   if (context.URL) {
     return envelope_ok(`${chalk.blue(context.URL)}\n`, {
@@ -104,4 +122,97 @@ export async function builtin_whereami(_args: string[]): Promise<CommandEnvelope
   }
   exitCode_set(1);
   return envelope_error(`${chalk.gray('(not connected)')}\n`);
+}
+
+/**
+ * `id`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [idCommand] }, 'backend');
+ * ```
+ */
+export const idCommand = command_declare({
+  name: 'id',
+  grammar: IDENTITY_GRAMMAR,
+  help: {
+    summary: 'Print the CUBE user as a Unix-style uid, gid and groups',
+    description: 'Print the current CUBE user as a Unix-style UID, projected primary GID, and complete list of CUBE group memberships.',
+    category: 'Connection',
+    examples: ['id'],
+  },
+  holds: [],
+  handler: async (): Promise<CommandEnvelope> => id_run(),
+});
+
+/**
+ * `whoami`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [whoamiCommand] }, 'backend');
+ * ```
+ */
+export const whoamiCommand = command_declare({
+  name: 'whoami',
+  grammar: IDENTITY_GRAMMAR,
+  help: {
+    summary: 'Print the currently authenticated ChRIS username',
+    description: 'Print the currently authenticated ChRIS username; a session not connected says so.',
+    category: 'Connection',
+    examples: ['whoami'],
+  },
+  holds: [],
+  handler: async (): Promise<CommandEnvelope> => whoami_run(),
+});
+
+/**
+ * `whereami`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [whereamiCommand] }, 'backend');
+ * ```
+ */
+export const whereamiCommand = command_declare({
+  name: 'whereami',
+  grammar: IDENTITY_GRAMMAR,
+  help: {
+    summary: 'Print the current CUBE URL',
+    description: 'Print the URL of the CUBE this session talks to; a session not connected says so.',
+    category: 'Connection',
+    examples: ['whereami'],
+  },
+  holds: [],
+  handler: async (): Promise<CommandEnvelope> => whereami_run(),
+});
+
+/**
+ * `id` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `id`: none.
+ * @returns The identity, or the refusal of a bad line.
+ */
+export async function builtin_id(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(idCommand, args);
+}
+
+/**
+ * `whoami` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `whoami`: none.
+ * @returns The username, or the refusal of a bad line.
+ */
+export async function builtin_whoami(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(whoamiCommand, args);
+}
+
+/**
+ * `whereami` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `whereami`: none.
+ * @returns The CUBE URL, or the refusal of a bad line.
+ */
+export async function builtin_whereami(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(whereamiCommand, args);
 }
