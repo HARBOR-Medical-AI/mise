@@ -13,7 +13,7 @@ import { berthKey_compute, identity_normalise } from '@fnndsc/calypso/berth';
 import { berthCapacity_derive, profileFloor_get } from '@fnndsc/menu';
 import type { DockerAnswer, DockerApi, ExecAnswer } from '../../src/launcher/docker.js';
 import { dockerStream_demux } from '../../src/launcher/docker.js';
-import { BERTH_IMAGE_DEFAULT, BERTH_LABEL, BerthLauncher, berthContainer_spec, berthName_matches, berthNames_derive, cohort_word, pullFailure_read, stats_digest } from '../../src/launcher/launcher.js';
+import { BERTH_ANCHORS_DIR, BERTH_IMAGE_DEFAULT, BERTH_LABEL, BERTH_OUTGOING_DIR, BerthLauncher, type BerthNames, berthContainer_spec, berthName_matches, berthNames_derive, berthPlaces_check, cohort_word, pullFailure_read, stats_digest, volumesOwnScript_build } from '../../src/launcher/launcher.js';
 import { BERTH_LIMITS_DEFAULT, berthPolicy_read, capacityRefusal_words, type BerthPolicy } from '../../src/launcher/policy.js';
 import { launcherServer_create, secret_matches } from '../../src/launcher/server.js';
 import { launcherSecret_read } from '../../src/launcher/secret.js';
@@ -43,6 +43,8 @@ class FakeDocker implements DockerApi {
   hung: Set<string> = new Set();
   /** The images the host holds a copy of. */
   images: Set<string> = new Set(['mbw/mise-berth@sha256:abc']);
+  /** Every container made, helpers too, in order, with the body it was made from. */
+  made: Array<{ name: string; spec: Record<string, unknown> }> = [];
   /** Each image a pull asked the registry for. */
   pulls: string[] = [];
   /** Why the registry refuses a pull, said in the progress stream; null: it gives the image. */
@@ -102,13 +104,14 @@ class FakeDocker implements DockerApi {
       const nets = Object.keys(((spec['NetworkingConfig'] as { EndpointsConfig?: Record<string, unknown> } | undefined)?.EndpointsConfig) ?? {});
       for (const net of nets) this.networks.get(net)?.members.add(made);
       this.containers.set(made, { spec, running: false, ip: `10.213.77.${this.serial++}`, token: null });
+      this.made.push({ name: made, spec });
       return { status: 201, body: { Id: made } };
     }
     const found = this.containers.get(name);
     if (method === 'GET' && route.endsWith('/json')) {
       if (found === undefined) return { status: 404, body: {} };
       const wire: string = String((found.spec['HostConfig'] as Record<string, unknown>)['NetworkMode']);
-      return { status: 200, body: { State: { Running: found.running }, Config: { User: found.spec['User'], Labels: found.spec['Labels'] }, NetworkSettings: { Networks: { [wire]: { IPAddress: found.ip } } } } };
+      return { status: 200, body: { State: { Running: found.running }, Config: { User: found.spec['User'], Labels: found.spec['Labels'] }, HostConfig: found.spec['HostConfig'], NetworkSettings: { Networks: { [wire]: { IPAddress: found.ip } } } } };
     }
     if (route.endsWith('/start')) { if (found !== undefined) found.running = true; return { status: 204, body: null }; }
     if (route.endsWith('/wait')) { if (found !== undefined) found.running = false; return { status: 200, body: { StatusCode: name.endsWith('-own') ? this.ownExit : 0 } }; }
@@ -142,9 +145,26 @@ function launcher_make(docker: FakeDocker, policy: BerthPolicy = POLICY, porterC
 
 /** A running berth under the legacy name, `<prefix>-<key>`, on its person's wire with porter. */
 function legacy_put(docker: FakeDocker, user: string, identity: string): void {
-  const names = berthNames_derive('mbw', identity, user, null);
+  const names = berthNames_derive('mbw', identity, user);
   docker.networks.set(names.network, { options: {}, members: new Set(['porter', names.containerLegacy]) });
   docker.containers.set(names.containerLegacy, { spec: { User: '7:7', Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: identity, [`${BERTH_LABEL}.user`]: user, [`${BERTH_LABEL}.cohort`]: 'none' }, HostConfig: { NetworkMode: names.network } }, running: true, ip: '10.213.77.99', token: 'old-token' });
+}
+
+/** The mounts a berth had on the cohort volume: `/incoming` read-only and `/outgoing`, both from `…-cohort-none`. */
+function mountsOld_build(names: BerthNames): Array<Record<string, unknown>> {
+  return [
+    { Type: 'volume', Source: names.home, Target: '/home/ana', ReadOnly: false, VolumeOptions: { NoCopy: true } },
+    { Type: 'volume', Source: names.cohortLegacy, Target: '/incoming', ReadOnly: true, VolumeOptions: { NoCopy: true, Subpath: 'incoming' } },
+    { Type: 'volume', Source: names.cohortLegacy, Target: '/outgoing', ReadOnly: false, VolumeOptions: { NoCopy: true, Subpath: 'outgoing' } },
+  ];
+}
+
+/** Ana's berth as a launcher on the cohort volume left it: her home, her `…-cohort-none` volume, and her berth running on their places, on her wire with porter. */
+function oldShape_put(docker: FakeDocker, names: BerthNames): void {
+  docker.volumes.set(names.home, { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.user`]: 'ana', [`${BERTH_LABEL}.volume`]: 'home' });
+  docker.volumes.set(names.cohortLegacy, { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: ANA, [`${BERTH_LABEL}.user`]: 'ana', [`${BERTH_LABEL}.volume`]: 'cohort', [`${BERTH_LABEL}.cohort`]: 'none' });
+  docker.networks.set(names.network, { options: {}, members: new Set(['porter', names.container]) });
+  docker.containers.set(names.container, { spec: { User: '7:7', Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: ANA, [`${BERTH_LABEL}.user`]: 'ana', [`${BERTH_LABEL}.cohort`]: 'none' }, HostConfig: { Mounts: mountsOld_build(names), NetworkMode: names.network } }, running: true, ip: '10.213.77.98', token: 'old-token' });
 }
 
 describe('the berth policy', () => {
@@ -180,31 +200,29 @@ describe('the berth policy', () => {
 });
 
 describe('the names and the container a berth is', () => {
-  it('names one home for life, one cohort volume per person and cohort, and one wire per person', () => {
+  it('names one home for life, one work volume per person, the cohort volume /outgoing was on, and one wire per person', () => {
     const key: string = berthKey_compute(ANA);
-    expect(berthNames_derive('mbw', ANA, 'ana', null)).toEqual({ container: `mbw-ana-${key}`, containerLegacy: `mbw-${key}`, network: 'mbw-net-ana', home: `mbw-${key}-home`, cohort: `mbw-${key}-cohort-none` });
-    expect(berthNames_derive('mbw', ANA, 'ana', 42).cohort).toBe(`mbw-${key}-cohort-42`);
-    expect(berthNames_derive('mbw', ANA, 'ana', 42).home).toBe(`mbw-${key}-home`);
-    expect(berthNames_derive('mbw', identity_normalise('a.b+c@x', CUBE), 'a.b+c@x', null).network).toBe('mbw-net-a.b-c-x');
+    expect(berthNames_derive('mbw', ANA, 'ana')).toEqual({ container: `mbw-ana-${key}`, containerLegacy: `mbw-${key}`, network: 'mbw-net-ana', home: `mbw-${key}-home`, work: `mbw-${key}-work`, cohortLegacy: `mbw-${key}-cohort-none` });
+    expect(berthNames_derive('mbw', identity_normalise('a.b+c@x', CUBE), 'a.b+c@x').network).toBe('mbw-net-a.b-c-x');
     expect(cohort_word(undefined)).toBe('none');
     expect(cohort_word(7)).toBe('7');
   });
 
   it('names the container by the prefix, the user as the wire spells them, and the key: readable, and apart for the same user on two CUBEs', () => {
     const odd: string = identity_normalise('a.b+c@x', CUBE);
-    expect(berthNames_derive('mbw', odd, 'a.b+c@x', null).container).toBe(`mbw-a.b-c-x-${berthKey_compute(odd)}`);
+    expect(berthNames_derive('mbw', odd, 'a.b+c@x').container).toBe(`mbw-a.b-c-x-${berthKey_compute(odd)}`);
     const elsewhere: string = identity_normalise('ana', 'http://other.example.org/api/v1/');
-    expect(berthNames_derive('mbw', elsewhere, 'ana', null).container).toBe(`mbw-ana-${berthKey_compute(elsewhere)}`);
-    expect(berthNames_derive('mbw', elsewhere, 'ana', null).container).not.toBe(berthNames_derive('mbw', ANA, 'ana', null).container);
+    expect(berthNames_derive('mbw', elsewhere, 'ana').container).toBe(`mbw-ana-${berthKey_compute(elsewhere)}`);
+    expect(berthNames_derive('mbw', elsewhere, 'ana').container).not.toBe(berthNames_derive('mbw', ANA, 'ana').container);
     // The volumes hold a person's data: named by the key alone, whatever the container is called.
-    expect(berthNames_derive('mbw', odd, 'a.b+c@x', 3)).toMatchObject({ home: `mbw-${berthKey_compute(odd)}-home`, cohort: `mbw-${berthKey_compute(odd)}-cohort-3` });
+    expect(berthNames_derive('mbw', odd, 'a.b+c@x')).toMatchObject({ home: `mbw-${berthKey_compute(odd)}-home`, work: `mbw-${berthKey_compute(odd)}-work` });
   });
 
   it('knows a berth by its name, the legacy one too, and a helper, porter or another prefix as none', () => {
-    const names = berthNames_derive('mise.berth', ANA, 'ana', null);
+    const names = berthNames_derive('mise.berth', ANA, 'ana');
     expect(berthName_matches('mise.berth', names.container)).toBe(true);
     expect(berthName_matches('mise.berth', names.containerLegacy)).toBe(true);
-    expect(berthName_matches('mise.berth', berthNames_derive('mise.berth', identity_normalise('a.b+c@x', CUBE), 'a.b+c@x', null).container)).toBe(true);
+    expect(berthName_matches('mise.berth', berthNames_derive('mise.berth', identity_normalise('a.b+c@x', CUBE), 'a.b+c@x').container)).toBe(true);
     expect(berthName_matches('mise.berth', `${names.container}-own`)).toBe(false);
     expect(berthName_matches('mise.berth', `${names.containerLegacy}-own`)).toBe(false);
     expect(berthName_matches('mise.berth', 'mise.berth-porter-standin')).toBe(false);
@@ -213,18 +231,25 @@ describe('the names and the container a berth is', () => {
     expect(berthName_matches('mise.berth', names.container.replace('mise.berth', 'misexberth'))).toBe(false);
   });
 
-  it('fixes everything but who it is for and which cohort: the image, the home and the cohort pair by subpath, the token tmpfs, the limits, no privilege, no engine, a read-only root, its own wire and cube-net', () => {
+  it('fixes everything but who it is for: the image, the home and the work volume\'s anchors and outgoing by subpath, both writable, no /incoming, the places named in the environment, the token tmpfs, the limits, no privilege, no engine, a read-only root, its own wire and cube-net', () => {
     const spec = berthContainer_spec({ image: 'img@sha256:abc', prefix: 'mbw', cubeNetwork: 'mbw-cube-net', policy: POLICY }, { user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'secret-cube-token', cohort: 42 }, ANA);
-    const names = berthNames_derive('mbw', ANA, 'ana', 42);
+    const names = berthNames_derive('mbw', ANA, 'ana');
     const host = spec['HostConfig'] as Record<string, unknown>;
     expect(spec['Image']).toBe('img@sha256:abc');
     expect(spec['User']).toBe('7:7');
     expect(spec['Env']).toContain('MISE_COHORT=42');
+    expect(spec['Env']).toEqual(expect.arrayContaining(['MISE_BERTH_ANCHORS=/anchors', 'MISE_BERTH_OUTGOING=/outgoing']));
+    expect(BERTH_ANCHORS_DIR).toBe('/anchors');
+    expect(BERTH_OUTGOING_DIR).toBe('/outgoing');
     expect(host['Mounts']).toEqual([
       { Type: 'volume', Source: names.home, Target: '/home/ana', ReadOnly: false, VolumeOptions: { NoCopy: true } },
-      { Type: 'volume', Source: names.cohort, Target: '/incoming', ReadOnly: true, VolumeOptions: { NoCopy: true, Subpath: 'incoming' } },
-      { Type: 'volume', Source: names.cohort, Target: '/outgoing', ReadOnly: false, VolumeOptions: { NoCopy: true, Subpath: 'outgoing' } },
+      { Type: 'volume', Source: names.work, Target: '/anchors', ReadOnly: false, VolumeOptions: { NoCopy: true, Subpath: 'anchors' } },
+      { Type: 'volume', Source: names.work, Target: '/outgoing', ReadOnly: false, VolumeOptions: { NoCopy: true, Subpath: 'outgoing' } },
     ]);
+    expect(JSON.stringify(spec)).not.toContain('/incoming');
+    expect(JSON.stringify(spec)).not.toContain('-cohort-');
+    // The cohort selects no volume: another cohort, or none, mounts the same work volume.
+    expect(berthContainer_spec({ image: 'img@sha256:abc', prefix: 'mbw', cubeNetwork: 'mbw-cube-net', policy: POLICY }, { user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 't', cohort: null }, ANA)['HostConfig']).toMatchObject({ Mounts: host['Mounts'] });
     expect((host['Tmpfs'] as Record<string, string>)['/run/mise']).toBe('rw,nosuid,nodev,noexec,size=1m,mode=0700,uid=7,gid=7');
     expect(host).toMatchObject({ ReadonlyRootfs: true, Privileged: false, CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges'], NanoCpus: 1e9, Memory: 2 * 1024 ** 3, PidsLimit: 1024, NetworkMode: 'mbw-net-ana' });
     expect(Object.keys((spec['NetworkingConfig'] as { EndpointsConfig: Record<string, unknown> }).EndpointsConfig)).toEqual(['mbw-net-ana', 'mbw-cube-net']);
@@ -261,7 +286,7 @@ describe('the launcher over an engine', () => {
     docker.gateway = '172.31.0.1';
     const named: BerthLauncher = new BerthLauncher({ docker, policy: POLICY, image: 'mbw/mise-berth@sha256:abc', prefix: 'mbw', cubeNetwork: 'mbw-cube-net', porterContainer: 'porter', cubeHost: 'cube.example.org', bootMs: 300, pollMs: 10 });
     await named.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
-    const names = berthNames_derive('mbw', ANA, 'ana', null);
+    const names = berthNames_derive('mbw', ANA, 'ana');
     expect((docker.containers.get(names.container)?.spec['HostConfig'] as Record<string, unknown>)['ExtraHosts']).toEqual(['cube.example.org:172.31.0.1']);
     const plain = new FakeDocker();
     await launcher_make(plain).start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
@@ -275,15 +300,19 @@ describe('the launcher over an engine', () => {
     expect(docker.containers.size).toBe(0);
   });
 
-  it('starts a berth: cube-net blocking its containers from one another, the person\'s own wire with porter joined, the home and the cohort pair made and given to the uid, the token written on stdin as the user, the address on the wire', async () => {
+  it('starts a berth: cube-net blocking its containers from one another, the person\'s own wire with porter joined, the home and the work volume made, labelled and given to the uid, the token written on stdin as the user, the address on the wire', async () => {
     const launcher: BerthLauncher = launcher_make(docker);
     const berth = await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: 42 });
-    const names = berthNames_derive('mbw', ANA, 'ana', 42);
+    const names = berthNames_derive('mbw', ANA, 'ana');
     expect(docker.networks.get('mbw-cube-net')?.options).toEqual({ 'com.docker.network.bridge.enable_icc': 'false' });
     expect([...docker.networks.get('mbw-net-ana')?.members ?? []].sort()).toEqual([names.container, 'porter']);
     expect([...docker.networks.get('mbw-cube-net')?.members ?? []]).toEqual([names.container]);
-    expect([...docker.volumes.keys()].sort()).toEqual([names.cohort, names.home].sort());
-    expect(docker.volumes.get(names.cohort)).toMatchObject({ [`${BERTH_LABEL}.volume`]: 'cohort', [`${BERTH_LABEL}.cohort`]: '42' });
+    expect([...docker.volumes.keys()].sort()).toEqual([names.home, names.work].sort());
+    expect(docker.volumes.get(names.work)).toEqual({ [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: ANA, [`${BERTH_LABEL}.user`]: 'ana', [`${BERTH_LABEL}.volume`]: 'work' });
+    // The one-shot root container gives both volumes to the uid, anchors/ and outgoing/ made in the work volume, and copies nothing when there is no cohort volume.
+    const helper = docker.made.find((one) => one.name === `${names.container}-own`);
+    expect(helper?.spec).toMatchObject({ User: '0:0', Entrypoint: ['sh', '-c', volumesOwnScript_build(7, 7, false)], HostConfig: { Binds: [`${names.home}:/v/home`, `${names.work}:/v/work`], NetworkMode: 'none', CapDrop: ['ALL'], CapAdd: ['CHOWN', 'DAC_OVERRIDE'] } });
+    expect(docker.containers.has(`${names.container}-own`)).toBe(false);
     expect(berth).toEqual({ identity: ANA, user: 'ana', state: 'running', url: 'ws://10.213.77.3:41234', token: `attach-${names.container}`, container: names.container, cohort: '42' });
     const own = docker.execs.length;
     const write = docker.execs.find((one) => one.cmd.join(' ').includes('.token.new'));
@@ -305,7 +334,7 @@ describe('the launcher over an engine', () => {
     docker.images.clear();
     docker.pullSays = `Status: Downloaded newer image for ${BERTH_IMAGE_DEFAULT}`;
     await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
-    const names = berthNames_derive('mbw', ANA, 'ana', null);
+    const names = berthNames_derive('mbw', ANA, 'ana');
     expect(docker.pulls).toEqual([BERTH_IMAGE_DEFAULT]);
     expect(docker.containers.get(names.container)?.spec['Image']).toBe(BERTH_IMAGE_DEFAULT);
     expect(said).toEqual([`pulled a newer berth image ${BERTH_IMAGE_DEFAULT}`]);
@@ -381,16 +410,89 @@ describe('the launcher over an engine', () => {
     expect(docker.volumes.size).toBe(2);
   });
 
-  it('switches cohort: the berth is made again on the new pair, the home the same; none is a pair of its own', async () => {
+  it('takes a cohort as a label alone: another cohort makes the berth again on the same home and work volume, and no cohort volume is made', async () => {
     const launcher: BerthLauncher = launcher_make(docker);
     await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: 42 });
     const moved = await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: null });
     expect(moved.cohort).toBe('none');
-    const names = berthNames_derive('mbw', ANA, 'ana', null);
-    expect([...docker.volumes.keys()].sort()).toEqual([names.home, `${names.home.replace(/-home$/, '')}-cohort-42`, names.cohort].sort());
+    const names = berthNames_derive('mbw', ANA, 'ana');
+    expect([...docker.volumes.keys()].sort()).toEqual([names.home, names.work].sort());
     expect(docker.containers.size).toBe(1);
     expect((docker.containers.get(names.container)?.spec['Labels'] as Record<string, string>)[`${BERTH_LABEL}.cohort`]).toBe('none');
+    // The volumes were given once, at the first start.
+    expect(docker.made.filter((one) => one.name.endsWith('-own'))).toHaveLength(1);
     await expect(launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 't', cohort: -1 })).rejects.toThrow('a cohort is a feed\'s id');
+  });
+
+  it('reads a container\'s places from either list the engine names its mounts in, and knows the cohort volume\'s places as not the work volume\'s', () => {
+    const names = berthNames_derive('mbw', ANA, 'ana');
+    const current = (berthContainer_spec({ image: 'img', prefix: 'mbw', cubeNetwork: 'mbw-cube-net', policy: POLICY }, { user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 't' }, ANA)['HostConfig'] as Record<string, unknown>)['Mounts'];
+    expect(berthPlaces_check({ HostConfig: { Mounts: current } }, names.work)).toBe(true);
+    expect(berthPlaces_check({ Mounts: [{ Type: 'volume', Name: names.work, Destination: '/anchors' }, { Type: 'volume', Name: names.work, Destination: '/outgoing' }] }, names.work)).toBe(true);
+    expect(berthPlaces_check({ HostConfig: { Mounts: mountsOld_build(names) } }, names.work)).toBe(false);
+    expect(berthPlaces_check({ Mounts: [{ Type: 'volume', Name: names.cohortLegacy, Destination: '/incoming' }, { Type: 'volume', Name: names.cohortLegacy, Destination: '/outgoing' }] }, names.work)).toBe(false);
+    expect(berthPlaces_check({ HostConfig: { Mounts: [{ Source: names.work, Target: '/anchors' }] } }, names.work)).toBe(false);
+    expect(berthPlaces_check({}, names.work)).toBe(false);
+  });
+
+  it('makes a berth running on the cohort volume\'s places again on the work volume\'s, rather than handing it back; the home and the cohort volume are kept', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const names = berthNames_derive('mbw', ANA, 'ana');
+    oldShape_put(docker, names);
+    const berth = await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    expect(berth.state).toBe('running');
+    expect(docker.made.filter((one) => one.name === names.container)).toHaveLength(1);
+    const spec = docker.containers.get(names.container)?.spec ?? {};
+    expect(((spec['HostConfig'] as Record<string, unknown>)['Mounts'] as Array<Record<string, unknown>>).map((one) => `${String(one['Source'])}:${String(one['Target'])}`)).toEqual([`${names.home}:/home/ana`, `${names.work}:/anchors`, `${names.work}:/outgoing`]);
+    expect(spec['Env']).toEqual(expect.arrayContaining(['MISE_BERTH_ANCHORS=/anchors', 'MISE_BERTH_OUTGOING=/outgoing']));
+    expect(docker.volumes.has(names.cohortLegacy)).toBe(true);
+    expect(docker.volumes.get(names.home)).toEqual({ [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.user`]: 'ana', [`${BERTH_LABEL}.volume`]: 'home' });
+    // On its new places it is handed back as it stands at the next start.
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token-2' });
+    expect(docker.made.filter((one) => one.name === names.container)).toHaveLength(1);
+    expect(docker.containers.get(names.container)?.token).toBe('ana-token-2\n');
+  });
+
+  it('copies the cohort volume\'s outgoing/ into the work volume once, as the work volume is made, the cohort volume read-only and kept', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const names = berthNames_derive('mbw', ANA, 'ana');
+    oldShape_put(docker, names);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    const helpers = (): Array<{ name: string; spec: Record<string, unknown> }> => docker.made.filter((one) => one.name === `${names.container}-own`);
+    expect(helpers()).toHaveLength(1);
+    expect(helpers()[0]?.spec).toMatchObject({ User: '0:0', Entrypoint: ['sh', '-c', volumesOwnScript_build(7, 7, true)], HostConfig: { Binds: [`${names.home}:/v/home`, `${names.work}:/v/work`, `${names.cohortLegacy}:/v/old:ro`] } });
+    expect(docker.volumes.get(names.work)).toMatchObject({ [`${BERTH_LABEL}.volume`]: 'work' });
+    expect(docker.volumes.has(names.cohortLegacy)).toBe(true);
+    // The work volume stands: a berth made again copies nothing and runs no helper.
+    await launcher.stop('ana', CUBE);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    expect(helpers()).toHaveLength(1);
+    // A home made anew beside a work volume that stands is given without a copy.
+    docker.volumes.delete(names.home);
+    await launcher.stop('ana', CUBE);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    expect(helpers()).toHaveLength(2);
+    expect(helpers()[1]?.spec).toMatchObject({ Entrypoint: ['sh', '-c', volumesOwnScript_build(7, 7, false)], HostConfig: { Binds: [`${names.home}:/v/home`, `${names.work}:/v/work`] } });
+  });
+
+  it('a copy that fails removes the work volume it was made into, so the next start copies again; the cohort volume is kept', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const names = berthNames_derive('mbw', ANA, 'ana');
+    oldShape_put(docker, names);
+    docker.ownExit = 1;
+    await expect(launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' })).rejects.toThrow('ana\'s volumes were not given to them (exit 1)');
+    expect(docker.volumes.has(names.work)).toBe(false);
+    expect(docker.volumes.has(names.home)).toBe(true);
+    expect(docker.volumes.has(names.cohortLegacy)).toBe(true);
+    docker.ownExit = 0;
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    expect(docker.made.filter((one) => one.name === `${names.container}-own`).map((one) => (one.spec['HostConfig'] as { Binds: string[] }).Binds.at(-1))).toEqual([`${names.cohortLegacy}:/v/old:ro`, `${names.cohortLegacy}:/v/old:ro`]);
+  });
+
+  it('builds the helper\'s command: the work volume\'s two places made and both volumes given to the uid, and the copy only when asked, links kept as links', () => {
+    expect(volumesOwnScript_build(7, 8, false)).toBe('mkdir -p /v/work/anchors /v/work/outgoing && chown 7:8 /v/home /v/work /v/work/anchors /v/work/outgoing');
+    expect(volumesOwnScript_build(7, 8, true)).toBe('mkdir -p /v/work/anchors /v/work/outgoing && chown 7:8 /v/home /v/work /v/work/anchors /v/work/outgoing && if [ -d /v/old/outgoing ]; then cp -R /v/old/outgoing/. /v/work/outgoing/ && chown -hR 7:8 /v/work/outgoing; fi');
+    expect(volumesOwnScript_build(7, 8, true)).not.toContain('incoming');
   });
 
   it('refuses a full spoke naming who holds it; a stop frees the room, takes porter off the wire and removes it, and keeps the volumes', async () => {
@@ -408,7 +510,7 @@ describe('the launcher over an engine', () => {
 
   it('a start removes the container left under the legacy name and makes the berth under its own; the home and the wire are the same', async () => {
     const launcher: BerthLauncher = launcher_make(docker);
-    const names = berthNames_derive('mbw', ANA, 'ana', null);
+    const names = berthNames_derive('mbw', ANA, 'ana');
     legacy_put(docker, 'ana', ANA);
     expect((await launcher.status({ user: 'ana', cubeUrl: CUBE }))[0]).toMatchObject({ state: 'running', container: names.containerLegacy });
     const berth = await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
@@ -429,7 +531,7 @@ describe('the launcher over an engine', () => {
 
   it('a stop removes the container under the legacy name, alone or beside the one under its own, with the wire', async () => {
     const launcher: BerthLauncher = launcher_make(docker);
-    const names = berthNames_derive('mbw', ANA, 'ana', null);
+    const names = berthNames_derive('mbw', ANA, 'ana');
     legacy_put(docker, 'ana', ANA);
     expect(await launcher.stop('ana', CUBE)).toBe(true);
     expect(docker.containers.size).toBe(0);
@@ -446,11 +548,11 @@ describe('the launcher over an engine', () => {
     await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
     const rudolph: string = identity_normalise('rudolph', CUBE);
     legacy_put(docker, 'rudolph', rudolph);
-    docker.networks.set('mbw-net-ghost', { options: {}, members: new Set(['porter', `${berthNames_derive('mbw', ANA, 'ana', null).container}-own`]) });
+    docker.networks.set('mbw-net-ghost', { options: {}, members: new Set(['porter', `${berthNames_derive('mbw', ANA, 'ana').container}-own`]) });
     expect(await launcher.orphans_clear()).toEqual(['mbw-net-ghost']);
     expect(docker.networks.has('mbw-net-ana')).toBe(true);
     expect(docker.networks.has('mbw-net-rudolph')).toBe(true);
-    expect(docker.containers.has(berthNames_derive('mbw', rudolph, 'rudolph', null).containerLegacy)).toBe(true);
+    expect(docker.containers.has(berthNames_derive('mbw', rudolph, 'rudolph').containerLegacy)).toBe(true);
   });
 
   it('refuses root, a name CUBE would not take, and a start with no token it holds', async () => {
@@ -463,7 +565,7 @@ describe('the launcher over an engine', () => {
   it('restarts on the token it holds, says a berth that never answers, and clears what an earlier run left', async () => {
     const launcher: BerthLauncher = launcher_make(docker);
     await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
-    const names = berthNames_derive('mbw', ANA, 'ana', null);
+    const names = berthNames_derive('mbw', ANA, 'ana');
     docker.containers.get(names.container)!.running = false;
     const restarted = await launcher.start({ user: 'ana', uid: 0, gid: 0, cubeUrl: CUBE, token: null });
     expect(restarted.state).toBe('running');
@@ -484,7 +586,7 @@ describe('the launcher over an engine', () => {
     await launcher.stop('benito', CUBE);
     await launcher.start({ user: 'carla', uid: 9, gid: 9, cubeUrl: CUBE, token: 'carla-token' });
     // Carla's container is up but the engine cannot sample it: she is running, her usage unread.
-    docker.stats[berthNames_derive('mbw', ANA, 'ana', 42).container] = {
+    docker.stats[berthNames_derive('mbw', ANA, 'ana').container] = {
       cpu_stats: { cpu_usage: { total_usage: 2_300_000 }, system_cpu_usage: 100_000_000, online_cpus: 4 },
       precpu_stats: { cpu_usage: { total_usage: 2_000_000 }, system_cpu_usage: 90_000_000 },
       memory_stats: { usage: 300 * 1024 ** 2, limit: 2 * 1024 ** 3, stats: { inactive_file: 90 * 1024 ** 2 } },
@@ -523,7 +625,7 @@ describe('the launcher over an engine', () => {
     docker.volumes.set('mbw-eli-old-home', { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: identity_normalise('eli', OLD), [`${BERTH_LABEL}.user`]: 'eli', [`${BERTH_LABEL}.volume`]: 'home' });
     docker.volumes.set('mbw-gil-old-home', { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: identity_normalise('gil', OLD), [`${BERTH_LABEL}.user`]: 'gil', [`${BERTH_LABEL}.volume`]: 'home' });
     docker.volumes.set('mbw-fay-home', { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.user`]: 'fay', [`${BERTH_LABEL}.volume`]: 'home' });
-    expect([...docker.volumes.entries()].find(([name]) => name === berthNames_derive('mbw', ANA, 'ana', null).home)?.[1][`${BERTH_LABEL}.identity`]).toBe(ANA);
+    expect([...docker.volumes.entries()].find(([name]) => name === berthNames_derive('mbw', ANA, 'ana').home)?.[1][`${BERTH_LABEL}.identity`]).toBe(ANA);
     expect((await launcher.access_read(CUBE)).map((row) => `${row.user}:${row.state}`)).toEqual(['ana:running', 'eli:stopped', 'fay:stopped']);
     expect((await launcher.access_read(OLD)).map((row) => `${row.user}:${row.state}`)).toEqual(['dora:running', 'eli:stopped', 'fay:stopped', 'gil:stopped']);
   });
@@ -531,7 +633,7 @@ describe('the launcher over an engine', () => {
   it('reports one running berth for a person whose identity has two containers up, the same one whatever order the engine lists them', async () => {
     const launcher: BerthLauncher = launcher_make(docker);
     await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token', cohort: 42 });
-    const first: string = berthNames_derive('mbw', ANA, 'ana', 42).container;
+    const first: string = berthNames_derive('mbw', ANA, 'ana').container;
     const labels = { ...(docker.containers.get(first)?.spec['Labels'] as Record<string, string>), [`${BERTH_LABEL}.cohort`]: '7' };
     docker.containers.set('mbw-aaaa', { spec: { Labels: labels }, running: true, ip: '', token: null });
     const forward = await launcher.access_read(CUBE);
@@ -543,14 +645,14 @@ describe('the launcher over an engine', () => {
   it('gives up on a container the engine does not sample in time: the berth is running, its usage unread', async () => {
     const launcher: BerthLauncher = launcher_make(docker, POLICY, 'porter', 50);
     await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
-    docker.hung.add(berthNames_derive('mbw', ANA, 'ana', null).container);
+    docker.hung.add(berthNames_derive('mbw', ANA, 'ana').container);
     expect(await launcher.access_read(CUBE)).toEqual([{ user: 'ana', state: 'running', cohort: 'none', cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }]);
   });
 
   it('a porter on the host joins no wire', async () => {
     const launcher: BerthLauncher = launcher_make(docker, POLICY, null);
     await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
-    expect([...docker.networks.get('mbw-net-ana')?.members ?? []]).toEqual([berthNames_derive('mbw', ANA, 'ana', null).container]);
+    expect([...docker.networks.get('mbw-net-ana')?.members ?? []]).toEqual([berthNames_derive('mbw', ANA, 'ana').container]);
   });
 
   it('demuxes the engine\'s stream into stdout and stderr', () => {
@@ -611,9 +713,9 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     expect(identity_split(ANA)).toEqual({ user: 'ana', cubeUrl: CUBE });
     const berth = await host.spawn(ANA, 'ana', CUBE, 'ana-token');
     expect(berth.url).toBe('ws://10.213.77.3:41234');
-    const names = berthNames_derive('mbw', ANA, 'ana', null);
+    const names = berthNames_derive('mbw', ANA, 'ana');
     expect(docker.containers.get(names.container)?.spec['User']).toBe('7:7');
-    expect(docker.volumes.has(names.cohort)).toBe(true);
+    expect(docker.volumes.has(names.work)).toBe(true);
     expect((await host.find(ANA))?.token).toBe(berth.token);
     expect((await host.sessions_adopt()).map((one) => one.identity)).toEqual([ANA]);
     const followed = host.boot_follow(ANA, { line: () => undefined, done: () => undefined });
