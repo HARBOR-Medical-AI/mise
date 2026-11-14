@@ -237,12 +237,12 @@ describe('porter\'s host: the CUBE id and the launcher\'s answers', () => {
     expect(JSON.parse(asked[0]?.body ?? '{}')).toMatchObject({ user: 'ana', uid: 42, gid: 42, token: 'new-token' });
     host.restart_begin(identity, 'ana', cubeUrl, { kind: 'stale', behind: ['chell 1 → 2'] });
     await new Promise((resolve) => { setTimeout(resolve, 200); });
-    expect(asked.map((one) => one.path)).toEqual(['/berths/start', '/berths/stop', '/berths/start']);
+    expect(asked.map((one) => one.path)).toEqual(['/berths/start', '/berths/stop', '/berths/start?follow=lines']);
     expect(JSON.parse(asked[2]?.body ?? '{}')).toMatchObject({ token: null, uid: 0 });
     expect(host.boot_follow(identity, { line: () => undefined, done: () => undefined })?.report.lines[0]?.text).toBe('Restarting a stale calypso daemon (chell 1 → 2)');
     host.restart_begin(identity, 'ana', cubeUrl, { kind: 'saved-login' });
     await new Promise((resolve) => { setTimeout(resolve, 200); });
-    expect(asked.at(-1)?.path).toBe('/berths/start');
+    expect(asked.at(-1)?.path).toBe('/berths/start?follow=lines');
     expect(asked.filter((one) => one.path === '/berths/stop')).toHaveLength(1);
     host.spawn_begin(identity, 'ana', cubeUrl, 'good');
     await new Promise((resolve) => { setTimeout(resolve, 200); });

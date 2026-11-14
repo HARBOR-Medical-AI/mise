@@ -11,8 +11,8 @@ import { createServer, type Server } from 'node:http';
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { berthKey_compute, identity_normalise } from '@fnndsc/calypso/berth';
 import { berthCapacity_derive, profileFloor_get } from '@fnndsc/menu';
-import type { DockerAnswer, DockerApi, ExecAnswer } from '../../src/launcher/docker.js';
-import { dockerStream_demux } from '../../src/launcher/docker.js';
+import type { DockerAnswer, DockerApi, ExecAnswer, LogFollow, LogLineSink } from '../../src/launcher/docker.js';
+import { DockerLogLines, dockerStream_demux } from '../../src/launcher/docker.js';
 import { BERTH_ANCHORS_DIR, BERTH_IMAGE_DEFAULT, BERTH_LABEL, BERTH_OUTGOING_DIR, BerthLauncher, type BerthNames, berthContainer_spec, berthName_matches, berthNames_derive, berthPlaces_check, cohort_word, imageRecord_read, pullFailure_read, stats_digest, volumesOwnScript_build } from '../../src/launcher/launcher.js';
 import { BERTH_LIMITS_DEFAULT, berthPolicy_read, capacityRefusal_words, type BerthPolicy } from '../../src/launcher/policy.js';
 import { launcherServer_create, secret_matches } from '../../src/launcher/server.js';
@@ -31,6 +31,33 @@ class FakeDocker implements DockerApi {
   execs: Array<{ container: string; cmd: string[]; user: string; stdin: string | null }> = [];
   /** A berth whose session never writes its berth file. */
   silent: boolean = false;
+  /** Each container's log, a line each; absent: nothing written. */
+  logs: Map<string, string[]> = new Map();
+  /** Who follows each container's log, and how each follow ends. */
+  private followers: Map<string, Set<{ onLine: LogLineSink; settle: () => void }>> = new Map();
+
+  /** A line the container writes to its log, told to whoever follows it. */
+  log_write(container: string, line: string): void {
+    this.logs.set(container, [...(this.logs.get(container) ?? []), line]);
+    for (const one of this.followers.get(container) ?? []) one.onLine(line, 'out');
+  }
+
+  /** The engine ends every follow of a container's log, as it does when the container stops. */
+  log_end(container: string): void {
+    for (const one of this.followers.get(container) ?? []) one.settle();
+    this.followers.delete(container);
+  }
+
+  logs_follow(container: string, fromStart: boolean, onLine: LogLineSink): LogFollow {
+    if (fromStart) for (const line of this.logs.get(container) ?? []) onLine(line, 'out');
+    let settle: () => void = (): void => undefined;
+    const ended: Promise<void> = new Promise<void>((resolve) => { settle = resolve; });
+    const one = { onLine, settle: (): void => { settle(); } };
+    const set = this.followers.get(container) ?? new Set();
+    set.add(one);
+    this.followers.set(container, set);
+    return { stop: (): void => { set.delete(one); settle(); }, ended };
+  }
   /** The gateway every network inspect names; null: the network has an address range and no gateway. */
   gateway: string | null = '172.18.0.1';
   /** What the one-shot container that gives the volumes away exits with. */
@@ -112,6 +139,11 @@ class FakeDocker implements DockerApi {
       return { status: 201, body: { Id: made } };
     }
     const found = this.containers.get(name);
+    if (method === 'GET' && route.endsWith('/logs')) {
+      const tail: number = Number(new URLSearchParams(query).get('tail') ?? '0');
+      const lines: string[] = this.logs.get(name) ?? [];
+      return { status: found === undefined ? 404 : 200, body: lines.length === 0 ? null : `${lines.slice(-tail).join('\n')}\n` };
+    }
     if (method === 'GET' && route.endsWith('/json')) {
       if (found === undefined) return { status: 404, body: {} };
       const wire: string = String((found.spec['HostConfig'] as Record<string, unknown>)['NetworkMode']);
@@ -586,12 +618,115 @@ describe('the launcher over an engine', () => {
     expect(restarted.state).toBe('running');
     expect(docker.containers.get(names.container)?.spec['User']).toBe('7:7');
     docker.silent = true;
-    await expect(launcher.start({ user: 'rudolph', uid: 3, gid: 3, cubeUrl: CUBE, token: 'r' })).rejects.toThrow('did not answer');
+    await expect(launcher.start({ user: 'rudolph', uid: 3, gid: 3, cubeUrl: CUBE, token: 'r' })).rejects.toThrow('the berth wrote nothing for 0 s and did not answer: no words');
     // An earlier run's helper and a wire with no berth on it are removed, whoever else stands on it (porter, a helper); a wire with a berth is kept.
     docker.networks.set('mbw-net-ghost', { options: {}, members: new Set(['porter', 'mbw-porter-standin', 'mbw-x-own']) });
     docker.containers.set('mbw-x-own', { spec: { Labels: { [BERTH_LABEL]: 'mbw' } }, running: false, ip: '', token: null });
     expect((await launcher.orphans_clear()).sort()).toEqual(['mbw-net-ghost', 'mbw-x-own']);
     expect(docker.networks.has('mbw-net-ana')).toBe(true);
+  });
+
+  /** Writes one stamped line to a berth's log every few ms, as a session at work does; the returned call stops it. */
+  function log_keepMoving(container: string): () => void {
+    let line: number = 0;
+    const timer: NodeJS.Timeout = setInterval((): void => {
+      docker.log_write(container, `[PENDING] Queries     Indexing prior PACS queries behind the prompt (${line++})`);
+    }, 15);
+    return (): void => { clearInterval(timer); };
+  }
+
+  it('waits past the silence limit for a berth whose log still moves, and hands it back once its berth file is written', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const names: BerthNames = berthNames_derive('mbw', ANA, 'ana');
+    docker.silent = true;
+    const halt: () => void = log_keepMoving(names.container);
+    try {
+      const started: Promise<unknown> = launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+      // Twice the 300 ms limit, the log moving all the while: still waited for.
+      await new Promise<void>((resolve) => { setTimeout(resolve, 650); });
+      docker.silent = false;
+      await expect(started).resolves.toMatchObject({ state: 'running', token: `attach-${names.container}` });
+    } finally {
+      halt();
+    }
+  });
+
+  it('refuses a berth whose log stops moving for the whole limit, with the last words it wrote', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const names: BerthNames = berthNames_derive('mbw', ANA, 'ana');
+    docker.silent = true;
+    docker.logs.set(names.container, ['[ OK ]    CUBE        Connected']);
+    await expect(launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' })).rejects.toMatchObject({ status: 502, message: 'the berth wrote nothing for 0 s and did not answer: [ OK ]    CUBE        Connected' });
+  });
+
+  it('refuses a berth that stops while it boots, as it always did, with its last words', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const names: BerthNames = berthNames_derive('mbw', ANA, 'ana');
+    docker.silent = true;
+    // The session says why and exits; the engine ends the log with the container.
+    setTimeout((): void => {
+      docker.log_write(names.container, '[!] could not reach CUBE');
+      docker.containers.get(names.container)!.running = false;
+      docker.log_end(names.container);
+    }, 40);
+    await expect(launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' })).rejects.toMatchObject({ status: 502, message: 'the berth stopped as it started: [!] could not reach CUBE' });
+  });
+
+  it('refuses a berth still writing at the ceiling that never answered, saying so', async () => {
+    const launcher: BerthLauncher = new BerthLauncher({ docker, policy: POLICY, image: 'mbw/mise-berth@sha256:abc', prefix: 'mbw', cubeNetwork: 'mbw-cube-net', porterContainer: 'porter', bootMs: 300, bootCeilingMs: 400, pollMs: 10 });
+    const names: BerthNames = berthNames_derive('mbw', ANA, 'ana');
+    docker.silent = true;
+    const halt: () => void = log_keepMoving(names.container);
+    try {
+      await expect(launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' })).rejects.toThrow(/^the berth was still starting after 0 s and did not answer: .*Indexing prior PACS queries/);
+    } finally {
+      halt();
+    }
+  });
+
+  it('tells each line of a new berth\'s log as it boots, from its first, its attach token taken out; a berth found running, only the lines from then', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const names: BerthNames = berthNames_derive('mbw', ANA, 'ana');
+    docker.logs.set(names.container, ['[ OK ]    Plugins      Cached 284 plugins', '    token:     0123456789abcdef0123456789abcdef']);
+    docker.silent = true;
+    const told: string[] = [];
+    setTimeout((): void => { docker.log_write(names.container, '[PENDING] Engine       5 steps warming'); docker.silent = false; }, 40);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' }, (line: string): void => { told.push(line); });
+    expect(told).toEqual(['[ OK ]    Plugins      Cached 284 plugins', '    token:     (held by the porter)', '[PENDING] Engine       5 steps warming']);
+    // A later line is no longer followed, and a berth already running replays none.
+    docker.log_write(names.container, '[ OK ]    Engine       Ready');
+    expect(told).toHaveLength(3);
+    const again: string[] = [];
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' }, (line: string): void => { again.push(line); });
+    expect(again).toEqual([]);
+  });
+
+  it('splits the engine\'s framed log into lines across frames and chunks, stdout and stderr apart', () => {
+    const frame = (kind: number, text: string): Buffer => Buffer.concat([Buffer.from([kind, 0, 0, 0]), Buffer.from([0, 0, 0, Buffer.byteLength(text)]), Buffer.from(text)]);
+    const lines: Array<[string, string]> = [];
+    const reader: DockerLogLines = new DockerLogLines((line: string, channel: 'out' | 'err'): void => { lines.push([channel, line]); });
+    const stream: Buffer = Buffer.concat([frame(1, '[ OK ]    CUBE  Conn'), frame(1, 'ected\r\n[PENDING] '), frame(2, 'a warning\n'), frame(1, 'Public  Warming\n'), frame(1, 'no end')]);
+    for (let at: number = 0; at < stream.length; at += 7) reader.chunk_take(stream.subarray(at, at + 7));
+    reader.end();
+    expect(lines).toEqual([['out', '[ OK ]    CUBE  Connected'], ['err', 'a warning'], ['out', '[PENDING] Public  Warming'], ['out', 'no end']]);
+  });
+
+  it('a login while the berth runs and has written no berth file yet joins the wait, rather than being refused at once', async () => {
+    const first: BerthLauncher = launcher_make(docker);
+    await first.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    const names: BerthNames = berthNames_derive('mbw', ANA, 'ana');
+    // The launcher made again (a restart) finds the berth running, its session still booting.
+    docker.silent = true;
+    const halt: () => void = log_keepMoving(names.container);
+    try {
+      const again: Promise<unknown> = launcher_make(docker).start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token-2' });
+      await new Promise<void>((resolve) => { setTimeout(resolve, 400); });
+      docker.silent = false;
+      await expect(again).resolves.toMatchObject({ state: 'running', container: names.container });
+      expect(docker.containers.get(names.container)?.token).toBe('ana-token-2\n');
+    } finally {
+      halt();
+    }
   });
 
   it('reads each person\'s berth for the operator: a running one with what it uses, a stopped one as the home kept, a person with neither absent', async () => {
@@ -720,6 +855,52 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     } finally {
       silent.closeAllConnections();
       await new Promise<void>((resolve) => { silent.close(() => resolve()); });
+    }
+  });
+
+  it('porter\'s host shows the berth\'s own boot rows as it boots, its token never on the page, an open row settled in place', async () => {
+    const host: LauncherHost = new LauncherHost({ listen: join(dir, 'launcher.sock'), secret: SECRET }, async (): Promise<number> => 7);
+    const names: BerthNames = berthNames_derive('mbw', ANA, 'ana');
+    docker.logs.set(names.container, [
+      '\x1b[36m[PENDING]\x1b[39m Public       Warming /PUBLIC behind the prompt',
+      '    token:     0123456789abcdef0123456789abcdef',
+      '[+] ARGUS web surface at http://127.0.0.1:41234/?token=0123456789abcdef0123456789abcdef',
+    ]);
+    docker.silent = true;
+    setTimeout((): void => { docker.log_write(names.container, '[ OK ]    Public       Cached 9 items from /PUBLIC'); docker.silent = false; }, 40);
+    const seen: Array<{ text: string; replaces?: number }> = [];
+    const booting: Promise<unknown> = host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    await new Promise<void>((resolve) => { setTimeout(resolve, 10); });
+    host.boot_follow(ANA, { line: (line) => { seen.push({ text: line.text, ...(line.replaces !== undefined ? { replaces: line.replaces } : {}) }); }, done: () => undefined });
+    await booting;
+    const report = host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report;
+    const texts: string[] = report?.lines.map((line) => line.text) ?? [];
+    expect(texts).toEqual([
+      '[ OK ]    Identity     ana is CUBE user 7',
+      '[PENDING] Berth        starting ana\'s berth',
+      '[ OK ]    Public       Cached 9 items from /PUBLIC',
+      '    token:     (held by the porter)',
+      '[+] ARGUS web surface at http://127.0.0.1:41234/?token=…',
+      '[ OK ]    Berth        ana\'s berth answers',
+    ]);
+    expect(JSON.stringify(report)).not.toContain('0123456789abcdef');
+    expect(JSON.stringify(seen)).not.toContain('0123456789abcdef');
+    // The row printed open is settled where it stands, for a follower as for the kept lines.
+    expect(seen).toContainEqual({ text: '[ OK ]    Public       Cached 9 items from /PUBLIC', replaces: 2 });
+  });
+
+  it('porter\'s host reads a launcher that answers a start plainly, as one from before the boot rows does', async () => {
+    const plain: Server = createServer((req, res): void => {
+      req.resume();
+      req.on('end', (): void => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ identity: ANA, user: 'ana', state: 'running', url: 'ws://10.0.0.9:4000', token: 'attach' })); });
+    });
+    const at: string = join(dir, 'plain.sock');
+    await new Promise<void>((resolve) => { plain.listen(at, resolve); });
+    try {
+      const host: LauncherHost = new LauncherHost({ listen: at, secret: SECRET }, async (): Promise<number> => 7);
+      expect((await host.spawn(ANA, 'ana', CUBE, 'ana-token')).url).toBe('ws://10.0.0.9:4000');
+    } finally {
+      await new Promise<void>((resolve) => { plain.close(() => resolve()); });
     }
   });
 

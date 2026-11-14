@@ -57,6 +57,17 @@ describe('prompt /proc progress', () => {
     expect(prompt_render('p10k', ctx)).toContain('+3 feeds');
   });
 
+  it('names the steps still warming behind the prompt, in both themes, and says nothing once they settle', () => {
+    const ctx: PromptContext = promptContext_createWithProgress(0, 0);
+    delete ctx.procWarmup;
+    ctx.warmupPending = ['Public', 'Queries'];
+    expect(prompt_render('default', ctx)).toContain('[warming: public queries]');
+    expect(prompt_render('p10k', ctx)).toContain('warming: public queries');
+    ctx.warmupPending = [];
+    expect(prompt_render('default', ctx)).not.toContain('warming');
+    expect(prompt_render('p10k', ctx)).not.toContain('warming');
+  });
+
   it('marks restored data as usable while reconciliation continues', () => {
     const context: PromptContext = promptContext_createWithProgress(25, 100);
     context.procWarmup = { loaded: 25, total: 100, restored: true };

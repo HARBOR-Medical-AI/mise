@@ -14,7 +14,7 @@
 import { jobsState_derive, type JobsState } from './jobsState.js';
 import type { ProcFeedPromptProgress } from '@fnndsc/menu';
 import { session } from '../session/index.js';
-import { warmupFailures_list, type WarmupFailure } from '../core/warmupFailures.js';
+import { warmupFailures_list, warmupPending_list, type WarmupFailure } from '../core/warmupFailures.js';
 import { context_getSingle } from '@fnndsc/salsa';
 import { type ProcFeed, pace_get, type CubePace, type ProcRosterSyncKind, SingleContext, procCache_get, type ProcCacheLifecycle, type ProcFeedLoadProgress, type ProcPromptProgress, type ProcPromptState, type ProcWarmupProgress, type ProcLandedFeed } from '@fnndsc/cumin';
 
@@ -45,6 +45,12 @@ export interface SessionPromptContext {
    * that left the boot gate has no other way to be heard.
    */
   warmupFailures?: WarmupFailure[];
+  /**
+   * Warm-up steps still running behind the prompt, by label. A daemon
+   * listens before its warm-up ends, so a surface that attaches early is
+   * told what the session is still warming.
+   */
+  warmupPending?: string[];
 }
 
 /**
@@ -119,6 +125,7 @@ export async function sessionPromptContext_build(
   const sweeping: boolean =
     warmupRaw.active || lifecycle.state === 'reconciling' || lifecycle.state === 'failed';
   const warmupFailures: WarmupFailure[] = warmupFailures_list();
+  const warmupPending: string[] = warmupPending_list();
   const procWarmup: ProcPromptProgress | undefined =
     sweeping || feedLoad !== null || arrived.length > 0 || landed.length > 0 || roster !== null
       ? {
@@ -153,6 +160,7 @@ export async function sessionPromptContext_build(
     lastCommandDurationMs: options.lastCommandDurationMs ?? 0,
     procWarmup,
     ...(warmupFailures.length > 0 ? { warmupFailures } : {}),
+    ...(warmupPending.length > 0 ? { warmupPending } : {}),
     procIndex,
   };
 }

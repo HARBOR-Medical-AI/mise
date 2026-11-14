@@ -21,9 +21,11 @@ import { mkdirSync, readFileSync, readdirSync, existsSync, writeFileSync } from 
 import { join } from 'node:path';
 import { berthKey_compute, berth_pathIn, berthUrl_isAlive, closing_write } from '@fnndsc/calypso/berth';
 import { restartLine_render, type Berth, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
+import { bootLine_note } from './bootLines.js';
 
-/** How many boot lines a session keeps for late followers. */
-export const BOOT_LINES_KEPT: number = 2_000;
+// The boot lines' parse, the token taken out, and how many are kept are shared with the launcher's host.
+export { BOOT_LINES_KEPT, bootLine_redact, bootRow_parse, type BootRow } from './bootLines.js';
+
 
 /** How long a restart waits for the old daemon to go before it gives up. */
 export const STOP_WAIT_MS: number = 15_000;
@@ -104,49 +106,6 @@ interface SessionRecord {
   reason?: string;
   listeners: Set<BootListener>;
   starting: Promise<Berth> | null;
-}
-
-/** A boot row as chell prints it: a status tag, then the step's label. */
-export interface BootRow {
-  /** The step the row is about (`Feeds`, `Queries`, …). */
-  label: string;
-  /** Whether the row is still open — `[PENDING]` or `[RETRY]` — or settled. */
-  open: boolean;
-}
-
-/** The tags chell's boot logger prints (bootsequence.ts), colour stripped. */
-const BOOT_ROW: RegExp = /^\[\s*(OK|RETRY|SKIP|FAIL|PENDING)\s*\]\s+(\S+)/;
-
-/**
- * Reads a boot line as a status row, or not one.
- *
- * @param text - The line, ANSI and all.
- * @returns The row's label and whether it is still open, or null for a line
- *   that is not a status row (the brain, a box rule, a plain note).
- */
-export function bootRow_parse(text: string): BootRow | null {
-  const plain: string = text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
-  const match: RegExpExecArray | null = BOOT_ROW.exec(plain);
-  if (match === null) return null;
-  const tag: string = match[1] as string;
-  return { label: match[2] as string, open: tag === 'PENDING' || tag === 'RETRY' };
-}
-
-/**
- * A boot line with the attach token taken out. A daemon prints its token
- * (`token:`, an ARGUS `?token=` address, an attach line's `--token`) for a
- * terminal; under porter the lines go to a browser's greeter, and the
- * browser never holds the token: the porter does, and adds it on the way
- * to the daemon.
- *
- * @param text - The line, ANSI and all.
- * @returns The line without the token.
- */
-export function bootLine_redact(text: string): string {
-  return text
-    .replace(/(token:\s+)[0-9a-f]{16,}/g, '$1(held by the porter)')
-    .replace(/([?&]token=)[0-9a-f]{16,}/g, '$1…')
-    .replace(/(--token\s+)[0-9a-f]{16,}/g, '$1…');
 }
 
 /** Default spawner: a real child with piped streams. */
@@ -409,30 +368,7 @@ export class ProcessHost implements SessionHost {
     }
     const child: SpawnedSession = this.spawner(process.execPath, argv, { env, stdio: ['pipe', 'pipe', 'pipe'] });
     record.child = child;
-    const line_note = (channel: 'out' | 'err', raw: string): void => {
-      const text: string = bootLine_redact(raw);
-      const row: BootRow | null = bootRow_parse(text);
-      const held: number | undefined = row === null ? undefined : record.open.get(row.label);
-      if (row !== null && held !== undefined) {
-        // The outcome of a row printed open: settle it where it stands, as
-        // the boot logger would on a terminal. The kept line takes the new
-        // text under the old number, so a late follower sees the settled
-        // row once, in its place.
-        const kept: BootLine | undefined = record.lines.find((line: BootLine): boolean => line.id === held);
-        if (kept !== undefined) { kept.channel = channel; kept.text = text; }
-        if (!row.open) record.open.delete(row.label);
-        const line: BootLine = { channel, text, id: held, replaces: held };
-        for (const listener of record.listeners) listener.line(line);
-        return;
-      }
-      const line: BootLine = { channel, text, id: record.serial++ };
-      if (row !== null && row.open) record.open.set(row.label, line.id as number);
-      record.lines.push(line);
-      // A daemon writes for as long as it lives; a follower wants the boot,
-      // not the year. The earliest lines go first.
-      if (record.lines.length > BOOT_LINES_KEPT) record.lines.splice(0, record.lines.length - BOOT_LINES_KEPT);
-      for (const listener of record.listeners) listener.line(line);
-    };
+    const line_note = (channel: 'out' | 'err', raw: string): void => { bootLine_note(record, channel, raw); };
     stream_lines(child.stdout, (text: string): void => line_note('out', text));
     stream_lines(child.stderr, (text: string): void => line_note('err', text));
     child.stdin?.end(stdin);

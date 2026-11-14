@@ -22,6 +22,7 @@ import {
   procProgress_format,
   feedArrivals_format,
   warmupFailures_format,
+  warmupPending_format,
 } from './utils.js';
 
 /** Fraction of terminal width allowed before path truncation kicks in. */
@@ -93,6 +94,11 @@ export class ThemeDefault implements PromptTheme {
       if (ctx.procWarmup.arrived && ctx.procWarmup.arrived.length > 0) {
         warmup += chalk.hex(PROMPT_PALETTE.WARMUP)(feedArrivals_format(ctx.procWarmup.arrived));
       }
+    }
+    // A session still warming says so: a surface can attach before the
+    // daemon's warm-up ends, and its lines are answered meanwhile.
+    if (ctx.warmupPending && ctx.warmupPending.length > 0) {
+      warmup += chalk.hex(PROMPT_PALETTE.WARMUP)(warmupPending_format(ctx.warmupPending));
     }
     // A warm-up that failed behind the prompt has no readout left to be
     // printed to, so it is said here until a later attempt clears it.

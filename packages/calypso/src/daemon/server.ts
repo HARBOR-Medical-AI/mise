@@ -307,7 +307,7 @@ export class CalypsoDaemon {
   private telemetryTimer: NodeJS.Timeout | null = null;
   /** The index counts at the last heartbeat, to detect movement. */
   private telemetryLastIndex: { jobs: number; feeds: number } | null = null;
-  /** Whether the last pushed prompt context carried active warm-up. */
+  /** Whether the last pushed prompt context carried active warm-up: index movement, or a step still warming. */
   private promptWarmupActive: boolean = false;
   private readonly stack: DaemonStackInfo | undefined;
   private readonly backend: string | undefined;
@@ -1412,7 +1412,8 @@ export class CalypsoDaemon {
     const provided: PromptContext = await this.promptProvider(this.lastCommand);
     // The session's open questions are the daemon's to count, not the backend's.
     const context: PromptContext = this.questionsOpen.size > 0 ? { ...provided, questions: this.questionsOpen.size } : provided;
-    this.promptWarmupActive = context.procWarmup !== undefined;
+    // A step still warming settles with no command to announce it, as the index does.
+    this.promptWarmupActive = context.procWarmup !== undefined || (context.warmupPending?.length ?? 0) > 0;
     if (target) {
       this.send(target.socket, { type: 'promptline', context });
       return;

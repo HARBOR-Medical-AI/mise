@@ -13,6 +13,7 @@
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from 'node:http';
 import { identity_normalise, type Berth } from '@fnndsc/calypso/berth';
 import { restartLine_render, type BerthAccess, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
+import { bootLine_note, type BootBook } from './bootLines.js';
 
 /** How long the launcher has to answer a read, in ms. */
 const LAUNCHER_ANSWER_MS: number = 10_000;
@@ -75,10 +76,12 @@ export function identity_split(identity: string): { user: string; cubeUrl: strin
  * @param path - The path and query.
  * @param body - The JSON body, when there is one.
  * @param timeoutMs - How long the launcher has to answer in all, in ms; a start waits on a berth, so a caller that starts one gives longer.
+ * @param onLine - Told each line of a streamed answer (`application/x-ndjson`: lines, then `{answer}`), as it comes;
+ *   a plain answer tells it nothing.
  * @returns The status and the parsed body.
  * @throws {Error} When the launcher does not answer in time, or cannot be reached.
  */
-export function launcher_call(reach: LauncherReach, method: string, path: string, body?: unknown, timeoutMs: number = LAUNCHER_ANSWER_MS): Promise<{ status: number; body: Record<string, unknown> }> {
+export function launcher_call(reach: LauncherReach, method: string, path: string, body?: unknown, timeoutMs: number = LAUNCHER_ANSWER_MS, onLine?: (line: string, channel: 'out' | 'err') => void): Promise<{ status: number; body: Record<string, unknown> }> {
   return new Promise((resolve: (answer: { status: number; body: Record<string, unknown> }) => void, reject: (error: Error) => void): void => {
     const payload: string | null = body === undefined ? null : JSON.stringify(body);
     const hostPort: RegExpExecArray | null = /^(127\.0\.0\.1|localhost|::1):(\d+)$/.exec(reach.listen);
@@ -87,6 +90,7 @@ export function launcher_call(reach: LauncherReach, method: string, path: string
       ...(hostPort !== null ? { host: hostPort[1], port: Number(hostPort[2]) } : { socketPath: reach.listen }),
       method, path, headers,
     }, (res: IncomingMessage): void => {
+      if ((res.headers['content-type'] ?? '').startsWith('application/x-ndjson')) { answerStream_read(res, resolve, reject, onLine); return; }
       const chunks: Buffer[] = [];
       res.on('data', (chunk: Buffer): void => { chunks.push(chunk); });
       res.on('end', (): void => {
@@ -103,12 +107,57 @@ export function launcher_call(reach: LauncherReach, method: string, path: string
   });
 }
 
+/**
+ * Reads a streamed answer: each `{line, channel}` told as it comes, then the `{answer}` that ends it.
+ *
+ * @param res - The response.
+ * @param resolve - Given the answer.
+ * @param reject - Given a stream that ended with no answer.
+ * @param onLine - Told each line.
+ */
+function answerStream_read(
+  res: IncomingMessage,
+  resolve: (answer: { status: number; body: Record<string, unknown> }) => void,
+  reject: (error: Error) => void,
+  onLine?: (line: string, channel: 'out' | 'err') => void,
+): void {
+  let buffered: string = '';
+  let answered: boolean = false;
+  const record_take = (text: string): void => {
+    if (text.trim() === '') return;
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { return; }
+    if (typeof parsed !== 'object' || parsed === null) return;
+    const one: Record<string, unknown> = parsed as Record<string, unknown>;
+    if (typeof one['line'] === 'string') { onLine?.(one['line'], one['channel'] === 'err' ? 'err' : 'out'); return; }
+    const answer: unknown = one['answer'];
+    if (typeof answer === 'object' && answer !== null) {
+      const status: unknown = (answer as Record<string, unknown>)['status'];
+      const answerBody: unknown = (answer as Record<string, unknown>)['body'];
+      answered = true;
+      resolve({ status: typeof status === 'number' ? status : 0, body: typeof answerBody === 'object' && answerBody !== null ? answerBody as Record<string, unknown> : {} });
+    }
+  };
+  res.setEncoding('utf-8');
+  res.on('data', (chunk: string): void => {
+    buffered += chunk;
+    let cut: number = buffered.indexOf('\n');
+    while (cut !== -1) {
+      record_take(buffered.slice(0, cut));
+      buffered = buffered.slice(cut + 1);
+      cut = buffered.indexOf('\n');
+    }
+  });
+  res.on('end', (): void => {
+    record_take(buffered);
+    if (!answered) reject(new Error('the berth launcher ended its answer without one'));
+  });
+}
+
 /** A boot as this host keeps it: its lines, its state, who follows. */
-interface BootRecord {
-  lines: BootLine[];
+interface BootRecord extends BootBook {
   state: 'booting' | 'ready' | 'failed';
   reason?: string;
-  listeners: Set<BootListener>;
 }
 
 /** Sessions as berths the launcher starts. */
@@ -247,7 +296,8 @@ export class LauncherHost implements SessionHost {
       }
       this.line_add(record, `[PENDING] Berth        starting ${user}'s berth`);
       // No cohort: it selects no volume, and what a berth works on is the anchors its session names (docs/berths.adoc).
-      const answer = await launcher_call(this.reach, 'POST', '/berths/start', { user, uid: uid ?? 0, gid: uid ?? 0, cubeUrl, token, cohort: null }, LAUNCHER_START_MS);
+      // The berth's own boot rows come as it boots, the attach token taken out here as beside porter.
+      const answer = await launcher_call(this.reach, 'POST', '/berths/start?follow=lines', { user, uid: uid ?? 0, gid: uid ?? 0, cubeUrl, token, cohort: null }, LAUNCHER_START_MS, (line: string, channel: 'out' | 'err'): void => { bootLine_note(record, channel, line); });
       if (answer.status !== 200) throw new Error(typeof answer.body['error'] === 'string' ? answer.body['error'] : `the launcher answered ${answer.status}`);
       const berth: Berth | null = LauncherHost.berth_take(answer.body as unknown as LauncherBerth);
       if (berth === null) throw new Error('the launcher started no berth');
@@ -270,7 +320,7 @@ export class LauncherHost implements SessionHost {
    */
   private record_open(identity: string): BootRecord {
     const listeners: Set<BootListener> = this.boots.get(identity)?.listeners ?? new Set();
-    const record: BootRecord = { lines: [], state: 'booting', listeners };
+    const record: BootRecord = { lines: [], serial: 0, open: new Map(), state: 'booting', listeners };
     this.boots.set(identity, record);
     return record;
   }
@@ -282,7 +332,7 @@ export class LauncherHost implements SessionHost {
    * @param text - The line.
    */
   private line_add(record: BootRecord, text: string): void {
-    const line: BootLine = { channel: 'out', text, id: record.lines.length };
+    const line: BootLine = { channel: 'out', text, id: record.serial++ };
     record.lines.push(line);
     for (const listener of record.listeners) listener.line(line);
   }

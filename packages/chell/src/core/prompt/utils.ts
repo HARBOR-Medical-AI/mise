@@ -114,3 +114,17 @@ export function warmupFailures_format(failures: ReadonlyArray<{ label: string }>
   const named: string = failures.map((failure): string => failure.label.toLowerCase()).join(' ');
   return ` [warm-up failed: ${named}]`;
 }
+
+/**
+ * Names the warm-up steps still running behind the prompt.
+ *
+ * @param pending - Labels of the steps that have started and not settled.
+ * @returns A leading-space segment, or an empty string when none.
+ *
+ * @example
+ * warmupPending_format(['Public', 'Queries']); // ' [warming: public queries]'
+ */
+export function warmupPending_format(pending: ReadonlyArray<string>): string {
+  if (pending.length === 0) return '';
+  return ` [warming: ${pending.map((label: string): string => label.toLowerCase()).join(' ')}]`;
+}

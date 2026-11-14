@@ -8,7 +8,9 @@
  * whose environment carries `CHELL_TERMINAL` or `CHELL_CONSOLE`, as calypso
  * starts them), every chell attached to the session from elsewhere in the
  * berth (`chell --remote`, the surface a `berth close` may itself be typed
- * at), and a shell such a terminal or surface starts directly (`!`).
+ * at), the processes that only hold such a chell (a `timeout`, or the shell
+ * it was typed in, whose children are all the session's), and a shell such a
+ * terminal or surface starts directly (`!`).
  * Whatever runs under that shell is the person's work and is listed. A process of
  * another user, or with no command line (a kernel thread, a zombie), is not
  * listed.
@@ -154,8 +156,9 @@ function procEntries_read(procRoot: string, uid: number): Map<number, ProcEntry>
 
 /**
  * The session's own processes: this one, its parents up to PID 1, the
- * console terminals it runs, the chells attached to it, and the shells
- * those terminals and chells start.
+ * console terminals it runs, the chells attached to it, the processes that
+ * only hold an attached chell, and the shells those terminals and chells
+ * start.
  *
  * @param entries - The user's processes.
  * @param procRoot - The `/proc` folder, for parents of another user.
@@ -176,7 +179,32 @@ function sessionPids_find(entries: ReadonlyMap<number, ProcEntry>, procRoot: str
   for (const entry of entries.values()) {
     if (terminals.includes(entry.ppid) && SHELLS.has(entry.name)) session.add(entry.pid);
   }
+  for (const entry of entries.values()) {
+    if (entry.surface) holders_add(entries, session, entry.ppid);
+  }
   return session;
+}
+
+/**
+ * Adds to the session the processes that only hold an attached chell: from
+ * its parent upward, each process whose children are all the session's
+ * (a `timeout`, `env`, or the shell the chell was typed in). The walk stops
+ * at the first process with a child of its own work, which is listed.
+ *
+ * @param entries - The user's processes.
+ * @param session - The session's processes so far; grown in place.
+ * @param parent - The attached chell's parent.
+ */
+function holders_add(entries: ReadonlyMap<number, ProcEntry>, session: Set<number>, parent: number): void {
+  let holder: number = parent;
+  while (holder > 0 && !session.has(holder)) {
+    const entry: ProcEntry | undefined = entries.get(holder);
+    if (entry === undefined) return;
+    const children: ProcEntry[] = [...entries.values()].filter((child: ProcEntry): boolean => child.ppid === holder);
+    if (!children.every((child: ProcEntry): boolean => session.has(child.pid))) return;
+    session.add(holder);
+    holder = entry.ppid;
+  }
 }
 
 /**
