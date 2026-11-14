@@ -59,110 +59,52 @@ async function file_write(filePath: string, bytes: Buffer): Promise<void> {
 }
 
 /**
- * A `/proc` job data path as the physical file behind it, when the node's
- * output folder is a link. Returns the input unchanged when it is not a
- * data path or resolves no further.
+ * Reads one ChRIS file's raw bytes where the store keeps it.
  *
- * @param projected - A path under a projection.
- * @returns The physical path, or the input.
- */
-async function projectedPath_physical(projected: string): Promise<string> {
-  try {
-    const link: RegExpExecArray | null = /^(\/proc\/jobs\/feed_\d+\/[^/]+\/data)(\/.*)?$/.exec(projected);
-    if (link === null) return projected;
-    const { vfsDispatcher } = await import('@fnndsc/salsa');
-    const target: Result<string> = await vfsDispatcher.linkTarget_resolve(link[1] as string);
-    if (!target.ok) return projected;
-    const { logicalPath_resolve } = await import('@fnndsc/chili/utils');
-    const physical: Result<string> = await logicalPath_resolve(`${target.value}${link[2] ?? ''}`);
-    return physical.ok ? physical.value : projected;
-  } catch {
-    return projected;
-  }
-}
-
-/**
- * Reads one ChRIS file's raw bytes through ChILI, resolved against the
- * session's working directory.
- *
- * Resolved, as its twin {@link file_write} is: a surface addresses a file
- * the way the session does, and the session's paths include the relative
- * ones and the `/proc` projections. Handing the raw path to ChILI meant a
- * volume produced by a run could not be read at the address the graph
- * itself gives for it — the node's own `data` — while the same bytes read
- * fine under `/home`. One file, two names, one of them refused.
+ * The path is resolved as every reader resolves it (`storePath_resolve`):
+ * against the working directory, through a `/proc` job's `data` link to its
+ * output, and through the store's links at any depth. One file has many
+ * names (its feed path, the node's own `data` in the graph, the folder a
+ * `pl-dircopy` link points at) and all of them read the same bytes.
  *
  * @param filePath - The file's path (absolute, cwd-relative, or projected).
  * @returns The file's bytes.
- * @throws {Error} When the path does not resolve to a readable file.
+ * @throws {FileReadRefusal} When the path does not lead to a readable file, with the kernel's reason.
  */
 async function file_read(filePath: string): Promise<Buffer> {
-  const { path_resolve } = await import('../builtins/utils.js');
+  const { storePath_resolve } = await import('../builtins/utils.js');
   const { errorStack } = await import('@fnndsc/fond');
   const since: number = errorStack.checkpoint_mark();
-  const refusal = (): FileReadRefusal => fileRefusal_name(filePath, errorStack.checkpoint_drain(since).map((note: { message: string }): string => note.message));
-  const resolved: string = await path_resolve(filePath);
+  const stored: string = await storePath_resolve(filePath);
   const { vfsDispatcher } = await import('@fnndsc/salsa');
-  // A projection is read by the provider that owns it — `/proc/jobs/…/data`
-  // follows the node's own data link and delegates to the file behind it.
-  // ChILI's cat knows only CFS, so a path under a projection reached this
-  // route and 404'd: the volume a run had just produced could not be read
-  // at the address its own graph gives for it.
-  if (vfsDispatcher.path_isVirtual(resolved)) {
-    const projected: Result<Buffer> = vfsOutcome_convertToResult(await vfsDispatcher.readBinary(resolved), 'readBinary', resolved);
-    if (projected.ok) return projected.value;
-    // A node's data link can point at a folder that is ITSELF a link — a
-    // `pl-dircopy` of a PACS pull stores its DICOM under `/SERVICES/PACS`
-    // — and the provider hands back the logical name, which no file id
-    // answers to. Follow it the rest of the way rather than refusing a
-    // file the same graph just listed.
-    const physical: string = await projectedPath_physical(resolved);
-    if (physical !== resolved) {
-      const { files_catBinary: catLinked } = await import('@fnndsc/chili/commands/fs/cat.js');
-      const followed: Result<Buffer> = await catLinked(physical);
-      if (followed.ok) return followed.value;
-    }
-    throw refusal();
-  }
-  const { files_catBinary } = await import('@fnndsc/chili/commands/fs/cat.js');
-  const result: Result<Buffer> = await files_catBinary(resolved);
-  if (!result.ok) {
-    throw refusal();
-  }
-  errorStack.checkpoint_drain(since);
-  return result.value;
+  const read: Result<Buffer> = vfsOutcome_convertToResult(await vfsDispatcher.readBinary(stored), 'readBinary', stored);
+  const notes: string[] = errorStack.checkpoint_drain(since).map((note: { message: string }): string => note.message);
+  if (!read.ok) throw fileRefusal_name(filePath, notes);
+  return read.value;
 }
 
 /**
- * Opens one ChRIS file's bytes as a stream, resolved as {@link file_read}
+ * Opens one ChRIS file's bytes as a stream, at the path {@link file_read}
  * resolves, so a download is served as CUBE sends it and never held whole
- * in the daemon. A projection (`/proc/…/data`) is read whole, as before:
- * those are small virtual files or links the read already follows.
+ * in the daemon. A file a mount makes itself (a job's `log`) is small and
+ * read whole.
  *
  * @param filePath - The file's path (absolute, cwd-relative, or projected).
  * @returns The stream and its size when CUBE gave one.
  * @throws {FileReadRefusal} When the file cannot be opened, with the kernel's reason.
  */
 async function file_stream(filePath: string): Promise<FileByteStream> {
-  const { path_resolve } = await import('../builtins/utils.js');
+  const { storePath_resolve } = await import('../builtins/utils.js');
   const { vfsDispatcher, fileContent_getBinaryStream } = await import('@fnndsc/salsa');
-  const resolved: string = await path_resolve(filePath);
-  // A node's `/proc/…/data` path streams the file behind its data link; any
-  // other projection is small and read whole.
-  let target: string = resolved;
-  if (vfsDispatcher.path_isVirtual(resolved)) {
-    target = await projectedPath_physical(resolved);
-    if (target === resolved) {
-      const bytes: Buffer = await file_read(filePath);
-      const { Readable } = await import('node:stream');
-      return { stream: Readable.from(bytes), size: bytes.length };
-    }
+  const stored: string = await storePath_resolve(filePath);
+  if (vfsDispatcher.path_isVirtual(stored)) {
+    const bytes: Buffer = await file_read(filePath);
+    const { Readable } = await import('node:stream');
+    return { stream: Readable.from(bytes), size: bytes.length };
   }
   const { errorStack } = await import('@fnndsc/fond');
   const since: number = errorStack.checkpoint_mark();
-  const { path_resolveChrisFs } = await import('@fnndsc/chili/utils/cli.js');
-  const physical: string = await path_resolveChrisFs(target, {});
-  const opened = await fileContent_getBinaryStream(physical);
+  const opened = await fileContent_getBinaryStream(stored);
   const notes: string[] = errorStack.checkpoint_drain(since).map((note: { message: string }): string => note.message);
   if (!opened.ok) throw fileRefusal_name(filePath, notes);
   const value = opened.value as { stream: unknown; size?: number };

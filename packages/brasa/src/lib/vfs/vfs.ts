@@ -12,6 +12,7 @@ import * as path from 'path';
 import { ambient_publish, ambient_hasListeners } from '../../core/ambient.js';
 import { type ListingItem, type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { listingCache_get, listingCache_holds, vfsDispatcher_get } from '../../core/filesystem.js';
+import { storePath_resolve } from '../../core/paths.js';
 import type { ListingCache } from '../../core/backend.js';
 import { spinner } from '../spinner.js';
 import { error_stripDebugPrefix } from '../../core/errorText.js';
@@ -69,7 +70,7 @@ export class VFS {
       // A change while this read is out (an rm, an upload) makes what it
       // brings back the folder as it was: the cache does not keep it.
       const since: number | undefined = listingCache_get().stamp_take?.();
-      const fetched = await vfsDispatcher_get().list(effectivePath, {});
+      const fetched = await vfsDispatcher_get().list(await storePath_resolve(effectivePath), {});
       if (!fetched.ok) return;
       const items: ListingItem[] = listingItemsFromVfs_make(fetched.value);
       if (since === undefined) listingCache_get().cache_set(effectivePath, items);
@@ -137,7 +138,8 @@ export class VFS {
       // Delegate path queries to the unified vfsDispatcher (which handles both virtual and native paths)
       const beforeList: number = errorStack.checkpoint_mark();
       const since: number | undefined = listCache.stamp_take?.();
-      const vfsResult = await vfsDispatcher_get().list(effectivePath, options);
+      // Listed where the store keeps it (a /proc data path, a link); kept and said under the name asked.
+      const vfsResult = await vfsDispatcher_get().list(await storePath_resolve(effectivePath), options);
       if (vfsResult.ok) {
         const items: ListingItem[] = listingItemsFromVfs_make(vfsResult.value);
 

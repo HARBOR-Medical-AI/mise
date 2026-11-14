@@ -16,7 +16,7 @@ jest.unstable_mockModule('../src/core/filesystem.js', () => ({
   }),
 }));
 jest.unstable_mockModule('../src/builtins/utils.js', () => ({
-  path_resolve: async (word: string): Promise<string> => (word.startsWith('/') ? word : `/home/chris/${word}`),
+  storePath_resolve: async (word: string): Promise<string> => (word.startsWith('/') ? word : `/home/chris/${word}`),
 }));
 const surface = {
   capabilities: { pipeSegments: false },

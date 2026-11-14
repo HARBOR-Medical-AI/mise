@@ -100,7 +100,7 @@ await dispatcher.list('/proc');        // the mounts beneath it ('jobs'), beside
 await dispatcher.read('/notes/today'); // notesMount.read('/notes/today')
 ```
 
-Every operation a mount does not offer is refused by name (`mkdir: cannot create directory '/x': Read-only file system`), never silently ignored. A dispatcher built without a fallback refuses any path no mount claims, rather than answering with an empty folder. `pathResolver_register` adds a hook that maps a path to the fallback's own form before the fallback sees it; a copy whose path cannot be resolved fails rather than guessing.
+Every operation a mount does not offer is refused by name (`mkdir: cannot create directory '/x': Read-only file system`), never silently ignored. A dispatcher built without a fallback refuses any path no mount claims, rather than answering with an empty folder. `pathResolver_register` adds a hook that maps a path to the fallback's own form before the fallback sees it; a copy whose path cannot be resolved fails rather than guessing. A mount that stands for a folder of the fallback (a job's `data` under `/proc/jobs` is that job's output folder) says so with `storePath_resolve`: the fallback path a path under it means, or null for a path the mount holds itself. A session asks it, and the fallback's links on the answer, before every read and listing (brasa's `storePath_resolve`).
 
 ## One instance, whoever loads it
 

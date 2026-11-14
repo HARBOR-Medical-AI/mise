@@ -195,7 +195,7 @@ export function path_resolvePure(inputPath: string, context: PathContext): strin
 }
 
 // A path argument as the session means it: `~` and relative paths resolved.
-export { path_resolve } from '../core/paths.js';
+export { path_resolve, storePath_resolve } from '../core/paths.js';
 
 /**
  * Resolves links in a path without using PathMapper (for physical mode).

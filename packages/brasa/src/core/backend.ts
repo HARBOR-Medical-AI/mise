@@ -223,7 +223,7 @@ export interface BackendFilesystem {
    * cleared): a listing that fails says the path was walked as written.
    */
   readonly unreadLinks_take?: () => Promise<string[]>;
-  /** A folder as the filesystem holds it, links followed, for globbing beneath it; absent, the path as given. */
+  /** A store path with the store's own links followed, at any depth (ChRIS: `.chrislink`s); absent, the path as given. `storePath_resolve` asks it for every read and listing, and globbing for a folder. */
   readonly path_physical?: (path: string) => Promise<string>;
   /** Paths that are always folders, entered without asking (beside the mounts and the folders above them). */
   readonly structural?: ReadonlyArray<string>;

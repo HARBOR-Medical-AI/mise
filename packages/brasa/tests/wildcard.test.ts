@@ -21,7 +21,7 @@ cuminMock_install(() => ({
   feedTags_readByFeed: jest.fn(),
   Err: (): { ok: false } => ({ ok: false }),
   Ok: <T>(value: T): { ok: true; value: T } => ({ ok: true, value }),
-  errorStack: { stack_push: jest.fn() },
+  errorStack: { stack_push: jest.fn(), checkpoint_mark: (): number => 0, checkpoint_drain: (): never[] => [] },
   listCache_get: (): { cache_get: typeof mockCacheGet; cache_set: typeof mockCacheSet } => ({
     cache_get: mockCacheGet,
     cache_set: mockCacheSet,

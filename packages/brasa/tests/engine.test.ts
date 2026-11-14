@@ -176,9 +176,12 @@ const mockToPhysical = jest.fn(async (path: string): Promise<{ ok: boolean; valu
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/cat.js', () => ({ files_cat: jest.fn(), files_catBinary: mockCatBinary }));
 jest.unstable_mockModule('@fnndsc/chili/utils', () => ({ logicalPath_resolve: mockToPhysical }));
 
-// The path a caller gave, already absolute in these cases.
+// The path a caller gave, already absolute in these cases; where the store
+// keeps it is the session's one resolver, pinned in storePath.test.ts.
+const mockStorePath = jest.fn(async (path: string): Promise<string> => path);
 jest.unstable_mockModule('../src/builtins/utils.js', () => ({
   path_resolve: jest.fn(async (path: string): Promise<string> => path),
+  storePath_resolve: mockStorePath,
   path_resolvePure: jest.fn((path: string): string => path),
   commandArgs_process: jest.fn(),
   error_stripDebugPrefix: (s: string): string => s,
@@ -607,48 +610,35 @@ describe('file_read: one file, three names', () => {
   const CFS: string = '/home/me/feeds/feed_42/pl-dircopy_7/data/series/0001.dcm';
 
   beforeEach((): void => {
-    mockIsVirtual.mockClear();
     mockReadBinary.mockClear();
-    mockLinkTarget.mockClear();
+    mockStorePath.mockClear();
     mockCatBinary.mockClear();
-    mockToPhysical.mockClear();
     mockReadBinary.mockResolvedValue({ ok: false });
-    mockLinkTarget.mockResolvedValue({ ok: false });
-    mockCatBinary.mockResolvedValue({ ok: false });
-    mockToPhysical.mockImplementation(async (path: string) => ({ ok: true, value: path }));
+    mockStorePath.mockImplementation(async (path: string): Promise<string> => path);
   });
 
-  it('reads a CFS path through the session cat', async (): Promise<void> => {
-    mockCatBinary.mockResolvedValue({ ok: true, value: Buffer.from('cfs') });
+  it('reads a store path where it stands', async (): Promise<void> => {
+    mockReadBinary.mockResolvedValue({ ok: true, value: Buffer.from('cfs') });
     await expect(file_read(CFS)).resolves.toEqual(Buffer.from('cfs'));
-    expect(mockCatBinary).toHaveBeenCalledWith(CFS);
+    expect(mockStorePath).toHaveBeenCalledWith(CFS);
+    expect(mockReadBinary).toHaveBeenCalledWith(CFS);
   });
 
-  it('reads a projection through the provider that owns it', async (): Promise<void> => {
-    mockReadBinary.mockResolvedValue({ ok: true, value: Buffer.from('proc') });
-    await expect(file_read(PROC)).resolves.toEqual(Buffer.from('proc'));
-    expect(mockCatBinary).not.toHaveBeenCalled();
-  });
-
-  it('follows a data link whose folder is itself a link, rather than refusing', async (): Promise<void> => {
-    // What a pl-dircopy of a PACS pull looks like: the provider hands back a
-    // logical name no file id answers to, and the bytes live somewhere else.
-    mockLinkTarget.mockResolvedValue({ ok: true, value: '/home/me/feeds/feed_42/pl-dircopy_7/data' });
-    mockToPhysical.mockResolvedValue({ ok: true, value: '/SERVICES/PACS/x/0001.dcm' });
-    mockCatBinary.mockResolvedValue({ ok: true, value: Buffer.from('linked') });
+  it("reads a node's data path at the file its links lead to, never at the name asked", async (): Promise<void> => {
+    // What a pl-dircopy of a PACS pull looks like: the node's data is a
+    // folder of links, and the bytes live somewhere else.
+    mockStorePath.mockResolvedValue('/SERVICES/PACS/x/0001.dcm');
+    mockReadBinary.mockResolvedValue({ ok: true, value: Buffer.from('linked') });
     await expect(file_read(PROC)).resolves.toEqual(Buffer.from('linked'));
-    expect(mockLinkTarget).toHaveBeenCalledWith('/proc/jobs/feed_42/pl-dircopy_7/data');
-    expect(mockCatBinary).toHaveBeenCalledWith('/SERVICES/PACS/x/0001.dcm');
+    expect(mockStorePath).toHaveBeenCalledWith(PROC);
+    expect(mockReadBinary).toHaveBeenCalledTimes(1);
+    expect(mockReadBinary).toHaveBeenCalledWith('/SERVICES/PACS/x/0001.dcm');
+    expect(mockCatBinary).not.toHaveBeenCalled();
   });
 
   it('refuses by name when nothing can read it', async (): Promise<void> => {
     await expect(file_read(PROC)).rejects.toThrow(`cannot read ${PROC}`);
     await expect(file_read(CFS)).rejects.toThrow(`cannot read ${CFS}`);
-  });
-
-  it('leaves a projection that is not a data path alone', async (): Promise<void> => {
-    await expect(file_read('/proc/jobs/feed_42/status')).rejects.toThrow('cannot read');
-    expect(mockLinkTarget).not.toHaveBeenCalled();
   });
 });
 

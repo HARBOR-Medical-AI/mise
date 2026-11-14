@@ -75,6 +75,13 @@ jest.unstable_mockModule('../src/core/paths.js', () => ({
     if (typed.startsWith('~/')) return `/home/alice/${typed.slice(2)}`;
     return typed.startsWith('/') ? typed : `/home/alice/${typed}`;
   },
+  // The session's one resolver (its rules pinned in storePath.test.ts): the store's links followed.
+  storePath_resolve: async (logical: string): Promise<string> => {
+    for (const [link, target] of cubeLinks) {
+      if (logical === link || logical.startsWith(`${link}/`)) return `${target}${logical.slice(link.length)}`;
+    }
+    return logical;
+  },
 }));
 /** The ChRIS backend's argument kinds (an anchor's name), filled once its module loads. */
 const backendKinds: { kinds: ReadonlyArray<unknown> } = { kinds: [] };

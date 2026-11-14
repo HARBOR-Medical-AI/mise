@@ -203,6 +203,20 @@ export interface VFSProvider {
   linkTarget_resolve?(path: string): Promise<Result<string>>;
 
   /**
+   * The path in the backend's store a path under this mount stands for:
+   * where the mount's own link leads, with the rest of the path after it
+   * (`/proc/jobs/feed_1/pl-x_2/data/a.txt` is the job's output folder and
+   * `a.txt` in it). Null when the mount holds the path itself (a file it
+   * makes, a folder of its own). The session's path resolver asks it, then
+   * follows the store's links on what it answers.
+   *
+   * @param path - Absolute path under this mount.
+   * @returns The store path, null when the mount holds the path, or an error
+   *   (its reason stacked) when the link leads nowhere.
+   */
+  storePath_resolve?(path: string): Promise<Result<string | null>>;
+
+  /**
    * Answers everything beneath a path at once, from what the mount already
    * holds, so a walk (`find`) need not list it folder by folder. Null when
    * the mount holds nothing it can answer from.

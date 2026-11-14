@@ -12,7 +12,7 @@ import * as path from 'path';
 import chalk from 'chalk';
 import { highlight, supportsLanguage, type Theme } from 'cli-highlight';
 import { vfsDispatcher_get } from '../../core/filesystem.js';
-import { path_resolve, error_stripDebugPrefix } from '../utils.js';
+import { path_resolve, storePath_resolve, error_stripDebugPrefix } from '../utils.js';
 import { sink_get } from '../../core/sink.js';
 import {
   CAT_USAGE,
@@ -48,7 +48,7 @@ function read_said<T>(outcome: VfsOutcome<T>, operation: 'read' | 'readBinary', 
  * @returns The text, or Err with the reason stacked.
  */
 async function text_read(target: string): Promise<Result<string>> {
-  return read_said(await vfsDispatcher_get().read(target), 'read', target);
+  return read_said(await vfsDispatcher_get().read(await storePath_resolve(target)), 'read', target);
 }
 
 /**
@@ -58,7 +58,7 @@ async function text_read(target: string): Promise<Result<string>> {
  * @returns The bytes, or Err with the reason stacked.
  */
 async function bytes_read(target: string): Promise<Result<Buffer>> {
-  return read_said(await vfsDispatcher_get().readBinary(target), 'readBinary', target);
+  return read_said(await vfsDispatcher_get().readBinary(await storePath_resolve(target)), 'readBinary', target);
 }
 import { envelope_ok, envelope_error, type CommandEnvelope } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
