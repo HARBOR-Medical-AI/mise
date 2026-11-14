@@ -135,7 +135,7 @@ export function commandTools_derive(declaration: CommandDeclaration): CommandToo
   const tools: CommandTool[] = [];
   if (grammar.subcommands === undefined || grammar.bare !== undefined) {
     const description: string = grammar.subcommands === undefined ? declaration.help.summary : (grammar.bare?.summary ?? declaration.help.summary);
-    tools.push(tool_make(declaration.name, description, { operands: grammar.operands ?? [], options: own }));
+    tools.push(tool_make(declaration.name, description, { operands: grammar.operands ?? [], options: { ...own, ...(grammar.bare?.options ?? {}) } }));
   }
   for (const [word, sub] of Object.entries(grammar.subcommands ?? {}) as Array<[string, SubcommandGrammar]>) {
     tools.push(tool_make(`${declaration.name}_${word}`, sub.summary, { operands: sub.operands ?? [], options: { ...own, ...(sub.options ?? {}) } }));

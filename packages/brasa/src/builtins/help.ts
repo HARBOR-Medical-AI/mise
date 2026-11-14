@@ -945,6 +945,7 @@ export function args_checkHasHelpFlag(args: string[], command?: string): boolean
   if (declaration !== undefined && declaration_isParsed(declaration)) {
     const groups: OptionsGrammar[] = [
       declaration.grammar.options ?? {},
+      declaration.grammar.bare?.options ?? {},
       ...Object.values(declaration.grammar.subcommands ?? {}).map((sub: SubcommandGrammar): OptionsGrammar => sub.options ?? {}),
     ];
     const takesH: boolean = groups.some((group: OptionsGrammar): boolean => Object.values(group).some((option: OptionGrammar): boolean => option.short === 'h'));

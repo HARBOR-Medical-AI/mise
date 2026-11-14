@@ -25,9 +25,10 @@ import { join, relative } from 'node:path';
 /**
  * Commands that declare an expression grammar. Lower it whenever it drops.
  * `echo` (a dash-word past the front is a word) and `command` (its words are
- * the host program's line, options and all) take their words as they come.
+ * the host program's line, options and all) take their words as they come,
+ * and so does `whatif` (its words are a plugin's or Pipeline's whole line).
  */
-const BASELINE = 2;
+const BASELINE = 3;
 
 /** A declaration's grammar given as an expression language. */
 const PATTERN = /(?<!readonly )\bgrammar:\s*'expression'/g;

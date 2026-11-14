@@ -61,12 +61,12 @@ jest.unstable_mockModule('@fnndsc/chili/commands/compute/list.js', () => ({ comp
 jest.unstable_mockModule('@fnndsc/chili/commands/compute/fields.js', () => ({ computeFields_fetch: mockComputeFields }));
 jest.unstable_mockModule('@fnndsc/chili/views/compute.js', () => ({ computeList_render: mockComputeRender }));
 
-const { builtin_tag } = await import('../src/builtins/res/tag.js');
-const { builtin_group } = await import('../src/builtins/res/group.js');
-const { builtin_workflow } = await import('../src/builtins/res/workflow.js');
-const { builtin_pluginmeta } = await import('../src/builtins/res/pluginmeta.js');
-const { builtin_plugininstance } = await import('../src/builtins/res/plugininstance.js');
-const { builtin_compute } = await import('../src/builtins/res/compute.js');
+const { builtin_tag, tagsCommand } = await import('../src/builtins/res/tag.js');
+const { builtin_group, groupsCommand } = await import('../src/builtins/res/group.js');
+const { builtin_workflow, workflowsCommand } = await import('../src/builtins/res/workflow.js');
+const { builtin_pluginmeta, pluginmetasCommand, metasCommand } = await import('../src/builtins/res/pluginmeta.js');
+const { builtin_plugininstance, plugininstancesCommand, jobsCommand } = await import('../src/builtins/res/plugininstance.js');
+const { builtin_compute, computeCommand } = await import('../src/builtins/res/compute.js');
 
 let logSpy: jest.SpiedFunction<typeof console.log>;
 let errSpy: jest.SpiedFunction<typeof console.error>;
@@ -164,18 +164,19 @@ describe.each(cases)('builtin_$name', ({ builtin, list, fields, listKey }) => {
   it('refuses a search with no term, or more than one', async () => {
     const none = await builtin(['search']);
     expect(process.exitCode).toBe(1);
-    expect(none.renderedErr).toContain('give a term');
+    expect(none.renderedErr).toContain('search: missing operand <term>');
     process.exitCode = 0;
-    await builtin(['search', 'a:1', 'b:2']);
+    const two = await builtin(['search', 'a:1', 'b:2']);
     expect(process.exitCode).toBe(1);
+    expect(two.renderedErr).toContain("unexpected operand 'b:2'");
     expect(list).not.toHaveBeenCalled();
   });
 
-  it('refuses a list option it does not read, by name, pointing at --search', async () => {
+  it('refuses a list option it does not read, by name, its usage naming --search', async () => {
     const envelope = await builtin(['list', '--feed', '5536']);
     expect(process.exitCode).toBe(1);
     expect(envelope.renderedErr).toContain("unrecognized option '--feed'");
-    expect(envelope.renderedErr).toContain('--search <field>:<value>');
+    expect(envelope.renderedErr).toContain('[--search <field:value>]');
     expect(list).not.toHaveBeenCalled();
   });
 
@@ -184,6 +185,75 @@ describe.each(cases)('builtin_$name', ({ builtin, list, fields, listKey }) => {
     await builtin(['list', '--all', '--limit', '5', '--fields', 'id', '--sort', 'id', '--reverse', '--search', 'id:1']);
     expect(process.exitCode).toBe(0);
     expect(list).toHaveBeenCalled();
+  });
+});
+
+describe('the declared resource commands', () => {
+  const declared = [tagsCommand, groupsCommand, workflowsCommand, pluginmetasCommand, plugininstancesCommand] as const;
+
+  it('each declares the Resource Contract: list and search with the listing options, and inspect', () => {
+    for (const declaration of declared) {
+      const subcommands: Record<string, { options?: Record<string, { long?: string }> }> = declaration.grammar.subcommands;
+      expect([declaration.name, ['list', 'search', 'inspect'].every((word: string): boolean => word in subcommands)]).toEqual([declaration.name, true]);
+      for (const word of ['list', 'search']) {
+        const longs: Array<string | undefined> = Object.values(subcommands[word]?.options ?? {}).map((option) => option.long);
+        expect(longs).toEqual(expect.arrayContaining(['all', 'limit', 'offset', 'fields', 'search', 'sort', 'reverse', 'table', 'csv']));
+      }
+    }
+  });
+
+  it('answers each other name with the same command, its usage saying the name typed', async () => {
+    expect(metasCommand.grammar).toBe(pluginmetasCommand.grammar);
+    expect(jobsCommand.handler).toBe(plugininstancesCommand.handler);
+    const envelope = await jobsCommand.handler({ subcommand: 'cancel', operands: { id: '42' }, options: {}, expanded: {} } as never);
+    expect(envelope.renderedErr).toContain('proc find 42');
+    const { commandUsage_render } = await import('../src/core/commandUsage.js');
+    expect(commandUsage_render(jobsCommand, 'search')).toMatch(/^jobs search /);
+  });
+
+  it('says a membership change needs an administrator, and a read holds nothing of the session', () => {
+    expect(groupsCommand.grammar.subcommands.adduser.summary).toContain('administrator');
+    expect(groupsCommand.grammar.subcommands.removeuser.summary).toContain('administrator');
+    expect(groupsCommand.holds).toEqual([]);
+    expect(plugininstancesCommand.holds).toEqual([]);
+    expect(computeCommand.holds).toBeUndefined();
+  });
+
+  it('takes the listing options bare, as list does: jobs --all is jobs list --all', async () => {
+    mockInstancesList.mockResolvedValue({ pluginInstances: [{ id: 1 }], selectedFields: ['id'], totalCount: 1 });
+    const envelope = await jobsCommand.handler({ subcommand: null, operands: {}, options: {}, expanded: {} } as never);
+    expect(envelope.status).toBe('ok');
+    await builtin_plugininstance(['--all', '--table', '--limit', '5']);
+    expect(process.exitCode).toBe(0);
+    expect(mockInstancesList).toHaveBeenLastCalledWith({ all: true, table: true, limit: '5' });
+    const { commandUsage_render } = await import('../src/core/commandUsage.js');
+    expect(commandUsage_render(jobsCommand)).toMatch(/^jobs \[\[--all\] \[--reverse\] \[--table\] \[--csv\] .* \| list \[--all\]/);
+  });
+
+  it('refuses a bare option a subcommand does not take, and an unknown one bare, with the usage', async () => {
+    const before = await builtin_tag(['--all', 'inspect']);
+    expect(before.renderedErr).toContain("tag: inspect: option '--all' is not one inspect takes; usage: tag inspect");
+    process.exitCode = 0;
+    const unknown = await builtin_tag(['--feed', '5536']);
+    expect(unknown.renderedErr).toContain("tag: unrecognized option '--feed'; usage: tag [[--all]");
+    expect(process.exitCode).toBe(1);
+    expect(mockTagsList).not.toHaveBeenCalled();
+  });
+
+  it('takes a listing option given before list, as list\'s', async () => {
+    mockTagsList.mockResolvedValue({ tags: [{ id: 1 }], selectedFields: ['id'], totalCount: 1 });
+    await builtin_tag(['--all', 'list', '--sort', 'name']);
+    expect(mockTagsList).toHaveBeenLastCalledWith({ all: true, sort: 'name' });
+  });
+});
+
+describe('builtin_compute search', () => {
+  it('keeps the compute resources a term matches, by name or by field:value', async () => {
+    mockComputeList.mockResolvedValue({ ok: true, value: { resources: [{ id: 1, name: 'host', description: 'local' }, { id: 2, name: 'moc', description: 'cloud' }] } });
+    await builtin_compute(['search', 'mo']);
+    expect(mockComputeRender).toHaveBeenLastCalledWith([{ id: 2, name: 'moc', description: 'cloud' }], { table: false, csv: false });
+    await builtin_compute(['search', 'description:LOC', '--table']);
+    expect(mockComputeRender).toHaveBeenLastCalledWith([{ id: 1, name: 'host', description: 'local' }], { table: true, csv: false });
   });
 });
 

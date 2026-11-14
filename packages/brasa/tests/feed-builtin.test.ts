@@ -82,6 +82,8 @@ const mockConfirm = jest.fn(async (): Promise<boolean> => true);
 jest.unstable_mockModule('../src/core/question.js', () => ({ repl_confirm: mockConfirm }));
 
 const { builtin_feed } = await import('../src/builtins/res/feed.js');
+// A feed on the line is the ChRIS kind `feed`, which the ChRIS backend registers.
+(await import('../src/core/backend.js')).backend_install({ id: 'test', session: {} as never, argumentKinds: (await import('../src/chris/kinds.js')).chrisArgumentKinds });
 
 const ok = <T>(value: T) => ({ ok: true as const, value });
 const err = () => ({ ok: false as const });
@@ -98,9 +100,13 @@ beforeEach(() => {
 });
 
 describe('builtin_feed', () => {
-  it('renders usage with no subcommand', async () => {
-    const env = await builtin_feed([]);
-    expect(env.rendered).toContain('Usage: feed');
+  it('lists the feeds bare, with the listing options list takes: feeds --all --user', async () => {
+    mockFeedsList.mockResolvedValue({ feeds: [{ id: 1 }], selectedFields: ['id'], totalCount: 1 });
+    const env = await builtin_feed(['--all', '--user', 'radstar']);
+    expect(env.rendered).toContain('FEED_LIST');
+    expect(mockFeedsList).toHaveBeenCalledWith({ all: true, user: 'radstar' });
+    const bare = await builtin_feed(['--frob']);
+    expect(bare.renderedErr).toContain("feed: unrecognized option '--frob'; usage: feed [[--all]");
   });
 
   it('lists feeds', async () => {
@@ -130,13 +136,13 @@ describe('builtin_feed', () => {
 
   it('rejects a non-numeric comments feed id', async () => {
     const env = await builtin_feed(['comments', 'abc']);
-    expect(env.renderedErr).toContain('Usage: feed comments');
+    expect(env.renderedErr).toContain("feed: comments: invalid argument 'abc' for <feed> (not a whole number); usage: feed comments <feed>");
   });
 
   it('returns an error envelope for an unknown subcommand', async () => {
     const env = await builtin_feed(['frobnicate']);
     expect(mockChiliRun).not.toHaveBeenCalled();
-    expect(env.renderedErr).toContain('Unknown subcommand');
+    expect(env.renderedErr).toContain("feed: unknown subcommand 'frobnicate'");
   });
 
   it('reports an error from a handler', async () => {
@@ -210,7 +216,7 @@ describe('builtin_feed', () => {
 
   it('rejects malformed note commands and reports failures', async () => {
     const usage = await builtin_feed(['note', 'abc']);
-    expect(usage.renderedErr).toContain('Usage: feed note');
+    expect(usage.renderedErr).toContain("feed: note: invalid argument 'abc' for <feed> (not a whole number); usage: feed note");
 
     mockNoteGet.mockResolvedValue(err());
     await builtin_feed(['note', '5']);
@@ -231,7 +237,7 @@ describe('builtin_feed', () => {
 
   it('rejects a non-numeric note edit id', async () => {
     const usage = await builtin_feed(['note', 'edit', 'abc']);
-    expect(usage.renderedErr).toContain('Usage: feed note edit');
+    expect(usage.renderedErr).toContain("feed: note: invalid argument 'abc' for <feed>");
     expect(mockBuiltinEdit).not.toHaveBeenCalled();
   });
 
@@ -251,16 +257,20 @@ describe('builtin_feed', () => {
 
   it('rejects malformed and unknown comment operations', async () => {
     const add = await builtin_feed(['comment', 'add', 'abc']);
-    expect(add.renderedErr).toContain('Usage: feed comment');
+    expect(add.renderedErr).toContain("feed: comment: invalid argument 'abc' for <feed> (not a whole number); usage: feed comment");
 
     const del = await builtin_feed(['comment', 'delete', '5', 'abc']);
-    expect(del.renderedErr).toContain('Usage: feed comment delete');
+    expect(del.renderedErr).toContain("invalid argument 'abc' for <comment>");
 
     const edit = await builtin_feed(['comment', 'edit', '5', 'abc']);
-    expect(edit.renderedErr).toContain('Usage: feed comment edit');
+    expect(edit.renderedErr).toContain("invalid argument 'abc' for <comment>");
+
+    const bare = await builtin_feed(['comment', 'delete', '5']);
+    expect(bare.renderedErr).toContain('Usage: feed comment delete <feed> <comment>');
+    expect(mockCommentDelete).not.toHaveBeenCalled();
 
     const frob = await builtin_feed(['comment', 'frob', '5']);
-    expect(frob.renderedErr).toContain('Unknown comment op');
+    expect(frob.renderedErr).toContain("invalid argument 'frob' for <op> (valid: add, edit, delete)");
     expect(process.exitCode).toBe(1);
   });
 
@@ -272,6 +282,26 @@ describe('builtin_feed', () => {
     mockCommentsList.mockResolvedValue(err());
     await builtin_feed(['comments', '5']);
     expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('the feed declaration', () => {
+  it('names a feed by the ChRIS kind feed, and every other word by a core kind', async () => {
+    const { feedCommand, feedsCommand } = await import('../src/builtins/res/feed.js');
+    const { CORE_KIND_NAMES } = await import('../src/core/argumentKinds.js');
+    const kinds: string[] = Object.values(feedCommand.grammar.subcommands).flatMap((sub: { operands?: ReadonlyArray<{ kind: string }>; options?: Record<string, { value?: { kind: string } }> }): string[] => [
+      ...(sub.operands ?? []).map((operand) => operand.kind),
+      ...Object.values(sub.options ?? {}).flatMap((option) => (option.value === undefined ? [] : [option.value.kind])),
+    ]);
+    expect(kinds.filter((kind: string): boolean => !CORE_KIND_NAMES.includes(kind))).toEqual(['feed', 'feed', 'feed']);
+    expect(feedsCommand.holds).toEqual([]);
+    expect(feedCommand.holds).toBeUndefined();
+  });
+
+  it('creates a feed from the folders named, as --dirs does', async () => {
+    mockFeedCreate.mockResolvedValue({ id: 5, name: 'f' });
+    await builtin_feed(['create', '/home/u/uploads/a', '/home/u/uploads/b']);
+    expect(mockFeedCreate).toHaveBeenCalledWith({ dirs: '/home/u/uploads/a,/home/u/uploads/b' });
   });
 });
 

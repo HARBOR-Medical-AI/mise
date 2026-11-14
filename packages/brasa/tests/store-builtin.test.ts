@@ -43,6 +43,8 @@ jest.unstable_mockModule('../src/config/storeConfig.js', () => ({
 }));
 
 const { builtin_store } = await import('../src/builtins/store.js');
+// --compute is the ChRIS kind `compute`, which the ChRIS backend registers.
+(await import('../src/core/backend.js')).backend_install({ id: 'test', session: {} as never, argumentKinds: (await import('../src/chris/kinds.js')).chrisArgumentKinds });
 
 let logSpy: jest.SpiedFunction<typeof console.log>;
 let errSpy: jest.SpiedFunction<typeof console.error>;
@@ -55,9 +57,10 @@ beforeEach(() => {
 });
 
 describe('builtin_store', () => {
-  it('renders usage with no subcommand', async () => {
+  it('refuses a line with no subcommand, with the usage', async () => {
     const env = await builtin_store([]);
-    expect(env.rendered).toContain('Usage: store');
+    expect(env.renderedErr).toContain('store: missing subcommand (list, search, install, inspect, set, reset); usage: store [--store <url>] <list');
+    expect(process.exitCode).toBe(1);
   });
 
   it('lists store plugins with the grid view', async () => {
@@ -97,7 +100,8 @@ describe('builtin_store', () => {
 
   it('requires a query for search', async () => {
     const env = await builtin_store(['search']);
-    expect(env.rendered).toContain('Usage: store search');
+    expect(env.renderedErr).toContain('store: search: missing operand <query>; usage: store search [-l] <query>');
+    expect(mockSearchPlugins).not.toHaveBeenCalled();
   });
 
   it('searches the store', async () => {
@@ -116,7 +120,13 @@ describe('builtin_store', () => {
   it('installs via plugin_addInteractive', async () => {
     mockAddInteractive.mockResolvedValue({ status: 'ok', rendered: '' });
     await builtin_store(['install', 'pl-c']);
-    expect(mockAddInteractive).toHaveBeenCalled();
+    expect(mockAddInteractive).toHaveBeenCalledWith({ _: ['install', 'pl-c'] });
+  });
+
+  it('installs on the compute resources --compute names, from the store --store names', async () => {
+    mockAddInteractive.mockResolvedValue({ status: 'ok', rendered: '' });
+    await builtin_store(['install', 'pl-c', '--compute', 'host,moc', '--store=https://peer/api/v1/']);
+    expect(mockAddInteractive).toHaveBeenCalledWith({ _: ['install', 'pl-c'], compute: 'host,moc', store: 'https://peer/api/v1/' });
   });
 
   it('inspects the current store URL', async () => {
@@ -133,7 +143,7 @@ describe('builtin_store', () => {
 
   it('rejects set with no URL', async () => {
     const env = await builtin_store(['set']);
-    expect(env.renderedErr).toContain('Usage: store set');
+    expect(env.renderedErr).toContain('store: set: missing operand <url>; usage: store set <url>');
     expect(process.exitCode).toBe(1);
   });
 
@@ -146,7 +156,7 @@ describe('builtin_store', () => {
 
   it('rejects an unknown subcommand', async () => {
     const env = await builtin_store(['frobnicate']);
-    expect(env.renderedErr).toContain('Unknown subcommand');
+    expect(env.renderedErr).toContain("store: unknown subcommand 'frobnicate'");
   });
 
   it('reports an error from the store command', async () => {

@@ -17,6 +17,7 @@
  *
  * Key components:
  * - CommandGrammar: subcommands, operands and options, as a value.
+ * - BareGrammar: the line with no subcommand, and its own options.
  * - CommandDeclaration: the whole record for a parsed command.
  * - ExpressionDeclaration: the record for an expression-grammar command.
  * - CommandArguments: the typed object a handler receives.
@@ -152,7 +153,24 @@ export interface CommandGrammar {
   /** Its subcommands, by the word that names each. */
   readonly subcommands?: { readonly [word: string]: SubcommandGrammar };
   /** What the command does with no subcommand; absent, a command with subcommands needs one. */
-  readonly bare?: { readonly summary: string };
+  readonly bare?: BareGrammar;
+}
+
+/**
+ * A command's line with no subcommand, when it has subcommands: what it does,
+ * and the options it takes of its own (`jobs --all`, as `jobs list --all`).
+ * The command's own options hold beside them.
+ *
+ * @example
+ * ```ts
+ * const bare: BareGrammar = { summary: 'List the first page', options: { all: { long: 'all', summary: 'Every page' } } };
+ * ```
+ */
+export interface BareGrammar {
+  /** One line for help and the schema. */
+  readonly summary: string;
+  /** Its options. */
+  readonly options?: OptionsGrammar;
 }
 
 /**
@@ -224,10 +242,25 @@ interface ParsedLine<S, G> {
   readonly expanded: ExpandedOf<S>;
 }
 
+/** The options the bare command takes of its own. */
+type BareOptionsOf<G> = G extends { readonly bare: { readonly options: infer M } }
+  ? { readonly [K in keyof M]: OptionValue<M[K]> }
+  : Record<never, never>;
+
+/** The bare command's parsed line: the grammar's operands, its own options and the command's. */
+interface BareParsedLine<G> {
+  /** The operands, by name. */
+  readonly operands: OperandsOf<G>;
+  /** The options, by property: the bare command's and the command's. */
+  readonly options: BareOptionsOf<G> & OptionsOf<G>;
+  /** For each operand that globs, whether its words came from pathname expansion. */
+  readonly expanded: ExpandedOf<G>;
+}
+
 /** The bare command's line, when the grammar allows one. */
 type BareLine<G> = G extends { readonly subcommands: object }
-  ? G extends { readonly bare: object } ? { readonly subcommand: null } & ParsedLine<G, G> : never
-  : { readonly subcommand: null } & ParsedLine<G, G>;
+  ? G extends { readonly bare: object } ? { readonly subcommand: null } & BareParsedLine<G> : never
+  : { readonly subcommand: null } & BareParsedLine<G>;
 
 /** Each subcommand's line. */
 type SubcommandLine<G> = G extends { readonly subcommands: infer S }

@@ -14,6 +14,7 @@ import { variablesPage_render } from '../builtins/variablesPage.js';
 import type { ListingItem, CommandEnvelope } from '@fnndsc/menu';
 import type { Result } from '@fnndsc/fond';
 import type { BackendFallback } from '../core/backend.js';
+import type { ExpressionDeclaration } from '../core/commandDeclaration.js';
 import { envelope_deliver, sink_get } from '../core/sink.js';
 import { exitCode_read, exitCode_set, handler_runDirect } from '../core/handlerRun.js';
 import { runs_awaitSettled, settlement_render, type RunSettlement } from '../builtins/res/runWait.js';
@@ -254,6 +255,53 @@ export async function builtin_whatif(args: string[]): Promise<CommandEnvelope> {
   sink_get().err_write(chalk.red(`whatif: ${command}: not a plugin or a Pipeline in /bin\n`));
   return { status: 'error', rendered: '' };
 }
+
+/**
+ * Completes a word of a `whatif` line as the line after it completes: its
+ * first word a plugin `/bin` lists, an option the plugin or pipeline takes,
+ * and an operand a path when the `/bin` entry takes paths.
+ *
+ * @param words - The words after `whatif`, before the one completed.
+ * @param word - The word typed so far.
+ * @returns The candidates.
+ */
+async function whatifWord_complete(words: readonly string[], word: string): Promise<string[]> {
+  const { chrisCompletion } = await import('./completion.js');
+  const first: string | undefined = words[0];
+  if (first === undefined) {
+    const names: string[] = (await chrisCompletion.commandWords?.()) ?? [];
+    return names.filter((name: string): boolean => name.startsWith(word));
+  }
+  if (word.startsWith('-')) return (await chrisCompletion.options?.([...words], word)) ?? [];
+  if (words[words.length - 1] === 'as' || !(await chrisCompletion.pathArguments?.(first))) return [];
+  const { cfsPaths_complete } = await import('../lib/completer/cfsPaths.js');
+  return cfsPaths_complete(word);
+}
+
+/**
+ * `whatif <plugin or Pipeline line>`: the declaration. Its words are a whole
+ * line of another command, whose flags are that command's, so it parses
+ * them itself (an expression grammar), as `time` and `env` would.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [whatifCommand] }, 'backend');
+ * ```
+ */
+export const whatifCommand: ExpressionDeclaration = {
+  name: 'whatif',
+  grammar: 'expression',
+  help: {
+    usage: 'whatif <plugin or Pipeline> [operands] [options]',
+    summary: 'Print what a plugin or Pipeline line would do, and run nothing',
+    description: 'Resolve the line as a run would and print it: the version picked, the operands as read, the stage, the node it would attach to or the feed it would root, and every parameter with defaults marked. Nothing is staged, no feed is made, no job starts. When the real line would refuse, whatif prints the same refusal and exits non-zero. A prefix, as time and env are: every flag after a /bin name belongs to the plugin, and several directory operands print one resolution per run.',
+    category: 'Resources',
+    examples: ['whatif pl-freesurfer ~/uploads/t1.nii as sub-01', 'whatif pl-dcm2niix ~/feeds/feed_12/pl-dircopy_40/data'],
+  },
+  holds: [],
+  handler: builtin_whatif,
+  complete: whatifWord_complete,
+};
 
 /** The ChRIS backend's fallback. */
 export const chrisFallback: BackendFallback = {

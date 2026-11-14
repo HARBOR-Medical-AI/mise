@@ -22,7 +22,7 @@
 import { argumentKind_get, candidates_filter, type ArgumentKind } from '../../core/argumentKinds.js';
 import {
   declaration_isParsed,
-  type AnyCommandDeclaration, type ArgumentGrammar, type CommandGrammar, type OperandGrammar, type OptionGrammar, type SubcommandGrammar,
+  type AnyCommandDeclaration, type ArgumentGrammar, type CommandGrammar, type OperandGrammar, type OptionGrammar, type OptionsGrammar, type SubcommandGrammar,
 } from '../../core/commandDeclaration.js';
 
 /** A word that reads as a negative number. */
@@ -41,14 +41,16 @@ interface LineReach {
 }
 
 /**
- * The options in reach: the subcommand's, then the command's.
+ * The options in reach: the subcommand's (the bare command's while none is
+ * typed), then the command's.
  *
  * @param grammar - The command's grammar.
  * @param subcommand - The subcommand's, or null.
  * @returns The options.
  */
 function optionsInReach_list(grammar: CommandGrammar, subcommand: SubcommandGrammar | null): OptionGrammar[] {
-  return [...Object.values(subcommand?.options ?? {}), ...Object.values(grammar.options ?? {})];
+  const own: OptionsGrammar = subcommand === null ? (grammar.bare?.options ?? {}) : (subcommand.options ?? {});
+  return [...Object.values(own), ...Object.values(grammar.options ?? {})];
 }
 
 /**

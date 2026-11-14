@@ -118,9 +118,12 @@ export function commandUsage_render(declaration: CommandDeclaration, subcommand:
   }
   const own: string = lineTail_render({ ...(grammar.options !== undefined ? { options: grammar.options } : {}), ...(subcommands === undefined && grammar.operands !== undefined ? { operands: grammar.operands } : {}) });
   if (subcommands === undefined) return words_join(declaration.name, own);
-  const choices: string = Object.entries(subcommands)
-    .map(([word, sub]: [string, SubcommandGrammar]): string => words_join(word, lineTail_render(sub)))
-    .join(' | ');
+  // The bare command's own options are its line, the first choice.
+  const bareTail: string = grammar.bare?.options !== undefined ? lineTail_render({ options: grammar.bare.options }) : '';
+  const choices: string = [
+    ...(bareTail !== '' ? [bareTail] : []),
+    ...Object.entries(subcommands).map(([word, sub]: [string, SubcommandGrammar]): string => words_join(word, lineTail_render(sub))),
+  ].join(' | ');
   const bracketed: string = grammar.bare !== undefined ? `[${choices}]` : `<${choices}>`;
   return words_join(words_join(declaration.name, own), bracketed);
 }
@@ -180,7 +183,10 @@ function subcommandLines_render(grammar: CommandGrammar): string[] {
   const headLines: string[] = columns_render(heads, '');
   const lines: string[] = [];
   let at: number = 0;
-  if (grammar.bare !== undefined) lines.push(headLines[at++] as string);
+  if (grammar.bare !== undefined) {
+    lines.push(headLines[at++] as string);
+    lines.push(...lineRows_render({ ...(grammar.bare.options !== undefined ? { options: grammar.bare.options } : {}) }, '  '));
+  }
   for (const sub of Object.values(subcommands)) {
     lines.push(headLines[at++] as string);
     lines.push(...lineRows_render(sub, '  '));

@@ -63,53 +63,6 @@ export function optionsUnknown_refusal(verb: string, parsed: ParsedArgs, known: 
   return null;
 }
 
-/** The options every resource `list` reads (RESOURCE_LIST_OPTIONS in help). */
-export const RESOURCE_LIST_KEYS: ReadonlyArray<string> = ['all', 'limit', 'offset', 'page', 'fields', 'search', 'sort', 'reverse', 'table', 'csv'];
-
-/**
- * Refuses an option a resource `list` does not read, and says how to ask
- * the question instead: an ignored filter prints the unfiltered page, which
- * reads as the answer to the question asked.
- *
- * @param verb - The resource command, for the message.
- * @param parsed - The parsed arguments.
- * @returns The refusal line, or null when every option is one `list` reads.
- */
-export function resourceListOptions_refusal(verb: string, parsed: ParsedArgs): string | null {
-  const refusal: string | null = optionsUnknown_refusal(`${verb} list`, parsed, RESOURCE_LIST_KEYS);
-  if (refusal === null) return null;
-  return `${refusal}; filter with --search <field>:<value> (${verb} inspect names the fields)`;
-}
-
-/**
- * Refuses a `search` that does not carry exactly one term.
- *
- * @param verb - The resource command, for the message.
- * @param parsed - The parsed `search` arguments: the subcommand, then the term.
- * @returns The refusal line, or null when there is one term.
- */
-export function resourceSearchTerm_refusal(verb: string, parsed: ParsedArgs): string | null {
-  const terms: string[] = parsed._.slice(1).map(String);
-  if (terms.length === 0) return `${verb} search: what? give a term, field:value (${verb} inspect names the fields)`;
-  if (terms.length > 1) return `${verb} search: one term, field:value; got ${terms.length}: ${terms.join(' ')}`;
-  return null;
-}
-
-/**
- * Turns `search <term>` into the `list --search <term>` it stands for,
- * keeping the line's other options.
- *
- * @param parsed - The parsed `search` arguments: the subcommand, then the term.
- * @param term - The search term, when the verb rewrites the one given.
- * @returns The arguments for `list`.
- */
-export function resourceSearch_args(parsed: ParsedArgs, term: string = String(parsed._[1] ?? '')): string[] {
-  const options: string[] = Object.entries(parsed)
-    .filter(([key]: [string, unknown]): boolean => key !== '_' && key !== 'search')
-    .map(([key, value]: [string, unknown]): string => (value === true ? `--${key}` : `--${key}=${String(value)}`));
-  return ['list', ...options, `--search=${term}`];
-}
-
 /**
  * Parses raw argument strings into a structured object.
  * Supports `--` as an end-of-options marker (everything after is treated as positional args).
