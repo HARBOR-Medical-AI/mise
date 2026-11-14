@@ -42,7 +42,7 @@ describe('showpieces', () => {
     expect(plain(tetris.rendered)).toContain('ARGUS draws it in its GAMES pane');
     const refused = await builtin_tetris(['-x']);
     expect(refused.status).toBe('error');
-    expect(plain(refused.rendered)).toContain("unknown option '-x' (--pane)");
+    expect((refused as { renderedErr?: string }).renderedErr).toContain("invalid option -- 'x'");
     for (const [run, program, arcade] of [[builtin_cmatrix, 'cmatrix', false], [builtin_rain, 'rain', false], [builtin_asciiquarium, 'aquarium', false], [builtin_snake, 'snake', true]] as const) {
       expect((await run([])).model).toEqual({ kind: 'games.show', data: { program, args: [], arcade, pane: false } });
     }

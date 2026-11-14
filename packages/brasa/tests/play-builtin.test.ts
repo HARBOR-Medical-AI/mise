@@ -257,33 +257,33 @@ describe('manifest_parse', () => {
 });
 
 describe('playArgs_parse', () => {
-  it('keeps EVERY --param, which a generic parser would not', () => {
-    const parsed = playArgs_parse(['f.mise', '--param', 'MRN=1', '--param', 'LABEL=two words']);
+  it('keeps EVERY --param, which a generic parser would not', async () => {
+    const parsed = await playArgs_parse(['f.mise', '--param', 'MRN=1', '--param', 'LABEL=two words']);
     expect(parsed.params.get('MRN')).toBe('1');
     expect(parsed.params.get('LABEL')).toBe('two words');
   });
 
-  it('refuses --step, which needs a terminal, by name', () => {
-    expect(playArgs_parse(['f.mise', '--step']).parseError).toContain('terminal');
+  it('refuses --step, which needs a terminal, by name', async () => {
+    expect((await playArgs_parse(['f.mise', '--step'])).parseError).toContain('terminal');
     // A script's text read in place of its file, for a standing only: a surface reads lines it has not written yet.
-    expect(playArgs_parse(['f.mise', '--status', '--text=vm new s\nvm build s']).text).toBe('vm new s\nvm build s');
-    expect(playArgs_parse(['f.mise', '--status', '--text', '-x']).text).toBe('-x');
-    expect(playArgs_parse(['f.mise', '--text=vm new s']).parseError).toContain('with --status');
-    expect(playArgs_parse(['f.mise', '--status', '--text']).parseError).toContain('--text takes');
+    expect((await playArgs_parse(['f.mise', '--status', '--text=vm new s\nvm build s'])).text).toBe('vm new s\nvm build s');
+    expect((await playArgs_parse(['f.mise', '--status', '--text', '-x'])).text).toBe('-x');
+    expect((await playArgs_parse(['f.mise', '--text=vm new s'])).parseError).toContain('with --status');
+    expect((await playArgs_parse(['f.mise', '--status', '--text'])).parseError).toContain("option '--text' wants a value");
   });
 });
 
 describe('playArgs_parse, the rest', () => {
-  it('reads a pace in seconds and in milliseconds', () => {
-    expect(playArgs_parse(['f.mise', '--pace', '2s']).paceMs).toBe(2000);
-    expect(playArgs_parse(['f.mise', '--pace', '250ms']).paceMs).toBe(250);
+  it('reads a pace in seconds and in milliseconds', async () => {
+    expect((await playArgs_parse(['f.mise', '--pace', '2s'])).paceMs).toBe(2000);
+    expect((await playArgs_parse(['f.mise', '--pace', '250ms'])).paceMs).toBe(250);
   });
 
-  it('refuses what it cannot make sense of', () => {
-    expect(playArgs_parse(['f.mise', '--pace', 'soon']).parseError).toContain('--pace');
-    expect(playArgs_parse(['f.mise', '--param', 'MRN']).parseError).toContain('--param');
-    expect(playArgs_parse(['f.mise', '--sideways']).parseError).toContain('--sideways');
-    expect(playArgs_parse(['one.mise', 'two.mise']).parseError).toContain('two.mise');
+  it('refuses what it cannot make sense of', async () => {
+    expect((await playArgs_parse(['f.mise', '--pace', 'soon'])).parseError).toContain('--pace');
+    expect((await playArgs_parse(['f.mise', '--param', 'MRN'])).parseError).toContain('--param');
+    expect((await playArgs_parse(['f.mise', '--sideways'])).parseError).toContain('--sideways');
+    expect((await playArgs_parse(['one.mise', 'two.mise'])).parseError).toContain('two.mise');
   });
 });
 
@@ -291,7 +291,7 @@ describe('play', () => {
   it('refuses when there is no manifest to play, and when neither filesystem has it', async () => {
     const noName = await builtin_play([]);
     expect(noName.status).toBe('error');
-    expect(noName.renderedErr).toContain('Usage: play');
+    expect(noName.renderedErr).toContain('missing operand <manifest>; usage: play');
 
     missing = true;
     const notThere = await builtin_play(['nowhere.mise']);

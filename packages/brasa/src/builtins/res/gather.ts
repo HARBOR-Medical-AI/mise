@@ -2,12 +2,25 @@
  * @file Builtin gather command: the session's cohort as a kernel subject.
  *
  * Subcommands: list (the default), add, remove, clear, name, feed, process.
+ * Declared in one record (`gatherCommand`).
  *
  * Gathering was a surface gesture before it was a verb, which meant the set
  * a session was working on could only be built by pressing on it. As a
  * subject it is scriptable: a line adds to it, a manifest builds one, and
  * the surface becomes one client of the cohort rather than the only place
  * it exists.
+ *
+ * Key components:
+ * - gatherCommand: the declaration.
+ * - builtin_gather: the declaration run over words already split.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_gather(['add', '@SER3']);
+ * ```
+ *
+ * Dependencies: the cohort store; `gather.process.js`, loaded when a feed is
+ * made or a run starts.
  *
  * @module
  */
@@ -16,7 +29,9 @@ import { answerNumbering_derive, handleWords_map, numberedFooter_render, type Nu
 import chalk from 'chalk';
 import path from 'path';
 import { table_render } from '@fnndsc/chili/screen/screen.js';
-import { commandArgs_process, ParsedArgs, path_resolve } from '../utils.js';
+import { path_resolve } from '../utils.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import {
   GatherKind,
   GatherMember,
@@ -241,14 +256,14 @@ async function gather_name(operands: string[]): Promise<CommandEnvelope> {
 /**
  * Makes the cohort's feed, or names the one it has.
  *
- * @param words - The words after `gather feed`, raw.
+ * @param title - The feed's title as `--title` gave it, or null for the cohort's name.
  * @returns The cohort, with its feed.
  */
-async function gather_feed(words: ReadonlyArray<string>): Promise<CommandEnvelope> {
+async function gather_feed(title: string | null): Promise<CommandEnvelope> {
   // Loaded on demand, as `process` is: making a feed carries the pull and
   // feed machinery, which the cohort's own verbs never need.
   const { cohortFeed_make } = await import('./gather.process.js');
-  const made: { state: GatherState; made: boolean } | string = await cohortFeed_make(words);
+  const made: { state: GatherState; made: boolean } | string = await cohortFeed_make(title);
   if (typeof made === 'string') return gather_error(`gather feed: ${made}`);
   const feedId: number | undefined = made.state.feed?.feedId;
   const said: string = made.made ? `gather: the cohort's feed is ${feedId}, made now.` : `gather: the cohort's feed is ${feedId}.`;
@@ -256,48 +271,150 @@ async function gather_feed(words: ReadonlyArray<string>): Promise<CommandEnvelop
   return envelope_ok(`${chalk.green(said)}\n${envelope.rendered}`, envelope.model);
 }
 
+/** What `add` takes. */
+const ADD_OPERAND = {
+  name: 'paths', kind: 'cfsPath', optional: true, repeat: true, glob: true,
+  summary: 'Paths, handles (@SER3, @SER1-4) or ${listing}; with none, a listing piped in',
+} as const;
+
+/** What `remove` and `rm` take. */
+const REMOVE_OPERAND = {
+  name: 'members', kind: 'cfsPath', optional: true, repeat: true, glob: true,
+  summary: 'Paths, handles or listed indices (2, #2); with none, a listing piped in',
+} as const;
+
+/** The title of a feed `feed` or `process` makes. */
+const TITLE_OPTION = { long: 'title', summary: "The feed's title, when one is made (the cohort's name otherwise)", value: { name: 'title', kind: 'word' } } as const;
+
+/** What a `gather` line may hold. */
+const GATHER_GRAMMAR = {
+  bare: { summary: 'Show the cohort (as list)' },
+  subcommands: {
+    list: { summary: 'Show the cohort' },
+    add: { summary: 'Take series, directories or files into it', operands: [ADD_OPERAND] },
+    remove: { summary: 'Drop members, by path or by listed index', operands: [REMOVE_OPERAND] },
+    rm: { summary: 'As remove', operands: [REMOVE_OPERAND] },
+    clear: { summary: 'Empty it, name and feed included' },
+    name: {
+      summary: "Read the cohort's name, or give it one",
+      operands: [{ name: 'name', kind: 'word', optional: true, repeat: true, summary: 'The new name; its words are joined' }],
+    },
+    feed: {
+      summary: "The cohort's feed, made now if it has none: series still at the PACS are pulled first, then one feed is rooted on every member",
+      options: { title: TITLE_OPTION },
+    },
+    process: {
+      summary: 'Run a plugin or pipeline ONCE over the whole cohort, off one feed whose root holds every member',
+      operands: [
+        { name: 'executable', kind: 'word', summary: "The plugin's /bin name or the pipeline's own name" },
+        { name: 'arguments', kind: 'word', optional: true, repeat: true, summary: "After --: the run's own arguments" },
+      ],
+      options: {
+        title: TITLE_OPTION,
+        detach: { long: 'detach', summary: 'Return at once rather than wait for the run' },
+      },
+    },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * Builtin handler for the `gather` command.
+ * `gather [list | add | remove | rm | clear | name | feed | process]`: the declaration.
  *
- * @param args - Parsed command arguments.
- * @returns An envelope carrying the cohort, or a usage refusal.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [gatherCommand] }, 'backend');
+ * ```
+ */
+export const gatherCommand = command_declare({
+  name: 'gather',
+  grammar: GATHER_GRAMMAR,
+  help: {
+    summary: 'Hold the set of things this session is working on',
+    description: "Hold the set of things this session is working on: the cohort. add and remove take paths, handles (@SER3, @SER1-4), ${listing}, or a listing piped in with no operands: query … | gather add. With none of these they refuse rather than guess. process runs off the cohort's own feed when it has one, refuses while a series is unpulled, and answers as the bare run would: R=$(gather process …). <executable> is the /bin name or the pipeline's own name: gather process \"FreeSurfer 8.2.0 mri_convert\". A plugin that starts jobs of its own (pl-dymap) finishes once they are submitted; watch them in the feed.",
+    category: 'Workflows',
+    examples: [
+      'gather',
+      'gather add /net/pacs/queries/qid:3125/Study_1.2.3/Series_4.5.6',
+      'gather add ~/uploads/brain',
+      'gather add @SER3 @SER7',
+      'query PatientID:1234567,Modality:MR | gather add',
+      'gather remove 2',
+      'gather name "sag cohort"',
+      'gather feed',
+      'R=$(gather process pl-dcm2niix-v1.0.2 --title "sag nifti")',
+      'gather process pl-x -- --threshold 0.5',
+    ],
+  },
+  holds: ['cohort'],
+  handler: async (args: CommandArguments<typeof GATHER_GRAMMAR>): Promise<CommandEnvelope> => {
+    try {
+      switch (args.subcommand) {
+        case null:
+        case 'list':
+          return cohort_render(await cohort_read());
+        case 'add':
+          return await gatherMembers_change('add', args.operands.paths);
+        case 'remove':
+        case 'rm':
+          return await gatherMembers_change(args.subcommand, args.operands.members);
+        case 'clear':
+          return await gather_clear();
+        case 'name':
+          return await gather_name(args.operands.name);
+        case 'feed':
+          return await gather_feed(args.options.title ?? null);
+        case 'process': {
+          // Loaded on demand: running carries the plugin and pipeline
+          // machinery, which the cohort's own verbs never need.
+          const { gather_process } = await import('./gather.process.js');
+          return await gather_process({
+            name: args.operands.executable,
+            title: args.options.title ?? null,
+            detach: args.options.detach,
+            forwarded: args.operands.arguments,
+          });
+        }
+      }
+    } catch (e: unknown) {
+      return gather_error(`gather: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  },
+});
+
+/**
+ * `gather` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `gather`.
+ * @returns An envelope carrying the cohort, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_gather(['add', '~/uploads/brain']);
+ * ```
  */
 export async function builtin_gather(args: string[]): Promise<CommandEnvelope> {
-  const parsed: ParsedArgs = commandArgs_process(args);
-  const subcommand: string | undefined = parsed._[0];
-  const operands: string[] = parsed._.slice(1);
+  return declaredCommand_run(gatherCommand, args);
+}
 
-  try {
-    if (subcommand === undefined || subcommand === 'list') return cohort_render(await cohort_read());
-    if (subcommand === 'add' || subcommand === 'remove' || subcommand === 'rm') {
-      // With no operands, a listing piped in is the operand list (#1103):
-      // `query … | gather add`. With neither, the verb says what it needs
-      // rather than taking the held listing behind the operator's back.
-      let given: string[] = operands;
-      if (given.length === 0) {
-        const piped: ListingModel | null = listingIn_take();
-        if (piped === null) {
-          return gather_error(`gather ${subcommand}: what? give paths or handles (@SER3), \${listing}, or pipe a listing in (query … | gather ${subcommand === 'rm' ? 'remove' : subcommand})`);
-        }
-        given = listingOperands_extract(piped) ?? [];
-        if (given.length === 0) return gather_error(`gather ${subcommand}: the listing piped in has nothing to ${subcommand === 'add' ? 'gather' : 'remove'}.`);
-      }
-      return subcommand === 'add' ? await gather_add(given) : await gather_remove(given);
+/**
+ * Adds members to the cohort or drops them. With no operands, a listing
+ * piped in is the operand list (#1103): `query … | gather add`. With
+ * neither, the verb says what it needs rather than taking the held listing
+ * behind the operator's back.
+ *
+ * @param verb - `add`, `remove` or `rm`.
+ * @param operands - The paths, handles or indices given.
+ * @returns The cohort after the change, or a refusal.
+ */
+async function gatherMembers_change(verb: 'add' | 'remove' | 'rm', operands: string[]): Promise<CommandEnvelope> {
+  let given: string[] = operands;
+  if (given.length === 0) {
+    const piped: ListingModel | null = listingIn_take();
+    if (piped === null) {
+      return gather_error(`gather ${verb}: what? give paths or handles (@SER3), \${listing}, or pipe a listing in (query … | gather ${verb === 'rm' ? 'remove' : verb})`);
     }
-    if (subcommand === 'clear') return await gather_clear();
-    // Raw words: the run's own arguments follow `--`, and a generic parser
-    // would read them as gather's options.
-    // Loaded on demand: running carries the plugin and pipeline machinery,
-    // which the cohort's own verbs never need.
-    if (subcommand === 'process') {
-      const { gather_process } = await import('./gather.process.js');
-      return await gather_process(args.slice(args.indexOf('process') + 1));
-    }
-    if (subcommand === 'name') return await gather_name(operands);
-    if (subcommand === 'feed') return await gather_feed(args.slice(args.indexOf('feed') + 1));
-  } catch (e: unknown) {
-    return gather_error(`gather: ${e instanceof Error ? e.message : String(e)}`);
+    given = listingOperands_extract(piped) ?? [];
+    if (given.length === 0) return gather_error(`gather ${verb}: the listing piped in has nothing to ${verb === 'add' ? 'gather' : 'remove'}.`);
   }
-
-  return gather_error(`Unknown subcommand: ${subcommand}. Usage: gather <list|add|remove|clear|name|feed|process>`);
+  return verb === 'add' ? await gather_add(given) : await gather_remove(given);
 }

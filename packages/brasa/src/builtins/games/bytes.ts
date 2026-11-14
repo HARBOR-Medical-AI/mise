@@ -14,6 +14,8 @@ import chalk from 'chalk';
 import { path_resolve, error_stripDebugPrefix } from '../utils.js';
 import { errorStack, type Result, type StackMessage } from '@fnndsc/fond';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** Bytes `xxd` shows when not told. */
 export const XXD_DEFAULT: number = 256;
@@ -103,23 +105,6 @@ async function bytes_read(pathArg: string, name: string): Promise<{ path: string
   return { error: envelope_error('', undefined, `${name}: ${pathArg}: ${why}\n`) };
 }
 
-/** Takes `-FLAG N` pairs off the arguments. */
-function numberFlags_take(args: string[], flags: string[]): { values: Record<string, number>; rest: string[] } | { refusal: string } {
-  const values: Record<string, number> = {};
-  const rest: string[] = [];
-  for (let i: number = 0; i < args.length; i++) {
-    const a: string = args[i] as string;
-    if (flags.includes(a)) {
-      const n: number = Number(args[i + 1]);
-      if (!Number.isInteger(n) || n < 0) return { refusal: `${a} wants a whole number` };
-      values[a] = n; i++;
-    } else {
-      rest.push(a);
-    }
-  }
-  return { values, rest };
-}
-
 /** `file <path>...` */
 export async function builtin_file(args: string[]): Promise<CommandEnvelope> {
   if (args.length === 0) return envelope_error('', undefined, 'file: usage: file <path>...\n');
@@ -135,41 +120,156 @@ export async function builtin_file(args: string[]): Promise<CommandEnvelope> {
   return envelope_ok(`${lines.join('\n')}\n`, { kind: 'games.file', data: { files: data } });
 }
 
-/** `xxd [-s OFFSET] [-l LENGTH] <path>` */
+/** What an `xxd` line may hold: a file, where to start, how much to show. */
+const XXD_GRAMMAR = {
+  operands: [{ name: 'path', kind: 'cfsPath', glob: true, summary: 'The file' }],
+  options: {
+    offset: { short: 's', summary: 'Start at this byte (default 0)', value: { name: 'OFFSET', kind: 'int', min: 0 } },
+    length: { short: 'l', summary: `Show this many bytes (default ${XXD_DEFAULT})`, value: { name: 'LENGTH', kind: 'int', min: 0 } },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * `xxd [-s OFFSET] [-l LENGTH] <path>`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [xxdCommand] });
+ * ```
+ */
+export const xxdCommand = command_declare({
+  name: 'xxd',
+  grammar: XXD_GRAMMAR,
+  help: {
+    summary: 'A hex dump of a file',
+    description: 'The canonical hex dump — offset, sixteen bytes in pairs, the text beside — of a CFS file. 256 bytes unless -l asks for more; -s starts further in. Says how much of the file it showed.',
+    posix: { group: 'Text', differs: 'reads a CFS file' },
+    examples: ['xxd 0001.dcm', 'xxd -s 128 -l 16 0001.dcm', 'xxd -l 4096 image.nii'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof XXD_GRAMMAR>): Promise<CommandEnvelope> => xxd_run(args.operands.path, args.options.offset, args.options.length),
+});
+
+/**
+ * `xxd` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `xxd`.
+ * @returns The dump, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_xxd(['-l', '16', 'a.txt']);
+ * ```
+ */
 export async function builtin_xxd(args: string[]): Promise<CommandEnvelope> {
-  const parsed = numberFlags_take(args, ['-s', '-l']);
-  if ('refusal' in parsed) return envelope_error('', undefined, `xxd: ${parsed.refusal}\n`);
-  if (parsed.rest.length !== 1) return envelope_error('', undefined, 'xxd: usage: xxd [-s OFFSET] [-l LENGTH] <path>\n');
-  const read = await bytes_read(parsed.rest[0] as string, 'xxd');
+  return declaredCommand_run(xxdCommand, args);
+}
+
+/**
+ * Dumps a file's bytes in hex.
+ *
+ * @param path - The CFS path.
+ * @param start - Where to start; absent for the beginning.
+ * @param span - How many bytes to show; absent for the default.
+ * @returns The dump and how much it showed, or why the file cannot be read.
+ *
+ * @example
+ * ```ts
+ * await xxd_run('a.txt', 0, 16);
+ * ```
+ */
+export async function xxd_run(path: string, start: number | undefined, span: number | undefined): Promise<CommandEnvelope> {
+  const read = await bytes_read(path, 'xxd');
   if ('error' in read) return read.error;
-  const offset: number = parsed.values['-s'] ?? 0;
-  const length: number = parsed.values['-l'] ?? XXD_DEFAULT;
+  const offset: number = start ?? 0;
+  const length: number = span ?? XXD_DEFAULT;
   const shown: Buffer = read.bytes.subarray(offset, offset + length);
   const more: number = read.bytes.length - offset - shown.length;
   const note: string = more > 0 ? chalk.gray(`\nxxd: ${shown.length} of ${read.bytes.length.toLocaleString('en-US')} bytes shown (-l ${length}; -s to start elsewhere)`) : '';
   return envelope_ok(`${hexdump_render(shown, offset)}${note}\n`, { kind: 'games.xxd', data: { path: read.path, offset, shown: shown.length, total: read.bytes.length } });
 }
 
-/** `strings [-n MIN] [-l LIMIT] <path>` */
+/** What a `strings` line may hold: a file, the shortest run, how many to show. */
+const STRINGS_GRAMMAR = {
+  operands: [{ name: 'path', kind: 'cfsPath', glob: true, summary: 'The file' }],
+  options: {
+    min: { short: 'n', summary: 'Shortest run to show (default 4)', value: { name: 'MIN', kind: 'int', min: 0 } },
+    limit: { short: 'l', summary: `Most runs to show (default ${STRINGS_DEFAULT})`, value: { name: 'LIMIT', kind: 'int', min: 0 } },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * `strings [-n MIN] [-l LIMIT] <path>`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [stringsCommand] });
+ * ```
+ */
+export const stringsCommand = command_declare({
+  name: 'strings',
+  grammar: STRINGS_GRAMMAR,
+  help: {
+    summary: 'The readable runs in a file',
+    description: 'Prints the runs of printable characters, MIN (4) or longer, in a CFS file — the way to see what a binary carries. 200 lines unless -l asks for more; says how many there were.',
+    posix: { group: 'Text', differs: 'reads a CFS file' },
+    examples: ['strings 0001.dcm', 'strings -n 8 report.pdf'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof STRINGS_GRAMMAR>): Promise<CommandEnvelope> => strings_run(args.operands.path, args.options.min, args.options.limit),
+});
+
+/**
+ * `strings` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `strings`.
+ * @returns The runs, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_strings(['-n', '8', 'a.bin']);
+ * ```
+ */
 export async function builtin_strings(args: string[]): Promise<CommandEnvelope> {
-  const parsed = numberFlags_take(args, ['-n', '-l']);
-  if ('refusal' in parsed) return envelope_error('', undefined, `strings: ${parsed.refusal}\n`);
-  if (parsed.rest.length !== 1) return envelope_error('', undefined, 'strings: usage: strings [-n MIN] [-l LIMIT] <path>\n');
-  const read = await bytes_read(parsed.rest[0] as string, 'strings');
+  return declaredCommand_run(stringsCommand, args);
+}
+
+/**
+ * Lists the printable runs in a file.
+ *
+ * @param path - The CFS path.
+ * @param shortest - The shortest run to show; absent for 4.
+ * @param most - The most runs to show; absent for the default.
+ * @returns The runs and how many there were, or why the file cannot be read.
+ *
+ * @example
+ * ```ts
+ * await strings_run('a.bin', 8, 50);
+ * ```
+ */
+export async function strings_run(path: string, shortest: number | undefined, most: number | undefined): Promise<CommandEnvelope> {
+  const read = await bytes_read(path, 'strings');
   if ('error' in read) return read.error;
-  const min: number = Math.max(1, parsed.values['-n'] ?? 4);
-  const limit: number = parsed.values['-l'] ?? STRINGS_DEFAULT;
+  const min: number = Math.max(1, shortest ?? 4);
+  const limit: number = most ?? STRINGS_DEFAULT;
   const found: string[] = strings_find(read.bytes, min);
   const shown: string[] = found.slice(0, limit);
   const note: string = found.length > shown.length ? chalk.gray(`\nstrings: ${shown.length} of ${found.length} shown (-l for more)`) : '';
   return envelope_ok(`${shown.join('\n')}${note}\n`, { kind: 'games.strings', data: { path: read.path, shown: shown.length, total: found.length } });
 }
 
-async function digest_run(args: string[], algorithm: 'sha256' | 'md5', name: string): Promise<CommandEnvelope> {
-  if (args.length === 0) return envelope_error('', undefined, `${name}: usage: ${name} <path>...\n`);
+/**
+ * Digests each file with an algorithm, as the coreutils tools print.
+ *
+ * @param paths - The CFS paths.
+ * @param algorithm - The digest.
+ * @param name - The command's name, for refusals and the model kind.
+ * @returns A line per file, or why one cannot be read.
+ */
+async function digest_run(paths: readonly string[], algorithm: 'sha256' | 'md5', name: string): Promise<CommandEnvelope> {
   const lines: string[] = [];
   const data: Array<{ path: string; digest: string }> = [];
-  for (const arg of args) {
+  for (const arg of paths) {
     const read = await bytes_read(arg, name);
     if ('error' in read) return read.error;
     const digest: string = createHash(algorithm).update(read.bytes).digest('hex');
@@ -179,12 +279,79 @@ async function digest_run(args: string[], algorithm: 'sha256' | 'md5', name: str
   return envelope_ok(`${lines.join('\n')}\n`, { kind: `games.${name}`, data: { algorithm, files: data } });
 }
 
-/** `sha256sum <path>...` */
+/** What a digest line may hold: the files. */
+const DIGEST_GRAMMAR = {
+  operands: [{ name: 'paths', kind: 'cfsPath', glob: true, repeat: true, summary: 'The files' }],
+} as const satisfies CommandGrammar;
+
+/**
+ * `sha256sum <path>...`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [sha256sumCommand] });
+ * ```
+ */
+export const sha256sumCommand = command_declare({
+  name: 'sha256sum',
+  grammar: DIGEST_GRAMMAR,
+  help: {
+    summary: 'The SHA-256 digest of a file',
+    description: "Prints each CFS file's SHA-256 as hex, then its name, in the format the coreutils tool uses.",
+    posix: { group: 'Text', differs: 'hashes a CFS file' },
+    examples: ['sha256sum image.nii.gz', 'sha256sum ~/uploads/*'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof DIGEST_GRAMMAR>): Promise<CommandEnvelope> => digest_run(args.operands.paths, 'sha256', 'sha256sum'),
+});
+
+/**
+ * `md5sum <path>...`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [md5sumCommand] });
+ * ```
+ */
+export const md5sumCommand = command_declare({
+  name: 'md5sum',
+  grammar: DIGEST_GRAMMAR,
+  help: {
+    summary: 'The MD5 digest of a file',
+    description: "Prints each CFS file's MD5 as hex, then its name.",
+    posix: { group: 'Text', differs: 'hashes a CFS file' },
+    examples: ['md5sum image.nii.gz'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof DIGEST_GRAMMAR>): Promise<CommandEnvelope> => digest_run(args.operands.paths, 'md5', 'md5sum'),
+});
+
+/**
+ * `sha256sum` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `sha256sum`.
+ * @returns The digests, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_sha256sum(['a.txt']);
+ * ```
+ */
 export async function builtin_sha256sum(args: string[]): Promise<CommandEnvelope> {
-  return digest_run(args, 'sha256', 'sha256sum');
+  return declaredCommand_run(sha256sumCommand, args);
 }
 
-/** `md5sum <path>...` */
+/**
+ * `md5sum` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `md5sum`.
+ * @returns The digests, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_md5sum(['a.txt']);
+ * ```
+ */
 export async function builtin_md5sum(args: string[]): Promise<CommandEnvelope> {
-  return digest_run(args, 'md5', 'md5sum');
+  return declaredCommand_run(md5sumCommand, args);
 }

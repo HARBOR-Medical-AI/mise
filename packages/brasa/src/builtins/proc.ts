@@ -1,6 +1,22 @@
 /**
  * @file Builtin proc command.
- * Manages the /proc VFS cache (job monitoring).
+ * Manages the /proc VFS cache (job monitoring). Declared in one record
+ * (`procCommand`): one subcommand per question asked of the job index.
+ *
+ * Key components:
+ * - procCommand: the declaration.
+ * - builtin_proc: the declaration run over words already split.
+ * - procUniverseModel_build: the universe as the index holds it.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_proc(['jobs', 'list', '--sort', 'erroredJobs', '--reverse']);
+ * ```
+ *
+ * Dependencies: salsa's /proc index (roster, topology, warm-up); cumin's
+ * proc cache; the session's cwd for `here` and `jump`.
+ *
+ * @module
  */
 import chalk from 'chalk';
 import { context_getSingle, procCache_refresh, procFeed_ensureLoaded, procFeed_probe, procTarget_locate, type ProcLocation, procFeed_refreshStart, type FeedTopologyReadiness, procRoster_sync, procTopologyCatchup_status, procPipelineBackfill_status, procRoster_syncStart, procTopology_await, procTopology_retry, procTopology_status, procTopology_warmup, jobs_find, type ProcTopologyStatus } from '@fnndsc/salsa';
@@ -8,7 +24,8 @@ import { path_extractFeedID, path_extractPluginInstanceID, path_isInFeed, procCa
 import { FEED_LIST_MODEL_KIND, PROC_JUMP_MODEL_KIND, type ProcJumpModel, PROC_LAYOUT_MODEL_KIND, PROC_UNIVERSE_MODEL_KIND, type FeedListModel, type ProcLayoutModel, type ProcUniverseModel, type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { spinner } from '../lib/spinner.js';
 import { universeLayout_underWay, universeLayouts_warm } from '../chris/universeLayout.js';
-import { commandArgs_process, type ParsedArgs } from './utils.js';
+import { command_declare, type CommandArguments, type CommandGrammar, type SubcommandArguments } from '../core/commandDeclaration.js';
+import { declaredCommand_run } from '../core/commandParse.js';
 import { builtin_cd } from './fs/cd.js';
 import { procWatch_add, procWatch_remove, procWatch_list, watchSubject_parse, type ProcWatchEntry } from './procWatch.js';
 import { feedIndexing_envelope } from './res/feed.diagram.js';
@@ -159,13 +176,11 @@ function procJobs_renderLines(page: ProcJobEntry[], selectedFields: string[]): s
  * Handles `proc jobs [inspect|list]`: lists cached feed jobs with optional
  * search, sort, paging, field selection, and CSV/table output.
  *
- * @param args - Arguments following `proc jobs`.
+ * @param args - The `proc jobs` line.
  * @returns An envelope carrying the listing.
  */
-async function jobs_subcmd(args: string[]): Promise<CommandEnvelope> {
-  const second: string | undefined = args[0];
-
-  if (second === 'inspect') {
+async function jobs_subcmd(args: SubcommandArguments<typeof PROC_GRAMMAR, 'jobs'>): Promise<CommandEnvelope> {
+  if (args.operands.view === 'inspect') {
     return envelope_ok(table_render(
       [...ALL_JOB_FIELDS].map((f: string) => ({ field: f })),
       ['field'],
@@ -173,32 +188,31 @@ async function jobs_subcmd(args: string[]): Promise<CommandEnvelope> {
     ));
   }
 
-  const listArgs: string[] = second === 'list' ? args.slice(1) : args;
-  const parsed: ParsedArgs = commandArgs_process(listArgs);
-  const blocked: CommandEnvelope | null = await procWarmup_guard('proc jobs list', !!parsed['force']);
+  const options = args.options;
+  const blocked: CommandEnvelope | null = await procWarmup_guard('proc jobs list', options.force);
   if (blocked) return blocked;
   // The roster is index movement: answered from the cache now, walked off the lane.
   procRoster_syncStart();
 
   let entries: ProcJobEntry[] = procEntries_build(procCache_get());
-  entries = procEntries_filterBySearch(entries, String(parsed['search'] ?? ''));
+  entries = procEntries_filterBySearch(entries, options.search ?? '');
 
   if (entries.length === 0) {
     return envelope_ok(`${chalk.gray('No feeds in cache.')}\n`);
   }
 
-  const sortField: string = String(parsed['sort'] ?? '');
-  if (sortField) entries = list_applySort(entries, sortField, !!parsed['reverse']);
+  const sortField: string = options.sort ?? '';
+  if (sortField) entries = list_applySort(entries, sortField, options.reverse);
 
-  const showAll: boolean = !!parsed['all'];
-  const limit: number = showAll ? entries.length : Math.max(1, Number(parsed['limit'] ?? 20));
+  const showAll: boolean = options.all;
+  const limit: number = showAll ? entries.length : options.limit ?? JOBS_LIMIT;
   const page: ProcJobEntry[] = entries.slice(0, limit);
-  const selectedFields: string[] = jobFields_select(String(parsed['fields'] ?? ''));
+  const selectedFields: string[] = jobFields_select(options.fields ?? '');
 
-  if (parsed['csv']) {
+  if (options.csv) {
     return envelope_ok(`${procCsv_render(page, selectedFields)}\n`);
   }
-  if (parsed['table']) {
+  if (options.table) {
     return envelope_ok(procJobs_renderTable(page, selectedFields));
   }
 
@@ -214,11 +228,10 @@ async function jobs_subcmd(args: string[]): Promise<CommandEnvelope> {
 /**
  * Handles `proc refresh [feed]`: refreshes the cache for one feed or all.
  *
- * @param args - Full command args (`args[1]` is the optional feed).
+ * @param feedArg - The feed, as typed; none refreshes every feed.
  * @returns An envelope reporting the refresh outcome.
  */
-async function procRefresh_handle(args: string[]): Promise<CommandEnvelope> {
-  const feedArg: string | undefined = args[1];
+async function procRefresh_handle(feedArg: string | undefined): Promise<CommandEnvelope> {
   let feedID: number | undefined;
 
   if (feedArg) {
@@ -286,21 +299,16 @@ function procRetry_handle(): CommandEnvelope {
  * Handles `proc find <query>`: locates instances by id/plugin-name and reports
  * their /proc paths.
  *
- * @param args - Full command args (`args[1]` is the query).
+ * @param query - An instance id, or a plugin name substring.
+ * @param force - Whether a name search waits for the warm-up.
  * @returns An envelope carrying the matched paths.
  */
-async function procFind_handle(args: string[]): Promise<CommandEnvelope> {
-  const parsed: ParsedArgs = commandArgs_process(args.slice(1));
-  const query: string | undefined = parsed._[0];
-  if (!query) {
-    exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red('Usage: proc find <instance_id | plugin_name_substring>')}\n`);
-  }
+async function procFind_handle(query: string, force: boolean): Promise<CommandEnvelope> {
 
   const numeric: number = parseInt(query, 10);
   const isInstanceID: boolean = !isNaN(numeric) && String(numeric) === query;
   if (!isInstanceID) {
-    const blocked: CommandEnvelope | null = await procWarmup_guard(`proc find ${query}`, !!parsed['force']);
+    const blocked: CommandEnvelope | null = await procWarmup_guard(`proc find ${query}`, force);
     if (blocked) return blocked;
   }
 
@@ -376,15 +384,9 @@ async function procHere_canonicalPath_get(cwd: string, cache: ProcCache): Promis
  * stable feed and plugin-instance IDs. Other CFS output locations use the
  * session's CUBE-supplied output-path provenance as a fallback.
  *
- * @param args - Full command args. No operands are accepted.
  * @returns The directory-change envelope, or a clear error when provenance is unknown.
  */
-async function procHere_handle(args: string[]): Promise<CommandEnvelope> {
-  if (args.length > 1) {
-    exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red('Usage: proc here')}\n`);
-  }
-
+async function procHere_handle(): Promise<CommandEnvelope> {
   const cache: ProcCache = procCache_get();
   const cwd: string = await session.getCWD();
   const canonicalPath: string | null = await procHere_canonicalPath_get(cwd, cache);
@@ -415,18 +417,11 @@ async function procHere_handle(args: string[]): Promise<CommandEnvelope> {
  * reaches each. `--where` only answers (a surface lands its own pane there
  * and leaves the session's cwd alone).
  *
- * @param args - Full command args (`args[0]` is `jump`).
+ * @param target - The feed or node: an id, feed_N or plugin_N.
+ * @param whereOnly - Answer where it is, leaving the cwd alone.
  * @returns The cd envelope, or the answer with its `proc.jump` model.
  */
-async function procJump_handle(args: string[]): Promise<CommandEnvelope> {
-  // `--where` is a switch, not an option taking the target as its value.
-  const words: string[] = args.slice(1);
-  const whereOnly: boolean = words.includes('--where');
-  const target: string = words.find((word: string): boolean => !word.startsWith('--')) ?? '';
-  if (target === '') {
-    exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red('Usage: proc jump [--where] <feed id | node id | feed_N | plugin_N>')}\n`);
-  }
+async function procJump_handle(target: string, whereOnly: boolean): Promise<CommandEnvelope> {
   let places: ProcLocation[];
   try {
     places = await procTarget_locate(target);
@@ -462,15 +457,10 @@ async function procJump_handle(args: string[]): Promise<CommandEnvelope> {
  * does it for all). The marks are kept with the roster, so what is NEW
  * survives a login until it is seen.
  *
- * @param args - Full command args (`args[0]` is `seen`).
+ * @param words - The feeds (feed_N or N), or `all`.
  * @returns An envelope saying how many marks were taken off.
  */
-function procSeen_handle(args: string[]): Promise<CommandEnvelope> {
-  const words: string[] = args.slice(1);
-  if (words.length === 0) {
-    exitCode_set(1);
-    return Promise.resolve(envelope_error('', undefined, `${chalk.red('Usage: proc seen <feed_N | N ...> | all')}\n`));
-  }
+function procSeen_handle(words: readonly string[]): Promise<CommandEnvelope> {
   const cache: ProcCache = procCache_get();
   const ids: number[] = [];
   if (!words.includes('all')) {
@@ -511,28 +501,27 @@ async function feedTags_read(): Promise<Map<number, string[]> | null> {
  * now, so a share, an unshare or a deletion lands without waiting for the
  * roster to age.
  *
- * @param args - Full command args (`args[1]` is the query).
+ * @param args - The `proc feeds` line.
  * @returns An envelope carrying the matched feeds.
  */
-async function procFeeds_handle(args: string[]): Promise<CommandEnvelope> {
-  const parsed: ParsedArgs = commandArgs_process(args.slice(1));
+async function procFeeds_handle(args: SubcommandArguments<typeof PROC_GRAMMAR, 'feeds'>): Promise<CommandEnvelope> {
   // No query lists the whole cache-resident roster — the chooser's case.
-  const query: string = parsed._[0] ?? '';
+  const query: string = args.operands.query ?? '';
 
   const blocked: CommandEnvelope | null = await procWarmup_guard(
-    `proc feeds${query ? ` ${query}` : ''}`, !!parsed['force'],
+    `proc feeds${query ? ` ${query}` : ''}`, args.options.force,
   );
   if (blocked) return blocked;
   // The roster is index movement: answered from the cache now, walked off
   // the lane, named on the prompt while it runs; arrivals bring the pane
   // back for the rest. `--fresh` walks the whole index now, whatever the
   // roster's age: the operator's way of asking CUBE again.
-  procRoster_syncStart(!!parsed['fresh']);
+  procRoster_syncStart(args.options.fresh);
 
   const cache: ProcCache = procCache_get();
   const unseen: Set<number> = new Set(cache.unseen_get());
   const matches: ProcFeed[] = cache.feeds_find(query)
-    .filter((feed: ProcFeed): boolean => !parsed['new'] || unseen.has(feed.id))
+    .filter((feed: ProcFeed): boolean => !args.options.new || unseen.has(feed.id))
     .sort((a: ProcFeed, b: ProcFeed) => b.creationDate.localeCompare(a.creationDate));
 
   // Asking is an answer: a bare id the roster lacks is asked of CUBE, and
@@ -545,7 +534,7 @@ async function procFeeds_handle(args: string[]): Promise<CommandEnvelope> {
     rendered += chalk.dim(`feed_${asked.id} was not in the roster; CUBE lists it for you (owner ${asked.ownerUsername || 'unknown'}) — added.`) + '\n';
   }
 
-  if (matches.length === 0 && parsed['new']) {
+  if (matches.length === 0 && args.options.new) {
     return envelope_ok(`${chalk.dim('Nothing new since your last visit.')}\n`, { kind: FEED_LIST_MODEL_KIND, data: { feeds: [] } });
   }
   if (matches.length === 0) {
@@ -646,12 +635,16 @@ export function procUniverseModel_build(): ProcUniverseModel {
  * A surface asks before it settles and draws at once from what is kept;
  * after it settles, it puts what it found.
  *
- * @param args - Full command args (`args[1]` is the name or `put`).
+ * @param args - The `proc layout` line: a name, or `put`, a name and the places.
  * @returns The kept layout as a model, or what was kept.
  */
-async function procLayout_handle(args: string[]): Promise<CommandEnvelope> {
-  const putting: boolean = args[1] === 'put';
-  const name: string = (putting ? args[2] : args[1]) ?? '';
+async function procLayout_handle(args: SubcommandArguments<typeof PROC_GRAMMAR, 'layout'>): Promise<CommandEnvelope> {
+  const putting: boolean = args.operands.layout === 'put';
+  const name: string = (putting ? args.operands.name : args.operands.layout) ?? '';
+  if (!putting && args.operands.name !== undefined) {
+    exitCode_set(1);
+    return envelope_error('', undefined, `${chalk.red(`proc layout: unexpected operand '${args.operands.name}'; usage: proc layout <name> | proc layout put <name> <places>`)}\n`);
+  }
   if (!procLayoutName_check(name)) {
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red(`proc layout: not a layout: '${name}'`)}\n`);
@@ -659,7 +652,7 @@ async function procLayout_handle(args: string[]): Promise<CommandEnvelope> {
   if (putting) {
     let places: unknown = null;
     try {
-      places = JSON.parse(args[3] ?? '');
+      places = JSON.parse(args.operands.places ?? '');
     } catch {
       places = null;
     }
@@ -709,12 +702,11 @@ function feedJobs_count(feed: ProcFeed): { jobsDone: number; jobsTotal: number; 
 /**
  * Handles `proc stat [feed]`: reports a cache summary or a single feed's detail.
  *
- * @param args - Full command args (`args[1]` is the optional feed).
+ * @param feedArg - The feed, as typed; none summarises the cache.
  * @returns An envelope carrying the summary or feed detail.
  */
-async function procStat_handle(args: string[]): Promise<CommandEnvelope> {
+async function procStat_handle(feedArg: string | undefined): Promise<CommandEnvelope> {
   const cache: ProcCache = procCache_get();
-  const feedArg: string | undefined = args[1];
 
   if (!feedArg) {
     const warmup: ProcWarmupProgress = cache.warmupProgress_get();
@@ -798,11 +790,10 @@ const OPERATOR_OWNER: string = 'operator';
  * then sampled while it runs, and every surface receives the refreshed
  * model), or with no argument lists the session's watches.
  *
- * @param args - Full command args (`args[1]` is the feed).
+ * @param subject - The feed, as typed; none lists the watches.
  * @returns An envelope reporting the watch state or the watch list.
  */
-async function procWatch_handle(args: string[]): Promise<CommandEnvelope> {
-  const subject: string | undefined = args[1];
+async function procWatch_handle(subject: string | undefined): Promise<CommandEnvelope> {
   if (subject === undefined) {
     const entries: ProcWatchEntry[] = procWatch_list();
     if (entries.length === 0) return envelope_ok(`${chalk.gray('No watches.')}\n`);
@@ -824,71 +815,172 @@ async function procWatch_handle(args: string[]): Promise<CommandEnvelope> {
 /**
  * Handles `proc unwatch <feed>`: releases the operator's watch on a feed.
  *
- * @param args - Full command args (`args[1]` is the feed).
+ * @param subject - The feed, as typed.
  * @returns An envelope confirming the release.
  */
-async function procUnwatch_handle(args: string[]): Promise<CommandEnvelope> {
-  const subject: string | undefined = args[1];
-  const feedID: number | null = subject === undefined ? null : watchSubject_parse(subject);
+async function procUnwatch_handle(subject: string): Promise<CommandEnvelope> {
+  const feedID: number | null = watchSubject_parse(subject);
   if (feedID === null) {
     exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red('proc unwatch: a feed is required')}\n`);
+    return envelope_error('', undefined, `${chalk.red(`proc unwatch: a feed is required, not '${subject}'`)}\n`);
   }
   procWatch_remove(feedID, OPERATOR_OWNER);
   return envelope_ok(`${chalk.green(`released /proc/jobs/feed_${feedID}`)}\n`);
 }
 
-// ── Main dispatcher ───────────────────────────────────────────────────────────
+// ── The declaration ───────────────────────────────────────────────────────────
+
+/** Feeds `proc jobs list` shows when not told how many. */
+const JOBS_LIMIT: number = 20;
+
+/** A feed, as `proc` subcommands take one: feed_N, N, or its /proc path. */
+const FEED_OPERAND = { name: 'feed', kind: 'word', summary: 'The feed: feed_N or its id' } as const;
+
+/** Waits for the complete index rather than refusing while it warms. */
+const FORCE_OPTION = { long: 'force', summary: 'Wait for warm-up, then answer from the complete index' } as const;
+
+/** What a `proc` line may hold. */
+const PROC_GRAMMAR = {
+  bare: { summary: 'Rebuild the entire proc cache (as refresh)' },
+  subcommands: {
+    jobs: {
+      summary: 'List all feeds with their counter fields (default 20), or inspect the field names',
+      operands: [{ name: 'view', kind: 'enum', values: ['list', 'inspect'], optional: true, summary: 'list (the default), or inspect: every field name' }],
+      options: {
+        fields: { long: 'fields', summary: 'Select columns', value: { name: 'f,f', kind: 'word' } },
+        sort: { long: 'sort', summary: 'Sort by field', value: { name: 'field', kind: 'word' } },
+        reverse: { long: 'reverse', summary: 'Reverse the sort' },
+        table: { long: 'table', summary: 'Tabular output' },
+        csv: { long: 'csv', summary: 'CSV output' },
+        all: { long: 'all', summary: 'All feeds (no limit)' },
+        limit: { long: 'limit', summary: 'Feeds to show (default 20)', value: { name: 'n', kind: 'int', min: 1 } },
+        search: { long: 'search', summary: 'Filter by title substring', value: { name: 'term', kind: 'word' } },
+        force: FORCE_OPTION,
+      },
+    },
+    stat: {
+      summary: 'Show the cache summary, or one feed\'s raw counters and topology state',
+      operands: [{ ...FEED_OPERAND, optional: true }],
+    },
+    feeds: {
+      summary: 'Find feeds by title, feed_N name or id; an id the roster lacks is asked of CUBE',
+      operands: [{ name: 'query', kind: 'word', optional: true, summary: 'Title substring, feed_N or id; none lists the whole roster' }],
+      options: {
+        fresh: { long: 'fresh', summary: 'Walk the whole feed index now' },
+        new: { long: 'new', summary: 'Feeds shared with you since your last visit, not yet opened (NEW)' },
+        force: FORCE_OPTION,
+      },
+    },
+    seen: {
+      summary: 'Take the NEW mark off feeds you have looked at',
+      operands: [{ name: 'feeds', kind: 'word', repeat: true, summary: 'feed_N or N, or all' }],
+    },
+    universe: { summary: 'Every feed the index holds as it landed: size, status, pipeline shape; honest while warming' },
+    layout: {
+      summary: 'Where a surface last laid the universe out under a layout; put keeps one (node ids to [x, y, z], as JSON)',
+      operands: [
+        { name: 'layout', kind: 'word', summary: 'The layout\'s name; or put, to keep one' },
+        { name: 'name', kind: 'word', optional: true, summary: 'With put: the layout\'s name' },
+        { name: 'places', kind: 'word', optional: true, summary: 'With put: node ids to [x, y, z], as JSON' },
+      ],
+    },
+    refresh: {
+      summary: 'Rebuild the entire proc cache, or one feed\'s',
+      operands: [{ ...FEED_OPERAND, optional: true }],
+    },
+    retry: { summary: 'Resume a failed topology sweep at its failed page' },
+    find: {
+      summary: 'Find a job: an instance id (available during warm-up), or a plugin name',
+      operands: [{ name: 'query', kind: 'word', summary: 'An instance id, or a plugin name substring' }],
+      options: { force: FORCE_OPTION },
+    },
+    here: { summary: 'Navigate from a CFS feed/output path to its matching job' },
+    jump: {
+      summary: 'Go to a feed or node by id or /proc name (feed_N, plugin_N); a number that is both is not guessed',
+      operands: [{ name: 'target', kind: 'word', summary: 'A feed id, node id, feed_N or plugin_N' }],
+      options: { where: { long: 'where', summary: 'Only answer where it is; the cwd stays' } },
+    },
+    watch: {
+      summary: 'Keep a running feed live: sample it while it runs, push its DAG to every surface; none lists the watches',
+      operands: [{ ...FEED_OPERAND, optional: true }],
+    },
+    unwatch: {
+      summary: 'Release the watch on a feed',
+      operands: [FEED_OPERAND],
+    },
+  },
+} as const satisfies CommandGrammar;
 
 /**
- * Handles proc commands.
+ * `proc <jobs|stat|feeds|seen|universe|layout|refresh|retry|find|here|jump|watch|unwatch>`: the declaration.
  *
- * @param args - command arguments.
- * @returns An envelope carrying the subcommand's output.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [procCommand] }, 'backend');
+ * ```
+ */
+export const procCommand = command_declare({
+  name: 'proc',
+  grammar: PROC_GRAMMAR,
+  help: {
+    summary: 'Job history inspector — navigate, query and monitor ChRIS pipeline execution via /proc/jobs',
+    description: '/proc/jobs is a job history inspector for every computation visible to the current ChRIS identity. Each plugin instance is a discrete job with a parent, zero or more children, a status, parameters, and a log. Jobs are grouped into feeds (pipeline runs), and the parent-child relationships form a DAG: the execution tree of a full computation. /proc/jobs exposes this as a navigable filesystem. The daemon restores an identity-scoped local topology checkpoint, validates feed visibility with CUBE, and reconciles all plugin instances in the background. Restored queries remain usable while syncing; a cold cache still guards global queries until complete. CUBE remains authoritative.',
+    category: 'Monitoring',
+    examples: [
+      'proc jobs list',
+      'proc jobs list --sort erroredJobs --reverse --table',
+      'proc jobs list --fields id,title,erroredJobs,startedJobs --all',
+      'proc jobs list --search failed',
+      'proc jobs inspect',
+      'proc stat',
+      'proc stat 899',
+      'proc feeds failed',
+      'proc feeds --fresh',
+      'proc feeds --new',
+      'proc seen all',
+      'proc universe',
+      'proc refresh',
+      'proc retry',
+      'proc find 64306',
+      'proc find pl-fshack',
+      'proc here',
+      'proc jump 639204',
+      'proc jump feed_4389',
+      'proc watch feed_2583',
+      'proc unwatch 2583',
+    ],
+  },
+  handler: async (args: CommandArguments<typeof PROC_GRAMMAR>): Promise<CommandEnvelope> => {
+    switch (args.subcommand) {
+      case null: return procRefresh_handle(undefined);
+      case 'refresh': return procRefresh_handle(args.operands.feed);
+      case 'retry': return procRetry_handle();
+      case 'jobs': return jobs_subcmd(args);
+      case 'find': return procFind_handle(args.operands.query, args.options.force);
+      case 'here': return procHere_handle();
+      case 'jump': return procJump_handle(args.operands.target, args.options.where);
+      case 'seen': return procSeen_handle(args.operands.feeds);
+      case 'feeds': return procFeeds_handle(args);
+      case 'universe': return procUniverse_handle();
+      case 'layout': return procLayout_handle(args);
+      case 'stat': return procStat_handle(args.operands.feed);
+      case 'watch': return procWatch_handle(args.operands.feed);
+      case 'unwatch': return procUnwatch_handle(args.operands.feed);
+    }
+  },
+});
+
+/**
+ * `proc` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `proc`.
+ * @returns An envelope carrying the subcommand's output, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_proc(['stat']);
+ * ```
  */
 export async function builtin_proc(args: string[]): Promise<CommandEnvelope> {
-  const subcommand: string | undefined = args[0];
-
-  if (!subcommand || subcommand === 'refresh') {
-    return procRefresh_handle(args);
-  }
-  if (subcommand === 'retry') {
-    return procRetry_handle();
-  }
-  if (subcommand === 'jobs') {
-    return jobs_subcmd(args.slice(1));
-  }
-  if (subcommand === 'find') {
-    return procFind_handle(args);
-  }
-  if (subcommand === 'here') {
-    return procHere_handle(args);
-  }
-  if (subcommand === 'jump') {
-    return procJump_handle(args);
-  }
-  if (subcommand === 'seen') {
-    return procSeen_handle(args);
-  }
-  if (subcommand === 'feeds') {
-    return procFeeds_handle(args);
-  }
-  if (subcommand === 'universe') {
-    return procUniverse_handle();
-  }
-  if (subcommand === 'layout') {
-    return procLayout_handle(args);
-  }
-  if (subcommand === 'stat') {
-    return procStat_handle(args);
-  }
-  if (subcommand === 'watch') {
-    return procWatch_handle(args);
-  }
-  if (subcommand === 'unwatch') {
-    return procUnwatch_handle(args);
-  }
-
-  exitCode_set(1);
-  return envelope_error('', undefined, `${chalk.red(`proc: unknown subcommand '${subcommand}'. Use proc --help.`)}\n`);
+  return declaredCommand_run(procCommand, args);
 }

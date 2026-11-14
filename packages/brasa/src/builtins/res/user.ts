@@ -2,7 +2,22 @@
  * @file CUBE-local account administration builtin.
  *
  * This is a targeted control-plane command rather than a ChRIS Resource
- * Command: federated identities remain outside its authority.
+ * Command: federated identities remain outside its authority. Declared in one
+ * record (`userCommand`), answered as `user` and `users`.
+ *
+ * Key components:
+ * - userCommand: the declaration.
+ * - builtin_user: the declaration run over words already split.
+ * - user_run: one account operation, typed.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_user(['inspect', 'jack.bivowac']);
+ * await user_run('inspect', 'jack.bivowac');
+ * ```
+ *
+ * Dependencies: chili's local-account seam; the active surface for the
+ * hidden password prompt.
  *
  * @module
  */
@@ -21,6 +36,8 @@ import { authorizationFailure_is, sudoHint_build } from '../../core/elevation.js
 import { errorStack } from '@fnndsc/fond';
 import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /**
  * Renders a local-account command error and records a failing process status.
@@ -56,19 +73,75 @@ function user_render(account: LocalAccount): CommandEnvelope {
   return envelope_ok(table_render([{ ...account }], ['id', 'username', 'email', 'is_active', 'disabled_at', 'removed_at']));
 }
 
+/** The account a subcommand acts on. */
+const USERNAME_OPERAND = { name: 'username', kind: 'word', summary: 'The CUBE-local account' } as const;
+
+/** What a `user` line may hold: one operation on one account. */
+const USER_GRAMMAR = {
+  subcommands: {
+    add: { summary: 'Make a local account: prompts for its email, then a hidden password twice', operands: [USERNAME_OPERAND] },
+    inspect: { summary: 'Show a local account', operands: [USERNAME_OPERAND] },
+    disable: { summary: 'Disable a local account', operands: [USERNAME_OPERAND] },
+    enable: { summary: 'Enable a disabled local account', operands: [USERNAME_OPERAND] },
+    remove: { summary: 'Remove a local account', operands: [USERNAME_OPERAND] },
+  },
+} as const satisfies CommandGrammar;
+
+/** One operation `user` performs. */
+export type UserVerb = keyof typeof USER_GRAMMAR.subcommands;
+
 /**
- * Handles targeted local-account lifecycle commands.
+ * `user <add|inspect|disable|enable|remove> <username>`: the declaration.
  *
- * @param args - Parsed command arguments beginning with an account operation.
- * @returns Envelope containing a local-account result or operation error.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [userCommand] }, 'backend');
+ * ```
+ */
+export const userCommand = command_declare({
+  name: 'user',
+  aliases: ['users'],
+  grammar: USER_GRAMMAR,
+  help: {
+    summary: 'Manage CUBE-local accounts; federated identities remain externally managed',
+    description: 'Manage CUBE-local accounts; federated identities remain externally managed. Use `sudo user …` for lifecycle operations; add prompts for the email and a hidden password, with a confirmation.',
+    category: 'Admin',
+    examples: ['sudo user add jack.bivowac', 'sudo user disable jack.bivowac', 'sudo user remove jack.bivowac'],
+  },
+  handler: async (args: CommandArguments<typeof USER_GRAMMAR>): Promise<CommandEnvelope> => user_run(args.subcommand, args.operands.username),
+});
+
+/**
+ * `user` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `user`.
+ * @returns The account operation's result, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_user(['disable', 'jack.bivowac']);
+ * ```
  */
 export async function builtin_user(args: string[]): Promise<CommandEnvelope> {
-  const [verb, username] = args;
-  if (verb === 'add' || verb === 'inspect' || verb === 'disable' || verb === 'enable' || verb === 'remove') {
-    if (!username) return user_error(`Usage: user ${verb} <username>`);
-    const access = await localAccount_adminAccessEnsure();
-    if (!access.ok) return user_operationError(verb, username);
-  }
+  return declaredCommand_run(userCommand, args);
+}
+
+/**
+ * Performs one local-account lifecycle operation, after making sure the
+ * identity may administer accounts.
+ *
+ * @param verb - The operation.
+ * @param username - The local account it acts on.
+ * @returns Envelope containing a local-account result or operation error.
+ *
+ * @example
+ * ```ts
+ * await user_run('inspect', 'jack.bivowac');
+ * ```
+ */
+export async function user_run(verb: UserVerb, username: string): Promise<CommandEnvelope> {
+  const access = await localAccount_adminAccessEnsure();
+  if (!access.ok) return user_operationError(verb, username);
   if (verb === 'add') {
     const surface = surface_get();
     if (!surface.capabilities.hiddenInput) return user_error('user add: this surface cannot securely collect a password.');
@@ -83,12 +156,9 @@ export async function builtin_user(args: string[]): Promise<CommandEnvelope> {
     const result = await localAccount_find(username);
     return result.ok ? user_render(result.value) : user_error(errorStack.stack_pop()?.message ?? `No CUBE-local account named '${username}'.`);
   }
-  if (verb === 'disable' || verb === 'enable' || verb === 'remove') {
-    const found = await localAccount_find(username);
-    if (!found.ok) return user_error(errorStack.stack_pop()?.message ?? `No CUBE-local account named '${username}'.`);
-    const action: LocalAccountAction = verb;
-    const result = await localAccount_action(found.value.id, action);
-    return result.ok ? user_render(result.value) : user_operationError(verb, username);
-  }
-  return user_error('Usage: user <add|inspect|disable|enable|remove> ...');
+  const found = await localAccount_find(username);
+  if (!found.ok) return user_error(errorStack.stack_pop()?.message ?? `No CUBE-local account named '${username}'.`);
+  const action: LocalAccountAction = verb;
+  const result = await localAccount_action(found.value.id, action);
+  return result.ok ? user_render(result.value) : user_operationError(verb, username);
 }

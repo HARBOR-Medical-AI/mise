@@ -313,6 +313,8 @@ export interface CommandDeclaration<G extends CommandGrammar = CommandGrammar> {
   readonly grammar: G;
   /** What `help` says of it. */
   readonly help: CommandProse;
+  /** Other words that run it (`users` for `user`): parsed, completed and held alike; `help` and `/bin` list the name alone. */
+  readonly aliases?: readonly string[];
   /** The pieces of the session it changes while it runs; absent, it holds the whole session. */
   readonly holds?: readonly SessionPiece[];
   /**

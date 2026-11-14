@@ -11,6 +11,8 @@
  */
 import { text_input } from './stdin.js';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** Data codewords per version at level L (1..10). */
 const DATA_CODEWORDS: ReadonlyArray<number> = [0, 19, 34, 55, 80, 108, 136, 156, 194, 232, 274];
@@ -283,9 +285,60 @@ export function qr_render(dark: boolean[][]): string[] {
   return lines;
 }
 
-/** `qr <text>` */
+
+/** What a `qr` line may hold. */
+const QR_GRAMMAR = {
+  operands: [{ name: 'text', kind: 'word', optional: true, repeat: true, summary: 'The text or URL to encode (default: what is piped in)' }],
+} as const satisfies CommandGrammar;
+
+/**
+ * `qr <text or URL>`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [qrCommand] });
+ * ```
+ */
+export const qrCommand = command_declare({
+  name: 'qr',
+  grammar: QR_GRAMMAR,
+  help: {
+    summary: 'A QR code in the console, for a phone',
+    description: 'Draws a QR code of the text — a URL, mostly — in half-block characters, light modules bright so a phone camera reads it off a dark screen. Up to 271 bytes (QR versions 1 to 10, error correction L), encoded here with no library.',
+    examples: ['qr https://titan.tch.harvard.edu', 'whereami | qr'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof QR_GRAMMAR>): Promise<CommandEnvelope> => qr_run(args.operands.text),
+});
+
+/**
+ * `qr` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `qr`.
+ * @returns The code, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_qr(['https://example.org']);
+ * ```
+ */
 export async function builtin_qr(args: string[]): Promise<CommandEnvelope> {
-  const text: string | null = text_input(args);
+  return declaredCommand_run(qrCommand, args);
+}
+
+/**
+ * Draws a QR code of the piped text, else the words.
+ *
+ * @param words - The words given.
+ * @returns The code drawn in half blocks, or a refusal when there is no text or too much.
+ *
+ * @example
+ * ```ts
+ * await qr_run(['https://example.org']);
+ * ```
+ */
+export async function qr_run(words: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  const text: string | null = text_input(words);
   if (text === null) return envelope_error('', undefined, 'qr: usage: qr <text or URL>   (up to 271 bytes)\n');
   const said: string = text.replace(/\n$/, '');
   const code = qr_encode(said);

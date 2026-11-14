@@ -10,6 +10,8 @@
  */
 import { text_input } from './stdin.js';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** The brain, as ASCII has long drawn it. */
 export const BRAIN: ReadonlyArray<string> = [
@@ -81,39 +83,104 @@ export function cowsay_render(text: string, thought: boolean = false, width: num
   return [...bubble_draw(lines, thought), ...trail, ...BRAIN].join('\n') + '\n';
 }
 
-/** Parses `-W N` out of the arguments; the rest is the text. */
-function cowsayArgs_parse(args: string[]): { width: number; words: string[] } | { refusal: string } {
-  let width: number = COWSAY_WIDTH;
-  const words: string[] = [];
-  for (let i: number = 0; i < args.length; i++) {
-    if (args[i] === '-W') {
-      const n: number = Number(args[i + 1]);
-      if (!Number.isInteger(n) || n < 8) return { refusal: 'cowsay: -W wants a width of 8 or more' };
-      width = n; i++;
-    } else if (args[i]?.startsWith('-') && (args[i]?.length ?? 0) > 1) {
-      return { refusal: `cowsay: unknown flag '${args[i]}' (only -W N)` };
-    } else {
-      words.push(args[i] as string);
-    }
-  }
-  return { width, words };
-}
+/** The words a cow says: what is piped in, else these. */
+const COW_TEXT = { name: 'text', kind: 'word', optional: true, repeat: true, summary: 'What to say (default: what is piped in)' } as const;
 
-async function cow_run(args: string[], thought: boolean, name: string): Promise<CommandEnvelope> {
-  const parsed = cowsayArgs_parse(args);
-  if ('refusal' in parsed) return envelope_error('', undefined, `${parsed.refusal}\n`);
-  const text: string | null = text_input(parsed.words);
+/** What a `cowsay` or `cowthink` line may hold. */
+const COW_GRAMMAR = {
+  operands: [COW_TEXT],
+  options: {
+    width: { short: 'W', summary: 'Wrap the bubble at N columns (8 or more)', value: { name: 'N', kind: 'int', min: 8 } },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * `cowsay [-W N] [text]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [cowsayCommand] });
+ * ```
+ */
+export const cowsayCommand = command_declare({
+  name: 'cowsay',
+  grammar: COW_GRAMMAR,
+  help: {
+    summary: 'The ChRIS brain says it — fortune | cowsay',
+    description: 'The classic, with the ChRIS brain for a cow: a speech bubble over the mascot. Says what is piped in, else the words given; -W N wraps at N columns (40 by default).',
+    examples: ['fortune | cowsay', 'cowsay hello, world', 'motd | cowsay -W 60'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof COW_GRAMMAR>): Promise<CommandEnvelope> => cow_run('cowsay', args.operands.text, false, args.options.width),
+});
+
+/**
+ * `cowthink [-W N] [text]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [cowthinkCommand] });
+ * ```
+ */
+export const cowthinkCommand = command_declare({
+  name: 'cowthink',
+  grammar: COW_GRAMMAR,
+  help: {
+    summary: 'The ChRIS brain thinks it',
+    description: 'cowsay with a thought bubble.',
+    examples: ['fortune | cowthink'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof COW_GRAMMAR>): Promise<CommandEnvelope> => cow_run('cowthink', args.operands.text, true, args.options.width),
+});
+
+/**
+ * Draws the brain saying or thinking the piped text, else the words.
+ *
+ * @param name - The command's name, for its refusal.
+ * @param words - The words given.
+ * @param thought - Thought bubble rather than speech.
+ * @param width - The wrap width asked for, or undefined for the default.
+ * @returns The picture, or a refusal when there is nothing to say.
+ *
+ * @example
+ * ```ts
+ * await cow_run('cowsay', ['moo'], false, 20);
+ * ```
+ */
+export async function cow_run(name: string, words: ReadonlyArray<string>, thought: boolean, width: number | undefined): Promise<CommandEnvelope> {
+  const text: string | null = text_input(words);
   if (text === null) return envelope_error('', undefined, `${name}: nothing to say (pipe text in, or give it: fortune | ${name})\n`);
   const said: string = text.replace(/\n$/, '');
-  return envelope_ok(cowsay_render(said, thought, parsed.width), { kind: 'games.cowsay', data: { text: said, thought } });
+  return envelope_ok(cowsay_render(said, thought, width ?? COWSAY_WIDTH), { kind: 'games.cowsay', data: { text: said, thought } });
 }
 
-/** `cowsay [-W N] [text]` */
+/**
+ * `cowsay` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `cowsay`.
+ * @returns The picture, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_cowsay(['-W', '20', 'moo']);
+ * ```
+ */
 export async function builtin_cowsay(args: string[]): Promise<CommandEnvelope> {
-  return cow_run(args, false, 'cowsay');
+  return declaredCommand_run(cowsayCommand, args);
 }
 
-/** `cowthink [-W N] [text]` */
+/**
+ * `cowthink` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `cowthink`.
+ * @returns The picture, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_cowthink(['hmm']);
+ * ```
+ */
 export async function builtin_cowthink(args: string[]): Promise<CommandEnvelope> {
-  return cow_run(args, true, 'cowthink');
+  return declaredCommand_run(cowthinkCommand, args);
 }

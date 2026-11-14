@@ -105,6 +105,8 @@ const plainHandlers: Record<string, CommandHandler> = {};
 const helpEntries: Record<string, CommandHelp> = {};
 const holdsEntries: Map<string, readonly SessionPiece[]> = new Map();
 const declarationEntries: Map<string, AnyCommandDeclaration> = new Map();
+/** Each alias of a declared command, to its declaration. */
+const aliasEntries: Map<string, AnyCommandDeclaration> = new Map();
 
 /** The listing order, by kind; empty until set. */
 const listingOrder: { envelope: string[]; plain: string[]; help: string[] } = { envelope: [], plain: [], help: [] };
@@ -160,7 +162,7 @@ function names_ordered(record: Record<string, unknown>, order: string[]): string
  * @throws {Error} When a backend's group names a core command.
  */
 export function commands_register(group: CommandGroup, owner: CommandOwner = 'core'): void {
-  const declared: string[] = (group.declarations ?? []).map((declaration: AnyCommandDeclaration): string => declaration.name);
+  const declared: string[] = (group.declarations ?? []).flatMap((declaration: AnyCommandDeclaration): string[] => [declaration.name, ...declarationAliases_list(declaration)]);
   const names: string[] = [...Object.keys(group.envelope ?? {}), ...Object.keys(group.plain ?? {}), ...declared];
   if (owner === 'backend') {
     const taken: string[] = names.filter((name: string): boolean => coreNames.has(name));
@@ -176,9 +178,21 @@ export function commands_register(group: CommandGroup, owner: CommandOwner = 'co
 }
 
 /**
+ * The other words a declaration answers to.
+ *
+ * @param declaration - The command's declaration.
+ * @returns Its aliases; none for an expression grammar or a command without any.
+ */
+function declarationAliases_list(declaration: AnyCommandDeclaration): readonly string[] {
+  return declaration_isParsed(declaration) ? (declaration.aliases ?? []) : [];
+}
+
+/**
  * Registers one declared command: its name answered by a handler that parses
  * the line against the grammar (an expression grammar's handler takes the
- * words), its help generated from the record, and what it holds.
+ * words), its help generated from the record, and what it holds. Its aliases
+ * are answered by the same handler and hold the same, with no help entry of
+ * their own, so `help` and `/bin` list the name alone.
  *
  * @param declaration - The command's declaration.
  */
@@ -186,16 +200,23 @@ function declaration_register(declaration: AnyCommandDeclaration): void {
   const handler: EnvelopeHandler = declaration_isParsed(declaration)
     ? declaredHandler_make(declaration)
     : (args: string[]): Promise<CommandEnvelope> => declaration.handler(args);
-  declarationEntries.set(declaration.name, declaration);
-  envelopeHandlers[declaration.name] = handler;
   // The plain form delivers what the handler answers, as envelopeHandler_wrap
   // does; the sink is loaded when it runs, so the registry loads no output path.
-  plainHandlers[declaration.name] = async (args: string[]): Promise<void> => {
+  const plain: CommandHandler = async (args: string[]): Promise<void> => {
     const envelope: CommandEnvelope | undefined = await handler(args);
     if (envelope === undefined) return;
     const { envelope_deliver } = await import('./sink.js');
     envelope_deliver(envelope);
   };
+  declarationEntries.set(declaration.name, declaration);
+  envelopeHandlers[declaration.name] = handler;
+  plainHandlers[declaration.name] = plain;
+  for (const alias of declarationAliases_list(declaration)) {
+    aliasEntries.set(alias, declaration);
+    envelopeHandlers[alias] = handler;
+    plainHandlers[alias] = plain;
+    if (declaration.holds !== undefined) holdsEntries.set(alias, declaration.holds);
+  }
   helpEntries[declaration.name] = declaration_isParsed(declaration)
     ? declarationHelp_derive(declaration)
     : {
@@ -210,18 +231,19 @@ function declaration_register(declaration: AnyCommandDeclaration): void {
 }
 
 /**
- * A command's declaration, when it has one.
+ * A command's declaration, when it has one, by its name or an alias.
  *
- * @param name - The command name.
+ * @param name - The command name, or an alias of it (`users`).
  * @returns The declaration, or undefined for a command not yet declared in one record.
  *
  * @example
  * ```ts
  * commandDeclaration_get('ls')?.grammar;
+ * commandDeclaration_get('users')?.name; // 'user'
  * ```
  */
 export function commandDeclaration_get(name: string): AnyCommandDeclaration | undefined {
-  return declarationEntries.get(name);
+  return declarationEntries.get(name) ?? aliasEntries.get(name);
 }
 
 /**

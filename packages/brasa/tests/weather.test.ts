@@ -12,8 +12,10 @@ cuminMock_install(() => ({
   envelope_error: (rendered: string) => ({ status: 'error', rendered }),
 }));
 
-const { builtin_weather, compass_convertFromDegrees, condition_resolve, report_render, weatherArgs_parse } =
+const { builtin_weather, compass_convertFromDegrees, condition_resolve, report_render, weatherCommand } =
   await import('../src/builtins/sys/weather.js');
+const { commandLine_parse } = await import('../src/core/commandParse.js');
+const { shellWords_tokenize } = await import('../src/lib/parser.js');
 
 /** A geocoder answer for Boston, as Open-Meteo gives it. */
 const GEOCODE_BOSTON = {
@@ -42,23 +44,36 @@ function fetch_stub(answers: Record<string, unknown>, asked: string[] = []): Wea
   };
 }
 
-describe('weatherArgs_parse', () => {
-  it('asks about Boston in metric with no words', () => {
-    expect(weatherArgs_parse([])).toEqual({ place: 'Boston', units: 'metric', days: 3 });
+/**
+ * Parses a weather line against its declaration.
+ *
+ * @param line - The words after `weather`.
+ * @returns The place, units and days it parses to, or the refusal.
+ */
+async function line_parse(line: string): Promise<{ place: string[]; units: string | undefined; days: number | undefined } | string> {
+  const parsed = await commandLine_parse(weatherCommand, shellWords_tokenize(line));
+  if (!parsed.ok) return parsed.refusal;
+  return { place: parsed.args.operands['place'] as string[], units: parsed.args.options['units'] as string | undefined, days: parsed.args.options['days'] as number | undefined };
+}
+
+describe('the weather line', () => {
+  it('has no place, units or days with no words', async () => {
+    expect(await line_parse('')).toEqual({ place: [], units: undefined, days: undefined });
   });
-  it('takes a place in several words, and the units and day flags', () => {
-    expect(weatherArgs_parse(['Cape', 'Town', '-u', 'imperial', '-d', '7'])).toEqual({ place: 'Cape Town', units: 'imperial', days: 7 });
-    expect(weatherArgs_parse(['--units=imperial', '--days', '1', 'Paris'])).toEqual({ place: 'Paris', units: 'imperial', days: 1 });
-    expect(weatherArgs_parse(['--units', 'metric'])).toEqual({ place: 'Boston', units: 'metric', days: 3 });
+  it('takes a place in several words, and the units and day flags', async () => {
+    expect(await line_parse('Cape Town -u imperial -d 7')).toEqual({ place: ['Cape', 'Town'], units: 'imperial', days: 7 });
+    expect(await line_parse('--units=imperial --days 1 Paris')).toEqual({ place: ['Paris'], units: 'imperial', days: 1 });
+    expect(await line_parse('--units metric')).toEqual({ place: [], units: 'metric', days: undefined });
   });
-  it('refuses an unknown flag by name, a bad unit system, and a bad day count', () => {
-    expect(weatherArgs_parse(['--celsius'])).toMatch(/unknown option '--celsius'/);
-    expect(weatherArgs_parse(['--units', 'kelvin'])).toMatch(/--units takes metric or imperial, not 'kelvin'/);
-    expect(weatherArgs_parse(['--units'])).toMatch(/--units takes metric or imperial/);
-    expect(weatherArgs_parse(['-d', 'lots'])).toMatch(/-d takes a number of days/);
-    expect(weatherArgs_parse(['-d', '40'])).toMatch(/1 to 16/);
+  it('refuses an unknown flag by name, a bad unit system, and a bad day count', async () => {
+    expect(await line_parse('--celsius')).toMatch(/unrecognized option '--celsius'/);
+    expect(await line_parse('--units kelvin')).toMatch(/kelvin/);
+    expect(await line_parse('--units')).toMatch(/wants a value/);
+    expect(await line_parse('-d lots')).toMatch(/not a whole number/);
+    expect(await line_parse('-d 40')).toMatch(/40/);
   });
 });
+
 
 describe('condition_resolve and compass_convertFromDegrees', () => {
   it('words the WMO codes and says an unknown one by number', () => {

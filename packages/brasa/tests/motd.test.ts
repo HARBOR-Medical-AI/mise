@@ -15,7 +15,7 @@ cuminMock_install(() => ({
   procCache_get: () => mockCache,
   envelope_ok: (rendered: string, model?: unknown) =>
     model === undefined ? { status: 'ok', rendered } : { status: 'ok', rendered, model },
-  envelope_error: (rendered: string) => ({ status: 'error', rendered }),
+  envelope_error: (rendered: string, _errors?: unknown, renderedErr?: string) => ({ status: 'error', rendered, renderedErr }),
 }));
 
 const { builtin_motd, motd_gather, motd_render } = await import('../src/builtins/sys/motd.js');
@@ -100,6 +100,6 @@ describe('builtin_motd', () => {
   it('says so when nobody is connected, and refuses a flag by name', async () => {
     mockContext.mockResolvedValue({ user: null, URL: null });
     expect((await builtin_motd([])).rendered).toMatch(/not connected/);
-    expect((await builtin_motd(['--brief'])).rendered).toMatch(/unknown option '--brief'/);
+    expect(((await builtin_motd(['--brief'])) as { renderedErr?: string }).renderedErr).toMatch(/unrecognized option '--brief'/);
   });
 });

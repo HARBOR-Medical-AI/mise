@@ -33,7 +33,7 @@ describe('the trek command', () => {
   it('refuses an unknown flag by name', async () => {
     const refused = await builtin_trek(['--warp']);
     expect(refused.status).toBe('error');
-    expect((refused as { renderedErr?: string }).renderedErr).toContain("unknown option '--warp'");
+    expect((refused as { renderedErr?: string }).renderedErr).toContain("unrecognized option '--warp'");
     expect(((await builtin_trek(['extra'])) as { renderedErr?: string }).renderedErr).toContain('usage: trek');
   });
 

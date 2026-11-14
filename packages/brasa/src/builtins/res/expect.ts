@@ -17,14 +17,30 @@
  * The grammar, the polling and the verdict are the core's, and so is `path`
  * (`exists`, `count`). Everything else a claim can be about belongs to a
  * backend's world, and the backend registers it (`Backend.expectSubjects`):
- * this file names no backend.
+ * this file names no backend. Declared in one record (`expectCommand`).
+ *
+ * Key components:
+ * - expectCommand: the declaration.
+ * - builtin_expect: the declaration run over words already split.
+ * - claim_holds: whether a reading meets a comparison.
+ * - expectSubjects_get: every subject this session can make claims about.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_expect(['path', '~/results', 'count', 'gt', '0', '--within', '20m']);
+ * ```
+ *
+ * Dependencies: the session's filesystem for `path`; the backend's
+ * subjects; the duration reader `--within` shares with `play --pace`.
  *
  * @module
  */
 import chalk from 'chalk';
 import path from 'path';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
-import { commandArgs_process, ParsedArgs, path_resolve } from '../utils.js';
+import { path_resolve } from '../utils.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import { duration_parse } from '../../lib/duration.js';
 
 export { duration_parse };
@@ -253,17 +269,90 @@ function claim_render(parts: string[]): string {
 }
 
 /**
- * Builtin handler for the `expect` command.
+ * What an `expect` line may hold. The claim's words after the subject depend
+ * on the subject, which the backend registers, so they are read here rather
+ * than declared: a target when the subject names one, the property and its
+ * own words, then the comparison and the value.
+ */
+const EXPECT_GRAMMAR = {
+  operands: [
+    { name: 'subject', kind: 'word', optional: true, summary: 'What the claim is about: path, and the subjects the backend adds' },
+    { name: 'claim', kind: 'word', optional: true, repeat: true, summary: '[<target>] <property> [<predicate> <value>]' },
+  ],
+  options: {
+    within: { long: 'within', summary: 'Keep asking until the claim holds or the time is up (30s, 20m, 2h)', value: { name: 'duration', kind: 'word' } },
+    matching: { long: 'matching', summary: 'Narrow a count to names matching a shell pattern', value: { name: 'glob', kind: 'word' } },
+    deep: { long: 'deep', summary: 'Count beneath the folder too' },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * `expect <subject> [<target>] <property> [<predicate> <value>] [--within <duration>]`: the declaration.
  *
- * @param args - Parsed command arguments.
- * @returns An ok envelope when the claim holds, an error envelope when it does not.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [expectCommand] });
+ * ```
+ */
+export const expectCommand = command_declare({
+  name: 'expect',
+  grammar: EXPECT_GRAMMAR,
+  help: {
+    summary: 'State a claim about the session, and refuse when it does not hold',
+    description: 'A claim the session checks: it holds, or the line fails, non-zero, saying what it wanted and what it got. The core answers path (path <p> exists: whether a path is there; path <p> count [--matching <glob>]: how many things a folder holds); the session\'s backend adds the subjects of its own world, and expect with no words names every subject this session has, with their properties. The comparisons are eq, ne, gt, gte, lt, lte, contains, notContains and matches.',
+    category: 'Workflows',
+    examples: [
+      'expect path ~/results exists',
+      'expect path ~/results count --matching "*.nii*" --deep gt 0',
+    ],
+  },
+  handler: async (args: CommandArguments<typeof EXPECT_GRAMMAR>): Promise<CommandEnvelope> => expect_run({
+    subject: args.operands.subject,
+    words: args.operands.claim,
+    within: args.options.within,
+    matching: args.options.matching,
+    deep: args.options.deep,
+  }),
+});
+
+/**
+ * `expect` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `expect`.
+ * @returns An ok envelope when the claim holds, an error envelope when it does not or the line is refused.
+ *
+ * @example
+ * ```ts
+ * await builtin_expect(['path', '/here', 'exists']);
+ * ```
  */
 export async function builtin_expect(args: string[]): Promise<CommandEnvelope> {
-  // `--deep` carries no value: undeclared, the parser hands it the next
-  // operand — which is the COMPARISON — and the claim loses its predicate.
-  const parsed: ParsedArgs = commandArgs_process(args, { booleanLongOptions: ['deep'] });
-  const operands: string[] = parsed._;
-  const subject: string | undefined = operands[0];
+  return declaredCommand_run(expectCommand, args);
+}
+
+/** A claim as the line made it, before its subject reads it. */
+interface ExpectClaim {
+  /** What it is about; absent, the line named no subject. */
+  readonly subject: string | undefined;
+  /** The words after the subject. */
+  readonly words: readonly string[];
+  /** How long to keep asking, as typed. */
+  readonly within: string | undefined;
+  /** The glob narrowing a count. */
+  readonly matching: string | undefined;
+  /** Whether a count reaches beneath the folder. */
+  readonly deep: boolean;
+}
+
+/**
+ * Checks a claim, asking again until it holds or `--within` runs out.
+ *
+ * @param asked - The claim as the line made it.
+ * @returns An ok envelope when the claim holds, an error envelope when it does not.
+ */
+async function expect_run(asked: ExpectClaim): Promise<CommandEnvelope> {
+  const operands: string[] = [...asked.words];
+  const subject: string | undefined = asked.subject;
   const subjects: Map<string, SubjectEntry> = expectSubjects_get();
   const names: string = [...subjects.keys()].join(', ');
 
@@ -282,9 +371,9 @@ export async function builtin_expect(args: string[]): Promise<CommandEnvelope> {
   }
 
   // A subject that is one thing (`gather`: there is one cohort) names nothing.
-  const target: string | undefined = entry.named ? operands[1] : undefined;
-  const property: string | undefined = entry.named ? operands[2] : operands[1];
-  const rest: string[] = entry.named ? operands.slice(3) : operands.slice(2);
+  const target: string | undefined = entry.named ? operands[0] : undefined;
+  const property: string | undefined = entry.named ? operands[1] : operands[0];
+  const rest: string[] = entry.named ? operands.slice(2) : operands.slice(1);
   const properties: string = [...entry.properties.keys()].join(', ');
 
   if (property === undefined) {
@@ -308,11 +397,11 @@ export async function builtin_expect(args: string[]): Promise<CommandEnvelope> {
   }
 
   let deadlineMs: number = 0;
-  if (typeof parsed.within === 'string') {
-    const parsedWait: number | null = duration_parse(parsed.within);
+  if (asked.within !== undefined) {
+    const parsedWait: number | null = duration_parse(asked.within);
     if (parsedWait === null) {
       exitCode_set(1);
-      return envelope_error('', undefined, `${chalk.red(`expect: --within takes a duration such as 30s, 20m or 2h, not "${parsed.within}".`)}\n`);
+      return envelope_error('', undefined, `${chalk.red(`expect: --within takes a duration such as 30s, 20m or 2h, not "${asked.within}".`)}\n`);
     }
     deadlineMs = parsedWait;
   }
@@ -320,16 +409,16 @@ export async function builtin_expect(args: string[]): Promise<CommandEnvelope> {
   // The claim is printed as it was MADE, narrowing included: a ✓ reading
   // `count gt 0` for a claim that was about `*.nii*` says the wrong thing
   // held, and a battery is read by people who were not there.
-  const narrowing: string = matching_get(parsed) === undefined ? '' : `--matching '${matching_get(parsed)}'`;
+  const matching: string | undefined = asked.matching;
+  const narrowing: string = matching === undefined ? '' : `--matching '${matching}'`;
   const claim: string = claim_render([
     subject, target ?? '', property, ...words, narrowing,
-    parsed.deep === true ? '--deep' : '', predicate, wanted,
+    asked.deep ? '--deep' : '', predicate, wanted,
   ]);
   const started: number = Date.now();
   if (deadlineMs > 0) commandCancellation_enable();
   const signal: AbortSignal | undefined = deadlineMs > 0 ? commandCancellation_signalGet() : undefined;
 
-  const matching: string | undefined = matching_get(parsed);
   let reading: ExpectReading = { got: null };
   let outcome: { held: boolean } | { refusal: string } = { held: false };
 
@@ -339,7 +428,7 @@ export async function builtin_expect(args: string[]): Promise<CommandEnvelope> {
       property,
       words,
       ...(matching !== undefined ? { matching } : {}),
-      deep: parsed.deep === true,
+      deep: asked.deep,
     });
     if (reading.got !== null) {
       outcome = claim_holds(reading.got, predicate, wanted);
@@ -379,14 +468,4 @@ export async function builtin_expect(args: string[]): Promise<CommandEnvelope> {
   if (refusal !== undefined) lines.push(`    because ${refusal}`);
   if (deadlineMs > 0) lines.push(chalk.gray(`    waited  ${Math.round(waitedMs / 1000)}s of ${Math.round(deadlineMs / 1000)}s`));
   return envelope_error('', undefined, `${lines.join('\n')}\n`, );
-}
-
-/**
- * The glob narrowing a count, when one was given.
- *
- * @param parsed - The parsed arguments.
- * @returns The pattern, or undefined.
- */
-function matching_get(parsed: ParsedArgs): string | undefined {
-  return typeof parsed.matching === 'string' ? parsed.matching : undefined;
 }

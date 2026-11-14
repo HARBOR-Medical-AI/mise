@@ -11,6 +11,8 @@
 import chalk from 'chalk';
 import { text_input } from './stdin.js';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** 24-bit colour whatever the host thinks of its terminal: every surface here renders it. */
 const paint: chalk.Chalk = new chalk.Instance({ level: 3 });
@@ -44,26 +46,68 @@ export function lolcat_paint(text: string, spread: number = LOLCAT_SPREAD, phase
   ).join('\n');
 }
 
-/** `lolcat [-p SPREAD] [-S PHASE] [text]` */
+/** What a `lolcat` line may hold. */
+const LOLCAT_GRAMMAR = {
+  operands: [{ name: 'text', kind: 'word', optional: true, repeat: true, summary: 'The text to paint (default: what is piped in)' }],
+  options: {
+    spread: { short: 'p', summary: 'Characters per rainbow cycle (1 or more)', value: { name: 'SPREAD', kind: 'number', min: 1 } },
+    phase: { short: 'S', summary: 'Where the rainbow starts', value: { name: 'PHASE', kind: 'number' } },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * `lolcat [-p SPREAD] [-S PHASE] [text]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [lolcatCommand] });
+ * ```
+ */
+export const lolcatCommand = command_declare({
+  name: 'lolcat',
+  grammar: LOLCAT_GRAMMAR,
+  help: {
+    summary: 'Text in a rainbow',
+    description: 'Paints each character the next hue along a rainbow, drifting down the lines. -p sets how many characters one cycle spans (24), -S where it starts (random). Reads what is piped in, else the words given.',
+    examples: ['fortune | lolcat', 'figlet ARGUS | lolcat', 'motd | lolcat -p 12'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof LOLCAT_GRAMMAR>): Promise<CommandEnvelope> => lolcat_run(args.operands.text, args.options.spread, args.options.phase),
+});
+
+/**
+ * `lolcat` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `lolcat`.
+ * @returns The painted text, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_lolcat(['-p', '12', 'hello']);
+ * ```
+ */
 export async function builtin_lolcat(args: string[]): Promise<CommandEnvelope> {
-  let spread: number = LOLCAT_SPREAD;
-  let phase: number = Math.floor(Math.random() * 256);
-  const words: string[] = [];
-  for (let i: number = 0; i < args.length; i++) {
-    const flag: string = args[i] as string;
-    if (flag === '-p' || flag === '-S') {
-      const n: number = Number(args[i + 1]);
-      if (!Number.isFinite(n) || (flag === '-p' && n < 1)) return envelope_error('', undefined, `lolcat: ${flag} wants a number${flag === '-p' ? ' of 1 or more' : ''}\n`);
-      if (flag === '-p') spread = n; else phase = n;
-      i++;
-    } else if (flag.startsWith('-') && flag.length > 1) {
-      return envelope_error('', undefined, `lolcat: unknown flag '${flag}' (only -p SPREAD and -S PHASE)\n`);
-    } else {
-      words.push(flag);
-    }
-  }
+  return declaredCommand_run(lolcatCommand, args);
+}
+
+/**
+ * Paints the piped text, else the words, in a rainbow.
+ *
+ * @param words - The words given.
+ * @param spread - Characters per cycle, or undefined for the default.
+ * @param phase - Where the rainbow starts, or undefined for a random start.
+ * @returns The painted text, or a refusal when there is nothing to paint.
+ *
+ * @example
+ * ```ts
+ * await lolcat_run(['hello'], 12, 0);
+ * ```
+ */
+export async function lolcat_run(words: ReadonlyArray<string>, spread: number | undefined, phase: number | undefined): Promise<CommandEnvelope> {
+  const cycle: number = spread ?? LOLCAT_SPREAD;
+  const start: number = phase ?? Math.floor(Math.random() * 256);
   const text: string | null = text_input(words);
   if (text === null) return envelope_error('', undefined, 'lolcat: nothing to paint (pipe text in: fortune | lolcat)\n');
   const said: string = text.replace(/\n$/, '');
-  return envelope_ok(`${lolcat_paint(said, spread, phase)}\n`, { kind: 'games.lolcat', data: { text: said, spread, phase } });
+  return envelope_ok(`${lolcat_paint(said, cycle, start)}\n`, { kind: 'games.lolcat', data: { text: said, spread: cycle, phase: start } });
 }

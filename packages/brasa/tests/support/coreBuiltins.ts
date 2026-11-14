@@ -45,12 +45,16 @@ const CORE_MODULES: ReadonlyArray<[string, string[]]> = [...new Set([...groupSou
 function export_stub(name: string, stubs: Record<string, unknown>): unknown {
   if (stubs[name] !== undefined) return stubs[name];
   const standIn = STAND_IN_MAKERS[name];
-  const builtin: unknown = stubs[`builtin_${name.replace(/Command$/, '')}`];
+  const command: string = COMMAND_NAMES[name] ?? name.replace(/Command$/, '');
+  const builtin: unknown = stubs[`builtin_${command}`];
   if (standIn !== undefined) return standIn((builtin as StandInHandler | undefined) ?? jest.fn());
   // Any other declaration (`echoCommand`) stands in by its name, its words handed to the test's stub.
-  if (/^[a-z]\w*Command$/.test(name)) return wordsStandIn_make(name.replace(/Command$/, ''), (builtin as StandInHandler | undefined) ?? jest.fn());
+  if (/^[a-z]\w*Command$/.test(name)) return wordsStandIn_make(command, (builtin as StandInHandler | undefined) ?? jest.fn());
   return jest.fn();
 }
+
+/** A declaration whose export cannot spell its command's name (`2048` is no identifier). */
+const COMMAND_NAMES: Readonly<Record<string, string>> = { game2048Command: '2048' };
 
 /**
  * Mocks every builtin module the core group imports: a function the test

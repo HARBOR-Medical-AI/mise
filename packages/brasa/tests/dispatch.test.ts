@@ -107,7 +107,6 @@ jest.unstable_mockModule('../src/builtins/res/pipeline.js', () => ({ builtin_pip
 
 const mockExecutePlugin = jest.fn();
 jest.unstable_mockModule('../src/builtins/pluginExecute.js', () => ({ builtin_executePlugin: mockExecutePlugin }));
-jest.unstable_mockModule('../src/builtins/proc.js', () => ({ builtin_proc: jest.fn() }));
 const mockShellWordsExpand = jest.fn(async (words) => Ok(words));
 jest.unstable_mockModule('../src/lib/wildcard.js', () => ({ shellWords_expand: mockShellWordsExpand }));
 

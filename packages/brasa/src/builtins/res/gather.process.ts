@@ -32,50 +32,34 @@ import { cohort_read, cohort_write, cohortFolders_resolve, cohortModel_wrap, typ
 import { ambient_publish } from '../../core/ambient.js';
 import { exitCode_set } from '../../core/handlerRun.js';
 
-/** How `gather process` was asked for. */
-export interface GatherProcessArgs {
+/**
+ * How `gather process` was asked for, as `gather`'s declaration parses it.
+ *
+ * @example
+ * ```ts
+ * const asked: GatherProcessRequest = { name: 'pl-x', title: null, detach: false, forwarded: ['--threshold', '0.5'] };
+ * ```
+ */
+export interface GatherProcessRequest {
   /** The plugin or pipeline, as `/bin` names it. */
-  name: string | null;
+  readonly name: string;
   /** The feed's title, when one is made. */
-  title: string | null;
+  readonly title: string | null;
   /** Whether the line returns at once rather than waiting for the run. */
-  detach: boolean;
+  readonly detach: boolean;
   /** What follows `--`, handed to the run as its own arguments. */
-  forwarded: string[];
-  /** Why the words make no request, when they do not. */
-  error: string | null;
+  readonly forwarded: readonly string[];
 }
 
-/** The usage line a refusal points at. */
-const USAGE: string = 'gather process <plugin|pipeline> [--title T] [--detach] [-- <its arguments>]';
-
 /**
- * Reads the words after `gather process`.
+ * A title as given: trimmed, and refused when nothing is left.
  *
- * @param words - The words, raw.
- * @returns The request, or why it is not one.
+ * @param title - The title as typed, or null for none.
+ * @returns The title, null for none, or the refusal.
  */
-export function gatherProcessArgs_parse(words: ReadonlyArray<string>): GatherProcessArgs {
-  const delimiter: number = words.indexOf('--');
-  const own: ReadonlyArray<string> = delimiter === -1 ? words : words.slice(0, delimiter);
-  const forwarded: string[] = delimiter === -1 ? [] : words.slice(delimiter + 1);
-  const parsed: GatherProcessArgs = { name: null, title: null, detach: false, forwarded, error: null };
-  for (let at: number = 0; at < own.length; at++) {
-    const word: string = own[at] as string;
-    if (word === '--detach') { parsed.detach = true; continue; }
-    if (word === '--title') {
-      const title: string | undefined = own[at + 1];
-      if (title === undefined || title.startsWith('--') || title.trim() === '') { parsed.error ??= '--title needs a title'; continue; }
-      parsed.title = title.trim();
-      at++;
-      continue;
-    }
-    if (word.startsWith('-')) { parsed.error ??= `${word}: unknown option; the run's own arguments go after --`; continue; }
-    if (parsed.name !== null) { parsed.error ??= `one plugin or pipeline at a time; ${word} is a second (its arguments go after --)`; continue; }
-    parsed.name = word;
-  }
-  if (parsed.name === null) parsed.error ??= `name the plugin or pipeline to run over the cohort. Usage: ${USAGE}`;
-  return parsed;
+function title_check(title: string | null): { title: string | null } | { refusal: string } {
+  if (title === null) return { title: null };
+  return title.trim() === '' ? { refusal: '--title needs a title' } : { title: title.trim() };
 }
 
 /**
@@ -147,22 +131,18 @@ async function cohortFeed_ensure(state: GatherState, places: string[], title: st
  * cohort, which is what a later `gather process` runs off and what a
  * surface reads it from.
  *
- * @param words - The words after `gather feed`, raw.
+ * @param titleGiven - The feed's title as `--title` gave it, or null for the cohort's name.
  * @returns The cohort with its feed, and whether the feed was made now; or a refusal.
+ *
+ * @example
+ * ```ts
+ * const made = await cohortFeed_make('sag nifti');
+ * ```
  */
-export async function cohortFeed_make(words: ReadonlyArray<string>): Promise<{ state: GatherState; made: boolean } | string> {
-  let title: string | null = null;
-  for (let at: number = 0; at < words.length; at++) {
-    const word: string = words[at] as string;
-    if (word === '--title') {
-      const given: string | undefined = words[at + 1];
-      if (given === undefined || given.startsWith('--') || given.trim() === '') return '--title needs a title';
-      title = given.trim();
-      at++;
-      continue;
-    }
-    return `${word}: not understood. Usage: gather feed [--title T]`;
-  }
+export async function cohortFeed_make(titleGiven: string | null): Promise<{ state: GatherState; made: boolean } | string> {
+  const checked: { title: string | null } | { refusal: string } = title_check(titleGiven);
+  if ('refusal' in checked) return checked.refusal;
+  const title: string | null = checked.title;
 
   let state: GatherState = await cohortFolders_resolve(await cohort_read());
   if (state.series.length === 0) return 'the cohort is empty; gather add something first';
@@ -191,12 +171,18 @@ export async function cohortFeed_make(words: ReadonlyArray<string>): Promise<{ s
  * `gather process <name> [--title T] [--detach] [-- args]`: runs a plugin or
  * a pipeline once over the whole cohort.
  *
- * @param words - The words after `gather process`, raw.
+ * @param asked - The request, as `gather`'s declaration parsed it.
  * @returns The run's envelope, or a refusal.
+ *
+ * @example
+ * ```ts
+ * await gather_process({ name: 'pl-dcm2niix', title: 'sag nifti', detach: false, forwarded: [] });
+ * ```
  */
-export async function gather_process(words: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const parsed: GatherProcessArgs = gatherProcessArgs_parse(words);
-  if (parsed.error !== null || parsed.name === null) return process_refuse(parsed.error ?? USAGE);
+export async function gather_process(asked: GatherProcessRequest): Promise<CommandEnvelope> {
+  const checked: { title: string | null } | { refusal: string } = title_check(asked.title);
+  if ('refusal' in checked) return process_refuse(checked.refusal);
+  const parsed: GatherProcessRequest = { ...asked, title: checked.title };
   const name: string = parsed.name;
 
   // A series pulled but not yet noted on the cohort is found in CUBE, not

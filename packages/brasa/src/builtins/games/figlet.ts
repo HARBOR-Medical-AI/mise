@@ -10,6 +10,8 @@
  */
 import { text_input } from './stdin.js';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** The face: each glyph five rows, `#` for ink. */
 const FACE: Readonly<Record<string, ReadonlyArray<string>>> = {
@@ -95,19 +97,98 @@ export function figlet_render(text: string, ink: string = '#'): string[] {
   return rows;
 }
 
-async function big_run(args: string[], ink: string, name: string): Promise<CommandEnvelope> {
-  const text: string | null = text_input(args);
+/** The words to set in big letters: what is piped in, else these. */
+const BIG_TEXT = { name: 'text', kind: 'word', optional: true, repeat: true, summary: 'The words to set (default: what is piped in)' } as const;
+
+/** What a `figlet` or `banner` line may hold. */
+const BIG_GRAMMAR = { operands: [BIG_TEXT] } as const satisfies CommandGrammar;
+
+/**
+ * `figlet [text]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [figletCommand] });
+ * ```
+ */
+export const figletCommand = command_declare({
+  name: 'figlet',
+  grammar: BIG_GRAMMAR,
+  help: {
+    summary: 'Big letters, solid',
+    description: 'Sets words in a five-row face of solid blocks. Letters, digits and the punctuation a title needs; lowercase is set as capitals. Reads what is piped in, else the words given.',
+    examples: ['figlet LCARS', 'date +%H:%M | figlet'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof BIG_GRAMMAR>): Promise<CommandEnvelope> => big_run('figlet', args.operands.text, '█'),
+});
+
+/**
+ * `banner [text]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [bannerCommand] });
+ * ```
+ */
+export const bannerCommand = command_declare({
+  name: 'banner',
+  grammar: BIG_GRAMMAR,
+  help: {
+    summary: 'Big letters in #, as banner drew them',
+    description: 'figlet in the face banner used: # for ink.',
+    examples: ['banner ChRIS'],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof BIG_GRAMMAR>): Promise<CommandEnvelope> => big_run('banner', args.operands.text, '#'),
+});
+
+/**
+ * Sets the piped text, else the words, in big letters.
+ *
+ * @param name - The command's name, for its refusal.
+ * @param words - The words given.
+ * @param ink - The character to draw with.
+ * @returns The big letters, or a refusal when there is nothing to set.
+ *
+ * @example
+ * ```ts
+ * await big_run('banner', ['hi'], '#');
+ * ```
+ */
+export async function big_run(name: string, words: ReadonlyArray<string>, ink: string): Promise<CommandEnvelope> {
+  const text: string | null = text_input(words);
   if (text === null) return envelope_error('', undefined, `${name}: nothing to set (give words, or pipe them in)\n`);
   const said: string = text.replace(/\n$/, '');
   return envelope_ok(`${figlet_render(said, ink).join('\n')}\n`, { kind: 'games.figlet', data: { text: said, ink } });
 }
 
-/** `figlet [text]`: big letters, solid. */
+/**
+ * `figlet` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `figlet`.
+ * @returns The big letters, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_figlet(['LCARS']);
+ * ```
+ */
 export async function builtin_figlet(args: string[]): Promise<CommandEnvelope> {
-  return big_run(args, '█', 'figlet');
+  return declaredCommand_run(figletCommand, args);
 }
 
-/** `banner [text]`: big letters in `#`, as banner always drew them. */
+/**
+ * `banner` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `banner`.
+ * @returns The big letters, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_banner(['ChRIS']);
+ * ```
+ */
 export async function builtin_banner(args: string[]): Promise<CommandEnvelope> {
-  return big_run(args, '#', 'banner');
+  return declaredCommand_run(bannerCommand, args);
 }

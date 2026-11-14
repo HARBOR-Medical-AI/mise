@@ -11,6 +11,8 @@ import { surface_get, type SurfacePeer } from '../../core/surface.js';
 import { uptime_words } from './lab.js';
 import { BRAIN } from './cowsay.js';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** Round trips `ping` makes when not told. */
 export const PING_COUNT: number = 3;
@@ -68,18 +70,81 @@ export function ping_summary(samples: PingSample[]): string {
   return out;
 }
 
-/** `ping [-c N]`: round trips to CUBE. */
-export async function builtin_ping(args: string[], fetchFn: PingFetch = (url, init) => fetch(url, init)): Promise<CommandEnvelope> {
-  let count: number = PING_COUNT;
-  for (let i: number = 0; i < args.length; i++) {
-    if (args[i] === '-c') {
-      const n: number = Number(args[i + 1]);
-      if (!Number.isInteger(n) || n < 1) return envelope_error('', undefined, 'ping: -c wants a positive whole number\n');
-      count = Math.min(n, PING_MAX); i++;
-    } else if (args[i] !== 'cube') {
-      return envelope_error('', undefined, `ping: only CUBE is pinged from here (ping [-c N] [cube]); '${args[i]}' is not that\n`);
-    }
-  }
+/** What a `ping` line may hold: how many round trips, and the one place it pings. */
+const PING_GRAMMAR = {
+  operands: [{ name: 'target', kind: 'enum', values: ['cube'], optional: true, summary: 'What to ping: only cube' }],
+  options: {
+    count: { short: 'c', summary: `Round trips to make (default ${PING_COUNT}, at most ${PING_MAX})`, value: { name: 'N', kind: 'int', min: 1 } },
+  },
+} as const satisfies CommandGrammar;
+
+/** The fetch `ping` uses unless handed another. */
+const defaultFetch: PingFetch = (url: string, init: { method: string; signal: AbortSignal }): Promise<{ status: number }> => fetch(url, init);
+
+/**
+ * Declares `ping` over a fetch (a test hands in its own).
+ *
+ * @param fetchFn - The fetch the command round-trips with.
+ * @returns The declaration.
+ *
+ * @example
+ * ```ts
+ * const command = pingCommand_make(fakeFetch);
+ * ```
+ */
+export function pingCommand_make(fetchFn: PingFetch): CommandDeclaration<typeof PING_GRAMMAR> {
+  return command_declare({
+    name: 'ping',
+    grammar: PING_GRAMMAR,
+    help: {
+      summary: 'Round trips to CUBE, timed',
+      description: "Makes N (3) HTTP round trips to the CUBE this session talks to and times each, then sums up as ping does — and adds the average of this session's own calls to CUBE so far. Only CUBE is pinged from here: a hosted session is not a probe for the network it sits on.",
+      examples: ['ping', 'ping -c 10'],
+    },
+    handler: async (args: CommandArguments<typeof PING_GRAMMAR>): Promise<CommandEnvelope> => ping_command(args.options.count, fetchFn),
+  });
+}
+
+/**
+ * `ping [-c N] [cube]`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [pingCommand] });
+ * ```
+ */
+export const pingCommand: CommandDeclaration<typeof PING_GRAMMAR> = pingCommand_make(defaultFetch);
+
+/**
+ * `ping` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `ping`.
+ * @param fetchFn - The fetch to use.
+ * @returns The round trips, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_ping(['-c', '2']);
+ * ```
+ */
+export async function builtin_ping(args: string[], fetchFn: PingFetch = defaultFetch): Promise<CommandEnvelope> {
+  return declaredCommand_run(fetchFn === defaultFetch ? pingCommand : pingCommand_make(fetchFn), args);
+}
+
+/**
+ * Round-trips to the session's CUBE and sums up.
+ *
+ * @param asked - How many round trips were asked for; absent for the default.
+ * @param fetchFn - The fetch to use.
+ * @returns The samples and their summary, or a refusal when not connected.
+ *
+ * @example
+ * ```ts
+ * await ping_command(3, fetch);
+ * ```
+ */
+export async function ping_command(asked: number | undefined, fetchFn: PingFetch): Promise<CommandEnvelope> {
+  const count: number = Math.min(asked ?? PING_COUNT, PING_MAX);
   const url: string | null = await chrisContext.ChRISURL_get();
   if (url === null) return envelope_error('', undefined, 'ping: not connected to a CUBE\n');
   const lines: string[] = [`PING cube (${url})`];
@@ -91,8 +156,54 @@ export async function builtin_ping(args: string[], fetchFn: PingFetch = (url, in
   return envelope_ok(`${lines.join('\n')}\n--- cube ping statistics ---\n${ping_summary(samples)}${recent}\n`, { kind: 'games.ping', data: { url, samples } });
 }
 
-/** `chrisfetch`: the brain beside the session's facts, neofetch style. */
-export async function builtin_chrisfetch(_args: string[]): Promise<CommandEnvelope> {
+/** `chrisfetch` takes nothing. */
+const CHRISFETCH_GRAMMAR = {} as const satisfies CommandGrammar;
+
+/**
+ * `chrisfetch`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [chrisfetchCommand] });
+ * ```
+ */
+export const chrisfetchCommand = command_declare({
+  name: 'chrisfetch',
+  grammar: CHRISFETCH_GRAMMAR,
+  help: {
+    summary: "The brain beside the session's facts, neofetch style",
+    description: "Who you are and where, feeds by scope, jobs run and the failure rate, the index's state, the surfaces attached, the uptime — beside the ChRIS brain. All from what the session already holds: no extra calls.",
+    examples: ['chrisfetch', 'chrisfetch | lolcat'],
+  },
+  handler: async (): Promise<CommandEnvelope> => chrisfetch_run(),
+});
+
+/**
+ * `chrisfetch` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `chrisfetch`: none.
+ * @returns The brain beside the facts, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_chrisfetch([]);
+ * ```
+ */
+export async function builtin_chrisfetch(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(chrisfetchCommand, args);
+}
+
+/**
+ * The brain beside the session's facts, neofetch style.
+ *
+ * @returns The brain and the facts.
+ *
+ * @example
+ * ```ts
+ * await chrisfetch_run();
+ * ```
+ */
+export async function chrisfetch_run(): Promise<CommandEnvelope> {
   const user: string = (await chrisContext.ChRISuser_get()) ?? '?';
   const url: string | null = await chrisContext.ChRISURL_get();
   const host: string = url === null ? '(not connected)' : url.replace(/^https?:\/\//, '').replace(/\/api\/v1\/?$/, '');

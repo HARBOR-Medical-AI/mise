@@ -60,6 +60,8 @@ const { BinVfsProvider } = await import('../src/chris/binMount.js');
 const { chrisHelp_install, everyVerb_install } = await import('./support/chrisHelp.js');
 chrisHelp_install();
 everyVerb_install();
+// `fortune`, on the shelf, is declared: its help is its declaration's.
+(await import('../src/core/commandRegistry.js')).commands_register({ declarations: [(await import('../src/builtins/sys/fortune.js')).fortuneCommand] });
 const binRead = (path: string) => new BinVfsProvider().read(path);
 
 beforeEach((): void => {

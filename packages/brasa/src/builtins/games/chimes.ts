@@ -13,6 +13,8 @@
 import chalk from 'chalk';
 import { ambient_publish } from '../../core/ambient.js';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /** A chime waiting its turn. */
 export interface Chime {
@@ -118,21 +120,94 @@ function chimes_render(): string {
   return list.map((c: Chime): string => `${String(c.id).padStart(3)}  ${c.source.padEnd(5)}  in ${span_words(c.at - Date.now()).padEnd(8)}  ${c.text}`).join('\n') + '\n';
 }
 
-/** `timer <duration> [words] | timer | timer cancel [id|all]` */
+/** What a `timer` line may hold: a duration and words, or `cancel`. */
+const TIMER_GRAMMAR = {
+  operands: [
+    { name: 'duration', kind: 'word', optional: true, summary: 'How long: 90s, 5m, 1h30m, 2:30, or a bare number of minutes' },
+    { name: 'words', kind: 'word', optional: true, repeat: true, summary: 'What the chime says' },
+  ],
+  subcommands: {
+    cancel: {
+      summary: 'End the waiting timers, one by id or all of them',
+      operands: [{ name: 'which', kind: 'word', optional: true, summary: 'A chime id, or all (default: every timer)' }],
+    },
+  },
+  bare: { summary: 'Set a chime after a duration, or list the chimes waiting' },
+} as const satisfies CommandGrammar;
+
+/**
+ * `timer`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [timerCommand] });
+ * ```
+ */
+export const timerCommand = command_declare({
+  name: 'timer',
+  grammar: TIMER_GRAMMAR,
+  help: {
+    summary: 'A chime after a while: timer 5m tea',
+    description: "Sets a chime for later — 90s, 5m, 1h30m, 2:30, or a bare number of minutes — with the words to say when it sounds. The chime reaches every surface on the session: ARGUS notes it in the console and speaks it, a remote chell prints it. Nothing waits: the console is yours meanwhile. Bare timer lists the chimes waiting; timer cancel ends them. A chime lives as long as the session's process.",
+    examples: ['timer 5m tea', 'timer 25m pomodoro over', 'timer 1:30', 'timer', 'timer cancel 2'],
+  },
+  handler: async (args: CommandArguments<typeof TIMER_GRAMMAR>): Promise<CommandEnvelope> =>
+    args.subcommand === 'cancel' ? timerCancel_run(args.operands.which) : timer_run(args.operands.duration, args.operands.words),
+});
+
+/**
+ * `timer` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `timer`.
+ * @returns The chime set or listed, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_timer(['5m', 'tea']);
+ * ```
+ */
 export async function builtin_timer(args: string[]): Promise<CommandEnvelope> {
-  if (args.length === 0) return envelope_ok(chimes_render(), { kind: 'games.chimes', data: { chimes: chimes_list() } });
-  if (args[0] === 'cancel') {
-    const which: number | 'timer' | 'all' = args[1] === undefined ? 'timer' : args[1] === 'all' ? 'all' : Number(args[1]);
-    if (typeof which === 'number' && !Number.isInteger(which)) return envelope_error('', undefined, 'timer: cancel wants a chime id, or all\n');
-    const n: number = chimes_cancel(which);
-    return envelope_ok(`${n} chime${n === 1 ? '' : 's'} cancelled\n`, { kind: 'games.chimes', data: { cancelled: n } });
-  }
-  const ms: number | null = duration_parse(args[0] as string);
-  if (ms === null || ms <= 0) return envelope_error('', undefined, `timer: '${args[0]}' is not a duration (try 90s, 5m, 1h30m, 2:30)\n`);
+  return declaredCommand_run(timerCommand, args);
+}
+
+/**
+ * Ends the waiting timers.
+ *
+ * @param which - A chime id, `all`, or nothing for every timer.
+ * @returns How many were cancelled, or a refusal for a word that is neither an id nor `all`.
+ *
+ * @example
+ * ```ts
+ * await timerCancel_run('all');
+ * ```
+ */
+export async function timerCancel_run(which: string | undefined): Promise<CommandEnvelope> {
+  const target: number | 'timer' | 'all' = which === undefined ? 'timer' : which === 'all' ? 'all' : Number(which);
+  if (typeof target === 'number' && !Number.isInteger(target)) return envelope_error('', undefined, 'timer: cancel wants a chime id, or all\n');
+  const n: number = chimes_cancel(target);
+  return envelope_ok(`${n} chime${n === 1 ? '' : 's'} cancelled\n`, { kind: 'games.chimes', data: { cancelled: n } });
+}
+
+/**
+ * Sets a timer, or lists the chimes waiting when no duration is given.
+ *
+ * @param duration - How long, as `duration_parse` reads it; absent to list.
+ * @param words - What the chime says; empty for the default.
+ * @returns The chime set or the list, or a refusal for a bad duration.
+ *
+ * @example
+ * ```ts
+ * await timer_run('5m', ['tea']);
+ * ```
+ */
+export async function timer_run(duration: string | undefined, words: readonly string[]): Promise<CommandEnvelope> {
+  if (duration === undefined) return envelope_ok(chimes_render(), { kind: 'games.chimes', data: { chimes: chimes_list() } });
+  const ms: number | null = duration_parse(duration);
+  if (ms === null || ms <= 0) return envelope_error('', undefined, `timer: '${duration}' is not a duration (try 90s, 5m, 1h30m, 2:30)\n`);
   if (ms > CHIME_MAX_MS) return envelope_error('', undefined, 'timer: a day is the most a timer waits\n');
-  const words: string = args.slice(1).join(' ') || `timer: ${span_words(ms)} is up`;
-  const chime: Chime = chime_set(ms, words, 'timer');
-  return envelope_ok(`timer ${chime.id} set: ${span_words(ms)} from now (${new Date(chime.at).toTimeString().slice(0, 8)}) — ${words}\n`, { kind: 'games.chimes', data: { set: chime } });
+  const said: string = words.join(' ') || `timer: ${span_words(ms)} is up`;
+  const chime: Chime = chime_set(ms, said, 'timer');
+  return envelope_ok(`timer ${chime.id} set: ${span_words(ms)} from now (${new Date(chime.at).toTimeString().slice(0, 8)}) — ${said}\n`, { kind: 'games.chimes', data: { set: chime } });
 }
 
 /** Reads `+hhmm` (from now) or `hhmm` (a clock time, today or tomorrow) as a delay. */
@@ -147,20 +222,83 @@ export function leave_delay(text: string, now: Date = new Date()): number | null
   return at.getTime() - now.getTime();
 }
 
-/** `leave [+hhmm | hhmm] | leave cancel` — BSD's leave: a word five minutes before, one at the time, and one after. */
+/** What a `leave` line may hold: a time, or `cancel`. */
+const LEAVE_GRAMMAR = {
+  operands: [{ name: 'time', kind: 'word', optional: true, summary: '+hhmm from now, or hhmm as a clock time' }],
+  subcommands: { cancel: { summary: 'Forget the leave' } },
+  bare: { summary: 'Say when you leave, or set it to a time' },
+} as const satisfies CommandGrammar;
+
+/**
+ * `leave`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [leaveCommand] });
+ * ```
+ */
+export const leaveCommand = command_declare({
+  name: 'leave',
+  grammar: LEAVE_GRAMMAR,
+  help: {
+    summary: 'A word when it is time to go home: leave +0030',
+    description: "BSD's leave: tell it when you must leave — +hhmm from now, or a clock time — and it says so five minutes before, at the time, and a minute after. Bare leave says when; leave cancel forgets it.",
+    examples: ['leave +0030', 'leave 1730', 'leave', 'leave cancel'],
+  },
+  handler: async (args: CommandArguments<typeof LEAVE_GRAMMAR>): Promise<CommandEnvelope> =>
+    args.subcommand === 'cancel' ? leaveCancel_run() : leave_run(args.operands.time),
+});
+
+/**
+ * `leave` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `leave`.
+ * @returns The alarm set, shown or cancelled, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_leave(['+0030']);
+ * ```
+ */
 export async function builtin_leave(args: string[]): Promise<CommandEnvelope> {
-  if (args.length === 0) {
+  return declaredCommand_run(leaveCommand, args);
+}
+
+/**
+ * Forgets the leave.
+ *
+ * @returns How many chimes were cancelled.
+ *
+ * @example
+ * ```ts
+ * await leaveCancel_run();
+ * ```
+ */
+export async function leaveCancel_run(): Promise<CommandEnvelope> {
+  const n: number = chimes_cancel('leave');
+  return envelope_ok(`${n === 0 ? 'no leave was set' : 'leave cancelled'}\n`, { kind: 'games.chimes', data: { cancelled: n } });
+}
+
+/**
+ * Says when the operator leaves, or sets it to a time.
+ *
+ * @param time - `+hhmm` or `hhmm`; absent to say when.
+ * @returns The alarm, or a refusal for a word that is not a time.
+ *
+ * @example
+ * ```ts
+ * await leave_run('1730');
+ * ```
+ */
+export async function leave_run(time: string | undefined): Promise<CommandEnvelope> {
+  if (time === undefined) {
     const mine: Chime[] = chimes_list().filter((c: Chime): boolean => c.source === 'leave');
     if (mine.length === 0) return envelope_ok(`${chalk.gray('no leave set (leave +0030, or leave 1730)')}\n`, { kind: 'games.chimes', data: { chimes: [] } });
     const last: Chime = mine[mine.length - 1] as Chime;
     return envelope_ok(`leaving at ${new Date(last.at - 60_000).toTimeString().slice(0, 5)} — in ${span_words(last.at - 60_000 - Date.now())}\n`, { kind: 'games.chimes', data: { chimes: mine } });
   }
-  if (args[0] === 'cancel') {
-    const n: number = chimes_cancel('leave');
-    return envelope_ok(`${n === 0 ? 'no leave was set' : 'leave cancelled'}\n`, { kind: 'games.chimes', data: { cancelled: n } });
-  }
-  const delay: number | null = leave_delay(args[0] as string);
-  if (delay === null) return envelope_error('', undefined, `leave: '${args[0]}' is not a time (leave +hhmm from now, or leave hhmm)\n`);
+  const delay: number | null = leave_delay(time);
+  if (delay === null) return envelope_error('', undefined, `leave: '${time}' is not a time (leave +hhmm from now, or leave hhmm)\n`);
   chimes_cancel('leave');
   const at: Date = new Date(Date.now() + delay);
   if (delay > 5 * 60_000) chime_set(delay - 5 * 60_000, 'You have to leave in 5 minutes.', 'leave');
@@ -192,9 +330,63 @@ const clock_words = (ms: number): string => {
   return `${h > 0 ? `${h}:` : ''}${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${tenths}`;
 };
 
-/** `stopwatch [start|stop|lap|reset]` — bare, it shows the time. */
+/** What a `stopwatch` line may hold: one of its four words, or none to show the time. */
+const STOPWATCH_GRAMMAR = {
+  subcommands: {
+    start: { summary: 'Start the stopwatch, or resume it' },
+    stop: { summary: 'Stop it, keeping the time' },
+    lap: { summary: 'Mark a lap' },
+    reset: { summary: 'Stop it and clear the time and the laps' },
+  },
+  bare: { summary: 'Show the time and the laps' },
+} as const satisfies CommandGrammar;
+
+/**
+ * `stopwatch`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [stopwatchCommand] });
+ * ```
+ */
+export const stopwatchCommand = command_declare({
+  name: 'stopwatch',
+  grammar: STOPWATCH_GRAMMAR,
+  help: {
+    summary: 'A stopwatch, with laps',
+    description: 'One stopwatch per session: start, stop (and start again to resume), lap, reset. Bare stopwatch shows the time and the laps.',
+    examples: ['stopwatch start', 'stopwatch lap', 'stopwatch', 'stopwatch stop'],
+  },
+  handler: async (args: CommandArguments<typeof STOPWATCH_GRAMMAR>): Promise<CommandEnvelope> => stopwatch_run(args.subcommand ?? 'show'),
+});
+
+/**
+ * `stopwatch` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `stopwatch`.
+ * @returns The stopwatch's state, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_stopwatch(['start']);
+ * ```
+ */
 export async function builtin_stopwatch(args: string[]): Promise<CommandEnvelope> {
-  const verb: string = args[0] ?? 'show';
+  return declaredCommand_run(stopwatchCommand, args);
+}
+
+/**
+ * Does one thing to the session's stopwatch.
+ *
+ * @param verb - `start`, `stop`, `lap`, `reset`, or `show` for the time.
+ * @returns The stopwatch's state, or a refusal for a lap while it is stopped.
+ *
+ * @example
+ * ```ts
+ * await stopwatch_run('lap');
+ * ```
+ */
+export async function stopwatch_run(verb: 'start' | 'stop' | 'lap' | 'reset' | 'show'): Promise<CommandEnvelope> {
   const now: number = Date.now();
   const running: boolean = watch.startedAt !== null;
   if (verb === 'start') {
@@ -219,7 +411,6 @@ export async function builtin_stopwatch(args: string[]): Promise<CommandEnvelope
     stopwatch_reset();
     return envelope_ok('stopwatch reset\n', { kind: 'games.stopwatch', data: { elapsedMs: 0, running: false } });
   }
-  if (verb !== 'show') return envelope_error('', undefined, `stopwatch: unknown word '${verb}' (start, stop, lap, reset)\n`);
   const elapsed: number = stopwatch_elapsed(now);
   const laps: string = watch.laps.map((l: number, i: number): string => `  lap ${i + 1}  ${clock_words(l - (watch.laps[i - 1] ?? 0))}`).join('\n');
   return envelope_ok(`${clock_words(elapsed)}${running ? ' (running)' : watch.accumulated > 0 ? ' (stopped)' : ''}\n${laps ? `${laps}\n` : ''}`, { kind: 'games.stopwatch', data: { elapsedMs: elapsed, laps: watch.laps, running } });
