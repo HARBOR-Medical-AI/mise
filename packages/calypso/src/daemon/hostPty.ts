@@ -17,6 +17,11 @@
  * The pty comes from node-pty, through the same `PtySpawn` the daemon's
  * terminals use (terminals.ts).
  *
+ * The program leads a session of its own whose parent, the daemon, is
+ * outside it, so its process group is orphaned: POSIX has job-control stops
+ * (Ctrl-Z, nvim's `:suspend`, `kill -TSTP`) do nothing there. A program
+ * cannot stop and hold the session with nothing to resume it.
+ *
  * @module
  */
 import { HOST_KILL_GRACE_MS } from './hostControl.js';

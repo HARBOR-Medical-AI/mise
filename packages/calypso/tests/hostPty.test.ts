@@ -141,6 +141,31 @@ describe('hostPty_start', () => {
     expect(out).toContain('got hello');
   }, 15000);
 
+  it('on a real pty Ctrl-Z and a program suspending itself stop nothing: the line goes on', async () => {
+    // The pty's process group has no parent in its session, so POSIX has
+    // job-control stops do nothing there. A stopped program would hold the
+    // session with nothing to resume it; this holds that it cannot happen.
+    const spawn: PtySpawn | null = await ptySpawn_load();
+    if (spawn === null) return;
+    let out: string = '';
+    let step: number = 0;
+    const run = hostPty_start(spawn, 'echo ready; read x; kill -TSTP $$; echo "got $x"; read y; echo "then $y"', {
+      terminal: { term: 'xterm', cols: 80, rows: 24 },
+      cwd: process.cwd(),
+      env: process.env,
+      data: (chunk: string): void => {
+        out += chunk;
+        if (step === 0 && out.includes('ready')) { step = 1; run.write('\x1a'); setTimeout((): void => run.write('one\r'), 300); }
+        if (step === 1 && out.includes('got one')) { step = 2; run.write('two\r'); }
+      },
+    });
+    const ended: number | string = await Promise.race([run.done, new Promise<string>((resolve) => setTimeout(() => resolve('held'), 8000))]);
+    if (ended === 'held') run.stop();
+    expect(ended).toBe(0);
+    expect(out).toContain('got one');
+    expect(out).toContain('then two');
+  }, 15000);
+
   it('on a real pty a cancel ends the program and everything it started', async () => {
     const spawn: PtySpawn | null = await ptySpawn_load();
     if (spawn === null) return;
