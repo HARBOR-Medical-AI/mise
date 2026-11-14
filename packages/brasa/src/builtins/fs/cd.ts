@@ -1,8 +1,29 @@
 /**
- * @file Builtin cd command.
- * Changes the current working directory, reported as a command envelope.
+ * @file `cd`: changes where the session stands in ChRIS's filesystem (CFS),
+ * the /proc and /net projections included.
+ *
+ * Declared in one record (`cdCommand`): one path, which may be a wildcard
+ * that matches one folder; none goes home, `-` goes back.
+ *
+ * Key components:
+ * - cdCommand: the declaration.
+ * - builtin_cd: the declaration run over words already split.
+ * - cd_run: the typed core behind both, and the typed API.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_cd(['~/feeds']);
+ * await cd_run({ path: '-' });
+ * ```
+ *
+ * Dependencies: the session's cwd, the filesystem's providers and listing
+ * cache, and the backend's way of entering a folder.
+ *
+ * @module
  */
 import chalk from 'chalk';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 import path from 'path';
 import { session } from '../../session/index.js';
 import { path_resolve, error_stripDebugPrefix } from '../utils.js';
@@ -188,15 +209,50 @@ async function folderEntry_resolveByListing(logicalPath: string): Promise<Folder
   return { cwd: null, rendered: '', renderedErr: '' };
 }
 
+/** What a `cd` line may hold. */
+const CD_GRAMMAR = {
+  operands: [
+    { name: 'path', kind: 'cfsPath', optional: true, glob: true, summary: 'Where to go: a folder, .., ~, or - for the last; home when none is given' },
+  ],
+} as const satisfies CommandGrammar;
+
 /**
- * Changes the current working directory in the ChRIS filesystem context.
- * Validates the existence of the target path before setting it.
+ * `cd [path]`: the declaration.
  *
- * @param args - An array containing the target path as the first element.
- * @returns An envelope carrying the new working directory on success.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [cdCommand] });
+ * ```
+ */
+export const cdCommand = command_declare({
+  name: 'cd',
+  grammar: CD_GRAMMAR,
+  help: {
+    summary: 'Change current working directory',
+    description: "Moves the session to a folder of ChRIS's filesystem, the /proc and /net projections included. A link is entered at its target. With no path cd goes home; cd - goes back to the folder before.",
+    category: 'Navigation',
+    posix: { group: 'Files', differs: 'moves in CFS, including /proc and /net' },
+    examples: [
+      'cd /home/user/data    # Absolute path',
+      'cd experiments        # Relative path',
+      'cd ..                 # Parent directory',
+      'cd ~                  # Home directory',
+      'cd -                  # The folder before',
+      'cd                    # Home directory',
+    ],
+  },
+  holds: ['cwd'],
+  handler: async (args: CommandArguments<typeof CD_GRAMMAR>): Promise<CommandEnvelope> => cd_run({ path: args.operands.path }),
+});
+
+/**
+ * `cd` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `cd`.
+ * @returns The new working directory, or the refusal of a bad line.
  */
 export async function builtin_cd(args: string[]): Promise<CommandEnvelope> {
-  return cd_run({ path: args.length > 0 ? args.join(' ') : undefined });
+  return declaredCommand_run(cdCommand, args);
 }
 
 /** Typed invocation options for cd. */
@@ -217,7 +273,7 @@ export async function cd_run(options: CdOptions): Promise<CommandEnvelope> {
 
   // 'cd' with no args goes to home
   if (!pathArg) {
-    return builtin_cd(['~']);
+    return cd_run({ path: '~' });
   }
 
   if (pathArg === '-') {
@@ -225,7 +281,7 @@ export async function cd_run(options: CdOptions): Promise<CommandEnvelope> {
     if (!previousCWD) {
       return envelope_error('', undefined, `${chalk.red('cd: OLDPWD not set')}\n`);
     }
-    const result: CommandEnvelope = await builtin_cd([previousCWD]);
+    const result: CommandEnvelope = await cd_run({ path: previousCWD });
     return result.status === 'ok'
       ? { ...result, rendered: `${previousCWD}\n${result.rendered}` }
       : result;

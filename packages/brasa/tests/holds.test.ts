@@ -53,7 +53,7 @@ describe('what the commands declare', () => {
     // ls holds what its declaration says.
     expect(coreCommands.declarations?.find((declaration) => declaration.name === 'ls')?.holds).toEqual([]);
     expect(coreCommands.holds?.cat).toEqual([]);
-    expect(coreCommands.holds?.cd).toEqual(['cwd']);
+    expect(coreCommands.declarations?.find((declaration) => declaration.name === 'cd')?.holds).toEqual(['cwd']);
     expect(coreCommands.holds?.play).toBeUndefined();
   });
 });

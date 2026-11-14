@@ -171,7 +171,7 @@ describe('builtin_timing', () => {
   it('rejects an unknown argument', async () => {
     const envelope: CommandEnvelope = await builtin_timing(['sideways']);
     expect(envelope.status).toBe('error');
-    expect(envelope.rendered).toContain('Unknown argument');
+    expect(envelope.renderedErr).toContain("unknown subcommand 'sideways' (on, off)");
   });
 });
 
@@ -193,7 +193,7 @@ describe('builtin_physicalmode', () => {
   it('rejects an unknown argument', async () => {
     const envelope: CommandEnvelope = await builtin_physicalmode(['sideways']);
     expect(envelope.status).toBe('error');
-    expect(envelope.rendered).toContain('Unknown argument');
+    expect(envelope.renderedErr).toContain("unknown subcommand 'sideways' (on, off)");
   });
 });
 
@@ -231,7 +231,7 @@ describe('builtin_debug', () => {
   it('rejects an unknown argument', async () => {
     const envelope: CommandEnvelope = await builtin_debug(['sideways']);
     expect(envelope.status).toBe('error');
-    expect(envelope.rendered).toContain('Unknown argument');
+    expect(envelope.renderedErr).toContain("unknown subcommand 'sideways' (on, off)");
   });
 });
 

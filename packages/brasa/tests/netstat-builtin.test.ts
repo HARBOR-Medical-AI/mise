@@ -92,10 +92,13 @@ describe('builtin_netstat', () => {
   it('refuses a count that is not one, and an option it does not know, by name', async () => {
     const bad: CommandEnvelope = await builtin_netstat(['-n', 'x']);
     expect(bad.status).toBe('error');
-    expect(plain(bad.renderedErr ?? '')).toContain('netstat: -n takes a count');
+    expect(plain(bad.renderedErr ?? '')).toContain("netstat: invalid argument 'x' for '-n' (not a whole number)");
+    const negative: CommandEnvelope = await builtin_netstat(['-n', '-1']);
+    expect(plain(negative.renderedErr ?? '')).toContain("netstat: invalid argument '-1' for '-n' (at least 0)");
     const unknown: CommandEnvelope = await builtin_netstat(['--verbose']);
     expect(unknown.status).toBe('error');
-    expect(plain(unknown.renderedErr ?? '')).toContain('netstat: unknown option --verbose');
+    expect(plain(unknown.renderedErr ?? '')).toContain("netstat: unrecognized option '--verbose'");
     expect(mockSnapshot).not.toHaveBeenCalled();
+    process.exitCode = 0;
   });
 });

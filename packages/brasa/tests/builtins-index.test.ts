@@ -1062,7 +1062,8 @@ describe('Builtins - Core Functions', () => {
     it('should error with missing credentials', async () => {
       const envelope = await builtin_connect(['http://localhost:8000']);
 
-      expect(envelope.rendered).toContain('Usage:');
+      expect(envelope.status).toBe('error');
+      expect(envelope.renderedErr).toContain('connect: --user and --password are both needed; usage: connect');
     });
 
     it('should handle connection errors', async () => {

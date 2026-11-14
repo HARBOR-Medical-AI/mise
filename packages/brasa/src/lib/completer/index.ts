@@ -190,7 +190,7 @@ function argumentCompletion_run(line: string, args: string[], callback: Complete
 }
 
 /** The commands not yet declared whose arguments are paths; a declared command leaves it, its kinds saying which words are paths. */
-const PATH_COMMANDS: ReadonlyArray<string> = ['cd', 'mkdir', 'rmdir', 'chmod', 'touch', 'cat', 'edit', 'cp', 'mv', 'rm', 'upload', 'du', 'find', 'tree', 'wc', 'head', 'tail', 'sort', 'uniq', 'cut', 'pull', 'cubepath', 'query', 'image', 'dcm'];
+const PATH_COMMANDS: ReadonlyArray<string> = ['mkdir', 'rmdir', 'chmod', 'touch', 'cat', 'edit', 'cp', 'mv', 'rm', 'upload', 'find', 'wc', 'head', 'tail', 'sort', 'uniq', 'cut', 'pull', 'query', 'image', 'dcm'];
 
 /**
  * Command words beyond the registry's, from the backend (ChRIS: its plugins).

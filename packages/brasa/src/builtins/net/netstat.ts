@@ -7,13 +7,32 @@
  * `netstat -r`), by endpoint family with the time spent, and the last few
  * timed. Smoke asserts budgets against the same model; an operator on a
  * slow day asks it before guessing where the time went.
+ *
+ * Declared in one record (`netstatCommand`): how many recent requests to
+ * list, and whether to reset the count.
+ *
+ * Key components:
+ * - netstatCommand: the declaration.
+ * - builtin_netstat: the declaration run over words already split.
+ * - netstat_render: the ledger as text.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_netstat(['-n', '30']);
+ * ```
+ *
+ * Dependencies: cumin's request ledger.
+ *
+ * @module
  */
 import chalk from 'chalk';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 // The ledger by its own door: a jest ESM test importing a name from the
 // cumin ROOT overflows cjs-module-lexer on that index and sees none of
 // the names added after the overflow — the subpath is small and seen whole.
 import { requestLedger_snapshot, requestLedger_reset, type LedgerSnapshot, type LedgerFamily, type LedgerEntry } from '@fnndsc/cumin/request-ledger';
-import { NET_STATS_MODEL_KIND, type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { NET_STATS_MODEL_KIND, type CommandEnvelope, envelope_ok } from '@fnndsc/menu';
 
 /** How many recent requests the table shows unless asked otherwise. */
 const LAST_SHOWN: number = 10;
@@ -45,28 +64,57 @@ export function netstat_render(snapshot: LedgerSnapshot, last: number): string {
   return `${lines.join('\n')}\n`;
 }
 
+/** What a `netstat` line may hold. */
+const NETSTAT_GRAMMAR = {
+  options: {
+    reset: { short: 'r', long: 'reset', summary: 'Forget the count after showing it' },
+    count: { short: 'n', summary: `List that many recent requests (default ${LAST_SHOWN})`, value: { name: 'count', kind: 'int', min: 0 } },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * `netstat [-n <count>] [-r]`
+ * `netstat [-r] [-n <count>]`: the declaration.
  *
- * @param args - `-n <count>` lists that many recent requests; `-r` / `--reset`
- *   forgets the count (the readout then shows what was forgotten).
- * @returns The ledger as text and as the `net.stats` model.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [netstatCommand] }, 'backend');
+ * ```
+ */
+export const netstatCommand = command_declare({
+  name: 'netstat',
+  grammar: NETSTAT_GRAMMAR,
+  help: {
+    summary: 'What the session has asked of CUBE',
+    description: 'What the session has asked of CUBE: requests since the session (or the last reset), by endpoint family with the time spent, and the last few timed',
+    category: 'Connection',
+    examples: [
+      'netstat              # the count, by family, the last 10',
+      'netstat -n 30        # the last 30 requests, timed',
+      'netstat -r; cd ~/feeds; netstat   # what one navigation costs',
+    ],
+  },
+  handler: async (args: CommandArguments<typeof NETSTAT_GRAMMAR>): Promise<CommandEnvelope> => netstat_run(args.options.count ?? LAST_SHOWN, args.options.reset),
+});
+
+/**
+ * `netstat` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `netstat`.
+ * @returns The ledger, or the refusal of a bad line.
  */
 export async function builtin_netstat(args: string[] = []): Promise<CommandEnvelope> {
-  let last: number = LAST_SHOWN;
-  let reset: boolean = false;
-  for (let index: number = 0; index < args.length; index++) {
-    const arg: string = args[index] as string;
-    if (arg === '-r' || arg === '--reset') { reset = true; continue; }
-    if (arg === '-n') {
-      const value: number = Number(args[index + 1]);
-      if (!Number.isInteger(value) || value < 0) return envelope_error('', undefined, `${chalk.red('netstat: -n takes a count')}\n`);
-      last = value;
-      index += 1;
-      continue;
-    }
-    return envelope_error('', undefined, `${chalk.red(`netstat: unknown option ${arg}`)}\n`);
-  }
+  return declaredCommand_run(netstatCommand, args);
+}
+
+/**
+ * Reads the ledger, and resets it when asked; the readout then shows what
+ * was forgotten.
+ *
+ * @param last - How many recent requests to list.
+ * @param reset - Forget the count after reading it.
+ * @returns The ledger as text and as the `net.stats` model.
+ */
+function netstat_run(last: number, reset: boolean): CommandEnvelope {
   const snapshot: LedgerSnapshot = requestLedger_snapshot({ last: Math.max(last, LAST_SHOWN) });
   if (reset) requestLedger_reset();
   const rendered: string = netstat_render(snapshot, last) + (reset ? `${chalk.gray('count reset')}\n` : '');

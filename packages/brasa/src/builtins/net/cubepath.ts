@@ -1,9 +1,24 @@
 /**
- * @file Builtin cubepath command.
+ * @file `cubepath`: where each series under a PACS path lives in CUBE.
  *
  * Given one or more `/net/pacs/queries/...` VFS paths (at query, study, or series level),
  * resolves where each matching series lives in CUBE storage and reports the
  * actual file count there. Zero files means the series has not been pulled.
+ *
+ * Declared in one record (`cubepathCommand`): paths that glob, the PACS
+ * server, and whether to wait for a series still arriving.
+ *
+ * Key components:
+ * - cubepathCommand: the declaration.
+ * - builtin_cubepath: the declaration run over words already split.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_cubepath(['/net/pacs/queries/AccessionNumber:12345678_qid:2661', '--retry']);
+ * ```
+ *
+ * Dependencies: pacsUtils for the series and their CUBE folders; the
+ * session's client.
  *
  * @module
  */
@@ -11,7 +26,6 @@
 import chalk from 'chalk';
 import { Client } from '@fnndsc/cumin';
 import { session } from '../../session/index.js';
-import { args_checkHasHelpFlag, help_render } from '../help.js';
 import { path_resolve } from '../utils.js';
 import {
   PACSSeriesInfo,
@@ -22,39 +36,69 @@ import {
 } from './pacsUtils.js';
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
+
+/** What a `cubepath` line may hold. */
+const CUBEPATH_GRAMMAR = {
+  operands: [
+    { name: 'path', kind: 'cfsPath', repeat: true, glob: true, summary: 'A PACS path: a query, a study or a series under /net/pacs/queries' },
+  ],
+  options: {
+    pacsserver: { long: 'pacsserver', summary: 'Override PACS server (default: context PACSserver)', value: { name: 'id', kind: 'word' } },
+    retry: { long: 'retry', summary: 'Ask again, a few times, for a series not yet in CUBE' },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * `cubepath [--retry] [--pacsserver <id>] <path…>`: the declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [cubepathCommand] }, 'backend');
+ * ```
+ */
+export const cubepathCommand = command_declare({
+  name: 'cubepath',
+  grammar: CUBEPATH_GRAMMAR,
+  help: {
+    summary: 'Where each series under a PACS path lives in CUBE',
+    description: 'Show CUBE FS path and file count for each series under a PACS VFS path. Zero files = not pulled.',
+    category: 'Navigation',
+    examples: [
+      '# All series under a query',
+      'cubepath /net/pacs/queries/AccessionNumber:12345678_qid:2661',
+      '',
+      '# All series under a study',
+      'cubepath /net/pacs/queries/AccessionNumber:12345678_qid:2661/Study_1.2.3_Brain_MRI',
+      '',
+      '# Single series',
+      'cubepath /net/pacs/queries/AccessionNumber:12345678_qid:2661/Study_1.2.3/Series_1.2.3.4_AX_T2',
+    ],
+  },
+  handler: async (args: CommandArguments<typeof CUBEPATH_GRAMMAR>): Promise<CommandEnvelope> =>
+    cubepath_run(args.operands.path, args.options.pacsserver ?? null, args.options.retry),
+});
+
+/**
+ * `cubepath` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `cubepath`.
+ * @returns Each series' CUBE folder and file count, or the refusal of a bad line.
+ */
+export async function builtin_cubepath(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(cubepathCommand, args);
+}
 
 /**
  * Resolves CUBE FS paths and file counts for all series under one or more PACS VFS paths.
  *
- * @param args - `<vfs-path> [...] [--pacsserver <id>] [--retry]`
- * @example
- * cubepath /net/pacs/queries/AccessionNumber:12345678_qid:2661
- * cubepath /net/pacs/queries/.../Series_1.2.3_AX_T2 /net/pacs/queries/.../Series_1.2.3_DWI
+ * @param positional - The PACS paths.
+ * @param pacsserverOverride - The PACS server named, or null for the context's.
+ * @param retry - Ask again for a series not yet in CUBE.
+ * @returns Each series' CUBE folder and file count; warnings on the error channel.
  */
-export async function builtin_cubepath(args: string[]): Promise<CommandEnvelope> {
-  if (args_checkHasHelpFlag(args, 'cubepath')) {
-    return envelope_ok(help_render('cubepath'));
-  }
-
-  let pacsserverOverride: string | null = null;
-  let retry: boolean = false;
-  const positional: string[] = [];
-
-  for (let i: number = 0; i < args.length; i++) {
-    if (args[i] === '--pacsserver' && i + 1 < args.length) {
-      pacsserverOverride = args[++i];
-    } else if (args[i] === '--retry') {
-      retry = true;
-    } else if (!args[i].startsWith('--')) {
-      positional.push(args[i]);
-    }
-  }
-
-  if (positional.length === 0) {
-    exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red('cubepath: Missing path. Usage: cubepath <vfs-path> [...]')}\n`);
-  }
-
+async function cubepath_run(positional: readonly string[], pacsserverOverride: string | null, retry: boolean): Promise<CommandEnvelope> {
   const pacsIdentifier: string | null = await pacsServer_resolve(pacsserverOverride);
   if (!pacsIdentifier) {
     exitCode_set(1);

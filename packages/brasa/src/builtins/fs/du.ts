@@ -1,18 +1,36 @@
 /**
- * @file Builtin du command.
- * Displays disk usage.
+ * @file `du`: how much of ChRIS's filesystem (CFS) each folder takes, as
+ * Linux du says it.
+ *
+ * Declared in one record (`duCommand`): paths that glob, and du's options;
+ * one it does not have is refused by name.
+ *
+ * Key components:
+ * - duCommand: the declaration.
+ * - builtin_du: the declaration run over words already split.
+ * - dirSizes_compute: each folder's size from a scan.
+ *
+ * Typical usage:
+ * ```ts
+ * await builtin_du(['-sh', '~/uploads']);
+ * ```
+ *
+ * Dependencies: chili's scan for the walk; the listing for what a path is.
+ *
+ * @module
  */
 import chalk from 'chalk';
 import path from 'path';
-import { ParsedArgs, commandArgs_process, optionsUnknown_refusal, path_resolve } from '../utils.js';
+import { path_resolve } from '../utils.js';
 import { vfs } from '../../lib/vfs/vfs.js';
 import { spinner } from '../../lib/spinner.js';
 import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
 import { scan_do, type CLIscan, type ScanRecord } from '@fnndsc/chili/path/pathCommand.js';
 import { bytes_format } from '@fnndsc/chili/commands/fs/upload.js';
-import { envelope_error, type ListingItem, type CommandEnvelope } from '@fnndsc/menu';
+import { type ListingItem, type CommandEnvelope } from '@fnndsc/menu';
 import type { Result } from '@fnndsc/fond';
-import { exitCode_set } from '../../core/handlerRun.js';
+import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
 
 /**
  * Parsed flags controlling `du` output.
@@ -26,33 +44,67 @@ export interface DuOptions {
   maxDepth: number | undefined;
 }
 
-/** Long `du` flags that never accept a separate value. */
-const DU_BOOLEAN_LONG_OPTIONS: readonly string[] = [
-  'human-readable', 'summarize', 'all', 'total', 'separate-dirs',
-];
+/** What a `du` line may hold. */
+const DU_GRAMMAR = {
+  operands: [
+    { name: 'path', kind: 'cfsPath', optional: true, repeat: true, glob: true, summary: 'What to measure; the working directory when none is given' },
+  ],
+  options: {
+    humanReadable: { short: 'h', long: 'human-readable', summary: 'Print sizes in human readable format' },
+    summarize: { short: 's', long: 'summarize', summary: 'Display only total for each argument' },
+    all: { short: 'a', long: 'all', summary: 'Show counts for all files, not just directories' },
+    total: { short: 'c', long: 'total', summary: 'Produce a grand total' },
+    separateDirs: { short: 'S', long: 'separate-dirs', summary: 'Do not include size of subdirectories' },
+    maxDepth: { short: 'd', long: 'max-depth', summary: 'Print total only if N or fewer levels below', value: { name: 'N', kind: 'int', min: 0 } },
+  },
+} as const satisfies CommandGrammar;
 
 /**
- * Spells `-d N` and `-dN` as `--max-depth=N`, the one form the parser
- * takes a value for: a short flag is otherwise a switch, and the depth
- * read as a path to measure.
+ * `du [-hsacS] [-d <N>] [path…]`: the declaration.
  *
- * @param args - du's words.
- * @returns The words, the depth spelled long.
+ * @example
+ * ```ts
+ * commands_register({ declarations: [duCommand] }, 'backend');
+ * ```
  */
-export function depthOption_normalize(args: string[]): string[] {
-  const out: string[] = [];
-  for (let i: number = 0; i < args.length; i++) {
-    const arg: string = args[i];
-    if (arg === '--') { out.push(...args.slice(i)); break; }
-    if (arg === '-d' && args[i + 1] !== undefined) { out.push(`--max-depth=${args[i + 1]}`); i++; continue; }
-    const glued: RegExpMatchArray | null = arg.match(/^-d(\d+)$/);
-    out.push(glued !== null ? `--max-depth=${glued[1]}` : arg);
-  }
-  return out;
-}
+export const duCommand = command_declare({
+  name: 'du',
+  grammar: DU_GRAMMAR,
+  help: {
+    summary: 'Display disk usage statistics (mimics Linux du)',
+    description: "Says how much of ChRIS's filesystem each folder under a path takes, its subfolders included, as Linux du does: the working directory when no path is given, each path given otherwise (a wildcard matches paths). A file is its own size.",
+    category: 'Navigation',
+    posix: { group: 'Files', differs: 'sizes in CFS' },
+    examples: [
+      'du                    # Disk usage of current directory',
+      'du -h                 # Human-readable sizes (1K, 234M, 2G)',
+      'du -s /home/user/data # Summary only for specified path',
+      'du -a                 # Show all files, not just directories',
+      'du -c                 # Show grand total at end',
+      'du -d 2               # Max depth of 2 levels',
+      'du -sh                # Human-readable summary',
+    ],
+  },
+  holds: [],
+  handler: async (args: CommandArguments<typeof DU_GRAMMAR>): Promise<CommandEnvelope> => du_run(args.operands.path, {
+    humanReadable: args.options.humanReadable,
+    summarize: args.options.summarize,
+    showAll: args.options.all,
+    showTotal: args.options.total,
+    separateDirs: args.options.separateDirs,
+    maxDepth: args.options.maxDepth,
+  }),
+});
 
-/** Every option du reads; any other is refused by name. */
-const DU_OPTIONS: readonly string[] = [...DU_BOOLEAN_LONG_OPTIONS, 'max-depth', 'h', 's', 'a', 'c', 'S', 'd'];
+/**
+ * `du` over words already split: the declaration's parse and handler.
+ *
+ * @param args - The words after `du`.
+ * @returns The sizes, or the refusal of a bad line.
+ */
+export async function builtin_du(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(duCommand, args);
+}
 
 /**
  * Stat summary for a single `du` target.
@@ -75,28 +127,6 @@ export function duSize_format(bytes: number, humanReadable: boolean): string {
     ? bytes_format(bytes)
     : Math.ceil(bytes / 1024).toString();
   return formatted.padStart(12, ' ');
-}
-
-/**
- * Extracts `du` flags from parsed command arguments.
- *
- * @param parsed - The parsed command arguments.
- * @returns The resolved du options.
- */
-export function duOptions_parse(parsed: ParsedArgs): DuOptions {
-  const maxDepth: number | undefined = parsed['d']
-    ? parseInt(String(parsed['d']), 10)
-    : parsed['max-depth']
-      ? parseInt(String(parsed['max-depth']), 10)
-      : undefined;
-  return {
-    humanReadable: !!parsed['h'] || !!parsed['human-readable'],
-    summarize: !!parsed['s'] || !!parsed['summarize'],
-    showAll: !!parsed['a'] || !!parsed['all'],
-    showTotal: !!parsed['c'] || !!parsed['total'],
-    separateDirs: !!parsed['S'] || !!parsed['separate-dirs'],
-    maxDepth,
-  };
 }
 
 /**
@@ -211,32 +241,15 @@ function dirUsage_render(
  * Mimics standard Linux du command behavior and flags.
  * Uses chili's scan_do machinery for recursive filesystem traversal.
  *
- * @param args - Command line arguments (optional path and flags).
- * @returns A Promise that resolves when disk usage is displayed.
- *
- * @example
- * ```
- * du                      # Disk usage of current directory
- * du -h                   # Human-readable sizes
- * du -s /home/user/data   # Summary only
- * du -a                   # Show all files, not just directories
- * du -c                   # Show grand total
- * du -d 2                 # Max depth of 2 levels
- * ```
+ * @param pathArgs - The paths to measure; none measures the working directory.
+ * @param opts - The du options.
+ * @returns The sizes, and on the error channel each path that could not be read.
  */
-export async function builtin_du(args: string[]): Promise<CommandEnvelope> {
-  const parsed: ParsedArgs = commandArgs_process(depthOption_normalize(args), { booleanLongOptions: DU_BOOLEAN_LONG_OPTIONS });
-  const unknown: string | null = optionsUnknown_refusal('du', parsed, DU_OPTIONS);
-  if (unknown !== null) {
-    exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red(unknown)}\n`);
-  }
-  const opts: DuOptions = duOptions_parse(parsed);
-  const pathArgs: string[] = parsed._ as string[];
+async function du_run(pathArgs: readonly string[], opts: DuOptions): Promise<CommandEnvelope> {
   commandCancellation_enable();
   const signal: AbortSignal | undefined = commandCancellation_signalGet();
 
-  const rawTargets: string[] = pathArgs.length > 0 ? pathArgs : ['.'];
+  const rawTargets: string[] = pathArgs.length > 0 ? [...pathArgs] : ['.'];
 
   const resolvedTargets: string[] = [];
   for (const raw of rawTargets) {

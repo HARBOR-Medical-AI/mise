@@ -42,19 +42,6 @@ export const helpText: Record<string, CommandHelp> = {
       'sudo plugin add pl-dircopy',
     ],
   },
-  cd: {
-    posix: { group: 'Files', differs: 'moves in CFS, including /proc and /net' },
-    category: 'Navigation',
-    usage: 'cd [path]',
-    description: 'Change current working directory',
-    examples: [
-      'cd /home/user/data    # Absolute path',
-      'cd experiments        # Relative path',
-      'cd ..                 # Parent directory',
-      'cd ~                  # Home directory',
-      'cd                    # Show current directory',
-    ],
-  },
   grep: {
     posix: { group: 'Files', differs: 'also filters numbered listings, keeping their handles (help grep)' },
     category: 'Files',
@@ -98,26 +85,6 @@ export const helpText: Record<string, CommandHelp> = {
       'url .                                 # Paste it to a colleague the feed is shared with',
       '',
       '# The door comes from CHELL_DOOR; without it the fragment alone is printed.',
-    ],
-  },
-  pwd: {
-    posix: { group: 'Files', differs: 'where the session stands in CFS' },
-    category: 'Navigation',
-    usage: 'pwd [options]',
-    description: 'Print current working directory',
-    options: [
-      '--title    Replace feed_XXXX and pl-<name>_XXXX with titles in path',
-    ],
-    examples: [
-      'pwd                  # Show actual path',
-      'pwd --title          # Show path with feed/plugin titles',
-      '',
-      '# Example output:',
-      '# pwd',
-      '# /home/chris/feeds/feed_2326/pl-dircopy_176660/data',
-      '',
-      '# pwd --title',
-      '# /home/chris/feeds/Brain MRI Analysis/dircopy v2.1.1/data',
     ],
   },
   find: {
@@ -680,34 +647,6 @@ export const helpText: Record<string, CommandHelp> = {
       'prompt p10k        # Switch to two-line Powerlevel10k-inspired theme',
     ],
   },
-  timing: {
-    category: 'Settings',
-    usage: 'timing [on|off]',
-    description: 'Toggle or display command timing mode',
-    options: [
-      'on          Enable timing display',
-      'off         Disable timing display',
-    ],
-    examples: [
-      'timing                # Show current status',
-      'timing on             # Enable timing display',
-      'timing off            # Disable timing display',
-    ],
-  },
-  debug: {
-    category: 'Settings',
-    usage: 'debug [on|off]',
-    description: 'Toggle or display debug mode (verbose logging)',
-    options: [
-      'on          Enable debug logging',
-      'off         Disable debug logging',
-    ],
-    examples: [
-      'debug                 # Show current status',
-      'debug on              # Enable debug mode',
-      'debug off             # Disable debug mode',
-    ],
-  },
   '!': {
     category: 'General',
     usage: '! <shell_command>',
@@ -1012,13 +951,6 @@ export function args_checkHasHelpFlag(args: string[], command?: string): boolean
     return !takesH && args.includes('-h');
   }
 
-  // Commands not yet declared where -h means human-readable sizes, not help
-  const humanReadableCommands: string[] = ['du'];
-  
-  if (command && humanReadableCommands.includes(command)) {
-    return false;
-  }
-  
   if (isPluginExecutable) {
     return false;
   }

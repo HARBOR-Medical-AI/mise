@@ -45,20 +45,6 @@ export const chrisHelp: Record<string, CommandHelp> = {
     options: ['Use `sudo user …` for lifecycle operations.', 'add prompts for email and a hidden password confirmation.'],
     examples: ['sudo user add jack.bivowac', 'sudo user disable jack.bivowac', 'sudo user remove jack.bivowac'],
   },
-  netstat: {
-    category: 'Connection',
-    usage: 'netstat [-n <count>] [-r]',
-    description: 'What the session has asked of CUBE: requests since the session (or the last reset), by endpoint family with the time spent, and the last few timed',
-    options: [
-      '-n <count>   List that many recent requests (default 10)',
-      '-r, --reset  Forget the count after showing it',
-    ],
-    examples: [
-      'netstat              # the count, by family, the last 10',
-      'netstat -n 30        # the last 30 requests, timed',
-      'netstat -r; cd ~/feeds; netstat   # what one navigation costs',
-    ],
-  },
   edit: {
     category: 'Files',
     usage: 'edit <file>',
@@ -188,21 +174,6 @@ export const chrisHelp: Record<string, CommandHelp> = {
       'upload ./results/ ~/data/',
       'upload ~/experiment/data /home/user/projects/',
     ],
-  },
-  connect: {
-    category: 'Connection',
-    usage: 'connect <username> <url> [password]',
-    description: 'Connect to ChRIS server',
-    examples: [
-      'connect alice https://cube.chrisproject.org/api/v1/',
-      'connect bob http://localhost:8000/api/v1/ mypassword',
-    ],
-  },
-  logout: {
-    category: 'Connection',
-    usage: 'logout',
-    description: 'Disconnect from ChRIS server',
-    examples: ['logout'],
   },
   plugin: {
     category: 'Resources',
@@ -645,24 +616,6 @@ export const chrisHelp: Record<string, CommandHelp> = {
       'pacsretrieve cancel <retrieveId> # Cancel a retrieve',
     ],
   },
-  context: {
-    category: 'Connection',
-    usage: 'context',
-    description: 'Display current ChRIS context information',
-    examples: ['context'],
-  },
-  whoami: {
-    category: 'Connection',
-    usage: 'whoami',
-    description: 'Print the currently authenticated ChRIS username',
-    examples: ['whoami'],
-  },
-  id: {
-    category: 'Connection',
-    usage: 'id',
-    description: 'Print the current CUBE user as a Unix-style UID, projected primary GID, and complete list of CUBE group memberships.',
-    examples: ['id'],
-  },
   ping: {
     usage: 'ping [-c N] [cube]',
     summary: 'Round trips to CUBE, timed',
@@ -720,12 +673,6 @@ export const chrisHelp: Record<string, CommandHelp> = {
     summary: 'The greeting a session gives on arrival',
     description: 'Says who you are, how many feeds you hold, how many jobs have run and what share of them failed, and what is running now — from the session\'s own index, at no cost. While the index is still warming it says what it holds so far. A surface may name itself (motd ARGUS) and the greeting says where you arrived. Ends with a short fortune.',
     examples: ['motd', 'motd ARGUS'],
-  },
-  whereami: {
-    category: 'Connection',
-    usage: 'whereami',
-    description: 'Print the current CUBE URL',
-    examples: ['whereami'],
   },
   proc: {
     category: 'Monitoring',
@@ -785,20 +732,6 @@ export const chrisHelp: Record<string, CommandHelp> = {
       'proc unwatch 2583',
     ],
   },
-  physicalmode: {
-    category: 'Settings',
-    usage: 'physicalmode [on|off]',
-    description: 'Toggle or display physical filesystem mode',
-    options: [
-      'on          Enable physical mode (paths used directly)',
-      'off         Disable physical mode (use logical-to-physical mapping)',
-    ],
-    examples: [
-      'physicalmode          # Show current status',
-      'physicalmode on       # Enable physical mode',
-      'physicalmode off      # Disable physical mode',
-    ],
-  },
   parametersofplugin: {
     category: 'Resources',
     usage: 'parametersofplugin <plugin_name>',
@@ -806,49 +739,6 @@ export const chrisHelp: Record<string, CommandHelp> = {
     examples: [
       'parametersofplugin pl-dircopy',
       'parametersofplugin pl-simpledsapp',
-    ],
-  },
-  tree: {
-    posix: { group: 'Files', differs: 'a CFS tree' },
-    category: 'Navigation',
-    usage: 'tree [options] [path]',
-    description: 'Display directory tree structure',
-    options: [
-      '--follow    Follow symbolic links when traversing',
-      '--path      Emit one full path per entry (grep-friendly, no tree art)',
-      '--dirs      Show directories only',
-      '--dirpath   Emit one full directory path per line',
-    ],
-    examples: [
-      'tree                  # Tree of current directory',
-      'tree /home/user/data  # Tree of specific path',
-      'tree --follow         # Follow symbolic links',
-      'tree --path           # One path per line, no decoration',
-      'tree --dirs           # Directory hierarchy only',
-      'tree --dirpath        # One directory path per line',
-    ],
-  },
-  du: {
-    posix: { group: 'Files', differs: 'sizes in CFS' },
-    category: 'Navigation',
-    usage: 'du [options] [path]',
-    description: 'Display disk usage statistics (mimics Linux du)',
-    options: [
-      '-h, --human-readable  Print sizes in human readable format',
-      '-s, --summarize       Display only total for each argument',
-      '-a, --all             Show counts for all files, not just directories',
-      '-c, --total           Produce a grand total',
-      '-d N, --max-depth=N   Print total only if N or fewer levels below',
-      '-S, --separate-dirs   Do not include size of subdirectories',
-    ],
-    examples: [
-      'du                    # Disk usage of current directory',
-      'du -h                 # Human-readable sizes (1K, 234M, 2G)',
-      'du -s /home/user/data # Summary only for specified path',
-      'du -a                 # Show all files, not just directories',
-      'du -c                 # Show grand total at end',
-      'du -d 2               # Max depth of 2 levels',
-      'du -sh                # Human-readable summary',
     ],
   },
   store: {
@@ -1167,25 +1057,6 @@ export const chrisHelp: Record<string, CommandHelp> = {
       'image /SERVICES/PACS/PACSDCM/patient/study/00005-T1-abcdef0',
       'image scan.dcm                                # A single file; its folder is the series',
       'image brain.nii.gz --force                    # A volume, past the size guard',
-    ],
-  },
-  cubepath: {
-    category: 'Navigation',
-    usage: 'cubepath <vfs-path> [--pacsserver <id>]',
-    description: 'Show CUBE FS path and file count for each series under a PACS VFS path. Zero files = not pulled.',
-    options: [
-      '--pacsserver <id>    Override PACS server (default: context PACSserver)',
-      '--help               Show this help',
-    ],
-    examples: [
-      '# All series under a query',
-      'cubepath /net/pacs/queries/AccessionNumber:12345678_qid:2661',
-      '',
-      '# All series under a study',
-      'cubepath /net/pacs/queries/AccessionNumber:12345678_qid:2661/Study_1.2.3_Brain_MRI',
-      '',
-      '# Single series',
-      'cubepath /net/pacs/queries/AccessionNumber:12345678_qid:2661/Study_1.2.3/Series_1.2.3.4_AX_T2',
     ],
   },
   query: {
