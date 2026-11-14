@@ -108,6 +108,10 @@ jobs:
       - run: npm run lint:stratus-deps
       - run: npm run test:boot --workspace @fnndsc/stratus
       - run: npm run lint:commands
+      # One declaration per command: the builtins not yet declared in one
+      # record, and those parsing an expression language of their own, only fall.
+      - run: npm run lint:migration
+      - run: npm run lint:expressions
       - run: npm run lint:prompt
       - run: npm run lint:wire
       - run: npm run lint:listings

@@ -80,13 +80,10 @@ describe('pathnameExpansion_isEligible', () => {
     expect(pathnameExpansion_isEligible('connect', 0, 1)).toBe(true);
   });
 
-  it('keeps cross-realm transfer operands out of CFS/VFS expansion', () => {
+  // download is declared: its grammar says which operands glob, so the
+  // table is never asked about it (commandDeclarations.test.ts).
+  it('keeps upload\'s host operands out of CFS/VFS expansion', () => {
     expect(pathnameExpansion_isEligible('upload', 0, 2)).toBe(false);
-    expect(pathnameExpansion_isEligible('download', 0, 2, ['*.nii', '/tmp'])).toBe(true);
-    expect(pathnameExpansion_isEligible('download', 1, 2, ['*.nii', '/tmp'])).toBe(false);
-    expect(pathnameExpansion_isEligible('download', 1, 3, ['-f', '*.nii', '/tmp'])).toBe(true);
-    expect(pathnameExpansion_isEligible('download', 1, 3, ['a*', 'b*', '/tmp'])).toBe(true);
-    expect(pathnameExpansion_isEligible('download', 2, 3, ['a*', 'b*', '/tmp'])).toBe(false);
   });
 });
 

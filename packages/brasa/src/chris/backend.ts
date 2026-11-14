@@ -28,6 +28,7 @@ import { chrisListingLook } from '@fnndsc/chili/views/ls.js';
 import { chrisFilesystem } from './filesystem.js';
 import { chrisMounts_register } from './mounts.js';
 import { chrisCompletion } from './completion.js';
+import { chrisArgumentKinds } from './kinds.js';
 import { chrisDebug_get, chrisDebug_set } from './debug.js';
 
 declare module '../session/index.js' {
@@ -110,6 +111,7 @@ export const chrisBackend: Backend = {
   files: chrisFiles,
   vfs: chrisFilesystem,
   completion: chrisCompletion,
+  argumentKinds: chrisArgumentKinds,
   listingLook: chrisListingLook,
   debug_get: chrisDebug_get,
   debug_set: chrisDebug_set,

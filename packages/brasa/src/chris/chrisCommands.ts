@@ -11,7 +11,7 @@
  */
 import { type CommandGroup, type CommandHandler, type EnvelopeHandler, type SessionPiece } from '../core/commandRegistry.js';
 import { builtin_chrisfetch, builtin_ping } from '../builtins/games/chrislab.js';
-import { builtin_chmod, builtin_compute, builtin_config, builtin_connect, builtin_context, builtin_cubepath, builtin_dcm, builtin_dirs, builtin_download, builtin_feed, builtin_files, builtin_gather, builtin_getfacl, builtin_getfattr, builtin_group, builtin_id, builtin_image, builtin_links, builtin_logout, builtin_pacs, builtin_parametersofplugin, builtin_physicalmode, builtin_pipeline, builtin_plugin, builtin_plugininstance, builtin_pluginmeta, builtin_pull, builtin_query, builtin_setfacl, builtin_setfattr, builtin_store, builtin_tag, builtin_upload, builtin_user, builtin_whereami, builtin_whoami, builtin_workflow } from '../builtins/index.js';
+import { builtin_chmod, builtin_compute, builtin_config, builtin_connect, builtin_context, builtin_cubepath, builtin_dcm, builtin_dirs, builtin_feed, builtin_files, builtin_gather, builtin_getfacl, builtin_getfattr, builtin_group, builtin_id, builtin_image, builtin_links, builtin_logout, builtin_pacs, builtin_parametersofplugin, builtin_physicalmode, builtin_pipeline, builtin_plugin, builtin_plugininstance, builtin_pluginmeta, builtin_pull, builtin_query, builtin_setfacl, builtin_setfattr, builtin_store, builtin_tag, builtin_upload, builtin_user, builtin_whereami, builtin_whoami, builtin_workflow } from '../builtins/index.js';
 import { builtin_netstat } from '../builtins/net/netstat.js';
 import { builtin_proc } from '../builtins/proc.js';
 import { chiliCommand_run } from './chiliDelegate.js';
@@ -25,7 +25,9 @@ import { builtin_record } from '../builtins/res/record.js';
 import { builtin_motd } from '../builtins/sys/motd.js';
 import { chrisHelp } from './help.js';
 import { builtin_whatif } from './commandFallback.js';
-import { builtin_berth } from '../builtins/berth/berth.js';
+import { berthCommand } from '../builtins/berth/berth.js';
+import { downloadCommand } from '../builtins/fs/download.js';
+import type { AnyCommandDeclaration } from '../core/commandDeclaration.js';
 
 const envelope: Record<string, EnvelopeHandler> = {
   setfacl: builtin_setfacl,
@@ -81,7 +83,6 @@ const envelope: Record<string, EnvelopeHandler> = {
   pacsretrieve: (args: string[]): Promise<CommandEnvelope> => chiliCommand_run('pacsretrieve', ['-s', ...args]),
   connect: builtin_connect,
   upload: builtin_upload,
-  download: builtin_download,
   store: builtin_store,
   config: builtin_config,
   pacs: builtin_pacs,
@@ -99,7 +100,6 @@ const envelope: Record<string, EnvelopeHandler> = {
   du: builtin_du,
   record: builtin_record,
   edit: builtin_edit,
-  berth: builtin_berth,
 };
 
 const plain: Record<string, CommandHandler> = {
@@ -121,7 +121,6 @@ const plain: Record<string, CommandHandler> = {
   cubepath: envelopeHandler_wrap(builtin_cubepath),
   dcm: envelopeHandler_wrap(builtin_dcm),
   image: envelopeHandler_wrap(builtin_image),
-  download: envelopeHandler_wrap(builtin_download),
   config: envelopeHandler_wrap(builtin_config),
   context: envelopeHandler_wrap(builtin_context),
   parametersofplugin: envelopeHandler_wrap(builtin_parametersofplugin),
@@ -172,7 +171,6 @@ const plain: Record<string, CommandHandler> = {
   tree: envelopeHandler_wrap(builtin_tree),
   du: envelopeHandler_wrap(builtin_du),
   record: envelopeHandler_wrap(builtin_record),
-  berth: envelopeHandler_wrap(builtin_berth),
 };
 
 
@@ -190,16 +188,17 @@ const holds: Record<string, readonly SessionPiece[]> = {
     // of the session: `image` answers with an intent a surface draws, `dcm`
     // with a model.
     'dcm', 'image',
-    // A berth's anchors are the berth's own disk: anchoring reads CUBE and
-    // writes there, and changes no piece of the session.
-    'berth',
   ].map((name: string): [string, readonly SessionPiece[]] => [name, []])),
   gather: ['cohort'],
 };
+
+/** The ChRIS commands declared in one record each: grammar, kinds, handler, holds and help together. */
+const declarations: ReadonlyArray<AnyCommandDeclaration> = [downloadCommand, berthCommand];
 
 export const chrisCommands: CommandGroup = {
   envelope,
   plain,
   help: chrisHelp,
   holds,
+  declarations,
 };

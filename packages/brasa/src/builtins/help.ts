@@ -10,13 +10,17 @@ import { HELP_SECTIONS, helpPosix_render, helpSection_render, helpToc_render, se
 import { gamesShelf_render, gamesShelf_names } from './games/shelf.js';
 import chalk from 'chalk';
 import { CAT_USAGE } from './fs/cat.args.js';
-import { commands_register, commandHelpEntry_get, helpTopic_names, builtinCommand_has, type CommandHelp } from '../core/commandRegistry.js';
+import { commands_register, commandDeclaration_get, commandHelpEntry_get, helpTopic_names, builtinCommand_has, type CommandHelp } from '../core/commandRegistry.js';
+import { declaration_isParsed, type AnyCommandDeclaration, type OptionGrammar, type OptionsGrammar, type SubcommandGrammar } from '../core/commandDeclaration.js';
+import { declarationHelp_derive } from '../core/commandUsage.js';
 import { backendInstalled_get } from '../core/backend.js';
 import type { CommandEnvelope } from '@fnndsc/menu';
 
 
 /**
- * Help-text registry keyed by builtin command name.
+ * Help-text registry keyed by builtin command name, for the commands not yet
+ * declared in one record: a declared command's help is generated from its
+ * declaration, and its entry leaves this table.
  */
 export const helpText: Record<string, CommandHelp> = {
   sudo: {
@@ -30,34 +34,6 @@ export const helpText: Record<string, CommandHelp> = {
     examples: [
       'sudo group adduser pacs_users peter.hong',
       'sudo plugin add pl-dircopy',
-    ],
-  },
-  ls: {
-    posix: { group: 'Files', differs: 'lists ChRIS\'s filesystem (CFS), not this machine\'s; -l numbers rows' },
-    category: 'Navigation',
-    usage: 'ls [options] [path]',
-    description: 'List directory contents',
-    options: [
-      '-l          Long format (detailed information, shows feed/plugin titles)',
-      '-1          One entry per line (single-column)',
-      '-h          Human-readable sizes (use with -l)',
-      '-f, --refresh  Force refresh (ignore cache)',
-      '-r, --reverse  Reverse sort order',
-      '-d          List directory itself, not contents',
-      '--sort=<field>  Sort by: name, size, date, owner',
-    ],
-    examples: [
-      'ls                    # List current directory',
-      'ls -l                 # Long format with titles',
-      'ls -lh                # Long format with human sizes',
-      'ls -f                 # Force refresh from server',
-      'ls /home/user/data    # List specific directory',
-      'ls *.txt              # List matching files (wildcard)',
-      'ls --sort=size -r     # Sort by size, reversed',
-      '',
-      '# Long format shows feed and plugin instance titles:',
-      '# d user 0  2025-05-18  feed_875           Brain MRI Analysis',
-      '# d user 0  2025-05-18  pl-dircopy_33314   pl-dircopy v2.1.2',
     ],
   },
   cd: {
@@ -1000,7 +976,10 @@ function commandHelp_render(command: string, help: CommandHelp): string {
  * @returns The formatted help text string, or undefined if no help exists.
  */
 export function commandHelp_get(command: string): string | undefined {
-  const help: CommandHelp | undefined = commandHelpEntry_get(command);
+  const declaration: AnyCommandDeclaration | undefined = commandDeclaration_get(command);
+  const help: CommandHelp | undefined = declaration !== undefined && declaration_isParsed(declaration)
+    ? declarationHelp_derive(declaration)
+    : commandHelpEntry_get(command);
   return help ? commandHelp_render(command, help) : undefined;
 }
 
@@ -1147,8 +1126,19 @@ export function args_checkHasHelpFlag(args: string[], command?: string): boolean
   const isPluginExecutable: boolean = !!command && /-v.+$/.test(command);
   if (!isPluginExecutable && args.includes('--help')) return true;
 
-  // Commands where -h means human-readable sizes, not help
-  const humanReadableCommands: string[] = ['ls', 'du'];
+  // A declared command's -h is help unless its grammar takes -h itself (ls: human sizes).
+  const declaration: AnyCommandDeclaration | undefined = command === undefined ? undefined : commandDeclaration_get(command);
+  if (declaration !== undefined && declaration_isParsed(declaration)) {
+    const groups: OptionsGrammar[] = [
+      declaration.grammar.options ?? {},
+      ...Object.values(declaration.grammar.subcommands ?? {}).map((sub: SubcommandGrammar): OptionsGrammar => sub.options ?? {}),
+    ];
+    const takesH: boolean = groups.some((group: OptionsGrammar): boolean => Object.values(group).some((option: OptionGrammar): boolean => option.short === 'h'));
+    return !takesH && args.includes('-h');
+  }
+
+  // Commands not yet declared where -h means human-readable sizes, not help
+  const humanReadableCommands: string[] = ['du'];
   
   if (command && humanReadableCommands.includes(command)) {
     return false;

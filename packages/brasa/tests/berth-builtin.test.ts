@@ -76,7 +76,9 @@ jest.unstable_mockModule('../src/core/paths.js', () => ({
     return typed.startsWith('/') ? typed : `/home/alice/${typed}`;
   },
 }));
-jest.unstable_mockModule('../src/core/backend.js', () => ({ backendInstalled_get: () => ({ session: { home_get: async (): Promise<string> => '/home/alice' } }) }));
+/** The ChRIS backend's argument kinds (an anchor's name), filled once its module loads. */
+const backendKinds: { kinds: ReadonlyArray<unknown> } = { kinds: [] };
+jest.unstable_mockModule('../src/core/backend.js', () => ({ backendInstalled_get: () => ({ session: { home_get: async (): Promise<string> => '/home/alice' }, argumentKinds: backendKinds.kinds }) }));
 jest.unstable_mockModule('../src/core/filesystem.js', () => ({
   vfsDispatcher_get: () => ({
     list: async (folder: string) => cubeFolder_list(folder),
@@ -116,6 +118,7 @@ jest.unstable_mockModule('../src/core/sink.js', () => ({
   sink_dataLine: (text: string): void => { dataLines.push(text); },
 }));
 
+backendKinds.kinds = (await import('../src/chris/kinds.js')).chrisArgumentKinds;
 const { builtin_berth, ANCHOR_ASK_BYTES } = await import('../src/builtins/berth/berth.js');
 const { berthState_read, berthState_update, berthState_write, berthPlaces_read, BerthStateError, BERTH_STATE_FILE } = await import('../src/builtins/berth/berthState.js');
 
@@ -265,7 +268,7 @@ describe('berth anchor: names', () => {
     await builtin_berth(['anchor', '~/uploads/weights']);
     const refused = await builtin_berth(['anchor', '/PUBLIC/atlas/weights']);
     expect(refused.status).toBe('error');
-    expect(strip(refused.renderedErr)).toBe('berth: anchor: the anchor weights holds /home/alice/uploads/weights; name this one: berth anchor <path> <name> [--refresh] [--yes]\n');
+    expect(strip(refused.renderedErr)).toBe('berth: anchor: the anchor weights holds /home/alice/uploads/weights; name this one: berth anchor [-y] [--refresh] <path> <name>\n');
     expect(readFileSync(join(anchors, 'weights', 'model.pt'), 'utf8')).toBe('MODEL');
     expect((await builtin_berth(['anchor', '/PUBLIC/atlas/weights', 'atlas'])).status).toBe('ok');
     expect(berthState_read(anchors).anchors.map((anchor) => anchor.name)).toEqual(['weights', 'atlas']);
@@ -290,9 +293,9 @@ describe('berth anchor: names', () => {
     expect(strip((await builtin_berth(['anchor', '~/uploads/weights', 'a/b'])).renderedErr)).toContain('berth: anchor: a/b cannot name an anchor');
     mkdirSync(join(anchors, 'mine'));
     expect(strip((await builtin_berth(['anchor', '~/uploads/weights', 'mine'])).renderedErr)).toBe(`berth: anchor: ${join(anchors, 'mine')} is there and is not an anchor\n`);
-    expect(strip((await builtin_berth(['anchor', '~/uploads/weights', '--force'])).renderedErr)).toBe('berth: anchor: unknown option --force; berth anchor <path> [name] [--refresh] [--yes]\n');
-    expect(strip((await builtin_berth(['anchor'])).renderedErr)).toBe('berth: anchor: usage: berth anchor <path> [name] [--refresh] [--yes]\n');
-    expect(strip((await builtin_berth(['anchor', 'a', 'b', 'c'])).renderedErr)).toBe('berth: anchor: usage: berth anchor <path> [name] [--refresh] [--yes]\n');
+    expect(strip((await builtin_berth(['anchor', '~/uploads/weights', '--force'])).renderedErr)).toBe("berth: anchor: unrecognized option '--force'; usage: berth anchor [-y] [--refresh] <path> [name]\n");
+    expect(strip((await builtin_berth(['anchor'])).renderedErr)).toBe('berth: anchor: missing operand <path>; usage: berth anchor [-y] [--refresh] <path> [name]\n');
+    expect(strip((await builtin_berth(['anchor', 'a', 'b', 'c'])).renderedErr)).toBe("berth: anchor: unexpected operand 'c'; usage: berth anchor [-y] [--refresh] <path> [name]\n");
   });
 });
 
@@ -414,7 +417,7 @@ describe('the state file', () => {
 describe('berth: the listing', () => {
   it('says there are no anchors, and that the berth never closed', async () => {
     const result = await builtin_berth([]);
-    expect(strip(result.rendered)).toBe(`no anchors in ${anchors}; berth anchor <path> [name] [--refresh] [--yes] downloads one\nlast close: never\n`);
+    expect(strip(result.rendered)).toBe(`no anchors in ${anchors}; berth anchor [-y] [--refresh] <path> [name] downloads one\nlast close: never\n`);
   });
 
   it('lists name, path, node or none, files, size and time, and when the berth last closed', async () => {
@@ -444,7 +447,7 @@ describe('berth drop', () => {
   it('refuses a name it does not hold, and a missing name', async () => {
     expect(strip((await builtin_berth(['drop', 'sub-01'])).renderedErr)).toBe('berth: drop: no anchor named sub-01\n');
     expect(process.exitCode).toBe(1);
-    expect(strip((await builtin_berth(['drop'])).renderedErr)).toBe('berth: drop: usage: berth drop <name>\n');
+    expect(strip((await builtin_berth(['drop'])).renderedErr)).toBe('berth: drop: missing operand <name>; usage: berth drop <name>\n');
   });
 });
 
@@ -494,14 +497,14 @@ describe('berth clear', () => {
   });
 
   it('takes no words', async () => {
-    expect(strip((await builtin_berth(['clear', 'now'])).renderedErr)).toBe('berth: clear: usage: berth clear\n');
+    expect(strip((await builtin_berth(['clear', 'now'])).renderedErr)).toBe("berth: clear: unexpected operand 'now'; usage: berth clear\n");
   });
 });
 
 describe('berth: subcommands', () => {
   it('refuses one it does not know, with the usage', async () => {
     const result = await builtin_berth(['sail']);
-    expect(strip(result.renderedErr)).toBe('berth: sail: unknown subcommand; usage: berth [anchor <path> [name] [--refresh] [--yes] | close [--infeed <anchor> | --newfeed] [--name <feed>] [--title <text>] [--force] | drop <name> | clear]\n');
+    expect(strip(result.renderedErr)).toBe("berth: unknown subcommand 'sail' (anchor, close, drop, clear); usage: berth [anchor [-y] [--refresh] <path> [name] | close [-f] [--newfeed] [--infeed <anchor>] [--name <feed>] [--title <text>] | drop <name> | clear]\n");
     expect(process.exitCode).toBe(1);
   });
 });

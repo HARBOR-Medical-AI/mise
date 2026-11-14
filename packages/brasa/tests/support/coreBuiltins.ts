@@ -10,6 +10,8 @@
 import { jest } from '@jest/globals';
 import { readFileSync } from 'node:fs';
 
+import { STAND_IN_MAKERS, type StandInHandler } from './declarationStandIns.js';
+
 const groupSource: string = ['../../src/core/coreCommands.ts', '../../src/chris/chrisCommands.ts']
   .map((group: string): string => readFileSync(new URL(group, import.meta.url), 'utf8'))
   .join('\n');
@@ -32,13 +34,34 @@ const CORE_MODULES: ReadonlyArray<[string, string[]]> = [...new Set([...groupSou
   .map((module: string): [string, string[]] => [`../../src/builtins/${module}`, moduleFunctions_read(module)]);
 
 /**
+ * The stub for one export: the test's own, else for a declaration
+ * (`lsCommand`) its stand-in running the test's `builtin_ls` stub, else a
+ * fresh `jest.fn()`.
+ *
+ * @param name - The export's name.
+ * @param stubs - The test's stubs, by export name.
+ * @returns The stub.
+ */
+function export_stub(name: string, stubs: Record<string, unknown>): unknown {
+  if (stubs[name] !== undefined) return stubs[name];
+  const standIn = STAND_IN_MAKERS[name];
+  if (standIn !== undefined) {
+    const builtin: unknown = stubs[`builtin_${name.replace(/Command$/, '')}`];
+    return standIn((builtin as StandInHandler | undefined) ?? jest.fn());
+  }
+  return jest.fn();
+}
+
+/**
  * Mocks every builtin module the core group imports: a function the test
- * stubs answers with its stub, any other with a fresh `jest.fn()`.
+ * stubs answers with its stub, a declared command stands in (running the
+ * test's stub of its builtin with the typed line), any other export is a
+ * fresh `jest.fn()`.
  *
  * @param stubs - The test's stubs, by export name.
  */
 export function coreBuiltins_mock(stubs: Record<string, unknown>): void {
   for (const [path, names] of CORE_MODULES) {
-    jest.unstable_mockModule(path, () => Object.fromEntries(names.map((name: string): [string, unknown] => [name, stubs[name] ?? jest.fn()])));
+    jest.unstable_mockModule(path, () => Object.fromEntries(names.map((name: string): [string, unknown] => [name, export_stub(name, stubs)])));
   }
 }

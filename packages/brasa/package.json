@@ -58,6 +58,7 @@
     "js-yaml": "^4.1.0",
     "minimatch": "^10.1.1",
     "ws": "^8.21.0",
+    "zod": "^4.6.7",
     "@fnndsc/menu": "^0.41.1",
     "@fnndsc/orrery": "^0.7.0"
   },

@@ -167,9 +167,26 @@ The exploration stated this as "manifest as law" — if a command is not in the 
 
 *For plugins, the manifest already exists and CUBE owns it.* CUBE declares plugin parameters, and `mise` reads them (`packages/brasa/src/builtins/parametersofplugin.ts`). `mise` must not reinvent that; doing so would be exactly the erosion <<no-silent-workaround>> forbids.
 
-*For `mise`'s own builtins, nothing declares anything.* Commands are entries in `ENVELOPE_HANDLERS` — a name pointing at a function, carrying no metadata — with a separate, hand-maintained `helpText` table beside it. Two registries, no link between them, and they have already drifted.
+*For `mise`'s own builtins, the declaration is `mise`'s to make.* A builtin left as an entry in `ENVELOPE_HANDLERS` is a name pointing at a function, carrying no metadata, with a separate, hand-maintained `helpText` table beside it: two registries with no link between them, which drift.
 
 One declaration per command is therefore `mise`'s own obligation, and it pays three times over: it is the help a human reads, the metadata completion consumes, and the contract an assistant must be jailed to.
+
+[[the-declaration]]
+==== The declaration
+
+A builtin's declaration is one typed record in the command's own module, made with `command_declare` (`packages/brasa/src/core/commandDeclaration.ts`): its name, its grammar, the kind of each argument, its handler, what it holds of the session, and its help prose (summary, description, examples, category, and the POSIX utility it mirrors). The registry answers the name from that record, and `help`, the `/bin` builtin list, completion and the tool schema all read the same record, so help and behaviour cannot drift apart.
+
+The grammar is the shell's own: subcommands; operands in order, each optional or repeated; options with a short name, a long name or both, taking a value or none. The engine parses every line against it before the handler runs (`commandParse.ts`), with GNU `getopt_long` for every command: `-f`, bundled short switches (`-rf`) and `--force`; `--name x` and `--name=x`; `--` ending the options; options anywhere among the operands; and a negative number an operand when the operand it fills is numeric. References (`$VAR`, `@index`) expand first. Then the line's shape is parsed, its subcommand words and option names literal and never globbed. Then operands expand by kind: only a `cfsPath` or `hostPath` operand that declares `glob` has its wildcards matched, so a glob can never turn into an option. Then values are checked. A bad line is refused in plain words, ending with the usage the grammar generates.
+
+The handler receives a typed object the compiler infers from the grammar, written `as const`: which subcommand, its operands, its options, and which operands came from pathname expansion. Reading an undeclared option is a build error, and the handler never sees the line's words.
+
+Each argument has a kind (`argumentKinds.ts`): a value check, written in zod where it fits, a completion source, and for a path its pathname expansion. The core's kinds are `word`, `enum`, `int`, `number`, `cfsPath`, `hostPath`, `variable` and `job`. A backend registers its own through the backend seam, `Backend.argumentKinds` (the ChRIS backend: `anchor`, a berth's anchor by name). A core command uses only core kinds, which a test holds. A plugin's or pipeline's parameters are CUBE's, and the ChRIS backend completes them through its own completion hooks.
+
+A pure function turns a declaration into JSON Schema, one tool per command and per subcommand (`commandSchema.ts`): the vocabulary an assistant is jailed to, arguments included.
+
+A command whose arguments form an expression language declares `grammar: 'expression'` instead, keeps its own parser and completion, and receives its words after references expand.
+
+Line-level syntax (pipes, `>`, `&`, `as <name>`) is the engine's and is handled before a command's line is parsed; a declaration describes only its command's own words.
 
 ==== Consequence for machine assistance
 
@@ -184,7 +201,7 @@ Six breaches were known at the time of writing. One is now closed.
 
 *1. Status output crosses the wire as terminal escapes.* [.line-through]#`packages/brasa/src/lib/spinner.ts` wrote `\r\x1b[K<frame>` to the status channel, plus cursor hide and show, so every attached surface received terminal choreography whether or not it was a terminal.# *Closed by issue #221.* The spinner announces `operation: task`, `kind: inspection`, `phase: working` and each surface draws waiting in its own idiom: `chell` spins a braille frame on its status stream, `argus` spins a CSS element in a live region. Elapsed time moved to the renderers, which also collapsed a spin from twelve wire messages a second to two for the whole operation. `scripts/wire-escapes.mjs` holds the count at zero.
 
-*2. Commands are declared twice.* 51 commands are bound under 67 names in `ENVELOPE_HANDLERS`, with a separate, unlinked `helpText` table beside it. The drift this produced is closed — every command now carries help — but the duplication that caused it remains: nothing keeps the two tables in step except a check, and the alias relationship between names exists only implicitly, as two keys sharing a handler. Violates <<one-declaration>>. *Resolution: unify into one declaration per builtin — issue #222.*
+*2. Commands are declared twice.* Builtins are bound by name in their groups' `envelope` and `plain` records, with a separate, unlinked `helpText` table beside them. The drift this produced is closed — every command carries help — but the duplication that caused it remains for every builtin not yet declared: nothing keeps the two tables in step except a check, and the alias relationship between names exists only implicitly, as two keys sharing a handler. Violates <<one-declaration>>. *Resolution: one declaration per builtin (<<the-declaration>>), issue #222, partly done.* The framework stands, and `ls`, `download` and `berth` are declared in one record each. The other 133 builtins, aliases resolved, are counted by `scripts/command-migration.mjs`, a ratchet that may only fall as each `help` category migrates; `scripts/expression-grammars.mjs` counts the commands that parse an expression language of their own (none yet; `find` is to be the first).
 
 *3. `calypso` knows a surface by name.* The daemon resolves `apps/argus/dist` as a literal path fragment. `brasa` is the kernel, so this is not a strict <<kernel-isolation>> breach — but it is surface knowledge in a layer that claims to have none, and `bundledWebRoot_find` deepened it. *Noted, not resolved: surface registration is more machinery than this problem currently deserves. Revisit when a second web surface exists.*
 
@@ -204,12 +221,14 @@ Patterned on `scripts/cast-ratchet.mjs`: a count that may only fall, where CI re
 
 | <<kernel-isolation>> | `brasa` imports nothing from `chell`, `calypso`, or `argus` | Hard check | `lint:kernel`
 | <<one-declaration>> | Every command has a declaration, aliases resolved | Ratchet, baseline 0 | `lint:commands`
+| <<one-declaration>> | Builtins not declared in one record, aliases resolved | Ratchet, baseline 133 | `lint:migration`
+| <<one-declaration>> | Commands declaring an expression grammar of their own | Ratchet, baseline 0 | `lint:expressions`
 | Prompt parity (violation 4) | `argus` glyphs and palette match `theme_p10k.ts` | Hard check | `lint:prompt`
 | <<surfaces-are-views>> | Sink writes carrying `\r` or `\x1b` | Ratchet, baseline 4 | `lint:wire`
 | <<intent-equivalence>>, <<degradation>> | Human judgement, cited in review | Review only | —
 |===
 
-All four run in CI on every pull request, beside the cast ratchet. A ratchet that finds fewer than its baseline also fails, with instructions to lower the baseline in the same change, so an improvement locks in rather than eroding quietly.
+Every row with a script runs in CI on every pull request, beside the cast ratchet. A ratchet that finds fewer than its baseline also fails, with instructions to lower the baseline in the same change, so an improvement locks in rather than eroding quietly.
 
 The last row is not an admission of defeat. Neither mechanizes without inventing a great deal of machinery to catch very little, and a check that fires spuriously is a check that gets deleted.
 

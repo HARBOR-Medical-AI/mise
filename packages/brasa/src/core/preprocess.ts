@@ -12,34 +12,27 @@ import { Result, Ok, Err, errorStack } from '@fnndsc/fond';
 import { backslash_escapesNext } from '../lib/quoting.js';
 
 /**
- * Determines whether an argument belongs to the CFS/VFS shell namespace.
+ * Determines whether an argument of a command not yet declared belongs to the
+ * CFS/VFS shell namespace. A declared command never asks: its grammar says
+ * which operands glob (core/commandParse.ts), and each command leaves this
+ * table as it is declared.
  *
- * Ordinary ChELL words expand before dispatch. Transfer commands mark their
- * host-local operands as a different realm: upload owns host-source expansion,
- * while download keeps its final host destination literal.
+ * Ordinary ChELL words expand before dispatch. `upload` marks its host-local
+ * operands as a different realm and owns host-source expansion.
  *
  * @param command - Command word being executed.
- * @param index - Zero-based argument position before expansion.
- * @param argumentCount - Number of arguments before expansion.
- * @param args - Argument values before expansion.
+ * @param _index - Zero-based argument position before expansion.
+ * @param _argumentCount - Number of arguments before expansion.
+ * @param _args - Argument values before expansion.
  * @returns True if the word is eligible for CFS/VFS pathname expansion.
  */
 export function pathnameExpansion_isEligible(
   command: string,
-  index: number,
-  argumentCount: number,
-  args: readonly string[] = [],
+  _index: number,
+  _argumentCount: number,
+  _args: readonly string[] = [],
 ): boolean {
-  if (command === 'upload') return false;
-  if (command === 'download') {
-    const positionalIndexes: number[] = args.reduce((indexes: number[], arg: string, argIndex: number): number[] => {
-      if (arg !== '-f' && arg !== '--force') indexes.push(argIndex);
-      return indexes;
-    }, []);
-    const destinationIndex: number | undefined = positionalIndexes.at(-1);
-    return destinationIndex !== undefined && index !== destinationIndex && positionalIndexes.includes(index);
-  }
-  return true;
+  return command !== 'upload';
 }
 
 /**

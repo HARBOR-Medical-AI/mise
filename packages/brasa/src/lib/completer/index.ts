@@ -1,19 +1,20 @@
 /**
  * @file REPL Autocompletion.
  *
- * Provides tab-completion logic for the REPL, including built-in commands
- * and path completion.
+ * Provides tab-completion logic for the REPL: command words, then a
+ * declared command's line from its declaration (subcommands, options, and
+ * values by kind, `declared.ts`), and for a command not yet declared the
+ * older rules: a backend's option hook, a CFS path for the commands that
+ * take one, and a backend's `/bin` entries.
  *
  * @module
  */
-import { session } from '../../session/index.js';
-import type { ListingItem } from '@fnndsc/menu';
-import { listingItemsFromVfs_make } from '../vfs/listing.js';
-import { partialPath_split, completions_build } from './pathComplete.helpers.js';
-import { backendInstalled_get, type ListingCache } from '../../core/backend.js';
-import { listingCache_get, vfsDispatcher_get } from '../../core/filesystem.js';
-import * as path from 'path';
+import { backendInstalled_get } from '../../core/backend.js';
 import { builtinCommands_list } from '../../builtins/help.js';
+import { commandDeclaration_get } from '../../core/commandRegistry.js';
+import type { AnyCommandDeclaration } from '../../core/commandDeclaration.js';
+import { cfsPaths_complete } from './cfsPaths.js';
+import { declaredWord_complete } from './declared.js';
 import { args_tokenize } from '../parser.js';
 import { backslash_escapesNext } from '../quoting.js';
 
@@ -107,6 +108,12 @@ export function input_complete(line: string, callback: CompleterCallback): void 
     return;
   }
 
+  const declaration: AnyCommandDeclaration | undefined = commandDeclaration_get(args[0] ?? '');
+  if (declaration !== undefined) {
+    declaredLine_complete(line, args, declaration, callback);
+    return;
+  }
+
   const compoundWord: CompletionWord = completionWord_get(line);
   const options: ((args: string[], word: string) => Promise<string[] | null>) | undefined = backendInstalled_get()?.completion?.options;
   if (compoundWord.value.startsWith('--') && options !== undefined) {
@@ -124,6 +131,24 @@ export function input_complete(line: string, callback: CompleterCallback): void 
 }
 
 /**
+ * Completes the word being typed in a declared command's line, from its
+ * declaration.
+ *
+ * @param line - The input line.
+ * @param args - Its words.
+ * @param declaration - The command's declaration.
+ * @param callback - Where the completions go.
+ */
+function declaredLine_complete(line: string, args: string[], declaration: AnyCommandDeclaration, callback: CompleterCallback): void {
+  const word: CompletionWord = completionWord_get(line);
+  const typing: boolean = !/\s$/.test(line);
+  const prior: string[] = args.slice(1, typing ? -1 : undefined);
+  declaredWord_complete(declaration, prior, word.value).then((found: string[]): void => {
+    callback(null, [found.map((candidate: string): string => completion_format(candidate, word)), word.raw]);
+  }).catch((): void => callback(null, [[], word.raw]));
+}
+
+/**
  * Completes an argument: a path, for the commands that take one.
  *
  * @param line - The input line.
@@ -136,7 +161,7 @@ function argumentCompletion_run(line: string, args: string[], callback: Complete
   const pathWord_complete = (): void => {
     const word: CompletionWord = completionWord_get(line);
 
-    path_complete(word.value).then((matches) => {
+    cfsPaths_complete(word.value).then((matches) => {
         callback(null, [matches.map((match: string) => completion_format(match, word)), word.raw]);
     }).catch((err) => {
         // On error, return no matches, don't crash REPL
@@ -164,77 +189,8 @@ function argumentCompletion_run(line: string, args: string[], callback: Complete
   callback(null, [[], line]);
 }
 
-/** The commands whose arguments are paths. */
-const PATH_COMMANDS: ReadonlyArray<string> = ['cd', 'ls', 'mkdir', 'rmdir', 'chmod', 'touch', 'cat', 'edit', 'cp', 'mv', 'rm', 'upload', 'download', 'du', 'find', 'tree', 'wc', 'head', 'tail', 'sort', 'uniq', 'cut', 'pull', 'cubepath', 'query', 'image', 'dcm'];
-
-/**
- * Resolves directory contents for completion.
- * @param partial - The partial path string typed so far.
- */
-async function path_complete(partial: string): Promise<string[]> {
-  // 1. Handle ~ expansion for the partial path base
-  let effectivePartial: string = partial;
-
-  if (partial.startsWith('~')) {
-    const home: string = (await backendInstalled_get()?.session.home_get()) ?? '/';
-    if (partial === '~' || partial === '~/') {
-      effectivePartial = home + (partial.endsWith('/') ? '/' : '');
-    } else if (partial.startsWith('~/')) {
-      effectivePartial = path.posix.join(home, partial.substring(2));
-    }
-  }
-
-  // Resolve the directory to list and the prefix to match
-  const { dirToList, prefix } = partialPath_split(effectivePartial);
-
-  // 2. Resolve absolute path for listing
-  let absDirToList: string;
-  if (dirToList.startsWith('/')) {
-    absDirToList = dirToList;
-  } else {
-    const cwd: string = await session.getCWD();
-    absDirToList = dirToList ? path.posix.resolve(cwd, dirToList) : cwd;
-  }
-
-  // 3. Fetch contents (check cache first)
-  let items: ListingItem[] = [];
-  const listCache: ListingCache = listingCache_get();
-
-  // Check cache first
-  const cached = listCache.cache_get<ListingItem[]>(absDirToList);
-  if (cached) {
-    items = cached.data;
-  } else {
-    try {
-      // The session's filesystem answers every path: the backend's mounts and fallback, and the core's.
-      const vfsResult = await vfsDispatcher_get().list(absDirToList);
-      if (vfsResult.ok) {
-        items = listingItemsFromVfs_make(vfsResult.value);
-      }
-
-      // Names completed at the root even when its listing lacks them.
-      if (absDirToList === '/' || absDirToList === '') {
-        const hasItem = (name: string) => items.some((i: ListingItem) => i.name === name);
-        for (const name of backendInstalled_get()?.completion?.rootWords ?? ['usr']) {
-          if (!hasItem(name)) {
-            items.push({ name, type: 'vfs', size: 0, owner: 'root', date: new Date().toISOString() });
-          }
-        }
-      }
-
-      // Cache the results
-      if (items.length > 0) {
-        listCache.cache_set(absDirToList, items);
-      }
-    } catch (e: unknown) {
-      // Ignore errors (e.g., perms, not a dir)
-    }
-  }
-
-  // 4. Filter and format matches, preserving the original partial's style
-  // (tilde/relative) and appending "/" to directory-like entries.
-  return completions_build(items, prefix, partial);
-}
+/** The commands not yet declared whose arguments are paths; a declared command leaves it, its kinds saying which words are paths. */
+const PATH_COMMANDS: ReadonlyArray<string> = ['cd', 'mkdir', 'rmdir', 'chmod', 'touch', 'cat', 'edit', 'cp', 'mv', 'rm', 'upload', 'du', 'find', 'tree', 'wc', 'head', 'tail', 'sort', 'uniq', 'cut', 'pull', 'cubepath', 'query', 'image', 'dcm'];
 
 /**
  * Command words beyond the registry's, from the backend (ChRIS: its plugins).

@@ -893,10 +893,12 @@ describe('Builtins - Core Functions', () => {
       } as never);
     };
 
-    it('should show usage with insufficient args', async () => {
+    it('refuses a line with no destination, with the usage, before anything runs', async () => {
       const envelope = await builtin_download(['remote.txt']);
 
-      expect(envelope.rendered).toContain('Usage: download');
+      expect(envelope.status).toBe('error');
+      expect(envelope.renderedErr).toContain('download: missing operand <destination>; usage: download [-f] <source…> <destination>');
+      expect(mockChefsDownload).not.toHaveBeenCalled();
     });
 
     it('should invoke chili download helper', async () => {

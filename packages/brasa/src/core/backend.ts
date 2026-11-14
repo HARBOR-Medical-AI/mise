@@ -17,6 +17,7 @@ import type { PromptContext, CubeTelemetry, JobsStateTelemetry, CommandEnvelope,
 import type { ReferenceValue } from '../lib/parser.js';
 import type { ListingLook, VFSDispatcher } from '@fnndsc/fond';
 import type { ListingItem } from '@fnndsc/menu';
+import type { ArgumentKind } from './argumentKinds.js';
 
 /**
  * Who a session is and where: the input a host keys the session by (calypso's
@@ -338,6 +339,8 @@ export interface Backend {
   readonly vfs?: BackendFilesystem;
   /** What it adds to completion. */
   readonly completion?: BackendCompletion;
+  /** The argument kinds its commands declare beside the core's (ChRIS: an anchor's name); a kind is found among the core's first. */
+  readonly argumentKinds?: ReadonlyArray<ArgumentKind>;
   /** How its listings show: the kinds it lists beside the core's, and how a name is coloured. */
   readonly listingLook?: ListingLook;
   /** Whether the backend is debugging (error messages keep their function stamp), or null before it can say. */

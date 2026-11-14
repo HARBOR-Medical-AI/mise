@@ -13,7 +13,7 @@
  * @module
  */
 import { commandCancellation_enable, commandCancellation_signalGet } from './cancellation.js';
-import { commands_register, commandOrder_set, envelopeHandler_get, plainHandler_get, builtinCommand_has, type CommandHandler, type EnvelopeHandler } from './commandRegistry.js';
+import { commands_register, commandOrder_set, envelopeHandler_get, plainHandler_get, builtinCommand_has, commandDeclaration_get, type CommandHandler, type EnvelopeHandler } from './commandRegistry.js';
 import { coreCommands } from './coreCommands.js';
 import { ENVELOPE_ORDER, PLAIN_ORDER, HELP_ORDER } from './commandOrder.js';
 
@@ -287,13 +287,6 @@ async function helpEnvelope_maybe(command: string, args: string[]): Promise<Comm
 }
 
 /**
- * Expands eligible shell words in the ChELL CFS/VFS namespace.
- *
- * @param command - Command word being executed.
- * @param args - Parsed argument words.
- * @returns Expanded compatibility arguments with expansion provenance.
- */
-/**
  * Resolves the references in a whole command line, the command word included.
  *
  * A shell runs `$CMD arg`, and a manifest names its plugin as a parameter
@@ -326,6 +319,17 @@ async function commandLine_referencesExpand(words: readonly ShellWord[]): Promis
   return Ok(expanded.words);
 }
 
+/**
+ * Expands a line's words for a command not yet declared: every word but the
+ * ones the glob-eligibility table excludes has its wildcards matched. A
+ * declared command's words pass unglobbed, quoting kept: its line is parsed
+ * against its grammar first, and only its path operands that declare `glob`
+ * expand (core/commandParse.ts), so a glob never turns into an option.
+ *
+ * @param command - The command word (`sudo` names the one after it).
+ * @param args - The words after it, references expanded.
+ * @returns The arguments, carrying their words.
+ */
 async function commandWords_expand(
   command: string,
   args: readonly ShellWord[],
@@ -334,6 +338,9 @@ async function commandWords_expand(
   const targetCommand: string = sudoNestedCommand?.value ?? command;
 
   const targetArgs: readonly ShellWord[] = sudoNestedCommand ? args.slice(1) : args;
+  if (commandDeclaration_get(targetCommand) !== undefined) {
+    return Ok(shellWords_values(sudoNestedCommand ? [sudoNestedCommand, ...targetArgs] : targetArgs));
+  }
   const values: string[] = targetArgs.map((word: ShellWord): string => word.value);
   const result: Result<ShellWord[]> = await shellWords_expand(
     targetArgs,

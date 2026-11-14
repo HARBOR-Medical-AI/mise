@@ -40,6 +40,11 @@ export interface ShellWord {
 export type ShellArguments = string[] & {
   pathnameExpanded?: readonly boolean[];
   pathnameExpansion?: readonly boolean[];
+  /**
+   * The words themselves, quoting kept, for a declared command: its operands
+   * expand by kind after the line is parsed, so its words reach it unglobbed.
+   */
+  words?: readonly ShellWord[];
 };
 
 /**
@@ -112,6 +117,7 @@ export function shellWords_values(words: readonly ShellWord[]): ShellArguments {
     value: words.map((word: ShellWord): boolean => word.pathnameExpansion),
     enumerable: false,
   });
+  Object.defineProperty(values, 'words', { value: [...words], enumerable: false });
   return values;
 }
 
@@ -181,6 +187,7 @@ export function shellArguments_slice(args: readonly string[], start: number): Sh
     value: source.pathnameExpansion?.slice(start),
     enumerable: false,
   });
+  Object.defineProperty(values, 'words', { value: source.words?.slice(start), enumerable: false });
   return values;
 }
 
