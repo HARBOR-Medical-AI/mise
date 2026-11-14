@@ -55,7 +55,7 @@ async function workflowFields_render(): Promise<CommandEnvelope> {
 
 /** What a `workflow` line may hold. */
 const WORKFLOW_GRAMMAR = {
-  bare: { summary: 'List the first page of workflows' },
+  bare: { summary: 'List the workflows, as list does', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
   subcommands: {
     list: { summary: 'List the workflows, 20 to a page', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
     search: {
@@ -75,7 +75,7 @@ const WORKFLOW_GRAMMAR = {
  */
 async function workflow_run(args: CommandArguments<typeof WORKFLOW_GRAMMAR>): Promise<CommandEnvelope> {
   switch (args.subcommand) {
-    case null: return workflowList_render({});
+    case null:
     case 'list': return workflowList_render(resourceListBag_build(args.options));
     case 'search': return workflowList_render(resourceListBag_build(args.options, args.operands.term));
     case 'inspect': return workflowFields_render();
@@ -83,7 +83,7 @@ async function workflow_run(args: CommandArguments<typeof WORKFLOW_GRAMMAR>): Pr
 }
 
 /**
- * `workflow [list [listing options] | search <term> [listing options] | inspect]`: the declaration.
+ * `workflow [[listing options] | list [listing options] | search <term> [listing options] | inspect]`: the declaration.
  *
  * @example
  * ```ts

@@ -98,7 +98,7 @@ const COMPUTE_SHAPE_OPTIONS = {
 
 /** What a `compute` line may hold. */
 const COMPUTE_GRAMMAR = {
-  bare: { summary: 'List every compute resource' },
+  bare: { summary: 'List every compute resource, as list does', options: COMPUTE_SHAPE_OPTIONS },
   subcommands: {
     list: { summary: 'List every compute resource', options: COMPUTE_SHAPE_OPTIONS },
     search: {
@@ -118,7 +118,7 @@ const COMPUTE_GRAMMAR = {
  */
 async function compute_run(args: CommandArguments<typeof COMPUTE_GRAMMAR>): Promise<CommandEnvelope> {
   switch (args.subcommand) {
-    case null: return computeList_answer({ table: false, csv: false });
+    case null:
     case 'list': return computeList_answer(args.options);
     case 'search': return computeList_answer(args.options, args.operands.term);
     case 'inspect': return computeFields_render();
@@ -126,7 +126,7 @@ async function compute_run(args: CommandArguments<typeof COMPUTE_GRAMMAR>): Prom
 }
 
 /**
- * `compute [list [--table] [--csv] | search <term> [--table] [--csv] | inspect]`: the declaration.
+ * `compute [[--table] [--csv] | list [--table] [--csv] | search <term> [--table] [--csv] | inspect]`: the declaration.
  *
  * @example
  * ```ts

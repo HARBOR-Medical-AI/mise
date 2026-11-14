@@ -94,14 +94,15 @@ class LineRefusal extends Error {
 }
 
 /**
- * The options in reach once a subcommand is chosen: its own, then the command's.
+ * The options in reach once a subcommand is chosen, or none is: its own (the
+ * bare command's for none), then the command's.
  *
  * @param grammar - The command's grammar.
- * @param subcommand - The subcommand's grammar, or null.
+ * @param subcommand - The subcommand's grammar, or null for the bare command.
  * @returns The options.
  */
 function optionEntries_list(grammar: CommandGrammar, subcommand: SubcommandGrammar | null): OptionEntry[] {
-  const own: OptionsGrammar = subcommand?.options ?? {};
+  const own: OptionsGrammar = subcommand === null ? (grammar.bare?.options ?? {}) : (subcommand.options ?? {});
   const command: OptionsGrammar = grammar.options ?? {};
   return [...Object.entries(own), ...Object.entries(command)]
     .map(([key, option]: [string, OptionGrammar]): OptionEntry => ({ key, option }));
@@ -220,16 +221,25 @@ function shortOptions_read(words: readonly ShellWord[], at: number, walk: ShapeW
  * @param word - The word.
  * @param walk - Where the parse stands.
  * @param operands - The operands so far.
- * @throws {LineRefusal} For a word that names no subcommand of a command that takes no bare operand.
+ * @param options - The options so far, which a chosen subcommand must take.
+ * @throws {LineRefusal} For a word that names no subcommand of a command that takes no bare operand, or a subcommand that does not take an option given before it.
  */
-function plainWord_take(grammar: CommandGrammar, word: ShellWord, walk: ShapeWalk, operands: ShellWord[]): void {
+function plainWord_take(grammar: CommandGrammar, word: ShellWord, walk: ShapeWalk, operands: ShellWord[], options: Map<string, true | string[]>): void {
   const subcommands: Readonly<Record<string, SubcommandGrammar>> | undefined = grammar.subcommands;
   if (subcommands !== undefined && walk.subcommand === null && operands.length === 0 && !walk.optionsEnded) {
     const chosen: SubcommandGrammar | undefined = Object.hasOwn(subcommands, word.value) ? subcommands[word.value] : undefined;
     if (chosen !== undefined) {
+      const entries: OptionEntry[] = optionEntries_list(grammar, chosen);
+      // An option the bare command takes, given before a subcommand that does not take it, is refused, not dropped.
+      for (const key of options.keys()) {
+        if (entries.some((entry: OptionEntry): boolean => entry.key === key)) continue;
+        const given: OptionGrammar | undefined = walk.entries.find((entry: OptionEntry): boolean => entry.key === key)?.option;
+        const name: string = given?.long !== undefined ? `--${given.long}` : `-${given?.short ?? key}`;
+        throw new LineRefusal(`option '${name}' is not one ${word.value} takes`, word.value);
+      }
       walk.subcommand = word.value;
       walk.scope = chosen;
-      walk.entries = optionEntries_list(grammar, chosen);
+      walk.entries = entries;
       return;
     }
     if ((grammar.operands ?? []).length === 0) {
@@ -258,7 +268,7 @@ function lineShape_parse(grammar: CommandGrammar, words: readonly ShellWord[]): 
     const text: string = word.value;
     const reach: readonly OperandGrammar[] = walk.scope?.operands ?? grammar.operands ?? [];
     if (walk.optionsEnded) {
-      plainWord_take(grammar, word, walk, operands);
+      plainWord_take(grammar, word, walk, operands, options);
       at += 1;
     } else if (text === '--') {
       walk.optionsEnded = true;
@@ -268,7 +278,7 @@ function lineShape_parse(grammar: CommandGrammar, words: readonly ShellWord[]): 
     } else if (text.startsWith('-') && text.length > 1 && !(NEGATIVE_NUMBER.test(text) && operands_takeNumbers(reach))) {
       at = shortOptions_read(words, at, walk, options);
     } else {
-      plainWord_take(grammar, word, walk, operands);
+      plainWord_take(grammar, word, walk, operands, options);
       at += 1;
     }
   }

@@ -54,7 +54,7 @@ async function tagFields_render(): Promise<CommandEnvelope> {
 
 /** What a `tag` line may hold. */
 const TAG_GRAMMAR = {
-  bare: { summary: 'List the first page of tags' },
+  bare: { summary: 'List the tags, as list does', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
   subcommands: {
     list: { summary: 'List the tags, 20 to a page', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
     search: {
@@ -74,7 +74,7 @@ const TAG_GRAMMAR = {
  */
 async function tag_run(args: CommandArguments<typeof TAG_GRAMMAR>): Promise<CommandEnvelope> {
   switch (args.subcommand) {
-    case null: return tagList_render({});
+    case null:
     case 'list': return tagList_render(resourceListBag_build(args.options));
     case 'search': return tagList_render(resourceListBag_build(args.options, args.operands.term));
     case 'inspect': return tagFields_render();
@@ -82,7 +82,7 @@ async function tag_run(args: CommandArguments<typeof TAG_GRAMMAR>): Promise<Comm
 }
 
 /**
- * `tag [list [listing options] | search <term> [listing options] | inspect]`: the declaration.
+ * `tag [[listing options] | list [listing options] | search <term> [listing options] | inspect]`: the declaration.
  *
  * @example
  * ```ts

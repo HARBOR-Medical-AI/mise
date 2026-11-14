@@ -55,7 +55,7 @@ async function pluginmetaFields_render(): Promise<CommandEnvelope> {
 
 /** What a `pluginmeta` line may hold. */
 const PLUGINMETA_GRAMMAR = {
-  bare: { summary: 'List the first page of plugin metas' },
+  bare: { summary: 'List the plugin metas, as list does', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
   subcommands: {
     list: { summary: 'List the plugin metas, 20 to a page', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
     search: {
@@ -75,7 +75,7 @@ const PLUGINMETA_GRAMMAR = {
  */
 async function pluginmeta_run(args: CommandArguments<typeof PLUGINMETA_GRAMMAR>): Promise<CommandEnvelope> {
   switch (args.subcommand) {
-    case null: return pluginmetaList_render({});
+    case null:
     case 'list': return pluginmetaList_render(resourceListBag_build(args.options));
     case 'search': return pluginmetaList_render(resourceListBag_build(args.options, args.operands.term));
     case 'inspect': return pluginmetaFields_render();
@@ -83,7 +83,7 @@ async function pluginmeta_run(args: CommandArguments<typeof PLUGINMETA_GRAMMAR>)
 }
 
 /**
- * `pluginmeta [list [listing options] | search <term> [listing options] | inspect]`: the declaration.
+ * `pluginmeta [[listing options] | list [listing options] | search <term> [listing options] | inspect]`: the declaration.
  *
  * @example
  * ```ts

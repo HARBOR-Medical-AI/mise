@@ -219,10 +219,31 @@ describe('the declared resource commands', () => {
     expect(computeCommand.holds).toBeUndefined();
   });
 
-  it('refuses a listing option on the bare command, its usage naming list\'s', async () => {
-    const envelope = await builtin_tag(['--all']);
-    expect(envelope.renderedErr).toContain("tag: unrecognized option '--all'; usage: tag [list [--all]");
+  it('takes the listing options bare, as list does: jobs --all is jobs list --all', async () => {
+    mockInstancesList.mockResolvedValue({ pluginInstances: [{ id: 1 }], selectedFields: ['id'], totalCount: 1 });
+    const envelope = await jobsCommand.handler({ subcommand: null, operands: {}, options: {}, expanded: {} } as never);
+    expect(envelope.status).toBe('ok');
+    await builtin_plugininstance(['--all', '--table', '--limit', '5']);
+    expect(process.exitCode).toBe(0);
+    expect(mockInstancesList).toHaveBeenLastCalledWith({ all: true, table: true, limit: '5' });
+    const { commandUsage_render } = await import('../src/core/commandUsage.js');
+    expect(commandUsage_render(jobsCommand)).toMatch(/^jobs \[\[--all\] \[--reverse\] \[--table\] \[--csv\] .* \| list \[--all\]/);
+  });
+
+  it('refuses a bare option a subcommand does not take, and an unknown one bare, with the usage', async () => {
+    const before = await builtin_tag(['--all', 'inspect']);
+    expect(before.renderedErr).toContain("tag: inspect: option '--all' is not one inspect takes; usage: tag inspect");
+    process.exitCode = 0;
+    const unknown = await builtin_tag(['--feed', '5536']);
+    expect(unknown.renderedErr).toContain("tag: unrecognized option '--feed'; usage: tag [[--all]");
+    expect(process.exitCode).toBe(1);
     expect(mockTagsList).not.toHaveBeenCalled();
+  });
+
+  it('takes a listing option given before list, as list\'s', async () => {
+    mockTagsList.mockResolvedValue({ tags: [{ id: 1 }], selectedFields: ['id'], totalCount: 1 });
+    await builtin_tag(['--all', 'list', '--sort', 'name']);
+    expect(mockTagsList).toHaveBeenLastCalledWith({ all: true, sort: 'name' });
   });
 });
 

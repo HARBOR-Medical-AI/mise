@@ -229,7 +229,7 @@ async function groupMembership_change(reference: string, usernames: string[], op
 
 /** What a `group` line may hold. */
 const GROUP_GRAMMAR = {
-  bare: { summary: 'List the first page of groups' },
+  bare: { summary: 'List the groups, as list does', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
   subcommands: {
     list: { summary: 'List the groups, 20 to a page', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
     search: {
@@ -252,7 +252,7 @@ const GROUP_GRAMMAR = {
  */
 async function group_run(args: CommandArguments<typeof GROUP_GRAMMAR>): Promise<CommandEnvelope> {
   switch (args.subcommand) {
-    case null: return groupList_render({});
+    case null:
     case 'list': return groupList_render(resourceListBag_build(args.options));
     case 'search': {
       const term: string = args.operands.term;

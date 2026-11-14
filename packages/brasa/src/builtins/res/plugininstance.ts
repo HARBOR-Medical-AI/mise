@@ -118,7 +118,7 @@ const JOB_ID_OPERANDS = [{ name: 'id', kind: 'word', optional: true, summary: "T
 
 /** What a `plugininstance` line may hold. */
 const PLUGININSTANCE_GRAMMAR = {
-  bare: { summary: 'List the first page of plugin instances' },
+  bare: { summary: 'List the plugin instances, as list does', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
   subcommands: {
     list: { summary: 'List the plugin instances, 20 to a page', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
     search: {
@@ -145,7 +145,7 @@ const PLUGININSTANCE_GRAMMAR = {
  */
 async function plugininstance_run(args: CommandArguments<typeof PLUGININSTANCE_GRAMMAR>): Promise<CommandEnvelope> {
   switch (args.subcommand) {
-    case null: return plugininstanceList_render({});
+    case null:
     case 'list': return plugininstanceList_render(resourceListBag_build(args.options));
     case 'search': return plugininstanceList_render(resourceListBag_build(args.options, args.operands.term));
     case 'inspect': return plugininstanceFields_render();
@@ -154,7 +154,7 @@ async function plugininstance_run(args: CommandArguments<typeof PLUGININSTANCE_G
 }
 
 /**
- * `plugininstance [list [listing options] | search <term> [listing options] | inspect | <job verb> [id]]`: the declaration.
+ * `plugininstance [[listing options] | list [listing options] | search <term> [listing options] | inspect | <job verb> [id]]`: the declaration.
  *
  * @example
  * ```ts

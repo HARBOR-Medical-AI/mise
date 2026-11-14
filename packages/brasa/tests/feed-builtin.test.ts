@@ -100,10 +100,13 @@ beforeEach(() => {
 });
 
 describe('builtin_feed', () => {
-  it('refuses a line with no subcommand, with the usage', async () => {
-    const env = await builtin_feed([]);
-    expect(env.status).toBe('error');
-    expect(env.renderedErr).toContain('feed: missing subcommand (list, search, inspect, create, note, comments, comment, rm, tree, diagram, share); usage: feed <list');
+  it('lists the feeds bare, with the listing options list takes: feeds --all --user', async () => {
+    mockFeedsList.mockResolvedValue({ feeds: [{ id: 1 }], selectedFields: ['id'], totalCount: 1 });
+    const env = await builtin_feed(['--all', '--user', 'radstar']);
+    expect(env.rendered).toContain('FEED_LIST');
+    expect(mockFeedsList).toHaveBeenCalledWith({ all: true, user: 'radstar' });
+    const bare = await builtin_feed(['--frob']);
+    expect(bare.renderedErr).toContain("feed: unrecognized option '--frob'; usage: feed [[--all]");
   });
 
   it('lists feeds', async () => {

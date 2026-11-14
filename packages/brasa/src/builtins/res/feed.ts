@@ -279,17 +279,21 @@ const TEXT_OPTIONS = {
   content: { long: 'content', summary: 'The text', value: { name: 'text', kind: 'word' } },
 } as const;
 
+/** A feed listing's options: every resource listing's, and whose feeds. */
+const FEED_LIST_OPTIONS = {
+  ...RESOURCE_LIST_OPTIONS_GRAMMAR,
+  user: { long: 'user', summary: "Only this user's feeds (an administrator)", value: { name: 'username', kind: 'word' } },
+} as const;
+
 /** What a `feed` line may hold. */
 const FEED_GRAMMAR = {
+  bare: { summary: 'List the feeds, as list does', options: FEED_LIST_OPTIONS },
   subcommands: {
-    list: {
-      summary: 'List the feeds, 20 to a page',
-      options: { ...RESOURCE_LIST_OPTIONS_GRAMMAR, user: { long: 'user', summary: "Only this user's feeds (an administrator)", value: { name: 'username', kind: 'word' } } },
-    },
+    list: { summary: 'List the feeds, 20 to a page', options: FEED_LIST_OPTIONS },
     search: {
       summary: 'List the feeds a filter matches (list --search <term>)',
       operands: [{ name: 'term', kind: 'word', summary: 'The filter, field:value, or part of a name' }],
-      options: { ...RESOURCE_LIST_OPTIONS_GRAMMAR, user: { long: 'user', summary: "Only this user's feeds (an administrator)", value: { name: 'username', kind: 'word' } } },
+      options: FEED_LIST_OPTIONS,
     },
     inspect: { summary: 'Name the fields a feed has' },
     create: {
@@ -345,6 +349,7 @@ const FEED_GRAMMAR = {
 async function feed_run(args: CommandArguments<typeof FEED_GRAMMAR>): Promise<CommandEnvelope> {
   try {
     switch (args.subcommand) {
+      case null:
       case 'list': return await feedList_handle(resourceListBag_build(args.options, undefined, args.options.user !== undefined ? { user: args.options.user } : {}));
       case 'search': return await feedList_handle(resourceListBag_build(args.options, args.operands.term, args.options.user !== undefined ? { user: args.options.user } : {}));
       case 'inspect': return await feedInspect_handle();
@@ -373,7 +378,7 @@ async function feed_run(args: CommandArguments<typeof FEED_GRAMMAR>): Promise<Co
 }
 
 /**
- * `feed <list | search | inspect | create | note | comments | comment | rm | tree | diagram> …`: the declaration.
+ * `feed [[listing options] | list | search | inspect | create | note | comments | comment | rm | tree | diagram] …`: the declaration.
  *
  * @example
  * ```ts

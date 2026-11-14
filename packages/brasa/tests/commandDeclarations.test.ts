@@ -275,6 +275,51 @@ describe('the migrated commands parse as they did', () => {
   });
 });
 
+describe('a bare command with options of its own', () => {
+  const BARE_GRAMMAR = {
+    options: { verbose: { short: 'v', long: 'verbose', summary: 'Say more' } },
+    bare: { summary: 'List the first page', options: { all: { long: 'all', summary: 'Every page' }, limit: { long: 'limit', summary: 'Page size', value: { name: 'n', kind: 'int', min: 1 } } } },
+    subcommands: {
+      list: { summary: 'List', options: { all: { long: 'all', summary: 'Every page' } } },
+      inspect: { summary: 'The fields' },
+    },
+  } as const;
+  const bareCommand = command_declare({
+    name: 'pile',
+    grammar: BARE_GRAMMAR,
+    help: { summary: 'Pile', description: 'Piles.' },
+    handler: async (args): Promise<CommandEnvelope> => ({
+      status: 'ok',
+      rendered: args.subcommand === null ? `bare ${args.options.all} ${args.options.limit ?? '-'} ${args.options.verbose}\n` : `${args.subcommand}\n`,
+    }),
+  });
+
+  it('parses its own options beside the command\'s, and hands them to the handler typed', async () => {
+    expect((await declaredCommand_run(bareCommand, ['--all', '--limit', '5', '-v'])).rendered).toBe('bare true 5 true\n');
+    expect((await declaredCommand_run(bareCommand, [])).rendered).toBe('bare false - false\n');
+    expect((await declaredCommand_run(bareCommand, ['--all', 'list'])).rendered).toBe('list\n');
+  });
+
+  it('refuses an option it does not take, and one of its own a subcommand given after it does not take', async () => {
+    expect(await refusal_get(bareCommand, '--nosuch')).toBe("pile: unrecognized option '--nosuch'; usage: pile [-v] [[--all] [--limit <n>] | list [--all] | inspect]");
+    expect(await refusal_get(bareCommand, '--limit 5 list')).toBe("pile: list: option '--limit' is not one list takes; usage: pile list [--all]");
+    expect(await refusal_get(bareCommand, '--limit 0')).toContain("invalid argument '0' for '--limit' (at least 1)");
+  });
+
+  it('completes its own options while no subcommand is typed, and the subcommand\'s after it', async () => {
+    expect(await declaredWord_complete(bareCommand, [], '--')).toEqual(['--all', '--limit', '--verbose']);
+    expect(await declaredWord_complete(bareCommand, ['inspect'], '--')).toEqual(['--verbose']);
+  });
+
+  it('shows its options beneath (none) in help, and in its tool\'s schema', () => {
+    const help = declarationHelp_derive(bareCommand);
+    expect(help.options?.[1]).toMatch(/^ {2}\(none\)\s{2,}List the first page$/);
+    expect(help.options?.[2]).toMatch(/^ {4}--all\s{2,}Every page$/);
+    const [bare] = commandTools_derive(bareCommand);
+    expect(Object.keys(bare?.inputSchema['properties'] as Record<string, unknown>)).toEqual(['verbose', 'all', 'limit']);
+  });
+});
+
 describe('usage and help, generated from the grammar', () => {
   it('writes each migrated command\'s usage line', () => {
     expect(commandUsage_render(lsCommand)).toBe('ls [-l1hfrdaA] [--sort <field>] [path…]');
