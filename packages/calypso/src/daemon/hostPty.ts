@@ -28,10 +28,10 @@ import { HOST_KILL_GRACE_MS } from './hostControl.js';
 import { size_clamp, type PtyProcess, type PtySpawn } from './terminals.js';
 
 /** How long a pty stays quiet after its program exits before the line ends, in ms. */
-const HOST_PTY_DRAIN_QUIET_MS: number = 40;
+const HOST_PTY_DRAIN_QUIET_MS: number = 150;
 
 /** The longest a line waits for a program's last output after it exits, in ms. */
-const HOST_PTY_DRAIN_CEILING_MS: number = 500;
+const HOST_PTY_DRAIN_CEILING_MS: number = 2000;
 
 /** The terminal a surface declared: its type and size in cells. */
 export interface HostPtyTerminal {
