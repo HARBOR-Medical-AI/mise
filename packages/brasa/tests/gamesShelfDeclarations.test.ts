@@ -19,7 +19,7 @@ cuminMock_install(() => ({
   procCache_get: () => ({}),
 }));
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/cat.js', () => ({ files_catBinary: jest.fn(), files_cat: jest.fn() }));
-jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: async (p: string): Promise<string> => p, error_stripDebugPrefix: (s: string): string => s }));
+jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: async (p: string): Promise<string> => p, storePath_resolve: async (p: string): Promise<string> => p, error_stripDebugPrefix: (s: string): string => s }));
 jest.unstable_mockModule('../src/chris/jobsState.js', () => ({ jobsState_derive: () => ({ running: 0, scheduled: 0 }) }));
 jest.unstable_mockModule('../src/builtins/sys/fortune.js', () => ({ fortune_random: () => '' }));
 
