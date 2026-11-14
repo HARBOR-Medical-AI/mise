@@ -1,0 +1,5 @@
+---
+"@fnndsc/brasa": minor
+---
+
+In a berth, `berth close` returns the outgoing folder to ChRIS as one node, with a record of how it was made. It writes `berth.json` into the folder (who, every anchor with its ChRIS path, node and files, the berth, the git commit of the folder the session runs in, the image, the time and where the node goes), uploads the folder to `~/berth/<uuid>/`, and runs `pl-dsdircopy` over it: a child of the node every anchor is under, or a new feed rooted in `pl-dircopy` over every anchored path (over the work itself when there is no anchor). Anchors of two nodes, or of a node and of none, are refused with the two choices, `--infeed <anchor>` and `--newfeed`; `--name` names a new feed and `--title` the node. An empty outgoing folder is refused. When your processes still run in the berth the close lists them with the files they hold open there and asks (`--force` answers). An anchor with no node whose files changed in ChRIS is said and recorded. A node that cannot be made leaves the upload and says `uploaded, not attached` with CUBE's reason. A close removes nothing and records the time `berth clear` reads.

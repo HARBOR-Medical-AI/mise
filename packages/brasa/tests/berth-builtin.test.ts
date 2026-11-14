@@ -500,8 +500,8 @@ describe('berth clear', () => {
 
 describe('berth: subcommands', () => {
   it('refuses one it does not know, with the usage', async () => {
-    const result = await builtin_berth(['close']);
-    expect(strip(result.renderedErr)).toBe('berth: close: unknown subcommand; usage: berth [anchor <path> [name] [--refresh] [--yes] | drop <name> | clear]\n');
+    const result = await builtin_berth(['sail']);
+    expect(strip(result.renderedErr)).toBe('berth: sail: unknown subcommand; usage: berth [anchor <path> [name] [--refresh] [--yes] | close [--infeed <anchor> | --newfeed] [--name <feed>] [--title <text>] [--force] | drop <name> | clear]\n');
     expect(process.exitCode).toBe(1);
   });
 });
