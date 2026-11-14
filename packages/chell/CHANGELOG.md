@@ -1,5 +1,30 @@
 # @fnndsc/chell
 
+## 5.20.10
+
+### Patch Changes
+
+- 3aa9d0e: A berth login is no longer refused while the berth is alive and still warming up.
+
+  A daemon session listens and writes its berth file once it has connected to CUBE and listed `/bin`; the person's feeds, `/PUBLIC`, `/SHARED`, the groups and the PACS query index warm with it already answering, and Engine Ready is said when the last of them settles. While they run, every prompt context names them (`warmupPending`): chell's prompt says `[warming: public queries]` and ARGUS's status strip `WARMING PUBLIC QUERIES`. The berth launcher waits for the berth file as long as the container runs and its log moves, refusing a berth that stopped (with its last lines), one whose log wrote nothing for 90 s, or one still starting after 240 s; a login while a berth runs with no berth file yet joins that wait instead of being refused with `no berth file yet`.
+
+  porter's login page shows a berth's own boot rows as it boots: the launcher follows the berth's log once, for its wait and for the page, and relays each line to porter (a start asked with `?follow=lines` is answered as NDJSON, the lines then the answer); the attach token is taken out by the launcher and again by porter, which settles an open `[PENDING]` row in place as it does for a session beside it. A launcher from before answers plainly and is read as before.
+
+- a1a900b: A full-screen program run with `!` from a remote chell in a terminal now draws, takes keys and quits back to the prompt. A remote chell whose input and output are a terminal declares its type and size on attach (`tty`); the daemon runs that surface's `!` on a pseudo-terminal of its own and relays bytes, keys and window sizes (`hostPtyStart`, `hostPtyData`, `hostPtyExit`, `hostPtyInput`, `hostPtyResize`), and the line ends with the program's exit status. A surface with no terminal keeps pipes, and Neovim there, which would wait forever for a user interface, is refused by name instead of holding the session (#1498).
+- Updated dependencies [dc6d0f9]
+- Updated dependencies [6588983]
+- Updated dependencies [3aa9d0e]
+- Updated dependencies [dc6d0f9]
+- Updated dependencies [c6a97d4]
+- Updated dependencies [a1a900b]
+- Updated dependencies [0728336]
+- Updated dependencies [dc6d0f9]
+  - @fnndsc/argus@0.58.4
+  - @fnndsc/brasa@0.56.2
+  - @fnndsc/menu@0.41.2
+  - @fnndsc/calypso@0.29.13
+  - @fnndsc/salsa@4.5.3
+
 ## 5.20.9
 
 ### Patch Changes

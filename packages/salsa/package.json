@@ -1,6 +1,6 @@
 {
   "name": "@fnndsc/salsa",
-  "version": "4.5.2",
+  "version": "4.5.3",
   "description": "Shared Application Logic and Service Assets for ChRIS",
   "repository": {
     "type": "git",
@@ -61,7 +61,7 @@
   },
   "dependencies": {
     "@fnndsc/cumin": "^3.30.0",
-    "@fnndsc/fond": "^0.6.0",
+    "@fnndsc/fond": "^0.6.1",
     "ajv": "^8.17.1",
     "axios": "^1.6.8",
     "dcmjs": "^0.52.0",

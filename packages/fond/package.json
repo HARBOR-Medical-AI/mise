@@ -1,6 +1,6 @@
 {
   "name": "@fnndsc/fond",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "The pieces every layer of mise needs, whatever the backend. Depends on nothing in @fnndsc.",
   "repository": {
     "type": "git",
