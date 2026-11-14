@@ -1,5 +1,12 @@
 # @fnndsc/brasa
 
+## 0.56.0
+
+### Minor Changes
+
+- b3e5de6: In a berth, `berth anchor <path>` downloads any ChRIS path you can read into the berth's anchors folder. `berth` lists the anchors with their ChRIS path, their node or none, their files and size, when each was anchored and when the berth last closed; `berth drop <name>` removes one and `berth clear` removes them all and empties the outgoing folder, asking first when it holds files not yet closed. A path under your own feeds has the node it runs through, which must be `finishedSuccessfully`; any other path has none. The size and the free space are said before the download, above 10 GB it asks (`--yes` answers), and what does not fit is refused. The files are downloaded without write permission, and `--refresh` downloads an anchor again. On a host, not in a berth, `berth` says so. `help anchors` holds the rules.
+- 63aa4a4: In a berth, `berth close` returns the outgoing folder to ChRIS as one node, with a record of how it was made. It writes `berth.json` into the folder (who, every anchor with its ChRIS path, node and files, the berth, the git commit of the folder the session runs in, the image, the time and where the node goes), uploads the folder to `~/berth/<uuid>/`, and runs `pl-dsdircopy` over it: a child of the node every anchor is under, or a new feed rooted in `pl-dircopy` over every anchored path (over the work itself when there is no anchor). Anchors of two nodes, or of a node and of none, are refused with the two choices, `--infeed <anchor>` and `--newfeed`; `--name` names a new feed and `--title` the node. An empty outgoing folder is refused. When your processes still run in the berth the close lists them with the files they hold open there and asks (`--force` answers). An anchor with no node whose files changed in ChRIS is said and recorded. A node that cannot be made leaves the upload and says `uploaded, not attached` with CUBE's reason. A close removes nothing and records the time `berth clear` reads.
+
 ## 0.55.3
 
 ### Patch Changes
