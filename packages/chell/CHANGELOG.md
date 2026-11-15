@@ -1,5 +1,19 @@
 # @fnndsc/chell
 
+## 5.20.11
+
+### Patch Changes
+
+- 0598ad2: The commands guide says how `-j N` and `TRANSFER_JOBS` set how many files a transfer moves at once.
+- Updated dependencies [0598ad2]
+- Updated dependencies [0598ad2]
+- Updated dependencies [0598ad2]
+- Updated dependencies [0598ad2]
+  - @fnndsc/brasa@0.56.4
+  - @fnndsc/chili@3.9.5
+  - @fnndsc/cumin@3.30.6
+  - @fnndsc/salsa@4.5.5
+
 ## 5.20.10
 
 ### Patch Changes

@@ -1,5 +1,20 @@
 # @fnndsc/chili
 
+## 3.9.5
+
+### Patch Changes
+
+- 0598ad2: Folder downloads and uploads move their files through cumin's transfer pool, 8 at a time unless told otherwise.
+
+  `files_downloadWithProgress`, `files_downloadManyWithProgress` and `files_uploadWithProgress` take `jobs` and `signal`; their summaries carry `failedPaths` (each file that failed after its retry) and `cancelledCount`. Progress still counts files as each one ends, in whatever order. An upload CUBE refuses fails with the reason the upload noted, rather than `Failed to upload`.
+
+- Updated dependencies [0598ad2]
+- Updated dependencies [0598ad2]
+- Updated dependencies [0598ad2]
+  - @fnndsc/cumin@3.30.6
+  - @fnndsc/fond@0.6.2
+  - @fnndsc/salsa@4.5.5
+
 ## 3.9.4
 
 ### Patch Changes
