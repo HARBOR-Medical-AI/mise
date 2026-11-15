@@ -162,7 +162,34 @@ function closePlacement_decide(anchors: readonly BerthAnchor[], request: CloseRe
   if (placement.kind === 'child' && request.name !== null) {
     throw new BerthRefusal(`close: --name names a new feed; the work goes into feed ${placement.feed ?? '?'} under ${placement.parentName}`);
   }
+  if (placement.kind === 'newFeed') anchorPrefixes_refuse(anchors);
   return placement;
+}
+
+/**
+ * Refuses a new feed over anchors where one anchored path extends another
+ * as text (`…/SAG-anon` and `…/SAG-anon2`): pfcon's fslink staging takes the
+ * second for one already copied and never stages it, so CUBE cancels the
+ * work's node (HARBOR-Medical-AI/pfcon#180). Refused before anything is
+ * uploaded; renaming one folder clears it.
+ *
+ * @param anchors - The berth's anchors.
+ * @throws {BerthRefusal} Naming the first such pair.
+ * @example
+ * anchorPrefixes_refuse([{ name: 'a', path: '/home/u/x' }, { name: 'b', path: '/home/u/x2' }]); // throws
+ */
+export function anchorPrefixes_refuse(anchors: readonly Pick<BerthAnchor, 'name' | 'path'>[]): void {
+  const trimmed: string[] = anchors.map((anchor: Pick<BerthAnchor, 'name' | 'path'>): string => anchor.path.replace(/^\/+/, '').replace(/\/+$/, ''));
+  for (let i: number = 0; i < anchors.length; i++) {
+    for (let j: number = 0; j < anchors.length; j++) {
+      const short: string = trimmed[i] as string;
+      const long: string = trimmed[j] as string;
+      if (i === j || long === short || !long.startsWith(short)) continue;
+      const a: Pick<BerthAnchor, 'name' | 'path'> = anchors[i] as Pick<BerthAnchor, 'name' | 'path'>;
+      const b: Pick<BerthAnchor, 'name' | 'path'> = anchors[j] as Pick<BerthAnchor, 'name' | 'path'>;
+      throw new BerthRefusal(`close: anchors ${a.name} (${a.path}) and ${b.name} (${b.path}) would be cancelled by CUBE: one path begins with the other, and pfcon then skips the second (HARBOR-Medical-AI/pfcon#180); rename one folder so neither path begins with the other, drop and anchor it again, then close`);
+    }
+  }
 }
 
 /**

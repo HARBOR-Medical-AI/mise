@@ -116,6 +116,7 @@ backendKinds.kinds = (await import('../src/chris/kinds.js')).chrisArgumentKinds;
 const { builtin_berth } = await import('../src/builtins/berth/berth.js');
 const { berthState_read, berthState_write } = await import('../src/builtins/berth/berthState.js');
 const { anchorChanges_compare, berthSource_read } = await import('../src/builtins/berth/berthRecord.js');
+const { anchorPrefixes_refuse } = await import('../src/builtins/berth/berthClose.js');
 
 /** Colour codes, gone. */
 const strip = (text: string | undefined): string => (text ?? '').replace(/\u001b\[[0-9;]*m/g, '');
@@ -302,6 +303,28 @@ describe('berth close: anchors that point two ways', () => {
     expect(process.exitCode).toBe(1);
     expect(mockUpload).not.toHaveBeenCalled();
     expect(existsSync(join(outgoing, 'berth.json'))).toBe(false);
+  });
+
+  it('refuses a new feed over anchors where one path begins with the other, before anything is uploaded (pfcon#180)', async () => {
+    const ANON = { ...WEIGHTS, name: 'SAG-anon', path: '/home/alice/upload/SAG-anon' };
+    const ANON2 = { ...WEIGHTS, name: 'SAG-anon2', path: '/home/alice/upload/SAG-anon2' };
+    anchors_stand(ANON2, ANON);
+    const result = await builtin_berth(['close']);
+    expect(result.status).toBe('error');
+    expect(strip(result.renderedErr)).toBe('berth: close: anchors SAG-anon (/home/alice/upload/SAG-anon) and SAG-anon2 (/home/alice/upload/SAG-anon2) would be cancelled by CUBE: one path begins with the other, and pfcon then skips the second (HARBOR-Medical-AI/pfcon#180); rename one folder so neither path begins with the other, drop and anchor it again, then close\n');
+    expect(process.exitCode).toBe(1);
+    expect(mockUpload).not.toHaveBeenCalled();
+    expect(mockFeedCreate).not.toHaveBeenCalled();
+    expect(existsSync(join(outgoing, 'berth.json'))).toBe(false);
+  });
+
+  it('lets anchors whose names only share a start through (x1 and x2), and leaves a close into a node alone', async () => {
+    const X1 = { ...WEIGHTS, name: 'x1', path: '/home/alice/uploads/x1' };
+    const X2 = { ...WEIGHTS, name: 'x2', path: '/home/alice/uploads/x2' };
+    anchors_stand(X1, X2);
+    expect((await builtin_berth(['close'])).status).toBe('ok');
+    expect(() => anchorPrefixes_refuse([X1, X2])).not.toThrow();
+    expect(() => anchorPrefixes_refuse([{ name: 'a', path: '/home/u/x/' }, { name: 'b', path: 'home/u/x2' }])).toThrow(/pfcon#180/);
   });
 
   it('refuses a node and a path with none', async () => {
