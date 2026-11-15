@@ -1,6 +1,6 @@
 {
   "name": "@fnndsc/brasa",
-  "version": "0.56.3",
+  "version": "0.56.4",
   "description": "BRASA Runs Abstracted Shell Actions - the hostable ChRIS shell engine (kernel)",
   "repository": {
     "type": "git",
@@ -48,10 +48,10 @@
   "author": "FNNDSC <dev@babyMRI.org>",
   "license": "MIT",
   "dependencies": {
-    "@fnndsc/chili": "^3.9.4",
-    "@fnndsc/fond": "^0.6.1",
-    "@fnndsc/cumin": "^3.30.5",
-    "@fnndsc/salsa": "^4.5.4",
+    "@fnndsc/chili": "^3.9.5",
+    "@fnndsc/fond": "^0.6.2",
+    "@fnndsc/cumin": "^3.30.6",
+    "@fnndsc/salsa": "^4.5.5",
     "bsd-trek": "^0.4.0",
     "chalk": "^4.1.2",
     "cli-highlight": "^2.1.11",
