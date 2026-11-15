@@ -1,5 +1,15 @@
 # @fnndsc/porter
 
+## 0.13.3
+
+### Patch Changes
+
+- Updated dependencies [6ed12c8]
+- Updated dependencies [4550d33]
+  - @fnndsc/stratus@0.20.0
+  - @fnndsc/calypso@0.29.15
+  - @fnndsc/chell@5.20.12
+
 ## 0.13.2
 
 ### Patch Changes
