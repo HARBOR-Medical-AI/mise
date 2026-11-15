@@ -133,6 +133,19 @@ class ErrorStack {
   }
 
   /**
+   * Puts messages on the active stack as they are, without a second caller
+   * prefix: what a {@link scope_run} left behind, handed to the stack outside
+   * it once that work ends. Work run side by side, each in a scope of its
+   * own, drains its own checkpoints without taking another's messages, and
+   * what it means the caller to read still reaches the caller.
+   *
+   * @param messages - Messages taken from another stack, oldest first.
+   */
+  public stack_restore(messages: readonly StackMessage[]): void {
+    this.stack_active().push(...messages.map((message: StackMessage): StackMessage => ({ ...message })));
+  }
+
+  /**
    * Get the singleton instance of the ErrorStack.
    *
    * @param options - Optional configuration options for the stack.

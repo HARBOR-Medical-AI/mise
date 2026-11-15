@@ -36,6 +36,7 @@ export * from "./filebrowser/chrisPACS";
 export * from "./filebrowser/chrisPipeline";
 export * from "./io/chrisIO";
 export * from "./io/streamWatch";
+export * from "./io/transferPool";
 export * from "./net/requestLedger";
 export * from "./io/io";
 export * from "./io/node_io";

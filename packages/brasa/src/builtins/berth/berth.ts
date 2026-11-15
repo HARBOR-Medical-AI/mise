@@ -11,9 +11,11 @@
  * person's own `/home/<user>/feeds/` the plugin instance the path runs
  * through is its node, and a node not `finishedSuccessfully` is refused;
  * anywhere else it has none. The size is said before the download, above
- * 10 GB it asks, and what does not fit is refused. The files downloaded lose
- * their write permission, and the state file keeps what was downloaded, for
- * the close.
+ * 10 GB it asks, and what does not fit is refused. The files move through the
+ * transfer pool, 8 at a time unless `-j` or `TRANSFER_JOBS` says otherwise;
+ * an anchor is whole or not made, so a file that fails after its retry is
+ * named and nothing is anchored. The files downloaded lose their write
+ * permission, and the state file keeps what was downloaded, for the close.
  *
  * Declared in one record (`berthCommand`): the subcommands, their operands
  * and options, an anchor's name a ChRIS argument kind (`anchor`) that
@@ -41,6 +43,7 @@ import { dirname, join, posix } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
 import chalk from 'chalk';
+import { transferPool_run, type TransferFailure, type TransferPoolResult } from '@fnndsc/cumin/transfer-pool';
 import { size_format } from '@fnndsc/fond';
 import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
 
@@ -48,10 +51,12 @@ import { command_declare, type CommandArguments, type CommandGrammar, type Subco
 import { declaredCommand_run } from '../../core/commandParse.js';
 import { commandUsage_render } from '../../core/commandUsage.js';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
+import { TRANSFER_JOBS_OPTION, transferJobs_resolve, type TransferJobs } from '../fs/transferJobs.js';
 import { repl_confirm } from '../../core/question.js';
 import { sink_dataLine, sink_get } from '../../core/sink.js';
 import {
-  berthHome_get, berthPath_resolve, nodeStatus_get, remoteEntry_read, remoteFile_locate, remoteFile_open, remoteTree_list,
+  berthHome_get, berthPath_resolve, nodeStatus_get, remoteEntry_read, remoteFile_locate, remoteFile_open, remoteFiles_memoRun, remoteTree_list,
   type RemoteBytes, type RemoteEntry, type RemoteFile,
 } from './berthCube.js';
 import { close_run, WORK_TITLE } from './berthClose.js';
@@ -186,29 +191,42 @@ async function nodeFinished_check(source: AnchorSource): Promise<void> {
  *
  * @param file - The file to read.
  * @param target - Where it is written.
- * @param bytes_add - Told the bytes as they arrive.
+ * @param bytes_add - Told the bytes as they arrive, and told them back (negative) when the attempt fails.
+ * @param signal - The transfer pool's signal: a cancel stops the stream where it is.
+ * @throws {Error} When the file cannot be read or written.
  */
-async function file_download(file: RemoteFile, target: string, bytes_add: (count: number) => void): Promise<void> {
-  mkdirSync(dirname(target), { recursive: true });
-  const bytes: RemoteBytes = await remoteFile_open(file.source);
-  if (Buffer.isBuffer(bytes.stream)) {
-    writeFileSync(target, bytes.stream);
-    bytes_add(bytes.stream.length);
-  } else {
-    bytes.stream.on('data', (chunk: Buffer): void => bytes_add(chunk.length));
-    await pipeline(bytes.stream, createWriteStream(target));
+async function file_download(file: RemoteFile, target: string, bytes_add: (count: number) => void, signal: AbortSignal): Promise<void> {
+  let counted: number = 0;
+  const count_add = (count: number): void => { counted += count; bytes_add(count); };
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    const bytes: RemoteBytes = await remoteFile_open(file.source);
+    if (Buffer.isBuffer(bytes.stream)) {
+      writeFileSync(target, bytes.stream);
+      count_add(bytes.stream.length);
+    } else {
+      bytes.stream.on('data', (chunk: Buffer): void => count_add(chunk.length));
+      await pipeline(bytes.stream, createWriteStream(target), { signal });
+    }
+    chmodSync(target, statSync(target).mode & ~WRITE_BITS);
+  } catch (error: unknown) {
+    // A retry counts its bytes again: the progress takes this attempt's back.
+    bytes_add(-counted);
+    throw error;
   }
-  chmodSync(target, statSync(target).mode & ~WRITE_BITS);
 }
 
 /**
- * Downloads files into a folder, saying the bytes as they arrive.
+ * Downloads files into a folder through the transfer pool, saying the bytes
+ * as they arrive across every file in flight.
  *
  * @param files - The files.
  * @param folder - The folder they are written under, by their relative names.
  * @param label - The anchor's name, for the progress.
+ * @param jobs - How many files move at once.
+ * @throws {Error} Naming each file that failed after its retry, or saying the line was cancelled.
  */
-async function files_download(files: readonly RemoteFile[], folder: string, label: string): Promise<void> {
+async function files_download(files: readonly RemoteFile[], folder: string, label: string, jobs: number): Promise<void> {
   mkdirSync(folder, { recursive: true });
   const total: number = bytes_sum(files);
   let current: number = 0;
@@ -216,8 +234,18 @@ async function files_download(files: readonly RemoteFile[], folder: string, labe
     operation: 'download', kind: 'transfer', phase, label, current, total, unit: 'bytes',
     status: phase === 'complete' ? 'done' : 'running',
   });
-  for (const file of files) {
-    await file_download(file, join(folder, ...file.name.split('/')), (count: number): void => { current += count; progress('transferring'); });
+  commandCancellation_enable();
+  const signal: AbortSignal | undefined = commandCancellation_signalGet();
+  const result: TransferPoolResult<RemoteFile, void> = await remoteFiles_memoRun(() => transferPool_run(files,
+    (file: RemoteFile, poolSignal: AbortSignal): Promise<void> => file_download(file, join(folder, ...file.name.split('/')),
+      (count: number): void => { current += count; progress('transferring'); }, poolSignal),
+    { jobs, ...(signal !== undefined ? { signal } : {}) }));
+  if (result.cancelled.length > 0) {
+    throw new Error(`cancelled with ${count_say(result.cancelled.length, 'file')} not downloaded`);
+  }
+  if (result.failed.length > 0) {
+    const named: string = result.failed.map((failure: TransferFailure<RemoteFile>): string => `${failure.item.name} (${failure.reason})`).join(', ');
+    throw new Error(`${count_say(result.failed.length, 'file')} of ${files.length} failed: ${named}`);
   }
   progress('complete');
 }
@@ -285,7 +313,7 @@ async function anchorSize_settle(places: BerthPlaces, name: string, files: reado
 }
 
 /**
- * `berth anchor <path> [name] [--refresh] [--yes]`: downloads a ChRIS path
+ * `berth anchor <path> [name] [--refresh] [--yes] [-j N]`: downloads a ChRIS path
  * into `<anchors>/<name>/` and records it.
  *
  * @param request - The line.
@@ -294,6 +322,8 @@ async function anchorSize_settle(places: BerthPlaces, name: string, files: reado
  */
 async function anchor_run(request: AnchorRequest): Promise<CommandEnvelope> {
   const places: BerthPlaces = places_require('anchor');
+  const jobs: TransferJobs = transferJobs_resolve(request.options.jobs);
+  if ('refused' in jobs) throw new BerthRefusal(`anchor: ${jobs.refused}`);
   const typed: string = request.operands.path;
   const resolved: string = await berthPath_resolve(typed);
   const source: AnchorSource = await anchorSource_find(resolved, await berthHome_get());
@@ -317,7 +347,7 @@ async function anchor_run(request: AnchorRequest): Promise<CommandEnvelope> {
   }
   rmSync(partial, { recursive: true, force: true });
   try {
-    await files_download(files, partial, name);
+    await files_download(files, partial, name, jobs.jobs);
   } catch (error: unknown) {
     rmSync(partial, { recursive: true, force: true });
     throw new BerthRefusal(`anchor: ${name}: ${error instanceof Error ? error.message : String(error)}; nothing anchored`);
@@ -458,6 +488,7 @@ const BERTH_GRAMMAR = {
       options: {
         refresh: { long: 'refresh', summary: 'Download an anchor that stands again' },
         yes: { short: 'y', long: 'yes', summary: 'Answer yes to the question above 10 GB' },
+        jobs: TRANSFER_JOBS_OPTION,
       },
     },
     close: {
@@ -519,7 +550,7 @@ export const berthCommand = command_declare({
   grammar: BERTH_GRAMMAR,
   help: {
     summary: "The ChRIS paths downloaded into this session's berth, and the work returned: anchor, list, close, drop, clear",
-    description: "Anchor ChRIS paths in this session's berth: download each into the anchors folder, list them, return the outgoing folder to ChRIS as one node, drop one, or clear them all. Under your own ~/feeds an anchor has a node, the plugin instance its path runs through, which must be finishedSuccessfully; anywhere else (uploads, PACS, /PUBLIC, /SHARED) it has none. Anchors of two nodes, or of a node and of none, want --infeed or --newfeed to close, never both. A close removes nothing. help anchors says more. On a host, not in a berth, berth says so and refuses the subcommands.",
+    description: "Anchor ChRIS paths in this session's berth: download each into the anchors folder, list them, return the outgoing folder to ChRIS as one node, drop one, or clear them all. Under your own ~/feeds an anchor has a node, the plugin instance its path runs through, which must be finishedSuccessfully; anywhere else (uploads, PACS, /PUBLIC, /SHARED) it has none. Anchors of two nodes, or of a node and of none, want --infeed or --newfeed to close, never both. A close removes nothing. An anchor's files move 8 at a time (-j N, or the session variable TRANSFER_JOBS, 1 to 32); a file that fails is tried once more, and an anchor with a file that still fails is named and not made. help anchors says more. On a host, not in a berth, berth says so and refuses the subcommands.",
     category: 'Workflows',
     examples: [
       'berth',
@@ -527,6 +558,7 @@ export const berthCommand = command_declare({
       'berth anchor ~/uploads/weights',
       'berth anchor /PUBLIC/atlas/weights atlas-weights',
       'berth anchor ~/uploads/weights --refresh',
+      'berth anchor -j 16 ~/uploads/study',
       'berth close',
       'berth close --title "sub-01 segmentation"',
       'berth close --infeed sub-01',

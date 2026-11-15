@@ -40,6 +40,7 @@ jest.unstable_mockModule('@fnndsc/chili/commands/fs/upload.js', () => ({
     return {
       startTime: 0, endTime: 1, totalFiles: 1, duration: 1, speed: content.length, actualTargetPath: remote,
       transferredCount: written.ok ? 1 : 0, failedCount: written.ok ? 0 : 1, transferSize: written.ok ? content.length : 0,
+      failedPaths: written.ok ? [] : [local], cancelledCount: 0,
     };
   },
 }));

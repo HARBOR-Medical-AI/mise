@@ -113,7 +113,7 @@ cuminMock_install(() => ({
     return id;
   },
 }));
-jest.unstable_mockModule('@fnndsc/salsa', () => ({ job_statusFetch: mockStatus, fileContent_getBinaryStream: mockOpen }));
+jest.unstable_mockModule('@fnndsc/salsa', () => ({ job_statusFetch: mockStatus, fileContent_getBinaryStream: mockOpen, fileIds_memoRun: (operation: () => Promise<unknown>) => operation() }));
 jest.unstable_mockModule('../src/core/question.js', () => ({ repl_confirm: mockConfirm }));
 jest.unstable_mockModule('../src/core/sink.js', () => ({
   sink_get: () => ({ progress_write: mockProgress, data_write: jest.fn(), err_write: jest.fn(), status_write: jest.fn() }),
@@ -270,7 +270,7 @@ describe('berth anchor: names', () => {
     await builtin_berth(['anchor', '~/uploads/weights']);
     const refused = await builtin_berth(['anchor', '/PUBLIC/atlas/weights']);
     expect(refused.status).toBe('error');
-    expect(strip(refused.renderedErr)).toBe('berth: anchor: the anchor weights holds /home/alice/uploads/weights; name this one: berth anchor [-y] [--refresh] <path> <name>\n');
+    expect(strip(refused.renderedErr)).toBe('berth: anchor: the anchor weights holds /home/alice/uploads/weights; name this one: berth anchor [-y] [--refresh] [--jobs <N>] <path> <name>\n');
     expect(readFileSync(join(anchors, 'weights', 'model.pt'), 'utf8')).toBe('MODEL');
     expect((await builtin_berth(['anchor', '/PUBLIC/atlas/weights', 'atlas'])).status).toBe('ok');
     expect(berthState_read(anchors).anchors.map((anchor) => anchor.name)).toEqual(['weights', 'atlas']);
@@ -295,9 +295,9 @@ describe('berth anchor: names', () => {
     expect(strip((await builtin_berth(['anchor', '~/uploads/weights', 'a/b'])).renderedErr)).toContain('berth: anchor: a/b cannot name an anchor');
     mkdirSync(join(anchors, 'mine'));
     expect(strip((await builtin_berth(['anchor', '~/uploads/weights', 'mine'])).renderedErr)).toBe(`berth: anchor: ${join(anchors, 'mine')} is there and is not an anchor\n`);
-    expect(strip((await builtin_berth(['anchor', '~/uploads/weights', '--force'])).renderedErr)).toBe("berth: anchor: unrecognized option '--force'; usage: berth anchor [-y] [--refresh] <path> [name]\n");
-    expect(strip((await builtin_berth(['anchor'])).renderedErr)).toBe('berth: anchor: missing operand <path>; usage: berth anchor [-y] [--refresh] <path> [name]\n');
-    expect(strip((await builtin_berth(['anchor', 'a', 'b', 'c'])).renderedErr)).toBe("berth: anchor: unexpected operand 'c'; usage: berth anchor [-y] [--refresh] <path> [name]\n");
+    expect(strip((await builtin_berth(['anchor', '~/uploads/weights', '--force'])).renderedErr)).toBe("berth: anchor: unrecognized option '--force'; usage: berth anchor [-y] [--refresh] [--jobs <N>] <path> [name]\n");
+    expect(strip((await builtin_berth(['anchor'])).renderedErr)).toBe('berth: anchor: missing operand <path>; usage: berth anchor [-y] [--refresh] [--jobs <N>] <path> [name]\n');
+    expect(strip((await builtin_berth(['anchor', 'a', 'b', 'c'])).renderedErr)).toBe("berth: anchor: unexpected operand 'c'; usage: berth anchor [-y] [--refresh] [--jobs <N>] <path> [name]\n");
   });
 });
 
@@ -372,11 +372,85 @@ describe('berth anchor: the files', () => {
     expect(berthState_read(anchors).anchors[0]).toMatchObject({ node: 9, feed: 6 });
   });
 
-  it('a download that fails leaves nothing anchored', async () => {
+  it('a file that fails once is tried again, and the anchor is made', async () => {
     mockOpen.mockResolvedValueOnce({ ok: false });
     const result = await builtin_berth(['anchor', '~/uploads/weights']);
-    expect(strip(result.renderedErr)).toBe('berth: anchor: weights: cannot read /home/alice/uploads/weights/model.pt; nothing anchored\n');
+    expect(result.status).toBe('ok');
+    expect(readFileSync(join(anchors, 'weights', 'model.pt'), 'utf8')).toBe('MODEL');
+    // The failed attempt's bytes are not counted twice.
+    expect(mockProgress).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'complete', current: 5, total: 5 }));
+  });
+
+  it('a file that fails again is named, and nothing is anchored', async () => {
+    const opened = mockOpen.getMockImplementation();
+    mockOpen.mockImplementation(async (path: string) => (path.endsWith('model.pt') ? { ok: false } : (opened as (p: string) => Promise<unknown>)(path)) as never);
+    const result = await builtin_berth(['anchor', '~/uploads/weights']);
+    mockOpen.mockImplementation(opened as never);
+    expect(strip(result.renderedErr)).toBe('berth: anchor: weights: 1 file of 1 failed: model.pt (cannot read /home/alice/uploads/weights/model.pt); nothing anchored\n');
+    expect(process.exitCode).toBe(1);
     expect(readdirSync(anchors)).toEqual([]);
+  });
+});
+
+describe('berth anchor: files at once', () => {
+  const MANY: string = '/home/alice/uploads/many';
+  let inFlight: number = 0;
+  let most: number = 0;
+  let openFake: ((path: string) => Promise<unknown>) | undefined;
+
+  beforeEach(() => {
+    for (let index: number = 0; index < 12; index++) cubeFile_put(`${MANY}/f${index}.dcm`, `file ${index}`);
+    inFlight = 0;
+    most = 0;
+    const opened = mockOpen.getMockImplementation() as (path: string) => Promise<unknown>;
+    openFake = opened;
+    mockOpen.mockImplementation((async (path: string) => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 2); });
+      inFlight--;
+      return opened(path);
+    }) as never);
+  });
+
+  afterEach(async () => {
+    for (let index: number = 0; index < 12; index++) cubeFiles.delete(`${MANY}/f${index}.dcm`);
+    mockOpen.mockImplementation(openFake as never);
+    const { variable_unset } = await import('../src/core/variables.js');
+    variable_unset('TRANSFER_JOBS');
+  });
+
+  it('moves 8 at a time by default, and every byte arrives', async () => {
+    expect((await builtin_berth(['anchor', '~/uploads/many'])).status).toBe('ok');
+    expect(most).toBe(8);
+    expect(readdirSync(join(anchors, 'many'))).toHaveLength(12);
+    expect(mockProgress).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'complete', current: 74, total: 74 }));
+  });
+
+  it('takes -j N, and -j 1 is one at a time', async () => {
+    expect((await builtin_berth(['anchor', '-j', '1', '~/uploads/many'])).status).toBe('ok');
+    expect(most).toBe(1);
+    most = 0;
+    expect((await builtin_berth(['anchor', '--jobs', '3', '~/uploads/many', 'again'])).status).toBe('ok');
+    expect(most).toBe(3);
+  });
+
+  it('refuses -j above 32 in the parser, before anything is read', async () => {
+    const result = await builtin_berth(['anchor', '-j', '33', '~/uploads/many']);
+    expect(result.status).toBe('error');
+    expect(strip(result.renderedErr)).toContain('at most 32');
+    expect(mockOpen).not.toHaveBeenCalled();
+  });
+
+  it('takes the session\'s TRANSFER_JOBS when the line gives none, and refuses one that is not a number of jobs', async () => {
+    const { variable_set, textAnswer_make } = await import('../src/core/variables.js');
+    variable_set('TRANSFER_JOBS', textAnswer_make('2', 'TRANSFER_JOBS=2'));
+    expect((await builtin_berth(['anchor', '~/uploads/many'])).status).toBe('ok');
+    expect(most).toBe(2);
+    variable_set('TRANSFER_JOBS', textAnswer_make('lots', 'TRANSFER_JOBS=lots'));
+    const result = await builtin_berth(['anchor', '~/uploads/many', 'again']);
+    expect(strip(result.renderedErr)).toBe('berth: anchor: TRANSFER_JOBS is lots; it says how many files move at once, a whole number from 1 to 32\n');
+    expect(process.exitCode).toBe(1);
   });
 });
 
@@ -419,7 +493,7 @@ describe('the state file', () => {
 describe('berth: the listing', () => {
   it('says there are no anchors, and that the berth never closed', async () => {
     const result = await builtin_berth([]);
-    expect(strip(result.rendered)).toBe(`no anchors in ${anchors}; berth anchor [-y] [--refresh] <path> [name] downloads one\nlast close: never\n`);
+    expect(strip(result.rendered)).toBe(`no anchors in ${anchors}; berth anchor [-y] [--refresh] [--jobs <N>] <path> [name] downloads one\nlast close: never\n`);
   });
 
   it('lists name, path, node or none, files, size and time, and when the berth last closed', async () => {
@@ -506,7 +580,7 @@ describe('berth clear', () => {
 describe('berth: subcommands', () => {
   it('refuses one it does not know, with the usage', async () => {
     const result = await builtin_berth(['sail']);
-    expect(strip(result.renderedErr)).toBe("berth: unknown subcommand 'sail' (anchor, close, drop, clear); usage: berth [anchor [-y] [--refresh] <path> [name] | close [-f] [--newfeed] [--infeed <anchor>] [--name <feed>] [--title <text>] | drop <name> | clear]\n");
+    expect(strip(result.renderedErr)).toBe("berth: unknown subcommand 'sail' (anchor, close, drop, clear); usage: berth [anchor [-y] [--refresh] [--jobs <N>] <path> [name] | close [-f] [--newfeed] [--infeed <anchor>] [--name <feed>] [--title <text>] | drop <name> | clear]\n");
     expect(process.exitCode).toBe(1);
   });
 });

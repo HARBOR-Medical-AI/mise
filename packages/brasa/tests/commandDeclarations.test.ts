@@ -228,7 +228,7 @@ describe('the parser: operands expand by kind, after the shape', () => {
   });
 
   it('refuses a one-path operand a wildcard gives several, and takes one it gives one', async () => {
-    expect(await refusal_get(berthCommand, 'anchor *.nii')).toBe("berth: anchor: <path> takes one path; '*.nii' matches 2; usage: berth anchor [-y] [--refresh] <path> [name]");
+    expect(await refusal_get(berthCommand, 'anchor *.nii')).toBe("berth: anchor: <path> takes one path; '*.nii' matches 2; usage: berth anchor [-y] [--refresh] [--jobs <N>] <path> [name]");
     const one: Parsed = await line_parse(berthCommand, 'anchor one* w');
     expect(one.ok && one.args.operands).toEqual({ path: 'one.nii', name: 'w' });
   });
@@ -262,7 +262,7 @@ describe('the migrated commands parse as they did', () => {
   it('download: one source and a destination, several sources, and too few words', async () => {
     const parsed: Parsed = await line_parse(downloadCommand, '/a /b /c ./d');
     expect(parsed.ok && parsed.args.operands).toEqual({ source: ['/a', '/b', '/c'], destination: './d' });
-    expect(await refusal_get(downloadCommand, '/a')).toBe('download: missing operand <destination>; usage: download [-f] <source…> <destination>');
+    expect(await refusal_get(downloadCommand, '/a')).toBe('download: missing operand <destination>; usage: download [-f] [--jobs <N>] <source…> <destination>');
   });
 
   it('berth: bare, each subcommand, and its refusals', async () => {
@@ -271,7 +271,7 @@ describe('the migrated commands parse as they did', () => {
     expect(anchored.ok && anchored.args).toEqual({ subcommand: 'anchor', operands: { path: '~/x', name: undefined }, options: { refresh: true, yes: true }, expanded: { path: false } });
     const closed: Parsed = await line_parse(berthCommand, 'close --infeed=sub-01 --title "seg run" -f');
     expect(closed.ok && closed.args.options).toEqual({ infeed: 'sub-01', newfeed: false, name: undefined, title: 'seg run', force: true });
-    expect(await refusal_get(berthCommand, 'anchor')).toBe('berth: anchor: missing operand <path>; usage: berth anchor [-y] [--refresh] <path> [name]');
+    expect(await refusal_get(berthCommand, 'anchor')).toBe('berth: anchor: missing operand <path>; usage: berth anchor [-y] [--refresh] [--jobs <N>] <path> [name]');
   });
 });
 
@@ -323,8 +323,8 @@ describe('a bare command with options of its own', () => {
 describe('usage and help, generated from the grammar', () => {
   it('writes each migrated command\'s usage line', () => {
     expect(commandUsage_render(lsCommand)).toBe('ls [-l1hfrdaA] [--sort <field>] [path…]');
-    expect(commandUsage_render(downloadCommand)).toBe('download [-f] <source…> <destination>');
-    expect(commandUsage_render(berthCommand)).toBe('berth [anchor [-y] [--refresh] <path> [name] | close [-f] [--newfeed] [--infeed <anchor>] [--name <feed>] [--title <text>] | drop <name> | clear]');
+    expect(commandUsage_render(downloadCommand)).toBe('download [-f] [--jobs <N>] <source…> <destination>');
+    expect(commandUsage_render(berthCommand)).toBe('berth [anchor [-y] [--refresh] [--jobs <N>] <path> [name] | close [-f] [--newfeed] [--infeed <anchor>] [--name <feed>] [--title <text>] | drop <name> | clear]');
     expect(commandUsage_render(berthCommand, 'drop')).toBe('berth drop <name>');
   });
 

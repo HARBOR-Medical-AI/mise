@@ -8,7 +8,8 @@ import { pipeline } from "stream/promises";
 
 import chalk from "chalk";
 
-import { fileContent_getBinaryStream, files_listRecursive, files_path_isDirectory, FsItem } from "@fnndsc/salsa";
+import { fileContent_getBinaryStream, fileIds_memoRun, files_listRecursive, files_path_isDirectory, FsItem } from "@fnndsc/salsa";
+import { TRANSFER_JOBS_DEFAULT, transferPool_run, type TransferPoolResult, type TransferSettled } from "@fnndsc/cumin";
 import { errorStack, type StackMessage } from "@fnndsc/fond";
 import { chiliLog } from "../../screen/output.js";
 import { prompt_confirmOrThrow } from "../../utils/input_format.js";
@@ -52,6 +53,10 @@ export interface DownloadSummary {
   transferSize: number;
   duration: number;
   speed: number;
+  /** The ChRIS paths that failed after their retry, in the order they ended. */
+  failedPaths: string[];
+  /** Files a cancel left undownloaded. */
+  cancelledCount: number;
 }
 
 /** Download progress fact emitted to callers that want to render progress. */
@@ -75,6 +80,10 @@ export interface DownloadOptions {
   /** Reports a live transfer notice on the caller's chosen output channel. */
   onNotice?: (message: string, channel: "status" | "err") => void;
   onProgress?: (event: DownloadProgressEvent) => void;
+  /** How many files move at once; the transfer pool's default when absent. */
+  jobs?: number;
+  /** The line's abort signal: a cancel starts no more files and stops those in flight. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -123,6 +132,73 @@ interface DownloadPlan {
 interface DownloadBatchPlan {
   directories: string[];
   files: DownloadPlan[];
+}
+
+/**
+ * Writes one planned file to the local disk, stopping where it is when the
+ * line is cancelled.
+ *
+ * @param plan - The ChRIS file and where it goes.
+ * @param signal - The transfer pool's signal.
+ * @returns The bytes written: CUBE's size when it gave one.
+ * @throws {Error} When the file cannot be opened or written.
+ */
+async function planFile_download(plan: DownloadPlan, signal: AbortSignal): Promise<number> {
+  const { stream, size } = await downloadStream_open(plan.remotePath);
+  await directory_ensureExists(path.dirname(plan.localPath));
+  let transferred: number = 0;
+  stream.on("data", (chunk: Buffer): void => {
+    transferred += chunk.length;
+  });
+  await pipeline(stream, fs.createWriteStream(plan.localPath), { signal });
+  return size ?? transferred;
+}
+
+/**
+ * Downloads planned files through the transfer pool, several at once,
+ * counting them into the summary and the progress as each one ends.
+ *
+ * @param plans - The files and where each goes.
+ * @param options - Download options: jobs, signal, notices and progress.
+ * @param summary - The summary the counts go into.
+ * @param label - The progress label.
+ */
+async function plans_download(
+  plans: readonly DownloadPlan[],
+  options: DownloadOptions,
+  summary: DownloadSummary,
+  label: string,
+): Promise<void> {
+  let settledCount: number = 0;
+  // One listing per folder for the whole transfer: each file's id comes
+  // from its folder's listing, made once rather than once per file.
+  const result: TransferPoolResult<DownloadPlan, number> = await fileIds_memoRun(() => transferPool_run(plans, planFile_download, {
+    jobs: options.jobs ?? TRANSFER_JOBS_DEFAULT,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    onSettled: (settled: TransferSettled<DownloadPlan, number>): void => {
+      settledCount++;
+      if (settled.ok) {
+        summary.transferredCount++;
+        summary.transferSize += settled.value;
+      } else {
+        summary.failedCount++;
+        summary.failedPaths.push(settled.item.remotePath);
+        downloadNotice_emit(options, `Error downloading ${settled.item.remotePath}: ${settled.reason}`, "err");
+      }
+      options.onProgress?.({
+        operation: "download",
+        kind: "transfer",
+        phase: "transferring",
+        label,
+        current: settledCount,
+        total: plans.length,
+        percent: plans.length === 0 ? 100 : (settledCount / plans.length) * 100,
+        unit: "files",
+        status: "running",
+      });
+    },
+  }));
+  summary.cancelledCount = result.cancelled.length;
 }
 
 /**
@@ -176,6 +252,8 @@ export async function files_downloadWithProgress(
     transferSize: 0,
     duration: 0,
     speed: 0,
+    failedPaths: [],
+    cancelledCount: 0,
   };
 
   const isDirectory: boolean = await chrisPath_isDirectory(resolvedChris);
@@ -322,57 +400,11 @@ export async function files_downloadWithProgress(
     status: "running",
   });
 
-  // Download each file
-  for (const [index, file] of files.entries()) {
-    try {
-      const result = await fileContent_getBinaryStream(file.path);
-      if (!result.ok) {
-        summary.failedCount++;
-        downloadNotice_emit(options, `Failed to download: ${file.path}`, "err");
-        continue;
-      }
-
-      const { stream, size } = result.value as {
-        stream: NodeJS.ReadableStream;
-        size?: number;
-        filename?: string;
-      };
-
-      // Calculate relative path
-      const relativePath: string = file.path.substring(resolvedChris.length).replace(/^\//, '');
-      const localFilePath: string = path.join(targetDir, relativePath);
-
-      // Ensure parent directory exists
-      const parentDir: string = path.dirname(localFilePath);
-      await directory_ensureExists(parentDir);
-
-      const writeStream: fs.WriteStream = fs.createWriteStream(localFilePath);
-      let transferred: number = 0;
-      stream.on("data", (chunk: Buffer) => {
-        transferred += chunk.length;
-      });
-      await pipeline(stream, writeStream);
-
-      summary.transferredCount++;
-      summary.transferSize += size ?? transferred;
-    } catch (error: unknown) {
-      summary.failedCount++;
-      const msg: string = error instanceof Error ? error.message : String(error);
-      downloadNotice_emit(options, `Error downloading ${file.path}: ${msg}`, "err");
-    }
-
-    options.onProgress?.({
-      operation: "download",
-      kind: "transfer",
-      phase: "transferring",
-      label: "Downloading files",
-      current: index + 1,
-      total: files.length,
-      percent: files.length === 0 ? 100 : ((index + 1) / files.length) * 100,
-      unit: "files",
-      status: "running",
-    });
-  }
+  const plans: DownloadPlan[] = files.map((file: FsItem): DownloadPlan => ({
+    remotePath: file.path,
+    localPath: path.join(targetDir, file.path.substring(resolvedChris.length).replace(/^\//, '')),
+  }));
+  await plans_download(plans, options, summary, "Downloading files");
 
   summary.endTime = Date.now();
   summary.duration = (summary.endTime - summary.startTime) / 1000;
@@ -381,13 +413,13 @@ export async function files_downloadWithProgress(
   options.onProgress?.({
     operation: "download",
     kind: "transfer",
-    phase: summary.failedCount === 0 ? "complete" : "failed",
+    phase: summary.failedCount === 0 && summary.cancelledCount === 0 ? "complete" : "failed",
     label: "Download complete",
     current: summary.transferredCount,
     total: summary.totalFiles,
     percent: summary.totalFiles === 0 ? 100 : (summary.transferredCount / summary.totalFiles) * 100,
     unit: "files",
-    status: summary.failedCount === 0 ? "done" : "error",
+    status: summary.failedCount === 0 && summary.cancelledCount === 0 ? "done" : "error",
   });
 
   return summary;
@@ -522,6 +554,8 @@ export async function files_downloadManyWithProgress(
     transferSize: 0,
     duration: 0,
     speed: 0,
+    failedPaths: [],
+    cancelledCount: 0,
   };
 
   options.onProgress?.({
@@ -550,35 +584,7 @@ export async function files_downloadManyWithProgress(
     status: 'running',
   });
 
-  for (const [index, plan] of plans.files.entries()) {
-    try {
-      const { stream, size } = await downloadStream_open(plan.remotePath);
-      await directory_ensureExists(path.dirname(plan.localPath));
-      let transferred: number = 0;
-      stream.on('data', (chunk: Buffer): void => {
-        transferred += chunk.length;
-      });
-      await pipeline(stream, fs.createWriteStream(plan.localPath));
-      summary.transferredCount++;
-      summary.transferSize += size ?? transferred;
-    } catch (error: unknown) {
-      summary.failedCount++;
-      const message: string = error instanceof Error ? error.message : String(error);
-      downloadNotice_emit(options, `Error downloading ${plan.remotePath}: ${message}`, "err");
-    }
-
-    options.onProgress?.({
-      operation: 'download',
-      kind: 'transfer',
-      phase: 'transferring',
-      label: 'Downloading matching files',
-      current: index + 1,
-      total: plans.files.length,
-      percent: plans.files.length === 0 ? 100 : ((index + 1) / plans.files.length) * 100,
-      unit: 'files',
-      status: 'running',
-    });
-  }
+  await plans_download(plans.files, options, summary, 'Downloading matching files');
 
   summary.endTime = Date.now();
   summary.duration = (summary.endTime - summary.startTime) / 1000;
@@ -586,13 +592,13 @@ export async function files_downloadManyWithProgress(
   options.onProgress?.({
     operation: 'download',
     kind: 'transfer',
-    phase: summary.failedCount === 0 ? 'complete' : 'failed',
+    phase: summary.failedCount === 0 && summary.cancelledCount === 0 ? 'complete' : 'failed',
     label: 'Download complete',
     current: summary.transferredCount,
     total: summary.totalFiles,
     percent: summary.totalFiles === 0 ? 100 : (summary.transferredCount / summary.totalFiles) * 100,
     unit: 'files',
-    status: summary.failedCount === 0 ? 'done' : 'error',
+    status: summary.failedCount === 0 && summary.cancelledCount === 0 ? 'done' : 'error',
   });
 
   return summary;

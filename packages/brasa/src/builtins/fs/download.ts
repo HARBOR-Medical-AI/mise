@@ -41,6 +41,8 @@ import { directory_archive, type ArchiveResult } from './archive.js';
 import { type FileDeliverResult, type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { errorStack } from '@fnndsc/fond';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
+import { TRANSFER_JOBS_OPTION, transferJobs_resolve, transferLeftovers_render, type TransferJobs } from './transferJobs.js';
 
 /**
  * A source as the transfer reads it: where the store keeps it, resolved as
@@ -181,11 +183,12 @@ const DOWNLOAD_GRAMMAR = {
   ],
   options: {
     force: { short: 'f', long: 'force', summary: 'Overwrite local paths that exist' },
+    jobs: TRANSFER_JOBS_OPTION,
   },
 } as const satisfies CommandGrammar;
 
 /**
- * `download [-f] <source…> <destination>`: the declaration.
+ * `download [-f] [-j N] <source…> <destination>`: the declaration.
  *
  * @example
  * ```ts
@@ -197,16 +200,18 @@ export const downloadCommand = command_declare({
   grammar: DOWNLOAD_GRAMMAR,
   help: {
     summary: 'Download ChRIS files or folders to this machine',
-    description: 'Download a ChRIS file, folder, or the paths a wildcard matches to the local filesystem with progress tracking: files, ETA, bytes transferred. Several sources, typed or matched, go together into one folder. Under a daemon the files are handed to the surface, which puts them on its own disk or in a browser\'s downloads.',
+    description: 'Download a ChRIS file, folder, or the paths a wildcard matches to the local filesystem with progress tracking: files, ETA, bytes transferred. Several sources, typed or matched, go together into one folder. The files of a folder move 8 at a time (-j N, or the session variable TRANSFER_JOBS, says how many, 1 to 32); a file that fails is tried once more, the rest continue, and the summary names each that failed. Under a daemon the files are handed to the surface, which puts them on its own disk or in a browser\'s downloads.',
     category: 'Files',
     examples: [
       'download /home/user/data ./data',
       'download /home/user/results/*.nii ./results/',
       'download /feeds/feed_123 ./downloads -f',
+      'download -j 16 /home/user/uploads/study ./study',
+      'TRANSFER_JOBS=1; download /home/user/uploads/study ./study  # one at a time',
     ],
   },
   handler: async (args: CommandArguments<typeof DOWNLOAD_GRAMMAR>): Promise<CommandEnvelope> =>
-    download_run(args.operands.source, args.operands.destination, args.options.force, args.expanded.source),
+    download_run(args.operands.source, args.operands.destination, args.options.force, args.expanded.source, args.options.jobs),
 });
 
 /**
@@ -227,9 +232,21 @@ export async function builtin_download(args: string[]): Promise<CommandEnvelope>
  * @param localPathArg - Where they go.
  * @param force - Overwrite local paths that exist.
  * @param sourceWasExpanded - The sources came from a wildcard, so even one goes into a folder.
+ * @param jobsGiven - The line's `-j`; undefined when it gives none.
  * @returns An envelope carrying the download summary.
  */
-async function download_run(sourceArgs: string[], localPathArg: string, force: boolean, sourceWasExpanded: boolean): Promise<CommandEnvelope> {
+async function download_run(
+  sourceArgs: string[],
+  localPathArg: string,
+  force: boolean,
+  sourceWasExpanded: boolean,
+  jobsGiven: number | undefined,
+): Promise<CommandEnvelope> {
+  const jobs: TransferJobs = transferJobs_resolve(jobsGiven);
+  if ('refused' in jobs) {
+    exitCode_set(1);
+    return envelope_error('', undefined, `${chalk.red(`download: ${jobs.refused}`)}\n`);
+  }
 
   // A path resolved here is a path on the *engine's* disk. That is the
   // operator's disk only when a local shell hosts the engine in its own
@@ -244,10 +261,14 @@ async function download_run(sourceArgs: string[], localPathArg: string, force: b
   }
 
   const targetLocal: string = path.resolve(localPathArg);
+  commandCancellation_enable();
+  const signal: AbortSignal | undefined = commandCancellation_signalGet();
 
   try {
     const progress: DownloadOptions = {
       force,
+      jobs: jobs.jobs,
+      ...(signal !== undefined ? { signal } : {}),
       confirm: downloadConfirmation_request,
       onNotice: (message: string, channel: 'status' | 'err'): void => {
         const sink = sink_get();
@@ -273,6 +294,11 @@ async function download_run(sourceArgs: string[], localPathArg: string, force: b
       rendered += `${chalk.yellow(`⚠ Downloaded ${summary.transferredCount} file(s), ${summary.failedCount} failed`)}\n`;
     }
     rendered += `${chalk.gray(`  Total: ${bytes_format(summary.transferSize)} in ${summary.duration.toFixed(1)}s (${bytes_format(summary.speed)}/s)`)}\n`;
+    rendered += transferLeftovers_render(summary.failedPaths, summary.cancelledCount, 'downloaded');
+    if (summary.failedCount > 0 || summary.cancelledCount > 0) {
+      exitCode_set(1);
+      return envelope_error(rendered, undefined, '');
+    }
     return envelope_ok(rendered);
   } catch (e: unknown) {
     const msg: string = e instanceof Error ? e.message : String(e);

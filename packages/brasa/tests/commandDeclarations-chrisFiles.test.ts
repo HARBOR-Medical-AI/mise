@@ -23,7 +23,7 @@ const mockCatBinary = jest.fn(async (_path: string) => ({ ok: true as const, val
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/cat.js', () => ({ files_cat: mockCat, files_catBinary: mockCatBinary }));
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/edit.js', () => ({ file_replaceContent: jest.fn(async () => ({ success: true })) }));
 const mockUpload = jest.fn(async (_local: string, _remote: string, _options: Record<string, unknown>) => ({
-  startTime: 0, endTime: 1, totalFiles: 1, transferredCount: 1, failedCount: 0, transferSize: 1, duration: 1, speed: 1, actualTargetPath: '/home/chris/in',
+  startTime: 0, endTime: 1, totalFiles: 1, transferredCount: 1, failedCount: 0, transferSize: 1, duration: 1, speed: 1, actualTargetPath: '/home/chris/in', failedPaths: [], cancelledCount: 0,
 }));
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/upload.js', () => ({ files_uploadWithProgress: mockUpload, bytes_format: (bytes: number): string => `${bytes} B` }));
 
@@ -33,6 +33,8 @@ const { uploadCommand, builtin_upload } = await import('../src/builtins/fs/uploa
 const { fileCommand, builtin_file } = await import('../src/builtins/games/bytes.js');
 const { commandUsage_render } = await import('../src/core/commandUsage.js');
 const { surface_set, HeadlessSurface } = await import('../src/core/surface.js');
+const { variable_set, variable_unset, textAnswer_make } = await import('../src/core/variables.js');
+const { commandCancellation_run } = await import('../src/core/cancellation.js');
 
 beforeEach((): void => {
   jest.clearAllMocks();
@@ -70,7 +72,7 @@ describe('a bad line is refused before the handler runs', () => {
   });
 
   it('upload', async () => {
-    refusal_expect(await builtin_upload(['--recursive', 'a.txt', 'in']), "upload: unrecognized option '--recursive'; usage: upload <source> <destination>");
+    refusal_expect(await builtin_upload(['--recursive', 'a.txt', 'in']), "upload: unrecognized option '--recursive'; usage: upload [--jobs <N>] <source> <destination>");
     refusal_expect(await builtin_upload(['a.txt']), 'upload: missing operand <destination>');
     expect(mockUpload).not.toHaveBeenCalled();
   });
@@ -108,11 +110,49 @@ describe('-- ends the options, and the typed line reaches the handler', () => {
   });
 });
 
+describe('upload: files at once', () => {
+  /** The options the last upload was handed. */
+  const optionsGiven = (): Record<string, unknown> => (mockUpload.mock.calls.at(-1) as [string, string, Record<string, unknown>])[2];
+
+  beforeEach(() => { variable_unset('TRANSFER_JOBS'); });
+
+  it('hands the pool 8 by default, the line\'s -j, the session\'s TRANSFER_JOBS, and the cancel signal', async () => {
+    await builtin_upload(['./study', 'in']);
+    expect(optionsGiven()['jobs']).toBe(8);
+    await builtin_upload(['-j', '1', './study', 'in']);
+    expect(optionsGiven()['jobs']).toBe(1);
+    variable_set('TRANSFER_JOBS', textAnswer_make('12', 'TRANSFER_JOBS=12'));
+    await builtin_upload(['./study', 'in']);
+    expect(optionsGiven()['jobs']).toBe(12);
+    await commandCancellation_run(async () => builtin_upload(['./study', 'in']));
+    expect(optionsGiven()['signal']).toBeInstanceOf(AbortSignal);
+  });
+
+  it('refuses -j above 32 and a TRANSFER_JOBS out of range, before anything moves', async () => {
+    refusal_expect(await builtin_upload(['--jobs', '64', './study', 'in']), 'at most 32');
+    variable_set('TRANSFER_JOBS', textAnswer_make('33', 'TRANSFER_JOBS=33'));
+    refusal_expect(await builtin_upload(['./study', 'in']), 'upload: TRANSFER_JOBS is 33; it says how many files move at once, a whole number from 1 to 32');
+    expect(mockUpload).not.toHaveBeenCalled();
+  });
+
+  it('names each file that failed, and fails the line', async () => {
+    mockUpload.mockResolvedValueOnce({
+      startTime: 0, endTime: 1, totalFiles: 3, transferredCount: 2, failedCount: 1, transferSize: 2, duration: 1, speed: 2, actualTargetPath: '/home/chris/in/study',
+      failedPaths: ['./study/b.dcm'] as never[], cancelledCount: 0,
+    });
+    const envelope: CommandEnvelope = await builtin_upload(['./study', 'in']);
+    expect(envelope.status).toBe('error');
+    expect(process.exitCode).toBe(1);
+    expect(envelope.rendered).toContain('Uploaded 2 file(s), 1 failed');
+    expect(envelope.rendered).toContain('  failed: ./study/b.dcm\n');
+  });
+});
+
 describe('usage, help and holds, from the declaration', () => {
   it('generates each usage from its grammar', () => {
     expect(commandUsage_render(editCommand)).toBe('edit <file>');
     expect(commandUsage_render(configCommand)).toBe('config <write <path> <content>>');
-    expect(commandUsage_render(uploadCommand)).toBe('upload <source> <destination>');
+    expect(commandUsage_render(uploadCommand)).toBe('upload [--jobs <N>] <source> <destination>');
     expect(commandUsage_render(fileCommand)).toBe('file <path…>');
   });
 
