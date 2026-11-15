@@ -144,6 +144,8 @@ export interface Browser {
   fileText_fetch: (path: string) => Promise<FileText>;
   /** Brings one file down to the operator's disk and says how it went. */
   file_save: (path: string) => void;
+  /** Downloads the row a browser indicates: a file saved, a folder archived by the kernel's `download`. */
+  indicated_download: (id: string, path: string) => boolean;
   /** Shows a listing in a pane's browser, rooted (a silent `ls`). */
   rootedListing_show: (id: string, panel: FilesPanel, path: string) => void;
   /** Asks a browser for its place again, after something changed it. */
@@ -202,6 +204,30 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
         ? `download: ${outcome.name}${outcome.streamed ? ' — handed to the browser; its progress is on the transfer row' : ''}`
         : `download: ${path}: ${outcome.reason}`);
     });
+  };
+
+  /** Each browser's indicated row, and whether it is a folder: what `file download` acts on. */
+  const indicated: Map<string, { path: string; directory: boolean }> = new Map();
+
+  /**
+   * Brings a row down to the operator's disk. A file is saved straight from
+   * the session; a folder has no bytes of its own, so it is the kernel's
+   * `download`, which archives the tree into one file and hands that over.
+   * That run makes a feed and takes a while, so it goes through the console
+   * as a line the operator can read and follow. The kernel's `download`
+   * always takes a destination; a browser has no folder to name and ignores
+   * it, so the line names the working directory, as a person would type it.
+   */
+  const download_press = (id: string, path: string, directory: boolean): void => {
+    if (directory) hooks.verbLine_run(id, `download "${path}" .`);
+    else file_save(path);
+  };
+
+  /** Downloads a browser's indicated row, when it is the one the regard names. */
+  const indicated_download = (id: string, path: string): boolean => {
+    const row: { path: string; directory: boolean } | undefined = indicated.get(id);
+    download_press(id, path, row !== undefined && row.path === path && row.directory);
+    return true;
   };
 
   const fileText_fetch = (path: string): Promise<FileText> =>
@@ -436,8 +462,8 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
     };
     const runs: Record<string, () => void> = {
       image: (): void => { void hooks.image_open(id, path).then((line: string): void => context.terminal.line_note(line)); },
-      // The browser's own save: an attachment named for the file lands on the operator's disk.
-      download: (): void => file_save(path),
+      // A file is the browser's own save; a folder is the kernel's `download`, run where the operator can read it.
+      download: (): void => download_press(id, path, directory),
       // LINK copies a web address that opens ARGUS at this path (`url` in chell).
       // The line under the trail shows what was copied, and the console notes it.
       link: (): void => {
@@ -521,7 +547,8 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
     panel.selectionVerbs_declare((rows) => selectionVerbs_build(id, rows));
     panel.rowVerbs_declare(
       (entry, path: string) => rowVerbs_build(id, entry, path),
-      (_entry, path: string): void => {
+      (entry, path: string): void => {
+        indicated.set(id, { path, directory: entry.type === 'dir' || entry.type === 'vfs' || entry.type === 'job' });
         // Indicating IS the regard: a viewer in the group renders what the
         // operator pointed at, without their having to open it first.
         subjects.regard_write(id, { address: path, modelKind: 'fs.file' });
@@ -550,6 +577,7 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
       dispose: (): void => {
         panels.delete(id);
         rootedHistory.delete(id);
+        indicated.delete(id);
         subjects.pane_leave(id);
       },
     };
@@ -558,6 +586,7 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
   return {
     previewProvider,
     fileText_fetch,
+    indicated_download,
     file_save,
     rootedListing_show,
     listing_refresh,

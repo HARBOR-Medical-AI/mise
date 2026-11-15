@@ -40,7 +40,7 @@ function host_make(shown: string[], tree: LayoutNode | null, groups: Record<stri
     identity_get: (): string | null => 'u@cube',
     consoleZoom_toggle: (): void => {},
     feed_enter: (): void => {},
-    file_save: (): void => {},
+    indicated_download: (): boolean => true,
     image_open: async (): Promise<string> => '',
     series_ask: async () => null,
     tagsPane_open: (): string => 'tags',

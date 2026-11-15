@@ -45,7 +45,8 @@ export interface ConsoleHostHooks {
   consoleZoom_toggle: () => void;
   /** The primary DAG enters a feed. */
   feed_enter: (feedId: number) => void;
-  file_save: (path: string) => void;
+  /** Downloads the row a files pane indicates: a file saved, a folder archived. */
+  indicated_download: (paneId: string, path: string) => boolean;
   image_open: (paneId: string | null, path: string, options: { force?: boolean }) => Promise<string>;
   /** A DICOM series read for `image series <n>`. */
   series_ask: (path: string) => Promise<DicomSeriesModel | null>;
@@ -293,8 +294,7 @@ export function argusHost_build(context: Pick<HostContext, 'layout' | 'panels' |
     file_download: (paneId: string): boolean => {
       const regard: RegardValue | null = subjects.regard_get(paneId);
       if (regard === null || regard.modelKind !== 'fs.file') return false;
-      hooks.file_save(regard.address);
-      return true;
+      return hooks.indicated_download(paneId, regard.address);
     },
     image_open: (paneId: string | null, path: string, options?: { force?: boolean }): Promise<string> => hooks.image_open(paneId, path, options ?? {}),
     image_control: async (paneId: string, verb: string, args: string[]): Promise<string> => {

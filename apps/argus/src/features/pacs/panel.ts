@@ -45,7 +45,7 @@ import {
 } from '@fnndsc/menu';
 import type { ProgressMessage } from '../../calypso/client.js';
 import { Listing, listingChild_declare, type ListingStateParts } from '../roster/listing.js';
-import { PACS_SERIES_ROSTER, PACS_STUDY_ROSTER, verbRule_get, type PacsSeriesFacts } from '../roster/verbs.js';
+import { PACS_PATIENT_ROSTER, PACS_SERIES_ROSTER, PACS_STUDY_ROSTER, verbRule_get, type PacsSeriesFacts } from '../roster/verbs.js';
 import type { GatherSeries } from '../gather/panel.js';
 import {
   progress_aggregate, progressCell_build,
@@ -798,6 +798,7 @@ export class PacsPanel {
   private readonly traits: ReadonlyArray<ListingTrait<SeriesRow>>;
   private readonly actions: ReadonlyArray<ListingAction<SeriesRow>>;
   private readonly studyTraits: ReadonlyArray<ListingTrait<StudyRow>>;
+  private readonly patientActions: ReadonlyArray<ListingAction<PatientRow>>;
   private readonly studyActions: ReadonlyArray<ListingAction<StudyRow>>;
   private readonly patientTraits: ReadonlyArray<ListingTrait<PatientRow>>;
   /** The three levels, declared once into the listing façade. */
@@ -854,6 +855,7 @@ export class PacsPanel {
     this.traits = this.traits_declare();
     this.actions = this.actions_declare();
     this.studyTraits = this.studyTraits_declare();
+    this.patientActions = this.patientActions_declare();
     this.studyActions = this.studyActions_declare();
     this.patientTraits = this.patientTraits_declare();
     // Three levels, one declaration each, one frame: the PATIENT caps head
@@ -880,6 +882,7 @@ export class PacsPanel {
       address: (row: PatientRow): string | undefined => (row.studies.length > 0 ? patientAddress_format(row.patient) : undefined),
       // Navigating is not selecting: the fold cell folds, the row selects.
       control: 'fold',
+      actions: { of: (): ReadonlyArray<ListingAction<PatientRow>> => this.patientActions },
       row: {
         className: (): string => 'pacs-patient-row',
         groupClassName: (row: PatientRow): string =>
@@ -1297,6 +1300,33 @@ export class PacsPanel {
         width: '6.5em',
         cell: (row: StudyRow): string => String(row.study.series.length),
         compare: (row: StudyRow): number => row.study.series.length,
+      },
+    ];
+  }
+
+  /**
+   * A patient's verbs. Pulling a patient is ONE line over every study of
+   * theirs the answer can name, and queues every series those studies hold.
+   */
+  private patientActions_declare(): ReadonlyArray<ListingAction<PatientRow>> {
+    const addressed = (row: PatientRow): string[] => row.studies
+      .map((study: PacsStudy): string | undefined => study.vfsPath)
+      .filter((path: string | undefined): path is string => path !== undefined);
+    return [
+      {
+        label: verbRule_get(PACS_PATIENT_ROSTER, 'pullPatient').label({ addressable: true }),
+        offered: (row: PatientRow): boolean =>
+          verbRule_get(PACS_PATIENT_ROSTER, 'pullPatient').offered({ addressable: addressed(row).length > 0 }),
+        run: (row: PatientRow): void => {
+          const paths: string[] = addressed(row);
+          if (paths.length === 0) return;
+          const queued: string[] = row.studies
+            .filter((study: PacsStudy): boolean => study.vfsPath !== undefined)
+            .flatMap((study: PacsStudy): PacsSeries[] => study.series)
+            .filter((series: PacsSeries): boolean => series.vfsPath !== undefined && series.pulled !== true)
+            .map((series: PacsSeries): string => series.seriesUID);
+          this.pull_press(paths, queued);
+        },
       },
     ];
   }
@@ -2262,7 +2292,13 @@ export class PacsPanel {
     if (block === null) return;
     const count: number = this.shown_pullable().length;
     block.hidden = count === 0;
-    block.textContent = this.filtering() ? `PULL ${count} SHOWN` : `PULL ${count}`;
+    // ALL, not a bare count: beside a row's PULL SERIES, "PULL 11" read as
+    // a second, different pull rather than the whole set. The count stays
+    // on the capsule's title, where hovering asks how many.
+    block.textContent = this.filtering() ? 'PULL ALL SHOWN' : 'PULL ALL';
+    block.title = this.filtering()
+      ? `retrieve the ${count} series the filter leaves showing that are not in CUBE yet`
+      : `retrieve the ${count} series in this answer that are not in CUBE yet`;
   }
 
   /**

@@ -1114,7 +1114,7 @@ async function surface_start(token: string): Promise<void> {
     template_stamp,
     pane_find,
   });
-  const { previewProvider, fileText_fetch, file_save, rootedListing_show, listing_refresh, directory_make, files_deliver, filesBody_stamp, rowVerbs_build } = browser;
+  const { previewProvider, fileText_fetch, rootedListing_show, listing_refresh, directory_make, files_deliver, filesBody_stamp, rowVerbs_build } = browser;
   const filesInstance_build = browser.instance_build;
 
   /** The session's user, as the prompt context last named it; null before the first. */
@@ -2225,7 +2225,7 @@ async function surface_start(token: string): Promise<void> {
     identity_get: (): string | null => promptIdentity,
     consoleZoom_toggle,
     feed_enter: (feedId: number): void => dagPanel.feed_enter(feedId),
-    file_save,
+    indicated_download: browser.indicated_download,
     stage_keep: (): void => stageDesktop_capture(),
     files_open: (paneId: string, path: string): boolean => {
       const panel: FilesPanel | undefined = panels.get('files', paneId);

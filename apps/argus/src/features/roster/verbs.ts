@@ -29,6 +29,7 @@ export type VerbListing =
   | 'files.row'
   | 'files.selection'
   | 'runs.row'
+  | 'pacs.patient'
   | 'pacs.study'
   | 'pacs.series'
   | 'gather.cohort'
@@ -166,7 +167,15 @@ export const FILE_ROW_ROSTER: VerbRoster<FileRowFacts> = {
     // EDIT opens a text file in the editor pane, a projection's writable one
     // (a feed's note) included; the kernel refuses a read-only one's save.
     { name: 'edit', label: (): string => 'EDIT', offered: (f: FileRowFacts): boolean => f.kind === 'file' && f.editable === true },
-    { name: 'download', label: (): string => 'DOWNLOAD', offered: (f: FileRowFacts): boolean => f.kind === 'file' },
+    // DOWNLOAD on a folder is the kernel's `download`, which archives the
+    // tree into one file a browser can save. Not on a projection: /proc and
+    // /net are rendered by the kernel and hold nothing an archive run could read.
+    {
+      name: 'download',
+      label: (): string => 'DOWNLOAD',
+      offered: (f: FileRowFacts): boolean =>
+        f.kind === 'file' || ((f.kind === 'directory' || f.kind === 'seriesFolder') && f.projection !== true),
+    },
     // LINK: a web address that opens ARGUS here, for a colleague the feed is shared with.
     { name: 'link', label: (): string => 'LINK', offered: (f: FileRowFacts): boolean => f.kind !== 'catalogue' },
     { name: 'move', label: (): string => 'MOVE', offered: (f: FileRowFacts): boolean => f.kind !== 'catalogue' && f.projection !== true },
@@ -234,6 +243,27 @@ export const RUNS_ROW_ROSTER: VerbRoster<RunsRowFacts> = {
   states: [{ name: 'any feed', facts: { feedId: 12 } }],
 };
 
+/** What a PACS patient row is. */
+export interface PacsPatientFacts {
+  /** At least one of the patient's studies resolves to a VFS path, so the patient can be pulled. */
+  addressable: boolean;
+}
+
+/**
+ * A PACS patient row's verbs. Each level's pull names its level, so the
+ * capsule says how much it fetches: PULL PATIENT, PULL STUDY, PULL SERIES.
+ */
+export const PACS_PATIENT_ROSTER: VerbRoster<PacsPatientFacts> = {
+  listing: 'pacs.patient',
+  rules: [
+    { name: 'pullPatient', label: (): string => 'PULL PATIENT', offered: (f: PacsPatientFacts): boolean => f.addressable },
+  ],
+  states: [
+    { name: 'a patient with studies', facts: { addressable: true } },
+    { name: 'a patient with none', facts: { addressable: false } },
+  ],
+};
+
 /** A PACS study row's verbs. */
 export const PACS_STUDY_ROSTER: VerbRoster<PacsStudyFacts> = {
   listing: 'pacs.study',
@@ -285,7 +315,7 @@ export const PACS_SERIES_ROSTER: VerbRoster<PacsSeriesFacts> = {
     // landed series as IMAGE, so it stands beside it under the same gate.
     { name: 'dir', label: (): string => 'DIR', offered: (f: PacsSeriesFacts): boolean => f.inCube && f.folderKnown },
     { name: 'process', label: (): string => 'PROCESS', offered: (f: PacsSeriesFacts): boolean => f.inCube && f.folderKnown },
-    { name: 'pull', label: (): string => 'PULL', offered: (f: PacsSeriesFacts): boolean => !f.inCube },
+    { name: 'pull', label: (): string => 'PULL SERIES', offered: (f: PacsSeriesFacts): boolean => !f.inCube },
   ],
   states: [
     { name: 'not yet retrieved', facts: { inCube: false, folderKnown: false, addressable: true } },
@@ -319,7 +349,7 @@ export const GATHER_SERIES_ROSTER: VerbRoster<GatherSeriesFacts> = {
   listing: 'gather.series',
   rules: [
     { name: 'remove', label: (): string => 'REMOVE', offered: (): boolean => true },
-    { name: 'pull', label: (): string => 'PULL', offered: (f: GatherSeriesFacts): boolean => f.pullable === true },
+    { name: 'pull', label: (): string => 'PULL SERIES', offered: (f: GatherSeriesFacts): boolean => f.pullable === true },
     {
       name: 'image',
       label: (): string => 'IMAGE',
@@ -410,6 +440,7 @@ export const VERB_ROSTERS: ReadonlyArray<AnyVerbRoster> = [
   verbRoster_any(FILE_ROW_ROSTER),
   verbRoster_any(FILES_SELECTION_ROSTER),
   verbRoster_any(RUNS_ROW_ROSTER),
+  verbRoster_any(PACS_PATIENT_ROSTER),
   verbRoster_any(PACS_STUDY_ROSTER),
   verbRoster_any(PACS_SERIES_ROSTER),
   verbRoster_any(GATHER_COHORT_ROSTER),
