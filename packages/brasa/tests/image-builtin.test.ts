@@ -138,6 +138,15 @@ describe('image on a series', () => {
     expect(mockSeries).toHaveBeenCalledWith('/home/chris/uploads/sag-anon', expect.anything());
   });
 
+  it("reads a series behind a node's data link where the store keeps it, and names it as typed", async () => {
+    const { linkedStore_install, VIA_PROC, LINKED } = await import('./support/linkedStore.js');
+    linkedStore_install();
+    mockSeries.mockResolvedValue(ok(seriesSummary));
+    const envelope: CommandEnvelope = await builtin_image([VIA_PROC]);
+    expect(mockSeries).toHaveBeenCalledWith(LINKED, expect.anything());
+    expect(envelope.model).toEqual({ kind: 'image.view', data: { path: VIA_PROC, target: 'series' } });
+  });
+
   it('refuses by name when the path is not a readable series or volume', async () => {
     mockSeries.mockResolvedValue(err());
     const envelope: CommandEnvelope = await builtin_image(['nope']);

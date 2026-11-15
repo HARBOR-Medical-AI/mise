@@ -21,7 +21,7 @@ cuminMock_install(() => ({
 const fileContent = jest.fn();
 jest.unstable_mockModule('@fnndsc/salsa', () => ({ fileContent_get: fileContent }));
 const pathResolve = jest.fn(async (p: string) => `/home/chris/${p.replace(/^~\//, '')}`);
-jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: pathResolve }));
+jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: pathResolve, storePath_resolve: pathResolve }));
 
 const {
   QUERY_COHORT_MAX,

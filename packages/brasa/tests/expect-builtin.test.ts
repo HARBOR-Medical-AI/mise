@@ -60,7 +60,6 @@ jest.unstable_mockModule('../src/lib/vfs/vfs.js', () => ({
 }));
 
 jest.unstable_mockModule('../src/builtins/res/dicom.js', () => ({
-  path_physical: async (p: string): Promise<string> => p,
   tagsModel_read: async (): Promise<{ ok: boolean; value: unknown }> => ({
     ok: true,
     value: {
@@ -96,6 +95,7 @@ jest.unstable_mockModule('../src/builtins/utils.js', () => ({
     return parsed;
   },
   path_resolve: async (p: string): Promise<string> => p,
+  storePath_resolve: async (p: string): Promise<string> => p,
 }));
 
 const { builtin_expect, claim_holds, duration_parse } = await import('../src/builtins/res/expect.js');

@@ -298,10 +298,11 @@ async function csvFile_put(
   force: boolean,
 ): Promise<CsvWrite> {
   const { errorStack } = await import('@fnndsc/fond');
-  const { path_resolve, error_stripDebugPrefix } = await import('../utils.js');
+  const { storePath_resolve, error_stripDebugPrefix } = await import('../utils.js');
   const { files_create, files_delete, files_listAll, files_mkdir, files_path_isDirectory } =
     await import('@fnndsc/salsa');
-  const resolved: string = await path_resolve(destination);
+  // Where the store keeps it: through a `/proc` job's `data` and any link.
+  const resolved: string = await storePath_resolve(destination);
 
   if (path_isVirtual(resolved)) {
     return {

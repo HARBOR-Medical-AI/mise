@@ -32,7 +32,8 @@ export function fileRefusal_name(filePath: string, notes: ReadonlyArray<string>)
 
 
 /**
- * Writes bytes to one ChRIS path through the kernel's own create.
+ * Writes bytes to one ChRIS path through the kernel's own create, where the
+ * store keeps it (`storePath_resolve`).
  *
  * A browser surface holds bytes the daemon's machine has never seen; this
  * is how they reach the store without any surface talking to CUBE.
@@ -42,10 +43,11 @@ export function fileRefusal_name(filePath: string, notes: ReadonlyArray<string>)
  * @throws {Error} When the store refused the write.
  */
 async function file_write(filePath: string, bytes: Buffer): Promise<void> {
-  const { path_resolve } = await import('../builtins/utils.js');
+  const { storePath_resolve } = await import('../builtins/utils.js');
   const { files_create } = await import('@fnndsc/salsa');
   const { listCache_get } = await import('@fnndsc/cumin');
-  const resolved: string = await path_resolve(filePath);
+  // Where the store keeps it, as every writer asks: a `/proc` job's `data` and any link on the way.
+  const resolved: string = await storePath_resolve(filePath);
   const written: boolean = await files_create(bytes, resolved);
   if (!written) {
     throw new Error(`cannot write ${filePath}`);

@@ -1,7 +1,8 @@
 /**
  * @file A ChRIS file served as a stream: a CUBE file is opened as one and
  * never read whole; a refusal names CUBE's status; a small projection is
- * read whole, as before.
+ * read whole, as before. A file a surface delivers is written where the
+ * store keeps its path.
  */
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { Readable } from 'node:stream';
@@ -12,12 +13,16 @@ const isVirtual_mock = jest.fn((_p: string): boolean => false);
 const readBinary_mock = jest.fn(async (): Promise<{ ok: true; value: Buffer }> => ({ ok: true, value: Buffer.from('status') }));
 const stream_mock = jest.fn(async (_p: string): Promise<unknown> => ({ ok: false }));
 const catBinary_mock = jest.fn(async (): Promise<unknown> => ({ ok: false }));
+const create_mock = jest.fn(async (_bytes: Buffer, _p: string): Promise<boolean> => true);
+const invalidate_mock = jest.fn((_p: string): void => undefined);
 
 jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: async (p: string): Promise<string> => p, storePath_resolve: storePath_mock }));
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
   vfsDispatcher: { path_isVirtual: isVirtual_mock, readBinary: readBinary_mock },
   fileContent_getBinaryStream: stream_mock,
+  files_create: create_mock,
 }));
+jest.unstable_mockModule('@fnndsc/cumin', () => ({ listCache_get: () => ({ cache_invalidate: invalidate_mock }) }));
 jest.unstable_mockModule('@fnndsc/chili/commands/fs/cat.js', () => ({ files_catBinary: catBinary_mock }));
 
 const { chrisFiles } = await import('../src/chris/files.js');
@@ -77,5 +82,20 @@ describe('chrisFiles.stream', () => {
     expect(await drain(opened.stream)).toBe('dcm');
     expect(storePath_mock).toHaveBeenCalledWith('/proc/jobs/feed_1/pl-dircopy_7/data/home_s_uploads_set/a.dcm');
     expect(stream_mock).toHaveBeenCalledWith('/home/s/uploads/set/a.dcm');
+  });
+});
+
+describe('chrisFiles.write', () => {
+  it('writes a delivered file through a node\'s data link, where the store keeps it', async () => {
+    storePath_mock.mockResolvedValueOnce('/home/s/uploads/set/new.txt');
+    await chrisFiles.write!('/proc/jobs/feed_1/pl-dircopy_7/data/home_s_uploads_set/new.txt', Buffer.from('hi'));
+    expect(storePath_mock).toHaveBeenCalledWith('/proc/jobs/feed_1/pl-dircopy_7/data/home_s_uploads_set/new.txt');
+    expect(create_mock).toHaveBeenCalledWith(Buffer.from('hi'), '/home/s/uploads/set/new.txt');
+    expect(invalidate_mock).toHaveBeenCalledWith('/home/s/uploads/set');
+  });
+
+  it('says the path it was given when the store refuses the write', async () => {
+    create_mock.mockResolvedValueOnce(false);
+    await expect(chrisFiles.write!('~/x.txt', Buffer.from('hi'))).rejects.toThrow('cannot write ~/x.txt');
   });
 });

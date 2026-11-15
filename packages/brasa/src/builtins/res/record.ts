@@ -27,7 +27,7 @@ import chalk from 'chalk';
 import { files_touch as chefs_touch_cmd } from '@fnndsc/chili/commands/fs/touch.js';
 import { files_mkdir as chefs_mkdir_cmd } from '@fnndsc/chili/commands/fs/mkdir.js';
 import path from 'path';
-import { path_resolve } from '../utils.js';
+import { path_resolve, storePath_resolve } from '../utils.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
 import {
@@ -219,8 +219,10 @@ async function recording_stop(): Promise<CommandEnvelope> {
 
   const { lines, params } = identifiers_offer(held.lines);
   const name: string = path.posix.basename(held.target).replace(/\.[^.]+$/, '');
-  await chefs_mkdir_cmd(path.posix.dirname(held.target));
-  const written: boolean = await chefs_touch_cmd(held.target, {
+  // Written where the store keeps it; said as it was named.
+  const stored: string = await storePath_resolve(held.target);
+  await chefs_mkdir_cmd(path.posix.dirname(stored));
+  const written: boolean = await chefs_touch_cmd(stored, {
     withContents: manifest_render(name, lines, params),
   });
   if (!written) {

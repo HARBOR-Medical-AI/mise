@@ -190,7 +190,7 @@ describe('csvFile_write', () => {
       listCache_get: (): { cache_invalidate: (path: string) => void } => ({ cache_invalidate: invalidate }),
     }));
     jest.unstable_mockModule('../src/builtins/utils.js', () => ({
-      path_resolve: async (p: string): Promise<string> => p.replace('~', '/home/chris'),
+      storePath_resolve: async (p: string): Promise<string> => p.replace('~', '/home/chris'),
       error_stripDebugPrefix: (m: string): string => m,
     }));
     jest.unstable_mockModule('@fnndsc/salsa', () => ({

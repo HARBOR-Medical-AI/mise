@@ -28,6 +28,7 @@ jest.unstable_mockModule('@fnndsc/chili/commands/fs/mkdir.js', () => ({ files_mk
 
 jest.unstable_mockModule('../src/builtins/utils.js', () => ({
   path_resolve: async (p: string): Promise<string> => p.replace(/^~/, '/home/chris'),
+  storePath_resolve: async (p: string): Promise<string> => p.replace(/^~/, '/home/chris'),
   commandArgs_process: (args: string[]) => ({ _: args }),
 }));
 

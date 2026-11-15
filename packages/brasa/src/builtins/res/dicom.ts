@@ -39,7 +39,7 @@ import {
   type DicomTagGroup,
 } from '@fnndsc/salsa';
 import { DICOM_MODEL_KINDS, DICOM_TAG_GROUPS, type DicomSeriesModel, type DicomTagsModel, type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
-import { path_resolve, storePath_resolve } from '../utils.js';
+import { storePath_resolve } from '../utils.js';
 import type { Result } from '@fnndsc/fond';
 import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
@@ -139,39 +139,16 @@ export async function builtin_dcm(args: string[]): Promise<CommandEnvelope> {
 }
 
 /**
- * The address the bytes actually live at.
+ * `dcm series <folder>`: the folder as a series.
  *
  * A path can name a file three times over: the logical place a listing shows
  * it (`/home/me/feeds/feed_42/pl-dircopy_1/data/...`), the projection the
  * graph gives for the same place (`/proc/jobs/feed_42/pl-dircopy_1/data/...`),
- * and the physical file CUBE stores. A `pl-dircopy` of a PACS pull is the
- * case where all three differ: its output folder is a LINK, and the DICOM
- * under it is stored beneath `/SERVICES/PACS`. Reading the logical name got
- * no file id, so every slice of a pulled series was unreadable from the feed
- * it was pulled into — a listing that shows what it cannot open — while the
- * same series read fine at its PACS address, and `cd` into the folder (which
- * does follow links) made the very same command work.
- *
- * So the address is resolved before anything is read, as every reader
- * resolves it (`storePath_resolve`). A path that resolves to nothing stands
- * as it was, so a bad path still refuses by its own name.
- *
- * @param input - The path as the operator or a surface gave it.
- * @returns The physical path, or the input when it resolves no further.
- */
-export async function path_physical(input: string): Promise<string> {
-  // Resolution is best effort by design: whatever cannot answer — a stubbed
-  // dispatcher, a path no link walk knows — leaves the address as it was,
-  // and the command refuses by its own name rather than by an exception.
-  try {
-    return await storePath_resolve(input);
-  } catch {
-    return input;
-  }
-}
-
-/**
- * `dcm series <folder>`: the folder as a series.
+ * and the file CUBE stores. A `pl-dircopy` of a PACS pull is the case where
+ * all three differ: its output folder is a LINK, and the DICOM under it is
+ * stored beneath `/SERVICES/PACS`. So the folder is read where the store
+ * keeps it (`storePath_resolve`), as every reader reads; a path that
+ * resolves no further stands as it was and refuses by its own name.
  *
  * @param target - The folder, as the line named it.
  * @returns The series' text and model, or the refusal.
@@ -184,7 +161,7 @@ async function dcmSeries_handle(target: string): Promise<CommandEnvelope> {
   // Read afresh at each step: the signal changes while a read is awaited.
   const stop_isAsked = (): boolean => signal?.aborted === true;
   const stopped = (): CommandEnvelope => envelope_error('', undefined, 'dcm series: stopped\n');
-  const folder: string = await path_physical(await path_resolve(target));
+  const folder: string = await storePath_resolve(target);
   if (stop_isAsked()) return stopped();
   const annotationRoot: string | undefined = await annotationRoot_get();
   const summary: Result<DicomSeriesSummary> = await dicomSeries_summarize(folder, annotationRoot !== undefined ? { annotationRoot } : {});
@@ -213,7 +190,7 @@ async function annotationRoot_get(): Promise<string | undefined> {
  * @returns The tags' text and model, or the refusal.
  */
 async function dcmTags_handle(target: string, options: TagsRenderOptions): Promise<CommandEnvelope> {
-  const resolved: string = await path_physical(await path_resolve(target));
+  const resolved: string = await storePath_resolve(target);
   const model: Result<DicomTagsModel> = await tagsModel_read(resolved);
   if (!model.ok) {
     exitCode_set(1);
@@ -229,10 +206,14 @@ async function dcmTags_handle(target: string, options: TagsRenderOptions): Promi
  * the header exactly the way the readout does, or a manifest could pass
  * against a file the operator is shown differently.
  *
- * @param resolved - A physical path, already resolved.
+ * The path is read where the store keeps it (`storePath_resolve`); a path
+ * already resolved resolves to itself.
+ *
+ * @param target - The file or folder, absolute or as the session means it.
  * @returns The tags model, or a refusal when the path holds no readable DICOM.
  */
-export async function tagsModel_read(resolved: string): Promise<Result<DicomTagsModel>> {
+export async function tagsModel_read(target: string): Promise<Result<DicomTagsModel>> {
+  const resolved: string = await storePath_resolve(target);
   return /\.dcm$/i.test(resolved) ? await fileTags_model(resolved) : await folderTags_model(resolved);
 }
 
