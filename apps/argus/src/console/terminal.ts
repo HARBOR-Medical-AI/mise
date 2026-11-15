@@ -161,7 +161,13 @@ export class ArgusTerminal {
    * line, and a queued line should not jump ahead of the answer.
    */
   private pendingAsk: { settle: (answer: string | null) => void; kind: AskKind } | null = null;
-  private readonly queuedLines: string[] = [];
+  /**
+   * Lines pressed while another was running, each with the echo that
+   * stands for it. A press is answered at once: the echo says the line is
+   * waiting, and it runs where it stands when the line before it ends. A
+   * queue with no echo made a tile's press look like nothing at all.
+   */
+  private readonly queuedLines: Array<{ line: string; echo: HTMLElement }> = [];
   /**
    * Whether a question is standing somewhere on the surface.
    *
@@ -283,9 +289,13 @@ export class ArgusTerminal {
     const exitOk: boolean = (this.promptContext?.lastExitCode ?? 0) === 0;
     this.inputGlyph.style.color = exitOk ? '#00D787' : '#FF005F';
     this.busy_set(false);
-    const queued: string | undefined = this.queuedLines.shift();
+    const queued: { line: string; echo: HTMLElement } | undefined = this.queuedLines.shift();
     if (queued !== undefined) {
-      this.line_run(queued);
+      // Its echo moves below what the line before it said, and stops waiting.
+      queued.echo.querySelector('.argus-queued-note')?.remove();
+      queued.echo.classList.remove('argus-queued');
+      this.output.appendChild(queued.echo);
+      this.line_start(queued.line, queued.echo);
     }
     this.size_fit();
   }
@@ -590,7 +600,12 @@ export class ArgusTerminal {
 
   public line_run(line: string): void {
     if (this.busy && !this.questionOpen) {
-      this.queuedLines.push(line);
+      const echo: HTMLElement = this.block_append(
+        'argus-echo argus-queued',
+        `<span class="prompt-glyph">❯</span> <span class="user-input">${html_escape(line)}</span> <span class="argus-queued-note">queued: runs when the line running now ends</span>`,
+      );
+      this.queuedLines.push({ line, echo });
+      this.size_fit();
       return;
     }
     if (this.questionOpen) {
@@ -604,9 +619,20 @@ export class ArgusTerminal {
       void this.submit(line);
       return;
     }
+    this.line_start(line, null);
+  }
+
+  /**
+   * Runs a line now: its echo (the one it waited under, or a new one), the
+   * history, the mirror, the submit.
+   *
+   * @param line - The line.
+   * @param echo - The echo already standing for it, when it was queued.
+   */
+  private line_start(line: string, echo: HTMLElement | null): void {
     this.busy_set(true);
     this.history_push(line);
-    this.block_append('argus-echo', `<span class="prompt-glyph">❯</span> <span class="user-input">${html_escape(line)}</span>`);
+    if (echo === null) this.block_append('argus-echo', `<span class="prompt-glyph">❯</span> <span class="user-input">${html_escape(line)}</span>`);
     this.mirrorEcho_emit(line);
     this.size_fit();
     void this.submit(line);
@@ -877,11 +903,12 @@ export class ArgusTerminal {
    * @param className - The block's CSS class(es).
    * @param html - The block's inner HTML (already escaped/converted).
    */
-  private block_append(className: string, html: string): void {
+  private block_append(className: string, html: string): HTMLElement {
     const block: HTMLDivElement = document.createElement('div');
     block.className = `argus-line ${className}`;
     block.innerHTML = html;
     this.output.appendChild(block);
+    return block;
   }
 
   /**

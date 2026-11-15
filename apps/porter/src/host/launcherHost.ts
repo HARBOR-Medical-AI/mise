@@ -259,6 +259,11 @@ export class LauncherHost implements SessionHost {
   }
 
   /** @inheritdoc */
+  public stratus_refusal(): string | null {
+    return 'this door starts berths, and a cloud session is not offered on one yet; enter your cloud session through a porter that runs sessions on its host (pangea)';
+  }
+
+  /** @inheritdoc */
   public async evict(identity: string): Promise<boolean> {
     const who = identity_split(identity);
     if (who === null) return false;

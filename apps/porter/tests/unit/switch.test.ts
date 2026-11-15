@@ -29,6 +29,8 @@ class SwitchHost implements SessionHost {
   restart_begin(): void { /* not asked */ }
   stratus_begin(identity: string, configPath: string, spend: boolean, replace: boolean, door?: { cubeUrl: string; user: string }): void { this.begun.push({ identity, configPath, spend, replace, ...(door === undefined ? {} : { door }) }); }
   stratus_armed(identity: string): boolean | null { return this.armed.get(identity) ?? null; }
+  public refusal: string | null = null;
+  stratus_refusal(): string | null { return this.refusal; }
 }
 
 let host: SwitchHost;
@@ -70,6 +72,20 @@ describe('POST /switch', () => {
     expect(refused.statusCode).toBe(404);
     expect(refused.json().error).toContain('no OCI credentials are filed for rudolph');
     expect(host.begun).toEqual([]);
+  });
+
+  it('on a door that cannot start one, refuses by name before the cookie moves, credentials filed or not', async () => {
+    creds_file();
+    host.refusal = 'this door starts berths, and a cloud session is not offered on one yet';
+    const cookie: string = await login();
+    const reply = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie } });
+    expect(reply.statusCode).toBe(409);
+    expect(reply.json().error).toContain('a cloud session is not offered');
+    expect(reply.headers['set-cookie']).toBeUndefined();
+    expect(host.begun).toEqual([]);
+    // The ChRIS session is still the browser's: switching back finds it.
+    const back = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'chris' }, headers: { cookie } });
+    expect(back.json()).toMatchObject({ state: 'attached' });
   });
 
   it('starts the person\'s stratus session read-only on their own credentials, and moves the cookie to it', async () => {
