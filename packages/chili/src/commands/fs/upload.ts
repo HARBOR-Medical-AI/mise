@@ -8,8 +8,9 @@ import path from "path";
 import chalk from "chalk";
 import { glob } from "glob";
 
-import { chrisIO } from "@fnndsc/cumin";
+import { chrisIO, TRANSFER_JOBS_DEFAULT, transferPool_run, type TransferPoolResult, type TransferSettled } from "@fnndsc/cumin";
 import { files_uploadPath } from "@fnndsc/salsa";
+import { errorStack, type StackMessage } from "@fnndsc/fond";
 import { chiliLog } from "../../screen/output.js";
 import { prompt_confirmOrThrow } from "../../utils/input_format.js";
 import { path_resolveChrisFs } from "../../utils/cli.js";
@@ -36,6 +37,10 @@ export interface UploadSummary {
   duration: number;
   speed: number;
   actualTargetPath: string; // The actual path where files were uploaded
+  /** The local paths that failed after their retry, in the order they ended. */
+  failedPaths: string[];
+  /** Files a cancel left unuploaded. */
+  cancelledCount: number;
 }
 
 /** Upload progress fact emitted to callers that want to render progress. */
@@ -61,6 +66,10 @@ export interface UploadOptions {
   /** Reports a live transfer notice on the caller's chosen output channel. */
   onNotice?: (message: string, channel: "status" | "err") => void;
   onProgress?: (event: UploadProgressEvent) => void;
+  /** How many files move at once; the transfer pool's default when absent. */
+  jobs?: number;
+  /** The line's abort signal: a cancel starts no more files. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -216,6 +225,31 @@ async function localFiles_scan(localPaths: readonly string[], remotePath: string
 }
 
 /**
+ * Uploads one scanned file to its ChRIS path.
+ *
+ * @param file - The local file and its ChRIS path.
+ * @returns The bytes sent.
+ * @throws {Error} When CUBE did not take it, with the reasons the upload
+ *   noted, so the transfer pool tries it again and then names it.
+ */
+async function uploadFile_send(file: UploadFileInfo): Promise<number> {
+  const fileContent: NonSharedBuffer = await fs.promises.readFile(file.hostPath);
+  const fileBlob: Blob = new Blob([new Uint8Array(fileContent)]);
+  const lastSlash: number = file.chrisPath.lastIndexOf('/');
+  const dir: string = file.chrisPath.substring(0, lastSlash) || '/';
+  const filename: string = file.chrisPath.substring(lastSlash + 1);
+  const since: number = errorStack.checkpoint_mark();
+  if (!await chrisIO.file_upload(fileBlob, dir, filename)) {
+    const reasons: string = errorStack.checkpoint_drain(since)
+      .map((note: StackMessage): string => note.message.replace(/^\[[^\]]*\]\s*\|\s*/, '').trim())
+      .filter((line: string): boolean => line.length > 0)
+      .join('; ');
+    throw new Error(reasons.length > 0 ? reasons : "CUBE did not take it");
+  }
+  return fileContent.length;
+}
+
+/**
  * Uploads files and optionally emits structured progress events.
  * @param localPath - Local path (file or directory) or a host-local glob.
  * @param remotePath - Remote ChRIS path.
@@ -290,6 +324,8 @@ export async function files_uploadWithProgress(
     duration: 0,
     speed: 0,
     actualTargetPath: actualTarget,
+    failedPaths: [],
+    cancelledCount: 0,
   };
 
   options.onProgress?.({
@@ -304,46 +340,34 @@ export async function files_uploadWithProgress(
     status: "running",
   });
 
-  for (const [index, file] of fileList.entries()) {
-    try {
-      const fileContent: NonSharedBuffer = await fs.promises.readFile(file.hostPath);
-      const fileBlob: Blob = new Blob([new Uint8Array(fileContent)]);
-
-      // Split chrisPath into dir and filename for the new API
-      const lastSlash: number = file.chrisPath.lastIndexOf('/');
-      const dir: string = file.chrisPath.substring(0, lastSlash) || '/';
-      const filename: string = file.chrisPath.substring(lastSlash + 1);
-
-      const uploadResult: boolean = await chrisIO.file_upload(fileBlob, dir, filename);
-
-      if (uploadResult) {
+  let settledCount: number = 0;
+  const result: TransferPoolResult<UploadFileInfo, number> = await transferPool_run(fileList, uploadFile_send, {
+    jobs: options.jobs ?? TRANSFER_JOBS_DEFAULT,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    onSettled: (settled: TransferSettled<UploadFileInfo, number>): void => {
+      settledCount++;
+      if (settled.ok) {
         summary.transferredCount++;
-        summary.transferSize += fileContent.length;
+        summary.transferSize += settled.value;
       } else {
         summary.failedCount++;
-        uploadNotice_emit(options, `Failed to upload: ${file.hostPath}`, "err");
+        summary.failedPaths.push(settled.item.hostPath);
+        uploadNotice_emit(options, `Error uploading ${settled.item.hostPath}: ${settled.reason}`, "err");
       }
-    } catch (error: unknown) {
-      summary.failedCount++;
-      uploadNotice_emit(
-        options,
-        `Error uploading ${file.hostPath}: ${error instanceof Error ? error.message : String(error)}`,
-        "err",
-      );
-    }
-
-    options.onProgress?.({
-      operation: "upload",
-      kind: "transfer",
-      phase: "transferring",
-      label: "Uploading files",
-      current: index + 1,
-      total: fileList.length,
-      percent: fileList.length === 0 ? 100 : ((index + 1) / fileList.length) * 100,
-      unit: "files",
-      status: "running",
-    });
-  }
+      options.onProgress?.({
+        operation: "upload",
+        kind: "transfer",
+        phase: "transferring",
+        label: "Uploading files",
+        current: settledCount,
+        total: fileList.length,
+        percent: fileList.length === 0 ? 100 : (settledCount / fileList.length) * 100,
+        unit: "files",
+        status: "running",
+      });
+    },
+  });
+  summary.cancelledCount = result.cancelled.length;
 
   summary.endTime = Date.now();
   summary.duration = (summary.endTime - summary.startTime) / 1000; // seconds
@@ -352,13 +376,13 @@ export async function files_uploadWithProgress(
   options.onProgress?.({
     operation: "upload",
     kind: "transfer",
-    phase: summary.failedCount === 0 ? "complete" : "failed",
+    phase: summary.failedCount === 0 && summary.cancelledCount === 0 ? "complete" : "failed",
     label: "Upload complete",
     current: summary.transferredCount,
     total: summary.totalFiles,
     percent: summary.totalFiles === 0 ? 100 : (summary.transferredCount / summary.totalFiles) * 100,
     unit: "files",
-    status: summary.failedCount === 0 ? "done" : "error",
+    status: summary.failedCount === 0 && summary.cancelledCount === 0 ? "done" : "error",
   });
 
   return summary;

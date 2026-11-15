@@ -38,6 +38,11 @@
       "types": "./dist/output/runtimeOutput.d.ts",
       "require": "./dist/output/runtimeOutput.js"
     },
+    "./transfer-pool": {
+      "import": "./dist/io/transferPool.js",
+      "types": "./dist/io/transferPool.d.ts",
+      "require": "./dist/io/transferPool.js"
+    },
     "./package.json": "./package.json",
     "./login-failure": {
       "import": "./dist/connect/loginFailure.js",

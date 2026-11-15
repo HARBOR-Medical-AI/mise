@@ -120,6 +120,22 @@ describe('ErrorStack', () => {
     });
   });
 
+  describe('stack_restore', () => {
+    it('hands a scope\'s leftovers to the stack outside it, as they were', () => {
+      const left = errorStack.scope_run(() => {
+        errorStack.stack_push('warning', 'landed under another name');
+        return errorStack.checkpoint_drain(0);
+      });
+      expect(errorStack.stack_getAll()).toHaveLength(0);
+      errorStack.stack_restore(left);
+      const restored = errorStack.stack_getAll();
+      expect(restored).toHaveLength(1);
+      expect(restored[0]).toEqual(left[0]);
+      // One caller prefix, not a second one for the restore.
+      expect(restored[0].message.match(/\|/g)).toHaveLength(1);
+    });
+  });
+
   describe('scope_run isolation (background fencing)', () => {
     it('keeps scoped pushes off the shared stack', () => {
       errorStack.scope_run(() => {

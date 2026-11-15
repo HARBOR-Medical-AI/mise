@@ -34,6 +34,8 @@ import { declaredCommand_run } from '../../core/commandParse.js';
 import { errorStack, type StackMessage } from '@fnndsc/fond';
 import { type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
+import { TRANSFER_JOBS_OPTION, transferJobs_resolve, transferLeftovers_render, type TransferJobs } from './transferJobs.js';
 
 /** The characters that make a host path a pattern chili matches against the disk. */
 const HOST_WILDCARD: RegExp = /[*?[]/;
@@ -59,10 +61,13 @@ const UPLOAD_GRAMMAR = {
     { name: 'source', kind: 'hostPath', summary: "What to upload from this machine's disk: a file, a folder, or a wildcard chili matches there" },
     { name: 'destination', kind: 'cfsPath', summary: 'The ChRIS folder it goes into' },
   ],
+  options: {
+    jobs: TRANSFER_JOBS_OPTION,
+  },
 } as const satisfies CommandGrammar;
 
 /**
- * `upload <source> <destination>`: the declaration.
+ * `upload [-j N] <source> <destination>`: the declaration.
  *
  * @example
  * ```ts
@@ -74,17 +79,18 @@ export const uploadCommand = command_declare({
   grammar: UPLOAD_GRAMMAR,
   help: {
     summary: 'Upload local files, directories, or glob matches to ChRIS',
-    description: 'Upload local files, directories, or glob matches to ChRIS with progress tracking. A progress bar shows the file count and percentage complete, the estimated time remaining (ETA) and the data transferred; summary statistics follow the upload.',
+    description: 'Upload local files, directories, or glob matches to ChRIS with progress tracking. A progress bar shows the file count and percentage complete, the estimated time remaining (ETA) and the data transferred; summary statistics follow the upload. The files of a folder move 8 at a time (-j N, or the session variable TRANSFER_JOBS, says how many, 1 to 32); a file that fails is tried once more, the rest continue, and the summary names each that failed.',
     category: 'Files',
     examples: [
       'upload ~/data/file.csv /home/user/uploads/',
       'upload ~/Pictures/earthandmoon* .',
       'upload ./results/ ~/data/',
       'upload ~/experiment/data /home/user/projects/',
+      'upload -j 1 ./results/ ~/data/  # one at a time',
     ],
   },
   handler: async (args: CommandArguments<typeof UPLOAD_GRAMMAR>): Promise<CommandEnvelope> =>
-    upload_run(args.operands.source, args.operands.destination),
+    upload_run(args.operands.source, args.operands.destination, args.options.jobs),
 });
 
 /**
@@ -102,9 +108,10 @@ export async function builtin_upload(args: string[]): Promise<CommandEnvelope> {
  *
  * @param localPath - The host path, as typed: a wildcard in it is matched on the engine's disk.
  * @param remotePath - The ChRIS destination, as typed.
+ * @param jobsGiven - The line's `-j`; undefined when it gives none.
  * @returns An envelope carrying the upload summary.
  */
-async function upload_run(localPath: string, remotePath: string): Promise<CommandEnvelope> {
+async function upload_run(localPath: string, remotePath: string, jobsGiven: number | undefined): Promise<CommandEnvelope> {
   // The local path is read by the ENGINE: under a daemon that is the daemon
   // host's disk, which belongs to nobody attending the session unless the
   // operator declared it theirs (--host-control=files). Without that, refuse
@@ -114,6 +121,13 @@ async function upload_run(localPath: string, remotePath: string): Promise<Comman
     return envelope_error('', undefined,
       `${chalk.red("upload: calypso's host disk is nobody's; start calypso with --host-control=files, or upload from a surface that can supply the bytes.")}\n`);
   }
+  const jobs: TransferJobs = transferJobs_resolve(jobsGiven);
+  if ('refused' in jobs) {
+    exitCode_set(1);
+    return envelope_error('', undefined, `${chalk.red(`upload: ${jobs.refused}`)}\n`);
+  }
+  commandCancellation_enable();
+  const signal: AbortSignal | undefined = commandCancellation_signalGet();
   // chili reads an exact path first and matches a pattern only when nothing
   // stands at it.
   const localGlob: boolean = HOST_WILDCARD.test(localPath);
@@ -124,6 +138,8 @@ async function upload_run(localPath: string, remotePath: string): Promise<Comman
   try {
     const summary: UploadSummary = await chefs_upload_cmd(localPath, targetRemote, {
       expandLocalGlob: localGlob,
+      jobs: jobs.jobs,
+      ...(signal !== undefined ? { signal } : {}),
       confirm: uploadConfirmation_request,
       onNotice: (message: string, channel: 'status' | 'err'): void => {
         const sink = sink_get();
@@ -140,6 +156,7 @@ async function upload_run(localPath: string, remotePath: string): Promise<Comman
       rendered += `${chalk.yellow(`⚠ Uploaded ${summary.transferredCount} file(s), ${summary.failedCount} failed`)}\n`;
     }
     rendered += `${chalk.gray(`  Total: ${bytes_format(summary.transferSize)} in ${summary.duration.toFixed(1)}s (${bytes_format(summary.speed)}/s)`)}\n`;
+    rendered += transferLeftovers_render(summary.failedPaths, summary.cancelledCount, 'uploaded');
 
     // A file that landed under another name because its own was taken must
     // say so: the store has no overwrite, and an upload reported as plain
@@ -161,7 +178,7 @@ async function upload_run(localPath: string, remotePath: string): Promise<Comman
       listCache.cache_invalidate(targetRemote);
       listCache.cache_invalidate(await path_resolve(remotePath));
     }
-    if (summary.failedCount > 0) {
+    if (summary.failedCount > 0 || summary.cancelledCount > 0) {
       exitCode_set(1);
       return envelope_error(rendered, undefined, '');
     }

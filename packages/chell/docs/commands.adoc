@@ -418,13 +418,14 @@ Uploads files or directories from the local filesystem to ChRIS.
 
 **Syntax:**
 ```bash
-upload <local_path_or_glob> <chris_path>
+upload [-j N|--jobs N] <local_path_or_glob> <chris_path>
 ```
 
 **Parameters:**
 
 * `local_path_or_glob` - Path or glob on the local transfer endpoint filesystem
 * `chris_path` - Target path in ChRIS filesystem
+* `-j N`, `--jobs N` - How many files move at once, 1 to 32 (see <<transfer-jobs,files at once>>)
 
 **Examples:**
 ```bash
@@ -432,6 +433,7 @@ upload ~/data/results.csv /home/alice/experiments/
 upload ~/Pictures/earthandmoon* .
 upload ./local_dir/ ~/uploads/
 upload /tmp/output.json .
+upload -j 1 ./local_dir/ ~/uploads/
 ```
 
 **Notes:**
@@ -450,19 +452,26 @@ Downloads a ChRIS file or directory to the local filesystem.
 
 **Syntax:**
 ```bash
-download <chris_path_or_glob> <local_path> [-f|--force]
+download <chris_path_or_glob> <local_path> [-f|--force] [-j N|--jobs N]
 ```
 
 **Parameters:**
 
 * `chris_path_or_glob` - ChRIS path, or a CFS glob that selects multiple paths
 * `local_path` - Exact local destination. For a source glob, this is a directory receiving every match.
+* `-j N`, `--jobs N` - How many files move at once, 1 to 32 (see <<transfer-jobs,files at once>>)
 
 **Examples:**
 ```bash
 download /home/alice/results/*.nii /tmp/results/
 download /home/alice/feeds/feed_42 ./downloads/
+download -j 16 /home/alice/uploads/study ./study/
 ```
+
+[[transfer-jobs]]
+**Files at once:**
+
+`download`, `upload` and `berth anchor` move the files of a folder or a wildcard through one transfer pool (cumin's `transferPool_run`), 8 at a time by default: a CUBE file costs a round trip before its first byte, so a folder of small files moved one at a time is mostly waiting. A file is read by the id its folder's listing gives, and a transfer lists each folder once (salsa's `fileIds_memoRun`), not once per file. `-j N` (`--jobs N`) sets how many for one line, from 1 (one at a time) to 32, and a larger number is refused before anything moves; the session variable `TRANSFER_JOBS` (`TRANSFER_JOBS=4`) sets it for every line that gives no `-j`, and a value that is not a whole number from 1 to 32 is refused in a plain line. The progress counts files and bytes across every file in flight; files end in whatever order they finish. A file that fails is tried once more, then named in the summary, and the rest continue; the line's exit status is 1 when any failed. Ctrl-C or a job's stop starts no more files and stops those in flight.
 
 == PACS Query and Retrieval
 

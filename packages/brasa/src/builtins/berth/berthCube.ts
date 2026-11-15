@@ -282,6 +282,24 @@ export async function remoteFile_open(source: string): Promise<RemoteBytes> {
 }
 
 /**
+ * Runs the reads of many files with each folder listed once: a file is read
+ * by an id its folder's listing gives, and without this each file of a
+ * folder lists that whole folder again.
+ *
+ * @param operation - The reads.
+ * @returns What the reads return.
+ *
+ * @example
+ * ```ts
+ * await remoteFiles_memoRun(async () => Promise.all(files.map((file) => remoteFile_open(file.source))));
+ * ```
+ */
+export async function remoteFiles_memoRun<T>(operation: () => Promise<T>): Promise<T> {
+  const { fileIds_memoRun } = await import('@fnndsc/salsa');
+  return fileIds_memoRun(operation);
+}
+
+/**
  * What a plugin run or a feed's start answered: the plugin instance made, or
  * CUBE's reason for making none.
  *

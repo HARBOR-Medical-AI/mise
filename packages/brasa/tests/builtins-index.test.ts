@@ -409,6 +409,8 @@ const DOWNLOAD_SUMMARY: DownloadSummary = {
   totalFiles: 1,
   endTime: Date.now(),
   startTime: Date.now(),
+  failedPaths: [],
+  cancelledCount: 0,
 };
 
 mockChefsDownload.mockResolvedValue(DOWNLOAD_SUMMARY);
@@ -825,6 +827,8 @@ describe('Builtins - Core Functions', () => {
         duration: 1,
         speed: 1024,
         actualTargetPath: '/home/user/remote.txt',
+        failedPaths: [],
+        cancelledCount: 0,
       });
 
       const envelope = await builtin_upload(['./local.txt', 'remote.txt']);
@@ -895,7 +899,7 @@ describe('Builtins - Core Functions', () => {
       const envelope = await builtin_download(['remote.txt']);
 
       expect(envelope.status).toBe('error');
-      expect(envelope.renderedErr).toContain('download: missing operand <destination>; usage: download [-f] <source…> <destination>');
+      expect(envelope.renderedErr).toContain('download: missing operand <destination>; usage: download [-f] [--jobs <N>] <source…> <destination>');
       expect(mockChefsDownload).not.toHaveBeenCalled();
     });
 

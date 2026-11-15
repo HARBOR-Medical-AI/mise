@@ -15,12 +15,14 @@ jest.mock('../../../src/utils/input_format', () => ({
   prompt_confirmOrThrow: jest.fn(),
 }));
 jest.mock('@fnndsc/cumin', () => ({
+  ...jest.requireActual('@fnndsc/cumin/transfer-pool'),
   chrisIO: {
     client_get: jest.fn(),
     file_upload: jest.fn(),
   },
 }));
 jest.mock('@fnndsc/salsa', () => ({
+  fileIds_memoRun: (operation: () => Promise<unknown>) => operation(),
   fileContent_getBinaryStream: jest.fn(),
   files_listRecursive: jest.fn(),
   files_path_isDirectory: jest.fn(),
@@ -389,13 +391,11 @@ describe('fs structured progress producers', () => {
       { type: 'file', path: '/remote/study/nested/b.dcm', size: 2 },
       { type: 'file', path: '/remote/study/c.dcm', size: 3 },
     ]);
-    (fileContent_getBinaryStream as jest.Mock)
-      .mockResolvedValueOnce({
-        ok: true,
-        value: { stream: Readable.from([Buffer.from('a')]), size: 1 },
-      })
-      .mockResolvedValueOnce({ ok: false })
-      .mockRejectedValueOnce(new Error('boom'));
+    (fileContent_getBinaryStream as jest.Mock).mockImplementation(async (remote: string) => {
+      if (remote.endsWith('a.dcm')) return { ok: true, value: { stream: Readable.from([Buffer.from('a')]), size: 1 } };
+      if (remote.endsWith('b.dcm')) return { ok: false };
+      throw new Error('boom');
+    });
 
     const summary = await files_downloadWithProgress('/remote/study', destination, {
       onProgress: event => { events.push(event); },
@@ -404,6 +404,10 @@ describe('fs structured progress producers', () => {
     expect(summary.totalFiles).toBe(3);
     expect(summary.transferredCount).toBe(1);
     expect(summary.failedCount).toBe(2);
+    // Each failed file is tried once more: 1 + 2 + 2 opens.
+    expect(fileContent_getBinaryStream).toHaveBeenCalledTimes(5);
+    expect([...summary.failedPaths].sort()).toEqual(['/remote/study/c.dcm', '/remote/study/nested/b.dcm']);
+    expect(summary.cancelledCount).toBe(0);
     expect(await fs.promises.readFile(path.join(destination, 'study', 'a.dcm'), 'utf8')).toBe('a');
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({ operation: 'download', phase: 'scanning', status: 'running' }),
@@ -411,5 +415,114 @@ describe('fs structured progress producers', () => {
       expect.objectContaining({ operation: 'download', phase: 'transferring', current: 3, total: 3, percent: 100 }),
       expect.objectContaining({ operation: 'download', phase: 'failed', current: 1, total: 3, status: 'error' }),
     ]));
+  });
+});
+
+describe('transfers through the pool', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    jest.resetAllMocks();
+    tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'chili-pool-'));
+    (cliUtils.path_resolveChrisFs as jest.Mock).mockImplementation(async (p: string | undefined) => p ?? '/');
+    (chrisIO.client_get as jest.Mock).mockResolvedValue(null);
+    (prompt_confirmOrThrow as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Holds each open until the test lets it go, and counts how many are open at once. */
+  function opens_hold(): { most: () => number; release: () => void } {
+    let open: number = 0;
+    let most: number = 0;
+    const waiting: Array<() => void> = [];
+    let released: boolean = false;
+    (fileContent_getBinaryStream as jest.Mock).mockImplementation(async (remote: string) => {
+      open++;
+      most = Math.max(most, open);
+      if (!released) await new Promise<void>((resolve: () => void): void => { waiting.push(resolve); });
+      open--;
+      return { ok: true, value: { stream: Readable.from([Buffer.from(remote)]), size: remote.length } };
+    });
+    return {
+      most: (): number => most,
+      release: (): void => { released = true; waiting.splice(0).forEach((resolve: () => void): void => resolve()); },
+    };
+  }
+
+  it('downloads a folder at most jobs files at a time, and counts every file and byte', async () => {
+    const remotes: string[] = Array.from({ length: 7 }, (_: unknown, index: number): string => `/remote/study/f${index}.dcm`);
+    (files_path_isDirectory as jest.Mock).mockResolvedValue(true);
+    (files_listRecursive as jest.Mock).mockResolvedValue(remotes.map((remote: string) => ({ type: 'file', path: remote, size: remote.length })));
+    const hold = opens_hold();
+    const events: DownloadProgressEvent[] = [];
+    const running = files_downloadWithProgress('/remote/study', tmpDir, { jobs: 3, onProgress: (event: DownloadProgressEvent) => { events.push(event); } });
+    await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 20); });
+    expect(hold.most()).toBe(3);
+    hold.release();
+    const summary = await running;
+    expect(summary.transferredCount).toBe(7);
+    expect(summary.transferSize).toBe(remotes.reduce((sum: number, remote: string): number => sum + remote.length, 0));
+    const counts: number[] = events.filter((event: DownloadProgressEvent): boolean => event.phase === 'transferring').map((event: DownloadProgressEvent): number => event.current ?? -1);
+    expect(counts).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(events[events.length - 1]).toMatchObject({ phase: 'complete', current: 7, total: 7, status: 'done' });
+  });
+
+  it('downloads matched sources one at a time with jobs 1', async () => {
+    (files_path_isDirectory as jest.Mock).mockResolvedValue(false);
+    const hold = opens_hold();
+    hold.release();
+    const summary = await files_downloadManyWithProgress(['/remote/a', '/remote/b', '/remote/c'], tmpDir, { jobs: 1 });
+    expect(hold.most()).toBe(1);
+    expect(summary.transferredCount).toBe(3);
+  });
+
+  it('a cancel stops a folder download: nothing new starts, and the summary counts what it left', async () => {
+    const remotes: string[] = Array.from({ length: 6 }, (_: unknown, index: number): string => `/remote/study/f${index}.dcm`);
+    (files_path_isDirectory as jest.Mock).mockResolvedValue(true);
+    (files_listRecursive as jest.Mock).mockResolvedValue(remotes.map((remote: string) => ({ type: 'file', path: remote, size: 1 })));
+    const hold = opens_hold();
+    const controller: AbortController = new AbortController();
+    const events: DownloadProgressEvent[] = [];
+    const running = files_downloadWithProgress('/remote/study', tmpDir, { jobs: 2, signal: controller.signal, onProgress: (event: DownloadProgressEvent) => { events.push(event); } });
+    await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 20); });
+    controller.abort();
+    hold.release();
+    const summary = await running;
+    expect(fileContent_getBinaryStream).toHaveBeenCalledTimes(2);
+    expect(summary.cancelledCount).toBe(6);
+    expect(summary.failedCount).toBe(0);
+    expect(events[events.length - 1]).toMatchObject({ phase: 'failed', status: 'error' });
+  });
+
+  it('uploads a folder at most jobs at a time, retries a refused file once, and names one that fails twice', async () => {
+    const localDir: string = path.join(tmpDir, 'study');
+    await fs.promises.mkdir(localDir, { recursive: true });
+    for (const name of ['a.dcm', 'b.dcm', 'flaky.dcm', 'bad.dcm']) await fs.promises.writeFile(path.join(localDir, name), name);
+    const tries: Map<string, number> = new Map();
+    let open: number = 0;
+    let most: number = 0;
+    (chrisIO.file_upload as jest.Mock).mockImplementation(async (_blob: Blob, _dir: string, name: string): Promise<boolean> => {
+      tries.set(name, (tries.get(name) ?? 0) + 1);
+      open++;
+      most = Math.max(most, open);
+      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 5); });
+      open--;
+      if (name === 'bad.dcm') {
+        errorStack.stack_push('error', 'CUBE answered 500');
+        return false;
+      }
+      return !(name === 'flaky.dcm' && tries.get(name) === 1);
+    });
+    const notices: string[] = [];
+    const summary = await files_uploadWithProgress(localDir, '/remote', { jobs: 2, onNotice: (message: string): void => { notices.push(message); } });
+    expect(most).toBe(2);
+    expect(tries.get('flaky.dcm')).toBe(2);
+    expect(tries.get('bad.dcm')).toBe(2);
+    expect(summary.transferredCount).toBe(3);
+    expect(summary.failedPaths).toEqual([path.join(localDir, 'bad.dcm')]);
+    expect(notices).toContain(`Error uploading ${path.join(localDir, 'bad.dcm')}: CUBE answered 500`);
   });
 });
