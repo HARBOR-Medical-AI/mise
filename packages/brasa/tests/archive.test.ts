@@ -15,6 +15,7 @@ const pipelineRun = jest.fn();
 const pipelineReadiness = jest.fn();
 const feedDelete = jest.fn();
 const statusFetch = jest.fn();
+const outputPathFetch = jest.fn();
 const listRecursive = jest.fn();
 const stackPush = jest.fn();
 
@@ -27,6 +28,7 @@ jest.unstable_mockModule('@fnndsc/salsa', () => ({
   pipeline_readiness: pipelineReadiness,
   feed_delete: feedDelete,
   job_statusFetch: statusFetch,
+  job_outputPathFetch: outputPathFetch,
   files_listRecursive: listRecursive,
 }));
 cuminMock_install(() => ({
@@ -41,6 +43,18 @@ const binWithDircopy = { ok: true, value: [{ name: 'pl-dircopy-v1.1.0' }] };
 /** A feed whose pl-dircopy instance is 41. */
 const feed = { id: 9, pluginInstance: { data: { id: 41 } } };
 
+/**
+ * Where CUBE keeps the archive job's output: under its owner's home, as
+ * `output_path` records it. No other folder holds anything, as on a real
+ * store, where `feeds/feed_9/…` names nothing.
+ */
+const OUTPUT: string = '/home/me/feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data';
+
+/** The store's listing: CUBE's `fname`s, from its root, without a leading slash. */
+const store: Record<string, unknown[]> = {
+  [OUTPUT]: [{ path: 'home/me/feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data/series.zip', type: 'file', size: 4096 }],
+};
+
 describe('directory_archive', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -50,30 +64,42 @@ describe('directory_archive', () => {
     pipelineRun.mockResolvedValue({ ok: true, value: { workflowId: 3, pluginInstanceIds: [42] } } as never);
     feedDelete.mockResolvedValue(true as never);
     statusFetch.mockResolvedValue({ ok: true, value: 'finishedSuccessfully' } as never);
-    listRecursive.mockResolvedValue([
-      { path: 'feeds/feed_9/pl-dircopy_41/data/scan.dcm', type: 'file', size: 10 },
-      { path: 'feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data/series.zip', type: 'file', size: 4096 },
-    ] as never);
+    outputPathFetch.mockImplementation(async (id: unknown) =>
+      (id === 42 ? { ok: true, value: OUTPUT } : { ok: false }) as never);
+    listRecursive.mockImplementation(async (root: unknown) => (store[String(root)] ?? []) as never);
   });
 
-  it('returns the file the pipeline produced', async () => {
+  it('returns the file the pipeline produced, at the path a session reads', async () => {
     const result = await directory_archive('/home/me/series');
 
     expect(feedCreate).toHaveBeenCalledWith(['/home/me/series'], { title: 'Archive of series' });
     expect(pipelineRun).toHaveBeenCalledWith('zip v20240311', 41);
     expect(result).toEqual({
-      path: 'feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data/series.zip',
+      path: '/home/me/feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data/series.zip',
       filename: 'series.zip',
       size: 4096,
     });
   });
 
-  it('takes the archive from the pipeline output, not the copied input', async () => {
-    // The dircopy stage republishes every source file. Matching on the archive
-    // instance is what distinguishes the result from its own input.
+  it('lists the folder CUBE says the archive job wrote, not one built from ids', async () => {
+    // The store keeps a feed under its owner's home. `feeds/feed_9/…` names
+    // nothing there, and every browser download of a folder ended as
+    // "produced no file".
+    await directory_archive('/home/me/series');
+
+    expect(outputPathFetch).toHaveBeenCalledWith(42);
+    expect(listRecursive).toHaveBeenCalledWith(OUTPUT);
+  });
+
+  it('says so when CUBE names no output folder for the archive job', async () => {
+    outputPathFetch.mockResolvedValueOnce({ ok: false } as never);
+
     const result = await directory_archive('/home/me/series');
 
-    expect(result?.filename).toBe('series.zip');
+    expect(result).toBeNull();
+    expect(listRecursive).not.toHaveBeenCalled();
+    const [, message] = stackPush.mock.calls.at(-1) as [string, string];
+    expect(message).toContain('no output folder');
   });
 
   it('names the missing pipeline and where to get it', async () => {
@@ -168,7 +194,7 @@ describe('directory_archive', () => {
 
   it('reports an empty output rather than returning a directory as the archive', async () => {
     listRecursive.mockResolvedValueOnce([
-      { path: 'feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data', type: 'dir' },
+      { path: 'home/me/feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data/empty', type: 'dir' },
     ] as never);
 
     const result = await directory_archive('/home/me/series');
