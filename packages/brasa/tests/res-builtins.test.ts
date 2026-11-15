@@ -269,6 +269,75 @@ describe('the declared resource commands', () => {
   });
 });
 
+/** The resource commands whose inspect takes a record's id. */
+const recordCases = [
+  { name: 'tag', title: 'Tag', noun: 'tag', builtin: builtin_tag, list: mockTagsList, fields: mockTagFields, listKey: 'tags' },
+  { name: 'workflow', title: 'Workflow', noun: 'workflow', builtin: builtin_workflow, list: mockWorkflowsList, fields: mockWorkflowFields, listKey: 'workflows' },
+  { name: 'pluginmeta', title: 'Plugin Meta', noun: 'plugin meta', builtin: builtin_pluginmeta, list: mockMetasList, fields: mockMetaFields, listKey: 'pluginMetas' },
+  { name: 'plugininstance', title: 'Plugin Instance', noun: 'plugin instance', builtin: builtin_plugininstance, list: mockInstancesList, fields: mockInstanceFields, listKey: 'pluginInstances' },
+] as const;
+
+describe.each(recordCases)('$name inspect <id>', ({ name, title, noun, builtin, list, fields, listKey }) => {
+  it('shows the one record, every field with its value, read through the listing filtered by id', async () => {
+    fields.mockResolvedValue(['id', 'status', 'note']);
+    list.mockResolvedValue({ [listKey]: [{ id: 864581, status: 'finishedSuccessfully', note: null }], selectedFields: ['id', 'status', 'note'] });
+    const envelope = await builtin(['inspect', '864581']);
+    expect(envelope.status).toBe('ok');
+    expect(process.exitCode).toBe(0);
+    expect(list).toHaveBeenCalledWith({ search: 'id:864581', fields: 'id,status,note' });
+    expect(mockTable).toHaveBeenLastCalledWith(
+      [{ field: 'id', value: '864581' }, { field: 'status', value: 'finishedSuccessfully' }, { field: 'note', value: '-' }],
+      ['field', 'value'],
+      { title: { title: `${title} 864581`, justification: 'center' } },
+    );
+  });
+
+  it('says an id CUBE holds no record of, exits 1, and refuses an id that is not a whole number above 0', async () => {
+    fields.mockResolvedValue(['id']);
+    list.mockResolvedValue({ [listKey]: [], selectedFields: ['id'] });
+    const missing = await builtin(['inspect', '7']);
+    expect(missing.renderedErr).toContain(`${name} inspect: no ${noun} 7`);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+    for (const word of ['abc', '0']) {
+      const refused = await builtin(['inspect', word]);
+      expect(refused.status).toBe('error');
+    }
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('with no id still names the fields', async () => {
+    fields.mockResolvedValue(['id', 'name']);
+    await builtin(['inspect']);
+    expect(list).not.toHaveBeenCalled();
+    expect(mockTable).toHaveBeenLastCalledWith([{ field: 'id' }, { field: 'name' }], ['field'], expect.anything());
+  });
+});
+
+describe('jobs inspect <id>, as the operator types it', () => {
+  it('takes the id under every name of the command', async () => {
+    mockInstanceFields.mockResolvedValue(['id']);
+    mockInstancesList.mockResolvedValue({ pluginInstances: [{ id: 864581 }], selectedFields: ['id'] });
+    for (const declaration of [jobsCommand, plugininstancesCommand]) {
+      const { declaredCommand_run } = await import('../src/core/commandParse.js');
+      const envelope = await declaredCommand_run(declaration, ['inspect', '864581']);
+      expect(envelope.status).toBe('ok');
+    }
+  });
+});
+
+describe('compute inspect <id>', () => {
+  it('filters the one read by id and shows that resource, or says there is none', async () => {
+    mockComputeFields.mockResolvedValue(['id', 'name']);
+    mockComputeList.mockResolvedValue({ ok: true, value: { resources: [{ id: 1, name: 'host' }, { id: 2, name: 'moc' }] } });
+    expect((await builtin_compute(['inspect', '2'])).status).toBe('ok');
+    expect(mockTable).toHaveBeenLastCalledWith([{ field: 'id', value: '2' }, { field: 'name', value: 'moc' }], ['field', 'value'], { title: { title: 'Compute 2', justification: 'center' } });
+    const missing = await builtin_compute(['inspect', '3']);
+    expect(missing.renderedErr).toContain('compute inspect: no compute resource 3');
+    expect(process.exitCode).toBe(1);
+  });
+});
+
 describe('builtin_compute search', () => {
   it('keeps the compute resources a term matches, by name or by field:value', async () => {
     mockComputeList.mockResolvedValue({ ok: true, value: { resources: [{ id: 1, name: 'host', description: 'local' }, { id: 2, name: 'moc', description: 'cloud' }] } });
@@ -280,7 +349,7 @@ describe('builtin_compute search', () => {
 });
 
 describe('builtin_plugininstance job verbs', () => {
-  it.each(['cancel', 'delete', 'output', 'parameters'])('%s names the /proc/jobs way', async (verb: string) => {
+  it.each(['cancel', 'delete', 'rm', 'output', 'parameters', 'params', 'log'])('%s names the /proc/jobs way', async (verb: string) => {
     const envelope = await builtin_plugininstance([verb, '42']);
     expect(process.exitCode).toBe(1);
     expect(envelope.renderedErr).toContain('proc find 42');

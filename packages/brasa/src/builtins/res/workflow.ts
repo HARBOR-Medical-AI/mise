@@ -21,6 +21,7 @@ import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
 import { RESOURCE_LIST_OPTIONS_GRAMMAR, resourceListBag_build } from './resourceList.js';
+import { RESOURCE_ID_OPERANDS, resourceRecord_render, type ResourceRecordSource } from './resourceRecord.js';
 
 /**
  * Lists the workflows a listing's options ask for.
@@ -52,6 +53,15 @@ async function workflowFields_render(): Promise<CommandEnvelope> {
   return envelope_ok(`${chalk.gray('No fields found for workflows.')}\n`);
 }
 
+/** How `workflow inspect <id>` reads one workflow. */
+const WORKFLOW_RECORD: ResourceRecordSource = {
+  command: 'workflow',
+  noun: 'workflow',
+  title: 'Workflow',
+  fields_fetch: workflowFields_fetch,
+  rows_fetch: async (options: CLIoptions): Promise<readonly object[]> => (await workflows_fetchList(options)).workflows,
+};
+
 /** What a `workflow` line may hold. */
 const WORKFLOW_GRAMMAR = {
   bare: { summary: 'List the workflows, as list does', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
@@ -62,7 +72,7 @@ const WORKFLOW_GRAMMAR = {
       operands: [{ name: 'term', kind: 'word', summary: 'The filter, field:value (inspect names the fields)' }],
       options: RESOURCE_LIST_OPTIONS_GRAMMAR,
     },
-    inspect: { summary: 'Name the fields a workflow has' },
+    inspect: { summary: 'One workflow, every field with its value; with no id, the fields a workflow has', operands: RESOURCE_ID_OPERANDS },
   },
 } as const satisfies CommandGrammar;
 
@@ -77,12 +87,12 @@ async function workflow_run(args: CommandArguments<typeof WORKFLOW_GRAMMAR>): Pr
     case null:
     case 'list': return workflowList_render(resourceListBag_build(args.options));
     case 'search': return workflowList_render(resourceListBag_build(args.options, args.operands.term));
-    case 'inspect': return workflowFields_render();
+    case 'inspect': return args.operands.id === undefined ? workflowFields_render() : resourceRecord_render(WORKFLOW_RECORD, args.operands.id);
   }
 }
 
 /**
- * `workflow [[listing options] | list [listing options] | search <term> [listing options] | inspect]`: the declaration.
+ * `workflow [[listing options] | list [listing options] | search <term> [listing options] | inspect [id]]`: the declaration.
  *
  * @example
  * ```ts
@@ -95,9 +105,9 @@ export const workflowCommand = command_declare({
   grammar: WORKFLOW_GRAMMAR,
   help: {
     summary: "CUBE's workflows, a pipeline's runs: list them, search them, name their fields",
-    description: 'List the workflows in CUBE, each one run of a pipeline, a page at a time or every page, filtered by a field:value search and in the columns asked for; inspect names the fields a workflow has. workflow and workflows are one command. pipeline run starts one.',
+    description: 'List the workflows in CUBE, each one run of a pipeline, a page at a time or every page, filtered by a field:value search and in the columns asked for; inspect <id> shows the fields and values of one workflow, and inspect alone names the fields a workflow has. workflow and workflows are one command. pipeline run starts one.',
     category: 'Resources',
-    examples: ['workflows list', 'workflows list --all', 'workflows search pipeline_name:PHI_detection', 'workflows inspect'],
+    examples: ['workflows list', 'workflows list --all', 'workflows search pipeline_name:PHI_detection', 'workflows inspect', 'workflow inspect 7'],
   },
   handler: workflow_run,
 });

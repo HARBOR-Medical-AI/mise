@@ -21,6 +21,7 @@ import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
 import { RESOURCE_LIST_OPTIONS_GRAMMAR, resourceListBag_build } from './resourceList.js';
+import { RESOURCE_ID_OPERANDS, resourceRecord_render, type ResourceRecordSource } from './resourceRecord.js';
 
 /**
  * Lists the tags a listing's options ask for.
@@ -52,6 +53,15 @@ async function tagFields_render(): Promise<CommandEnvelope> {
   return envelope_ok(`${chalk.gray('No fields found for tags.')}\n`);
 }
 
+/** How `tag inspect <id>` reads one tag. */
+const TAG_RECORD: ResourceRecordSource = {
+  command: 'tag',
+  noun: 'tag',
+  title: 'Tag',
+  fields_fetch: tagFields_fetch,
+  rows_fetch: async (options: CLIoptions): Promise<readonly object[]> => (await tags_fetchList(options)).tags,
+};
+
 /** What a `tag` line may hold. */
 const TAG_GRAMMAR = {
   bare: { summary: 'List the tags, as list does', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
@@ -62,7 +72,7 @@ const TAG_GRAMMAR = {
       operands: [{ name: 'term', kind: 'word', summary: 'The filter, field:value (inspect names the fields)' }],
       options: RESOURCE_LIST_OPTIONS_GRAMMAR,
     },
-    inspect: { summary: 'Name the fields a tag has' },
+    inspect: { summary: 'One tag, every field with its value; with no id, the fields a tag has', operands: RESOURCE_ID_OPERANDS },
   },
 } as const satisfies CommandGrammar;
 
@@ -77,12 +87,12 @@ async function tag_run(args: CommandArguments<typeof TAG_GRAMMAR>): Promise<Comm
     case null:
     case 'list': return tagList_render(resourceListBag_build(args.options));
     case 'search': return tagList_render(resourceListBag_build(args.options, args.operands.term));
-    case 'inspect': return tagFields_render();
+    case 'inspect': return args.operands.id === undefined ? tagFields_render() : resourceRecord_render(TAG_RECORD, args.operands.id);
   }
 }
 
 /**
- * `tag [[listing options] | list [listing options] | search <term> [listing options] | inspect]`: the declaration.
+ * `tag [[listing options] | list [listing options] | search <term> [listing options] | inspect [id]]`: the declaration.
  *
  * @example
  * ```ts
@@ -95,9 +105,9 @@ export const tagCommand = command_declare({
   grammar: TAG_GRAMMAR,
   help: {
     summary: "CUBE's tags: list them, search them, name their fields",
-    description: "List the tags in CUBE, a page at a time or every page, filtered by a field:value search and in the columns asked for; inspect names the fields a tag has. tag and tags are one command. A feed wears a tag through setfattr -n tag -v <name>.",
+    description: "List the tags in CUBE, a page at a time or every page, filtered by a field:value search and in the columns asked for; inspect <id> shows the fields and values of one tag, and inspect alone names the fields a tag has. tag and tags are one command. A feed wears a tag through setfattr -n tag -v <name>.",
     category: 'Resources',
-    examples: ['tags list', 'tags list --all --sort name', 'tags search name:brain', 'tags inspect'],
+    examples: ['tags list', 'tags list --all --sort name', 'tags search name:brain', 'tags inspect', 'tag inspect 3'],
   },
   handler: tag_run,
 });

@@ -109,6 +109,27 @@ describe('mkdir', () => {
     expect(await mkdirLine_parse('-- -p')).toEqual({ paths: ['-p'], parents: false });
   });
 
+  it('mkdir -p a/b/c makes the three folders and nothing named after an option word', async () => {
+    for (const line of [['-p', 'a/b/c'], ['--parents', 'a/b/c'], ['a/b/c', '-p']]) {
+      filesystem_reset();
+      const envelope: CommandEnvelope = await builtin_mkdir(line);
+      expect(envelope.status).toBe('ok');
+      expect(await itemNames_list('/home/chris/a/b')).toEqual(['c:dir']);
+      expect((await itemNames_list('/home/chris')).filter((name: string): boolean => name.startsWith('-'))).toEqual([]);
+    }
+    filesystem_reset();
+    expect((await builtin_mkdir(['-px', 'a'])).renderedErr).toContain("mkdir: invalid option -- 'x'");
+    expect((await builtin_mkdir(['--parent', 'a'])).status).toBe('error');
+    expect((await itemNames_list('/home/chris')).filter((name: string): boolean => name === 'a:dir' || name.startsWith('-'))).toEqual([]);
+  });
+
+  it('mkdir -- -p is the one way to make a folder named -p', async () => {
+    const envelope: CommandEnvelope = await builtin_mkdir(['--', '-p']);
+    expect(envelope.status).toBe('ok');
+    expect(await itemNames_list('/home/chris')).toContain('-p:dir');
+    expect(await itemNames_list('/home/chris/-p')).toEqual([]);
+  });
+
   it('without -p, a missing parent is No such file or directory', async () => {
     const envelope: CommandEnvelope = await builtin_mkdir(['a/b']);
     expect(envelope.status).toBe('error');
