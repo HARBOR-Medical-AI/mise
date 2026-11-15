@@ -120,7 +120,7 @@ export async function builtin_executePlugin(
  *
  * @example
  * ```ts
- * await pluginParsed_run('pl-dircopy-v2.1.1', { operands: ['~/uploads'], parameters: {}, context: [], detach: false, inspect: null });
+ * await pluginParsed_run('pl-dircopy-v2.1.1', { operands: ['~/uploads'], parameters: {}, run: { title: 'T' }, context: [], detach: false, inspect: null });
  * ```
  */
 export async function pluginParsed_run(
@@ -240,8 +240,10 @@ async function pluginRun_execute(
       }
     }
 
-    // The parameters the line gave, and the context after its `--`.
-    let pluginParams: Dictionary = { ...line.parameters };
+    // The parameters the line gave, and the context after its `--`. The run's
+    // own fields (`title`, `compute_resource_name`, the limits) go to CUBE in
+    // the same request, by the names its plugin instance takes.
+    let pluginParams: Dictionary = { ...line.run, ...line.parameters };
     let contextParams: Dictionary = {};
     if (assigned.length > 0) {
       try {

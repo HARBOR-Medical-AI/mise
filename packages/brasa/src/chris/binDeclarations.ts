@@ -12,7 +12,9 @@
  * node, the node named by its title when that is unique and shell-safe and
  * always by `@<piping id>`. Beside them stand the session's own options of
  * a `/bin` line (`--detach`, `--parameters`, `--diagram`, …), which win a
- * name both claim, and the operands: the line's input paths, which glob.
+ * name both claim; a plugin line's run fields (`--title`, `--compute`,
+ * `--cpu_limit`, …), which CUBE takes beside the parameters and a parameter
+ * of the same name wins; and the operands: the line's input paths, which glob.
  *
  * A declaration is made when the session first needs it and kept, by the
  * `/bin` entry it is made for: a plugin's carries its version
@@ -89,6 +91,8 @@ export interface PluginLine {
   readonly operands: readonly string[];
   /** The plugin's parameters given, by flag name (`dir`), each its value. */
   readonly parameters: Readonly<Record<string, string | number | boolean>>;
+  /** The run's own fields given, by the field CUBE's plugin instance takes (`title`, `compute_resource_name`, `cpu_limit`). */
+  readonly run: Readonly<Record<string, string | number>>;
   /** The run's context words, after a lone `--` (`feed_title=T`). */
   readonly context: readonly string[];
   /** Return the run's handle at once rather than wait for it. */
@@ -186,10 +190,54 @@ const PIPELINE_SESSION_OPTIONS: Readonly<Record<string, OptionGrammar>> = {
   help: { short: 'h', long: 'help', summary: 'Show this page' },
 };
 
-/** The execution controls every pipeline node takes, and the kind of each. */
-const EXECUTION_FIELDS: ReadonlyArray<readonly [string, string]> = [
-  ['compute_resource_name', 'compute'], ['cpu_limit', 'word'], ['memory_limit', 'word'], ['gpu_limit', 'int'], ['number_of_workers', 'int'],
+/** One execution control of a run: the field CUBE's plugin instance takes, and its value. */
+interface ExecutionField {
+  /** The field, as CUBE names it. */
+  readonly field: string;
+  /** Its value: the kind, and the bounds of a number. */
+  readonly value: OptionValueGrammar;
+  /** What it sets, for help: `CPU limit`. */
+  readonly summary: string;
+}
+
+/**
+ * The execution controls a run takes beside its plugin's parameters, as
+ * CUBE's plugin instance names them: every pipeline node's, and a plugin
+ * line's.
+ */
+const EXECUTION_FIELDS: readonly ExecutionField[] = [
+  { field: 'compute_resource_name', value: { name: 'resource', kind: 'compute' }, summary: 'compute resource' },
+  { field: 'cpu_limit', value: { name: 'millicores', kind: 'cpu' }, summary: 'CPU limit (2000m, or 2000 millicores)' },
+  { field: 'memory_limit', value: { name: 'size', kind: 'memory' }, summary: 'memory limit (512Mi, 8Gi, or MiB)' },
+  { field: 'gpu_limit', value: { name: 'gpus', kind: 'int', min: 0 }, summary: 'number of GPUs' },
+  { field: 'number_of_workers', value: { name: 'workers', kind: 'int', min: 1 }, summary: 'number of workers' },
 ];
+
+/** A plugin line's option for one field of its run, and the field it is posted as. */
+interface RunOption {
+  /** The field of CUBE's plugin instance the value is posted as. */
+  readonly field: string;
+  /** The option. */
+  readonly option: OptionGrammar;
+}
+
+/**
+ * The run's own fields a plugin line takes, by property: its title and its
+ * execution controls, which CUBE's plugin-instance create reads from the
+ * same request as the plugin's parameters, each by its field's name
+ * (`--title`, `--cpu_limit`). `--compute` is `--compute_resource_name` as
+ * `pipeline run` spells it; given both, `--compute_resource_name` counts. A
+ * parameter of the plugin's that claims a name wins it, and its value goes
+ * to CUBE under that name, as a parameter.
+ */
+const PLUGIN_RUN_OPTIONS: Readonly<Record<string, RunOption>> = {
+  'run.title': { field: 'title', option: { long: 'title', summary: "The run's title, as its node shows it", value: { name: 'title', kind: 'word' } } },
+  'run.compute': { field: 'compute_resource_name', option: { long: 'compute', summary: 'Run on this compute resource (as --compute_resource_name)', value: { name: 'resource', kind: 'compute' } } },
+  ...Object.fromEntries(EXECUTION_FIELDS.map((control: ExecutionField): [string, RunOption] => [
+    `run.${control.field}`,
+    { field: control.field, option: { long: control.field, summary: `The run's ${control.summary}`, value: control.value } },
+  ])),
+};
 
 /** A node title usable as a selector: one shell word, no dot. */
 const SELECTOR_WORD: RegExp = /^[A-Za-z0-9_-]+$/;
@@ -250,7 +298,8 @@ function parameterShort_read(parameter: PluginParameterSpec): string | undefined
 
 /**
  * The options of a plugin's line: the session's, then one per parameter
- * whose names the session's options leave free, by its flag's long name.
+ * whose names the session's options leave free, by its flag's long name,
+ * then the run's own fields whose names both leave free.
  *
  * @param parameters - The plugin's parameters.
  * @returns The options, by property.
@@ -275,6 +324,11 @@ function pluginOptions_make(parameters: readonly PluginParameterSpec[]): Record<
     };
     if (long !== undefined) longs.add(long);
     if (usableShort !== undefined) shorts.add(usableShort);
+  }
+  // The run's own fields, where the session's options and the parameters leave the name free.
+  for (const [key, run] of Object.entries(PLUGIN_RUN_OPTIONS)) {
+    if (run.option.long !== undefined && longs.has(run.option.long)) continue;
+    options[key] = run.option;
   }
   return options;
 }
@@ -302,9 +356,12 @@ export function pluginDeclaration_make(spec: PluginSpec, handler: (args: Command
     grammar: { operands: [INPUT_OPERAND], options: pluginOptions_make(spec.parameters) },
     help: {
       summary: spec.title ?? `The CUBE plugin ${spec.name}, version ${spec.version}`,
-      description: `${spec.description ?? `Run ${spec.name} ${spec.version}, a CUBE ${spec.kind} plugin.`} A run stands where you are, or on its operands, first on the line: a directory is the input (in a feed, that node; outside one, pl-dircopy roots a new feed of it), several directories are one run each, and files are shaped into subjects, each file its own named by its stem or the files before \`as <name>\` one.${fs} After a lone --, key=value words set the run's context (feed_title). help operands gives the full rules; whatif <line> prints a run and starts nothing.`,
+      description: `${spec.description ?? `Run ${spec.name} ${spec.version}, a CUBE ${spec.kind} plugin.`} A run stands where you are, or on its operands, first on the line: a directory is the input (in a feed, that node; outside one, pl-dircopy roots a new feed of it), several directories are one run each, and files are shaped into subjects, each file its own named by its stem or the files before \`as <name>\` one.${fs} --title, --compute and the limits set the run's own fields, as CUBE names them. After a lone --, key=value words set the run's context (feed_title). help operands gives the full rules; whatif <line> prints a run and starts nothing.`,
       category: 'Resources',
-      examples: [`${name} ~/uploads/subjects`, `${name} ~/uploads/t1.nii as sub-01`, `${name} --parameters`, `${name} --readme --raw | glow -`, `${name} -- feed_title="Brain MRI"`],
+      examples: [
+        `${name} ~/uploads/subjects`, `${name} ~/uploads/t1.nii as sub-01`, `${name} ~/uploads/subjects --title "T1 run" --compute host --memory_limit 8Gi`,
+        `${name} --parameters`, `${name} --readme --raw | glow -`, `${name} -- feed_title="Brain MRI"`,
+      ],
     },
     holds: [],
     handler,
@@ -332,10 +389,10 @@ function nodeSelectors_list(manifest: PipelineManifest, node: PipelineManifestNo
  * @returns Each field's name, kind and summary.
  */
 function nodeFields_list(node: PipelineManifestNode): Array<{ name: string; value: OptionValueGrammar | undefined; summary: string }> {
-  const controls = EXECUTION_FIELDS.map(([field, kind]: readonly [string, string]) => ({
-    name: field,
-    value: { name: field, kind } as OptionValueGrammar,
-    summary: `${node.title} (${node.pluginName}): its ${field.replaceAll('_', ' ')}`,
+  const controls = EXECUTION_FIELDS.map((control: ExecutionField) => ({
+    name: control.field,
+    value: { ...control.value, name: control.field },
+    summary: `${node.title} (${node.pluginName}): its ${control.summary}`,
   }));
   const parameters = (node.parameterDefinitions ?? [])
     .filter((parameter): boolean => parameter.name !== 'plugininstances')
@@ -424,11 +481,27 @@ function lineRecords_read(args: LineRead): { operands: Readonly<Record<string, u
 function pluginParameters_read(options: Readonly<Record<string, unknown>>): Record<string, string | number | boolean> {
   const parameters: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(options)) {
-    if (Object.hasOwn(PLUGIN_SESSION_OPTIONS, key)) continue;
+    if (Object.hasOwn(PLUGIN_SESSION_OPTIONS, key) || Object.hasOwn(PLUGIN_RUN_OPTIONS, key)) continue;
     if (value === false || value === undefined) continue;
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') parameters[key] = value;
   }
   return parameters;
+}
+
+/**
+ * The run's own fields a parsed line gave, by the field each is posted as:
+ * `--compute` first, so `--compute_resource_name` counts when both are given.
+ *
+ * @param options - The parsed options.
+ * @returns The fields.
+ */
+function pluginRun_read(options: Readonly<Record<string, unknown>>): Record<string, string | number> {
+  const run: Record<string, string | number> = {};
+  for (const [key, option] of Object.entries(PLUGIN_RUN_OPTIONS)) {
+    const value: unknown = options[key];
+    if (typeof value === 'string' || typeof value === 'number') run[option.field] = value;
+  }
+  return run;
 }
 
 /**
@@ -449,6 +522,7 @@ export function pluginLine_read(args: LineRead, context: readonly string[] = [])
   return {
     operands: (operands['input'] as string[] | undefined) ?? [],
     parameters: pluginParameters_read(options),
+    run: pluginRun_read(options),
     context: [...context],
     detach: options['detach'] === true,
     inspect,
