@@ -4,13 +4,14 @@
  *
  * The close writes `berth.json` into the outgoing folder, uploads the folder
  * to the person's CUBE files at `/home/<user>/berth/<uuid>/`, and makes the
- * node from it. Where the node goes follows from the anchors: every anchor
- * under one node of the person's feeds makes it a child of that node, the
- * registered ds plugin `pl-dsdircopy` whose `dir` is that folder; no anchor
- * under their feeds makes a new feed whose one node is its root,
- * `pl-dircopy` over that folder alone, the anchors named only in
- * `berth.json`. Anchors of two nodes, or of a node and of none, are refused
- * with the two choices, `--infeed <anchor>` and `--newfeed`.
+ * node from it with the registered ds plugin `pl-dsdircopy`, whose `dir` is
+ * that folder. Where the node goes follows from the anchors: every anchor
+ * under one node of the person's feeds makes it a child of that node; no
+ * anchor under their feeds makes a new feed, its root `pl-dircopy` over
+ * every anchored path with the work its child, or with no anchor at all the
+ * root `pl-dircopy` over the work itself. Anchors of two nodes, or of a node
+ * and of none, are refused with the two choices, `--infeed <anchor>` and
+ * `--newfeed`.
  *
  * Before the upload it asks when the person's processes still run in the
  * berth (`--force` answers), and says what changed in ChRIS under an anchor
@@ -58,7 +59,7 @@ import {
 import { berthState_read, berthState_update, type AnchoredFile, type BerthAnchor, type BerthPlaces, type BerthState } from './berthState.js';
 import { anchorNode_show, BerthRefusal, count_say, columns_render } from './berthWords.js';
 
-/** The registered ds plugin a child work node runs: it copies its `dir` and does nothing else. */
+/** The registered ds plugin the work's node runs: it copies its `dir` and does nothing else. */
 export const WORK_PLUGIN: string = 'pl-dsdircopy';
 
 /** The work node's title unless one is given. */
@@ -179,7 +180,7 @@ function anchorsPlacement_decide(anchors: readonly BerthAnchor[], name: string, 
   const first: BerthAnchor = noded[0] as BerthAnchor;
   const other: BerthAnchor | undefined = noded.find((anchor: BerthAnchor): boolean => anchor.node !== first.node);
   const none: BerthAnchor | undefined = anchors.find((anchor: BerthAnchor): boolean => anchor.node === null);
-  const choices: string = 'a node has one parent: --infeed <anchor> makes the work a child of that anchor\'s node, --newfeed a new feed of the work alone, every anchor named in its berth.json';
+  const choices: string = 'a node has one parent: --infeed <anchor> makes the work a child of that anchor\'s node, --newfeed a new feed over every anchor';
   if (other !== undefined) {
     throw new BerthRefusal(`close: the anchors are under two nodes, ${anchorWithNode_say(first)} and ${anchorWithNode_say(other)}; ${choices}`);
   }
@@ -279,15 +280,12 @@ interface AttachResult {
   readonly attached: BerthAttachment | null;
   /** CUBE's reason, when it was not. */
   readonly reason: string | null;
+  /** A new feed's root made before the work failed; else null. */
+  readonly root: AttachOutcome | null;
 }
 
 /**
- * Makes the work's node where the placement says: a child `pl-dsdircopy`
- * over the folder, or a new feed whose one node is `pl-dircopy` over the
- * folder alone. The anchors are not copied into a new feed: under a root
- * over them the work would be its child, and pfcon stages a child's parent
- * output into its input before the job starts, copying data the job never
- * reads; a staging that fails cancels the job.
+ * Makes the work's node where the placement says.
  *
  * @param placement - Where it goes.
  * @param folder - The uploaded folder in the person's CUBE files.
@@ -297,18 +295,25 @@ interface AttachResult {
 async function work_attach(placement: BerthPlacement, folder: string, title: string): Promise<AttachResult> {
   if (placement.kind === 'child') {
     const work: AttachOutcome = await pluginChild_run(WORK_PLUGIN, placement.parent, { dir: folder, title });
-    if (!work.ok) return { attached: null, reason: work.reason };
-    return { attached: { feed: work.feed ?? placement.feed, node: work.instance, plugin: work.pluginName }, reason: null };
+    if (!work.ok) return { attached: null, reason: work.reason, root: null };
+    return { attached: { feed: work.feed ?? placement.feed, node: work.instance, plugin: work.pluginName, root: null }, reason: null, root: null };
   }
-  // The work is the feed's root, so its title is the node's, and the feed
-  // is named after it unless a name was given.
-  const root: AttachOutcome = await feedRoot_create([folder], title);
-  if (!root.ok) return { attached: null, reason: root.reason };
-  if (placement.name !== title && root.feed !== null) {
-    const refused: string | null = await feedName_set(root.feed, placement.name);
-    if (refused !== null) sink_dataLine(`berth: close: feed ${root.feed} keeps the name ${title}: ${refused}`);
+  if (placement.inputs.length === 0) {
+    // No anchor: the work is the feed's root, so its title is the node's,
+    // and the feed is named after it unless a name was given.
+    const root: AttachOutcome = await feedRoot_create([folder], title);
+    if (!root.ok) return { attached: null, reason: root.reason, root: null };
+    if (placement.name !== title && root.feed !== null) {
+      const refused: string | null = await feedName_set(root.feed, placement.name);
+      if (refused !== null) sink_dataLine(`berth: close: feed ${root.feed} keeps the name ${title}: ${refused}`);
+    }
+    return { attached: { feed: root.feed, node: root.instance, plugin: root.pluginName, root: null }, reason: null, root: null };
   }
-  return { attached: { feed: root.feed, node: root.instance, plugin: root.pluginName }, reason: null };
+  const root: AttachOutcome = await feedRoot_create(placement.inputs, placement.name);
+  if (!root.ok) return { attached: null, reason: root.reason, root: null };
+  const work: AttachOutcome = await pluginChild_run(WORK_PLUGIN, root.instance, { dir: folder, title });
+  if (!work.ok) return { attached: null, reason: work.reason, root };
+  return { attached: { feed: root.feed, node: work.instance, plugin: work.pluginName, root: root.instance }, reason: null, root };
 }
 
 /**
@@ -326,7 +331,13 @@ async function work_index(placement: BerthPlacement, attached: BerthAttachment, 
     const { procCache_get } = await import('@fnndsc/cumin');
     procCache_get().instance_add({ id: attached.node, feedID: attached.feed, parentID: placement.parent, pluginName: attached.plugin, params: null, status: 'scheduled' });
   } else {
-    newFeed_cacheAdd({ feedID: attached.feed, title: placement.name, ownerUsername: who, rootInstanceID: attached.node });
+    newFeed_cacheAdd({
+      feedID: attached.feed,
+      title: placement.name,
+      ownerUsername: who,
+      rootInstanceID: attached.root ?? attached.node,
+      ...(attached.root === null ? {} : { child: { id: attached.node, pluginName: attached.plugin } }),
+    });
   }
   run_follow(attached.feed);
 }
@@ -342,8 +353,8 @@ function whereWent_say(placement: BerthPlacement, attached: BerthAttachment): st
   const node: string = `node ${attached.node} (${attached.plugin})`;
   const feed: string = `feed ${attached.feed ?? '?'}`;
   if (placement.kind === 'child') return `${feed}, ${node}, a child of ${placement.parentName}`;
-  const inputs: string = placement.inputs.length === 0 ? '' : `; ${BERTH_RECORD_FILE} names its ${count_say(placement.inputs.length, 'anchored path')}`;
-  return `the new ${feed} "${placement.name}", ${node}, its root and only node${inputs}`;
+  if (attached.root === null) return `the new ${feed} "${placement.name}", ${node}, its root`;
+  return `the new ${feed} "${placement.name}", ${node}, a child of pl-dircopy_${attached.root} over ${count_say(placement.inputs.length, 'anchored path')}`;
 }
 
 /**
@@ -422,7 +433,8 @@ export async function close_run(places: BerthPlaces, request: CloseRequest): Pro
   const made: AttachResult = await work_attach(placement, folder, request.title);
   if (made.attached === null) {
     exitCode_set(1);
-    return envelope_ok(`${chalk.yellow(`berth: close: uploaded, not attached: ${made.reason ?? 'CUBE gave no reason'}`)}\n${chalk.gray(`berth: close: the work stays in ${folder}`)}\n`);
+    const root: string = made.root?.ok === true ? `; the new feed ${made.root.feed ?? '?'} holds the anchored paths under pl-dircopy_${made.root.instance}` : '';
+    return envelope_ok(`${chalk.yellow(`berth: close: uploaded, not attached: ${made.reason ?? 'CUBE gave no reason'}${root}`)}\n${chalk.gray(`berth: close: the work stays in ${folder}`)}\n`);
   }
   const written: string = berthRecord_write(places.outgoing, { ...record, attached: made.attached });
   await work_index(placement, made.attached, who);

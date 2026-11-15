@@ -130,7 +130,7 @@ export interface PlacementNewFeed {
   readonly by: PlacementCause;
   /** The feed's name. */
   readonly name: string;
-  /** The anchored ChRIS paths the work was made from, kept as provenance; the feed's one node copies the upload alone. */
+  /** The ChRIS paths its `pl-dircopy` root copies; empty when the root is the work itself. */
   readonly inputs: readonly string[];
 }
 
@@ -139,7 +139,7 @@ export interface PlacementNewFeed {
  *
  * @example
  * ```ts
- * const attached: BerthAttachment = { feed: 12, node: 58, plugin: 'pl-dsdircopy' };
+ * const attached: BerthAttachment = { feed: 12, node: 58, plugin: 'pl-dsdircopy', root: 57 };
  * ```
  */
 export interface BerthAttachment {
@@ -147,8 +147,10 @@ export interface BerthAttachment {
   readonly feed: number | null;
   /** The work's plugin instance. */
   readonly node: number;
-  /** Its plugin: `pl-dsdircopy` for a child, `pl-dircopy` for a new feed's root. */
+  /** Its plugin. */
   readonly plugin: string;
+  /** The new feed's root, when the close made one under the work; else null. */
+  readonly root: number | null;
 }
 
 /**

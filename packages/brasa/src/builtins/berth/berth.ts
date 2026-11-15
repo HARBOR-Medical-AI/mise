@@ -492,10 +492,10 @@ const BERTH_GRAMMAR = {
       },
     },
     close: {
-      summary: 'Upload the outgoing folder, with berth.json, to ~/berth/<uuid>/ and make it one node: pl-dsdircopy, a child of the node every anchor is under, or pl-dircopy, a new feed\'s root, when none is',
+      summary: 'Upload the outgoing folder, with berth.json, to ~/berth/<uuid>/ and make it one node (pl-dsdircopy): a child of the node every anchor is under, or a new feed when none is',
       options: {
         infeed: { long: 'infeed', summary: "A child of that anchor's node", value: { name: 'anchor', kind: 'anchor' } },
-        newfeed: { long: 'newfeed', summary: 'A new feed of the work alone, every anchor named in berth.json' },
+        newfeed: { long: 'newfeed', summary: 'A new feed over every anchor' },
         name: { long: 'name', summary: "The new feed's name", value: { name: 'feed', kind: 'word' } },
         title: { long: 'title', summary: `The node's title (${WORK_TITLE})`, value: { name: 'text', kind: 'word' } },
         force: { short: 'f', long: 'force', summary: 'Answer yes when your processes still run' },
