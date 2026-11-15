@@ -131,6 +131,7 @@ describe('a plugin\'s declaration, from its parameters', () => {
       line: {
         operands: ['~/uploads'],
         parameters: { threads: 4, verbose: true, label: 'T2', inputFile: 'a.nii' },
+        run: {},
         context: ['feed_title=Brain MRI'],
         detach: true,
         inspect: null,
@@ -153,6 +154,65 @@ describe('a plugin\'s declaration, from its parameters', () => {
   it('completes its options, the session\'s and the plugin\'s, and a path parameter\'s value as a path', async () => {
     expect(await declaredWord_complete(declaration, [], '--th')).toEqual(['--threads', '--threshold']);
     expect(await declaredWord_complete(declaration, [], '-')).toEqual(expect.arrayContaining(['-h', '-v', '-t', '--detach', '--label']));
+  });
+
+  it('takes the run\'s own fields CUBE reads beside the parameters: a title, the compute resource, the limits', () => {
+    const options = declaration.grammar.options ?? {};
+    expect(options['run.title']).toEqual(expect.objectContaining({ long: 'title', value: { name: 'title', kind: 'word' } }));
+    expect(options['run.compute']).toEqual(expect.objectContaining({ long: 'compute', value: { name: 'resource', kind: 'compute' } }));
+    expect(options['run.compute_resource_name']?.value?.kind).toBe('compute');
+    expect(options['run.cpu_limit']?.value?.kind).toBe('cpu');
+    expect(options['run.memory_limit']?.value?.kind).toBe('memory');
+    expect(options['run.gpu_limit']?.value).toEqual(expect.objectContaining({ kind: 'int', min: 0 }));
+    expect(options['run.number_of_workers']?.value).toEqual(expect.objectContaining({ kind: 'int', min: 1 }));
+  });
+
+  it('reads the run\'s fields apart from the parameters, by the field CUBE takes, each value of its kind', async () => {
+    const parsed = await pluginWords_parse(declaration, [
+      '--title', 'T1 run', '--compute', 'host', '--cpu_limit', '2000m', '--memory_limit', '8Gi', '--gpu_limit', '0', '--number_of_workers', '2', '--threads', '4',
+    ]);
+    expect(parsed.ok && parsed.line.run).toEqual({ title: 'T1 run', compute_resource_name: 'host', cpu_limit: '2000m', memory_limit: '8Gi', gpu_limit: 0, number_of_workers: 2 });
+    expect(parsed.ok && parsed.line.parameters).toEqual({ threads: 4 });
+    // A bare number is CUBE's own unit, posted as a number, as the line before declarations did.
+    const bare = await pluginWords_parse(declaration, ['--cpu_limit', '1000', '--memory_limit', '512']);
+    expect(bare.ok && bare.line.run).toEqual({ cpu_limit: 1000, memory_limit: 512 });
+    // Both spellings of the compute resource: --compute_resource_name counts.
+    const both = await pluginWords_parse(declaration, ['--compute_resource_name', 'gpu', '--compute', 'host']);
+    expect(both.ok && both.line.run).toEqual({ compute_resource_name: 'gpu' });
+  });
+
+  it('refuses a run field\'s value not of its kind, before anything runs', async () => {
+    for (const [option, value, said] of [
+      ['--cpu_limit', 'x', 'millicores'], ['--cpu_limit', '2Gi', 'millicores'], ['--memory_limit', '8G', 'memory size'], ['--memory_limit', '0', 'memory size'],
+      ['--number_of_workers', '0', 'at least 1'], ['--gpu_limit', 'one', 'not a whole number'],
+    ] as const) {
+      const refused = await pluginWords_parse(declaration, [option, value]);
+      expect(!refused.ok && refused.refusal).toContain(`invalid argument '${value}' for '${option}'`);
+      expect(!refused.ok && refused.refusal).toContain(said);
+    }
+    const noTitle = await pluginWords_parse(declaration, ['--title']);
+    expect(!noTitle.ok && noTitle.refusal).toContain("option '--title' wants a value");
+    expect(mockPluginRun).not.toHaveBeenCalled();
+  });
+
+  it('leaves a run field\'s name to a parameter that claims it, whose value goes to CUBE as the parameter', async () => {
+    const clashing = pluginDeclaration_make({
+      name: 'pl-titled', version: '1.0.0', kind: 'ds',
+      parameters: [{ name: 'title', type: 'int', optional: true, help: 'A numbered title', flag: '--title' }, { name: 'compute', type: 'str', optional: true, flag: '--compute' }],
+    }, run);
+    const options = clashing.grammar.options ?? {};
+    expect(options['title']?.value?.kind).toBe('int');
+    expect(options['run.title']).toBeUndefined();
+    expect(options['run.compute']).toBeUndefined();
+    expect(options['run.compute_resource_name']?.long).toBe('compute_resource_name');
+    const parsed = await pluginWords_parse(clashing, ['--title', '3', '--compute', 'x']);
+    expect(parsed.ok && [parsed.line.parameters, parsed.line.run]).toEqual([{ title: 3, compute: 'x' }, {}]);
+  });
+
+  it('completes the run\'s fields among its options, and a compute resource by name', async () => {
+    expect(await declaredWord_complete(declaration, [], '--ti')).toEqual(['--title']);
+    expect(await declaredWord_complete(declaration, [], '--comp')).toEqual(['--compute', '--compute_resource_name']);
+    expect(await declaredWord_complete(declaration, [], '--')).toEqual(expect.arrayContaining(['--cpu_limit', '--memory_limit', '--gpu_limit', '--number_of_workers']));
   });
 
   it('is described as a tool: its input and each parameter typed in JSON Schema', () => {
@@ -181,6 +241,15 @@ describe('a pipeline\'s declaration, from its manifest', () => {
     expect(declaration.grammar.options?.['segment.normalize']?.value).toBeUndefined();
     expect(declaration.grammar.options?.['@42.smooth']?.value?.kind).toBe('int');
     expect(declaration.grammar.options?.['segment.compute_resource_name']?.value?.kind).toBe('compute');
+    expect(declaration.grammar.options?.['segment.cpu_limit']?.value?.kind).toBe('cpu');
+    expect(declaration.grammar.options?.['@42.memory_limit']?.value?.kind).toBe('memory');
+  });
+
+  it('reads a node\'s limits as CUBE takes them, and refuses one it would not', async () => {
+    const parsed = await pipelineWords_parse(declaration, ['--segment.cpu_limit', '2000', '--@42.memory_limit', '8Gi']);
+    expect(parsed.ok && parsed.line.bindings).toEqual([{ node: 'segment', field: 'cpu_limit', value: 2000 }, { node: '@42', field: 'memory_limit', value: '8Gi' }]);
+    const refused = await pipelineWords_parse(declaration, ['--segment.memory_limit', 'lots']);
+    expect(!refused.ok && refused.refusal).toContain("invalid argument 'lots' for '--segment.memory_limit'");
   });
 
   it('reads a line: its node overrides typed, its run options, or the look it asks for', async () => {
@@ -217,6 +286,8 @@ describe('the declaration of a word /bin answers', () => {
     const declaration = await binDeclaration_get('pl-x-v1.0.0');
     await declaration?.handler({ subcommand: null, operands: { input: ['~/a'] }, options: { threads: 2, detach: false }, expanded: { input: false } } as never);
     expect(mockPluginRun).toHaveBeenCalledWith('pl-x-v1.0.0', expect.objectContaining({ operands: ['~/a'], parameters: { threads: 2 } }));
+    await declaration?.handler({ subcommand: null, operands: { input: [] }, options: { 'run.title': 'T', 'run.compute': 'host', detach: false }, expanded: { input: false } } as never);
+    expect(mockPluginRun).toHaveBeenLastCalledWith('pl-x-v1.0.0', expect.objectContaining({ parameters: {}, run: { title: 'T', compute_resource_name: 'host' } }));
   });
 
   it('makes a pipeline\'s from its manifest, by its /bin name or its own, and names its node options for pipeline run', async () => {

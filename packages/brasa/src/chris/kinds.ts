@@ -7,6 +7,7 @@
  * - ANCHOR_KIND: an anchor of this session's berth, by name.
  * - FEED_KIND: a feed, by id, feed_N or title.
  * - COMPUTE_KIND: a compute resource, by name.
+ * - CPU_KIND / MEMORY_KIND: a run's CPU and memory limits, as CUBE writes them.
  * - PACS_QUERY_KIND: a PACS query, by id, by path, or as a question.
  * - PLUGIN_KIND: a plugin, as `/bin` names a version of it.
  * - PIPELINE_KIND: a pipeline, by its name, id or `/bin` name.
@@ -90,6 +91,45 @@ export const COMPUTE_KIND: ArgumentKind = {
     const names: string[] = listed.value.map((resource: { name: string }): string => `${head}${resource.name}`);
     return candidates_filter(names, partial);
   },
+};
+
+/**
+ * A limit as CUBE writes it: a whole number above nought, bare or with one
+ * of its units. Bare, it is a number (CUBE counts it in the field's own
+ * unit); with a unit, the word as typed, which CUBE converts.
+ *
+ * @param word - The word.
+ * @param units - The units CUBE takes after the number.
+ * @param reason - What the word should be, for the refusal.
+ * @returns The value, or why it is not one.
+ */
+function limit_read(word: string, units: readonly string[], reason: string): ArgumentCheck {
+  const found: RegExpMatchArray | null = word.match(/^(\d+)([A-Za-z]*)$/);
+  if (found === null || Number(found[1]) <= 0) return { ok: false, reason };
+  if (found[2] === '') return { ok: true, value: Number(found[1]) };
+  return units.includes(found[2] ?? '') ? { ok: true, value: word } : { ok: false, reason };
+}
+
+/**
+ * A run's CPU limit, as CUBE's plugin instance takes it: millicores, `2000m`
+ * or a bare `2000`.
+ */
+export const CPU_KIND: ArgumentKind = {
+  name: 'cpu',
+  summary: 'a CPU limit in millicores: 2000m, or 2000',
+  word_read: (word: string): ArgumentCheck => limit_read(word, ['m'], 'millicores: 2000m, or 2000'),
+  schema_make: (): z.ZodType => z.union([z.number().int().positive(), z.string().regex(/^[1-9]\d*m$/)]),
+};
+
+/**
+ * A run's memory limit, as CUBE's plugin instance takes it: `512Mi`, `8Gi`,
+ * or a bare number of MiB.
+ */
+export const MEMORY_KIND: ArgumentKind = {
+  name: 'memory',
+  summary: 'a memory limit: 512Mi, 8Gi, or a number of MiB',
+  word_read: (word: string): ArgumentCheck => limit_read(word, ['Mi', 'Gi'], 'a memory size: 512Mi, 8Gi, or a number of MiB'),
+  schema_make: (): z.ZodType => z.union([z.number().int().positive(), z.string().regex(/^[1-9]\d*(?:Mi|Gi)$/)]),
 };
 
 /** Where the PACS provider keeps its queries. */
@@ -190,4 +230,4 @@ export const PIPELINE_KIND: ArgumentKind = {
 };
 
 /** Every argument kind the ChRIS backend registers. */
-export const chrisArgumentKinds: ReadonlyArray<ArgumentKind> = [ANCHOR_KIND, FEED_KIND, COMPUTE_KIND, PACS_QUERY_KIND, PLUGIN_KIND, PIPELINE_KIND];
+export const chrisArgumentKinds: ReadonlyArray<ArgumentKind> = [ANCHOR_KIND, FEED_KIND, COMPUTE_KIND, CPU_KIND, MEMORY_KIND, PACS_QUERY_KIND, PLUGIN_KIND, PIPELINE_KIND];

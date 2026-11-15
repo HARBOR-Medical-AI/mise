@@ -53,6 +53,8 @@ jest.unstable_mockModule('../src/core/filesystem.js', () => ({
 }));
 
 const { builtin_executePlugin } = await import('../src/builtins/pluginExecute.js');
+// The ChRIS kinds a line's run fields name (compute, cpu, memory), as the session installs them.
+(await import('../src/core/backend.js')).backend_install({ id: 'chris', session: {} as never, argumentKinds: (await import('../src/chris/kinds.js')).chrisArgumentKinds });
 const strip = (text: string): string => text.replace(/\u001b\[[0-9;]*m/g, '');
 
 beforeEach(() => {
@@ -182,6 +184,27 @@ describe('builtin_executePlugin with an operand', () => {
     mockPluginsList.mockResolvedValue(null);
     const unknown = await builtin_executePlugin('pl-freesurfer-v1.0.4', ['/home/u/uploads/subjects']);
     expect(unknown.status).toBe('error');
+    expect(mockExecuteInPlace).not.toHaveBeenCalled();
+  });
+
+  it('posts the run\'s own fields beside the parameters, by the names CUBE takes: pl-x --dir a --title "t", --compute name', async () => {
+    await builtin_executePlugin('pl-dircopy-v2.1.2', ['--dir', '/home/u/uploads', '--title', 't']);
+    expect(errors).toEqual([]);
+    expect(mockExecuteInPlace).toHaveBeenCalledWith('name_exact:pl-dircopy,version:2.1.2', { title: 't', dir: '/home/u/uploads' }, { feed_title: 'uploads' }, '/home/u/uploads', ['pl-dircopy-v2.1.2']);
+    await builtin_executePlugin('pl-dircopy-v2.1.2', ['--dir', '/home/u/uploads', '--compute', 'moc', '--cpu_limit', '2000m', '--memory_limit', '8Gi', '--number_of_workers', '2', '--gpu_limit', '1']);
+    expect(mockExecuteInPlace).toHaveBeenLastCalledWith(
+      'name_exact:pl-dircopy,version:2.1.2',
+      { compute_resource_name: 'moc', cpu_limit: '2000m', memory_limit: '8Gi', number_of_workers: 2, gpu_limit: 1, dir: '/home/u/uploads' },
+      { feed_title: 'uploads' }, '/home/u/uploads', ['pl-dircopy-v2.1.2'],
+    );
+  });
+
+  it('shows the run\'s fields under whatif and posts nothing; a bad limit is refused before anything runs', async () => {
+    await builtin_executePlugin('pl-dircopy-v2.1.2', ['--dir', '/home/u/uploads', '--title', 't', '--compute', 'moc'], undefined, true);
+    expect(lines.map(strip)).toEqual(expect.arrayContaining([expect.stringMatching(/^ {2}with --title t {2}--compute_resource_name moc {2}--dir \/home\/u\/uploads/)]));
+    const refused = await builtin_executePlugin('pl-dircopy-v2.1.2', ['--dir', '/home/u/uploads', '--cpu_limit', 'x']);
+    expect(refused.status).toBe('error');
+    expect(errors.map(strip).join('\n')).toContain("pl-dircopy-v2.1.2: invalid argument 'x' for '--cpu_limit' (millicores: 2000m, or 2000)");
     expect(mockExecuteInPlace).not.toHaveBeenCalled();
   });
 

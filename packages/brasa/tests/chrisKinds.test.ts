@@ -1,7 +1,8 @@
 /**
- * @file The ChRIS argument kinds a resource command's line names: a feed and
- * a compute resource. Each checks its word and completes from the session:
- * a feed from the feeds its index holds, a compute resource from CUBE.
+ * @file The ChRIS argument kinds a resource command's line names: a feed, a
+ * compute resource, and a run's CPU and memory limits. Each checks its word
+ * and completes from the session: a feed from the feeds its index holds, a
+ * compute resource from CUBE.
  */
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
@@ -12,7 +13,7 @@ jest.unstable_mockModule('@fnndsc/cumin', () => ({
   computeResources_getAll: mockComputeAll,
 }));
 
-const { FEED_KIND, COMPUTE_KIND, chrisArgumentKinds } = await import('../src/chris/kinds.js');
+const { FEED_KIND, COMPUTE_KIND, CPU_KIND, MEMORY_KIND, chrisArgumentKinds } = await import('../src/chris/kinds.js');
 const { errorStack } = await import('@fnndsc/fond');
 
 beforeEach(() => {
@@ -50,8 +51,31 @@ describe('the compute kind', () => {
   });
 });
 
+describe('the cpu and memory kinds', () => {
+  it('take a limit as CUBE writes it: bare, a number in the field\'s unit; with a unit, the word', () => {
+    expect(CPU_KIND.word_read('2000m', { kind: 'cpu' })).toEqual({ ok: true, value: '2000m' });
+    expect(CPU_KIND.word_read('2000', { kind: 'cpu' })).toEqual({ ok: true, value: 2000 });
+    expect(MEMORY_KIND.word_read('8Gi', { kind: 'memory' })).toEqual({ ok: true, value: '8Gi' });
+    expect(MEMORY_KIND.word_read('512Mi', { kind: 'memory' })).toEqual({ ok: true, value: '512Mi' });
+    expect(MEMORY_KIND.word_read('512', { kind: 'memory' })).toEqual({ ok: true, value: 512 });
+  });
+
+  it('refuse a word CUBE would not read, a unit of the other field, and nought', () => {
+    for (const word of ['x', '', '0', '0m', '-1', '2Gi', '1.5', 'm']) expect(CPU_KIND.word_read(word, { kind: 'cpu' }).ok).toBe(false);
+    for (const word of ['x', '', '0', '0Gi', '8G', '8gi', '2000m', '1.5Gi']) expect(MEMORY_KIND.word_read(word, { kind: 'memory' }).ok).toBe(false);
+  });
+
+  it('describe their value in a schema: a positive whole number or the word with its unit', () => {
+    expect(CPU_KIND.schema_make({ kind: 'cpu' }).safeParse('2000m').success).toBe(true);
+    expect(CPU_KIND.schema_make({ kind: 'cpu' }).safeParse(2000).success).toBe(true);
+    expect(CPU_KIND.schema_make({ kind: 'cpu' }).safeParse('2Gi').success).toBe(false);
+    expect(MEMORY_KIND.schema_make({ kind: 'memory' }).safeParse('8Gi').success).toBe(true);
+    expect(MEMORY_KIND.schema_make({ kind: 'memory' }).safeParse(0).success).toBe(false);
+  });
+});
+
 describe('the ChRIS kinds', () => {
   it('are registered through the backend seam, by name', () => {
-    expect(chrisArgumentKinds.map((kind) => kind.name)).toEqual(['anchor', 'feed', 'compute', 'pacsQuery', 'plugin', 'pipeline']);
+    expect(chrisArgumentKinds.map((kind) => kind.name)).toEqual(['anchor', 'feed', 'compute', 'cpu', 'memory', 'pacsQuery', 'plugin', 'pipeline']);
   });
 });
