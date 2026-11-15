@@ -1,5 +1,21 @@
 # @fnndsc/brasa
 
+## 0.57.1
+
+### Patch Changes
+
+- 21d8c3c: A berth close refuses new-feed anchors like `SAG-anon` and `SAG-anon2`, which CUBE would cancel, and names the pair.
+
+  pfcon's fslink staging skips a linked folder whose path begins with one already copied (HARBOR-Medical-AI/pfcon#180); the close says so before it uploads anything, and renaming one folder clears it.
+
+- aaa0c63: Inspecting a job by its id works again (`jobs inspect <id>`), showing every field of that job with its value.
+
+  `inspect` on `jobs` (and every other name of `plugininstance`), `feed`, `tag`, `pluginmeta`, `workflow` and `compute` takes an optional id and shows that record, every field with its value; an id CUBE holds no record of is said and exits 1. With no id it names the fields, as before. The declared commands had refused the id since the move to declarations.
+
+- 12cf9d0: A plugin line takes --title, --compute and the run's limits again, instead of refusing them as unknown options.
+
+  `pl-dircopy --dir ~/uploads --title "T1 run" --compute host` runs as it did before every `/bin` line was parsed against its plugin's declaration: each plugin's line takes the fields CUBE's plugin instance reads beside the plugin's parameters, `--title`, `--compute_resource_name` (or `--compute`, as `pipeline run` spells it), `--cpu_limit`, `--memory_limit`, `--gpu_limit` and `--number_of_workers`, and posts them under those names. A limit is checked as CUBE writes it (`2000m`, `8Gi`, or a bare number in the field's unit), a compute resource completes from CUBE, and a plugin parameter of the same name keeps the name. A pipeline node's `cpu_limit` and `memory_limit` are checked the same way, and a bare number goes to CUBE as a number.
+
 ## 0.57.0
 
 ### Minor Changes
