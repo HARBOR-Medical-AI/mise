@@ -24,6 +24,7 @@ import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
 import { RESOURCE_LIST_OPTIONS_GRAMMAR, resourceListBag_build } from './resourceList.js';
+import { RESOURCE_ID_OPERANDS, resourceRecord_render, type ResourceRecordSource } from './resourceRecord.js';
 
 /**
  * Projects a listed row onto the wire's instance model: the fields the
@@ -116,6 +117,15 @@ function procWay_say(verb: keyof typeof PROC_WAYS, id: string | undefined): Comm
 /** The operand of a job verb /proc/jobs answers: the job's id, which it names in the way it says. */
 const JOB_ID_OPERANDS = [{ name: 'id', kind: 'word', optional: true, summary: "The job's id" }] as const;
 
+/** How `plugininstance inspect <id>` reads one plugin instance. */
+const PLUGININSTANCE_RECORD: ResourceRecordSource = {
+  command: 'plugininstance',
+  noun: 'plugin instance',
+  title: 'Plugin Instance',
+  fields_fetch: pluginInstanceFields_fetch,
+  rows_fetch: async (options: CLIoptions): Promise<readonly object[]> => (await pluginInstances_fetchList(options)).pluginInstances,
+};
+
 /** What a `plugininstance` line may hold. */
 const PLUGININSTANCE_GRAMMAR = {
   bare: { summary: 'List the plugin instances, as list does', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
@@ -126,7 +136,7 @@ const PLUGININSTANCE_GRAMMAR = {
       operands: [{ name: 'term', kind: 'word', summary: 'The filter, field:value (inspect names the fields)' }],
       options: RESOURCE_LIST_OPTIONS_GRAMMAR,
     },
-    inspect: { summary: 'Name the fields a plugin instance has' },
+    inspect: { summary: 'One plugin instance, every field with its value; with no id, the fields a plugin instance has', operands: RESOURCE_ID_OPERANDS },
     cancel: { summary: 'Says how: rm <path> in /proc/jobs cancels a running job', operands: JOB_ID_OPERANDS },
     delete: { summary: 'Says how: rm <path> in /proc/jobs removes a finished job', operands: JOB_ID_OPERANDS },
     rm: { summary: 'Says how: rm <path> in /proc/jobs removes a finished job', operands: JOB_ID_OPERANDS },
@@ -148,13 +158,13 @@ async function plugininstance_run(args: CommandArguments<typeof PLUGININSTANCE_G
     case null:
     case 'list': return plugininstanceList_render(resourceListBag_build(args.options));
     case 'search': return plugininstanceList_render(resourceListBag_build(args.options, args.operands.term));
-    case 'inspect': return plugininstanceFields_render();
+    case 'inspect': return args.operands.id === undefined ? plugininstanceFields_render() : resourceRecord_render(PLUGININSTANCE_RECORD, args.operands.id);
     default: return procWay_say(args.subcommand, args.operands.id);
   }
 }
 
 /**
- * `plugininstance [[listing options] | list [listing options] | search <term> [listing options] | inspect | <job verb> [id]]`: the declaration.
+ * `plugininstance [[listing options] | list [listing options] | search <term> [listing options] | inspect [id] | <job verb> [id]]`: the declaration.
  *
  * @example
  * ```ts
@@ -167,9 +177,9 @@ export const plugininstanceCommand = command_declare({
   grammar: PLUGININSTANCE_GRAMMAR,
   help: {
     summary: "CUBE's plugin instances, the jobs: list them, search them, name their fields",
-    description: 'List the plugin instances in CUBE, the jobs, a page at a time or every page, filtered by a field:value search and in the columns asked for; inspect names the fields a job has. A job is worked in /proc/jobs: proc find <id> names its path, rm <path> cancels it while it runs and removes it once done, cat <path>/params and cat <path>/log read it, and <path>/data is its output; the verbs that would do these here say so. plugininstance, plugininstances, instance, instances, job and jobs are one command.',
+    description: 'List the plugin instances in CUBE, the jobs, a page at a time or every page, filtered by a field:value search and in the columns asked for; inspect <id> shows the fields and values of one job, and inspect alone names the fields a job has. A job is worked in /proc/jobs: proc find <id> names its path, rm <path> cancels it while it runs and removes it once done, cat <path>/params and cat <path>/log read it, and <path>/data is its output; the verbs that would do these here say so. plugininstance, plugininstances, instance, instances, job and jobs are one command.',
     category: 'Resources',
-    examples: ['jobs list', 'jobs list --all', 'jobs search status:started', 'jobs list --search feed_id:5536', 'jobs inspect', 'proc find 42'],
+    examples: ['jobs list', 'jobs list --all', 'jobs search status:started', 'jobs list --search feed_id:5536', 'jobs inspect', 'jobs inspect 42', 'proc find 42'],
   },
   handler: plugininstance_run,
 });

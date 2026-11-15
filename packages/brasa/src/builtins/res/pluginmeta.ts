@@ -22,6 +22,7 @@ import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
 import { RESOURCE_LIST_OPTIONS_GRAMMAR, resourceListBag_build } from './resourceList.js';
+import { RESOURCE_ID_OPERANDS, resourceRecord_render, type ResourceRecordSource } from './resourceRecord.js';
 
 /**
  * Lists the plugin metas a listing's options ask for.
@@ -53,6 +54,15 @@ async function pluginmetaFields_render(): Promise<CommandEnvelope> {
   return envelope_ok(`${chalk.gray('No fields found for plugin metas.')}\n`);
 }
 
+/** How `pluginmeta inspect <id>` reads one plugin meta. */
+const PLUGINMETA_RECORD: ResourceRecordSource = {
+  command: 'pluginmeta',
+  noun: 'plugin meta',
+  title: 'Plugin Meta',
+  fields_fetch: pluginMetaFields_fetch,
+  rows_fetch: async (options: CLIoptions): Promise<readonly object[]> => (await pluginMetas_fetchList(options)).pluginMetas,
+};
+
 /** What a `pluginmeta` line may hold. */
 const PLUGINMETA_GRAMMAR = {
   bare: { summary: 'List the plugin metas, as list does', options: RESOURCE_LIST_OPTIONS_GRAMMAR },
@@ -63,7 +73,7 @@ const PLUGINMETA_GRAMMAR = {
       operands: [{ name: 'term', kind: 'word', summary: 'The filter, field:value (inspect names the fields)' }],
       options: RESOURCE_LIST_OPTIONS_GRAMMAR,
     },
-    inspect: { summary: 'Name the fields a plugin meta has' },
+    inspect: { summary: 'One plugin meta, every field with its value; with no id, the fields a plugin meta has', operands: RESOURCE_ID_OPERANDS },
   },
 } as const satisfies CommandGrammar;
 
@@ -78,12 +88,12 @@ async function pluginmeta_run(args: CommandArguments<typeof PLUGINMETA_GRAMMAR>)
     case null:
     case 'list': return pluginmetaList_render(resourceListBag_build(args.options));
     case 'search': return pluginmetaList_render(resourceListBag_build(args.options, args.operands.term));
-    case 'inspect': return pluginmetaFields_render();
+    case 'inspect': return args.operands.id === undefined ? pluginmetaFields_render() : resourceRecord_render(PLUGINMETA_RECORD, args.operands.id);
   }
 }
 
 /**
- * `pluginmeta [[listing options] | list [listing options] | search <term> [listing options] | inspect]`: the declaration.
+ * `pluginmeta [[listing options] | list [listing options] | search <term> [listing options] | inspect [id]]`: the declaration.
  *
  * @example
  * ```ts
@@ -96,9 +106,9 @@ export const pluginmetaCommand = command_declare({
   grammar: PLUGINMETA_GRAMMAR,
   help: {
     summary: "CUBE's plugin metas, each a plugin across its versions: list them, search them, name their fields",
-    description: 'List the plugin metas in CUBE, a page at a time or every page, filtered by a field:value search and in the columns asked for; inspect names the fields a plugin meta has. A plugin meta is a tool across its versions (pl-dircopy); a plugin is one version of it. pluginmeta, pluginmetas, meta and metas are one command.',
+    description: 'List the plugin metas in CUBE, a page at a time or every page, filtered by a field:value search and in the columns asked for; inspect <id> shows the fields and values of one plugin meta, and inspect alone names the fields a plugin meta has. A plugin meta is a tool across its versions (pl-dircopy); a plugin is one version of it. pluginmeta, pluginmetas, meta and metas are one command.',
     category: 'Resources',
-    examples: ['pluginmetas list', 'pluginmetas search name:dircopy', 'metas list --fields name,category', 'meta inspect'],
+    examples: ['pluginmetas list', 'pluginmetas search name:dircopy', 'metas list --fields name,category', 'meta inspect', 'meta inspect 12'],
   },
   handler: pluginmeta_run,
 });

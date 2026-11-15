@@ -24,6 +24,7 @@ import type { ComputeResource } from '@fnndsc/cumin';
 import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
+import { RESOURCE_ID_OPERANDS, resourceRecord_render, type ResourceRecordSource } from './resourceRecord.js';
 
 /** How a listing is drawn. */
 interface ComputeListShape {
@@ -94,6 +95,22 @@ const COMPUTE_SHAPE_OPTIONS = {
   csv: { long: 'csv', summary: 'CSV output' },
 } as const;
 
+/**
+ * How `compute inspect <id>` reads one compute resource: CUBE answers every
+ * one in a single read, so the read is filtered here.
+ */
+const COMPUTE_RECORD: ResourceRecordSource = {
+  command: 'compute',
+  noun: 'compute resource',
+  title: 'Compute',
+  fields_fetch: computeFields_fetch,
+  rows_fetch: async (): Promise<readonly object[]> => {
+    const listed: Result<ComputeListResult> = await computeResources_fetchList();
+    if (!listed.ok) throw new Error(errorStack.stack_pop()?.message ?? 'compute list failed');
+    return listed.value.resources;
+  },
+};
+
 /** What a `compute` line may hold. */
 const COMPUTE_GRAMMAR = {
   bare: { summary: 'List every compute resource, as list does', options: COMPUTE_SHAPE_OPTIONS },
@@ -104,7 +121,7 @@ const COMPUTE_GRAMMAR = {
       operands: [{ name: 'term', kind: 'word', summary: 'The filter, field:value, or part of a name' }],
       options: COMPUTE_SHAPE_OPTIONS,
     },
-    inspect: { summary: 'Name the fields a compute resource has' },
+    inspect: { summary: 'One compute resource, every field with its value; with no id, the fields a compute resource has', operands: RESOURCE_ID_OPERANDS },
   },
 } as const satisfies CommandGrammar;
 
@@ -119,12 +136,12 @@ async function compute_run(args: CommandArguments<typeof COMPUTE_GRAMMAR>): Prom
     case null:
     case 'list': return computeList_answer(args.options);
     case 'search': return computeList_answer(args.options, args.operands.term);
-    case 'inspect': return computeFields_render();
+    case 'inspect': return args.operands.id === undefined ? computeFields_render() : resourceRecord_render(COMPUTE_RECORD, args.operands.id);
   }
 }
 
 /**
- * `compute [[--table] [--csv] | list [--table] [--csv] | search <term> [--table] [--csv] | inspect]`: the declaration.
+ * `compute [[--table] [--csv] | list [--table] [--csv] | search <term> [--table] [--csv] | inspect [id]]`: the declaration.
  *
  * @example
  * ```ts
@@ -137,9 +154,9 @@ export const computeCommand = command_declare({
   grammar: COMPUTE_GRAMMAR,
   help: {
     summary: 'The compute resources registered with CUBE, where jobs run',
-    description: 'List the compute resources registered with CUBE, every one in a single read, as a table or CSV when asked; search keeps those a field:value, or part of a name, matches; inspect names the fields a compute resource has. compute and computes are one command. A plugin or pipeline run takes one with --compute <name>.',
+    description: 'List the compute resources registered with CUBE, every one in a single read, as a table or CSV when asked; search keeps those a field:value, or part of a name, matches; inspect <id> shows the fields and values of one compute resource, and inspect alone names the fields a compute resource has. compute and computes are one command. A plugin or pipeline run takes one with --compute <name>.',
     category: 'Resources',
-    examples: ['compute list', 'compute list --table', 'compute search moc', 'compute list --csv', 'compute inspect'],
+    examples: ['compute list', 'compute list --table', 'compute search moc', 'compute list --csv', 'compute inspect', 'compute inspect 1'],
   },
   handler: compute_run,
 });

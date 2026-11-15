@@ -259,21 +259,24 @@ describe('berth close: where the node goes', () => {
     expect(process.exitCode).toBe(0);
   });
 
-  it('no anchor under your feeds: a new feed, pl-dircopy over every anchored path, the work its child', async () => {
+  it('no anchor under your feeds: a new feed whose one node is pl-dircopy over the upload alone, the anchors only in berth.json', async () => {
     anchors_stand(WEIGHTS, ATLAS);
     const result = await builtin_berth(['close', '--name', 'seg run', '--title', 'unet weights']);
     const folder: string = folder_uploaded();
-    expect(mockFeedCreate).toHaveBeenCalledWith(['/home/alice/uploads/weights', '/PUBLIC/atlas'], { title: 'seg run' });
-    expect(mockPluginRun).toHaveBeenCalledWith('name_exact:pl-dsdircopy', { dir: folder, title: 'unet weights', previous_id: 100 });
-    expect(strip(result.rendered)).toBe(`berth: close: the work is the new feed 20 "seg run", node 101 (pl-dsdircopy), a child of pl-dircopy_100 over 2 anchored paths\nberth: close: its files are in ${folder}\n`);
-    expect(mockCacheAdd).toHaveBeenCalledWith({ feedID: 20, title: 'seg run', ownerUsername: 'alice', rootInstanceID: 100, child: { id: 101, pluginName: 'pl-dsdircopy' } });
-    expect(mockFeedRename).not.toHaveBeenCalled();
+    expect(mockFeedCreate).toHaveBeenCalledTimes(1);
+    expect(mockFeedCreate).toHaveBeenCalledWith([folder], { title: 'unet weights' });
+    expect(mockPluginRun).not.toHaveBeenCalled();
+    expect(mockFeedRename).toHaveBeenCalledWith(20, 'seg run');
+    expect(strip(result.rendered)).toBe(`berth: close: the work is the new feed 20 "seg run", node 100 (pl-dircopy), its root and only node; berth.json names its 2 anchored paths\nberth: close: its files are in ${folder}\n`);
+    expect(mockCacheAdd).toHaveBeenCalledWith({ feedID: 20, title: 'seg run', ownerUsername: 'alice', rootInstanceID: 100 });
+    expect(record_read()['placement']).toEqual({ kind: 'newFeed', by: 'anchors', name: 'seg run', inputs: ['/home/alice/uploads/weights', '/PUBLIC/atlas'] });
   });
 
   it('a new feed is named after the title when no name is given', async () => {
     anchors_stand(WEIGHTS);
     await builtin_berth(['close', '--title=unet weights']);
-    expect(mockFeedCreate).toHaveBeenCalledWith(['/home/alice/uploads/weights'], { title: 'unet weights' });
+    expect(mockFeedCreate).toHaveBeenCalledWith([folder_uploaded()], { title: 'unet weights' });
+    expect(mockFeedRename).not.toHaveBeenCalled();
   });
 
   it('no anchor at all: the root of a new feed is pl-dircopy over the upload itself', async () => {
@@ -281,7 +284,7 @@ describe('berth close: where the node goes', () => {
     const folder: string = folder_uploaded();
     expect(mockFeedCreate).toHaveBeenCalledWith([folder], { title: 'berth work' });
     expect(mockPluginRun).not.toHaveBeenCalled();
-    expect(strip(result.rendered)).toBe(`berth: close: the work is the new feed 20 "berth work", node 100 (pl-dircopy), its root\nberth: close: its files are in ${folder}\n`);
+    expect(strip(result.rendered)).toBe(`berth: close: the work is the new feed 20 "berth work", node 100 (pl-dircopy), its root and only node\nberth: close: its files are in ${folder}\n`);
     expect(mockCacheAdd).toHaveBeenCalledWith({ feedID: 20, title: 'berth work', ownerUsername: 'alice', rootInstanceID: 100 });
     expect(mockFeedRename).not.toHaveBeenCalled();
   });
@@ -298,7 +301,7 @@ describe('berth close: anchors that point two ways', () => {
     anchors_stand(SUB01, SEG);
     const result = await builtin_berth(['close']);
     expect(result.status).toBe('error');
-    expect(strip(result.renderedErr)).toBe('berth: close: the anchors are under two nodes, sub-01 (pl-fshack_41) and seg (pl-unet_81); a node has one parent: --infeed <anchor> makes the work a child of that anchor\'s node, --newfeed a new feed over every anchor\n');
+    expect(strip(result.renderedErr)).toBe('berth: close: the anchors are under two nodes, sub-01 (pl-fshack_41) and seg (pl-unet_81); a node has one parent: --infeed <anchor> makes the work a child of that anchor\'s node, --newfeed a new feed of the work alone, every anchor named in its berth.json\n');
     expect(process.exitCode).toBe(1);
     expect(mockUpload).not.toHaveBeenCalled();
     expect(existsSync(join(outgoing, 'berth.json'))).toBe(false);
@@ -307,7 +310,7 @@ describe('berth close: anchors that point two ways', () => {
   it('refuses a node and a path with none', async () => {
     anchors_stand(SUB01, WEIGHTS);
     const result = await builtin_berth(['close']);
-    expect(strip(result.renderedErr)).toBe('berth: close: sub-01 (pl-fshack_41) is under a node and weights is under none; a node has one parent: --infeed <anchor> makes the work a child of that anchor\'s node, --newfeed a new feed over every anchor\n');
+    expect(strip(result.renderedErr)).toBe('berth: close: sub-01 (pl-fshack_41) is under a node and weights is under none; a node has one parent: --infeed <anchor> makes the work a child of that anchor\'s node, --newfeed a new feed of the work alone, every anchor named in its berth.json\n');
     expect(mockUpload).not.toHaveBeenCalled();
   });
 
@@ -319,16 +322,19 @@ describe('berth close: anchors that point two ways', () => {
     expect(record_read()['placement']).toEqual({ kind: 'child', by: '--infeed', parent: 81, parentName: 'pl-unet_81', feed: 8, anchor: 'seg' });
   });
 
-  it('--newfeed makes a new feed over every anchor, in every case', async () => {
+  it('--newfeed makes a new feed of the work alone, in every case, every anchor in berth.json', async () => {
     anchors_stand(SUB01, SEG, WEIGHTS);
     expect((await builtin_berth(['close', '--newfeed'])).status).toBe('ok');
-    expect(mockFeedCreate).toHaveBeenCalledWith([SUB01.path, SEG.path, WEIGHTS.path], { title: 'berth work' });
-    expect(mockPluginRun).toHaveBeenCalledWith('name_exact:pl-dsdircopy', { dir: folder_uploaded(), title: 'berth work', previous_id: 100 });
+    expect(mockFeedCreate).toHaveBeenCalledWith([folder_uploaded()], { title: 'berth work' });
+    expect(mockPluginRun).not.toHaveBeenCalled();
+    expect(record_read()['placement']).toEqual({ kind: 'newFeed', by: '--newfeed', name: 'berth work', inputs: [SUB01.path, SEG.path, WEIGHTS.path] });
 
     jest.clearAllMocks();
     anchors_stand(SUB01, SUB02);
     expect((await builtin_berth(['close', '--newfeed', '--name', 'again'])).status).toBe('ok');
-    expect(mockFeedCreate).toHaveBeenCalledWith([SUB01.path, SUB02.path], { title: 'again' });
+    expect(mockFeedCreate).toHaveBeenCalledWith([mockUpload.mock.calls[0]?.[1] as string], { title: 'berth work' });
+    expect(mockFeedRename).toHaveBeenCalledWith(21, 'again');
+    expect(mockPluginRun).not.toHaveBeenCalled();
   });
 
   it('refuses --infeed of an anchor with no node or not there, both flags at once, and --name for a child', async () => {
@@ -361,7 +367,7 @@ describe('berth close: berth.json', () => {
       outgoing,
       folder,
       placement: { kind: 'child', by: 'anchors', parent: 41, parentName: 'pl-fshack_41', feed: 5, anchor: null },
-      attached: { feed: 5, node: 100, plugin: 'pl-dsdircopy', root: null },
+      attached: { feed: 5, node: 100, plugin: 'pl-dsdircopy' },
     });
     expect(Date.parse(record['closedAt'] as string)).toBeGreaterThanOrEqual(before - 1000);
   });
@@ -372,7 +378,7 @@ describe('berth close: berth.json', () => {
     const sent: Record<string, unknown> = JSON.parse(uploaded.get(`${folder_uploaded()}/berth.json`) ?? '{}') as Record<string, unknown>;
     expect(sent['placement']).toEqual({ kind: 'newFeed', by: 'anchors', name: 'berth work', inputs: ['/home/alice/uploads/weights'] });
     expect(sent['attached']).toBeNull();
-    expect(record_read()['attached']).toEqual({ feed: 20, node: 101, plugin: 'pl-dsdircopy', root: 100 });
+    expect(record_read()['attached']).toEqual({ feed: 20, node: 100, plugin: 'pl-dircopy' });
   });
 
   it('names the image as none when the berth names none', async () => {
@@ -519,17 +525,17 @@ describe('berth close: when it cannot attach, and the last close', () => {
     expect(mockFollow).not.toHaveBeenCalled();
   });
 
-  it('a new feed whose work cannot attach says the feed its root made', async () => {
-    anchors_stand(WEIGHTS);
-    mockPluginRun.mockResolvedValueOnce(null);
-    const result = await builtin_berth(['close']);
-    expect(strip(result.rendered)).toContain('berth: close: uploaded, not attached: CUBE made no pl-dsdircopy instance; the new feed 20 holds the anchored paths under pl-dircopy_100\n');
-  });
-
-  it('a feed CUBE does not make is not attached either', async () => {
+  it('a feed CUBE does not make is not attached either, with anchors or without', async () => {
     mockFeedCreate.mockResolvedValueOnce(null as never);
     const result = await builtin_berth(['close']);
     expect(strip(result.rendered)).toContain('berth: close: uploaded, not attached: CUBE made no feed\n');
+
+    anchors_stand(WEIGHTS);
+    mockFeedCreate.mockResolvedValueOnce(null as never);
+    const anchored = await builtin_berth(['close']);
+    expect(strip(anchored.rendered)).toBe(`berth: close: uploaded, not attached: CUBE made no feed\nberth: close: the work stays in ${mockUpload.mock.calls.at(-1)?.[1] as string}\n`);
+    expect(mockPluginRun).not.toHaveBeenCalled();
+    expect(record_read()['attached']).toBeNull();
   });
 
   it('an upload that fails attaches nothing', async () => {

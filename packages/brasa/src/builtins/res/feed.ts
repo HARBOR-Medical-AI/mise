@@ -36,6 +36,7 @@ import { exitCode_set } from '../../core/handlerRun.js';
 import { command_declare, type CommandArguments, type CommandGrammar, type SubcommandArguments } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
 import { RESOURCE_LIST_OPTIONS_GRAMMAR, resourceListBag_build } from './resourceList.js';
+import { RESOURCE_ID_OPERANDS, resourceRecord_render, type ResourceRecordSource } from './resourceRecord.js';
 
 /**
  * Resolves an explicit feed specifier or, when omitted, the `feed_N` segment of
@@ -284,6 +285,15 @@ const FEED_LIST_OPTIONS = {
   user: { long: 'user', summary: "Only this user's feeds (an administrator)", value: { name: 'username', kind: 'word' } },
 } as const;
 
+/** How `feed inspect <id>` reads one feed. */
+const FEED_RECORD: ResourceRecordSource = {
+  command: 'feed',
+  noun: 'feed',
+  title: 'Feed',
+  fields_fetch: feedFields_fetch,
+  rows_fetch: async (options: CLIoptions): Promise<readonly object[]> => (await feeds_fetchList(options)).feeds,
+};
+
 /** What a `feed` line may hold. */
 const FEED_GRAMMAR = {
   bare: { summary: 'List the feeds, as list does', options: FEED_LIST_OPTIONS },
@@ -294,7 +304,7 @@ const FEED_GRAMMAR = {
       operands: [{ name: 'term', kind: 'word', summary: 'The filter, field:value, or part of a name' }],
       options: FEED_LIST_OPTIONS,
     },
-    inspect: { summary: 'Name the fields a feed has' },
+    inspect: { summary: 'One feed, every field with its value; with no id, the fields a feed has', operands: RESOURCE_ID_OPERANDS },
     create: {
       summary: 'Create a feed from data folders in ChRIS',
       operands: [{ name: 'paths', kind: 'cfsPath', optional: true, repeat: true, summary: 'The data folders the feed starts from' }],
@@ -351,7 +361,7 @@ async function feed_run(args: CommandArguments<typeof FEED_GRAMMAR>): Promise<Co
       case null:
       case 'list': return await feedList_handle(resourceListBag_build(args.options, undefined, args.options.user !== undefined ? { user: args.options.user } : {}));
       case 'search': return await feedList_handle(resourceListBag_build(args.options, args.operands.term, args.options.user !== undefined ? { user: args.options.user } : {}));
-      case 'inspect': return await feedInspect_handle();
+      case 'inspect': return args.operands.id === undefined ? await feedInspect_handle() : await resourceRecord_render(FEED_RECORD, args.operands.id);
       case 'create': {
         const dirs: string = [...args.operands.paths, ...(args.options.dirs !== undefined ? [args.options.dirs] : [])].join(',');
         const options: CLIoptions = { ...(dirs !== '' ? { dirs } : {}), ...(args.options.params !== undefined ? { params: args.options.params } : {}) };
@@ -377,7 +387,7 @@ async function feed_run(args: CommandArguments<typeof FEED_GRAMMAR>): Promise<Co
 }
 
 /**
- * `feed [[listing options] | list | search | inspect | create | note | comments | comment | rm | tree | diagram] …`: the declaration.
+ * `feed [[listing options] | list | search | inspect [id] | create | note | comments | comment | rm | tree | diagram] …`: the declaration.
  *
  * @example
  * ```ts
@@ -390,12 +400,13 @@ export const feedCommand = command_declare({
   grammar: FEED_GRAMMAR,
   help: {
     summary: "CUBE's feeds: list and search them; create one, note and comment on it, draw its DAG, remove it",
-    description: "A feed is a data analysis in ChRIS: a DAG of linked plugin instances, also a folder at /home/<user>/feeds/feed_N. List the feeds a page at a time or every page, filtered by a search and in the columns asked for; inspect names a feed's fields. create starts a feed from data folders; note and comment read and write the words on one; tree and diagram draw its DAG; rm removes it and everything in it, asking first. A feed is named by its id, its feed_N, an exact title or a unique search; inside a feed_N path, leave it out to mean that feed. Sharing a feed is setfacl's and chmod's. feed and feeds are one command.",
+    description: "A feed is a data analysis in ChRIS: a DAG of linked plugin instances, also a folder at /home/<user>/feeds/feed_N. List the feeds a page at a time or every page, filtered by a search and in the columns asked for; inspect <id> shows the fields and values of one feed, and inspect alone names the fields a feed has. create starts a feed from data folders; note and comment read and write the words on one; tree and diagram draw its DAG; rm removes it and everything in it, asking first. A feed is named by its id, its feed_N, an exact title or a unique search; inside a feed_N path, leave it out to mean that feed. Sharing a feed is setfacl's and chmod's. feed and feeds are one command.",
     category: 'Resources',
     examples: [
       'feeds list',
       'feeds list --all --user radstar',
       'feeds search experiment',
+      'feed inspect 1669',
       'feed create /home/user/uploads/MRI-data',
       'feed tree 1669',
       'feed diagram                       # the feed you are in',

@@ -195,6 +195,29 @@ describe('builtin_feed', () => {
     expect(mockFeedDiagramHandle).toHaveBeenCalledWith(44, 'signalflow');
   });
 
+  it('inspects one feed by its id: every field with its value, read through the listing filtered by id', async () => {
+    mockFeedFields.mockResolvedValue(['id', 'name', 'owner_username']);
+    mockFeedsList.mockResolvedValue({ feeds: [{ id: 5975, name: 'decl-walk-close', owner_username: 'mise-e2e' }], selectedFields: ['id', 'name', 'owner_username'] });
+    const env = await builtin_feed(['inspect', '5975']);
+    expect(env.status).toBe('ok');
+    expect(mockFeedsList).toHaveBeenCalledWith({ search: 'id:5975', fields: 'id,name,owner_username' });
+    expect(mockTableRender).toHaveBeenLastCalledWith(
+      [{ field: 'id', value: '5975' }, { field: 'name', value: 'decl-walk-close' }, { field: 'owner_username', value: 'mise-e2e' }],
+      ['field', 'value'],
+      { title: { title: 'Feed 5975', justification: 'center' } },
+    );
+  });
+
+  it('says a feed id CUBE holds no feed of, and refuses an id that is not a number', async () => {
+    mockFeedFields.mockResolvedValue(['id']);
+    mockFeedsList.mockResolvedValue({ feeds: [], selectedFields: ['id'] });
+    const missing = await builtin_feed(['inspect', '9']);
+    expect(missing.renderedErr).toContain('feed inspect: no feed 9');
+    expect(process.exitCode).toBe(1);
+    const word = await builtin_feed(['inspect', 'feed_9']);
+    expect(word.status).toBe('error');
+  });
+
   it('reports empty inspect results', async () => {
     mockFeedFields.mockResolvedValue(null);
     const env = await builtin_feed(['inspect']);
