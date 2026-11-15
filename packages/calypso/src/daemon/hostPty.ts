@@ -80,6 +80,26 @@ export function hostPtyTerm_resolve(term: string): string {
   return /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(term) ? term : 'xterm-256color';
 }
 
+/** How long the shell holds the pty open after the command ends, in seconds, so its last output is read. */
+const HOST_PTY_LINGER_S: string = '0.2';
+
+/**
+ * The line the pty's shell runs: the command in a subshell, then a short
+ * linger before the shell exits with the command's status. node-pty can close
+ * the pty as the shell exits, before the last bytes the program wrote are read
+ * off it; the program's output is all written once its subshell ends, and the
+ * linger lets it be read before the pty goes. An `exit` in the command ends
+ * only its subshell, so the status still comes through.
+ *
+ * @param command - The command without its leading `!`.
+ * @returns The line for `sh -c`.
+ * @example
+ * hostPtyLine_wrap('nvim notes.txt'); // '( nvim notes.txt\n); s=$?; sleep 0.2; exit $s'
+ */
+export function hostPtyLine_wrap(command: string): string {
+  return `( ${command}\n); s=$?; sleep ${HOST_PTY_LINGER_S}; exit $s`;
+}
+
 /**
  * Starts a shell command on a pseudo-terminal of its own: `sh -c`, sized to
  * the surface's terminal, `TERM` from it.
@@ -95,7 +115,7 @@ export function hostPtyTerm_resolve(term: string): string {
  */
 export function hostPty_start(spawn: PtySpawn, command: string, options: HostPtyOptions): HostPtyRun {
   const term: string = hostPtyTerm_resolve(options.terminal.term);
-  const pty: PtyProcess = spawn('/bin/sh', ['-c', command], {
+  const pty: PtyProcess = spawn('/bin/sh', ['-c', hostPtyLine_wrap(command)], {
     name: term,
     cols: size_clamp(options.terminal.cols),
     rows: size_clamp(options.terminal.rows),

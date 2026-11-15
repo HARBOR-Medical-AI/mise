@@ -11,7 +11,7 @@ import { describe, it, expect, afterEach } from '@jest/globals';
 import { WebSocket } from 'ws';
 import { CalypsoDaemon } from '../src/daemon/server';
 import type { HostedEngine } from '../src/daemon/engine';
-import { hostPty_start, hostPtyTerm_resolve } from '../src/daemon/hostPty';
+import { hostPty_start, hostPtyLine_wrap, hostPtyTerm_resolve } from '../src/daemon/hostPty';
 import { ptySpawn_load, type PtyProcess, type PtySpawn } from '../src/daemon/terminals';
 import { CONTRACT_VERSION } from '@fnndsc/menu';
 import type { CommandEnvelope } from '@fnndsc/cumin';
@@ -64,7 +64,7 @@ describe('hostPty_start', () => {
     const run = hostPty_start(spawn, 'nvim notes.txt', { terminal: { term: 'screen-256color', cols: 5000, rows: 30 }, cwd: '/work', env: { HOME: '/home/me', TERM: 'dumb' }, data: (chunk) => out.push(chunk) });
     const pty = ptys[0] as FakePty;
     expect(pty.file).toBe('/bin/sh');
-    expect(pty.args).toEqual(['-c', 'nvim notes.txt']);
+    expect(pty.args).toEqual(['-c', hostPtyLine_wrap('nvim notes.txt')]);
     expect([pty.options.name, pty.options.cols, pty.options.rows, pty.options.cwd]).toEqual(['screen-256color', 1000, 30, '/work']);
     expect(pty.options.env).toEqual({ HOME: '/home/me', TERM: 'screen-256color' });
     run.write(':q\r');
@@ -125,6 +125,12 @@ describe('hostPty_start', () => {
     expect((ptys[0] as FakePty).signals).toEqual(['SIGHUP']);
     (ptys[0] as FakePty).end(0, 1);
     expect(await run.done).toBe(130);
+  });
+
+  it('runs the command in a subshell and lingers, so an exit inside it keeps its status and its last output is read', () => {
+    expect(hostPtyLine_wrap('echo hi; exit 4')).toBe('( echo hi; exit 4\n); s=$?; sleep 0.2; exit $s');
+    // A trailing comment cannot swallow the closing parenthesis.
+    expect(hostPtyLine_wrap('ls # all')).toBe('( ls # all\n); s=$?; sleep 0.2; exit $s');
   });
 
   it('keeps a plain terminal type and replaces anything else', () => {
