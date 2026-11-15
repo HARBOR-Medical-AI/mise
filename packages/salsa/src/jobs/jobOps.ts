@@ -173,6 +173,47 @@ export async function job_statusFetch(instanceID: number): Promise<Result<string
 }
 
 /**
+ * Fetches the folder a plugin instance writes its output to, as CUBE records it.
+ *
+ * Where a job's output lands is CUBE's answer (`output_path`), not a client's
+ * guess: the store keeps it under its owner's home
+ * (`home/<user>/feeds/feed_N/…`), a layout a client that builds the path from
+ * ids gets wrong. The path is answered absolute, as every other store path
+ * in a session is.
+ *
+ * @param instanceID - The plugin instance ID.
+ * @returns Ok(absolute output folder), or Err when CUBE records none or the fetch fails.
+ *
+ * @example
+ * ```typescript
+ * const result = await job_outputPathFetch(864596);
+ * if (result.ok) console.log(result.value);
+ * // '/home/alice/feeds/feed_5982/pl-dircopy_864595/pl-pfdorun_864596/data'
+ * ```
+ */
+export async function job_outputPathFetch(instanceID: number): Promise<Result<string>> {
+  try {
+    const client = await chrisConnection.client_get();
+    if (!client) {
+      errorStack.stack_push('error', 'Not connected to ChRIS.');
+      return Err();
+    }
+
+    const handle: PluginInstanceHandle | null = await pluginInstance_get(client, instanceID);
+    const recorded: string = handle?.data?.output_path?.trim() ?? '';
+    if (recorded === '') {
+      errorStack.stack_push('error', `CUBE records no output folder for plugin instance ${instanceID}.`);
+      return Err();
+    }
+    return Ok(recorded.startsWith('/') ? recorded : `/${recorded}`);
+  } catch (error: unknown) {
+    const msg: string = error instanceof Error ? error.message : String(error);
+    errorStack.stack_push('error', `Failed to fetch the output folder of instance ${instanceID}: ${msg}`);
+    return Err();
+  }
+}
+
+/**
  * Fetches current status for a batch of plugin instances in parallel.
  * Used by ls -l /proc/jobs/feed_N to get all node statuses in one round-trip.
  *

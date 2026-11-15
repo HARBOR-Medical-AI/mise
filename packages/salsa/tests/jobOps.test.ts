@@ -15,6 +15,7 @@ import {
   job_cancel,
   job_delete,
   job_statusFetch,
+  job_outputPathFetch,
   jobs_statusBatch,
   jobs_find,
   job_feedID_get,
@@ -149,6 +150,44 @@ describe('job_statusFetch', () => {
   it('errors when not connected', async () => {
     clientGet.mockResolvedValue(null);
     expect((await job_statusFetch(1)).ok).toBe(false);
+  });
+});
+
+describe('job_outputPathFetch', () => {
+  it('answers the output folder CUBE records, absolute', async () => {
+    clientGet.mockResolvedValue(client({ getPluginInstance: jest.fn().mockResolvedValue(
+      instance('finishedSuccessfully', { data: { output_path: 'home/me/feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data' } }),
+    ) }));
+    const r = await job_outputPathFetch(42);
+    expect(r.ok && r.value).toBe('/home/me/feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data');
+  });
+
+  it('keeps a path CUBE already gave absolute', async () => {
+    clientGet.mockResolvedValue(client({ getPluginInstance: jest.fn().mockResolvedValue(
+      instance(undefined, { data: { output_path: '/home/me/feeds/feed_9/x_42/data' } }),
+    ) }));
+    const r = await job_outputPathFetch(42);
+    expect(r.ok && r.value).toBe('/home/me/feeds/feed_9/x_42/data');
+  });
+
+  it('errors when CUBE records no output folder', async () => {
+    clientGet.mockResolvedValue(client({ getPluginInstance: jest.fn().mockResolvedValue(instance('scheduled')) }));
+    expect((await job_outputPathFetch(42)).ok).toBe(false);
+  });
+
+  it('errors when the instance is missing', async () => {
+    clientGet.mockResolvedValue(client({ getPluginInstance: jest.fn().mockResolvedValue(null) }));
+    expect((await job_outputPathFetch(42)).ok).toBe(false);
+  });
+
+  it('errors when the API throws', async () => {
+    clientGet.mockResolvedValue(client({ getPluginInstance: jest.fn().mockRejectedValue(new Error('x')) }));
+    expect((await job_outputPathFetch(42)).ok).toBe(false);
+  });
+
+  it('errors when not connected', async () => {
+    clientGet.mockResolvedValue(null);
+    expect((await job_outputPathFetch(42)).ok).toBe(false);
   });
 });
 

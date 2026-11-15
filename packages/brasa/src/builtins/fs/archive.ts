@@ -23,6 +23,7 @@ import {
   feed_create,
   files_listRecursive,
   job_statusFetch,
+  job_outputPathFetch,
   feed_delete,
   pipeline_readiness,
   pipeline_run,
@@ -167,7 +168,7 @@ export async function directory_archive(directory: string): Promise<ArchiveResul
     return null;
   }
 
-  return archiveOutput_find(feed.id, dircopyId, archiveInstanceId, name);
+  return archiveOutput_find(archiveInstanceId, name);
 }
 
 /**
@@ -190,27 +191,26 @@ async function feed_discard(feedId: number, name: string): Promise<void> {
 /**
  * Locates the file an archive run produced.
  *
- * The output directory is listed rather than its path reconstructed: the
- * archive's name is the pipeline's business, and a client that guesses it
- * breaks the day the pipeline changes.
+ * The output folder is CUBE's answer (the archive job's `output_path`), not a
+ * path built from the feed's and the job's ids: the store keeps a feed under
+ * its owner's home (`home/<user>/feeds/feed_N/…`), so a built `feeds/feed_N/…`
+ * names nothing. The folder is then listed rather than the archive's name
+ * reconstructed: that name is the pipeline's business, and a client that
+ * guesses it breaks the day the pipeline changes.
  *
- * @param feedId - The feed the run created.
- * @param dircopyId - The `pl-dircopy` instance that rooted it.
  * @param archiveInstanceId - The instance that produced the archive.
  * @param name - The directory's name, for the error message.
- * @returns The archive, or null when the output directory held no file.
+ * @returns The archive, or null when CUBE names no output folder or it held no file.
  */
-async function archiveOutput_find(
-  feedId: number,
-  dircopyId: number,
-  archiveInstanceId: number,
-  name: string,
-): Promise<ArchiveResult | null> {
-  const outputRoot: string = `feeds/feed_${feedId}/pl-dircopy_${dircopyId}`;
-  // store-path: the output of the run CUBE made, named by its feed's and its job's ids.
-  const items: FsItem[] = await files_listRecursive(outputRoot);
-  const produced: FsItem[] = items.filter((item: FsItem): boolean =>
-    item.path.includes(`_${archiveInstanceId}/data/`) && item.type !== 'dir');
+async function archiveOutput_find(archiveInstanceId: number, name: string): Promise<ArchiveResult | null> {
+  const outputRoot: Result<string> = await job_outputPathFetch(archiveInstanceId);
+  if (!outputRoot.ok) {
+    errorStack.stack_push('error', `The archive of ${name} has no output folder CUBE can name.`);
+    return null;
+  }
+  // store-path: the archive job's output folder, as CUBE records it (its output_path).
+  const items: FsItem[] = await files_listRecursive(outputRoot.value);
+  const produced: FsItem[] = items.filter((item: FsItem): boolean => item.type !== 'dir');
 
   if (produced.length === 0) {
     errorStack.stack_push('error', `The archive of ${name} produced no file.`);
@@ -218,9 +218,12 @@ async function archiveOutput_find(
   }
 
   const archive: FsItem = produced[0];
-  const filename: string = archive.path.split('/').filter(Boolean).pop() ?? `${name}.zip`;
+  // A listing names a file from the store's root without the leading slash,
+  // and a session reads a path without one from where it stands.
+  const archivePath: string = archive.path.startsWith('/') ? archive.path : `/${archive.path}`;
+  const filename: string = archivePath.split('/').filter(Boolean).pop() ?? `${name}.zip`;
   return {
-    path: archive.path,
+    path: archivePath,
     filename,
     ...(typeof archive.size === 'number' ? { size: archive.size } : {}),
   };
