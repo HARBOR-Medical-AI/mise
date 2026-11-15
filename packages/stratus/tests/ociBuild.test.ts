@@ -329,7 +329,7 @@ describe('cluster teardown', () => {
     expect(plain((await cluster_run(context, ['protect', 'trial'])).rendered)).toBe('trial: protected (teardown refused) (this host only, set now UTC)\n');
     expect(plain((await cluster_run(context, ['protect', 'trial', 'off'])).rendered)).toBe('trial: no longer protected; cluster teardown trial will ask for its name\nkept in the tenancy: every session reads this lock\n');
     expect(store.record_read('trial')?.protected).toBe(false);
-    expect((await cluster_run(context, ['protect', 'trial', 'maybe'])).renderedErr).toBe('cluster protect: usage: cluster protect <name> [on|off]\n');
+    expect((await cluster_run(context, ['protect', 'trial', 'maybe'])).renderedErr).toBe("cluster: protect: invalid argument 'maybe' for <setting> (valid: on, off); usage: cluster protect <name> [setting]\n");
     expect((await cluster_run(context, ['protect', 'ghost', 'on'])).renderedErr).toBe('cluster protect: ghost: no such cluster kept here\n');
   });
 
@@ -356,7 +356,7 @@ describe('cluster teardown', () => {
     expect(store.record_read('harbor')?.gone).toBeDefined();
     surface.answer = 'trial';
     expect((await cluster_run(context, ['teardown', 'nope'])).renderedErr).toBe('cluster teardown: nope: no such cluster\n');
-    expect((await cluster_run(context, ['teardown'])).renderedErr).toBe('cluster teardown: usage: cluster teardown <name>\n');
+    expect((await cluster_run(context, ['teardown'])).renderedErr).toBe('cluster: teardown: missing operand <name>; usage: cluster teardown <name>\n');
     const blind: ClusterCommandContext = { ...context, build: { ...context.build!, verifyReach: { ...context.build!.verifyReach!, kube_make: (): KubeApi => ({ ...new FakeKube({ nodes: [] }), json_get: async () => { throw new Error('unreachable'); } }) as KubeApi } } };
     expect((await cluster_run(blind, ['teardown', 'trial'])).renderedErr).toBe("cluster teardown: trial: cannot read the cluster's volumes (unreachable): refusing, they would be left billing\n");
     // The refusal is kept on the record, so a screen coming back says it, until a teardown starts.

@@ -64,13 +64,12 @@ function check_line(check: VerifyCheck): string {
  *
  * @param context - The session.
  * @param reach - How the checks reach the cluster.
- * @param args - The words after `verify`.
+ * @param named - The cluster, or none for the only one kept here.
  * @returns The envelope: failed when a check failed.
  */
-export async function clusterVerify_run(context: BuildCommandContext, reach: VerifyReach, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  if (args.length > 1 || args.some((word: string): boolean => word.startsWith('-'))) return envelope_error('', undefined, 'cluster verify: usage: cluster verify [<name>]\n');
+export async function clusterVerify_run(context: BuildCommandContext, reach: VerifyReach, named: string | undefined): Promise<CommandEnvelope> {
   const kept: string[] = context.store.names_list();
-  const name: string | undefined = args[0] ?? (kept.length === 1 ? kept[0] : undefined);
+  const name: string | undefined = named ?? (kept.length === 1 ? kept[0] : undefined);
   if (name === undefined) return envelope_error('', undefined, `cluster verify: which cluster? (${kept.join(', ') || 'none kept here'})\n`);
   const cluster: HarborCluster | null = context.clusters.cluster_read(name);
   if (cluster === null) return envelope_error('', undefined, `cluster verify: ${name}: no such cluster\n`);

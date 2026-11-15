@@ -9,7 +9,7 @@ import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { ociServicePrices_read, servicePrices_map, SERVICE_PARTS } from '../src/cloud/oci/prices.js';
 import { balancer_hourly, HOURS_PER_MONTH, instance_hourly, money_words, spend_line, spend_read, volume_hourly } from '../src/cluster/spend.js';
 import { ClusterTree } from '../src/vfs/clusters.js';
-import { spend_run, SPEND_HELP } from '../src/commands/spend.js';
+import { spend_run, spendCommand_make } from '../src/commands/spend.js';
 import type { ClusterCommandContext } from '../src/commands/cluster.js';
 import { harborCheckout_make } from './support/harborCheckout.js';
 
@@ -82,13 +82,14 @@ describe('spend', () => {
     expect(text).toContain('load balancers  apps');
     expect(text).toMatch(/an hour · \$[\d.]+ so far, at list price/);
     expect(text).toContain('List prices: an estimate, not the bill.');
-    expect(SPEND_HELP.category).toBe('Resources');
+    expect(spendCommand_make(context_of([])).help.category).toBe('Resources');
+    expect(spendCommand_make(context_of([])).holds).toEqual([]);
   });
 
   it('refuses an unknown cluster or option, and says when there is nothing to price', async () => {
     const context = context_of([{ name: 'harbor', root: harborCheckout_make() }]);
     expect((await spend_run(context, ['nope'])).renderedErr).toBe('spend: nope: no such cluster\n');
-    expect((await spend_run(context, ['-x'])).renderedErr).toBe('spend: -x: unknown option\n');
+    expect((await spend_run(context, ['-x'])).renderedErr).toBe("spend: invalid option -- 'x'; usage: spend [clusters…]\n");
     expect((await spend_run(context_of([]), [])).rendered).toBe('no clusters\n');
   });
 });

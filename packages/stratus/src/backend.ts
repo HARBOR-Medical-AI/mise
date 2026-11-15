@@ -44,6 +44,8 @@ import { publicAddresses_resolve, publicNameservers_get, urlStatus_get } from '.
 import { goDaddy_make } from './chris/registrar.js';
 import type { ChrisCommandContext } from './commands/chris.js';
 import { clientCidr_read } from './net/address.js';
+import { stratusKinds_make } from './commands/declared.js';
+import { CHRIS_PROFILES } from './chris/profiles.js';
 
 /** How the backend is made. */
 export interface StratusBackendOptions {
@@ -157,6 +159,13 @@ export function stratusBackend_make(options: StratusBackendOptions): StratusBack
   const backend: Backend = {
     id: 'stratus',
     session,
+    // What stratus's commands name beside the core's kinds: each completes from what the session keeps.
+    argumentKinds: stratusKinds_make({
+      clusters: (): string[] => clusters.clusters_read().map((cluster): string => cluster.name),
+      vms: (): string[] => vms.names_list(),
+      nets: (): string[] => nets.names_list(),
+      profiles: (): string[] => Object.keys(CHRIS_PROFILES),
+    }),
     vfs: {
       dispatcher,
       // The tenancy and its fixed folders are entered without asking once

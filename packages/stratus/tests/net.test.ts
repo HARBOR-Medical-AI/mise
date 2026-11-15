@@ -301,6 +301,7 @@ describe('net, over the fake cloud', () => {
   });
 
   it('refuses a verb it does not have, by name', async () => {
-    expect((await net_run(context, ['delete', 'x'])).renderedErr).toBe('net: delete: not a verb (net status, new, plan, build, teardown)\n');
+    expect((await net_run(context, ['delete'])).renderedErr).toBe('net: delete: not a verb (net status, new, plan, build, teardown)\n');
+    expect((await net_run(context, ['delete', 'x'])).renderedErr).toContain("net: unexpected operand 'x'; usage: net [");
   });
 });

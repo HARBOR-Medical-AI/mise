@@ -121,7 +121,7 @@ describe('chris plugin sync, by the chell porter runs beside CUBE', () => {
     expect((await chris_run(context, ['plugin', 'sync'])).renderedErr).toBe("chris plugin sync: store: no porter runs there, and plugin sync runs in porter's chell (chris deploy store --host <name> --porter <name>)\n");
     expect((await chris_run(context, ['plugin', 'sync', "x';rm"])).renderedErr).toContain('an index is owner/repo[@ref], cube:<path> or host:<path>');
     expect((await chris_run(context, ['plugin', 'sync', '--ref', 'a b'])).renderedErr).toContain('--ref a b: a branch, a tag or a commit');
-    expect((await chris_run(context, ['plugin', 'list'])).renderedErr).toContain('chris plugin: list: not a verb');
+    expect((await chris_run(context, ['plugin', 'list'])).renderedErr).toContain("chris: plugin: invalid argument 'list' for <action> (valid: sync)");
     expect(vm.syncs).toEqual([]);
   });
 

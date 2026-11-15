@@ -18,7 +18,7 @@ import type { CloudPrice, CloudShape, CloudZone, ServicePrices } from '../cloud/
 import { capacityRows_read } from './capacity.js';
 import { familyShape_find } from '../cluster/sizing.js';
 import { SPEC_DEFAULT } from '../cluster/spec.js';
-import { baseDomain_default, dnsZones_read, options_read, spec_line, type BuildCommandContext } from './build.js';
+import { baseDomain_default, dnsZones_read, spec_line, type BuildCommandContext } from './build.js';
 
 /**
  * What a limit leaves free in a zone, by a word in its name (`core`, `memory`).
@@ -36,16 +36,13 @@ function free_find(rows: ReadonlyArray<CapacityRow>, zone: string, word: string)
  * `cluster size [--family <family>]`.
  *
  * @param context - The session.
- * @param args - The words after `size`.
+ * @param named - The shape family, if given.
  * @returns The envelope.
  */
-export async function clusterSize_run(context: BuildCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const read = options_read(args, ['--family']);
-  if ('error' in read) return envelope_error('', undefined, `cluster size: ${read.error} (--family)\n`);
-  if (read.rest.length > 0) return envelope_error('', undefined, 'cluster size: usage: cluster size [--family <family>]\n');
+export async function clusterSize_run(context: BuildCommandContext, named: string | undefined): Promise<CommandEnvelope> {
   const region: string | null = context.region();
   if (region === null) return envelope_error('', undefined, 'cluster size: not connected\n');
-  const family: string = read.options.get('--family') ?? SPEC_DEFAULT.family;
+  const family: string = named ?? SPEC_DEFAULT.family;
   const shapes: CloudShape[] = await context.driver.shapes_list(region);
   const shape: CloudShape | undefined = familyShape_find(shapes, family);
   if (shape === undefined) return envelope_error('', undefined, `cluster size: ${family}: no such family in ${region} (${[...new Set(shapes.map((each: CloudShape): string => each.family))].sort().join(', ')})\n`);

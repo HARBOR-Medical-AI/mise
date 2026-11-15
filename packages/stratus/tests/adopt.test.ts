@@ -236,7 +236,7 @@ describe('adopting a cluster', () => {
     expect((await cluster_run(context, ['adopt'])).renderedErr).toContain('usage: cluster adopt');
     expect((await cluster_run(context, ['adopt', 'Harbor', '--from', checkout])).renderedErr).toContain('DNS label');
     expect((await cluster_run(context, ['adopt', 'harbor', '--from', root])).renderedErr).toContain('not a harbor-oci checkout');
-    expect((await cluster_run(context, ['adopt', 'harbor', '--colour', 'x'])).renderedErr).toContain('--colour: unknown option');
+    expect((await cluster_run(context, ['adopt', 'harbor', '--colour', 'x'])).renderedErr).toContain("cluster: adopt: unrecognized option '--colour'");
     store.create({ name: 'mine', created: 'now', region: 'r', baseDomain: 'b', steps: {}, ids: {} }, SPEC_DEFAULT);
     expect((await cluster_run(context, ['adopt', 'mine', '--from', checkout])).renderedErr).toBe('cluster adopt: mine: a cluster of that name was built here\n');
     surface_set(surface_with(true));

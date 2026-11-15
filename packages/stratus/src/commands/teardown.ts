@@ -25,12 +25,10 @@ import { TIER_REFUSAL } from '../tier.js';
  * `cluster teardown <name>`.
  *
  * @param context - The session.
- * @param args - The words after `teardown`.
+ * @param name - The cluster.
  * @returns The envelope.
  */
-export async function clusterTeardown_run(context: BuildCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  if (args.length !== 1 || (args[0] as string).startsWith('-')) return envelope_error('', undefined, 'cluster teardown: usage: cluster teardown <name>\n');
-  const name: string = args[0] as string;
+export async function clusterTeardown_run(context: BuildCommandContext, name: string): Promise<CommandEnvelope> {
   let cluster: HarborCluster | null = context.clusters.cluster_read(name);
   let record: ClusterRecord | null = context.store.record_read(name);
   const builder = context.builder;

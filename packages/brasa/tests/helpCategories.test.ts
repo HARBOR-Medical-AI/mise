@@ -13,9 +13,9 @@
  */
 import { beforeAll, describe, it, expect } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 const dist: string = join(process.cwd(), 'dist');
 const built: boolean = existsSync(join(dist, 'core', 'dispatch.js'));
@@ -57,6 +57,44 @@ const reading = {
 };
 process.stdout.write(JSON.stringify(reading), () => process.exit(0));
 `;
+
+/**
+ * Every TypeScript source under a folder, builds left out.
+ *
+ * @param folder - The folder.
+ * @returns The files.
+ */
+function sources_list(folder: string): string[] {
+  return readdirSync(folder, { withFileTypes: true }).flatMap((entry): string[] => {
+    if (entry.name === 'node_modules' || entry.name === 'dist') return [];
+    const path: string = join(folder, entry.name);
+    return entry.isDirectory() ? sources_list(path) : path.endsWith('.ts') ? [path] : [];
+  });
+}
+
+/** The packages that register commands, and the suite that holds each one's registry to its declarations. */
+const REGISTRY_SUITES: Readonly<Record<string, string>> = {
+  'packages/brasa': 'packages/brasa/tests/helpCategories.test.ts',
+  'packages/stratus': 'packages/stratus/tests/declarations.test.ts',
+};
+
+describe('every module that registers commands', () => {
+  it('is in a package whose suite holds every name it registers to a declaration', () => {
+    const repo: string = join(process.cwd(), '..', '..');
+    const roots: string[] = ['packages', 'apps'].flatMap((parent: string): string[] => {
+      const at: string = join(repo, parent);
+      return existsSync(at) ? readdirSync(at).map((name: string): string => join(at, name, 'src')).filter((src: string): boolean => existsSync(src)) : [];
+    });
+    const registering: Set<string> = new Set();
+    for (const path of roots.flatMap(sources_list)) {
+      // Comments name commands_register in examples; only code counts.
+      const code: string = readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+      if (/commands_register\(/.test(code)) registering.add(relative(repo, path).split('/').slice(0, 2).join('/'));
+    }
+    expect([...registering].sort()).toEqual(Object.keys(REGISTRY_SUITES).sort());
+    for (const suite of Object.values(REGISTRY_SUITES)) expect(existsSync(join(repo, suite))).toBe(true);
+  });
+});
 
 (built ? describe : describe.skip)('every command, declared and in help [built dist]', () => {
   let reading: RegistryReading;

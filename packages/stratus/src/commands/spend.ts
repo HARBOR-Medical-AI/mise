@@ -7,19 +7,42 @@
  */
 import chalk from 'chalk';
 import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
-import type { CommandHelp } from '@fnndsc/brasa/core';
+import { command_declare, declaredCommand_run, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
 import type { HarborCluster } from '../checkout/harborOci.js';
 import { money_words, spend_line, spend_read, type Spend, type SpendItem } from '../cluster/spend.js';
 import type { ClusterCommandContext } from './cluster.js';
 
-/** `spend`'s help. */
-export const SPEND_HELP: CommandHelp = {
-  usage: 'spend [<name>…]',
-  summary: 'What each cluster costs, an hour and so far',
-  category: 'Resources',
-  description: 'Prices every live resource in each cluster\'s compartment at list price: machines by vCPU and memory while they run, volumes by size and performance, load balancers by the hour and their minimum bandwidth. Prints each with its rate an hour and what it has come to since it was made, then the cluster\'s total. An estimate, not the bill: discounts, free tiers and traffic are not in it. Bare, every cluster.',
-  examples: ['spend', 'spend harbor'],
-};
+/** What a `spend` line may hold. */
+const SPEND_GRAMMAR = {
+  operands: [{ name: 'clusters', kind: 'cluster', optional: true, repeat: true, summary: 'The clusters; none, every one' }],
+} as const satisfies CommandGrammar;
+
+/**
+ * `spend [<name>…]`: the declaration. It reads the cloud and changes nothing
+ * of the session, so it holds nothing and runs beside any line.
+ *
+ * @param context - The session.
+ * @returns The declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [spendCommand_make(context)] }, 'backend');
+ * ```
+ */
+export function spendCommand_make(context: ClusterCommandContext): CommandDeclaration<typeof SPEND_GRAMMAR> {
+  return command_declare({
+    name: 'spend',
+    grammar: SPEND_GRAMMAR,
+    help: {
+      summary: 'What each cluster costs, an hour and so far',
+      category: 'Resources',
+      description: 'Prices every live resource in each cluster\'s compartment at list price: machines by vCPU and memory while they run, volumes by size and performance, load balancers by the hour and their minimum bandwidth. Prints each with its rate an hour and what it has come to since it was made, then the cluster\'s total. An estimate, not the bill: discounts, free tiers and traffic are not in it. Bare, every cluster.',
+      examples: ['spend', 'spend harbor'],
+    },
+    holds: [],
+    handler: (args): Promise<CommandEnvelope> => spend_answer(context, args.operands.clusters),
+  });
+}
 
 /**
  * One cluster's spend as lines.
@@ -39,15 +62,29 @@ export function spend_lines(name: string, spend: Spend): string[] {
 }
 
 /**
- * Runs `spend`.
+ * `spend` over words already split: the declaration's parse and handler.
+ *
+ * @param context - The session.
+ * @param args - The clusters' names.
+ * @returns The envelope, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await spend_run(context, ['harbor']);
+ * ```
+ */
+export async function spend_run(context: ClusterCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  return declaredCommand_run(spendCommand_make(context), [...args]);
+}
+
+/**
+ * Answers `spend`.
  *
  * @param context - The session.
  * @param args - The clusters' names.
  * @returns The envelope.
  */
-export async function spend_run(context: ClusterCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const flag: string | undefined = args.find((word: string): boolean => word.startsWith('-'));
-  if (flag !== undefined) return envelope_error('', undefined, `spend: ${flag}: unknown option\n`);
+async function spend_answer(context: ClusterCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
   const all: HarborCluster[] = context.clusters.clusters_read();
   const missing: string[] = args.filter((name: string): boolean => !all.some((cluster: HarborCluster): boolean => cluster.name === name));
   if (missing.length > 0) return envelope_error('', undefined, `spend: ${missing.join(', ')}: no such cluster\n`);

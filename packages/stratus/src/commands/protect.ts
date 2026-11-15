@@ -22,14 +22,11 @@ import { tasks_granted, type BuildCommandContext } from './build.js';
  * `cluster protect <name> [on|off]`.
  *
  * @param context - The session.
- * @param args - The words after `protect`.
+ * @param name - The cluster.
+ * @param setting - `on` or `off`; none, say where it stands.
  * @returns The envelope.
  */
-export async function clusterProtect_run(context: BuildCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const [name, setting, ...extra] = args;
-  if (name === undefined || extra.length > 0 || (setting !== undefined && setting !== 'on' && setting !== 'off')) {
-    return envelope_error('', undefined, 'cluster protect: usage: cluster protect <name> [on|off]\n');
-  }
+export async function clusterProtect_run(context: BuildCommandContext, name: string, setting: 'on' | 'off' | undefined): Promise<CommandEnvelope> {
   if (context.store.record_read(name) === null) return envelope_error('', undefined, `cluster protect: ${name}: no such cluster kept here\n`);
   if (setting === undefined) {
     const record: ClusterRecord = await clusterLock_refresh(context.builder, context.store, name);

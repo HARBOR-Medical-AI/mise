@@ -151,31 +151,28 @@ export function baseDomain_default(context: BuildCommandContext, zones: Readonly
  * `cluster new <name> [options]`.
  *
  * @param context - The session.
- * @param args - The words after `new`.
+ * @param name - The cluster.
+ * @param options - Its options given, by flag (`--family` → `E5`).
  * @returns The envelope.
  */
-export async function clusterNew_run(context: BuildCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const read = options_read(args, NEW_OPTIONS);
-  if ('error' in read) return envelope_error('', undefined, `cluster new: ${read.error} (${NEW_OPTIONS.join(', ')})\n`);
-  const [name, ...extra] = read.rest;
-  if (name === undefined || extra.length > 0) return envelope_error('', undefined, 'cluster new: usage: cluster new <name> [--family E5] [--plane 3x8/24] [--workers 2x8/32] [--data GiB] [--base-domain zone] [--compartment ocid]\n');
+export async function clusterNew_run(context: BuildCommandContext, name: string, options: ReadonlyMap<string, string>): Promise<CommandEnvelope> {
   if (!CLUSTER_NAME.test(name)) return envelope_error('', undefined, `cluster new: ${name}: a cluster's name is a DNS label: lower-case letters, digits and '-', starting with a letter, at most 54\n`);
   const kept: ClusterRecord | null = context.store.record_read(name);
-  if (kept !== null) return clusterNew_replay(context, kept, read.options);
+  if (kept !== null) return clusterNew_replay(context, kept, options);
   if (context.clusters.cluster_read(name) !== null) return envelope_error('', undefined, `cluster new: ${name}: File exists (read from a checkout; cluster adopt ${name} keeps it here)\n`);
   const region: string | null = context.region();
   if (region === null) return envelope_error('', undefined, 'cluster new: not connected\n');
   // The zone is found where it lives (D14): named, it must be one the tenancy holds; unnamed, the tenancy's only one.
   const zones: string[] = await dnsZones_read(context, region);
-  const named: string | undefined = read.options.get('--base-domain');
+  const named: string | undefined = options.get('--base-domain');
   if (named !== undefined && zones.length > 0 && !zones.includes(named)) return envelope_error('', undefined, `cluster new: --base-domain ${named}: no such zone in the tenancy (${zones.join(', ')})\n`);
   const baseDomain: string | null = named ?? baseDomain_default(context, zones);
   if (baseDomain === null) {
     const why: string = zones.length === 0 ? 'the tenancy holds no DNS zone to find' : `the tenancy holds ${zones.length}: ${zones.join(', ')}`;
     return envelope_error('', undefined, `cluster new: --base-domain <zone> is needed: the DNS zone the cluster's names live under (${why})\n`);
   }
-  const sized = specOptions_apply(SPEC_DEFAULT, sizingOptions_pick(read.options));
-  const compartmentId: string | undefined = read.options.get('--compartment');
+  const sized = specOptions_apply(SPEC_DEFAULT, sizingOptions_pick(options));
+  const compartmentId: string | undefined = options.get('--compartment');
   if ('error' in sized) return envelope_error('', undefined, `cluster new: ${sized.error}\n`);
   const record: ClusterRecord = { name, created: new Date().toISOString(), region, baseDomain, steps: {}, ids: {}, protected: true, ...(compartmentId !== undefined ? { compartmentId } : {}) };
   context.store.create(record, sized.spec);
@@ -268,12 +265,11 @@ export function tasks_granted(): boolean {
  * `cluster plan [<name>]`: the fit, the cost and the steps, read; the plan itself with the tier.
  *
  * @param context - The session.
- * @param args - The words after `plan`.
+ * @param named - The cluster, or none for the only one.
  * @returns The envelope.
  */
-export async function clusterPlan_run(context: BuildCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  if (args.length > 1 || args.some((word: string): boolean => word.startsWith('-'))) return envelope_error('', undefined, 'cluster plan: usage: cluster plan [<name>]\n');
-  const need = builtCluster_need(context, 'plan', args[0]);
+export async function clusterPlan_run(context: BuildCommandContext, named: string | undefined): Promise<CommandEnvelope> {
+  const need = builtCluster_need(context, 'plan', named);
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   const { cluster, record, spec } = need;
   const fits: ZoneFit[] = await specFit_read(context.driver, record.region, cluster.name, spec);
@@ -406,16 +402,13 @@ async function resume_question(context: BuildCommandContext, name: string, recor
  * `cluster build [<name>] [--through <step>]`.
  *
  * @param context - The session.
- * @param args - The words after `build`.
+ * @param named - The cluster, or none for the only one.
+ * @param through - The last step to run, if given.
  * @returns The envelope.
  */
-export async function clusterBuild_run(context: BuildCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const read = options_read(args, ['--through']);
-  if ('error' in read) return envelope_error('', undefined, `cluster build: ${read.error} (--through)\n`);
-  if (read.rest.length > 1) return envelope_error('', undefined, 'cluster build: usage: cluster build [<name>] [--through <step>]\n');
-  const through: string | undefined = read.options.get('--through');
+export async function clusterBuild_run(context: BuildCommandContext, named: string | undefined, through: string | undefined): Promise<CommandEnvelope> {
   if (through !== undefined && !BUILD_STEPS.includes(through)) return envelope_error('', undefined, `cluster build: --through ${through}: no such step (${BUILD_STEPS.join(' ')})\n`);
-  const need = builtCluster_need(context, 'build', read.rest[0]);
+  const need = builtCluster_need(context, 'build', named);
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   if (need.record.adopted !== undefined) return envelope_error('', undefined, `cluster build: ${need.cluster.name}: adopted from ${need.record.adopted.from}: building on it is refused until it is allowed by name\n`);
   if (context.deps === null) return envelope_error('', undefined, 'cluster build: this cloud\'s build steps are not written yet; stratus --fake builds over the fake cloud\n');
@@ -572,12 +565,7 @@ async function tenancyAdopt_run(context: BuildCommandContext, name: string): Pro
   return envelope_ok(`${lines.join('\n')}\n`);
 }
 
-export async function clusterAdopt_run(context: BuildCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const read = options_read(args, ['--from', '--stack-compartment']);
-  if ('error' in read) return envelope_error('', undefined, `cluster adopt: ${read.error} (--from, --stack-compartment)\n`);
-  const [name, ...extra] = read.rest;
-  const from: string | undefined = read.options.get('--from');
-  if (name === undefined || extra.length > 0) return envelope_error('', undefined, 'cluster adopt: usage: cluster adopt <name> [--from <harbor-oci checkout>] [--stack-compartment <ocid>]\n');
+export async function clusterAdopt_run(context: BuildCommandContext, name: string, from: string | undefined, stackCompartment: string | undefined): Promise<CommandEnvelope> {
   if (!CLUSTER_NAME.test(name)) return envelope_error('', undefined, `cluster adopt: ${name}: a cluster's name is a DNS label\n`);
   if (from === undefined) return tenancyAdopt_run(context, name);
   const checkout: CheckoutRead | { error: string } = checkout_read(name, from, new Date());
@@ -606,7 +594,7 @@ export async function clusterAdopt_run(context: BuildCommandContext, args: Reado
     return envelope_ok(`${lines.join('\n')}\n`);
   }
   if (context.builder === null || context.builder.stack_adopt === undefined) return envelope_error('', undefined, `cluster adopt: ${lines.join('\n')}\nthis cloud cannot take a stack in yet\n`);
-  const compartment: string = read.options.get('--stack-compartment') ?? checkout.record.compartmentId ?? '';
+  const compartment: string = stackCompartment ?? checkout.record.compartmentId ?? '';
   for (const line of lines) sink_dataLine(line);
   const ran = await job_runFollowed(`${name}-adopt`, `adopt ${name}`, adoptRun_make(context.store, context.builder, name, checkout.variables, checkout.stateFile, compartment, checkout.stackVersion));
   if ('error' in ran) return envelope_error('', undefined, `cluster adopt: ${ran.error}\n`);

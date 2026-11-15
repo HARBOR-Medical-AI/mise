@@ -72,7 +72,7 @@ describe('the library of scripts', () => {
     expect(plain((await scripts_run(context, ['remove', 'chrisproject'])).rendered)).toBe('chrisproject: forgotten; its clone removed\n');
     expect(existsSync(library.clone_derive('chrisproject'))).toBe(false);
     expect((await scripts_run(context, ['remove', 'chrisproject'])).renderedErr).toContain('not a source');
-    expect((await scripts_run(context, ['fetch'])).renderedErr).toContain('fetch: not a verb');
+    expect((await scripts_run(context, ['fetch'])).renderedErr).toContain("scripts: unknown subcommand 'fetch' (add, pull, remove)");
   });
 
   it('is mounted at /scripts: a source read-only without its .git, mine written to, and play reading through it', async () => {

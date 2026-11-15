@@ -356,7 +356,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect((await chris_run(context, ['user', 'add', 'jo', '--email', 'jo@example.org'])).renderedErr).toContain('jo: a user name is 4 to 32');
     expect((await chris_run(context, ['user', 'add', 'jorge', '--email', 'not-an-address'])).renderedErr).toContain('not an email address');
     expect((await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org', '--on', 'nowhere'])).renderedErr).toContain('--on nowhere: no such VM');
-    expect((await chris_run(context, ['user'])).renderedErr).toContain('chris user add <name> --email <address>');
+    expect((await chris_run(context, ['user'])).renderedErr).toContain('chris: user: missing operand <action>; usage: chris user');
     await vm_run(vmContext, ['new', 'blt', '--net', 'scratch', '--open', '80,443', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--os', 'ubuntu-26.04']);
     expect((await chris_run(context, ['user', 'add', 'jorge', '--email', 'jorge@example.org', '--on', 'blt'])).renderedErr).toContain('--on blt: no ChRIS deployed there');
     vms.record_update('blt', (record): void => { record.chris = { profile: 'complete', compute: 'blt', host: null, url: 'http://203.0.113.11/api/v1/', deployed: 'now' }; });

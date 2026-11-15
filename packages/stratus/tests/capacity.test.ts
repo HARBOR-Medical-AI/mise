@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
-import { capacity_run, capacityRows_read, specFamily_parse, CAPACITY_HELP } from '../src/commands/capacity.js';
+import { capacity_run, capacityCommand_make, capacityRows_read, specFamily_parse } from '../src/commands/capacity.js';
 import { ClusterTree } from '../src/vfs/clusters.js';
 import { harborCheckout_make } from './support/harborCheckout.js';
 import { AnswerCache } from '../src/cache.js';
@@ -71,6 +71,7 @@ describe('capacity', () => {
     expect(plain(every.rendered)).toContain('capacity in us-ashburn-1');
     expect((every.model?.data as { rows: Array<{ family: string }> }).rows.some((row) => row.family === 'E5')).toBe(true);
     expect((await capacity_run(context_make({}, null), ['E5'])).renderedErr).toBe('capacity: not connected\n');
-    expect(CAPACITY_HELP.category).toBe('Resources');
+    expect(capacityCommand_make(context_make({})).help.category).toBe('Resources');
+    expect(capacityCommand_make(context_make({})).holds).toEqual([]);
   });
 });
