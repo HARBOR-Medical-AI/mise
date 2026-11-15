@@ -94,11 +94,10 @@ async function run_read(target: string): Promise<ExpectReading> {
  */
 async function pathTags_read(ask: ExpectAsk): Promise<ExpectReading> {
   const tagName: string | undefined = ask.words[0];
-  const { path_physical, tagsModel_read } = await import('../builtins/res/dicom.js');
+  const { tagsModel_read } = await import('../builtins/res/dicom.js');
   const resolved: string = await path_resolve(ask.target ?? '');
   if (tagName === undefined) return { got: null, refusal: 'expect path <p> tags <TagName> <predicate> <value>' };
-  const physical: string = await path_physical(resolved);
-  let model: Result<DicomTagsModel> = await tagsModel_read(physical);
+  let model: Result<DicomTagsModel> = await tagsModel_read(resolved);
   if (!model.ok) {
     // A plugin's output is routinely nested, so a tag claim made at the
     // node's own folder looks BENEATH it before giving up: the files a run
@@ -108,7 +107,7 @@ async function pathTags_read(ask: ExpectAsk): Promise<ExpectReading> {
       .filter((entry): boolean => entry.item.type === 'dir')
       .map((entry): string => `${entry.folder.replace(/\/$/, '')}/${entry.item.name}`))];
     for (const folder of folders) {
-      const beneath: Result<DicomTagsModel> = await tagsModel_read(await path_physical(folder));
+      const beneath: Result<DicomTagsModel> = await tagsModel_read(folder);
       if (beneath.ok) { model = beneath; break; }
     }
   }

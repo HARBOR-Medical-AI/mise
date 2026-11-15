@@ -95,26 +95,30 @@ export function strings_find(bytes: Buffer, min: number = 4): string[] {
 /**
  * Reads a CFS file's bytes, or answers why not.
  *
+ * The bytes are read where the store keeps them (`storePath_resolve`),
+ * through a `/proc` job's `data` and any link.
+ *
  * @param pathArg - The path as typed.
  * @param name - The command, for the refusal.
- * @param resolve - Where the path is read: the session's path by default;
- *   `file` reads where the store keeps it, through any link.
- * @returns The path read and its bytes, or the refusal.
+ * @param shown - The path the answer names: the session's path by default;
+ *   `file` names where the store keeps it.
+ * @returns The path named and its bytes, or the refusal.
  */
 async function bytes_read(
   pathArg: string,
   name: string,
-  resolve: (path: string) => Promise<string> = path_resolve,
+  shown: (path: string) => Promise<string> = path_resolve,
 ): Promise<{ path: string; bytes: Buffer } | { error: CommandEnvelope }> {
-  const target: string = await resolve(pathArg);
+  const named: string = await shown(pathArg);
+  const target: string = await storePath_resolve(pathArg);
   const result: Result<Buffer> = await files_catBinary(target);
-  if (result.ok) return { path: target, bytes: result.value };
+  if (result.ok) return { path: named, bytes: result.value };
   // A projected file (/etc/cube, a /proc log) has words but no bytes of its
   // own: its text is read instead, and the refusal of the first read is
   // dropped — it was a question, not a failure.
   const first: StackMessage | undefined = errorStack.stack_pop();
   const text: Result<string> = await files_cat(target);
-  if (text.ok) return { path: target, bytes: Buffer.from(text.value, 'utf-8') };
+  if (text.ok) return { path: named, bytes: Buffer.from(text.value, 'utf-8') };
   const last: StackMessage | undefined = errorStack.stack_pop() ?? first;
   const why: string = last === undefined ? 'cannot read' : error_stripDebugPrefix(last.message);
   return { error: envelope_error('', undefined, `${name}: ${pathArg}: ${why}\n`) };

@@ -109,6 +109,9 @@ jest.unstable_mockModule('../src/builtins/utils.js', () => ({
   path_resolve: async (p: string): Promise<string> => (
     p.startsWith('/') || p.startsWith('~') ? p.replace(/^~/, '/home/chris') : `/home/chris/${p}`
   ),
+  storePath_resolve: async (p: string): Promise<string> => (
+    p.startsWith('/') || p.startsWith('~') ? p.replace(/^~/, '/home/chris') : `/home/chris/${p}`
+  ),
 }));
 
 const { builtin_gather } = await import('../src/builtins/res/gather.js');

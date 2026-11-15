@@ -112,6 +112,9 @@ jobs:
       # (lint:commands, above), and the commands parsing an expression
       # language of their own may only fall in number.
       - run: npm run lint:expressions
+      # One route from a typed path to the store: a call that reaches CUBE's
+      # files by path asks storePath_resolve, and no mount reads one itself.
+      - run: npm run lint:store-paths
       - run: npm run lint:prompt
       - run: npm run lint:wire
       - run: npm run lint:listings

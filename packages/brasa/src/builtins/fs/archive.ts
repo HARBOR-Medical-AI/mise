@@ -207,6 +207,7 @@ async function archiveOutput_find(
   name: string,
 ): Promise<ArchiveResult | null> {
   const outputRoot: string = `feeds/feed_${feedId}/pl-dircopy_${dircopyId}`;
+  // store-path: the output of the run CUBE made, named by its feed's and its job's ids.
   const items: FsItem[] = await files_listRecursive(outputRoot);
   const produced: FsItem[] = items.filter((item: FsItem): boolean =>
     item.path.includes(`_${archiveInstanceId}/data/`) && item.type !== 'dir');

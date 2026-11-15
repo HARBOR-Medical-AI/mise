@@ -25,7 +25,7 @@
 import { context_getSingle, dicomSeries_summarize, dicomSlice_gray, type DicomSeriesSummary, type DicomGrayOutcome } from '@fnndsc/salsa';
 import { IMAGE_MODEL_KINDS, type DicomSeriesModel, type ImageViewModel, type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import chalk from 'chalk';
-import { path_resolve } from '../utils.js';
+import { path_resolve, storePath_resolve } from '../utils.js';
 import { help_render } from '../help.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
@@ -132,8 +132,10 @@ async function image_run(target: string | undefined, force: boolean): Promise<Co
     );
   }
 
-  // A series: the folder the path names, or the folder a .dcm sits in.
-  const folder: string = DICOM_FILE_PATTERN.test(resolved) ? resolved.slice(0, resolved.lastIndexOf('/')) : resolved;
+  // A series: the folder the path names, or the folder a .dcm sits in,
+  // read where the store keeps it (through a `/proc` job's `data` and any link).
+  const named: string = DICOM_FILE_PATTERN.test(resolved) ? resolved.slice(0, resolved.lastIndexOf('/')) : resolved;
+  const folder: string = await storePath_resolve(named);
   const annotationRoot: string | undefined = await annotationRoot_get();
   const summary: Result<DicomSeriesSummary> = await dicomSeries_summarize(folder, annotationRoot !== undefined ? { annotationRoot } : {});
   if (stop_isAsked()) return stopped_answer();
@@ -146,7 +148,7 @@ async function image_run(target: string | undefined, force: boolean): Promise<Co
   // The reflection: the same facts `dcm series` shows, under an `image` line,
   // and a thumbnail of the middle slice so a text surface shows the image too.
   const thumbnail: string = await sliceThumbnail_render(series);
-  const reflection: string = `${chalk.cyan('image')} ${series.seriesDescription || folder}\n${series_render(series)}${thumbnail}`;
+  const reflection: string = `${chalk.cyan('image')} ${series.seriesDescription || named}\n${series_render(series)}${thumbnail}`;
   return envelope_ok(reflection, { kind: IMAGE_MODEL_KINDS.view, data: model });
 }
 

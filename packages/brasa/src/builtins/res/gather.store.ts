@@ -27,7 +27,7 @@ import type { ListCache, SeriesStorageFilter, SeriesStorageState } from '@fnndsc
 import { fileContent_get, files_path_isDirectory } from '@fnndsc/salsa';
 import { files_touch as chefs_touch_cmd } from '@fnndsc/chili/commands/fs/touch.js';
 import { files_mkdir as chefs_mkdir_cmd } from '@fnndsc/chili/commands/fs/mkdir.js';
-import { path_resolve } from '../utils.js';
+import { storePath_resolve } from '../utils.js';
 import { errorStack, type Result } from '@fnndsc/fond';
 import type { EnvelopeModel } from '@fnndsc/menu';
 import { GATHER_MODEL_KIND } from './gather.kind.js';
@@ -161,7 +161,7 @@ function member_normalize(raw: GatherMember): GatherMember {
  */
 export async function cohort_read(): Promise<GatherState> {
   try {
-    const resolved: string = await path_resolve(COHORT_FILE);
+    const resolved: string = await storePath_resolve(COHORT_FILE);
     const content: Result<string> = await fileContent_get(resolved);
     if (!content.ok) return cohortState_empty();
     const held: Partial<GatherState> = JSON.parse(content.value) as Partial<GatherState>;
@@ -207,8 +207,8 @@ export function cohortDirs_forget(): void {
  * @throws {Error} When CUBE would not take the write.
  */
 export async function cohort_write(state: GatherState): Promise<void> {
-  const directory: string = await path_resolve(COHORT_DIR);
-  const target: string = await path_resolve(COHORT_FILE);
+  const directory: string = await storePath_resolve(COHORT_DIR);
+  const target: string = await storePath_resolve(COHORT_FILE);
   const contents: string = JSON.stringify(state);
   if (!cohortDirsKnown.has(directory)) {
     await chefs_mkdir_cmd(directory);
@@ -231,13 +231,13 @@ export async function cohort_write(state: GatherState): Promise<void> {
  * only things in the tree that name one. Everything else is asked of the
  * filesystem, and what is not a directory is a file.
  *
- * @param address - A resolved VFS path.
+ * @param address - A resolved VFS path; a folder is asked where the store keeps it.
  * @returns The member kind to record, or null when nothing is at the path.
  */
 export async function pathKind_determine(address: string): Promise<GatherKind | null> {
   if (address.startsWith('/net/pacs/')) return 'series';
   try {
-    if (await files_path_isDirectory(address)) return 'dir';
+    if (await files_path_isDirectory(await storePath_resolve(address))) return 'dir';
     // Not a directory is not the same as a file: a path that names nothing
     // must not be gathered as one, or a typo becomes a member a run would
     // be handed and refused on. Its parent is asked whether it is there.

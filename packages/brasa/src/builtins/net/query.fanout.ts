@@ -139,9 +139,9 @@ export async function patients_read(value: string): Promise<Result<string[]>> {
   // Imported where they are used: a cohort file is a rare path, and
   // pulling the session and storage stacks into this module's graph would
   // load both for every query that never names one.
-  const { path_resolve } = await import('../utils.js');
+  const { storePath_resolve } = await import('../utils.js');
   const { fileContent_get } = await import('@fnndsc/salsa');
-  const resolved: string = await path_resolve(named);
+  const resolved: string = await storePath_resolve(named);
   const content: Result<string> = await fileContent_get(resolved);
   if (!content.ok) {
     const problem: { message: string } | undefined = errorStack.stack_pop();

@@ -250,6 +250,7 @@ async function series_retrieveAndCopy(
   const targetSeriesFolder: string = path.posix.join(dest, `Series_${seriesItem.uid}_${cleanDesc}`);
 
   runtimeOutput_data(`${chalk.gray(`  -> Copying series files to '${targetSeriesFolder}'...`)}\n`);
+  // store-path: the folder CUBE registered for the series, into a destination `cp` resolved (storePath_resolve, both ends).
   const copySuccess: boolean = await files_copyRecursively(absoluteFolderPath, targetSeriesFolder);
   if (!copySuccess) {
     runtimeOutput_err(`${chalk.red(`  ✗ Recursive copy failed from '${absoluteFolderPath}' to '${targetSeriesFolder}'`)}\n`);

@@ -274,6 +274,7 @@ export async function nodeStatus_get(instanceId: number): Promise<string> {
  */
 export async function remoteFile_open(source: string): Promise<RemoteBytes> {
   const { fileContent_getBinaryStream } = await import('@fnndsc/salsa');
+  // store-path: a source remoteFile_locate answered, through storePath_resolve.
   const opened: Result<{ stream: unknown; size?: number }> = await fileContent_getBinaryStream(source);
   if (!opened.ok) throw new Error(`cannot read ${source}`);
   const stream: unknown = opened.value.stream;
@@ -383,6 +384,7 @@ export async function folderContents_upload(local: string, target: string): Prom
   let bytes: number = 0;
   let failed: number = 0;
   for (const name of readdirSync(local).sort()) {
+    // store-path: a folder the close names under the session's CUBE home.
     const summary: { transferredCount: number; transferSize: number; failedCount: number } = await files_uploadWithProgress(join(local, name), target, {
       expandLocalGlob: false,
       force: true,

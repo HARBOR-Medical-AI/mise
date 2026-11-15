@@ -200,6 +200,21 @@ Deterministic resolution precedes probabilistic resolution, always. Any future n
 
 <<one-declaration>> is the anchor of that guardrail: with every command's arguments declared, and every plugin's and pipeline's read from CUBE into the same shape, the vocabulary is jailed to declared arguments, not only to command *names*. Names alone stop invented commands but not invented arguments, and arguments are where the damage lives.
 
+[[one-store-route]]
+=== One route from a typed path to the store
+
+*A path as the session means it reaches CUBE's files through one resolver, `storePath_resolve`, and no other.*
+
+A path as typed (`~/x`, a relative path, `/proc/jobs/…/data/…`, a path through a `.chrislink`) is not where CUBE keeps the file. `storePath_resolve` in `packages/brasa/src/core/paths.ts` answers where it is: the session's namespace first, then, in turn until neither moves the path, a mount that stands for a store folder (`VFSProvider.storePath_resolve`: a job's `data` is its output folder) and the backend's link step (ChRIS: `.chrislink`s at any depth). With `entry`, the last part names the entry itself, so `rm`, `rmdir` and the source of `mv` act on a link and not on what it points at.
+
+Every file command asks it, readers and writers alike, and so does every other function that reaches the store by path (`image`, `dcm`, `expect`, `gather`, `record`, `xxd`, a query's `--csv-to`, a file a surface delivers). The dispatcher asks it too: it is the path resolver of the dispatcher's fallback, registered once (`packages/brasa/src/chris/mounts.ts`), so a path handed to the dispatcher is resolved there. A mount that stands for a store folder hands the store path back to the dispatcher and never reads the store itself.
+
+Beneath the resolver are the store's own functions: salsa's files and DICOM readers, cumin's IO, and the chili commands brasa calls. They take a store path and do not ask. The link mapper (`logicalPath_resolve`) and the backend's link step (`vfs.path_physical`) are parts of the resolver, named nowhere else above the store. chili's own command line resolves its paths through the link mapper, because chili cannot depend on brasa.
+
+The consequence: a file has one answer for where it lives, whichever name reaches it. `cat`, `wc`, an ARGUS text view, `cp`, `image` and `dcm` read the same bytes by a `/proc` job's `data`, by the feed path, and by the folder a link points at. The rule comes from an incident (#1509): the `/proc` mount read a job's `data` path directly and never followed the links under it, so every file behind a `pl-dircopy` link was unreadable there while the same file opened by its feed path, and a few commands carried their own copy of the mapping to work around it.
+
+A call handed a store path CUBE gave (a listing's `fname`, a path built from a feed's and a job's ids) says so where it stands, with a `store-path:` comment saying where the path came from. That comment is the whole exemption.
+
 [[known-violations]]
 == Known violations
 
@@ -228,6 +243,7 @@ Patterned on `scripts/cast-ratchet.mjs`: a count that may only fall, where CI re
 | <<kernel-isolation>> | `brasa` imports nothing from `chell`, `calypso`, or `argus` | Hard check | `lint:kernel`
 | <<one-declaration>> | Every command is declared in one record: every command group, in every package and app, binds names only through declarations and shell words | Hard check | `lint:commands`
 | <<one-declaration>> | Commands declaring an expression grammar of their own | Ratchet, baseline 6 | `lint:expressions`
+| <<one-store-route>> | Above the store, every call of a store IO function stands in a function that asks `storePath_resolve`, or in one reached only from such functions, or says it is handed a store path; no mount calls one; the link mapper is named only by the store and the resolver; the dispatcher's one path resolver is `storePath_resolve` | Ratchet, baseline 0 | `lint:store-paths`
 | Prompt parity (violation 4) | `argus` glyphs and palette match `theme_p10k.ts` | Hard check | `lint:prompt`
 | <<surfaces-are-views>> | Sink writes carrying `\r` or `\x1b` | Ratchet, baseline 4 | `lint:wire`
 | <<intent-equivalence>>, <<degradation>> | Human judgement, cited in review | Review only | —

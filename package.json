@@ -21,6 +21,7 @@
     "lint:stratus-deps": "node scripts/stratus-cloud-ratchet.mjs",
     "lint:commands": "node scripts/command-declarations.mjs",
     "lint:expressions": "node scripts/expression-grammars.mjs",
+    "lint:store-paths": "node scripts/store-path-route.mjs",
     "lint:prompt": "node scripts/prompt-parity.mjs",
     "lint:wire": "node scripts/wire-escapes.mjs",
     "lint:listings": "node scripts/listing-bounds.mjs",
