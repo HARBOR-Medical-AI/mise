@@ -38,15 +38,17 @@ import {
 import { load as yamlLoad } from 'js-yaml';
 import { pipelineFields_fetch } from '@fnndsc/chili/commands/pipeline/fields.js';
 import { table_render } from '@fnndsc/chili/screen/screen.js';
-import { args_checkHasHelpFlag, help_render } from '../help.js';
 import { sink_get, sink_dataLine, sink_errLine } from '../../core/sink.js';
 import { echoValue_render } from '../runEcho.js';
-import { pipelineRunArgs_parse, type PipelineRunOverrides } from './pipeline.args.js';
+import { argumentValue_coerce } from '../argumentTokens.js';
+import type { PipelineInvocationBinding } from '@fnndsc/salsa';
+import { command_declare, type CommandArguments, type CommandGrammar, type FamilyValue, type SubcommandArguments } from '../../core/commandDeclaration.js';
+import { declaredCommand_run } from '../../core/commandParse.js';
+import { path_resolve as pathLogical_resolve, storePath_resolve } from '../../core/paths.js';
 import { runs_awaitSettled, settlement_render, settlementStatus_derive, type RunSettlement } from './runWait.js';
 import type { PipelineNode, PipelineScheduled } from '../../api/models.js';
 import { pipelineDiagram_handle, type PipelineDiagramMode } from './pipeline.diagram.js';
 import { pipelineManifest_render, pipelineParameters_render } from './pipeline.manifest.js';
-import { path_resolve } from '../utils.js';
 import { errorStack, type Result, type StackMessage } from '@fnndsc/fond';
 import { type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../../core/handlerRun.js';
@@ -57,10 +59,9 @@ const PIPELINE_PROGRESS_LABEL: string = 'Reading registered pipeline…';
 /**
  * Handles `pipeline list [search]`.
  *
- * @param args - Command arguments.
+ * @param search - The filter, if any.
  */
-async function pipelineList_handle(args: string[]): Promise<void> {
-  const search: string | undefined = args[1];
+async function pipelineList_handle(search: string | undefined): Promise<void> {
   const data = await pipelines_list(search);
   if (!data || data.tableData.length === 0) {
     sink_dataLine(chalk.yellow('No pipelines registered.'));
@@ -84,16 +85,15 @@ async function pipelineList_handle(args: string[]): Promise<void> {
 /**
  * Handles `pipeline info <name|id>`.
  *
- * @param args - Command arguments.
+ * @param nameOrId - The pipeline.
  * @returns Command envelope whose status matches resolution and manifest fetching.
+ *
+ * @example
+ * ```ts
+ * await pipelineInfo_handle('PHI_detection');
+ * ```
  */
-async function pipelineInfo_handle(args: string[]): Promise<CommandEnvelope> {
-  const nameOrId: string | undefined = args[1];
-  if (!nameOrId) {
-    sink_errLine(chalk.red('Usage: pipeline info <name|id>'));
-    exitCode_set(1);
-    return envelope_error('');
-  }
+export async function pipelineInfo_handle(nameOrId: string): Promise<CommandEnvelope> {
   const result: Result<PipelineRecord> = await pipeline_resolve(nameOrId);
   if (!result.ok) {
     const err: StackMessage | undefined = errorStack.stack_pop();
@@ -186,27 +186,46 @@ async function pipelineEcho_build(nameOrId: string, options: PipelineRunOptions,
   });
 }
 
-/**
- * Handles `pipeline run <name|id> [--compute <r>] [--previous <id>]`.
- *
- * @param args - Command arguments.
- * @returns Command envelope whose status matches Workflow creation.
- */
-async function pipelineRun_handle(args: string[]): Promise<CommandEnvelope> {
-  const nameOrId: string | undefined = args[1];
-  if (!nameOrId) {
-    sink_errLine(chalk.red('Usage: pipeline run <name|id> [--compute <resource>] [--previous <inst_id>]'));
-    exitCode_set(1);
-    return envelope_error('');
-  }
+/** One pipeline run, as a line asks for it: the pipeline, where it attaches, its overlays, and how the line holds it. */
+export interface PipelineRunRequest {
+  /** The pipeline: its name, id or `/bin` name. */
+  readonly pipeline: string;
+  /** The compute resource every node runs on, when given. */
+  readonly compute?: string;
+  /** The instance the run attaches to; absent, the feed node the session stands in. */
+  readonly previous?: number;
+  /** A CFS file of sparse YAML overrides, when given. */
+  readonly paramFile?: string;
+  /** The node overrides, `--<node>.<field> <value>`. */
+  readonly bindings: readonly PipelineInvocationBinding[];
+  /** Return the handles at once rather than wait for the run. */
+  readonly detach: boolean;
+  /** Echo every parameter of every piping. */
+  readonly verbose: boolean;
+  /** Resolve the run and print it, creating nothing (`whatif`). */
+  readonly dry: boolean;
+  /** A dry run on a feed that would be rooted first, so no node exists to attach to. */
+  readonly dryNewFeed: boolean;
+}
 
-  const parsed: PipelineRunOverrides = pipelineRunArgs_parse(args);
-  const { computeOverride, previousOverride } = parsed;
-  if (parsed.parseError !== null) {
-    sink_errLine(chalk.red(`pipeline run: ${parsed.parseError}`));
-    exitCode_set(1);
-    return envelope_error('');
-  }
+/**
+ * Runs one pipeline: from the instance the request names or the feed node
+ * the session stands in, with the overlays it gives; the resolved call is
+ * echoed first, and a dry run stops there.
+ *
+ * @param request - The run.
+ * @returns Command envelope whose status matches Workflow creation.
+ *
+ * @example
+ * ```ts
+ * await pipelineRun_execute({ pipeline: 'PHI_detection', bindings: [], detach: false, verbose: false, dry: true, dryNewFeed: false });
+ * ```
+ */
+export async function pipelineRun_execute(request: PipelineRunRequest): Promise<CommandEnvelope> {
+  const nameOrId: string = request.pipeline;
+  const parsed: PipelineRunRequest = request;
+  const computeOverride: string | undefined = request.compute;
+  const previousOverride: number | undefined = request.previous;
 
   // A dry run on a feed that would be rooted first has no node yet: the caller said where it would attach.
   const previousInstId: number | null = parsed.dryNewFeed ? null : await pipelineRun_previousInstId(previousOverride);
@@ -228,7 +247,7 @@ async function pipelineRun_handle(args: string[]): Promise<CommandEnvelope> {
 
   let parameterFile: unknown;
   if (parsed.paramFile !== undefined) {
-    const resolvedPath: string = await path_resolve(parsed.paramFile);
+    const resolvedPath: string = await pathLogical_resolve(parsed.paramFile);
     const virtualPrefix: string | undefined = ['/bin', '/usr', '/etc', '/proc', '/net']
       .find((prefix: string): boolean => resolvedPath === prefix || resolvedPath.startsWith(`${prefix}/`));
     if (virtualPrefix !== undefined) {
@@ -236,7 +255,8 @@ async function pipelineRun_handle(args: string[]): Promise<CommandEnvelope> {
       exitCode_set(1);
       return envelope_error('');
     }
-    const contentResult: Result<string> = await fileContent_get(resolvedPath);
+    // The file is read where the store keeps it: a link inside a feed is followed, as every reader follows it.
+    const contentResult: Result<string> = await fileContent_get(await storePath_resolve(resolvedPath));
     if (!contentResult.ok) {
       const err: StackMessage | undefined = errorStack.stack_pop();
       sink_errLine(chalk.red(`pipeline run: ${err?.message ?? `cannot read ${resolvedPath}`}`));
@@ -256,7 +276,7 @@ async function pipelineRun_handle(args: string[]): Promise<CommandEnvelope> {
   const invocationOptions: PipelineRunOptions | undefined = hasInvocationOptions ? {
     globalCompute: computeOverride,
     parameterFile,
-    cliBindings: parsed.bindings,
+    cliBindings: [...parsed.bindings],
   } : undefined;
   // The resolved call, said before it is dispatched; `whatif` stops here.
   const echo: string[] | null = await pipelineEcho_build(nameOrId, invocationOptions ?? {}, parsed.verbose || parsed.dry);
@@ -364,16 +384,15 @@ export function pipelineScheduled_make(
 /**
  * Handles `pipeline source <name|id>`.
  *
- * @param args - Command arguments.
+ * @param nameOrId - The pipeline.
  * @returns Command envelope whose status matches source retrieval.
+ *
+ * @example
+ * ```ts
+ * await pipelineSource_handle('PHI_detection');
+ * ```
  */
-async function pipelineSource_handle(args: string[]): Promise<CommandEnvelope> {
-  const nameOrId: string | undefined = args[1];
-  if (!nameOrId) {
-    sink_errLine(chalk.red('Usage: pipeline source <name|id>'));
-    exitCode_set(1);
-    return envelope_error('');
-  }
+export async function pipelineSource_handle(nameOrId: string): Promise<CommandEnvelope> {
   const sourceResult: Result<string> = await pipeline_sourceGet(nameOrId);
   if (!sourceResult.ok) {
     const err: StackMessage | undefined = errorStack.stack_pop();
@@ -388,15 +407,15 @@ async function pipelineSource_handle(args: string[]): Promise<CommandEnvelope> {
 /**
  * Handles `pipeline manifest <name|id|slug>`.
  *
- * @param args - Command arguments.
+ * @param specifier - The pipeline, its words joined.
  * @returns Complete registered invocation manifest as serializable YAML.
+ *
+ * @example
+ * ```ts
+ * await pipelineManifestCommand_handle('PHI_detection');
+ * ```
  */
-async function pipelineManifestCommand_handle(args: string[]): Promise<CommandEnvelope> {
-  const specifier: string = args.slice(1).join(' ').trim();
-  if (specifier.length === 0) {
-    exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red('Usage: pipeline manifest <name|id|slug>')}\n`);
-  }
+export async function pipelineManifestCommand_handle(specifier: string): Promise<CommandEnvelope> {
   const result: Result<PipelineManifest> = await pipelineManifestWithProgress_get(specifier);
   if (!result.ok) {
     const err: StackMessage | undefined = errorStack.stack_pop();
@@ -466,87 +485,208 @@ async function pipelineInspect_handle(): Promise<void> {
   }
 }
 
-/** Parsed arguments for `pipeline diagram`. */
-interface PipelineDiagramArgs {
-  specifier: string;
-  withArguments: boolean;
-  signalflow: boolean;
-}
-
-/** Parses diagram flags while preserving every non-flag word as the search specifier. */
-function pipelineDiagramArgs_parse(args: string[]): PipelineDiagramArgs {
-  const words: string[] = [];
-  let withArguments: boolean = false;
-  let signalflow: boolean = false;
-  for (const argument of args.slice(1)) {
-    if (argument === '--withargs') withArguments = true;
-    else if (argument === '--signalflow') signalflow = true;
-    else words.push(argument);
-  }
-  return { specifier: words.join(' ').trim(), withArguments, signalflow };
-}
-
-/** Handles shallow and SignalFlow pipeline diagram output. */
-async function pipelineDiagramCommand_handle(args: string[]): Promise<CommandEnvelope> {
-  const parsed: PipelineDiagramArgs = pipelineDiagramArgs_parse(args);
-  if (!parsed.specifier) {
-    exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red('Usage: pipeline diagram [--withargs | --signalflow] <name|id>')}\n`);
-  }
-  if (parsed.withArguments && parsed.signalflow) {
+/**
+ * Handles shallow and SignalFlow pipeline diagram output.
+ *
+ * @param specifier - The pipeline, its words joined.
+ * @param withArguments - Each node's stored arguments inline.
+ * @param signalflow - SignalFlow YAML instead of the tree.
+ * @returns The diagram, or the refusal.
+ *
+ * @example
+ * ```ts
+ * await pipelineDiagramCommand_handle('PHI_detection', false, true);
+ * ```
+ */
+export async function pipelineDiagramCommand_handle(specifier: string, withArguments: boolean, signalflow: boolean): Promise<CommandEnvelope> {
+  if (withArguments && signalflow) {
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red('pipeline diagram: --withargs is only available for shallow rendering')}\n`);
   }
-  const mode: PipelineDiagramMode = parsed.signalflow
+  const mode: PipelineDiagramMode = signalflow
     ? 'signalflow'
-    : parsed.withArguments ? 'shallow-withargs' : 'shallow';
-  return pipelineDiagram_handle(parsed.specifier, mode);
+    : withArguments ? 'shallow-withargs' : 'shallow';
+  return pipelineDiagram_handle(specifier, mode);
+}
+
+/** A node override's name: `<node>.<field>`, the node a title or `@<piping id>`. */
+const NODE_FIELD: RegExp = /^[^.=\s]+\.[^.=\s]+$/;
+
+/** A pipeline, as `pipeline` names one: its name, its id, or its `/bin` name. */
+const PIPELINE_OPERAND = { name: 'pipeline', kind: 'pipeline', summary: 'The pipeline: its name, its id, or its /bin name' } as const;
+
+/** A pipeline named in several words (`pipeline diagram PHI detection`): the words are joined. */
+const PIPELINE_WORDS_OPERAND = { name: 'pipeline', kind: 'pipeline', repeat: true, summary: 'The pipeline: its name (in several words, joined), its id, or its /bin name' } as const;
+
+/** What a `pipeline` line may hold. */
+const PIPELINE_GRAMMAR = {
+  bare: { summary: 'Name the subcommands, and the feed node a run here starts from' },
+  subcommands: {
+    list: { summary: 'List the registered pipelines', operands: [{ name: 'search', kind: 'word', optional: true, summary: 'Only those whose name holds this' }] },
+    search: { summary: 'List the pipelines whose name holds a word (list <word>)', operands: [{ name: 'term', kind: 'word', optional: true, summary: 'The word' }] },
+    inspect: { summary: 'Name the fields a pipeline has' },
+    info: { summary: "Show a pipeline's nodes, plugins and topology", operands: [PIPELINE_OPERAND] },
+    manifest: { summary: 'Emit the complete registered invocation YAML', operands: [PIPELINE_WORDS_OPERAND] },
+    run: {
+      summary: 'Run a pipeline from the feed node you are in, and wait for it',
+      operands: [PIPELINE_OPERAND],
+      options: {
+        compute: { long: 'compute', summary: 'Run every node on this compute resource', value: { name: 'resource', kind: 'compute' } },
+        previous: { long: 'previous', summary: 'Start from this instance (default: the feed node you are in)', value: { name: 'instance', kind: 'int', min: 1 } },
+        paramFile: { long: 'paramFile', summary: 'Apply one sparse YAML invocation overlay, a CFS file', value: { name: 'file', kind: 'cfsPath' } },
+        detach: { long: 'detach', summary: 'Return the instance ids at once, without waiting' },
+        verbose: { long: 'verbose', summary: 'Echo every parameter of every piping before the run' },
+        bindings: {
+          long: '<node>.<field>',
+          summary: 'Override one parameter or execution control of one node (@<piping id> names a node whose title is ambiguous)',
+          value: { name: 'value', kind: 'word' },
+          family: {
+            pattern: NODE_FIELD,
+            names_list: async (operands: readonly string[]): Promise<string[]> => {
+              const named: string | undefined = operands[0];
+              if (named === undefined) return [];
+              const { pipelineNodeOptions_list } = await import('../../chris/binDeclarations.js');
+              return pipelineNodeOptions_list(named);
+            },
+          },
+        },
+      },
+    },
+    source: { summary: 'Show the pipeline YAML source', operands: [PIPELINE_OPERAND] },
+    diagram: {
+      summary: 'Draw the pipeline as a shallow tree',
+      operands: [PIPELINE_WORDS_OPERAND],
+      options: {
+        withargs: { long: 'withargs', summary: "Each node's stored non-null arguments inline" },
+        signalflow: { long: 'signalflow', summary: 'Emit SignalFlow YAML instead of the tree' },
+      },
+    },
+  },
+} as const satisfies CommandGrammar;
+
+/**
+ * The bindings a `pipeline run` line gave, each value read as CUBE reads a
+ * scalar (`true`, `false`, a number, else the text).
+ *
+ * @param given - The family's options, in order.
+ * @returns The bindings.
+ */
+function familyBindings_read(given: readonly FamilyValue[]): PipelineInvocationBinding[] {
+  return given.map((one: FamilyValue): PipelineInvocationBinding => {
+    const dot: number = one.name.lastIndexOf('.');
+    return { node: one.name.slice(0, dot), field: one.name.slice(dot + 1), value: one.value === true ? true : argumentValue_coerce(one.value) };
+  });
 }
 
 /**
- * Manages ChRIS pipeline registration, inspection, and execution.
+ * `pipeline` with no subcommand: the subcommands, and where a run here starts.
  *
- * @param args - Command arguments.
+ * @returns An ok envelope; the lines went out on the sink.
  */
-export async function builtin_pipeline(args: string[]): Promise<CommandEnvelope> {
-  if (args_checkHasHelpFlag(args, 'pipeline')) {
-    return envelope_ok(help_render('pipeline'));
+async function pipelineBare_handle(): Promise<CommandEnvelope> {
+  const current: number | null = feedNodeInstance_find(await session.getCWD());
+  sink_dataLine(chalk.gray('Usage: pipeline <list|search|inspect|info|manifest|run|source|diagram> [args]'));
+  if (current !== null) {
+    sink_dataLine(chalk.gray(`  A run here starts from instance ${current}, the feed node you are in`));
   }
+  return envelope_ok('');
+}
 
-  const subcommand: string | undefined = args[0];
+/**
+ * Runs one `pipeline run` line.
+ *
+ * @param args - The line, parsed.
+ * @returns The run's envelope.
+ */
+async function pipelineRunLine_handle(args: SubcommandArguments<typeof PIPELINE_GRAMMAR, 'run'>): Promise<CommandEnvelope> {
+  const options = args.options;
+  return pipelineRun_execute({
+    pipeline: args.operands.pipeline,
+    ...(options.compute !== undefined ? { compute: options.compute } : {}),
+    ...(options.previous !== undefined ? { previous: options.previous } : {}),
+    ...(options.paramFile !== undefined ? { paramFile: options.paramFile } : {}),
+    bindings: familyBindings_read(options.bindings),
+    detach: options.detach,
+    verbose: options.verbose,
+    dry: false,
+    dryNewFeed: false,
+  });
+}
 
-  if (!subcommand) {
-    const current: number | null = feedNodeInstance_find(await session.getCWD());
-    sink_dataLine(chalk.gray('Usage: pipeline <list|info|manifest|run|source|diagram> [args]'));
-    if (current !== null) {
-      sink_dataLine(chalk.gray(`  A run here starts from instance ${current}, the feed node you are in`));
-    }
-    return envelope_ok('');
-  }
-
-  switch (subcommand) {
+/**
+ * Runs one `pipeline` line.
+ *
+ * @param args - The line, parsed.
+ * @returns What the subcommand answers.
+ */
+async function pipelineLine_run(args: CommandArguments<typeof PIPELINE_GRAMMAR>): Promise<CommandEnvelope> {
+  switch (args.subcommand) {
+    case null: return pipelineBare_handle();
     case 'list':
-      await pipelineList_handle(args);
+      await pipelineList_handle(args.operands.search);
       return envelope_ok('');
-    case 'info':
-      return pipelineInfo_handle(args);
-    case 'run':
-      return pipelineRun_handle(args);
-    case 'source':
-      return pipelineSource_handle(args);
-    case 'manifest':
-      return pipelineManifestCommand_handle(args);
-    case 'diagram':
-      return pipelineDiagramCommand_handle(args);
+    case 'search':
+      await pipelineList_handle(args.operands.term ?? '');
+      return envelope_ok('');
     case 'inspect':
       await pipelineInspect_handle();
       return envelope_ok('');
-    case 'search':
-      return builtin_pipeline(['list', args[1] ?? '']);
-    default:
-      sink_errLine(chalk.red(`pipeline: unknown subcommand '${subcommand}'`));
-      sink_dataLine(chalk.gray('  Subcommands: list, search, inspect, info, manifest, run, source, diagram'));
-      exitCode_set(1);
-      return envelope_error('');
+    case 'info': return pipelineInfo_handle(args.operands.pipeline);
+    case 'manifest': return pipelineManifestCommand_handle(args.operands.pipeline.join(' ').trim());
+    case 'run': return pipelineRunLine_handle(args);
+    case 'source': return pipelineSource_handle(args.operands.pipeline);
+    case 'diagram': return pipelineDiagramCommand_handle(args.operands.pipeline.join(' ').trim(), args.options.withargs, args.options.signalflow);
   }
+}
+
+/**
+ * `pipeline <list|search|inspect|info|manifest|run|source|diagram> …`: the
+ * declaration. `pipelines` is the same command, and a read.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [pipelineCommand] }, 'backend');
+ * ```
+ */
+export const pipelineCommand = command_declare({
+  name: 'pipeline',
+  aliases: [{ name: 'pipelines', holds: [] }],
+  grammar: PIPELINE_GRAMMAR,
+  help: {
+    summary: 'The registered ChRIS pipelines (DAG workflows): list them, read them, draw them, run them',
+    description: "List the pipelines registered in CUBE, show one's nodes and topology, its YAML source and its complete registered invocation, draw it as a tree or as SignalFlow YAML, and run it from the feed node you are in, waiting for every node to settle unless --detach. A run takes --compute, --previous, a --paramFile of sparse YAML overrides, and --<node>.<field> <value> to override one parameter or execution control of one node, the node named by its title or @<piping id>. A pipeline also stands in /bin under its own name and runs as a line of its own, on operands as a plugin does (help <pipeline>). pipeline and pipelines are one command.",
+    category: 'Resources',
+    examples: [
+      'pipeline list',
+      'pipeline list PHI',
+      'pipeline info PHI_detection',
+      'pipeline manifest PHI_detection',
+      'pipeline run PHI_detection',
+      'pipeline run PHI_detection --compute gpu',
+      'pipeline run PHI_detection --segmentation.threshold 0.5',
+      'pipeline run PHI_detection --paramFile ~/params/run.yaml',
+      'pipeline source PHI_detection',
+      'pipeline diagram PHI_detection',
+      'pipeline diagram --withargs PHI_detection',
+      'pipeline diagram --signalflow PHI_detection | signalflow -',
+      'PHI_detection --diagram                # the pipeline as a /bin line of its own',
+    ],
+  },
+  handler: pipelineLine_run,
+});
+
+/**
+ * Manages ChRIS pipeline registration, inspection, and execution: a
+ * `pipeline` line over words already split, through the declaration.
+ *
+ * @param args - The words after `pipeline`.
+ * @returns The answer, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await builtin_pipeline(['run', 'PHI_detection', '--previous', '42']);
+ * ```
+ */
+export async function builtin_pipeline(args: string[]): Promise<CommandEnvelope> {
+  return declaredCommand_run(pipelineCommand, args);
 }

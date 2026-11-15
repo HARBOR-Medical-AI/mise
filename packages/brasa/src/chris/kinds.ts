@@ -8,6 +8,8 @@
  * - FEED_KIND: a feed, by id, feed_N or title.
  * - COMPUTE_KIND: a compute resource, by name.
  * - PACS_QUERY_KIND: a PACS query, by id, by path, or as a question.
+ * - PLUGIN_KIND: a plugin, as `/bin` names a version of it.
+ * - PIPELINE_KIND: a pipeline, by its name, id or `/bin` name.
  * - chrisArgumentKinds: every kind the ChRIS backend registers.
  *
  * Typical usage:
@@ -156,5 +158,36 @@ export const PACS_QUERY_KIND: ArgumentKind = {
   },
 };
 
+/**
+ * A plugin registered with CUBE, as `/bin` names a version of it
+ * (`pl-dircopy-v2.1.1`), or by its name. It completes the versions `/bin`
+ * lists.
+ */
+export const PLUGIN_KIND: ArgumentKind = {
+  name: 'plugin',
+  summary: 'a plugin: a version as /bin names it, <name>-v<version>, or its name',
+  word_read: (word: string): ArgumentCheck => (word === '' ? { ok: false, reason: 'an empty word names no plugin' } : { ok: true, value: word }),
+  schema_make: (): z.ZodType => z.string().min(1),
+  words_complete: async (partial: string): Promise<string[]> => {
+    const { binEntries_list } = await import('./completion.js');
+    return candidates_filter(await binEntries_list('plugin'), partial);
+  },
+};
+
+/**
+ * A pipeline registered with CUBE: its name, its id, or its `/bin` name
+ * (`PHI_detection_id12`). It completes the `/bin` names.
+ */
+export const PIPELINE_KIND: ArgumentKind = {
+  name: 'pipeline',
+  summary: 'a pipeline: its name, its id, or its /bin name',
+  word_read: (word: string): ArgumentCheck => (word === '' ? { ok: false, reason: 'an empty word names no pipeline' } : { ok: true, value: word }),
+  schema_make: (): z.ZodType => z.string().min(1),
+  words_complete: async (partial: string): Promise<string[]> => {
+    const { binEntries_list } = await import('./completion.js');
+    return candidates_filter(await binEntries_list('pipeline'), partial);
+  },
+};
+
 /** Every argument kind the ChRIS backend registers. */
-export const chrisArgumentKinds: ReadonlyArray<ArgumentKind> = [ANCHOR_KIND, FEED_KIND, COMPUTE_KIND, PACS_QUERY_KIND];
+export const chrisArgumentKinds: ReadonlyArray<ArgumentKind> = [ANCHOR_KIND, FEED_KIND, COMPUTE_KIND, PACS_QUERY_KIND, PLUGIN_KIND, PIPELINE_KIND];

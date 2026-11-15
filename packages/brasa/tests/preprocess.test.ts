@@ -25,7 +25,6 @@ const {
   pipes_parse,
   redirect_parse,
   redirectTarget_resolve,
-  pathnameExpansion_isEligible,
   command_shellEscape_detect,
 } = await import('../src/core/preprocess.js');
 
@@ -72,16 +71,6 @@ describe('redirect_parse', () => {
   it('ignores an escaped redirect operator', () => {
     expect(redirect_parse('echo \\>')).toBeNull();
   });
-});
-
-describe('pathnameExpansion_isEligible', () => {
-  it('expands ordinary command arguments without an allow-list', () => {
-    expect(pathnameExpansion_isEligible('ls', 0, 1)).toBe(true);
-    expect(pathnameExpansion_isEligible('connect', 0, 1)).toBe(true);
-  });
-
-  // download and upload are declared: their grammars say which operands
-  // glob, so the table is never asked about them (commandDeclarations.test.ts).
 });
 
 describe('command_shellEscape_detect', () => {

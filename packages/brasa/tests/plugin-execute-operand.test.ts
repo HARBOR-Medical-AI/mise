@@ -20,8 +20,15 @@ cuminMock_install(() => ({
   envelope_ok: (rendered: string, model?: unknown) => ({ status: 'ok', rendered, ...(model !== undefined ? { model } : {}) }),
   envelope_error: (rendered: string) => ({ status: 'error', rendered }),
   errorStack: { stack_pop: () => undefined, stack_push: () => undefined, checkpoint_mark: () => 0, checkpoint_drain: () => undefined },
+  // The plugin as CUBE declares it: the line is parsed against the declaration made of its parameters.
+  plugin_find: async (_client: unknown, name: string, version: string) => ({ data: { name, version, type: 'ds' }, handle: {} }),
+  pluginParameters_drain: async () => [
+    { name: 'threads', type: 'int', optional: true, default: 1, flag: '--threads' },
+    { name: 'dirFilter', type: 'str', optional: true, default: '', flag: '--dirFilter' },
+    { name: 'dir', type: 'path', optional: true, flag: '--dir' },
+  ],
 }));
-jest.unstable_mockModule('../src/session/index.js', () => ({ session: { getCWD: async () => '/home/u/uploads' } }));
+jest.unstable_mockModule('../src/session/index.js', () => ({ session: { getCWD: async () => '/home/u/uploads', connection: { client_get: async () => ({}) } } }));
 jest.unstable_mockModule('../src/lib/vfs/vfs.js', () => ({ vfs: { data_get: async () => ({ ok: true, value: [{ name: 'pl-dircopy-v2.1.2', type: 'plugin' }] }) } }));
 jest.unstable_mockModule('../src/builtins/feedCreation.js', () => ({ newFeed_cacheAdd: jest.fn(), run_follow: jest.fn() }));
 jest.unstable_mockModule('../src/builtins/res/runWait.js', () => ({

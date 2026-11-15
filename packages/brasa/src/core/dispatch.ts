@@ -13,7 +13,7 @@
  * @module
  */
 import { commandCancellation_enable, commandCancellation_signalGet } from './cancellation.js';
-import { commands_register, commandOrder_set, envelopeHandler_get, plainHandler_get, builtinCommand_has, commandDeclaration_get, type CommandHandler, type EnvelopeHandler } from './commandRegistry.js';
+import { commands_register, commandOrder_set, envelopeHandler_get, plainHandler_get, builtinCommand_has, type CommandHandler, type EnvelopeHandler } from './commandRegistry.js';
 import { coreCommands } from './coreCommands.js';
 import { ENVELOPE_ORDER, PLAIN_ORDER, HELP_ORDER } from './commandOrder.js';
 
@@ -30,7 +30,6 @@ import { error_stripDebugPrefix } from './errorText.js';
 import { exitCode_read, handler_runDirect, exitCode_set } from './handlerRun.js';
 import { backendInstalled_get } from './backend.js';
 
-import { shellWords_expand } from '../lib/wildcard.js';
 import {
   help_render,
   helpMissing_render,
@@ -53,7 +52,6 @@ import { surface_get, capability_require } from './surface.js';
 import { sudoCommand_run } from './elevation.js';
 import {
   redirectTarget_resolve,
-  pathnameExpansion_isEligible,
   type RedirectInfo,
 } from './preprocess.js';
 import { envelope_error, type CommandEnvelope } from '@fnndsc/menu';
@@ -320,42 +318,17 @@ async function commandLine_referencesExpand(words: readonly ShellWord[]): Promis
 }
 
 /**
- * Expands a line's words for a command not yet declared: every word but the
- * ones the glob-eligibility table excludes has its wildcards matched. A
- * declared command's words pass unglobbed, quoting kept: its line is parsed
- * against its grammar first, and only its path operands that declare `glob`
- * expand (core/commandParse.ts), so a glob never turns into an option.
+ * A line's words as dispatch hands them on: unglobbed, quoting kept. Every
+ * command's line is parsed against its declaration first, a `/bin` line's
+ * against the one CUBE's parameters make, and only an operand whose kind
+ * expands pathnames has its wildcards matched (core/commandParse.ts), so a
+ * glob never turns into an option.
  *
- * @param command - The command word (`sudo` names the one after it).
- * @param args - The words after it, references expanded.
+ * @param args - The words after the command, references expanded.
  * @returns The arguments, carrying their words.
  */
-async function commandWords_expand(
-  command: string,
-  args: readonly ShellWord[],
-): Promise<Result<ShellArguments>> {
-  const sudoNestedCommand: ShellWord | undefined = command === 'sudo' ? args[0] : undefined;
-  const targetCommand: string = sudoNestedCommand?.value ?? command;
-
-  const targetArgs: readonly ShellWord[] = sudoNestedCommand ? args.slice(1) : args;
-  if (commandDeclaration_get(targetCommand) !== undefined) {
-    return Ok(shellWords_values(sudoNestedCommand ? [sudoNestedCommand, ...targetArgs] : targetArgs));
-  }
-  const values: string[] = targetArgs.map((word: ShellWord): string => word.value);
-  const result: Result<ShellWord[]> = await shellWords_expand(
-    targetArgs,
-    (_word: ShellWord, index: number): boolean => pathnameExpansion_isEligible(
-      targetCommand,
-      index,
-      targetArgs.length,
-      values,
-    ),
-  );
-  if (!result.ok) return result;
-  const expandedWords: ShellWord[] = sudoNestedCommand
-    ? [sudoNestedCommand, ...result.value]
-    : result.value;
-  return Ok(shellWords_values(expandedWords));
+function commandWords_carry(args: readonly ShellWord[]): ShellArguments {
+  return shellWords_values(args);
 }
 
 /**
@@ -396,13 +369,7 @@ async function chellCommand_executeAndCapture(commandLine: string): Promise<Capt
   const [commandWord, ...argumentWords]: ShellWord[] = words;
   const command: string = commandWord.value;
 
-  const expandResult: Result<ShellArguments> = await commandWords_expand(command, argumentWords);
-  if (!expandResult.ok) {
-    const lastError: StackMessage | undefined = errorStack.stack_pop();
-    const errorMsg: string = lastError ? error_stripDebugPrefix(lastError.message) : 'Unknown error';
-    return { text: chalk.red(`${errorMsg}\n`), buffer: Buffer.from('') };
-  }
-  const args: ShellArguments = expandResult.value;
+  const args: ShellArguments = commandWords_carry(argumentWords);
 
   if (command === 'exit') {
     process.exit(0);
@@ -564,15 +531,7 @@ export async function command_executeToEnvelope(
   }
   const [commandWord, ...argumentWords]: ShellWord[] = words;
   const command: string = commandWord.value;
-  const expandResult: Result<ShellArguments> = await commandWords_expand(command, argumentWords);
-  if (!expandResult.ok) {
-    const lastError: StackMessage | undefined = errorStack.stack_pop();
-    if (lastError) {
-      sink_get().err_write(`${chalk.red(error_stripDebugPrefix(lastError.message))}\n`);
-    }
-    return { status: 'error', rendered: '' };
-  }
-  const args: ShellArguments = expandResult.value;
+  const args: ShellArguments = commandWords_carry(argumentWords);
 
   // Help travels through the same expanded-word path as a pipe's first
   // ChELL segment, ensuring that structural execution forms agree.

@@ -332,9 +332,9 @@ describe('building a cluster over the fakes', () => {
     expect((await cluster_run(context, ['new', 'trial', '--base-domain', 'other.example'])).renderedErr).toBe('cluster new: trial: its names live under fake.example; --base-domain other.example would be another cluster\n');
     expect((await cluster_run(context, ['new', 'trial', '--compartment', 'ocid1.compartment.oc1..other'])).renderedErr).toBe('cluster new: trial: it lives in a compartment of its own; --compartment ocid1.compartment.oc1..other would be another cluster\n');
     expect((await cluster_run(context, ['new', 'Trial'])).renderedErr).toContain("a cluster's name is a DNS label");
-    expect((await cluster_run(context, ['new'])).renderedErr).toContain('usage: cluster new <name>');
-    expect((await cluster_run(context, ['new', 'x', '--colour', 'red'])).renderedErr).toContain('--colour: unknown option');
-    expect((await cluster_run(context, ['new', 'x', '--workers'])).renderedErr).toContain('--workers takes a value');
+    expect((await cluster_run(context, ['new'])).renderedErr).toContain('cluster: new: missing operand <name>; usage: cluster new [--family <family>]');
+    expect((await cluster_run(context, ['new', 'x', '--colour', 'red'])).renderedErr).toContain("unrecognized option '--colour'");
+    expect((await cluster_run(context, ['new', 'x', '--workers'])).renderedErr).toContain("option '--workers' wants a value (<nodes>)");
     expect((await cluster_run(context, ['new', 'x', '--plane', '2x8/24'])).renderedErr).toContain('the control plane is three nodes');
     const unanchored: ClusterCommandContext = { ...context, build: { ...context.build!, baseDomain: null } };
     expect((await cluster_run(unanchored, ['new', 'y'])).renderedErr).toContain('--base-domain <zone> is needed: the DNS zone the cluster\'s names live under (the tenancy holds no DNS zone to find)');
@@ -414,7 +414,7 @@ describe('building a cluster over the fakes', () => {
     store.file_write('trial', 'plan.json', JSON.stringify({ ref: 'p', rows: [{ action: 'create', kind: 'i', name: 'a' }, { action: 'change', kind: 'i', name: 'b', drift: true }] }));
     expect(plain((await cluster_run(context, ['plan', 'trial'])).rendered)).toContain('plan  1 to create, 0 to change and 1 Oracle-Tags drift, 0 to destroy');
     expect((await cluster_run(context, ['plan', 'nope'])).renderedErr).toBe('cluster plan: nope: no such cluster\n');
-    expect((await cluster_run(context, ['plan', '-x'])).renderedErr).toBe('cluster plan: usage: cluster plan [<name>]\n');
+    expect((await cluster_run(context, ['plan', '-x'])).renderedErr).toBe("cluster: plan: invalid option -- 'x'; usage: cluster plan [name]\n");
     record_new('other');
     expect((await cluster_run(context, ['plan'])).renderedErr).toBe('cluster plan: which cluster? (other, trial)\n');
   });
@@ -496,7 +496,7 @@ describe('building a cluster over the fakes', () => {
     expect(model.price).toMatchObject({ currency: 'USD' });
     expect(plain(sized.rendered)).toContain('starts from: E5');
     expect((await cluster_run(context, ['size', '--family', 'Z9'])).renderedErr).toContain('Z9: no such family');
-    expect((await cluster_run(context, ['size', 'x'])).renderedErr).toBe('cluster size: usage: cluster size [--family <family>]\n');
+    expect((await cluster_run(context, ['size', 'x'])).renderedErr).toBe("cluster: size: unexpected operand 'x'; usage: cluster size [--family <family>]\n");
     expect((await cluster_run({ ...context, build: { ...context.build!, region: (): null => null } }, ['size'])).renderedErr).toBe('cluster size: not connected\n');
   });
 
@@ -505,8 +505,8 @@ describe('building a cluster over the fakes', () => {
     surface.answers = ['y'];
     expect(plain((await cluster_run(context, ['build', 'trial', '--through', 'cluster'])).rendered)).toBe('trial: done through cluster; next: iso\n');
     expect((await cluster_run(context, ['build', 'trial', '--through', 'nope'])).renderedErr).toContain('--through nope: no such step');
-    expect((await cluster_run(context, ['build', 'trial', '--colour'])).renderedErr).toContain('--colour: unknown option');
-    expect((await cluster_run(context, ['build', 'a', 'b'])).renderedErr).toContain('usage: cluster build');
+    expect((await cluster_run(context, ['build', 'trial', '--colour'])).renderedErr).toContain("unrecognized option '--colour'");
+    expect((await cluster_run(context, ['build', 'a', 'b'])).renderedErr).toContain("unexpected operand 'b'; usage: cluster build");
     surface_set(new GrantedSurface(false));
     expect((await cluster_run(context, ['build', 'trial'])).renderedErr).toContain('starting a task needs the tasks tier');
     const unbuildable: ClusterCommandContext = { ...context, build: { ...context.build!, deps: null } };

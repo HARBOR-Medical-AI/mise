@@ -17,17 +17,20 @@
  * its backups and the address; `--all` takes those too, asking for the name
  * typed back. A bare `vm` is `vm status`.
  *
+ * Declared in one record (`vmCommand_make`): its line is parsed against the
+ * grammar before anything here runs.
+ *
  * @module
  */
 import * as path from 'path';
 import chalk from 'chalk';
 import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, taskState_isOver, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATE_EVENT, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow } from '@fnndsc/menu';
-import { repl_confirm, repl_question, runner_get, sink_dataLine, sink_get, surface_get, type CommandHelp } from '@fnndsc/brasa/core';
+import { command_declare, declaredCommand_run, repl_confirm, repl_question, runner_get, sink_dataLine, sink_get, surface_get, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_words, type BuildCall, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import type { VmRemote } from '../vm/remote.js';
 import type { CloudDriver } from '../cloud/driver.js';
 import type { NetStore } from '../net/state.js';
-import { VM_OPTIONS, vmPorts_open as vmPorts_openOf, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSsh_words, sshKeyFile_resolve, type VmSpec } from '../vm/spec.js';
+import { vmPorts_open as vmPorts_openOf, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSsh_words, sshKeyFile_resolve, type VmSpec } from '../vm/spec.js';
 import { VM_HOST_JOB, vmHost_current, vmHost_owed, vmHostRun_make } from '../vm/host.js';
 import type { CloudInstance, CloudShape, CloudVolume } from '../cloud/driver.js';
 import { CHRIS_PORTER_TAG, CHRIS_URL_TAG, VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
@@ -35,7 +38,8 @@ import { vmsFound_read, vmTakeover_run, type FoundVm } from '../vm/found.js';
 import { VM_KEYLESS, vmChris_adopt, vmDeclared_adopt, vmKey_held, vmKeyless_is, vmKept_read, vmKept_write, vmLock_adopt, type VmKept } from '../vm/keep.js';
 import { lock_read, lock_where, lockKept_is } from '../kept/lock.js';
 import { cost_words, planFile_derive, VM_JOBS, vmApplyRun_make, vmCost_estimate, vmNet_read, vmPlanRun_make, vmTeardownRun_make, type VmCost, type VmDeps, type VmPart } from '../vm/build.js';
-import { job_runFollowed, options_read, tasks_granted } from './build.js';
+import { job_runFollowed, tasks_granted } from './build.js';
+import { flags_map } from './declared.js';
 import { STEPS_SOURCE } from '../cluster/steps.js';
 import { VM_GROW_JOB, vmGrowRun_make, vmPlan_judge, type VmPlanJudged } from '../vm/resize.js';
 import { HOURS_PER_MONTH } from '../cluster/spend.js';
@@ -537,28 +541,23 @@ async function runsCost_read(context: VmCommandContext, record: VmRecord, spec: 
   return { rate: cost === null ? null : { machineHour: machine ? cost.machineHour : 0, dataHour: data ? cost.dataHour : 0, currency: cost.currency }, at: stands.at };
 }
 
-/** `vm cost`'s usage. */
-const VM_COST_USAGE: string = 'vm cost [<name> [--vcpu <n>] [--memory <GiB>] [--disk <GB>] [--data <GB>] [--data-backup daily|none] [--os <os>] [--net <network>] [--open <ports>]]';
-
 /**
  * `vm new <name> …`: declares; on one declared, compares.
  *
  * @param context - The session.
- * @param args - The words after `new`.
+ * @param name - The VM.
+ * @param options - Its options given, by flag (`--vcpu` → `2`).
  * @returns The envelope.
  */
-async function vmNew_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const read = options_read(args, VM_OPTIONS);
-  if ('error' in read) return envelope_error('', undefined, `vm new: ${read.error} (${VM_OPTIONS.join(', ')})\n`);
-  const [name, ...extra] = read.rest;
-  if (name === undefined || extra.length > 0) return envelope_error('', undefined, 'vm new: usage: vm new <name> --net <network> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> [--open <ports>] [--data-backup daily|none] [--ssh <port>|off --ssh-user <user> --ssh-key-file <key.pub>]\n');
+async function vmNew_run(context: VmCommandContext, name: string, options: ReadonlyMap<string, string>): Promise<CommandEnvelope> {
+  const flags: Map<string, string> = new Map(options);
   // A key file is read here, once: the declaration keeps the public key itself, so a rebuild needs no file.
-  const keyRead: string | null = sshKeyFile_resolve(read.options);
+  const keyRead: string | null = sshKeyFile_resolve(flags);
   if (keyRead !== null) return envelope_error('', undefined, `vm new: ${keyRead}\n`);
   if (!VM_NAME.test(name)) return envelope_error('', undefined, `vm new: ${name}: a VM's name is a hostname: lower-case letters, digits and hyphens, starting with a letter, at most 32\n`);
   const before = context.store.spec_read(name);
   const keptSpec: VmSpec | null = before !== null && 'spec' in before ? before.spec : null;
-  const spec = vmSpec_read(read.options, keptSpec);
+  const spec = vmSpec_read(flags, keptSpec);
   if ('error' in spec) return envelope_error('', undefined, `vm new: ${spec.error}\n`);
   const region: string | null = context.region();
   const kept: VmRecord | null = context.store.record_read(name);
@@ -687,14 +686,12 @@ function costChange_line(before: VmCost, after: VmCost): string {
  * Bare, every declared VM.
  *
  * @param context - The session.
- * @param args - The words after `cost`.
+ * @param name - The VM, or none for every one declared.
+ * @param given - The options given, by flag; none without a name.
  * @returns The envelope.
  */
-async function vmCost_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const read = options_read(args, VM_OPTIONS);
-  if ('error' in read) return envelope_error('', undefined, `vm cost: ${read.error} (${VM_OPTIONS.join(', ')})\n`);
-  const [name, ...extra] = read.rest;
-  if (extra.length > 0 || (name === undefined && read.options.size > 0)) return envelope_error('', undefined, `vm cost: usage: ${VM_COST_USAGE}\n`);
+async function vmCost_run(context: VmCommandContext, name: string | undefined, given: ReadonlyMap<string, string>): Promise<CommandEnvelope> {
+  if (name === undefined && given.size > 0) return envelope_error('', undefined, `vm cost: ${[...given.keys()].join(', ')} without a VM: name the VM the options price (vm cost <name> --vcpu 4)\n`);
   // The price list is read once for the session; the answer that read it says so, and every later price is worked out from it.
   const readBefore: string | null = context.driver.pricesRead_get();
   const told = (text: string): string => readBefore === null && context.driver.pricesRead_get() !== null ? `${chalk.gray('read Oracle\'s price list, kept for this session: every price after this is worked out here')}\n${text}` : text;
@@ -719,7 +716,7 @@ async function vmCost_run(context: VmCommandContext, args: ReadonlyArray<string>
   }
   const before = context.store.spec_read(name);
   const keptSpec: VmSpec | null = before !== null && 'spec' in before ? before.spec : null;
-  const options: Map<string, string> = new Map(read.options);
+  const options: Map<string, string> = new Map(given);
   // The network only places a VM; its price is the session's region's.
   if (keptSpec === null && !options.has('--net')) options.set('--net', '-');
   const spec = vmSpec_read(options, keptSpec);
@@ -739,11 +736,9 @@ async function vmCost_run(context: VmCommandContext, args: ReadonlyArray<string>
  * so a slider's ends and steps come from the cloud and never from a page.
  *
  * @param context - The session.
- * @param args - The words after `limits`; none are taken.
  * @returns The envelope.
  */
-async function vmLimits_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  if (args.length > 0) return envelope_error('', undefined, 'vm limits: usage: vm limits\n');
+async function vmLimits_run(context: VmCommandContext): Promise<CommandEnvelope> {
   const region: string | null = context.region();
   if (region === null) return envelope_error('', undefined, 'vm limits: not connected: the limits are the session\'s region\'s\n');
   const shapeName: string | undefined = context.builder?.vmShape;
@@ -764,12 +759,11 @@ async function vmLimits_run(context: VmCommandContext, args: ReadonlyArray<strin
  * `vm plan [<name>]`.
  *
  * @param context - The session.
- * @param args - The words after `plan`.
+ * @param named - The VM, or none for the only one.
  * @returns The envelope.
  */
-async function vmPlan_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  if (args.length > 1 || args.some((word: string): boolean => word.startsWith('-'))) return envelope_error('', undefined, 'vm plan: usage: vm plan [<name>]\n');
-  const need = await vm_needOrTake(context, args[0], 'plan');
+async function vmPlan_run(context: VmCommandContext, named: string | undefined): Promise<CommandEnvelope> {
+  const need = await vm_needOrTake(context, named, 'plan');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   if (vmKeyless_is(context.store, need.record)) return envelope_error(need.said, undefined, `vm plan: ${need.name}: ${VM_KEYLESS}\n`);
   const { record, spec } = need;
@@ -876,13 +870,16 @@ function built_mark(context: VmCommandContext, name: string, spec: VmSpec): void
   context.store.record_update(name, (current: VmRecord): void => { current.built = new Date().toISOString(); current.builtSpec = spec; });
 }
 
-async function vmBuild_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const allowAlter: boolean = args.includes('--allow-alter');
-  const words: string[] = args.filter((word: string): boolean => word !== '--allow-alter');
-  const unknown: string | undefined = words.find((word: string): boolean => word.startsWith('-'));
-  if (unknown !== undefined) return envelope_error('', undefined, `vm build: ${unknown}: unknown option (--allow-alter)\n`);
-  if (words.length > 1) return envelope_error('', undefined, 'vm build: usage: vm build [<name>] [--allow-alter]\n');
-  const need = await vm_needOrTake(context, words[0], 'build');
+/**
+ * `vm build [<name>] [--allow-alter]`.
+ *
+ * @param context - The session.
+ * @param named - The VM, or none for the only one.
+ * @param allowAlter - A plan that replaces or removes what exists may go on.
+ * @returns The envelope.
+ */
+async function vmBuild_run(context: VmCommandContext, named: string | undefined, allowAlter: boolean): Promise<CommandEnvelope> {
+  const need = await vm_needOrTake(context, named, 'build');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   if (vmKeyless_is(context.store, need.record)) return envelope_error(need.said, undefined, `vm build: ${need.name}: ${VM_KEYLESS}\n`);
   if (!tasks_granted()) return envelope_error('', undefined, `vm build: ${TIER_REFUSAL}\n`);
@@ -1015,13 +1012,11 @@ export function sshLine_build(session: { sessionId: string; host: string }, keyP
  * `vm shell <name>`: a session on the network's bastion, and the SSH line that uses it.
  *
  * @param context - The session.
- * @param args - The words after `shell`.
+ * @param named - The VM, or none for the only one.
  * @returns The envelope.
  */
-async function vmShell_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const words: string[] = args.filter((word: string): boolean => word !== '--print');
-  if (words.length > 1 || words.some((word: string): boolean => word.startsWith('-'))) return envelope_error('', undefined, 'vm shell: usage: vm shell [<name>] [--print]\n');
-  const need = await vm_needOrTake(context, words[0], 'shell');
+async function vmShell_run(context: VmCommandContext, named: string | undefined): Promise<CommandEnvelope> {
+  const need = await vm_needOrTake(context, named, 'shell');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   if (vmKeyless_is(context.store, need.record)) return envelope_error(need.said, undefined, `vm shell: ${need.name}: ${VM_KEYLESS}\n`);
   if (surface_get().capabilities.shellCommands !== true) return envelope_error('', undefined, 'vm shell: needs the shell tier (stratus --host-control shell)\n');
@@ -1053,12 +1048,11 @@ async function vmShell_run(context: VmCommandContext, args: ReadonlyArray<string
  * stratus kept them, from the host that holds them.
  *
  * @param context - The session.
- * @param args - The words after `keep`.
+ * @param named - The VM.
  * @returns The envelope.
  */
-async function vmKeep_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  if (args.length !== 1 || args[0]?.startsWith('-') === true) return envelope_error('', undefined, 'vm keep: usage: vm keep <name>\n');
-  const need = vm_need(context, args[0], 'keep');
+async function vmKeep_run(context: VmCommandContext, named: string): Promise<CommandEnvelope> {
+  const need = vm_need(context, named, 'keep');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   if (!tasks_granted()) return envelope_error('', undefined, `vm keep: ${TIER_REFUSAL}\n`);
   if (context.builder?.keep_write === undefined) return envelope_error('', undefined, 'vm keep: this cloud keeps nothing in the tenancy\n');
@@ -1077,12 +1071,11 @@ async function vmKeep_run(context: VmCommandContext, args: ReadonlyArray<string>
  * `vm protect <name> on|off`.
  *
  * @param context - The session.
- * @param args - The words after `protect`.
+ * @param nameWord - The VM.
+ * @param setting - `on` or `off`.
  * @returns The envelope.
  */
-async function vmProtect_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const [nameWord, setting, ...extra] = args;
-  if (nameWord === undefined || (setting !== 'on' && setting !== 'off') || extra.length > 0) return envelope_error('', undefined, 'vm protect: usage: vm protect <name> on|off\n');
+async function vmProtect_run(context: VmCommandContext, nameWord: string, setting: 'on' | 'off'): Promise<CommandEnvelope> {
   const need = await vm_needOrTake(context, nameWord, 'protect');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   context.store.record_update(need.name, (current: VmRecord): void => { current.protected = setting === 'on'; current.protectedAt = new Date().toISOString(); });
@@ -1135,14 +1128,12 @@ async function lock_refresh(context: VmCommandContext, name: string): Promise<Vm
  * `vm teardown <name> [--all]`.
  *
  * @param context - The session.
- * @param args - The words after `teardown`.
+ * @param named - The VM.
+ * @param all - Its data, backups and address go too.
  * @returns The envelope.
  */
-async function vmTeardown_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const all: boolean = args.includes('--all');
-  const words: string[] = args.filter((word: string): boolean => word !== '--all');
-  if (words.length !== 1 || (words[0] as string).startsWith('-')) return envelope_error('', undefined, 'vm teardown: usage: vm teardown <name> [--all]\n');
-  const need = await vm_needOrTake(context, words[0], 'teardown');
+async function vmTeardown_run(context: VmCommandContext, named: string, all: boolean): Promise<CommandEnvelope> {
+  const need = await vm_needOrTake(context, named, 'teardown');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   const { name, record, spec } = need;
   if (need.said !== '') sink_dataLine(need.said.trimEnd());
@@ -1169,42 +1160,141 @@ async function vmTeardown_run(context: VmCommandContext, args: ReadonlyArray<str
   return envelope_ok(all ? `${name}: torn down whole; its spec stays (vm build ${name} builds it again, empty)\n` : `${name}: its machine is gone; its data and address stay (vm build ${name} makes the machine again over them)\n`);
 }
 
+/** `vm new`'s and `vm cost`'s options, by property, and the flag each is. */
+const VM_FLAGS: Readonly<Record<string, string>> = {
+  net: '--net', open: '--open', vcpu: '--vcpu', memory: '--memory', disk: '--disk', data: '--data', dataBackup: '--data-backup', os: '--os',
+  ssh: '--ssh', sshUser: '--ssh-user', sshKey: '--ssh-key', sshKeyFile: '--ssh-key-file',
+};
+
+/** A VM's spec, as `vm new` and `vm cost` take it. */
+const VM_SPEC_OPTIONS = {
+  net: { long: 'net', summary: 'The built network it stands on', value: { name: 'network', kind: 'network' } },
+  open: { long: 'open', summary: 'The ports open to the internet, comma-separated (80,443)', value: { name: 'ports', kind: 'word' } },
+  vcpu: { long: 'vcpu', summary: 'Its vCPUs', value: { name: 'n', kind: 'word' } },
+  memory: { long: 'memory', summary: 'Its memory, in GiB', value: { name: 'GiB', kind: 'word' } },
+  disk: { long: 'disk', summary: 'Its boot disk, in GB', value: { name: 'GB', kind: 'word' } },
+  data: { long: 'data', summary: 'Its data volume, in GB (50 at least)', value: { name: 'GB', kind: 'word' } },
+  dataBackup: { long: 'data-backup', summary: 'Daily backups of its data, or none', value: { name: 'daily|none', kind: 'word' } },
+  os: { long: 'os', summary: 'Its operating system (ubuntu-26.04)', value: { name: 'os', kind: 'word' } },
+  ssh: { long: 'ssh', summary: 'Public SSH on this port, or off', value: { name: 'port|off', kind: 'word' } },
+  sshUser: { long: 'ssh-user', summary: 'Public SSH\'s administrative user (default ops)', value: { name: 'user', kind: 'word' } },
+  sshKey: { long: 'ssh-key', summary: 'Public SSH\'s public key, as text', value: { name: 'key', kind: 'word' } },
+  sshKeyFile: { long: 'ssh-key-file', summary: 'Public SSH\'s public key, read from a file on this host', value: { name: 'key.pub', kind: 'hostPath' } },
+} as const;
+
+/** A VM, as a line names it. */
+const VM_OPERAND = { name: 'name', kind: 'vm', summary: 'The VM' } as const;
+
+/** The same, left out for the only one. */
+const ONLY_VM_OPERAND = { name: 'name', kind: 'vm', optional: true, summary: 'The VM; none, the only one' } as const;
+
+/** What a `vm` line may hold. */
+const VM_GRAMMAR = {
+  operands: [{ name: 'name', kind: 'vm', optional: true, summary: 'A VM: vm <name> is its status' }],
+  bare: { summary: 'Every VM\'s status: those declared here and those the tenancy runs' },
+  subcommands: {
+    status: { summary: 'Where each VM stands', operands: [{ name: 'names', kind: 'vm', optional: true, repeat: true, summary: 'The VMs; none, every one' }] },
+    new: { summary: 'Declare a VM (or compare with the one declared), building nothing', operands: [{ name: 'name', kind: 'word', summary: 'Its name, a hostname' }], options: VM_SPEC_OPTIONS },
+    cost: { summary: 'What a VM bills at list price, declaring nothing', operands: [{ ...VM_OPERAND, optional: true, summary: 'The VM, declared or not; none, every one declared' }], options: VM_SPEC_OPTIONS },
+    limits: { summary: 'What the shape VMs are built from sells, in the spec\'s words' },
+    plan: { summary: 'The VM\'s size, its network and its cost', operands: [ONLY_VM_OPERAND] },
+    build: {
+      summary: 'Plan its data and machine as tasks, say the counts and the cost, ask, apply',
+      operands: [ONLY_VM_OPERAND],
+      options: { allowAlter: { long: 'allow-alter', summary: 'Let a plan replace or remove what exists' } },
+    },
+    shell: { summary: 'A three-hour session on the network\'s bastion, and the ssh line (shell tier)', operands: [ONLY_VM_OPERAND], options: { print: { long: 'print', summary: 'Print the ssh line (as it always is)' } } },
+    protect: { summary: 'Refuse teardown, or let it run', operands: [VM_OPERAND, { name: 'setting', kind: 'enum', values: ['on', 'off'], summary: 'on refuses teardown; off lets it run' }] },
+    teardown: {
+      summary: 'Remove the machine, keeping its data, backups and address',
+      operands: [VM_OPERAND],
+      options: { all: { long: 'all', summary: 'Its data, backups and address too, its name typed back first' } },
+    },
+    keep: { summary: 'Keep the VM\'s secrets in the tenancy from this host', operands: [VM_OPERAND] },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * `vm`.
+ * `vm <name>`: that VM's status, one the tenancy runs read by its name too;
+ * a word naming none is refused.
  *
  * @param context - The session.
- * @param args - The words after `vm`.
+ * @param named - The word.
  * @returns The envelope.
  */
-export async function vm_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const [verb = 'status', ...rest] = args;
-  switch (verb) {
-    case 'status': return vmStatus_run(context, rest);
-    case 'new': return await vmNew_run(context, rest);
-    case 'cost': return await vmCost_run(context, rest);
-    case 'limits': return await vmLimits_run(context, rest);
-    case 'plan': return await vmPlan_run(context, rest);
-    case 'build': return await vmBuild_run(context, rest);
-    case 'shell': return await vmShell_run(context, rest);
-    case 'protect': return await vmProtect_run(context, rest);
-    case 'teardown': return await vmTeardown_run(context, rest);
-    case 'keep': return await vmKeep_run(context, rest);
-    default:
-      if (rest.length === 0 && context.store.names_list().includes(verb)) return vmStatus_run(context, [verb]);
-      // A VM the tenancy runs that this session keeps no record of is read by its name too.
-      if (rest.length === 0 && VM_NAME.test(verb)) {
-        const read: CommandEnvelope = await vmStatus_run(context, [verb]);
-        if (read.status === 'ok') return read;
-      }
-      return envelope_error('', undefined, `vm: ${verb}: not a verb (vm status, new, cost, limits, plan, build, shell, protect, teardown) nor a VM\n`);
+async function vmNamed_run(context: VmCommandContext, named: string): Promise<CommandEnvelope> {
+  if (context.store.names_list().includes(named)) return vmStatus_run(context, [named]);
+  // A VM the tenancy runs that this session keeps no record of is read by its name too.
+  if (VM_NAME.test(named)) {
+    const read: CommandEnvelope = await vmStatus_run(context, [named]);
+    if (read.status === 'ok') return read;
+  }
+  return envelope_error('', undefined, `vm: ${named}: not a verb (vm status, new, cost, limits, plan, build, shell, protect, teardown) nor a VM\n`);
+}
+
+/**
+ * Runs one `vm` line.
+ *
+ * @param context - The session.
+ * @param args - The line, parsed.
+ * @returns The envelope.
+ */
+async function vmLine_run(context: VmCommandContext, args: CommandArguments<typeof VM_GRAMMAR>): Promise<CommandEnvelope> {
+  switch (args.subcommand) {
+    case null: return args.operands.name === undefined ? vmStatus_run(context, []) : vmNamed_run(context, args.operands.name);
+    case 'status': return vmStatus_run(context, args.operands.names);
+    case 'new': return await vmNew_run(context, args.operands.name, flags_map(args.options, VM_FLAGS));
+    case 'cost': return await vmCost_run(context, args.operands.name, flags_map(args.options, VM_FLAGS));
+    case 'limits': return await vmLimits_run(context);
+    case 'plan': return await vmPlan_run(context, args.operands.name);
+    case 'build': return await vmBuild_run(context, args.operands.name, args.options.allowAlter);
+    case 'shell': return await vmShell_run(context, args.operands.name);
+    case 'protect': return await vmProtect_run(context, args.operands.name, args.operands.setting);
+    case 'teardown': return await vmTeardown_run(context, args.operands.name, args.options.all);
+    case 'keep': return await vmKeep_run(context, args.operands.name);
   }
 }
 
-/** `vm`'s help. */
-export const VM_HELP: CommandHelp = {
-  usage: 'vm [status [<name>…]] | vm <name> | vm new <name> --net <network> --vcpu <n> --memory <GiB> --disk <GB> --data <GB> --os <os> [--open <ports>] [--data-backup daily|none] | vm cost [<name> [<vm new\'s options>]] | vm limits | vm plan [<name>] | vm build [<name>] [--allow-alter] | vm shell [<name>] | vm protect <name> on|off | vm teardown <name> [--all] | vm keep <name>',
-  summary: 'Declare, build, reach and tear down VMs on a network',
-  category: 'Resources',
-  description: 'vm new declares a VM and builds nothing; on a VM already declared it compares, printing unchanged or the change (a script is the truth), and an option not given keeps its value. A VM stands on a built network (--net) and is named in portable words only: vCPUs, memory in GiB, a boot disk and a data volume in GB (50 at least), the operating system (ubuntu-26.04), the ports open to the internet (--open 80,443), public SSH for an administrative Linux user that is not a ChRIS account (--ssh <port>|off, --ssh-user, default ops, --ssh-key-file <key.pub> or --ssh-key: key-only, with sudo; off keeps the user and the key; the network\'s bastion reaches the machine either way) and daily backups of its data. The driver chooses the rest: on OCI an E5.Flex (two vCPUs to an OCPU), the newest image of the OS (pinned at the first build), the first availability domain. A VM is two stacks: its data (the volume, its backups, a reserved address) and its machine (the instance, its boot disk, a security group, the volume\'s attachment); cloud-init formats the volume once, mounts it at /srv/data and puts Docker\'s data there. vm cost says what a VM bills at list price, an hour and a month, and what its data alone keeps billing after a teardown; it declares and saves nothing. Its words are vm new\'s: on a declared VM the options given change its spec for the answer and the difference is said (vm cost store --memory 16); on a name not declared they are the whole spec, without --net (the price is the session\'s region\'s); bare, every declared VM. vm limits says what the shape VMs are built from sells, in the same words: vCPUs from the least to the most in the cloud\'s steps, memory in GiB and per vCPU, the disks\' floors and ceilings; a slider takes its ends from it. vm plan says the size, the network and the cost. vm build plans as tasks (/proc/steps/vm-<name>-plan-data, -machine), says the counts and the cost and asks, applies the data and the machine and points the address at it. On a VM that stands it resizes in place: new vCPUs or memory reshape the machine, which the cloud reboots (the question says so first); a grown boot disk or data volume has its filesystem grown after, over the bastion (/proc/steps/vm-<name>-grow); ports open and close (the machine\'s own firewall admits them over the bastion after the apply, /proc/steps/vm-<name>-host, which also makes public SSH\'s user, its key and sshd\'s port), backups turn on and off; a shrink, a new OS (a new machine) or a replaced volume is refused unless --allow-alter. vm shell (shell tier) opens a three-hour session on the network\'s bastion for the VM\'s own key and prints the ssh line. A VM is born protected: vm protect <name> off lets teardown run. vm teardown removes the machine and keeps the data, backups and address, so the next build brings it back with its data and name; --all takes those too, asking for the name typed back. The tenancy is the truth and this host\'s records its cache: a VM\'s SSH key and its ChRIS\'s record and passwords are kept in the tenancy\'s vault (mise), so every session on every host holding the tenancy\'s credentials reads a VM stratus built whole, on vm status; vm keep <name> keeps them from this host for a VM built before they were kept.',
-  examples: ['vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04', 'vm cost store --memory 16', 'vm cost blt --vcpu 4 --memory 16 --disk 50 --data 1024 --data-backup daily --os ubuntu-26.04', 'vm limits', 'vm plan store', 'vm build store', 'vm shell store', 'vm protect store off', 'vm teardown store'],
-};
+/**
+ * `vm`: the declaration, over the session's VMs.
+ *
+ * @param context - The session.
+ * @returns The declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [vmCommand_make(context)] }, 'backend');
+ * ```
+ */
+export function vmCommand_make(context: VmCommandContext): CommandDeclaration<typeof VM_GRAMMAR> {
+  return command_declare({
+    name: 'vm',
+    grammar: VM_GRAMMAR,
+    help: {
+      summary: 'Declare, build, reach and tear down VMs on a network',
+      category: 'Resources',
+      description: VM_DESCRIPTION,
+      examples: ['vm new store --net chrisproject-services --open 80,443 --vcpu 2 --memory 8 --disk 50 --data 50 --data-backup daily --os ubuntu-26.04', 'vm cost store --memory 16', 'vm cost blt --vcpu 4 --memory 16 --disk 50 --data 1024 --data-backup daily --os ubuntu-26.04', 'vm limits', 'vm plan store', 'vm build store', 'vm shell store', 'vm protect store off', 'vm teardown store'],
+    },
+    handler: (args): Promise<CommandEnvelope> => vmLine_run(context, args),
+  });
+}
+
+/**
+ * `vm` over words already split: the declaration's parse and handler.
+ *
+ * @param context - The session.
+ * @param args - The words after `vm`.
+ * @returns The envelope, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await vm_run(context, ['plan', 'store']);
+ * ```
+ */
+export async function vm_run(context: VmCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  return declaredCommand_run(vmCommand_make(context), [...args]);
+}
+
+/** What `help vm` says of it. */
+const VM_DESCRIPTION: string = 'vm new declares a VM and builds nothing; on a VM already declared it compares, printing unchanged or the change (a script is the truth), and an option not given keeps its value. A VM stands on a built network (--net) and is named in portable words only: vCPUs, memory in GiB, a boot disk and a data volume in GB (50 at least), the operating system (ubuntu-26.04), the ports open to the internet (--open 80,443), public SSH for an administrative Linux user that is not a ChRIS account (--ssh <port>|off, --ssh-user, default ops, --ssh-key-file <key.pub> or --ssh-key: key-only, with sudo; off keeps the user and the key; the network\'s bastion reaches the machine either way) and daily backups of its data. The driver chooses the rest: on OCI an E5.Flex (two vCPUs to an OCPU), the newest image of the OS (pinned at the first build), the first availability domain. A VM is two stacks: its data (the volume, its backups, a reserved address) and its machine (the instance, its boot disk, a security group, the volume\'s attachment); cloud-init formats the volume once, mounts it at /srv/data and puts Docker\'s data there. vm cost says what a VM bills at list price, an hour and a month, and what its data alone keeps billing after a teardown; it declares and saves nothing. Its words are vm new\'s: on a declared VM the options given change its spec for the answer and the difference is said (vm cost store --memory 16); on a name not declared they are the whole spec, without --net (the price is the session\'s region\'s); bare, every declared VM. vm limits says what the shape VMs are built from sells, in the same words: vCPUs from the least to the most in the cloud\'s steps, memory in GiB and per vCPU, the disks\' floors and ceilings; a slider takes its ends from it. vm plan says the size, the network and the cost. vm build plans as tasks (/proc/steps/vm-<name>-plan-data, -machine), says the counts and the cost and asks, applies the data and the machine and points the address at it. On a VM that stands it resizes in place: new vCPUs or memory reshape the machine, which the cloud reboots (the question says so first); a grown boot disk or data volume has its filesystem grown after, over the bastion (/proc/steps/vm-<name>-grow); ports open and close (the machine\'s own firewall admits them over the bastion after the apply, /proc/steps/vm-<name>-host, which also makes public SSH\'s user, its key and sshd\'s port), backups turn on and off; a shrink, a new OS (a new machine) or a replaced volume is refused unless --allow-alter. vm shell (shell tier) opens a three-hour session on the network\'s bastion for the VM\'s own key and prints the ssh line. A VM is born protected: vm protect <name> off lets teardown run. vm teardown removes the machine and keeps the data, backups and address, so the next build brings it back with its data and name; --all takes those too, asking for the name typed back. The tenancy is the truth and this host\'s records its cache: a VM\'s SSH key and its ChRIS\'s record and passwords are kept in the tenancy\'s vault (mise), so every session on every host holding the tenancy\'s credentials reads a VM stratus built whole, on vm status; vm keep <name> keeps them from this host for a VM built before they were kept.';

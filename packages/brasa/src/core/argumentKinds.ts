@@ -302,6 +302,39 @@ const CORE_KINDS: ReadonlyMap<string, ArgumentKind> = new Map(
 );
 
 /**
+ * A kind for a word that names one thing among those a backend keeps (a
+ * cluster, a VM, a network): any word stands, so the command says itself
+ * when it names nothing kept, and it completes the names the backend lists
+ * now. A backend that registers kinds of its own makes them with this, so
+ * its value check and schema are the core's.
+ *
+ * @param name - The kind's name.
+ * @param summary - What it is, in a few words.
+ * @param names_list - The names kept now.
+ * @returns The kind.
+ *
+ * @example
+ * ```ts
+ * const clusterKind: ArgumentKind = namedKind_make('cluster', 'a cluster this session keeps', () => store.names_list());
+ * ```
+ */
+export function namedKind_make(name: string, summary: string, names_list: () => ReadonlyArray<string> | Promise<ReadonlyArray<string>>): ArgumentKind {
+  return {
+    name,
+    summary,
+    word_read: (word: string): ArgumentCheck => text_read(word, summary),
+    schema_make: (): z.ZodType => z.string().min(1),
+    words_complete: async (partial: string): Promise<string[]> => {
+      try {
+        return candidates_filter(await names_list(), partial);
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
+/**
  * Finds a kind: the core's, then the installed backend's.
  *
  * @param name - The kind's name.

@@ -15,14 +15,14 @@
  */
 import chalk from 'chalk';
 import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, type CommandEnvelope, type NetStatusRow } from '@fnndsc/menu';
-import { repl_confirm, repl_question, type CommandHelp } from '@fnndsc/brasa/core';
+import { command_declare, declaredCommand_run, repl_confirm, repl_question, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_alter, planCounts_words, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import type { CloudDriver } from '../cloud/driver.js';
 import { cidr_read, NET_RESOURCES, netSpec_diff, subnet_derive, type NetSpec } from '../net/spec.js';
 import { NET_NAME, type NetRecord, type NetStore } from '../net/state.js';
 import { netsFound_read, type FoundNet } from '../vm/found.js';
 import { NET_JOBS, netApplyRun_make, netPlanRun_make, netTeardownRun_make, standing_words, type NetDeps } from '../net/build.js';
-import { job_runFollowed, options_read, tasks_granted } from './build.js';
+import { job_runFollowed, tasks_granted } from './build.js';
 import { TIER_REFUSAL } from '../tier.js';
 
 /** What `net` reads from the session. */
@@ -197,16 +197,12 @@ async function netStatus_run(context: NetCommandContext, names: ReadonlyArray<st
  * `net new <name> --cidr <range>`: declares; on one declared, compares.
  *
  * @param context - The session.
- * @param args - The words after `new`.
+ * @param name - The network.
+ * @param cidrText - Its range as typed, if given.
  * @returns The envelope.
  */
-function netNew_run(context: NetCommandContext, args: ReadonlyArray<string>): CommandEnvelope {
-  const read = options_read(args, ['--cidr']);
-  if ('error' in read) return envelope_error('', undefined, `net new: ${read.error} (--cidr)\n`);
-  const [name, ...extra] = read.rest;
-  if (name === undefined || extra.length > 0) return envelope_error('', undefined, 'net new: usage: net new <name> --cidr <range>\n');
+function netNew_run(context: NetCommandContext, name: string, cidrText: string | undefined): CommandEnvelope {
   if (!NET_NAME.test(name)) return envelope_error('', undefined, `net new: ${name}: a network's name is lower-case letters, digits and hyphens, starting with a letter\n`);
-  const cidrText: string | undefined = read.options.get('--cidr');
   if (cidrText === undefined) return envelope_error('', undefined, 'net new: --cidr <range> is needed (10.20.0.0/16)\n');
   const cidr = cidr_read(cidrText);
   if ('error' in cidr) return envelope_error('', undefined, `net new: --cidr ${cidr.error}\n`);
@@ -242,12 +238,11 @@ function planKept_read(context: NetCommandContext, name: string): { plan: InfraP
  * `net plan [<name>]`.
  *
  * @param context - The session.
- * @param args - The words after `plan`.
+ * @param named - The network, or none for the only one.
  * @returns The envelope.
  */
-async function netPlan_run(context: NetCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  if (args.length > 1 || args.some((word: string): boolean => word.startsWith('-'))) return envelope_error('', undefined, 'net plan: usage: net plan [<name>]\n');
-  const need = net_need(context, args[0], 'plan');
+async function netPlan_run(context: NetCommandContext, named: string | undefined): Promise<CommandEnvelope> {
+  const need = net_need(context, named, 'plan');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   const { name, record, spec } = need;
   const lines: string[] = [...netStatus_lines(record, spec, await netStands_read(context, record)), 'made of:', ...NET_RESOURCES.map((kind: string): string => `  ${kind}`), chalk.gray('cost  none: nothing a network is made of is in the price list')];
@@ -268,16 +263,12 @@ async function netPlan_run(context: NetCommandContext, args: ReadonlyArray<strin
  * `net build <name> [--allow-alter]`: plans as a task, asks, applies.
  *
  * @param context - The session.
- * @param args - The words after `build`.
+ * @param named - The network, or none for the only one.
+ * @param allowAlter - An apply may touch what exists.
  * @returns The envelope.
  */
-async function netBuild_run(context: NetCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const allowAlter: boolean = args.includes('--allow-alter');
-  const words: string[] = args.filter((word: string): boolean => word !== '--allow-alter');
-  const unknown: string | undefined = words.find((word: string): boolean => word.startsWith('-'));
-  if (unknown !== undefined) return envelope_error('', undefined, `net build: ${unknown}: unknown option (--allow-alter)\n`);
-  if (words.length > 1) return envelope_error('', undefined, 'net build: usage: net build [<name>] [--allow-alter]\n');
-  const need = net_need(context, words[0], 'build');
+async function netBuild_run(context: NetCommandContext, named: string | undefined, allowAlter: boolean): Promise<CommandEnvelope> {
+  const need = net_need(context, named, 'build');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   if (!tasks_granted()) return envelope_error('', undefined, `net build: ${TIER_REFUSAL}\n`);
   const deps = deps_make(context);
@@ -308,12 +299,11 @@ async function netBuild_run(context: NetCommandContext, args: ReadonlyArray<stri
  * `net teardown <name>`: refuses while anything stands on the network, then asks for its name.
  *
  * @param context - The session.
- * @param args - The words after `teardown`.
+ * @param named - The network.
  * @returns The envelope.
  */
-async function netTeardown_run(context: NetCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  if (args.length !== 1 || (args[0] as string).startsWith('-')) return envelope_error('', undefined, 'net teardown: usage: net teardown <name>\n');
-  const need = net_need(context, args[0], 'teardown');
+async function netTeardown_run(context: NetCommandContext, named: string): Promise<CommandEnvelope> {
+  const need = net_need(context, named, 'teardown');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   const { name, record } = need;
   if (record.placeId === undefined && record.stackRef === undefined) return envelope_ok(`${name}: nothing of it is built\n`);
@@ -332,32 +322,90 @@ async function netTeardown_run(context: NetCommandContext, args: ReadonlyArray<s
   return envelope_ok(`${name}: torn down; its spec stays (net build ${name} builds it again)\n`);
 }
 
+/** A network, as a line names it. */
+const NETWORK_OPERAND = { name: 'name', kind: 'network', summary: 'The network' } as const;
+
+/** What a `net` line may hold. */
+const NET_GRAMMAR = {
+  operands: [{ name: 'name', kind: 'network', optional: true, summary: 'A network: net <name> is its status' }],
+  bare: { summary: 'Every network\'s status: those declared here and those the tenancy holds' },
+  subcommands: {
+    status: { summary: 'Where each network stands', operands: [{ name: 'names', kind: 'network', optional: true, repeat: true, summary: 'The networks; none, every one' }] },
+    new: {
+      summary: 'Declare a network (or compare with the one declared), building nothing',
+      operands: [{ name: 'name', kind: 'word', summary: 'Its name: lower-case letters, digits and hyphens' }],
+      options: { cidr: { long: 'cidr', summary: 'Its address range, /16 to /24 (10.20.0.0/16)', value: { name: 'range', kind: 'word' } } },
+    },
+    plan: { summary: 'What the network is made of; with the tasks tier, plan a built one again', operands: [{ ...NETWORK_OPERAND, optional: true, summary: 'The network; none, the only one' }] },
+    build: {
+      summary: 'Plan as a task, say the counts and ask, then apply',
+      operands: [{ ...NETWORK_OPERAND, optional: true, summary: 'The network; none, the only one' }],
+      options: { allowAlter: { long: 'allow-alter', summary: 'Let an apply touch what exists' } },
+    },
+    teardown: { summary: 'Remove a network nothing stands on, its name typed back first', operands: [NETWORK_OPERAND] },
+  },
+} as const satisfies CommandGrammar;
+
 /**
- * `net`.
+ * Runs one `net` line.
  *
  * @param context - The session.
- * @param args - The words after `net`.
+ * @param args - The line, parsed.
  * @returns The envelope.
  */
-export async function net_run(context: NetCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
-  const [verb = 'status', ...rest] = args;
-  switch (verb) {
-    case 'status': return netStatus_run(context, rest);
-    case 'new': return netNew_run(context, rest);
-    case 'plan': return await netPlan_run(context, rest);
-    case 'build': return await netBuild_run(context, rest);
-    case 'teardown': return await netTeardown_run(context, rest);
-    default:
-      if (rest.length === 0 && context.store.names_list().includes(verb)) return netStatus_run(context, [verb]);
-      return envelope_error('', undefined, `net: ${verb}: not a verb (net status, new, plan, build, teardown)\n`);
+async function netLine_run(context: NetCommandContext, args: CommandArguments<typeof NET_GRAMMAR>): Promise<CommandEnvelope> {
+  switch (args.subcommand) {
+    case null: {
+      const named: string | undefined = args.operands.name;
+      if (named === undefined) return netStatus_run(context, []);
+      if (context.store.names_list().includes(named)) return netStatus_run(context, [named]);
+      return envelope_error('', undefined, `net: ${named}: not a verb (net status, new, plan, build, teardown)\n`);
+    }
+    case 'status': return netStatus_run(context, args.operands.names);
+    case 'new': return netNew_run(context, args.operands.name, args.options.cidr);
+    case 'plan': return await netPlan_run(context, args.operands.name);
+    case 'build': return await netBuild_run(context, args.operands.name, args.options.allowAlter);
+    case 'teardown': return await netTeardown_run(context, args.operands.name);
   }
 }
 
-/** `net`'s help. */
-export const NET_HELP: CommandHelp = {
-  usage: 'net [status [<name>…]] | net <name> | net new <name> --cidr <range> | net plan [<name>] | net build [<name>] [--allow-alter] | net teardown <name>',
-  summary: 'Declare, build and tear down the networks VMs stand on',
-  category: 'Resources',
-  description: 'net new declares a network and builds nothing; on a network already declared it compares, printing unchanged or the change (the one place where a replayed line outranks a refusal: a script is the truth). A network is its address range (--cidr, /16 to /24); its subnet is the range\'s first /24. On OCI it is a compartment of its name under the tenancy\'s root, holding a VCN, an internet gateway, the default route and security list (SSH only from inside the network), one public subnet and an OCI Bastion admitting only this host\'s public address, read when it is built. A compartment of that name that holds nothing is adopted; one that holds anything is refused. net plan says what the network is made of and, with the tasks tier, plans a built one again. net build plans as a task (/proc/steps/net-<name>-plan), says the counts and asks, then applies; a plan that touches what exists is refused unless --allow-alter. net teardown refuses while instances, volumes, load balancers or buckets stand in its compartment, asks for the name typed back, then destroys the stack and removes the compartment it made (one adopted keeps itself and loses its tag). Nothing a network is made of bills.',
-  examples: ['net new chrisproject-services --cidr 10.20.0.0/16', 'net plan chrisproject-services', 'net build chrisproject-services', 'net', 'net teardown scratch'],
-};
+/**
+ * `net`: the declaration, over the session's networks.
+ *
+ * @param context - The session.
+ * @returns The declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [netCommand_make(context)] }, 'backend');
+ * ```
+ */
+export function netCommand_make(context: NetCommandContext): CommandDeclaration<typeof NET_GRAMMAR> {
+  return command_declare({
+    name: 'net',
+    grammar: NET_GRAMMAR,
+    help: {
+      summary: 'Declare, build and tear down the networks VMs stand on',
+      category: 'Resources',
+      description: 'net new declares a network and builds nothing; on a network already declared it compares, printing unchanged or the change (the one place where a replayed line outranks a refusal: a script is the truth). A network is its address range (--cidr, /16 to /24); its subnet is the range\'s first /24. On OCI it is a compartment of its name under the tenancy\'s root, holding a VCN, an internet gateway, the default route and security list (SSH only from inside the network), one public subnet and an OCI Bastion admitting only this host\'s public address, read when it is built. A compartment of that name that holds nothing is adopted; one that holds anything is refused. net plan says what the network is made of and, with the tasks tier, plans a built one again. net build plans as a task (/proc/steps/net-<name>-plan), says the counts and asks, then applies; a plan that touches what exists is refused unless --allow-alter. net teardown refuses while instances, volumes, load balancers or buckets stand in its compartment, asks for the name typed back, then destroys the stack and removes the compartment it made (one adopted keeps itself and loses its tag). Nothing a network is made of bills. net <name> is that network\'s status.',
+      examples: ['net new chrisproject-services --cidr 10.20.0.0/16', 'net plan chrisproject-services', 'net build chrisproject-services', 'net', 'net teardown scratch'],
+    },
+    handler: (args): Promise<CommandEnvelope> => netLine_run(context, args),
+  });
+}
+
+/**
+ * `net` over words already split: the declaration's parse and handler.
+ *
+ * @param context - The session.
+ * @param args - The words after `net`.
+ * @returns The envelope, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await net_run(context, ['plan', 'scratch']);
+ * ```
+ */
+export async function net_run(context: NetCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  return declaredCommand_run(netCommand_make(context), [...args]);
+}

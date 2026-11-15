@@ -18,7 +18,7 @@
  */
 import chalk from 'chalk';
 import { envelope_error, envelope_ok, STRATUS_CAPACITY_MODEL_KIND, type CapacityModel, type CapacityRow, type CommandEnvelope } from '@fnndsc/menu';
-import type { CommandHelp } from '@fnndsc/brasa/core';
+import { command_declare, declaredCommand_run, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
 import type { CloudAvailability, CloudDriver, CloudLimit, CloudShape } from '../cloud/driver.js';
 import { AnswerCache } from '../cache.js';
 import type { HarborCluster } from '../checkout/harborOci.js';
@@ -106,13 +106,13 @@ function row_line(row: CapacityRow, limitWidth: number, zoneWidth: number): stri
 }
 
 /**
- * Runs `capacity`.
+ * Answers `capacity`.
  *
  * @param context - The session.
  * @param args - Families, or none for the clusters' own.
  * @returns The envelope, with the `stratus.capacity` model.
  */
-export async function capacity_run(context: CapacityCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
+async function capacity_answer(context: CapacityCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
   const region: string | null = context.region();
   if (region === null) return envelope_error('', undefined, 'capacity: not connected\n');
   const named: string[] = args.length > 0
@@ -131,11 +131,50 @@ export async function capacity_run(context: CapacityCommandContext, args: Readon
   return envelope_ok(`${text}\n`, { kind: STRATUS_CAPACITY_MODEL_KIND, data: model });
 }
 
-/** `capacity`'s help. */
-export const CAPACITY_HELP: CommandHelp = {
-  usage: 'capacity [<family>…]',
-  summary: 'What the region has free for a shape family, per zone',
-  category: 'Resources',
-  description: 'For each shape family named (or, with none, each family a cluster\'s spec names), the limits its shapes draw on in the session\'s region, at every zone they are kept in: what is permitted and, when the cloud says, how much is free. The same facts are under regions/<region>/limits.',
-  examples: ['capacity', 'capacity E5 A1'],
-};
+/** What a `capacity` line may hold. */
+const CAPACITY_GRAMMAR = {
+  operands: [{ name: 'families', kind: 'word', optional: true, repeat: true, summary: 'Shape families (E5, A1); none, those the clusters\' specs name, else every one the region offers' }],
+} as const satisfies CommandGrammar;
+
+/**
+ * `capacity [<family>…]`: the declaration. It reads the cloud and changes
+ * nothing of the session, so it holds nothing and runs beside any line.
+ *
+ * @param context - The session.
+ * @returns The declaration.
+ *
+ * @example
+ * ```ts
+ * commands_register({ declarations: [capacityCommand_make(context)] }, 'backend');
+ * ```
+ */
+export function capacityCommand_make(context: CapacityCommandContext): CommandDeclaration<typeof CAPACITY_GRAMMAR> {
+  return command_declare({
+    name: 'capacity',
+    grammar: CAPACITY_GRAMMAR,
+    help: {
+      summary: 'What the region has free for a shape family, per zone',
+      category: 'Resources',
+      description: 'For each shape family named (or, with none, each family a cluster\'s spec names), the limits its shapes draw on in the session\'s region, at every zone they are kept in: what is permitted and, when the cloud says, how much is free. The same facts are under regions/<region>/limits.',
+      examples: ['capacity', 'capacity E5 A1'],
+    },
+    holds: [],
+    handler: (args): Promise<CommandEnvelope> => capacity_answer(context, args.operands.families),
+  });
+}
+
+/**
+ * `capacity` over words already split: the declaration's parse and handler.
+ *
+ * @param context - The session.
+ * @param args - Families, or none for the clusters' own.
+ * @returns The envelope, with the `stratus.capacity` model, or the refusal of a bad line.
+ *
+ * @example
+ * ```ts
+ * await capacity_run(context, ['E5']);
+ * ```
+ */
+export async function capacity_run(context: CapacityCommandContext, args: ReadonlyArray<string>): Promise<CommandEnvelope> {
+  return declaredCommand_run(capacityCommand_make(context), [...args]);
+}

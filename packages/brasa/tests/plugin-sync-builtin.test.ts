@@ -47,6 +47,11 @@ jest.unstable_mockModule('../src/core/question.js', () => ({ repl_confirm: mockC
 const lines: string[] = [];
 jest.unstable_mockModule('../src/core/sink.js', () => ({ sink_dataLine: (line: string): void => { lines.push(line); } }));
 jest.unstable_mockModule('../src/builtins/utils.js', () => ({ path_resolve: async (p: string): Promise<string> => (p.startsWith('/') ? p : `/home/u/${p}`) }));
+// A CUBE file or index is read where the store keeps it: the same place here, no links to follow.
+jest.unstable_mockModule('../src/core/paths.js', () => ({
+  path_resolve: async (p: string): Promise<string> => (p.startsWith('/') ? p : `/home/u/${p}`),
+  storePath_resolve: async (p: string): Promise<string> => (p.startsWith('/') ? p : `/home/u/${p}`),
+}));
 
 const verbs = await import('../src/builtins/res/plugin.sync.js');
 const indexConfig = await import('../src/config/indexConfig.js');

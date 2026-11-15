@@ -1,6 +1,7 @@
 import { jest, describe, it, expect, beforeEach, afterEach, beforeAll } from '@jest/globals';
 import type { CommandEnvelope } from '@fnndsc/menu';
 import { commands_register } from '../src/core/commandRegistry.js';
+import { SHELL_WORDS } from '../src/core/shellWords.js';
 import { backend_install } from '../src/core/backend.js';
 import { chrisHelp_install, declarations_install, everyVerb_install } from './support/chrisHelp.js';
 import {
@@ -121,8 +122,8 @@ describe('builtin_help in a session with nothing of its own', () => {
 
 describe('builtin_help in a session that has the verbs', () => {
   beforeAll(() => {
-    const ran = async (): Promise<CommandEnvelope> => ({ status: 'ok', rendered: '' });
-    commands_register({ envelope: { ls: ran } });
+    // The shell's own words, as the core registers them; ls, declared, comes with the stand-ins.
+    commands_register({ shellWords: SHELL_WORDS });
     chrisHelp_install();
     backend_install({
       id: 'test',

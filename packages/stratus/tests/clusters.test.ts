@@ -9,7 +9,7 @@ import { envFile_parse, harborCluster_read, lastDone_find, HARBOR_STEPS } from '
 import { ClusterTree } from '../src/vfs/clusters.js';
 import { TenancyProvider } from '../src/vfs/tenancy.js';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
-import { cluster_run, stratusCommands_make, CLUSTER_HELP } from '../src/commands/cluster.js';
+import { cluster_run, stratusCommands_make } from '../src/commands/cluster.js';
 import type { CloudDriver, ResourceCounts } from '../src/cloud/driver.js';
 import { harborCheckout_make } from './support/harborCheckout.js';
 
@@ -184,15 +184,17 @@ describe('cluster status', () => {
     const context = context_make({ harbor: harborCheckout_make() });
     expect((await cluster_run(context, ['status', 'nope'])).renderedErr).toBe('cluster: nope: no such cluster (harbor)\n');
     expect((await cluster_run(context, ['harbor'])).rendered).toBe((await cluster_run(context, ['status', 'harbor'])).rendered);
-    expect((await cluster_run(context, ['harbor', 'x'])).renderedErr).toContain('cluster: harbor: not a verb');
+    expect((await cluster_run(context, ['harbor', 'x'])).renderedErr).toContain("cluster: unexpected operand 'x'");
     expect((await cluster_run(context, ['rename'])).renderedErr).toBe('cluster: rename: not a verb this session has yet (cluster status, new, size, plan, build, adopt, verify, protect, teardown)\n');
   });
 
   it('is one of the backend\'s two commands, with its help in the Resources category', async () => {
     const group = stratusCommands_make(context_make({}));
-    expect(Object.keys(group.envelope ?? {})).toEqual(['cluster', 'capacity', 'spend']);
-    expect(group.help?.['cluster']).toBe(CLUSTER_HELP);
-    expect(CLUSTER_HELP.category).toBe('Resources');
-    expect((await group.envelope!['cluster']!([])).status).toBe('ok');
+    expect(Object.keys(group)).toEqual(['declarations']);
+    expect((group.declarations ?? []).map((declaration) => declaration.name)).toEqual(['cluster', 'capacity', 'spend']);
+    const cluster = group.declarations?.[0];
+    expect(cluster?.help.category).toBe('Resources');
+    expect(cluster?.grammar).not.toBe('expression');
+    expect((await (cluster as { handler: (args: unknown) => Promise<{ status: string }> }).handler({ subcommand: null, operands: {}, options: {}, expanded: {} })).status).toBe('ok');
   });
 });

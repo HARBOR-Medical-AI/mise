@@ -7,9 +7,10 @@ import { describe, it, expect, beforeAll } from '@jest/globals';
 import { commands_register } from '../src/core/commandRegistry.js';
 import { lineHolds_get } from '../src/core/holds.js';
 import { coreCommands } from '../src/core/coreCommands.js';
+import { holdsStandIn_make } from './support/declarationStandIns.js';
 
 beforeAll((): void => {
-  commands_register({ holds: { look: [], move: ['cwd'], collect: ['cohort'] } });
+  commands_register({ declarations: [holdsStandIn_make('look', []), holdsStandIn_make('move', ['cwd']), holdsStandIn_make('collect', ['cohort'])] });
 });
 
 describe('what a line holds', () => {

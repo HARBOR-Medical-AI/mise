@@ -3,17 +3,16 @@
  *
  * Provides tab-completion logic for the REPL: command words, then a
  * declared command's line from its declaration (subcommands, options, and
- * values by kind, `declared.ts`), and for a command not yet declared the
- * older rules: a backend's option hook, a CFS path for the commands that
- * take one, and a backend's `/bin` entries.
+ * values by kind, `declared.ts`). A word the backend answers (a `/bin`
+ * plugin or pipeline) completes from the declaration the backend makes of
+ * it; any other word completes nothing.
  *
  * @module
  */
 import { backendInstalled_get } from '../../core/backend.js';
 import { builtinCommands_list } from '../../builtins/help.js';
 import { commandDeclaration_get } from '../../core/commandRegistry.js';
-import type { AnyCommandDeclaration } from '../../core/commandDeclaration.js';
-import { cfsPaths_complete } from './cfsPaths.js';
+import type { AnyCommandDeclaration, CommandDeclaration } from '../../core/commandDeclaration.js';
 import { declaredWord_complete } from './declared.js';
 import { args_tokenize } from '../parser.js';
 import { backslash_escapesNext } from '../quoting.js';
@@ -114,20 +113,20 @@ export function input_complete(line: string, callback: CompleterCallback): void 
     return;
   }
 
-  const compoundWord: CompletionWord = completionWord_get(line);
-  const options: ((args: string[], word: string) => Promise<string[] | null>) | undefined = backendInstalled_get()?.completion?.options;
-  if (compoundWord.value.startsWith('--') && options !== undefined) {
-    options(args, compoundWord.value).then((found: string[] | null): void => {
-      if (found === null) {
-        argumentCompletion_run(line, args, callback);
-        return;
-      }
-      callback(null, [found, compoundWord.raw]);
-    }).catch(() => callback(null, [[], compoundWord.raw]));
+  // A word the backend answers (a /bin plugin or pipeline) completes from the
+  // declaration it makes of it, as a builtin's line completes from its own.
+  const backendDeclaration: ((command: string) => Promise<CommandDeclaration | null>) | undefined = backendInstalled_get()?.fallback?.declaration;
+  if (backendDeclaration === undefined) {
+    callback(null, [[], line]);
     return;
   }
-
-  argumentCompletion_run(line, args, callback);
+  backendDeclaration(args[0] ?? '').then((found: CommandDeclaration | null): void => {
+    if (found === null) {
+      callback(null, [[], line]);
+      return;
+    }
+    declaredLine_complete(line, args, found, callback);
+  }).catch((): void => callback(null, [[], line]));
 }
 
 /**
@@ -146,44 +145,6 @@ function declaredLine_complete(line: string, args: string[], declaration: AnyCom
   declaredWord_complete(declaration, prior, word.value).then((found: string[]): void => {
     callback(null, [found.map((candidate: string): string => completion_format(candidate, word)), word.raw]);
   }).catch((): void => callback(null, [[], word.raw]));
-}
-
-/**
- * Completes an argument of a command not declared: a path, for a /bin
- * entry that takes one (a declared command's kinds complete its words).
- *
- * @param line - The input line.
- * @param args - Its words.
- * @param callback - Where the completions go.
- */
-function argumentCompletion_run(line: string, args: string[], callback: CompleterCallback): void {
-  // Case 2: Path Completion (Argument to specific commands)
-  const cmd: string = args[0];
-  const pathWord_complete = (): void => {
-    const word: CompletionWord = completionWord_get(line);
-
-    cfsPaths_complete(word.value).then((matches) => {
-        callback(null, [matches.map((match: string) => completion_format(match, word)), word.raw]);
-    }).catch((err) => {
-        // On error, return no matches, don't crash REPL
-        callback(null, [[], word.raw]);
-    });
-  };
-  // A /bin entry's operand is a path (#1303, #1305): a directory or files,
-  // first on the line. An option word is not one, and the word after `as`
-  // is a subject's name, so neither completes.
-  const pathArguments: ((command: string) => Promise<boolean>) | undefined = backendInstalled_get()?.completion?.pathArguments;
-  if (pathArguments !== undefined) {
-    const word: CompletionWord = completionWord_get(line);
-    const previous: string | undefined = line.endsWith(' ') ? args[args.length - 1] : args[args.length - 2];
-    const operandPosition: boolean = !word.value.startsWith('-') && previous !== 'as';
-    pathArguments(cmd).then((takesPaths: boolean): void => {
-      if (takesPaths && operandPosition) pathWord_complete();
-      else callback(null, [[], operandPosition ? line : word.raw]);
-    }).catch(() => callback(null, [[], line]));
-    return;
-  }
-  callback(null, [[], line]);
 }
 
 /**

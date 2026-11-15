@@ -1,24 +1,35 @@
 /**
  * @file What a ChRIS session adds to completion: its plugins as command
- * words, a pipeline's `--node.field` options, and the names completed at `/`.
+ * words, and the names completed at `/`. A `/bin` line's options and
+ * operands complete from its declaration, made from CUBE's parameters
+ * (`binDeclarations.ts`), as a builtin's line completes from its own.
+ *
+ * Key components:
+ * - plugins_getNames: the plugins `/bin` lists, by their `/bin` names.
+ * - binNames_list: every plugin and pipeline `/bin` lists.
+ * - chrisCompletion: what the backend adds to completion.
  *
  * @module
  */
-import { plugins_listAll, pipelineManifest_get, type PipelineManifest, type PipelineManifestNode } from '@fnndsc/salsa';
+import { plugins_listAll } from '@fnndsc/salsa';
 import { listCache_get } from '@fnndsc/cumin';
 import type { ListingItem } from '@fnndsc/menu';
 import type { BackendCompletion } from '../core/backend.js';
-import { pluginInfo_build, pluginSpecifier_parse, type PluginSpecifier } from '../builtins/res/plugin.info.js';
-import { pluginVersions_compare } from './binExecutables.js';
 import { vfs } from '../lib/vfs/vfs.js';
 
 /**
  * Fetches available plugin names from /bin in the format: name-vVersion.
  * This matches the display format used in /bin listings.
  * Uses cache first for fast completion.
+ *
  * @returns Array of plugin names with version suffixes.
+ *
+ * @example
+ * ```ts
+ * await plugins_getNames(); // ['pl-dircopy-v2.1.1', …]
+ * ```
  */
-async function plugins_getNames(): Promise<string[]> {
+export async function plugins_getNames(): Promise<string[]> {
   try {
     // Check cache first for /bin
     const listCache = listCache_get();
@@ -55,141 +66,50 @@ async function plugins_getNames(): Promise<string[]> {
 
       return pluginNames;
     }
-  } catch (e: unknown) {
+  } catch {
     // Silently fail if plugins cannot be fetched
   }
   return [];
 }
 
-
-/** The fields every pipeline node takes for its execution. */
-const EXECUTION_FIELDS: ReadonlyArray<string> = [
-  'compute_resource_name', 'cpu_limit', 'memory_limit', 'gpu_limit', 'number_of_workers',
-];
-
 /**
- * The `--node.field` options of the pipeline a line runs (`pipeline run X`
- * or `X` itself), starting with the word typed.
+ * The entries `/bin` lists of one type, by name.
  *
- * @param args - The line's words.
- * @param word - The option word typed so far.
- * @returns The options, none when the pipeline cannot be read, or null for
- *   a line naming no pipeline.
- */
-async function pipelineOptions_get(args: string[], word: string): Promise<string[] | null> {
-  const pipelineSpecifier: string | undefined = args[0] === 'pipeline' && args[1] === 'run'
-    ? args[2]
-    : args[0];
-  if (pipelineSpecifier === undefined) return null;
-  const result = await pipelineManifest_get(pipelineSpecifier);
-  if (!result.ok) return [];
-  const options: string[] = [];
-  const manifest: PipelineManifest = result.value as PipelineManifest;
-  for (const node of manifest.nodes) {
-    const titleUsable: boolean = /^[A-Za-z0-9_-]+$/.test(node.title) &&
-      manifest.nodes.filter(
-        (candidate: PipelineManifestNode): boolean => candidate.title === node.title,
-      ).length === 1;
-    const selectors: string[] = titleUsable ? [node.title, `@${node.pipingID}`] : [`@${node.pipingID}`];
-    const fields: string[] = [
-      ...EXECUTION_FIELDS,
-      ...(node.parameterDefinitions ?? [])
-        .filter((parameter) => parameter.name !== 'plugininstances')
-        .map((parameter) => parameter.name),
-    ];
-    for (const field of fields) {
-      options.push(...selectors.map((selector: string): string => `--${selector}.${field}`));
-    }
-  }
-  return options.filter((option: string): boolean => option.startsWith(word));
-}
-
-/** A plugin's option words, by its `/bin` name, kept once read. */
-const pluginOptions_cache: Map<string, string[]> = new Map();
-
-/**
- * The `/bin` name a line's first word runs as a plugin: itself when it is a
- * full `name-vVersion` /bin lists, the highest version when it is a bare
- * name (#1303), or null when /bin lists no such plugin.
+ * @param type - `plugin` or `pipeline`.
+ * @returns The names; none when `/bin` cannot be read.
  *
- * @param word - The line's first word.
- * @returns The full `/bin` name, or null.
+ * @example
+ * ```ts
+ * await binEntries_list('pipeline'); // ['PHI_detection_id12', …]
+ * ```
  */
-async function pluginExecutable_resolve(word: string): Promise<string | null> {
-  const names: string[] = await plugins_getNames();
-  if (names.includes(word)) return word;
-  const versions: string[] = names
-    .filter((name: string): boolean => name.startsWith(`${word}-v`))
-    .map((name: string): string => name.slice(word.length + 2))
-    .sort(pluginVersions_compare);
-  const highest: string | undefined = versions[versions.length - 1];
-  return highest === undefined ? null : `${word}-v${highest}`;
-}
-
-/**
- * The `--flag` options of the plugin a line runs, starting with the word
- * typed: its parameters as CUBE declares them, the list `--parameters`
- * prints, read once per plugin (#1306). A boolean parameter is its flag
- * alone.
- *
- * @param args - The line's words.
- * @param word - The option word typed so far.
- * @returns The options, none when the plugin cannot be read, or null for a
- *   line naming no plugin.
- */
-async function pluginOptions_get(args: string[], word: string): Promise<string[] | null> {
-  const first: string | undefined = args[0];
-  if (first === undefined) return null;
-  const executable: string | null = await pluginExecutable_resolve(first);
-  if (executable === null) return null;
-  let options: string[] | undefined = pluginOptions_cache.get(executable);
-  if (options === undefined) {
-    const specifier: PluginSpecifier | null = pluginSpecifier_parse(executable);
-    if (specifier === null) return [];
-    const info = await pluginInfo_build(specifier);
-    if (!info.ok) return [];
-    options = info.value.parameters.map((parameter): string => parameter.flag);
-    pluginOptions_cache.set(executable, options);
-  }
-  return options.filter((option: string): boolean => option.startsWith(word));
-}
-
-/**
- * The option words for a line: a plugin's parameters when its first word
- * runs a plugin, else a pipeline's `--node.field` options.
- *
- * @param args - The line's words.
- * @param word - The option word typed so far.
- * @returns The options, or null for a line the session does not complete.
- */
-async function lineOptions_get(args: string[], word: string): Promise<string[] | null> {
-  const plugin: string[] | null = await pluginOptions_get(args, word);
-  return plugin !== null ? plugin : pipelineOptions_get(args, word);
-}
-
-/**
- * Whether a word names a `/bin` entry, whose arguments are paths (#1305):
- * a plugin `name-vVersion`, a bare plugin name (any version listed, #1303),
- * or a pipeline by its `/bin` name or its own name.
- *
- * @param command - The line's first word.
- * @returns True for a `/bin` entry.
- */
-async function binPathArguments(command: string): Promise<boolean> {
-  const names: string[] = await plugins_getNames();
-  if (names.includes(command) || names.some((name: string): boolean => name.startsWith(`${command}-v`))) return true;
+export async function binEntries_list(type: 'plugin' | 'pipeline'): Promise<string[]> {
   try {
     const bin = await vfs.data_get('/bin');
-    return bin.ok && bin.value.some((item: ListingItem): boolean => item.type === 'pipeline' && (item.name === command || item.title === command));
+    return bin.ok ? bin.value.filter((item: ListingItem): boolean => item.type === type).map((item: ListingItem): string => item.name) : [];
   } catch {
-    return false;
+    return [];
   }
+}
+
+/**
+ * Every word that runs a `/bin` entry: each plugin version and each
+ * pipeline, by its `/bin` name.
+ *
+ * @returns The names.
+ *
+ * @example
+ * ```ts
+ * await binNames_list(); // ['pl-dircopy-v2.1.1', 'PHI_detection_id12', …]
+ * ```
+ */
+export async function binNames_list(): Promise<string[]> {
+  const [plugins, pipelines] = await Promise.all([plugins_getNames(), binEntries_list('pipeline')]);
+  return [...new Set([...plugins, ...pipelines])];
 }
 
 /** What the ChRIS session adds to completion. */
 export const chrisCompletion: BackendCompletion = {
   commandWords: plugins_getNames,
-  options: lineOptions_get,
-  pathArguments: binPathArguments,
   rootWords: ['bin', 'usr'],
 };

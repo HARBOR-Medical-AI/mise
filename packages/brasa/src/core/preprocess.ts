@@ -12,29 +12,6 @@ import { Result, Ok, Err, errorStack } from '@fnndsc/fond';
 import { backslash_escapesNext } from '../lib/quoting.js';
 
 /**
- * Determines whether an argument of a command not yet declared belongs to the
- * CFS/VFS shell namespace. A declared command never asks: its grammar says
- * which operands glob (core/commandParse.ts), and each command leaves this
- * table as it is declared.
- *
- * Every word of such a command is a CFS/VFS word, expanded before dispatch.
- *
- * @param _command - Command word being executed.
- * @param _index - Zero-based argument position before expansion.
- * @param _argumentCount - Number of arguments before expansion.
- * @param _args - Argument values before expansion.
- * @returns True if the word is eligible for CFS/VFS pathname expansion.
- */
-export function pathnameExpansion_isEligible(
-  _command: string,
-  _index: number,
-  _argumentCount: number,
-  _args: readonly string[] = [],
-): boolean {
-  return true;
-}
-
-/**
  * Returns true if the input line is a shell escape (starts with `!`).
  *
  * @param line - Trimmed input line.

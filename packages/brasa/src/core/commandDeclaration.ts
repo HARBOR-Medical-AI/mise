@@ -136,6 +136,46 @@ export interface OptionGrammar {
    * `head -5` is `head -n 5`. At most one option of a line says so.
    */
   readonly numeral?: boolean;
+  /**
+   * Not one option but a family of long ones: every `--<name>` whose name
+   * the pattern matches (`--<node>.<field>`, one per field of a pipeline's
+   * nodes). Its `long` is the word usage shows (`<node>.<field>`). Each one
+   * given takes the next word as its value unless that word is an option or
+   * nothing follows, when its value is `true`, as CUBE writes a switch; the
+   * handler reads every one given, in order, as a name and a value.
+   */
+  readonly family?: OptionFamily;
+}
+
+/**
+ * The names a family of options answers to, and where the names a line may
+ * take come from.
+ *
+ * @example
+ * ```ts
+ * const nodeFields: OptionFamily = { pattern: /^[^.=]+\.[^.=]+$/ };
+ * ```
+ */
+export interface OptionFamily {
+  /** What a name of the family matches, without the dashes. */
+  readonly pattern: RegExp;
+  /**
+   * The names of the family a line can take, given its operands so far (a
+   * pipeline's nodes' fields, once the line names the pipeline); absent,
+   * none are completed.
+   *
+   * @param operands - The operand words typed so far.
+   * @returns The names, without the dashes.
+   */
+  names_list?(operands: readonly string[]): Promise<string[]>;
+}
+
+/** One option of a family, as given: its name without the dashes, and its value. */
+export interface FamilyValue {
+  /** The name typed, `segmentation.threshold`. */
+  readonly name: string;
+  /** Its value, or `true` when none followed. */
+  readonly value: string | true;
 }
 
 /** A grammar's options, by the property the handler reads them as. */
@@ -246,7 +286,9 @@ type GlobNamesOf<G> = G extends { readonly operands: readonly (infer O)[] }
 type ExpandedOf<G> = { readonly [N in GlobNamesOf<G>]: boolean };
 
 /** An option's value: a switch is a boolean; a value option its value, or every value when it repeats; null when it asks. */
-type OptionValue<O> = O extends { readonly value: infer V }
+type OptionValue<O> = O extends { readonly family: object }
+  ? FamilyValue[]
+  : O extends { readonly value: infer V }
   ? O extends { readonly repeat: true }
     ? KindValue<V>[]
     : KindValue<V> | undefined | (O extends { readonly asks: true } ? null : never)

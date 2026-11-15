@@ -21,12 +21,8 @@ jest.unstable_mockModule('@fnndsc/salsa', () => ({
   pipelineManifest_get: mockPipelineManifestGet,
 }));
 
-// A plugin's parameters, as plugin info reads them from CUBE (#1306).
-const mockPluginInfoBuild = jest.fn();
-jest.unstable_mockModule('../src/builtins/res/plugin.info.js', () => ({
-  pluginInfo_build: mockPluginInfoBuild,
-  pluginSpecifier_parse: (entry: string) => { const m = entry.match(/^(.+)-v(.+)$/); return m ? { name: m[1], version: m[2], command: entry } : null; },
-}));
+// A /bin entry's declaration, as the ChRIS fallback makes it from CUBE's parameters (#1306).
+const mockBinDeclaration = jest.fn<(command: string) => Promise<unknown>>();
 
 // Mock session
 jest.unstable_mockModule('../src/session/index.js', () => ({
@@ -59,7 +55,21 @@ cuminMock_install(() => ({
 
 
 const { input_complete } = await import('../src/lib/completer/index.js');
-await (await import('./support/chrisPieces.js')).chrisPieces_install({ vfs: true, completion: true });
+await (await import('./support/chrisPieces.js')).chrisPieces_install({ vfs: true, completion: true, declaration: mockBinDeclaration as never });
+const { pluginDeclaration_make, pipelineDeclaration_make } = await import('../src/chris/binDeclarations.js');
+
+/** What a stand-in /bin line runs: nothing. */
+const binRun = async () => ({ status: 'ok' as const, rendered: '' });
+/** pl-dircopy 2.0.0, as CUBE declares it: a path and a switch. */
+const DIRCOPY = pluginDeclaration_make({
+  name: 'pl-dircopy', version: '2.0.0', kind: 'fs',
+  parameters: [{ name: 'dir', type: 'path', optional: false, flag: '--dir' }, { name: 'verbose', type: 'boolean', optional: true, flag: '--verbose' }],
+}, binRun);
+/** One pipeline node, as its manifest gives it. */
+const segmentationNode = (title: string) => ({
+  pipingID: 481, title, pluginName: 'pl-segmentation', pluginVersion: '2.4.0', parentID: null, computeResourceName: 'host',
+  parameterDefaults: [], parameterDefinitions: [{ name: 'threshold', type: 'float', optional: true }],
+});
 // A ChRIS session: its help, and every verb it has.
 const { chrisHelp_install, everyVerb_install } = await import('./support/chrisHelp.js');
 chrisHelp_install();
@@ -209,42 +219,23 @@ describe('Tab Completion', () => {
   });
 
   describe('Pipeline Parameter Completion', () => {
-    it('completes a plugin\'s parameters after --, by its full name or its bare name, reading them once (#1306)', (done) => {
-      mockPlugins_listAll.mockResolvedValue({ tableData: [{ name: 'pl-dircopy', version: '1.0.0' }, { name: 'pl-dircopy', version: '2.0.0' }] });
-      mockPluginInfoBuild.mockResolvedValue({ ok: true, value: { name: 'pl-dircopy', version: '2.0.0', type: 'fs', parameters: [{ name: 'dir', type: 'path', optional: false, flag: '--dir' }, { name: 'verbose', type: 'boolean', optional: true, flag: '--verbose' }] } });
+    it('completes a plugin\'s parameters and the session\'s options from its declaration, by its full name or its bare name (#1306)', (done) => {
+      mockBinDeclaration.mockImplementation(async (command: string) => (command === 'pl-dircopy' || command === 'pl-dircopy-v2.0.0' ? DIRCOPY : null));
       input_complete('pl-dircopy-v2.0.0 --d', (err, full) => {
         expect(err).toBeNull();
-        expect(full).toEqual([['--dir'], '--d']);
+        expect(full).toEqual([['--detach', '--dir'], '--d']);
         input_complete('pl-dircopy --', (bareErr, bare) => {
           expect(bareErr).toBeNull();
-          expect(bare).toEqual([['--dir', '--verbose'], '--']);
-          expect(mockPluginInfoBuild).toHaveBeenCalledTimes(1);
-          expect(mockPluginInfoBuild).toHaveBeenCalledWith({ name: 'pl-dircopy', version: '2.0.0', command: 'pl-dircopy-v2.0.0' });
+          expect(bare[0]).toEqual(expect.arrayContaining(['--dir', '--verbose', '--detach', '--parameters', '--readme']));
+          expect(mockBinDeclaration).toHaveBeenCalledWith('pl-dircopy');
           done();
         });
       });
     });
 
     it('completes hosted parameters and execution controls from the registered manifest', (done) => {
-      mockPipelineManifestGet.mockResolvedValue({
-        ok: true,
-        value: {
-          pipelineID: 27,
-          name: 'brain-preprocessing',
-          rootIDs: [481],
-          nodes: [{
-            pipingID: 481,
-            title: 'segmentation',
-            pluginName: 'pl-segmentation',
-            pluginVersion: '2.4.0',
-            parentID: null,
-            computeResourceName: 'host',
-            parameterDefaults: [],
-            parameterDefinitions: [{ name: 'threshold', type: 'float', optional: true }],
-          }],
-        },
-      });
-
+      const pipeline = pipelineDeclaration_make('brain-preprocessing', { pipelineID: 27, name: 'brain-preprocessing', rootIDs: [481], nodes: [segmentationNode('segmentation')] } as never, binRun);
+      mockBinDeclaration.mockImplementation(async (command: string) => (command === 'brain-preprocessing' ? pipeline : null));
       input_complete('brain-preprocessing --seg', (err, result) => {
         expect(err).toBeNull();
         expect(result[0]).toContain('--segmentation.threshold');
@@ -254,25 +245,8 @@ describe('Tab Completion', () => {
     });
 
     it('uses exact piping IDs instead of unsafe authored titles', (done) => {
-      mockPipelineManifestGet.mockResolvedValue({
-        ok: true,
-        value: {
-          pipelineID: 27,
-          name: 'brain-preprocessing',
-          rootIDs: [481],
-          nodes: [{
-            pipingID: 481,
-            title: 'segmentation stage',
-            pluginName: 'pl-segmentation',
-            pluginVersion: '2.4.0',
-            parentID: null,
-            computeResourceName: 'host',
-            parameterDefaults: [],
-            parameterDefinitions: [{ name: 'threshold', type: 'float', optional: true }],
-          }],
-        },
-      });
-
+      const pipeline = pipelineDeclaration_make('brain-preprocessing', { pipelineID: 27, name: 'brain-preprocessing', rootIDs: [481], nodes: [segmentationNode('segmentation stage')] } as never, binRun);
+      mockBinDeclaration.mockImplementation(async (command: string) => (command === 'brain-preprocessing' ? pipeline : null));
       input_complete('brain-preprocessing --@481', (err, result) => {
         expect(err).toBeNull();
         expect(result[0]).toContain('--@481.threshold');
@@ -297,8 +271,8 @@ describe('Tab Completion', () => {
       });
     });
 
-    it('completes a path after a /bin plugin name, full or bare, and after a pipeline (#1305)', (done) => {
-      mockPlugins_listAll.mockResolvedValue({ tableData: [{ name: 'pl-dircopy', version: '1.0.0' }] });
+    it('completes a path after a /bin plugin name, full or bare: its input operand is a CFS path (#1305)', (done) => {
+      mockBinDeclaration.mockImplementation(async (command: string) => (command.startsWith('pl-dircopy') ? DIRCOPY : null));
       mockVfsDispatcherList.mockResolvedValue({ ok: true, value: [{ name: 'data', type: 'dir', size: 0, owner: 'testuser', date: '' }] });
       input_complete('pl-dircopy-v1.0.0 da', (err, full) => {
         expect(err).toBeNull();
@@ -306,25 +280,26 @@ describe('Tab Completion', () => {
         input_complete('pl-dircopy da', (bareErr, bare) => {
           expect(bareErr).toBeNull();
           expect(bare).toEqual([['data/'], 'da']);
-          done();
+          // A path parameter's value is a path too.
+          input_complete('pl-dircopy --dir da', (valueErr, value) => {
+            expect(valueErr).toBeNull();
+            expect(value).toEqual([['data/'], 'da']);
+            done();
+          });
         });
       });
     });
 
-    it('completes nothing after a /bin name for an option word, after as, or for a word /bin does not list', (done) => {
-      mockPlugins_listAll.mockResolvedValue({ tableData: [{ name: 'pl-dircopy', version: '1.0.0' }] });
+    it('completes no path for an option word, and nothing for a word /bin does not list', (done) => {
+      mockBinDeclaration.mockImplementation(async (command: string) => (command.startsWith('pl-dircopy') ? DIRCOPY : null));
       mockVfsDispatcherList.mockResolvedValue({ ok: true, value: [{ name: 'data', type: 'dir', size: 0, owner: 'testuser', date: '' }] });
-      input_complete('pl-dircopy-v1.0.0 --d', (err, option) => {
+      input_complete('pl-dircopy-v1.0.0 --x', (err, option) => {
         expect(err).toBeNull();
         expect(option[0]).toEqual([]);
-        input_complete('pl-dircopy-v1.0.0 t1.nii as da', (asErr, named) => {
-          expect(asErr).toBeNull();
-          expect(named[0]).toEqual([]);
-          input_complete('frobnicate da', (otherErr, other) => {
-            expect(otherErr).toBeNull();
-            expect(other).toEqual([[], 'frobnicate da']);
-            done();
-          });
+        input_complete('frobnicate da', (otherErr, other) => {
+          expect(otherErr).toBeNull();
+          expect(other).toEqual([[], 'frobnicate da']);
+          done();
         });
       });
     });

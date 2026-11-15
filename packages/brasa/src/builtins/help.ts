@@ -2,8 +2,10 @@
  * @file Command help system.
  *
  * Provides help text for shell commands, and the `help` command itself,
- * declared in one record (`helpCommand`). A declared command's page comes
- * from its declaration; `helpText` holds the pages of the rest.
+ * declared in one record (`helpCommand`). A command's page comes from its
+ * declaration, a shell word's from its record in `core/shellWords.ts`, and
+ * a `/bin` plugin's or pipeline's from the declaration made of CUBE's
+ * parameters (`chris/binDeclarations.ts`).
  *
  * @module
  */
@@ -11,94 +13,16 @@ import { variablesPage_render } from './variablesPage.js';
 import { HELP_SECTIONS, helpPosix_render, helpSection_render, helpToc_render, section_find, shellTopic_render, type HelpLookup, type HelpSection } from './helpSections.js';
 import { gamesShelf_render, gamesShelf_names } from './games/shelf.js';
 import chalk from 'chalk';
-import { commands_register, commandDeclaration_get, commandHelpEntry_get, helpTopic_names, builtinCommand_has, type CommandHelp } from '../core/commandRegistry.js';
+import { commandDeclaration_get, commandHelpEntry_get, helpTopic_names, builtinCommand_has, type CommandHelp } from '../core/commandRegistry.js';
 import {
   command_declare, declaration_isParsed,
-  type AnyCommandDeclaration, type CommandArguments, type CommandGrammar, type OptionGrammar, type OptionsGrammar, type SubcommandGrammar,
+  type AnyCommandDeclaration, type CommandDeclaration, type CommandArguments, type CommandGrammar, type OptionGrammar, type OptionsGrammar, type SubcommandGrammar,
 } from '../core/commandDeclaration.js';
 import { declaredCommand_run } from '../core/commandParse.js';
-import { declarationHelp_derive, subcommandHelp_derive } from '../core/commandUsage.js';
+import { commandUsage_render, declarationHelp_derive, subcommandHelp_derive } from '../core/commandUsage.js';
 import { backendInstalled_get } from '../core/backend.js';
 import type { CommandEnvelope } from '@fnndsc/menu';
 
-
-/**
- * Help-text registry keyed by builtin command name, for the commands not yet
- * declared in one record: a declared command's help is generated from its
- * declaration, and its entry leaves this table.
- */
-export const helpText: Record<string, CommandHelp> = {
-  sudo: {
-    category: 'Admin',
-    usage: 'sudo <command> [arguments...]',
-    description: 'Run one ChRIS command with a temporary administrator identity',
-    options: [
-      'Prompts for an administrator username and hidden password on the active surface.',
-      'The elevated CUBE token is used only for the nested command; it is not saved or made the session identity.',
-    ],
-    examples: [
-      'sudo group adduser pacs_users peter.hong',
-      'sudo plugin add pl-dircopy',
-    ],
-  },
-  url: {
-    category: 'Sharing',
-    usage: 'url [path]',
-    summary: 'Print a link (a web address) that opens ARGUS at a path, to send to a colleague',
-    description: 'Print a web address that opens ARGUS at a path (a feed or node lands in RUNS, anything else in FILES)',
-    options: [],
-    examples: [
-      'url                                   # Where you stand',
-      'url /home/sandip.samal/feeds/feed_4389/pl-dicom_repack_639204',
-      'url .                                 # Paste it to a colleague the feed is shared with',
-      '',
-      '# The door comes from CHELL_DOOR; without it the fragment alone is printed.',
-    ],
-  },
-  exit: {
-    category: 'General',
-    usage: 'exit',
-    description: 'Exit the shell',
-    examples: ['exit'],
-  },
-  clear: {
-    category: 'Settings',
-    usage: 'clear',
-    description: 'Empty the console: the screen and its scrollback in a terminal, the record in the transcript. Ctrl-L clears the screen alone.',
-    examples: ['clear'],
-  },
-  prompt: {
-    category: 'Settings',
-    usage: 'prompt [list | <theme>]',
-    description: 'List available prompt themes or switch the active theme',
-    options: [
-      'list        Show all available themes (marks the active one)',
-      '<theme>     Switch to the named theme immediately',
-    ],
-    examples: [
-      'prompt             # Show current theme',
-      'prompt list        # List all themes',
-      'prompt default     # Switch to single-line smart-truncation theme',
-      'prompt p10k        # Switch to two-line Powerlevel10k-inspired theme',
-    ],
-  },
-  '!': {
-    category: 'General',
-    usage: '! <shell_command>',
-    description: 'Execute command on host shell (shell escape)',
-    examples: [
-      '! ls                  # List files on host system',
-      '! pwd                 # Print host working directory',
-      '! cat /etc/hostname   # Read host file',
-      '! df -h               # Check host disk usage',
-      '! echo "test" > /tmp/file.txt  # Write to host file',
-    ],
-  },
-};
-
-// The help is registered with the engine's commands; every reader below goes
-// through the registry, never this record.
-commands_register({ help: helpText });
 
 /**
  * Displays help text for a command.
@@ -246,14 +170,29 @@ function subcommandHelp_get(topic: string): CommandHelp | undefined {
 }
 
 /**
+ * The page's usage and parameters from a `/bin` entry's declaration: the
+ * usage it generates, and a block of every option it takes.
+ *
+ * @param declaration - The declaration CUBE's parameters made, if one was.
+ * @returns The usage, and the lines that list the options.
+ */
+function binDeclaration_lines(declaration: CommandDeclaration | undefined): { usage: string | null; options: string[] } {
+  if (declaration === undefined) return { usage: null, options: [] };
+  const derived: CommandHelp = declarationHelp_derive(declaration);
+  return { usage: commandUsage_render(declaration), options: ['', 'EVERY OPTION THIS ONE TAKES:', ...(derived.options ?? []).map((line: string): string => `  ${line}`)] };
+}
+
+/**
  * Renders contextual help for one registered pipeline executable.
  *
  * @param name - Pipeline executable name as exposed in `/bin`.
+ * @param declaration - Its declaration, made from its manifest, when CUBE gave one: the usage and every node option come from it.
  * @returns Pipeline-specific help text, terminated with a newline.
  */
-export function pipelineExecutableHelp_render(name: string): string {
+export function pipelineExecutableHelp_render(name: string, declaration?: CommandDeclaration): string {
+  const declared: { usage: string | null; options: string[] } = binDeclaration_lines(declaration);
   const help: CommandHelp = {
-    usage: `${name} [run options]`,
+    usage: declared.usage ?? `${name} [run options]`,
     description: 'Run or inspect this registered CUBE pipeline.',
     options: [
       'DIAGRAM OUTPUT:',
@@ -279,6 +218,7 @@ export function pipelineExecutableHelp_render(name: string): string {
       '  --verbose               Echo every parameter of every piping before the run',
       '',
       'help operands for the full rules; whatif <line> prints a run and starts nothing.',
+      ...declared.options,
     ],
     examples: [
       `${name} --diagram`,
@@ -297,11 +237,13 @@ export function pipelineExecutableHelp_render(name: string): string {
  * Renders contextual help for one versioned plugin executable.
  *
  * @param name - Plugin executable name as exposed in `/bin`.
+ * @param declaration - Its declaration, made from CUBE's parameters, when CUBE gave one: the usage and every parameter come from it.
  * @returns Plugin-specific help text, terminated with a newline.
  */
-export function pluginExecutableHelp_render(name: string): string {
+export function pluginExecutableHelp_render(name: string, declaration?: CommandDeclaration): string {
+  const declared: { usage: string | null; options: string[] } = binDeclaration_lines(declaration);
   const help: CommandHelp = {
-    usage: `${name} [<dir> | <file> [as <subject>]…] [plugin options]`,
+    usage: declared.usage ?? `${name} [<dir> | <file> [as <subject>]…] [plugin options]`,
     description: 'Run this registered CUBE plugin version on an input, or inspect it.',
     options: [
       'INPUT (the operand, first on the line; a flag before it is written with =):',
@@ -316,8 +258,11 @@ export function pluginExecutableHelp_render(name: string): string {
       '  --parameters   Show parameter definitions for this plugin version',
       '  --readme       Show the rendered plugin README',
       '  --readme --raw Output raw README markdown for piping',
+      '  --detach       Return the run at once, without waiting for it to settle',
+      '  -- key=value   The run\'s context after a lone --: feed_title="T"',
       '',
       'help operands for the full rules; whatif <line> prints a run and starts nothing.',
+      ...declared.options,
     ],
     examples: [
       `${name} ~/uploads/subjects`,
@@ -358,8 +303,8 @@ export function helpMissing_render(command: string): string {
   return `${chalk.yellow(`No help available for '${command}'`)}\n${chalk.gray('Type "help" to see all available commands.')}\n`;
 }
 
-/** Words the shell or its surface answers itself, with no handler in the registry. */
-const SHELL_WORDS: ReadonlyArray<string> = ['exit', '!', 'help', 'prompt'];
+/** Words the shell or its surface answers itself, with no handler in the registry, that a session always has. */
+const SHELL_ANSWERED: ReadonlyArray<string> = ['exit', '!', 'help', 'prompt'];
 
 /**
  * Whether this session can run a verb (or a verb's subcommand, `pacs query`):
@@ -371,7 +316,7 @@ const SHELL_WORDS: ReadonlyArray<string> = ['exit', '!', 'help', 'prompt'];
  */
 export function verb_available(name: string): boolean {
   const verb: string = name.split(' ')[0] ?? '';
-  if (SHELL_WORDS.includes(verb)) return true;
+  if (SHELL_ANSWERED.includes(verb)) return true;
   if (verb === 'sudo') return backendInstalled_get()?.elevate !== undefined;
   return builtinCommand_has(verb);
 }

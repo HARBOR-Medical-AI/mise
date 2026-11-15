@@ -125,7 +125,7 @@ describe('cluster verify', () => {
     expect(store.record_read('harbor')?.steps['verify']?.state).toBe('failed');
     expect((await cluster_run(context, ['verify', 'checkout'])).renderedErr).toContain('read from a harbor-oci checkout; cluster adopt checkout --from');
     expect((await cluster_run(context, ['verify', 'nope'])).renderedErr).toBe('cluster verify: nope: no such cluster\n');
-    expect((await cluster_run(context, ['verify', '-x'])).renderedErr).toBe('cluster verify: usage: cluster verify [<name>]\n');
+    expect((await cluster_run(context, ['verify', '-x'])).renderedErr).toBe("cluster: verify: invalid option -- 'x'; usage: cluster verify [name]\n");
     store.create({ name: 'other', created: 'now', region: 'r', baseDomain: 'b', steps: {}, ids: {} }, SPEC_DEFAULT);
     expect((await cluster_run(context, ['verify'])).renderedErr).toBe('cluster verify: which cluster? (harbor, other)\n');
   });

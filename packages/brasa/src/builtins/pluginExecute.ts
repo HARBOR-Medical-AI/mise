@@ -22,6 +22,8 @@ import { errorStack, Result, type StackMessage } from '@fnndsc/fond';
 import { exitCode_set } from '../core/handlerRun.js';
 import { path_resolve } from '../core/paths.js';
 import { OperandRefusal, operands_read, stage_lines, stage_make, stageMade_lines, stageWriter_default, stageWriter_none, type BinOperands, type Stage } from './operands.js';
+import type { CommandDeclaration } from '../core/commandDeclaration.js';
+import { pluginDeclaration_get, pluginWords_parse, type PluginLine, type PluginLineParse } from '../chris/binDeclarations.js';
 import { echoNode_render, echoParameters_render, type DeclaredParameter } from './runEcho.js';
 import { operandRuns_split } from './operandRuns.js';
 
@@ -63,13 +65,14 @@ async function pluginParameters_read(pluginName: string): Promise<DeclaredParame
 }
 
 /**
- * Executes a plugin in the current directory context.
+ * Executes a plugin in the current directory context: its line parsed
+ * against the declaration made from CUBE's parameters (binDeclarations.ts),
+ * a bad line refused before anything runs.
  *
  * This function is called when the user types a plugin name that exists in /bin.
- * It handles parameter parsing, interactive prompts, and delegates execution to salsa.
  *
  * @param pluginName - Full plugin name with version (e.g., pl-dcm2niix-v2.1.1).
- * @param args - Array of command line arguments.
+ * @param args - The words after it, carrying their shell words when a line gave them.
  * @param place - Where the run stands instead of the session's cwd, so a
  *   caller can run off a node without moving the operator (`gather process`
  *   runs off its cohort's feed root).
@@ -90,34 +93,74 @@ export async function builtin_executePlugin(
   place?: string,
   dry: boolean = false,
 ): Promise<CommandEnvelope> {
-  if (place !== undefined) return pluginRun_execute(pluginName, args, place, dry);
+  const declaration: CommandDeclaration | null = await pluginDeclaration_get(pluginName);
+  if (declaration === null) {
+    sink_errLine(chalk.red(`${pluginName}: could not read the plugin's parameters from CUBE, so the line cannot be read`));
+    exitCode_set(1);
+    return envelope_error('');
+  }
+  const parsed: PluginLineParse = await pluginWords_parse(declaration, args);
+  if (!parsed.ok) {
+    sink_errLine(chalk.red(parsed.refusal));
+    exitCode_set(1);
+    return envelope_error('');
+  }
+  return pluginParsed_run(pluginName, parsed.line, place, dry);
+}
+
+/**
+ * Runs a plugin line already read: a look at the plugin when it asks for
+ * one, else one run per directory operand, or one run.
+ *
+ * @param pluginName - Full plugin name with version.
+ * @param line - The line, read against the plugin's declaration.
+ * @param place - Where the run stands instead of the session's cwd.
+ * @param dry - Resolve the run and print it, creating and running nothing.
+ * @returns Command envelope whose status matches the run.
+ *
+ * @example
+ * ```ts
+ * await pluginParsed_run('pl-dircopy-v2.1.1', { operands: ['~/uploads'], parameters: {}, context: [], detach: false, inspect: null });
+ * ```
+ */
+export async function pluginParsed_run(
+  pluginName: string,
+  line: PluginLine,
+  place?: string,
+  dry: boolean = false,
+): Promise<CommandEnvelope> {
+  if (line.inspect !== null) {
+    const flags: string[] = line.inspect === 'parameters' ? ['--parameters'] : line.inspect === 'readme' ? ['--readme'] : ['--readme', '--raw'];
+    const { pluginExecutable_handle } = await import('./executable.js');
+    return (await pluginExecutable_handle(pluginName, flags)) ?? envelope_ok('');
+  }
+  if (place !== undefined) return pluginRun_execute(pluginName, line, place, dry);
   // Several directory operands are several runs, one each, and file operands
   // stand in one node; to an fs plugin every operand is its one `dir`,
   // untranslated, so that line is one run and its paths are not looked at.
   let runs: string[][];
   try {
-    const operands: BinOperands = await operands_read(args);
+    const operands: BinOperands = await operands_read(line.operands);
     const placed: boolean = operands.directories.length > 1 || operands.subjects.length > 0;
-    runs = placed && await pluginKind_read(pluginName) === 'fs' ? [args] : await operandRuns_split(args);
+    runs = placed && await pluginKind_read(pluginName) === 'fs' ? [[...line.operands]] : await operandRuns_split(line.operands);
   } catch (error: unknown) {
     if (!(error instanceof OperandRefusal)) throw error;
     sink_errLine(chalk.red(`${pluginName}: ${error.message}`));
     return envelope_error('');
   }
-  if (runs.length === 1) return pluginRun_execute(pluginName, args, undefined, dry);
+  if (runs.length === 1) return pluginRun_execute(pluginName, line, undefined, dry);
   // Every run is dispatched before any is waited for; then one wait holds the line for them all.
-  const detach: boolean = args.includes('--detach');
   const instanceIDs: number[] = [];
   let last: CommandEnvelope = envelope_ok('');
   let failed: boolean = false;
   for (const words of runs) {
     sink_dataLine(chalk.gray(`${pluginName} ${words[0]}:`));
-    last = await pluginRun_execute(pluginName, detach ? words : [...words, '--detach'], undefined, dry);
+    last = await pluginRun_execute(pluginName, { ...line, operands: words, detach: true }, undefined, dry);
     failed ||= last.status === 'error';
     const instanceID: unknown = last.model?.kind === 'run.scheduled' ? (last.model.data as { instanceId?: unknown }).instanceId : undefined;
     if (typeof instanceID === 'number') instanceIDs.push(instanceID);
   }
-  if (!detach && instanceIDs.length > 0) {
+  if (!line.detach && instanceIDs.length > 0) {
     const settlement: RunSettlement = await runs_awaitSettled(instanceIDs, pluginName);
     sink_dataLine(settlement_render(settlement, pluginName));
     if (settlement.outcome === 'settled' && settlement.failed > 0) exitCode_set(1);
@@ -129,41 +172,44 @@ export async function builtin_executePlugin(
  * Executes one plugin run: at most one directory operand, or file operands.
  *
  * @param pluginName - Full plugin name with version.
- * @param args - Array of command line arguments.
+ * @param line - The line, read.
  * @param place - Where the run stands instead of the session's cwd.
  * @param dry - Resolve the run and print it, creating and running nothing.
  * @returns Command envelope whose status matches parsing and execution.
  */
 async function pluginRun_execute(
   pluginName: string,
-  args: string[],
+  line: PluginLine,
   place?: string,
   dry: boolean = false,
 ): Promise<CommandEnvelope> {
   try {
-    // 0. `--detach` is the SESSION's flag, never the plugin's: it says the
-    //    operator wants the handle now rather than the outcome later, so it
-    //    is taken out of the line before the plugin's own parameters are
-    //    read. Left in, it would be posted to CUBE as a plugin parameter.
-    const detach: boolean = args.includes('--detach');
-    args = args.filter((arg: string): boolean => arg !== '--detach');
+    // `--detach` is the SESSION's option, never the plugin's: the line read
+    // it apart from the plugin's parameters, so it is never posted to CUBE.
+    const detach: boolean = line.detach;
 
-    // 0b. The input operand (operands.ts): a directory replaces cwd; files
-    //     are shaped into a stage the run roots the feed with; to an fs
-    //     plugin an operand is its `dir`, untranslated.
+    // The input operand (operands.ts): a directory replaces cwd; files are
+    // shaped into a stage the run roots the feed with; to an fs plugin an
+    // operand is its `dir`, untranslated. A bare `key=value` among the
+    // operands is the plugin's, as it always was.
     let operandPlace: string | null = null;
     let stage: Stage | null = null;
     let operandDir: string | null = null;
+    let assigned: string[] = [];
+    if (place !== undefined && line.operands.length > 0) {
+      sink_errLine(chalk.red(`${pluginName}: an operand is not taken here; the run stands at ${place}`));
+      return envelope_error('');
+    }
     if (place === undefined) {
       let operands: BinOperands;
       try {
-        operands = await operands_read(args);
+        operands = await operands_read(line.operands);
       } catch (error: unknown) {
         if (!(error instanceof OperandRefusal)) throw error;
         sink_errLine(chalk.red(`${pluginName}: ${error.message}`));
         return envelope_error('');
       }
-      args = operands.rest;
+      assigned = operands.rest;
       if (operands.directory !== null || operands.subjects.length > 0) {
         const kind: string | null = await pluginKind_read(pluginName);
         if (kind === null) {
@@ -188,24 +234,18 @@ async function pluginRun_execute(
             return envelope_error('');
           }
           if (dry) sink_dataLine(chalk.cyan(`would stage under ${stage.path}`));
-          for (const line of stage_lines(stage)) sink_dataLine(chalk.cyan(line));
+          for (const stageLine of stage_lines(stage)) sink_dataLine(chalk.cyan(stageLine));
           operandPlace = stage.path;
         }
       }
     }
 
-    // 1. Split the already-tokenized arguments on the context delimiter.
-    const delimiterIndex: number = args.indexOf('--');
-    const pluginArgTokens: string[] = delimiterIndex === -1 ? args : args.slice(0, delimiterIndex);
-    const contextArgTokens: string[] = delimiterIndex === -1 ? [] : args.slice(delimiterIndex + 1);
-
-    // 2. Parse both sets of parameters
-    let pluginParams: Dictionary = {};
+    // The parameters the line gave, and the context after its `--`.
+    let pluginParams: Dictionary = { ...line.parameters };
     let contextParams: Dictionary = {};
-
-    if (pluginArgTokens.length > 0) {
+    if (assigned.length > 0) {
       try {
-        pluginParams = executableArguments_parse(pluginArgTokens);
+        pluginParams = { ...pluginParams, ...executableArguments_parse(assigned) };
       } catch (e: unknown) {
         const msg: string = e instanceof Error ? e.message : String(e);
         sink_errLine(chalk.red(`Error parsing plugin parameters: ${msg}`));
@@ -215,6 +255,7 @@ async function pluginRun_execute(
 
     if (operandDir !== null) pluginParams['dir'] = operandDir;
 
+    const contextArgTokens: readonly string[] = line.context;
     if (contextArgTokens.length > 0) {
       try {
         contextParams = executableArguments_parse(contextArgTokens);

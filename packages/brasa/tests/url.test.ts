@@ -28,7 +28,18 @@ describe('url', () => {
     expect(envelope.rendered).toContain('No door is known to this session (CHELL_DOOR is unset)');
   });
 
-  it('refuses two paths', async () => {
-    expect((await builtin_url(['a', 'b'], {})).status).toBe('error');
+  it('refuses two paths, and an option it does not take, in the parser\'s words', async () => {
+    const two = await builtin_url(['a', 'b'], {});
+    expect(two.status).toBe('error');
+    expect(two.renderedErr).toContain("url: unexpected operand 'b'; usage: url [path]");
+    expect((await builtin_url(['--long'], {})).renderedErr).toContain("url: unrecognized option '--long'");
+  });
+
+  it('is declared with a core kind only, and described as a tool', async () => {
+    const { urlCommand } = await import('../src/builtins/fs/url.js');
+    const { commandTools_derive } = await import('../src/core/commandSchema.js');
+    expect(urlCommand.grammar.operands.map((operand) => operand.kind)).toEqual(['cfsPath']);
+    expect(urlCommand.help.category).toBe('Sharing');
+    expect(commandTools_derive(urlCommand)[0]?.inputSchema).toEqual(expect.objectContaining({ properties: { path: expect.objectContaining({ type: 'string' }) } }));
   });
 });

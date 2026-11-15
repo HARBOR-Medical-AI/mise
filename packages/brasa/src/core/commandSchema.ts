@@ -98,6 +98,10 @@ function toolInput_make(grammar: ToolGrammar): z.ZodObject {
  * @returns The schema.
  */
 function optionValue_schema(option: OptionGrammar): z.ZodType {
+  // A family is every name it matches, each with its value or true.
+  if (option.family !== undefined) {
+    return z.array(z.object({ name: z.string().regex(option.family.pattern), value: z.union([z.string(), z.literal(true)]) }).strict()).describe(option.summary);
+  }
   if (option.value === undefined) return z.boolean().describe(option.summary);
   const value: z.ZodType = argument_schema(option.value, option.summary);
   if (option.repeat === true) return z.array(value).describe(option.summary);
