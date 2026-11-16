@@ -191,6 +191,14 @@ export interface SessionHost {
    * @returns True or false, or null when this porter did not start it.
    */
   stratus_armed(identity: string): boolean | null;
+  /**
+   * Why this host cannot start a stratus session at all, or null when it can.
+   * Asked before a switch moves the person's cookie, so a door that cannot
+   * start one says so and leaves them in the session they are in.
+   *
+   * @returns The reason, or null.
+   */
+  stratus_refusal(): string | null;
 
   /**
    * Ends an identity's session, leaving the daemon the reason so it can tell

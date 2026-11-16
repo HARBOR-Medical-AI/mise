@@ -665,6 +665,11 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       cookie(back);
       return { key: back, mount: `/s/${back}/`, state: 'attached' };
     }
+    // A door that cannot start a stratus session says so here, before the
+    // cookie moves: moving it to a session that then fails left the person
+    // on a failed greet with their ChRIS session's cookie gone.
+    const refusal: string | null = host.stratus_refusal();
+    if (refusal !== null) return reply.code(409).send({ error: refusal });
     const configPath: string | null = creds.ociConfig_find(owner);
     if (configPath === null) {
       return reply.code(404).send({ error: `no OCI credentials are filed for ${user} on this host. The host's operator files an existing key with porter --creds ${user} --oci <config>; connecting a new key from here is not built yet` });

@@ -5085,6 +5085,16 @@ body[data-zoom] #header-restore {
   color: var(--sky, #9cf);
 }
 
+/* A line pressed while another runs: answered at once, waiting in place. */
+.argus-queued .user-input {
+  opacity: 0.7;
+}
+
+.argus-queued-note {
+  color: var(--honey, #fc6);
+  font-style: italic;
+}
+
 .argus-result.error {
   color: #f24444;
 }

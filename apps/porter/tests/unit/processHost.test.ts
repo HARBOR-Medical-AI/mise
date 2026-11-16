@@ -346,3 +346,13 @@ describe('the boot lines a greeter is shown', () => {
     expect(bootLine_redact('[ OK ] Feeds')).toBe('[ OK ] Feeds');
   });
 });
+
+describe('a porter that runs sessions on its host and the cloud session', () => {
+  it('can start one when it carries stratus, and says why not when it does not', () => {
+    const dir: string = mkdtempSync(join(tmpdir(), 'porter-stratus-'));
+    const spawn: SessionSpawn = (): SpawnedSession => { throw new Error('not asked'); };
+    expect(new ProcessHost({ stateDir: dir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn }).stratus_refusal()).toBeNull();
+    expect(new ProcessHost({ stateDir: dir, chellEntry: '/opt/chell/dist/index.js', spawn }).stratus_refusal()).toBe('this porter has no stratus to start');
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

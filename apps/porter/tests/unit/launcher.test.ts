@@ -946,3 +946,10 @@ describe('porter\'s switch', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe('a door that starts berths and the cloud session', () => {
+  it('says it cannot start one, so the switch refuses before the cookie moves', () => {
+    const host: LauncherHost = new LauncherHost({ listen: '127.0.0.1:1', secret: 'unused' }, async (): Promise<number> => 7);
+    expect(host.stratus_refusal()).toMatch(/a cloud session is not offered/);
+  });
+});

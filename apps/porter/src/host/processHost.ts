@@ -281,6 +281,11 @@ export class ProcessHost implements SessionHost {
   }
 
   /** @inheritdoc */
+  public stratus_refusal(): string | null {
+    return this.stratusEntry === null ? 'this porter has no stratus to start' : null;
+  }
+
+  /** @inheritdoc */
   public stratus_armed(identity: string): boolean | null {
     return this.armed.get(identity) ?? null;
   }
