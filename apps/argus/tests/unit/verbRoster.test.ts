@@ -98,6 +98,7 @@ describe('the verb roster', () => {
       'files.row',
       'files.selection',
       'runs.row',
+      'pacs.patient',
       'pacs.study',
       'pacs.series',
       'gather.cohort',
@@ -154,13 +155,14 @@ const CONTRACT: Readonly<Record<string, Readonly<Record<string, string[]>>>> = {
     'a file inside a feed': ['GATHER', 'DOWNLOAD', 'LINK', 'MOVE', 'COPY', 'DELETE', 'SHARE FEED 12'],
     // A place can be gathered: a cohort is what the session is working on,
     // and that is not only PACS.
-    'a directory': ['GATHER', 'PROCESS', 'LINK', 'MOVE', 'COPY', 'DELETE'],
+    // A folder downloads as one archive: a browser has no directory to fill.
+    'a directory': ['GATHER', 'PROCESS', 'DOWNLOAD', 'LINK', 'MOVE', 'COPY', 'DELETE'],
     // Gatherable even though it cannot be PROCESSed: the kernel runs on a
     // whole node, so a directory beneath one is no input — but it is still
     // a place a cohort can hold.
-    'a directory inside a feed that is not a node': ['GATHER', 'LINK', 'MOVE', 'COPY', 'DELETE', 'SHARE FEED 12'],
-    "a node's data inside a feed": ['GATHER', 'PROCESS', 'LINK', 'MOVE', 'COPY', 'DELETE', 'SHARE FEED 12'],
-    'a DICOM series folder': ['IMAGE', 'GATHER', 'PROCESS', 'LINK', 'MOVE', 'COPY', 'DELETE'],
+    'a directory inside a feed that is not a node': ['GATHER', 'DOWNLOAD', 'LINK', 'MOVE', 'COPY', 'DELETE', 'SHARE FEED 12'],
+    "a node's data inside a feed": ['GATHER', 'PROCESS', 'DOWNLOAD', 'LINK', 'MOVE', 'COPY', 'DELETE', 'SHARE FEED 12'],
+    'a DICOM series folder': ['IMAGE', 'GATHER', 'PROCESS', 'DOWNLOAD', 'LINK', 'MOVE', 'COPY', 'DELETE'],
     'a catalogue entry': [],
     'a catalogue entry in a bound catalogue': ['RUN'],
     // A projection is rendered by the kernel and written by nothing: there
@@ -180,6 +182,11 @@ const CONTRACT: Readonly<Record<string, Readonly<Record<string, string[]>>>> = {
   'runs.row': {
     'any feed': ['NOTE', 'TAG', 'RENAME', 'SHARE', 'DELETE'],
   },
+  'pacs.patient': {
+    // Each level's pull names its level, so the capsule says how much it fetches.
+    'a patient with studies': ['PULL PATIENT'],
+    'a patient with none': [],
+  },
   'pacs.study': {
     // A study with a path can be gathered: its addressable series are the
     // cohort's targets, whether or not any of them is home yet.
@@ -192,8 +199,8 @@ const CONTRACT: Readonly<Record<string, Readonly<Record<string, string[]>>>> = {
     'a study partly home': ['PULL STUDY', 'GATHER'],
   },
   'pacs.series': {
-    'not yet retrieved': ['GATHER', 'PULL'],
-    'not retrieved and unaddressable': ['PULL'],
+    'not yet retrieved': ['GATHER', 'PULL SERIES'],
+    'not retrieved and unaddressable': ['PULL SERIES'],
     'home, folder not yet named': ['GATHER'],
     'home, folder named': ['GATHER', 'IMAGE', 'DIR', 'PROCESS'],
   },
@@ -213,7 +220,7 @@ const CONTRACT: Readonly<Record<string, Readonly<Record<string, string[]>>>> = {
     'folder not yet named': ['REMOVE', 'PROCESS'],
     // A member that is not home is offered the fetch, on its own row: the
     // frame pulls the whole cohort, the row pulls this one.
-    'not retrieved yet': ['REMOVE', 'PULL', 'PROCESS'],
+    'not retrieved yet': ['REMOVE', 'PULL SERIES', 'PROCESS'],
   },
 };
 
@@ -262,7 +269,7 @@ describe('the PACS series row, where the verb went missing', () => {
       const away = roster.states.find((one: { name: string }): boolean => one.name === 'not yet retrieved');
       expect(away).toBeDefined();
       if (away === undefined) return;
-      expect(rendered_verbs(roster, away)).toEqual(['GATHER', 'PULL']);
+      expect(rendered_verbs(roster, away)).toEqual(['GATHER', 'PULL SERIES']);
     });
   });
 });

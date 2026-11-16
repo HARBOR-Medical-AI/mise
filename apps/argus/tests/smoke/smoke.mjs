@@ -4221,6 +4221,82 @@ try {
     JSON.stringify({ lines: dl.lines, handed }));
   }
 
+  if (await stage('folder-download')) {
+  // DOWNLOAD on a folder row: a browser has no directory to fill, so the
+  // row runs the kernel's `download "<folder>" .` in the console, which
+  // archives the tree through the zip pipeline and hands over one file.
+  // Proven at the hand-off, as file-download is; the archive feed the run
+  // leaves (the zip lives in it) is removed by its title afterwards.
+  await evalIn(`
+    window.__argusHandoffs = [];
+    if (!window.__argusHandoffWrapped) {
+      window.__argusHandoffWrapped = true;
+      const press = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () {
+        if (this.download) { window.__argusHandoffs.push({ name: this.download, href: this.href, text: null }); return; }
+        return press.call(this);
+      };
+    }
+    return true;`);
+  const folder = await evalIn(`
+    document.getElementById('gutter-files').click(); await sleep(800);
+    const fp = () => [...document.querySelectorAll('.pane-files')].find(p => p.offsetParent !== null);
+    const term = console_input();
+    const say = async (line, ms) => { term.value = line;
+      term.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await sleep(ms); await console_settled(); };
+    const named = (n) => [...fp().querySelectorAll('.files-row')].find(r => r.querySelector('.files-name')?.textContent.trim() === n);
+    const click = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const settle = async (want, tries = 140) => { for (let i = 0; i < tries; i++) { await sleep(500); if (want()) return true; } return false; };
+    const zoneVerbs = () => [...fp().querySelectorAll('.files-row-zone .listing-action')].map(b => b.textContent.trim());
+    const downloadVerb = () => [...fp().querySelectorAll('.files-row-zone .listing-action')].find(b => b.textContent.trim() === 'DOWNLOAD') ?? null;
+    await say('rm -r ~/smoke-folder-dl', 2500);
+    await say('mkdir -p ~/smoke-folder-dl', 2500);
+    await say('cd ~/smoke-folder-dl', 2500);
+    await settle(() => (window.__argusPromptContext?.cwd ?? '').endsWith('/smoke-folder-dl'));
+    const chooser = fp().querySelector('.files-upload-input');
+    const dt = new DataTransfer();
+    dt.items.add(new File([new TextEncoder().encode('a,b\\n1,2\\n')], 'inside.csv', { type: 'text/csv' }));
+    chooser.files = dt.files;
+    chooser.dispatchEvent(new Event('change', { bubbles: true }));
+    const uploaded = await settle(() => named('inside.csv'));
+    await say('cd ~', 2500);
+    await settle(() => named('smoke-folder-dl'));
+    click(named('smoke-folder-dl')); await sleep(700);
+    return { uploaded, verbs: zoneVerbs() };`);
+  if (process.env.SMOKE_SHOTS) {
+    await evalIn(`
+      const fp = [...document.querySelectorAll('.pane-files')].find(p => p.offsetParent !== null);
+      fp.querySelector('.files-row.listing-indicated')?.scrollIntoView({ block: 'center' });
+      [...fp.querySelectorAll('.files-row-zone .listing-action')].find(b => b.textContent.trim() === 'DOWNLOAD')?.scrollIntoView({ block: 'center' });
+      await sleep(400);
+      return true;`);
+    await page.shot(`${process.env.SMOKE_SHOTS}/folder-download-indicated.png`);
+  }
+  const pressed = await evalIn(`
+    const fp = () => [...document.querySelectorAll('.pane-files')].find(p => p.offsetParent !== null);
+    const term = console_input();
+    const say = async (line, ms) => { term.value = line;
+      term.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await sleep(ms); await console_settled(); };
+    const settle = async (want, tries = 140) => { for (let i = 0; i < tries; i++) { await sleep(500); if (want()) return true; } return false; };
+    const downloadVerb = () => [...fp().querySelectorAll('.files-row-zone .listing-action')].find(b => b.textContent.trim() === 'DOWNLOAD') ?? null;
+    const verb = downloadVerb();
+    if (verb !== null) verb.click();
+    // The archive is a plugin run: minutes on a busy CUBE, not seconds.
+    const handed = await settle(() => (window.__argusHandoffs ?? []).length > 0 || /could not archive/.test(console_text()), 600);
+    const text = console_text();
+    const echoed = /download "[^"]*smoke-folder-dl" \\./.test(text);
+    await say('feed rm -f "Archive of smoke-folder-dl"', 5000);
+    await say('rm -r ~/smoke-folder-dl', 3000);
+    return { pressed: verb !== null, handed, echoed,
+      handoffs: (window.__argusHandoffs ?? []).map((h) => h.name),
+      tail: text.split('\\n').slice(-12).join('\\n') };`);
+  Object.assign(folder, pressed);
+  check('a folder row offers DOWNLOAD', folder.verbs.includes('DOWNLOAD'), folder.verbs.join(','));
+  check("a folder's DOWNLOAD runs the kernel's download in the console and hands the browser one zip",
+    folder.pressed && folder.echoed && folder.handoffs.length === 1 && /\.zip$/.test(folder.handoffs[0]),
+    JSON.stringify(folder));
+  }
+
   if (await stage('place-verbs')) {
   // Two verbs that act on the PLACE: they ride the field's frame, they make
   // and land things in the listing on stage, and the listing shows what

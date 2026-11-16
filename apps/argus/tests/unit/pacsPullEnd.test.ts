@@ -252,17 +252,35 @@ describe('the PACS pane, following a pull', () => {
 
   it('counts a series that was not received as pullable again, and pulls it', async () => {
     const pull: HTMLElement = document.getElementById('pacs-pull-shown') as HTMLElement;
-    expect(pull.textContent).toBe('PULL 2');
+    expect(pull.textContent).toBe('PULL ALL');
+    expect(pull.title).toContain('the 2 series');
     panel.progress_observe(progress_make('9.9.1', { status: 'unconfirmed', current: 0, total: 1, reason: 'the PACS sent nothing' }));
     panel.progress_observe(progress_make('9.9.2', { status: 'done', current: 1, total: 1, path: '/SERVICES/PACS/TESTPACS/x' }));
     await settle();
     expect(pull.hidden).toBe(false);
-    expect(pull.textContent).toBe('PULL 1');
+    expect(pull.textContent).toBe('PULL ALL');
+    expect(pull.title).toContain('the 1 series');
 
     pull.click();
     expect(lines).toEqual(["pull '/net/pacs/queries/q_qid:7/study/SAG T1' &"]);
     expect(badge_find('9.9.1').textContent).toBe('QUEUED');
     expect(badge_find('9.9.1').hasAttribute('title')).toBe(false);
+  });
+
+  it('names each pull by its level: the frame pulls ALL, a patient row PULL PATIENT, a series row PULL SERIES', async () => {
+    const frame: HTMLElement = document.getElementById('pacs-pull-shown') as HTMLElement;
+    expect(frame.textContent).toBe('PULL ALL');
+    const patientRow: HTMLElement | null = document.querySelector<HTMLElement>('.pacs-patient-row');
+    if (patientRow === null) throw new Error('no patient row');
+    patientRow.click();
+    await settle();
+    const zone: HTMLElement | null = document.querySelector<HTMLElement>('.pacs-row-zone');
+    const verbs: string[] = [...(zone?.querySelectorAll<HTMLElement>('.listing-action') ?? [])].map((verb: HTMLElement): string => verb.textContent ?? '');
+    expect(verbs).toEqual(['PULL PATIENT']);
+    (zone?.querySelector<HTMLElement>('.listing-action') as HTMLElement).click();
+    expect(lines).toEqual(["pull '/net/pacs/queries/q_qid:7/study' &"]);
+    expect(badge_find('9.9.1').textContent).toBe('QUEUED');
+    expect(badge_find('9.9.2').textContent).toBe('QUEUED');
   });
 
   it('keeps offering the row and the study their pull once a series has ended without its files', () => {
@@ -310,7 +328,8 @@ describe('the PACS pane, following a pull', () => {
       expect(notes).toContain('pull: SAG T1: NOT RECEIVED, the pull failed: pull: CUBE answered 503');
       expect(notes).toContain('pull: AX T2: NOT RECEIVED, the pull failed: pull: CUBE answered 503');
       // Both can be pulled again.
-      expect(pullShown_find().textContent).toBe('PULL 2');
+      expect(pullShown_find().textContent).toBe('PULL ALL');
+      expect(pullShown_find().title).toContain('the 2 series');
     });
 
     it('settles them when the session refuses the pull at its start', async () => {
@@ -375,7 +394,7 @@ describe('the PACS pane, following a pull', () => {
       await settle();
       expect(badge_find('9.9.1').textContent).toBe('QUEUED');
 
-      // The row's own pull ends; the frame's PULL 2 still has SAG T1 queued.
+      // The row's own pull ends; the frame's PULL ALL still has SAG T1 queued.
       panel.jobEnd_observe(jobEnd_make(row, 'failed', 'exit 1'));
       await settle();
       expect(badge_find('9.9.1').textContent).toBe('QUEUED');
@@ -394,7 +413,7 @@ describe('the PACS pane, following a pull', () => {
       const badge: HTMLElement = badge_find('9.9.1');
       expect(badge.hasAttribute('data-fault')).toBe(true);
       const pull: HTMLButtonElement | null = rowPull_find('9.9.1');
-      expect(pull?.textContent).toBe('PULL');
+      expect(pull?.textContent).toBe('PULL SERIES');
 
       pull?.click();
       expect(lines).toEqual(["pull '/net/pacs/queries/q_qid:7/study/SAG T1' &"]);
