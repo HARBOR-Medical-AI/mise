@@ -1,5 +1,19 @@
 # @fnndsc/argus
 
+## 0.59.0
+
+### Minor Changes
+
+- bb876e6: Folders in the file browser offer DOWNLOAD, and each PACS pull names its level: ALL, PATIENT, STUDY or SERIES.
+
+  DOWNLOAD on a folder runs the kernel's `download "<folder>" .` in the console, which archives the tree through the zip pipeline and hands the browser one file; `file download` with a folder indicated does the same. A projection's folder (/proc, /net) is not offered it. In the PACS pane the frame's set pull read `PULL 11` beside a row's bare `PULL`, which read as two different pulls; it reads PULL ALL (PULL ALL SHOWN under a filter) with the count on its title, a series row's reads PULL SERIES, and a patient row is offered PULL PATIENT, one `pull` over every study of theirs.
+
+### Patch Changes
+
+- f59ee5c: The CLOUD tile always answers: a busy console shows the press as queued, and a berth door says why it has no cloud.
+
+  A line a control presses while another runs (or before the session's first prompt) used to wait with no echo, so a tile could look dead; it now stands in the transcript as `queued` and runs in place. On a porter that starts berths, `stratus oci` moved the cookie to a cloud session the porter then refused, dropping the person on a failed greet without their ChRIS session; the porter now refuses the switch first, by name, and leaves the cookie alone.
+
 ## 0.58.4
 
 ### Patch Changes
