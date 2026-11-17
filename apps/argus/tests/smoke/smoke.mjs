@@ -5528,10 +5528,10 @@ try {
       const series = [...study.querySelectorAll('.pacs-series')];
       // a series CUBE holds is gathered, not pulled
       let picked = null;
-      for (const row of series) { row.click(); await sleep(300); if (zoneVerbs(ws, '.pacs-row-zone').includes('GATHER')) { picked = row; break; } }
+      for (const row of series) { row.click(); await sleep(300); if (zoneVerbs(ws, '.pacs-row-zone').includes('GATHER SERIES')) { picked = row; break; } }
       if (!picked) return { error: 'no series in CUBE to gather' };
       const uid = picked.dataset.seriesuid;
-      [...ws.querySelectorAll('.pacs-row-zone .listing-action')].find(b => b.textContent.trim() === 'GATHER')?.click();
+      [...ws.querySelectorAll('.pacs-row-zone .listing-action')].find(b => b.textContent.trim() === 'GATHER SERIES')?.click();
       // The band redraws from the kernel's answer, a CUBE round trip away.
       for (let i = 0; i < 80; i++) { await sleep(250); if (band.querySelector('.gather-series')) break; }
       await sleep(600);
@@ -5542,7 +5542,7 @@ try {
       const count = band.querySelector('.gather-cohort-count')?.textContent.trim() ?? null;
       // the PACS row's GATHER lights from the cohort
       picked.click(); await sleep(300);
-      const lit = [...ws.querySelectorAll('.pacs-row-zone .listing-action')].find(b => b.textContent.trim() === 'GATHER')?.classList.contains('listing-action-selected') ?? false;
+      const lit = [...ws.querySelectorAll('.pacs-row-zone .listing-action')].find(b => b.textContent.trim() === 'GATHER SERIES')?.classList.contains('listing-action-selected') ?? false;
       document.getElementById('status-strip').dispatchEvent(new MouseEvent('click', { bubbles: true })); await sleep(200);
       // series row: its verbs
       band.querySelector('.gather-series')?.click(); await sleep(400);
@@ -5608,11 +5608,11 @@ try {
       for (const row of study.querySelectorAll('.pacs-series')) {
         if (!row.querySelector('.pacs-bar-full')) continue;
         row.click(); await sleep(300);
-        if (zoneVerb(ws, '.pacs-row-zone', 'GATHER')) { picked = row; break; }
+        if (zoneVerb(ws, '.pacs-row-zone', 'GATHER SERIES')) { picked = row; break; }
       }
       if (!picked) return { error: 'no fully pulled series in CUBE to gather' };
       const uid = picked.dataset.seriesuid;
-      zoneVerb(ws, '.pacs-row-zone', 'GATHER').click();
+      zoneVerb(ws, '.pacs-row-zone', 'GATHER SERIES').click();
       const face = document.getElementById('header-gather');
       for (let i = 0; i < 80 && !face.querySelector('.gather-series[data-seriesuid="' + uid + '"]'); i++) await sleep(250);
       if (face.offsetParent === null) { document.getElementById('header-gather-pill').click(); await sleep(600); }
@@ -6057,9 +6057,9 @@ try {
       if (!study.classList.contains('listing-open')) { study.querySelector('.pacs-study-row .listing-control').click(); await sleep(400); }
       const zoneVerbs = (root, zone) => [...root.querySelectorAll(zone + ' .listing-action')].map(b => b.textContent.trim());
       let picked = null;
-      for (const row of [...study.querySelectorAll('.pacs-series')]) { row.click(); await sleep(300); if (zoneVerbs(ws, '.pacs-row-zone').includes('GATHER')) { picked = row; break; } }
+      for (const row of [...study.querySelectorAll('.pacs-series')]) { row.click(); await sleep(300); if (zoneVerbs(ws, '.pacs-row-zone').includes('GATHER SERIES')) { picked = row; break; } }
       if (!picked) return { error: 'no series in CUBE to gather' };
-      [...ws.querySelectorAll('.pacs-row-zone .listing-action')].find(b => b.textContent.trim() === 'GATHER').click();
+      [...ws.querySelectorAll('.pacs-row-zone .listing-action')].find(b => b.textContent.trim() === 'GATHER SERIES').click();
       // The gather lands in the band; ON STAGE gives the cohort its pane,
       // where this scenario's checks are read.
       const band = document.getElementById('header-gather');

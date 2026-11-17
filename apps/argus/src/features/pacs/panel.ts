@@ -145,6 +145,17 @@ export function seriesVerbs_offered(series: PacsSeries): { gather: boolean; imag
 }
 
 /**
+ * The series of a study the cohort can take: the ones a series row would
+ * offer GATHER SERIES on.
+ *
+ * @param study - The study.
+ * @returns Its gatherable series, in the order they stand.
+ */
+function study_gatherable(study: PacsStudy): PacsSeries[] {
+  return study.series.filter((series: PacsSeries): boolean => seriesVerbs_offered(series).gather);
+}
+
+/**
  * Records that a series has landed, in every row that shows it.
  *
  * The rows are built from `model.studies` at every level, so marking the
@@ -1328,6 +1339,15 @@ export class PacsPanel {
           this.pull_press(paths, queued);
         },
       },
+      {
+        // Gathering a patient is gathering each of their studies, saying once
+        // what it took and what it could not.
+        label: verbRule_get(PACS_PATIENT_ROSTER, 'gatherPatient').label({ addressable: true }),
+        offered: (row: PatientRow): boolean => verbRule_get(PACS_PATIENT_ROSTER, 'gatherPatient').offered({
+          addressable: row.studies.some((study: PacsStudy): boolean => study_gatherable(study).length > 0),
+        }),
+        run: (row: PatientRow): void => { this.studies_gather(row.studies); },
+      },
     ];
   }
 
@@ -1356,19 +1376,8 @@ export class PacsPanel {
         // became of every member. Pulling is the other verb, and it is a
         // fetch, not a choice: it puts nothing in the cohort.
         label: verbRule_get(PACS_STUDY_ROSTER, 'gather').label({ addressable: true, allInCube: false, anyInCube: true }),
-        offered: (row: StudyRow): boolean => row.study.series.some(
-          (series: PacsSeries): boolean => seriesVerbs_offered(series).gather,
-        ),
-        run: (row: StudyRow): void => {
-          const taken: PacsSeries[] = row.study.series.filter(
-            (series: PacsSeries): boolean => seriesVerbs_offered(series).gather,
-          );
-          for (const series of taken) this.gather_note(row.study, series);
-          const away: number = row.study.series.length - taken.length;
-          this.handlers.note(
-            `gather: ${taken.length} series gathered${away > 0 ? `, ${away} not in CUBE (pull them first)` : ''}`,
-          );
-        },
+        offered: (row: StudyRow): boolean => study_gatherable(row.study).length > 0,
+        run: (row: StudyRow): void => { this.studies_gather([row.study]); },
       },
       {
         // A study whose every series is home can be processed as one folder:
@@ -2271,7 +2280,13 @@ export class PacsPanel {
     // A control that cannot act stands down rather than misleading, and a
     // readout that acts says what it will do: the count is the promise.
     block.hidden = count === 0;
-    block.textContent = this.filtering() ? `GATHER ${count} SHOWN` : `GATHER ${count}`;
+    // ALL, not a bare count, as the frame's PULL ALL: beside a row's GATHER
+    // SERIES, "GATHER 11" read as a second, different gather rather than the
+    // whole set. The count stays on the capsule's title.
+    block.textContent = this.filtering() ? 'GATHER ALL SHOWN' : 'GATHER ALL';
+    block.title = this.filtering()
+      ? `gather the ${count} series the filter leaves showing that the cohort does not hold yet`
+      : `gather the ${count} series in the answer that the cohort does not hold yet`;
   }
 
   /**
@@ -2328,6 +2343,24 @@ export class PacsPanel {
       ? `gather: ${taking.length} series gathered from what the filter left showing`
       : `gather: ${taking.length} series gathered from the whole answer`);
     this.shownGather_render();
+  }
+
+  /**
+   * Gathers every series these studies hold that the cohort can name, and
+   * says in one note what it took and what it could not.
+   *
+   * @param studies - A study, or a patient's studies.
+   */
+  private studies_gather(studies: ReadonlyArray<PacsStudy>): void {
+    let taken: number = 0;
+    let away: number = 0;
+    for (const study of studies) {
+      const gatherable: PacsSeries[] = study_gatherable(study);
+      for (const series of gatherable) this.gather_note(study, series);
+      taken += gatherable.length;
+      away += study.series.length - gatherable.length;
+    }
+    this.handlers.note(`gather: ${taken} series gathered${away > 0 ? `, ${away} not in CUBE (pull them first)` : ''}`);
   }
 
   private gather_note(study: PacsStudy, series: PacsSeries): void {
