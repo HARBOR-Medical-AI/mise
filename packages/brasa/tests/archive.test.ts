@@ -81,6 +81,30 @@ describe('directory_archive', () => {
     });
   });
 
+  it('names the archive after the folder, keeping the pipeline its own file and extension', async () => {
+    // The zip pipeline names its file after the folder above the one it
+    // archived, so every folder arrived as `parent.zip`.
+    const PARENT: string = '/home/me/feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data';
+    listRecursive.mockResolvedValueOnce([
+      { path: 'home/me/feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data/parent.zip', type: 'file', size: 4096 },
+    ] as never);
+    const zipped = await directory_archive('/home/me/sub-01.anat');
+    expect(zipped).toEqual({ path: `${PARENT}/parent.zip`, filename: 'sub-01.anat.zip', size: 4096 });
+
+    listRecursive.mockResolvedValueOnce([
+      { path: 'home/me/feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data/parent.tar.gz', type: 'file' },
+    ] as never);
+    const tarred = await directory_archive('/home/me/series/');
+    expect(tarred).toEqual({ path: `${PARENT}/parent.tar.gz`, filename: 'series.tar.gz' });
+
+    // The produced name is a folder's too, and a dot inside it is not an extension.
+    listRecursive.mockResolvedValueOnce([
+      { path: 'home/me/feeds/feed_9/pl-dircopy_41/pl-pfdorun_42/data/ses.1.zip', type: 'file' },
+    ] as never);
+    const dotted = await directory_archive('/home/me/ses.1/anat');
+    expect(dotted).toEqual({ path: `${PARENT}/ses.1.zip`, filename: 'anat.zip' });
+  });
+
   it('lists the folder CUBE says the archive job wrote, not one built from ids', async () => {
     // The store keeps a feed under its owner's home. `feeds/feed_9/…` names
     // nothing there, and every browser download of a folder ended as

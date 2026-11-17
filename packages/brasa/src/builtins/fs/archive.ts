@@ -189,6 +189,27 @@ async function feed_discard(feedId: number, name: string): Promise<void> {
 }
 
 /**
+ * The name a surface saves an archive under: the folder's own name, with the
+ * extension of the file the pipeline produced.
+ *
+ * The pipeline names its file after the folder above the one archived (every
+ * folder arrived as `parent.zip`), so its basename says nothing about what is
+ * inside. Its extension is kept as it stands, because the format is the
+ * pipeline's business: `.zip` today, `.tar.gz` from another deployment's.
+ *
+ * @param name - The archived folder's name.
+ * @param archivePath - The file the pipeline produced.
+ * @returns The folder's name and the produced file's extension, if it has one.
+ */
+function archiveFilename_make(name: string, archivePath: string): string {
+  const produced: string = archivePath.split('/').filter(Boolean).pop() ?? '';
+  // The last extension, and `.tar` before it: the produced name is itself a
+  // folder's, so a dot earlier in it is part of that name.
+  const extension: string = /(?:\.tar)?\.[A-Za-z0-9]+$/.exec(produced)?.[0] ?? '';
+  return `${name}${extension}`;
+}
+
+/**
  * Locates the file an archive run produced.
  *
  * The output folder is CUBE's answer (the archive job's `output_path`), not a
@@ -221,10 +242,9 @@ async function archiveOutput_find(archiveInstanceId: number, name: string): Prom
   // A listing names a file from the store's root without the leading slash,
   // and a session reads a path without one from where it stands.
   const archivePath: string = archive.path.startsWith('/') ? archive.path : `/${archive.path}`;
-  const filename: string = archivePath.split('/').filter(Boolean).pop() ?? `${name}.zip`;
   return {
     path: archivePath,
-    filename,
+    filename: archiveFilename_make(name, archivePath),
     ...(typeof archive.size === 'number' ? { size: archive.size } : {}),
   };
 }

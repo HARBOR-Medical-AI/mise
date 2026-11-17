@@ -4292,8 +4292,8 @@ try {
       tail: text.split('\\n').slice(-12).join('\\n') };`);
   Object.assign(folder, pressed);
   check('a folder row offers DOWNLOAD', folder.verbs.includes('DOWNLOAD'), folder.verbs.join(','));
-  check("a folder's DOWNLOAD runs the kernel's download in the console and hands the browser one zip",
-    folder.pressed && folder.echoed && folder.handoffs.length === 1 && /\.zip$/.test(folder.handoffs[0]),
+  check("a folder's DOWNLOAD runs the kernel's download in the console and hands the browser one zip named after the folder",
+    folder.pressed && folder.echoed && folder.handoffs.length === 1 && folder.handoffs[0] === 'smoke-folder-dl.zip',
     JSON.stringify(folder));
   }
 
