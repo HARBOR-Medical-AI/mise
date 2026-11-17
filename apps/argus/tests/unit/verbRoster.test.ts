@@ -183,26 +183,26 @@ const CONTRACT: Readonly<Record<string, Readonly<Record<string, string[]>>>> = {
     'any feed': ['NOTE', 'TAG', 'RENAME', 'SHARE', 'DELETE'],
   },
   'pacs.patient': {
-    // Each level's pull names its level, so the capsule says how much it fetches.
-    'a patient with studies': ['PULL PATIENT'],
+    // Each level's pull and gather names its level, so the capsule says how much it takes.
+    'a patient with studies': ['PULL PATIENT', 'GATHER PATIENT'],
     'a patient with none': [],
   },
   'pacs.study': {
     // A study with a path can be gathered: its addressable series are the
     // cohort's targets, whether or not any of them is home yet.
-    'a study with a path': ['PULL STUDY', 'GATHER'],
+    'a study with a path': ['PULL STUDY', 'GATHER STUDY'],
     'a study with none': [],
     // A study with something home can be gathered; one with everything home
     // can also be processed as a folder. A study with nothing home is
     // pulled — and pulling is a fetch, not a choice: it gathers nothing.
-    'a study wholly home': ['PULL STUDY', 'GATHER', 'PROCESS'],
-    'a study partly home': ['PULL STUDY', 'GATHER'],
+    'a study wholly home': ['PULL STUDY', 'GATHER STUDY', 'PROCESS'],
+    'a study partly home': ['PULL STUDY', 'GATHER STUDY'],
   },
   'pacs.series': {
-    'not yet retrieved': ['GATHER', 'PULL SERIES'],
+    'not yet retrieved': ['GATHER SERIES', 'PULL SERIES'],
     'not retrieved and unaddressable': ['PULL SERIES'],
-    'home, folder not yet named': ['GATHER'],
-    'home, folder named': ['GATHER', 'IMAGE', 'DIR', 'PROCESS'],
+    'home, folder not yet named': ['GATHER SERIES'],
+    'home, folder named': ['GATHER SERIES', 'IMAGE', 'DIR', 'PROCESS'],
   },
   'gather.cohort': {
     'holding series': ['SAVE', 'EXPORT CSV', 'CREATE FEED', 'PROCESS', 'DISMISS'],
@@ -257,7 +257,7 @@ describe('the PACS series row, where the verb went missing', () => {
       const home = roster.states.find((one: { name: string }): boolean => one.name === 'home, folder named');
       expect(home).toBeDefined();
       if (home === undefined) return;
-      expect(rendered_verbs(roster, home)).toEqual(['GATHER', 'IMAGE', 'DIR', 'PROCESS']);
+      expect(rendered_verbs(roster, home)).toEqual(['GATHER SERIES', 'IMAGE', 'DIR', 'PROCESS']);
     });
   });
 
@@ -269,7 +269,7 @@ describe('the PACS series row, where the verb went missing', () => {
       const away = roster.states.find((one: { name: string }): boolean => one.name === 'not yet retrieved');
       expect(away).toBeDefined();
       if (away === undefined) return;
-      expect(rendered_verbs(roster, away)).toEqual(['GATHER', 'PULL SERIES']);
+      expect(rendered_verbs(roster, away)).toEqual(['GATHER SERIES', 'PULL SERIES']);
     });
   });
 });

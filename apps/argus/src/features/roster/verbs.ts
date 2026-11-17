@@ -250,13 +250,15 @@ export interface PacsPatientFacts {
 }
 
 /**
- * A PACS patient row's verbs. Each level's pull names its level, so the
- * capsule says how much it fetches: PULL PATIENT, PULL STUDY, PULL SERIES.
+ * A PACS patient row's verbs. Each level's pull and gather names its level,
+ * so the capsule says how much it takes: PULL PATIENT, PULL STUDY, PULL
+ * SERIES; GATHER PATIENT, GATHER STUDY, GATHER SERIES.
  */
 export const PACS_PATIENT_ROSTER: VerbRoster<PacsPatientFacts> = {
   listing: 'pacs.patient',
   rules: [
     { name: 'pullPatient', label: (): string => 'PULL PATIENT', offered: (f: PacsPatientFacts): boolean => f.addressable },
+    { name: 'gatherPatient', label: (): string => 'GATHER PATIENT', offered: (f: PacsPatientFacts): boolean => f.addressable },
   ],
   states: [
     { name: 'a patient with studies', facts: { addressable: true } },
@@ -271,7 +273,7 @@ export const PACS_STUDY_ROSTER: VerbRoster<PacsStudyFacts> = {
     { name: 'pullStudy', label: (): string => 'PULL STUDY', offered: (f: PacsStudyFacts): boolean => f.addressable },
     {
       name: 'gather',
-      label: (): string => 'GATHER',
+      label: (): string => 'GATHER STUDY',
       offered: (f: PacsStudyFacts): boolean => f.addressable,
     },
     { name: 'process', label: (): string => 'PROCESS', offered: (f: PacsStudyFacts): boolean => f.allInCube },
@@ -304,7 +306,7 @@ export const PACS_SERIES_ROSTER: VerbRoster<PacsSeriesFacts> = {
   rules: [
     {
       name: 'gather',
-      label: (): string => 'GATHER',
+      label: (): string => 'GATHER SERIES',
       // Gatherable when the cohort can NAME it: a PACS path to pull it by,
       // or the fact that it is already home. Not gatherable when it is
       // neither, which is a series nothing can address.

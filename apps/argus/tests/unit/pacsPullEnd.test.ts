@@ -182,6 +182,8 @@ describe('the PACS pane, following a pull', () => {
   let panel: PacsPanel;
   let notes: string[];
   let lines: string[];
+  /** The series the pane handed the cohort, by UID. */
+  let gathered: string[];
   /** What each pull the pane sends answers with; a start notice unless a test says otherwise. */
   let answer: (line: string) => Promise<ReadonlyArray<WireEnvelope>>;
 
@@ -213,6 +215,7 @@ describe('the PACS pane, following a pull', () => {
     document.documentElement.innerHTML = page.replace(/<script[\s\S]*?<\/script>/g, '');
     notes = [];
     lines = [];
+    gathered = [];
     answer = async (line: string): Promise<ReadonlyArray<WireEnvelope>> => [started_make(line)];
     const root: HTMLElement | null = document.getElementById('pacs-workspace');
     if (root === null) throw new Error('the page has no PACS workspace');
@@ -225,7 +228,7 @@ describe('the PACS pane, following a pull', () => {
       image_open: (): void => undefined,
       dir_open: (): void => undefined,
       process_open: (): void => undefined,
-      gather_add: (): void => undefined,
+      gather_add: (member: { seriesUID: string }): void => { gathered.push(member.seriesUID); },
       gathered_is: (): boolean => false,
     } as unknown as ConstructorParameters<typeof PacsPanel>[1]);
     panel.envelope_observe({ status: 'ok', rendered: '', model: { kind: 'pacs.query', data: model_make() } } as never);
@@ -276,11 +279,32 @@ describe('the PACS pane, following a pull', () => {
     await settle();
     const zone: HTMLElement | null = document.querySelector<HTMLElement>('.pacs-row-zone');
     const verbs: string[] = [...(zone?.querySelectorAll<HTMLElement>('.listing-action') ?? [])].map((verb: HTMLElement): string => verb.textContent ?? '');
-    expect(verbs).toEqual(['PULL PATIENT']);
+    expect(verbs).toEqual(['PULL PATIENT', 'GATHER PATIENT']);
     (zone?.querySelector<HTMLElement>('.listing-action') as HTMLElement).click();
     expect(lines).toEqual(["pull '/net/pacs/queries/q_qid:7/study' &"]);
     expect(badge_find('9.9.1').textContent).toBe('QUEUED');
     expect(badge_find('9.9.2').textContent).toBe('QUEUED');
+  });
+
+  it('names each gather by its level: the frame gathers ALL, a patient row GATHER PATIENT, a series row GATHER SERIES', async () => {
+    const frame: HTMLElement = document.getElementById('pacs-gather-shown') as HTMLElement;
+    expect(frame.textContent).toBe('GATHER ALL');
+    expect(frame.title).toContain('the 2 series');
+    const patientRow: HTMLElement | null = document.querySelector<HTMLElement>('.pacs-patient-row');
+    if (patientRow === null) throw new Error('no patient row');
+    patientRow.click();
+    await settle();
+    const zoneVerbs = (): HTMLElement[] => [...(document.querySelector<HTMLElement>('.pacs-row-zone')?.querySelectorAll<HTMLElement>('.listing-action') ?? [])];
+    expect(zoneVerbs().map((verb: HTMLElement): string => verb.textContent ?? '')).toEqual(['PULL PATIENT', 'GATHER PATIENT']);
+    (zoneVerbs()[1] as HTMLElement).click();
+    expect(gathered).toEqual(['9.9.1', '9.9.2']);
+    expect(notes).toContain('gather: 2 series gathered');
+    expect(lines).toEqual([]);
+    const seriesRow: HTMLElement | null = document.querySelector<HTMLElement>('.pacs-series[data-seriesuid="9.9.1"]');
+    if (seriesRow === null) throw new Error('no series row');
+    seriesRow.click();
+    await settle();
+    expect(zoneVerbs().map((verb: HTMLElement): string => verb.textContent ?? '')).toContain('GATHER SERIES');
   });
 
   it('keeps offering the row and the study their pull once a series has ended without its files', () => {
