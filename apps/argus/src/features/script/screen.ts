@@ -302,6 +302,8 @@ export class ScriptScreen {
   protected saved: { path: string; at: string; view: string } | null = null;
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
   protected ticker: ReturnType<typeof setInterval> | null = null;
+  /** Whether the screen was left: a read that answers after that still redraws it, and must not retitle the tab the page has again. */
+  private left: boolean = false;
 
   /**
    * Builds the screen.
@@ -372,6 +374,7 @@ export class ScriptScreen {
 
   /** Stops the screen's clock; the host calls it on leaving. */
   public dispose(): void {
+    this.left = true;
     if (this.ticker !== null) clearInterval(this.ticker);
     this.ticker = null;
     if (this.costTimer !== null) clearTimeout(this.costTimer);
@@ -1007,7 +1010,7 @@ export class ScriptScreen {
     this.parts.promptLabel.textContent = this.path === '' ? 'stratus ›' : `stratus ${scriptName_derive(this.path)} ›`;
     this.parts.input.disabled = this.busy !== null;
     this.root.dataset['busy'] = this.busy === null ? 'no' : 'yes';
-    document.title = this.title_get();
+    if (!this.left) document.title = this.title_get();
   }
 
   /** The rail: LIBRARY, then a seat per step wearing its state. */

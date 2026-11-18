@@ -108,6 +108,18 @@ describe('the script screen', () => {
     screen.root.remove();
   });
 
+  it('leaves the tab title alone once it is left: a read that answers late redraws nothing the page can see', () => {
+    const { screen } = screen_make();
+    screen.dispose();
+    screen.root.remove();
+    document.title = 'ARGUS';
+
+    // What a late answer does: the screen draws again.
+    screen.mode_refresh();
+
+    expect(document.title).toBe('ARGUS');
+  });
+
   it('a step\'s pill sends its line as the form left it, and the standing is read again after', async () => {
     const { screen, sent, asked } = screen_make();
     await screen.open('/scripts/chrisproject/store.mise');
