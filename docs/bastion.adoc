@@ -99,6 +99,8 @@ In the common case the developer, human or agent, sits at the Hub, in a *Hub dev
 
 The exception is a developer who logs in at the spoke's own door and works inside it, under the open policy. Same host, a human in it.
 
+The open policy is the one that is built, on a stand-in spoke; the sealed common case is designed and in part open. `/incoming` in this section is the berth's `/anchors` (<<berths.adoc#settled,berths.adoc>>). <<dev-bastion.adoc#sealed-berth,dev-bastion.adoc>> sets the two side by side, step by step, with what stands for each.
+
 [[spoke-not-backend]]
 === Not a backend
 
@@ -115,4 +117,5 @@ Two lines in stratus.adoc placed the bastion inside the tenancy it builds: the b
 * The Hub bastion as a container on the Hub cluster: its entrypoint, how the key files arrive (mounted Secrets), and who may reach its porter.
 * Who runs the sealed job in a spoke bastion: the same host with the mount hidden from the shell, or a job the session launches.
 * How source crosses the wire from the Hub dev bastion to a spoke bastion, and how the gate approves it.
+* How the cohort is set in a sealed berth, who closes it, and what a round returns besides `/outgoing` (<<dev-bastion.adoc#open,dev-bastion.adoc>>).
 * One image family for the three bastions, or more.
