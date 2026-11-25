@@ -69,6 +69,10 @@ BASE ?= main
 # check is watched.
 CHECKS_SCOPE = $(if $(filter main,$(BASE)),--required,)
 
+# The pull request ci-watch watches, by number; unset, the current branch's.
+# merge sets it, so the checks it waits on are those of the PR it merges.
+PR ?=
+
 .DEFAULT_GOAL := help
 .PHONY: help shop prep cook taste taste-flight serve scrub run binaries deploy smoke-report smoke-upgrade \
         login connect daemon remote porter porter-status taco meal install build test clean link all \
@@ -297,10 +301,10 @@ base-check:
 # The first loop covers the gap before GitHub registers any checks at all;
 # --watch then follows them to a verdict.
 ci-watch:
-	@gh pr view --json number >/dev/null || { echo "No PR for $(BRANCH); run 'make pr' first."; exit 1; }
+	@gh pr view $(PR) --json number >/dev/null || { echo "No PR for $(BRANCH); run 'make pr' first."; exit 1; }
 	@echo "Waiting for checks on the $(BRANCH) PR..."
-	@until gh pr checks $(CHECKS_SCOPE) 2>/dev/null | grep -q .; do sleep 15; done
-	@gh pr checks --watch --interval 30 $(CHECKS_SCOPE)
+	@until gh pr checks $(PR) $(CHECKS_SCOPE) 2>/dev/null | grep -q .; do sleep 15; done
+	@gh pr checks $(PR) --watch --interval 30 $(CHECKS_SCOPE)
 
 # Rebases this branch onto origin/$(BASE) and pushes it (force-with-lease:
 # only over what was last pushed). A branch left BEHIND main cannot merge
@@ -317,26 +321,35 @@ rebase: base-check
 # loop would notice, so the branch is rebased and re-pushed first, and once
 # more if main moved again while the checks ran. Two rounds, then it stops
 # and says so rather than chase a busy main forever.
-# A PR can be aimed elsewhere while its checks run, so the base is read again
-# after the wait and the PR that was read is the one merged, by its number.
+# One PR is taken by its number at the start and everything after is asked of
+# that number: its checks, and, after the wait, that it is still open and
+# still aimed at $(BASE). A PR closed and replaced, or aimed elsewhere, while
+# the checks ran is not merged on another's checks. A last round that ends
+# BEHIND says so and fails; it does not fall through to "Merged".
 merge: base-check
-	@gh pr view --json number >/dev/null || { echo "No PR for $(BRANCH); run 'make pr' first."; exit 1; }
-	@for round in 1 2 3; do \
-		state=$$(gh pr view --json mergeStateStatus --jq .mergeStateStatus); \
+	@num=$$(gh pr list --head $(BRANCH) --state open --json number --jq '.[0].number // empty') \
+		|| { echo "Could not ask GitHub for the $(BRANCH) PR: nothing done."; exit 1; }; \
+	[ -n "$$num" ] || { echo "No open PR for $(BRANCH); run 'make pr' first."; exit 1; }; \
+	merged=no; \
+	for round in 1 2 3; do \
+		state=$$(gh pr view $$num --json mergeStateStatus --jq .mergeStateStatus) || exit 1; \
 		if [ "$$state" = "BEHIND" ] || [ "$$state" = "DIRTY" ]; then \
 			if [ $$round -eq 3 ]; then echo "Still $$state after two rebases; $(BASE) is moving — try again."; exit 1; fi; \
 			echo "Branch is $$state $(BASE); rebasing and pushing..."; \
 			$(MAKE) --no-print-directory rebase || exit 1; \
 			sleep 10; \
 		fi; \
-		$(MAKE) --no-print-directory ci-watch || exit 1; \
-		state=$$(gh pr view --json mergeStateStatus --jq .mergeStateStatus); \
-		if [ "$$state" = "BEHIND" ]; then echo "$(BASE) moved while the checks ran."; continue; fi; \
-		num=$$(gh pr list --head $(BRANCH) --state open --json number,baseRefName --jq '.[] | select(.baseRefName == "$(BASE)") | .number') \
-			|| { echo "Could not ask GitHub what the $(BRANCH) PR is aimed at: not merged."; exit 1; }; \
-		[ -n "$$num" ] || { echo "The $(BRANCH) PR is no longer aimed at $(BASE): not merged."; exit 1; }; \
-		gh pr merge $$num --merge && break || exit 1; \
-	done
+		$(MAKE) --no-print-directory ci-watch PR=$$num || exit 1; \
+		now=$$(gh pr view $$num --json state,baseRefName,mergeStateStatus --jq '"\(.state) \(.baseRefName) \(.mergeStateStatus)"') \
+			|| { echo "Could not read PR #$$num after its checks: not merged."; exit 1; }; \
+		set -- $$now; \
+		[ "$$1" = "OPEN" ] || { echo "PR #$$num is $$1: not merged."; exit 1; }; \
+		[ "$$2" = "$(BASE)" ] || { echo "PR #$$num is now aimed at $$2, not $(BASE): not merged."; exit 1; }; \
+		if [ "$$3" = "BEHIND" ]; then echo "$(BASE) moved while the checks ran."; continue; fi; \
+		gh pr merge $$num --merge || exit 1; \
+		merged=yes; break; \
+	done; \
+	[ "$$merged" = "yes" ] || { echo "Not merged: $(BASE) moved under every round of checks. Try again."; exit 1; }
 	@echo "Merged. 'make sync' fast-forwards local main; 'make publish' releases"
 	@echo "any pending changesets via the Version Packages PR."
 
