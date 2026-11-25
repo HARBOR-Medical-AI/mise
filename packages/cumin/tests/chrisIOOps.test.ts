@@ -81,8 +81,15 @@ describe('file_moveById field drift', () => {
     expect(put).toHaveBeenCalledTimes(1);
   });
 
+  it('asks for no second move after a 400 that is not about the field', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { detail: 'Invalid file name.' } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
   it('asks the caller again before the older field, and stops when the place is no longer shown free', async () => {
-    const put = jest.fn(async () => { throw Object.assign(new Error('bad field'), { response: { status: 400 } }); });
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['This field is required.'] } } }); });
     mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
     const recheck = jest.fn(async (): Promise<boolean> => false);
     expect((await io().file_moveById(5, '/new/name.txt', recheck)).ok).toBe(false);
@@ -92,7 +99,7 @@ describe('file_moveById field drift', () => {
 
   it('tries the older field once the caller has shown the place free again', async () => {
     const put = jest.fn()
-      .mockRejectedValueOnce(Object.assign(new Error('bad field'), { response: { status: 400 } }))
+      .mockRejectedValueOnce(Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['This field is required.'] } } }))
       .mockResolvedValueOnce({});
     mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
     expect((await io().file_moveById(5, '/new/name.txt', async (): Promise<boolean> => true)).ok).toBe(true);
@@ -100,7 +107,7 @@ describe('file_moveById field drift', () => {
   });
 
   it('fails when both field spellings are rejected', async () => {
-    const put = jest.fn(async () => { throw Object.assign(new Error('bad field'), { response: { status: 400 } }); });
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['This field is required.'] } } }); });
     mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
     expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
     expect(put).toHaveBeenCalledTimes(2);

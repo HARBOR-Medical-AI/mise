@@ -102,6 +102,31 @@ function httpStatus_extract(error: unknown): number | null {
   return typeof status === "number" ? status : null;
 }
 
+/** What a CUBE that does not know a rename field says of it in its refusal. */
+const FIELD_REFUSAL: RegExp = /upload_path|"path"|At least one of the fields/;
+
+/**
+ * Whether a failed rename was refused over the field it was spelt with.
+ *
+ * Only then is the other spelling worth a request: CUBE read this one and
+ * did nothing with it. A 400 about anything else (the name, the place) will
+ * be a 400 again, and is the answer.
+ *
+ * @param error - The thrown value.
+ * @returns True for an HTTP 400 whose body or message speaks of the field.
+ */
+function fieldRefusal_detect(error: unknown): boolean {
+  if (httpStatus_extract(error) !== HTTP_BAD_REQUEST) return false;
+  const body: unknown = (error as { response?: { data?: unknown } }).response?.data;
+  let said: string = error instanceof Error ? error.message : '';
+  try {
+    said += typeof body === 'string' ? body : JSON.stringify(body ?? '');
+  } catch {
+    // A body that will not serialise says nothing more than the message did.
+  }
+  return FIELD_REFUSAL.test(said);
+}
+
 export class ChrisIO {
   private _chrisFolder: string = "";
   private _client: Client | null = null;
@@ -755,15 +780,17 @@ export class ChrisIO {
    * The rename field drifted across CUBE versions: newer servers take
    * `upload_path`, older ones `path` (chrisapi types neither). The current
    * name is tried first. The older one is tried only when CUBE answered the
-   * first request and refused it (HTTP 400): a request whose reply was
-   * lost, or that failed in any other way, may have moved the file, and a
-   * second write then would be a move nobody checked. Such a failure is
+   * first request and refused it over the field itself (HTTP 400 whose
+   * body speaks of the field): a request whose reply was lost may have
+   * moved the file, and one refused for another reason will be refused
+   * again, so a second write then would be a move nobody checked. Such a failure is
    * answered as Err, and the caller asks where the file is.
    *
    * @param fileId - The file ID.
    * @param destPath - The target path including filename.
    * @param recheck - Asked before the second spelling is tried, when given:
-   *   whether the destination is still free. False stops the move.
+   *   whether the move may still be made (the file where it was, the
+   *   destination free). False stops the move.
    * @returns Ok(true) when CUBE accepted the move; Err otherwise, which
    *   does not say the file stayed where it was.
    */
@@ -784,7 +811,7 @@ export class ChrisIO {
         await resource_call<unknown>(userFile, 'put', { upload_path: destPath });
         return Ok(true);
       } catch (first: unknown) {
-        if (httpStatus_extract(first) !== HTTP_BAD_REQUEST) throw first;
+        if (!fieldRefusal_detect(first)) throw first;
       }
       if (recheck !== undefined && !await recheck()) {
         errorStack.stack_push("error", `Did not move file ID ${fileId} to ${destPath}: the place could not be shown free a second time`);

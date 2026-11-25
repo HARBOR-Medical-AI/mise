@@ -122,7 +122,8 @@ function rowId_derive(row: Record<string, unknown>): number | null {
  * parent that is there and will not list has proved nothing, and neither
  * has one that a file or a link holds.
  *
- * @param target - The absolute CUBE path.
+ * @param target - The CUBE path; one written without its leading slash is
+ *   read from the root.
  * @returns What holds it, or that nothing does; Err when neither could be
  *   proved, with the reason on the error stack.
  *
@@ -133,8 +134,10 @@ function rowId_derive(row: Record<string, unknown>): number | null {
  * ```
  */
 export async function pathHolders_prove(target: string): Promise<Result<PathProof>> {
-  const clean: string = target.length > 1 && target.endsWith('/') ? target.slice(0, -1) : target;
-  if (clean === '/' || clean === '') return Ok({ kind: 'held', holders: [{ kind: 'dir', id: 0 }] });
+  // One spelling for the walk up: a path written without its leading slash
+  // would otherwise climb from `.` to `.` and never reach the root.
+  const clean: string = path.posix.resolve('/', target);
+  if (clean === '/') return Ok({ kind: 'held', holders: [{ kind: 'dir', id: 0 }] });
   const parent: string = path.posix.dirname(clean);
   const name: string = path.posix.basename(clean);
   const holders: PathHolderRecord[] = [];

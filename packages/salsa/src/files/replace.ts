@@ -105,7 +105,20 @@ async function file_moveProved(fileId: number, origin: string, destination: stri
     errorStack.stack_push('error', `${destination} is held, or could not be checked: nothing was moved onto it`);
     return 'blocked';
   }
-  await chrisIO.file_moveById(fileId, destination, (): Promise<boolean> => path_proveIsFree(destination));
+  // cumin may ask again before a second request (an older CUBE's field).
+  // What that second look found is kept: a stop there is this move's
+  // answer, and is not to be read afterwards as "asked for, did not happen".
+  let stopped: Place | null = null;
+  const recheck = async (): Promise<boolean> => {
+    if (!await file_isAt(fileId, origin)) stopped = 'unknown';
+    else if (!await path_proveIsFree(destination)) stopped = 'blocked';
+    return stopped === null;
+  };
+  await chrisIO.file_moveById(fileId, destination, recheck);
+  if (stopped !== null) {
+    errorStack.stack_push('error', `${destination} could not be shown free a second time, or the file was no longer at ${origin}: the move was not asked for again`);
+    return stopped;
+  }
   const where: Result<string | null> = await chrisIO.file_locate(fileId);
   if (!where.ok) return 'unknown';
   if (where.value === destination) return 'destination';
@@ -177,7 +190,8 @@ async function file_createProved(target: string, content: Blob): Promise<boolean
  * completed) and nothing is written: a listing that failed or was cut short
  * is not taken for an empty one.
  *
- * @param target - The absolute CUBE path.
+ * @param written - The CUBE path; one written without its leading slash
+ *   is read from the root.
  * @param content - The content.
  * @returns True when the path holds the content; false otherwise, with the
  *   reason on the error stack.
@@ -187,7 +201,10 @@ async function file_createProved(target: string, content: Blob): Promise<boolean
  * const written: boolean = await file_write('/home/ada/notes.txt', new Blob(['draft']));
  * ```
  */
-export async function file_write(target: string, content: Blob): Promise<boolean> {
+export async function file_write(written: string, content: Blob): Promise<boolean> {
+  // One name for the proof, the upload and the comparison with what CUBE
+  // says it stored: CUBE answers with the path from the root.
+  const target: string = path.posix.resolve('/', written);
   const proof: Result<PathProof> = await pathHolders_prove(target);
   if (!proof.ok) {
     errorStack.stack_push('error', `Could not write ${target}: what holds that path could not be learned. Nothing was written.`);
@@ -208,7 +225,8 @@ export async function file_write(target: string, content: Blob): Promise<boolean
  * Puts new content at a path that holds a file, keeping the old content
  * recoverable until the new is verified in place.
  *
- * @param target - The absolute CUBE path of the file to rewrite.
+ * @param rewritten - The CUBE path of the file to rewrite; one written
+ *   without its leading slash is read from the root.
  * @param content - The new content.
  * @param oldId - The id of the file now at the path.
  * @returns True when the path holds the new content. False otherwise, with
@@ -221,7 +239,8 @@ export async function file_write(target: string, content: Blob): Promise<boolean
  * const replaced: boolean = await file_replace('/home/ada/notes.txt', new Blob(['second draft']), 41);
  * ```
  */
-export async function file_replace(target: string, content: Blob, oldId: number): Promise<boolean> {
+export async function file_replace(rewritten: string, content: Blob, oldId: number): Promise<boolean> {
+  const target: string = path.posix.resolve('/', rewritten);
   const dir: string = path.posix.dirname(target);
   const name: string = path.posix.basename(target);
   const mark: string = randomBytes(STAGING_BYTES).toString('hex');
