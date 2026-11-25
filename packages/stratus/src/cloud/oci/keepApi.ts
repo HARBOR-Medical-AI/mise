@@ -17,6 +17,7 @@ import * as keymanagement from 'oci-keymanagement';
 import * as secrets from 'oci-secrets';
 import * as vault from 'oci-vault';
 import { notFound } from './errors.js';
+import { pages_drain } from './pages.js';
 
 /** The vault's and its key's display name. */
 export const KEEP_VAULT: string = 'mise';
@@ -64,7 +65,7 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
   /** The vault, active, or null; one still being made is waited on. */
   const vault_find = async (): Promise<keymanagement.models.VaultSummary | null> => {
     for (let tries: number = 0; tries < 60; tries += 1) {
-      const found: keymanagement.models.VaultSummary[] = (await vaults.listVaults({ compartmentId: root })).items
+      const found: keymanagement.models.VaultSummary[] = (await pages_drain((page: string | undefined) => vaults.listVaults({ compartmentId: root, page })))
         .filter((one): boolean => one.displayName === KEEP_VAULT && (one.lifecycleState === 'ACTIVE' || one.lifecycleState === 'CREATING'));
       const active: keymanagement.models.VaultSummary | undefined = found.find((one): boolean => one.lifecycleState === 'ACTIVE');
       if (active !== undefined) return active;
@@ -85,7 +86,7 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
   const key_ensure = async (found: keymanagement.models.VaultSummary, log: (line: string) => void): Promise<string> => {
     const keys: keymanagement.KmsManagementClient = keysClient_make(found);
     for (let tries: number = 0; tries < 60; tries += 1) {
-      const all: keymanagement.models.KeySummary[] = (await keys.listKeys({ compartmentId: root })).items.filter((one): boolean => one.displayName === KEEP_VAULT);
+      const all: keymanagement.models.KeySummary[] = (await pages_drain((page: string | undefined) => keys.listKeys({ compartmentId: root, page }))).filter((one): boolean => one.displayName === KEEP_VAULT);
       const enabled: keymanagement.models.KeySummary | undefined = all.find((one): boolean => one.lifecycleState === 'ENABLED');
       if (enabled !== undefined) return enabled.id;
       if (!all.some((one): boolean => one.lifecycleState === 'CREATING' || one.lifecycleState === 'ENABLING')) {
@@ -123,7 +124,7 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
 
   /** A secret of a name in the vault, in any state but deleted, or null. */
   const secret_find = async (vaultId: string, name: string): Promise<vault.models.SecretSummary | null> => {
-    const all: vault.models.SecretSummary[] = (await secretsOf.listSecrets({ compartmentId: root, vaultId, name })).items;
+    const all: vault.models.SecretSummary[] = await pages_drain((page: string | undefined) => secretsOf.listSecrets({ compartmentId: root, vaultId, name, page }));
     return all.find((one): boolean => one.secretName === name && one.lifecycleState !== 'DELETED') ?? null;
   };
 
