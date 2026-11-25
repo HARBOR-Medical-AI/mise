@@ -697,6 +697,41 @@ export async function files_listOutcome(
 }
 
 /**
+ * Lists every file, link or directory of a folder, or says it could not.
+ *
+ * The strict counterpart of {@link files_listOutcome}, for an act that
+ * destroys or overwrites on the strength of what a folder holds. That
+ * listing is made for showing: a page it cannot read ends its walk with the
+ * rows it has, and an answer that is no list at all reads as `empty`. Here
+ * the whole collection is walked (cumin's `resources_getWhole`), and a page
+ * that could not be fetched, is not a list, or carries no items is `refused`.
+ *
+ * @param assetName - The type of asset to list ('files', 'links', 'dirs').
+ * @param path - The absolute ChRIS path of the folder.
+ * @returns `listing` with every row, `empty` when the folder answered in
+ *   full and holds none of this kind, `missing` when no listing could be
+ *   made for the path, `refused` when the walk failed.
+ *
+ * @example
+ * ```ts
+ * const files: ListingOutcome = await files_listWhole('files', '/home/ada/uploads');
+ * const proved: boolean = files.kind === 'listing' || files.kind === 'empty';
+ * ```
+ */
+export async function files_listWhole(assetName: string, path: string): Promise<ListingOutcome> {
+  const group: ChRISEmbeddedResourceGroup<ChrisPathNode> | null = await files_getGroup(assetName, path);
+  if (!group) {
+    return { kind: "missing" };
+  }
+  try {
+    const data: FilteredResourceData = await group.asset.resources_getWhole();
+    return data.tableData.length === 0 ? { kind: "empty" } : { kind: "listing", data };
+  } catch (error: unknown) {
+    return { kind: "refused", error: error instanceof Error ? error : new Error(String(error)) };
+  }
+}
+
+/**
  * Get the list of available fields for files, links, or directories.
  *
  * @param assetName - The type of asset ('files', 'links', 'dirs').

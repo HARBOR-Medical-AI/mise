@@ -123,6 +123,85 @@ describe('resources_getList', () => {
   });
 });
 
+describe('resources_getWhole: the whole collection, or an error', () => {
+  /** A list resource whose collection carries no `items` at all. */
+  const malformed_make = (): ListResource => {
+    const list: ListResource = Object.create(ListResource.prototype) as ListResource;
+    Object.defineProperties(list, {
+      collection: { value: {} },
+      getItems: { value: (): unknown[] => [] },
+      totalCount: { value: -1 },
+      hasNext: { value: false },
+    });
+    return list;
+  };
+
+  it('answers an empty table, not null, for a collection that holds nothing', async () => {
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, jest.fn(async () => listResource_make([])) as never);
+    expect((await resource.resources_getWhole()).tableData).toEqual([]);
+  });
+
+  it('follows a short page when the server says more follows', async () => {
+    const fetch = jest.fn(async (params: { offset?: number }) =>
+      (params.offset ?? 0) === 0
+        ? listResource_make(rows_make(2), 'resources', true)
+        : listResource_make(rows_make(1, 2)),
+    );
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never);
+    const whole: FilteredResourceData = await resource.resources_getWhole();
+    expect(whole.tableData.map((row: Record<string, unknown>) => row.id)).toEqual([1, 2, 3]);
+    expect(fetch).toHaveBeenNthCalledWith(2, expect.objectContaining({ offset: 2 }));
+  });
+
+  it('stops on a full page when the server says nothing follows', async () => {
+    const fetch = jest.fn(async () => listResource_make(rows_make(100), 'resources', false));
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never);
+    expect((await resource.resources_getWhole()).tableData).toHaveLength(100);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a list that carries no items, where the lenient walk reads it as empty', async () => {
+    const resource: ChRISResource = new ChRISResource();
+    resource.resourceName = 'Files';
+    resource.binding_applyGet({}, jest.fn(async () => malformed_make()) as never);
+    expect(await resource.resources_getAll()).toBeNull();
+    await expect(resource.resources_getWhole()).rejects.toThrow('Files: the list at offset 0 carries no items');
+  });
+
+  it('refuses an answer that is not a list', async () => {
+    const resource: ChRISResource = new ChRISResource();
+    resource.resourceName = 'Files';
+    resource.binding_applyGet({}, jest.fn(async () => null) as never);
+    await expect(resource.resources_getWhole()).rejects.toThrow('Files: the answer at offset 0 is not a list');
+  });
+
+  it('refuses a later page that yields nothing, and never reuses the page before it', async () => {
+    const fetch = jest.fn(async (params: { offset?: number }) =>
+      (params.offset ?? 0) === 0 ? listResource_make(rows_make(2), 'resources', true) : null,
+    );
+    const resource: ChRISResource = new ChRISResource();
+    resource.resourceName = 'Files';
+    resource.binding_applyGet({}, fetch as never);
+    await expect(resource.resources_getWhole()).rejects.toThrow('Files: the answer at offset 2 is not a list');
+  });
+
+  it('refuses a page that says more follows and gives no rows', async () => {
+    const resource: ChRISResource = new ChRISResource();
+    resource.resourceName = 'Files';
+    resource.binding_applyGet({}, jest.fn(async () => listResource_make([], 'resources', true)) as never);
+    await expect(resource.resources_getWhole()).rejects.toThrow('Files: more is said to follow offset 0, and the page is empty');
+  });
+
+  it('lets a failed fetch be a failure', async () => {
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, jest.fn(async () => { throw new Error('500 Internal Server Error'); }) as never);
+    await expect(resource.resources_getWhole()).rejects.toThrow('500 Internal Server Error');
+  });
+});
+
 describe('resources_getAll', () => {
   it('walks pages until a short page arrives', async () => {
     const fetch = jest.fn(async (params: { offset?: number }) =>

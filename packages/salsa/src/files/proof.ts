@@ -21,9 +21,10 @@
  * if (proof.value.kind === 'absent') create();    // nothing is there
  * ```
  *
- * Dependencies: `files_listOutcome` of `./index.js` for the three listings a
- * folder has (dirs, files, links), and cumin's error stack, where the reason
- * a proof failed is left. Paths are absolute CUBE paths.
+ * Dependencies: `files_listWhole` of `./index.js`, the strict listing, for
+ * the three listings a folder has (dirs, files, links), and cumin's error
+ * stack, where the reason a proof failed is left. Paths are absolute CUBE
+ * paths.
  *
  * @module
  */
@@ -32,7 +33,7 @@ import * as path from 'path';
 
 import { errorStack, Ok, Err, type Result } from '@fnndsc/cumin';
 
-import { files_listOutcome, type ListingOutcome, type PathHolder } from './index.js';
+import { files_listWhole, type ListingOutcome, type PathHolder } from './index.js';
 
 /**
  * One thing holding a path, with the id CUBE knows it by.
@@ -67,17 +68,48 @@ export type PathProof =
 /** The three listings a folder has, each with the kind of holder it yields. */
 const HOLDER_KINDS: ReadonlyArray<readonly ['dirs' | 'files' | 'links', PathHolder]> = [['dirs', 'dir'], ['files', 'file'], ['links', 'link']];
 
-/** The bound each listing is asked with; one cut short at it is not proof. */
-const LISTING_BOUND: number = 1000;
+/**
+ * The name a listing's row gives its entry, as the entry is spelt in its folder.
+ *
+ * A folder row names itself by `path`, and a file or link row by `fname`. A
+ * link's `fname` ends in `.chrislink`, which is CUBE's mark and no part of
+ * the name; a file or a folder that happens to end so keeps every letter.
+ *
+ * @param row - One row of a listing.
+ * @param kind - Which of the three listings it came from.
+ * @returns The entry's name, or null when the row does not say.
+ */
+function rowName_derive(row: Record<string, unknown>, kind: PathHolder): string | null {
+  const raw: unknown = kind === 'dir' ? row.path : row.fname;
+  if (typeof raw !== 'string' || raw === '') return null;
+  const entry: string = path.posix.basename(raw);
+  if (entry === '') return null;
+  return kind === 'link' ? entry.replace(/\.chrislink$/, '') : entry;
+}
+
+/**
+ * The id a listing's row carries, when it is one CUBE could have given.
+ *
+ * @param row - One row of a listing.
+ * @returns A positive whole number, or null for anything else: an id that
+ *   is missing, null, zero or not a number is not an id to delete by.
+ */
+function rowId_derive(row: Record<string, unknown>): number | null {
+  const raw: unknown = row.id;
+  const id: number = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : Number.NaN;
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
 
 /**
  * Proves what holds a path, or that nothing does.
  *
- * A refused listing of the parent, or one cut short, is a failure. A listing
- * that could not be made at all proves absence only when the parent is
- * itself proved absent, one level up, and so on to the root: a parent that
- * is there and will not list has proved nothing, and neither has one that a
- * file or a link holds.
+ * A refused listing of the parent, or one cut short, is a failure, and so is
+ * a row that does not say what it is: one with no name could be the entry
+ * asked about, and one of that name with no usable id cannot be acted on.
+ * A listing that could not be made at all proves absence only when the
+ * parent is itself proved absent, one level up, and so on to the root: a
+ * parent that is there and will not list has proved nothing, and neither
+ * has one that a file or a link holds.
  *
  * @param target - The absolute CUBE path.
  * @returns What holds it, or that nothing does; Err when neither could be
@@ -98,7 +130,7 @@ export async function pathHolders_prove(target: string): Promise<Result<PathProo
   let unmade: boolean = false;
   for (const [asset, kind] of HOLDER_KINDS) {
     const mark: number = errorStack.checkpoint_mark();
-    const outcome: ListingOutcome = await files_listOutcome({ limit: LISTING_BOUND, offset: 0 }, asset, parent);
+    const outcome: ListingOutcome = await files_listWhole(asset, parent);
     if (outcome.kind === 'refused') {
       errorStack.stack_push('error', `Cannot check ${clean}: ${outcome.error.message}`);
       return Err();
@@ -115,11 +147,18 @@ export async function pathHolders_prove(target: string): Promise<Result<PathProo
       return Err();
     }
     for (const row of outcome.data.tableData ?? []) {
-      // A folder row names itself by `path`; a file or link row by `fname`
-      // (a link's ends in `.chrislink`, and its `path` is where it points).
-      const raw: string = String((kind === 'dir' ? row.path : row.fname) ?? '');
-      const entry: string = path.posix.basename(raw).replace(/\.chrislink$/, '');
-      if (entry === name && row.id !== undefined) holders.push({ kind, id: Number(row.id) });
+      const entry: string | null = rowName_derive(row, kind);
+      if (entry === null) {
+        errorStack.stack_push('error', `Cannot check ${clean}: a row among the ${asset} of ${parent} has no name`);
+        return Err();
+      }
+      if (entry !== name) continue;
+      const id: number | null = rowId_derive(row);
+      if (id === null) {
+        errorStack.stack_push('error', `Cannot check ${clean}: the ${kind} of that name in ${parent} has no usable id`);
+        return Err();
+      }
+      holders.push({ kind, id });
     }
   }
   if (!unmade) return Ok(holders.length > 0 ? { kind: 'held', holders } : { kind: 'absent' });
@@ -151,7 +190,7 @@ export async function pathHolders_prove(target: string): Promise<Result<PathProo
 export async function folderEmptiness_prove(target: string): Promise<Result<boolean>> {
   let rows: number = 0;
   for (const [asset] of HOLDER_KINDS) {
-    const outcome: ListingOutcome = await files_listOutcome({ limit: LISTING_BOUND, offset: 0 }, asset, target);
+    const outcome: ListingOutcome = await files_listWhole(asset, target);
     if (outcome.kind === 'refused') {
       errorStack.stack_push('error', `Cannot tell whether ${target} is empty: its ${asset} could not be read (${outcome.error.message})`);
       return Err();

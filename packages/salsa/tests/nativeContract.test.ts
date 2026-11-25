@@ -140,6 +140,7 @@ function mockCube_read(where: string): Result<Buffer> {
 
 jest.mock('../src/files/index', () => ({
   files_listOutcome: async (_opts: unknown, asset: string, folder: string) => mockCube_list(asset, folder),
+  files_listWhole: async (asset: string, folder: string) => mockCube_list(asset, folder),
   files_listAll: async (_opts: unknown, asset: string, folder: string) => {
     const listed: Listing = mockCube_list(asset, folder);
     return listed.kind === 'listing' ? listed.data : null;

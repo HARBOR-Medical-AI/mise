@@ -349,6 +349,67 @@ export class ChRISResource {
   }
 
   /**
+   * The collection the last fetch left, read after the fetch.
+   *
+   * A method, so the compiler does not carry what was assigned before the
+   * fetch across the `await` that replaced it.
+   *
+   * @returns The collection, or null when the fetch left none.
+   */
+  private collection_read(): ListResource | Resource | null {
+    return this._resourceCollection;
+  }
+
+  /**
+   * Walks the whole collection and answers only when it has all of it.
+   *
+   * {@link resources_getAll} is forgiving, which suits a listing meant to be
+   * shown: a page it cannot read ends the walk with the rows it has, a page
+   * shorter than the bound is taken as the last, and an answer that is not
+   * a list reads as "nothing here". An act that destroys on the strength of
+   * a listing cannot use an answer like that. Here every page must be a
+   * list that carries an array of items, the walk follows the server's own
+   * word on whether more follows and never infers the end from a short
+   * page, and anything else is an error.
+   *
+   * @param options - Filtering options. Limit and offset are managed here.
+   * @returns Every row of the collection. `tableData` is empty, not absent,
+   *   when the collection holds nothing.
+   * @throws {Error} When a page could not be fetched, is not a list, carries
+   *   no array of items, or says that more follows and gives no rows.
+   */
+  async resources_getWhole(options?: Partial<ListOptions>): Promise<FilteredResourceData> {
+    const tableData: Record<string, unknown>[] = [];
+    let selectedFields: string[] = [];
+    let offset: number = 0;
+    for (;;) {
+      // A fetch that yields nothing leaves the last page's collection in
+      // place; cleared, such a fetch is seen for what it is.
+      this._resourceCollection = null;
+      const asked: ListOptions | null = await this.resources_getList({ ...options, limit: PAGE_SIZE, offset });
+      const page: ListResource | Resource | null = this.collection_read();
+      if (!resource_isList(page)) {
+        throw new Error(`${this._resourceName}: the answer at offset ${offset} is not a list`);
+      }
+      const items: unknown = (page.collection as { items?: unknown } | undefined)?.items;
+      if (!Array.isArray(items)) {
+        throw new Error(`${this._resourceName}: the list at offset ${offset} carries no items`);
+      }
+      const rows: FilteredResourceData | null = this.resources_filterByFields(await this.resourceFields_get(asked));
+      if (rows !== null && rows.tableData) {
+        tableData.push(...rows.tableData);
+        if (selectedFields.length === 0) selectedFields = rows.selectedFields;
+      }
+      if (!this.hasNextPage) break;
+      if (items.length === 0) {
+        throw new Error(`${this._resourceName}: more is said to follow offset ${offset}, and the page is empty`);
+      }
+      offset += items.length;
+    }
+    return { tableData, selectedFields, totalCount: tableData.length };
+  }
+
+  /**
    * Lists and filters resources based on options.
    * @param options - Filtering and listing options.
    * @returns A Promise resolving to filtered resource data or null.
