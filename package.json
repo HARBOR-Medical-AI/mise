@@ -15,6 +15,7 @@
     "lint:seam": "eslint --config eslint.seam.config.mjs \"packages/*/src/**/*.ts\"",
     "lint:casts": "node scripts/cast-ratchet.mjs",
     "lint:kernel": "node scripts/kernel-isolation.mjs",
+    "lint:workers": "node scripts/worker-paths.mjs",
     "lint:fond": "node scripts/fond-isolation.mjs",
     "lint:trek": "node scripts/trek-isolation.mjs",
     "lint:core-deps": "node scripts/core-dependency-ratchet.mjs",

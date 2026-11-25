@@ -16,6 +16,7 @@
  */
 import { Worker } from 'node:worker_threads';
 import { procLayout_get, procLayout_set, type ProcLayoutPosition } from '@fnndsc/cumin';
+import { errorStack } from '@fnndsc/fond';
 import { procDataFacts_settled } from '@fnndsc/salsa';
 import {
   UNIVERSE_LAYOUTS,
@@ -83,10 +84,16 @@ export function universeLayoutInput_build(layout: UniverseLayout, feeds: Readonl
  * @param physics - The terms of the settle.
  * @param progress - Told how far it has come, 0..1.
  * @returns Every node's place.
+ * @throws {Error} When the worker cannot be started or the engine fails.
+ *
+ * @example
+ * ```ts
+ * const places: Positions = await layout_runInWorker('force', nodes, PHYSICS_DEFAULT, (): void => undefined);
+ * ```
  */
-function layout_runInWorker(engine: string, nodes: LayoutNode[], physics: PhysicsTerms, progress: (fraction: number) => void): Promise<Positions> {
+export function layout_runInWorker(engine: string, nodes: LayoutNode[], physics: PhysicsTerms, progress: (fraction: number) => void): Promise<Positions> {
   return new Promise<Positions>((resolve: (positions: Positions) => void, reject: (error: Error) => void): void => {
-    const worker: Worker = new Worker(new URL('./layoutWorker.js', import.meta.url));
+    const worker: Worker = new Worker(new URL('../universe/layoutWorker.js', import.meta.url));
     const finish = (): void => { void worker.terminate(); };
     worker.on('message', (message: { type: string; fraction?: number; positions?: Positions; reason?: string }): void => {
       if (message.type === 'progress') progress(message.fraction ?? 0);
@@ -131,6 +138,22 @@ export async function universeLayout_lay(
 }
 
 /**
+ * Says that the session could not lay a layout out.
+ *
+ * It is a warning and not a failure of the session: a surface settles what
+ * the session could not. But it is said, since a session that never lays
+ * anything out (its worker not found, say) otherwise looks like one with
+ * nothing to lay out.
+ *
+ * @param layout - The layout.
+ * @param error - What the attempt threw.
+ */
+function layoutFailure_note(layout: UniverseLayout, error: unknown): void {
+  const reason: string = error instanceof Error ? error.message : String(error);
+  errorStack.stack_push('warning', `the ${layout} layout could not be laid out by the session: ${reason}`);
+}
+
+/**
  * Lays out, once, every layout the session does not keep yet — DATA last,
  * after the facts sweep settles, and afresh, since its hubs are the facts.
  * One pass at a time; a failed layout is left for surfaces to settle.
@@ -148,15 +171,15 @@ export async function universeLayouts_warm(feeds: () => ReadonlyArray<LandedFeed
       if (await procLayout_get(layout) !== null) continue;
       try {
         if (await universeLayout_lay(layout, feeds(), run)) laid += 1;
-      } catch {
-        // A surface settles what the session could not.
+      } catch (error: unknown) {
+        layoutFailure_note(layout, error);
       }
     }
     await procDataFacts_settled();
     try {
       if (await universeLayout_lay('data', feeds(), run)) laid += 1;
-    } catch {
-      // As above.
+    } catch (error: unknown) {
+      layoutFailure_note('data', error);
     }
   } finally {
     warming = false;
