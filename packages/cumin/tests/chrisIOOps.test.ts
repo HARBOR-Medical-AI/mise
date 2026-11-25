@@ -57,9 +57,9 @@ describe('file_moveById field drift', () => {
     expect(put).toHaveBeenCalledWith({ upload_path: '/new/name.txt' });
   });
 
-  it('falls back to path for older CUBEs', async () => {
+  it('falls back to path for older CUBEs, which refuse the newer field outright', async () => {
     const put = jest.fn()
-      .mockRejectedValueOnce(new Error('At least one of the fields'))
+      .mockRejectedValueOnce(Object.assign(new Error('At least one of the fields'), { response: { status: 400 } }))
       .mockResolvedValueOnce({});
     mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
     expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(true);
@@ -67,10 +67,43 @@ describe('file_moveById field drift', () => {
     expect(put).toHaveBeenNthCalledWith(2, { path: '/new/name.txt' });
   });
 
-  it('fails when both field spellings are rejected', async () => {
-    const put = jest.fn(async () => { throw new Error('403'); });
+  it('asks for no second move when the first one\'s reply was lost: the move may have happened', async () => {
+    const put = jest.fn(async () => { throw new Error('socket hang up'); });
     mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
     expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for no second move after a refusal that is not about the field', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Forbidden'), { response: { status: 403 } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the caller again before the older field, and stops when the place is no longer shown free', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('bad field'), { response: { status: 400 } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    const recheck = jest.fn(async (): Promise<boolean> => false);
+    expect((await io().file_moveById(5, '/new/name.txt', recheck)).ok).toBe(false);
+    expect(recheck).toHaveBeenCalledTimes(1);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('tries the older field once the caller has shown the place free again', async () => {
+    const put = jest.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('bad field'), { response: { status: 400 } }))
+      .mockResolvedValueOnce({});
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt', async (): Promise<boolean> => true)).ok).toBe(true);
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails when both field spellings are rejected', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('bad field'), { response: { status: 400 } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -27,6 +27,9 @@ import type { Readable } from "node:stream";
 /** The status CUBE answers for a resource that is not there. */
 const HTTP_NOT_FOUND: number = 404;
 
+/** The status CUBE answers a request it read and refused for what it carried. */
+const HTTP_BAD_REQUEST: number = 400;
+
 /**
  * What CUBE stored for an upload: which file, and where.
  *
@@ -748,11 +751,23 @@ export class ChrisIO {
 
   /**
    * Moves (renames) a file in ChRIS by updating its path.
+   *
+   * The rename field drifted across CUBE versions: newer servers take
+   * `upload_path`, older ones `path` (chrisapi types neither). The current
+   * name is tried first. The older one is tried only when CUBE answered the
+   * first request and refused it (HTTP 400): a request whose reply was
+   * lost, or that failed in any other way, may have moved the file, and a
+   * second write then would be a move nobody checked. Such a failure is
+   * answered as Err, and the caller asks where the file is.
+   *
    * @param fileId - The file ID.
    * @param destPath - The target path including filename.
-   * @returns Promise resolving to true on success, false on failure.
+   * @param recheck - Asked before the second spelling is tried, when given:
+   *   whether the destination is still free. False stops the move.
+   * @returns Ok(true) when CUBE accepted the move; Err otherwise, which
+   *   does not say the file stayed where it was.
    */
-  async file_moveById(fileId: number, destPath: string): Promise<Result<boolean>> {
+  async file_moveById(fileId: number, destPath: string, recheck?: () => Promise<boolean>): Promise<Result<boolean>> {
     const client: Client | null = await this.client_get();
     if (!client) {
       errorStack.stack_push("error", "ChRIS client is not initialized");
@@ -765,14 +780,17 @@ export class ChrisIO {
         errorStack.stack_push("error", `File not found with ID ${fileId}`);
         return Err<boolean>();
       }
-      // The rename field drifted across CUBE versions: newer servers take
-      // `upload_path`, older ones `path` (chrisapi types neither). Try the
-      // current name first and fall back for older CUBEs.
       try {
         await resource_call<unknown>(userFile, 'put', { upload_path: destPath });
-      } catch {
-        await resource_call<unknown>(userFile, 'put', { path: destPath });
+        return Ok(true);
+      } catch (first: unknown) {
+        if (httpStatus_extract(first) !== HTTP_BAD_REQUEST) throw first;
       }
+      if (recheck !== undefined && !await recheck()) {
+        errorStack.stack_push("error", `Did not move file ID ${fileId} to ${destPath}: the place could not be shown free a second time`);
+        return Err<boolean>();
+      }
+      await resource_call<unknown>(userFile, 'put', { path: destPath });
       return Ok(true);
     } catch (error: unknown) {
       const errorMsg: string = error instanceof Error ? error.message : String(error);

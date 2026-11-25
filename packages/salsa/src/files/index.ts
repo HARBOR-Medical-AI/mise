@@ -307,16 +307,11 @@ export async function files_touch(
   // exists is a REWRITE. It was once done by removing the file and creating
   // it again, and a create that failed left nothing at the name; the swap in
   // `./replace.js` keeps the old content until the new is seen in place.
+  // Which of the two it is, a first write or a rewrite, is decided there on
+  // proof: a parent that would not list in full is not read as "no file".
   if (content !== undefined) {
-    const mark: number = errorStack.checkpoint_mark();
-    const existing: Result<number> = await fileId_resolve(target);
-    if (!existing.ok) {
-      // Not being there is the ordinary case, not a fault to report.
-      errorStack.checkpoint_drain(mark);
-    } else {
-      const { file_replace } = await import("./replace.js");
-      return await file_replace(target, content_convertToBlob(fileContent), existing.value);
-    }
+    const { file_write } = await import("./replace.js");
+    return await file_write(target, content_convertToBlob(fileContent));
   }
 
   return await files_create(fileContent, target);

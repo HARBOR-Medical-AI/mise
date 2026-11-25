@@ -34,8 +34,8 @@ jest.mock('../src/files/pipeline_content', () => mockPipeline);
 jest.mock('../src/files/regular_content', () => mockRegular);
 jest.mock('../src/files/pacs_content', () => mockPacs);
 jest.mock('../src/vfs/dispatcher', () => ({ vfsDispatcher: mockDispatcher }));
-const mockReplace = jest.fn();
-jest.mock('../src/files/replace', () => ({ file_replace: mockReplace }));
+const mockWrite = jest.fn();
+jest.mock('../src/files/replace', () => ({ file_write: mockWrite }));
 
 import { Ok, Err, errorStack } from '@fnndsc/cumin';
 import {
@@ -252,42 +252,25 @@ describe('files_create / touch', () => {
   });
 
   // CUBE's upload does not replace, so a touch carrying content over a file
-  // that already exists kept the OLD content and still reported success: a
-  // session file written twice never changed after its first write. A
-  // rewrite is handed to the swap in files/replace, which has its own tests;
-  // here, only that it is handed over, with the id of the file that is there.
-  it('files_touch hands a rewrite of a file that is there to the swap, by that file\'s id', async () => {
-    mockObjCreate.mockResolvedValue(group({
-      resources_getAll: jest.fn().mockResolvedValue({ tableData: [{ id: 7, fname: '/a/held.json' }] }),
-    }));
-    mockReplace.mockResolvedValue(true);
+  // that already exists kept the OLD content and still reported success. A
+  // write of content is handed whole to files/replace, which decides on
+  // proof whether it is a first write or a rewrite and has its own tests;
+  // here, only that it is handed over and nothing is done beside it.
+  it('files_touch hands content to the proved write, and looks nothing up itself', async () => {
+    mockWrite.mockResolvedValue(true);
 
     expect(await files_touch('/a/held.json', 'new')).toBe(true);
-    expect(mockReplace).toHaveBeenCalledWith('/a/held.json', expect.any(Blob), 7);
-    expect(await (mockReplace.mock.calls[0][1] as Blob).text()).toBe('new');
-    // The file there is neither deleted nor uploaded over from here.
+    expect(mockWrite).toHaveBeenCalledWith('/a/held.json', expect.any(Blob));
+    expect(await (mockWrite.mock.calls[0][1] as Blob).text()).toBe('new');
+    expect(mockObjCreate).not.toHaveBeenCalled();
     expect(mockIO.file_deleteById).not.toHaveBeenCalled();
     expect(mockIO.file_upload).not.toHaveBeenCalled();
   });
 
-  it('files_touch answers false when the swap could not be made', async () => {
-    mockObjCreate.mockResolvedValue(group({
-      resources_getAll: jest.fn().mockResolvedValue({ tableData: [{ id: 7, fname: '/a/held.json' }] }),
-    }));
-    mockReplace.mockResolvedValue(false);
+  it('files_touch answers false when the write could not be made', async () => {
+    mockWrite.mockResolvedValue(false);
     expect(await files_touch('/a/held.json', 'new')).toBe(false);
-  });
-
-  it('writes content to a path holding nothing without reporting a miss', async () => {
-    mockObjCreate.mockResolvedValue(group({
-      resources_getAll: jest.fn().mockResolvedValue({ tableData: [] }),
-    }));
-    mockIO.file_upload.mockResolvedValue(true);
-
-    expect(await files_touch('/a/fresh.json', 'new')).toBe(true);
-    expect(mockIO.file_deleteById).not.toHaveBeenCalled();
-    // Nothing being there is the ordinary case, not a fault to report.
-    expect(errorStack.stack_search('not found').length).toBe(0);
+    expect(mockIO.file_upload).not.toHaveBeenCalled();
   });
 
 });
