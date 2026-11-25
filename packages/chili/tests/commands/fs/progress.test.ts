@@ -6,7 +6,7 @@ import { bytes_format, eta_format, files_upload, files_uploadWithProgress, rate_
 import { files_downloadManyWithProgress, files_downloadWithProgress, type DownloadProgressEvent } from '../../../src/commands/fs/download';
 import * as cliUtils from '../../../src/utils/cli';
 import { chrisIO } from '@fnndsc/cumin';
-import { fileContent_getBinaryStream, files_listRecursive, files_path_isDirectory, files_uploadPath } from '@fnndsc/salsa';
+import { fileContent_getBinaryStream, files_listRecursive, files_path_isDirectory, files_uploadPath, pathHolders_prove } from '@fnndsc/salsa';
 import { prompt_confirmOrThrow } from '../../../src/utils/input_format';
 import { errorStack } from '@fnndsc/fond';
 
@@ -27,6 +27,7 @@ jest.mock('@fnndsc/salsa', () => ({
   files_listRecursive: jest.fn(),
   files_path_isDirectory: jest.fn(),
   files_uploadPath: jest.fn(),
+  pathHolders_prove: jest.fn(),
 }));
 
 describe('fs structured progress producers', () => {
@@ -40,6 +41,7 @@ describe('fs structured progress producers', () => {
     (chrisIO.client_get as jest.Mock).mockResolvedValue(null);
     (chrisIO.file_upload as jest.Mock).mockResolvedValue(true);
     (prompt_confirmOrThrow as jest.Mock).mockResolvedValue(undefined);
+    (pathHolders_prove as jest.Mock).mockResolvedValue({ ok: true, value: { kind: 'absent' } });
   });
 
   afterEach(async () => {
@@ -120,11 +122,7 @@ describe('fs structured progress producers', () => {
     await fs.promises.writeFile(path.join(localDir, 'a.dcm'), 'a');
     await fs.promises.writeFile(path.join(localDir, 'series', 'b.dcm'), 'bb');
     const events: UploadProgressEvent[] = [];
-    (chrisIO.client_get as jest.Mock).mockResolvedValue({
-      getFileBrowserFolders: jest.fn().mockResolvedValue({
-        getItems: jest.fn().mockResolvedValue([{ path: '/remote/study' }]),
-      }),
-    });
+    (pathHolders_prove as jest.Mock).mockResolvedValue({ ok: true, value: { kind: 'held', holders: [{ kind: 'dir', id: 4 }] } });
 
     const summary = await files_uploadWithProgress(localDir, '/remote', {
       onProgress: event => { events.push(event); },
@@ -142,14 +140,11 @@ describe('fs structured progress producers', () => {
   it('places a file into an existing destination directory without confirmation', async () => {
     const localFile: string = path.join(tmpDir, 'scan.dcm');
     await fs.promises.writeFile(localFile, 'scan');
-    (chrisIO.client_get as jest.Mock).mockResolvedValue({
-      getFileBrowserFolders: jest.fn().mockResolvedValue({
-        getItems: jest.fn().mockResolvedValue([{ path: '/remote/existing-child' }]),
-      }),
-    });
+    (pathHolders_prove as jest.Mock).mockResolvedValue({ ok: true, value: { kind: 'held', holders: [{ kind: 'dir', id: 4 }] } });
 
     await files_uploadWithProgress(localFile, '/remote');
 
+    expect(pathHolders_prove).not.toHaveBeenCalled();
     expect(prompt_confirmOrThrow).not.toHaveBeenCalled();
     expect(chrisIO.file_upload).toHaveBeenCalledWith(expect.any(Blob), '/remote', 'scan.dcm');
   });
@@ -160,11 +155,7 @@ describe('fs structured progress producers', () => {
     await fs.promises.writeFile(path.join(localDir, 'scan.dcm'), 'scan');
     const confirm = jest.fn(async (): Promise<void> => undefined);
     const notices: string[] = [];
-    (chrisIO.client_get as jest.Mock).mockResolvedValue({
-      getFileBrowserFolders: jest.fn().mockResolvedValue({
-        getItems: jest.fn().mockResolvedValue([{ path: '/remote/study' }]),
-      }),
-    });
+    (pathHolders_prove as jest.Mock).mockResolvedValue({ ok: true, value: { kind: 'held', holders: [{ kind: 'dir', id: 4 }] } });
 
     await files_uploadWithProgress(localDir, '/remote', {
       confirm,
@@ -427,6 +418,7 @@ describe('transfers through the pool', () => {
     (cliUtils.path_resolveChrisFs as jest.Mock).mockImplementation(async (p: string | undefined) => p ?? '/');
     (chrisIO.client_get as jest.Mock).mockResolvedValue(null);
     (prompt_confirmOrThrow as jest.Mock).mockResolvedValue(undefined);
+    (pathHolders_prove as jest.Mock).mockResolvedValue({ ok: true, value: { kind: 'absent' } });
   });
 
   afterEach(async () => {
