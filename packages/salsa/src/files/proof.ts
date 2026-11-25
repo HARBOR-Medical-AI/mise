@@ -87,17 +87,28 @@ function rowName_derive(row: Record<string, unknown>, kind: PathHolder): string 
   return kind === 'link' ? entry.replace(/\.chrislink$/, '') : entry;
 }
 
+/** A row id written as text: decimal digits and nothing else. */
+const ID_DIGITS: RegExp = /^[0-9]+$/;
+
 /**
- * The id a listing's row carries, when it is one CUBE could have given.
+ * The id a listing's row carries, when it is one a delete may be given.
+ *
+ * An id is acted on, so it has to be exactly the one CUBE sent. A number
+ * beyond the range JavaScript holds exactly has already been rounded to a
+ * neighbour by the time it is read, and text such as `1e3` or ` 7 ` would
+ * coerce to a number nobody wrote.
  *
  * @param row - One row of a listing.
- * @returns A positive whole number, or null for anything else: an id that
- *   is missing, null, zero or not a number is not an id to delete by.
+ * @returns A positive whole number within the exact range, or null for
+ *   anything else: missing, null, zero, negative, fractional, out of range,
+ *   or text that is not plain digits.
  */
 function rowId_derive(row: Record<string, unknown>): number | null {
   const raw: unknown = row.id;
-  const id: number = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : Number.NaN;
-  return Number.isInteger(id) && id > 0 ? id : null;
+  if (typeof raw === 'string' && !ID_DIGITS.test(raw)) return null;
+  if (typeof raw !== 'number' && typeof raw !== 'string') return null;
+  const id: number = Number(raw);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
 /**

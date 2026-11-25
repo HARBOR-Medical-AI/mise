@@ -171,6 +171,27 @@ describe('resources_getWhole: the whole collection, or an error', () => {
     await expect(resource.resources_getWhole()).rejects.toThrow('Files: the list at offset 0 carries no items');
   });
 
+  it('refuses a list that carries no links, which has not said that nothing follows', async () => {
+    const list: ListResource = Object.create(ListResource.prototype) as ListResource;
+    Object.defineProperties(list, { collection: { value: { items: [] } }, getItems: { value: (): unknown[] => [] } });
+    const resource: ChRISResource = new ChRISResource();
+    resource.resourceName = 'Files';
+    resource.binding_applyGet({}, jest.fn(async () => list) as never);
+    await expect(resource.resources_getWhole()).rejects.toThrow('Files: the list at offset 0 carries no links');
+  });
+
+  it('reads "more follows" from the collection\'s own next link, through the SDK\'s getter', async () => {
+    const first: ListResource = listResource_make(rows_make(2), 'resources', true);
+    expect(Object.getOwnPropertyNames(first)).not.toContain('hasNext');
+    expect(Object.getOwnPropertyNames(first)).not.toContain('hasNextPage');
+    expect(first.hasNextPage).toBe(true);
+    expect(listResource_make(rows_make(2)).hasNextPage).toBe(false);
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, jest.fn(async () => first) as never);
+    await resource.resources_getList();
+    expect(resource.hasNextPage).toBe(true);
+  });
+
   it('refuses an answer that is not a list', async () => {
     const resource: ChRISResource = new ChRISResource();
     resource.resourceName = 'Files';

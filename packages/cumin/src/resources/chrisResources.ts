@@ -20,10 +20,13 @@ import { connectionConfig } from "../config/config.js";
 import { errorStack } from "../error/errorStack.js";
 
 /**
- * ListResource with pagination support (hasNext property exists at runtime).
+ * The part of a collection+json document a page walk reads.
  */
-interface ListResourceWithPagination extends ListResource {
-  hasNext: boolean;
+interface CollectionPage {
+  /** The page's items. */
+  items?: unknown;
+  /** The page's link relations; one of rel `next` says more follows. */
+  links?: unknown;
 }
 
 /**
@@ -259,11 +262,21 @@ export class ChRISResource {
     }
   }
 
+  /**
+   * Whether the server says another page follows the one last fetched.
+   *
+   * The SDK derives this from the collection's `next` link and names it
+   * `hasNextPage`. It was read here as `hasNext`, which the SDK does not
+   * have, so the answer was always undefined and a walk could only guess
+   * from the length of a page.
+   */
   get hasNextPage(): boolean {
-    if (resource_isList(this._resourceCollection)) {
-      return (this._resourceCollection as ListResourceWithPagination).hasNext;
-    }
-    return false;
+    const page: ListResource | Resource | null = this._resourceCollection;
+    if (!resource_isList(page)) return false;
+    // The SDK's getter reads `collection.links` without looking; a page
+    // that carries none says nothing about a next one.
+    if (!Array.isArray((page.collection as CollectionPage | undefined)?.links)) return false;
+    return page.hasNextPage;
   }
 
   /**
@@ -376,7 +389,8 @@ export class ChRISResource {
    * @returns Every row of the collection. `tableData` is empty, not absent,
    *   when the collection holds nothing.
    * @throws {Error} When a page could not be fetched, is not a list, carries
-   *   no array of items, or says that more follows and gives no rows.
+   *   no array of items or of links, or says that more follows and gives no
+   *   rows.
    */
   async resources_getWhole(options?: Partial<ListOptions>): Promise<FilteredResourceData> {
     const tableData: Record<string, unknown>[] = [];
@@ -391,9 +405,15 @@ export class ChRISResource {
       if (!resource_isList(page)) {
         throw new Error(`${this._resourceName}: the answer at offset ${offset} is not a list`);
       }
-      const items: unknown = (page.collection as { items?: unknown } | undefined)?.items;
+      const collection: CollectionPage | undefined = page.collection as CollectionPage | undefined;
+      const items: unknown = collection?.items;
       if (!Array.isArray(items)) {
         throw new Error(`${this._resourceName}: the list at offset ${offset} carries no items`);
+      }
+      // Whether more follows is read from the page's links. A page without
+      // them has not said that nothing follows.
+      if (!Array.isArray(collection?.links)) {
+        throw new Error(`${this._resourceName}: the list at offset ${offset} carries no links, so it does not say whether more follows`);
       }
       const rows: FilteredResourceData | null = this.resources_filterByFields(await this.resourceFields_get(asked));
       if (rows !== null && rows.tableData) {
