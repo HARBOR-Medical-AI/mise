@@ -25,8 +25,8 @@
 
 /** A page of items and the token for the next, as every OCI list call answers. */
 export interface Page<T> {
-  /** The page's items; a call that answers none may leave this out. */
-  readonly items: T[] | undefined;
+  /** The page's items. An answer without them is not an empty page: the walk fails on it. */
+  readonly items: T[];
   /** The token of the next page; absent or empty on the last. */
   readonly opcNextPage?: string;
 }
@@ -36,6 +36,7 @@ export interface Page<T> {
  *
  * @param page_get - Fetches one page, given the token of the previous (undefined first).
  * @returns Every item, in order.
+ * @throws {Error} When a page carries no list of items.
  *
  * @example
  * ```ts
@@ -47,7 +48,11 @@ export async function pages_drain<T>(page_get: (page: string | undefined) => Pro
   let token: string | undefined = undefined;
   do {
     const page: Page<T> = await page_get(token);
-    items.push(...(page.items ?? []));
+    // The SDK gives an empty list for an empty page and leaves the list out
+    // for an answer with no body. The second is not "nothing there": read
+    // so, a vault or a compartment that exists would be made again.
+    if (!Array.isArray(page.items)) throw new Error('a page of the cloud\'s answer carries no list of items');
+    items.push(...page.items);
     token = page.opcNextPage === '' ? undefined : page.opcNextPage;
   } while (token !== undefined);
   return items;

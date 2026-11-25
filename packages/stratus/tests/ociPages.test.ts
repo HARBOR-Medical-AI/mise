@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 type Row = Record<string, unknown>;
 
 /** What the stand-in cloud holds: each list call's pages, and every call asked. */
-const world: { pages: Record<string, Row[][]>; asked: Array<{ call: string; request: Row }> } = { pages: {}, asked: [] };
+const world: { pages: Record<string, Array<Row[] | null>>; asked: Array<{ call: string; request: Row }> } = { pages: {}, asked: [] };
 
 /**
  * One page of a list call, by the token the caller passed.
@@ -21,11 +21,14 @@ const world: { pages: Record<string, Row[][]>; asked: Array<{ call: string; requ
  * @param request - What was asked; `page` is the token.
  * @returns The page, with a token when another follows.
  */
-function page_answer(call: string, request: Row): { items: Row[]; opcNextPage?: string } {
+function page_answer(call: string, request: Row): { items?: Row[]; opcNextPage?: string } {
   world.asked.push({ call, request });
-  const pages: Row[][] = world.pages[call] ?? [[]];
+  const pages: Array<Row[] | null> = world.pages[call] ?? [[]];
   const index: number = request.page === undefined ? 0 : Number(request.page);
-  return { items: pages[index] ?? [], ...(index < pages.length - 1 ? { opcNextPage: String(index + 1) } : {}) };
+  const page: Row[] | null | undefined = pages[index];
+  const rows: Row[] | null = page === undefined ? [] : page;
+  // A null page is an answer with no body: the SDK then leaves `items` out.
+  return { ...(rows === null ? {} : { items: rows }), ...(index < pages.length - 1 ? { opcNextPage: String(index + 1) } : {}) };
 }
 
 /** A client of any SDK package: its list calls page, and the few other calls the cases reach answer plainly. */
@@ -99,11 +102,31 @@ describe('pages_drain', () => {
     const all: number[] = await pages_drain(async (page: string | undefined) => {
       tokens.push(page);
       if (page === undefined) return { items: [1], opcNextPage: 'b' };
-      if (page === 'b') return { items: undefined, opcNextPage: 'c' };
+      if (page === 'b') return { items: [], opcNextPage: 'c' };
       return { items: [3], opcNextPage: '' };
     });
     expect(all).toEqual([1, 3]);
     expect(tokens).toEqual([undefined, 'b', 'c']);
+  });
+});
+
+describe('a page that carries no list is not an empty page', () => {
+  it('a later page of compartments with no items fails the call, and no compartment is made', async () => {
+    world.pages = { listCompartments: [[{ id: 'a', name: 'other' }], null] };
+    await expect(ociBuildApi_make({ region: 'us-ashburn-1' }).compartmentChild_ensure('parent', 'wanted', 'a description', {})).rejects.toThrow('carries no list of items');
+    expect(asked_count('createCompartment')).toBe(0);
+  });
+
+  it('a page of vaults with no items fails the read: the vault is not taken as absent', async () => {
+    world.pages = { listVaults: [null] };
+    await expect(ociKeepApi_make({ region: 'us-ashburn-1' }).secret_read('store')).rejects.toThrow('carries no list of items');
+    expect(asked_count('createVault')).toBe(0);
+  });
+
+  it('a bucket whose links answer with no list has none, and is removed', async () => {
+    world.pages = { listPreauthenticatedRequests: [null] };
+    await ociBuildApi_make({ region: 'us-ashburn-1' }).bucket_remove('images', 'home');
+    expect(asked_count('deleteBucket')).toBe(1);
   });
 });
 

@@ -307,7 +307,12 @@ export function ociBuildApi_make(options: OciBuildApiOptions): OciBuildApi {
         for (const object of page.objects ?? []) if (typeof object.name === 'string') await store.deleteObject({ namespaceName, bucketName: bucket, objectName: object.name });
         start = page.nextStartWith || undefined;
       } while (start !== undefined);
-      for (const link of await pages_drain((page: string | undefined) => store.listPreauthenticatedRequests({ namespaceName, bucketName: bucket, page }))) {
+      // A bucket with no links may answer with no list at all; here that is "none".
+      const links: objectstorage.models.PreauthenticatedRequestSummary[] = await pages_drain(async (page: string | undefined) => {
+        const answer = await store.listPreauthenticatedRequests({ namespaceName, bucketName: bucket, page });
+        return { items: answer.items ?? [], opcNextPage: answer.opcNextPage };
+      });
+      for (const link of links) {
         if (typeof link.id === 'string') await store.deletePreauthenticatedRequest({ namespaceName, bucketName: bucket, parId: link.id });
       }
       await store.deleteBucket({ namespaceName, bucketName: bucket });
