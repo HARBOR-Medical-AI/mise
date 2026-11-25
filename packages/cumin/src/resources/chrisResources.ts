@@ -263,20 +263,28 @@ export class ChRISResource {
   }
 
   /**
-   * Whether the server says another page follows the one last fetched.
+   * What the page last fetched says about a page after it.
    *
    * The SDK derives this from the collection's `next` link and names it
    * `hasNextPage`. It was read here as `hasNext`, which the SDK does not
    * have, so the answer was always undefined and a walk could only guess
    * from the length of a page.
+   *
+   * @returns True when a `next` link is there, false when the page carries
+   *   links and none is `next`, and null when it carries no links at all:
+   *   such a page has said nothing either way, and the SDK's getter would
+   *   fail on it.
    */
-  get hasNextPage(): boolean {
+  private nextPage_read(): boolean | null {
     const page: ListResource | Resource | null = this._resourceCollection;
-    if (!resource_isList(page)) return false;
-    // The SDK's getter reads `collection.links` without looking; a page
-    // that carries none says nothing about a next one.
-    if (!Array.isArray((page.collection as CollectionPage | undefined)?.links)) return false;
+    if (!resource_isList(page)) return null;
+    if (!Array.isArray((page.collection as CollectionPage | undefined)?.links)) return null;
     return page.hasNextPage;
+  }
+
+  /** Whether the server says another page follows the one last fetched; false when it does not say. */
+  get hasNextPage(): boolean {
+    return this.nextPage_read() === true;
   }
 
   /**
@@ -335,8 +343,10 @@ export class ChRISResource {
         break;
       }
 
-      // 3. If API explicitly says no next page (and it's not undefined).
-      if (this.hasNextPage === false) {
+      // 3. If the API explicitly says no next page. A page that says
+      // nothing either way is not that: a full page is then followed, as it
+      // always was, so a listing made for showing is never cut at the bound.
+      if (this.nextPage_read() === false) {
         break;
       }
 

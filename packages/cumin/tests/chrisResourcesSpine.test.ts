@@ -224,6 +224,26 @@ describe('resources_getWhole: the whole collection, or an error', () => {
 });
 
 describe('resources_getAll', () => {
+  it('follows a full page that says nothing about a next one, where the strict walk refuses that page', async () => {
+    /** A page whose collection carries items and no links at all. */
+    const unlinked_make = (rows: Array<Record<string, unknown>>): ListResource => {
+      const list: ListResource = listResource_make(rows);
+      delete (list.collection as { links?: unknown }).links;
+      return list;
+    };
+    const fetch = jest.fn(async (params: { offset?: number }) =>
+      (params.offset ?? 0) === 0 ? unlinked_make(rows_make(100)) : listResource_make(rows_make(1, 100)),
+    );
+    const lenient: ChRISResource = new ChRISResource();
+    lenient.binding_applyGet({}, fetch as never);
+    expect((await lenient.resources_getAll())?.tableData).toHaveLength(101);
+
+    const strict: ChRISResource = new ChRISResource();
+    strict.resourceName = 'Files';
+    strict.binding_applyGet({}, fetch as never);
+    await expect(strict.resources_getWhole()).rejects.toThrow('Files: the list at offset 0 carries no links');
+  });
+
   it('walks pages until a short page arrives', async () => {
     const fetch = jest.fn(async (params: { offset?: number }) =>
       (params.offset ?? 0) === 0
