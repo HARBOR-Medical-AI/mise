@@ -8,7 +8,7 @@
 
 == Abstract
 
-A berth is one person's mise session, running in a container of its own behind a spoke's door, with the ChRIS data they anchored under `/anchors`, their results at `/outgoing`, and a shell that is never on the machine that runs CUBE. This document owns the word, the topology and the decisions that build it. The spoke it sits in is <<dev-bastion.adoc#,dev-bastion.adoc>>'s subject; the host that runs the door is <<bastion.adoc#,bastion.adoc>>'s; how a spoke is built is <<stratus.adoc#,stratus.adoc>>'s.
+A berth is one person's mise session, running in a container of its own behind a spoke's door, with the ChRIS data they anchored under `/anchors`, their results at `/outgoing`, and a shell that is never on the machine that runs CUBE. This document owns the word, the topology and the decisions that build it. What is built is the open posture, a person at the prompt, on a stand-in spoke; the sealed berth of a Trusted Domain, with nobody at its prompt, is <<dev-bastion.adoc#sealed-berth,dev-bastion.adoc>>'s. The spoke it sits in is <<dev-bastion.adoc#,dev-bastion.adoc>>'s subject; the host that runs the door is <<bastion.adoc#,bastion.adoc>>'s; how a spoke is built is <<stratus.adoc#,stratus.adoc>>'s.
 
 [[words]]
 == The words
@@ -121,6 +121,7 @@ The session's `berth` verbs are brasa's (`packages/brasa/src/builtins/berth/`). 
 [[open]]
 == Open
 
+* *The sealed berth is not built, and this document describes the open one.* Every act above, the login at the door, `berth anchor`, the shell, `berth close`, is a person's at the prompt, on a stand-in spoke. In a Trusted Domain the common case has nobody at the prompt and the Hub driving; how the cohort is anchored there, who closes, and what a round returns are open, and are listed in <<dev-bastion.adoc#sealed-berth,dev-bastion.adoc>>.
 * *A refreshed token takes effect at the berth's next start,* not live; and a launcher restarted forgets the tokens it held, so the next start needs a fresh login.
 * *The two-hour idle stop* is not built; stop at logout is.
 * *A short-lived root helper* gives new volumes to the person's uid at the first start; it is the one moment of root on the path.
