@@ -3436,10 +3436,12 @@ try {
   // law a-change-is-a-loop, walked whole over the fake cloud: a network built
   // from the console; `vm` takes the screen on + NEW, where the levers and the
   // price stand before anything is sent; BUILD, its one commit, writes the
-  // script, declares and builds, its question in place, CONTINUE answering;
-  // SIZE then renders what runs (RUNS beside each lever), a lever moved says
-  // what BUILD would do against it, BUILD again reshapes the machine, and the
-  // receipt is what runs read back. Esc gives the page back.
+  // script, declares and builds, each question in place, YES answering; SPEC
+  // then renders what runs (RUNS beside each lever) and says in one line that
+  // nothing changes; a lever moved is said in the change block, whose BUILD
+  // names the act and its cost; the build is one run of phases on the seat,
+  // and its receipt is the outcome over what runs read back. Esc gives the
+  // page back.
   const vc = await evalIn(`
     await console_idle();
     if (document.body.dataset.composition !== 'stratus') return { composition: document.body.dataset.composition ?? null };
@@ -3448,12 +3450,18 @@ try {
     const type = (line) => { input.value = line; input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); };
     const settle = async (want, tries = 60) => { for (let i = 0; i < tries; i++) { if (want()) return true; await sleep(250); } return want(); };
     const root = () => document.getElementById('vm-controller');
-    const pill = (word) => [...(root()?.querySelectorAll('button') ?? [])].find((b) => b.textContent.trim() === word);
+    // A pill as the operator can press it: one that is drawn (a view not shown keeps its own, unseen).
+    const pill = (word) => [...(root()?.querySelectorAll('button') ?? [])].find((b) => b.offsetParent !== null && b.textContent.trim() === word);
     const idle = () => root()?.dataset.busy === 'no';
     const asking = () => root()?.querySelector('.tdc-strip')?.hidden === false;
     const runsMarks = () => [...(root()?.querySelectorAll('.ss-slider-runs') ?? [])].map((m) => m.textContent);
-    const note = () => root()?.querySelector('.ss-note-would')?.textContent ?? null;
-    const noteTitle = () => root()?.querySelector('.ss-note-would .tdc-note-title')?.textContent ?? null;
+    const question = () => root()?.querySelector('.tdc-strip-text')?.textContent ?? null;
+    // The question's answers, as the errand bar words them; YES is the one that goes on.
+    const answers = () => [...(root()?.querySelectorAll('button') ?? [])].filter((b) => b.offsetParent !== null && /^(YES|NO) · /.test(b.textContent.trim())).map((b) => b.textContent.trim());
+    const yes = () => [...(root()?.querySelectorAll('button') ?? [])].find((b) => b.offsetParent !== null && b.textContent.trim().startsWith('YES · '));
+    // The change block: what would change, in words, and its one commit.
+    const change = () => root()?.querySelector('.vm-change-lines')?.textContent ?? null;
+    const commit = () => [...(root()?.querySelectorAll('.vm-change button') ?? [])].find((b) => b.offsetParent !== null && b.textContent.trim().startsWith('BUILD'));
     // A network of this run's own, built from the console (its build asks; y answers).
     const net = 'smokevm-' + String(Date.now() % 100000);
     type('net new ' + net + ' --cidr 10.53.0.0/16'); await sleep(2000); await console_idle();
@@ -3472,41 +3480,55 @@ try {
     const disk = root().querySelector('#ss-slider-disk'); disk.value = '60'; disk.dispatchEvent(new Event('input'));
     const priced = await settle(() => /AS SIZED/.test(root().querySelector('.tdc-col-cost')?.textContent ?? ''), 80);
     const sentBefore = [...document.querySelectorAll('#vm-controller .tdc-log-sent')].length;
-    // BUILD, its one commit: the script, the declaration, the build; the question in place, CONTINUE.
+    // BUILD, its one commit: the script, the declaration, the build; each question in place, answered YES.
+    // It is held, and says why (BUILD · PRICING), until the offer as it stands is priced.
+    const offered = await settle(() => pill('BUILD') !== undefined && !pill('BUILD').disabled, 120);
     pill('BUILD')?.click();
     const askedNew = await settle(() => asking(), 400);
-    const questionNew = root().querySelector('.tdc-strip-text')?.textContent ?? null;
-    pill('CONTINUE')?.click();
+    const questionNew = question();
+    const answersNew = answers();
+    yes()?.click();
     // A first build asks again before its machine, once its data stands: that question is answered too.
-    const askedMachine = await settle(() => asking() && /the machine plan/.test(root().querySelector('.tdc-strip-text')?.textContent ?? ''), 400);
-    if (askedMachine) pill('CONTINUE')?.click();
-    const built = await settle(() => idle() && window.__argusVm?.vm() === name && runsMarks().length === 4, 600);
+    const askedMachine = await settle(() => asking() && /machine now/.test(question() ?? ''), 400);
+    const answersMachine = answers();
+    if (askedMachine) yes()?.click();
+    const built = await settle(() => idle() && !asking() && window.__argusVm?.vm() === name && runsMarks().length === 4, 600);
     const runsBuilt = runsMarks();
-    const titleBuilt = noteTitle();
-    // A lever moved off what runs: BUILD WOULD says the change and what it means.
-    const memory = root().querySelector('#ss-slider-memory'); memory.value = '16'; memory.dispatchEvent(new Event('input')); await sleep(300);
-    const would = note();
-    const declareShown = pill('DECLARE') !== undefined;
-    pill('BUILD')?.click();
+    // Built, nothing differs: one quiet line, and no BUILD to press.
+    const quiet = change();
+    const buildAtRest = commit() !== undefined;
+    // A lever moved off what runs: the change block says the change, what it means and what it costs, and BUILD names the act.
+    const memory = root().querySelector('#ss-slider-memory'); memory.value = '16'; memory.dispatchEvent(new Event('input'));
+    // The change's cost is asked of the price list: BUILD names it once it is read.
+    await settle(() => /memory 8 → 16 GiB/.test(change() ?? '') && /a month$/.test(commit()?.textContent.trim() ?? ''), 80);
+    const would = change();
+    const means = root().querySelector('.vm-change-means')?.textContent ?? null;
+    const commitWord = commit()?.textContent.trim() ?? null;
+    const differs = [...root().querySelectorAll('.ss-slider-differs')].map((m) => m.textContent);
+    commit()?.click();
     const askedResize = await settle(() => asking(), 400);
-    const questionResize = root().querySelector('.tdc-strip-text')?.textContent ?? null;
-    pill('CONTINUE')?.click();
-    const receipt = await settle(() => idle() && noteTitle() === 'BUILT · WHAT RUNS IS WHAT WAS OFFERED', 600);
+    const questionResize = question();
+    const answersResize = answers();
+    const runAsking = [...root().querySelectorAll('.vm-run-step')].map((s) => s.textContent);
+    yes()?.click();
+    const receipt = await settle(() => idle() && !asking() && runsMarks().includes('RUNS 16 GiB') && root().querySelector('.vm-run-outcome') !== null, 600);
     const runsAfter = runsMarks();
-    const receiptText = note();
-    // The rest of what runs beside its field, read from the tenancy: the ports, the backups, the OS.
+    const outcome = root().querySelector('.vm-run-outcome')?.textContent ?? null;
+    const runEnded = [...root().querySelectorAll('.vm-run-step')].map((s) => s.textContent);
+    // The rest of what runs beside its field, read from the tenancy: the OS and the backups.
     const fieldRuns = [...(root()?.querySelectorAll('.ss-field-runs') ?? [])].map((m) => m.textContent);
     // TEARDOWN's guard: the lock is the tenancy's, said with when it was set; PROTECT · OFF lifts it there and it is read back.
     const seat = (word) => [...root().querySelectorAll('.takeover-gutter button')].find((b) => b.textContent.trim().startsWith(word));
+    const gutter = [...root().querySelectorAll('.takeover-gutter button')].map((b) => b.textContent.trim());
     const lockWhere = () => root().querySelector('.ss-lock-where')?.textContent ?? null;
     const lockTitle = () => root().querySelector('.ss-col-side .tdc-note-title')?.textContent ?? null;
     seat('TEARDOWN')?.click();
     await settle(() => lockWhere() !== null, 80);
-    const lockBorn = { title: lockTitle(), where: lockWhere() };
+    const lockBorn = { title: lockTitle(), where: lockWhere(), teardown: pill('TEARDOWN · ALL') !== undefined };
     const blocksRead = [...root().querySelectorAll('.tdc-teardown-step .tdc-strip-word')].map((w) => w.textContent);
     pill('PROTECT · OFF')?.click();
     const lifted = await settle(() => idle() && lockTitle() === 'UNLOCKED' && /KEPT IN THE TENANCY/.test(lockWhere() ?? ''), 240);
-    const lockLifted = { title: lockTitle(), where: lockWhere() };
+    const lockLifted = { title: lockTitle(), where: lockWhere(), teardown: pill('TEARDOWN · ALL') !== undefined };
     pill('PROTECT · ON')?.click();
     const relocked = await settle(() => idle() && lockTitle() === 'PROTECTED', 240);
     const logged = [...document.querySelectorAll('.tdc-log-sent')].map((l) => l.textContent);
@@ -3514,25 +3536,36 @@ try {
     const pills = [...document.querySelectorAll('#vm-controller .takeover-seat .tdc-cluster')].map((p) => p.textContent);
     const hidden = [...document.body.children].filter((node) => node.id !== 'vm-controller' && getComputedStyle(node).visibility !== 'hidden' && node.offsetParent !== null).length;
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await sleep(400);
-    return { composition: 'stratus', opened: true, name, priced, sentBefore, askedNew, questionNew, askedMachine, built, runsBuilt, titleBuilt, would, declareShown, askedResize, questionResize, receipt, runsAfter, receiptText, fieldRuns, blocksRead, lockBorn, lifted, lockLifted, relocked, logged, steps, pills, hidden, titleBack: document.title === titleBefore, after: document.body.dataset.takeover ?? null };`);
+    const titleAfter = document.title;
+    return { composition: 'stratus', opened: true, name, titleBefore, titleAfter, priced, offered, sentBefore, askedNew, questionNew, answersNew, askedMachine, answersMachine, built, runsBuilt, quiet, buildAtRest, would, means, commitWord, differs, askedResize, questionResize, answersResize, runAsking, receipt, runsAfter, outcome, runEnded, fieldRuns, gutter, blocksRead, lockBorn, lifted, lockLifted, relocked, logged, steps, pills, hidden, titleBack: document.title === titleBefore, after: document.body.dataset.takeover ?? null };`);
   if (vc.composition !== 'stratus') {
     check('under any other composition vm opens no controller', true, JSON.stringify(vc));
   } else if (!vc.opened) {
     check('a display narrower than the VM controller\'s least refuses by name, and the line runs as text', vc.narrow && /needs a display at least 1250 px wide/.test(vc.said), JSON.stringify(vc));
   } else {
-    check('vm on a new machine offers its levers and its price before anything is sent; BUILD, its one commit, writes the script, declares and builds, its question in place with the cost',
-      vc.priced && vc.sentBefore === 0 && vc.askedNew && /It bills/.test(vc.questionNew ?? '') && vc.askedMachine && vc.logged.some((l) => l.startsWith('stratus> touch --withContents=')) && vc.logged.some((l) => l.startsWith('stratus> vm new ' + vc.name)) && vc.logged.includes('stratus> vm build ' + vc.name), JSON.stringify(vc));
-    check('SIZE is one loop: it renders what runs beside each lever, says what BUILD would do against it, BUILD is its only commit, the question is in place, and the receipt is what runs read back',
-      vc.built && JSON.stringify(vc.runsBuilt) === JSON.stringify(['RUNS 2', 'RUNS 8 GiB', 'RUNS 60 GB', 'RUNS 50 GB']) && vc.titleBuilt !== null
-        && /memory 8 → 16 GiB: the machine reboots/.test(vc.would ?? '') && !vc.declareShown && vc.askedResize && /REBOOTS/.test(vc.questionResize ?? '')
-        && vc.receipt && vc.runsAfter.includes('RUNS 16 GiB') && /read from the tenancy/.test(vc.receiptText ?? ''), JSON.stringify(vc));
-    check('what runs beside every field of SIZE is read from the tenancy, the ports, the backups and the OS too, and TEARDOWN\'s blocks say each part stands as read',
-      JSON.stringify(vc.fieldRuns) === JSON.stringify(['RUNS DAILY', 'RUNS 80,443', 'RUNS UBUNTU-26.04']) && vc.blocksRead.length === 2 && vc.blocksRead.every((w) => /^STANDS · READ \d\d:\d\d$/.test(w ?? '')), JSON.stringify(vc));
-    check('the lock is kept in the tenancy: THE GUARD says where it is kept and when it was set, PROTECT · OFF lifts it there and the screen reads it back',
-      vc.lockBorn.title === 'PROTECTED' && /^KEPT IN THE TENANCY · SET \d{4}-\d\d-\d\d \d\d:\d\d UTC$/.test(vc.lockBorn.where ?? '') && vc.lifted && /^KEPT IN THE TENANCY/.test(vc.lockLifted.where ?? '')
+    check('vm on a new machine offers its levers and its price before anything is sent; BUILD, its one commit, writes the script, declares and builds, each question in place with the cost and a YES and a NO that say what they do',
+      vc.priced && vc.offered && vc.sentBefore === 0 && vc.askedNew && /It bills/.test(vc.questionNew ?? '') && JSON.stringify(vc.answersNew) === JSON.stringify(['YES · BUILD', 'NO · BUILD NOTHING'])
+        && vc.askedMachine && JSON.stringify(vc.answersMachine) === JSON.stringify(['YES · BUILD', 'NO · MAKE NO MACHINE'])
+        && vc.logged.some((l) => l.startsWith('stratus> touch --withContents=')) && vc.logged.some((l) => l.startsWith('stratus> vm new ' + vc.name)) && vc.logged.includes('stratus> vm build ' + vc.name), JSON.stringify(vc));
+    check('SPEC is one loop: it renders what runs beside each lever; with nothing to change it says so in one quiet line and offers no BUILD; a lever moved is said as its change, what it means and what it costs, on a BUILD that names the act',
+      vc.built && JSON.stringify(vc.runsBuilt) === JSON.stringify(['RUNS 2', 'RUNS 8 GiB', 'RUNS 60 GB', 'RUNS 50 GB'])
+        && /nothing changes · what runs is what is sized/.test(vc.quiet ?? '') && !vc.buildAtRest
+        && /memory 8 → 16 GiB · reboots/.test(vc.would ?? '') && /the machine restarts/.test(vc.means ?? '') && /^BUILD · memory 8 → 16 GiB · \+\$[\d.]+ a month$/.test(vc.commitWord ?? '')
+        && JSON.stringify(vc.differs) === JSON.stringify(['RUNS 8 GiB']), JSON.stringify(vc));
+    check('a build is one run on the seat that started it: its question in place, said plainly with the reboot and the cost, its phases drawn with ASKS asking, and its receipt the outcome in words over what runs read back',
+      vc.askedResize && /^Resize .* memory 8 → 16 GiB/.test(vc.questionResize ?? '') && /reboots/.test(vc.questionResize ?? '') && /\$[\d.]+ → \$[\d.]+ a month\.$/.test(vc.questionResize ?? '')
+        && vc.answersResize.length === 2 && /^YES · .*RESIZE$/.test(vc.answersResize[0]) && vc.answersResize[1] === 'NO · BUILD NOTHING'
+        && vc.runAsking.includes('ASKSASKING') && vc.receipt && vc.runsAfter.includes('RUNS 16 GiB') && vc.outcome === 'BUILT · MEMORY 8 → 16 GIB'
+        && vc.runEnded.includes('ASKSANSWERED YES') && vc.runEnded.includes('APPLY MACHINEDONE'), JSON.stringify(vc));
+    check('what runs beside SPEC\'s fields is read from the tenancy, the OS and the backups too, and TEARDOWN\'s blocks say each part stands as read',
+      JSON.stringify(vc.fieldRuns) === JSON.stringify(['RUNS UBUNTU-26.04', 'RUNS DAILY']) && vc.blocksRead.length === 2 && vc.blocksRead.every((w) => /^STANDS · READ \d\d:\d\d$/.test(w ?? '')), JSON.stringify(vc));
+    check('the lock is kept in the tenancy: THE GUARD says where it is kept and when it was set, a locked machine is offered no teardown, PROTECT · OFF lifts the lock there and the screen reads it back',
+      vc.lockBorn.title === 'PROTECTED' && /^KEPT IN THE TENANCY · SET \d{4}-\d\d-\d\d \d\d:\d\d UTC$/.test(vc.lockBorn.where ?? '') && !vc.lockBorn.teardown
+        && vc.lifted && /^KEPT IN THE TENANCY/.test(vc.lockLifted.where ?? '') && vc.lockLifted.teardown
         && vc.relocked && vc.logged.includes('stratus> vm protect ' + vc.name + ' off'), JSON.stringify(vc));
-    check('the machine stands in the gutter with its seats, MACHINE then SIZE (holding its build), CHRIS, USERS, TEARDOWN, the page hidden behind it',
-      JSON.stringify(vc.steps) === JSON.stringify(['MACHINE', 'SIZE', 'CHRIS', 'USERS', 'TEARDOWN']) && vc.pills.includes(vc.name.toUpperCase()) && vc.pills.at(-1) === '+ NEW' && vc.hidden === 0, JSON.stringify(vc));
+    check('the machine stands in the gutter with its seats, SPEC (holding its build), SERVICES, CHRIS (holding its accounts), TEARDOWN, the page hidden behind it',
+      JSON.stringify(vc.gutter) === JSON.stringify(['SPEC', 'SERVICES', 'CHRIS', 'TEARDOWN', 'LEAVE']) && JSON.stringify(vc.steps) === JSON.stringify(['SPEC', 'SERVICES', 'CHRIS', 'USERS', 'TEARDOWN'])
+        && vc.pills.includes(vc.name.toUpperCase()) && vc.pills.at(-1) === '+ NEW' && vc.hidden === 0, JSON.stringify(vc));
     check('Esc gives the VM controller back: no takeover, the tab\'s title as it was', vc.after === null && vc.titleBack, JSON.stringify(vc));
   }
   }
