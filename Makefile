@@ -69,6 +69,11 @@ BASE ?= main
 # check is watched.
 CHECKS_SCOPE = $(if $(filter main,$(BASE)),--required,)
 
+# The jq that keeps this repository's own pull requests. `gh pr list --head`
+# matches a branch NAME, and a fork's branch of the same name answers to it
+# too; a PR from a fork is not the one this checkout pushed.
+PR_OWN = map(select(.isCrossRepository == false))
+
 # The pull request ci-watch watches, by number; unset, the current branch's.
 # merge sets it, so the checks it waits on are those of the PR it merges.
 PR ?=
@@ -290,7 +295,7 @@ pr: push
 # listing that answered can say there is none. A lookup that failed (the
 # network, a login) has said nothing, and a rebase force-pushes: it stops.
 base-check:
-	@bases=$$(gh pr list --head $(BRANCH) --state open --json baseRefName --jq '.[].baseRefName') \
+	@bases=$$(gh pr list --head $(BRANCH) --state open --json baseRefName,isCrossRepository --jq '$(PR_OWN) | .[].baseRefName') \
 		|| { echo "Could not ask GitHub what the $(BRANCH) PR is aimed at: nothing done."; exit 1; }; \
 	for actual in $$bases; do \
 		[ "$$actual" = "$(BASE)" ] || { echo "The $(BRANCH) PR is aimed at $$actual, not $(BASE): nothing done. Say BASE=$$actual if that is meant."; exit 1; }; \
@@ -327,9 +332,11 @@ rebase: base-check
 # the checks ran is not merged on another's checks. A last round that ends
 # BEHIND says so and fails; it does not fall through to "Merged".
 merge: base-check
-	@num=$$(gh pr list --head $(BRANCH) --state open --json number --jq '.[0].number // empty') \
+	@nums=$$(gh pr list --head $(BRANCH) --state open --json number,isCrossRepository --jq '$(PR_OWN) | .[].number') \
 		|| { echo "Could not ask GitHub for the $(BRANCH) PR: nothing done."; exit 1; }; \
-	[ -n "$$num" ] || { echo "No open PR for $(BRANCH); run 'make pr' first."; exit 1; }; \
+	[ -n "$$nums" ] || { echo "No open PR for $(BRANCH); run 'make pr' first."; exit 1; }; \
+	[ $$(echo "$$nums" | wc -w) -eq 1 ] || { echo "More than one open PR from $(BRANCH) in this repository ($$(echo $$nums)): nothing done."; exit 1; }; \
+	num=$$nums; \
 	merged=no; \
 	for round in 1 2 3; do \
 		state=$$(gh pr view $$num --json mergeStateStatus --jq .mergeStateStatus) || exit 1; \
