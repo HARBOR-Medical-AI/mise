@@ -263,6 +263,18 @@ export async function files_create(
 }
 
 /**
+ * The content of a file as the Blob an upload takes.
+ *
+ * @param content - Text, bytes, or a Blob already.
+ * @returns The same content as a Blob.
+ */
+function content_convertToBlob(content: string | Buffer | Blob): Blob {
+  if (typeof content === 'string') return new Blob([content]);
+  if (Buffer.isBuffer(content)) return new Blob([new Uint8Array(content)]);
+  return content;
+}
+
+/**
  * Creates a new empty file at the specified path (like Unix touch).
  * Optionally creates the file with specified content.
  *
@@ -292,8 +304,9 @@ export async function files_touch(
   // a file leaves the OLD content in place and still reports success, so a
   // caller writing content to a file it has written before was silently
   // keeping the first version forever. Content given for a path that already
-  // exists is a REWRITE, so the file it holds is removed first and the
-  // failure to remove it is reported rather than written over.
+  // exists is a REWRITE. It was once done by removing the file and creating
+  // it again, and a create that failed left nothing at the name; the swap in
+  // `./replace.js` keeps the old content until the new is seen in place.
   if (content !== undefined) {
     const mark: number = errorStack.checkpoint_mark();
     const existing: Result<number> = await fileId_resolve(target);
@@ -301,12 +314,8 @@ export async function files_touch(
       // Not being there is the ordinary case, not a fault to report.
       errorStack.checkpoint_drain(mark);
     } else {
-      const parent: string = path.posix.dirname(target);
-      const removed: boolean = await files_delete(existing.value, "files", parent);
-      if (!removed) {
-        errorStack.stack_push("error", `Could not rewrite ${target}: the file already there could not be removed.`);
-        return false;
-      }
+      const { file_replace } = await import("./replace.js");
+      return await file_replace(target, content_convertToBlob(fileContent), existing.value);
     }
   }
 

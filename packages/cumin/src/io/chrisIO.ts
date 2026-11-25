@@ -24,6 +24,24 @@ import { Err, Ok, Result } from "../utils/result.js";
 import { STREAM_STALL_MS, stream_watchStalls, upload_watchStalls, type UploadWatch } from "./streamWatch.js";
 import type { Readable } from "node:stream";
 
+/** The status CUBE answers for a resource that is not there. */
+const HTTP_NOT_FOUND: number = 404;
+
+/**
+ * What CUBE stored for an upload: which file, and where.
+ *
+ * @example
+ * ```ts
+ * const receipt: UploadReceipt = { id: 41, path: '/home/ada/uploads/notes.txt' };
+ * ```
+ */
+export interface UploadReceipt {
+  /** The id CUBE gave the stored file. */
+  readonly id: number;
+  /** The path it was stored at, with a leading slash; not always the one asked for. */
+  readonly path: string;
+}
+
 /**
  * UserFile data with fname field.
  */
@@ -453,6 +471,83 @@ export class ChrisIO {
       );
       return false;
     }
+  }
+
+  /**
+   * Uploads a file and answers what CUBE stored, without touching it after.
+   *
+   * {@link file_upload} answers only yes or no, and on a name CUBE changed
+   * it may rename the file back. A caller that goes on to act on the file
+   * (to move it, or to delete it) needs to know which file it is: its id,
+   * and the path it actually landed at, which is not always the one asked.
+   *
+   * @param fileBlob - The file content.
+   * @param uploadDir - The ChRIS folder to upload into.
+   * @param filename - The name asked for.
+   * @returns The stored file's id and path, or Err with the reason stacked
+   *   when the upload failed or CUBE's answer names no usable id or path.
+   */
+  async file_uploadReceipted(fileBlob: Blob, uploadDir: string, filename: string): Promise<Result<UploadReceipt>> {
+    const client: Client | null = await this.client_get();
+    if (!client) {
+      errorStack.stack_push("error", "ChRIS client is not initialized");
+      return Err<UploadReceipt>();
+    }
+    const normalizedUploadDir: string = uploadDir.startsWith('/') ? uploadDir.substring(1) : uploadDir;
+    const fullPath: string = normalizedUploadDir.endsWith('/') ? normalizedUploadDir + filename : `${normalizedUploadDir}/${filename}`;
+    const watch: UploadWatch = upload_watchStalls(fileBlob, filename, STREAM_STALL_MS);
+    const abandon: AbortController = new AbortController();
+    watch.stalled.catch((stall: unknown): void => { abandon.abort(stall); });
+    let uploaded: Record<string, unknown>;
+    try {
+      uploaded = await client_userFileUpload(client, fullPath, watch.file, abandon.signal);
+    } catch (error: unknown) {
+      const errorMsg: string = error instanceof Error ? error.message : String(error);
+      errorStack.stack_push("error", `Failed to upload file ${filename} to ${uploadDir}: ${errorMsg}`);
+      return Err<UploadReceipt>();
+    } finally {
+      watch.stop();
+    }
+    const id: unknown = uploaded.id;
+    const fname: unknown = uploaded.fname;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0 || typeof fname !== 'string' || fname === '') {
+      errorStack.stack_push("error", `CUBE took ${filename} and did not say which file it made of it`);
+      return Err<UploadReceipt>();
+    }
+    return Ok({ id, path: fname.startsWith('/') ? fname : `/${fname}` });
+  }
+
+  /**
+   * Where a file is now, asked of CUBE by the file's id.
+   *
+   * After a move whose reply was lost, the move may or may not have
+   * happened; this is how a caller finds out before it undoes anything.
+   *
+   * @param fileId - The file's id.
+   * @returns The file's path with a leading slash; null when CUBE says the
+   *   file is not there (404); Err when CUBE could not be asked or would
+   *   not say, which is neither.
+   */
+  async file_locate(fileId: number): Promise<Result<string | null>> {
+    const client: Client | null = await this.client_get();
+    if (!client) {
+      errorStack.stack_push("error", "ChRIS client is not initialized");
+      return Err<string | null>();
+    }
+    let status: number | null = null;
+    try {
+      const userFile: UserFile | null = await client.getUserFile(fileId);
+      const fname: unknown = (userFile as UserFileWithData | null)?.data?.fname;
+      if (typeof fname === 'string' && fname !== '') return Ok(fname.startsWith('/') ? fname : `/${fname}`);
+    } catch (error: unknown) {
+      status = httpStatus_extract(error);
+    }
+    // The client answers a refusal with null as readily as an absence, so
+    // CUBE is asked plainly what it thinks of this id.
+    status ??= await this.fileStatus_probe(fileId);
+    if (status === HTTP_NOT_FOUND) return Ok(null);
+    errorStack.stack_push("error", `Could not learn where file ID ${fileId} is${status === null ? '' : ` (HTTP ${status})`}`);
+    return Err<string | null>();
   }
 
   /**

@@ -349,6 +349,67 @@ describe('file_upload', () => {
   });
 });
 
+describe('file_uploadReceipted: the upload answers which file it made', () => {
+  beforeEach(() => { posted = []; });
+  afterEach(() => { fetchSpy?.mockRestore(); fetchSpy = undefined; });
+
+  it('answers the stored id and the path, with a leading slash', async () => {
+    cube_fake();
+    mockClientGet.mockResolvedValue(uploadClient());
+    expect(await io().file_uploadReceipted(new Blob(['xyz']), '/home/chris/up', 'a.txt'))
+      .toEqual({ ok: true, value: { id: 41, path: '/home/chris/up/a.txt' } });
+  });
+
+  it('answers the path CUBE chose when it is not the one asked for, and renames nothing', async () => {
+    cube_fake({ fname: () => 'home/chris/up/a_XYZ.txt' });
+    const getUserFile = jest.fn();
+    mockClientGet.mockResolvedValue(uploadClient({ getUserFile }));
+    expect(await io().file_uploadReceipted(new Blob(['x']), 'home/chris/up', 'a.txt'))
+      .toEqual({ ok: true, value: { id: 41, path: '/home/chris/up/a_XYZ.txt' } });
+    expect(getUserFile).not.toHaveBeenCalled();
+  });
+
+  it('fails when CUBE refuses the upload', async () => {
+    cube_fake({ status: 500 });
+    mockClientGet.mockResolvedValue(uploadClient());
+    expect((await io().file_uploadReceipted(new Blob(['x']), 'up', 'a.txt')).ok).toBe(false);
+  });
+
+  it('fails when not connected', async () => {
+    mockClientGet.mockResolvedValue(null);
+    expect((await io().file_uploadReceipted(new Blob(['x']), 'up', 'a.txt')).ok).toBe(false);
+  });
+});
+
+describe('file_locate: where a file is, by its id', () => {
+  it('answers the path the file is at, with a leading slash', async () => {
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ data: { fname: 'home/chris/up/a.txt' } })) });
+    expect(await io().file_locate(41)).toEqual({ ok: true, value: '/home/chris/up/a.txt' });
+  });
+
+  it('answers null when CUBE says the file is not there', async () => {
+    const gone: Error & { response?: { status: number } } = Object.assign(new Error('Not Found'), { response: { status: 404 } });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => { throw gone; }) });
+    expect(await io().file_locate(41)).toEqual({ ok: true, value: null });
+  });
+
+  it('answers neither when CUBE refuses to say: a refusal is not an absence', async () => {
+    const refused: Error & { response?: { status: number } } = Object.assign(new Error('Forbidden'), { response: { status: 403 } });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => { throw refused; }) });
+    expect((await io().file_locate(41)).ok).toBe(false);
+  });
+
+  it('answers neither when the client gives nothing and CUBE cannot be asked plainly', async () => {
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => null) });
+    expect((await io().file_locate(41)).ok).toBe(false);
+  });
+
+  it('fails when not connected', async () => {
+    mockClientGet.mockResolvedValue(null);
+    expect((await io().file_locate(41)).ok).toBe(false);
+  });
+});
+
 describe('folder operations', () => {
   it('creates a folder', async () => {
     mockClientGet.mockResolvedValue({
