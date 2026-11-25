@@ -91,12 +91,28 @@ class MockCube {
  * CUBE accepts a folder's DELETE (202) and removes it after: a ghost is a
  * removed folder its parent goes on listing for so many more reads.
  */
-const mockState: { cube: MockCube; ghosts: Map<string, { id: number; reads: number }>; lingerReads: number } = { cube: new MockCube({}), ghosts: new Map(), lingerReads: 0 };
+const mockState: { cube: MockCube; ghosts: Map<string, { id: number; reads: number }>; lingerReads: number; faults: Map<string, Listing> } = { cube: new MockCube({}), ghosts: new Map(), lingerReads: 0, faults: new Map() };
 
-type Listing = { kind: 'listing'; data: { tableData: Array<Record<string, unknown>> } } | { kind: 'empty' } | { kind: 'missing' };
+type Listing =
+  | { kind: 'listing'; data: { tableData: Array<Record<string, unknown>>; incomplete?: { gathered: number; reason: string } } }
+  | { kind: 'empty' }
+  | { kind: 'missing' }
+  | { kind: 'refused'; error: Error };
+
+/** Makes one listing of one folder answer as given, whatever the folder holds. */
+function mockFault_set(asset: 'dirs' | 'files' | 'links', folder: string, answer: Listing): void {
+  mockState.faults.set(`${asset} ${folder}`, answer);
+}
+
+/** A listing cut short at its bound: the rows it has, and the word that there were more. */
+function mockListing_cutShort(rows: Array<Record<string, unknown>>): Listing {
+  return { kind: 'listing', data: { tableData: rows, incomplete: { gathered: rows.length, reason: 'stopped at 1000' } } };
+}
 
 /** CUBE's listing of one kind in a folder. */
 function mockCube_list(asset: string, folder: string): Listing {
+  const fault: Listing | undefined = mockState.faults.get(`${asset} ${folder}`);
+  if (fault !== undefined) return fault;
   const at: CubeEntry | undefined = mockState.cube.get(folder);
   if (at === undefined || at.type !== 'dir') return { kind: 'missing' };
   if (asset === 'links') return { kind: 'empty' };
@@ -158,6 +174,7 @@ const cubeDriver: VfsContractDriver = {
     mockState.cube = new MockCube(seed);
     mockState.ghosts = new Map();
     mockState.lingerReads = 0;
+    mockState.faults = new Map();
     return new NativeVfsProvider();
   },
 };
@@ -230,5 +247,78 @@ describe('what the native mount says beyond an errno', () => {
     const mount = await cubeDriver.mount_make({ '/home/docs': null });
     expect(await mount.read!('/home/docs')).toEqual({ ok: false, errno: 'EISDIR' });
     expect(await mount.readBinary!('/home/docs')).toEqual({ ok: false, errno: 'EISDIR' });
+  });
+});
+
+describe('rmdir removes a folder only on proof that it is a folder, alone at its path, and empty', () => {
+  const eio = (reason: string): unknown => ({ ok: false, errno: 'EIO', reason });
+
+  it('removes a folder whose three listings all answer, and hold nothing', async () => {
+    const mount = await cubeDriver.mount_make({ '/home/x': null });
+    expect(await mount.rmdir!('/home/x')).toEqual({ ok: true, value: true });
+    expect(mockState.cube.deletes).toBe(1);
+    expect(mockState.cube.get('/home/x')).toBeUndefined();
+  });
+
+  it('removes nothing when the folder holds a file', async () => {
+    const mount = await cubeDriver.mount_make({ '/home/x': null, '/home/x/a.txt': 'alpha' });
+    expect(await mount.rmdir!('/home/x')).toEqual({ ok: false, errno: 'ENOTEMPTY' });
+    expect(mockState.cube.deletes).toBe(0);
+  });
+
+  it('removes nothing when the files of the folder are refused, though its folders and links read as empty', async () => {
+    const mount = await cubeDriver.mount_make({ '/home/x': null, '/home/x/a.txt': 'alpha' });
+    mockFault_set('files', '/home/x', { kind: 'refused', error: new Error('500 Internal Server Error') });
+    expect(await mount.rmdir!('/home/x')).toEqual(eio('Cannot tell whether /home/x is empty: its files could not be read (500 Internal Server Error)'));
+    expect(mockState.cube.deletes).toBe(0);
+    expect(mockState.cube.get('/home/x/a.txt')?.content.toString()).toBe('alpha');
+  });
+
+  it('removes nothing when a listing of the folder was cut short, even with no row in it', async () => {
+    const mount = await cubeDriver.mount_make({ '/home/x': null });
+    mockFault_set('files', '/home/x', mockListing_cutShort([]));
+    expect(await mount.rmdir!('/home/x')).toEqual(eio('Cannot tell whether /home/x is empty: its files were not all read (stopped at 1000)'));
+    expect(mockState.cube.deletes).toBe(0);
+  });
+
+  it('removes nothing when a listing of the folder could not be made at all', async () => {
+    const mount = await cubeDriver.mount_make({ '/home/x': null, '/home/x/a.txt': 'alpha' });
+    mockFault_set('files', '/home/x', { kind: 'missing' });
+    expect(await mount.rmdir!('/home/x')).toEqual(eio('Cannot tell whether /home/x is empty: its files could not be listed'));
+    expect(mockState.cube.deletes).toBe(0);
+  });
+
+  it('removes nothing when the parent\'s files were cut short, since a file of the same name may be among the unread', async () => {
+    const mount = await cubeDriver.mount_make({ '/home/x': null });
+    mockFault_set('files', '/home', mockListing_cutShort([]));
+    expect(await mount.rmdir!('/home/x')).toEqual(eio('Cannot check /home/x: the files of /home were not all read (stopped at 1000)'));
+    expect(mockState.cube.deletes).toBe(0);
+  });
+
+  it('removes nothing when a listing of the parent could not be made though the parent is there', async () => {
+    const mount = await cubeDriver.mount_make({ '/home/x': null });
+    mockFault_set('files', '/home', { kind: 'missing' });
+    expect(await mount.rmdir!('/home/x')).toEqual(eio('Cannot check /home/x: /home is there and could not be listed'));
+    expect(mockState.cube.deletes).toBe(0);
+  });
+
+  it('removes nothing when the parent\'s listing is refused', async () => {
+    const mount = await cubeDriver.mount_make({ '/home/x': null });
+    mockFault_set('dirs', '/home', { kind: 'refused', error: new Error('403 Forbidden') });
+    expect(await mount.rmdir!('/home/x')).toEqual(eio('Cannot check /home/x: 403 Forbidden'));
+    expect(mockState.cube.deletes).toBe(0);
+  });
+
+  it('says a folder that is not there is not there, when its parent is proved absent too', async () => {
+    const mount = await cubeDriver.mount_make({ '/home/x': null });
+    expect(await mount.rmdir!('/home/gone/y')).toEqual({ ok: false, errno: 'ENOENT' });
+    expect(mockState.cube.deletes).toBe(0);
+  });
+
+  it('still shows the rows it has when part of a listing fails: showing is not removing', async () => {
+    const mount = await cubeDriver.mount_make({ '/home/x': null, '/home/x/sub': null, '/home/x/a.txt': 'alpha' });
+    mockFault_set('files', '/home/x', { kind: 'refused', error: new Error('500 Internal Server Error') });
+    const listed = await mount.list('/home/x');
+    expect(listed.ok && listed.value.map((item: { name: string }): string => item.name)).toEqual(['sub']);
   });
 });
