@@ -834,16 +834,18 @@ export async function files_getSingle(
 
 
 /**
- * Shares files in ChRIS.
+ * Answers that a file cannot be shared by its id from here.
  *
- * @param fileId - The ID of the file to share.
- * @param options - Options for sharing (e.g., user, permissions).
- * @returns A Promise resolving to true.
+ * Sharing by file id is not offered: permissions are set through `setfacl`.
+ * This says so, and shares nothing.
+ *
+ * @param fileId - The ID of the file asked about.
+ * @param _options - The sharing options asked for; none is acted on.
+ * @returns Always false, with the reason on the error stack.
  */
-export async function files_share(fileId: number, options: FileShareOptions): Promise<boolean> {
-  // Implement actual sharing logic using cumin/chrisapi
-  runtimeOutput_data(`Sharing file ${fileId} with options: ${JSON.stringify(options)}\n`);
-  return Promise.resolve(true);
+export async function files_share(fileId: number, _options: FileShareOptions): Promise<boolean> {
+  errorStack.stack_push("error", `Sharing file ${fileId} by its id is not offered here: nothing was shared. Permissions are set with setfacl.`);
+  return false;
 }
 
 /**

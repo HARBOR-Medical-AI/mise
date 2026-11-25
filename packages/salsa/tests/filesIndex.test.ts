@@ -288,8 +288,15 @@ describe('files_mkdir / uploadPath / share', () => {
     mockIO.uploadLocalPath.mockResolvedValue(true);
     expect(await files_uploadPath('/local', '/remote')).toBe(true);
   });
-  it('share returns true', async () => {
-    expect(await files_share(1, { is_public: true })).toBe(true);
+  it('share says it cannot, shares nothing and writes nothing to the output', async () => {
+    const written: string[] = [];
+    const out = jest.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown): boolean => { written.push(String(chunk)); return true; });
+    const answer: boolean = await files_share(1, { is_public: true });
+    out.mockRestore();
+    expect(answer).toBe(false);
+    expect(errorStack.stack_search('nothing was shared').length).toBe(1);
+    expect(written).toEqual([]);
+    expect(mockObjCreate).not.toHaveBeenCalled();
   });
 });
 
