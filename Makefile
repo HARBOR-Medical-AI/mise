@@ -282,10 +282,15 @@ pr: push
 # Stops, having done nothing, when this branch's PR is aimed at another
 # branch than $(BASE). A stage PR opened against main by mistake would
 # otherwise be rebased onto, and merged under, the wrong branch's gate.
-# A branch with no PR yet has nothing to contradict, and passes.
+# A branch with no open PR has nothing to contradict, and passes; but only a
+# listing that answered can say there is none. A lookup that failed (the
+# network, a login) has said nothing, and a rebase force-pushes: it stops.
 base-check:
-	@actual=$$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null) || exit 0; \
-	[ "$$actual" = "$(BASE)" ] || { echo "The $(BRANCH) PR is aimed at $$actual, not $(BASE): nothing done. Say BASE=$$actual if that is meant."; exit 1; }
+	@bases=$$(gh pr list --head $(BRANCH) --state open --json baseRefName --jq '.[].baseRefName') \
+		|| { echo "Could not ask GitHub what the $(BRANCH) PR is aimed at: nothing done."; exit 1; }; \
+	for actual in $$bases; do \
+		[ "$$actual" = "$(BASE)" ] || { echo "The $(BRANCH) PR is aimed at $$actual, not $(BASE): nothing done. Say BASE=$$actual if that is meant."; exit 1; }; \
+	done
 
 # Waits for the required contexts (audit, check 22, check 24) on this
 # branch's PR; for a base other than main, for every check (CHECKS_SCOPE).
@@ -312,6 +317,8 @@ rebase: base-check
 # loop would notice, so the branch is rebased and re-pushed first, and once
 # more if main moved again while the checks ran. Two rounds, then it stops
 # and says so rather than chase a busy main forever.
+# A PR can be aimed elsewhere while its checks run, so the base is read again
+# after the wait and the PR that was read is the one merged, by its number.
 merge: base-check
 	@gh pr view --json number >/dev/null || { echo "No PR for $(BRANCH); run 'make pr' first."; exit 1; }
 	@for round in 1 2 3; do \
@@ -325,7 +332,10 @@ merge: base-check
 		$(MAKE) --no-print-directory ci-watch || exit 1; \
 		state=$$(gh pr view --json mergeStateStatus --jq .mergeStateStatus); \
 		if [ "$$state" = "BEHIND" ]; then echo "$(BASE) moved while the checks ran."; continue; fi; \
-		gh pr merge --merge && break || exit 1; \
+		num=$$(gh pr list --head $(BRANCH) --state open --json number,baseRefName --jq '.[] | select(.baseRefName == "$(BASE)") | .number') \
+			|| { echo "Could not ask GitHub what the $(BRANCH) PR is aimed at: not merged."; exit 1; }; \
+		[ -n "$$num" ] || { echo "The $(BRANCH) PR is no longer aimed at $(BASE): not merged."; exit 1; }; \
+		gh pr merge $$num --merge && break || exit 1; \
 	done
 	@echo "Merged. 'make sync' fast-forwards local main; 'make publish' releases"
 	@echo "any pending changesets via the Version Packages PR."
