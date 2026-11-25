@@ -202,12 +202,7 @@ async function localFiles_scan(localPaths: readonly string[], remotePath: string
   for (const localPath of localPaths) {
     const stats: fs.Stats = await fs.promises.stat(localPath);
     if (stats.isDirectory()) {
-      // Preserve each directory basename in the remote path (Unix cp semantics).
-      const basename: string = path.basename(localPath);
-      const targetDir: string = remotePath.endsWith('/')
-        ? remotePath + basename
-        : remotePath + '/' + basename;
-      await walkDir(localPath, targetDir);
+      await walkDir(localPath, directoryTarget_derive(localPath, remotePath));
     } else {
       const filename: string = path.basename(localPath);
       const targetPath: string = remotePath.endsWith('/')
@@ -250,10 +245,31 @@ async function uploadFile_send(file: UploadFileInfo): Promise<number> {
 }
 
 /**
+ * Where one folder on this machine lands in ChRIS.
+ *
+ * One answer, used by the scan, by the check before sending and by the
+ * summary, so the place that is asked about is the place that is written.
+ * A folder keeps its own name under the destination, as `cp -r` does. The
+ * folder written as `.` (or `some/where/.`) has no name of its own to keep:
+ * its contents go into the destination itself, as `cp -r . dest` puts them.
+ * One written as `..` is known by the name it has on disk.
+ *
+ * @param localPath - The folder as the operator wrote it.
+ * @param remotePath - The resolved ChRIS destination.
+ * @returns The ChRIS path the folder's contents go under, with no `.` or
+ *   `..` segment in it.
+ */
+function directoryTarget_derive(localPath: string, remotePath: string): string {
+  const written: string = path.basename(localPath);
+  if (written === '.') return remotePath.length > 1 && remotePath.endsWith('/') ? remotePath.slice(0, -1) : remotePath;
+  const name: string = written === '..' ? path.basename(path.resolve(localPath)) : written;
+  return remotePath.endsWith('/') ? remotePath + name : `${remotePath}/${name}`;
+}
+
+/**
  * Where each folder among the sources lands in ChRIS.
  *
- * A folder keeps its own name under the destination, as `cp -r` does; a
- * file goes into the destination and has no target folder of its own.
+ * A file goes into the destination and has no target folder of its own.
  *
  * @param localPaths - The sources on this machine, files and folders.
  * @param remotePath - The resolved ChRIS destination.
@@ -264,8 +280,7 @@ async function directoryTargets_derive(localPaths: readonly string[], remotePath
   const targets: string[] = [];
   for (const localPath of localPaths) {
     if (!(await fs.promises.stat(localPath)).isDirectory()) continue;
-    const basename: string = path.basename(localPath);
-    targets.push(remotePath.endsWith('/') ? remotePath + basename : `${remotePath}/${basename}`);
+    targets.push(directoryTarget_derive(localPath, remotePath));
   }
   return targets;
 }
@@ -346,10 +361,7 @@ export async function files_uploadWithProgress(
   if (localPaths.length === 1) {
     const stats: fs.Stats = await fs.promises.stat(localPaths[0]);
     if (stats.isDirectory()) {
-      const basename: string = path.basename(localPaths[0]);
-      actualTarget = resolvedRemote.endsWith('/')
-        ? resolvedRemote + basename
-        : resolvedRemote + '/' + basename;
+      actualTarget = directoryTarget_derive(localPaths[0], resolvedRemote);
     }
   }
 

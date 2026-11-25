@@ -135,6 +135,15 @@ describe('a folder upload sends nothing', () => {
     expect(mockUpload).not.toHaveBeenCalled();
   });
 
+  it('from a folder written as "." when the destination itself is there and the answer is no', async () => {
+    const local: string = await folder_make('study');
+    cube_answer(REMOTE_IS_THERE);
+    const confirm = jest.fn(async (): Promise<void> => { throw new Error('Operation cancelled by user.'); });
+    await expect(files_uploadWithProgress(`${local}/.`, '/remote', { confirm })).rejects.toThrow('Operation cancelled by user.');
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Target '/remote' already exists"));
+    expect(mockUpload).not.toHaveBeenCalled();
+  });
+
   it('from the first of two folders when the second is declined', async () => {
     await folder_make('alpha');
     await folder_make('beta');
@@ -180,6 +189,17 @@ describe('a folder upload goes ahead', () => {
     expect(mockObjCreate).not.toHaveBeenCalled();
     expect(prompt_confirmOrThrow).not.toHaveBeenCalled();
     expect(summary.transferredCount).toBe(1);
+  });
+});
+
+describe('a folder written as "."', () => {
+  it('puts its contents into the destination itself, at the place that was asked about', async () => {
+    const local: string = await folder_make('study');
+    cube_answer(REMOTE_IS_THERE);
+    const confirm = jest.fn(async (): Promise<void> => undefined);
+    const summary = await files_uploadWithProgress(`${local}/.`, '/remote', { confirm });
+    expect(summary.actualTargetPath).toBe('/remote');
+    expect(mockUpload).toHaveBeenCalledWith(expect.any(Blob), '/remote', 'scan.dcm');
   });
 });
 
