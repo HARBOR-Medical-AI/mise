@@ -298,6 +298,43 @@ describe('feed watches', () => {
     expect(procWatch_list()).toEqual([{ feedID: 7, owners: 1, state: 'live' }]);
   });
 
+  it('a launch answered after someone else connected makes no watch and joins none: the feed of that number is now another\'s', async () => {
+    const { identityEpoch_raise, identityScope_run } = await import('@fnndsc/cumin/identity-epoch');
+    activeFeed_seed();
+    let launched: () => void = (): void => undefined;
+    // The first identity launches a run; CUBE is slow to answer, and the run is followed when it does.
+    const followed: Promise<unknown> = identityScope_run(async (): Promise<unknown> => {
+      await new Promise<void>((resolve: () => void): void => { launched = resolve; });
+      return procWatch_add(7, 'run');
+    });
+    identityEpoch_raise('other@cube');
+    // No watch yet for the second: the late follow makes none.
+    launched();
+    expect(await followed).toBeNull();
+    await flush();
+    expect(procWatch_list()).toEqual([]);
+    expect(feedDag_handle).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    // The second has its own watch of feed 7: a late follow from the first adds no owner to it.
+    procWatch_add(7, 'pane-a');
+    await flush();
+    const before: number = events.length;
+    const late: Promise<unknown> = identityScope_run(async (): Promise<unknown> => {
+      await new Promise<void>((resolve: () => void): void => { launched = resolve; });
+      return procWatch_add(7, 'run');
+    });
+    identityEpoch_raise('third@cube');
+    procWatch_add(7, 'pane-a');
+    await flush();
+    const published: number = events.length;
+    launched();
+    expect(await late).toBeNull();
+    await flush();
+    expect(procWatch_list()).toEqual([{ feedID: 7, owners: 1, state: 'live' }]);
+    expect(events.length).toBe(published);
+    expect(before).toBeGreaterThan(0);
+  });
+
   it('watches are refcounted per owner, and a release drops every watch an owner held', async () => {
     activeFeed_seed();
     cache.feed_add(feed({ id: 8 }));

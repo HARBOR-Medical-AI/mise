@@ -16,7 +16,7 @@
  * @module
  */
 import type { ProcCache, ProcCacheChange, ProcFeed } from '@fnndsc/cumin';
-import { identityChange_listen, identityElevated_is, identityEpoch_get, identityScope_hold } from '@fnndsc/cumin/identity-epoch';
+import { identityChange_listen, identityCache_usable, identityEpoch_get, identityScope_hold } from '@fnndsc/cumin/identity-epoch';
 import type { WatchState, CommandEnvelope } from '@fnndsc/menu';
 import { ambient_publish } from '../core/ambient.js';
 
@@ -266,8 +266,10 @@ identityChange_listen((): void => {
  */
 export function procWatch_add(feedID: number, owner: string): WatchState | null {
   // A watch outlives the command that asked for it and says what it sees to every surface: it is the
-  // session's own, and is not kept for work done as another user.
-  if (identityElevated_is()) return null;
+  // session's own. It is not made, or joined, for work done as another user, nor for work begun as someone
+  // who is no longer connected (a launch answered after a change of identity: the feed of that number now
+  // is another's).
+  if (!identityCache_usable()) return null;
   const existing: Watch | undefined = watches.get(feedID);
   if (existing) {
     existing.owners.add(owner);

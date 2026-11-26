@@ -697,6 +697,73 @@ describe('a change of who is connected is one step', () => {
     expect(conn.connection_isConnected()).toBe(false);
   });
 
+  it('a logout asked for at once after a login, before the login has awaited anything, comes after it: nobody is connected', async () => {
+    const store: FakeStore = { files: {} };
+    const conn: ChRISConnection = connection_make(store);
+    mockAuthToken.mockResolvedValue('SECOND');
+    const login: Promise<string | null> = conn.connection_connect({ user: 'second', password: 'pw', debug: true, url: 'https://cube/api/v1/' });
+    const logout: Promise<void> = conn.connection_logout();
+    expect(await login).toBeNull();
+    await logout;
+    expect(conn.connection_isConnected()).toBe(false);
+    expect(Object.values(store.files)).not.toContain('SECOND');
+  });
+
+  it('a refusal of an earlier login that comes back after a later login succeeded ends nothing and says nothing', async () => {
+    const conn: ChRISConnection = connection_make({ files: {} });
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    const refusal = gate_make<string>();
+    mockAuthToken.mockImplementationOnce((): Promise<string> => refusal.wait).mockResolvedValueOnce('LATER');
+    const earlier: Promise<string | null> = conn.connection_connect({ user: 'earlier', password: 'wrong', debug: true, url: 'https://cube/api/v1/' });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(await conn.connection_connect({ user: 'later', password: 'pw', debug: true, url: 'https://cube/api/v1/' })).toBe('LATER');
+    refusal.fail(new Error('CUBE answered 401'));
+    // With `debug` a refusal is thrown; this one is nobody's any more.
+    expect(await earlier).toBeNull();
+    expect(await conn.user_get()).toBe('later');
+    expect(await conn.client_get()).toEqual({ of: 'LATER' });
+  });
+
+  it('after a move of context whose write failed, the one before\'s saved token is not read back under the new name', async () => {
+    const store: FakeStore = { files: { '/cfg/token': 'FIRST' } };
+    const conn: ChRISConnection = connection_make(store);
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    mockContextSet.mockResolvedValue(true);
+    mockParse.mockResolvedValue({ user: 'chris', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    await conn.context_set('chris@https://cube/api/v1/');
+    expect(await conn.client_get()).toEqual({ of: 'FIRST' });
+    mockParse.mockResolvedValue({ user: 'other', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    mockContextSet.mockRejectedValueOnce(new Error('the disk is full'));
+    await expect(conn.context_set('other@https://cube/api/v1/')).rejects.toThrow('the disk is full');
+    // The first's token is still on disk, at the path still named.
+    expect(store.files['/cfg/token']).toBe('FIRST');
+    expect(await conn.authToken_get()).toBeNull();
+    expect(await conn.authToken_get(true)).toBeNull();
+    expect(await conn.client_get()).toBeNull();
+    expect(await conn.client_refresh()).toBeNull();
+    // Signing in makes the saved token readable again.
+    mockAuthToken.mockResolvedValue('OTHER');
+    await conn.connection_connect({ user: 'other', password: 'pw', debug: true, url: 'https://cube/api/v1/' });
+    expect(await conn.authToken_get(true)).toBe('OTHER');
+  });
+
+  it('a logout whose token could not be removed stays logged out', async () => {
+    const store: FakeStore = { files: { '/cfg/token': 'FIRST' } };
+    const storage = storage_make(store);
+    (storage.remove as unknown as jest.Mock).mockRejectedValueOnce(new Error('EACCES'));
+    const conn: ChRISConnection = new ChRISConnection(config_make(), storage);
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    expect(await conn.client_get()).toEqual({ of: 'FIRST' });
+    const said = jest.spyOn(console, 'error').mockImplementation((): void => undefined);
+    await conn.connection_logout();
+    said.mockRestore();
+    expect(store.files['/cfg/token']).toBe('FIRST');
+    expect(await conn.authToken_get()).toBeNull();
+    expect(await conn.authToken_get(true)).toBeNull();
+    expect(await conn.client_get()).toBeNull();
+    expect(await conn.client_refresh()).toBeNull();
+  });
+
   it('an address still being read when someone else connects is not put in place of theirs', async () => {
     const store: FakeStore = { files: { '/cfg/token': 'FIRST' } };
     const loaded = gate_make<string>();
