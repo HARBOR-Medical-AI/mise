@@ -2,7 +2,7 @@
  * @file A name from elsewhere is placed inside its folder or refused: by
  * what the name says, and by where the links already on the disk lead.
  */
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { wireName_place, type HostPlace } from '../src/hostPlace';
@@ -79,6 +79,24 @@ describe('wireName_place, by where the links on the disk lead', () => {
   it('refuses a name whose place is a link that leads nowhere', () => {
     symlinkSync(path.join(base, 'gone'), path.join(folder, 'x.txt'));
     expect(reason_of(wireName_place(folder, 'x.txt'))).toContain('a link that leads nowhere');
+  });
+
+  it('refuses a name whose way cannot be looked at, rather than taking that for absence', () => {
+    // A part of the way that is a file: the file system answers ENOTDIR for what lies under it, which is not ENOENT.
+    writeFileSync(path.join(folder, 'afile'), 'x');
+    expect(reason_of(wireName_place(folder, 'afile/x.txt'))).toContain('a place that could not be looked at');
+  });
+
+  it('refuses a name under a folder it may not look into', () => {
+    if (process.getuid?.() === 0) return;
+    const closed: string = path.join(folder, 'closed');
+    mkdirSync(closed);
+    chmodSync(closed, 0o000);
+    try {
+      expect(reason_of(wireName_place(folder, 'closed/x.txt'))).toContain('a place that could not be looked at');
+    } finally {
+      chmodSync(closed, 0o700);
+    }
   });
 
   it('places a name through a link that stays inside the folder', () => {

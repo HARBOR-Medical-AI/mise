@@ -1951,10 +1951,13 @@ export class CalypsoDaemon {
     if (!origin.capabilities.fileDelivery) {
       return Promise.reject(new Error('this surface cannot receive a file'));
     }
+    // The surface's own id for the line that is asking: it binds the delivery to that line.
+    const line: string | null = this.currentId;
     return this.deliveries.open(origin.socket, (deliverId: string): void => {
       this.send(origin.socket, {
         type: 'deliver',
         deliverId,
+        ...(line !== null ? { id: line } : {}),
         path: request.path,
         filename: request.filename,
         ...(request.destination !== undefined ? { destination: request.destination } : {}),

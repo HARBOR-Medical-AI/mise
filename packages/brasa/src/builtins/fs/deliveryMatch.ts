@@ -12,18 +12,24 @@
 export interface DeliveryIntent {
   /** The command that asked. */
   readonly verb: string;
-  /** The destination as the operator typed it, quoting removed; null when the command gave none. */
+  /** The destination as the operator typed it, quoting removed; null when the command gave none or it cannot be bound. */
   readonly destination: string | null;
+  /**
+   * Why this intent can authorise no delivery, when it cannot: the
+   * destination is written with a reference (`$OUT`), whose value only the
+   * engine knows. Such an intent matches nothing, whatever the engine sends.
+   */
+  readonly unbound?: string;
 }
 
 /**
  * Whether a delivery's destination is one a line asked for.
  *
- * @param intents - What the line in flight asked for.
+ * @param intents - What the delivery's own line asked for.
  * @param destination - The destination a delivery names; undefined or empty when it names none.
- * @returns True when some intent has exactly that destination, or none where the delivery has none.
+ * @returns True when some bound intent has exactly that destination, or none where the delivery has none.
  */
 export function deliveryIntent_matches(intents: ReadonlyArray<DeliveryIntent>, destination: string | undefined): boolean {
   const asked: string | null = destination === undefined || destination.length === 0 ? null : destination;
-  return intents.some((intent: DeliveryIntent): boolean => intent.destination === asked);
+  return intents.some((intent: DeliveryIntent): boolean => intent.unbound === undefined && intent.destination === asked);
 }

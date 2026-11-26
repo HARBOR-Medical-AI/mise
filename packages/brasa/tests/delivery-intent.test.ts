@@ -16,9 +16,6 @@ jest.unstable_mockModule('@fnndsc/chili/commands/fs/download.js', () => ({
   bytes_format: (bytes: number): string => `${bytes} B`,
 }));
 jest.unstable_mockModule('../src/builtins/utils.js', () => ({ storePath_resolve: async (input: string): Promise<string> => input }));
-jest.unstable_mockModule('../src/core/surface.js', () => ({ surface_get: () => ({ capabilities: {} }) }));
-jest.unstable_mockModule('../src/core/sink.js', () => ({ sink_get: () => ({ status_write: jest.fn(), err_write: jest.fn(), progress_write: jest.fn() }) }));
-jest.unstable_mockModule('../src/core/question.js', () => ({ repl_confirm: async (): Promise<boolean> => true }));
 jest.unstable_mockModule('@fnndsc/salsa', () => ({ files_path_isDirectory: async (): Promise<boolean> => false, files_listRecursive: async () => [] }));
 jest.unstable_mockModule('../src/builtins/fs/archive.js', () => ({ directory_archive: async () => null }));
 cuminMock_install(() => ({
@@ -35,9 +32,10 @@ const { shellWords_tokenize } = await import('../src/lib/parser.js');
 /** One line of the shared table. */
 interface TableLine {
   readonly line: string;
-  readonly intents: ReadonlyArray<{ verb: string; destination: string | null }>;
+  readonly intents: ReadonlyArray<{ verb: string; destination: string | null; unbound?: string }>;
 }
 
+// A null `unbound` is never written to the table; an absent one and the reader's undefined compare equal.
 const TABLE: ReadonlyArray<TableLine> = (JSON.parse(readFileSync(new URL('./fixtures/deliveryLines.json', import.meta.url), 'utf8')) as { lines: TableLine[] }).lines;
 
 describe('deliveryIntents_read', () => {
@@ -67,6 +65,17 @@ describe('deliveryIntent_matches', () => {
     expect(deliveryIntent_matches(intents, './scans/')).toBe(false);
     expect(deliveryIntent_matches(intents, 'scans')).toBe(false);
     expect(deliveryIntent_matches(intents, '/home/me/.ssh')).toBe(false);
+  });
+
+  it('an intent that cannot be bound matches nothing, not even the spelling it was written with', () => {
+    const unbound = deliveryIntents_read('download /a $OUT');
+    expect(unbound).toHaveLength(1);
+    expect(unbound[0]?.unbound).toContain('written with a reference');
+    expect(deliveryIntent_matches(unbound, '$OUT')).toBe(false);
+    expect(deliveryIntent_matches(unbound, undefined)).toBe(false);
+    expect(deliveryIntent_matches(unbound, '/data/out')).toBe(false);
+    // The same letters, quoted so they are text, are a place like any other.
+    expect(deliveryIntent_matches(deliveryIntents_read("download /a '$OUT'"), '$OUT')).toBe(true);
   });
 
   it('a delivery with no destination matches only an intent with none', () => {

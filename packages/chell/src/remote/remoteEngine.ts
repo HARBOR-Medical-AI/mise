@@ -381,7 +381,7 @@ export class RemoteEngine implements BrasaEngine {
         void this.edit_run(message.editId, message.content, message.extension);
         break;
       case 'deliver':
-        void this.deliver_run(message.deliverId, {
+        void this.deliver_run(message.deliverId, message.id, {
           path: message.path,
           filename: message.filename,
           ...(message.destination !== undefined ? { destination: message.destination } : {}),
@@ -517,41 +517,56 @@ export class RemoteEngine implements BrasaEngine {
    * Refuses a delivery this client did not ask for.
    *
    * The daemon names where on this machine a file is to be written. That is
-   * honoured only while a line sent from here is in flight, and only when
-   * the place named is the destination that line's own delivering command
-   * gave (`deliveryIntents_read`). A source path, a word of another command,
-   * a delivery after its line has ended, or a destination the daemon made
-   * up are all refused, by name.
+   * honoured only against one line: the line the daemon says is asking, by
+   * the id this client gave it, while that line is still in flight here;
+   * and only when the place named is the destination that line's own
+   * delivering command gave (`deliveryIntents_read`). Another line running
+   * beside it lends it nothing. A source path, a word of another command, a
+   * delivery after its line has ended, a destination written as a
+   * reference, or one the daemon made up are all refused, by name.
    *
+   * A daemon that does not say which line is asking is believed only when
+   * exactly one line is in flight here.
+   *
+   * @param executeId - This client's id for the asking line, as the daemon gave it.
    * @param request - The delivery the daemon asked for.
-   * @throws {Error} When no line in flight asked for a delivery to that place.
+   * @throws {Error} When that line is not in flight, or did not ask for a delivery to that place.
    */
-  private delivery_require(request: FileDeliverRequest): void {
+  private delivery_require(executeId: string | undefined, request: FileDeliverRequest): void {
     const where: string = request.destination !== undefined && request.destination.length > 0 ? JSON.stringify(request.destination) : 'the working directory';
-    const intents: DeliveryIntent[] = [...this.deliveryIntents.values()].flat();
-    if (intents.length === 0) {
-      throw new Error(`refused: no line sent from here is asking for a file, and the session asked to write ${JSON.stringify(request.filename)} to ${where}; nothing was written`);
+    const asked: string = `the session asked to write ${JSON.stringify(request.filename)} to ${where}`;
+    let intents: DeliveryIntent[] | undefined;
+    if (executeId !== undefined) {
+      intents = this.deliveryIntents.get(executeId);
+      if (intents === undefined) throw new Error(`refused: ${asked} for a line that is not running here; nothing was written`);
+    } else {
+      if (this.deliveryIntents.size > 1) throw new Error(`refused: ${asked} and did not say for which of the lines running here; nothing was written`);
+      intents = [...this.deliveryIntents.values()][0];
+      if (intents === undefined) throw new Error(`refused: ${asked} and no line is running here; nothing was written`);
     }
-    if (!deliveryIntent_matches(intents, request.destination)) {
-      const asked: string = intents.map((intent: DeliveryIntent): string => (intent.destination === null ? 'the working directory' : JSON.stringify(intent.destination))).join(', ');
-      throw new Error(`refused: the session asked to write to ${where}, and the line sent from here named ${asked}; nothing was written. A destination written as a variable is not known here: type the path itself`);
-    }
+    if (intents.length === 0) throw new Error(`refused: ${asked}, and the line sent from here asks for no file; nothing was written`);
+    if (deliveryIntent_matches(intents, request.destination)) return;
+    const unbound: DeliveryIntent | undefined = intents.find((intent: DeliveryIntent): boolean => intent.unbound !== undefined);
+    if (unbound !== undefined) throw new Error(`refused: ${asked}, and the line sent from here cannot say where: ${unbound.unbound}; nothing was written`);
+    const named: string = intents.map((intent: DeliveryIntent): string => (intent.destination === null ? 'the working directory' : JSON.stringify(intent.destination))).join(', ');
+    throw new Error(`refused: ${asked}, and the line sent from here named ${named}; nothing was written`);
   }
 
   /**
    * Places a file on this client's machine at the daemon's request.
    *
    * @param deliverId - The delivery correlation id.
+   * @param executeId - This client's id for the line the daemon says is asking; absent from a daemon that does not say.
    * @param request - What to deliver and where the operator asked for it.
    */
-  private async deliver_run(deliverId: string, request: FileDeliverRequest): Promise<void> {
+  private async deliver_run(deliverId: string, executeId: string | undefined, request: FileDeliverRequest): Promise<void> {
     try {
       if (!this.onDeliver) {
         // Reporting success for a file nobody received would be worse than
         // failing: the operator would go looking for it.
         throw new Error('this surface cannot receive a file');
       }
-      this.delivery_require(request);
+      this.delivery_require(executeId, request);
       const result: FileDeliverResult = await this.onDeliver(request);
       this.ws.send(JSON.stringify({
         type: 'deliverResult', deliverId, location: result.location, bytes: result.bytes,

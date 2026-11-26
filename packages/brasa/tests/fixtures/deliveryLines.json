@@ -1,22 +1,233 @@
 {
-  "about": "Lines and the deliveries each asks for. brasa's delivery-intent test holds the real reader to this table; chell's remote-engine test, which cannot load the engine, reads its intents from the same table.",
+  "about": "Lines and the deliveries each asks for. brasa's delivery-intent test holds the real reader to this table; chell's remote-engine test, which cannot load the engine, reads its intents from the same table. `download /a ./out > log | wc` reads `log` because the engine runs a pipeline's segment without taking a redirect off it, so `>` and `log` are that download's operands.",
   "lines": [
-    { "line": "download /home/me/scan.dcm /tmp", "intents": [{ "verb": "download", "destination": "/tmp" }] },
-    { "line": "download -f /home/me/scan.dcm \"./my scans\"", "intents": [{ "verb": "download", "destination": "./my scans" }] },
-    { "line": "download /home/me/scan.dcm ./scans", "intents": [{ "verb": "download", "destination": "./scans" }] },
-    { "line": "download -j 4 /home/me/scan.dcm ./scans", "intents": [{ "verb": "download", "destination": "./scans" }] },
-    { "line": "download --jobs=4 --force /a/b /c/d './out dir'", "intents": [{ "verb": "download", "destination": "./out dir" }] },
-    { "line": "cd /etc; download /home/me/scan.dcm ./scans", "intents": [{ "verb": "download", "destination": "./scans" }] },
-    { "line": "download /a ./one && download /b ./two || download /c ./three", "intents": [{ "verb": "download", "destination": "./one" }, { "verb": "download", "destination": "./two" }, { "verb": "download", "destination": "./three" }] },
-    { "line": "download /a ./out | wc -l", "intents": [{ "verb": "download", "destination": "./out" }] },
-    { "line": "download /home/me/scan.dcm $OUT", "intents": [{ "verb": "download", "destination": "$OUT" }] },
-    { "line": "download -- /a -odd", "intents": [{ "verb": "download", "destination": "-odd" }] },
-    { "line": "ls /home/me", "intents": [] },
-    { "line": "echo download /a /b", "intents": [] },
-    { "line": "echo 'x; download /a /b'", "intents": [] },
-    { "line": "download /only-one-word", "intents": [] },
-    { "line": "download --nosuch /a /b", "intents": [] },
-    { "line": "upload ./a /b", "intents": [] },
-    { "line": "", "intents": [] }
+    {
+      "line": "download /home/me/scan.dcm /tmp",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "/tmp"
+        }
+      ]
+    },
+    {
+      "line": "download -f /home/me/scan.dcm \"./my scans\"",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./my scans"
+        }
+      ]
+    },
+    {
+      "line": "download /home/me/scan.dcm ./scans",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./scans"
+        }
+      ]
+    },
+    {
+      "line": "download -j 4 /home/me/scan.dcm ./scans",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./scans"
+        }
+      ]
+    },
+    {
+      "line": "download --jobs=4 --force /a/b /c/d './out dir'",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./out dir"
+        }
+      ]
+    },
+    {
+      "line": "cd /etc; download /home/me/scan.dcm ./scans",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./scans"
+        }
+      ]
+    },
+    {
+      "line": "download /a ./one && download /b ./two || download /c ./three",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./one"
+        },
+        {
+          "verb": "download",
+          "destination": "./two"
+        },
+        {
+          "verb": "download",
+          "destination": "./three"
+        }
+      ]
+    },
+    {
+      "line": "download /a ./out | wc -l",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./out"
+        }
+      ]
+    },
+    {
+      "line": "download -- /a -odd",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "-odd"
+        }
+      ]
+    },
+    {
+      "line": "ls /home/me",
+      "intents": []
+    },
+    {
+      "line": "echo download /a /b",
+      "intents": []
+    },
+    {
+      "line": "echo 'x; download /a /b'",
+      "intents": []
+    },
+    {
+      "line": "download /only-one-word",
+      "intents": []
+    },
+    {
+      "line": "download --nosuch /a /b",
+      "intents": []
+    },
+    {
+      "line": "upload ./a /b",
+      "intents": []
+    },
+    {
+      "line": "",
+      "intents": []
+    },
+    {
+      "line": "download /home/me/scan.dcm $OUT",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": null,
+          "unbound": "its destination \"$OUT\" is written with a reference, whose value is not known here: type the path itself"
+        }
+      ]
+    },
+    {
+      "line": "download /a \"${OUT}/x\"",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": null,
+          "unbound": "its destination \"${OUT}/x\" is written with a reference, whose value is not known here: type the path itself"
+        }
+      ]
+    },
+    {
+      "line": "download /a '$OUT'",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "$OUT"
+        }
+      ]
+    },
+    {
+      "line": "download /a ./out > log.txt",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./out"
+        }
+      ]
+    },
+    {
+      "line": "download /a ./out >> log.txt",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./out"
+        }
+      ]
+    },
+    {
+      "line": "ls /x | download /a ./later",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./later"
+        }
+      ]
+    },
+    {
+      "line": "download /a ./first | download /b ./second | wc",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./first"
+        },
+        {
+          "verb": "download",
+          "destination": "./second"
+        }
+      ]
+    },
+    {
+      "line": "download /a ./out > log | wc",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "log"
+        }
+      ]
+    },
+    {
+      "line": "cd /x; download /a ./out > log.txt",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./out"
+        }
+      ]
+    },
+    {
+      "line": "download /a ./out &",
+      "intents": []
+    },
+    {
+      "line": "cd /x; download /a ./out &",
+      "intents": []
+    },
+    {
+      "line": "!download /a /b",
+      "intents": []
+    },
+    {
+      "line": "X=$(download /a ./out)",
+      "intents": []
+    },
+    {
+      "line": "download /a \"./open",
+      "intents": []
+    },
+    {
+      "line": "$VERB /a ./out",
+      "intents": []
+    }
   ]
 }

@@ -21,18 +21,28 @@ export type HostPlace =
   | { readonly ok: true; readonly place: string }
   | { readonly ok: false; readonly reason: string };
 
+/** A path that could not be looked at: neither there nor proved missing. */
+class Uninspectable extends Error {}
+
 /**
  * Whether a path exists, as itself: a link counts, wherever it leads.
  *
+ * Only the file system saying `ENOENT` means it is not there. Any other
+ * answer (no permission to look, a part that is not a folder, an I/O
+ * error) is not knowing, and not knowing is not absence.
+ *
  * @param target - The path.
- * @returns True when something is there.
+ * @returns True when something is there, false when the file system says nothing is.
+ * @throws {Uninspectable} When it could not be looked at.
  */
 function path_stands(target: string): boolean {
   try {
     lstatSync(target);
     return true;
-  } catch {
-    return false;
+  } catch (error: unknown) {
+    const code: string | undefined = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return false;
+    throw new Uninspectable(code ?? 'unknown');
   }
 }
 
@@ -41,21 +51,25 @@ function path_stands(target: string): boolean {
  * appended as written.
  *
  * @param target - An absolute path.
- * @returns The path with every link in its existing part followed, or null when a link in it leads nowhere.
+ * @returns The path with every link in its existing part followed; `dangling` when a link in it leads nowhere; `uninspectable` when a part of it could not be looked at.
  */
-function existingPart_resolve(target: string): string | null {
+function existingPart_resolve(target: string): string | { readonly failed: 'dangling' | 'uninspectable' } {
   let existing: string = target;
   const rest: string[] = [];
-  while (!path_stands(existing)) {
-    const parent: string = path.dirname(existing);
-    if (parent === existing) break;
-    rest.unshift(path.basename(existing));
-    existing = parent;
+  try {
+    while (!path_stands(existing)) {
+      const parent: string = path.dirname(existing);
+      if (parent === existing) break;
+      rest.unshift(path.basename(existing));
+      existing = parent;
+    }
+  } catch {
+    return { failed: 'uninspectable' };
   }
   try {
     return path.join(realpathSync(existing), ...rest);
-  } catch {
-    return null;
+  } catch (error: unknown) {
+    return { failed: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'dangling' : 'uninspectable' };
   }
 }
 
@@ -80,7 +94,7 @@ function path_within(inner: string, outer: string): boolean {
  * separator. It is refused when it is empty, holds a NUL, is absolute by
  * either system's rules, has an empty, `.` or `..` part, or when the place
  * it comes to, with every link already on this disk followed, is not
- * inside the folder.
+ * inside the folder, or when a part of it could not be looked at.
  *
  * @param folder - The folder the name belongs in.
  * @param name - The name as it arrived.
@@ -107,9 +121,13 @@ export function wireName_place(folder: string, name: string): HostPlace {
   const root: string = path.resolve(folder);
   const place: string = path.join(root, ...parts);
   if (!path_within(place, root) || place === root) return { ok: false, reason: `${shown} does not stay inside ${root}` };
-  const realRoot: string | null = existingPart_resolve(root);
-  const realPlace: string | null = existingPart_resolve(place);
-  if (realRoot === null || realPlace === null) return { ok: false, reason: `${shown} passes through a link that leads nowhere` };
+  const realRoot = existingPart_resolve(root);
+  const realPlace = existingPart_resolve(place);
+  for (const resolved of [realRoot, realPlace]) {
+    if (typeof resolved === 'string') continue;
+    return { ok: false, reason: resolved.failed === 'dangling' ? `${shown} passes through a link that leads nowhere` : `${shown} passes through a place that could not be looked at` };
+  }
+  if (typeof realRoot !== 'string' || typeof realPlace !== 'string') return { ok: false, reason: `${shown} could not be placed` };
   if (!path_within(realPlace, realRoot) || realPlace === realRoot) {
     return { ok: false, reason: `${shown} passes through a link that leads outside ${root}` };
   }
