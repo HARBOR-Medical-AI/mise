@@ -328,6 +328,34 @@ describe('pipeline_resolve', () => {
     expect(getPipeline.mock.calls.length).toBe(calls + 1);
   });
 
+  it('says a malformed source-file answer in the fallback, with its place, where an empty one is still a plain miss', async () => {
+    const fallback_ask = async (sourceFiles: unknown, getPipelines: jest.Mock = jest.fn(async () => listResource_make([]))): Promise<boolean> => {
+      pushSpy.mockClear();
+      mockClientGet.mockResolvedValue({ getPipelines, getPipelineSourceFiles: jest.fn(async () => sourceFiles) });
+      return (await pipeline_resolve('report')).ok;
+    };
+    // A served source file whose name is not text: said, and not followed by the generic miss.
+    expect(await fallback_ask({ getItems: (): unknown[] => [{ data: { fname: 7, pipeline_name: 'Report' } }] })).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', expect.stringMatching(/^pipeline_resolve: CUBE answered .*\[0\]\.data\.fname is a number, where a string is read$/));
+    expect(pushSpy).not.toHaveBeenCalledWith('error', "No pipeline matching 'report'");
+    // The control: a valid page with nothing in it is the plain miss it was.
+    expect(await fallback_ask({ getItems: (): unknown[] => [] })).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', "No pipeline matching 'report'");
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+    // A source file found, and the listing by its pipeline's name fails: that failure is the answer.
+    const getPipelines: jest.Mock = jest.fn()
+      .mockImplementationOnce(async () => listResource_make([]))
+      .mockImplementationOnce(async () => listResource_make([{ id: 'sixty', name: 'Report' }]));
+    expect(await fallback_ask({ getItems: (): unknown[] => [{ data: { fname: 'x/report.yml', pipeline_name: 'Report' } }] }, getPipelines)).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', expect.stringMatching(/^pipelines_list: CUBE answered .*id is a string, where a number is read$/));
+    expect(pushSpy).not.toHaveBeenCalledWith('error', "No pipeline matching 'report'");
+    // And found, with the listing answering: the pipeline.
+    const found: jest.Mock = jest.fn()
+      .mockImplementationOnce(async () => listResource_make([]))
+      .mockImplementationOnce(async () => listResource_make([{ id: 60, name: 'Report' }]));
+    expect(await fallback_ask({ getItems: (): unknown[] => [{ data: { fname: 'x/report.yml', pipeline_name: 'Report' } }] }, found)).toBe(true);
+  });
+
   it('keeps the items of a search that holds, so the good path is unchanged', async () => {
     const client = {
       getPipelines: jest.fn(async () => {

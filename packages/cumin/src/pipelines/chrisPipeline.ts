@@ -391,14 +391,21 @@ async function pipelineResolve_fetch(
       );
       if (sfItems.length > 0 && sfItems[0].data.pipeline_name) {
         const byName: Result<PipelineRecord[]> = await pipelines_list(sfItems[0].data.pipeline_name);
-        if (byName.ok) {
-          const exactByName: PipelineRecord | undefined = byName.value.find(
-            (p: PipelineRecord) => p.name === sfItems[0].data.pipeline_name
-          );
-          if (exactByName) return Ok(exactByName);
-        }
+        // A listing that failed has said why; that is the answer, not "no such pipeline".
+        if (!byName.ok) return Err();
+        const exactByName: PipelineRecord | undefined = byName.value.find(
+          (p: PipelineRecord) => p.name === sfItems[0].data.pipeline_name
+        );
+        if (exactByName) return Ok(exactByName);
       }
-    } catch (_e: unknown) {}
+    } catch (error: unknown) {
+      // A source-file answer that is not what is read is said, with its place: it is not a miss. Anything
+      // else (CUBE would not answer) leaves this way of finding the pipeline untried, as before.
+      if (error instanceof ShapeError) {
+        errorStack.stack_push('error', `pipeline_resolve: ${error.message}`);
+        return Err();
+      }
+    }
     
     errorStack.stack_push('error', `No pipeline matching '${nameOrId}'`);
     return Err();
