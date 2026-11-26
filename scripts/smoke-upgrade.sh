@@ -20,7 +20,10 @@
 #
 # A run that cannot do its work is a failure, not a skip: with nothing
 # published to start from, or a previous release that cannot be logged in
-# this way, it says so in the ledger and exits 1.
+# this way, it says so in the ledger and exits 1. It exits 3 when, besides
+# failing, it had to leave its folder as it was (something it started
+# would not stop, or the folder is no longer the one it made): whoever
+# handed the folder down keeps it.
 #
 #   scripts/smoke-upgrade.sh              the previous published chell
 #   OLD_CHELL=5.10.3 scripts/smoke-upgrade.sh   that release, and no other
@@ -60,24 +63,32 @@ ending() {
   [ "$status" -eq 0 ] && status=$left
   if [ -n "$WORK" ]; then
     local stopped=0
+    # What the run started is stopped from what this shell noted of it, whatever has become of its folder.
     # The porter first: it is what starts daemons, and stopped it starts no more.
     daemons_stop ${PORTER_PID:+"$PORTER_PID"} || stopped=1
     # Then whatever it started, found by what proves it the run's (its environment names this run's own
     # session folder), whether or not it had yet written the berth it would be known by.
     [ -n "$DIR" ] && daemons_note_proven "XDG_RUNTIME_DIR=$DIR/run"
     daemons_reap || stopped=1
-    # No secret outlives the run, whether or not its folder does.
-    secrets_remove "$WORK" || { say "a credential store could not be removed from $WORK"; verdict "FAIL: credentials the run made could not be removed from $WORK (see $log)"; status=1; }
-    if [ "$stopped" -eq 0 ]; then
-      run_root_remove || { say "the run's folder was not removed: $RUN_ROOT_KEPT"; verdict "FAIL: the run's folder is left at $WORK ($RUN_ROOT_KEPT) (see $log)"; status=1; }
+    [ "$stopped" -eq 0 ] || { say "could not stop pid $DAEMONS_LEFT"; verdict "FAIL: could not stop what the run started (pid $DAEMONS_LEFT) (see $log)"; }
+    if ! run_root_verify; then
+      # The folder at the run's place is not the folder this run made (it was moved, or another put there).
+      # Nothing in it is read, written or removed, and whoever handed the place down is told, by this
+      # run's status, to leave it be as well.
+      say "the folder at $WORK is not the one this run made; nothing in it was touched"
+      verdict "FAIL: the folder at $WORK is no longer the one this run made; nothing in it was touched (see $log)"
+      status=$KEEP_STATUS
     else
-      # Something the run started could not be stopped: a failure, said, with the folder and its list of
-      # what was started kept for whoever has to stop it by hand; a parent that handed the folder down is
-      # told to keep it too.
-      say "could not stop pid $DAEMONS_LEFT"
-      verdict "FAIL: could not stop what the run started (pid $DAEMONS_LEFT); its folder is kept at $WORK (see $log)"
-      [ -n "${SMOKE_RUN_ROOT:-}" ] && run_root_keep "$SMOKE_RUN_ROOT" "the upgrade could not stop pid $DAEMONS_LEFT; see $WORK"
-      status=1
+      # No secret outlives the run, whether or not its folder does.
+      secrets_remove "$WORK" || { say "a credential store could not be removed from $WORK"; verdict "FAIL: credentials the run made could not be removed from $WORK (see $log)"; status=1; }
+      if [ "$stopped" -eq 0 ]; then
+        run_root_remove || { say "the run's folder was not removed: $RUN_ROOT_KEPT"; verdict "FAIL: the run's folder is left at $WORK ($RUN_ROOT_KEPT) (see $log)"; status=1; }
+      else
+        # Something the run started could not be stopped: the folder, with its list of what was started, is
+        # kept for whoever has to stop it by hand, and whoever handed the folder down is told to keep it.
+        verdict "FAIL: the run's folder is kept at $WORK, with the list of what it started (see $log)"
+        status=$KEEP_STATUS
+      fi
     fi
   fi
   exit "$status"

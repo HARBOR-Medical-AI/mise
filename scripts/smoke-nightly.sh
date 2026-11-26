@@ -176,6 +176,9 @@ upgrade_step() {
   SMOKE_RUN_ROOT="$P" bash "${SMOKE_UPGRADE:-$ROOT/scripts/smoke-upgrade.sh}"
   local status=$?
   if [ "$status" -ne 0 ]; then failures=$((failures + 1)); fi
+  # It could not finish its own ending, and left its folder as it was: this run's folder, which holds it,
+  # is kept too. The reason is in the upgrade's own line in the ledger.
+  if [ "$status" -eq "$KEEP_STATUS" ]; then run_root_keep "the upgrade step left its folder as it was"; fi
 }
 
 # The run's last line in the ledger, and its verdict as a status.

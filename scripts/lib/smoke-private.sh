@@ -163,8 +163,7 @@ cube_token_get() { # the private folder to work in
 }
 
 # Removes what a run may have left that is a secret, each by the path the
-# run itself put it at, in the run's folder and in the folder of a step
-# inside it:
+# run itself put it at, in the run's own folder:
 #
 #   - a token, a login payload, a cookie jar;
 #   - the stores its daemons and porter kept credentials in: each daemon's
@@ -176,10 +175,13 @@ cube_token_get() { # the private folder to work in
 #
 # Done at every ending, after what the run started is stopped, so that a
 # folder kept for a person to look at holds none. Logs and the list of
-# what was started are left. Nothing is removed through a link: a path
-# that reaches its place by way of one is left and counted as a failure.
-# Returns 1 if anything could not be looked at, could not be removed, or
-# is still there.
+# what was started are left. The folder must be the one named (never a
+# link), and when it is the run's own, the very folder the run made.
+# Nothing is removed through a link: a path that reaches its place by way
+# of one is left and counted as a failure. A folder a step worked in,
+# inside this one, is that step's to clean and is not gone into. Returns 1
+# if anything could not be looked at, could not be removed, or is still
+# there.
 secrets_remove() { # the run's folder
   local dir=$1 root place path parent left=0
   [ -n "$dir" ] || return 0
@@ -190,10 +192,9 @@ secrets_remove() { # the run's folder
   [ "$(realpath -- "$dir" 2>/dev/null)" = "$dir" ] || return 1
   # The run's own folder is, besides, the very folder the run made.
   if [ "$dir" = "${RUN_ROOT:-}" ]; then run_root_verify || return 1; fi
-  for root in "$dir" "$dir"/*; do
-    [ -d "$root" ] || continue
-    # A step's folder is a folder the run made, never a link to one.
-    if [ -L "$root" ]; then left=1; continue; fi
+  # This folder's own places only. A step that worked in a folder inside it cleans that folder itself, as
+  # the one that knows it to be the folder it made; nothing here goes into a folder inside this one.
+  for root in "$dir"; do
     # Every folder that is looked into must be one this user can look into, or what is in it goes unseen.
     for place in "$root" "$root"/state "$root"/state/* "$root"/run "$root"/run/calypso "$root"/state/*/run "$root"/state/*/run/calypso "$root"/tmp "$root"/state/*/tmp; do
       [ -d "$place" ] || continue
@@ -229,13 +230,30 @@ process_stat_read() { # pid
   echo "$1 ${20}"
 }
 
+# What the run has noted of the processes it started: one "<pid> <start>"
+# to a line. It is kept here, in the shell, and it is from here that the
+# ending stops them: never from a file, which someone else could have put
+# other processes' numbers in. A copy is written to started.pids in the
+# run's folder for a person to read (which processes to stop by hand if
+# the run could not), and only while that folder is still the one the run
+# made.
+DAEMONS_NOTED=""
+
+# Notes one pid and start, once.
+noted_add() { # pid, start
+  case $'\n'"$DAEMONS_NOTED" in *$'\n'"$1 $2"$'\n'*) return 0 ;; esac
+  DAEMONS_NOTED="$DAEMONS_NOTED$1 $2"$'\n'
+  if run_root_verify; then echo "$1 $2" >> "$RUN_ROOT/started.pids"; fi
+  return 0
+}
+
 # Notes a process the run started, so the ending can stop it: its pid and
 # the moment it started, which together are that process and no other. For
 # a process this script launched itself, by the pid the shell gave it.
 daemon_note() { # pid
   local pid=$1 read
   read=$(process_stat_read "$pid") || return 0
-  echo "$pid ${read#* }" >> "$RUN_ROOT/started.pids"
+  noted_add "$pid" "${read#* }"
 }
 
 # Notes a process the run did not launch by its own hand (a daemon the
@@ -252,7 +270,7 @@ daemon_note_owned() { # pid, the environment entry that proves it (NAME=value)
   { entries_have "/proc/$pid/environ" "$proof"; } 2>/dev/null || return 1
   after=$(process_stat_read "$pid") || return 1
   [ "${before#* }" = "${after#* }" ] || return 1
-  grep -qxF -- "$pid ${before#* }" "$RUN_ROOT/started.pids" 2>/dev/null || echo "$pid ${before#* }" >> "$RUN_ROOT/started.pids"
+  noted_add "$pid" "${before#* }"
 }
 
 # Notes every process of this user's whose environment carries the proof:
@@ -282,39 +300,43 @@ daemon_alive() { # pid, the start it was noted with
 # none of them is left running; otherwise 1, and DAEMONS_LEFT names those
 # that are.
 daemons_stop() { # pids to stop; none for every noted process
-  local list="$RUN_ROOT/started.pids" pid started left wanted=" $* "
+  local pid started left wanted=" $* "
   DAEMONS_LEFT=""
-  # The list is read only from the folder this run made: one put in its place could name any process.
-  run_root_verify || { DAEMONS_LEFT="unknown: the run's folder is no longer the one this run made"; return 1; }
-  [ -f "$list" ] || return 0
+  # What was noted, as this shell holds it: nothing is read from the run's folder to decide what to signal.
+  [ -n "$DAEMONS_NOTED" ] || return 0
   # Whether a noted pid is among those asked for.
   wanted_has() { [ "$wanted" = "  " ] || case "$wanted" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
   while read -r pid started; do
+    [ -n "$pid" ] || continue
     wanted_has "$pid" && daemon_alive "$pid" "$started" && kill "$pid" 2>/dev/null
-  done < "$list"
+  done <<< "$DAEMONS_NOTED"
   for _ in $(seq 1 20); do
     left=0
     while read -r pid started; do
+    [ -n "$pid" ] || continue
       wanted_has "$pid" && daemon_alive "$pid" "$started" && left=1
-    done < "$list"
+    done <<< "$DAEMONS_NOTED"
     [ "$left" -eq 0 ] && return 0
     sleep 0.5
   done
   while read -r pid started; do
+    [ -n "$pid" ] || continue
     wanted_has "$pid" && daemon_alive "$pid" "$started" && kill -9 "$pid" 2>/dev/null
-  done < "$list"
+  done <<< "$DAEMONS_NOTED"
   # A killed process is gone at once; a moment for the kernel to say so.
   for _ in $(seq 1 10); do
     left=0
     while read -r pid started; do
+    [ -n "$pid" ] || continue
       wanted_has "$pid" && daemon_alive "$pid" "$started" && left=1
-    done < "$list"
+    done <<< "$DAEMONS_NOTED"
     [ "$left" -eq 0 ] && return 0
     sleep 0.2
   done
   while read -r pid started; do
+    [ -n "$pid" ] || continue
     wanted_has "$pid" && daemon_alive "$pid" "$started" && DAEMONS_LEFT="$DAEMONS_LEFT $pid"
-  done < "$list"
+  done <<< "$DAEMONS_NOTED"
   DAEMONS_LEFT=${DAEMONS_LEFT# }
   [ -z "$DAEMONS_LEFT" ]
 }
@@ -324,22 +346,25 @@ daemons_reap() {
   daemons_stop
 }
 
-# Says that the run's folder must be kept, and why: by a step working in a
-# folder inside it that could not stop what it started. The folder's owner
-# reads it in run_root_remove.
-run_root_keep() { # the folder to keep (the parent's), the reason
-  echo "$2" >> "$1/kept"
+# Says that the run's folder must be kept, and why: asked for by the run
+# itself when a step working in a folder inside it reports that it could
+# not finish its own ending (it exits with KEEP_STATUS). Held in the shell;
+# nothing is written into the folder to say it.
+KEEP_STATUS=3
+RUN_ROOT_KEEP=""
+run_root_keep() { # the reason
+  RUN_ROOT_KEEP="$RUN_ROOT_KEEP$1; "
 }
 
-# Removes the run's folder, if and only if this run made it by itself and
-# nothing in it asked to be kept. Returns 1 when a step asked for that
-# (nothing is removed) or when the folder could not be removed:
-# RUN_ROOT_KEPT then says which.
+# Removes the run's folder, if and only if this run made it by itself, it
+# is still the folder the run made, and nothing asked for it to be kept.
+# Returns 1, with the reason in RUN_ROOT_KEPT, when it is kept or could not
+# be removed.
 run_root_remove() {
   RUN_ROOT_KEPT=""
   [ "${RUN_ROOT_OWNED:-0}" = 1 ] || return 0
+  if [ -n "$RUN_ROOT_KEEP" ]; then RUN_ROOT_KEPT=$RUN_ROOT_KEEP; return 1; fi
   run_root_verify || { RUN_ROOT_KEPT="it is no longer the folder this run made"; return 1; }
-  if [ -s "$RUN_ROOT/kept" ]; then RUN_ROOT_KEPT=$(tr '\n' ';' < "$RUN_ROOT/kept"); return 1; fi
   # Only a folder mktemp made here: its name is checked for what it must be before it is removed.
   case "$RUN_ROOT" in
     */mise-smoke-*.????????) rm -rf -- "$RUN_ROOT" 2>/dev/null; [ ! -e "$RUN_ROOT" ] || { RUN_ROOT_KEPT="it could not be removed"; return 1; } ;;

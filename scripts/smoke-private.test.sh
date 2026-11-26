@@ -120,22 +120,24 @@ done
   && ok "a credentials file that no longer reads, or no longer names the password, runs nothing" || bad "a command was run without the file's password"
 mkdir -p "$WORK/stores/config/chell/doors" "$WORK/stores/state/abc/config/chell" "$WORK/stores/state/creds/k" "$WORK/stores/upgrade.Ab12Cd34/state/abc/config" "$WORK/stores/upgrade.Ab12Cd34/state/abc/run" "$WORK/stores/old/node_modules/pkg/config"
 touch "$WORK/stores/config/chell/token.json" "$WORK/stores/upgrade.Ab12Cd34/token" "$WORK/stores/upgrade.Ab12Cd34/cj" "$WORK/stores/upgrade.Ab12Cd34/porter.log" "$WORK/stores/daemon.log" "$WORK/stores/old/node_modules/pkg/config/login.js"
-( secrets_remove "$WORK/stores" && [ -z "$(find "$WORK/stores" \( -name config -o -name creds -o -name token -o -name cj \) -not -path '*/node_modules/*')" ] \
-  && [ -f "$WORK/stores/daemon.log" ] && [ -f "$WORK/stores/upgrade.Ab12Cd34/porter.log" ] && [ -d "$WORK/stores/upgrade.Ab12Cd34/state/abc/run" ] && [ -f "$WORK/stores/old/node_modules/pkg/config/login.js" ] ) \
-  && ok "the daemons' config folders and the porter's credential store are removed, in the run's folder and a step's inside it; logs and what was installed stay" || bad "credential stores: $(find "$WORK/stores" -name config -o -name creds | tr '\n' ' ')"
+( secrets_remove "$WORK/stores" && [ -z "$(find "$WORK/stores" \( -name config -o -name creds -o -name token -o -name cj \) -not -path '*/node_modules/*' -not -path '*/upgrade.Ab12Cd34/*')" ] \
+  && [ -f "$WORK/stores/daemon.log" ] && [ -f "$WORK/stores/old/node_modules/pkg/config/login.js" ] \
+  && [ -d "$WORK/stores/upgrade.Ab12Cd34/state/abc/config" ] && [ -f "$WORK/stores/upgrade.Ab12Cd34/token" ] && [ -f "$WORK/stores/upgrade.Ab12Cd34/cj" ] && [ -f "$WORK/stores/upgrade.Ab12Cd34/porter.log" ] ) \
+  && ok "the daemons' config folders and the porter's credential store are removed from the run's own folder; logs and what was installed stay, and a step's folder inside it is not gone into" || bad "credential stores: $(find "$WORK/stores" -name config -o -name creds | tr '\n' ' ')"
 ( mkdir -p "$WORK/stuck/config"; rm() { :; }; secrets_remove "$WORK/stuck"; [ $? -eq 1 ] ) && ok "a credential store that could not be removed is a failure of the removing" || bad "a store left behind was not reported"
 ( mkdir -p "$WORK/stuck2/config"; rm() { return 1; }; secrets_remove "$WORK/stuck2"; [ $? -eq 1 ] ) && ok "a removal that reports an error is a failure of the removing" || bad "a failed removal was not reported"
 # The daemons' berths and attach notes carry a session token; a killed daemon leaves them.
 mkdir -p "$WORK/berths/run/calypso" "$WORK/berths/tmp" "$WORK/berths/upgrade.Ab12Cd34/state/abc/run/calypso" "$WORK/berths/upgrade.Ab12Cd34/state/abc/tmp"
 touch "$WORK/berths/run/calypso/berth-1.json" "$WORK/berths/tmp/calypso-me.attach" "$WORK/berths/upgrade.Ab12Cd34/state/abc/run/calypso/berth-2.json" "$WORK/berths/upgrade.Ab12Cd34/state/abc/tmp/calypso-me.attach" \
   "$WORK/berths/started.pids" "$WORK/berths/daemon.log" "$WORK/berths/upgrade.Ab12Cd34/started.pids" "$WORK/berths/upgrade.Ab12Cd34/porter.log"
-( secrets_remove "$WORK/berths" && [ -z "$(find "$WORK/berths" -name 'berth-*.json' -o -name '*.attach')" ] && [ "$(find "$WORK/berths" -name started.pids -o -name '*.log' | wc -l)" = 4 ] ) \
-  && ok "a daemon's berth and attach note are removed, in the run's folder and a step's; the lists of pids and the logs stay" || bad "berths or attach notes left: $(find "$WORK/berths" -name 'berth-*.json' -o -name '*.attach' | tr '\n' ' ')"
+( secrets_remove "$WORK/berths" && [ -z "$(find "$WORK/berths" \( -name 'berth-*.json' -o -name '*.attach' \) -not -path '*/upgrade.Ab12Cd34/*')" ] && [ "$(find "$WORK/berths" -name started.pids -o -name '*.log' | wc -l)" = 4 ] \
+  && secrets_remove "$WORK/berths/upgrade.Ab12Cd34" && [ -z "$(find "$WORK/berths" -name 'berth-*.json' -o -name '*.attach')" ] && [ "$(find "$WORK/berths" -name started.pids -o -name '*.log' | wc -l)" = 4 ] ) \
+  && ok "a daemon's berth and attach note are removed from the folder that is cleaned (the run's, then a step's own, with its session folders); the lists of pids and the logs stay" || bad "berths or attach notes left: $(find "$WORK/berths" -name 'berth-*.json' -o -name '*.attach' | tr '\n' ' ')"
 # Nothing is removed through a link: a state folder that is a link elsewhere is left alone, and that is a failure.
 mkdir -p "$WORK/elsewhere/abc/config" "$WORK/linked"; touch "$WORK/elsewhere/abc/config/token.json"; ln -s "$WORK/elsewhere" "$WORK/linked/state"
 ( secrets_remove "$WORK/linked"; status=$?; [ "$status" -eq 1 ] && [ -f "$WORK/elsewhere/abc/config/token.json" ] ) && ok "a store reached by way of a link is not removed through it, and the removing fails" || bad "a link was followed, or passed over in silence"
 mkdir -p "$WORK/linkstep/real.Ab12Cd34" "$WORK/elsewhere2/config"; ln -s "$WORK/elsewhere2" "$WORK/linkstep/upgrade.Zz99Zz99"
-( secrets_remove "$WORK/linkstep"; status=$?; [ "$status" -eq 1 ] && [ -d "$WORK/elsewhere2/config" ] ) && ok "a step's folder that is a link is not gone into, and the removing fails" || bad "a linked step folder was followed"
+( rm() { echo "rm $*" >> "$WORK/linkstep-acts.txt"; }; secrets_remove "$WORK/linkstep"; [ -d "$WORK/elsewhere2/config" ] && [ ! -e "$WORK/linkstep-acts.txt" ] ) && ok "a folder inside the run's that is a link elsewhere is not gone into: nothing there is removed" || bad "a linked step folder was followed"
 # A folder that cannot be looked into may hold what cannot be seen: a failure, not a clean bill.
 mkdir -p "$WORK/blind/state/abc/config"; chmod 000 "$WORK/blind/state"
 if [ -r "$WORK/blind/state" ]; then
@@ -151,18 +153,24 @@ for swap in link folder; do
   (
     XDG_RUNTIME_DIR="$WORK/swap-$swap"; mkdir -m 700 "$XDG_RUNTIME_DIR"
     run_root_settle "" "" "" mise-smoke-nightly || exit 9
-    mv "$RUN_ROOT" "$WORK/swap-$swap-moved"
-    mkdir -p "$WORK/swap-$swap-other/config"; echo "999999999 12345" > "$WORK/swap-$swap-other/started.pids"
-    if [ "$swap" = link ]; then ln -s "$WORK/swap-$swap-other" "$RUN_ROOT"; else mv "$WORK/swap-$swap-other" "$RUN_ROOT"; fi
-    kill() { echo "kill $*" >> "$WORK/swap-$swap-acts.txt"; }
+    kill() { echo "kill $*" >> "$WORK/swap-$swap-signals.txt"; }
     rm() { echo "rm $*" >> "$WORK/swap-$swap-acts.txt"; }
     daemon_alive() { return 0; }
     sleep() { :; }
+    # What this run noted, before its folder was swapped: a made-up pid.
+    noted_add 999999999 12345
+    mv "$RUN_ROOT" "$WORK/swap-$swap-moved"
+    # What is put in its place lists another process, and holds a config folder and a keep note of its own.
+    mkdir -p "$WORK/swap-$swap-other/config"; echo "888888888 1" > "$WORK/swap-$swap-other/started.pids"; echo "theirs" > "$WORK/swap-$swap-other/kept"
+    if [ "$swap" = link ]; then ln -s "$WORK/swap-$swap-other" "$RUN_ROOT"; else mv "$WORK/swap-$swap-other" "$RUN_ROOT"; fi
+    noted_add 777777777 1
     daemons_reap; reaped=$?
     secrets_remove "$RUN_ROOT"; cleaned=$?
     run_root_remove; removed=$?
-    [ "$reaped" -eq 1 ] && [ "$cleaned" -eq 1 ] && [ "$removed" -eq 1 ] && [ ! -e "$WORK/swap-$swap-acts.txt" ] && [ -d "$RUN_ROOT/config" ]
-  ) > "$WORK/swap-$swap.txt" 2>&1 && ok "a $swap put in place of the run's folder: nothing is read from it, signalled or removed, and each cleaning fails" || bad "a $swap in place of the run's folder was cleaned: $(cat "$WORK/swap-$swap-acts.txt" 2>/dev/null | tr '\n' ';')"
+    [ "$reaped" -eq 1 ] && [ "$cleaned" -eq 1 ] && [ "$removed" -eq 1 ] && [ ! -e "$WORK/swap-$swap-acts.txt" ] && [ -d "$RUN_ROOT/config" ] \
+      && [ "$(cat "$RUN_ROOT/started.pids")" = "888888888 1" ] && [ "$(cat "$RUN_ROOT/kept")" = theirs ] \
+      && ! grep -q 888888888 "$WORK/swap-$swap-signals.txt" && grep -qx "kill 999999999" "$WORK/swap-$swap-signals.txt"
+  ) > "$WORK/swap-$swap.txt" 2>&1 && ok "a $swap put in place of the run's folder: what the run itself noted is still stopped, nothing listed there is signalled, nothing in it is read, written or removed, and each cleaning fails" || bad "a $swap in place of the run's folder: $(cat "$WORK/swap-$swap-acts.txt" "$WORK/swap-$swap-signals.txt" 2>/dev/null | tr '\n' ';')"
 done
 ( mkdir -p "$WORK/named-target/config"; ln -s "$WORK/named-target" "$WORK/named-link"; rm() { echo "rm $*" >> "$WORK/named-link-acts.txt"; }
   secrets_remove "$WORK/named-link"; [ $? -eq 1 ] && [ ! -e "$WORK/named-link-acts.txt" ] ) && ok "a folder named by a link is not cleaned through it" || bad "a link named as the folder was followed"
@@ -213,7 +221,7 @@ echo "what the run started"
   sleep 300 & bystander=$!
   daemon_note "$noted"
   # The bystander's pid with a start time that is not its own: a pid the run once noted, since given to another process.
-  echo "$bystander 1" >> "$RUN_ROOT/started.pids"
+  noted_add "$bystander" 1
   daemons_reap || { echo "the reaping said something was left: $DAEMONS_LEFT"; exit 1; }
   if kill -0 "$noted" 2>/dev/null; then echo "the noted process is still running"; kill "$noted" "$bystander"; exit 1; fi
   if ! kill -0 "$bystander" 2>/dev/null; then echo "a process that only shared a noted pid was stopped"; exit 1; fi
@@ -336,7 +344,7 @@ upgrade_expect() { # name, exit status, then texts the ledger must hold
   RUN_ROOT="$WORK/unstoppable"; mkdir -m 700 "$RUN_ROOT"
   # A process that cannot be stopped, made up: a pid no process can have, and stand-ins in this shell for
   # the signal and for the look at whether it is still there. No real process is named to the reaper.
-  echo "999999999 12345" > "$RUN_ROOT/started.pids"
+  noted_add 999999999 12345
   kill() { echo "kill $*" >> "$RUN_ROOT/signals.txt"; }
   daemon_alive() { [ "$1" = 999999999 ] && [ "$2" = 12345 ]; }
   sleep() { :; }
@@ -348,7 +356,7 @@ upgrade_expect() { # name, exit status, then texts the ledger must hold
   MARK="$WORK/pairs/run" sh -c 'exec sleep 300' & ours=$!
   sleep 0.2
   # The pid is on the list already with a start that is not this process's: one the run noted once, since reused.
-  echo "$ours 1" > "$RUN_ROOT/started.pids"
+  noted_add "$ours" 1
   daemon_note_owned "$ours" "MARK=$WORK/pairs/run" && daemon_note_owned "$ours" "MARK=$WORK/pairs/run" || { kill "$ours"; exit 1; }
   [ "$(wc -l < "$RUN_ROOT/started.pids")" = 2 ] || { echo "the list holds $(wc -l < "$RUN_ROOT/started.pids") entries, wanted the stale one and the verified pair once"; kill "$ours"; exit 1; }
   daemons_reap || exit 1; wait "$ours" 2>/dev/null; ! kill -0 "$ours" 2>/dev/null
@@ -477,8 +485,7 @@ echo "the nightly's entry"
 . "$LIB"
 child=$(mktemp -d "$SMOKE_RUN_ROOT/upgrade.XXXXXXXX")
 echo "999999999 12345" > "$child/started.pids"; echo "what the porter said" > "$child/porter.log"; touch "$child/token"
-run_root_keep "$SMOKE_RUN_ROOT" "the upgrade could not stop pid 999999999; see $child"
-exit 1
+exit 3
 SH
   (
     run_root_settle "" "" "" mise-smoke-nightly || exit 9
@@ -488,8 +495,8 @@ SH
     nightly_finish
   ); status=$?
   kept=$(find "$XDG_RUNTIME_DIR" -mindepth 2 -maxdepth 2 -name 'upgrade.*' | head -1)
-  [ "$status" -eq 1 ] && [ -n "$kept" ] && [ -f "$kept/started.pids" ] && [ -f "$kept/porter.log" ] && [ ! -e "$kept/token" ] && grep -q "the run's folder is kept at .*the upgrade could not stop pid 999999999" "$ledger"
-) > "$WORK/kept.txt" 2>&1 && ok "a step that could not stop what it started has the nightly keep its folder: the list of pids and the logs survive, no secret does, and the run fails" || bad "the nightly removed a folder a step asked it to keep: $(tail -2 "$WORK/kept.txt")"
+  [ "$status" -eq 1 ] && [ -n "$kept" ] && [ -f "$kept/started.pids" ] && [ -f "$kept/porter.log" ] && [ -e "$kept/token" ] && grep -q "the run's folder is kept at .*the upgrade step left its folder as it was" "$ledger"
+) > "$WORK/kept.txt" 2>&1 && ok "a step that left its folder as it was (it says so by its status) has the nightly keep its own: everything in the step's folder is as the step left it, and the run fails" || bad "the nightly removed a folder a step asked it to keep: $(tail -2 "$WORK/kept.txt")"
 
 (
   home="$WORK/nightly-home"; mkdir -p "$home/.config/mise" "$WORK/nightly-state"; mkdir -m 700 "$WORK/nightly-runtime"
@@ -498,6 +505,44 @@ SH
   status=$?
   [ "$status" -eq 1 ] && grep -qF 'not started: the e2e credentials' "$WORK/nightly-state/ledger.txt" && grep -qF 'has mode 644' "$WORK/nightly-state/ledger.txt" && [ -z "$(ls "$WORK/nightly-runtime")" ]
 ) && ok "credentials others can read stop the nightly before anything is made or started" || bad "the nightly with open credentials: $(tail -2 "$WORK/nightly-said.txt" 2>/dev/null)"
+# The upgrade's folder is swapped for another while it runs (a stand-in porter does it): the upgrade stops
+# what it started from what it noted itself, touches nothing in the folder now at its place, and says so by
+# its status; the nightly, which handed the place down, keeps its own folder and goes into neither.
+cat > "$WORK/porter-swaps.js" <<'JS'
+const fs = require('fs'); const path = require('path');
+const work = path.dirname(process.env.PORTER_STATE_DIR);
+fs.renameSync(work, work + '.moved');
+fs.mkdirSync(path.join(work, 'config'), { recursive: true });
+fs.writeFileSync(path.join(work, 'started.pids'), '888888888 1\n');
+fs.writeFileSync(path.join(work, 'kept'), 'theirs\n');
+fs.appendFileSync(process.env.STARTED_LOG, 'porter ' + process.pid + '\n');
+setInterval(() => {}, 1000);
+JS
+(
+  export SMOKE_NIGHTLY_SOURCED=1 SMOKE_STATE="$WORK/swapped-state" XDG_RUNTIME_DIR="$WORK/swapped-runtime"; mkdir -p "$SMOKE_STATE"; mkdir -m 700 "$XDG_RUNTIME_DIR"
+  export PATH="$BIN:$PATH" E2E_ENV="$WORK/e2e.env" UPGRADE_PORT=41${RANDOM:0:3} STARTED_LOG="$WORK/swapped-started.txt" UPGRADE_PORTER="$WORK/porter-swaps.js"
+  : > "$STARTED_LOG"
+  . "$HERE/smoke-nightly.sh"
+  (
+    run_root_settle "" "" "" mise-smoke-nightly || exit 9
+    P=$RUN_ROOT
+    trap nightly_ending EXIT
+    upgrade_step
+    # From here the nightly's own shell removes nothing for real: what it tries is written down.
+    rm() { echo "rm $*" >> "$WORK/swapped-acts.txt"; }
+    nightly_finish
+  ); status=$?
+  parent=$(find "$XDG_RUNTIME_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
+  put=$(find "$parent" -mindepth 1 -maxdepth 1 -type d -name 'upgrade.*' -not -name '*.moved' | head -1)
+  [ "$status" -eq 1 ] || { echo "the nightly's status was $status"; exit 1; }
+  [ -n "$put" ] && [ -d "$put/config" ] && [ "$(cat "$put/started.pids")" = "888888888 1" ] && [ "$(cat "$put/kept")" = theirs ] || { echo "what was put in the upgrade's place was touched: $(ls "$put" 2>/dev/null | tr '\n' ' ')"; exit 1; }
+  [ ! -e "$WORK/swapped-acts.txt" ] || { echo "the nightly tried to remove: $(tr '\n' ';' < "$WORK/swapped-acts.txt")"; exit 1; }
+  grep -q "upgrade  FAIL: the folder at .* is no longer the one this run made; nothing in it was touched" "$ledger" || { echo "the upgrade's own failure is not in the ledger"; exit 1; }
+  grep -q "upgrade  FAIL: the porter did not come up" "$ledger" || { echo "the failure the run first had is not in the ledger"; exit 1; }
+  grep -q "the run's folder is kept at .*the upgrade step left its folder as it was" "$ledger" || { echo "the nightly did not say it kept its folder"; exit 1; }
+  while read -r _ pid; do ! kill -0 "$pid" 2>/dev/null || { echo "pid $pid of the run is still running"; kill "$pid"; exit 1; }; done < "$STARTED_LOG"
+  grep -q '^old-daemon ' "$STARTED_LOG" && grep -q '^porter ' "$STARTED_LOG"
+) > "$WORK/swapped.txt" 2>&1 && ok "an upgrade whose folder is swapped under it: its processes are stopped, the folder now there is untouched (config, list of pids, keep note), both failures are in the ledger, and the nightly keeps its own folder" || bad "swapped upgrade folder: $(tail -2 "$WORK/swapped.txt" | tr '\n' ' ')"
 
 echo
 echo "$((cases - failed_cases)) ok, $failed_cases failed (state left in $WORK)"
