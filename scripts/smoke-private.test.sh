@@ -161,6 +161,22 @@ upgrade_expect() { # name, exit status, then texts the ledger must hold
   if [ "$verdict" = ok ]; then ok "$name"; else bad "$name: $verdict"; fi
 }
 
+(
+  RUN_ROOT="$WORK/reap-spaced"; mkdir -m 700 "$RUN_ROOT"
+  # A program whose name holds a space and a parenthesis: the kernel puts that name, as it is, into the line
+  # the start time is read from.
+  cp "$(command -v sleep)" "$WORK/bin/my (odd) sleep"
+  "$WORK/bin/my (odd) sleep" 300 & spaced=$!
+  sleep 0.2
+  grep -q "(my (odd) sleep)" "/proc/$spaced/stat" || { echo "the stand-in's name is not what the case needs: $(cut -c1-60 "/proc/$spaced/stat")"; kill "$spaced"; exit 1; }
+  daemon_note "$spaced"
+  [ "$(awk '{print $2}' "$RUN_ROOT/started.pids")" = "$(awk -F') ' '{print $NF}' "/proc/$spaced/stat" | awk '{print $20}')" ] || { echo "the start noted is not the process's start"; kill "$spaced"; exit 1; }
+  daemon_alive "$spaced" "$(awk '{print $2}' "$RUN_ROOT/started.pids")" || { echo "a noted process with a space in its name is not seen as alive"; kill "$spaced"; exit 1; }
+  daemons_reap
+  wait "$spaced" 2>/dev/null
+  ! kill -0 "$spaced" 2>/dev/null
+) > "$WORK/reap-spaced.txt" 2>&1 && ok "a noted process whose name holds a space and a parenthesis is noted by its true start, seen alive, and stopped" || bad "a process with a space in its name: $(cat "$WORK/reap-spaced.txt")"
+
 echo "the upgrade script"
 cp "$WORK/e2e.env" "$WORK/e2e-open.env"; chmod 644 "$WORK/e2e-open.env"
 upgrade_run credentials-others-can-read E2E_ENV="$WORK/e2e-open.env"

@@ -73,23 +73,35 @@ cube_token_get() { # the private folder to work in
   printf '%s\n' "$token"
 }
 
+# Reads a process's state and the moment it started, as "<state> <start>".
+# The one place /proc/<pid>/stat is read: the command's name stands second
+# in it, in parentheses, and may itself hold spaces and parentheses, so the
+# fields are counted from after the last closing one.
+process_stat_read() { # pid
+  local stat
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  stat=${stat##*) }
+  # What is left begins with the state (the third field of the whole); the start is the twenty-second.
+  # shellcheck disable=SC2086
+  set -- $stat
+  [ -n "${20:-}" ] || return 1
+  echo "$1 ${20}"
+}
+
 # Notes a process the run started, so the ending can stop it: its pid and
 # the moment it started, which together are that process and no other.
 daemon_note() { # pid
-  local pid=$1 started
-  started=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null) || return 0
-  [ -n "$started" ] && echo "$pid $started" >> "$RUN_ROOT/started.pids"
+  local pid=$1 read
+  read=$(process_stat_read "$pid") || return 0
+  echo "$pid ${read#* }" >> "$RUN_ROOT/started.pids"
 }
 
 # Whether a noted process is still that process, and still running: the same
 # pid started at the same moment, and not merely waiting to be collected.
 daemon_alive() { # pid, the start it was noted with
-  local stat
-  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
-  # After the command's name, which may hold spaces and is in parentheses: the state, and nineteen fields on, the start.
-  stat=${stat##*) }
-  set -- "$1" "$2" $stat
-  [ "${22}" = "$2" ] && [ "$3" != Z ]
+  local read
+  read=$(process_stat_read "$1") || return 1
+  [ "${read#* }" = "$2" ] && [ "${read%% *}" != Z ]
 }
 
 # Stops every process the run noted that is still the process it noted:
