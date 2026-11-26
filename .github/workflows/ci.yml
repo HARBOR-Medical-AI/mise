@@ -21,18 +21,11 @@ jobs:
         with:
           node-version: 24
       - run: npm install -g npm@11.19.0
+      # The workspace has one lockfile, at the root, and the audit reads it. That is an audit of what each
+      # published workspace ships only if every production dependency of each, with all it pulls in, is in
+      # that lockfile and not marked development-only there: checked first, so the audit's green means that.
+      - run: npm run lint:audit-coverage
       - run: npm audit --omit=dev --audit-level=high
-      # Auditing from inside a workspace member is a silent no-op: npm
-      # resolves the prefix up to the workspace root and audits the root
-      # lockfile again. Copying each nested lockfile out of the workspace
-      # tree is what actually audits it.
-      - name: Audit nested lockfiles
-        run: |
-          for pkg in cumin salsa; do
-            dir=$(mktemp -d)
-            cp "packages/$pkg/package.json" "packages/$pkg/package-lock.json" "$dir"
-            (cd "$dir" && npm audit --omit=dev --audit-level=high)
-          done
 
   check:
     runs-on: ubuntu-latest
@@ -109,6 +102,8 @@ jobs:
       # lays a graph out (checked on the build).
       - run: npm run lint:workers
       - run: npm run lint:argv
+      - run: npm run lint:debris
+      - run: npm run test:debris
       - run: npm run test:argv
       - run: npm run test:layout-worker --workspace @fnndsc/brasa
       # The nightly's accounting: a red stage or step is a non-zero exit.
