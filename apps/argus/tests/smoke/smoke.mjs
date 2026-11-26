@@ -4299,14 +4299,24 @@ try {
     await settle(() => /^[/]home[/][^/]+$/.test(homeAt()), 20);
     const place = homeAt() + '/' + folder;
     if (!/^[/]home[/][^/]+[/]smoke-kinds-[a-z0-9]+-[a-z0-9]+$/.test(place)) return { error: 'no home to make the folder in: ' + homeAt() };
+    // The folder is this run's only when this run made it: mkdir without -p
+    // fails on a name that is taken, and then nothing is removed afterwards.
     await say('mkdir ' + place, 2500);
+    const made = window.__argusPromptContext?.lastExitCode;
+    if (made !== 0) return { error: 'mkdir ' + place + ' did not succeed (exit ' + made + '): nothing was sent up, nothing is removed' };
     try {
     await say('cd ' + place, 2500);
     const there = await settle(() => homeAt() === place, 60);
     if (!there) return { error: 'the session did not move to ' + place + ' (it is at ' + homeAt() + '): nothing was sent up' };
+    // A pane sends files to the folder it shows, which is its own and may lag
+    // the session's: the chooser is touched only when the pane shows this folder.
+    const paneAt = () => fp()?.querySelector('.files-crumb-here')?.dataset.path ?? null;
+    const shown = await settle(() => paneAt() === place, 60);
+    if (!shown) return { error: 'the files pane shows ' + paneAt() + ', not ' + place + ': nothing was sent up' };
     const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEklEQVR4nGP4z8DwH4QZYAwAR8oH+Rq28akAAAAASUVORK5CYII='), (c) => c.charCodeAt(0));
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="7" height="5"><rect width="7" height="5" fill="red"/></svg>';
     const chooser = fp().querySelector('.files-upload-input');
+    if (paneAt() !== place) return { error: 'the files pane moved to ' + paneAt() + ' before the files were chosen: nothing was sent up' };
     const dt = new DataTransfer();
     dt.items.add(new File([png], 'dot.png', { type: 'image/png' }));
     dt.items.add(new File([svg], 'dot.svg', { type: 'image/svg+xml' }));
