@@ -25,6 +25,7 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { base_resolve, ceilings_compare, fileAtCommit_read } from './lib/ratchetBase.mjs';
 
 const PATTERN = /as unknown as/g;
@@ -51,7 +52,7 @@ function sourceFiles_collect(dir, out) {
   return out;
 }
 
-const root = resolve(process.argv[2] ?? new URL('..', import.meta.url).pathname);
+const root = resolve(process.argv[2] ?? fileURLToPath(new URL('..', import.meta.url)));
 const baselinePath = resolve(process.argv[3] ?? join(root, BASELINE_FILE));
 const ceilings = JSON.parse(readFileSync(baselinePath, 'utf8')).casts ?? {};
 

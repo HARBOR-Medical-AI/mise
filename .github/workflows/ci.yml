@@ -26,10 +26,9 @@ jobs:
         with:
           node-version: 24
       - run: npm install -g npm@11.19.0
-      # The workspace has one lockfile, at the root, and the audit reads it. That is an audit of what each
-      # published workspace ships only if every production dependency of each, with all it pulls in, is in
-      # that lockfile and not marked development-only there: checked first, so the audit's green means that.
-      - run: npm run lint:audit-coverage
+      # The workspace has one lockfile, at the root, and this audit reads it. That is an audit of what each
+      # published workspace ships only if the lockfile describes it: `lint:audit-coverage`, in the check job
+      # (it needs the installed tree), fails the change otherwise.
       - run: npm audit --omit=dev --audit-level=high
 
   check:
@@ -117,6 +116,10 @@ jobs:
       - run: npm run lint:workers
       - run: npm run lint:argv
       - run: npm run lint:debris
+      # The root lockfile describes what every published workspace ships (its edges resolve, in range, none
+      # development-only), which is what makes the audit job's green an audit of them.
+      - run: npm run lint:audit-coverage
+      - run: npm run test:audit-coverage
       - run: npm run test:debris
       - run: npm run test:argv
       - run: npm run test:layout-worker --workspace @fnndsc/brasa

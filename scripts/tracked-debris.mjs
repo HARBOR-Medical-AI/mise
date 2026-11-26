@@ -6,11 +6,13 @@
  * one, at the root) are things tools make. Tracked, they go stale and are
  * read as if they meant something: a nested lockfile was audited in CI
  * long after it stopped describing what is installed. This reads the list
- * of tracked files and fails on any of them.
+ * of tracked files and fails on any of them. What stands under a folder
+ * named `fixtures` is a test's own input and is passed over.
  *
- * Run via `npm run lint:debris`. The list of tracked files may be given on
- * standard input instead, one per line, when the first argument is
- * `--stdin` (the check's own test does).
+ * Run via `npm run lint:debris`, in the repository whose tracked files are
+ * meant (it asks git in the folder it is run from). The list may be given
+ * on standard input instead, each path ended by a NUL as `git ls-files -z`
+ * writes them, when the first argument is `--stdin`.
  *
  * @module
  */
@@ -26,10 +28,12 @@ const KINDS = [
   { test: (path) => path.includes('/') && path.split('/').pop() === 'package-lock.json', why: 'a lockfile below the root (the workspace has one, at the root)' },
 ];
 
+// Asked for with `-z`: paths as they are, each ended by a NUL. Without it git prints for people, and
+// quotes and escapes any path with a byte outside ASCII, which would then match nothing here.
 const listing = process.argv[2] === '--stdin'
   ? readFileSync(0, 'utf8')
-  : execFileSync('git', ['ls-files'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-const tracked = listing.split('\n').filter((line) => line !== '');
+  : execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+const tracked = listing.split('\0').filter((path) => path !== '');
 if (tracked.length === 0) {
   console.error('tracked-debris: no tracked files were listed: nothing was checked');
   process.exit(1);
@@ -37,6 +41,8 @@ if (tracked.length === 0) {
 
 const found = [];
 for (const path of tracked) {
+  // A test's fixtures are kept on purpose, and may be made to look like anything: a lockfile, a report.
+  if (path.split('/').includes('fixtures')) continue;
   const kind = KINDS.find((one) => one.test(path));
   if (kind !== undefined) found.push(`  ${path}: ${kind.why}`);
 }

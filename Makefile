@@ -413,7 +413,9 @@ smoke-report:
 # Local package.json versions against what the registry serves, one line
 # per package. After a publish the two columns must agree.
 verify-npm:
-	@node scripts/published-workspaces.mjs | while read -r dir name version; do \
+	@list=$$(node scripts/published-workspaces.mjs) || { echo "verify-npm: the published workspaces could not be listed: nothing compared."; exit 1; }; \
+	[ -n "$$list" ] || { echo "verify-npm: no published workspace was listed: nothing compared."; exit 1; }; \
+	echo "$$list" | while read -r dir name version; do \
 		printf "%-16s local %-9s npm %s\n" "$$name" "$$version" \
 			"$$(npm view "$$name" version 2>/dev/null || echo '?')"; \
 	done
