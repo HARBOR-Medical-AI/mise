@@ -21,7 +21,7 @@
  * @module
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -139,8 +139,52 @@ const raised = ratchet_run(withBaseline);
 expect_that('a ceiling raised beside its count fails against the base', raised.status === 1 && raised.said.includes('apps/beta: the ceiling of no-empty is 2 here and was 1 at the base'), raised.said);
 const unnamed = spawnSync('npm', ['run', '-s', 'lint'], { cwd: tree, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, GITHUB_EVENT_NAME: 'push', RATCHET_BEFORE: '0'.repeat(40) } });
 expect_that('a base that cannot be named fails the ratchet', unnamed.status === 1 && `${unnamed.stdout}${unnamed.stderr}`.includes('could not be compared'), `${unnamed.stdout}${unnamed.stderr}`);
+// The same, asked of one workspace alone, and then with --lower: the base rule holds in every mode, and a
+// refusal leaves the baseline as it was.
+const raisedBaseline = readFileSync(BASELINE, 'utf8');
+const raisedOnly = ratchet_run(withBaseline, '--only', 'apps/beta');
+expect_that('a count and ceiling raised together fail under --only too', raisedOnly.status === 1 && raisedOnly.said.includes('apps/beta: the ceiling of no-empty is 2 here and was 1 at the base'), raisedOnly.said);
+for (const flags of [['--lower'], ['--only', 'apps/beta', '--lower']]) {
+  const raisedLower = ratchet_run(withBaseline, ...flags);
+  expect_that(`a count and ceiling raised together: ${flags.join(' ')} lowers nothing and leaves the baseline as it was`, raisedLower.status === 1 && raisedLower.said.includes('nothing lowered') && readFileSync(BASELINE, 'utf8') === raisedBaseline, raisedLower.said);
+}
 writeFileSync(BASELINE, pristine);
 file_put(join(tree, 'apps/beta/src/tally.ts'), SOURCE);
+
+// A baseline is written for the first time only where there has never been one. Deleted from the working
+// tree while the base has it, or with a base that cannot be found: no --bootstrap.
+renameSync(BASELINE, `${BASELINE}.aside`);
+const reboot = ratchet_run(withBaseline, '--bootstrap');
+expect_that('--bootstrap is refused when the base has a baseline, and writes nothing', reboot.status === 1 && reboot.said.includes('the base has a scripts/eslint-baseline.json') && !existsSync(BASELINE), reboot.said);
+const lostBase = spawnSync('npm', ['run', '-s', 'lint', '--', '--bootstrap'], { cwd: tree, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, RATCHET_BASE: 'no-such-ref' } });
+expect_that('--bootstrap is refused when the base cannot be found, and writes nothing', lostBase.status === 1 && `${lostBase.stdout}${lostBase.stderr}`.includes('could not be compared') && !existsSync(BASELINE), `${lostBase.stdout}${lostBase.stderr}`);
+renameSync(`${BASELINE}.aside`, BASELINE);
+const lostBaseLower = spawnSync('npm', ['run', '-s', 'lint', '--', '--lower'], { cwd: tree, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, RATCHET_BASE: 'no-such-ref' } });
+expect_that('--lower with a base that cannot be found lowers nothing', lostBaseLower.status === 1 && readFileSync(BASELINE, 'utf8') === pristine, `${lostBaseLower.stdout}${lostBaseLower.stderr}`);
+
+// A new finding at the end of a file that already has many of the same rule: it is shown, by its line.
+const NOISY = `${SOURCE}${Array.from({ length: 20 }, (_unused, at) => `export function noisy${at}(): void {\n  try { tally([]); } catch { }\n}\n`).join('')}`;
+file_put(join(tree, 'apps/beta/src/tally.ts'), NOISY);
+const noisyCounts = spawnSync(process.execPath, ['--input-type=module', '-e', `
+  import { ESLint } from 'eslint';
+  import { baseline_write } from ${JSON.stringify(join(tree, 'scripts/lib/eslintCounts.mjs'))};
+  const eslint = new ESLint({ cwd: ${JSON.stringify(tree)} });
+  const counts = {};
+  for (const workspace of ['packages/alpha', 'apps/beta']) for (const result of await eslint.lintFiles([workspace + '/src/**/*.ts'])) for (const message of result.messages) { (counts[workspace] ??= {})[message.ruleId] = (counts[workspace][message.ruleId] ?? 0) + 1; }
+  process.stdout.write(baseline_write(counts));`], { cwd: tree, encoding: 'utf8' });
+writeFileSync(BASELINE, noisyCounts.stdout);
+const noisyBase = commit('a file with twenty-one empty blocks, and its ceilings');
+const lastLine = NOISY.split('\n').length + 1;
+file_put(join(tree, 'apps/beta/src/tally.ts'), `${NOISY}export function latest(): void {\n  try { tally([]); } catch { }\n}\n`);
+const buried = ratchet_run(noisyBase);
+expect_that('a new finding after twenty existing ones of its rule is shown, by its line, and only it',
+  buried.status === 1 && buried.said.includes('apps/beta: 22 findings of no-empty, its ceiling is 21. On lines this change added or changed, all 1 of that rule\'s findings') && buried.said.includes(`apps/beta/src/tally.ts:${lastLine}:`),
+  buried.said);
+// Back to the small tree and its baseline, committed, for the cases below.
+file_put(join(tree, 'apps/beta/src/tally.ts'), SOURCE);
+writeFileSync(BASELINE, pristine);
+const restored = commit('the small tree again');
+void restored;
 
 // A violation taken out.
 file_put(join(tree, 'packages/alpha/src/tally.ts'), SOURCE.replace('  try { sum += 1; } catch { }\n', '  sum += 1;\n'));

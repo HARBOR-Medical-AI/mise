@@ -23,18 +23,26 @@
  *   file as it stood at the change's base (`scripts/lib/ratchetBase.mjs`
  *   says which commit that is), and one higher here than there fails.
  *   There is nothing to compare in one case only, the base's tree having
- *   no baseline file.
+ *   no baseline file. A base that cannot be found fails.
  *
- * Run via `npm run lint`. `--bootstrap` writes the baseline from what is
- * found, and only when there is none. `--root <folder>` lints another
- * tree (the check's own test). `--only <workspace>` lints one workspace
- * and judges only it.
+ * That last rule holds in every mode, since each of them judges or writes
+ * ceilings. Run via `npm run lint`. `--only <workspace>` lints one
+ * workspace and judges only it, its ceilings against the base's among the
+ * rest. `--lower` lowers ceilings to what was found, writes nothing if the
+ * tree does not pass, and writes no ceiling above the base's.
+ * `--bootstrap` writes a first baseline only where there has never been
+ * one: none in the working tree and none at the base. A baseline is
+ * written whole or not at all. `--root <folder>` lints another tree.
+ *
+ * When a rule rises, its findings on the lines the change added or
+ * changed are printed, all of them: the new one is there. Only when none
+ * is on such a line are others shown, and those may be cut short.
  *
  * @module
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
@@ -122,16 +130,47 @@ for (const workspace of workspaces) {
 const total = Object.values(counts).reduce((sum, rules) => sum + Object.values(rules).reduce((inner, count) => inner + count, 0), 0);
 const seconds = Math.round((Date.now() - started) / 1000);
 
+// ---- The base: the commit this change starts from, and the ceilings as they stood there. Found before
+// anything is judged or written, and needed in every mode: a ceiling may be written here only if it is no
+// higher than the base's, and a first baseline only where the base had none.
+/** The base commit; null when it could not be resolved (a fault, already said). */
+let base = null;
+/** The ceilings at the base; null when the base's tree has no baseline file (the one case with nothing to compare). */
+let atBase = null;
+try {
+  base = base_resolve(process.env, root);
+  const text = fileAtCommit_read(base.sha, BASELINE_FILE, root);
+  if (text !== null) atBase = baseline_read(text, `${BASELINE_FILE} at the base (${base.sha.slice(0, 8)})`);
+} catch (error) {
+  base = null;
+  faults.push(`the ceilings could not be compared with the base's: ${error.message}`);
+}
+const baseSaid = base === null ? '' : ` (base: ${base.how}, ${base.sha.slice(0, 8)})`;
+
+/**
+ * Writes the baseline whole or not at all: to a file beside it, then moved into its place.
+ *
+ * @param {Record<string, Record<string, number>>} next - The ceilings to write.
+ */
+function baseline_put(next) {
+  const beside = `${baselinePath}.writing`;
+  writeFileSync(beside, baseline_write(next));
+  renameSync(beside, baselinePath);
+}
+
 if (bootstrap) {
-  if (existsSync(baselinePath)) {
-    console.error(`eslint-ratchet: ${BASELINE_FILE} exists: a baseline is written once; after that it only falls (--lower)`);
+  // A first baseline is written where there has never been one: not in the working tree, and not at the
+  // base. A baseline that was deleted is not a reason to count afresh.
+  const refusals = [];
+  if (only !== undefined) refusals.push('a baseline is of every workspace, not one');
+  if (existsSync(baselinePath)) refusals.push(`${BASELINE_FILE} exists: a baseline is written once; after that it only falls (--lower)`);
+  if (atBase !== null) refusals.push(`the base has a ${BASELINE_FILE}${baseSaid}: there are ceilings already; restore that file and lower it`);
+  refusals.push(...faults);
+  if (refusals.length > 0) {
+    console.error(`eslint-ratchet: no baseline written: ${refusals.join('; ')}`);
     process.exit(1);
   }
-  if (faults.length > 0 || only !== undefined) {
-    console.error(`eslint-ratchet: no baseline written: ${only !== undefined ? 'a baseline is of every workspace, not one' : faults.join('; ')}`);
-    process.exit(1);
-  }
-  writeFileSync(baselinePath, baseline_write(counts));
+  baseline_put(counts);
   console.log(`eslint-ratchet: wrote ${BASELINE_FILE}: ${total} findings over ${workspaces.length} workspaces (${files} files, ${seconds} s).`);
   process.exit(0);
 }
@@ -146,9 +185,11 @@ if (!existsSync(baselinePath)) {
     faults.push(error.message);
   }
 }
-// One workspace asked for: only its ceilings are judged.
+// One workspace asked for: only its ceilings are judged, against its counts and against the base's.
 const judgedCeilings = only === undefined ? ceilings : (ceilings[only] === undefined ? {} : { [only]: ceilings[only] });
 const { risen, fallen } = counts_judge(counts, judgedCeilings);
+// The committed ceilings against the base's, in every mode: one higher here than there is a fault.
+if (atBase !== null) faults.push(...ceilings_risen(judgedCeilings, atBase).map((line) => `${line}${baseSaid}`));
 
 if (lower) {
   if (faults.length > 0 || risen.length > 0) {
@@ -165,52 +206,71 @@ if (lower) {
     next = { ...ceilings };
     if (loweredOnly === undefined) delete next[only]; else next[only] = loweredOnly;
   }
-  writeFileSync(baselinePath, baseline_write(next));
+  // What is about to be written is held to the base as well: lowering never puts a ceiling above the base's.
+  const over = atBase === null ? [] : ceilings_risen(only === undefined ? next : (next[only] === undefined ? {} : { [only]: next[only] }), atBase);
+  if (over.length > 0) {
+    console.error(`eslint-ratchet: nothing lowered: ${over.join('; ')}${baseSaid}`);
+    process.exit(1);
+  }
+  baseline_put(next);
   console.log(`eslint-ratchet: lowered ${fallen.length} ceiling(s) in ${BASELINE_FILE}; none raised.`);
   process.exit(0);
 }
 
 /**
- * The files this change touched, so that a rule that rose can be shown where it most likely rose: every
- * file that differs from the base, and every file git does not track yet.
+ * The lines this change added or changed, per file, so that a rule that rose can be shown where it rose.
  *
- * @returns {Set<string> | null} Their paths from the root; null when the base cannot be found (then nothing is singled out).
+ * @returns {Map<string, { all: boolean, lines: Set<number> }> | null} For each file that differs from the base, its added and changed lines (`all` for a file the base did not have); null when the base is not known.
  */
-function touched_read() {
+function changed_read() {
+  if (base === null) return null;
+  const run = (gitArgs) => execFileSync('git', gitArgs, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 });
+  const changed = new Map();
   try {
-    const base = base_resolve(process.env, root);
-    const run = (gitArgs) => execFileSync('git', gitArgs, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\0').filter((path) => path !== '');
-    return new Set([...run(['diff', '--name-only', '-z', base.sha]), ...run(['ls-files', '--others', '--exclude-standard', '-z'])]);
+    for (const path of run(['ls-files', '--others', '--exclude-standard', '-z']).split('\0')) if (path !== '') changed.set(path, { all: true, lines: new Set() });
+    // No context lines: each hunk's header names exactly the lines that are new in this tree.
+    let file = null;
+    for (const line of run(['diff', '--unified=0', '--no-color', '--no-ext-diff', base.sha, '--']).split('\n')) {
+      if (line.startsWith('+++ ')) {
+        file = line === '+++ /dev/null' ? null : line.slice(line.indexOf('/') + 1);
+        if (file !== null && !changed.has(file)) changed.set(file, { all: false, lines: new Set() });
+        continue;
+      }
+      const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+      if (hunk === null || file === null) continue;
+      const first = Number(hunk[1]);
+      const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
+      for (let at = first; at < first + count; at++) changed.get(file).lines.add(at);
+    }
   } catch {
     return null;
   }
+  return changed;
 }
-const touched = risen.length === 0 ? null : touched_read();
+const changed = risen.length === 0 ? null : changed_read();
 for (const one of risen) {
   const found = findings[one.workspace]?.[one.rule] ?? [];
-  // Findings in the files this change touched come first: the new one is among those.
-  const mine = touched === null ? [] : found.filter((line) => touched.has(line.slice(0, line.indexOf(':'))));
-  const shown = mine.length > 0 ? mine : found;
-  const lead = mine.length > 0 ? `That rule's findings in the files this change touched (${mine.length} of ${found.length})` : `All of that rule's findings there (the new one is among them)`;
-  faults.push(`${one.workspace}: ${one.count} findings of ${one.rule}, its ceiling is ${one.ceiling}. ${lead}:\n${shown.slice(0, SHOWN).map((line) => `      ${line}`).join('\n')}${shown.length > SHOWN ? `\n      … and ${shown.length - SHOWN} more` : ''}`);
+  // Where each finding stands: on a line this change added or changed, elsewhere in a file it touched, or
+  // in a file it did not touch. The first kind is where the new one is, and is never cut short.
+  const onChanged = [];
+  const inTouched = [];
+  const elsewhere = [];
+  for (const line of found) {
+    const [file, lineNumber] = line.split(':');
+    const lines = changed?.get(file);
+    if (lines === undefined) elsewhere.push(line);
+    else if (lines.all || lines.lines.has(Number(lineNumber))) onChanged.push(line);
+    else inTouched.push(line);
+  }
+  const list = (lines, cap) => `${lines.slice(0, cap).map((line) => `      ${line}`).join('\n')}${lines.length > cap ? `\n      … and ${lines.length - cap} more` : ''}`;
+  let shown;
+  if (onChanged.length > 0) shown = `On lines this change added or changed, all ${onChanged.length} of that rule's findings:\n${list(onChanged, Infinity)}`;
+  else if (changed === null) shown = `The base is not known, so the new one cannot be picked out. All ${found.length} of that rule's findings there:\n${list(found, Infinity)}`;
+  else shown = `None is on a line this change added or changed (a change elsewhere made one, a type that moved for instance). In the files it touched (${inTouched.length}), then the rest (${elsewhere.length}):\n${list([...inTouched, ...elsewhere], SHOWN)}`;
+  faults.push(`${one.workspace}: ${one.count} findings of ${one.rule}, its ceiling is ${one.ceiling}. ${shown}`);
 }
 for (const one of fallen) {
   faults.push(`${one.workspace}: ${one.rule} fell to ${one.count} (ceiling ${one.ceiling}) — good. Lower it in ${BASELINE_FILE} as part of this change (npm run lint -- --lower), so the improvement locks in.`);
-}
-
-// The ceilings against the base's: only for the repository's own baseline, whole.
-if (existsSync(baselinePath) && only === undefined) {
-  try {
-    const base = base_resolve(process.env, root);
-    const text = fileAtCommit_read(base.sha, BASELINE_FILE, root);
-    // Nothing to compare with in one case only: the base's tree has no baseline file.
-    if (text !== null) {
-      const atBase = baseline_read(text, `${BASELINE_FILE} at the base (${base.sha.slice(0, 8)})`);
-      faults.push(...ceilings_risen(ceilings, atBase).map((line) => `${line} (base: ${base.how}, ${base.sha.slice(0, 8)})`));
-    }
-  } catch (error) {
-    faults.push(`the ceilings could not be compared with the base's: ${error.message}`);
-  }
 }
 
 if (faults.length > 0) {
