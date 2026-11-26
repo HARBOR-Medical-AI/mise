@@ -879,6 +879,22 @@ function built_mark(context: VmCommandContext, name: string, spec: VmSpec): void
  * @returns The envelope.
  */
 async function vmBuild_run(context: VmCommandContext, named: string | undefined, allowAlter: boolean): Promise<CommandEnvelope> {
+  const unkept: { line: string } = { line: '' };
+  const built: CommandEnvelope = await vmBuild_plan(context, named, allowAlter, unkept);
+  // A keep that failed is said on the build's own output, whatever the build then answered.
+  return unkept.line === '' ? built : { ...built, rendered: `${unkept.line}${built.rendered ?? ''}` };
+}
+
+/**
+ * The build itself: keeps what is declared, plans, asks, applies.
+ *
+ * @param context - The session's stores and cloud.
+ * @param named - The VM's name, when given.
+ * @param allowAlter - Whether a plan that alters what stands may go on.
+ * @param unkept - Given the line to say when the declaration could not be kept in the tenancy first.
+ * @returns What happened.
+ */
+async function vmBuild_plan(context: VmCommandContext, named: string | undefined, allowAlter: boolean, unkept: { line: string }): Promise<CommandEnvelope> {
   const need = await vm_needOrTake(context, named, 'build');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   if (vmKeyless_is(context.store, need.record)) return envelope_error(need.said, undefined, `vm build: ${need.name}: ${VM_KEYLESS}\n`);
@@ -890,8 +906,10 @@ async function vmBuild_run(context: VmCommandContext, named: string | undefined,
   if (context.builder?.keep_write !== undefined) {
     try {
       await vmKept_write(context.builder, context.store, need.name, need.record.region, { log: (): void => undefined, signal: new AbortController().signal });
-    } catch {
-      // Not kept now: the machine's apply keeps it again.
+    } catch (error: unknown) {
+      // Not kept now: the machine's apply keeps it again. The build goes on,
+      // and says so; the reason is the cloud's words, never what was to be kept.
+      unkept.line = `${chalk.yellow(`vm build ${need.name}: what is declared was not kept in the tenancy first (${error instanceof Error ? error.message : String(error)}); the machine's apply keeps it again`)}\n`;
     }
   }
   const name: string = need.name;

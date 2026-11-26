@@ -32,7 +32,7 @@ const DROP_DAYS: number = 1;
 export interface OciKeepApi {
   /** A secret's content, or null when the vault or the secret is not there (or the secret is scheduled for deletion). */
   secret_read(name: string): Promise<string | null>;
-  /** Writes a secret's content: a new version of one there (brought back when scheduled for deletion), else a new secret; the vault and its key made first when missing. */
+  /** Writes a secret's content: a new version of one there when its content differs (brought back first when scheduled for deletion), else a new secret; the vault and its key made first when missing. One there that cannot be read is left as it is, and the write fails. */
   secret_write(name: string, content: string, log: (line: string) => void): Promise<void>;
   /** Schedules a secret's deletion; one not there is no error. Answers whether it was there. */
   secret_drop(name: string): Promise<boolean>;
@@ -43,6 +43,17 @@ export interface OciKeepApiOptions {
   readonly configFile?: string;
   readonly profile?: string;
   readonly region: string;
+}
+
+/**
+ * A secret's content out of the bundle the cloud answers.
+ *
+ * @param bundle - The answer to a bundle read.
+ * @returns The content as text, or undefined when the bundle carries none.
+ */
+function content_decode(bundle: secrets.responses.GetSecretBundleByNameResponse): string | undefined {
+  const content: string | undefined = (bundle.secretBundle.secretBundleContent as { content?: string } | undefined)?.content;
+  return content === undefined ? undefined : Buffer.from(content, 'base64').toString('utf-8');
 }
 
 /** Waits a while. */
@@ -144,9 +155,7 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
       const found: keymanagement.models.VaultSummary | null = await vault_find();
       if (found === null) return null;
       try {
-        const bundle = await bundles.getSecretBundleByName({ secretName: name, vaultId: found.id });
-        const content: string | undefined = (bundle.secretBundle.secretBundleContent as { content?: string } | undefined)?.content;
-        return content === undefined ? null : Buffer.from(content, 'base64').toString('utf-8');
+        return content_decode(await bundles.getSecretBundleByName({ secretName: name, vaultId: found.id })) ?? null;
       } catch (error: unknown) {
         // A secret scheduled for deletion answers as not there, as a deleted one does.
         if (notFound(error) || (error as { statusCode?: number }).statusCode === 409) return null;
@@ -164,12 +173,21 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
         await secret_settle(made.secret.id);
         return;
       }
-      if (kept.lifecycleState === 'PENDING_DELETION') {
-        await secretsOf.cancelSecretDeletion({ secretId: kept.id });
-        await secret_settle(kept.id);
-      } else {
-        await secret_settle(kept.id);
+      if (kept.lifecycleState === 'PENDING_DELETION') await secretsOf.cancelSecretDeletion({ secretId: kept.id });
+      await secret_settle(kept.id);
+      // Every update makes a version and the cloud holds thirty at once, so
+      // a write of what the secret already holds is not made. That needs
+      // the current content; when it cannot be read the secret is left as
+      // it is, since writing unread is how the thirty are spent on a vault
+      // that answers no reads.
+      let held: string | undefined;
+      try {
+        held = content_decode(await bundles.getSecretBundleByName({ secretName: name, vaultId: found.id }));
+      } catch (error: unknown) {
+        throw new Error(`the secret ${name} is kept and could not be read (${error instanceof Error ? error.message : String(error)}), so it was left as it is`);
       }
+      if (held === undefined) throw new Error(`the secret ${name} is kept and the cloud answered no content for it, so it was left as it is`);
+      if (held === content) return;
       await settled_call(() => secretsOf.updateSecret({ secretId: kept.id, updateSecretDetails: { secretContent: body } }));
       await secret_settle(kept.id);
     },

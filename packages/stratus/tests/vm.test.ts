@@ -297,6 +297,21 @@ describe('vm, over the fake cloud', () => {
     expect((await vm_run(context, ['build', 'store'])).renderedErr).toContain('the network elsewhere is not declared');
   });
 
+  it('goes on when what is declared cannot be kept in the tenancy first, and says so with the cloud\'s reason and nothing of what was to be kept', async () => {
+    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+    const handed: string[] = [];
+    if (context.builder !== null) context.builder.keep_write = async (kept: { content: string }): Promise<void> => { handed.push(kept.content); throw new Error('Bad Gateway'); };
+    surface.answers = ['n'];
+    const built = await vm_run(context, ['build', 'store']);
+    const said: string = plain(built.rendered);
+    expect(said).toContain('vm build store: what is declared was not kept in the tenancy first (Bad Gateway); the machine\'s apply keeps it again\n');
+    // The build went on to its plan and its question.
+    expect(surface.asked.at(-1)).toContain('vm build store: data 3 to create');
+    expect(said).toContain('stopped before the apply');
+    expect(handed.length).toBeGreaterThan(0);
+    for (const content of handed) expect(said).not.toContain(content);
+  });
+
   it('builds its data, then its machine, each asked with the cost before it is applied; points the address; again, nothing to do', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
     surface.answers = ['y', 'y'];
