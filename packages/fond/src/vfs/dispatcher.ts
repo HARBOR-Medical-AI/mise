@@ -251,7 +251,36 @@ export class VFSDispatcher {
   }
 
   /**
-   * Copies within or between paths, through the provider that owns the source.
+   * The mount that owns a path, or none.
+   *
+   * {@link provider_get} answers the fallback for whatever no mount claims,
+   * and that includes a path that is only a parent of mounts (`/net` above
+   * `/net/pacs`), which the fallback has no folder behind. Such a path has
+   * no owner: nothing can be copied out of it or into it.
+   *
+   * @param pathStr - The absolute path.
+   * @returns The owning mount or the fallback; null for a parent of mounts.
+   */
+  private owner_find(pathStr: string): VFSProvider | null {
+    const provider: VFSProvider = this.provider_get(pathStr);
+    return provider === this.defaultProvider && this.path_isVirtual(pathStr) ? null : provider;
+  }
+
+  /**
+   * Copies within a mount, or out of a mount that offers it into the
+   * fallback; any other pair of mounts answers `EXDEV`.
+   *
+   * A mount's `cp` is given two paths and treats both as its own, so a copy
+   * handed to the source's mount with a destination it does not own writes
+   * somewhere nobody asked for. Who owns each path is settled here, before
+   * either mount is asked anything, and again once the paths are resolved,
+   * since a resolver can answer a path another mount owns:
+   *
+   * - both paths in one mount: that mount copies;
+   * - the source in a mount that declares `copiesOut`, the destination in
+   *   the fallback: the source's mount copies, and the destination is
+   *   resolved as the fallback resolves its own paths;
+   * - anything else, a parent of mounts on either side included: `EXDEV`.
    *
    * @param src - Source path.
    * @param dest - Destination path.
@@ -259,12 +288,21 @@ export class VFSDispatcher {
    * @returns Done, or why not.
    */
   async cp(src: string, dest: string, options: CpOptions): Promise<VfsOutcome> {
-    const provider: VFSProvider = this.provider_get(src);
-    const from: VfsOutcome<string> = await this.pathFor_provider(provider, src, 'source path', 'cp');
+    const source: VFSProvider | null = this.owner_find(src);
+    const destination: VFSProvider | null = this.owner_find(dest);
+    if (source === null) return vfs_fail('EXDEV', `cp: ${src} is a folder of mounts, and holds nothing of its own to copy`);
+    if (destination === null) return vfs_fail('EXDEV', `cp: ${dest} is a folder of mounts, and nothing is copied into it`);
+    const across: boolean = source !== destination;
+    if (across && !(source.copiesOut === true && destination === this.defaultProvider)) {
+      return vfs_fail('EXDEV', `cp: ${src} and ${dest} are on different mounts, and no copy between them is offered`);
+    }
+    const from: VfsOutcome<string> = await this.pathFor_provider(source, src, 'source path', 'cp');
     if (!from.ok) return from;
-    const to: VfsOutcome<string> = await this.pathFor_provider(provider, dest, 'destination path', 'cp');
+    const to: VfsOutcome<string> = await this.pathFor_provider(destination, dest, 'destination path', 'cp');
     if (!to.ok) return to;
-    return provider.cp(from.value, to.value, options);
+    if (this.owner_find(from.value) !== source) return vfs_fail('EXDEV', `cp: ${src} resolves to ${from.value}, which another mount owns`);
+    if (this.owner_find(to.value) !== destination) return vfs_fail('EXDEV', `cp: ${dest} resolves to ${to.value}, which another mount owns`);
+    return source.cp(from.value, to.value, options);
   }
 
   /**

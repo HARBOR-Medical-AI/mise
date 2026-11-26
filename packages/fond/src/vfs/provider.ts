@@ -89,6 +89,13 @@ export interface VFSProvider {
   prefix: string;
 
   /**
+   * Whether this mount's `cp` copies out of the mount into the fallback's
+   * tree (a PACS pull into a feed's folder). Absent or false, the mount
+   * copies only within itself, and the dispatcher refuses any other pair.
+   */
+  readonly copiesOut?: boolean;
+
+  /**
    * Lists the contents of a directory matching this provider.
    *
    * @param path - The absolute virtual directory path.
