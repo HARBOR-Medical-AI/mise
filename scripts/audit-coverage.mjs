@@ -18,7 +18,8 @@
  *
  * And the graph the lockfile describes holds together, by npm's own
  * reading of it. The lockfile is loaded with npm's tree library
- * (`@npmcli/arborist`, the one `npm audit` itself uses), so that which
+ * (`@npmcli/arborist`): the copy inside the npm that runs this script,
+ * which is the one that npm's `audit` reads the tree with, so that which
  * copy of a package an edge resolves to, whether it satisfies its range
  * or the root's `overrides`, where a peer may stand, and what
  * `--omit=dev` leaves out are npm's answers and not a second opinion.
@@ -29,9 +30,17 @@
  *   place) is a fault, unless it is optional and merely absent; and where
  *   an override puts another package in a dependency's place, the package
  *   found must be that one by name, which npm itself does not ask;
- * - a package reached by a required edge that the audit would leave out
- *   is a fault; one reached only by an optional edge and left out is not
+ * - a package that is installed and wanted in production, and that the
+ *   audit would leave out, is a fault: reached by a required edge, or as
+ *   an optional dependency that is installed. Only an optional peer the
+ *   lockfile carries for development alone is passed over: it is not
  *   shipped, and is no part of the graph;
+ * - a workspace's peer that the workspace also lists for development has,
+ *   in npm's tree, only the development edge, at the development range.
+ *   What is published is the peer: it is judged here at the peer's range,
+ *   and its only copy being development's is a fault;
+ * - a registry package with no version recorded cannot be looked up by
+ *   the audit, and is a fault though npm sees nothing wrong with the edge;
  * - an optional peer that is installed but outside the range asked is not
  *   a fault (its dependent does without it; what is installed is walked
  *   as what it is), but it is not "in range" either: each is printed as a
@@ -49,7 +58,32 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Arborist from '@npmcli/arborist';
+import { createRequire } from 'node:module';
+import { dirname } from 'node:path';
+
+/**
+ * Loads npm's tree library, and the `semver` it uses, from the npm that is
+ * running this: `npm run` says where it lives (`npm_execpath`), and its
+ * own copy of `@npmcli/arborist` is the one its `audit` reads the tree
+ * with. Run without npm (`node scripts/audit-coverage.mjs`), the copy
+ * among this repository's dev dependencies is used, pinned to the version
+ * the repository's npm (`packageManager`) carries.
+ *
+ * @returns {{ Arborist: new (options: { path: string }) => { loadVirtual(): Promise<any> }, semver: any, from: string }} The library, its semver, and which copy it is.
+ */
+function arborist_load() {
+  const execPath = process.env.npm_execpath ?? '';
+  const candidates = [];
+  if (execPath !== '') candidates.push(join(dirname(dirname(execPath)), 'node_modules', '@npmcli', 'arborist', 'package.json'));
+  candidates.push(createRequire(import.meta.url).resolve('@npmcli/arborist/package.json'));
+  for (const manifest of candidates) {
+    if (!existsSync(manifest)) continue;
+    const load = createRequire(manifest);
+    return { Arborist: load(dirname(manifest)), semver: load('semver'), from: `@npmcli/arborist ${JSON.parse(readFileSync(manifest, 'utf8')).version}${manifest === candidates[0] && execPath !== '' ? ', the running npm\'s own' : ', this repository\'s dev dependency'}` };
+  }
+  throw new Error('npm\'s tree library (@npmcli/arborist) was not found');
+}
+const { Arborist, semver, from: arboristFrom } = arborist_load();
 
 const args = process.argv.slice(2);
 /** Takes an option and its value out of the arguments. */
@@ -151,19 +185,59 @@ function tree_walk(dir) {
   }
   const queue = [start];
   const seen = new Set(queue);
+  /** Takes a package into the graph: says what it is, and walks on from it. */
+  const node_take = (target) => {
+    // What the audit looks a package up by: its own name and version. Under an alias that is not the name it
+    // is installed as; both are said.
+    const identity = `${target.packageName ?? target.name}@${workspaces.get(target.location)?.version ?? target.version}`;
+    const aliased = !workspaces.has(target.location) && typeof target.packageName === 'string' && target.packageName !== target.name;
+    reached.set(target.location, aliased ? `${identity} (installed as ${target.name})` : identity);
+    // A workspace reached from another is held to its own record as well.
+    if (workspaces.has(target.location)) for (const fault of record_compare(target.location)) faults.add(fault);
+    // A package from a registry is audited by its version; with none recorded the audit passes over it.
+    else if (typeof target.version !== 'string' || target.version === '') faults.add(`${dir}: ${target.name} at ${place_of(target)} has no version in the root lockfile, so the audit cannot look it up`);
+    if (seen.has(target)) return;
+    seen.add(target);
+    queue.push(target);
+  };
   while (queue.length > 0) {
     const node = queue.shift();
+    // A workspace's peer that it also lists for development: npm keeps one edge for the name, the development
+    // one, at the development range. What is published is the peer, at the peer's range: judged here.
+    const own = workspaces.get(node.location);
+    for (const [name, range] of Object.entries(own?.peerDependencies ?? {})) {
+      const edge = node.edgesOut.get(name);
+      if (edge === undefined || edge.type !== 'dev') continue;
+      const optional = own.peerDependenciesMeta?.[name]?.optional === true;
+      const asked = `${name}@${range} (${optional ? 'an optional peer' : 'a peer'} dependency of ${place_of(node)}, which also lists it for development as ${edge.spec})`;
+      const target = edge.to === null || edge.to === undefined ? null : (edge.to.isLink ? edge.to.target : edge.to);
+      if (target === null) {
+        if (!optional) faults.add(`${dir}: ${asked} is not in the root lockfile`);
+        continue;
+      }
+      if (target.shouldOmit(OMIT)) {
+        // The only copy is development's: those who install the workspace need the peer, and the audit leaves it out.
+        if (!optional) faults.add(`${dir}: ${target.name}@${target.version} at ${place_of(target)}, ${asked}, is taken for development-only, so the audit leaves it out`);
+        continue;
+      }
+      if (semver.validRange(range) !== null && !semver.satisfies(target.version ?? '', range)) {
+        const said = `${dir}: ${asked} is resolved outside the range asked: ${target.name}@${target.version} at ${place_of(target)}`;
+        if (optional) notes.add(said); else faults.add(said);
+      }
+      node_take(target);
+    }
     for (const edge of node.edgesOut.values()) {
       if (edge.type === 'dev') continue;
       const optional = edge.type === 'optional' || edge.type === 'peerOptional';
       const asked = `${edge.name}@${edge.spec} (${edge.type === 'peerOptional' ? 'an optional peer' : edge.type === 'peer' ? 'a peer' : edge.type === 'optional' ? 'an optional' : 'a'} dependency of ${place_of(node)})`;
       const target = edge.to === null || edge.to === undefined ? null : (edge.to.isLink ? edge.to.target : edge.to);
-      // Left out by the audit and reached only optionally: not shipped with its dependent, and no part of
-      // this graph, whatever else is true of it.
-      if (target !== null && optional && target.shouldOmit(OMIT)) continue;
-      // An override that puts another package in a dependency's place (`npm:other@range`) is held to that
-      // package by name: npm itself judges such an edge by the version alone.
-      const alias = /^npm:(.+)@[^@]*$/.exec(edge.spec ?? '');
+      // An optional peer the lockfile carries only for development is not shipped with its dependent: a
+      // production install does not have it, and it is no part of this graph. (An optional dependency that
+      // is installed is another matter: it is shipped, and one left out by the audit is a fault, below.)
+      if (target !== null && edge.type === 'peerOptional' && target.shouldOmit(OMIT)) continue;
+      // An override that puts another package in a dependency's place (`npm:other` or `npm:other@range`) is
+      // held to that package by name: npm itself judges such an edge by the version alone.
+      const alias = /^npm:((?:@[^/@]+\/)?[^@]+)(?:@.*)?$/.exec(edge.spec ?? '');
       if (target !== null && alias !== null && target.packageName !== alias[1]) {
         faults.add(`${dir}: ${asked} is to be ${alias[1]} and the lockfile has ${target.packageName}@${target.version} at ${place_of(target)}`);
       }
@@ -177,16 +251,12 @@ function tree_walk(dir) {
       }
       if (target === null) continue;
       if (target.shouldOmit(OMIT)) {
-        // Left out by the audit. Reached only optionally, it is not shipped; required, the audit misses it.
-        if (!optional) faults.add(`${dir}: ${target.name}@${target.version} at ${place_of(target)}, ${asked}, is taken for development-only, so the audit leaves it out`);
+        // Installed, wanted in production (an optional dependency that is installed is shipped), and left
+        // out by the audit.
+        faults.add(`${dir}: ${target.name}@${target.version} at ${place_of(target)}, ${asked}, is taken for development-only, so the audit leaves it out`);
         continue;
       }
-      // A workspace reached from another is held to its own record as well.
-      if (workspaces.has(target.location)) for (const fault of record_compare(target.location)) faults.add(fault);
-      reached.set(target.location, `${target.name}@${workspaces.get(target.location)?.version ?? target.version}`);
-      if (seen.has(target)) continue;
-      seen.add(target);
-      queue.push(target);
+      node_take(target);
     }
   }
   return { tree: reached, faults: [...faults], notes: [...notes] };
@@ -221,4 +291,4 @@ if (faults.size > 0) {
   for (const fault of faults) console.error(`  ${fault}`);
   process.exit(1);
 }
-console.log(`audit-coverage: the root lockfile holds the production graph of all ${published.length} published workspaces (${placements} package placements): every record agrees with its manifest, every required edge holds by npm's reading, nothing required is left out by the audit${notes.size === 0 ? '' : `; ${notes.size} optional peer(s) installed out of range, noted above`}.`);
+console.log(`audit-coverage: the root lockfile holds the production graph of all ${published.length} published workspaces (${placements} package placements): every record agrees with its manifest, every required edge holds by npm's reading, nothing shipped is left out by the audit${notes.size === 0 ? '' : `; ${notes.size} optional peer(s) installed out of range, noted above`}. Read with ${arboristFrom}.`);

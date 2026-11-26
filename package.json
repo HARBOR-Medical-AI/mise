@@ -46,12 +46,14 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.9",
-    "@npmcli/arborist": "^9.9.1",
+    "@npmcli/arborist": "9.9.1",
     "@yao-pkg/pkg": "6.21.0",
     "asciidoctor": "^4.0.11",
     "esbuild": "0.28.1",
-    "eslint": "^10.6.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-import": "^2.32.0",
     "eslint-plugin-jest": "^29.15.4",
+    "eslint-plugin-jsdoc": "^63.3.3",
     "typedoc": "^0.28.20",
     "typescript-eslint": "^8.62.1"
   },
