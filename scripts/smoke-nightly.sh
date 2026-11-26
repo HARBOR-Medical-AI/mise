@@ -61,7 +61,8 @@ run() { # name, port, extra env…
 # The door's commands, as an operator's script runs them. Every command that
 # fails is noted (the ERR trap) and the rest still run, so a login that
 # fails is not hidden by a logout that works; the status is whether any
-# failed. The one command meant to fail carries `|| true`. Call it as a
+# failed. The one command meant to fail is checked for failing as it
+# should, outside the lines the guide quotes. Call it as a
 # command of its own, never on the left of && or ||: bash drops the trap
 # there, as it drops `set -e`.
 door_commands() (
@@ -75,7 +76,17 @@ door_commands() (
   # From here no flags are needed: this door is the default for this config.
   node packages/chell/dist/index.js auth status
   node packages/chell/dist/index.js -c pwd
-  node packages/chell/dist/index.js -e -c "cd /nowhere; pwd" || true   # -e stops at the first error
+  # end::door-login[]
+  # -e stops a batch at its first error, and that is checked for what it is:
+  # the cd is refused by name, the status is not zero, and the pwd after it
+  # never ran. A batch that succeeds, or a crash that says nothing of the
+  # cd, is not that.
+  stopped_said=$(node packages/chell/dist/index.js -e -c "cd /nowhere; pwd" 2>&1) && stopped=0 || stopped=$?
+  printf '%s\n' "$stopped_said"
+  if [ "$stopped" -eq 0 ]; then echo "door: the -e batch went on past its error (exit 0)"; failed=1; fi
+  case "$stopped_said" in *"cd: /nowhere"*) ;; *) echo "door: the -e batch did not refuse the cd by name"; failed=1 ;; esac
+  if printf '%s\n' "$stopped_said" | grep -q '^/'; then echo "door: the pwd after the refused cd ran"; failed=1; fi
+  # tag::door-login[]
   node packages/chell/dist/index.js auth logout
   # end::door-login[]
   exit "$failed"
@@ -91,11 +102,23 @@ door_step() {
   local env_file=${PORTER_ENV:-$HOME/.config/porter.env}
   [ -f "$env_file" ] && [ -x "$PORTER_BIN" ] || return 0
   set -a; . "$env_file"; set +a
-  if ! "$PORTER_BIN" --tokens >/dev/null 2>&1; then
-    echo "$day  door  skipped: the installed porter has no door tokens yet" | tee -a "$ledger"
+  local door_log="$STATE/$day-door.log"
+  # A porter from before door tokens refuses the word itself, and says so;
+  # that is the one skip. Any other failure of the probe is a porter that
+  # has tokens and could not list them, which is a red.
+  local probe probed
+  probe=$("$PORTER_BIN" --tokens 2>&1) && probed=0 || probed=$?
+  if [ "$probed" -ne 0 ]; then
+    if printf '%s' "$probe" | grep -qF "unknown word '--tokens'"; then
+      echo "$day  door  skipped: the installed porter has no door tokens yet" | tee -a "$ledger"
+      return 0
+    fi
+    # The probe's own words may name tokens: they go to the door's log, not the ledger.
+    printf '%s\n' "$probe" > "$door_log"
+    echo "$day  door  FAIL (the porter could not list its door tokens, exit $probed; see $door_log)" | tee -a "$ledger"
+    failures=$((failures + 1))
     return 0
   fi
-  local door_log="$STATE/$day-door.log"
   door_commands > "$door_log" 2>&1
   local status=$?
   if [ "$status" -eq 0 ]; then

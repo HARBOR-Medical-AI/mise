@@ -33,15 +33,29 @@ case "$*" in
   *) step=other ;;
 esac
 echo "$step" >> "$DOOR_CALLS"
-[ "$step" = stops-at-first-error ] && exit 1
+if [ "$step" = stops-at-first-error ]; then
+  case " ${DOOR_FAILS:-} " in
+    *" e-goes-on "*) echo "cd: /nowhere: No such file or directory" >&2; echo "/home/stand-in"; exit 0 ;;
+    *" e-crashes "*) echo "Segmentation fault" >&2; exit 139 ;;
+    *) echo "cd: /nowhere: No such file or directory" >&2; exit 1 ;;
+  esac
+fi
 case " ${DOOR_FAILS:-} " in *" $step "*) echo "stand-in: $step failed"; exit 1 ;; esac
 exit 0
 EOF
 
 # A stand-in porter: it has door tokens, and mints one unless told to fail.
+# Told to be an old one, it refuses the word as an old porter does; told its
+# probe fails, it fails as one that has tokens and cannot list them.
 cat > "$BIN/porter" <<'EOF'
 #!/usr/bin/env bash
-[ "$1" = --tokens ] && exit 0
+if [ "$1" = --tokens ]; then
+  case " ${DOOR_FAILS:-} " in
+    *" porter-is-old "*) echo "[!] unknown word '--tokens'" >&2; exit 2 ;;
+    *" probe-fails "*) echo "[!] the token store could not be read" >&2; exit 1 ;;
+  esac
+  exit 0
+fi
 echo mint >> "$DOOR_CALLS"
 case " ${DOOR_FAILS:-} " in *" mint "*) echo "stand-in: mint failed"; exit 1 ;; esac
 printf 'minted for %s\nthe-token\n' "$2"
@@ -132,12 +146,16 @@ door_green() { door_step; }
 door_login_fails() { DOOR_FAILS=login door_step; }
 door_logout_fails() { DOOR_FAILS=logout door_step; }
 door_mint_fails() { DOOR_FAILS=mint door_step; }
+door_e_goes_on() { DOOR_FAILS=e-goes-on door_step; }
+door_e_crashes() { DOOR_FAILS=e-crashes door_step; }
+door_probe_fails() { DOOR_FAILS=probe-fails door_step; }
+door_porter_is_old() { DOOR_FAILS=porter-is-old door_step; }
 upgrade_green() { SMOKE_UPGRADE="$BIN/upgrade-ok" upgrade_step; }
 upgrade_red() { SMOKE_UPGRADE="$BIN/upgrade-red" upgrade_step; }
 all_green() { stage desk runner-green; door_step; SMOKE_UPGRADE="$BIN/upgrade-ok" upgrade_step; }
 one_red_among_green() { stage desk runner-green; DOOR_FAILS=status door_step; SMOKE_UPGRADE="$BIN/upgrade-ok" upgrade_step; }
 
-for body in stages_green stage_red stage_crashed stage_timed_out door_green door_login_fails door_logout_fails door_mint_fails upgrade_green upgrade_red all_green one_red_among_green; do
+for body in stages_green stage_red stage_crashed stage_timed_out door_green door_login_fails door_logout_fails door_mint_fails door_e_goes_on door_e_crashes door_probe_fails door_porter_is_old upgrade_green upgrade_red all_green one_red_among_green; do
   case_run "$body" "$body"
 done
 
@@ -154,6 +172,13 @@ expect door_login_fails 1 has 'door  FAIL' lacks 'door  ok'
 expect_calls door_login_fails 'mint login status pwd stops-at-first-error logout'
 expect door_logout_fails 1 has 'door  FAIL' lacks 'door  ok'
 expect door_mint_fails 1 has 'door  FAIL' lacks 'door  ok'
+# The batch that should stop at its first error: going on past it, or crashing without refusing the cd, is a red.
+expect door_e_goes_on 1 has 'door  FAIL' lacks 'door  ok'
+expect door_e_crashes 1 has 'door  FAIL' lacks 'door  ok'
+# A porter that has tokens and cannot list them is a red; one from before door tokens is the one skip.
+expect door_probe_fails 1 has 'door  FAIL (the porter could not list its door tokens, exit 1' lacks 'skipped'
+expect_calls door_probe_fails ''
+expect door_porter_is_old 0 has 'door  skipped: the installed porter has no door tokens yet' lacks 'door  FAIL'
 echo "the upgrade"
 expect upgrade_green 0
 expect upgrade_red 1
