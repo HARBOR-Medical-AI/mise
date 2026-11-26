@@ -341,20 +341,25 @@ describe('how often a password may be tried', () => {
     // At the advertised moment there is.
     at = 90_000;
     expect(limit.try_begin('new').ok).toBe(true);
-    // A key with a try in the air beside an old failure is not dated by the failure.
-    at = 0;
+  });
+
+  it.each([['fails', false], ['turns out right', true]] as Array<[string, boolean]>)('dates a key afresh when its try in the air %s, though the key stays held', (_how: string, right: boolean) => {
+    let at = 0;
     const mixed = new AttemptLimit(5, 60_000, (): number => at, 2);
+    // a: an old failure and a try in the air. b: failures at 0 s and 10 s.
     mixed.try_fail(taken(mixed, 'a'));
     const air: Attempt = taken(mixed, 'a');
     mixed.try_fail(taken(mixed, 'b'));
     at = 10_000;
     mixed.try_fail(taken(mixed, 'b'));
-    // a cannot be dated (a try in the air); b is wholly gone at 70 s.
+    // a cannot be dated while its try is in the air; b is wholly gone at 70 s.
     expect(mixed.try_begin('c')).toEqual({ ok: false, wait: 60 });
-    // The try in the air ends as a failure of 0 s: a is now wholly gone at 60 s, sooner than b. What was
-    // worked out is discarded at that telling, and a new key is told the sooner moment and admitted at it.
-    mixed.try_fail(air);
+    // The try ends, either way. a still holds its failure of 0 s, so the key stays; but it is now wholly
+    // gone at 60 s, sooner than b. What was worked out is discarded at the telling.
+    if (right) mixed.try_forgive(air); else mixed.try_fail(air);
+    expect(mixed.wait_read('a')).toBe(0);
     expect(mixed.try_begin('c')).toEqual({ ok: false, wait: 50 });
+    for (let n = 0; n < 20; n++) expect(mixed.try_begin(`other${n}`)).toEqual({ ok: false, wait: 50 });
     at = 59_999;
     expect(mixed.try_begin('c')).toEqual({ ok: false, wait: 1 });
     at = 60_000;

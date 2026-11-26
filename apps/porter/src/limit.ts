@@ -232,6 +232,8 @@ export class AttemptLimit {
    */
   public try_forgive(attempt: Attempt): void {
     attempt.pending = false;
+    // Its key may be gone sooner now, whether or not the key stays: what was worked out is discarded.
+    this.fullUntil = 0;
     const kept: Attempt[] = (this.tries.get(attempt.key) ?? []).filter((one: Attempt): boolean => one !== attempt);
     if (kept.length === 0) this.key_release(attempt.key);
     else this.tries.set(attempt.key, kept);
