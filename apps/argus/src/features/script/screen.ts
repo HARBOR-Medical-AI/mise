@@ -313,6 +313,13 @@ export class ScriptScreen {
    * the screen while the next script is being read) changes nothing.
    */
   protected editSession: number = 0;
+  /**
+   * How many reads of a script are under way. While one is, the lines on
+   * the screen are about to be replaced: a field is drawn disabled, and
+   * what is typed into any field (one left from before, or one a redraw
+   * made meanwhile) changes nothing.
+   */
+  protected reading: number = 0;
   /** The last SAVE, where and when: its receipt stands on the seat until the next edit. */
   protected saved: { path: string; at: string; view: string } | null = null;
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
@@ -581,6 +588,23 @@ export class ScriptScreen {
   // ---------------------------------------------------------------- reading
 
   protected async script_read(): Promise<void> {
+    // Held as being read for the whole of it: see `reading`.
+    this.reading += 1;
+    try {
+      await this.scriptText_read();
+    } finally {
+      this.reading -= 1;
+    }
+  }
+
+  /**
+   * Reads the script at the path and what stands of each of its lines, and
+   * makes them the screen's.
+   *
+   * @example
+   * await this.scriptText_read();
+   */
+  protected async scriptText_read(): Promise<void> {
     let text: string = '';
     try {
       text = text_extract(await this.hooks.ask(`cat ${this.path}`));
@@ -1557,11 +1581,12 @@ export class ScriptScreen {
     input.placeholder = placeholder;
     input.spellcheck = false;
     input.autocomplete = 'off';
-    input.disabled = this.busy !== null;
+    input.disabled = this.busy !== null || this.reading > 0;
     input.addEventListener('input', (): void => {
-      // A field left on the screen from a script since replaced: its line is no longer the screen's, and what
-      // is typed into it is neither kept nor counted as an edit of the script now being read.
-      if (session !== this.editSession) return;
+      // A field left on the screen from a script since replaced, or drawn while the next one is being read:
+      // its line is not, or is about to be no longer, the screen's, and what is typed into it is neither
+      // kept nor counted as an edit of the script being read.
+      if (session !== this.editSession || this.reading > 0) return;
       // The line takes the value without the spaces around it; the field keeps what was typed, so a space
       // typed on the way to the next word is still there for that word to follow.
       line.text = lineOption_set(line.text, word, input.value.trim());

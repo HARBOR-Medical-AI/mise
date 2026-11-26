@@ -712,6 +712,15 @@ describe('the script screen', () => {
     await settle();
     first.value = '10.20.0.0/16 ';
     first.dispatchEvent(new Event('input'));
+    // Something draws the seat again during the wait (the mode changed): the field it makes is the first
+    // script's still, and is no more open to an edit than the one it replaced.
+    screen.mode_refresh();
+    await settle();
+    const redrawn: HTMLInputElement = screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    expect(redrawn).not.toBe(first);
+    expect(redrawn.disabled).toBe(true);
+    redrawn.value = '10.99.0.0/16';
+    redrawn.dispatchEvent(new Event('input'));
     read();
     await opening;
     await settle();
@@ -721,7 +730,10 @@ describe('the script screen', () => {
     expect(button_named(screen.root, 'SAVE')).toBeUndefined();
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
     await settle();
-    expect((screen.root.querySelector('#ss-cidr-1') as HTMLInputElement).value).toBe('10.20.0.0/16');
+    const opened: HTMLInputElement = screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    expect(opened.value).toBe('10.20.0.0/16');
+    // And the script that is now open is the operator's to edit.
+    expect(opened.disabled).toBe(false);
     screen.dispose();
     screen.root.remove();
   });

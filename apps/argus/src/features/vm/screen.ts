@@ -224,6 +224,26 @@ export class VmScreen extends ScriptScreen {
    * @param name - The VM, or `''` to start one.
    */
   public async vm_open(name: string): Promise<void> {
+    // Held as being read until the machine's script is the screen's: see `reading`.
+    this.reading += 1;
+    try {
+      await this.vm_openHeld(name);
+    } finally {
+      this.reading -= 1;
+    }
+    // Drawn while it was being read, the fields were held; drawn again now, they are the machine's to edit.
+    this.draw();
+  }
+
+  /**
+   * Reads a machine, or starts a new one, and makes its script the screen's.
+   *
+   * @param name - The VM, or `''` to start one.
+   *
+   * @example
+   * await this.vm_openHeld('store');
+   */
+  private async vm_openHeld(name: string): Promise<void> {
     await this.vms_read();
     this.vm = name;
     // A machine opened, or opened again: what was typed into the script before is not this one's.
