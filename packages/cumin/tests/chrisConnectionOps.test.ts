@@ -114,9 +114,16 @@ describe('a token on disk is its owner\'s alone', () => {
       expect(mode_of(old)).toBe(0o600);
       expect(mode_of(join(root, 'old'))).toBe(0o700);
       chmodSync(old, 0o644);
+      // A rewrite never puts the new token into the old, looser file: a new private file takes its place.
+      const before: number = statSync(old).ino;
       await store.writePrivate(old, 'NEW');
       expect(mode_of(old)).toBe(0o600);
       expect(readFileSync(old, 'utf8')).toBe('NEW');
+      expect(statSync(old).ino).not.toBe(before);
+      expect((await import('node:fs')).readdirSync(join(root, 'old'))).toEqual(['user_token.txt']);
+      // Where the folder cannot be had at all, nothing is written and the failure is said.
+      writeFileSync(join(root, 'blocked'), 'a file where a folder should be');
+      await expect(store.writePrivate(join(root, 'blocked', 'user_token.txt'), 'NEVER')).rejects.toThrow();
       // A file that is not there is no error.
       await expect(store.private_tighten(join(root, 'none', 'x'))).resolves.toBeUndefined();
     } finally {
@@ -159,6 +166,18 @@ describe('connection_connect', () => {
     }
     expect(said.join('\n')).toContain('disk full');
     expect(said.join('\n')).not.toContain('TOKEN-SECRET');
+    // And it is not claimed saved: the session holds it, the disk does not.
+    const told: string[] = [];
+    const log = jest.spyOn(console, 'log').mockImplementation((...parts: unknown[]): void => { told.push(parts.map(String).join(' ')); });
+    const quiet = jest.spyOn(console, 'error').mockImplementation((): void => undefined);
+    try {
+      await conn.connection_connect({ user: 'chris', password: 'pw', debug: false, url: 'https://cube/api/v1/' });
+    } finally {
+      log.mockRestore();
+      quiet.mockRestore();
+    }
+    expect(told).toContain('Auth token held for this session; it was not saved');
+    expect(told).not.toContain('Auth token saved successfully');
   });
 
   it('returns null when no token is issued', async () => {

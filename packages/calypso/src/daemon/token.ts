@@ -78,6 +78,21 @@ export function tokenWords_say(token: string, terminal: boolean, kept: string): 
 }
 
 /**
+ * The lines that say how to attach to one berth.
+ *
+ * @param identity - The berth's identity.
+ * @param url - Its wire address.
+ * @param token - Its token.
+ * @param terminal - Whether the lines go to a terminal.
+ * @param kept - The record this berth was read from.
+ * @returns The identity line, the ARGUS line and the attach line, uncoloured.
+ */
+export function berthLines_say(identity: string, url: string, token: string, terminal: boolean, kept: string): [string, string, string] {
+  const words: TokenWords = tokenWords_say(token, terminal, kept);
+  return [identity, `  ARGUS:   ${url.replace(/^ws/, 'http')}/${words.query}${words.aside}`, `  attach:  chell --remote --attach ${url} ${words.flag}`];
+}
+
+/**
  * Compares a provided token against the expected one in constant time, so a
  * mismatch reveals nothing through timing. Unequal lengths fail fast (and are
  * not themselves secret).

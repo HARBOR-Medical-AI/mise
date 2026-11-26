@@ -20,8 +20,8 @@ import { daemon_launch, type DaemonLaunchInfo } from './daemon/launch.js';
 import { packageWebRoot_find } from './daemon/static.js';
 import { daemonConsole_run } from './daemon/consoleSession.js';
 import { hostControl_parseArgv, type HostControlPolicy } from './daemon/hostControl.js';
-import { LocalBerthResolver, berth_path, berthUrl_isAlive, type Berth } from './daemon/berth.js';
-import { tokenWords_say, type TokenWords } from './daemon/token.js';
+import { LocalBerthResolver, berthUrl_isAlive, type Berth, type LocatedBerth } from './daemon/berth.js';
+import { berthLines_say } from './daemon/token.js';
 
 /** The backends a test may ask the calypso command to host instead of ChRIS. */
 const TEST_BACKENDS: ReadonlyArray<string> = ['null'];
@@ -116,19 +116,19 @@ async function berths_print(): Promise<void> {
   const resolver: LocalBerthResolver = new LocalBerthResolver(
     (berth: Berth): Promise<boolean> => berthUrl_isAlive(berth.url),
   );
-  const berths: Berth[] = await resolver.list();
+  // Each berth with the record it was read from: this runtime's, or a porter session's.
+  const berths: LocatedBerth[] = await resolver.listLocated();
   if (berths.length === 0) {
     console.error(chalk.yellow('No calypso is running.'));
     console.error(chalk.gray("Start one with:  calypso <user>@<url>"));
     return;
   }
-  for (const berth of berths) {
-    const web: string = berth.url.replace(/^ws/, 'http');
-    console.log(chalk.bold.cyan(berth.identity));
-    // Each berth's token is printed to a terminal and, anywhere else, named by its own record.
-    const words: TokenWords = tokenWords_say(berth.token, process.stdout.isTTY === true, berth_path(berth.identity));
-    console.log(chalk.green(`  ARGUS:   ${web}/${words.query}${words.aside}`));
-    console.log(chalk.gray(`  attach:  chell --remote --attach ${berth.url} ${words.flag}`));
+  for (const { berth, path } of berths) {
+    // Each berth's token is printed to a terminal and, anywhere else, named by the record it was actually read from.
+    const [identity, argus, attach] = berthLines_say(berth.identity, berth.url, berth.token, process.stdout.isTTY === true, path);
+    console.log(chalk.bold.cyan(identity));
+    console.log(chalk.green(argus));
+    console.log(chalk.gray(attach));
   }
 }
 

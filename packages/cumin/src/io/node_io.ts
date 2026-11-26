@@ -12,6 +12,7 @@ import { IStorageProvider } from "./io.js";
 import { promises as fs } from "fs";
 import * as path from "path";
 import * as os from "os";
+import { randomBytes } from "crypto";
 
 /**
  * Type guard for Node.js filesystem errors.
@@ -104,13 +105,29 @@ export class NodeStorageProvider implements IStorageProvider {
     const resolvedPath: string = this.resolvePath(filepath);
     const dir: string = path.dirname(resolvedPath);
     await this.mkdir(dir, { recursive: true });
+    // The credential never stands in a file anybody else could read: it is
+    // written to a new file made private at its creation, in a folder shown
+    // private first, and only then takes the old file's place. A file
+    // already there, looser, is never written into.
+    const fresh: string = `${resolvedPath}.${process.pid}.${randomBytes(6).toString("hex")}.new`;
+    let made: boolean = false;
     try {
       await fs.chmod(dir, PRIVATE_FOLDER_MODE);
-      await fs.writeFile(resolvedPath, data, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
-      await fs.chmod(resolvedPath, PRIVATE_FILE_MODE);
+      if (((await fs.stat(dir)).mode & OTHERS_MASK) !== 0) throw new Error(`${dir} could not be made its owner's alone`);
+      const handle = await fs.open(fresh, "wx", PRIVATE_FILE_MODE);
+      made = true;
+      try {
+        await handle.chmod(PRIVATE_FILE_MODE);
+        if (((await handle.stat()).mode & OTHERS_MASK) !== 0) throw new Error(`${fresh} could not be made its owner's alone`);
+        await handle.writeFile(data, "utf-8");
+      } finally {
+        await handle.close();
+      }
+      await fs.rename(fresh, resolvedPath);
     } catch (error: unknown) {
-      const message = nodeError_is(error) ? error.message : String(error);
-      throw new Error(`Failed to write file ${resolvedPath}: ${message}`);
+      if (made) await fs.unlink(fresh).catch((): void => undefined);
+      const message = nodeError_is(error) ? error.message : error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to write file ${resolvedPath} privately: ${message}`);
     }
   }
 

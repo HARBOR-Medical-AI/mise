@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import chalk from 'chalk';
 import { session } from '@fnndsc/brasa';
 import { settings } from '../config/settings.js';
-import { history_appendPrivate, history_tighten, historyFile_resolve, historyLine_redact } from './history.js';
+import { history_appendPrivate, history_readPrivate, historyFile_resolve, historyLine_redact, recall_accept } from './history.js';
 import { sessionPrompt_render } from './prompt/session.js';
 import { surface_set } from '@fnndsc/brasa';
 import { cliSurface_create, type BytesFetch } from './cliSurface.js';
@@ -61,6 +61,8 @@ export class REPL {
   private busy: boolean = false;
   /** When the raw watcher last stopped a command on Ctrl-C. */
   private rawInterruptAt: number = 0;
+  /** True once the history could not be shown private: it is then neither read nor written for the session. */
+  private historyUnkept: boolean = false;
   /** Draws progress for the command in flight; cleared when it ends. */
   private readonly progressRenderer: TerminalProgressRenderer = new TerminalProgressRenderer();
   private lastCommandDurationMs: number = 0;
@@ -135,6 +137,9 @@ export class REPL {
     });
 
     this.rl.on('line', (line: string): void => {
+      // readline has already kept the line as typed: its recall takes the kept form now, as the line is
+      // accepted, whether it runs at once, waits behind a running command, or is thrown away unrun.
+      recall_accept(Reflect.get(this.rl, 'history'), line);
       void this.line_receive(line);
     });
 
@@ -284,38 +289,46 @@ export class REPL {
   }
 
   /**
-   * Loads command history from file.
+   * Loads the history into the reader's recall, each line as the history
+   * keeps it. A history that cannot be shown private is not read, and the
+   * operator is told once why it is not kept.
    */
   private async history_load(): Promise<void> {
-    const file: string = historyFile_resolve(settings.config.historyFile);
-    history_tighten(file);
-    if (fs.existsSync(file)) {
-      try {
-        const content: string = await fs.promises.readFile(file, 'utf-8');
-        const lines: string[] = content.split('\n').filter((l: string) => l.trim()).reverse();
-        const limit: number = settings.config.historySize;
-        // `history` is a runtime readline property its typings do not declare.
-        Reflect.set(this.rl, 'history', lines.slice(0, limit));
-      } catch (e: unknown) {
-        // Silently fail if history cannot be loaded
-      }
+    try {
+      const lines: string[] = await history_readPrivate(historyFile_resolve(settings.config.historyFile));
+      // `history` is a runtime readline property its typings do not declare.
+      Reflect.set(this.rl, 'history', lines.reverse().slice(0, settings.config.historySize));
+    } catch (error: unknown) {
+      this.historyUnkept_say(error);
     }
   }
 
   /**
-   * Appends a command to the history file.
-   * @param line - The command line to append.
+   * Appends a line to the history file, as the history keeps it. A line
+   * that must not be kept is not written; a history that cannot be shown
+   * private is not written to.
+   *
+   * @param line - The line as typed.
    */
   private async history_append(line: string): Promise<void> {
-    if (!line.trim()) return;
-    const kept: string = historyLine_redact(line);
-    // The reader's own recall holds the line as typed; it keeps what the file keeps.
-    const recall: unknown = Reflect.get(this.rl, 'history');
-    if (kept !== line && Array.isArray(recall) && recall[0] === line) recall[0] = kept;
+    if (!line.trim() || this.historyUnkept) return;
+    const kept: string | null = historyLine_redact(line);
+    if (kept === null) return;
     try {
       await history_appendPrivate(historyFile_resolve(settings.config.historyFile), kept);
-    } catch (e: unknown) {
-      // Silently fail if history cannot be saved
+    } catch (error: unknown) {
+      this.historyUnkept_say(error);
     }
+  }
+
+  /**
+   * Says, once, that the history is not being kept and why, and stops trying.
+   *
+   * @param error - What stood in the way.
+   */
+  private historyUnkept_say(error: unknown): void {
+    if (this.historyUnkept) return;
+    this.historyUnkept = true;
+    process.stderr.write(`${chalk.yellow(`chell: this session's history is not kept: ${error instanceof Error ? error.message : String(error)}`)}\n`);
   }
 }
