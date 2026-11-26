@@ -2,6 +2,11 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      base:
+        description: The commit or ref the ratchets' ceilings are compared with (default, the commit before this one on main; elsewhere, the merge base with main)
+        required: false
+        default: ''
   pull_request:
   push:
     branches: [main]
@@ -21,26 +26,26 @@ jobs:
         with:
           node-version: 24
       - run: npm install -g npm@11.19.0
+      # The workspace has one lockfile, at the root, and this audit reads it. That is an audit of what each
+      # published workspace ships only if the lockfile describes it: `lint:audit-coverage`, in the check job
+      # (it needs the installed tree), fails the change otherwise.
       - run: npm audit --omit=dev --audit-level=high
-      # Auditing from inside a workspace member is a silent no-op: npm
-      # resolves the prefix up to the workspace root and audits the root
-      # lockfile again. Copying each nested lockfile out of the workspace
-      # tree is what actually audits it.
-      - name: Audit nested lockfiles
-        run: |
-          for pkg in cumin salsa; do
-            dir=$(mktemp -d)
-            cp "packages/$pkg/package.json" "packages/$pkg/package-lock.json" "$dir"
-            (cd "$dir" && npm audit --omit=dev --audit-level=high)
-          done
 
   check:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         node: [22, 24]
+    # What a ratchet's ceilings are compared with (scripts/lib/ratchetBase.mjs): a pull request's base is in
+    # GITHUB_BASE_REF; a push's is the commit the branch was at before it; a manual run may name one.
+    env:
+      RATCHET_BEFORE: ${{ github.event.before }}
+      RATCHET_BASE: ${{ inputs.base }}
     steps:
+      # The whole history: a ratchet reads its baseline at the change's base, which must be here to be read.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -93,8 +98,9 @@ jobs:
           fail_ci_if_error: false
       - run: npm run lint:tests
       - run: npm run lint:seam
-      # Cast ratchet: the repo's `as unknown as` count may only decrease.
+      # Cast ratchet: each workspace's `as unknown as` count may only decrease, and its ceiling with it.
       - run: npm run lint:casts
+      - run: npm run test:ratchets
       # Principle checks (docs/principles.adoc). Two are hard checks; two are
       # ratchets that cannot repair what exists but stop it growing.
       - run: npm run lint:kernel
@@ -109,6 +115,12 @@ jobs:
       # lays a graph out (checked on the build).
       - run: npm run lint:workers
       - run: npm run lint:argv
+      - run: npm run lint:debris
+      # The root lockfile describes what every published workspace ships (its edges resolve, in range, none
+      # development-only), which is what makes the audit job's green an audit of them.
+      - run: npm run lint:audit-coverage
+      - run: npm run test:audit-coverage
+      - run: npm run test:debris
       - run: npm run test:argv
       - run: npm run test:layout-worker --workspace @fnndsc/brasa
       # The nightly's accounting: a red stage or step is a non-zero exit.
@@ -133,4 +145,9 @@ jobs:
       - run: npm run lint:changesets
       - run: npm run lint:aegis
       - run: npm run lint:orrery
-      - run: npm run lint --if-present
+      # The style guide's rules over every workspace's sources, each rule in each workspace held to a ceiling
+      # that only falls (scripts/eslint-ratchet.mjs). No --if-present: a missing script fails the job.
+      - run: npm run test:lint
+      # The findings do not depend on the node that runs ESLint: counted once, on one leg of the matrix.
+      - if: matrix.node == 24
+        run: npm run lint

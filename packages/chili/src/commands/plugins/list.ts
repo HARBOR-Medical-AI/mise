@@ -10,7 +10,7 @@ import {
   plugins_list as salsaPlugins_list,
   plugins_listAll as salsaPlugins_listAll
 } from "@fnndsc/salsa";
-import { FilteredResourceData, ListOptions, listData_get } from "@fnndsc/cumin";
+import { FilteredResourceData, ListOptions, listData_get, shape_object } from "@fnndsc/cumin";
 import { CLIoptions, options_convertToParams } from "../../utils/cli.js";
 import { Plugin } from "../../models/plugin.js";
 import { list_applySort } from "../../utils/sort.js";
@@ -42,7 +42,7 @@ export async function plugins_fetchList(options: CLIoptions): Promise<PluginList
   }
 
   if (result && result.tableData) {
-    let plugins: Plugin[] = listData_get<Plugin>({ data: result.tableData });
+    let plugins: Plugin[] = listData_get({ data: result.tableData }, shape_object<Plugin>('a plugin row'));
 
     // Apply sorting if specified
     if (options.sort) {

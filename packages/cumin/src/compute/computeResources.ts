@@ -9,7 +9,7 @@
  */
 
 import { chrisConnection } from '../connect/chrisConnection.js';
-import { listData_get, type ComputeResourceList } from '../chrisapi/adapter.js';
+import { listData_get, type ComputeResourceList, shape_build, type Shape } from '../chrisapi/adapter.js';
 import { ChRISResourceGroup } from '../resources/chrisResourceGroup.js';
 import { errorStack } from '../error/errorStack.js';
 import { Result, Ok, Err } from '../utils/result.js';
@@ -33,6 +33,9 @@ export interface ComputeResource {
   description?: string;
   [key: string]: unknown;
 }
+
+/** A compute resource as CUBE lists it: its name is read as a string wherever a resource is named. */
+export const COMPUTE_RESOURCE_SHAPE: Shape<ComputeResource> = shape_build<ComputeResource>('a compute resource')(['name', 'string']);
 
 /**
  * Validates that specified compute resources exist in ChRIS CUBE.
@@ -63,7 +66,7 @@ export async function computeResources_validate(
     }
 
     const computeResourceList: ComputeResourceList = await client.getComputeResources();
-    const resources: ComputeResource[] = listData_get<ComputeResource>(computeResourceList);
+    const resources: ComputeResource[] = listData_get(computeResourceList, COMPUTE_RESOURCE_SHAPE);
 
     const availableNames: Set<string> = new Set(resources.map((r: ComputeResource) => r.name));
 
@@ -105,7 +108,7 @@ export async function computeResources_getAll(): Promise<Result<ComputeResource[
     }
 
     const computeResourceList: ComputeResourceList = await client.getComputeResources();
-    const resources: ComputeResource[] = listData_get<ComputeResource>(computeResourceList);
+    const resources: ComputeResource[] = listData_get(computeResourceList, COMPUTE_RESOURCE_SHAPE);
 
     return Ok(resources);
   } catch (error: unknown) {

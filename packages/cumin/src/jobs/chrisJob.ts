@@ -5,7 +5,7 @@
  */
 
 import { chrisConnection } from '../connect/chrisConnection.js';
-import { itemData_get } from '../chrisapi/adapter.js';
+import { itemData_get, shape_build, type Shape } from '../chrisapi/adapter.js';
 import { errorStack } from '../error/errorStack.js';
 import { Result, Ok, Err } from '../utils/result.js';
 
@@ -49,6 +49,9 @@ interface PluginInstanceData {
   [key: string]: unknown;
 }
 
+/** A plugin instance as a job reads it: its plugin's name, its status and its start are read as text. The other dates and the error are looked at before they are used, and are not held to a kind here. */
+const JOB_INSTANCE_SHAPE: Shape<PluginInstanceData> = shape_build<PluginInstanceData>('a plugin instance')(['plugin_name', 'string'], ['status', 'string'], ['start_date', 'string']);
+
 /**
  * Represents a single ChRIS plugin-instance (job) and its operations.
  */
@@ -76,7 +79,7 @@ export class ChRISJob {
       // or that we need to fetch the resource.
       // Looking at chrisapi docs (mental check): client.getPluginInstance(id) exists.
       const instance = await client.getPluginInstance(Number(this.instanceId));
-      const instanceData: PluginInstanceData | null = itemData_get<PluginInstanceData>(instance);
+      const instanceData: PluginInstanceData | null = itemData_get(instance, JOB_INSTANCE_SHAPE);
       if (!instanceData) {
         errorStack.stack_push('error', `Job ${this.instanceId} not found`);
         return Err();
@@ -148,7 +151,7 @@ export class ChRISJob {
         // or implement it if we can find the logs.
         
         // Let's check status.
-        const instanceData: PluginInstanceData | null = itemData_get<PluginInstanceData>(instance);
+        const instanceData: PluginInstanceData | null = itemData_get(instance, JOB_INSTANCE_SHAPE);
         if (instanceData) {
             const status: string = instanceData.status;
             if (['completed', 'error', 'cancelled'].includes(status)) {

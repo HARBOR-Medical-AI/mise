@@ -1,0 +1,16 @@
+{
+  "name": "@x/a",
+  "version": "1.0.0",
+  "dependencies": {
+    "b": "^1.0.0"
+  },
+  "optionalDependencies": {
+    "d": "^1.0.0"
+  },
+  "peerDependencies": {
+    "p": "https://example.invalid/p/-/p-1.0.0.tgz"
+  },
+  "devDependencies": {
+    "p": "https://example.invalid/p/-/p-1.0.0.tgz"
+  }
+}

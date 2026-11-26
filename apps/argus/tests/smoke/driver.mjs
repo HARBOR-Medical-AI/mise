@@ -13,14 +13,32 @@ import os from 'node:os';
 const DEBUG_PORT = Number(process.env.SMOKE_CDP_PORT ?? 9345);
 
 /**
- * Extra chromium flags, space separated, from SMOKE_CHROME_FLAGS.
+ * Extra chromium flags, from SMOKE_CHROME_FLAGS and SMOKE_PROFILE_DIR.
  *
  * A container or a sandboxed home needs its own profile directory, and
  * sometimes needs the sandbox disabled, before chromium will open its
  * debug port at all. Those are environment facts, not suite policy, so
  * they come from the environment rather than being written down here.
  */
-const EXTRA_FLAGS = (process.env.SMOKE_CHROME_FLAGS ?? '').split(' ').filter(Boolean);
+const EXTRA_FLAGS = chromeFlags_read(process.env);
+
+/**
+ * The extra chromium arguments the environment asks for.
+ *
+ * SMOKE_CHROME_FLAGS holds flags, space separated, so a value in it cannot
+ * hold a space. A profile folder can (a run's own folder under a home with
+ * a space in its name), so it has a name of its own, SMOKE_PROFILE_DIR,
+ * and is handed to chromium as one argument whatever it holds.
+ *
+ * @param {Record<string, string | undefined>} env - The environment.
+ * @returns {string[]} The arguments, each as chromium is to see it.
+ */
+export function chromeFlags_read(env) {
+  const flags = (env.SMOKE_CHROME_FLAGS ?? '').split(' ').filter(Boolean);
+  const profile = env.SMOKE_PROFILE_DIR ?? '';
+  if (profile !== '') flags.push(`--user-data-dir=${profile}`);
+  return flags;
+}
 
 /** Reads the argus URL: $ARGUS_URL, else the user's calypso attach file. */
 export function argusUrl_discover() {

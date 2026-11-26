@@ -12,6 +12,8 @@ import {
   listData_get,
   itemData_get,
   resource_call,
+  resource_invoke,
+  DATA_CARRIER_SHAPE,
   type Client,
   type ListResource,
   type PluginInstance,
@@ -19,6 +21,8 @@ import {
   type CommentList,
   type Note,
   type Comment,
+  shape_build,
+  type Shape,
 } from "../chrisapi/adapter.js";
 import { chrisConnection } from "../connect/chrisConnection.js";
 import {
@@ -52,6 +56,20 @@ export interface FeedRecord {
   name: string;
   [key: string]: unknown;
 }
+
+/** A feed where it is told from others: its id is used as a number, its name compared and shown as text. */
+const FEED_RECORD_SHAPE: Shape<FeedRecord> = shape_build<FeedRecord>('a feed')(['id', 'number'], ['name', 'string']);
+
+/** A row of a feed's user permissions. */
+interface UserPermissionRow {
+  /** Who holds the permission; read through a conversion. */
+  username?: string | null;
+}
+
+/** A row of a feed's user permissions: an object, the name read through a check of its own. */
+const USER_PERMISSION_SHAPE: Shape<UserPermissionRow> = shape_build<UserPermissionRow>('a feed permission')(
+  ['username', 'string?|null'],
+);
 
 /**
  * Class for managing individual ChRIS feeds.
@@ -169,7 +187,7 @@ export async function feed_resolve(specifier: string): Promise<Result<FeedRecord
     if (directMatch) {
       const feedID: number = parseInt(directMatch[1], 10);
       const feed: Feed | null = await client.getFeed(feedID);
-      const record: FeedRecord | null = itemData_get<FeedRecord>(feed);
+      const record: FeedRecord | null = itemData_get(feed, FEED_RECORD_SHAPE);
       if (record) return Ok(record);
       errorStack.stack_push('error', `Feed with ID ${feedID} not found.`);
       return Err();
@@ -178,7 +196,7 @@ export async function feed_resolve(specifier: string): Promise<Result<FeedRecord
     const matches: FeedRecord[] = await listPages_drain(
       async (offset: number, limit: number): Promise<ListPage<FeedRecord>> => {
         const list: ListResource = await client.getFeeds({ name: specifier, limit, offset });
-        return collectionPage_wrap(list, listData_get<FeedRecord>(list));
+        return collectionPage_wrap(list, listData_get(list, FEED_RECORD_SHAPE));
       },
     );
     const exact: FeedRecord[] = matches.filter((feed: FeedRecord): boolean => feed.name === specifier);
@@ -327,7 +345,7 @@ export async function feed_share(feedId: number, username: string): Promise<Resu
     }
     // Through the licensed seam, not a cast at the call site: a boundary
     // the adapter owns is a boundary one file cannot quietly widen.
-    await resource_call<unknown>(feed, 'addUserPermission', username);
+    await resource_invoke(feed, 'addUserPermission', username);
     return Ok(true);
   } catch (error: unknown) {
     const message: string = error instanceof Error ? error.message : String(error);
@@ -361,10 +379,10 @@ export async function feedShares_list(feedId: number): Promise<Result<string[]>>
     const names: string[] = [];
     const pageSize: number = 100;
     for (let offset: number = 0; ; offset += pageSize) {
-      const permissions = await resource_call<{ data?: unknown }>(
-        feed, 'getUserPermissions', { limit: pageSize, offset },
+      const permissions = await resource_call(
+        feed, DATA_CARRIER_SHAPE, 'getUserPermissions', { limit: pageSize, offset },
       );
-      const rows: Array<{ username?: string }> = listData_get<{ username?: string }>(permissions);
+      const rows: UserPermissionRow[] = listData_get(permissions, USER_PERMISSION_SHAPE);
       for (const row of rows) {
         const name: string = String(row.username ?? '');
         if (name !== '') names.push(name);
@@ -443,6 +461,20 @@ export interface FeedComment {
   owner_username: string;
 }
 
+/** A feed's note as CUBE answers it: either field may be missing or null, and is text when it is there. */
+interface FeedNoteWire {
+  /** The note's title. */
+  title?: string | null;
+  /** The note's body. */
+  content?: string | null;
+}
+
+/** A feed note on the wire; a missing or null field is read as empty text by the reader. */
+const FEED_NOTE_SHAPE: Shape<FeedNoteWire> = shape_build<FeedNoteWire>('a feed note')(['title', 'string?|null'], ['content', 'string?|null']);
+
+/** A comment on a feed: its id is shown and its owner's name padded as text. */
+const FEED_COMMENT_SHAPE: Shape<FeedComment> = shape_build<FeedComment>('a feed comment')(['id', 'number'], ['owner_username', 'string']);
+
 /**
  * Fetches the note for a feed.
  *
@@ -462,7 +494,7 @@ export async function feedNote_get(feedId: number): Promise<Result<FeedNote>> {
       return Err();
     }
     const note: Note = await feed.getNote();
-    const data: FeedNote | null = itemData_get<FeedNote>(note);
+    const data: FeedNoteWire | null = itemData_get(note, FEED_NOTE_SHAPE);
     return Ok({ title: data?.title ?? '', content: data?.content ?? '' });
   } catch (error: unknown) {
     const msg: string = error instanceof Error ? error.message : String(error);
@@ -524,7 +556,7 @@ export async function feedComments_list(feedId: number): Promise<Result<FeedComm
     const comments: FeedComment[] = await listPages_drain(
       async (offset: number, limit: number): Promise<ListPage<FeedComment>> => {
         const commentList: CommentList = await feed.getComments({ limit, offset });
-        return collectionPage_wrap(commentList, listData_get<FeedComment>(commentList));
+        return collectionPage_wrap(commentList, listData_get(commentList, FEED_COMMENT_SHAPE));
       },
     );
     return Ok(comments);
@@ -559,7 +591,7 @@ export async function feedComment_create(
     }
     const commentList: CommentList = await feed.getComments({ limit: 1 });
     const created: CommentList = await commentList.post(data);
-    const createdData: FeedComment | undefined = listData_get<FeedComment>(created)[0];
+    const createdData: FeedComment | undefined = listData_get(created, FEED_COMMENT_SHAPE)[0];
     return Ok(createdData ?? { id: 0, title: data.title ?? '', content: data.content ?? '', owner_username: '' });
   } catch (error: unknown) {
     const msg: string = error instanceof Error ? error.message : String(error);

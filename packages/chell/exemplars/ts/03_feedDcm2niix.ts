@@ -18,7 +18,7 @@
  */
 
 import {
-  ChRISFeed, ChRISPlugin, feed_delete, listData_get,
+  ChRISFeed, ChRISPlugin, feed_delete, listData_get, shape_build,
   Result, Ok, Err, Dictionary, PluginInstance, SimpleRecord, Client,
 } from '@fnndsc/cumin';
 import { job_statusFetch, job_logFetch, vfsDispatcher, type VFSItem } from '@fnndsc/salsa';
@@ -57,7 +57,7 @@ async function pluginNewest_resolve(name: string): Promise<Result<number>> {
   if (!client) return Err();
 
   const plugins: Array<{ id: number; version: string }> =
-    listData_get<{ id: number; version: string }>(await client.getPlugins({ name_exact: name, limit: 50 }));
+    listData_get(await client.getPlugins({ name_exact: name, limit: 50 }), shape_build<{ id: number; version: string }>('a plugin')(['id', 'number'], ['version', 'string']));
   if (plugins.length === 0) return Err();
 
   const wanted: string | undefined = process.env.CUBE_DCM2NIIX_VERSION;

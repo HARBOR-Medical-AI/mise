@@ -193,7 +193,9 @@ serve:
 scrub:
 	@echo "Scrubbing the kitchen..."
 	rm -rf node_modules
-	rm -rf packages/*/node_modules packages/*/dist packages/*/types
+	rm -rf packages/*/node_modules packages/*/dist packages/*/types packages/*/coverage
+	rm -rf apps/*/node_modules apps/*/dist apps/*/coverage
+	rm -rf packages/*/exemplars/*/dist apps/*/exemplars/*/dist
 	@echo "Kitchen is clean."
 
 # --- Run (build + launch local shell) ---
@@ -411,10 +413,11 @@ smoke-report:
 # Local package.json versions against what the registry serves, one line
 # per package. After a publish the two columns must agree.
 verify-npm:
-	@for p in cumin salsa chili brasa calypso chell; do \
-		printf "%-8s local %-8s npm %s\n" $$p \
-			"$$(node -p "require('./packages/$$p/package.json').version")" \
-			"$$(npm view @fnndsc/$$p version 2>/dev/null || echo '?')"; \
+	@list=$$(node scripts/published-workspaces.mjs) || { echo "verify-npm: the published workspaces could not be listed: nothing compared."; exit 1; }; \
+	[ -n "$$list" ] || { echo "verify-npm: no published workspace was listed: nothing compared."; exit 1; }; \
+	echo "$$list" | while read -r dir name version; do \
+		printf "%-16s local %-9s npm %s\n" "$$name" "$$version" \
+			"$$(npm view "$$name" version 2>/dev/null || echo '?')"; \
 	done
 
 # Regenerates the lockfile with CI's npm pin and proves the result with a

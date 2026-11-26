@@ -1,0 +1,8 @@
+{
+  "name": "@x/s",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "f": "^1.0.0"
+  }
+}

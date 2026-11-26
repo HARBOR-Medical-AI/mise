@@ -16,9 +16,14 @@ import {
   listData_get,
   itemData_get,
   resource_call,
+  DATA_CARRIER_SHAPE,
   type Client,
   type PluginInstance,
   type PluginList,
+  shape_nullable,
+  shape_object,
+  shape_build,
+  type Shape,
 } from "../chrisapi/adapter.js";
 import { chrisConnection } from "../connect/chrisConnection.js";
 import { chrisContext, Context } from "../context/chrisContext.js";
@@ -99,12 +104,11 @@ interface ComputeResourceData {
   [key: string]: unknown;
 }
 
-/**
- * Compute resource list response.
- */
-interface ComputeResourceListResponse {
-  data: ComputeResourceData[];
-}
+/** A compute resource a plugin is registered to: its name is read as text. */
+const PLUGIN_COMPUTE_SHAPE: Shape<ComputeResourceData> = shape_build<ComputeResourceData>('a compute resource')(['name', 'string']);
+
+/** A plugin's record as it is handed on whole: an object, its fields read by those it is handed to. */
+const PLUGIN_RECORD_SHAPE: Shape<Record<string, unknown>> = shape_object('a plugin');
 
 /**
  * Interface for Collection+JSON data item.
@@ -473,7 +477,7 @@ export class ChRISPlugin {
       );
 
       const pluginAdminData: Record<string, unknown> | null =
-        itemData_get<Record<string, unknown>>(pluginAdmin);
+        itemData_get(pluginAdmin, PLUGIN_RECORD_SHAPE);
       if (pluginAdminData) {
         return pluginAdminData;
       }
@@ -566,14 +570,14 @@ export class ChRISPlugin {
 
       // Try searching by name first
       let pluginList: PluginList = await client.getPlugins({ name_exact: nameOrImage, limit: 1 });
-      const byName: Record<string, unknown>[] = listData_get<Record<string, unknown>>(pluginList);
+      const byName: Record<string, unknown>[] = listData_get(pluginList, PLUGIN_RECORD_SHAPE);
       if (byName.length > 0) {
         return byName[0];
       }
 
       // Try searching by dock_image
       pluginList = await client.getPlugins({ dock_image: nameOrImage, limit: 1 });
-      const byImage: Record<string, unknown>[] = listData_get<Record<string, unknown>>(pluginList);
+      const byImage: Record<string, unknown>[] = listData_get(pluginList, PLUGIN_RECORD_SHAPE);
       if (byImage.length > 0) {
         return byImage[0];
       }
@@ -699,9 +703,8 @@ export class ChRISPlugin {
         return [];
       }
 
-      const computeResourceList: ComputeResourceListResponse =
-        await resource_call<ComputeResourceListResponse>(plugin, 'getPluginComputeResources');
-      const resources: ComputeResourceData[] = listData_get<ComputeResourceData>(computeResourceList);
+      const computeResourceList: { data?: unknown } = await resource_call(plugin, DATA_CARRIER_SHAPE, 'getPluginComputeResources');
+      const resources: ComputeResourceData[] = listData_get(computeResourceList, PLUGIN_COMPUTE_SHAPE);
 
       return resources.map((r: ComputeResourceData) => r.name);
     } catch (error: unknown) {
@@ -751,11 +754,11 @@ export async function plugin_registerDirect(
     }
 
     // Call the internal _post method directly (legacy API)
-    const response: { data: Record<string, unknown> } =
-      await resource_call<{ data: Record<string, unknown> }>(pluginList, '_post', data);
+    const response: { data?: unknown } | null = await resource_call(pluginList, shape_nullable(DATA_CARRIER_SHAPE), '_post', data);
+    const registered: Record<string, unknown> | null = itemData_get(response, PLUGIN_RECORD_SHAPE);
 
-    if (response && response.data) {
-      return Ok(response.data);
+    if (registered !== null) {
+      return Ok(registered);
     }
 
     errorStack.stack_push("error", "Failed to register plugin. No data in response.");

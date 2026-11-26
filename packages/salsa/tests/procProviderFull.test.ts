@@ -475,7 +475,7 @@ describe('ProcVfsProvider.list', () => {
     });
     cache.topologyLoaded_mark(5);
     const getPluginInstance = jest.fn().mockResolvedValue({
-      data: { output_path: 'home/alice/outputs/result-set' },
+      data: { id: 10, feed_id: 5, plugin_name: 'pl-root', output_path: 'home/alice/outputs/result-set' },
     });
     mockClientGet.mockResolvedValue({ getPluginInstance });
 
@@ -501,7 +501,7 @@ describe('ProcVfsProvider.list', () => {
     });
     cache.topologyLoaded_mark(5);
     const getPluginInstance = jest.fn().mockResolvedValue({
-      data: { output_path: 'home/alice/outputs/result-set' },
+      data: { id: 10, feed_id: 5, plugin_name: 'pl-root', output_path: 'home/alice/outputs/result-set' },
     });
     mockClientGet.mockResolvedValue({ getPluginInstance });
 
@@ -1607,7 +1607,7 @@ describe('a job\'s data link on a cold cache (#1364)', () => {
         { id: 70, feed_id: 7, previous_id: null, plugin_name: 'pl-dircopy', status: 'finishedSuccessfully' },
         { id: 71, feed_id: 7, previous_id: 70, plugin_name: 'pl-whisper', status: 'finishedSuccessfully' },
       ], totalCount: 2 }),
-      getPluginInstance: jest.fn().mockResolvedValue({ data: { id: 71, output_path: 'home/chris/feeds/feed_7/pl-dircopy_70/pl-whisper_71/data' } }),
+      getPluginInstance: jest.fn().mockResolvedValue({ data: { id: 71, feed_id: 7, plugin_name: 'pl-whisper', output_path: 'home/chris/feeds/feed_7/pl-dircopy_70/pl-whisper_71/data' } }),
     };
     mockClientGet.mockResolvedValue(client);
     expect(cache.instance_get(71)).toBeUndefined();

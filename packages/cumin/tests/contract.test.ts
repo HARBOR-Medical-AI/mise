@@ -627,3 +627,113 @@ describe('pluginParameters_drain', () => {
     expect(await pluginParameters_drain(served.handle as never)).toEqual([]);
   });
 });
+
+describe('a page that is malformed is refused, not read as empty', () => {
+  /** An instance handle whose parameters answer with the given page. */
+  async function parameters_ask(page: unknown): Promise<unknown> {
+    const client: Client = client_fake({
+      getPluginInstance: async () => ({ data: { id: 5, feed_id: 2, plugin_name: 'pl-x' }, getParameters: async () => page }),
+    });
+    const handle: PluginInstanceHandle | null = await pluginInstance_get(client, 5);
+    return handle?.parametersPage_get({ limit: 10, offset: 0 });
+  }
+
+  test('data that is there and is not a list fails, even when the page also serves items', async () => {
+    await expect(parameters_ask({ data: { param_name: 'dir' }, getItems: () => [{ data: { param_name: 'dir' } }] }))
+      .rejects.toThrow('whose data is an object, where an array is read');
+    await expect(parameters_ask({ data: 'none', getItems: () => [] })).rejects.toThrow('whose data is a string, where an array is read');
+  });
+
+  test('a served item with no data, or with data of another kind, fails the page at its place', async () => {
+    await expect(parameters_ask({ getItems: () => [{ data: { param_name: 'a' } }, {}] })).rejects.toThrow('whose items[1].data is missing, where an object is read');
+    await expect(parameters_ask({ getItems: () => [{ data: null }] })).rejects.toThrow('whose items[0].data is null, where an object is read');
+    await expect(parameters_ask({ getItems: () => [{ data: { param_name: 'a' } }, { data: { param_name: 4 } }] })).rejects.toThrow('items[1].data.param_name is a number, where a string is read');
+  });
+
+  test('a getItems that is there and cannot be called is refused, not read as an empty page', async () => {
+    await expect(parameters_ask({ getItems: 'gone' })).rejects.toThrow('whose getItems is a string, where a function is read');
+    await expect(parameters_ask({ getItems: [] })).rejects.toThrow('whose getItems is an array, where a function is read');
+    // A page that says nothing of its items at all is still an empty page.
+    expect(await parameters_ask({ totalCount: 0 })).toMatchObject({ data: [], totalCount: 0 });
+    expect(await parameters_ask(null)).toMatchObject({ data: [] });
+  });
+
+  test('pipings whose page data is malformed are refused even when the page serves items', async () => {
+    const pipings_ask = async (page: unknown): Promise<unknown> => {
+      const client: Client = client_fake({ getPipeline: async () => ({ data: { id: 9, name: 'brain-flow' }, getPluginPipings: async () => page }) });
+      return (await pipeline_get(client, 9))?.pluginPipings_get({ limit: 100 });
+    };
+    await expect(pipings_ask({ data: { id: 1 }, getItems: () => [] })).rejects.toThrow('whose data is an object, where an array is read');
+    await expect(pipings_ask({ data: [{ id: 'one' }], getItems: () => [{ data: { id: 1 } }] })).rejects.toThrow('data[0].id is a string, where a number is read');
+    await expect(pipings_ask({ getItems: 7 })).rejects.toThrow('whose getItems is a number, where a function is read');
+  });
+
+  test('a pipeline that is not one is refused and not kept: the next ask reads CUBE again', async () => {
+    const getPipeline = jest.fn()
+      .mockResolvedValueOnce({ data: { id: 77, name: 12 } })
+      .mockResolvedValueOnce({ data: { id: 77, name: 'retried' } });
+    const client: Client = client_fake({ getPipeline });
+    await expect(pipeline_get(client, 77)).rejects.toThrow('whose data.name is a number, where a string is read');
+    expect((await pipeline_get(client, 77))?.data).toEqual({ id: 77, name: 'retried' });
+    expect(getPipeline).toHaveBeenCalledTimes(2);
+    // Kept now, and not asked for a third time.
+    expect((await pipeline_get(client, 77))?.data?.name).toBe('retried');
+    expect(getPipeline).toHaveBeenCalledTimes(2);
+  });
+
+  test('a pipeline answered with no data is handed on and not kept; another pipeline\'s is refused and not kept', async () => {
+    const getPipeline = jest.fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ data: { id: 80, name: 'another' } })
+      .mockResolvedValueOnce({ data: { id: 78, name: 'the one' } });
+    const client: Client = client_fake({ getPipeline });
+    expect((await pipeline_get(client, 78))?.data).toBeNull();
+    await expect(pipeline_get(client, 78)).rejects.toThrow("whose data.id is another pipeline's, where pipeline 78's is read");
+    expect((await pipeline_get(client, 78))?.data).toEqual({ id: 78, name: 'the one' });
+    expect(getPipeline).toHaveBeenCalledTimes(3);
+    // The corrected answer is the one kept.
+    expect((await pipeline_get(client, 78))?.data?.name).toBe('the one');
+    expect(getPipeline).toHaveBeenCalledTimes(3);
+  });
+
+  test('a getItems that cannot be called is refused beside data too, populated or empty; data alone is still a page', async () => {
+    await expect(parameters_ask({ data: [{ param_name: 'dir', value: '/in' }], getItems: 7 })).rejects.toThrow('whose getItems is a number, where a function is read');
+    await expect(parameters_ask({ data: [], getItems: 'gone' })).rejects.toThrow('whose getItems is a string, where a function is read');
+    expect(await parameters_ask({ data: [{ param_name: 'dir', value: '/in' }], totalCount: 1 })).toMatchObject({ data: [{ param_name: 'dir', value: '/in' }], totalCount: 1 });
+    expect(await parameters_ask({ data: [], totalCount: 0 })).toMatchObject({ data: [], totalCount: 0 });
+  });
+
+  test('a listing of plugin instances holds each row to its id, its feed, its plugin and its parent', async () => {
+    const instances_ask = (rows: unknown[]): Promise<unknown> =>
+      pluginInstancesPage_get(client_fake({ getPluginInstances: async () => ({ data: rows, totalCount: rows.length }) }), { feed_id: 9 });
+    await expect(instances_ask([{}])).rejects.toThrow('data[0].id is missing, where a number is read');
+    await expect(instances_ask([{ id: 1, feed_id: 9, plugin_name: 'pl-a' }, { id: 2, feed_id: '9', plugin_name: 'pl-b' }])).rejects.toThrow('data[1].feed_id is a string, where a number is read');
+    await expect(instances_ask([{ id: 1, feed_id: 9 }])).rejects.toThrow('data[0].plugin_name is missing, where a string is read');
+    await expect(instances_ask([{ id: 1, feed_id: 9, plugin_name: 'pl-a', previous_id: 'root' }])).rejects.toThrow('data[0].previous_id is a string, where a number is read');
+    await expect(instances_ask([{ id: 1, feed_id: 9, plugin_name: 'pl-a', previous_id: null }, { id: 2, feed_id: 9, plugin_name: 'pl-b', previous_id: 1 }])).resolves.toMatchObject({ data: [{ id: 1 }, { id: 2 }] });
+  });
+
+  test('a page with no data and no items is still an empty page', async () => {
+    expect(await parameters_ask({ getItems: () => [], totalCount: 0 })).toEqual({ data: [], totalCount: 0, fetchedCount: 0 });
+  });
+
+  test('a piping served with no data fails the pipings at its place', async () => {
+    const client: Client = client_fake({
+      getPipeline: async () => ({
+        data: { id: 9, name: 'brain-flow' },
+        getPluginPipings: async () => ({ getItems: () => [{ data: { id: 1, plugin_name: 'pl-a', previous_id: null } }, { getPlugin: async () => null }] }),
+      }),
+    });
+    const handle = await pipeline_get(client, 9);
+    await expect(handle?.pluginPipings_get({ limit: 100 })).rejects.toThrow('whose items[1].data is missing, where an object is read');
+  });
+
+  test('a field read as text is refused when it is there and is not text; absent or null it is as before', async () => {
+    const instance_ask = (data: Record<string, unknown>): Promise<PluginInstanceHandle | null> =>
+      pluginInstance_get(client_fake({ getPluginInstance: async () => ({ data }) }), 5);
+    await expect(instance_ask({ id: 5, feed_id: 2, plugin_name: 'pl-x', output_path: 7 })).rejects.toThrow('CUBE answered a plugin instance whose data.output_path is a number, where a string is read');
+    await expect(instance_ask({ id: 5, feed_id: 2, plugin_name: 'pl-x', status: {} })).rejects.toThrow('whose data.status is an object, where a string is read');
+    expect((await instance_ask({ id: 5, feed_id: 2, plugin_name: 'pl-x', output_path: null }))?.data?.output_path).toBeNull();
+    expect((await instance_ask({ id: 5, feed_id: 2, plugin_name: 'pl-x' }))?.data?.output_path).toBeUndefined();
+  });
+});

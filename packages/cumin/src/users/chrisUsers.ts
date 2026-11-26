@@ -13,11 +13,13 @@ import {
   type Client,
   type User,
   type UserGroupList,
+  shape_build,
+  type Shape,
 } from '../chrisapi/adapter.js';
 import { collectionPage_wrap, listPages_drain, type ListPage } from '../chrisapi/contract.js';
 import { errorStack } from '../error/errorStack.js';
 import { Result, Ok, Err } from '../utils/result.js';
-import type { ChrisGroup } from '../groups/chrisGroups.js';
+import { CHRIS_GROUP_SHAPE, type ChrisGroup } from '../groups/chrisGroups.js';
 
 /**
  * Represents the currently authenticated ChRIS user.
@@ -28,6 +30,9 @@ export interface ChrisUser {
   email: string;
   is_staff: boolean;
 }
+
+/** The signed-in user as CUBE answers: the id is used as a number and the name as text (a path, a passwd line). */
+export const CHRIS_USER_SHAPE: Shape<ChrisUser> = shape_build<ChrisUser>('the current user')(['id', 'number'], ['username', 'string']);
 
 /**
  * Represents the authenticated ChRIS user and their CUBE group memberships.
@@ -181,7 +186,7 @@ async function currentUserResource_get(): Promise<Result<CurrentUserResource>> {
     }
 
     const resource: User = await client.getUser();
-    const user: ChrisUser | null = itemData_get<ChrisUser>(resource);
+    const user: ChrisUser | null = itemData_get(resource, CHRIS_USER_SHAPE);
     if (!user) {
       errorStack.stack_push('error', 'Current user response carried no data.');
       return Err();
@@ -219,7 +224,7 @@ export async function currentIdentity_get(): Promise<Result<ChrisIdentity>> {
     const groups: ChrisGroup[] = await listPages_drain(
       async (offset: number, limit: number): Promise<ListPage<ChrisGroup>> => {
         const groupList: UserGroupList = await current.value.resource.getGroups({ limit, offset });
-        return collectionPage_wrap(groupList, listData_get<ChrisGroup>(groupList));
+        return collectionPage_wrap(groupList, listData_get(groupList, CHRIS_GROUP_SHAPE));
       },
       { pageSize: membershipPageSize },
     );

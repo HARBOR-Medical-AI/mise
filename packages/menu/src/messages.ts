@@ -590,7 +590,7 @@ export const progressOperationSchema = z.enum(PROGRESS_OPERATIONS).catch('task')
  * Optional, so an unknown class degrades to absent: the event still renders
  * from its operation and phase, one axis poorer.
  */
-export const progressKindSchema = z.enum(PROGRESS_KINDS).catch(undefined as never);
+export const progressKindSchema = z.enum(PROGRESS_KINDS).optional().catch(undefined);
 
 /**
  * Lifecycle phase of a progress operation.
@@ -610,7 +610,7 @@ export const progressPhaseSchema = z.enum(PROGRESS_PHASES).catch('working');
  * Optional, so an unknown unit degrades to absent and the counter renders
  * unqualified — 3/10 rather than nothing at all.
  */
-export const progressUnitSchema = z.enum(PROGRESS_UNITS).catch(undefined as never);
+export const progressUnitSchema = z.enum(PROGRESS_UNITS).optional().catch(undefined);
 
 /**
  * State of the operation or item being reported.
