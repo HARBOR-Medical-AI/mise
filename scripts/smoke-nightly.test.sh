@@ -36,7 +36,7 @@ echo "$step" >> "$DOOR_CALLS"
 if [ "$step" = stops-at-first-error ]; then
   case " ${DOOR_FAILS:-} " in
     *" e-goes-on "*) echo "cd: /nowhere: No such file or directory" >&2; echo "/home/stand-in"; exit 0 ;;
-    *" e-crashes "*) echo "Segmentation fault" >&2; exit 139 ;;
+    *" e-crashes "*) echo "cd: /nowhere: No such file or directory" >&2; echo "Segmentation fault" >&2; exit 139 ;;
     *) echo "cd: /nowhere: No such file or directory" >&2; exit 1 ;;
   esac
 fi
@@ -172,7 +172,7 @@ expect door_login_fails 1 has 'door  FAIL' lacks 'door  ok'
 expect_calls door_login_fails 'mint login status pwd stops-at-first-error logout'
 expect door_logout_fails 1 has 'door  FAIL' lacks 'door  ok'
 expect door_mint_fails 1 has 'door  FAIL' lacks 'door  ok'
-# The batch that should stop at its first error: going on past it, or crashing without refusing the cd, is a red.
+# The batch that should stop at its first error: going on past it is a red, and so is a crash, even one that refused the cd first.
 expect door_e_goes_on 1 has 'door  FAIL' lacks 'door  ok'
 expect door_e_crashes 1 has 'door  FAIL' lacks 'door  ok'
 # A porter that has tokens and cannot list them is a red; one from before door tokens is the one skip.

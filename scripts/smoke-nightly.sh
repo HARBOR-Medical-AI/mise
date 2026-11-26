@@ -78,12 +78,13 @@ door_commands() (
   node packages/chell/dist/index.js -c pwd
   # end::door-login[]
   # -e stops a batch at its first error, and that is checked for what it is:
-  # the cd is refused by name, the status is not zero, and the pwd after it
-  # never ran. A batch that succeeds, or a crash that says nothing of the
-  # cd, is not that.
+  # the cd is refused by name, the status is 1, and the pwd after it never
+  # ran. A batch that succeeds, or a crash, is not that.
   stopped_said=$(node packages/chell/dist/index.js -e -c "cd /nowhere; pwd" 2>&1) && stopped=0 || stopped=$?
   printf '%s\n' "$stopped_said"
-  if [ "$stopped" -eq 0 ]; then echo "door: the -e batch went on past its error (exit 0)"; failed=1; fi
+  # chell's status for a refused line is 1. Anything else is not a batch that
+  # stopped: 0 went on, and a larger number is a crash, whatever it printed first.
+  if [ "$stopped" -ne 1 ]; then echo "door: the -e batch ended with status $stopped, where a stop at its first error is 1"; failed=1; fi
   case "$stopped_said" in *"cd: /nowhere"*) ;; *) echo "door: the -e batch did not refuse the cd by name"; failed=1 ;; esac
   if printf '%s\n' "$stopped_said" | grep -q '^/'; then echo "door: the pwd after the refused cd ran"; failed=1; fi
   # tag::door-login[]
