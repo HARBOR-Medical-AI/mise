@@ -12,3 +12,7 @@ mkdir -p "$HOME/.config/chell"
 echo "chell & co; chell | more" ; mkdir -p "$dir"
 chell "x@https://cube.example.invalid/?a=1&b=2" --version && mkdir -p "$dir"
 made="$(mkdir -p "$dir" && chell --version)"
+made="$(chell --version && mkdir -p "$dir")"
+chell --version -c "$(mkdir -p "$dir")"
+mkdir -p "$dir" 2>&1 | chell --with-token
+chell --version >&2; mkdir -p "$dir"

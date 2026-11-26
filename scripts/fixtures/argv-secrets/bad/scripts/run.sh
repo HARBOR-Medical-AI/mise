@@ -22,3 +22,8 @@ chell x@host\&more -p "$PW"
 chell "$(hostname | tr a-z A-Z)" -p "$PW"
 chell $(hostname | tr a-z A-Z) -p "$PW"
 (cd "$dir" && chell x@y -p "$PW")
+made="$(mkdir -p "$dir" && chell x@y -p "$PW")"
+chell x@y 2>&1 -p "$PW"
+chell x@y -c "$(mkdir -p "$dir")" -p "$PW"
+out=`chell x@y -p "$PW"`
+chell x@y &>/dev/null -p "$PW"

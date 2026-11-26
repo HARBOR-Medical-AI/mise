@@ -25,8 +25,10 @@
  *   options followed by, or joined with `=` to, a variable; and `-p`
  *   followed by a variable in a command that runs chell, calypso, stratus
  *   or porter, each command of a line that joins several (`&&`, `;`, `|`)
- *   being judged by itself; a joining word inside quotes, after a
- *   backslash or inside a substitution joins nothing. An option and its value are two words of a command however
+ *   being judged by itself; a joining word inside quotes or after a
+ *   backslash joins nothing, the `&` of a redirection stays with its
+ *   command, and a substitution is one operand of its command while the
+ *   commands inside it are judged as commands too. An option and its value are two words of a command however
  *   they are parted: spaces, tabs, or a backslash and a new line, a
  *   continued command being read as the one command it is.
  *
@@ -157,59 +159,91 @@ function listOwner_read(text, position) {
 }
 
 /**
- * Takes a shell line apart into its commands, at the words that join
- * commands (`&&`, `||`, `;`, `|`, `&`, and the parentheses of a subshell)
- * where they stand as such: not inside single or double quotes, not after
- * a backslash, and not inside a substitution (`$( … )`, backticks), whose
- * text stays with the command it is an argument of.
+ * Reads a shell line as the commands it runs, each by itself.
  *
- * @param {string} command - One logical line.
- * @returns {string[]} Its commands, each with its quotes and substitutions as written.
+ * Commands are parted at the words that join them (`&&`, `||`, `;`, `|`,
+ * `&`, the parentheses of a subshell) where the shell reads those as such:
+ * not inside quotes, not after a backslash, and not the `&` of a
+ * redirection (`2>&1`, `>&2`, `&>file`), which stays with its command.
+ *
+ * A substitution (`$( … )`, backticks) is two things. To the command it is
+ * an argument of it is one operand, and stands in that command as a single
+ * variable-like word. And it runs commands of its own, which are read the
+ * same way and returned beside the outer ones.
+ *
+ * @param {string} text - One logical line, or the inside of a substitution.
+ * @returns {string[]} Every command, inner ones included, each with its substitutions stood in for.
  */
-function shellParts_split(command) {
-  const parts = [];
+function shellCommands_read(text) {
+  const commands = [];
   let part = '';
-  let quote = null;
-  let depth = 0;
-  for (let at = 0; at < command.length; at++) {
-    const here = command[at];
-    if (here === '\\' && quote !== "'") { part += here + (command[at + 1] ?? ''); at++; continue; }
-    if (quote !== null) {
-      if (here === quote) quote = null;
-      part += here;
-    } else if (here === "'" || here === '"' || here === '`') {
-      quote = here; part += here;
-    } else if (here === '$' && command[at + 1] === '(') {
-      depth++; part += '$('; at++;
-    } else if (depth > 0) {
+  let inDouble = false;
+  const part_end = () => { if (part.trim() !== '') commands.push(part); part = ''; };
+  /** The index of the parenthesis that closes a substitution opened just before `from`. */
+  const closer_find = (from) => {
+    let depth = 1;
+    let quote = null;
+    for (let at = from; at < text.length; at++) {
+      const here = text[at];
+      if (here === '\\' && quote !== "'") { at++; continue; }
+      if (quote !== null) { if (here === quote) quote = null; continue; }
+      if (here === "'" || here === '"') { quote = here; continue; }
       if (here === '(') depth++;
-      if (here === ')') depth--;
-      part += here;
-    } else if (here === ';' || here === '|' || here === '&' || here === '(' || here === ')') {
-      parts.push(part); part = '';
-    } else {
-      part += here;
+      else if (here === ')' && --depth === 0) return at;
     }
+    return text.length;
+  };
+  /** Stands a substitution in the outer command as one operand, and reads its own commands. */
+  const substitution_take = (inner) => { commands.push(...shellCommands_read(inner)); part += '$SUBSTITUTED'; };
+  let at = 0;
+  while (at < text.length) {
+    const here = text[at];
+    if (here === '\\') { part += here + (text[at + 1] ?? ''); at += 2; continue; }
+    if (here === '$' && text[at + 1] === '(') {
+      const close = closer_find(at + 2);
+      substitution_take(text.slice(at + 2, close));
+      at = close + 1;
+      continue;
+    }
+    if (here === '`') {
+      const found = text.indexOf('`', at + 1);
+      const close = found === -1 ? text.length : found;
+      substitution_take(text.slice(at + 1, close));
+      at = close + 1;
+      continue;
+    }
+    if (inDouble) { if (here === '"') inDouble = false; part += here; at++; continue; }
+    if (here === '"') { inDouble = true; part += here; at++; continue; }
+    if (here === "'") {
+      const found = text.indexOf("'", at + 1);
+      const stop = found === -1 ? text.length : found + 1;
+      part += text.slice(at, stop);
+      at = stop;
+      continue;
+    }
+    // The `&` of a redirection belongs to its command.
+    if (here === '&' && (text[at - 1] === '>' || text[at - 1] === '<' || text[at + 1] === '>')) { part += here; at++; continue; }
+    if (here === ';' || here === '|' || here === '&' || here === '(' || here === ')' || here === '\n') { part_end(); at++; continue; }
+    part += here;
+    at++;
   }
-  parts.push(part);
-  return parts.filter((one) => one.trim() !== '');
+  part_end();
+  return commands;
 }
 
 /**
  * Whether one shell command gives `-p` a variable as a password: it does
- * when one of this project's programs is named before the `-p`, and the
- * command's own program is not one to which `-p` means something else.
+ * when one of this project's programs is named before a `-p` of its own,
+ * and the command's program is not one to which `-p` means something else.
  *
- * @param {string} part - One command, as it stands between the shell's joining words.
+ * @param {string} part - One command, as `shellCommands_read` returns it.
  * @returns {boolean} True when it does.
  */
 function shellPart_carries(part) {
-  const short = SHELL_SHORT.exec(part);
-  if (short === null) return false;
   // The command's program: its first word that is not a variable being set for it.
   const program = part.trim().split(/\s+/).find((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) ?? '';
   if (OTHER_P.has(program.replace(/^["']|["']$/g, '').split('/').pop())) return false;
-  return OUR_PROGRAM.test(part.slice(0, short.index));
+  return [...part.matchAll(new RegExp(SHELL_SHORT, 'g'))].some((short) => OUR_PROGRAM.test(part.slice(0, short.index)));
 }
 
 /** The line (from 1) a position in a text falls on. */
@@ -254,7 +288,7 @@ for (const file of shellFiles) {
     for (const found of long) findings.push(`${relative(root, file)}:${first + 1}: ${found[1]} is given a variable on a command line`);
     // `-p` belongs to the one command it is an argument of: a line of several (`a && b`, `a; b`, `a | b`) is
     // taken apart, and each part judged by its own program.
-    if (long.length === 0 && shellParts_split(command).some(shellPart_carries)) findings.push(`${relative(root, file)}:${first + 1}: -p is given a variable on a command line`);
+    if (long.length === 0 && shellCommands_read(command).some(shellPart_carries)) findings.push(`${relative(root, file)}:${first + 1}: -p is given a variable on a command line`);
   }
 }
 
