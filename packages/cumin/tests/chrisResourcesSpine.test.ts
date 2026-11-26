@@ -18,6 +18,7 @@ import {
   Dictionary,
 } from '../src/resources/chrisResources';
 import { listResource_make } from './fixtures';
+import { errorStack } from '../src/error/errorStack';
 
 const mockClientGet: jest.Mock = chrisConnection.client_get as unknown as jest.Mock;
 
@@ -291,6 +292,96 @@ describe('resources_getAll', () => {
   });
 });
 
+describe('resources_getAll is steered by what the server sent, not by what was kept', () => {
+  /** A server that refuses any query naming a field, so the filter is applied on this side. */
+  const refusing = (pages: (offset: number) => ListResource) => jest.fn(async (params: Record<string, unknown>) => {
+    if ('name' in params) throw new Error('400 unknown query param');
+    return pages(Number(params.offset ?? 0));
+  });
+  /** The offsets of the fetches the server answered. */
+  const offsets_answered = (fetch: jest.Mock): number[] => fetch.mock.calls
+    .map(([params]: [Record<string, unknown>]) => params)
+    .filter((params: Record<string, unknown>): boolean => !('name' in params))
+    .map((params: Record<string, unknown>): number => Number(params.offset));
+
+  it('reads past a full page that kept no row, to the only match on the next', async () => {
+    const fetch = refusing((offset: number): ListResource => (offset === 0 ? listResource_make(rows_make(100), 'resources', true) : listResource_make(rows_make(5, 100))));
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never, 'Filtered');
+    const all: FilteredResourceData | null = await resource.resources_getAll({ name: 'item-103' });
+    expect(all?.tableData).toEqual([{ id: 103, name: 'item-103' }]);
+    expect(all?.incomplete).toBeUndefined();
+    expect(offsets_answered(fetch)).toEqual([0, 100]);
+  });
+
+  it('reads past a full page that kept three rows of a hundred, which is not a short page', async () => {
+    const fetch = refusing((offset: number): ListResource => (offset === 0 ? listResource_make(rows_make(100)) : listResource_make(rows_make(20, 100))));
+    const resource: ChRISResource = new ChRISResource();
+    // No links on these pages: the walk has only the count to go by, and it is the raw count.
+    const bare = (list: ListResource): ListResource => { delete (list.collection as { links?: unknown }).links; return list; };
+    const served = jest.fn(async (params: Record<string, unknown>) => bare(await fetch(params)));
+    resource.binding_applyGet({}, served as never, 'Filtered');
+    const all: FilteredResourceData | null = await resource.resources_getAll({ name: 'item-11' });
+    // item-11, item-110 to item-119 on the two pages.
+    expect(all?.tableData.map((row: Record<string, unknown>) => row.name)).toEqual(['item-11', 'item-110', 'item-111', 'item-112', 'item-113', 'item-114', 'item-115', 'item-116', 'item-117', 'item-118', 'item-119']);
+    expect(offsets_answered(fetch)).toEqual([0, 100]);
+  });
+
+  it('moves on by the rows received when the server sends fewer than asked and says more follow', async () => {
+    const fetch = refusing((offset: number): ListResource => (offset === 0 ? listResource_make(rows_make(40), 'resources', true) : listResource_make(rows_make(5, 40))));
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never, 'Filtered');
+    const all: FilteredResourceData | null = await resource.resources_getAll({ name: 'item-41' });
+    expect(all?.tableData).toEqual([{ id: 41, name: 'item-41' }]);
+    // The second page is asked for at 40, where the first ended, not at 100.
+    expect(offsets_answered(fetch)).toEqual([0, 40]);
+  });
+
+  it('keeps its rows and says so when a later page has no rows and says more follow', async () => {
+    const fetch = jest.fn(async (params: { offset?: number }) => ((params.offset ?? 0) === 0
+      ? listResource_make(rows_make(100), 'resources', true)
+      : listResource_make([], 'resources', true)));
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never, 'Stalled');
+    errorStack.stack_clear();
+    const all: FilteredResourceData | null = await resource.resources_getAll();
+    expect(all?.tableData).toHaveLength(100);
+    expect(all?.incomplete?.gathered).toBe(100);
+    expect(all?.incomplete?.reason).toContain('no rows at offset 100');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(errorStack.stack_search('no rows at offset 100').length).toBe(1);
+  });
+
+  it('keeps the one match it has when the walk stalls under a filter applied here', async () => {
+    const fetch = refusing((offset: number): ListResource => (offset === 0 ? listResource_make(rows_make(100), 'resources', true) : listResource_make([], 'resources', true)));
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never, 'Stalled');
+    const all: FilteredResourceData | null = await resource.resources_getAll({ name: 'item-100' });
+    expect(all?.tableData).toEqual([{ id: 100, name: 'item-100' }]);
+    expect(all?.incomplete?.gathered).toBe(1);
+    expect(all?.incomplete?.reason).toContain('no rows at offset 100');
+  });
+
+  it('fails, and does not answer as an empty collection, when the first page has no rows and says more follow', async () => {
+    const fetch = jest.fn(async () => listResource_make([], 'resources', true));
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never, 'Stalled');
+    await expect(resource.resources_getAll()).rejects.toThrow('Stalled: the server sent no rows at offset 0 and said that more follow');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not read a later fetch that yields nothing as the page before it, again', async () => {
+    const fetch = jest.fn()
+      .mockResolvedValueOnce(listResource_make(rows_make(100), 'resources', true))
+      .mockResolvedValue(null);
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never);
+    const all: FilteredResourceData | null = await resource.resources_getAll();
+    expect(all?.tableData).toHaveLength(100);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('a listing shows what is there', () => {
   it('walks the collection when the caller named no limit', async () => {
     // The old default answered with twenty and said nothing about the rest.
@@ -349,6 +440,22 @@ describe('resourceItem_delete and resources_getItems', () => {
     await resource.resources_getList();
     const items = await resource.resources_getItems();
     expect(items).toHaveLength(2);
+  });
+
+  it('answers the items of the collection it just fetched, not of one a call before it left', async () => {
+    const itemsOf = (label: string, count: number): ListResource => {
+      const list: ListResource = Object.create(ListResource.prototype) as ListResource;
+      Object.defineProperties(list, {
+        collection: { value: { links: [], items: [] } },
+        getItems: { value: (): unknown[] => Array.from({ length: count }, (_v: unknown, i: number) => ({ from: label, at: i })) },
+      });
+      return list;
+    };
+    const fetch = jest.fn().mockResolvedValueOnce(itemsOf('A', 2)).mockResolvedValueOnce(itemsOf('B', 2));
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never);
+    await resource.resources_getList();
+    expect(await resource.resources_getItems()).toEqual([{ from: 'B', at: 0 }, { from: 'B', at: 1 }]);
   });
 
   it('returns null from getItems without a bound method', async () => {
