@@ -103,6 +103,27 @@ for case in "creds-dir:not a regular file" "no-such.env:not a regular file" "cre
   ( credentials_load "$WORK/$file"; status=$?; [ "$status" -ne 0 ] && case "$CREDENTIALS_SAID" in *"$words"*) exit 0 ;; *) echo "$CREDENTIALS_SAID"; exit 1 ;; esac ) > "$WORK/creds-said.txt" 2>&1 \
     && ok "credentials refused: $words" || bad "credentials ($file) were not refused with \"$words\": $(cat "$WORK/creds-said.txt")"
 done
+( export E2E_PASSWORD=inherited-secret E2E_USER=inherited E2E_CUBE=http://inherited.invalid/
+  credentials_load "$WORK/creds-short.env"; status=$?
+  [ "$status" -ne 0 ] && case "$CREDENTIALS_SAID" in *"do not name"*) ;; *) exit 1 ;; esac && ! env | grep -q inherited ) \
+  && ok "a password the caller exported does not stand in for one the file lacks, and is dropped from the environment" || bad "an inherited password was accepted or kept"
+( export E2E_PASSWORD=inherited-secret
+  credentials_load "$WORK/creds.env" && ! env | grep -q inherited-secret && [ "$(password_run sh -c 'printf %s "$E2E_PASSWORD"')" = the-password ] ) \
+  && ok "with good credentials an exported password is dropped too, and the command given the password has the file's" || bad "an inherited password survived the load"
+( cp "$WORK/creds.env" "$WORK/creds-going.env"; chmod 600 "$WORK/creds-going.env"
+  credentials_load "$WORK/creds-going.env" || exit 1
+  printf 'E2E_USER=stand-in\nif then fi (\n' > "$WORK/creds-going.env"
+  password_run sh -c 'echo ran' > "$WORK/going-ran.txt" 2>&1; first=$?
+  printf 'E2E_USER=stand-in\n' > "$WORK/creds-going.env"
+  E2E_PASSWORD=from-outside password_run sh -c 'echo ran' >> "$WORK/going-ran.txt" 2>&1; second=$?
+  [ "$first" -ne 0 ] && [ "$second" -ne 0 ] && [ ! -s "$WORK/going-ran.txt" ] ) \
+  && ok "a credentials file that no longer reads, or no longer names the password, runs nothing" || bad "a command was run without the file's password"
+mkdir -p "$WORK/stores/config/chell/doors" "$WORK/stores/state/abc/config/chell" "$WORK/stores/state/creds/k" "$WORK/stores/upgrade.Ab12Cd34/state/abc/config" "$WORK/stores/upgrade.Ab12Cd34/state/abc/run" "$WORK/stores/old/node_modules/pkg/config"
+touch "$WORK/stores/config/chell/token.json" "$WORK/stores/upgrade.Ab12Cd34/token" "$WORK/stores/upgrade.Ab12Cd34/cj" "$WORK/stores/upgrade.Ab12Cd34/porter.log" "$WORK/stores/daemon.log" "$WORK/stores/old/node_modules/pkg/config/login.js"
+( secrets_remove "$WORK/stores" && [ -z "$(find "$WORK/stores" \( -name config -o -name creds -o -name token -o -name cj \) -not -path '*/node_modules/*')" ] \
+  && [ -f "$WORK/stores/daemon.log" ] && [ -f "$WORK/stores/upgrade.Ab12Cd34/porter.log" ] && [ -d "$WORK/stores/upgrade.Ab12Cd34/state/abc/run" ] && [ -f "$WORK/stores/old/node_modules/pkg/config/login.js" ] ) \
+  && ok "the daemons' config folders and the porter's credential store are removed, in the run's folder and a step's inside it; logs and what was installed stay" || bad "credential stores: $(find "$WORK/stores" -name config -o -name creds | tr '\n' ' ')"
+( mkdir -p "$WORK/stuck/config"; rm() { :; }; secrets_remove "$WORK/stuck"; [ $? -eq 1 ] ) && ok "a credential store that could not be removed is a failure of the removing" || bad "a store left behind was not reported"
 mkdir -m 700 "$WORK/secrets"; touch "$WORK/secrets/token" "$WORK/secrets/login.json" "$WORK/secrets/login.Ab12Cd34" "$WORK/secrets/cj" "$WORK/secrets/porter.log"
 ( secrets_remove "$WORK/secrets"; [ "$(ls "$WORK/secrets")" = porter.log ] ) && ok "a token, a login payload and a cookie jar are removed from a folder that is kept; its logs stay" || bad "secrets were left, or more than secrets removed: $(ls "$WORK/secrets" | tr '\n' ' ')"
 
@@ -157,6 +178,7 @@ fs.readFileSync(0);
 const dir = path.join(process.env.XDG_RUNTIME_DIR, 'calypso'); fs.mkdirSync(dir, { recursive: true });
 fs.writeFileSync(path.join(dir, 'berth-standin.json'), JSON.stringify({ pid: process.pid, versions: { chell: '$version' } }));
 fs.appendFileSync(process.env.STARTED_LOG, 'old-daemon ' + process.pid + '\n');
+fs.mkdirSync(path.join(process.env.XDG_CONFIG_HOME, 'chell'), { recursive: true }); fs.writeFileSync(path.join(process.env.XDG_CONFIG_HOME, 'chell', 'token.json'), 'stand-in-token');
 if (process.env.E2E_PASSWORD !== undefined) fs.appendFileSync(process.env.STARTED_LOG + '.leaks', 'the old daemon had the password\n');
 setInterval(() => {}, 1000);
 JS
@@ -240,11 +262,37 @@ upgrade_expect() { # name, exit status, then texts the ledger must hold
 ) > "$WORK/owned.txt" 2>&1 && ok "a process the run did not launch is noted only on proof that it is the run's, and one without it is never stopped" || bad "ownership: $(cat "$WORK/owned.txt")"
 (
   RUN_ROOT="$WORK/unstoppable"; mkdir -m 700 "$RUN_ROOT"
-  # A process this user may not signal, noted as it truly is: the reaping cannot stop it, and must say so.
-  echo "1 $(process_stat_read 1 | cut -d' ' -f2)" > "$RUN_ROOT/started.pids"
+  # A process that cannot be stopped, made up: a pid no process can have, and stand-ins in this shell for
+  # the signal and for the look at whether it is still there. No real process is named to the reaper.
+  echo "999999999 12345" > "$RUN_ROOT/started.pids"
+  kill() { echo "kill $*" >> "$RUN_ROOT/signals.txt"; }
+  daemon_alive() { [ "$1" = 999999999 ] && [ "$2" = 12345 ]; }
+  sleep() { :; }
   daemons_reap; status=$?
-  [ "$status" -eq 1 ] && [ "$DAEMONS_LEFT" = 1 ]
-) > /dev/null 2>&1 && ok "a noted process that cannot be stopped is reported, by its pid, and the reaping fails" || bad "a process that could not be stopped was not reported"
+  [ "$status" -eq 1 ] && [ "$DAEMONS_LEFT" = 999999999 ] && grep -qx "kill 999999999" "$RUN_ROOT/signals.txt" && grep -qx "kill -9 999999999" "$RUN_ROOT/signals.txt"
+) > /dev/null 2>&1 && ok "a noted process that cannot be stopped is asked, killed, then reported by its pid, and the reaping fails" || bad "a process that could not be stopped was not reported"
+(
+  RUN_ROOT="$WORK/pairs"; mkdir -m 700 "$RUN_ROOT"
+  MARK="$WORK/pairs/run" sh -c 'exec sleep 300' & ours=$!
+  sleep 0.2
+  # The pid is on the list already with a start that is not this process's: one the run noted once, since reused.
+  echo "$ours 1" > "$RUN_ROOT/started.pids"
+  daemon_note_owned "$ours" "MARK=$WORK/pairs/run" && daemon_note_owned "$ours" "MARK=$WORK/pairs/run" || { kill "$ours"; exit 1; }
+  [ "$(wc -l < "$RUN_ROOT/started.pids")" = 2 ] || { echo "the list holds $(wc -l < "$RUN_ROOT/started.pids") entries, wanted the stale one and the verified pair once"; kill "$ours"; exit 1; }
+  daemons_reap || exit 1; wait "$ours" 2>/dev/null; ! kill -0 "$ours" 2>/dev/null
+) > "$WORK/pairs.txt" 2>&1 && ok "what is noted is the verified pid and start, once: a stale entry with the same pid does not stand in for it" || bad "pairs: $(cat "$WORK/pairs.txt")"
+(
+  RUN_ROOT="$WORK/proven"; mkdir -m 700 "$RUN_ROOT"
+  MARK="$WORK/proven/run" sh -c 'exec sleep 300' & one=$!
+  MARK="$WORK/proven/run" sh -c 'exec sleep 300' & two=$!
+  sleep 300 & stranger=$!
+  sleep 0.2
+  daemons_note_proven "MARK=$WORK/proven/run"
+  [ "$(wc -l < "$RUN_ROOT/started.pids")" = 2 ] || { echo "noted $(wc -l < "$RUN_ROOT/started.pids"), wanted 2"; kill "$one" "$two" "$stranger"; exit 1; }
+  daemons_reap || exit 1; wait "$one" "$two" 2>/dev/null
+  kill -0 "$stranger" 2>/dev/null || { echo "the stranger was stopped"; exit 1; }
+  kill "$stranger"
+) > "$WORK/proven.txt" 2>&1 && ok "every process whose environment proves it the run's is found with no berth to name it, and no other" || bad "proven: $(cat "$WORK/proven.txt")"
 
 echo "the upgrade script"
 cp "$WORK/e2e.env" "$WORK/e2e-open.env"; chmod 644 "$WORK/e2e-open.env"
@@ -297,7 +345,7 @@ cat "$WORK"/upgrade-*/started.txt.leaks 2>/dev/null | sort -u > "$WORK/leaks.txt
 mkdir -m 700 "$WORK/named kept"
 upgrade_run named-and-kept UPGRADE_WORK="$WORK/named kept"
 kept=$(find "$WORK/named kept" -mindepth 1 -maxdepth 1 -type d | head -1)
-[ -n "$kept" ] && [ -f "$kept/porter.log" ] && [ -z "$(find "$kept" -maxdepth 1 \( -name token -o -name 'login.*' -o -name cj \))" ] && ok "a named folder (with a space in its name) is kept after a failure, its logs there and no secret in it" || bad "the named folder after a failure: $(ls "$kept" 2>/dev/null | tr '\n' ' ')"
+[ -n "$kept" ] && [ -f "$kept/porter.log" ] && [ -f "$kept/old-daemon.log" ] && [ -z "$(find "$kept" -maxdepth 1 \( -name token -o -name 'login.*' -o -name cj \))" ] && [ -z "$(find "$kept/state" -name config -o -name token.json)" ] && ok "a named folder (with a space in its name) is kept after a logged-in daemon and a failure: its logs there, and neither a secret nor the daemon's saved token in it" || bad "the named folder after a failure: $(ls "$kept" 2>/dev/null | tr '\n' ' ')"
 # A runtime folder with a space in its name: the run still ends clean.
 (
   dir="$WORK/upgrade-spaced"; mkdir -p "$dir/state"; mkdir -m 700 "$dir/run time"; : > "$dir/started.txt"
@@ -306,7 +354,71 @@ kept=$(find "$WORK/named kept" -mindepth 1 -maxdepth 1 -type d | head -1)
   [ "$status" -eq 1 ] && grep -qF 'FAIL: the porter did not come up' "$dir/state/ledger.txt" && grep -q '^old-daemon ' "$dir/started.txt" && [ -z "$(ls "$dir/run time")" ] && while read -r _ pid; do ! kill -0 "$pid" 2>/dev/null || exit 1; done < "$dir/started.txt"
 ) && ok "under a runtime folder with a space in its name the run gets as far, fails the same way, and leaves nothing" || bad "a runtime folder with a space in its name: $(tail -1 "$WORK/upgrade-spaced/state/ledger.txt" 2>/dev/null)"
 
+# A caller that had the password exported: it reaches neither npm nor the old daemon.
+upgrade_run password-exported-by-the-caller E2E_PASSWORD=inherited-secret
+upgrade_expect password-exported-by-the-caller 1 'FAIL: the porter did not come up'
+[ ! -s "$WORK/upgrade-password-exported-by-the-caller/started.txt.leaks" ] && ok "a password exported by the caller reaches neither npm nor the old daemon" || bad "the caller's password leaked: $(cat "$WORK/upgrade-password-exported-by-the-caller/started.txt.leaks")"
+
+# A porter that starts a daemon which has not yet written its berth: a stand-in that spawns one into the
+# session's own folders and goes on running. Whether the run fails in its set-up or is interrupted there,
+# the porter and what it started are stopped.
+cat > "$WORK/porter-standin.js" <<'JS'
+const fs = require('fs'); const path = require('path'); const { spawn } = require('child_process');
+const state = process.env.PORTER_STATE_DIR;
+const session = fs.readdirSync(state).map((name) => path.join(state, name)).find((dir) => fs.existsSync(path.join(dir, 'run')));
+const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore', env: { ...process.env, XDG_RUNTIME_DIR: path.join(session, 'run') } });
+child.unref();
+fs.appendFileSync(process.env.STARTED_LOG, 'porter ' + process.pid + '\nreplacement ' + child.pid + '\n');
+setInterval(() => {}, 1000);
+JS
+upgrade_run replacement-before-its-berth UPGRADE_PORTER="$WORK/porter-standin.js"
+upgrade_expect replacement-before-its-berth 1 'FAIL: the porter did not come up'
+grep -q '^replacement ' "$WORK/upgrade-replacement-before-its-berth/started.txt" && ok "in that case a daemon the porter started had no berth yet (so it could only be found by what proves it)" || bad "the stand-in porter started nothing"
+(
+  dir="$WORK/upgrade-interrupted-before-the-berth"; mkdir -p "$dir/state"; mkdir -m 700 "$dir/runtime"; : > "$dir/started.txt"
+  env PATH="$BIN:$PATH" SMOKE_STATE="$dir/state" XDG_RUNTIME_DIR="$dir/runtime" E2E_ENV="$WORK/e2e.env" UPGRADE_PORT=41${RANDOM:0:3} STARTED_LOG="$dir/started.txt" UPGRADE_PORTER="$WORK/porter-standin.js" \
+    bash "$HERE/smoke-upgrade.sh" > "$dir/said.txt" 2>&1 &
+  script=$!
+  for _ in $(seq 1 100); do grep -q '^replacement ' "$dir/started.txt" && break; sleep 0.2; done
+  grep -q '^replacement ' "$dir/started.txt" || { kill "$script"; exit 1; }
+  kill -TERM "$script"; wait "$script"; echo "$?" > "$dir/exit.txt"
+)
+upgrade_expect interrupted-before-the-berth 1 'FAIL: interrupted (TERM)'
+
 echo "the nightly's entry"
+# The porter's environment file is exported for the door step alone: its signing secret is in the
+# environment of nothing started after it.
+(
+  export SMOKE_NIGHTLY_SOURCED=1 SMOKE_STATE="$WORK/door-state"; mkdir -p "$SMOKE_STATE"
+  . "$HERE/smoke-nightly.sh"
+  printf 'PORTER_SECRET=the-signing-secret\n' > "$WORK/porter.env"
+  printf '#!/usr/bin/env bash\necho "unknown word '"'"'--tokens'"'"'"; exit 2\n' > "$WORK/porter-old"; chmod +x "$WORK/porter-old"
+  PORTER_ENV="$WORK/porter.env" PORTER_BIN="$WORK/porter-old" door_step > /dev/null
+  [ "$failures" -eq 0 ] && grep -q 'door  skipped' "$ledger" && [ -z "${PORTER_SECRET:-}" ] && ! env | grep -q the-signing-secret
+) && ok "the door step reads the porter's environment file in a shell of its own: the secret is not left in the run's" || bad "the porter's signing secret was left in the nightly's environment"
+# A step that could not stop what it started asks for the run's folder to be kept, and the nightly keeps it:
+# the step's list of what it started and its logs are there afterwards, and the run fails.
+(
+  export SMOKE_NIGHTLY_SOURCED=1 SMOKE_STATE="$WORK/kept-state" XDG_RUNTIME_DIR="$WORK/kept-runtime"; mkdir -p "$SMOKE_STATE"; mkdir -m 700 "$XDG_RUNTIME_DIR"
+  . "$HERE/smoke-nightly.sh"
+  cat > "$WORK/upgrade-cannot-stop.sh" <<'SH'
+. "$LIB"
+child=$(mktemp -d "$SMOKE_RUN_ROOT/upgrade.XXXXXXXX")
+echo "999999999 12345" > "$child/started.pids"; echo "what the porter said" > "$child/porter.log"; touch "$child/token"
+run_root_keep "$SMOKE_RUN_ROOT" "the upgrade could not stop pid 999999999; see $child"
+exit 1
+SH
+  (
+    run_root_settle "" "" "" mise-smoke-nightly || exit 9
+    P=$RUN_ROOT
+    trap nightly_ending EXIT
+    LIB="$HERE/lib/smoke-private.sh" SMOKE_UPGRADE="$WORK/upgrade-cannot-stop.sh" upgrade_step
+    nightly_finish
+  ); status=$?
+  kept=$(find "$XDG_RUNTIME_DIR" -mindepth 2 -maxdepth 2 -name 'upgrade.*' | head -1)
+  [ "$status" -eq 1 ] && [ -n "$kept" ] && [ -f "$kept/started.pids" ] && [ -f "$kept/porter.log" ] && [ ! -e "$kept/token" ] && grep -q "the run's folder is kept at .*the upgrade could not stop pid 999999999" "$ledger"
+) > "$WORK/kept.txt" 2>&1 && ok "a step that could not stop what it started has the nightly keep its folder: the list of pids and the logs survive, no secret does, and the run fails" || bad "the nightly removed a folder a step asked it to keep: $(tail -2 "$WORK/kept.txt")"
+
 (
   home="$WORK/nightly-home"; mkdir -p "$home/.config/mise" "$WORK/nightly-state"; mkdir -m 700 "$WORK/nightly-runtime"
   cp "$WORK/e2e.env" "$home/.config/mise/e2e.env"; chmod 644 "$home/.config/mise/e2e.env"

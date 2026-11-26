@@ -60,10 +60,11 @@ run_root_settle() { # the parent's folder or empty, the name inside it, the over
 }
 
 # Reads one name out of the credentials file, in a shell of its own, so
-# that nothing in the file is left in this one.
+# that nothing in the file is left in this one. The file must supply it:
+# a value of that name the caller's environment came with is cleared first.
 credential_read() { # the file, the name
   # shellcheck disable=SC1090
-  ( set +u; . "$1" > /dev/null 2>&1 || exit 1; eval "printf '%s' \"\${$2:-}\"" )
+  ( set +u; unset E2E_USER E2E_PASSWORD E2E_CUBE; . "$1" > /dev/null 2>&1 || exit 1; eval "printf '%s' \"\${$2:-}\"" )
 }
 
 # Takes up the e2e credentials: the file must be a regular file this user
@@ -75,6 +76,9 @@ credential_read() { # the file, the name
 credentials_load() { # the file
   local file=$1
   CREDENTIALS_SAID=""
+  # Whatever of these the caller's environment came with is dropped before anything is started: the file
+  # is the one source, and a password exported by whoever ran this reaches no child.
+  unset E2E_USER E2E_PASSWORD E2E_CUBE
   [ -f "$file" ] || { CREDENTIALS_SAID="the e2e credentials ($file) are not a regular file"; return 1; }
   [ -r "$file" ] || { CREDENTIALS_SAID="the e2e credentials ($file) cannot be read"; return 1; }
   CREDENTIALS_SAID=$(private_check "$file" "the e2e credentials") || return 1
@@ -91,10 +95,16 @@ credentials_load() { # the file
 }
 
 # Runs one command with the e2e password in its environment, and only it:
-# the file is read in a shell that becomes that command.
+# the file is read in a shell that becomes that command. A file that does
+# not read, or no longer names the password, runs nothing.
 password_run() { # the command and its arguments
   # shellcheck disable=SC1090
-  ( set +u; set -a; . "$E2E_CREDENTIALS" > /dev/null 2>&1; set +a; exec "$@" )
+  (
+    set +u; unset E2E_PASSWORD
+    set -a; . "$E2E_CREDENTIALS" > /dev/null 2>&1 || exit 1; set +a
+    [ -n "${E2E_PASSWORD:-}" ] || exit 1
+    exec "$@"
+  )
 }
 
 # Writes the login payload (the user and the password, as JSON) to a file.
@@ -120,13 +130,23 @@ cube_token_get() { # the private folder to work in
 }
 
 # Removes what a run may have left that is a secret: a token, a login
-# payload, a cookie jar. Done at every ending, before anything else, so that
-# a folder kept for a person to look at (one they named, or one kept because
-# something could not be stopped) holds none.
+# payload or a cookie jar in the run's folder or a folder of a step inside
+# it, and the stores its daemons and porter kept credentials in (each
+# daemon's config folder, where a login writes its token and a door login
+# its door's; the porter's credential store). Done at every ending, after
+# what the run started is stopped, so that a folder kept for a person to
+# look at holds none. Logs are left. Returns 1 if any of it is still there.
 secrets_remove() { # the run's folder
-  local dir=$1
+  local dir=$1 store left=0
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
-  find "$dir" -maxdepth 1 -type f \( -name token -o -name 'login.*' -o -name login.json -o -name cj \) -exec rm -f -- {} +
+  find "$dir" -maxdepth 2 -type f \( -name token -o -name 'login.*' -o -name cj \) -exec rm -f -- {} + 2>/dev/null
+  for store in "$dir"/config "$dir"/state/*/config "$dir"/state/creds "$dir"/*/config "$dir"/*/state/*/config "$dir"/*/state/creds; do
+    [ -e "$store" ] || continue
+    rm -rf -- "$store" 2>/dev/null
+    [ -e "$store" ] && left=1
+  done
+  [ -z "$(find "$dir" -maxdepth 2 -type f \( -name token -o -name 'login.*' -o -name cj \) -print -quit 2>/dev/null)" ] || left=1
+  [ "$left" -eq 0 ]
 }
 
 # Reads a process's state and the moment it started, as "<state> <start>".
@@ -154,14 +174,32 @@ daemon_note() { # pid
 }
 
 # Notes a process the run did not launch by its own hand (a daemon the
-# porter started, known only by the berth it wrote), and only on proof that
-# it is the run's: its environment names a folder inside this run's own.
-# Without that proof it is not noted, and is never stopped.
+# porter started), and only on proof that it is the run's: its environment
+# names a folder inside this run's own. What is noted is the pid with the
+# start it had when the proof was read, and only if it has that start still
+# afterwards: the pair that was verified, and no other. Without the proof
+# it is not noted, and is never stopped.
 daemon_note_owned() { # pid, the environment entry that proves it (NAME=value)
-  local pid=$1 proof=$2
+  local pid=$1 proof=$2 before after
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  before=$(process_stat_read "$pid") || return 1
   tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF -- "$proof" || return 1
-  grep -q "^$pid " "$RUN_ROOT/started.pids" 2>/dev/null || daemon_note "$pid"
+  after=$(process_stat_read "$pid") || return 1
+  [ "${before#* }" = "${after#* }" ] || return 1
+  grep -qxF -- "$pid ${before#* }" "$RUN_ROOT/started.pids" 2>/dev/null || echo "$pid ${before#* }" >> "$RUN_ROOT/started.pids"
+}
+
+# Notes every process of this user's whose environment carries the proof:
+# what a porter of the run started, whether or not it has yet written the
+# berth it would be found by. Call it once whatever starts such processes
+# has been stopped, so that none appears after the look.
+daemons_note_proven() { # the environment entry that proves a process is the run's
+  local proof=$1 entry
+  for entry in /proc/[0-9]*; do
+    [ -O "$entry" ] || continue
+    daemon_note_owned "${entry#/proc/}" "$proof"
+  done
+  return 0
 }
 
 # Whether a noted process is still that process, and still running: the same
@@ -218,9 +256,20 @@ daemons_reap() {
   daemons_stop
 }
 
-# Removes the run's folder, if and only if this run made it by itself.
+# Says that the run's folder must be kept, and why: by a step working in a
+# folder inside it that could not stop what it started. The folder's owner
+# reads it in run_root_remove.
+run_root_keep() { # the folder to keep (the parent's), the reason
+  echo "$2" >> "$1/kept"
+}
+
+# Removes the run's folder, if and only if this run made it by itself and
+# nothing in it asked to be kept. Returns 1, removing nothing, when a step
+# asked for that: RUN_ROOT_KEPT then holds its reasons.
 run_root_remove() {
+  RUN_ROOT_KEPT=""
   [ "${RUN_ROOT_OWNED:-0}" = 1 ] || return 0
+  if [ -s "$RUN_ROOT/kept" ]; then RUN_ROOT_KEPT=$(tr '\n' ';' < "$RUN_ROOT/kept"); return 1; fi
   # Only a folder mktemp made here: its name is checked for what it must be before it is removed.
   case "$RUN_ROOT" in
     */mise-smoke-*.????????) rm -rf -- "$RUN_ROOT" ;;

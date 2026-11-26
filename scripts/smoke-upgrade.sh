@@ -14,8 +14,9 @@
 # Everything it makes while it runs is under a folder of its own: inside the
 # nightly's when the nightly runs it (SMOKE_RUN_ROOT, the nightly's to
 # remove), else a new one from mktemp, mode 0700, removed when the run ends.
-# UPGRADE_WORK names a folder to use instead, for a person debugging; it
-# must be private, and is left as it is.
+# UPGRADE_WORK names a folder to work inside instead, for a person debugging;
+# it must be private, and is left, without the credentials the run made.
+# UPGRADE_PORTER names another porter entry to run (the tests' stand-in).
 #
 # A run that cannot do its work is a failure, not a skip: with nothing
 # published to start from, or a previous release that cannot be logged in
@@ -55,24 +56,24 @@ ending() {
   trap - EXIT INT TERM
   [ "$status" -eq 0 ] && status=$left
   if [ -n "$WORK" ]; then
+    local stopped=0
+    # The porter first: it is what starts daemons, and stopped it starts no more.
+    daemons_stop ${PORTER_PID:+"$PORTER_PID"} || stopped=1
+    # Then whatever it started, found by what proves it the run's (its environment names this run's own
+    # session folder), whether or not it had yet written the berth it would be known by.
+    [ -n "$DIR" ] && daemons_note_proven "XDG_RUNTIME_DIR=$DIR/run"
+    daemons_reap || stopped=1
     # No secret outlives the run, whether or not its folder does.
-    secrets_remove "$WORK"
-    # A daemon the porter started is known only by the berth it wrote. It is the run's to stop on proof:
-    # its environment names this run's own session folder. (One that came up and was confirmed ready was
-    # noted then; this is for a run that failed before that.)
-    if [ -n "$DIR" ]; then
-      local berth
-      while read -r berth; do
-        daemon_note_owned "$(node -p "require(process.argv[1]).pid" "$berth" 2>/dev/null)" "XDG_RUNTIME_DIR=$DIR/run"
-      done < <(find "$DIR/run" -name 'berth-*.json' 2>/dev/null)
-    fi
-    if daemons_reap; then
+    secrets_remove "$WORK" || { say "a credential store could not be removed from $WORK"; verdict "FAIL: credentials the run made could not be removed from $WORK (see $log)"; status=1; }
+    if [ "$stopped" -eq 0 ]; then
       run_root_remove
     else
       # Something the run started could not be stopped: a failure, said, with the folder and its list of
-      # what was started kept for whoever has to stop it by hand.
+      # what was started kept for whoever has to stop it by hand; a parent that handed the folder down is
+      # told to keep it too.
       say "could not stop pid $DAEMONS_LEFT"
       verdict "FAIL: could not stop what the run started (pid $DAEMONS_LEFT); its folder is kept at $WORK (see $log)"
+      [ -n "${SMOKE_RUN_ROOT:-}" ] && run_root_keep "$SMOKE_RUN_ROOT" "the upgrade could not stop pid $DAEMONS_LEFT; see $WORK"
       status=1
     fi
   fi
@@ -142,7 +143,7 @@ say "old daemon up: pid $OLD_PID, berth says chell $oldRunning"
 # 2. A porter from this checkout over the same state; it adopts the old session.
 PORTER_CUBE_URL="$E2E_CUBE" PORTER_PORT=$PORT PORTER_HOST=127.0.0.1 PORTER_STATE_DIR="$WORK/state" \
   PORTER_SECRET=$(head -c 24 /dev/urandom | base64) PORTER_CHELL="$ROOT/packages/chell/dist/index.js" \
-  setsid nohup node apps/porter/dist/porter.js > "$WORK/porter.log" 2>&1 < /dev/null &
+  setsid nohup node "${UPGRADE_PORTER:-apps/porter/dist/porter.js}" > "$WORK/porter.log" 2>&1 < /dev/null &
 PORTER_PID=$!
 daemon_note "$PORTER_PID"
 for _ in $(seq 1 30); do curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null && break; sleep 1; done

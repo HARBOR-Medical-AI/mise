@@ -126,6 +126,11 @@ door_commands() (
 # a token may travel over plain http). Skipped, and said, while the
 # installed porter is older than door tokens.
 door_step() {
+  # In a shell of its own: the porter's environment file holds its signing secret, which is exported for
+  # the porter's own words here and reaches nothing the run starts afterwards.
+  ( door_step_scoped ) || failures=$((failures + 1))
+}
+door_step_scoped() {
   PORTER_BIN=${PORTER_BIN:-$HOME/.local/share/porter-published/node_modules/.bin/porter}
   local env_file=${PORTER_ENV:-$HOME/.config/porter.env}
   [ -f "$env_file" ] && [ -x "$PORTER_BIN" ] || return 0
@@ -144,8 +149,7 @@ door_step() {
     # The probe's own words may name tokens: they go to the door's log, not the ledger.
     printf '%s\n' "$probe" > "$door_log"
     echo "$day  door  FAIL (the porter could not list its door tokens, exit $probed; see $door_log)" | tee -a "$ledger"
-    failures=$((failures + 1))
-    return 0
+    return 1
   fi
   door_commands > "$door_log" 2>&1
   local status=$?
@@ -154,7 +158,7 @@ door_step() {
   else
     echo "$day  door  FAIL (see $door_log)" | tee -a "$ledger"
     tail -5 "$door_log" | cut -c1-300 >> "$ledger"
-    failures=$((failures + 1))
+    return 1
   fi
 }
 
@@ -180,14 +184,18 @@ nightly_ending() {
   local status=$?
   trap - EXIT INT TERM
   if [ -n "${RUN_ROOT:-}" ]; then
-    # No secret outlives the run, whether or not its folder does.
-    secrets_remove "$RUN_ROOT"
-    if daemons_reap; then
-      run_root_remove
-    else
+    local stopped=0
+    daemons_reap || stopped=1
+    # No secret outlives the run, whether or not its folder does: after what could write one is stopped.
+    secrets_remove "$RUN_ROOT" || { echo "$day  credentials the run made could not be removed from $RUN_ROOT" | tee -a "$ledger"; [ "$status" -eq 0 ] && status=1; }
+    if [ "$stopped" -ne 0 ]; then
       # Something the run started could not be stopped: said, counted as a failure, and the folder kept,
       # with the list of what it started, for whoever has to stop it by hand.
       echo "$day  could not stop what the run started (pid $DAEMONS_LEFT); its folder is kept at $RUN_ROOT" | tee -a "$ledger"
+      [ "$status" -eq 0 ] && status=1
+    elif ! run_root_remove; then
+      # A step working inside the folder could not stop what it started, and asked for it to be kept.
+      echo "$day  the run's folder is kept at $RUN_ROOT ($RUN_ROOT_KEPT)" | tee -a "$ledger"
       [ "$status" -eq 0 ] && status=1
     fi
   fi
