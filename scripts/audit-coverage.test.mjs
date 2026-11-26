@@ -64,6 +64,12 @@ const CASES = [
   { name: 'workspace-peer-alias-also-for-development', tree: [...BASE_TREE, 'right@1.3.0 (installed as p)'] },
   { name: 'workspace-peer-alias-also-for-development-wrong-package', faults: ['p@npm:right@^1.0.0 (a peer dependency of packages/a, which also lists it for development as npm:right@^1.0.0) is to be right and the lockfile has wrong@1.3.0 at node_modules/p'] },
   { name: 'workspace-peer-alias-also-for-development-out-of-range', faults: ['p@npm:right@^1.0.0 (a peer dependency of packages/a, which also lists it for development as npm:right@^1.0.0) is resolved outside the range asked: p@2.0.0 at node_modules/p'] },
+  // A shadowed spec that is no version range (a tarball's address) is judged by npm's own function: the
+  // same address passes, another address with the same name and version does not.
+  { name: 'workspace-peer-tarball-also-for-development', tree: [...BASE_TREE, 'p@1.0.0'] },
+  { name: 'workspace-peer-tarball-also-for-development-another-address', faults: ['p@https://example.invalid/p/-/p-1.0.0.tgz (a peer dependency of packages/a, which also lists it for development as https://example.invalid/other/-/p-1.0.0.tgz) is resolved outside the range asked: p@1.0.0 at node_modules/p'] },
+  // A shadowed peer the root overrides: the override is what must be matched.
+  { name: 'workspace-peer-also-for-development-overridden', tree: [...BASE_TREE, 'p@2.0.0'] },
   // npm sees nothing wrong with "*" resolved to an entry with no version; the audit has nothing to look up.
   { name: 'registry-package-without-a-version', faults: ['b at node_modules/b has no version in the root lockfile, so the audit cannot look it up'] },
   // An optional peer installed out of range: passed, walked, and said.

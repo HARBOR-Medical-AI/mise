@@ -79,11 +79,16 @@ function arborist_load() {
   for (const manifest of candidates) {
     if (!existsSync(manifest)) continue;
     const load = createRequire(manifest);
-    return { Arborist: load(dirname(manifest)), semver: load('semver'), from: `@npmcli/arborist ${JSON.parse(readFileSync(manifest, 'utf8')).version}${manifest === candidates[0] && execPath !== '' ? ', the running npm\'s own' : ', this repository\'s dev dependency'}` };
+    // npm's own judgement of whether what is installed is what a spec asks for (a range, a tag, a tarball
+    // address, a git ref, an alias): the function its edges use. Not part of the library's public face, so
+    // its absence is allowed for, and said where it matters.
+    let specValid = null;
+    try { specValid = load(join(dirname(manifest), 'lib', 'dep-valid.js')); } catch { specValid = null; }
+    return { Arborist: load(dirname(manifest)), semver: load('semver'), specValid, from: `@npmcli/arborist ${JSON.parse(readFileSync(manifest, 'utf8')).version}${manifest === candidates[0] && execPath !== '' ? ', the running npm\'s own' : ', this repository\'s dev dependency'}` };
   }
   throw new Error('npm\'s tree library (@npmcli/arborist) was not found');
 }
-const { Arborist, semver, from: arboristFrom } = arborist_load();
+const { Arborist, semver, specValid, from: arboristFrom } = arborist_load();
 
 const args = process.argv.slice(2);
 /** Takes an option and its value out of the arguments. */
@@ -153,6 +158,9 @@ function record_compare(dir) {
   }
   return faults;
 }
+
+/** The root's overrides: what the operator said a dependency resolves to, whatever its dependents ask. */
+const overrides = existsSync(join(root, 'package.json')) ? (JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).overrides ?? {}) : {};
 
 /** The tree the lockfile describes, as npm reads it. */
 const tree = await new Arborist({ path: root }).loadVirtual();
@@ -285,9 +293,25 @@ function tree_walk(dir) {
         if (edge !== undefined && edge.type !== 'dev') continue;
         shadowed.add(name);
         const target = target_of(edge);
-        const { range } = spec_read(declared.spec);
-        const invalid = target !== null && range !== null && !semver.satisfies(target.version ?? '', range);
-        edge_judge(node, { name, ...declared, ...(edge === undefined ? {} : { also: edge.spec }) }, target, invalid ? 'INVALID' : null);
+        // What must be matched: the root's override for the name when there is one (by the name alone, or
+        // under this workspace's name), else the spec the workspace declares.
+        const scoped = typeof overrides[own.name] === 'object' && overrides[own.name] !== null ? overrides[own.name][name] : undefined;
+        const top = typeof overrides[name] === 'object' && overrides[name] !== null ? overrides[name]['.'] : overrides[name];
+        const spec = typeof scoped === 'string' ? scoped : typeof top === 'string' ? top : declared.spec;
+        let error = null;
+        if (target !== null) {
+          if (specValid !== null) {
+            // npm's own answer, for any kind of spec.
+            if (!specValid(target, spec, null, node)) error = 'INVALID';
+          } else {
+            // Without npm's function only a version range can be judged here; anything else is not
+            // passed on trust.
+            const { range } = spec_read(spec);
+            if (range === null) faults.add(`${dir}: ${name}@${spec}, which ${place_of(node)} publishes and also lists for development, cannot be checked against ${target.name}@${target.version} at ${place_of(target)}: the spec is not a version range and npm's own check was not found`);
+            else if (!semver.satisfies(target.version ?? '', range)) error = 'INVALID';
+          }
+        }
+        edge_judge(node, { name, type: declared.type, spec, ...(edge === undefined ? {} : { also: edge.spec }) }, target, error);
       }
     }
     for (const edge of node.edgesOut.values()) {

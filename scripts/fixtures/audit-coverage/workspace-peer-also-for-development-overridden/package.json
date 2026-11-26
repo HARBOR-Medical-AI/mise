@@ -1,0 +1,10 @@
+{
+  "name": "fixture",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "overrides": {
+    "p": "^2.0.0"
+  }
+}
