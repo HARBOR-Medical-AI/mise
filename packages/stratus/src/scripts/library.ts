@@ -85,6 +85,9 @@ export function git_run(args: ReadonlyArray<string>, cwd?: string, network: bool
  */
 export const NETWORK_PROTOCOLS: Readonly<Record<string, 'always' | 'user'>> = { https: 'always', ssh: 'always', git: 'always', http: 'always', ftp: 'user', ftps: 'user' };
 
+/** The names of the network transports, and nothing a lookup by name could find by accident. */
+const NETWORK_NAMES: ReadonlySet<string> = new Set(Object.keys(NETWORK_PROTOCOLS));
+
 /** A configuration key that could not be read: neither set nor shown to be unset. */
 export interface ConfigUnread {
   /** Why. */
@@ -119,7 +122,8 @@ export function gitProtocols_configured(cwd?: string): ReadonlyArray<string> | C
   if (ran.status === 1) return [];
   if (ran.status !== 0) return { unread: `protocol.*.allow: ${(ran.stderr || ran.error?.message || `git config ended with ${String(ran.status)}`).trim().split('\n').at(-1) ?? ''}` };
   const names: string[] = ran.stdout.split('\n').map((key: string): string => key.trim()).filter((key: string): boolean => key !== '')
-    .map((key: string): string => key.slice('protocol.'.length, key.length - '.allow'.length).toLowerCase());
+    // The name as git holds it: the middle of such a key is a subsection, and a subsection's case is kept.
+    .map((key: string): string => key.slice('protocol.'.length, key.length - '.allow'.length));
   return [...new Set(names)];
 }
 
@@ -160,9 +164,11 @@ export function networkOnly_keys(
   const keys: string[] = ['-c', 'protocol.allow=never'];
   // This host's transports by name: the two git ships, and any the configuration names that is not a network one.
   // A name is used only when it is one a key can be made of; a configuration that names anything else is not read as a policy.
-  const local: string[] = ['file', 'ext', ...(named as ReadonlyArray<string>).filter((name: string): boolean => !(name in NETWORK_PROTOCOLS))];
+  // A network transport is one of the six named, exactly as named: nothing else is, whatever its letters'
+  // case and whatever it shares a name with.
+  const local: string[] = ['file', 'ext', ...(named as ReadonlyArray<string>).filter((name: string): boolean => !NETWORK_NAMES.has(name))];
   for (const name of [...new Set(local)]) {
-    if (!/^[a-z0-9][a-z0-9+.-]*$/.test(name)) return refuse(`a transport is configured under a name that is not one: ${JSON.stringify(name)}`);
+    if (!/^[A-Za-z0-9][A-Za-z0-9+.-]*$/.test(name)) return refuse(`a transport is configured under a name that is not one: ${JSON.stringify(name)}`);
     keys.push('-c', `protocol.${name}.allow=never`);
   }
   for (const [protocol, builtIn] of Object.entries(NETWORK_PROTOCOLS)) {

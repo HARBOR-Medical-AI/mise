@@ -445,6 +445,12 @@ describe('the library stays inside itself', () => {
       '-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never', '-c', 'protocol.leak.allow=never', '-c', 'protocol.sftp-helper.allow=never',
       '-c', 'protocol.https.allow=always', '-c', 'protocol.ssh.allow=always', '-c', 'protocol.git.allow=always', '-c', 'protocol.http.allow=always',
       '-c', 'protocol.ftp.allow=user', '-c', 'protocol.ftps.allow=user']);
+    // A name is kept in the case git holds it in, and a name that an object would answer to by inheritance is no network transport.
+    expect(networkOnly_keys(none, (): string[] => ['Leak', 'HTTPS', 'constructor', 'toString', 'hasOwnProperty'])).toEqual(['-c', 'protocol.allow=never',
+      '-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never',
+      '-c', 'protocol.Leak.allow=never', '-c', 'protocol.HTTPS.allow=never', '-c', 'protocol.constructor.allow=never', '-c', 'protocol.toString.allow=never', '-c', 'protocol.hasOwnProperty.allow=never',
+      '-c', 'protocol.https.allow=always', '-c', 'protocol.ssh.allow=always', '-c', 'protocol.git.allow=always', '-c', 'protocol.http.allow=always',
+      '-c', 'protocol.ftp.allow=user', '-c', 'protocol.ftps.allow=user']);
     expect(networkOnly_keys(none, () => ({ unread: 'protocol.*.allow: bad config' }))).toEqual({ refused: "git's transport policy could not be read (protocol.*.allow: bad config); nothing was fetched" });
     expect(networkOnly_keys(none, (): string[] => ['a b'])).toMatchObject({ refused: expect.stringContaining('a name that is not one') });
     // A read that failed, and a value that is no policy, are neither of them taken for "not set".
@@ -499,6 +505,18 @@ describe('the library stays inside itself', () => {
       expect(gitProtocols_configured()).toEqual(['leak', 'file', 'ext']);
       expect(git_run(['ls-remote', 'leak://anything'], undefined, true).text).toMatch(/not allowed/);
       expect(existsSync(ranMark)).toBe(false);
+      // A helper named in mixed case, and one named as something every object answers to, each allowed outright: refused, never started.
+      for (const name of ['Leak', 'constructor']) {
+        writeFileSync(join(bin, `git-remote-${name}`), `#!/bin/sh\ntouch '${ranMark}'\nexit 1\n`, { mode: 0o755 });
+        writeFileSync(join(root, 'empty-gitconfig'), `[protocol "${name}"]\n\tallow = always\n`);
+        expect(gitProtocols_configured()).toEqual([name]);
+        git_run(['ls-remote', `${name}://anything`]);
+        expect(existsSync(ranMark)).toBe(true);
+        rmSync(ranMark);
+        expect(git_run(['ls-remote', `${name}://anything`], undefined, true).text).toMatch(/not allowed/);
+        expect(existsSync(ranMark)).toBe(false);
+      }
+      writeFileSync(join(root, 'empty-gitconfig'), '');
       // Nor does a repository's own configuration allowing it, for a pull through its configured upstream.
       const work: string = join(root, 'helper-clone');
       mkdirSync(work);
@@ -506,7 +524,7 @@ describe('the library stays inside itself', () => {
       expect(git_run(['remote', 'add', 'origin', 'leak://anything'], work).ok).toBe(true);
       expect(git_run(['config', 'protocol.leak.allow', 'always'], work).ok).toBe(true);
       expect(git_run(['config', 'protocol.other.allow', 'always'], work).ok).toBe(true);
-      expect(gitProtocols_configured(work)).toEqual(expect.arrayContaining(['leak', 'other', 'file', 'ext']));
+      expect(gitProtocols_configured(work)).toEqual(expect.arrayContaining(['leak', 'other']));
       expect(git_run(['pull', '--quiet', '--ff-only', 'origin', 'main'], work, true).text).toMatch(/not allowed/);
       expect(existsSync(ranMark)).toBe(false);
     } finally {
