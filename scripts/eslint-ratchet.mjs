@@ -34,15 +34,20 @@
  * one: none in the working tree and none at the base. A baseline is
  * written whole or not at all. `--root <folder>` lints another tree.
  *
- * When a rule rises, its findings on the lines the change added or
- * changed are printed, all of them: the new one is there. Only when none
- * is on such a line are others shown, and those may be cut short.
+ * When a rule rises, every finding of that rule in that workspace is
+ * printed, by file and line, none left out: those on lines the change
+ * added or changed first, since the new one is likeliest there, then the
+ * rest, since a change can make a finding on a line nobody touched.
+ *
+ * One run at a time writes the baseline: `--lower` and `--bootstrap`
+ * claim it before they read it, and a run that finds it claimed by one
+ * still running writes nothing and says so.
  *
  * @module
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
@@ -51,9 +56,6 @@ import { baseline_read, baseline_write, ceilings_lower, ceilings_risen, counts_j
 
 /** The baseline file, from the repository's root. */
 const BASELINE_FILE = 'scripts/eslint-baseline.json';
-
-/** The most findings printed for one rule in one workspace that rose. */
-const SHOWN = 15;
 
 const args = process.argv.slice(2);
 /** Takes a flag out of the arguments. */
@@ -99,7 +101,7 @@ if (workspaces.length === 0) faults.push(only === undefined ? `no workspace with
 const eslint = new ESLint({ cwd: root, concurrency: 'auto', errorOnUnmatchedPattern: false });
 /** Counts per workspace and rule. */
 const counts = {};
-/** Findings per workspace and rule, as `file:line:column message`. */
+/** Findings per workspace and rule: the file (from the root), the line, the column and the message's first line. */
 const findings = {};
 let files = 0;
 for (const workspace of workspaces) {
@@ -123,7 +125,7 @@ for (const workspace of workspaces) {
       const rule = message.ruleId ?? DIRECTIVE_RULE;
       counts[workspace] ??= {};
       counts[workspace][rule] = (counts[workspace][rule] ?? 0) + 1;
-      ((findings[workspace] ??= {})[rule] ??= []).push(`${file}:${message.line}:${message.column} ${message.message.split('\n')[0]}`);
+      ((findings[workspace] ??= {})[rule] ??= []).push({ file, line: message.line, column: message.column, message: message.message.split('\n')[0] });
     }
   }
 }
@@ -153,9 +155,49 @@ const baseSaid = base === null ? '' : ` (base: ${base.how}, ${base.sha.slice(0, 
  * @param {Record<string, Record<string, number>>} next - The ceilings to write.
  */
 function baseline_put(next) {
-  const beside = `${baselinePath}.writing`;
+  // A scratch file of this process's own: no other writer's is ever moved into place by this one.
+  const beside = `${baselinePath}.writing.${process.pid}`;
   writeFileSync(beside, baseline_write(next));
   renameSync(beside, baselinePath);
+}
+
+/**
+ * Claims the baseline for writing, for the rest of this process: one writer at a time reads it, works out
+ * what to write and writes it, so two runs lowering different workspaces cannot each write over the other's
+ * change. The claim is a file beside the baseline, made only if it is not there, holding this process's
+ * id; it is let go when the process ends. A claim whose holder is no longer running is taken over.
+ *
+ * @returns {string | null} Null when the claim is this process's; otherwise why not.
+ */
+function writer_claim() {
+  const claim = `${baselinePath}.lock`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = openSync(claim, 'wx');
+      writeSync(handle, String(process.pid));
+      closeSync(handle);
+      process.on('exit', () => { try { unlinkSync(claim); } catch { /* already gone */ } });
+      return null;
+    } catch (error) {
+      if (error.code !== 'EEXIST') return `the baseline could not be claimed for writing: ${error.message}`;
+      let holder = Number.NaN;
+      try { holder = Number(readFileSync(claim, 'utf8')); } catch { continue; }
+      let running = Number.isInteger(holder) && holder > 0;
+      if (running) { try { process.kill(holder, 0); } catch { running = false; } }
+      if (running) return `another run is writing ${BASELINE_FILE} (process ${holder}): nothing was written by this one; run it again`;
+      // Left behind by a run that ended without letting go.
+      try { unlinkSync(claim); } catch { /* another took it over first */ }
+    }
+  }
+  return `the baseline could not be claimed for writing`;
+}
+// A mode that writes claims the baseline before it reads it: what it merges into is then what it writes over.
+if (bootstrap || lower) {
+  const refused = writer_claim();
+  if (refused !== null) {
+    console.error(`eslint-ratchet: ${refused}`);
+    process.exit(1);
+  }
 }
 
 if (bootstrap) {
@@ -218,9 +260,11 @@ if (lower) {
 }
 
 /**
- * The lines this change added or changed, per file, so that a rule that rose can be shown where it rose.
+ * The lines this change added or changed in the files it touched, so that a rule that rose can be shown
+ * with its likeliest new findings first. Each file is asked about by itself, so no path is ever read out
+ * of git's printing of one.
  *
- * @returns {Map<string, { all: boolean, lines: Set<number> }> | null} For each file that differs from the base, its added and changed lines (`all` for a file the base did not have); null when the base is not known.
+ * @returns {Map<string, { all: boolean, lines: Set<number> }> | null} For each file that differs from the base, its added and changed lines (`all` for a file git does not track yet); null when the base is not known.
  */
 function changed_read() {
   if (base === null) return null;
@@ -228,19 +272,18 @@ function changed_read() {
   const changed = new Map();
   try {
     for (const path of run(['ls-files', '--others', '--exclude-standard', '-z']).split('\0')) if (path !== '') changed.set(path, { all: true, lines: new Set() });
-    // No context lines: each hunk's header names exactly the lines that are new in this tree.
-    let file = null;
-    for (const line of run(['diff', '--unified=0', '--no-color', '--no-ext-diff', base.sha, '--']).split('\n')) {
-      if (line.startsWith('+++ ')) {
-        file = line === '+++ /dev/null' ? null : line.slice(line.indexOf('/') + 1);
-        if (file !== null && !changed.has(file)) changed.set(file, { all: false, lines: new Set() });
-        continue;
+    for (const path of run(['diff', '--name-only', '-z', '--diff-filter=d', base.sha, '--']).split('\0')) {
+      if (path === '' || changed.has(path)) continue;
+      const lines = new Set();
+      // No context lines: each hunk's header names exactly the lines that are new in this tree.
+      for (const line of run(['diff', '--unified=0', '--no-color', '--no-ext-diff', base.sha, '--', path]).split('\n')) {
+        const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+        if (hunk === null) continue;
+        const first = Number(hunk[1]);
+        const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
+        for (let at = first; at < first + count; at++) lines.add(at);
       }
-      const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
-      if (hunk === null || file === null) continue;
-      const first = Number(hunk[1]);
-      const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
-      for (let at = first; at < first + count; at++) changed.get(file).lines.add(at);
+      changed.set(path, { all: false, lines });
     }
   } catch {
     return null;
@@ -250,24 +293,21 @@ function changed_read() {
 const changed = risen.length === 0 ? null : changed_read();
 for (const one of risen) {
   const found = findings[one.workspace]?.[one.rule] ?? [];
-  // Where each finding stands: on a line this change added or changed, elsewhere in a file it touched, or
-  // in a file it did not touch. The first kind is where the new one is, and is never cut short.
+  // A finding on a line this change added or changed is the likeliest new one, and comes first. It is not
+  // the only place a new one can be (a type changed here can make a finding on a line nobody touched), so
+  // every finding of the rule in the workspace is printed, none left out: the new one is in the list.
   const onChanged = [];
-  const inTouched = [];
-  const elsewhere = [];
-  for (const line of found) {
-    const [file, lineNumber] = line.split(':');
-    const lines = changed?.get(file);
-    if (lines === undefined) elsewhere.push(line);
-    else if (lines.all || lines.lines.has(Number(lineNumber))) onChanged.push(line);
-    else inTouched.push(line);
+  const others = [];
+  for (const finding of found) {
+    const lines = changed?.get(finding.file);
+    if (lines !== undefined && (lines.all || lines.lines.has(finding.line))) onChanged.push(finding);
+    else others.push(finding);
   }
-  const list = (lines, cap) => `${lines.slice(0, cap).map((line) => `      ${line}`).join('\n')}${lines.length > cap ? `\n      … and ${lines.length - cap} more` : ''}`;
-  let shown;
-  if (onChanged.length > 0) shown = `On lines this change added or changed, all ${onChanged.length} of that rule's findings:\n${list(onChanged, Infinity)}`;
-  else if (changed === null) shown = `The base is not known, so the new one cannot be picked out. All ${found.length} of that rule's findings there:\n${list(found, Infinity)}`;
-  else shown = `None is on a line this change added or changed (a change elsewhere made one, a type that moved for instance). In the files it touched (${inTouched.length}), then the rest (${elsewhere.length}):\n${list([...inTouched, ...elsewhere], SHOWN)}`;
-  faults.push(`${one.workspace}: ${one.count} findings of ${one.rule}, its ceiling is ${one.ceiling}. ${shown}`);
+  const list = (some) => some.map((finding) => `      ${finding.file}:${finding.line}:${finding.column} ${finding.message}`).join('\n');
+  const parts = [];
+  if (onChanged.length > 0) parts.push(`On lines this change added or changed (${onChanged.length}):\n${list(onChanged)}`);
+  if (others.length > 0) parts.push(`${onChanged.length > 0 ? 'The rest' : changed === null ? 'The base is not known, so none can be put first. All' : 'None is on a line this change added or changed. All'} of that rule's findings there (${others.length}):\n${list(others)}`);
+  faults.push(`${one.workspace}: ${one.count} findings of ${one.rule}, its ceiling is ${one.ceiling}. ${parts.join('\n    ')}`);
 }
 for (const one of fallen) {
   faults.push(`${one.workspace}: ${one.rule} fell to ${one.count} (ceiling ${one.ceiling}) — good. Lower it in ${BASELINE_FILE} as part of this change (npm run lint -- --lower), so the improvement locks in.`);

@@ -20,8 +20,8 @@
  *
  * @module
  */
-import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -177,14 +177,61 @@ const noisyBase = commit('a file with twenty-one empty blocks, and its ceilings'
 const lastLine = NOISY.split('\n').length + 1;
 file_put(join(tree, 'apps/beta/src/tally.ts'), `${NOISY}export function latest(): void {\n  try { tally([]); } catch { }\n}\n`);
 const buried = ratchet_run(noisyBase);
-expect_that('a new finding after twenty existing ones of its rule is shown, by its line, and only it',
-  buried.status === 1 && buried.said.includes('apps/beta: 22 findings of no-empty, its ceiling is 21. On lines this change added or changed, all 1 of that rule\'s findings') && buried.said.includes(`apps/beta/src/tally.ts:${lastLine}:`),
+const emptyBlocks = buried.said.split('\n').filter((line) => line.includes('apps/beta/src/tally.ts:') && line.includes('Empty block statement'));
+expect_that('a new finding after twenty existing ones of its rule is put first, by its line',
+  buried.status === 1 && buried.said.includes('apps/beta: 22 findings of no-empty, its ceiling is 21. On lines this change added or changed (1):') && emptyBlocks[0]?.includes(`apps/beta/src/tally.ts:${lastLine}:`),
   buried.said);
+// And every finding of the rule is listed, none cut off: a new one need not be on a changed line (a type that
+// moved elsewhere can make one), so the twenty-one on lines nobody touched are all there, the last included.
+expect_that('every finding of a rising rule is listed, those on unchanged lines past the fifteenth included',
+  emptyBlocks.length === 22 && buried.said.includes("The rest of that rule's findings there (21):") && emptyBlocks.some((line) => line.includes(`apps/beta/src/tally.ts:${lastLine - 3}:`)) && !buried.said.includes('more'),
+  `${emptyBlocks.length} listed; ${buried.said.slice(0, 500)}`);
 // Back to the small tree and its baseline, committed, for the cases below.
 file_put(join(tree, 'apps/beta/src/tally.ts'), SOURCE);
 writeFileSync(BASELINE, pristine);
 const restored = commit('the small tree again');
-void restored;
+
+// Two runs lowering different workspaces at once: both reductions are in the baseline at the end. One may be
+// told the other is writing and write nothing; run again, it lowers.
+const CLEAN = SOURCE.replace('  try { sum += 1; } catch { }\n', '  sum += 1;\n');
+file_put(join(tree, 'packages/alpha/src/tally.ts'), CLEAN);
+file_put(join(tree, 'apps/beta/src/tally.ts'), CLEAN);
+/** Starts a run without waiting for it. */
+const ratchet_start = (...flags) => new Promise((resolve) => {
+  const child = spawn('npm', ['run', '-s', 'lint', '--', ...flags], { cwd: tree, env: { PATH: process.env.PATH, HOME: process.env.HOME, RATCHET_BASE: restored } });
+  let said = '';
+  child.stdout.on('data', (chunk) => { said += chunk; });
+  child.stderr.on('data', (chunk) => { said += chunk; });
+  child.on('close', (status) => resolve({ status, said, flags }));
+});
+for (let round = 0; round < 3; round++) {
+  writeFileSync(BASELINE, pristine);
+  const together = await Promise.all([ratchet_start('--only', 'packages/alpha', '--lower'), ratchet_start('--only', 'apps/beta', '--lower')]);
+  for (const one of together) {
+    if (one.status === 0) continue;
+    // The only refusal allowed: the other was writing. Run again, it must lower.
+    expect_that(`round ${round}: a lowering that did not write says another run was writing`, one.said.includes('another run is writing scripts/eslint-baseline.json'), one.said);
+    const retried = await ratchet_start(...one.flags);
+    expect_that(`round ${round}: the refused lowering, run again, lowers`, retried.status === 0, retried.said);
+  }
+  const both = JSON.parse(readFileSync(BASELINE, 'utf8'));
+  expect_that(`round ${round}: two workspaces lowered at once: both reductions survive`, both['packages/alpha']?.['no-empty'] === undefined && both['apps/beta']?.['no-empty'] === undefined && JSON.stringify(both) !== pristine.trim(), JSON.stringify(both));
+  expect_that(`round ${round}: nothing is left behind beside the baseline`, readdirSync(join(tree, 'scripts')).filter((name) => name.startsWith('eslint-baseline.json.')).length === 0, readdirSync(join(tree, 'scripts')).join(' '));
+}
+// A claim left by a run that is gone is taken over; one held by a run that is here is respected.
+writeFileSync(BASELINE, pristine);
+writeFileSync(`${BASELINE}.lock`, '2147483646');
+const stale = await ratchet_start('--only', 'packages/alpha', '--lower');
+expect_that('a claim left by a run that is no longer running is taken over', stale.status === 0, stale.said);
+writeFileSync(`${BASELINE}.lock`, String(process.pid));
+const held = await ratchet_start('--only', 'apps/beta', '--lower');
+const heldBaseline = readFileSync(BASELINE, 'utf8');
+expect_that('a claim held by a run that is here stops another writer, which writes nothing', held.status === 1 && held.said.includes(`another run is writing scripts/eslint-baseline.json (process ${process.pid})`) && JSON.parse(heldBaseline)['apps/beta']?.['no-empty'] === 1, held.said);
+renameSync(`${BASELINE}.lock`, `${BASELINE}.lock.aside`);
+// Back to the small tree and its baseline for the cases below.
+file_put(join(tree, 'packages/alpha/src/tally.ts'), SOURCE);
+file_put(join(tree, 'apps/beta/src/tally.ts'), SOURCE);
+writeFileSync(BASELINE, pristine);
 
 // A violation taken out.
 file_put(join(tree, 'packages/alpha/src/tally.ts'), SOURCE.replace('  try { sum += 1; } catch { }\n', '  sum += 1;\n'));
