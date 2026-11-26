@@ -105,30 +105,51 @@ function httpStatus_extract(error: unknown): number | null {
 /** The older rename field, which a CUBE that wants it names as missing. */
 const LEGACY_RENAME_FIELD: string = 'path';
 
-/** What a CUBE says when a rename carried none of the fields it reads. */
-const NO_KNOWN_FIELD: string = 'At least one of the fields';
+/**
+ * What a CUBE that reads the older field says when a rename did not carry
+ * it. CUBE's serializers raise this, under `non_field_errors`, when an
+ * update names neither `public` nor the rename field they read: "At least
+ * one of the fields 'public' or 'path' must be provided."
+ */
+const LEGACY_FIELD_MISSING: RegExp = /At least one of the fields 'public' or 'path' must be provided/;
+
+/** What a serializer says of a field it requires and did not get. */
+const FIELD_REQUIRED: RegExp = /required/i;
+
+/**
+ * The messages a refusal's body carries under one key.
+ *
+ * @param body - The body of a 400.
+ * @param key - The key.
+ * @returns Its messages as text; none when the key is absent.
+ */
+function refusalMessages_read(body: object, key: string): string[] {
+  const said: unknown = (body as Record<string, unknown>)[key];
+  if (said === undefined || said === null) return [];
+  return (Array.isArray(said) ? said : [said]).map((one: unknown): string => String(one));
+}
 
 /**
  * Whether a failed rename was refused because CUBE does not read the field
  * it was spelt with.
  *
  * Only then is the other spelling worth a request: CUBE read this one and
- * did nothing with it. Two answers say so: the older field named as the
- * one in error (it is required, and was not sent), or the sentence CUBE
- * gives when it found no field it reads. A 400 keyed by `upload_path` is
- * the opposite: CUBE knows the field and refuses its value, and would
- * refuse it again.
+ * did nothing with it. Two answers are that evidence and nothing else is:
+ * CUBE's own sentence that neither `public` nor `path` was provided, or
+ * the field `path` reported as required. A 400 about the value of either
+ * field (a name that is not valid, a destination that is held) is CUBE
+ * knowing the field and refusing the move; it would refuse it again.
  *
  * @param error - The thrown value.
- * @returns True for an HTTP 400 that says the field was not read.
+ * @returns True for an HTTP 400 that says the older field was not sent.
  */
 function fieldRefusal_detect(error: unknown): boolean {
   if (httpStatus_extract(error) !== HTTP_BAD_REQUEST) return false;
   const body: unknown = (error as { response?: { data?: unknown } }).response?.data;
-  if (typeof body === 'string') return body.includes(NO_KNOWN_FIELD);
+  if (typeof body === 'string') return LEGACY_FIELD_MISSING.test(body);
   if (body === null || typeof body !== 'object') return false;
-  if (Object.prototype.hasOwnProperty.call(body, LEGACY_RENAME_FIELD)) return true;
-  return Object.values(body).some((said: unknown): boolean => String(said).includes(NO_KNOWN_FIELD));
+  if (refusalMessages_read(body, 'non_field_errors').some((said: string): boolean => LEGACY_FIELD_MISSING.test(said))) return true;
+  return refusalMessages_read(body, LEGACY_RENAME_FIELD).some((said: string): boolean => FIELD_REQUIRED.test(said));
 }
 
 export class ChrisIO {

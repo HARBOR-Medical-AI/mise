@@ -104,6 +104,20 @@ describe('file_moveById field drift', () => {
     expect(put).toHaveBeenNthCalledWith(2, { path: '/new/name.txt' });
   });
 
+  it('asks for no second move when the older field is named for a reason other than being missing', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['Destination already exists.'] } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for no second move when CUBE says fields are missing and the older rename field is not among them', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { non_field_errors: ["At least one of the fields 'public' or 'upload_path' must be provided."] } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
   it('asks the caller again before the older field, and stops when the place is no longer shown free', async () => {
     const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['This field is required.'] } } }); });
     mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
