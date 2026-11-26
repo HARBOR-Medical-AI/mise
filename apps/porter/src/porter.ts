@@ -320,6 +320,7 @@ async function porter_start(): Promise<void> {
   // and this line is where an operator finds out why before anybody tries.
   const answersAs: DoorOrigins = config.origins ?? doorOrigins_resolve(undefined, config.port);
   console.log(`    origin: answers as ${answersAs.origins.join(', ')}${answersAs.named ? '' : ' — only this machine\'s own names; set PORTER_PUBLIC_ORIGIN to the address browsers use (e.g. https://porter.example.org) if this door is reached by another'}`);
+  console.log(`    proxy:  ${(config.trustedProxies ?? []).length === 0 ? 'none trusted — a request is counted by the address of whatever connects; behind a reverse proxy set PORTER_TRUSTED_PROXIES to it, or every visitor shares the proxy\'s count' : `forwarded headers believed from ${(config.trustedProxies ?? []).join(', ')}`}`);
   if (config.secretGenerated) {
     console.log('    secret: made up for this run — set PORTER_SECRET so a restart does not ask every browser again');
   }

@@ -43,10 +43,15 @@ export function attachOrigins_read(env: NodeJS.ProcessEnv): string[] {
 function origin_parse(text: string): string | null {
   try {
     const url: URL = new URL(text.trim());
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null;
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.username === '' && url.password === '' ? url.origin : null;
   } catch {
     return null;
   }
+}
+
+/** The port a scheme means when none is written. */
+function schemePort_default(protocol: string): string {
+  return protocol === 'https:' ? '443' : '80';
 }
 
 /**
@@ -57,11 +62,23 @@ function origin_parse(text: string): string | null {
  * @param named - The origins let in by name.
  * @returns True for no origin, the daemon's own page, or a named origin.
  */
-export function attachOrigin_allowed(origin: string | undefined, host: string | undefined, named: ReadonlyArray<string>): boolean {
+export function attachOrigin_allowed(origin: string | string[] | undefined, host: string | undefined, named: ReadonlyArray<string>): boolean {
   if (origin === undefined) return true;
-  const parsed: string | null = origin_parse(origin);
-  if (parsed === null) return false;
-  if (named.includes(parsed)) return true;
-  // The daemon's own page: the same host and port the request itself was sent to.
-  return host !== undefined && host !== '' && new URL(parsed).host.toLowerCase() === host.toLowerCase();
+  // One origin, as a browser serializes it; anything else was written by hand.
+  if (Array.isArray(origin) || origin_parse(origin) !== origin) return false;
+  if (named.includes(origin)) return true;
+  // The daemon's own page: the same host and the same port the request itself was sent to. A port left
+  // off either is the one the page's scheme means, since that is the port the browser spoke to.
+  if (host === undefined || host === '') return false;
+  let page: URL;
+  let spoken: URL;
+  try {
+    page = new URL(origin);
+    spoken = new URL(`${page.protocol}//${host}`);
+  } catch {
+    return false;
+  }
+  if (spoken.host === '' || spoken.pathname !== '/' || spoken.username !== '' || spoken.search !== '' || spoken.hash !== '') return false;
+  const port = (url: URL): string => (url.port === '' ? schemePort_default(page.protocol) : url.port);
+  return page.hostname === spoken.hostname && port(page) === port(spoken);
 }

@@ -97,7 +97,7 @@ describe('a ChRIS profile and what it renders', () => {
     // Only the launcher is given Docker's socket among the porter pair.
     expect(JSON.stringify(porter)).not.toContain('docker.sock');
     expect(compose_render(minimal, berthed).startsWith('# ChRIS, profile minimal, with porter and berths:')).toBe(true);
-    expect(porterEnv_render(berthed, keyed)).toBe('PORTER_CUBE_URL=https://cube.example.org/api/v1/\nPORTER_STATE_DIR=/var/lib/porter/sessions\nPORTER_HOST=0.0.0.0\nPORTER_PORT=4180\nPORTER_PUBLIC_ORIGIN=https://porter.example.org\nPORTER_SECRET=porter-s\nPORTER_BERTHS=launcher\nPORTER_LAUNCHER=/srv/berth/run/launcher.sock\nPORTER_LAUNCHER_SECRET_FILE=/srv/berth/launcher.secret\n');
+    expect(porterEnv_render(berthed, keyed)).toBe('PORTER_CUBE_URL=https://cube.example.org/api/v1/\nPORTER_STATE_DIR=/var/lib/porter/sessions\nPORTER_HOST=0.0.0.0\nPORTER_PORT=4180\nPORTER_PUBLIC_ORIGIN=https://porter.example.org\nPORTER_TRUSTED_PROXIES=uniquelocal\nPORTER_SECRET=porter-s\nPORTER_BERTHS=launcher\nPORTER_LAUNCHER=/srv/berth/run/launcher.sock\nPORTER_LAUNCHER_SECRET_FILE=/srv/berth/launcher.secret\n');
     expect(() => porterEnv_render(berthed, { ...SECRETS, porterSecret: 'porter-s' })).toThrow('berths need the launcher\'s secret');
     expect(launcherEnv_render(minimal, berthed)).toBe(`BERTH_LAUNCHER_LISTEN=/srv/berth/run/launcher.sock\nBERTH_LAUNCHER_SECRET_FILE=/srv/berth/launcher.secret\nBERTH_POLICY_FILE=/srv/berth/policy.json\nBERTH_PROFILE=minimal\nBERTH_PORTER_CONTAINER=${PORTER_CONTAINER}\nBERTH_CUBE_HOST=cube.example.org\n`);
     expect(PORTER_CONTAINER).toBe('chris-porter-1');
@@ -410,7 +410,7 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(compose.services['caddy']?.['networks']).toEqual({ default: { aliases: ['cube.example.org'] } });
     expect(Object.keys(compose.volumes)).toContain('porter');
     expect(vm.files.get('/srv/data/chris/Caddyfile')).toBe('cube.example.org {\n\treverse_proxy chris:8000\n}\n\nporter.example.org {\n\treverse_proxy porter:4180\n}\n');
-    expect(vm.files.get('/srv/data/chris/porter.env')).toBe(`PORTER_CUBE_URL=https://cube.example.org/api/v1/\nPORTER_STATE_DIR=/var/lib/porter/sessions\nPORTER_HOST=0.0.0.0\nPORTER_PORT=4180\nPORTER_PUBLIC_ORIGIN=https://porter.example.org\nPORTER_SECRET=${secrets?.porterSecret}\n`);
+    expect(vm.files.get('/srv/data/chris/porter.env')).toBe(`PORTER_CUBE_URL=https://cube.example.org/api/v1/\nPORTER_STATE_DIR=/var/lib/porter/sessions\nPORTER_HOST=0.0.0.0\nPORTER_PORT=4180\nPORTER_PUBLIC_ORIGIN=https://porter.example.org\nPORTER_TRUSTED_PROXIES=uniquelocal\nPORTER_SECRET=${secrets?.porterSecret}\n`);
     expect(vm.lines.some((line: string): boolean => line.includes(secrets?.porterSecret ?? '?'))).toBe(false);
     expect(vms.record_read('store')?.chris).toMatchObject({ porter: 'porter.example.org', dns: 'seen' });
     expect(plain((await chris_run(context, ['status'])).rendered)).toContain('porter https://porter.example.org/');

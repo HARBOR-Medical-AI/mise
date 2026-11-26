@@ -80,7 +80,7 @@ import { DOOR_COOKIE, doorCookie_options } from './door.js';
 import { loginPage_render, greetPage_render, authorisedPage_render } from './greeter.js';
 import { DeviceCodes, TokenStore, token_looksLike, type DeviceGrant, type DoorToken, type TokenCheck } from './tokens.js';
 import { idleSweep_run } from './sweep.js';
-import { AttemptLimit, HitLimit, VerdictCache } from './limit.js';
+import { AttemptLimit, HitLimit, VerdictCache, type Attempt } from './limit.js';
 import { doorOrigins_resolve, method_isSafe, origin_isDoors, originRefusal_say, type DoorOrigins } from './origin.js';
 import { answer_watch, bodyStream_pass, relayBreak_format, relayFailure_describe, relayTarget_name, relayTimeout_derive } from './relay.js';
 
@@ -313,7 +313,11 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   const tokens: TokenStore = options.tokens ?? new TokenStore(config.tokensFile, config.tokenDays);
   tokens.load();
   const codes: DeviceCodes = options.codes ?? new DeviceCodes();
-  const app: FastifyInstance = Fastify({ logger: options.logger ?? false, trustProxy: true });
+  // Who a request is from, and whether it came by https, is the socket's word unless the peer is a proxy
+  // the operator named (`PORTER_TRUSTED_PROXIES`): only such a peer's forwarded headers are believed. A
+  // peer nobody named that writes `X-Forwarded-For` is counted by its own address.
+  const trusted: ReadonlyArray<string> = config.trustedProxies ?? [];
+  const app: FastifyInstance = Fastify({ logger: options.logger ?? false, trustProxy: trusted.length === 0 ? false : [...trusted] });
 
   // A porter restarted adopts the sessions its predecessor started: their
   // berths are in the state directory, and a cookie that names one still
@@ -333,20 +337,29 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   await app.register(replyFrom);
 
   // Where a request on the cookie came from. A browser sends the door's cookie with any request to the door,
-  // whoever wrote the page that made it; so one that changes something on the strength of that cookie, or a
-  // login by password (which is what sets it), must say it came from the door itself. A program carrying a
-  // bearer token and no cookie is not a browser being steered, and is not asked.
+  // whoever wrote the page that made it; so one that changes something on the strength of that cookie must
+  // say it came from the door itself. A login by password, which is what sets the cookie, is asked the same
+  // in its own route (the password branch of POST /login), where the router has already said what it is.
+  // A program carrying a bearer token and no cookie is not a browser being steered, and is not asked.
   const origins: DoorOrigins = config.origins ?? doorOrigins_resolve(undefined, config.port);
+  // A request that carried two `Origin` lines arrives here with them joined by a comma, which is no origin.
+  const originLines_read = (raw: IncomingMessage): string | string[] | undefined => raw.headers.origin;
+  /** Sends the refusal of a request that did not come from the door, and logs it; true when it was refused. */
+  const elsewhere_refuse = async (request: FastifyRequest, reply: FastifyReply): Promise<boolean> => {
+    const sent: string | string[] | undefined = originLines_read(request.raw);
+    if (origin_isDoors(sent, origins.origins)) return false;
+    options.log?.(`refused ${request.method} ${request.routeOptions.url ?? 'an unrouted address'}: ${originRefusal_say(sent, origins)}`);
+    await reply.code(403).send({ error: originRefusal_say(sent, origins) });
+    return true;
+  };
   app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (method_isSafe(request.method)) return;
-    const rides: boolean = cookie_carried(request.headers.cookie);
-    const byBearer: boolean = bearer_extract(request) !== null;
-    const passwordLogin: boolean = request.method === 'POST' && request.url.split('?')[0] === '/login' && !byBearer;
-    if (!rides && !passwordLogin) return;
-    if (origin_isDoors(request.headers.origin, origins.origins)) return;
-    options.log?.(`refused ${request.method} ${request.url.split('?')[0]}: ${originRefusal_say(request.headers.origin, origins)}`);
-    await reply.code(403).send({ error: originRefusal_say(request.headers.origin, origins) });
+    if (!cookie_carried(request.headers.cookie)) return;
+    await elsewhere_refuse(request, reply);
   });
+  // Behind a proxy that ends TLS the socket is plain; a door whose every public name is https is reached by https.
+  const cookie_isSecure = (request: FastifyRequest): boolean =>
+    request.protocol === 'https' || (origins.named && origins.origins.every((one: string): boolean => one.startsWith('https://')));
 
   /**
    * Finds where an entry's session answers now, after its berth failed to.
@@ -509,6 +522,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       username = byToken.user;
       cubeToken = null;
     } else {
+      // A password is taken only from the door's own page. Asked here, in the route the router matched and
+      // on the branch that reads a password, so no spelling of the address goes round it.
+      if (await elsewhere_refuse(request, reply)) return reply;
       const parsed = loginSchema.safeParse(request.body);
       if (!parsed.success) {
         return refuse(400, 'a username and a password are required');
@@ -521,22 +537,28 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       const held: number = Math.max(loginsByAddress.wait_read(request.ip), loginsByName.wait_read(name));
       if (held > 0) {
         options.log?.(`refused a login as ${username}: too many failed tries (${held} s to wait)`);
-        void reply.header('retry-after', String(held));
-        return refuse(429, `too many failed logins; try again in ${held} s`);
+        const words: string = `too many failed logins; try again in ${held} s`;
+        void reply.code(429).header('retry-after', String(held));
+        if (wantsJson) return reply.send({ error: words });
+        // A form is answered with its own page and the reason on it: the status and the wait are the answer's, not a redirect's.
+        return reply.type('text/html; charset=utf-8').send(loginPage_render(config.cubeUrl, words, fromDevice ? 'ask' : null));
       }
-      loginsByAddress.try_begin(request.ip);
-      loginsByName.try_begin(name);
+      const byAddress: Attempt = loginsByAddress.try_begin(request.ip);
+      const byName: Attempt = loginsByName.try_begin(name);
+      /** Tells both counts how this try ended: only a password CUBE refused is a failure. */
+      const tries_tell = (failed: boolean): void => {
+        if (failed) { loginsByAddress.try_fail(byAddress); loginsByName.try_fail(byName); } else { loginsByAddress.try_forgive(byAddress); loginsByName.try_forgive(byName); }
+      };
       const minted: TokenMint = await mint(config.cubeUrl, username, parsed.data.password).catch((error: unknown): never => {
-        // A try that never got an answer is not a failed password.
-        loginsByAddress.try_forgive(request.ip);
-        loginsByName.try_forgive(name);
+        tries_tell(false);
         throw error;
       });
       if (minted.token === null) {
-        return refuse(401, minted.reason ?? 'refused');
+        // CUBE down, unreachable or answering nonsense gave no verdict on the password: nobody is held for it.
+        tries_tell(minted.why === 'rejected');
+        return refuse(401, minted.reason);
       }
-      loginsByAddress.try_forgive(request.ip);
-      loginsByName.try_forgive(name);
+      tries_tell(false);
       cubeToken = minted.token;
     }
     const identity: string = identity_normalise(username, config.cubeUrl);
@@ -585,7 +607,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     };
     const found: Berth | null = await host.find(identity);
     const key: string = registry.key_derive(identity);
-    void reply.setCookie(DOOR_COOKIE, key, doorCookie_options(config.cookieHours, request.protocol === 'https'));
+    void reply.setCookie(DOOR_COOKIE, key, doorCookie_options(config.cookieHours, cookie_isSecure(request)));
     if (byToken !== null) options.log?.(`${username} came through by door token "${byToken.name}"`);
     // A boot already under way is joined, never restarted: two scripts
     // arriving together, or a browser and a script, would otherwise take
@@ -720,7 +742,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     if (!parsed.success) return reply.code(400).send({ error: 'switch wants {to: "stratus" | "chris", cloud?: "oci", spend?: boolean}' });
     const owner: string = owner_extract(identity);
     const user: string = user_extract(identity);
-    const cookie = (to: string): void => { void reply.setCookie(DOOR_COOKIE, to, doorCookie_options(config.cookieHours, request.protocol === 'https')); };
+    const cookie = (to: string): void => { void reply.setCookie(DOOR_COOKIE, to, doorCookie_options(config.cookieHours, cookie_isSecure(request))); };
     if (parsed.data.to === 'chris') {
       const found: Berth | null = await host.find(owner);
       if (found === null) return reply.code(409).send({ error: `${user}'s ChRIS session is not running: log in again` });
@@ -892,8 +914,8 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       }
       // The wire is opened on the cookie: it must be opened from the door's own page (or by a chell that
       // says it stands at this door), never from a page somewhere else that a browser was led to.
-      if (!origin_isDoors(request.headers.origin, origins.origins)) {
-        options.log?.(`refused a wire to ${entry.user}'s session: ${originRefusal_say(request.headers.origin, origins)}`);
+      if (!origin_isDoors(originLines_read(request), origins.origins)) {
+        options.log?.(`refused a wire to ${entry.user}'s session: ${originRefusal_say(originLines_read(request), origins)}`);
         socket.write('HTTP/1.1 403 Forbidden\r\nconnection: close\r\ncontent-length: 0\r\n\r\n');
         socket.destroy();
         return;

@@ -582,7 +582,8 @@ export class CalypsoDaemon {
       const wss: WebSocketServer = new WebSocketServer({
         server: httpServer,
         verifyClient: (info: { origin?: string; req: IncomingMessage }): boolean => {
-          const origin: string | undefined = info.req.headers.origin ?? (info.origin !== undefined && info.origin !== '' ? info.origin : undefined);
+          // Two `Origin` lines arrive joined by a comma, which is no origin and is refused as none.
+          const origin: string | string[] | undefined = info.req.headers.origin;
           const allowed: boolean = attachOrigin_allowed(origin, info.req.headers.host, attachOrigins_read(process.env));
           if (!allowed) console.error(`[calypso] refused an attach from ${String(origin)}: not this daemon's own page, and not named in CALYPSO_ORIGINS`);
           return allowed;
@@ -705,6 +706,12 @@ export class CalypsoDaemon {
     // A download's stop changes something, and so is a POST: a GET changes nothing here, which is what
     // lets a door in front ask only a request that is not a GET where it came from.
     const stopping: boolean = query.has('cancel');
+    // One ask names one download for one purpose: a stop and a progress ask together, or either twice, would
+    // leave it to the order of reading which download is meant.
+    if (query.getAll('cancel').length + query.getAll('progress').length > 1) {
+      refuse(400, 'one of progress or cancel, once');
+      return;
+    }
     if (request.method === 'POST' && !stopping) {
       await this.vfs_receive(request, response, query, refuse);
       return;

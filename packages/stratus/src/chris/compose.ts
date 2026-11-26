@@ -202,6 +202,9 @@ export function porterEnv_render(target: ChrisTarget, secrets: ChrisSecrets): st
     // What browsers reach this porter as: the name Caddy serves it under, over HTTPS. The porter takes a
     // password, and anything on its cookie, only from a page of that origin.
     ...(target.porter !== undefined && target.porter !== null ? [['PORTER_PUBLIC_ORIGIN', `https://${target.porter}`]] as Array<[string, string]> : []),
+    // Who a visitor is, is Caddy's word: it reaches porter over the compose network, a private range, and
+    // nothing else is published to this port.
+    ['PORTER_TRUSTED_PROXIES', 'uniquelocal'],
     ['PORTER_SECRET', secrets.porterSecret],
     ...(berths_has(target) ? [['PORTER_BERTHS', 'launcher'], ['PORTER_LAUNCHER', BERTH_SOCKET], ['PORTER_LAUNCHER_SECRET_FILE', `${BERTH_MOUNT}/launcher.secret`]] as Array<[string, string]> : []),
   ];

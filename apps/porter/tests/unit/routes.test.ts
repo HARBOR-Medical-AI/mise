@@ -91,7 +91,7 @@ beforeEach(async () => {
     host,
     log: (line: string): void => { said.push(line); },
     mint: async (_cube: string, username: string, password: string) =>
-      password === 'right' ? { token: `TOKEN-${username}` } : { token: null, reason: 'CUBE refused the login' },
+      password === 'right' ? { token: `TOKEN-${username}` } : { token: null, why: 'rejected' as const, reason: 'CUBE refused the login' },
   });
 });
 
@@ -131,10 +131,15 @@ describe('POST /login', () => {
     expect(raw).not.toContain('Secure');
   });
 
-  it('marks the cookie Secure when a front says the page came over TLS', async () => {
-    const response = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', 'x-forwarded-proto': 'https' }, payload: { username: 'chris', password: 'right' } });
+  it('marks the cookie Secure when a front its operator named says the page came over TLS, and not on a stranger\'s say-so', async () => {
+    const fronted: PorterApp = await porterApp_build({ installed: {}, config: { ...config, trustedProxies: ['127.0.0.1'] }, host, mint: async () => ({ token: 'T' }) });
+    const response = await fronted.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', 'x-forwarded-proto': 'https' }, payload: { username: 'chris', password: 'right' } });
     const raw: string = String(Array.isArray(response.headers['set-cookie']) ? response.headers['set-cookie'][0] : response.headers['set-cookie']);
     expect(raw).toContain('Secure');
+    await fronted.app.close();
+    // No proxy named: the header is anybody's to write, and is not believed.
+    const unfronted = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', 'x-forwarded-proto': 'https' }, payload: { username: 'chris', password: 'right' } });
+    expect(String(unfronted.headers['set-cookie'])).not.toContain('Secure');
   });
 
   it('takes a form from the door and sends the browser to the greet while the session boots', async () => {

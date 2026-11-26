@@ -48,7 +48,23 @@ describe('where an attach came from', () => {
   it('takes no origin, the daemon\'s own page, and a named origin; nothing else', () => {
     expect(attachOrigin_allowed(undefined, '127.0.0.1:4000', [])).toBe(true);
     expect(attachOrigin_allowed('http://127.0.0.1:4000', '127.0.0.1:4000', [])).toBe(true);
-    expect(attachOrigin_allowed('http://Pangea.example.org:4000', 'pangea.example.org:4000', [])).toBe(true);
+    expect(attachOrigin_allowed('http://pangea.example.org:4000', 'Pangea.example.org:4000', [])).toBe(true);
+    // A port left off is the one the page's scheme means, on either side.
+    expect(attachOrigin_allowed('http://pangea.example.org', 'pangea.example.org:80', [])).toBe(true);
+    expect(attachOrigin_allowed('http://pangea.example.org', 'pangea.example.org', [])).toBe(true);
+    expect(attachOrigin_allowed('https://pangea.example.org', 'pangea.example.org:443', [])).toBe(true);
+    expect(attachOrigin_allowed('https://pangea.example.org', 'pangea.example.org', [])).toBe(true);
+    expect(attachOrigin_allowed('https://pangea.example.org', 'pangea.example.org:80', [])).toBe(false);
+    expect(attachOrigin_allowed('http://pangea.example.org', 'pangea.example.org:443', [])).toBe(false);
+    expect(attachOrigin_allowed('http://pangea.example.org:8080', 'pangea.example.org', [])).toBe(false);
+    expect(attachOrigin_allowed('http://[::1]:4000', '[::1]:4000', [])).toBe(true);
+    // Only one origin, as a browser serializes it; a hand-written spelling of the right one is refused.
+    for (const hand of ['HTTP://127.0.0.1:4000', 'http://127.0.0.1:4000/', ' http://127.0.0.1:4000', 'http://127.0.0.1:4000, http://127.0.0.1:4000', 'http://user@127.0.0.1:4000', 'http://Pangea.example.org:4000']) {
+      expect([hand, attachOrigin_allowed(hand, hand.includes('angea') ? 'pangea.example.org:4000' : '127.0.0.1:4000', [])]).toEqual([hand, false]);
+    }
+    expect(attachOrigin_allowed(['http://127.0.0.1:4000', 'http://127.0.0.1:4000'], '127.0.0.1:4000', [])).toBe(false);
+    // A Host that is more than a host is not compared at all.
+    for (const host of ['127.0.0.1:4000/x', 'user@127.0.0.1:4000', '127.0.0.1:4000?x', 'not a host']) expect(attachOrigin_allowed('http://127.0.0.1:4000', host, [])).toBe(false);
     // Another port on this machine is another page: there is no pass for loopback.
     expect(attachOrigin_allowed('http://127.0.0.1:5173', '127.0.0.1:4000', [])).toBe(false);
     expect(attachOrigin_allowed('http://localhost:4000', '127.0.0.1:4000', [])).toBe(false);
@@ -120,6 +136,15 @@ describe('a download\'s stop', () => {
       expect(JSON.parse(stopped.body)).toMatchObject({ phase: 'cancelled' });
       expect((await http_ask('POST', `${base}&cancel=dl-nosuch`)).status).toBe(404);
       expect((await http_ask('POST', `http://127.0.0.1:${port}/vfs?token=wrong&cancel=dl-abc123`)).status).toBe(404);
+      // One ask names one download for one purpose. A stop and a progress ask together, or either twice, is
+      // refused before the ledger is touched: both downloads go on.
+      ledger.begin('dl-one111', '/a');
+      ledger.begin('dl-two222', '/b');
+      for (const pair of ['progress=dl-one111&cancel=dl-two222', 'cancel=dl-two222&progress=dl-one111', 'cancel=dl-one111&cancel=dl-two222', 'progress=dl-one111&progress=dl-two222']) {
+        for (const method of ['POST', 'GET']) expect([pair, method, (await http_ask(method, `${base}&${pair}`)).status]).toEqual([pair, method, 400]);
+      }
+      expect(ledger.report('dl-one111')?.phase).toBe('opening');
+      expect(ledger.report('dl-two222')?.phase).toBe('opening');
     } finally {
       await daemon.stop();
     }

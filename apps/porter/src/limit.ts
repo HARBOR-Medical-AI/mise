@@ -53,17 +53,29 @@ export class HitLimit {
   }
 }
 
+/** One try, held from the moment it begins: the handle its outcome is told by. */
+export interface Attempt {
+  /** Whose try it is. */
+  readonly key: string;
+  /** When it began, in ms. */
+  readonly at: number;
+  /** True until its outcome is told. */
+  pending: boolean;
+}
+
 /**
  * A count of tries that failed, per key, in a sliding span.
  *
- * A try is taken up when it begins and given back when it turns out well,
- * so only failures stay counted; and because it is taken up before its
- * outcome is known, tries made all at once are counted while they are
- * still in the air, and cannot all get through on a count that has not
- * caught up with them.
+ * A try is taken up when it begins and is counted from then, so tries made
+ * all at once cannot all get through on a count that has not caught up
+ * with them. Its outcome is told on the try itself: failed, and it stays
+ * counted for the span from when it began; forgiven (the password was
+ * right, or no verdict on it was ever given), and that very try is taken
+ * out, whichever others began or ended meanwhile. A try whose outcome is
+ * not yet known is counted however long it has been in the air.
  */
 export class AttemptLimit {
-  private readonly tries: Map<string, number[]> = new Map();
+  private readonly tries: Map<string, Attempt[]> = new Map();
   private readonly allowed: number;
   private readonly spanMs: number;
   private readonly now: () => number;
@@ -79,10 +91,13 @@ export class AttemptLimit {
     this.now = now;
   }
 
-  /** The tries of a key still inside the span. */
-  private recent_read(key: string): number[] {
+  /** The tries of a key that still count: in the air, or failed inside the span. Forgets the rest. */
+  private counted_read(key: string): Attempt[] {
     const at: number = this.now();
-    return (this.tries.get(key) ?? []).filter((one: number): boolean => at - one < this.spanMs);
+    const counted: Attempt[] = (this.tries.get(key) ?? []).filter((one: Attempt): boolean => one.pending || at - one.at < this.spanMs);
+    if (counted.length === 0) this.tries.delete(key);
+    else this.tries.set(key, counted);
+    return counted;
   }
 
   /**
@@ -92,34 +107,67 @@ export class AttemptLimit {
    * @returns Zero when it may try now; otherwise the whole seconds to wait.
    */
   public wait_read(key: string): number {
-    const recent: number[] = this.recent_read(key);
-    if (recent.length < this.allowed) return 0;
-    return Math.max(1, Math.ceil(((recent[0] as number) + this.spanMs - this.now()) / 1000));
+    const counted: Attempt[] = this.counted_read(key);
+    if (counted.length < this.allowed) return 0;
+    // Room is made when enough of the failed ones have aged out; the ones in the air may yet be forgiven,
+    // and until they are the wait is at least a second.
+    const failed: number[] = counted.filter((one: Attempt): boolean => !one.pending).map((one: Attempt): number => one.at).sort((a: number, b: number): number => a - b);
+    const toFree: number = counted.length - this.allowed;
+    const frees: number | undefined = failed[toFree];
+    return frees === undefined ? 1 : Math.max(1, Math.ceil((frees + this.spanMs - this.now()) / 1000));
   }
 
   /**
    * Takes up a try for a key, before its outcome is known.
    *
    * @param key - Who is trying.
+   * @returns The try, to tell its outcome by.
    */
-  public try_begin(key: string): void {
-    const recent: number[] = this.recent_read(key);
-    recent.push(this.now());
+  public try_begin(key: string): Attempt {
+    const attempt: Attempt = { key, at: this.now(), pending: true };
+    const counted: Attempt[] = this.counted_read(key);
+    counted.push(attempt);
     this.tries.delete(key);
-    this.tries.set(key, recent);
-    while (this.tries.size > MEMORY_CAP) this.tries.delete(this.tries.keys().next().value as string);
+    this.tries.set(key, counted);
+    this.room_make();
+    return attempt;
   }
 
   /**
-   * Gives a try back: it did not fail.
+   * Tells a try's outcome: it failed, and stays counted for the span.
    *
-   * @param key - Who tried.
+   * @param attempt - The try.
    */
-  public try_forgive(key: string): void {
-    const recent: number[] = this.recent_read(key);
-    recent.pop();
-    if (recent.length === 0) this.tries.delete(key);
-    else this.tries.set(key, recent);
+  public try_fail(attempt: Attempt): void {
+    attempt.pending = false;
+    this.counted_read(attempt.key);
+  }
+
+  /**
+   * Tells a try's outcome: it is not a failure, and is taken out. Only that try.
+   *
+   * @param attempt - The try.
+   */
+  public try_forgive(attempt: Attempt): void {
+    attempt.pending = false;
+    const kept: Attempt[] = (this.tries.get(attempt.key) ?? []).filter((one: Attempt): boolean => one !== attempt);
+    if (kept.length === 0) this.tries.delete(attempt.key);
+    else this.tries.set(attempt.key, kept);
+  }
+
+  /**
+   * Keeps the memory inside its cap: keys with nothing left that counts go
+   * first, then the keys longest untouched whose tries have all been told.
+   * A key with a try in the air is never let go, since its outcome is
+   * still to be told on it.
+   */
+  private room_make(): void {
+    if (this.tries.size <= MEMORY_CAP) return;
+    for (const key of [...this.tries.keys()]) this.counted_read(key);
+    for (const [key, held] of this.tries) {
+      if (this.tries.size <= MEMORY_CAP) return;
+      if (held.every((one: Attempt): boolean => !one.pending)) this.tries.delete(key);
+    }
   }
 }
 

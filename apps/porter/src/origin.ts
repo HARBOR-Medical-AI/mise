@@ -33,6 +33,7 @@ export function origin_normalise(text: string): string | null {
   try {
     const url: URL = new URL(text.trim());
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (url.username !== '' || url.password !== '') return null;
     return url.origin;
   } catch {
     return null;
@@ -58,7 +59,8 @@ export interface DoorOrigins {
 export function doorOrigins_resolve(configured: string | undefined, port: number): DoorOrigins {
   const given: string[] = (configured ?? '').split(',').map((one: string): string => one.trim()).filter((one: string): boolean => one !== '');
   if (given.length === 0) {
-    return { origins: LOOPBACK_HOSTS.map((host: string): string => `http://${host}:${port}`), named: false };
+    // Written as a browser writes them: a default port is left off (`http://127.0.0.1`, not `:80`).
+    return { origins: LOOPBACK_HOSTS.map((host: string): string => new URL(`http://${host}:${port}`).origin), named: false };
   }
   const origins: string[] = [];
   for (const one of given) {
@@ -80,16 +82,31 @@ export function method_isSafe(method: string | undefined): boolean {
 }
 
 /**
+ * An `Origin` header as a browser sends one: exactly one origin, already
+ * in its serialized form (lower case, no path, no default port, nothing
+ * around it). What an operator types is forgiven its spelling
+ * (`origin_normalise`); what arrives on a request is not, since a browser
+ * never spells it another way and anything else was written by hand.
+ *
+ * @param header - The request's `Origin`, as sent.
+ * @returns The origin, or null when none was sent, several were, or it is not a serialized origin.
+ */
+export function originHeader_read(header: string | string[] | undefined): string | null {
+  if (header === undefined) return null;
+  if (Array.isArray(header) && header.length !== 1) return null;
+  const sent: string = Array.isArray(header) ? (header[0] as string) : header;
+  return origin_normalise(sent) === sent ? sent : null;
+}
+
+/**
  * Whether a request said it came from the door.
  *
  * @param header - The request's `Origin`, as sent.
  * @param allowed - The origins the door answers as.
- * @returns True only when an `Origin` was sent and is one of them.
+ * @returns True only when one serialized `Origin` was sent and is one of them.
  */
 export function origin_isDoors(header: string | string[] | undefined, allowed: ReadonlyArray<string>): boolean {
-  const sent: string | undefined = Array.isArray(header) ? header[0] : header;
-  if (sent === undefined) return false;
-  const origin: string | null = origin_normalise(sent);
+  const origin: string | null = originHeader_read(header);
   return origin !== null && allowed.includes(origin);
 }
 
@@ -101,7 +118,7 @@ export function origin_isDoors(header: string | string[] | undefined, allowed: R
  * @returns One line.
  */
 export function originRefusal_say(header: string | string[] | undefined, origins: DoorOrigins): string {
-  const sent: string | undefined = Array.isArray(header) ? header[0] : header;
+  const sent: string | undefined = Array.isArray(header) ? header.join(', ') : header;
   const from: string = sent === undefined ? 'a request that does not say where it came from' : `a request from ${sent}`;
   const fix: string = origins.named ? '' : '; if this door is reached by another name, set PORTER_PUBLIC_ORIGIN to it';
   return `the door does not take ${from}: it answers as ${origins.origins.join(', ')}${fix}`;
