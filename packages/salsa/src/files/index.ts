@@ -263,18 +263,36 @@ export async function files_create(
 }
 
 /**
+ * The content of a file as the Blob an upload takes.
+ *
+ * @param content - Text, bytes, or a Blob already.
+ * @returns The same content as a Blob.
+ */
+function content_convertToBlob(content: string | Buffer | Blob): Blob {
+  if (typeof content === 'string') return new Blob([content]);
+  if (Buffer.isBuffer(content)) return new Blob([new Uint8Array(content)]);
+  return content;
+}
+
+/**
  * Creates a new empty file at the specified path (like Unix touch).
  * Optionally creates the file with specified content.
  *
- * @param path - The ChRIS path for the new file.
+ * @param written - The ChRIS path for the new file; one written without its
+ *   leading slash is read from the root.
  * @param content - Optional content to write to the file (string, Buffer, or Blob).
  * @returns A Promise resolving to true on success, false on failure.
  */
 export async function files_touch(
-  target: string,
+  written: string,
   content?: string | Buffer | Blob
 ): Promise<boolean> {
   const fileContent: string | Buffer | Blob = content ?? new Blob([""]);
+  // One name, from the root, for every question asked of the path: whether
+  // a projection owns it, what holds it, and where the bytes go. A spelling
+  // such as `./proc/...` is otherwise a projection's file to one and a CUBE
+  // file to another.
+  const target: string = path.posix.resolve('/', written);
 
   // A projection's file (a feed's note under /proc) is written through the
   // projection that owns it, never uploaded into CUBE's store as a file of
@@ -292,22 +310,14 @@ export async function files_touch(
   // a file leaves the OLD content in place and still reports success, so a
   // caller writing content to a file it has written before was silently
   // keeping the first version forever. Content given for a path that already
-  // exists is a REWRITE, so the file it holds is removed first and the
-  // failure to remove it is reported rather than written over.
+  // exists is a REWRITE. It was once done by removing the file and creating
+  // it again, and a create that failed left nothing at the name; the swap in
+  // `./replace.js` keeps the old content until the new is seen in place.
+  // Which of the two it is, a first write or a rewrite, is decided there on
+  // proof: a parent that would not list in full is not read as "no file".
   if (content !== undefined) {
-    const mark: number = errorStack.checkpoint_mark();
-    const existing: Result<number> = await fileId_resolve(target);
-    if (!existing.ok) {
-      // Not being there is the ordinary case, not a fault to report.
-      errorStack.checkpoint_drain(mark);
-    } else {
-      const parent: string = path.posix.dirname(target);
-      const removed: boolean = await files_delete(existing.value, "files", parent);
-      if (!removed) {
-        errorStack.stack_push("error", `Could not rewrite ${target}: the file already there could not be removed.`);
-        return false;
-      }
-    }
+    const { file_write } = await import("./replace.js");
+    return await file_write(target, content_convertToBlob(fileContent));
   }
 
   return await files_create(fileContent, target);
@@ -697,6 +707,41 @@ export async function files_listOutcome(
 }
 
 /**
+ * Lists every file, link or directory of a folder, or says it could not.
+ *
+ * The strict counterpart of {@link files_listOutcome}, for an act that
+ * destroys or overwrites on the strength of what a folder holds. That
+ * listing is made for showing: a page it cannot read ends its walk with the
+ * rows it has, and an answer that is no list at all reads as `empty`. Here
+ * the whole collection is walked (cumin's `resources_getWhole`), and a page
+ * that could not be fetched, is not a list, or carries no items is `refused`.
+ *
+ * @param assetName - The type of asset to list ('files', 'links', 'dirs').
+ * @param path - The absolute ChRIS path of the folder.
+ * @returns `listing` with every row, `empty` when the folder answered in
+ *   full and holds none of this kind, `missing` when no listing could be
+ *   made for the path, `refused` when the walk failed.
+ *
+ * @example
+ * ```ts
+ * const files: ListingOutcome = await files_listWhole('files', '/home/ada/uploads');
+ * const proved: boolean = files.kind === 'listing' || files.kind === 'empty';
+ * ```
+ */
+export async function files_listWhole(assetName: string, path: string): Promise<ListingOutcome> {
+  const group: ChRISEmbeddedResourceGroup<ChrisPathNode> | null = await files_getGroup(assetName, path);
+  if (!group) {
+    return { kind: "missing" };
+  }
+  try {
+    const data: FilteredResourceData = await group.asset.resources_getWhole();
+    return data.tableData.length === 0 ? { kind: "empty" } : { kind: "listing", data };
+  } catch (error: unknown) {
+    return { kind: "refused", error: error instanceof Error ? error : new Error(String(error)) };
+  }
+}
+
+/**
  * Get the list of available fields for files, links, or directories.
  *
  * @param assetName - The type of asset ('files', 'links', 'dirs').
@@ -795,16 +840,18 @@ export async function files_getSingle(
 
 
 /**
- * Shares files in ChRIS.
+ * Answers that a file cannot be shared by its id from here.
  *
- * @param fileId - The ID of the file to share.
- * @param options - Options for sharing (e.g., user, permissions).
- * @returns A Promise resolving to true.
+ * Sharing by file id is not offered: permissions are set through `setfacl`.
+ * This says so, and shares nothing.
+ *
+ * @param fileId - The ID of the file asked about.
+ * @param _options - The sharing options asked for; none is acted on.
+ * @returns Always false, with the reason on the error stack.
  */
-export async function files_share(fileId: number, options: FileShareOptions): Promise<boolean> {
-  // Implement actual sharing logic using cumin/chrisapi
-  runtimeOutput_data(`Sharing file ${fileId} with options: ${JSON.stringify(options)}\n`);
-  return Promise.resolve(true);
+export async function files_share(fileId: number, _options: FileShareOptions): Promise<boolean> {
+  errorStack.stack_push("error", `Sharing file ${fileId} by its id is not offered here: nothing was shared. Permissions are set with setfacl.`);
+  return false;
 }
 
 /**

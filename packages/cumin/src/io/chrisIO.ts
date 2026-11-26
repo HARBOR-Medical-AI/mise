@@ -24,6 +24,27 @@ import { Err, Ok, Result } from "../utils/result.js";
 import { STREAM_STALL_MS, stream_watchStalls, upload_watchStalls, type UploadWatch } from "./streamWatch.js";
 import type { Readable } from "node:stream";
 
+/** The status CUBE answers for a resource that is not there. */
+const HTTP_NOT_FOUND: number = 404;
+
+/** The status CUBE answers a request it read and refused for what it carried. */
+const HTTP_BAD_REQUEST: number = 400;
+
+/**
+ * What CUBE stored for an upload: which file, and where.
+ *
+ * @example
+ * ```ts
+ * const receipt: UploadReceipt = { id: 41, path: '/home/ada/uploads/notes.txt' };
+ * ```
+ */
+export interface UploadReceipt {
+  /** The id CUBE gave the stored file. */
+  readonly id: number;
+  /** The path it was stored at, with a leading slash; not always the one asked for. */
+  readonly path: string;
+}
+
 /**
  * UserFile data with fname field.
  */
@@ -79,6 +100,60 @@ function httpStatus_extract(error: unknown): number | null {
   };
   const status: unknown = candidate.response?.status ?? candidate.status;
   return typeof status === "number" ? status : null;
+}
+
+/** The older rename field, which a CUBE that wants it names as missing. */
+const LEGACY_RENAME_FIELD: string = 'path';
+
+/**
+ * What a CUBE that reads the older field says when a rename did not carry
+ * it. CUBE's serializers raise this, under `non_field_errors`, when an
+ * update names neither `public` nor the rename field they read: "At least
+ * one of the fields 'public' or 'path' must be provided."
+ */
+const LEGACY_FIELD_MISSING: RegExp = /At least one of the fields 'public' or 'path' must be provided/;
+
+/**
+ * What CUBE's serializers say of a field they require and did not get: the
+ * whole message, since CUBE writes path names into its other refusals and
+ * a folder may be called `required`.
+ */
+const FIELD_REQUIRED: string = 'This field is required.';
+
+/**
+ * The messages a refusal's body carries under one key.
+ *
+ * @param body - The body of a 400.
+ * @param key - The key.
+ * @returns Its messages as text; none when the key is absent.
+ */
+function refusalMessages_read(body: object, key: string): string[] {
+  const said: unknown = (body as Record<string, unknown>)[key];
+  if (said === undefined || said === null) return [];
+  return (Array.isArray(said) ? said : [said]).map((one: unknown): string => String(one));
+}
+
+/**
+ * Whether a failed rename was refused because CUBE does not read the field
+ * it was spelt with.
+ *
+ * Only then is the other spelling worth a request: CUBE read this one and
+ * did nothing with it. Two answers are that evidence and nothing else is:
+ * CUBE's own sentence that neither `public` nor `path` was provided, or
+ * the field `path` reported as required. A 400 about the value of either
+ * field (a name that is not valid, a destination that is held) is CUBE
+ * knowing the field and refusing the move; it would refuse it again.
+ *
+ * @param error - The thrown value.
+ * @returns True for an HTTP 400 that says the older field was not sent.
+ */
+function fieldRefusal_detect(error: unknown): boolean {
+  if (httpStatus_extract(error) !== HTTP_BAD_REQUEST) return false;
+  const body: unknown = (error as { response?: { data?: unknown } }).response?.data;
+  if (typeof body === 'string') return LEGACY_FIELD_MISSING.test(body);
+  if (body === null || typeof body !== 'object') return false;
+  if (refusalMessages_read(body, 'non_field_errors').some((said: string): boolean => LEGACY_FIELD_MISSING.test(said))) return true;
+  return refusalMessages_read(body, LEGACY_RENAME_FIELD).some((said: string): boolean => said.trim() === FIELD_REQUIRED);
 }
 
 export class ChrisIO {
@@ -456,6 +531,83 @@ export class ChrisIO {
   }
 
   /**
+   * Uploads a file and answers what CUBE stored, without touching it after.
+   *
+   * {@link file_upload} answers only yes or no, and on a name CUBE changed
+   * it may rename the file back. A caller that goes on to act on the file
+   * (to move it, or to delete it) needs to know which file it is: its id,
+   * and the path it actually landed at, which is not always the one asked.
+   *
+   * @param fileBlob - The file content.
+   * @param uploadDir - The ChRIS folder to upload into.
+   * @param filename - The name asked for.
+   * @returns The stored file's id and path, or Err with the reason stacked
+   *   when the upload failed or CUBE's answer names no usable id or path.
+   */
+  async file_uploadReceipted(fileBlob: Blob, uploadDir: string, filename: string): Promise<Result<UploadReceipt>> {
+    const client: Client | null = await this.client_get();
+    if (!client) {
+      errorStack.stack_push("error", "ChRIS client is not initialized");
+      return Err<UploadReceipt>();
+    }
+    const normalizedUploadDir: string = uploadDir.startsWith('/') ? uploadDir.substring(1) : uploadDir;
+    const fullPath: string = normalizedUploadDir.endsWith('/') ? normalizedUploadDir + filename : `${normalizedUploadDir}/${filename}`;
+    const watch: UploadWatch = upload_watchStalls(fileBlob, filename, STREAM_STALL_MS);
+    const abandon: AbortController = new AbortController();
+    watch.stalled.catch((stall: unknown): void => { abandon.abort(stall); });
+    let uploaded: Record<string, unknown>;
+    try {
+      uploaded = await client_userFileUpload(client, fullPath, watch.file, abandon.signal);
+    } catch (error: unknown) {
+      const errorMsg: string = error instanceof Error ? error.message : String(error);
+      errorStack.stack_push("error", `Failed to upload file ${filename} to ${uploadDir}: ${errorMsg}`);
+      return Err<UploadReceipt>();
+    } finally {
+      watch.stop();
+    }
+    const id: unknown = uploaded.id;
+    const fname: unknown = uploaded.fname;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0 || typeof fname !== 'string' || fname === '') {
+      errorStack.stack_push("error", `CUBE took ${filename} and did not say which file it made of it`);
+      return Err<UploadReceipt>();
+    }
+    return Ok({ id, path: fname.startsWith('/') ? fname : `/${fname}` });
+  }
+
+  /**
+   * Where a file is now, asked of CUBE by the file's id.
+   *
+   * After a move whose reply was lost, the move may or may not have
+   * happened; this is how a caller finds out before it undoes anything.
+   *
+   * @param fileId - The file's id.
+   * @returns The file's path with a leading slash; null when CUBE says the
+   *   file is not there (404); Err when CUBE could not be asked or would
+   *   not say, which is neither.
+   */
+  async file_locate(fileId: number): Promise<Result<string | null>> {
+    const client: Client | null = await this.client_get();
+    if (!client) {
+      errorStack.stack_push("error", "ChRIS client is not initialized");
+      return Err<string | null>();
+    }
+    let status: number | null = null;
+    try {
+      const userFile: UserFile | null = await client.getUserFile(fileId);
+      const fname: unknown = (userFile as UserFileWithData | null)?.data?.fname;
+      if (typeof fname === 'string' && fname !== '') return Ok(fname.startsWith('/') ? fname : `/${fname}`);
+    } catch (error: unknown) {
+      status = httpStatus_extract(error);
+    }
+    // The client answers a refusal with null as readily as an absence, so
+    // CUBE is asked plainly what it thinks of this id.
+    status ??= await this.fileStatus_probe(fileId);
+    if (status === HTTP_NOT_FOUND) return Ok(null);
+    errorStack.stack_push("error", `Could not learn where file ID ${fileId} is${status === null ? '' : ` (HTTP ${status})`}`);
+    return Err<string | null>();
+  }
+
+  /**
    * Deletes one file by its id, without listing anything.
    *
    * A file that cannot be LISTED must still be deletable: a folder whose
@@ -653,11 +805,25 @@ export class ChrisIO {
 
   /**
    * Moves (renames) a file in ChRIS by updating its path.
+   *
+   * The rename field drifted across CUBE versions: newer servers take
+   * `upload_path`, older ones `path` (chrisapi types neither). The current
+   * name is tried first. The older one is tried only when CUBE answered the
+   * first request and refused it as a field it does not read (HTTP 400
+   * naming the older field as missing, or saying no known field came): a request whose reply was lost may have
+   * moved the file, and one refused for another reason will be refused
+   * again, so a second write then would be a move nobody checked. Such a failure is
+   * answered as Err, and the caller asks where the file is.
+   *
    * @param fileId - The file ID.
    * @param destPath - The target path including filename.
-   * @returns Promise resolving to true on success, false on failure.
+   * @param recheck - Asked before the second spelling is tried, when given:
+   *   whether the move may still be made (the file where it was, the
+   *   destination free). False stops the move.
+   * @returns Ok(true) when CUBE accepted the move; Err otherwise, which
+   *   does not say the file stayed where it was.
    */
-  async file_moveById(fileId: number, destPath: string): Promise<Result<boolean>> {
+  async file_moveById(fileId: number, destPath: string, recheck?: () => Promise<boolean>): Promise<Result<boolean>> {
     const client: Client | null = await this.client_get();
     if (!client) {
       errorStack.stack_push("error", "ChRIS client is not initialized");
@@ -670,14 +836,17 @@ export class ChrisIO {
         errorStack.stack_push("error", `File not found with ID ${fileId}`);
         return Err<boolean>();
       }
-      // The rename field drifted across CUBE versions: newer servers take
-      // `upload_path`, older ones `path` (chrisapi types neither). Try the
-      // current name first and fall back for older CUBEs.
       try {
         await resource_call<unknown>(userFile, 'put', { upload_path: destPath });
-      } catch {
-        await resource_call<unknown>(userFile, 'put', { path: destPath });
+        return Ok(true);
+      } catch (first: unknown) {
+        if (!fieldRefusal_detect(first)) throw first;
       }
+      if (recheck !== undefined && !await recheck()) {
+        errorStack.stack_push("error", `Did not move file ID ${fileId} to ${destPath}: the place could not be shown free a second time`);
+        return Err<boolean>();
+      }
+      await resource_call<unknown>(userFile, 'put', { path: destPath });
       return Ok(true);
     } catch (error: unknown) {
       const errorMsg: string = error instanceof Error ? error.message : String(error);

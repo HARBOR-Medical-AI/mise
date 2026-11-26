@@ -27,6 +27,7 @@ import chalk from 'chalk';
 import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, taskState_isOver, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATE_EVENT, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow } from '@fnndsc/menu';
 import { command_declare, declaredCommand_run, repl_confirm, repl_question, runner_get, sink_dataLine, sink_get, surface_get, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_words, type BuildCall, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
+import { keepFailure_describe } from '../cloud/keepFault.js';
 import type { VmRemote } from '../vm/remote.js';
 import type { CloudDriver } from '../cloud/driver.js';
 import type { NetStore } from '../net/state.js';
@@ -879,6 +880,22 @@ function built_mark(context: VmCommandContext, name: string, spec: VmSpec): void
  * @returns The envelope.
  */
 async function vmBuild_run(context: VmCommandContext, named: string | undefined, allowAlter: boolean): Promise<CommandEnvelope> {
+  const unkept: { line: string } = { line: '' };
+  const built: CommandEnvelope = await vmBuild_plan(context, named, allowAlter, unkept);
+  // A keep that failed is said on the build's own output, whatever the build then answered.
+  return unkept.line === '' ? built : { ...built, rendered: `${unkept.line}${built.rendered ?? ''}` };
+}
+
+/**
+ * The build itself: keeps what is declared, plans, asks, applies.
+ *
+ * @param context - The session's stores and cloud.
+ * @param named - The VM's name, when given.
+ * @param allowAlter - Whether a plan that alters what stands may go on.
+ * @param unkept - Given the line to say when the declaration could not be kept in the tenancy first.
+ * @returns What happened.
+ */
+async function vmBuild_plan(context: VmCommandContext, named: string | undefined, allowAlter: boolean, unkept: { line: string }): Promise<CommandEnvelope> {
   const need = await vm_needOrTake(context, named, 'build');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   if (vmKeyless_is(context.store, need.record)) return envelope_error(need.said, undefined, `vm build: ${need.name}: ${VM_KEYLESS}\n`);
@@ -890,8 +907,11 @@ async function vmBuild_run(context: VmCommandContext, named: string | undefined,
   if (context.builder?.keep_write !== undefined) {
     try {
       await vmKept_write(context.builder, context.store, need.name, need.record.region, { log: (): void => undefined, signal: new AbortController().signal });
-    } catch {
-      // Not kept now: the machine's apply keeps it again.
+    } catch (error: unknown) {
+      // Not kept now: the machine's apply keeps it again. The build goes on,
+      // and says so. The reason is never the error's own message, which may
+      // quote what was kept: only words composed for showing, or a status.
+      unkept.line = `${chalk.yellow(`vm build ${need.name}: what is declared was not kept in the tenancy first (${keepFailure_describe(error)}); the machine's apply keeps it again`)}\n`;
     }
   }
   const name: string = need.name;

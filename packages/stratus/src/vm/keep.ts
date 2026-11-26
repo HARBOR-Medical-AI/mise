@@ -28,6 +28,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { BuildCall, CloudBuilder } from '../cloud/builder.js';
 import type { ChrisSecrets } from '../chris/compose.js';
+import { KeepFault } from '../cloud/keepFault.js';
 import { secrets_read, secrets_write } from '../chris/secrets.js';
 import { lock_adopt, lock_newer, lock_read, type KeptLock } from '../kept/lock.js';
 import type { VmSpec } from './spec.js';
@@ -82,9 +83,16 @@ export async function vmKept_read(builder: CloudBuilder, name: string, region: s
   if (builder.keep_read === undefined) return null;
   const content: string | null = await builder.keep_read({ region, name: vmKeepName_derive(name) });
   if (content === null) return null;
-  const kept: VmKept = JSON.parse(content) as VmKept;
+  let kept: VmKept;
+  try {
+    kept = JSON.parse(content) as VmKept;
+  } catch {
+    // The parser's own words quote what it could not parse, and that is a secret.
+    throw new KeepFault(`${vmKeepName_derive(name)}: the tenancy's secret is not a readable record`);
+  }
+  if (kept === null || typeof kept !== 'object') throw new KeepFault(`${vmKeepName_derive(name)}: the tenancy's secret is not a VM's keep`);
   const sshBad: boolean = kept.ssh !== undefined && (typeof kept.ssh.privateKey !== 'string' || typeof kept.ssh.publicKey !== 'string');
-  if (kept.vm !== name || sshBad) throw new Error(`${vmKeepName_derive(name)}: the tenancy's secret is not a VM's keep`);
+  if (kept.vm !== name || sshBad) throw new KeepFault(`${vmKeepName_derive(name)}: the tenancy's secret is not a VM's keep`);
   return kept;
 }
 

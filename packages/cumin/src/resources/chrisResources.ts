@@ -20,10 +20,13 @@ import { connectionConfig } from "../config/config.js";
 import { errorStack } from "../error/errorStack.js";
 
 /**
- * ListResource with pagination support (hasNext property exists at runtime).
+ * The part of a collection+json document a page walk reads.
  */
-interface ListResourceWithPagination extends ListResource {
-  hasNext: boolean;
+interface CollectionPage {
+  /** The page's items. */
+  items?: unknown;
+  /** The page's link relations; one of rel `next` says more follows. */
+  links?: unknown;
 }
 
 /**
@@ -259,17 +262,59 @@ export class ChRISResource {
     }
   }
 
+  /**
+   * What the page last fetched says about a page after it.
+   *
+   * The SDK derives this from the collection's `next` link and names it
+   * `hasNextPage`. It was read here as `hasNext`, which the SDK does not
+   * have, so the answer was always undefined and a walk could only guess
+   * from the length of a page.
+   *
+   * @returns True when a `next` link is there, false when the page carries
+   *   links and none is `next`, and null when it carries no links at all:
+   *   such a page has said nothing either way, and the SDK's getter would
+   *   fail on it.
+   */
+  private nextPage_read(): boolean | null {
+    const page: ListResource | Resource | null = this._resourceCollection;
+    if (!resource_isList(page)) return null;
+    if (!Array.isArray((page.collection as CollectionPage | undefined)?.links)) return null;
+    return page.hasNextPage;
+  }
+
+  /** Whether the server says another page follows the one last fetched; false when it does not say. */
   get hasNextPage(): boolean {
-    if (resource_isList(this._resourceCollection)) {
-      return (this._resourceCollection as ListResourceWithPagination).hasNext;
-    }
-    return false;
+    return this.nextPage_read() === true;
+  }
+
+  /**
+   * How many rows the server sent on the page last fetched, before any
+   * filter applied on this side.
+   *
+   * @returns The count, or null when the page is not a list that says.
+   */
+  private rawCount_read(): number | null {
+    const page: ListResource | Resource | null = this._resourceCollection;
+    if (!resource_isList(page)) return null;
+    const items: unknown = (page.collection as CollectionPage | undefined)?.items;
+    return Array.isArray(items) ? items.length : null;
   }
 
   /**
    * Lists *all* resources by automatically handling pagination.
+   *
+   * The walk is steered by what the server sent, never by what was kept of
+   * it. When the server refuses a query, the fetch is made again without
+   * the filters and they are applied here, so a full page of a hundred may
+   * keep three rows, or none: the page was still full, and the next one is
+   * read. Each step moves on by the number of rows received, since a
+   * server may send fewer than were asked for and still have more.
+   *
    * @param options - Filtering options. Limit and offset will be managed internally.
-   * @returns A Promise resolving to FilteredResourceData containing all matching resources, or null.
+   * @returns Every matching resource, or null when there is none. When the
+   *   walk could not finish, the rows it has and `incomplete`.
+   * @throws {Error} When the first page cannot be fetched, or the walk
+   *   stalls with nothing gathered: neither is an empty collection.
    */
   async resources_getAll(
     options?: Partial<ListOptions>
@@ -278,18 +323,31 @@ export class ChRISResource {
     let offset: number = 0;
     let allTableData: Record<string, unknown>[] = [];
     let selectedFields: string[] = [];
-    // If options has a limit, we should respect it? No, getAll implies fetching everything.
-    // But we should respect filters.
-
     let stopped: string | null = null;
 
     while (true) {
       const pageOptions: Partial<ListOptions> = { ...options, limit, offset };
       let result: FilteredResourceData | null;
+      // A fetch that yields nothing leaves the last page's collection in
+      // place; cleared, what is read below is this page's or nobody's.
+      this._resourceCollection = null;
       try {
-        result = this.resources_filterByFields(
-          await this.resourceFields_get(await this.resources_getList(pageOptions)),
-        );
+        const asked: ListOptions | null = await this.resources_getList(pageOptions);
+        if (!resource_isList(this.collection_read())) {
+          // Nothing came, or something that is not a list. For the first
+          // page that is how a collection with nothing in it answers. For a
+          // later page it is a page that went missing: the one before it
+          // was not the last, and its rows are not the whole answer.
+          if (offset === 0) break;
+          throw new Error(`${this._resourceName}: the page at offset ${offset} did not come as a list`);
+        }
+        // The SDK answers a body with no collection in it as a list all the
+        // same, one that holds nothing. A later page like that has not said
+        // "no more rows": it has said nothing.
+        if (offset > 0 && this.rawCount_read() === null) {
+          throw new Error(`${this._resourceName}: the page at offset ${offset} did not come as a list of items`);
+        }
+        result = this.resources_filterByFields(await this.resourceFields_get(asked));
       } catch (error: unknown) {
         // A walk that never started is a FAILED listing and stays a failure:
         // callers check for one. A walk that started and then hit a page the
@@ -301,34 +359,34 @@ export class ChRISResource {
         break;
       }
 
-      if (!result || !result.tableData) {
+      if (result !== null && result.tableData) {
+        if (selectedFields.length === 0) selectedFields = result.selectedFields;
+        allTableData = allTableData.concat(result.tableData);
+      }
+
+      // What the server sent, whatever was kept of it. A page that is not a
+      // list says nothing of the kind, and the kept rows stand in for it.
+      const received: number = this.rawCount_read() ?? result?.tableData?.length ?? 0;
+      const more: boolean | null = this.nextPage_read();
+
+      if (received === 0) {
+        if (more !== true) break;
+        // No rows and "more follows": following it would ask for the same
+        // offset for ever, and stopping here quietly would pass a short
+        // listing off as a whole one.
+        const stall: string = `${this._resourceName}: the server sent no rows at offset ${offset} and said that more follow`;
+        errorStack.stack_push("warning", stall);
+        if (allTableData.length === 0) throw new Error(stall);
+        stopped = stall;
         break;
       }
 
-      if (selectedFields.length === 0) {
-        selectedFields = result.selectedFields;
-      }
+      // The server's own word when it gives one; when it gives none, a page
+      // shorter than was asked for is the last, as it always was.
+      if (more === false) break;
+      if (more === null && received < limit) break;
 
-      allTableData = allTableData.concat(result.tableData);
-
-      // Robust exit conditions:
-      // 1. If we got 0 items, we are definitely done.
-      if (result.tableData.length === 0) {
-        break;
-      }
-
-      // 2. If we got fewer items than the limit, this must be the last page.
-      if (result.tableData.length < limit) {
-        break;
-      }
-
-      // 3. If API explicitly says no next page (and it's not undefined).
-      if (this.hasNextPage === false) {
-        break;
-      }
-
-      // If we got a full page and hasNextPage is not explicitly false, continue
-      offset += limit;
+      offset += received;
     }
 
     if (allTableData.length === 0) {
@@ -346,6 +404,74 @@ export class ChRISResource {
         },
       }),
     };
+  }
+
+  /**
+   * The collection the last fetch left, read after the fetch.
+   *
+   * A method, so the compiler does not carry what was assigned before the
+   * fetch across the `await` that replaced it.
+   *
+   * @returns The collection, or null when the fetch left none.
+   */
+  private collection_read(): ListResource | Resource | null {
+    return this._resourceCollection;
+  }
+
+  /**
+   * Walks the whole collection and answers only when it has all of it.
+   *
+   * {@link resources_getAll} is forgiving, which suits a listing meant to be
+   * shown: a page it cannot read ends the walk with the rows it has, a page
+   * shorter than the bound is taken as the last, and an answer that is not
+   * a list reads as "nothing here". An act that destroys on the strength of
+   * a listing cannot use an answer like that. Here every page must be a
+   * list that carries an array of items, the walk follows the server's own
+   * word on whether more follows and never infers the end from a short
+   * page, and anything else is an error.
+   *
+   * @param options - Filtering options. Limit and offset are managed here.
+   * @returns Every row of the collection. `tableData` is empty, not absent,
+   *   when the collection holds nothing.
+   * @throws {Error} When a page could not be fetched, is not a list, carries
+   *   no array of items or of links, or says that more follows and gives no
+   *   rows.
+   */
+  async resources_getWhole(options?: Partial<ListOptions>): Promise<FilteredResourceData> {
+    const tableData: Record<string, unknown>[] = [];
+    let selectedFields: string[] = [];
+    let offset: number = 0;
+    for (;;) {
+      // A fetch that yields nothing leaves the last page's collection in
+      // place; cleared, such a fetch is seen for what it is.
+      this._resourceCollection = null;
+      const asked: ListOptions | null = await this.resources_getList({ ...options, limit: PAGE_SIZE, offset });
+      const page: ListResource | Resource | null = this.collection_read();
+      if (!resource_isList(page)) {
+        throw new Error(`${this._resourceName}: the answer at offset ${offset} is not a list`);
+      }
+      const collection: CollectionPage | undefined = page.collection as CollectionPage | undefined;
+      const items: unknown = collection?.items;
+      if (!Array.isArray(items)) {
+        throw new Error(`${this._resourceName}: the list at offset ${offset} carries no items`);
+      }
+      // Whether more follows is read from the page's links. A page without
+      // them has not said that nothing follows.
+      if (!Array.isArray(collection?.links)) {
+        throw new Error(`${this._resourceName}: the list at offset ${offset} carries no links, so it does not say whether more follows`);
+      }
+      const rows: FilteredResourceData | null = this.resources_filterByFields(await this.resourceFields_get(asked));
+      if (rows !== null && rows.tableData) {
+        tableData.push(...rows.tableData);
+        if (selectedFields.length === 0) selectedFields = rows.selectedFields;
+      }
+      if (!this.hasNextPage) break;
+      if (items.length === 0) {
+        throw new Error(`${this._resourceName}: more is said to follow offset ${offset}, and the page is empty`);
+      }
+      offset += items.length;
+    }
+    return { tableData, selectedFields, totalCount: tableData.length };
   }
 
   /**
@@ -486,11 +612,12 @@ export class ChRISResource {
     if (!this.resourceMethod) {
       return null;
     }
+    // The collection just fetched, not the one a call before this left.
     const resources: ListResource | Resource | null = await this.resourceMethod(params);
-    if (!resource_isList(this._resourceCollection)) {
+    if (!resource_isList(resources)) {
       return null;
     }
-    this._resourceArray = this._resourceCollection?.getItems() as ItemResource[] | null;
+    this._resourceArray = resources.getItems() as ItemResource[] | null;
     if (this._resourceArray) {
       // console.log(this._resourceArray);
       return this._resourceArray;

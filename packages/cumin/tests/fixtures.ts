@@ -23,6 +23,9 @@ export function listResource_make(
   Object.defineProperties(list, {
     collection: {
       value: {
+        // More follows when the page carries a link of rel `next`: that is
+        // what CUBE sends and what the SDK's own `hasNextPage` reads.
+        links: hasNext ? [{ rel: 'next', href: `https://cube/api/v1/${resourcePath}/?offset=${rows.length}` }] : [],
         items: rows.map((row: Record<string, unknown>) => ({
           data: Object.entries(row).map(([name, value]: [string, unknown]) => ({ name, value })),
           href: `https://cube/api/v1/${resourcePath}/${String(row.id)}/`,
@@ -32,7 +35,6 @@ export function listResource_make(
     },
     getItems: { value: (): unknown[] => rows.map(() => ({})) },
     totalCount: { value: totalCount ?? rows.length },
-    hasNext: { value: hasNext },
   });
   return list;
 }

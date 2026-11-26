@@ -86,3 +86,24 @@ describe('warming every layout', () => {
     expect(laid).toBe(order.length);
   }, 30000);
 });
+
+describe('a layout the session could not lay out', () => {
+  it('is said, by name and with the reason, and the rest are still laid out', async () => {
+    const { errorStack } = await import('@fnndsc/fond');
+    errorStack.stack_clear();
+    const run = async (engine: string, nodes: Array<{ id: string }>) => {
+      if (order.length === 0 && !run.failed) { run.failed = true; throw new Error(`Cannot find module layoutWorker.js (${engine})`); }
+      return Object.fromEntries(nodes.map((n) => [n.id, [0, 0, 0]])) as Record<string, [number, number, number]>;
+    };
+    run.failed = false;
+    const warm = universeLayouts_warm(() => lab(300), run as never);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    factsSettled();
+    const laid = await warm;
+    const said: string[] = errorStack.stack_search('could not be laid out by the session');
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain('Cannot find module layoutWorker.js');
+    expect(laid).toBeGreaterThan(0);
+    expect(order[order.length - 1]).toBe('data');
+  }, 30000);
+});

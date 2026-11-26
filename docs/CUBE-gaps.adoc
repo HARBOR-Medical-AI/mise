@@ -578,6 +578,32 @@ The feed item's `note` link names where the note is and says nothing about it. N
 
 `mise` reads a feed's note only when the feed is entered (its graph on stage), never for a listing. The RUNS roster carries no note mark. Tags, by contrast, are marked on every row, because the tags collection answers by tag: one read for the user's tags and one per tag, never one per feed.
 
+[[confirmed-gap-conditional-writes]]
+== Confirmed gap: no request removes or moves only if the place is as it was seen
+
+Upstream: not yet filed.
+
+=== Operator requirement
+
+`rmdir` removes a folder only if it is empty, and a file moved into a name does not land on another file. Both are checks followed by an act, and an operator takes the pair to be one step.
+
+=== Observed behaviour
+
+CUBE's `DELETE` of a folder removes the folder with everything in it; there is no request that removes it only when it holds nothing. Its move of a file (`PUT` of a new `upload_path`) does not refuse a path another file holds. So the client asks first and acts second, in two requests.
+
+=== Why this is a gap and not a client defect
+
+The client proves what it can before it acts: every listing of the folder must answer in full and hold nothing before `rmdir` deletes, and a destination must be proved absent before a file is moved onto it (`packages/salsa/src/files/proof.ts`). Nothing the client does closes the time between its proof and its act. A child that arrives in a folder between the two goes with the folder; a file that arrives at a name between the two is moved onto.
+
+=== What CUBE could offer
+
+* A folder `DELETE` that refuses a folder holding anything, by a parameter or as a separate request.
+* A move that refuses a destination already held.
+
+=== Client policy until then
+
+The proof stays, and the window stays open. It is short, one request wide, and it is recorded here so that it is not taken as closed.
+
 == Candidate proposal: change discovery
 
 Upstream: https://github.com/FNNDSC/ChRIS_ultron_backEnd/issues/644[ChRIS_ultron_backEnd#644].

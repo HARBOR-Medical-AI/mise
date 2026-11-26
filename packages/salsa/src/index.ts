@@ -6,6 +6,7 @@
 export * from './feeds/index.js';
 export * from './plugins/index.js';
 export * from './files/index.js';
+export * from './files/proof.js';
 export { fileIds_memoRun } from './files/fileLookup.js';
 export { PathMapper, pathMapper_get, logicalPath_resolve, linkCache_clear, type CacheStats } from './files/pathMapper.js';
 export * from './connect/index.js';

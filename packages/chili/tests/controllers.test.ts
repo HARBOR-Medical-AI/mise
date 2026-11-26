@@ -25,7 +25,7 @@ jest.mock('@fnndsc/cumin', () => ({
   ChRISFeed: jest.fn().mockImplementation(() => ({ createFromDirs: mockCreateFromDirs })),
 }));
 
-import { Ok, Err } from '@fnndsc/cumin';
+import { Ok, Err, errorStack } from '@fnndsc/cumin';
 import { BaseController } from '../src/controllers/baseController';
 import { FeedController } from '../src/controllers/feedController';
 import { FileController } from '../src/controllers/fileController';
@@ -111,6 +111,17 @@ describe('FileController', () => {
     expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('fileId is required'));
     await c.files_share({ fileId: 5 });
     expect(mockSalsa.files_share).toHaveBeenCalled();
+  });
+
+  it('files_share says the reason when nothing was shared', async () => {
+    mockSalsa.files_getSingle.mockResolvedValue({});
+    const c = (await FileController.member_create('/f'))!;
+    mockSalsa.files_share.mockImplementation(async (): Promise<boolean> => {
+      errorStack.stack_push('error', 'Sharing file 5 by its id is not offered here: nothing was shared.');
+      return false;
+    });
+    await c.files_share({ fileId: 5 });
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('nothing was shared'));
   });
 
   it('file_view prints content or an error', async () => {

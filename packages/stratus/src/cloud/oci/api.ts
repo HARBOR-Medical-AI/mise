@@ -14,6 +14,7 @@ import * as identity from 'oci-identity';
 import * as limits from 'oci-limits';
 import * as core from 'oci-core';
 import { ociResourceApi_make, type OciResourceApi } from './resourceApi.js';
+import { pages_drain, type Page } from './pages.js';
 
 /** What the SDK says about the credential's tenancy. */
 export interface OciTenancyRecord {
@@ -80,29 +81,6 @@ export interface OciApiOptions {
   readonly configFile?: string;
   /** The profile; `DEFAULT` when absent. */
   readonly profile?: string;
-}
-
-/** A page of items and the token for the next, as every OCI list call answers. */
-interface Page<T> {
-  readonly items: T[];
-  readonly opcNextPage?: string;
-}
-
-/**
- * Every item of a paged list call.
- *
- * @param page_get - Fetches one page, given the token of the previous (undefined first).
- * @returns Every item, in order.
- */
-async function pages_drain<T>(page_get: (page: string | undefined) => Promise<Page<T>>): Promise<T[]> {
-  const items: T[] = [];
-  let token: string | undefined = undefined;
-  do {
-    const page: Page<T> = await page_get(token);
-    items.push(...page.items);
-    token = page.opcNextPage === '' ? undefined : page.opcNextPage;
-  } while (token !== undefined);
-  return items;
 }
 
 /** Tags as the SDK gives them, with absent ones as empty. */
