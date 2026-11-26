@@ -7,8 +7,8 @@
  *   - jest/expect-expect        — every test must contain at least one assertion
  *   - jest/no-standalone-expect — assertions must live inside a test block
  *
- * Kept separate from eslint.config.base.mjs so it can run on its own via
- * `npm run lint:tests` without enabling the wider style rules.
+ * Kept separate from eslint.config.mjs (the style guide's rules, held by
+ * `npm run lint`) so it runs on its own via `npm run lint:tests`, at zero.
  */
 import tseslint from 'typescript-eslint';
 import jest from 'eslint-plugin-jest';

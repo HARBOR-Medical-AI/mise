@@ -145,4 +145,9 @@ jobs:
       - run: npm run lint:changesets
       - run: npm run lint:aegis
       - run: npm run lint:orrery
-      - run: npm run lint --if-present
+      # The style guide's rules over every workspace's sources, each rule in each workspace held to a ceiling
+      # that only falls (scripts/eslint-ratchet.mjs). No --if-present: a missing script fails the job.
+      - run: npm run test:lint
+      # The findings do not depend on the node that runs ESLint: counted once, on one leg of the matrix.
+      - if: matrix.node == 24
+        run: npm run lint
