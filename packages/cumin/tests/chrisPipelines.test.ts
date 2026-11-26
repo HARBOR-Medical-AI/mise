@@ -272,6 +272,62 @@ describe('pipeline_resolve', () => {
     expect(pipelineResource_recall(client, 19)).not.toBeNull();
   });
 
+  it('names the place of a served item whose field is wrong, and tells null from missing', async () => {
+    const search_ask = async (served: unknown[]): Promise<void> => {
+      const client = {
+        getPipelines: jest.fn(async () => {
+          const list: ListResource = listResource_make([{ id: 50, name: 'Corge' }, { id: 51, name: 'Corge two' }]);
+          Object.defineProperty(list, 'getItems', { value: (): unknown[] => served });
+          return list;
+        }),
+      };
+      mockClientGet.mockResolvedValue(client);
+      expect((await pipeline_resolve('Corge')).ok).toBe(false);
+      expect(pipelineResource_recall(client, 50)).toBeNull();
+    };
+    await search_ask([{ data: { id: 50, name: 'Corge' } }, { data: { id: 51, name: 5100 } }]);
+    expect(pushSpy).toHaveBeenLastCalledWith('error', 'pipelines_list: CUBE answered a list of a pipeline whose items[1].data.name is a number, where a string is read');
+    await search_ask([{ data: { id: 50, name: 'Corge' } }, { data: null }]);
+    expect(pushSpy).toHaveBeenLastCalledWith('error', 'pipelines_list: CUBE answered a list of a pipeline whose items[1].data is null, where an object is read');
+    await search_ask([{ data: { id: 50, name: 'Corge' } }, {}]);
+    expect(pushSpy).toHaveBeenLastCalledWith('error', 'pipelines_list: CUBE answered a list of a pipeline whose items[1].data is missing, where an object is read');
+  });
+
+  it('keeps the id that was typed as the answer\'s: a pipeline remembered under the same words does not stand in (warm)', async () => {
+    for (const [name, typed] of [['model_id19', 'model_id19'], ['19', '19']] as Array<[string, string]>) {
+      const getPipeline = jest.fn(async (id: number) => (id === 20 ? { data: { id: 20, name } } : { data: { id: 19, name: 'the nineteenth' } }));
+      const client = { getPipeline, getPipelines: jest.fn(async () => listResource_make([])) };
+      mockClientGet.mockResolvedValue(client);
+      const twenty: Result<PipelineRecord> = await pipeline_resolve('20');
+      expect(twenty.ok && twenty.value.id).toBe(20);
+      // Pipeline 20 is now remembered under its name, which is what is typed next; the id in those words wins.
+      const nineteen: Result<PipelineRecord> = await pipeline_resolve(typed);
+      expect(nineteen.ok && nineteen.value.id).toBe(19);
+      expect(getPipeline).toHaveBeenCalledWith(19);
+    }
+  });
+
+  it('keeps the id that was typed as the answer\'s on a cold memo: a wrong answer is said, and a search by name does not stand in', async () => {
+    const getPipeline = jest.fn(async () => ({ data: { id: 20, name: 'model_id19' } }));
+    const getPipelines = jest.fn(async () => listResource_make([{ id: 20, name: 'model_id19' }]));
+    const client = { getPipeline, getPipelines, getPipelineSourceFiles: jest.fn(async () => ({ getItems: (): unknown[] => [] })) };
+    mockClientGet.mockResolvedValue(client);
+    expect((await pipeline_resolve('model_id19')).ok).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', expect.stringContaining("whose data.id is another pipeline's, where pipeline 19's is read"));
+    expect(getPipelines).not.toHaveBeenCalled();
+    // CUBE has no pipeline 19 at all, and one named like the slug under another id: still no answer.
+    getPipeline.mockImplementation(async () => { throw new Error('404'); });
+    expect((await pipeline_resolve('model_id19')).ok).toBe(false);
+    expect(pipelineResource_recall(client, 19)).toBeNull();
+    // Corrected, the answer is fetched and then kept.
+    getPipeline.mockImplementation(async () => ({ data: { id: 19, name: 'the nineteenth' } }));
+    const calls: number = getPipeline.mock.calls.length;
+    const fixed: Result<PipelineRecord> = await pipeline_resolve('model_id19');
+    expect(fixed.ok && fixed.value.id).toBe(19);
+    expect((await pipeline_resolve('model_id19')).ok).toBe(true);
+    expect(getPipeline.mock.calls.length).toBe(calls + 1);
+  });
+
   it('keeps the items of a search that holds, so the good path is unchanged', async () => {
     const client = {
       getPipelines: jest.fn(async () => {

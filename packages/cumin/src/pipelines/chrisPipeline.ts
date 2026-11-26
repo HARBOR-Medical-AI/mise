@@ -191,9 +191,17 @@ export async function pipeline_resolve(
     errorStack.stack_push('error', 'Not connected to ChRIS');
     return Err();
   }
+  // What was typed may itself name an id (a number, or a slug ending `_idN`). That id is the answer's, or
+  // there is no answer: a pipeline remembered under the same words for another reason (its name happens
+  // to be those words) does not stand in for it, and neither does one a search by name turns up.
+  const wantedID: number | null = specifierID_read(nameOrId);
   const kept: PipelineRecord | null = pipelineRecord_recall(client, nameOrId);
-  if (kept !== null) return Ok(kept);
+  if (kept !== null && (wantedID === null || kept.id === wantedID)) return Ok(kept);
   const resolved: Result<PipelineRecord> = await pipelineResolve_fetch(client, nameOrId);
+  if (resolved.ok && wantedID !== null && resolved.value.id !== wantedID) {
+    errorStack.stack_push('error', `No pipeline matching '${nameOrId}'`);
+    return Err();
+  }
   if (resolved.ok) pipelineRecord_keep(client, nameOrId, resolved.value);
   return resolved;
 }
@@ -223,8 +231,9 @@ function pipelineItems_read(page: PipelinePage): KeptItem[] {
     const item: DataCarrier = items[at];
     // Held to what a pipeline is, as a later read of the kept item will hold it: an item that is not one,
     // or that carries nothing, fails the page here at its place, and is never kept or passed over.
-    const data: PipelineRecord | null = itemData_get(item, PIPELINE_RECORD_SHAPE);
-    if (data === null) throw new ShapeError('a list of a pipeline', `items[${String(at)}].data`, 'missing', 'an object');
+    const carried: unknown = item.data;
+    if (carried === undefined || carried === null) throw new ShapeError('a list of a pipeline', `items[${String(at)}].data`, carried === null ? 'null' : 'missing', 'an object');
+    const data: PipelineRecord = PIPELINE_RECORD_SHAPE.value_check(carried, `items[${String(at)}].data`, 'a list of a pipeline');
     kept.push({ id: data.id, item });
   }
   return kept;
@@ -237,6 +246,19 @@ function pipelineItems_read(page: PipelinePage): KeptItem[] {
  * @param nameOrId - Pipeline name or numeric ID.
  * @returns Result containing the matched PipelineRecord.
  */
+/**
+ * The id that what was typed names by itself, if it names one: all digits
+ * are an id, and a `/bin` slug ends in the id it was minted from.
+ *
+ * @param specifier - What was typed.
+ * @returns The id, or null when the words name none.
+ */
+function specifierID_read(specifier: string): number | null {
+  if (/^\d+$/.test(specifier)) return parseInt(specifier, 10);
+  const slug: RegExpMatchArray | null = specifier.match(/_id(\d+)$/);
+  return slug === null ? null : parseInt(slug[1], 10);
+}
+
 /**
  * Reads one pipeline by its id, and keeps its item for the pipings to be
  * read off. What is kept and answered is the pipeline that was asked for:
@@ -256,6 +278,27 @@ async function pipelineByID_read(client: Client, pipelineID: number): Promise<Pi
   if (data.id !== pipelineID) throw new ShapeError('a pipeline', 'data.id', "another pipeline's", `pipeline ${String(pipelineID)}'s`);
   pipelineResource_keep(client, data.id, pipeline);
   return data;
+}
+
+/**
+ * Reads the pipeline a slug's id names, as one way among several of
+ * finding it. An answer that is not a pipeline, or is another's, is said
+ * and is a failure: it is not a miss to be searched around. Anything else
+ * (CUBE has no such id, CUBE cannot be reached) is a miss, and leaves the
+ * other ways to be tried.
+ *
+ * @param client - The connection's client.
+ * @param pipelineID - The id the slug names.
+ * @returns The record; null on a miss; a failure, with the reason on the error stack, on a malformed answer.
+ */
+async function pipelineBySlugID_read(client: Client, pipelineID: number): Promise<Result<PipelineRecord | null>> {
+  try {
+    return Ok(await pipelineByID_read(client, pipelineID));
+  } catch (error: unknown) {
+    if (!(error instanceof ShapeError)) return Ok(null);
+    errorStack.stack_push('error', `pipeline_resolve: ${error.message}`);
+    return Err();
+  }
 }
 
 /**
@@ -295,10 +338,9 @@ async function pipelineResolve_fetch(
   // means it.
   const slugID: RegExpMatchArray | null = nameOrId.match(/_id(\d+)$/);
   if (slugID) {
-    try {
-      const data: PipelineRecord | null = await pipelineByID_read(client, parseInt(slugID[1], 10));
-      if (data) return Ok(data);
-    } catch (_e: unknown) {}
+    const bySlug: Result<PipelineRecord | null> = await pipelineBySlugID_read(client, parseInt(slugID[1], 10));
+    if (!bySlug.ok) return Err();
+    if (bySlug.value) return Ok(bySlug.value);
   }
 
   // The search is read as a page, not through pipelines_list, so the items
@@ -317,6 +359,9 @@ async function pipelineResolve_fetch(
     return Err();
   }
   for (const one of served) pipelineResource_keep(client, one.id, one.item);
+  // A slug's id is the pipeline it means: one that a search by name turns up under another id is not it.
+  const slugWanted: number | null = specifierID_read(nameOrId);
+  if (slugWanted !== null) found = found.filter((p: PipelineRecord): boolean => p.id === slugWanted);
   const exact: PipelineRecord | undefined = found.find(
     (p: PipelineRecord) => p.name === nameOrId
   );
@@ -328,10 +373,9 @@ async function pipelineResolve_fetch(
     const idSuffixMatch: RegExpMatchArray | null = nameOrId.match(/_id(\d+)$/);
     if (idSuffixMatch) {
       const directId: number = parseInt(idSuffixMatch[1], 10);
-      try {
-        const directData: PipelineRecord | null = await pipelineByID_read(fallbackClient, directId);
-        if (directData) return Ok(directData);
-      } catch (_e: unknown) {}
+      const direct: Result<PipelineRecord | null> = await pipelineBySlugID_read(fallbackClient, directId);
+      if (!direct.ok) return Err();
+      if (direct.value) return Ok(direct.value);
     }
 
     // Slug fallback: treat nameOrId as a source file fname fragment

@@ -242,7 +242,7 @@
     "@typescript-eslint/no-unsafe-call": 184,
     "@typescript-eslint/no-unsafe-member-access": 183,
     "@typescript-eslint/no-unsafe-return": 18,
-    "@typescript-eslint/no-unused-vars": 28,
+    "@typescript-eslint/no-unused-vars": 26,
     "@typescript-eslint/no-useless-constructor": 6,
     "@typescript-eslint/only-throw-error": 1,
     "@typescript-eslint/require-await": 12,
@@ -267,8 +267,8 @@
     "jsdoc/require-yields": 2,
     "jsdoc/tag-lines": 59,
     "local/file-overview-sections": 182,
-    "max-depth": 15,
-    "no-empty": 3,
+    "max-depth": 14,
+    "no-empty": 1,
     "prefer-const": 7
   },
   "packages/fond": {
