@@ -228,9 +228,10 @@ export class VmScreen extends ScriptScreen {
     // the hold: see `reading`.
     const hold: object = {};
     this.reading = hold;
+    const mine: number = ++this.opening;
     let latest: boolean = false;
     try {
-      latest = await this.vm_openHeld(name);
+      latest = await this.vm_openHeld(name, mine);
     } finally {
       if (this.reading === hold) this.reading = null;
     }
@@ -243,15 +244,18 @@ export class VmScreen extends ScriptScreen {
    * Reads a machine, or starts a new one, and makes its script the screen's.
    *
    * @param name - The VM, or `''` to start one.
+   * @param mine - This open's place in the count of opens.
    * @returns Whether this open is still the latest when it ends. When
    *   another machine was opened while this one was being read, nothing of
    *   this one is installed after that point, and false is returned.
    *
    * @example
-   * const latest: boolean = await this.vm_openHeld('store');
+   * const latest: boolean = await this.vm_openHeld('store', mine);
    */
-  private async vm_openHeld(name: string): Promise<boolean> {
+  private async vm_openHeld(name: string, mine: number): Promise<boolean> {
     await this.vms_read();
+    // Another machine was opened while the roster was being read: this one selects nothing.
+    if (mine !== this.opening) return false;
     this.vm = name;
     // A machine opened, or opened again: what was typed into the script before is not this one's.
     this.editSession_begin();
@@ -278,7 +282,7 @@ export class VmScreen extends ScriptScreen {
     const opened: VmStatusRow | undefined = this.vms.find((each: VmStatusRow): boolean => each.name === name);
     const path: string | null = vmKeyless_is(opened ?? null) ? null : await this.vmScript_find(name);
     // Another machine was opened while this one's script was being looked for: the screen is that one's.
-    if (session !== this.editSession) return false;
+    if (session !== this.editSession || mine !== this.opening) return false;
     if (vmKeyless_is(opened ?? null)) {
       // Seen, not built on from here: no script is made for it, so no act writes one that would declare it anew.
       this.path = '';
@@ -290,7 +294,7 @@ export class VmScreen extends ScriptScreen {
       this.unsaved = false;
       this.edited = false;
       await this.script_read();
-      if (session !== this.editSession) return false;
+      if (session !== this.editSession || mine !== this.opening) return false;
     } else {
       // No script declares it: its record is its script until the first act writes one.
       const row: VmStatusRow | undefined = this.vms.find((each: VmStatusRow): boolean => each.name === name);
@@ -300,7 +304,7 @@ export class VmScreen extends ScriptScreen {
       this.unsaved = true;
       this.edited = false;
       const standings = await this.status_read(this.path, text);
-      if (session !== this.editSession) return false;
+      if (session !== this.editSession || mine !== this.opening) return false;
       this.lines = lines_build(text, standings?.lines ?? []);
     }
     this.steps = this.steps_derive(this.lines);
@@ -376,12 +380,17 @@ export class VmScreen extends ScriptScreen {
     return this.vm;
   }
 
+  /** How many times the roster has been asked for: an answer is taken only if it is to the latest ask. */
+  private vmsAsked: number = 0;
+
   /** `vm status`, for the pills and the header. */
   private async vms_read(): Promise<void> {
+    // The roster shown is the latest one asked for: an older answer that comes back after a newer is not put over it.
+    const mine: number = ++this.vmsAsked;
     try {
       const answer: QuietAnswer = await this.hooks.ask('vm status');
       const model = this.model_take(answer, STRATUS_VM_STATUS_MODEL_KIND, (data: unknown) => vmStatusModelSchema.safeParse(data));
-      if (model !== null) this.vms = model.vms;
+      if (model !== null && mine === this.vmsAsked) this.vms = model.vms;
     } catch (error: unknown) {
       this.log_add(`vm status: ${error instanceof Error ? error.message : String(error)}`, 'note');
     }

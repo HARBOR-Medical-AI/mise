@@ -777,6 +777,49 @@ describe('the script screen', () => {
     screen.root.remove();
   });
 
+  it('the library opened after a script that is still being read stays the library when the script comes back', async () => {
+    const { screen, hooks } = screen_make();
+    const answer: ScriptHooks['ask'] = hooks.ask;
+    let slow: () => void = (): void => undefined;
+    const held: Promise<void> = new Promise((resolve: () => void): void => { slow = resolve; });
+    hooks.ask = async (line: string): Promise<QuietAnswer> => { if (line.startsWith('cat ')) await held; return answer(line); };
+    const script: Promise<void> = screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    await screen.open('');
+    await settle();
+    expect(screen.view_get()).toBe('library');
+    slow();
+    await script;
+    await settle();
+    expect(screen.view_get()).toBe('library');
+    expect(screen.root.querySelector('.ss-script-name')).not.toBeNull();
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('a visit to the library leaves an open script\'s edits as they were', async () => {
+    const { screen } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const field = (): HTMLInputElement => screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    field().value = '10.60.0.0/16 ';
+    field().dispatchEvent(new Event('input'));
+    await screen.open('');
+    await settle();
+    expect(screen.view_get()).toBe('library');
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    // The edit stands, the field as it was left, and SAVE is still offered.
+    expect(field().value).toBe('10.60.0.0/16 ');
+    expect(field().disabled).toBe(false);
+    expect(lineOption_get(screen.root.querySelector('.ss-line-text')?.textContent ?? '', '--cidr')).toBe('10.60.0.0/16');
+    expect(button_named(screen.root, 'SAVE')).toBeDefined();
+    screen.dispose();
+    screen.root.remove();
+  });
+
   it('an edit in READ leaves each pill saying what a pill drawn fresh would: refused, or asking first, never plainly "sends"', async () => {
     for (const elevate of [null, async (): Promise<boolean> => true]) {
       const { screen } = screen_make(['done', 'done', 'ready', 'not yet', 'not yet'], false, false, elevate);

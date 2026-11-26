@@ -314,6 +314,14 @@ export class ScriptScreen {
    */
   protected editSession: number = 0;
   /**
+   * How many times something has been opened on the screen: a script, the
+   * library, a machine. An open notes the count it made, and gives way,
+   * when its read comes back, to any later one. Opening the library is
+   * counted and begins no edit session: a script already open keeps its
+   * edits while the library is looked at.
+   */
+  protected opening: number = 0;
+  /**
    * The read of a script now under way for the screen, or null when none
    * is. While one is, the lines on the screen are about to be replaced: a
    * field is drawn disabled, and what is typed into any field (one left
@@ -419,6 +427,9 @@ export class ScriptScreen {
    * @param path - The script, or `''` for the library.
    */
   public async open(path: string): Promise<void> {
+    // The latest thing opened (a script, or the library) is what the screen shows: an open still waiting on
+    // its read when a later one is made finishes without choosing a seat or drawing.
+    const mine: number = ++this.opening;
     if (path === '') {
       this.view = LIBRARY_VIEW;
       this.draw();
@@ -433,8 +444,9 @@ export class ScriptScreen {
     const session: number = this.editSession;
     this.stepLogs.clear();
     await this.script_read();
-    // Another script was opened while this one was being read: the screen is that one's.
-    if (session !== this.editSession) return;
+    // Something else was opened while this one was being read (another script, or the library): the screen
+    // is that one's.
+    if (session !== this.editSession || mine !== this.opening) return;
     // The rail opens on the step running now, else on the first that needs the operator.
     const first: ScriptStep | undefined = runningStep_find(this.steps) ?? this.steps.find((step: ScriptStep): boolean => step.state === 'changed' || step.state === 'ready') ?? this.steps[0];
     this.view = first?.key ?? LIBRARY_VIEW;

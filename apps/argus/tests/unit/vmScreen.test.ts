@@ -79,6 +79,8 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
 let planGate: Promise<void> | null = null;
 /** While set, the store's script is not read until it resolves. */
 let storeGate: Promise<void> | null = null;
+/** While set, the next roster asked for is not answered until it resolves. */
+let rosterGate: Promise<void> | null = null;
 
 function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; asked: string[]; fed: Array<string | null> } {
   WRITTEN.clear();
@@ -107,6 +109,8 @@ function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; a
       if (planGate !== null && line.endsWith(' --plan')) await planGate;
       // And so is the text of the store's script, while a test holds that one.
       if (storeGate !== null && line.startsWith('cat ') && line.includes('store')) await storeGate;
+      // And the first roster asked for, while a test holds that (later asks for it are answered at once).
+      if (rosterGate !== null && line === 'vm status') { const held: Promise<void> = rosterGate; rosterGate = null; await held; }
       return answer_make(line, mine);
     },
     stop: (): void => { sent.push('<stop>'); },
@@ -1002,6 +1006,37 @@ describe('the VM controller', () => {
       screen.root.remove();
     } finally {
       storeGate = null;
+    }
+  });
+
+  it('a machine whose roster is slow to come does not take the screen from one opened after it', async () => {
+    const { screen } = screen_make();
+    await screen.vm_open('');
+    await settle(12);
+    let slow: () => void = (): void => undefined;
+    rosterGate = new Promise((resolve: () => void): void => { slow = resolve; });
+    try {
+      const first: Promise<void> = screen.vm_open('store');
+      await settle(12);
+      await screen.vm_open('lone');
+      await settle(12);
+      const path: string = screen.path_get();
+      expect(path).toContain('lone');
+      [...screen.root.querySelectorAll<HTMLButtonElement>('.takeover-gutter button[data-view]')].find((button: HTMLButtonElement): boolean => (button.textContent ?? '').includes('SPEC'))?.click();
+      await settle(12);
+      const os = (): HTMLInputElement => screen.root.querySelector('input[id^="ss-os-"]') as HTMLInputElement;
+      os().value = 'ubuntu-24.04';
+      os().dispatchEvent(new Event('input'));
+      slow();
+      await first;
+      await settle(12);
+      expect(screen.path_get()).toBe(path);
+      expect(os().value).toBe('ubuntu-24.04');
+      expect(os().disabled).toBe(false);
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      rosterGate = null;
     }
   });
 
