@@ -444,9 +444,14 @@ export class ScriptScreen {
     const session: number = this.editSession;
     this.stepLogs.clear();
     await this.script_read();
-    // Something else was opened while this one was being read (another script, or the library): the screen
-    // is that one's.
-    if (session !== this.editSession || mine !== this.opening) return;
+    // Another script was opened while this one was being read: the screen is that one's.
+    if (session !== this.editSession) return;
+    // The operator chose a seat meanwhile (the library, or a step): that choice stands. The script that has
+    // now been read is drawn under it, and no seat is chosen for them.
+    if (mine !== this.opening) {
+      this.draw();
+      return;
+    }
     // The rail opens on the step running now, else on the first that needs the operator.
     const first: ScriptStep | undefined = runningStep_find(this.steps) ?? this.steps.find((step: ScriptStep): boolean => step.state === 'changed' || step.state === 'ready') ?? this.steps[0];
     this.view = first?.key ?? LIBRARY_VIEW;
@@ -1057,6 +1062,10 @@ export class ScriptScreen {
   protected view_press(key: string): void {
     const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === key);
     this.hooks.voice.pill(key === LIBRARY_VIEW ? 'LIBRARY' : step?.label ?? key);
+    // A seat chosen by hand is the latest thing the operator asked to see: an open still waiting on its
+    // read does not choose another over it when it comes back. (It begins no edit session: what is being
+    // edited stays as it is.)
+    this.opening += 1;
     this.view = key;
     if (key === LIBRARY_VIEW && !this.libraryRead) void this.library_read();
     if (step?.kind === 'vm new') { void this.limits_need(); this.stepCost_ask(step.lines[0]?.text ?? ''); }

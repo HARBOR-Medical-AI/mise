@@ -797,6 +797,35 @@ describe('the script screen', () => {
     screen.root.remove();
   });
 
+  it('the library chosen from the rail while a second script is being read stays chosen when that script comes back', async () => {
+    const { screen, hooks } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const answer: ScriptHooks['ask'] = hooks.ask;
+    let slow: () => void = (): void => undefined;
+    const held: Promise<void> = new Promise((resolve: () => void): void => { slow = resolve; });
+    hooks.ask = async (line: string): Promise<QuietAnswer> => { if (line.startsWith('cat ')) await held; return answer(line); };
+    const second: Promise<void> = screen.open('/scripts/chrisproject/other.mise');
+    await settle();
+    // By the rail's own button, as a hand does it.
+    const library: HTMLButtonElement | null = screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="library"]');
+    expect(library).not.toBeNull();
+    library?.click();
+    await settle();
+    expect(screen.view_get()).toBe('library');
+    slow();
+    await second;
+    await settle();
+    expect(screen.view_get()).toBe('library');
+    expect(screen.root.querySelector('.ss-script-name')).not.toBeNull();
+    // The script that was read is the one open, under the seat the operator chose.
+    expect(screen.path_get()).toBe('/scripts/chrisproject/other.mise');
+    screen.dispose();
+    screen.root.remove();
+  });
+
   it('a visit to the library leaves an open script\'s edits as they were', async () => {
     const { screen } = screen_make();
     await screen.open('/scripts/chrisproject/store.mise');
