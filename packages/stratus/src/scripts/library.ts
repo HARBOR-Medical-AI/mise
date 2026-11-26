@@ -48,65 +48,57 @@ export interface GitAnswer {
  *
  * @param args - git's arguments.
  * @param cwd - Where.
- * @param network - Whether git may use only transports that leave this host, within what the operator's own policy allows.
+ * @param network - Whether git is kept off this host's own transports (`file`, `ext`), within what the operator's own policy allows.
  * @returns Whether it succeeded, and its last line.
  */
 export function git_run(args: ReadonlyArray<string>, cwd?: string, network: boolean = false): GitAnswer {
-  // With `network`, git itself is held to transports that leave this host: whatever a clone's configured
-  // upstream or a redirect says, `file` and every local helper are refused by git (GIT_ALLOW_PROTOCOL).
-  const ran: SpawnSyncReturns<string> = spawnSync('git', [...args], { encoding: 'utf-8', ...(cwd !== undefined ? { cwd } : {}), env: { ...process.env, ...(network ? { GIT_ALLOW_PROTOCOL: networkProtocols_allow(process.env['GIT_ALLOW_PROTOCOL'], (protocol: string): string | null => protocolPolicy_read(protocol, cwd)) } : {}), GIT_TERMINAL_PROMPT: '0' } });
+  // With `network`, git itself is held off this host's own transports, whatever a clone's configured upstream
+  // or a redirect says: by two keys on its command line where the operator's policy is git's configuration,
+  // and by a shortened list where the operator's policy is a list in the environment (which git lets replace
+  // its configuration). No part of the operator's policy is widened either way.
+  const inherited: string | undefined = process.env['GIT_ALLOW_PROTOCOL'];
+  const held: ReadonlyArray<string> = network ? [...LOCAL_TRANSPORTS_OFF, ...args] : args;
+  const ran: SpawnSyncReturns<string> = spawnSync('git', [...held], {
+    encoding: 'utf-8',
+    ...(cwd !== undefined ? { cwd } : {}),
+    env: { ...process.env, ...(network && inherited !== undefined ? { GIT_ALLOW_PROTOCOL: networkProtocols_allow(inherited) } : {}), GIT_TERMINAL_PROMPT: '0' },
+  });
   const text: string = ((ran.status === 0 ? ran.stdout : ran.stderr) || ran.error?.message || '').trim().split('\n').at(-1) ?? '';
   return { ok: ran.status === 0, text };
 }
 
 /**
  * The transports of git's own that leave this host. `file`, and every
- * helper that is a program on this host (`ext`, and any `remote-<name>`),
- * are not among them.
+ * helper that is a program on this host (`ext`), are not among them.
  */
 export const NETWORK_PROTOCOLS: ReadonlyArray<string> = ['https', 'ssh', 'git', 'http', 'ftp', 'ftps'];
 
 /**
- * The transports git may use when the session's host disk is nobody's.
+ * git's own configuration, given on its command line, that turns the
+ * transports of this host off and says nothing of any other.
  *
- * Never more than the operator already allows: where the daemon was
- * started under a `GIT_ALLOW_PROTOCOL` of its own (an HTTPS-only host),
- * the answer is what that policy and the network transports have in
- * common, which may be nothing. With no such policy it is the network
- * transports that git's own configuration does not forbid: a list given
- * in the environment overrides `protocol.<name>.allow`, so a transport the
- * operator set to `never` there is left out of the list, and a `git://`
- * source that worked before still does.
- *
- * @param inherited - The `GIT_ALLOW_PROTOCOL` the process was started with, when it has one.
- * @param configured - What git's own configuration says of a transport (`always`, `never`, `user`), or null when it says nothing; asked only when the environment holds no policy.
- * @returns The value to give git.
+ * A key given with `-c` overrides that one key and no more. So every
+ * other part of the operator's policy stands exactly as git reads it: a
+ * transport set to `never` stays never, one set to `user` stays subject to
+ * `GIT_PROTOCOL_FROM_USER`, and the defaults stay the defaults. Nothing is
+ * read out of the configuration and re-stated, so nothing can be re-stated
+ * wrongly.
  */
-export function networkProtocols_allow(inherited: string | undefined, configured: (protocol: string) => string | null = (): null => null): string {
-  if (inherited !== undefined) {
-    const own: string[] = inherited.split(':').map((one: string): string => one.trim()).filter((one: string): boolean => one !== '');
-    return NETWORK_PROTOCOLS.filter((protocol: string): boolean => own.includes(protocol)).join(':');
-  }
-  // No policy in the environment: git's own configuration is the operator's policy, and giving git a list in
-  // the environment would override it. So the list given is the network transports that configuration allows.
-  return NETWORK_PROTOCOLS.filter((protocol: string): boolean => (configured(protocol) ?? 'always') !== 'never').join(':');
-}
+export const LOCAL_TRANSPORTS_OFF: ReadonlyArray<string> = ['-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never'];
 
 /**
- * What git's configuration says of one transport, as git would read it
- * where it is about to run: `protocol.<name>.allow`, else `protocol.allow`.
+ * The `GIT_ALLOW_PROTOCOL` to give git when the process was started under
+ * one: what that policy and the network transports have in common, which
+ * may be nothing. A list in the environment replaces git's configuration
+ * wholesale, the `-c` keys above included, so here the list itself is
+ * what must lose the local transports; it is only ever made shorter.
  *
- * @param protocol - The transport.
- * @param cwd - Where git will run, so a repository's own configuration counts.
- * @returns `always`, `never` or `user`; null when the configuration says nothing.
+ * @param inherited - The `GIT_ALLOW_PROTOCOL` the process was started with.
+ * @returns The value to give git.
  */
-export function protocolPolicy_read(protocol: string, cwd?: string): string | null {
-  for (const key of [`protocol.${protocol}.allow`, 'protocol.allow']) {
-    const ran: SpawnSyncReturns<string> = spawnSync('git', ['config', '--get', key], { encoding: 'utf-8', env: { ...process.env }, ...(cwd !== undefined && fs.existsSync(cwd) ? { cwd } : {}) });
-    const value: string = ran.status === 0 ? ran.stdout.trim() : '';
-    if (value !== '') return value;
-  }
-  return null;
+export function networkProtocols_allow(inherited: string): string {
+  const own: string[] = inherited.split(':').map((one: string): string => one.trim()).filter((one: string): boolean => one !== '');
+  return NETWORK_PROTOCOLS.filter((protocol: string): boolean => own.includes(protocol)).join(':');
 }
 
 /** The library: its sources, as configured and as cloned. */

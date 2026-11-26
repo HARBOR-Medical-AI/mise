@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { stratusBackend_make } from '../src/backend.js';
 import { ClusterStore } from '../src/cluster/state.js';
-import { ScriptLibrary, git_run, networkProtocols_allow, protocolPolicy_read, scriptsRoot_derive } from '../src/scripts/library.js';
+import { LOCAL_TRANSPORTS_OFF, ScriptLibrary, git_run, networkProtocols_allow, scriptsRoot_derive } from '../src/scripts/library.js';
 import { scripts_run } from '../src/commands/scripts.js';
 import { ScriptsProvider } from '../src/vfs/scripts.js';
 import { backend_install, HeadlessSurface, manifestText_read, surface_set } from '@fnndsc/brasa/core';
@@ -393,8 +393,7 @@ describe('the library stays inside itself', () => {
     expect(await mount.absence_prove('/scripts/leaky/x.mise')).toBe(true);
   });
 
-  it('holds git to the network within what the operator already allows, never widening it', () => {
-    expect(networkProtocols_allow(undefined)).toBe('https:ssh:git:http:ftp:ftps');
+  it('shortens a policy the operator set in the environment, never widening it', () => {
     // An HTTPS-only host stays HTTPS-only: SSH is not switched on for it.
     expect(networkProtocols_allow('https')).toBe('https');
     expect(networkProtocols_allow('file:https:git')).toBe('https:git');
@@ -407,7 +406,11 @@ describe('the library stays inside itself', () => {
       // git:// would be a network transport, and this host's policy does not allow it.
       const refused = git_run(['ls-remote', 'git://git.example.invalid/x.git'], undefined, true);
       expect(refused.ok).toBe(false);
-      expect(refused.text).toMatch(/not allowed|transport/);
+      expect(refused.text).toMatch(/not allowed/);
+      // And a list that held `file` loses it.
+      process.env['GIT_ALLOW_PROTOCOL'] = 'file:https';
+      expect(git_run(['ls-remote', `file://${repo}`], undefined, true).text).toMatch(/not allowed/);
+      expect(git_run(['ls-remote', `file://${repo}`]).ok).toBe(true);
     } finally {
       if (saved === undefined) delete process.env['GIT_ALLOW_PROTOCOL']; else process.env['GIT_ALLOW_PROTOCOL'] = saved;
     }
@@ -428,29 +431,43 @@ describe('the library stays inside itself', () => {
     expect(ran).toEqual([]);
   });
 
-  it('keeps git\'s own configuration when it narrows to the network: a transport the operator set to never stays off', () => {
+  it('with no policy in the environment, leaves git\'s own configuration exactly as the operator set it, and turns off only this host\'s transports', () => {
+    expect(LOCAL_TRANSPORTS_OFF).toEqual(['-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never']);
     const config: string = join(root, 'gitconfig');
+    // ssh is never; git is user, which git allows a person at a terminal and refuses when told the request is not theirs.
     writeFileSync(config, '[protocol "ssh"]\n\tallow = never\n[protocol "git"]\n\tallow = user\n');
-    const saved = { global: process.env['GIT_CONFIG_GLOBAL'], system: process.env['GIT_CONFIG_NOSYSTEM'], allow: process.env['GIT_ALLOW_PROTOCOL'] };
+    const names = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_ALLOW_PROTOCOL', 'GIT_PROTOCOL_FROM_USER'] as const;
+    const saved = names.map((name) => process.env[name]);
+    /** Whether git refused by its transport policy, as against failing to reach a host that is not there. */
+    const byPolicy = (url: string): boolean => /not allowed/.test(git_run(['ls-remote', url], undefined, true).text);
     try {
       process.env['GIT_CONFIG_GLOBAL'] = config;
       process.env['GIT_CONFIG_NOSYSTEM'] = '1';
       delete process.env['GIT_ALLOW_PROTOCOL'];
-      expect(protocolPolicy_read('ssh')).toBe('never');
-      expect(protocolPolicy_read('git')).toBe('user');
-      expect(protocolPolicy_read('https')).toBeNull();
-      expect(networkProtocols_allow(undefined, protocolPolicy_read)).toBe('https:git:http:ftp:ftps');
-      // And git itself, run as the library runs it, refuses ssh under that configuration.
-      const refused = git_run(['ls-remote', 'ssh://git@git.example.invalid/x.git'], undefined, true);
-      expect(refused.ok).toBe(false);
-      expect(refused.text).toMatch(/not allowed|transport/);
-      // A blanket never in the configuration leaves nothing.
-      writeFileSync(config, '[protocol]\n\tallow = never\n');
-      expect(networkProtocols_allow(undefined, protocolPolicy_read)).toBe('');
+      delete process.env['GIT_PROTOCOL_FROM_USER'];
+      // never stays never.
+      expect(byPolicy('ssh://git@git.example.invalid/x.git')).toBe(true);
+      // user, with nothing said about who is asking: allowed by policy (the host is not there, which is another failure).
+      expect(byPolicy('git://git.example.invalid/x.git')).toBe(false);
+      // user, with git told the request is not the user's own: refused by policy. The library does not turn that into always.
+      process.env['GIT_PROTOCOL_FROM_USER'] = '0';
+      expect(byPolicy('git://git.example.invalid/x.git')).toBe(true);
+      // ftp is unconfigured and so user by git's default: the same both ways.
+      expect(byPolicy('ftp://git.example.invalid/x.git')).toBe(true);
+      process.env['GIT_PROTOCOL_FROM_USER'] = '1';
+      expect(byPolicy('ftp://git.example.invalid/x.git')).toBe(false);
+      // https is unconfigured and always by git's default.
+      expect(byPolicy('https://git.example.invalid/x.git')).toBe(false);
+      // This host's own transports are off whatever the rest says, and on without the restriction.
+      expect(byPolicy(`file://${repo}`)).toBe(true);
+      expect(byPolicy(repo)).toBe(true);
+      expect(git_run(['ls-remote', repo]).ok).toBe(true);
+      // A configuration that allowed file outright is overridden for file alone.
+      writeFileSync(config, '[protocol "file"]\n\tallow = always\n[protocol "ssh"]\n\tallow = never\n');
+      expect(byPolicy(`file://${repo}`)).toBe(true);
+      expect(byPolicy('ssh://git@git.example.invalid/x.git')).toBe(true);
     } finally {
-      for (const [name, value] of [['GIT_CONFIG_GLOBAL', saved.global], ['GIT_CONFIG_NOSYSTEM', saved.system], ['GIT_ALLOW_PROTOCOL', saved.allow]] as const) {
-        if (value === undefined) delete process.env[name]; else process.env[name] = value;
-      }
+      names.forEach((name, at) => { const value = saved[at]; if (value === undefined) delete process.env[name]; else process.env[name] = value; });
     }
   });
 
