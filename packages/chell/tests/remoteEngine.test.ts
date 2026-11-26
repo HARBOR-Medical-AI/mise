@@ -539,6 +539,7 @@ describe('RemoteEngine live output', () => {
         ws.emit('message', Buffer.from(JSON.stringify({
           type: 'deliver',
           deliverId: 'deliver1',
+          id,
           path: '/home/me/scan.dcm',
           filename: 'scan.dcm',
           destination: '/tmp',
@@ -620,9 +621,41 @@ describe('RemoteEngine live output', () => {
       expect(sent).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'deliverResult', deliverId: 'd1' })]));
     });
 
-    it('a daemon that does not say which line is believed while one line runs', async () => {
-      const { delivered } = await delivery_during('download /home/me/scan.dcm ./scans', './scans', { unnamed: true });
-      expect(delivered).toEqual(['./scans']);
+    it('a daemon that does not say which line is refused, even with one line running, and told to upgrade', async () => {
+      const { sent, delivered } = await delivery_during('download /home/me/scan.dcm ./scans', './scans', { unnamed: true });
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toBe('refused: the session asked to write "scan.dcm" to "./scans" and did not say which line asked for it, so it cannot be told from a delivery that is late or was never asked for; nothing was written. The session\'s daemon is older than this chell: upgrade the daemon');
+    });
+
+    it('a quoted verb later in a pipeline is the host\'s program, and asks for no file', async () => {
+      const { sent, delivered } = await delivery_during('ls /x | "download" /a ./later', './later');
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toContain('asks for no file');
+    });
+
+    it.each([
+      ['its result', (ws: FakeWebSocket, id: string): void => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] }))); }],
+      ['its error', (ws: FakeWebSocket, id: string): void => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'error', id, reason: 'the line failed' }))); }],
+    ])('a delivery read straight after %s, with nothing run in between, is refused', async (_ending: string, end: (ws: FakeWebSocket, id: string) => void) => {
+      const delivered: string[] = [];
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        const id: string = String(sent.id);
+        process.nextTick(() => {
+          // The ending and the delivery arrive back to back, in one turn: nothing awaits between them.
+          end(ws, id);
+          deliver_emit(ws, 'd1', id, './scans');
+        });
+      };
+      remote = await RemoteEngine.connect({
+        url: 'ws://127.0.0.1:1',
+        token: 'token',
+        onDeliver: async (request) => { delivered.push(request.destination ?? '(none)'); return { location: '/written', bytes: 1 }; },
+      });
+      await remote.line_execute('download /home/me/scan.dcm ./scans').catch((): undefined => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      remote.close();
+      expect(delivered).toEqual([]);
+      expect(refusal_of((FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket).sent as Array<Record<string, unknown>>)).toContain('for a line that is not running here');
     });
 
     it('another destination is refused by name, and nothing is written', async () => {
@@ -745,12 +778,12 @@ describe('RemoteEngine live output', () => {
         remote.close();
       });
 
-      it('a daemon that does not say which line is refused', async () => {
+      it('a daemon that does not say which line is refused with two running, too', async () => {
         const { ws, ids, delivered, ended } = await overlap_make('download /home/me/scan.dcm ./scans', 'download /home/me/scan.dcm /tmp');
         deliver_emit(ws, 'd1', undefined, './scans');
         await settle();
         expect(delivered).toEqual([]);
-        expect(refusal_of(ws.sent as Array<Record<string, unknown>>, 'd1')).toContain('did not say for which of the lines running here');
+        expect(refusal_of(ws.sent as Array<Record<string, unknown>>, 'd1')).toContain('did not say which line asked for it');
         result_emit(ws, ids[0] as string); result_emit(ws, ids[1] as string);
         await Promise.all(ended);
         remote.close();

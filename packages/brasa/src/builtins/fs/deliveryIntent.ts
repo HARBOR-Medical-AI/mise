@@ -24,7 +24,7 @@
 import type { CommandDeclaration } from '../../core/commandDeclaration.js';
 import { commandOperands_place } from '../../core/commandParse.js';
 import { jobletLine_parse } from '../../core/joblets.js';
-import { command_shellEscape_detect, pipes_parse, redirect_parse, type RedirectInfo } from '../../core/preprocess.js';
+import { command_shellEscape_detect, pipeSegment_word, pipes_parse, redirect_parse, type RedirectInfo } from '../../core/preprocess.js';
 import { assignment_parse } from '../../core/variables.js';
 import { shellWords_tokenize, type ShellSegment, type ShellWord } from '../../lib/parser.js';
 import { quoteOpen_find } from '../../lib/quoting.js';
@@ -73,13 +73,33 @@ function commandIntents_read(command: string): DeliveryIntent[] {
 }
 
 /**
+ * Whether a pipeline's later segment is one the engine would run as a
+ * delivering command, by the engine's own rule.
+ *
+ * `pipe_execute` (`core/dispatch.ts`) decides a later segment from its raw
+ * leading word, split on white space, before any quoting is read: a word
+ * that names a builtin runs in the engine, anything else goes to the
+ * surface's host shell. So `"download" a b` in that position is a host
+ * program, not the engine's `download`, and asks for no delivery. The rule
+ * is {@link pipeSegment_word}, which `pipe_execute` uses too.
+ *
+ * @param segment - A segment after the first.
+ * @returns True when its raw leading word is a delivering command's name.
+ */
+function laterSegment_runsInEngine(segment: string): boolean {
+  const word: string = pipeSegment_word(segment);
+  return DELIVERING.some((one: DeliveringCommand): boolean => one.declaration.name === word);
+}
+
+/**
  * Reads the deliveries a line asks for, without running it.
  *
  * The order is the engine's: an unfinished quote, a background line and a
  * host-shell line are settled first (none can be bound: no intent); then a
  * list is split and each command read as a line of its own; a capture is
- * not bound; a pipeline's every segment is read as a plain command, since
- * a later segment that names a builtin runs in the engine too; a redirect
+ * not bound; a pipeline's first segment is read as a plain command, and a
+ * later one too when its raw leading word names a delivering command, which
+ * is how the engine decides to run it itself; a redirect
  * is taken off and the command before it read; what is left is one plain
  * command.
  *
@@ -101,7 +121,9 @@ export function deliveryIntents_read(line: string): DeliveryIntent[] {
   if (listed.length > 1) return listed.flatMap((one: ListCommand): DeliveryIntent[] => deliveryIntents_read(one.command));
   if (assignment_parse(trimmed) !== null) return [];
   const segments: string[] = pipes_parse(trimmed);
-  if (segments.length > 1) return segments.flatMap((segment: string): DeliveryIntent[] => commandIntents_read(segment));
+  if (segments.length > 1) {
+    return segments.flatMap((segment: string, at: number): DeliveryIntent[] => (at === 0 || laterSegment_runsInEngine(segment) ? commandIntents_read(segment) : []));
+  }
   const redirect: RedirectInfo | null = redirect_parse(trimmed);
   return commandIntents_read(redirect !== null ? redirect.command : trimmed);
 }

@@ -228,6 +228,27 @@
     {
       "line": "$VERB /a ./out",
       "intents": []
+    },
+    {
+      "line": "ls /x | \"download\" /a ./later",
+      "intents": []
+    },
+    {
+      "line": "ls /x | 'download' /a ./later",
+      "intents": []
+    },
+    {
+      "line": "ls /x | $VERB /a ./later",
+      "intents": []
+    },
+    {
+      "line": "\"download\" /a ./first | wc",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./first"
+        }
+      ]
     }
   ]
 }

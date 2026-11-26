@@ -51,6 +51,7 @@ import {
 import { surface_get, capability_require } from './surface.js';
 import { sudoCommand_run } from './elevation.js';
 import {
+  pipeSegment_word,
   redirectTarget_resolve,
   type RedirectInfo,
 } from './preprocess.js';
@@ -465,7 +466,7 @@ export async function pipe_execute(segments: string[]): Promise<CommandEnvelope>
   let lastListing: CommandEnvelope['model'] = listing_is(first.model) ? first.model : undefined;
   for (let i: number = 1; i < segments.length; i++) {
     const segment: string = segments[i];
-    const word: string = segment.trim().split(/\s+/)[0] ?? '';
+    const word: string = pipeSegment_word(segment);
     if (word !== '' && builtinCommand_has(word)) {
       // The segment reads its input from slots of its own, so a line that
       // runs beside this one never takes this pipe's text or listing (#1273).
