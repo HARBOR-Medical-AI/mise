@@ -142,7 +142,7 @@ function line_scan(line: string): LinePiece[] | null {
 }
 
 /** Whether a line that cannot be read word by word still shows the mark of a secret. */
-const SECRET_MARK: RegExp = /--password|--adminPassword|--token|--auth-token|(^|\s)-p(\s|=|$)|:[^\s@/]+@|[?&]token=/;
+const SECRET_MARK: RegExp = /--password|--adminPassword|--token|--auth-token|(^|\s)-p(\s|=|$)|:[^@/]+@|(^|[?&\s])token=/;
 
 /** `scheme://user:password@…` at the start of a word. */
 const SCHEME_FIRST: RegExp = /^([a-z][a-z0-9+.-]*:\/\/[^:@/]+):([^@]+)@(.+)$/i;
@@ -150,8 +150,23 @@ const SCHEME_FIRST: RegExp = /^([a-z][a-z0-9+.-]*:\/\/[^:@/]+):([^@]+)@(.+)$/i;
 /** `user:password@scheme://…`, as `connect` takes an identity. */
 const USER_FIRST: RegExp = /^([^:@/]+):([^@]+)@([a-z][a-z0-9+.-]*:\/\/.+)$/i;
 
-/** A bare `user:password@host`. */
-const BARE: RegExp = /^([^:@/\s]+):([^@\s]+)@([^@\s]+)$/;
+/** A bare `user:password@host`; the password may hold anything but an at sign, a space included when the word was quoted. */
+const BARE: RegExp = /^([^:@/\s]+):([^@]+)@([^@\s]+)$/;
+
+/**
+ * A word as it is written back into a kept line: quoted when it was typed
+ * quoted, or when it holds anything the shell would read as more than part
+ * of one word, so the kept line has the words the typed line had.
+ *
+ * @param value - The word's value, a secret in it already replaced.
+ * @param typed - The word as it was typed.
+ * @returns The word to write.
+ */
+function word_quote(value: string, typed: string): string {
+  const wasQuoted: boolean = /['"\\]/.test(typed);
+  if (!wasQuoted && !/[\s;&|'"\\$`<>()]/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
 
 /**
  * A line as the history keeps it: every secret's place marked, the whole
@@ -190,6 +205,8 @@ export function historyLine_redact(line: string): string | null {
   for (let at: number = 0; at < pieces.length; at++) {
     const piece: LinePiece = pieces[at] as LinePiece;
     if (piece.kind === 'op') { verb = null; continue; }
+    // The host-shell mark may stand alone before its command (`! chell …`): the verb is the word after it.
+    if (verb === null && piece.value === '!') continue;
     const first: boolean = verb === null;
     if (verb === null) verb = (piece.value.replace(/^!/, '').split('/').pop() ?? '');
     const passwordVerb: boolean = PASSWORD_VERBS.includes(verb);
@@ -204,11 +221,12 @@ export function historyLine_redact(line: string): string | null {
       swaps.push({ start: piece.start, end: piece.end, text: `${inline}=${REDACTED}` });
       continue;
     }
-    if (first) continue;
-    const address: RegExpExecArray | null = SCHEME_FIRST.exec(piece.value) ?? USER_FIRST.exec(piece.value) ?? (passwordVerb ? BARE.exec(piece.value) : null);
+    // An address is no verb, but a `token=` is a token wherever it stands: an unquoted address is cut at its
+    // `&` like any line, and what follows the cut heads a command of its own.
+    const address: RegExpExecArray | null = first ? null : SCHEME_FIRST.exec(piece.value) ?? USER_FIRST.exec(piece.value) ?? (passwordVerb ? BARE.exec(piece.value) : null);
     let kept: string = address !== null ? `${address[1]}:${REDACTED}@${address[3]}` : piece.value;
-    kept = kept.replace(/([?&]token=)[^&]+/g, (_whole: string, lead: string): string => `${lead}${REDACTED}`);
-    if (kept !== piece.value) swaps.push({ start: piece.start, end: piece.end, text: kept });
+    kept = kept.replace(/((?:^|[?&])token=)[^&]+/g, (_whole: string, lead: string): string => `${lead}${REDACTED}`);
+    if (kept !== piece.value) swaps.push({ start: piece.start, end: piece.end, text: word_quote(kept, line.slice(piece.start, piece.end)) });
   }
   let out: string = line;
   for (const swap of swaps.reverse()) out = `${out.slice(0, swap.start)}${swap.text}${out.slice(swap.end)}`;
@@ -239,27 +257,41 @@ export function recall_accept(recall: unknown, line: string): void {
 export class HistoryPrivacyError extends Error {}
 
 /**
- * Makes the shell's own history folder, private, and shows that it is.
+ * Makes the shell's own history folder, and shows it to be a folder of
+ * this user's alone, before anything about it is changed.
+ *
+ * The folder is opened as a directory, without following a link at its own
+ * name, and looked at through that open handle: what is checked is what is
+ * then tightened. A link standing where the folder should be, a file there,
+ * or a folder that is somebody else's is refused untouched.
  *
  * @param folder - The folder.
- * @throws {HistoryPrivacyError} When it is not this user's, or cannot be made theirs alone.
+ * @throws {HistoryPrivacyError} When it is not this user's own folder, or cannot be made theirs alone.
  */
 async function ownFolder_secure(folder: string): Promise<void> {
   await fs.promises.mkdir(folder, { recursive: true, mode: HISTORY_FOLDER_MODE });
-  let stat: fs.Stats = await fs.promises.stat(folder);
-  if ((stat.mode & OTHERS_MASK) !== 0) {
-    await fs.promises.chmod(folder, HISTORY_FOLDER_MODE);
-    stat = await fs.promises.stat(folder);
-  }
-  if (!stat.isDirectory() || (stat.mode & OTHERS_MASK) !== 0 || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) {
-    throw new HistoryPrivacyError(`${folder} is not a folder of this user's alone`);
+  const handle: fs.promises.FileHandle = await fs.promises.open(folder, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+  try {
+    let stat: fs.Stats = await handle.stat();
+    if (!stat.isDirectory() || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) {
+      throw new HistoryPrivacyError(`${folder} is not a folder of this user's own`);
+    }
+    if ((stat.mode & OTHERS_MASK) !== 0) {
+      await handle.chmod(HISTORY_FOLDER_MODE);
+      stat = await handle.stat();
+    }
+    if ((stat.mode & OTHERS_MASK) !== 0) throw new HistoryPrivacyError(`${folder} could not be made this user's alone`);
+  } finally {
+    await handle.close();
   }
 }
 
 /**
  * Opens the history file and shows, through that open file, that it is a
  * regular file of this user's that nobody else can read, making it so
- * first if it was looser. A link is not followed.
+ * first if it was looser. A link is not followed, and the open does not
+ * wait: a pipe put where the history should be is found to be no file and
+ * refused, where a waiting open would hang the shell on it.
  *
  * @param place - Where the history is kept.
  * @param flags - How to open it.
@@ -267,17 +299,24 @@ async function ownFolder_secure(folder: string): Promise<void> {
  * @throws {HistoryPrivacyError} When privacy cannot be shown; nothing has been written.
  */
 async function history_open(place: HistoryPlace, flags: number): Promise<fs.promises.FileHandle> {
-  if (place.ownFolder) await ownFolder_secure(path.dirname(place.file));
-  const handle: fs.promises.FileHandle = await fs.promises.open(place.file, flags | fs.constants.O_NOFOLLOW, HISTORY_FILE_MODE);
+  let handle: fs.promises.FileHandle;
+  try {
+    if (place.ownFolder) await ownFolder_secure(path.dirname(place.file));
+    handle = await fs.promises.open(place.file, flags | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK, HISTORY_FILE_MODE);
+  } catch (error: unknown) {
+    throw error instanceof HistoryPrivacyError ? error : new HistoryPrivacyError(`${place.file} could not be opened privately: ${error instanceof Error ? error.message : String(error)}`);
+  }
   try {
     let stat: fs.Stats = await handle.stat();
-    if (stat.isFile() && (stat.mode & OTHERS_MASK) !== 0) {
+    // What it is and whose, before its mode is touched.
+    if (!stat.isFile() || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) {
+      throw new HistoryPrivacyError(`${place.file} is not a file of this user's own`);
+    }
+    if ((stat.mode & OTHERS_MASK) !== 0) {
       await handle.chmod(HISTORY_FILE_MODE);
       stat = await handle.stat();
     }
-    if (!stat.isFile() || (stat.mode & OTHERS_MASK) !== 0 || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) {
-      throw new HistoryPrivacyError(`${place.file} is not a file of this user's alone`);
-    }
+    if ((stat.mode & OTHERS_MASK) !== 0) throw new HistoryPrivacyError(`${place.file} could not be made this user's alone`);
     return handle;
   } catch (error: unknown) {
     await handle.close();

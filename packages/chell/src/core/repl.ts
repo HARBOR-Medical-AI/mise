@@ -109,6 +109,16 @@ export class REPL {
           .catch(() => callback(null, [[], line]));
       },
     });
+    // The reader is live from here, before the shell has finished starting. Lines are accepted from this
+    // moment: start-up counts as a command in flight, so a line typed during it waits its turn and is run
+    // when the first prompt stands, and its place in recall is clean the moment it is read.
+    this.busy = true;
+    this.rl.on('line', (line: string): void => {
+      // readline has already kept the line as typed: its recall takes the kept form now, as the line is
+      // accepted, whether it runs at once, waits behind a running command, or is thrown away unrun.
+      recall_accept(Reflect.get(this.rl, 'history'), line);
+      void this.line_receive(line);
+    });
   }
 
   /**
@@ -134,13 +144,6 @@ export class REPL {
       } catch {
         // The interface has closed.
       }
-    });
-
-    this.rl.on('line', (line: string): void => {
-      // readline has already kept the line as typed: its recall takes the kept form now, as the line is
-      // accepted, whether it runs at once, waits behind a running command, or is thrown away unrun.
-      recall_accept(Reflect.get(this.rl, 'history'), line);
-      void this.line_receive(line);
     });
 
     // While a command runs, Ctrl-C is read from the raw bytes, ahead of
@@ -180,6 +183,11 @@ export class REPL {
       console.log(chalk.cyan('Exiting ChELL. Goodbye!'));
       process.exit(0);
     });
+
+    // Start-up is over: what was typed while it ran is run now, in the order it was typed.
+    this.busy = false;
+    const early: string | undefined = typeahead_take();
+    if (early !== undefined) void this.line_receive(early);
   }
 
   /**
@@ -296,8 +304,10 @@ export class REPL {
   private async history_load(): Promise<void> {
     try {
       const lines: string[] = await history_readPrivate(historyFile_resolve(settings.config.historyFile));
-      // `history` is a runtime readline property its typings do not declare.
-      Reflect.set(this.rl, 'history', lines.reverse().slice(0, settings.config.historySize));
+      // `history` is a runtime readline property its typings do not declare. Lines typed while the history
+      // was being read are already in it, newest first, and stay ahead of what was loaded.
+      const typed: unknown = Reflect.get(this.rl, 'history');
+      Reflect.set(this.rl, 'history', [...(Array.isArray(typed) ? typed as string[] : []), ...lines.reverse()].slice(0, settings.config.historySize));
     } catch (error: unknown) {
       this.historyUnkept_say(error);
     }

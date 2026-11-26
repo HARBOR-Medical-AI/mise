@@ -3,7 +3,8 @@
  * before a byte is written, and no part of a secret in a line that is kept.
  */
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { history_appendPrivate, history_readPrivate, historyFile_resolve, historyLine_redact, recall_accept, HistoryPrivacyError } from '../src/core/history.js';
@@ -56,14 +57,25 @@ describe('historyLine_redact', () => {
     ['connect rudolph:hunter2@cube.example.org', 'connect rudolph:***@cube.example.org'],
     ['!chell rudolph:hunter2@cube.example.org -c version', '!chell rudolph:***@cube.example.org -c version'],
     ['!curl https://rudolph:hunter2@cube.example.org/api/v1/', '!curl https://rudolph:***@cube.example.org/api/v1/'],
-    ['!curl "https://rudolph:hunter 2@cube.example.org/api/v1/"', '!curl https://rudolph:***@cube.example.org/api/v1/'],
+    // A word typed quoted is kept quoted, so the kept line has the words the typed line had.
+    ['!curl "https://rudolph:hunter 2@cube.example.org/api/v1/"', "!curl 'https://rudolph:***@cube.example.org/api/v1/'"],
+    // The host-shell mark standing alone before its command.
+    ['! chell rudolph@https://cube/ -p hunter2 -c version', '! chell rudolph@https://cube/ -p *** -c version'],
+    ['!  connect -p "hunter 2" url', '!  connect -p *** url'],
+    // A bare identity typed quoted, its password holding a space.
+    ['connect "rudolph:hunter 2@cube.example.org"', "connect 'rudolph:***@cube.example.org'"],
+    ["!chell 'rudolph:my secret@cube.example.org' -c version", "!chell 'rudolph:***@cube.example.org' -c version"],
+    // An unquoted address is cut at its & like any line; the token after the cut is still a token.
+    ['!open http://pangea:42479/?x=1&token=0123abcd', '!open http://pangea:42479/?x=1&token=***'],
+    ['!open http://pangea:42479/?x=1&token=0123abcd&y=2', '!open http://pangea:42479/?x=1&token=***&y=2'],
+    ['!chell --remote --attach ws://h:9/?a=b&token=0123abcd', '!chell --remote --attach ws://h:9/?a=b&token=***'],
     ['!open http://pangea:42479/?token=0123abcd&x=1', '!open http://pangea:42479/?token=***&x=1'],
-    ['!curl "http://127.0.0.1:9/vfs?path=%2Fa&token=0123abcd"', '!curl http://127.0.0.1:9/vfs?path=%2Fa&token=***'],
+    ['!curl "http://127.0.0.1:9/vfs?path=%2Fa&token=0123abcd"', "!curl 'http://127.0.0.1:9/vfs?path=%2Fa&token=***'"],
   ])('%j is kept as %j', (typed: string, kept: string) => {
     const out: string | null = historyLine_redact(typed);
     expect(out).toBe(kept);
     // No piece of the secret survives, whatever was expected.
-    for (const secret of ['hunter', 'my secret', 'secret pass', "it's", 'a b', 'c d', 'chris1234', '0123abcd', 'abcdef', 'say']) {
+    for (const secret of ['hunter', 'my secret', 'secret pass', "it's", 'a b', 'c d', 'chris1234', '0123abcd', 'abcdef', 'say', ' 2']) {
       if (typed.includes(secret) && !kept.includes(secret)) expect(out).not.toContain(secret);
     }
   });
@@ -164,6 +176,37 @@ describe('the history file', () => {
     const folder = { file: join(root, 'a-folder'), ownFolder: false };
     mkdirSync(folder.file);
     await expect(history_appendPrivate(folder, 'x')).rejects.toThrow();
+  });
+
+  it('a link standing where its own folder should be is not followed, and the folder it points at keeps its mode', async () => {
+    const elsewhere: string = join(root, 'somebody-elses');
+    mkdirSync(elsewhere, { mode: 0o755 });
+    chmodSync(elsewhere, 0o755);
+    symlinkSync(elsewhere, join(root, 'chell'));
+    const place = { file: join(root, 'chell', 'history'), ownFolder: true };
+    await expect(history_appendPrivate(place, 'a line')).rejects.toThrow();
+    expect(mode_of(elsewhere)).toBe(0o755);
+    expect(readdirSync(elsewhere)).toEqual([]);
+  });
+
+  it('a file standing where its own folder should be keeps its mode, and nothing is written', async () => {
+    const blocked: string = join(root, 'chell');
+    writeFileSync(blocked, 'a file\n', { mode: 0o644 });
+    chmodSync(blocked, 0o644);
+    await expect(history_appendPrivate({ file: join(blocked, 'history'), ownFolder: true }, 'a line')).rejects.toThrow();
+    expect(mode_of(blocked)).toBe(0o644);
+  });
+
+  it('a pipe put where the history should be does not hang the shell: it is found to be no file and refused', async () => {
+    const pipe: string = join(root, 'history-pipe');
+    expect(spawnSync('mkfifo', [pipe]).status).toBe(0);
+    const place = { file: pipe, ownFolder: false };
+    const refused = await Promise.race([
+      history_readPrivate(place).then((): string => 'read', (error: Error): string => error.message),
+      new Promise<string>((resolve) => setTimeout((): void => resolve('hung'), 2000)),
+    ]);
+    expect(refused).toContain("is not a file of this user's own");
+    await expect(history_appendPrivate(place, 'x')).rejects.toThrow();
   });
 
   it('writes nothing when its own folder cannot be had: where the folder should be, a file stands', async () => {
