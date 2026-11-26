@@ -108,6 +108,8 @@ jobs:
       # lays a graph out (checked on the build).
       - run: npm run lint:workers
       - run: npm run test:layout-worker --workspace @fnndsc/brasa
+      # The nightly's accounting: a red stage or step is a non-zero exit.
+      - run: npm run test:nightly
       # stratus: oci-* only inside its OCI driver, no ChRIS package; it boots
       # over the fake cloud and walks the tenancy tree (docs/stratus.adoc).
       - run: npm run lint:stratus-deps
