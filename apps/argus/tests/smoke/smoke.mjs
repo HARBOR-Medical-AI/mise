@@ -4301,9 +4301,14 @@ try {
     if (!/^[/]home[/][^/]+[/]smoke-kinds-[a-z0-9]+-[a-z0-9]+$/.test(place)) return { error: 'no home to make the folder in: ' + homeAt() };
     // The folder is this run's only when this run made it: mkdir without -p
     // fails on a name that is taken, and then nothing is removed afterwards.
+    // The receipt is mkdir's own line for this exact path, read from what the
+    // console said after this line was sent: a status shared by every line the
+    // session runs could be another line's.
+    const mkdirMark = console_mark();
     await say('mkdir ' + place, 2500);
-    const made = window.__argusPromptContext?.lastExitCode;
-    if (made !== 0) return { error: 'mkdir ' + place + ' did not succeed (exit ' + made + '): nothing was sent up, nothing is removed' };
+    const receipt = 'Created directory: ' + place;
+    const made = await settle(() => console_since(mkdirMark, '\\n').split('\\n').some((l) => l.trim() === receipt), 20);
+    if (!made) return { error: 'mkdir ' + place + ' gave no receipt: nothing was sent up, nothing is removed' };
     try {
     await say('cd ' + place, 2500);
     const there = await settle(() => homeAt() === place, 60);
