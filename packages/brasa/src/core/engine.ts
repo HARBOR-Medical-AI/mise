@@ -504,6 +504,23 @@ export function line_abort(id?: string): boolean {
  * @returns The matching candidates and the prefix they complete.
  */
 export async function line_complete(linePrefix: string): Promise<CompletionResult> {
+  // A completion is a piece of the backend's work as a line is (see `Backend.work_run`): what it fetches
+  // to complete with (the plugin list, a folder's listing) is kept by the same rule.
+  const work_mark: Backend['work_run'] = backendInstalled_get()?.work_run;
+  if (work_mark === undefined) return await lineComplete_run(linePrefix);
+  return await work_mark((): Promise<CompletionResult> => lineComplete_run(linePrefix));
+}
+
+/**
+ * The completion itself: see {@link line_complete}.
+ *
+ * @param linePrefix - The line up to the cursor.
+ * @returns The candidates and the prefix they replace.
+ *
+ * @example
+ * const result: CompletionResult = await lineComplete_run('ls /ho');
+ */
+async function lineComplete_run(linePrefix: string): Promise<CompletionResult> {
   const { input_complete } = await import('../lib/completer/index.js');
   return new Promise((resolve: (result: CompletionResult) => void) => {
     input_complete(linePrefix, (err: Error | null, result: [string[], string]) => {

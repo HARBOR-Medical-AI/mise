@@ -16,7 +16,7 @@
  *
  * @module
  */
-import { identityCache_usable, identityChange_listen } from '../connect/identityEpoch';
+import { identityChange_listen, identityPartition_make } from '../connect/identityEpoch';
 import { listingsForFeeds_note, listingsForFeeds_drop, listingsForRoster_note, listingInvalidation_reset } from './listingInvalidation';
 
 /**
@@ -462,10 +462,12 @@ export class ProcCache {
 
   static instance_get(): ProcCache {
     if (!ProcCache._instance) {
-      const made: ProcCache = new ProcCache();
-      ProcCache._instance = made;
-      // The tree is one identity's feeds and jobs: at a change of identity all of it goes.
-      identityChange_listen((): void => { made.cache_clear(); });
+      const own: ProcCache = new ProcCache();
+      // The tree is one identity's feeds and jobs. Work begun under another identity, or done as another
+      // user, is handed a tree of its own (see identityPartition_make); and at a change of identity the
+      // session's is forgotten whole, what the operator had not yet looked at included.
+      ProcCache._instance = identityPartition_make(own, (): ProcCache => new ProcCache());
+      identityChange_listen((): void => { own.identity_forget(); });
     }
     return ProcCache._instance;
   }
@@ -512,8 +514,6 @@ export class ProcCache {
    * Adds or updates a feed entry.
    */
   feed_add(feed: ProcFeed): void {
-    // What is learnt of the tree as another user, or by work begun under an identity since replaced, is not kept.
-    if (!identityCache_usable()) return;
     this.feeds.set(feed.id, feed);
     if (!this.feedRoots.has(feed.id)) {
       this.feedRoots.set(feed.id, []);
@@ -593,8 +593,6 @@ export class ProcCache {
    *   aggregate job counts changed, or they still have active work.
    */
   feeds_reconcile(feeds: ProcFeed[]): number[] {
-    // What is learnt of the tree as another user, or by work begun under an identity since replaced, is not kept.
-    if (!identityCache_usable()) return [];
     const reconciliationTargets: number[] = [];
     const visible: Set<number> = new Set(feeds.map((feed: ProcFeed): number => feed.id));
     const departed: number[] = [];
@@ -628,8 +626,6 @@ export class ProcCache {
    * Adds a plugin instance to the topology cache.
    */
   instance_add(inst: ProcInstance): void {
-    // What is learnt of the tree as another user, or by work begun under an identity since replaced, is not kept.
-    if (!identityCache_usable()) return;
     this.landed.set(inst.feedID, Date.now());
     this.instances.set(inst.id, inst);
     let roll: Set<number> | undefined = this.byFeed.get(inst.feedID);
@@ -755,8 +751,6 @@ export class ProcCache {
    * Updates cached params for an instance (on first cat).
    */
   params_update(id: number, params: Record<string, unknown>): void {
-    // What is learnt of the tree as another user, or by work begun under an identity since replaced, is not kept.
-    if (!identityCache_usable()) return;
     const inst: ProcInstance | undefined = this.instances.get(id);
     if (inst) inst.params = params;
   }
@@ -769,8 +763,6 @@ export class ProcCache {
    * @returns Nothing.
    */
   outputPath_update(id: number, outputPath: string | null): void {
-    // What is learnt of the tree as another user, or by work begun under an identity since replaced, is not kept.
-    if (!identityCache_usable()) return;
     const inst: ProcInstance | undefined = this.instances.get(id);
     if (inst) inst.outputPath = outputPath;
   }
@@ -811,8 +803,6 @@ export class ProcCache {
    * @param status - Fresh status observed from the API.
    */
   status_update(id: number, status: string): void {
-    // What is learnt of the tree as another user, or by work begun under an identity since replaced, is not kept.
-    if (!identityCache_usable()) return;
     const inst: ProcInstance | undefined = this.instances.get(id);
     if (!inst) return;
     if (status_isTerminal(inst.status)) return;
@@ -833,8 +823,6 @@ export class ProcCache {
    * @param ids - Source instance IDs it merges (beyond its anchor parent).
    */
   joinParents_update(id: number, ids: number[]): void {
-    // What is learnt of the tree as another user, or by work begun under an identity since replaced, is not kept.
-    if (!identityCache_usable()) return;
     const inst: ProcInstance | undefined = this.instances.get(id);
     if (inst) { inst.joinParentIDs = ids; this.change_emit({ scope: 'feed', feedID: inst.feedID }); }
   }
@@ -853,8 +841,6 @@ export class ProcCache {
   // ── Topology loaded tracking ───────────────────────────────────────────────
 
   topologyLoaded_mark(feedID: number, at: number = Date.now()): void {
-    // What is learnt of the tree as another user, or by work begun under an identity since replaced, is not kept.
-    if (!identityCache_usable()) return;
     // Completing is a landing too — a feed with no instances lands only
     // here — but a feed marked again (a re-sweep) is not news, and a restore
     // from a checkpoint marks without landing at all.
@@ -874,8 +860,6 @@ export class ProcCache {
    * @param facts - What its first file said.
    */
   dataFacts_set(feedID: number, facts: ProcFeedDataFacts): void {
-    // What is learnt of the tree as another user, or by work begun under an identity since replaced, is not kept.
-    if (!identityCache_usable()) return;
     if (!this.feeds.has(feedID)) return;
     this.dataFacts.set(feedID, { ...facts });
     this.change_emit({ scope: 'feed', feedID });
@@ -895,8 +879,6 @@ export class ProcCache {
   // ── In-flight map ─────────────────────────────────────────────────────────
 
   loading_set(feedID: number, promise: Promise<void>): void {
-    // What is learnt of the tree as another user, or by work begun under an identity since replaced, is not kept.
-    if (!identityCache_usable()) return;
     this.loading.set(feedID, promise);
   }
 
@@ -1106,8 +1088,6 @@ export class ProcCache {
    * @param folders - Folders by how this identity sees a feed.
    */
   rosterFolders_set(folders: RosterFolders): void {
-    // What is learnt of the tree as another user, or by work begun under an identity since replaced, is not kept.
-    if (!identityCache_usable()) return;
     this.rosterFolders = { ...folders };
   }
 
@@ -1449,6 +1429,22 @@ export class ProcCache {
     this._built = false;
     this.lifecycle = { state: 'empty' };
     this.change_emit({ scope: 'all' });
+  }
+
+  /**
+   * Forgets everything of the identity the tree was built for: the index,
+   * as `cache_clear` does, and with it what is the operator's own memory
+   * and not the index's (the feeds not yet looked at, the roster's
+   * folders), which belong to that operator and to nobody who connects
+   * after them.
+   *
+   * @example
+   * identityChange_listen((): void => { cache.identity_forget(); });
+   */
+  identity_forget(): void {
+    this.cache_clear();
+    this.unseen.clear();
+    this.rosterFolders = {};
   }
 }
 

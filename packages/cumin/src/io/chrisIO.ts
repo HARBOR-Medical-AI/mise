@@ -10,6 +10,7 @@
 import { folderKey_spell, listCache_get } from "../cache/listCache.js";
 import { chrisConnection } from "../connect/chrisConnection.js";
 import {
+  client_authGet,
   client_userFileUpload,
   filebrowserFile_get,
   itemData_get,
@@ -295,20 +296,24 @@ export class ChrisIO {
     // CUBE plainly what it thinks of this file, once, on the failure path
     // only: an operator told "not found" about a file they can see listed
     // will go looking for the wrong problem.
-    refusal ??= await this.fileStatus_probe(fileId);
+    refusal ??= await this.fileStatus_probe(client, fileId);
     return { file: null, refusal };
   }
 
   /**
-   * Asks CUBE directly what it answers for a file id.
+   * Asks CUBE directly what it answers for a file id, as the same user the
+   * lookup was made as: with that lookup's own client's address and token,
+   * never the connection's current ones (which are another user's inside a
+   * `sudo`, and after someone else has connected).
    *
+   * @param client - The client the lookup was made with.
    * @param fileId - The file the lookup could not resolve.
    * @returns The HTTP status, or null when it could not be asked.
    */
-  private async fileStatus_probe(fileId: number): Promise<number | null> {
+  private async fileStatus_probe(client: Client, fileId: number): Promise<number | null> {
     try {
-      const url: string | null = await chrisConnection.chrisURL_get();
-      const token: string | null = await chrisConnection.authToken_get();
+      const url: string = client.url;
+      const token: string = client_authGet(client).token;
       if (!url || !token) return null;
       const response: Response = await fetch(`${url.replace(/\/$/, "")}/userfiles/${fileId}/`, {
         headers: { Authorization: `Token ${token}` },
@@ -620,7 +625,7 @@ export class ChrisIO {
     }
     // The client answers a refusal with null as readily as an absence, so
     // CUBE is asked plainly what it thinks of this id.
-    status ??= await this.fileStatus_probe(fileId);
+    status ??= await this.fileStatus_probe(client, fileId);
     if (status === HTTP_NOT_FOUND) return Ok(null);
     errorStack.stack_push("error", `Could not learn where file ID ${fileId} is${status === null ? '' : ` (HTTP ${status})`}`);
     return Err<string | null>();

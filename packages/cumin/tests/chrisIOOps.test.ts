@@ -196,6 +196,26 @@ describe('why a file could not be read', () => {
   });
 });
 
+describe('what CUBE is asked when a lookup comes back with nothing', () => {
+  it('is asked as the user the lookup was made as: with that client\'s own address and token', async () => {
+    const asked: Array<{ url: string; token: string }> = [];
+    fetchSpy?.mockRestore();
+    fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const token: string = String((init?.headers as Record<string, string> | undefined)?.['Authorization'] ?? '');
+      asked.push({ url: String(input), token });
+      // CUBE refuses the admin and has never heard of the file for the user: two answers, told apart by who asks.
+      return { status: token === 'Token ADMIN' ? 403 : 404 } as Response;
+    });
+    // A lookup made with one client (a sudo's, say) while the connection's current client is another's.
+    const lookupClient = { url: 'https://cube.admin/api/v1/', auth: { token: 'ADMIN' }, getUserFile: jest.fn(async () => null), getPACSFile: jest.fn(async () => null) };
+    mockClientGet.mockResolvedValue(lookupClient);
+    expect(await io().file_download(41)).toBeNull();
+    const said: string = pushSpy.mock.calls.map((call: unknown[]): string => String(call[1])).find((line: string): boolean => line.includes('File ID 41')) ?? '';
+    expect(said).toContain('refused access (403)');
+    expect(asked.filter((one) => one.url.includes('/userfiles/41/'))).toEqual([{ url: 'https://cube.admin/api/v1/userfiles/41/', token: 'Token ADMIN' }]);
+  });
+});
+
 describe('folder_deleteByPath', () => {
   it('deletes and confirms disappearance', async () => {
     const del = jest.fn(async () => undefined);

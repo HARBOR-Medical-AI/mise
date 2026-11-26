@@ -16,8 +16,11 @@ import {
 import { listCache_get, folderKey_spell } from '../src/cache/listCache';
 import { procCache_get } from '../src/cache/procCache';
 import { queryIndex_get } from '../src/cache/queryIndex';
-import { listCheckpoint_watch } from '../src/cache/listCheckpoint';
-import { mkdtempSync, existsSync, readdirSync } from 'node:fs';
+import { listCheckpoint_restore, listCheckpoint_save, listCheckpoint_watch } from '../src/cache/listCheckpoint';
+import { queryIndexCheckpoint_finish, queryIndexCheckpoint_hold, queryIndexCheckpoint_restore, queryIndexCheckpointPath_get } from '../src/cache/queryIndexCheckpoint';
+import { procLayout_get, procLayout_set, procLayoutHome_set, procCheckpointDir_get } from '../src/cache/procCheckpoint';
+import type { QueryIndexEntry } from '../src/cache/queryIndex';
+import { mkdtempSync, existsSync, readdirSync, readFileSync, promises as fsp } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -48,7 +51,7 @@ describe('the epoch', () => {
     expect(heard).toHaveLength(2);
   });
 
-  it('work in a scope remembers the epoch it began under; work that made the change carries on under the new one', async () => {
+  it('work in a scope remembers the epoch it began under, and so does the work that made the change', async () => {
     const held = gate_make<void>();
     // Begun as the first identity, still running when the second connects.
     const old: Promise<{ usable: boolean; passed: boolean; epoch: number }> = identityScope_run(async () => {
@@ -56,15 +59,31 @@ describe('the epoch', () => {
       return { usable: identityCache_usable(), passed: identityScope_passed(), epoch: identityScopeEpoch_get() };
     });
     const began: number = identityEpoch_get();
-    // The connect itself: one piece of work that changes the identity and then goes on.
+    // The connect itself is a piece of work begun as the first: after the change it is stale too. What the
+    // new identity fills is filled by work begun after the change.
     const connecting: { usable: boolean; epoch: number } = await identityScope_run(async () => {
       identityEpoch_raise();
       await Promise.resolve();
       return { usable: identityCache_usable(), epoch: identityScopeEpoch_get() };
     });
-    expect(connecting).toEqual({ usable: true, epoch: began + 1 });
+    expect(connecting).toEqual({ usable: false, epoch: began });
+    expect(identityScope_run((): boolean => identityCache_usable())).toBe(true);
     held.open();
     expect(await old).toEqual({ usable: false, passed: true, epoch: began });
+  });
+
+  it('a fill that work started before it changed the identity itself is not kept, though both are in one scope', async () => {
+    const answered = gate_make<string[]>();
+    await identityScope_run(async () => {
+      // A line that starts a lookup, and then connects as someone else while the lookup is out.
+      const lookup: Promise<void> = (async (): Promise<void> => {
+        listCache_get().cache_set('/bin', await answered.wait);
+      })();
+      identityEpoch_raise();
+      answered.open(['the first one\'s plugin']);
+      await lookup;
+    });
+    expect(listCache_get().cache_get('/bin')).toBeNull();
   });
 
   it('work already in a scope stays in it: stale work cannot make itself current by starting something', async () => {
@@ -200,5 +219,166 @@ describe('a checkpoint watcher', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+/** One PACS query as the index keeps it, told apart by its id and who asked. */
+function query_make(queryId: number, owner: string): QueryIndexEntry {
+  return { queryId, server: 'PACSDCM', criteria: { PatientID: String(queryId) }, owner, answeredAt: '2026-09-05T10:00:00.000Z', hasResult: true };
+}
+
+describe('the proc tree and the query index, for work that is not the session\'s own', () => {
+  it('work done as another user builds and reads a tree of its own: it sees none of the session\'s, and leaves none behind', async () => {
+    procCache_get().feed_add({ id: 7, name: 'the user\'s feed', owner: 'user' } as never);
+    queryIndex_get().entry_note(query_make(1, 'user'));
+    await identityScope_run((): Promise<void> => identityElevated_run({ of: 'the admin' }, async (): Promise<void> => {
+      // Nothing of the session's is there to be read.
+      expect(procCache_get().feedIDs_get()).toEqual([]);
+      expect(procCache_get().feed_get(7)).toBeUndefined();
+      expect(queryIndex_get().size_get()).toBe(0);
+      // What it builds, it can read back, across a wait: the same tree for the whole of this piece of work.
+      procCache_get().feed_add({ id: 7, name: 'the same number, as the admin sees it', owner: 'someone' } as never);
+      procCache_get().feed_add({ id: 8, name: 'one only the admin sees', owner: 'someone' } as never);
+      queryIndex_get().entry_note(query_make(2, 'admin'));
+      await Promise.resolve();
+      expect(procCache_get().feedIDs_get().sort()).toEqual([7, 8]);
+      expect((procCache_get().feed_get(7) as { name?: string } | undefined)?.name).toBe('the same number, as the admin sees it');
+      expect(queryIndex_get().has(2)).toBe(true);
+    }));
+    // The session's tree and index are as they were.
+    expect(procCache_get().feedIDs_get()).toEqual([7]);
+    expect((procCache_get().feed_get(7) as { name?: string } | undefined)?.name).toBe('the user\'s feed');
+    expect(queryIndex_get().has(1)).toBe(true);
+    expect(queryIndex_get().has(2)).toBe(false);
+  });
+
+  it('a build begun as the first identity, holding the cache from before the change, neither fills nor tidies the second\'s tree', async () => {
+    const answered = gate_make<void>();
+    const first: Promise<void> = identityScope_run(async (): Promise<void> => {
+      // The cache as taken before the change: the very reference a build holds across its waits.
+      const cache = procCache_get();
+      cache.loading_set(7, Promise.resolve());
+      await answered.wait;
+      cache.feed_add({ id: 7, name: 'the first one\'s feed', owner: 'a' } as never);
+      cache.topologyLoaded_mark(7);
+      // Its tidying up, as a build's `finally` does it.
+      cache.loading_clear(7);
+      cache.warmup_complete();
+    });
+    identityEpoch_raise();
+    // The second identity's own build of a feed with the same number is under way.
+    const theirs: Promise<void> = Promise.resolve();
+    await identityScope_run(async (): Promise<void> => {
+      procCache_get().feed_add({ id: 7, name: 'the second one\'s feed', owner: 'b' } as never);
+      procCache_get().loading_set(7, theirs);
+    });
+    answered.open();
+    await first;
+    expect((procCache_get().feed_get(7) as { name?: string } | undefined)?.name).toBe('the second one\'s feed');
+    expect(procCache_get().topologyLoaded_has(7)).toBe(false);
+    // The second's build in flight is still marked as in flight, and its warm-up is not called complete.
+    expect(procCache_get().loading_get(7)).toBe(theirs);
+    expect(procCache_get().warmupProgress_get().active === false && procCache_get().lifecycle_get().state).not.toBe('current');
+  });
+
+  it('what the operator had not yet looked at is forgotten with the identity: the next one, shown feeds of the same numbers, has no news of them', () => {
+    const feeds_show = (): void => {
+      procCache_get().feed_add({ id: 41, name: 'shared', owner: 'someone' } as never);
+      procCache_get().feed_add({ id: 42, name: 'made public', owner: 'someone' } as never);
+    };
+    feeds_show();
+    procCache_get().unseen_add([41, 42]);
+    expect(procCache_get().unseen_get()).toEqual([41, 42]);
+    // A plain clear of the index keeps the operator's memory of what is new: the same feeds, read again, are still news.
+    procCache_get().cache_clear();
+    feeds_show();
+    expect(procCache_get().unseen_get()).toEqual([41, 42]);
+    // A change of identity does not: it was that operator's memory.
+    identityEpoch_raise();
+    feeds_show();
+    expect(procCache_get().unseen_get()).toEqual([]);
+  });
+});
+
+describe('checkpoints through a change of identity', () => {
+  it('a checkpoint still being read when the identity changes is not put into the next identity\'s cache', async () => {
+    const root: string = mkdtempSync(join(tmpdir(), 'identity-restore-'));
+    // The first identity's listings and queries, saved.
+    listCache_get().cache_set('/bin', [{ name: 'the first one\'s plugin' }]);
+    await listCheckpoint_save('first@cube', root);
+    queryIndex_get().entry_note(query_make(1, 'first'));
+    queryIndex_get().floor_set('2026-01-01T00:00:00.000Z');
+    queryIndexCheckpoint_hold('first@cube', root);
+    await queryIndexCheckpoint_finish('first@cube', root);
+    listCache_get().cache_invalidate();
+    queryIndex_get().reset();
+    // Their restore is begun, and the disk is slow; the second connects before it answers.
+    const read = fsp.readFile.bind(fsp);
+    const slow = gate_make<void>();
+    const readSpy = jest.spyOn(fsp, 'readFile').mockImplementation((async (...given: Parameters<typeof fsp.readFile>): Promise<unknown> => { await slow.wait; return read(...given); }) as never);
+    try {
+      const listings = listCheckpoint_restore('first@cube', root);
+      const queries = queryIndexCheckpoint_restore('first@cube', root);
+      identityEpoch_raise();
+      slow.open();
+      expect(await listings).toMatchObject({ restored: false, reason: 'the identity changed' });
+      expect(await queries).toMatchObject({ restored: false, reason: 'the identity changed' });
+    } finally {
+      readSpy.mockRestore();
+    }
+    expect(listCache_get().cache_get('/bin')).toBeNull();
+    expect(queryIndex_get().size_get()).toBe(0);
+    expect(queryIndex_get().floor_get()).toBeNull();
+  });
+
+  it('each identity\'s queries and floor are in its own file at the end of a run in which the second connected part-way', async () => {
+    const root: string = mkdtempSync(join(tmpdir(), 'identity-exit-'));
+    const file = (identity: string): { identity: string; floor: string | null; entries: Array<{ queryId: number; owner: string }> } =>
+      JSON.parse(readFileSync(queryIndexCheckpointPath_get(identity, root), 'utf8')) as { identity: string; floor: string | null; entries: Array<{ queryId: number; owner: string }> };
+    // The second identity has a checkpoint from an earlier run, which this run must add to and not replace.
+    queryIndex_get().entry_note(query_make(20, 'second'));
+    queryIndexCheckpoint_hold('second@cube', root);
+    await queryIndexCheckpoint_finish('second@cube', root);
+    identityEpoch_raise();
+    await queryIndexCheckpoint_finish(null, root);
+    // This run begins as the first.
+    queryIndexCheckpoint_hold('first@cube', root);
+    queryIndex_get().entry_note(query_make(1, 'first'));
+    queryIndex_get().entry_note(query_make(2, 'first'));
+    queryIndex_get().floor_set('2026-03-01T00:00:00.000Z');
+    // The second connects; nothing primes the index again.
+    identityEpoch_raise();
+    queryIndex_get().entry_note(query_make(21, 'second'));
+    queryIndex_get().floor_set('2026-06-01T00:00:00.000Z');
+    // The run ends.
+    await queryIndexCheckpoint_finish('second@cube', root);
+    const first = file('first@cube');
+    const second = file('second@cube');
+    expect(first.identity).toBe('first@cube');
+    expect(first.entries.map((entry) => entry.queryId).sort()).toEqual([1, 2]);
+    expect(first.floor).toBe('2026-03-01T00:00:00.000Z');
+    expect(second.identity).toBe('second@cube');
+    expect(second.entries.map((entry) => entry.queryId).sort()).toEqual([20, 21]);
+    expect(second.floor).toBe('2026-06-01T00:00:00.000Z');
+    expect([...first.entries, ...second.entries].every((entry) => (entry.queryId < 10) === (entry.owner === 'first'))).toBe(true);
+  });
+
+  it('a layout is the identity\'s whose home it was kept in: after a change there is none, and none is written into the old home', async () => {
+    const root: string = mkdtempSync(join(tmpdir(), 'identity-layout-'));
+    procLayoutHome_set({ identity: 'first@cube', root });
+    await procLayout_set('galaxy', { 'feed:1:0': [1, 2, 3] });
+    expect((await procLayout_get('galaxy'))?.positions).toEqual({ 'feed:1:0': [1, 2, 3] });
+    const before: string[] = readdirSync(procCheckpointDir_get('first@cube', root)).sort();
+    identityEpoch_raise();
+    // The second has no layout of that name, and what it sets is not written under the first's name.
+    expect(await procLayout_get('galaxy')).toBeNull();
+    await procLayout_set('galaxy', { 'feed:9:0': [9, 9, 9] });
+    expect(readdirSync(procCheckpointDir_get('first@cube', root)).sort()).toEqual(before);
+    expect(JSON.parse(readFileSync(join(procCheckpointDir_get('first@cube', root), 'layout-galaxy.json'), 'utf8')).positions).toEqual({ 'feed:1:0': [1, 2, 3] });
+    // Work done as another user is handed no layout of the session's, and keeps none.
+    procLayoutHome_set({ identity: 'second@cube', root });
+    await procLayout_set('galaxy', { 'feed:9:0': [9, 9, 9] });
+    expect(await identityElevated_run({ of: 'the admin' }, (): Promise<unknown> => procLayout_get('galaxy'))).toBeNull();
+    procLayoutHome_set(null);
   });
 });

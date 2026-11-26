@@ -40,6 +40,8 @@ import {
   listCache_get,
   listCheckpoint_restore,
   listCheckpoint_watch,
+  queryIndexCheckpoint_finish,
+  queryIndexCheckpoint_hold,
   queryIndexCheckpoint_restore,
   queryIndexCheckpoint_save,
   queryIndexCheckpoint_watch,
@@ -52,7 +54,7 @@ import {
   type Result,
   type StackMessage,
 } from '@fnndsc/cumin';
-import { identityEpoch_get, identityScope_run } from '@fnndsc/cumin/identity-epoch';
+import { identityScope_run } from '@fnndsc/cumin/identity-epoch';
 import type { ListingItem } from '@fnndsc/menu';
 import {
   procCache_refresh,
@@ -294,13 +296,6 @@ function restoreAge_describe(): string {
  */
 let flushIdentity: string | null = null;
 
-/**
- * Which identity epoch that name was taken under. The flush at exit writes
- * only while it is still the epoch: once someone else has connected, what
- * the index holds is theirs, and is not written under this name.
- */
-let flushEpoch: number = -1;
-
 
 /**
  * The connected session's identity, the name its checkpoints are kept under:
@@ -332,7 +327,8 @@ export async function queryCheckpoint_prime(user: string | undefined): Promise<v
   const identity: string | null = await sessionIdentity_name();
   if (identity === null) return;
   flushIdentity = identity;
-  flushEpoch = identityEpoch_get();
+  // The index in memory is this identity's from here: if it leaves during the run, it is written under its name.
+  queryIndexCheckpoint_hold(identity);
   await queryIndexCheckpoint_restore(identity).catch((): QueryIndexRestoreResult => (
     { restored: false, count: 0 }
   ));
@@ -351,10 +347,11 @@ export async function queryCheckpoint_prime(user: string | undefined): Promise<v
  */
 export async function queryCheckpoint_flush(): Promise<void> {
   if (flushIdentity === null) return;
-  // The identity the name was taken under is no longer the one connected: its checkpoint is left as it
-  // was last written, and nothing of whoever connected since is put under its name.
-  if (flushEpoch !== identityEpoch_get()) return;
-  await queryIndexCheckpoint_save(flushIdentity).catch((): void => {
+  // Each identity's index goes under its own name: one that left during the run was written as it left (and
+  // is waited for here); what the index holds now is written for whoever is connected now, who may not be
+  // the one the run began as.
+  const now: string | null = await sessionIdentity_name().catch((): null => null);
+  await queryIndexCheckpoint_finish(now).catch((): void => {
     /* the index rebuilds itself from CUBE on the next boot */
   });
 }
@@ -429,7 +426,7 @@ async function startupWarmup_walk(
     if (identity !== null) {
       checkpointIdentity = identity;
       flushIdentity = identity;
-      flushEpoch = identityEpoch_get();
+      queryIndexCheckpoint_hold(identity);
       const listings: ListCheckpointRestoreResult = await listCheckpoint_restore(identity);
       listCheckpoint_watch(identity);
       reporter?.log(

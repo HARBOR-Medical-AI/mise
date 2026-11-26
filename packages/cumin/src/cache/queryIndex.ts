@@ -27,7 +27,7 @@
  * @module
  */
 
-import { identityCache_usable, identityChange_listen } from '../connect/identityEpoch';
+import { identityChange_listen, identityPartition_make } from '../connect/identityEpoch';
 
 /**
  * Separates the server from the criteria in a key, and one criterion from
@@ -173,9 +173,6 @@ export class QueryIndex {
    * @param entry - What was asked, of whom, and what came back.
    */
   public entry_note(entry: QueryIndexEntry): void {
-    // A query made as another user, or noted by work begun under an identity since replaced, is not this
-    // identity's to replay.
-    if (!identityCache_usable()) return;
     this.entries.set(entry.queryId, entry);
     const key: string = queryKey_build(entry.criteria, entry.server, entry.owner);
     const heldId: number | undefined = this.byQuestion.get(key);
@@ -299,7 +296,6 @@ export class QueryIndex {
    * @param at - The oldest record walked, as an ISO timestamp.
    */
   public floor_set(at: string): void {
-    if (!identityCache_usable()) return;
     if (this.floor !== null && Date.parse(this.floor) <= Date.parse(at)) return;
     this.floor = at;
     this.change_emit();
@@ -370,6 +366,24 @@ export class QueryIndex {
 
 let queryIndex: QueryIndex | null = null;
 
+/** Who is told what the index held, when it is about to be emptied for a change of identity. */
+const forgetListeners: Set<(snapshot: QueryIndexSnapshot) => void> = new Set<(snapshot: QueryIndexSnapshot) => void>();
+
+/**
+ * Registers to be told what the index held for the identity that is
+ * leaving, at the moment it is emptied for the next.
+ *
+ * @param listener - Handed the index as it stood.
+ * @returns A function that removes the listener.
+ *
+ * @example
+ * queryIndexForget_listen((left: QueryIndexSnapshot): void => { void file_write(left); });
+ */
+export function queryIndexForget_listen(listener: (snapshot: QueryIndexSnapshot) => void): () => void {
+  forgetListeners.add(listener);
+  return (): void => { forgetListeners.delete(listener); };
+}
+
 /**
  * The process-wide query index.
  *
@@ -377,10 +391,17 @@ let queryIndex: QueryIndex | null = null;
  */
 export function queryIndex_get(): QueryIndex {
   if (queryIndex === null) {
-    const made: QueryIndex = new QueryIndex();
-    queryIndex = made;
-    // The index is one identity's queries: at a change of identity it is emptied, entries and floor.
-    identityChange_listen((): void => { made.reset(); });
+    const own: QueryIndex = new QueryIndex();
+    // The index is one identity's queries. Work begun under another identity, or done as another user, is
+    // handed an index of its own (see identityPartition_make); at a change of identity the session's is
+    // emptied, entries and floor.
+    queryIndex = identityPartition_make(own, (): QueryIndex => new QueryIndex());
+    identityChange_listen((): void => {
+      // Whoever keeps the index on disk is shown it as it stood for the identity that is leaving, before it
+      // is emptied: what that identity learnt and had not yet saved is theirs to save.
+      for (const forget_hear of [...forgetListeners]) forget_hear(own.snapshot_create());
+      own.reset();
+    });
   }
   return queryIndex;
 }

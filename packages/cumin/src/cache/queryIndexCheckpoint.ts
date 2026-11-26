@@ -21,8 +21,9 @@ import {
   queryIndex_get,
   type QueryIndexEntrySnapshot,
   type QueryIndexSnapshot,
+  queryIndexForget_listen,
 } from './queryIndex';
-import { identityEpoch_get } from '../connect/identityEpoch';
+import { identityCache_usable, identityChange_listen, identityEpoch_get } from '../connect/identityEpoch';
 
 const QUERY_INDEX_SCHEMA: number = 1;
 
@@ -114,7 +115,11 @@ export async function queryIndexCheckpoint_restore(
   root: string = queryIndexRoot_get(),
 ): Promise<QueryIndexRestoreResult> {
   try {
+    const began: number = identityEpoch_get();
     const raw: string = await fs.readFile(queryIndexCheckpointPath_get(identity, root), 'utf8');
+    // The identity changed while the checkpoint was being read: it is the one before's, and is not put into
+    // the cache of whoever is connected now.
+    if (began !== identityEpoch_get() || !identityCache_usable()) return { restored: false, count: 0, reason: 'the identity changed' };
     const parsed: unknown = JSON.parse(raw);
     if (!file_check(parsed, identity)) {
       return { restored: false, count: 0, reason: 'incompatible query index' };
@@ -143,9 +148,23 @@ export async function queryIndexCheckpoint_save(
   identity: string,
   root: string = queryIndexRoot_get(),
 ): Promise<void> {
+  // Written only by the session's own identity's work: what other work sees of the index is not its to save
+  // under this name.
+  if (!identityCache_usable()) return;
+  // The index as it stands now, taken before anything is waited for.
+  await snapshot_write(identity, root, queryIndex_get().snapshot_create());
+}
+
+/**
+ * Writes one snapshot of the index as an identity's checkpoint, atomically.
+ *
+ * @param identity - Canonical ChRIS identity string.
+ * @param root - Checkpoint directory.
+ * @param snapshot - The index as it stood for that identity.
+ */
+async function snapshot_write(identity: string, root: string, snapshot: QueryIndexSnapshot): Promise<void> {
   const path: string = queryIndexCheckpointPath_get(identity, root);
   const temporaryPath: string = `${path}.${process.pid}-${randomUUID()}.tmp`;
-  const snapshot: QueryIndexSnapshot = queryIndex_get().snapshot_create();
   const file: QueryIndexCheckpointFile = {
     schemaVersion: QUERY_INDEX_SCHEMA,
     identity,
@@ -158,6 +177,74 @@ export async function queryIndexCheckpoint_save(
   await fs.writeFile(temporaryPath, `${JSON.stringify(file)}\n`, { encoding: 'utf8', mode: 0o600 });
   await fs.rename(temporaryPath, path);
   await fs.chmod(path, 0o600);
+}
+
+/** Whose checkpoint the index in memory is, and where its file is kept. */
+interface CheckpointHolder {
+  /** The identity the index was restored for. */
+  identity: string;
+  /** The checkpoint directory. */
+  root: string;
+}
+
+/** Whose checkpoint the index in memory is: the identity it was restored for. */
+let held: CheckpointHolder | null = null;
+
+/** Writes of an identity's index begun when that identity left, still under way. */
+const leaving: Set<Promise<void>> = new Set<Promise<void>>();
+
+/**
+ * Says whose checkpoint the index in memory is: the identity it has been
+ * restored for. From here, when that identity leaves (someone else
+ * connects, or it logs out), what the index holds is written under its
+ * name before the index is emptied.
+ *
+ * @param identity - Canonical ChRIS identity string.
+ * @param root - Checkpoint directory override.
+ *
+ * @example
+ * await queryIndexCheckpoint_restore(identity);
+ * queryIndexCheckpoint_hold(identity);
+ */
+export function queryIndexCheckpoint_hold(identity: string, root: string = queryIndexRoot_get()): void {
+  held = { identity, root };
+}
+
+// The identity that is leaving has its index written under its own name: entries and floor as they stood,
+// handed over before the index is emptied. Nothing of it is in the next identity's file, and nothing of the
+// next identity's is in its.
+queryIndexForget_listen((left: QueryIndexSnapshot): void => {
+  const whose: CheckpointHolder | null = held;
+  held = null;
+  if (whose === null) return;
+  const written: Promise<void> = snapshot_write(whose.identity, whose.root, left)
+    .catch((): void => { /* the index rebuilds itself from CUBE at the next boot */ })
+    .finally((): void => { leaving.delete(written); });
+  leaving.add(written);
+});
+
+/**
+ * Writes the index at the end of a run: waits for the checkpoint of any
+ * identity that left during the run, then writes what the index holds now
+ * under the name of the identity connected now. If the index was never
+ * restored for that identity (it connected part-way through the run), its
+ * checkpoint on disk is read in first, so that what this run learnt is
+ * added to what it already had and does not replace it.
+ *
+ * @param identity - The identity connected now, or null when nobody is.
+ * @param root - Checkpoint directory override.
+ *
+ * @example
+ * await queryIndexCheckpoint_finish(await sessionIdentity_name());
+ */
+export async function queryIndexCheckpoint_finish(identity: string | null, root: string = queryIndexRoot_get()): Promise<void> {
+  await Promise.all([...leaving]);
+  if (identity === null) return;
+  if (held?.identity !== identity) {
+    await queryIndexCheckpoint_restore(identity, root);
+    queryIndexCheckpoint_hold(identity, root);
+  }
+  await queryIndexCheckpoint_save(identity, root);
 }
 
 /**
@@ -193,9 +280,13 @@ export function queryIndexCheckpoint_watch(
     }, wait);
     timer.unref();
   });
-  return (): void => {
+  const watch_stop = (): void => {
     listener_remove();
     if (timer) clearTimeout(timer);
     timer = null;
+    retire_remove();
   };
+  // Retired at a change of identity: the cache it watched is no longer the one it writes for.
+  const retire_remove: () => void = identityChange_listen(watch_stop);
+  return watch_stop;
 }

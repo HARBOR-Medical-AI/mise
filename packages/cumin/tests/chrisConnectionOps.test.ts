@@ -520,6 +520,94 @@ describe('who is connected', () => {
   });
 });
 
+describe('a change of who is connected is one step', () => {
+  /** A promise and the hand that settles it. */
+  function gate_make<T>(): { wait: Promise<T>; open: (value: T) => void; fail: (reason: Error) => void } {
+    let open: (value: T) => void = (): void => undefined;
+    let fail: (reason: Error) => void = (): void => undefined;
+    const wait: Promise<T> = new Promise((resolve: (value: T) => void, reject: (reason: Error) => void): void => { open = resolve; fail = reject; });
+    return { wait, open, fail };
+  }
+
+  it('while a password is being exchanged, whoever was connected is still wholly connected; then the new one wholly is', async () => {
+    const conn: ChRISConnection = connection_make({ files: { '/cfg/token': 'FIRST' } });
+    const first: object = { of: 'the first' };
+    const second: object = { of: 'the second' };
+    mockClientCreate.mockImplementation((_url: string, token: string): object => (token === 'FIRST' ? first : second));
+    mockParse.mockResolvedValue({ user: 'first', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    mockContextSet.mockResolvedValue(true);
+    await conn.context_set('first@https://cube/api/v1/');
+    expect(await conn.client_get()).toBe(first);
+    const exchanged = gate_make<string>();
+    mockAuthToken.mockReturnValue(exchanged.wait);
+    const before: number = identityEpoch_get();
+    const login: Promise<string | null> = conn.connection_connect({ user: 'second', password: 'pw', debug: true, url: 'https://other/api/v1/' });
+    await Promise.resolve(); await Promise.resolve();
+    // CUBE has not answered: nothing has changed. The user, the CUBE, the client and the epoch are the first's.
+    expect(await conn.user_get()).toBe('first');
+    expect(await conn.chrisURL_get()).toBe('https://cube/api/v1/');
+    expect(await conn.client_get()).toBe(first);
+    expect(identityEpoch_get()).toBe(before);
+    exchanged.open('SECOND');
+    expect(await login).toBe('SECOND');
+    expect(await conn.user_get()).toBe('second');
+    expect(await conn.chrisURL_get()).toBe('https://other/api/v1/');
+    expect(await conn.client_get()).toBe(second);
+    expect(identityEpoch_get()).toBe(before + 1);
+  });
+
+  it('a refused password leaves whoever was connected as they were: user, CUBE, client and epoch', async () => {
+    const conn: ChRISConnection = connection_make({ files: { '/cfg/token': 'FIRST' } });
+    const first: object = { of: 'the first' };
+    mockClientCreate.mockReturnValue(first);
+    mockParse.mockResolvedValue({ user: 'first', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    mockContextSet.mockResolvedValue(true);
+    await conn.context_set('first@https://cube/api/v1/');
+    expect(await conn.client_get()).toBe(first);
+    const before: number = identityEpoch_get();
+    mockAuthToken.mockRejectedValue(Object.assign(new Error('Unauthorized'), { response: { status: 401 } }));
+    await expect(conn.connection_connect({ user: 'second', password: 'wrong', debug: true, url: 'https://other/api/v1/' })).rejects.toThrow('Unauthorized');
+    expect(await conn.user_get()).toBe('first');
+    expect(await conn.chrisURL_get()).toBe('https://cube/api/v1/');
+    expect(await conn.client_get()).toBe(first);
+    expect(conn.connection_isConnected()).toBe(true);
+    expect(identityEpoch_get()).toBe(before);
+  });
+
+  it('a read of the saved token that is still out at a logout does not bring the token back', async () => {
+    const store: FakeStore = { files: { '/cfg/token': 'FIRST' } };
+    const conn: ChRISConnection = connection_make(store);
+    mockClientCreate.mockReturnValue({ of: 'the first' });
+    expect(await conn.client_get()).not.toBeNull();
+    // A forced read of the token is begun, and the disk is slow.
+    const read = gate_make<string>();
+    const storage = (conn as unknown as { storageProvider: { read: jest.Mock } }).storageProvider;
+    storage.read.mockImplementationOnce(() => read.wait);
+    const reading: Promise<string | null> = conn.authToken_get(true);
+    await Promise.resolve(); await Promise.resolve();
+    const before: number = identityEpoch_get();
+    await conn.connection_logout();
+    read.open('FIRST');
+    await reading;
+    // Nobody is connected: the token read from before the logout was not taken.
+    expect(conn.connection_isConnected()).toBe(false);
+    expect(await conn.client_get()).toBeNull();
+    expect(identityEpoch_get()).toBe(before + 1);
+  });
+
+  it('a token that has gone from disk is a loss of who was connected, though the user and the CUBE named are the same', async () => {
+    const store: FakeStore = { files: { '/cfg/token': 'FIRST' } };
+    const conn: ChRISConnection = connection_make(store);
+    mockClientCreate.mockReturnValue({ of: 'the first' });
+    expect(await conn.client_get()).not.toBeNull();
+    const before: number = identityEpoch_get();
+    delete store.files['/cfg/token'];
+    expect(await conn.authToken_get(true)).toBeNull();
+    expect(identityEpoch_get()).toBe(before + 1);
+    expect(await conn.client_get()).toBeNull();
+  });
+});
+
 describe('context_set', () => {
   it('applies user, URL and folder from a parsed context and refreshes', async () => {
     const conn: ChRISConnection = connection_make({ files: { '/cfg/token': 'T' } });

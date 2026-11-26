@@ -605,6 +605,12 @@ describe('command_handle', () => {
 });
 
 describe('line_complete', () => {
+  it('is run as a piece of the backend\'s work, as a line is: what it fetches to complete with is kept by the same rule', async () => {
+    workMarks.length = 0;
+    await line_complete('l');
+    expect(workMarks).toEqual(['began', 'ended']);
+  });
+
   it('resolves the completer callback into candidates and prefix', async () => {
     const result = await line_complete('l');
     expect(mockInputComplete).toHaveBeenCalledWith('l', expect.any(Function));

@@ -57,6 +57,7 @@ import { type ProcRosterSyncKind,
   feed_rename,
   type FeedNote,
 } from '@fnndsc/cumin';
+import { identityCache_usable, identityChange_listen } from '@fnndsc/cumin/identity-epoch';
 import { VFSProvider, VFSItem, CpOptions } from '../provider.js';
 import { job_cancel, job_delete, job_statusFetch, job_logFetch, jobs_statusBatch } from '../../jobs/index.js';
 import { procJoins_sweep } from '../../dag/feedJoins.js';
@@ -235,6 +236,9 @@ let procCacheBuildPromise: Promise<number[]> | null = null;
  * @returns IDs whose topology is new, changed, or currently active.
  */
 function procCache_build(): Promise<number[]> {
+  // The walk that is joined is the session's own identity's. Work begun under another identity, or done as
+  // another user, walks for itself into a tree of its own, and neither joins this one nor is joined.
+  if (!identityCache_usable()) return procCache_buildRun();
   if (procCacheBuildPromise) return procCacheBuildPromise;
   const build: Promise<number[]> = procCache_buildRun().finally((): void => {
     if (procCacheBuildPromise === build) procCacheBuildPromise = null;
@@ -1515,7 +1519,9 @@ async function feedRows_merge(
  *   visit that needed no wire), false when the sync failed.
  */
 export async function feedVisit_sync(feedID: number, force: boolean = false): Promise<boolean> {
-  const inflight: Promise<boolean> | undefined = feedVisitInflight.get(feedID);
+  // As with the walk: only the session's own identity's work joins a visit in flight, or leaves one to be joined.
+  const shared: boolean = identityCache_usable();
+  const inflight: Promise<boolean> | undefined = shared ? feedVisitInflight.get(feedID) : undefined;
   if (inflight) return inflight;
   const run: Promise<boolean> = feedVisit_run(feedID, force)
     .then((): boolean => true)
@@ -1524,8 +1530,9 @@ export async function feedVisit_sync(feedID: number, force: boolean = false): Pr
       errorStack.stack_push('warning', `proc feed_${feedID}: live sync failed (${msg}); showing cached state`);
       return false;
     })
-    .finally((): void => { feedVisitInflight.delete(feedID); });
-  feedVisitInflight.set(feedID, run);
+    // Its own entry only: a visit that outlived a change of identity does not remove the next identity's.
+    .finally((): void => { if (feedVisitInflight.get(feedID) === run) feedVisitInflight.delete(feedID); });
+  if (shared) feedVisitInflight.set(feedID, run);
   return run;
 }
 
@@ -1578,6 +1585,15 @@ async function feedVisit_run(feedID: number, force: boolean): Promise<void> {
  *   was left alone.
  */
 export async function procRoster_sync(force: boolean = false): Promise<number[]> {
+  // Work begun under another identity, or done as another user, syncs for itself: it neither joins the
+  // session's sync nor leaves its own to be joined, and its end touches none of the session's bookkeeping.
+  if (!identityCache_usable()) {
+    return procRoster_run(force).catch((error: unknown): number[] => {
+      const msg: string = error instanceof Error ? error.message : String(error);
+      errorStack.stack_push('warning', `proc roster: live sync failed (${msg}); showing cached roster`);
+      return [];
+    });
+  }
   if (rosterSyncInflight) {
     // A forced walk asked during a delta is not that delta: it waits for it,
     // then walks (the operator's REFRESH would otherwise see nothing new).
@@ -1595,7 +1611,11 @@ export async function procRoster_sync(force: boolean = false): Promise<number[]>
       errorStack.stack_push('warning', `proc roster: live sync failed (${msg}); showing cached roster`);
       return [];
     })
-    .finally((): void => { rosterSyncInflight = null; rosterSyncInflightFull = false; rosterSyncedAt = Date.now(); cache.rosterSync_clear(); });
+    .finally((): void => {
+      // Its own bookkeeping only: a sync that outlived a change of identity leaves the next identity's as it is.
+      if (rosterSyncInflight !== run) return;
+      rosterSyncInflight = null; rosterSyncInflightFull = false; rosterSyncedAt = Date.now(); cache.rosterSync_clear();
+    });
   rosterSyncInflight = run;
   rosterSyncInflightFull = kind === 'full';
   return run;
@@ -1975,6 +1995,7 @@ async function procNode_find(nodeId: number): Promise<{ feedId: number; pluginNa
  * Forgets all visit bookkeeping (tests, and a cache cleared underneath us).
  */
 export function procVisitState_reset(): void {
+  procCacheBuildPromise = null;
   feedVisits.clear();
   feedVisitInflight.clear();
   rosterWalkedAt = 0;
@@ -1986,6 +2007,9 @@ export function procVisitState_reset(): void {
   rosterTotals = { owned: null, public: null };
   procTopologyCatchup_reset();
 }
+// What was visited, walked and is in flight is one identity's: at a change of identity it is all forgotten,
+// so that whoever connects next is neither told the roster is fresh nor handed a sync begun for another.
+identityChange_listen(procVisitState_reset);
 
 /**
  * Background topology warm-up — single paginated sweep of all plugin instances

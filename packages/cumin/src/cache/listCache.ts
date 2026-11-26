@@ -300,6 +300,8 @@ export class ListCache {
    * @param snapshot - A validated snapshot.
    */
   snapshot_restore(snapshot: ListCacheSnapshot): void {
+    // A checkpoint is put back only by the session's own identity's work.
+    if (!identityCache_usable()) return;
     const live: Map<string, CacheEntry<unknown>> = new Map(this.cache);
     this.cache.clear();
     for (const entry of snapshot.entries) {

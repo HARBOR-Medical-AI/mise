@@ -95,6 +95,10 @@ export class ChRISConnection {
   private user: string | null = null;
   private chrisURL: string | null = null;
   private client: Client | null = null;
+  /** Counts every change of who is connected: a read of a saved token notes it, and is not taken if it has moved. */
+  private credentials: number = 0;
+  /** The awaited part of a change of identity that is under way, or null. */
+  private transition: Promise<void> | null = null;
   private _config?: ConnectionConfig; // Renamed backing field
   private storageProvider?: IStorageProvider; // Made optional
 
@@ -152,29 +156,28 @@ export class ChRISConnection {
     }
 
     const authUrl: string = url + "auth-token/";
-    this.user = user;
-    this.chrisURL = url;
     console.log(`Connecting to ${url} with user ${user}`);
-    await this._config!.context_set(user, url);
-    this.tokenFile = this._config!.tokenFilepath;
     try {
-      this.authToken = await adapterAuthToken_get(authUrl, user, password);
-      // Whoever was connected before is not connected now: the client made for them goes, whether or not
-      // this login was given a token, and the next ask makes one for this login.
-      this.client = null;
-      // A change of identity: what is cached of the one before is emptied, and nothing it began is taken.
-      identityEpoch_raise();
-      if (this.authToken) {
-        // console.log("Auth token: " + this.authToken);
-        const saved: boolean = await this.token_saveToFile(this.tokenFile, this.authToken);
-        // Said only when it is so: a token that could not be saved privately is held for this session and not on disk.
-        console.log(saved ? "Auth token saved successfully" : "Auth token held for this session; it was not saved");
-        console.log("ChRIS URL saved successfully");
-        return this.authToken;
-      } else {
+      // Nothing of the connection is changed until CUBE has answered: while the password is being
+      // exchanged, and if it is refused, whoever was connected is still wholly connected (their user, their
+      // CUBE, their token and their client together).
+      const token: string | null = await adapterAuthToken_get(authUrl, user, password);
+      if (!token) {
         console.log("Failed to receive auth token");
         return null;
       }
+      // The new identity is published in one step, with nothing awaited inside it: there is no moment at
+      // which the user is the new one and the client the old.
+      this.identity_publish(user, url, token);
+      await this.transition_run(async (): Promise<void> => {
+        await this._config!.context_set(user, url);
+        this.tokenFile = this._config!.tokenFilepath;
+        const saved: boolean = await this.token_saveToFile(this.tokenFile, token);
+        // Said only when it is so: a token that could not be saved privately is held for this session and not on disk.
+        console.log(saved ? "Auth token saved successfully" : "Auth token held for this session; it was not saved");
+        console.log("ChRIS URL saved successfully");
+      });
+      return token;
     } catch (error: unknown) {
       // The real cause, said as what it is: only CUBE's refusal blames the
       // credentials; an untrusted certificate or an unreachable host says so (#965).
@@ -240,16 +243,14 @@ export class ChRISConnection {
       const reason: string = error instanceof Error ? error.message : String(error);
       return { connected: false, reason: `${url} refused the token for ${user}: ${reason}` };
     }
-    this.user = user;
-    this.chrisURL = url;
-    await this._config!.context_set(user, url);
-    this.tokenFile = this._config!.tokenFilepath;
-    this.authToken = token;
-    // One folder lookup per path per session, as client_get makes it.
-    this.client = folderLookup_memoize(client);
-    // A change of identity: what is cached of the one before is emptied, and nothing it began is taken.
-    identityEpoch_raise();
-    await this.token_saveToFile(this.tokenFile, token);
+    // Published in one step, with the client the token was proved for (its folder lookups remembered, as
+    // client_get makes them).
+    this.identity_publish(user, url, token, folderLookup_memoize(client));
+    await this.transition_run(async (): Promise<void> => {
+      await this._config!.context_set(user, url);
+      this.tokenFile = this._config!.tokenFilepath;
+      await this.token_saveToFile(this.tokenFile, token);
+    });
     return { connected: true };
   }
 
@@ -271,28 +272,27 @@ export class ChRISConnection {
     }
 
     let status: boolean = true;
-    let needsRefresh: boolean = false;
-    // Who was connected before the context was set, to tell a change of identity from the same one named again.
-    const before: string = `${this.user ?? ''}\n${this.chrisURL ?? ''}`;
 
-    if (parsedContext.user) {
-      status =
-        status &&
-        (await chrisContext.current_set(Context.ChRISuser, parsedContext.user)); // Await this call
-      this.user = parsedContext.user;
-      needsRefresh = true;
-      await this._config!.context_set(
-        parsedContext.user,
-        parsedContext.URL || ''
-      );
-    }
-
-    if (parsedContext.URL) {
-      status =
-        status && (await chrisContext.current_set(Context.ChRISURL, parsedContext.URL)); // Await this call
-      this.chrisURL = parsedContext.URL;
-      needsRefresh = true;
-      await this._config!.context_set(this.user || "", parsedContext.URL);
+    if (parsedContext.user || parsedContext.URL) {
+      const user: string | null = parsedContext.user || this.user;
+      const url: string | null = parsedContext.URL || this.chrisURL;
+      // The same user on the same CUBE named again is no change of identity, and empties nothing.
+      const changed: boolean = `${user ?? ''}\n${url ?? ''}` !== `${this.user ?? ''}\n${this.chrisURL ?? ''}`;
+      await this.transition_run(async (): Promise<void> => {
+        // Another user or another CUBE: from this moment nobody is connected as the one before, and until
+        // the new one's token has been read nobody is connected at all. (Nothing is awaited before this.)
+        if (changed) this.identity_publish(user, url, null);
+        if (parsedContext.user) {
+          status = status && (await chrisContext.current_set(Context.ChRISuser, parsedContext.user));
+          await this._config!.context_set(parsedContext.user, parsedContext.URL || '');
+        }
+        if (parsedContext.URL) {
+          status = status && (await chrisContext.current_set(Context.ChRISURL, parsedContext.URL));
+          await this._config!.context_set(this.user || "", parsedContext.URL);
+        }
+        // The client for who the context now names, from their own saved token.
+        await this.client_rebuild();
+      });
     }
 
     if (parsedContext.folder) {
@@ -313,14 +313,6 @@ export class ChRISConnection {
         (await chrisContext.current_set(Context.ChRISplugin, parsedContext.plugin)); // Await this call
     }
 
-    // Refresh the client with the new context
-    if (needsRefresh) {
-      await this.client_refresh();
-      // The context names another user or another CUBE: a change of identity. (The same user on the same
-      // CUBE named again is not one, and empties nothing.)
-      if (`${this.user ?? ''}\n${this.chrisURL ?? ''}` !== before) identityEpoch_raise();
-    }
-
     return status;
   }
 
@@ -330,6 +322,7 @@ export class ChRISConnection {
    * @returns A Promise resolving to the authentication token or null.
    */
   async authToken_get(forceLoad?: boolean): Promise<string | null> {
+    await this.transition_wait();
     if (!this.authToken || forceLoad) {
       await this.token_load();
     }
@@ -370,9 +363,24 @@ export class ChRISConnection {
    * @returns A Promise resolving to the refreshed Client instance or null.
    */
   async client_refresh(): Promise<Client | null> {
+    await this.transition_wait();
+    return this.client_rebuild();
+  }
+
+  /**
+   * Makes the client again from the token saved for who the context names.
+   * The work of {@link client_refresh}, without waiting for a change of
+   * identity to finish: it is what such a change itself calls.
+   *
+   * @returns The client, or null when no token is saved for them.
+   */
+  private async client_rebuild(): Promise<Client | null> {
     this.tokenFile = this._config!.tokenFilepath;
-    this.chrisURL = await this.chrisURL_get();
-    this.authToken = await this.authToken_get(true); // Pass true directly
+    if (!this.chrisURL) this.chrisURL = this._config ? await this._config.chrisURL_load() : null;
+    const began: number = this.credentials;
+    await this.token_load();
+    // Someone logged in or out while the token was being read: the client is theirs to make.
+    if (began !== this.credentials) return this.client;
     // A client for who the context now names, or none: one made for whoever was named before is never kept.
     this.client = this.chrisURL && this.authToken ? folderLookup_memoize(client_create(this.chrisURL, this.authToken)) : null;
     return this.client;
@@ -386,6 +394,9 @@ export class ChRISConnection {
     // Work being done as another user (a `sudo`) has that user's client for its own length.
     const elevatedClient: object | null = identityElevatedClient_get();
     if (elevatedClient !== null) return elevatedClient as Client;
+    // A login, a logout or a change of context that is under way is waited for: nobody is handed a client
+    // from the middle of one.
+    await this.transition_wait();
 
     if (
       (await this.authToken_get()) &&
@@ -449,17 +460,59 @@ export class ChRISConnection {
    * Logs out the user by clearing the authentication token from storage.
    */
   async connection_logout(): Promise<void> {
-    this.authToken = null;
-    // The client carries the token: it goes with it.
-    this.client = null;
-    // Nobody is connected: what is cached of who was is emptied.
+    // Nobody is connected from this moment: the token and the client that carries it go together, a read
+    // of the saved token that is under way is not taken when it comes back, and what is cached of who was
+    // connected is emptied.
+    this.identity_publish(this.user, this.chrisURL, null);
+    await this.transition_run(async (): Promise<void> => {
+      try {
+        await this.storageProvider!.remove(this.tokenFile);
+        console.log("Logged out successfully");
+      } catch (error: unknown) {
+        console.error("Error during logout:", error);
+      }
+    });
+  }
+
+  /**
+   * Publishes who is connected, in one step with nothing awaited inside
+   * it: the user, the CUBE, the token and the client change together, a
+   * read of a saved token begun before this moment is not taken when it
+   * comes back, and the change of identity is made known.
+   *
+   * @param user - The user now connected, or whoever the context names.
+   * @param url - Their CUBE.
+   * @param token - Their token, or null when nobody is connected.
+   * @param client - A client already made for that token, when there is one.
+   */
+  private identity_publish(user: string | null, url: string | null, token: string | null, client: Client | null = null): void {
+    this.user = user;
+    this.chrisURL = url;
+    this.authToken = token;
+    this.client = client;
+    this.credentials += 1;
     identityEpoch_raise();
-    try {
-      await this.storageProvider!.remove(this.tokenFile);
-      console.log("Logged out successfully");
-    } catch (error: unknown) {
-      console.error("Error during logout:", error);
-    }
+  }
+
+  /**
+   * Runs the awaited part of a change of identity (what is written to
+   * disk, what is read back), during which {@link client_get} and
+   * {@link authToken_get} wait.
+   *
+   * @param work - The awaited part.
+   */
+  private async transition_run(work: () => Promise<void>): Promise<void> {
+    const run: Promise<void> = work();
+    const held: Promise<void> = run.then((): void => undefined, (): void => undefined).then((): void => {
+      if (this.transition === held) this.transition = null;
+    });
+    this.transition = held;
+    await run;
+  }
+
+  /** Waits for a change of identity that is under way to finish. */
+  private async transition_wait(): Promise<void> {
+    while (this.transition !== null) await this.transition;
   }
 
   /**
@@ -487,10 +540,14 @@ export class ChRISConnection {
    * @returns A Promise that resolves when the token is loaded.
    */
   private async token_load(): Promise<void> {
+    // Whose token is being read: if someone logs in or out before the read comes back, what was read is
+    // not theirs, and is not taken.
+    const began: number = this.credentials;
+    let read: string | null = null;
     try {
       // A token saved before files were made private is made so when it is next read.
       await this.storageProvider!.private_tighten?.(this.tokenFile);
-      this.authToken = await this.storageProvider!.read(this.tokenFile);
+      read = await this.storageProvider!.read(this.tokenFile);
     } catch (error: unknown) {
       // A missing token file is the normal logged-out state; any other read
       // failure (permissions, disk) must not silently present as logged-out.
@@ -499,7 +556,17 @@ export class ChRISConnection {
         const msg: string = error instanceof Error ? error.message : String(error);
         errorStack.stack_push("warning", `Could not read auth token file ${this.tokenFile}: ${msg}`);
       }
-      this.authToken = null;
+      read = null;
+    }
+    if (began !== this.credentials) return;
+    const lost: boolean = this.authToken !== null && read === null;
+    this.authToken = read;
+    // The token that was held is gone from disk: whoever it was is no longer connected, though the user
+    // and the CUBE named are the same. Their client goes, and what is cached of them is emptied.
+    if (lost) {
+      this.client = null;
+      this.credentials += 1;
+      identityEpoch_raise();
     }
   }
 }

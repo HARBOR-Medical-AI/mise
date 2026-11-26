@@ -23,6 +23,7 @@
  * - {@link identityElevated_run}: runs work as another user, with their client.
  * - {@link identityCache_usable}: what a cache asks before a read or a fill.
  * - {@link identityChange_listen}: what a cache does when the identity changes.
+ * - {@link identityPartition_make}: a cache that other work sees a spare of.
  *
  * Typical usage:
  * ```typescript
@@ -44,7 +45,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 /** What a scope of work remembers. */
 interface IdentityScope {
-  /** The epoch the work began under, or the one it raised to itself. */
+  /** The epoch the work began under. It never changes. */
   epoch: number;
   /** The client of another user the work is being done with (a `sudo`), or null for the session's own. */
   elevatedWith: object | null;
@@ -107,9 +108,12 @@ export function identityScopeEpoch_get(): number {
 /**
  * Says that the identity has changed: someone connected, the context was
  * moved to another user or CUBE, or the session logged out. Every listener
- * is called, at once and in turn. The work that made the change (the
- * `connect` itself) carries on under the new epoch: what it fills next is
- * the new identity's.
+ * is called, at once and in turn. Every piece of work already begun,
+ * the one that made the change included, stays under the epoch it began
+ * under: a scope is never moved to a later epoch, since work it started
+ * before the change shares it. What the new identity fills, it fills from
+ * work begun after the change (the next line, the warm-up that follows a
+ * login).
  *
  * @example
  * this.authToken = token;
@@ -117,8 +121,6 @@ export function identityScopeEpoch_get(): number {
  */
 export function identityEpoch_raise(): void {
   current += 1;
-  const scope: IdentityScope | undefined = scope_get();
-  if (scope !== undefined) scope.epoch = current;
   for (const change_tell of [...listeners]) change_tell();
 }
 
@@ -208,6 +210,57 @@ export function identityElevated_is(): boolean {
  */
 export function identityCache_usable(): boolean {
   return !identityElevated_is() && identityScopeEpoch_get() === current;
+}
+
+/**
+ * A cache as each piece of work is to see it: the session's own, for work
+ * begun under the identity now connected and done as that identity; and
+ * for any other work (begun before the identity changed, or done as
+ * another user under `sudo`) a spare of its own, empty at first and thrown
+ * away with the work. So such work can go on building and reading what it
+ * needs (a `sudo ls /proc` builds a tree and lists it) without seeing a
+ * thing the session's identity was shown, and without leaving a thing
+ * behind for it. Which of the two is used is decided at each call, from
+ * the work that makes the call: a reference taken before a change of
+ * identity does not go on reaching the session's own after it.
+ *
+ * @param own - The session's cache.
+ * @param spareMake - Makes an empty one for a piece of other work.
+ * @returns The cache to hand out: it looks like `own`, and is.
+ *
+ * @example
+ * const shared: ProcCache = identityPartition_make(new ProcCache(), (): ProcCache => new ProcCache());
+ */
+export function identityPartition_make<T extends object>(own: T, spareMake: () => T): T {
+  const spares: WeakMap<object, T> = new WeakMap<object, T>();
+  const recipient_get = (): T => {
+    const scope: IdentityScope | undefined = scope_get();
+    if (scope === undefined || identityCache_usable()) return own;
+    let spare: T | undefined = spares.get(scope);
+    if (spare === undefined) {
+      spare = spareMake();
+      spares.set(scope, spare);
+    }
+    return spare;
+  };
+  return new Proxy(own, {
+    // (The trap's name is the language's, written as a key so that it is not read as one of this code's.)
+    ['get']: (...trap: [T, string | symbol, unknown]): unknown => {
+      const property: string | symbol = trap[1];
+      const recipient: T = recipient_get();
+      const member: unknown = Reflect.get(recipient, property, recipient);
+      if (typeof member !== 'function') return member;
+      // A function put on the cache itself (a stand-in a test put in a method's place) is handed out as it is.
+      if (Object.prototype.hasOwnProperty.call(recipient, property)) return member;
+      // Decided again when it is called: a method taken now and called after a change is the caller's then.
+      return (...given: unknown[]): unknown => {
+        const called: T = recipient_get();
+        // The member as it was when taken, unless the call is another piece of work's: then that one's.
+        const method: unknown = called === recipient ? member : Reflect.get(called, property, called);
+        return (method as (...args: unknown[]) => unknown).apply(called, given);
+      };
+    },
+  });
 }
 
 /**

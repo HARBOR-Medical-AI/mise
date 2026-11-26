@@ -34,6 +34,8 @@ export type {
 export {
   queryIndexCheckpointPath_get,
   queryIndexCheckpoint_restore,
+  queryIndexCheckpoint_finish,
+  queryIndexCheckpoint_hold,
   queryIndexCheckpoint_save,
   queryIndexCheckpoint_watch,
   QUERY_INDEX_CHECKPOINT_FLOOR_MS,
