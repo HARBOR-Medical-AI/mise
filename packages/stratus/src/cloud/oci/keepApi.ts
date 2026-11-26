@@ -16,6 +16,7 @@ import * as common from 'oci-common';
 import * as keymanagement from 'oci-keymanagement';
 import * as secrets from 'oci-secrets';
 import * as vault from 'oci-vault';
+import { KeepFault, errorStatus_describe } from '../keepFault.js';
 import { notFound } from './errors.js';
 import { pages_drain } from './pages.js';
 
@@ -43,21 +44,37 @@ export interface OciKeepApiOptions {
   readonly configFile?: string;
   readonly profile?: string;
   readonly region: string;
+  /** How a wait is made; a check hands in one that does not wait. */
+  readonly pause?: (ms: number) => Promise<void>;
 }
+
+/** Base64 as the cloud writes it: the alphabet, padded to a multiple of four. */
+const BASE64: RegExp = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 /**
  * A secret's content out of the bundle the cloud answers.
  *
  * @param bundle - The answer to a bundle read.
- * @returns The content as text, or undefined when the bundle carries none.
+ * @returns The content as text (empty for an empty secret), or undefined
+ *   when the bundle carries none.
+ * @throws {KeepFault} When the content is not base64: decoded leniently it
+ *   would be some other text, and compared as if it were the secret's.
  */
 function content_decode(bundle: secrets.responses.GetSecretBundleByNameResponse): string | undefined {
-  const content: string | undefined = (bundle.secretBundle.secretBundleContent as { content?: string } | undefined)?.content;
-  return content === undefined ? undefined : Buffer.from(content, 'base64').toString('utf-8');
+  const content: unknown = (bundle.secretBundle.secretBundleContent as { content?: unknown } | undefined)?.content;
+  if (content === undefined) return undefined;
+  if (typeof content !== 'string' || !BASE64.test(content)) throw new KeepFault('the cloud answered content that is not base64');
+  return Buffer.from(content, 'base64').toString('utf-8');
 }
 
+/** How many times a write looks again and tries again before it gives up. */
+const WRITE_TRIES: number = 5;
+
+/** The statuses that say another writer changed the secret since it was read. */
+const HTTP_CONFLICTS: ReadonlyArray<number> = [409, 412];
+
 /** Waits a while. */
-const pause = (ms: number): Promise<void> => new Promise((resolve): void => { setTimeout(resolve, ms); });
+const pause_default = (ms: number): Promise<void> => new Promise((resolve): void => { setTimeout(resolve, ms); });
 
 /**
  * The keep's calls over the SDK.
@@ -72,6 +89,7 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
   const secretsOf: vault.VaultsClient = regional(new vault.VaultsClient({ authenticationDetailsProvider: provider }));
   const bundles: secrets.SecretsClient = regional(new secrets.SecretsClient({ authenticationDetailsProvider: provider }));
   const root: string = provider.getTenantId();
+  const pause: (ms: number) => Promise<void> = options.pause ?? pause_default;
 
   /** The vault, active, or null; one still being made is waited on. */
   const vault_find = async (): Promise<keymanagement.models.VaultSummary | null> => {
@@ -139,11 +157,12 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
     return all.find((one): boolean => one.secretName === name && one.lifecycleState !== 'DELETED') ?? null;
   };
 
-  /** Waits a secret out of its passing states. */
-  const secret_settle = async (secretId: string): Promise<void> => {
+  /** Waits a secret out of its passing states, and answers its tag as it then stands: what a write is bound to. */
+  const secret_settle = async (secretId: string): Promise<string> => {
     for (let tries: number = 0; tries < 60; tries += 1) {
-      const state: string = (await secretsOf.getSecret({ secretId })).secret.lifecycleState;
-      if (state === 'ACTIVE') return;
+      const answer = await secretsOf.getSecret({ secretId });
+      const state: string = answer.secret.lifecycleState;
+      if (state === 'ACTIVE') return answer.etag;
       if (state === 'FAILED') throw new Error('the cloud failed the secret');
       await pause(2000);
     }
@@ -174,22 +193,40 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
         return;
       }
       if (kept.lifecycleState === 'PENDING_DELETION') await secretsOf.cancelSecretDeletion({ secretId: kept.id });
-      await secret_settle(kept.id);
       // Every update makes a version and the cloud holds thirty at once, so
-      // a write of what the secret already holds is not made. That needs
-      // the current content; when it cannot be read the secret is left as
-      // it is, since writing unread is how the thirty are spent on a vault
-      // that answers no reads.
-      let held: string | undefined;
-      try {
-        held = content_decode(await bundles.getSecretBundleByName({ secretName: name, vaultId: found.id }));
-      } catch (error: unknown) {
-        throw new Error(`the secret ${name} is kept and could not be read (${error instanceof Error ? error.message : String(error)}), so it was left as it is`);
+      // a write of what the secret already holds is not made. Each try
+      // reads the secret's tag and then its content, compares, and writes
+      // bound to that tag (`ifMatch`): the cloud refuses the write if the
+      // secret changed since. After a refusal like that, or an answer that
+      // does not say whether the write was made (a 5xx, no answer), the
+      // secret is read again before anything else: a write that did land
+      // then compares equal, and no second version is made of it.
+      for (let tries: number = 1; ; tries += 1) {
+        const tag: string = await secret_settle(kept.id);
+        let held: string | undefined;
+        try {
+          held = content_decode(await bundles.getSecretBundleByName({ secretName: name, vaultId: found.id }));
+        } catch (error: unknown) {
+          // Unread, the secret is left as it is: writing unread is how the
+          // thirty are spent on a vault that answers no reads.
+          const why: string = error instanceof KeepFault ? error.message : errorStatus_describe(error);
+          throw new KeepFault(`the secret ${name} is kept and could not be read (${why}), so it was left as it is`);
+        }
+        if (held === undefined) throw new KeepFault(`the secret ${name} is kept and the cloud answered no content for it, so it was left as it is`);
+        if (held === content) return;
+        try {
+          await secretsOf.updateSecret({ secretId: kept.id, ifMatch: tag, updateSecretDetails: { secretContent: body } });
+        } catch (error: unknown) {
+          const status: number | undefined = (error as { statusCode?: number }).statusCode;
+          const changedSince: boolean = status !== undefined && HTTP_CONFLICTS.includes(status);
+          const unsure: boolean = status === undefined || status >= 500;
+          if ((!changedSince && !unsure) || tries >= WRITE_TRIES) throw new KeepFault(`the secret ${name} could not be written (${errorStatus_describe(error)})`);
+          if (unsure) await pause(10_000);
+          continue;
+        }
+        await secret_settle(kept.id);
+        return;
       }
-      if (held === undefined) throw new Error(`the secret ${name} is kept and the cloud answered no content for it, so it was left as it is`);
-      if (held === content) return;
-      await settled_call(() => secretsOf.updateSecret({ secretId: kept.id, updateSecretDetails: { secretContent: body } }));
-      await secret_settle(kept.id);
     },
 
     async secret_drop(name: string): Promise<boolean> {

@@ -300,16 +300,34 @@ describe('vm, over the fake cloud', () => {
   it('goes on when what is declared cannot be kept in the tenancy first, and says so with the cloud\'s reason and nothing of what was to be kept', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
     const handed: string[] = [];
-    if (context.builder !== null) context.builder.keep_write = async (kept: { content: string }): Promise<void> => { handed.push(kept.content); throw new Error('Bad Gateway'); };
+    if (context.builder !== null) context.builder.keep_write = async (kept: { content: string }): Promise<void> => { handed.push(kept.content); throw Object.assign(new Error('Bad Gateway'), { statusCode: 502 }); };
     surface.answers = ['n'];
     const built = await vm_run(context, ['build', 'store']);
     const said: string = plain(built.rendered);
-    expect(said).toContain('vm build store: what is declared was not kept in the tenancy first (Bad Gateway); the machine\'s apply keeps it again\n');
+    expect(said).toContain('vm build store: what is declared was not kept in the tenancy first (HTTP 502); the machine\'s apply keeps it again\n');
     // The build went on to its plan and its question.
     expect(surface.asked.at(-1)).toContain('vm build store: data 3 to create');
     expect(said).toContain('stopped before the apply');
     expect(handed.length).toBeGreaterThan(0);
     for (const content of handed) expect(said).not.toContain(content);
+  });
+
+  it('says nothing of what an error quotes when the keep fails: not the cloud\'s echo, and not the parser\'s fragment of a kept record', async () => {
+    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+    // An error whose message echoes what it was sent.
+    if (context.builder !== null) context.builder.keep_write = async (kept: { content: string }): Promise<void> => { throw new Error(`could not store SENTINEL-ECHOED ${kept.content.slice(0, 40)}`); };
+    surface.answers = ['n'];
+    const echoed = await vm_run(context, ['build', 'store']);
+    expect(plain(echoed.rendered)).toContain('was not kept in the tenancy first (no status)');
+    expect(`${echoed.rendered ?? ''}${echoed.renderedErr ?? ''}`).not.toContain('SENTINEL-ECHOED');
+    expect(surface.asked.at(-1)).toContain('vm build store: data 3 to create');
+    // A kept record that is not JSON: the parser's own error would quote a piece of it.
+    world.kept.set('mise-vm-store', 'SENTINEL-KEPT-SECRET{not json');
+    surface.answers = ['n'];
+    const malformed = await vm_run(context, ['build', 'store']);
+    expect(plain(malformed.rendered)).toContain('was not kept in the tenancy first (mise-vm-store: the tenancy\'s secret is not a readable record)');
+    expect(`${malformed.rendered ?? ''}${malformed.renderedErr ?? ''}`).not.toContain('SENTINEL-KEPT');
+    expect(surface.asked.at(-1)).toContain('vm build store: data 3 to create');
   });
 
   it('builds its data, then its machine, each asked with the cost before it is applied; points the address; again, nothing to do', async () => {

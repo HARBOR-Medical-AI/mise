@@ -11,7 +11,20 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 type Row = Record<string, unknown>;
 
 /** The stand-in cloud: the secret it holds, whether its content can be read, and the calls asked. */
-const world: { secret: { id: string; state: string; content: string } | null; unreadable: Error | null; contentless: boolean; asked: string[] } = { secret: null, unreadable: null, contentless: false, asked: [] };
+const world: {
+  secret: { id: string; state: string; content: string } | null;
+  unreadable: Error | null;
+  contentless: boolean;
+  /** What the bundle carries in place of the secret's content, as sent: for an encoding that is not base64. */
+  rawContent: string | null;
+  /** How many versions the secret has had made of it; its tag is this number. */
+  versions: number;
+  /** The next update is made and its reply lost: the caller sees a 503. */
+  replyLost: boolean;
+  /** Every update is refused outright, in words that quote what was sent. */
+  refused: boolean;
+  asked: string[];
+} = { secret: null, unreadable: null, contentless: false, rawContent: null, versions: 1, replyLost: false, refused: false, asked: [] };
 
 class StandInClient {
   regionId?: string;
@@ -19,17 +32,23 @@ class StandInClient {
   listVaults = async () => ({ items: [{ id: 'vault-1', displayName: 'mise', lifecycleState: 'ACTIVE', managementEndpoint: 'https://kms' }] });
   listKeys = async () => ({ items: [{ id: 'key-1', displayName: 'mise', lifecycleState: 'ENABLED' }] });
   listSecrets = async () => ({ items: world.secret === null ? [] : [{ id: world.secret.id, secretName: 'store', lifecycleState: world.secret.state }] });
-  getSecret = async () => { world.asked.push('getSecret'); return { secret: { lifecycleState: world.secret?.state === 'PENDING_DELETION' ? 'PENDING_DELETION' : 'ACTIVE' } }; };
+  getSecret = async () => { world.asked.push('getSecret'); return { etag: String(world.versions), secret: { lifecycleState: world.secret?.state === 'PENDING_DELETION' ? 'PENDING_DELETION' : 'ACTIVE' } }; };
   cancelSecretDeletion = async () => { world.asked.push('cancelSecretDeletion'); if (world.secret !== null) world.secret.state = 'ACTIVE'; };
   getSecretBundleByName = async () => {
     world.asked.push('getSecretBundleByName');
     if (world.unreadable !== null) throw world.unreadable;
     if (world.contentless) return { secretBundle: {} };
+    if (world.rawContent !== null) return { secretBundle: { secretBundleContent: { content: world.rawContent } } };
     return { secretBundle: { secretBundleContent: { content: Buffer.from(world.secret?.content ?? '').toString('base64') } } };
   };
-  updateSecret = async (request: { updateSecretDetails: { secretContent: { content: string } } }) => {
+  updateSecret = async (request: { ifMatch?: string; updateSecretDetails: { secretContent: { content: string } } }) => {
     world.asked.push('updateSecret');
+    if (world.refused) throw Object.assign(new Error(`cannot store ${Buffer.from(request.updateSecretDetails.secretContent.content, 'base64').toString('utf-8')}`), { statusCode: 400, serviceCode: 'InvalidParameter' });
+    // The cloud refuses a write bound to a tag the secret no longer has.
+    if (request.ifMatch !== String(world.versions)) throw Object.assign(new Error('Precondition Failed'), { statusCode: 412 });
     if (world.secret !== null) world.secret.content = Buffer.from(request.updateSecretDetails.secretContent.content, 'base64').toString('utf-8');
+    world.versions += 1;
+    if (world.replyLost) { world.replyLost = false; throw Object.assign(new Error('Service Unavailable'), { statusCode: 503 }); }
     return {};
   };
   createSecret = async (request: { createSecretDetails: { secretContent: { content: string } } }) => {
@@ -54,7 +73,7 @@ jest.unstable_mockModule('oci-secrets', () => sdk_standIn('oci-secrets', ['Secre
 
 const { ociKeepApi_make } = await import('../src/cloud/oci/keepApi.js');
 
-const keep = () => ociKeepApi_make({ region: 'us-ashburn-1' });
+const keep = () => ociKeepApi_make({ region: 'us-ashburn-1', pause: async (): Promise<void> => undefined });
 const count = (call: string): number => world.asked.filter((asked: string): boolean => asked === call).length;
 const quiet = (): void => undefined;
 
@@ -62,6 +81,10 @@ beforeEach(() => {
   world.secret = { id: 'secret-1', state: 'ACTIVE', content: 'what is kept' };
   world.unreadable = null;
   world.contentless = false;
+  world.rawContent = null;
+  world.versions = 1;
+  world.replyLost = false;
+  world.refused = false;
   world.asked = [];
 });
 
@@ -80,7 +103,7 @@ describe('writing a secret that is there', () => {
 
   it('makes no version, and fails, when the secret cannot be read', async () => {
     world.unreadable = Object.assign(new Error('Service Unavailable'), { statusCode: 503 });
-    await expect(keep().secret_write('store', 'something new', quiet)).rejects.toThrow('the secret store is kept and could not be read (Service Unavailable), so it was left as it is');
+    await expect(keep().secret_write('store', 'something new', quiet)).rejects.toThrow('the secret store is kept and could not be read (HTTP 503), so it was left as it is');
     expect(count('updateSecret')).toBe(0);
     expect(world.secret?.content).toBe('what is kept');
   });
@@ -104,6 +127,54 @@ describe('writing a secret that is there', () => {
     expect(world.asked.indexOf('cancelSecretDeletion')).toBeLessThan(world.asked.indexOf('getSecret'));
     expect(world.asked.indexOf('getSecret')).toBeLessThan(world.asked.indexOf('getSecretBundleByName'));
     expect(count('updateSecret')).toBe(0);
+  });
+});
+
+describe('a write is bound to the version it compared', () => {
+  it('makes one version when the write lands and its reply is lost: it looks again before writing again', async () => {
+    world.replyLost = true;
+    await keep().secret_write('store', 'something new', quiet);
+    expect(world.secret?.content).toBe('something new');
+    expect(world.versions).toBe(2);
+    expect(count('updateSecret')).toBe(1);
+  });
+
+  it('makes one version when two writers of the same content read the same version', async () => {
+    await Promise.all([keep().secret_write('store', 'something new', quiet), keep().secret_write('store', 'something new', quiet)]);
+    expect(world.secret?.content).toBe('something new');
+    expect(world.versions).toBe(2);
+    // The second writer's update was refused by its tag, and what it then read was already what it had to write.
+    expect(count('updateSecret')).toBe(2);
+  });
+
+  it('sends the tag it read with the write', async () => {
+    world.versions = 7;
+    await keep().secret_write('store', 'something new', quiet);
+    expect(world.versions).toBe(8);
+  });
+
+  it('gives up after one try, saying only a status, when the cloud refuses the write outright', async () => {
+    world.refused = true;
+    const failure: Error = await keep().secret_write('store', 'a-password-nobody-should-see', quiet).then((): Error => new Error('did not fail'), (error: Error): Error => error);
+    expect(failure.message).toBe('the secret store could not be written (HTTP 400 InvalidParameter)');
+    expect(count('updateSecret')).toBe(1);
+    expect(world.versions).toBe(1);
+  });
+});
+
+describe('content that is not what it seems', () => {
+  it('makes no version when the bundle\'s encoding is not base64: it is not decoded into something to compare', async () => {
+    world.rawContent = 'not base64 at all!';
+    await expect(keep().secret_write('store', 'something new', quiet)).rejects.toThrow('could not be read (the cloud answered content that is not base64)');
+    expect(count('updateSecret')).toBe(0);
+  });
+
+  it('takes an empty secret as empty: no version for an empty write, one for a write of something', async () => {
+    (world.secret as { content: string }).content = '';
+    await keep().secret_write('store', '', quiet);
+    expect(count('updateSecret')).toBe(0);
+    await keep().secret_write('store', 'something', quiet);
+    expect(count('updateSecret')).toBe(1);
   });
 });
 
