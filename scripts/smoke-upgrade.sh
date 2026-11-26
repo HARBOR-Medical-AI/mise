@@ -49,16 +49,32 @@ fail() { say "FAIL: $*"; verdict "FAIL: $* (see $log)"; status=1; exit 1; }
 # removed if this run made it; and the status is the run's own.
 PORTER_PID=""
 WORK=""
+DIR=""
 ending() {
   local left=$?
   trap - EXIT INT TERM
   [ "$status" -eq 0 ] && status=$left
   if [ -n "$WORK" ]; then
-    # The daemon the porter started is known only by the berth it wrote.
-    local berth; berth=$(find "$WORK/state" -name 'berth-*.json' 2>/dev/null | head -1)
-    if [ -n "$berth" ]; then daemon_note "$(node -p "require(process.argv[1]).pid" "$berth" 2>/dev/null)"; fi
-    daemons_reap
-    run_root_remove
+    # No secret outlives the run, whether or not its folder does.
+    secrets_remove "$WORK"
+    # A daemon the porter started is known only by the berth it wrote. It is the run's to stop on proof:
+    # its environment names this run's own session folder. (One that came up and was confirmed ready was
+    # noted then; this is for a run that failed before that.)
+    if [ -n "$DIR" ]; then
+      local berth
+      while read -r berth; do
+        daemon_note_owned "$(node -p "require(process.argv[1]).pid" "$berth" 2>/dev/null)" "XDG_RUNTIME_DIR=$DIR/run"
+      done < <(find "$DIR/run" -name 'berth-*.json' 2>/dev/null)
+    fi
+    if daemons_reap; then
+      run_root_remove
+    else
+      # Something the run started could not be stopped: a failure, said, with the folder and its list of
+      # what was started kept for whoever has to stop it by hand.
+      say "could not stop pid $DAEMONS_LEFT"
+      verdict "FAIL: could not stop what the run started (pid $DAEMONS_LEFT); its folder is kept at $WORK (see $log)"
+      status=1
+    fi
   fi
   exit "$status"
 }
@@ -73,9 +89,11 @@ trap ending EXIT
 trap 'interrupted INT' INT
 trap 'interrupted TERM' TERM
 
-# The credentials are this user's alone, or nothing is started.
-said=$(private_check "$CREDENTIALS" "the e2e credentials") || fail "not started: $said"
-set -a; . "$CREDENTIALS"; set +a
+# The credentials: a file of this user's alone that reads without error and names all three, or nothing is
+# started. The user and the CUBE are taken into the environment; the password is not: npm and what it
+# installs, the daemons and the porter never have it. It is given only to the command that writes a login
+# payload.
+credentials_load "$CREDENTIALS" || fail "not started: $CREDENTIALS_SAID"
 
 run_root_settle "${SMOKE_RUN_ROOT:-}" upgrade "${UPGRADE_WORK:-}" mise-smoke-upgrade || fail "not started: $RUN_ROOT_SAID"
 WORK=$RUN_ROOT
@@ -86,10 +104,9 @@ NEW=$(node -p "require('./packages/chell/package.json').version")
 if [ -n "${OLD_CHELL:-}" ]; then
   OLD=$OLD_CHELL
 else
-  OLD=$(npm view @fnndsc/chell versions --json 2>/dev/null | NEW="$NEW" node -e '
-    const versions = JSON.parse(require("fs").readFileSync(0, "utf8")); const at = versions.indexOf(process.env.NEW);
-    const last = versions[versions.length - 1];
-    process.stdout.write(String(at > 0 ? versions[at - 1] : at === 0 ? "" : last === process.env.NEW ? versions[versions.length - 2] ?? "" : last ?? ""));') || OLD=""
+  # The greatest published version strictly below this checkout's, by its numbers: never one above it,
+  # whether or not this checkout's own version is published.
+  OLD=$(npm view @fnndsc/chell versions --json 2>/dev/null | version_before "$NEW") || OLD=""
 fi
 [ -n "$OLD" ] && [ "$OLD" != "$NEW" ] || fail "no published chell before $NEW to start from"
 say "old chell $OLD (published), new chell $NEW (this checkout)"
@@ -109,7 +126,7 @@ mkdir -p "$DIR/config" "$DIR/run" "$DIR/cache" "$DIR/tmp"
 
 # 1. The old daemon, in the session's own directories, as an older porter left it.
 cube_token_get "$WORK" > "$WORK/token" || fail "CUBE did not issue a token for the e2e identity"
-TMPDIR=$DIR/tmp XDG_RUNTIME_DIR=$DIR/run XDG_CONFIG_HOME=$DIR/config XDG_CACHE_HOME=$DIR/cache \
+TMPDIR="$DIR/tmp" XDG_RUNTIME_DIR="$DIR/run" XDG_CONFIG_HOME="$DIR/config" XDG_CACHE_HOME="$DIR/cache" \
   setsid nohup node "$OLD_ENTRY" "$E2E_USER@$E2E_CUBE" --daemon --auth-token-stdin --no-logo \
   > "$WORK/old-daemon.log" 2>&1 < "$WORK/token" &
 daemon_note $!
@@ -118,7 +135,7 @@ rm -f "$WORK/token"
 [ -n "$berth" ] || fail "the old daemon never wrote its berth"
 oldRunning=$(node -p "(require(process.argv[1]).versions || {}).chell || 'none'" "$berth")
 OLD_PID=$(node -p "require(process.argv[1]).pid" "$berth")
-daemon_note "$OLD_PID"
+daemon_note_owned "$OLD_PID" "XDG_RUNTIME_DIR=$DIR/run" || fail "the old daemon's berth names a process that is not this run's"
 say "old daemon up: pid $OLD_PID, berth says chell $oldRunning"
 [ "$oldRunning" = "$OLD" ] || fail "the old daemon's berth says chell $oldRunning, expected $OLD"
 
@@ -133,7 +150,7 @@ curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null || fail "the porter did not
 grep -q "adopted $E2E_USER's session" "$WORK/porter.log" || fail "the porter did not adopt the old session"
 
 # The password goes in a 0600 file, never on a command line (law a-secret-is-never-on-the-command-line).
-node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ username: process.env.E2E_USER, password: process.env.E2E_PASSWORD }))' "$WORK/login.json"
+login_payload_write "$WORK/login.json" || fail "the login payload could not be written"
 # A login says where it comes from, as a browser at this door would: the door takes a password only from itself.
 login() { curl -s -c "$WORK/cj" -H 'content-type: application/json' -H "origin: http://127.0.0.1:$PORT" -d @"$WORK/login.json" "http://127.0.0.1:$PORT/login"; }
 
@@ -144,6 +161,8 @@ timeout 300 curl -sN -b "$WORK/cj" -H 'accept: text/event-stream' "http://127.0.
 grep -q '^event: ready' "$WORK/boot.sse" || fail "the restarted session did not boot to ready ($(grep -A1 '^event: failed' "$WORK/boot.sse" | tail -1))"
 kill -0 "$OLD_PID" 2>/dev/null && fail "the old daemon (pid $OLD_PID) is still running after the restart"
 berth=$(find "$DIR/run" -name 'berth-*.json' | head -1)
+# The daemon the porter started, ready: noted now as the run's, on the proof of its environment.
+daemon_note_owned "$(node -p "require(process.argv[1]).pid" "$berth")" "XDG_RUNTIME_DIR=$DIR/run" || fail "the restarted daemon is not in this run's own folders"
 newRunning=$(node -p "(require(process.argv[1]).versions || {}).chell || 'none'" "$berth")
 say "after the restart the berth says chell $newRunning"
 [ "$newRunning" = "$NEW" ] || fail "after the restart the kernel is chell $newRunning, not $NEW"

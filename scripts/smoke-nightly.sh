@@ -49,7 +49,7 @@ daemon_start() { # extra env…: boots the private daemon, sets url and pid
   # A token from CUBE for this daemon, in a file of the run's own, handed over on standard input: no
   # password and no token is on a command line, and no login saved by another run is read.
   cube_token_get "$P" > "$P/token" || { echo "$day  no token: CUBE did not issue one for the e2e identity" | tee -a "$ledger"; exit 1; }
-  env "$@" TMPDIR=$P/tmp XDG_RUNTIME_DIR=$P/run XDG_CONFIG_HOME=$P/config XDG_CACHE_HOME=$P/cache \
+  env "$@" "TMPDIR=$P/tmp" "XDG_RUNTIME_DIR=$P/run" "XDG_CONFIG_HOME=$P/config" "XDG_CACHE_HOME=$P/cache" \
     setsid nohup node "$ROOT/packages/chell/dist/index.js" "$E2E_USER@$E2E_CUBE" --daemon --no-logo --auth-token-stdin > "$P/daemon.log" 2>&1 < "$P/token" &
   daemon_note $!
   b=""; for _ in $(seq 1 180); do b=$(ls "$P/run/calypso/" 2>/dev/null | grep berth- | head -1); [ -n "$b" ] && break; sleep 1; done
@@ -57,7 +57,8 @@ daemon_start() { # extra env…: boots the private daemon, sets url and pid
   [ -n "$b" ] || { echo "$day  no berth: the daemon did not boot" | tee -a "$ledger"; exit 1; }
   url=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['url'].replace('ws://','http://')+'/?token='+d['token'])" "$P/run/calypso/$b")
   pid=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['pid'])" "$P/run/calypso/$b")
-  daemon_note "$pid"
+  # The berth's process is the run's own on proof: its environment names this run's folder.
+  daemon_note_owned "$pid" "XDG_RUNTIME_DIR=$P/run" || { echo "$day  the berth names a process that is not this run's daemon (pid $pid)" | tee -a "$ledger"; exit 1; }
 }
 # One stage's verdict: its ledger line, its reds beneath, and whether it failed.
 # A stage failed when its runner did (a failed scenario, a crash, 124 from
@@ -79,7 +80,7 @@ run() { # name, port, extra env…
   # --no-sandbox: the browser on this host is started so by every smoke run (the sandbox needs a host
   # setting this script cannot make); it loads only the private daemon's own page.
   mkdir -p "$P/browser/$name"
-  env "$@" TMPDIR="$P/browser" ARGUS_URL="$url" SMOKE_CDP_PORT="$port" SMOKE_CHROME_FLAGS="--no-sandbox --user-data-dir=$P/browser/$name" \
+  env "$@" "TMPDIR=$P/browser" "ARGUS_URL=$url" "SMOKE_CDP_PORT=$port" SMOKE_CHROME_FLAGS=--no-sandbox "SMOKE_PROFILE_DIR=$P/browser/$name" \
     timeout 2700 node apps/argus/tests/smoke/smoke.mjs > "$log.$name" 2>&1
   local status=$?
   run_record "$name" "$status" "$log.$name"
@@ -178,7 +179,18 @@ nightly_finish() {
 nightly_ending() {
   local status=$?
   trap - EXIT INT TERM
-  [ -n "${RUN_ROOT:-}" ] && { daemons_reap; run_root_remove; }
+  if [ -n "${RUN_ROOT:-}" ]; then
+    # No secret outlives the run, whether or not its folder does.
+    secrets_remove "$RUN_ROOT"
+    if daemons_reap; then
+      run_root_remove
+    else
+      # Something the run started could not be stopped: said, counted as a failure, and the folder kept,
+      # with the list of what it started, for whoever has to stop it by hand.
+      echo "$day  could not stop what the run started (pid $DAEMONS_LEFT); its folder is kept at $RUN_ROOT" | tee -a "$ledger"
+      [ "$status" -eq 0 ] && status=1
+    fi
+  fi
   exit "$status"
 }
 # A signal is a failure by itself, whatever the command it interrupted had
@@ -194,9 +206,11 @@ nightly_main() {
   cd "$ROOT" || exit 1
   umask 077
   mkdir -p "$STATE"
-  local said
   # The credentials are this user's alone, or the run does not start.
-  said=$(private_check "$HOME/.config/mise/e2e.env" "the e2e credentials") || { echo "$day  not started: $said" | tee -a "$ledger"; exit 1; }
+  # The credentials: a file of this user's alone that reads without error and names all three. The user and
+  # the CUBE are taken into the environment; the password is not, and is given only to the one command that
+  # writes a login payload.
+  credentials_load "${E2E_ENV:-$HOME/.config/mise/e2e.env}" || { echo "$day  not started: $CREDENTIALS_SAID" | tee -a "$ledger"; exit 1; }
   run_root_settle "" "" "${SMOKE_PRIVATE:-}" mise-smoke-nightly || { echo "$day  not started: $RUN_ROOT_SAID" | tee -a "$ledger"; exit 1; }
   P=$RUN_ROOT
   trap nightly_ending EXIT
@@ -204,19 +218,20 @@ nightly_main() {
   trap 'nightly_interrupted TERM' TERM
   mkdir -p "$P/tmp" "$P/run" "$P/config" "$P/cache" "$P/browser"
   # A private daemon of our own: its own XDG dirs (cwd.txt and proc shards are per identity).
-  set -a; . "$HOME/.config/mise/e2e.env"; set +a
   daemon_start
   run desk 9701
   run tablet 9702 SMOKE_ONLY=listing-columns,mode-frame,cards,runs-honesty,roster-order,notes SMOKE_WIDTH=1024 SMOKE_HEIGHT=768
   run finger 9703 SMOKE_ONLY=listing-columns,mode-frame,cards,notes SMOKE_WIDTH=1024 SMOKE_HEIGHT=768 SMOKE_TOUCH=1
-  kill "$pid" 2>/dev/null || true
+  # Stopped as the process it was noted as, never by its pid alone; one that will not stop ends the run.
+  daemons_stop "$pid" || { echo "$day  the daemon (pid $pid) could not be stopped" | tee -a "$ledger"; exit 1; }
   # The console is a terminal (#1125); the transcript is the deprecated fallback
   # for a daemon without a pty. A daemon made one (CALYPSO_NO_PTY=1) runs its
   # own scenarios, so the fallback stays honest while it lasts.
   sleep 2
   daemon_start CALYPSO_NO_PTY=1
   run transcript 9704 SMOKE_CONSOLE=transcript SMOKE_ONLY=console-grammar,console-height,console-zoom,console-asks,question-both-places,pane-ask,ask-errand
-  kill "$pid" 2>/dev/null || true
+  # Stopped as the process it was noted as, never by its pid alone; one that will not stop ends the run.
+  daemons_stop "$pid" || { echo "$day  the daemon (pid $pid) could not be stopped" | tee -a "$ledger"; exit 1; }
   cat "$log".desk "$log".tablet "$log".finger "$log".transcript > "$log" 2>/dev/null; rm -f "$log".desk "$log".tablet "$log".finger "$log".transcript
   door_step
   upgrade_step

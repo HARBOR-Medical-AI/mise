@@ -64,8 +64,9 @@ runtime="$WORK/runtime"; mkdir -m 700 "$runtime"
 ( XDG_RUNTIME_DIR="$runtime"; run_root_settle "" "" "" mise-smoke-nightly && [ "$RUN_ROOT_OWNED" = 1 ] && [ "$(stat -c %a "$RUN_ROOT")" = 700 ] && [ "$(dirname "$RUN_ROOT")" = "$runtime" ] \
   && run_root_remove && [ ! -e "$RUN_ROOT" ] ) && ok "with nothing named: a new 0700 folder under the runtime folder, the run's own, and removed by it" || bad "with nothing named: a new 0700 folder of the run's own"
 mkdir -m 700 "$WORK/parent"
-( run_root_settle "$WORK/parent" upgrade "" mise-smoke-upgrade && [ "$RUN_ROOT" = "$WORK/parent/upgrade" ] && [ "$RUN_ROOT_OWNED" = 0 ] && run_root_remove && [ -d "$RUN_ROOT" ] ) \
-  && ok "handed a folder by a parent: a folder inside it, and not this run's to remove" || bad "handed a folder by a parent"
+( run_root_settle "$WORK/parent" upgrade "" mise-smoke-upgrade && first=$RUN_ROOT && [ "$(dirname "$RUN_ROOT")" = "$WORK/parent" ] && [ "$RUN_ROOT_OWNED" = 0 ] && [ "$(stat -c %a "$RUN_ROOT")" = 700 ] && run_root_remove && [ -d "$RUN_ROOT" ] \
+  && touch "$first/left-by-the-first" && run_root_settle "$WORK/parent" upgrade "" mise-smoke-upgrade && [ "$RUN_ROOT" != "$first" ] && [ -z "$(ls -A "$RUN_ROOT")" ] && [ -e "$first/left-by-the-first" ] ) \
+  && ok "handed a folder by a parent: a new folder inside it each time, empty, and not this run's to remove; what an earlier one left is untouched" || bad "handed a folder by a parent"
 mkdir -m 755 "$WORK/open-parent"
 ( run_root_settle "$WORK/open-parent" upgrade "" mise-smoke-upgrade ) > /dev/null 2>&1 && bad "a parent's folder others can reach is refused" || ok "a parent's folder others can reach is refused"
 mkdir -m 700 "$WORK/named"; touch "$WORK/named/from-before"
@@ -78,6 +79,40 @@ mkdir -m 755 "$WORK/named-open"
 # Only a folder mktemp made under the expected name is ever removed.
 ( RUN_ROOT="$WORK/mine"; RUN_ROOT_OWNED=1; run_root_remove; [ -d "$WORK/mine" ] ) && ok "a folder not named as mktemp names the run's is not removed, whatever is claimed" || bad "a folder with another name was removed"
 
+# A folder whose name holds a space, each way it can be come by.
+mkdir -m 700 "$WORK/run time"; mkdir -m 700 "$WORK/a parent"
+( XDG_RUNTIME_DIR="$WORK/run time"; run_root_settle "" "" "" mise-smoke-nightly && [ -d "$RUN_ROOT" ] && [ "$(dirname "$RUN_ROOT")" = "$WORK/run time" ] && run_root_remove && [ ! -e "$RUN_ROOT" ] ) \
+  && ok "a runtime folder with a space in its name: the run's folder is made in it and removed from it" || bad "a runtime folder with a space in its name"
+( run_root_settle "$WORK/a parent" upgrade "" mise-smoke-upgrade && [ "$(dirname "$RUN_ROOT")" = "$WORK/a parent" ] && run_root_settle "" "" "$WORK/a named one" mise-smoke-nightly && [ "$(dirname "$RUN_ROOT")" = "$WORK/a named one" ] ) \
+  && ok "a parent's folder and a named folder with spaces in their names" || bad "a parent's or a named folder with a space in its name"
+profile=$(SMOKE_CHROME_FLAGS="--no-sandbox" SMOKE_PROFILE_DIR="$WORK/run time/browser/desk" node -e "import('$HERE/../apps/argus/tests/smoke/driver.mjs').then((m) => console.log(JSON.stringify(m.chromeFlags_read(process.env))))")
+[ "$profile" = "[\"--no-sandbox\",\"--user-data-dir=$WORK/run time/browser/desk\"]" ] && ok "the browser's profile folder reaches chromium as one argument, a space in it and all" || bad "the profile folder was split: $profile"
+
+echo "the credentials"
+printf 'E2E_USER=stand-in\nE2E_PASSWORD=the-password\nE2E_CUBE=http://cube.invalid/api/v1/\n' > "$WORK/creds.env"; chmod 600 "$WORK/creds.env"
+( credentials_load "$WORK/creds.env" && [ "$E2E_USER" = stand-in ] && [ "$E2E_CUBE" = http://cube.invalid/api/v1/ ] && [ -z "${E2E_PASSWORD:-}" ] && ! env | grep -q the-password \
+  && [ "$(password_run sh -c 'printf %s "$E2E_PASSWORD"')" = the-password ] && ! env | grep -q the-password \
+  && login_payload_write "$WORK/payload.json" && grep -q '"password":"the-password"' "$WORK/payload.json" && [ "$(stat -c %a "$WORK/payload.json")" = 600 ] ) \
+  && ok "the user and the CUBE are taken up; the password is in no environment but that of the one command given it" || bad "the credentials were not taken up as they should be"
+mkdir "$WORK/creds-dir"; ln -s "$WORK/creds.env" "$WORK/creds-link.env"
+printf 'E2E_USER=stand-in\nE2E_CUBE=http://cube.invalid/\n' > "$WORK/creds-short.env"; chmod 600 "$WORK/creds-short.env"
+printf 'E2E_USER=stand-in\nif then fi (\n' > "$WORK/creds-broken.env"; chmod 600 "$WORK/creds-broken.env"
+cp "$WORK/creds.env" "$WORK/creds-open.env"; chmod 644 "$WORK/creds-open.env"
+for case in "creds-dir:not a regular file" "no-such.env:not a regular file" "creds-short.env:do not name E2E_USER, E2E_PASSWORD and E2E_CUBE" "creds-broken.env:could not be read as a shell file" "creds-open.env:has mode 644"; do
+  file=${case%%:*}; words=${case#*:}
+  ( credentials_load "$WORK/$file"; status=$?; [ "$status" -ne 0 ] && case "$CREDENTIALS_SAID" in *"$words"*) exit 0 ;; *) echo "$CREDENTIALS_SAID"; exit 1 ;; esac ) > "$WORK/creds-said.txt" 2>&1 \
+    && ok "credentials refused: $words" || bad "credentials ($file) were not refused with \"$words\": $(cat "$WORK/creds-said.txt")"
+done
+mkdir -m 700 "$WORK/secrets"; touch "$WORK/secrets/token" "$WORK/secrets/login.json" "$WORK/secrets/login.Ab12Cd34" "$WORK/secrets/cj" "$WORK/secrets/porter.log"
+( secrets_remove "$WORK/secrets"; [ "$(ls "$WORK/secrets")" = porter.log ] ) && ok "a token, a login payload and a cookie jar are removed from a folder that is kept; its logs stay" || bad "secrets were left, or more than secrets removed: $(ls "$WORK/secrets" | tr '\n' ' ')"
+
+echo "which release an upgrade starts from"
+for case in '["5.0.0","5.1.0","5.2.0"]|5.2.0|5.1.0' '["5.0.0","5.2.0"]|5.1.0|5.0.0' '["5.0.0","5.1.0","9.9.9"]|5.1.5|5.1.0' '["5.2.0","6.0.0"]|5.2.0|' '["5.10.0","5.9.0","5.2.0"]|5.11.0|5.10.0' '["5.1.0","5.2.0-beta.1"]|5.2.0|5.1.0' '[]|5.2.0|'; do
+  IFS='|' read -r listed new wanted <<< "$case"
+  got=$(printf '%s' "$listed" | version_before "$new")
+  [ "$got" = "$wanted" ] && ok "before $new among $listed: ${wanted:-none}" || bad "before $new among $listed: got \"$got\", wanted \"$wanted\""
+done
+
 echo "what the run started"
 (
   RUN_ROOT="$WORK/reap"; mkdir -m 700 "$RUN_ROOT"
@@ -86,7 +121,7 @@ echo "what the run started"
   daemon_note "$noted"
   # The bystander's pid with a start time that is not its own: a pid the run once noted, since given to another process.
   echo "$bystander 1" >> "$RUN_ROOT/started.pids"
-  daemons_reap
+  daemons_reap || { echo "the reaping said something was left: $DAEMONS_LEFT"; exit 1; }
   if kill -0 "$noted" 2>/dev/null; then echo "the noted process is still running"; kill "$noted" "$bystander"; exit 1; fi
   if ! kill -0 "$bystander" 2>/dev/null; then echo "a process that only shared a noted pid was stopped"; exit 1; fi
   kill "$bystander"
@@ -111,6 +146,7 @@ cat > "$BIN/npm" <<'EOF'
 case "$1" in
   view) echo '["0.9.0","9.9.9"]' ;;
   install)
+    env | grep -q '^E2E_PASSWORD=' && echo "npm had the password" >> "$STARTED_LOG.leaks"
     dist="$3/node_modules/@fnndsc/chell/dist"; mkdir -p "$dist"
     version=${4##*@}
     marker='--auth-token-stdin'; [ "${OLD_KIND:-}" = no-token ] && marker='--saved-token'
@@ -121,6 +157,7 @@ fs.readFileSync(0);
 const dir = path.join(process.env.XDG_RUNTIME_DIR, 'calypso'); fs.mkdirSync(dir, { recursive: true });
 fs.writeFileSync(path.join(dir, 'berth-standin.json'), JSON.stringify({ pid: process.pid, versions: { chell: '$version' } }));
 fs.appendFileSync(process.env.STARTED_LOG, 'old-daemon ' + process.pid + '\n');
+if (process.env.E2E_PASSWORD !== undefined) fs.appendFileSync(process.env.STARTED_LOG + '.leaks', 'the old daemon had the password\n');
 setInterval(() => {}, 1000);
 JS
     ;;
@@ -177,6 +214,38 @@ upgrade_expect() { # name, exit status, then texts the ledger must hold
   ! kill -0 "$spaced" 2>/dev/null
 ) > "$WORK/reap-spaced.txt" 2>&1 && ok "a noted process whose name holds a space and a parenthesis is noted by its true start, seen alive, and stopped" || bad "a process with a space in its name: $(cat "$WORK/reap-spaced.txt")"
 
+(
+  RUN_ROOT="$WORK/stop-one"; mkdir -m 700 "$RUN_ROOT"
+  sleep 300 & one=$!
+  sleep 300 & other=$!
+  daemon_note "$one"; daemon_note "$other"
+  daemons_stop "$one" || exit 1
+  wait "$one" 2>/dev/null
+  kill -0 "$one" 2>/dev/null && { echo "the one asked for is still running"; exit 1; }
+  kill -0 "$other" 2>/dev/null || { echo "the other was stopped too"; exit 1; }
+  daemons_reap && wait "$other" 2>/dev/null; ! kill -0 "$other" 2>/dev/null
+) > "$WORK/stop-one.txt" 2>&1 && ok "one noted process is stopped by name and the other left, until all are" || bad "stopping one: $(cat "$WORK/stop-one.txt")"
+(
+  RUN_ROOT="$WORK/owned"; mkdir -m 700 "$RUN_ROOT"
+  MARK="$WORK/owned/run" sh -c 'exec sleep 300' & ours=$!
+  sleep 300 & stranger=$!
+  sleep 0.2
+  daemon_note_owned "$ours" "MARK=$WORK/owned/run" || { echo "a process whose environment names the run's folder was not taken as the run's"; kill "$ours" "$stranger"; exit 1; }
+  daemon_note_owned "$stranger" "MARK=$WORK/owned/run" && { echo "a process with no such environment was taken as the run's"; kill "$ours" "$stranger"; exit 1; }
+  daemon_note_owned "" "MARK=x" && { echo "no pid at all was noted"; exit 1; }
+  [ "$(wc -l < "$RUN_ROOT/started.pids")" = 1 ] || { echo "the list holds $(wc -l < "$RUN_ROOT/started.pids") entries"; kill "$ours" "$stranger"; exit 1; }
+  daemons_reap; wait "$ours" 2>/dev/null
+  kill -0 "$stranger" 2>/dev/null || { echo "the stranger was stopped"; exit 1; }
+  kill "$stranger"
+) > "$WORK/owned.txt" 2>&1 && ok "a process the run did not launch is noted only on proof that it is the run's, and one without it is never stopped" || bad "ownership: $(cat "$WORK/owned.txt")"
+(
+  RUN_ROOT="$WORK/unstoppable"; mkdir -m 700 "$RUN_ROOT"
+  # A process this user may not signal, noted as it truly is: the reaping cannot stop it, and must say so.
+  echo "1 $(process_stat_read 1 | cut -d' ' -f2)" > "$RUN_ROOT/started.pids"
+  daemons_reap; status=$?
+  [ "$status" -eq 1 ] && [ "$DAEMONS_LEFT" = 1 ]
+) > /dev/null 2>&1 && ok "a noted process that cannot be stopped is reported, by its pid, and the reaping fails" || bad "a process that could not be stopped was not reported"
+
 echo "the upgrade script"
 cp "$WORK/e2e.env" "$WORK/e2e-open.env"; chmod 644 "$WORK/e2e-open.env"
 upgrade_run credentials-others-can-read E2E_ENV="$WORK/e2e-open.env"
@@ -212,7 +281,30 @@ upgrade_expect interrupted 1 'FAIL: interrupted (TERM): the run did not finish'
 mkdir -m 700 "$WORK/handed"
 upgrade_run handed-a-folder SMOKE_RUN_ROOT="$WORK/handed" OLD_CHELL=0.5.0 OLD_KIND=no-token
 upgrade_expect handed-a-folder 1 'FAIL: chell 0.5.0 cannot be logged in'
-[ -d "$WORK/handed/upgrade" ] && ok "a folder handed down by the nightly is still there after the upgrade returns" || bad "the upgrade removed a folder that was the nightly's"
+[ "$(ls "$WORK/handed" | wc -l)" = 1 ] && ok "a folder handed down by the nightly is still there after the upgrade returns, with this run's folder in it" || bad "the upgrade removed a folder that was the nightly's"
+# A second run handed the same folder works in a folder of its own, and the first one's is as it was left.
+first=$(ls "$WORK/handed"); touch "$WORK/handed/$first/left-by-the-first"
+upgrade_run handed-a-folder-again SMOKE_RUN_ROOT="$WORK/handed" OLD_CHELL=0.5.0 OLD_KIND=no-token
+[ "$(ls "$WORK/handed" | wc -l)" = 2 ] && [ -e "$WORK/handed/$first/left-by-the-first" ] && ok "a second run against the same handed folder makes its own inside it and leaves the first's alone" || bad "a second run reused or removed the first's folder: $(ls "$WORK/handed" | tr '\n' ' ')"
+
+# The release chosen when none is named: the newest published below the checkout's, never the one above it.
+grep -q "old chell 0.9.0 (published)" "$WORK/upgrade-setup-fails-after-the-daemon/state/"*-upgrade.log && ok "with 0.9.0 and 9.9.9 published the upgrade starts from 0.9.0, not from the one above the checkout" || bad "the release chosen: $(grep 'old chell' "$WORK/upgrade-setup-fails-after-the-daemon/state/"*-upgrade.log)"
+# The password reached neither npm nor the old daemon, in any of the runs above.
+cat "$WORK"/upgrade-*/started.txt.leaks 2>/dev/null | sort -u > "$WORK/leaks.txt"
+[ ! -s "$WORK/leaks.txt" ] && ok "the password reached neither npm nor the old daemon" || bad "the password leaked: $(tr '\n' ';' < "$WORK/leaks.txt")"
+
+# A folder named by a person is kept, and after a failure it holds no token, login payload or cookie jar.
+mkdir -m 700 "$WORK/named kept"
+upgrade_run named-and-kept UPGRADE_WORK="$WORK/named kept"
+kept=$(find "$WORK/named kept" -mindepth 1 -maxdepth 1 -type d | head -1)
+[ -n "$kept" ] && [ -f "$kept/porter.log" ] && [ -z "$(find "$kept" -maxdepth 1 \( -name token -o -name 'login.*' -o -name cj \))" ] && ok "a named folder (with a space in its name) is kept after a failure, its logs there and no secret in it" || bad "the named folder after a failure: $(ls "$kept" 2>/dev/null | tr '\n' ' ')"
+# A runtime folder with a space in its name: the run still ends clean.
+(
+  dir="$WORK/upgrade-spaced"; mkdir -p "$dir/state"; mkdir -m 700 "$dir/run time"; : > "$dir/started.txt"
+  env PATH="$BIN:$PATH" SMOKE_STATE="$dir/state" XDG_RUNTIME_DIR="$dir/run time" E2E_ENV="$WORK/e2e.env" UPGRADE_PORT=41${RANDOM:0:3} STARTED_LOG="$dir/started.txt" bash "$HERE/smoke-upgrade.sh" > "$dir/said.txt" 2>&1
+  status=$?
+  [ "$status" -eq 1 ] && grep -qF 'FAIL: the porter did not come up' "$dir/state/ledger.txt" && grep -q '^old-daemon ' "$dir/started.txt" && [ -z "$(ls "$dir/run time")" ] && while read -r _ pid; do ! kill -0 "$pid" 2>/dev/null || exit 1; done < "$dir/started.txt"
+) && ok "under a runtime folder with a space in its name the run gets as far, fails the same way, and leaves nothing" || bad "a runtime folder with a space in its name: $(tail -1 "$WORK/upgrade-spaced/state/ledger.txt" 2>/dev/null)"
 
 echo "the nightly's entry"
 (
