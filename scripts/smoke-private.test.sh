@@ -138,8 +138,40 @@ mkdir -p "$WORK/linkstep/real.Ab12Cd34" "$WORK/elsewhere2/config"; ln -s "$WORK/
 ( secrets_remove "$WORK/linkstep"; status=$?; [ "$status" -eq 1 ] && [ -d "$WORK/elsewhere2/config" ] ) && ok "a step's folder that is a link is not gone into, and the removing fails" || bad "a linked step folder was followed"
 # A folder that cannot be looked into may hold what cannot be seen: a failure, not a clean bill.
 mkdir -p "$WORK/blind/state/abc/config"; chmod 000 "$WORK/blind/state"
-( secrets_remove "$WORK/blind"; [ $? -eq 1 ] ) && ok "a folder that cannot be looked into is a failure of the removing" || bad "an unreadable folder was passed as clean"
+if [ -r "$WORK/blind/state" ]; then
+  # Whoever runs this can read anything (a privileged runner): the refusal cannot be made here, and is not claimed.
+  ok "a folder that cannot be looked into: not applicable, this runner can read a folder with no permissions"
+else
+  ( secrets_remove "$WORK/blind"; [ $? -eq 1 ] ) && ok "a folder that cannot be looked into is a failure of the removing" || bad "an unreadable folder was passed as clean"
+fi
 chmod 700 "$WORK/blind/state"
+# The run's folder is the one the run made: with a link, or another folder, put in its place, nothing is
+# read from it, nothing signalled, and nothing removed. Signals and removal are stand-ins here.
+for swap in link folder; do
+  (
+    XDG_RUNTIME_DIR="$WORK/swap-$swap"; mkdir -m 700 "$XDG_RUNTIME_DIR"
+    run_root_settle "" "" "" mise-smoke-nightly || exit 9
+    mv "$RUN_ROOT" "$WORK/swap-$swap-moved"
+    mkdir -p "$WORK/swap-$swap-other/config"; echo "999999999 12345" > "$WORK/swap-$swap-other/started.pids"
+    if [ "$swap" = link ]; then ln -s "$WORK/swap-$swap-other" "$RUN_ROOT"; else mv "$WORK/swap-$swap-other" "$RUN_ROOT"; fi
+    kill() { echo "kill $*" >> "$WORK/swap-$swap-acts.txt"; }
+    rm() { echo "rm $*" >> "$WORK/swap-$swap-acts.txt"; }
+    daemon_alive() { return 0; }
+    sleep() { :; }
+    daemons_reap; reaped=$?
+    secrets_remove "$RUN_ROOT"; cleaned=$?
+    run_root_remove; removed=$?
+    [ "$reaped" -eq 1 ] && [ "$cleaned" -eq 1 ] && [ "$removed" -eq 1 ] && [ ! -e "$WORK/swap-$swap-acts.txt" ] && [ -d "$RUN_ROOT/config" ]
+  ) > "$WORK/swap-$swap.txt" 2>&1 && ok "a $swap put in place of the run's folder: nothing is read from it, signalled or removed, and each cleaning fails" || bad "a $swap in place of the run's folder was cleaned: $(cat "$WORK/swap-$swap-acts.txt" 2>/dev/null | tr '\n' ';')"
+done
+( mkdir -p "$WORK/named-target/config"; ln -s "$WORK/named-target" "$WORK/named-link"; rm() { echo "rm $*" >> "$WORK/named-link-acts.txt"; }
+  secrets_remove "$WORK/named-link"; [ $? -eq 1 ] && [ ! -e "$WORK/named-link-acts.txt" ] ) && ok "a folder named by a link is not cleaned through it" || bad "a link named as the folder was followed"
+# An environment entry is matched whole and literally, with records held in a file as the kernel holds them.
+printf 'A=1\0MARK=/run/a\nb/run\0OTHER=first\nMARK=/forged\0LAST=z\0' > "$WORK/entries.bin"
+( entries_have "$WORK/entries.bin" $'MARK=/run/a\nb/run' && entries_have "$WORK/entries.bin" "LAST=z" \
+  && ! entries_have "$WORK/entries.bin" "MARK=/forged" && ! entries_have "$WORK/entries.bin" "MARK=/run/a" && ! entries_have "$WORK/entries.bin" "b/run" \
+  && ! entries_have "$WORK/entries.bin" $'MARK=/nowhere\nA=1' && ! entries_have "$WORK/entries.bin" "A=" ) \
+  && ok "an entry with a newline in it is matched whole; a line of it, a line inside another's value, and an entry that merely holds a real one after a newline are not" || bad "environment entries were not compared literally"
 # The proof of ownership is one whole entry of the environment, read as the kernel keeps it.
 ( RUN_ROOT="$WORK/environ"; mkdir -m 700 "$RUN_ROOT"
   MARK="$WORK/environ/run" OTHER=$'first line\nMARK=/a/forged/entry' PAD=$(head -c 100000 /dev/zero | tr '\0' x) PAD2=$(head -c 100000 /dev/zero | tr '\0' y) sh -c 'exec sleep 300' & ours=$!

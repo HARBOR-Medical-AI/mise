@@ -56,7 +56,33 @@ run_root_settle() { # the parent's folder or empty, the name inside it, the over
     chmod 700 "$RUN_ROOT" || return 1
     RUN_ROOT_OWNED=1
   fi
+  # The folder is known from here on by where it truly is and by what it is on the disk: every later
+  # cleaning checks both, so a folder or a link put in its place afterwards is never cleaned in its stead.
+  RUN_ROOT=$(realpath -- "$RUN_ROOT") || { RUN_ROOT_SAID="the run's folder could not be found again"; return 1; }
+  RUN_ROOT_ID=$(stat -c '%d:%i' -- "$RUN_ROOT") || { RUN_ROOT_SAID="the run's folder could not be read"; return 1; }
   RUN_ROOT_SAID=""
+}
+
+# Whether the run's folder is still the folder this run made: a real folder
+# (not a link) at the place it was made, and the same one on the disk. What
+# stops processes and removes things asks this first, and does nothing when
+# the answer is no.
+run_root_verify() {
+  [ -n "${RUN_ROOT:-}" ] && [ ! -L "$RUN_ROOT" ] && [ -d "$RUN_ROOT" ] || return 1
+  [ "$(realpath -- "$RUN_ROOT" 2>/dev/null)" = "$RUN_ROOT" ] || return 1
+  [ -z "${RUN_ROOT_ID:-}" ] || [ "$(stat -c '%d:%i' -- "$RUN_ROOT" 2>/dev/null)" = "$RUN_ROOT_ID" ]
+}
+
+# Whether a list of entries, each ended by a NUL (an environment as the
+# kernel keeps it), holds one that is exactly the entry given: compared
+# whole and as it is written, so that neither a newline in the entry asked
+# for nor one inside another entry's value can make a match.
+entries_have() { # the file of entries, the entry
+  local entry
+  while IFS= read -r -d '' entry; do
+    [ "$entry" = "$2" ] && return 0
+  done < "$1"
+  return 1
 }
 
 # Reads one name out of the credentials file, in a shell of its own, so
@@ -156,8 +182,14 @@ cube_token_get() { # the private folder to work in
 # is still there.
 secrets_remove() { # the run's folder
   local dir=$1 root place path parent left=0
-  [ -n "$dir" ] && [ -d "$dir" ] || return 0
-  dir=$(realpath -- "$dir") || return 1
+  [ -n "$dir" ] || return 0
+  # The folder itself, as it is named: never a link, and never somewhere other than where its name says.
+  # (The name is not resolved first: a link put in the folder's place would then pass for the folder.)
+  if [ -L "$dir" ]; then return 1; fi
+  [ -d "$dir" ] || return 0
+  [ "$(realpath -- "$dir" 2>/dev/null)" = "$dir" ] || return 1
+  # The run's own folder is, besides, the very folder the run made.
+  if [ "$dir" = "${RUN_ROOT:-}" ]; then run_root_verify || return 1; fi
   for root in "$dir" "$dir"/*; do
     [ -d "$root" ] || continue
     # A step's folder is a folder the run made, never a link to one.
@@ -216,10 +248,8 @@ daemon_note_owned() { # pid, the environment entry that proves it (NAME=value)
   local pid=$1 proof=$2 before after
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   before=$(process_stat_read "$pid") || return 1
-  # One whole entry of the environment, as the kernel keeps them: each ended by a NUL. Read from the file by
-  # the one command, so that no pipe's status stands in for the answer and a value with a newline in it
-  # cannot pass for an entry.
-  grep -zqxF -- "$proof" "/proc/$pid/environ" 2>/dev/null || return 1
+  # One whole entry of the environment, as the kernel keeps them (each ended by a NUL), compared literally.
+  { entries_have "/proc/$pid/environ" "$proof"; } 2>/dev/null || return 1
   after=$(process_stat_read "$pid") || return 1
   [ "${before#* }" = "${after#* }" ] || return 1
   grep -qxF -- "$pid ${before#* }" "$RUN_ROOT/started.pids" 2>/dev/null || echo "$pid ${before#* }" >> "$RUN_ROOT/started.pids"
@@ -254,6 +284,8 @@ daemon_alive() { # pid, the start it was noted with
 daemons_stop() { # pids to stop; none for every noted process
   local list="$RUN_ROOT/started.pids" pid started left wanted=" $* "
   DAEMONS_LEFT=""
+  # The list is read only from the folder this run made: one put in its place could name any process.
+  run_root_verify || { DAEMONS_LEFT="unknown: the run's folder is no longer the one this run made"; return 1; }
   [ -f "$list" ] || return 0
   # Whether a noted pid is among those asked for.
   wanted_has() { [ "$wanted" = "  " ] || case "$wanted" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -306,6 +338,7 @@ run_root_keep() { # the folder to keep (the parent's), the reason
 run_root_remove() {
   RUN_ROOT_KEPT=""
   [ "${RUN_ROOT_OWNED:-0}" = 1 ] || return 0
+  run_root_verify || { RUN_ROOT_KEPT="it is no longer the folder this run made"; return 1; }
   if [ -s "$RUN_ROOT/kept" ]; then RUN_ROOT_KEPT=$(tr '\n' ';' < "$RUN_ROOT/kept"); return 1; fi
   # Only a folder mktemp made here: its name is checked for what it must be before it is removed.
   case "$RUN_ROOT" in
