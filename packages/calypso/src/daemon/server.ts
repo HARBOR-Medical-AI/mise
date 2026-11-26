@@ -33,6 +33,7 @@ import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { HostedEngine, CompletionResult } from './engine.js';
 import { staticRequest_handle } from './static.js';
 import { vfsHeaders_build } from './vfsHeaders.js';
+import { attachOrigin_allowed, attachOrigins_read } from './attachOrigin.js';
 import { UploadHold, upload_take, uploadCeiling_read, type UploadRefusal, type UploadTaken } from './uploadHold.js';
 import { token_matches } from './token.js';
 import { RequestBroker } from './broker.js';
@@ -575,7 +576,18 @@ export class CalypsoDaemon {
           response.end('not found');
         },
       );
-      const wss: WebSocketServer = new WebSocketServer({ server: httpServer });
+      // An attach from a browser says which page asked; only this daemon's own page, or one named by its
+      // operator, is taken (attachOrigin.ts). A program sends no origin and is asked for its token as ever.
+      // The names are read at each attach, so an operator's word is the word at the time it is asked.
+      const wss: WebSocketServer = new WebSocketServer({
+        server: httpServer,
+        verifyClient: (info: { origin?: string; req: IncomingMessage }): boolean => {
+          const origin: string | undefined = info.req.headers.origin ?? (info.origin !== undefined && info.origin !== '' ? info.origin : undefined);
+          const allowed: boolean = attachOrigin_allowed(origin, info.req.headers.host, attachOrigins_read(process.env));
+          if (!allowed) console.error(`[calypso] refused an attach from ${String(origin)}: not this daemon's own page, and not named in CALYPSO_ORIGINS`);
+          return allowed;
+        },
+      });
       wss.on('connection', (socket: WebSocket, request: IncomingMessage) => this.connection_handle(socket, request));
       httpServer.on('error', reject);
       httpServer.listen(this.port, this.host, () => {
@@ -690,11 +702,19 @@ export class CalypsoDaemon {
       refuse(404, 'not found');
       return;
     }
-    if (request.method === 'POST') {
+    // A download's stop changes something, and so is a POST: a GET changes nothing here, which is what
+    // lets a door in front ask only a request that is not a GET where it came from.
+    const stopping: boolean = query.has('cancel');
+    if (request.method === 'POST' && !stopping) {
       await this.vfs_receive(request, response, query, refuse);
       return;
     }
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
+    if (stopping && request.method !== 'POST') {
+      response.setHeader('allow', 'POST');
+      refuse(405, 'a download is stopped by POST');
+      return;
+    }
+    if (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'POST') {
       refuse(405, 'method not allowed');
       return;
     }
@@ -702,7 +722,7 @@ export class CalypsoDaemon {
     const asked: string | null = query.get('progress') ?? query.get('cancel');
     if (asked !== null) {
       const id: string | null = downloadId_valid(asked) ? asked : null;
-      if (id !== null && query.has('cancel')) this.downloads.cancel(id);
+      if (id !== null && stopping) this.downloads.cancel(id);
       const report: DownloadReport | null = id === null ? null : this.downloads.report(id);
       response.writeHead(report === null ? 404 : 200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       response.end(JSON.stringify(report ?? { reason: 'no such download' }));

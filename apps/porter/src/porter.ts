@@ -9,6 +9,7 @@
  * @module
  */
 import { CredentialStore } from './creds.js';
+import { doorOrigins_resolve, type DoorOrigins } from './origin.js';
 import { porterConfig_resolve, porterStateDir_resolve, porterTokensFile_resolve, chellEntry_locate, stratusEntry_locate, PORTER_DEFAULT_TOKEN_DAYS, type PorterConfig } from './config.js';
 import { TokenStore, type DoorToken } from './tokens.js';
 import { identity_normalise } from '@fnndsc/calypso/berth';
@@ -315,6 +316,10 @@ async function porter_start(): Promise<void> {
   console.log(`    state:  ${config.stateDir}`);
   console.log(config.berths.mode === 'launcher' ? `    berths: started by the launcher at ${config.berths.listen}; a logout stops the user's berth` : `    chell:  ${config.chellEntry}`);
   console.log(`    idle:   sessions end after ${config.idleHours} h with nobody on them; their state directories stay`);
+  // Said at every start: a browser that reaches this door by a name not listed here is refused at login,
+  // and this line is where an operator finds out why before anybody tries.
+  const answersAs: DoorOrigins = config.origins ?? doorOrigins_resolve(undefined, config.port);
+  console.log(`    origin: answers as ${answersAs.origins.join(', ')}${answersAs.named ? '' : ' — only this machine\'s own names; set PORTER_PUBLIC_ORIGIN to the address browsers use (e.g. https://porter.example.org) if this door is reached by another'}`);
   if (config.secretGenerated) {
     console.log('    secret: made up for this run — set PORTER_SECRET so a restart does not ask every browser again');
   }

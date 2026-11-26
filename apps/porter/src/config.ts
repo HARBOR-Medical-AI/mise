@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { doorOrigins_resolve, type DoorOrigins } from './origin.js';
 
 /** Everything a porter needs to know, resolved. */
 export interface PorterConfig {
@@ -26,6 +27,12 @@ export interface PorterConfig {
   port: number;
   /** The chell entry to start a session with (`dist/index.js`). */
   chellEntry: string;
+  /**
+   * The origins a browser reaches this door as (`PORTER_PUBLIC_ORIGIN`), and
+   * whether the operator named them; absent, this machine's own names at
+   * the port (origin.ts). A request on the cookie must come from one.
+   */
+  origins?: DoorOrigins;
   /** What the door signs its cookie with. */
   secret: string;
   /** Whether the secret was made up at start: cookies die with this porter. */
@@ -60,6 +67,8 @@ export interface PorterEnv {
   PORTER_STATE_DIR?: string;
   PORTER_HOST?: string;
   PORTER_PORT?: string;
+  /** The origins a browser reaches this door as, comma-separated; unset, only this machine's own names at the port. */
+  PORTER_PUBLIC_ORIGIN?: string;
   PORTER_CHELL?: string;
   PORTER_SECRET?: string;
   PORTER_COOKIE_HOURS?: string;
@@ -205,6 +214,7 @@ export function porterConfig_resolve(env: PorterEnv, locateChell: () => string =
     stateDir,
     host: env.PORTER_HOST ?? '127.0.0.1',
     port,
+    origins: doorOrigins_resolve(env.PORTER_PUBLIC_ORIGIN, port),
     chellEntry: env.PORTER_CHELL ?? locateChell(),
     secret: secretGiven ? (env.PORTER_SECRET as string) : randomBytes(32).toString('hex'),
     secretGenerated: !secretGiven,

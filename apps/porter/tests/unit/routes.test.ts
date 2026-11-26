@@ -8,7 +8,8 @@ import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { AddressInfo } from 'node:net';
 import { createServer, get as httpGet, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { SessionRegistry } from '../../src/registry.js';
-import { porterApp_build, upstreamPath_build, mountUrl_split, berthHttp_derive, type PorterApp } from '../../src/app.js';
+import { upstreamPath_build, mountUrl_split, berthHttp_derive, type PorterApp } from '../../src/app.js';
+import { doorApp_build as porterApp_build, DOOR_ORIGIN } from './fromDoor.js';
 import type { Berth, BerthAccess, BootListener, BootReport, SessionHost } from '../../src/host/sessionHost.js';
 import type { PorterConfig } from '../../src/config.js';
 import { mkdtemp, writeFile } from 'node:fs/promises';
@@ -428,12 +429,14 @@ describe('address helpers', () => {
 describe('the wire through the mount', () => {
   let daemon: WebSocketServer;
   let seenUrl: string | null = null;
+  let seenHeaders: Record<string, unknown> = {};
 
   beforeEach(async () => {
     seenUrl = null;
     daemon = new WebSocketServer({ host: '127.0.0.1', port: 0 });
-    daemon.on('connection', (socket: WebSocket, request: { url?: string }): void => {
+    daemon.on('connection', (socket: WebSocket, request: { url?: string; headers?: Record<string, unknown> }): void => {
       seenUrl = request.url ?? null;
+      seenHeaders = request.headers ?? {};
       socket.on('message', (data: RawData): void => { socket.send(`echo:${data.toString()}`); });
     });
     await new Promise<void>((resolve) => daemon.once('listening', () => resolve()));
@@ -450,17 +453,41 @@ describe('the wire through the mount', () => {
     const key: string = (session.json() as { key: string }).key;
     await built.app.listen({ host: '127.0.0.1', port: 0 });
     const porterPort: number = (built.app.server.address() as AddressInfo).port;
-    const client: WebSocket = new WebSocket(`ws://127.0.0.1:${porterPort}/s/${key}/?door`, { headers: { cookie: cookie_of(session) } });
+    const client: WebSocket = new WebSocket(`ws://127.0.0.1:${porterPort}/s/${key}/?door`, { headers: { cookie: cookie_of(session), origin: DOOR_ORIGIN } });
     await new Promise<void>((resolve, reject) => { client.once('open', () => resolve()); client.once('error', reject); });
     const echoed: Promise<string> = new Promise((resolve) => client.once('message', (data: RawData) => resolve(data.toString())));
     client.send('hello');
     expect(await echoed).toBe('echo:hello');
     expect(seenUrl).toBe('/?door=&token=ATTACH');
+    // Where the browser came from was the door's to check; the session is not told.
+    expect('origin' in seenHeaders).toBe(false);
+    expect(typeof seenHeaders['cookie']).toBe('string');
     // A wire open counts as a surface on the session; closed, it does not.
     expect(built.registry.get(key)?.wires).toBe(1);
     client.close();
     await new Promise((r) => setTimeout(r, 100));
     expect(built.registry.get(key)?.wires).toBe(0);
+  });
+
+  it('refuses a wire opened on the cookie from another page, or from nowhere said, before the daemon hears of it', async () => {
+    const port: number = (daemon.address() as AddressInfo).port;
+    host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: `ws://127.0.0.1:${port}`, token: 'ATTACH' };
+    const session = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (session.json() as { key: string }).key;
+    await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const porterPort: number = (built.app.server.address() as AddressInfo).port;
+    for (const headers of [{ cookie: cookie_of(session), origin: 'https://elsewhere.example' }, { cookie: cookie_of(session) }, { cookie: cookie_of(session), origin: `${DOOR_ORIGIN}.elsewhere.example` }]) {
+      const client: WebSocket = new WebSocket(`ws://127.0.0.1:${porterPort}/s/${key}/?door`, { headers });
+      const outcome: string = await new Promise((resolve) => {
+        client.once('open', () => resolve('open'));
+        client.once('unexpected-response', (_request: unknown, response: { statusCode?: number }) => resolve(`refused ${response.statusCode}`));
+        client.once('error', (error: Error) => resolve(`error ${error.message}`));
+      });
+      expect(outcome).toBe('refused 403');
+      client.terminate();
+    }
+    expect(seenUrl).toBeNull();
+    expect(built.registry.get(key)?.wires ?? 0).toBe(0);
   });
 
   it('drops an upgrade without the cookie, even for a known key', async () => {

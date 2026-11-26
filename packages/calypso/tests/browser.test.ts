@@ -247,6 +247,9 @@ describe('browser surface', () => {
     try {
       const port: number = await daemon.start();
       pageServer = await browserPage_serve(browserSmoke_html(`ws://127.0.0.1:${port}`));
+      // The page is served from another port than the daemon's, as a development server's is: the daemon
+      // takes its attach only because its operator named that origin.
+      process.env['CALYPSO_ORIGINS'] = new URL(pageServer.url).origin;
       const result: ProcessResult = await browser_run(CHROMIUM, pageServer.url, profileDir);
 
       expect({
@@ -268,6 +271,7 @@ describe('browser surface', () => {
       }
       expect(executed).toEqual(['version']);
     } finally {
+      delete process.env['CALYPSO_ORIGINS'];
       await pageServer?.close();
       await daemon.stop();
       rmSync(tempDir, { recursive: true, force: true });

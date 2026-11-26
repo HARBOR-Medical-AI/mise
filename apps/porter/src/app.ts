@@ -80,7 +80,8 @@ import { DOOR_COOKIE, doorCookie_options } from './door.js';
 import { loginPage_render, greetPage_render, authorisedPage_render } from './greeter.js';
 import { DeviceCodes, TokenStore, token_looksLike, type DeviceGrant, type DoorToken, type TokenCheck } from './tokens.js';
 import { idleSweep_run } from './sweep.js';
-import { HitLimit, VerdictCache } from './limit.js';
+import { AttemptLimit, HitLimit, VerdictCache } from './limit.js';
+import { doorOrigins_resolve, method_isSafe, origin_isDoors, originRefusal_say, type DoorOrigins } from './origin.js';
 import { answer_watch, bodyStream_pass, relayBreak_format, relayFailure_describe, relayTarget_name, relayTimeout_derive } from './relay.js';
 
 /** What the routes are built over. */
@@ -121,6 +122,15 @@ export interface PorterApp {
 
 /** How many times a client may ask `/berths` in a minute. */
 const BERTHS_PER_MINUTE: number = 10;
+
+/** Failed password logins one address may make in a minute. */
+export const LOGIN_FAILURES_PER_ADDRESS: number = 10;
+
+/** Failed password logins that may be made against one name in a minute, from anywhere. */
+export const LOGIN_FAILURES_PER_NAME: number = 5;
+
+/** Device codes one address may ask for in a minute. */
+export const DEVICE_CODES_PER_MINUTE: number = 10;
 /** How long CUBE's verdict on one set of credentials is kept, in ms. */
 const BERTHS_VERDICT_MS: number = 30_000;
 
@@ -235,6 +245,19 @@ export function mountUrl_split(url: string): { key: string; rest: string } | nul
  * @param secret - The door's signing secret.
  * @returns The key, or null when there is no cookie or its signature fails.
  */
+/**
+ * Whether a request carries the door's cookie at all, valid or not: what a
+ * browser attaches by itself, which is what makes a request one that must
+ * say where it came from.
+ *
+ * @param cookieHeader - The raw `Cookie` request header.
+ * @returns True when a cookie of the door's name is among them.
+ */
+export function cookie_carried(cookieHeader: string | undefined): boolean {
+  if (cookieHeader === undefined) return false;
+  return cookieHeader.split(';').some((part: string): boolean => part.slice(0, Math.max(0, part.indexOf('='))).trim() === DOOR_COOKIE);
+}
+
 export function cookieKey_read(cookieHeader: string | undefined, secret: string): string | null {
   if (cookieHeader === undefined) return null;
   // The one cookie wanted, out of a header that may carry any number: the
@@ -279,6 +302,11 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   // /berths asks CUBE, and a Basic header makes CUBE hash a password each time: a client is allowed a few asks a minute, and a verdict (never the credentials) is kept for a short while.
   const berthsHits: HitLimit = new HitLimit(BERTHS_PER_MINUTE, 60_000, options.now);
   const berthsVerdicts: VerdictCache<AdminVerdict> = new VerdictCache<AdminVerdict>(BERTHS_VERDICT_MS, options.now);
+  // A password is checked by asking CUBE, which hashes it each time. Failed tries are counted two ways: by
+  // the address they come from, and by the name tried, since behind a proxy the address is the proxy's word.
+  const loginsByAddress: AttemptLimit = new AttemptLimit(LOGIN_FAILURES_PER_ADDRESS, 60_000, options.now);
+  const loginsByName: AttemptLimit = new AttemptLimit(LOGIN_FAILURES_PER_NAME, 60_000, options.now);
+  const deviceHits: HitLimit = new HitLimit(DEVICE_CODES_PER_MINUTE, 60_000, options.now);
   const adminCheck = options.adminCheck ?? ((cubeUrl: string, authorization: string): Promise<AdminVerdict> => cubeAdmin_check(cubeUrl, authorization));
   const registry: SessionRegistry = new SessionRegistry();
   const creds: CredentialStore = new CredentialStore(config.stateDir);
@@ -303,6 +331,22 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   await app.register(fastifyCookie, { secret: config.secret });
   await app.register(fastifyFormbody);
   await app.register(replyFrom);
+
+  // Where a request on the cookie came from. A browser sends the door's cookie with any request to the door,
+  // whoever wrote the page that made it; so one that changes something on the strength of that cookie, or a
+  // login by password (which is what sets it), must say it came from the door itself. A program carrying a
+  // bearer token and no cookie is not a browser being steered, and is not asked.
+  const origins: DoorOrigins = config.origins ?? doorOrigins_resolve(undefined, config.port);
+  app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    if (method_isSafe(request.method)) return;
+    const rides: boolean = cookie_carried(request.headers.cookie);
+    const byBearer: boolean = bearer_extract(request) !== null;
+    const passwordLogin: boolean = request.method === 'POST' && request.url.split('?')[0] === '/login' && !byBearer;
+    if (!rides && !passwordLogin) return;
+    if (origin_isDoors(request.headers.origin, origins.origins)) return;
+    options.log?.(`refused ${request.method} ${request.url.split('?')[0]}: ${originRefusal_say(request.headers.origin, origins)}`);
+    await reply.code(403).send({ error: originRefusal_say(request.headers.origin, origins) });
+  });
 
   /**
    * Finds where an entry's session answers now, after its berth failed to.
@@ -385,6 +429,8 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   });
 
   app.post('/auth/device', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+    const wait: number = deviceHits.hit_take(request.ip);
+    if (wait > 0) return reply.code(429).header('retry-after', String(wait)).send({ error: `too many codes asked for from here; ask again in ${wait} s` });
     const parsed = deviceSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'the host chell runs on is required' });
     const issued: { code: string; expires: string } = codes.issue(parsed.data.host);
@@ -469,10 +515,28 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       }
       username = parsed.data.username;
       wanted = { ...(parsed.data.tokenName === undefined ? {} : { tokenName: parsed.data.tokenName }), ...(parsed.data.code === undefined ? {} : { code: parsed.data.code }) };
-      const minted: TokenMint = await mint(config.cubeUrl, username, parsed.data.password);
+      // A try is taken up before CUBE is asked, so a burst cannot all reach it, and given back when the
+      // password was right: only failures are counted against an address and against a name.
+      const name: string = username.toLowerCase();
+      const held: number = Math.max(loginsByAddress.wait_read(request.ip), loginsByName.wait_read(name));
+      if (held > 0) {
+        options.log?.(`refused a login as ${username}: too many failed tries (${held} s to wait)`);
+        void reply.header('retry-after', String(held));
+        return refuse(429, `too many failed logins; try again in ${held} s`);
+      }
+      loginsByAddress.try_begin(request.ip);
+      loginsByName.try_begin(name);
+      const minted: TokenMint = await mint(config.cubeUrl, username, parsed.data.password).catch((error: unknown): never => {
+        // A try that never got an answer is not a failed password.
+        loginsByAddress.try_forgive(request.ip);
+        loginsByName.try_forgive(name);
+        throw error;
+      });
       if (minted.token === null) {
         return refuse(401, minted.reason ?? 'refused');
       }
+      loginsByAddress.try_forgive(request.ip);
+      loginsByName.try_forgive(name);
       cubeToken = minted.token;
     }
     const identity: string = identity_normalise(username, config.cubeUrl);
@@ -826,6 +890,14 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
         socket.destroy();
         return;
       }
+      // The wire is opened on the cookie: it must be opened from the door's own page (or by a chell that
+      // says it stands at this door), never from a page somewhere else that a browser was led to.
+      if (!origin_isDoors(request.headers.origin, origins.origins)) {
+        options.log?.(`refused a wire to ${entry.user}'s session: ${originRefusal_say(request.headers.origin, origins)}`);
+        socket.write('HTTP/1.1 403 Forbidden\r\nconnection: close\r\ncontent-length: 0\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       const target: URL = new URL(entry.berth.url);
       // A wire open is a surface on the session; the idle sweep never ends
       // a session with one, however quiet it is.
@@ -841,6 +913,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
         const path: string = upstreamPath_build(split.rest, entry.berth.token);
         const lines: string[] = [`${request.method ?? 'GET'} ${path} HTTP/1.1`];
         for (const [name, value] of Object.entries(request.headers)) {
+          // Where the browser came from has been checked here, against the door's own name; the session
+          // behind the door does not know that name and is not asked to.
+          if (name.toLowerCase() === 'origin') continue;
           lines.push(`${name}: ${Array.isArray(value) ? value.join(', ') : value ?? ''}`);
         }
         upstream.write(`${lines.join('\r\n')}\r\n\r\n`);

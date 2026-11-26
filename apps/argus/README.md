@@ -24,7 +24,7 @@ The daemon serves the built ARGUS bundle from the same loopback port as the wire
 [+] ARGUS web surface at http://127.0.0.1:<port>/?token=<token>
 ```
 
-The bundle is discovered from `apps/argus/dist` relative to the daemon's working directory; set `CALYPSO_WEB_ROOT` to serve a bundle from anywhere else. Without a token in the URL, the page offers a paste form. During UI development `npm run dev -w @fnndsc/argus` starts a Vite dev server; pass `?ws=ws://127.0.0.1:<port>` to point it at a running daemon across origins.
+The bundle is discovered from `apps/argus/dist` relative to the daemon's working directory; set `CALYPSO_WEB_ROOT` to serve a bundle from anywhere else. Without a token in the URL, the page offers a paste form. During UI development `npm run dev -w @fnndsc/argus` starts a Vite dev server; pass `?ws=ws://127.0.0.1:<port>` to point it at a running daemon across origins. The daemon takes an attach from a page only when the page is its own or its operator named the page's origin, so start that daemon with `CALYPSO_ORIGINS=http://localhost:5173` (the address the dev server prints).
 
 ## The faces it wears
 

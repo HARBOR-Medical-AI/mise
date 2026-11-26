@@ -47,7 +47,9 @@ describe('a transfer row never freezes', () => {
   it('says it has lost touch when the session stops answering, and a cancel that gets no answer says so', async () => {
     jest.useFakeTimers();
     // A session that never answers: every ask hangs until its deadline aborts it.
-    const fetcher = ((_url: string, init?: RequestInit): Promise<Response> => new Promise((_resolve, reject) => {
+    const asked: Array<[string, string]> = [];
+    const fetcher = ((url: string, init?: RequestInit): Promise<Response> => new Promise((_resolve, reject) => {
+      asked.push([init?.method ?? 'GET', new URL(url).search.replace(/&token=.*/, '')]);
       init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
     })) as typeof fetch;
     const row = transfer_watch('big.dcm', 'vfs?path=%2Fbig.dcm&token=t', 'dl-silent1', fetcher);
@@ -55,6 +57,9 @@ describe('a transfer row never freezes', () => {
     expect(row.element.querySelector('.transfer-words')?.textContent).toBe('LOST TOUCH WITH THE SESSION · STILL ASKING');
     (row.element.querySelector('.transfer-action') as HTMLButtonElement).click();
     expect(row.element.querySelector('.transfer-words')?.textContent).toBe('CANCELLING');
+    // A stop changes something and is asked by POST; progress is a read.
+    expect(asked[asked.length - 1]).toEqual(['POST', '?cancel=dl-silent1']);
+    expect(asked.filter(([, what]: [string, string]): boolean => what.startsWith('?progress=')).every(([method]: [string, string]): boolean => method === 'GET')).toBe(true);
     await jest.advanceTimersByTimeAsync(5100);
     expect(row.element.querySelector('.transfer-words')?.textContent).toBe('THE CANCEL GOT NO ANSWER FROM THE SESSION · PRESS CANCEL AGAIN');
     row.stop();

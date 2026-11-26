@@ -54,6 +54,76 @@ export class HitLimit {
 }
 
 /**
+ * A count of tries that failed, per key, in a sliding span.
+ *
+ * A try is taken up when it begins and given back when it turns out well,
+ * so only failures stay counted; and because it is taken up before its
+ * outcome is known, tries made all at once are counted while they are
+ * still in the air, and cannot all get through on a count that has not
+ * caught up with them.
+ */
+export class AttemptLimit {
+  private readonly tries: Map<string, number[]> = new Map();
+  private readonly allowed: number;
+  private readonly spanMs: number;
+  private readonly now: () => number;
+
+  /**
+   * @param allowed - The failed tries one key may hold in the span.
+   * @param spanMs - The span, in ms.
+   * @param now - The clock, in ms; the system's by default.
+   */
+  constructor(allowed: number, spanMs: number, now: () => number = Date.now) {
+    this.allowed = allowed;
+    this.spanMs = spanMs;
+    this.now = now;
+  }
+
+  /** The tries of a key still inside the span. */
+  private recent_read(key: string): number[] {
+    const at: number = this.now();
+    return (this.tries.get(key) ?? []).filter((one: number): boolean => at - one < this.spanMs);
+  }
+
+  /**
+   * How long a key must wait before it may try again.
+   *
+   * @param key - Who is trying (an address, a name).
+   * @returns Zero when it may try now; otherwise the whole seconds to wait.
+   */
+  public wait_read(key: string): number {
+    const recent: number[] = this.recent_read(key);
+    if (recent.length < this.allowed) return 0;
+    return Math.max(1, Math.ceil(((recent[0] as number) + this.spanMs - this.now()) / 1000));
+  }
+
+  /**
+   * Takes up a try for a key, before its outcome is known.
+   *
+   * @param key - Who is trying.
+   */
+  public try_begin(key: string): void {
+    const recent: number[] = this.recent_read(key);
+    recent.push(this.now());
+    this.tries.delete(key);
+    this.tries.set(key, recent);
+    while (this.tries.size > MEMORY_CAP) this.tries.delete(this.tries.keys().next().value as string);
+  }
+
+  /**
+   * Gives a try back: it did not fail.
+   *
+   * @param key - Who tried.
+   */
+  public try_forgive(key: string): void {
+    const recent: number[] = this.recent_read(key);
+    recent.pop();
+    if (recent.length === 0) this.tries.delete(key);
+    else this.tries.set(key, recent);
+  }
+}
+
+/**
  * A short memory of a verdict, keyed by the hash of what was presented, so
  * the credentials themselves are never held.
  */
