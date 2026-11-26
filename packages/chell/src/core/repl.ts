@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import chalk from 'chalk';
 import { session } from '@fnndsc/brasa';
 import { settings } from '../config/settings.js';
+import { history_appendPrivate, history_tighten, historyFile_resolve, historyLine_redact } from './history.js';
 import { sessionPrompt_render } from './prompt/session.js';
 import { surface_set } from '@fnndsc/brasa';
 import { cliSurface_create, type BytesFetch } from './cliSurface.js';
@@ -286,7 +287,8 @@ export class REPL {
    * Loads command history from file.
    */
   private async history_load(): Promise<void> {
-    const file: string = settings.config.historyFile;
+    const file: string = historyFile_resolve(settings.config.historyFile);
+    history_tighten(file);
     if (fs.existsSync(file)) {
       try {
         const content: string = await fs.promises.readFile(file, 'utf-8');
@@ -306,9 +308,12 @@ export class REPL {
    */
   private async history_append(line: string): Promise<void> {
     if (!line.trim()) return;
-    const file: string = settings.config.historyFile;
+    const kept: string = historyLine_redact(line);
+    // The reader's own recall holds the line as typed; it keeps what the file keeps.
+    const recall: unknown = Reflect.get(this.rl, 'history');
+    if (kept !== line && Array.isArray(recall) && recall[0] === line) recall[0] = kept;
     try {
-      await fs.promises.appendFile(file, line + '\n');
+      await history_appendPrivate(historyFile_resolve(settings.config.historyFile), kept);
     } catch (e: unknown) {
       // Silently fail if history cannot be saved
     }

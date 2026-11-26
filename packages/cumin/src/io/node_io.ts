@@ -25,6 +25,15 @@ function nodeError_is(error: unknown): error is NodeJS.ErrnoException {
   );
 }
 
+/** A credential's file: its owner reads and writes it, nobody else anything. */
+const PRIVATE_FILE_MODE: number = 0o600;
+
+/** A credential's folder: its owner alone may enter it. */
+const PRIVATE_FOLDER_MODE: number = 0o700;
+
+/** The permission bits of anybody but the owner. */
+const OTHERS_MASK: number = 0o077;
+
 /**
  * NodeStorageProvider implements IStorageProvider using Node.js's native 'fs' module.
  * It handles file system operations for reading, writing, and removing files,
@@ -80,6 +89,48 @@ export class NodeStorageProvider implements IStorageProvider {
     } catch (error: unknown) {
       const message = nodeError_is(error) ? error.message : String(error);
       throw new Error(`Failed to write file ${resolvedPath}: ${message}`);
+    }
+  }
+
+  /**
+   * Writes a credential: the file at 0600 and its folder at 0700, whatever
+   * either was before. The mode given to `writeFile` applies only to a file
+   * it creates, so both are set again after.
+   *
+   * @param filepath - The file.
+   * @param data - Its text.
+   */
+  async writePrivate(filepath: string, data: string): Promise<void> {
+    const resolvedPath: string = this.resolvePath(filepath);
+    const dir: string = path.dirname(resolvedPath);
+    await this.mkdir(dir, { recursive: true });
+    try {
+      await fs.chmod(dir, PRIVATE_FOLDER_MODE);
+      await fs.writeFile(resolvedPath, data, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+      await fs.chmod(resolvedPath, PRIVATE_FILE_MODE);
+    } catch (error: unknown) {
+      const message = nodeError_is(error) ? error.message : String(error);
+      throw new Error(`Failed to write file ${resolvedPath}: ${message}`);
+    }
+  }
+
+  /**
+   * Makes a credential already on disk, and its folder, its owner's alone
+   * when any other reader could reach them.
+   *
+   * @param filepath - The file; a file that is not there is left alone.
+   */
+  async private_tighten(filepath: string): Promise<void> {
+    const resolvedPath: string = this.resolvePath(filepath);
+    try {
+      const file = await fs.stat(resolvedPath);
+      if ((file.mode & OTHERS_MASK) !== 0) await fs.chmod(resolvedPath, PRIVATE_FILE_MODE);
+      const dir: string = path.dirname(resolvedPath);
+      if (((await fs.stat(dir)).mode & OTHERS_MASK) !== 0) await fs.chmod(dir, PRIVATE_FOLDER_MODE);
+    } catch (error: unknown) {
+      if (nodeError_is(error) && error.code === "ENOENT") return;
+      const message = nodeError_is(error) ? error.message : String(error);
+      throw new Error(`Failed to make ${resolvedPath} private: ${message}`);
     }
   }
 

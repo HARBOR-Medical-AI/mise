@@ -450,10 +450,13 @@ export class ChRISConnection {
    * @param info - The string data to save.
    */
   private async token_saveToFile(file: string, info: string): Promise<void> {
+    const store: IStorageProvider = this.storageProvider!;
     try {
-      await this.storageProvider!.write(file, info || "");
+      // A token is a credential: its owner's alone on disk, where the store has such a notion.
+      if (store.writePrivate !== undefined) await store.writePrivate(file, info || "");
+      else await store.write(file, info || "");
     } catch (error: unknown) {
-      console.error("For info: ", info);
+      // What failed to be saved is never said: it is the token.
       console.error("Error saving to file ", file, ": ", error);
     }
   }
@@ -464,6 +467,8 @@ export class ChRISConnection {
    */
   private async token_load(): Promise<void> {
     try {
+      // A token saved before files were made private is made so when it is next read.
+      await this.storageProvider!.private_tighten?.(this.tokenFile);
       this.authToken = await this.storageProvider!.read(this.tokenFile);
     } catch (error: unknown) {
       // A missing token file is the normal logged-out state; any other read

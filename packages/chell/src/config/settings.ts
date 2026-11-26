@@ -68,6 +68,7 @@ const CONFIG_FILE: string = path.join(configDir_get(), 'settings.json');
  */
 export const settings: Settings = {
   config: {
+    // The name of old; the history itself is kept in a private place of the operator's (core/history.ts).
     historyFile: '.chell_history',
     historySize: 1000,
     promptTheme: 'default',

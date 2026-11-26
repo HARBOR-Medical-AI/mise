@@ -223,6 +223,22 @@ describe('persistent prompting (REPL interface)', () => {
     expect(writeSpy).toHaveBeenCalledWith('Password: ');
     expect(answer).toBe('secret');
   });
+
+  it('takes a hidden answer back out of the reader\'s recall, so the up arrow never brings a secret back', async () => {
+    const rl = {
+      history: ['an earlier line'],
+      _writeToOutput: jest.fn(),
+      // readline keeps the line it read before it hands it over, as the real one does.
+      question: jest.fn((_p: string, cb: (a: string) => void) => { rl.history.unshift('hunter2'); cb('hunter2'); }),
+    };
+    expect(await cliSurface_create(rl as unknown as import('readline').Interface).prompt({ message: 'Password: ', hidden: true })).toBe('hunter2');
+    expect(rl.history).toEqual(['an earlier line']);
+    // An empty answer was never kept, and nothing else is taken.
+    rl.question.mockImplementation((_p: string, cb: (a: string) => void) => { cb(''); });
+    await cliSurface_create(rl as unknown as import('readline').Interface).prompt({ message: 'Password: ', hidden: true });
+    expect(rl.history).toEqual(['an earlier line']);
+  });
+
 });
 
 describe('local editing', () => {

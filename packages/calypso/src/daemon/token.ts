@@ -34,6 +34,49 @@ export function token_writeFile(token: string, path: string): void {
   writeFileSync(path, `${token}\n`, { mode: 0o600 });
 }
 
+/** How a token is written into lines a daemon prints. */
+export interface TokenWords {
+  /** For a line that states the token. */
+  readonly token: string;
+  /** For the end of a web address: `?token=…`, or nothing. */
+  readonly query: string;
+  /** For a command line: `--token …`. */
+  readonly flag: string;
+  /** What to add after a web address that was printed without its token; empty when it carries it. */
+  readonly aside: string;
+}
+
+/**
+ * The words a printed line uses for a token: the token itself where the
+ * output is a terminal somebody is reading, and where it is kept, never the
+ * token, where the output is anything else.
+ *
+ * A daemon's banner is the one place its operator reads the token off the
+ * screen. The same lines sent to a file or a pipe (`> daemon.log`, a
+ * service's journal) are a credential in a log. There the lines name the
+ * berth's own record, which holds the token at mode 0600.
+ *
+ * @param token - The attach token.
+ * @param terminal - Whether the output is a terminal.
+ * @param kept - The path of the record that holds the token.
+ * @returns The words.
+ *
+ * @example
+ * ```ts
+ * const words: TokenWords = tokenWords_say(token, process.stdout.isTTY === true, berth_path(identity));
+ * console.log(`token: ${words.token}`);
+ * ```
+ */
+export function tokenWords_say(token: string, terminal: boolean, kept: string): TokenWords {
+  if (terminal) return { token, query: `?token=${token}`, flag: `--token ${token}`, aside: '' };
+  return {
+    token: `not printed, since this output is not a terminal; it is kept in ${kept}`,
+    query: '',
+    flag: `--token <the token kept in ${kept}>`,
+    aside: ` (its token is kept in ${kept})`,
+  };
+}
+
 /**
  * Compares a provided token against the expected one in constant time, so a
  * mismatch reveals nothing through timing. Unequal lengths fail fast (and are

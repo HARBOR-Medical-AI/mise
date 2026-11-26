@@ -20,7 +20,8 @@ import { daemon_launch, type DaemonLaunchInfo } from './daemon/launch.js';
 import { packageWebRoot_find } from './daemon/static.js';
 import { daemonConsole_run } from './daemon/consoleSession.js';
 import { hostControl_parseArgv, type HostControlPolicy } from './daemon/hostControl.js';
-import { LocalBerthResolver, berthUrl_isAlive, type Berth } from './daemon/berth.js';
+import { LocalBerthResolver, berth_path, berthUrl_isAlive, type Berth } from './daemon/berth.js';
+import { tokenWords_say, type TokenWords } from './daemon/token.js';
 
 /** The backends a test may ask the calypso command to host instead of ChRIS. */
 const TEST_BACKENDS: ReadonlyArray<string> = ['null'];
@@ -124,8 +125,10 @@ async function berths_print(): Promise<void> {
   for (const berth of berths) {
     const web: string = berth.url.replace(/^ws/, 'http');
     console.log(chalk.bold.cyan(berth.identity));
-    console.log(chalk.green(`  ARGUS:   ${web}/?token=${berth.token}`));
-    console.log(chalk.gray(`  attach:  chell --remote --attach ${berth.url} --token ${berth.token}`));
+    // Each berth's token is printed to a terminal and, anywhere else, named by its own record.
+    const words: TokenWords = tokenWords_say(berth.token, process.stdout.isTTY === true, berth_path(berth.identity));
+    console.log(chalk.green(`  ARGUS:   ${web}/${words.query}${words.aside}`));
+    console.log(chalk.gray(`  attach:  chell --remote --attach ${berth.url} ${words.flag}`));
   }
 }
 

@@ -131,6 +131,10 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
   return new Promise((resolve: (answer: string) => void) => {
     rl.question('', (answer: string) => {
       Reflect.set(rl, '_writeToOutput', originalWrite);
+      // readline keeps every line it reads for recall, a hidden one included:
+      // a secret is taken out again, so the up arrow never brings it back.
+      const recall: unknown = Reflect.get(rl, 'history');
+      if (answer !== '' && Array.isArray(recall) && recall[0] === answer) recall.shift();
       terminalState_mark('busy');
       process.stdout.write('\n');
       resolve(answer.trim());

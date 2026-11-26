@@ -89,6 +89,42 @@ afterEach(() => {
   errSpy.mockRestore();
 });
 
+describe('a token on disk is its owner\'s alone', () => {
+  it('is written through the store\'s private write when it has one, and tightened before it is read', async () => {
+    const { mkdtempSync, statSync, writeFileSync, chmodSync, mkdirSync, rmSync, readFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { NodeStorageProvider } = await import('../src/io/node_io');
+    const root: string = mkdtempSync(join(tmpdir(), 'cumin-token-'));
+    const mode_of = (target: string): number => statSync(target).mode & 0o777;
+    try {
+      const store = new NodeStorageProvider();
+      const file: string = join(root, 'context', 'user_token.txt');
+      await store.writePrivate(file, 'TOKEN');
+      expect(readFileSync(file, 'utf8')).toBe('TOKEN');
+      expect(mode_of(file)).toBe(0o600);
+      expect(mode_of(join(root, 'context'))).toBe(0o700);
+      // One written before, readable by anyone, is made private by a write and by a tighten alike.
+      const old: string = join(root, 'old', 'user_token.txt');
+      mkdirSync(join(root, 'old'), { mode: 0o755 });
+      writeFileSync(old, 'OLD', { mode: 0o644 });
+      chmodSync(join(root, 'old'), 0o755);
+      chmodSync(old, 0o644);
+      await store.private_tighten(old);
+      expect(mode_of(old)).toBe(0o600);
+      expect(mode_of(join(root, 'old'))).toBe(0o700);
+      chmodSync(old, 0o644);
+      await store.writePrivate(old, 'NEW');
+      expect(mode_of(old)).toBe(0o600);
+      expect(readFileSync(old, 'utf8')).toBe('NEW');
+      // A file that is not there is no error.
+      await expect(store.private_tighten(join(root, 'none', 'x'))).resolves.toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('connection_connect', () => {
   it('authenticates, saves the token, and returns it', async () => {
     const store: FakeStore = { files: {} };
@@ -101,6 +137,28 @@ describe('connection_connect', () => {
     expect(mockAuthToken).toHaveBeenCalledWith('https://cube/api/v1/auth-token/', 'chris', 'pw');
     expect(store.files['/cfg/token']).toBe('TOKEN');
     expect(conn.connection_isConnected()).toBe(true);
+  });
+
+  it('saves the token through the store\'s private write when the store has one, and never says the token when the save fails', async () => {
+    const store: FakeStore = { files: {} };
+    const privately: string[] = [];
+    const conn: ChRISConnection = connection_make(store);
+    const storage = (conn as unknown as { storageProvider: IStorageProvider & { writePrivate?: (path: string, data: string) => Promise<void> } }).storageProvider;
+    storage.writePrivate = async (path: string, data: string): Promise<void> => { privately.push(path); store.files[path] = data; };
+    mockAuthToken.mockResolvedValue('TOKEN-SECRET');
+    await conn.connection_connect({ user: 'chris', password: 'pw', debug: false, url: 'https://cube/api/v1/' });
+    expect(privately).toEqual(['/cfg/token']);
+    expect(storage.write).not.toHaveBeenCalledWith('/cfg/token', expect.anything());
+    storage.writePrivate = async (): Promise<void> => { throw new Error('disk full'); };
+    const said: string[] = [];
+    const spy = jest.spyOn(console, 'error').mockImplementation((...parts: unknown[]): void => { said.push(parts.map(String).join(' ')); });
+    try {
+      await conn.connection_connect({ user: 'chris', password: 'pw', debug: false, url: 'https://cube/api/v1/' });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(said.join('\n')).toContain('disk full');
+    expect(said.join('\n')).not.toContain('TOKEN-SECRET');
   });
 
   it('returns null when no token is issued', async () => {
