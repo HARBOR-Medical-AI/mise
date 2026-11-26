@@ -19,11 +19,20 @@ import * as path from 'node:path';
 /** Where a name belongs under a folder, or why it has no place there. */
 export type HostPlace =
   | { readonly ok: true; readonly place: string }
-  /** `unseen` is set when the name was not refused for what it says but because a part of its way could not be looked at: a failure of this host, not of the name. */
-  | { readonly ok: false; readonly reason: string; readonly unseen?: true };
+  /**
+   * `unseen` is set when the name was not refused for what it says but because a part of its way could not be
+   * looked at: a failure of this host, not of the name. It is the file system's own code for why (`EACCES`
+   * for a folder that may not be entered, `ENOTDIR` for a file standing where a folder was wanted).
+   */
+  | { readonly ok: false; readonly reason: string; readonly unseen?: string };
 
 /** A path that could not be looked at: neither there nor proved missing. */
-class Uninspectable extends Error {}
+class Uninspectable extends Error {
+  /** The file system's code for why. */
+  constructor(public readonly code: string) {
+    super(code);
+  }
+}
 
 /**
  * Whether a path exists, as itself: a link counts, wherever it leads.
@@ -54,7 +63,7 @@ function path_stands(target: string): boolean {
  * @param target - An absolute path.
  * @returns The path with every link in its existing part followed; `dangling` when a link in it leads nowhere; `uninspectable` when a part of it could not be looked at.
  */
-function existingPart_resolve(target: string): string | { readonly failed: 'dangling' | 'uninspectable' } {
+function existingPart_resolve(target: string): string | { readonly failed: 'dangling' | 'uninspectable'; readonly code?: string } {
   let existing: string = target;
   const rest: string[] = [];
   try {
@@ -64,13 +73,14 @@ function existingPart_resolve(target: string): string | { readonly failed: 'dang
       rest.unshift(path.basename(existing));
       existing = parent;
     }
-  } catch {
-    return { failed: 'uninspectable' };
+  } catch (error: unknown) {
+    return { failed: 'uninspectable', code: error instanceof Uninspectable ? error.code : 'EIO' };
   }
   try {
     return path.join(realpathSync(existing), ...rest);
   } catch (error: unknown) {
-    return { failed: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'dangling' : 'uninspectable' };
+    const code: string = (error as NodeJS.ErrnoException).code ?? 'EIO';
+    return code === 'ENOENT' ? { failed: 'dangling' } : { failed: 'uninspectable', code };
   }
 }
 
@@ -127,7 +137,7 @@ export function wireName_place(folder: string, name: string): HostPlace {
   for (const resolved of [realRoot, realPlace]) {
     if (typeof resolved === 'string') continue;
     if (resolved.failed === 'dangling') return { ok: false, reason: `${shown} passes through a link that leads nowhere` };
-    return { ok: false, reason: `${shown} passes through a place that could not be looked at`, unseen: true };
+    return { ok: false, reason: `${shown} passes through a place that could not be looked at (${resolved.code ?? 'EIO'})`, unseen: resolved.code ?? 'EIO' };
   }
   if (typeof realRoot !== 'string' || typeof realPlace !== 'string') return { ok: false, reason: `${shown} could not be placed` };
   if (!path_within(realPlace, realRoot) || realPlace === realRoot) {

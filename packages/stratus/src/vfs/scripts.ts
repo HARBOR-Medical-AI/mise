@@ -35,6 +35,24 @@ interface Placed {
 interface Unseen {
   /** Why. */
   readonly unseen: string;
+  /** The file system's code for it. */
+  readonly code: string;
+}
+
+/**
+ * The failure a path whose way could not be looked at answers with: the
+ * file system's own kind, in words. Not being allowed in is permission
+ * denied; a file standing where a folder was wanted is not a directory;
+ * anything else is the host's failure.
+ *
+ * @param pathStr - The path asked for.
+ * @param placed - Why its way could not be looked at.
+ * @returns The failure.
+ */
+function unseen_fail(pathStr: string, placed: Unseen): VfsOutcome<never> {
+  if (placed.code === 'EACCES' || placed.code === 'EPERM') return vfs_fail('EACCES', `${pathStr}: permission denied on the session's host`);
+  if (placed.code === 'ENOTDIR') return vfs_fail('ENOTDIR', `${pathStr}: a part of the path is a file, not a folder`);
+  return vfs_fail('EIO', `${pathStr}: could not be looked at on the session's host (${placed.code})`);
 }
 
 /** Whether a placing came back as a way that could not be looked at. */
@@ -65,12 +83,13 @@ export class ScriptsProvider implements VFSProvider {
     const [first, ...rest] = segments;
     if (first === undefined) return null;
     if (rest.some((segment: string): boolean => segment === '..' || segment === '.git')) return 'unknown';
-    if (first === MINE) return this.within_place(this.library.mine_derive(), rest, true);
-    const source: ScriptSource | null = this.library.source_read(first);
-    if (source === null) return 'unknown';
-    // A source whose configured folder does not stay inside its clone shows nothing.
-    const base: string | null = this.library.shown_place(source);
-    return base === null ? 'unknown' : this.within_place(base, rest, false);
+    const source: ScriptSource | null = first === MINE ? null : this.library.source_read(first);
+    if (first !== MINE && source === null) return 'unknown';
+    // The folder itself is placed inside the library's root first: this host's own, or a source's clone and
+    // the folder configured in it. One that leads out shows nothing; one that could not be looked at says so.
+    const base: HostPlace = source === null ? this.library.mine_place() : this.library.shown_place(source);
+    if (!base.ok) return base.unseen !== undefined ? { unseen: base.reason, code: base.unseen } : 'unknown';
+    return this.within_place(base.place, rest, source === null);
   }
 
   /**
@@ -84,7 +103,7 @@ export class ScriptsProvider implements VFSProvider {
     const placed: HostPlace = wireName_place(base, rest.join('/'));
     if (placed.ok) return { base, disk: placed.place, writable };
     // A way that could not be looked at is a failure of this host, said as one: not a path that is not there.
-    return placed.unseen === true ? { unseen: placed.reason } : 'unknown';
+    return placed.unseen !== undefined ? { unseen: placed.reason, code: placed.unseen } : 'unknown';
   }
 
   private item_make(name: string, disk: string, type: string): VFSItem {
@@ -101,14 +120,21 @@ export class ScriptsProvider implements VFSProvider {
     return { name, type, size, owner: this.owner(), date };
   }
 
+  /** The folder a source's row is read from for its size and date: its shown folder, else the library's root, never a path outside it. */
+  private shown_disk(source: ScriptSource): string {
+    const shown: HostPlace = this.library.shown_place(source);
+    return shown.ok ? shown.place : this.library.root;
+  }
+
   private root_list(): VFSItem[] {
     const sources: VFSItem[] = this.library.sources_list().map((source: ScriptSource): VFSItem => ({
-      ...this.item_make(source.name, this.library.shown_place(source) ?? this.library.clone_derive(source.name), SOURCE_TYPE),
+      ...this.item_make(source.name, this.shown_disk(source), SOURCE_TYPE),
       title: `${source.repo}${source.folder !== undefined && source.folder !== '' ? ` ${source.folder}` : ''}`,
       // Where the clone stands, read from git: its head's commit, date and subject, so a pull's receipt is the head moving.
       status: this.library.cloned(source.name) ? `cloned · at ${this.library.head_read(source.name)}` : 'not cloned',
     }));
-    return [...sources, { ...this.item_make(MINE, this.library.mine_derive(), 'dir'), title: 'this host\'s own scripts' }];
+    const mine: HostPlace = this.library.mine_place();
+    return [...sources, { ...this.item_make(MINE, mine.ok ? mine.place : this.library.root, 'dir'), title: 'this host\'s own scripts' }];
   }
 
   private folder_list(disk: string): VFSItem[] {
@@ -146,7 +172,8 @@ export class ScriptsProvider implements VFSProvider {
       return Err();
     }
     if (unseen_is(placed)) {
-      errorStack.stack_push('error', `Cannot list ${pathStr}: permission denied on the session's host (${placed.unseen})`);
+      const failed: VfsOutcome<never> = unseen_fail(pathStr, placed);
+      errorStack.stack_push('error', `Cannot list ${failed.ok ? pathStr : (failed.reason ?? pathStr)}`);
       return Err();
     }
     if (!fs.existsSync(placed.disk)) {
@@ -176,7 +203,7 @@ export class ScriptsProvider implements VFSProvider {
     const placed = this.place(this.segments_split(pathStr));
     if (placed === null) return vfs_fail('EISDIR');
     if (placed === 'unknown') return vfs_fail('ENOENT');
-    if (unseen_is(placed)) return vfs_fail('EACCES', `${pathStr}: permission denied on the session's host (${placed.unseen})`);
+    if (unseen_is(placed)) return unseen_fail(pathStr, placed);
     // The file system's own answer is kept: a script that may not be read is not a script that is not there.
     try {
       if (fs.statSync(placed.disk).isDirectory()) return vfs_fail('EISDIR');
@@ -193,7 +220,7 @@ export class ScriptsProvider implements VFSProvider {
     const segments: string[] = this.segments_split(pathStr);
     const placed = this.place(segments);
     if (placed === null || placed === 'unknown') return vfs_fail('ENOENT');
-    if (unseen_is(placed)) return vfs_fail('EACCES', `${pathStr}: permission denied on the session's host (${placed.unseen})`);
+    if (unseen_is(placed)) return unseen_fail(pathStr, placed);
     if (!placed.writable) return vfs_fail('EROFS', `${segments[0]} is a source's clone: the way back into it is git; write under /scripts/${MINE}/`);
     if (segments.length < 2) return vfs_fail('EISDIR');
     fs.mkdirSync(path.dirname(placed.disk), { recursive: true, mode: 0o700 });

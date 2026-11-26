@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { stratusBackend_make } from '../src/backend.js';
 import { ClusterStore } from '../src/cluster/state.js';
-import { ScriptLibrary, git_run, scriptsRoot_derive } from '../src/scripts/library.js';
+import { ScriptLibrary, git_run, networkProtocols_allow, scriptsRoot_derive } from '../src/scripts/library.js';
 import { scripts_run } from '../src/commands/scripts.js';
 import { ScriptsProvider } from '../src/vfs/scripts.js';
 import { backend_install, HeadlessSurface, manifestText_read, surface_set } from '@fnndsc/brasa/core';
@@ -332,6 +332,87 @@ describe('the library stays inside itself', () => {
     }
   });
 
+  it('with the tier off, a clone folder or this host\'s own folder that is a link out of the library is not the library\'s: nothing is read through it and git is not run in it', async () => {
+    const scripts: string = join(root, 'state', 'scripts');
+    mkdirSync(scripts, { recursive: true });
+    // What stands at a source's clone name, and at `mine`, each lead outside the library's root.
+    symlinkSync(join(root, 'outside'), join(scripts, 'linked'));
+    symlinkSync(join(root, 'outside'), join(scripts, 'mine'));
+    mkdirSync(join(root, 'config'), { recursive: true });
+    writeFileSync(library.sourcesFile, JSON.stringify({ sources: [{ name: 'linked', repo: 'https://git.example.invalid/x/y.git' }] }));
+    hostDisk_set(false);
+    const ran: string[][] = [];
+    const watched = new ScriptLibrary(join(root, 'config'), scripts, (args: ReadonlyArray<string>, cwd?: string) => { ran.push([...args, cwd ?? '']); return { ok: true, text: '' }; });
+    const mount = new ScriptsProvider(watched, (): string => 'rudolph');
+    for (const at of ['/scripts/linked/secret.txt', '/scripts/mine/secret.txt']) {
+      expect(await mount.readBinary(at)).toMatchObject({ ok: false, errno: 'ENOENT' });
+      expect(await mount.absence_prove(at)).toBe(false);
+    }
+    expect((await mount.list('/scripts/linked')).ok).toBe(false);
+    expect(await mount.write('/scripts/mine/new.mise', 'x')).toMatchObject({ ok: false });
+    expect(existsSync(join(root, 'outside', 'new.mise'))).toBe(false);
+    // Pulling it, and adding a source over a standing link of that name: git is never run.
+    expect(plain((await scripts_run({ library: watched }, ['pull', 'linked'])).renderedErr ?? '')).toContain('linked: its clone is not inside the library');
+    writeFileSync(watched.sourcesFile, JSON.stringify({ sources: [] }));
+    expect(plain((await scripts_run({ library: watched }, ['add', 'linked', 'https://git.example.invalid/x/y.git'])).renderedErr)).toContain('linked: its clone would not be inside the library');
+    expect(ran).toEqual([]);
+    // Removing a source whose clone name is such a link forgets it and leaves what the link points at.
+    writeFileSync(watched.sourcesFile, JSON.stringify({ sources: [{ name: 'linked', repo: 'https://git.example.invalid/x/y.git' }] }));
+    expect(plain((await scripts_run({ library: watched }, ['remove', 'linked'])).rendered)).toContain('was left');
+    expect(readFileSync(secret, 'utf8')).toBe('not a script: a file elsewhere on this host\n');
+  });
+
+  it('tells a configured folder that may not be entered from one whose parent is a file, and both from one that is not there', async () => {
+    if (process.getuid?.() === 0) return;
+    expect((await scripts_run({ library }, ['add', 'leaky', repo])).renderedErr ?? '').toBe('');
+    const clone: string = library.clone_derive('leaky');
+    mkdirSync(join(clone, 'shut', 'inner'), { recursive: true });
+    writeFileSync(join(clone, 'shut', 'inner', 'x.mise'), 'net new n\n');
+    writeFileSync(library.sourcesFile, JSON.stringify({ sources: [
+      { name: 'leaky', repo, folder: 'shut/inner' },
+    ] }));
+    const mount = new ScriptsProvider(library, (): string => 'rudolph');
+    chmodSync(join(clone, 'shut'), 0o000);
+    try {
+      const denied = await mount.readBinary('/scripts/leaky/x.mise');
+      expect(denied).toMatchObject({ ok: false, errno: 'EACCES' });
+      expect(denied.ok === false && denied.reason).toBe("/scripts/leaky/x.mise: permission denied on the session's host");
+      expect(await mount.absence_prove('/scripts/leaky/x.mise')).toBe(false);
+    } finally {
+      chmodSync(join(clone, 'shut'), 0o700);
+    }
+    // A file where a folder of the configured path was wanted: not a directory, and not permission denied.
+    writeFileSync(library.sourcesFile, JSON.stringify({ sources: [{ name: 'leaky', repo, folder: 'real/ok.mise/inner' }] }));
+    const notdir = await mount.readBinary('/scripts/leaky/x.mise');
+    expect(notdir).toMatchObject({ ok: false, errno: 'ENOTDIR' });
+    expect(notdir.ok === false && notdir.reason).toBe('/scripts/leaky/x.mise: a part of the path is a file, not a folder');
+    expect(await mount.absence_prove('/scripts/leaky/x.mise')).toBe(false);
+    // And a configured folder that is simply not there.
+    writeFileSync(library.sourcesFile, JSON.stringify({ sources: [{ name: 'leaky', repo, folder: 'nowhere' }] }));
+    expect(await mount.readBinary('/scripts/leaky/x.mise')).toMatchObject({ ok: false, errno: 'ENOENT' });
+    expect(await mount.absence_prove('/scripts/leaky/x.mise')).toBe(true);
+  });
+
+  it('holds git to the network within what the operator already allows, never widening it', () => {
+    expect(networkProtocols_allow(undefined)).toBe('https:ssh:git:http:ftp:ftps');
+    // An HTTPS-only host stays HTTPS-only: SSH is not switched on for it.
+    expect(networkProtocols_allow('https')).toBe('https');
+    expect(networkProtocols_allow('file:https:git')).toBe('https:git');
+    // A policy of local transports alone leaves nothing a nobody's-disk session may use.
+    expect(networkProtocols_allow('file:ext')).toBe('');
+    expect(networkProtocols_allow('')).toBe('');
+    const saved: string | undefined = process.env['GIT_ALLOW_PROTOCOL'];
+    try {
+      process.env['GIT_ALLOW_PROTOCOL'] = 'https';
+      // git:// would be a network transport, and this host's policy does not allow it.
+      const refused = git_run(['ls-remote', 'git://git.example.invalid/x.git'], undefined, true);
+      expect(refused.ok).toBe(false);
+      expect(refused.text).toMatch(/not allowed|transport/);
+    } finally {
+      if (saved === undefined) delete process.env['GIT_ALLOW_PROTOCOL']; else process.env['GIT_ALLOW_PROTOCOL'] = saved;
+    }
+  });
+
   it('keeps the file system\'s own answer for a script that may not be read', async () => {
     if (process.getuid?.() === 0) return;
     const mine: string = library.mine_derive();
@@ -435,6 +516,16 @@ describe('play over stratus\'s own files, with the files tier on', () => {
     } finally {
       chmodSync(closed, 0o700);
     }
+  });
+
+  it('a script under a path where a file stands for a folder is said as not a directory, and the disk is read zero times', async () => {
+    await backend_set(new FakeDriver(fakeCloud_sample()));
+    writeFileSync(join(library.mine_derive(), 'afile'), 'x');
+    const answer = await manifestText_read('/scripts/mine/afile/x.mise', disk_read);
+    expect(answer.ok).toBe(false);
+    expect(answer.ok === false && answer.reason).toContain('/scripts/mine/afile/x.mise: a part of the path is a file, not a folder');
+    expect(answer.ok === false && answer.reason).not.toContain('permission denied');
+    expect(diskReads).toEqual([]);
   });
 
   it('an ambiguous name in the tenancy is said as ambiguous, and the disk is read zero times', async () => {
