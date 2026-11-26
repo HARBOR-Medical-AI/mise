@@ -298,6 +298,8 @@ export class ScriptScreen {
   protected stoodFor: Map<number, string> = new Map();
   /** The script as it was read (or last saved): an edit is said against it. */
   protected readText: string = '';
+  /** What was typed into each option field, as typed: a field drawn again is given it back while the line still says it. */
+  protected readonly typed: Map<string, string> = new Map<string, string>();
   /** The last SAVE, where and when: its receipt stands on the seat until the next edit. */
   protected saved: { path: string; at: string; view: string } | null = null;
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
@@ -1527,7 +1529,13 @@ export class ScriptScreen {
     const input: HTMLInputElement = el('input', 'tdc-name-input');
     input.id = `ss-${word.slice(2)}-${line.number}`;
     field.setAttribute('for', input.id);
-    input.value = lineOption_get(line.text, word) ?? '';
+    // The line holds the option without the spaces around it, since everything that reads the line (RUN, SAVE,
+    // the standing, a plan) reads it there. The field holds what was typed: if the seat is drawn again while
+    // the hand is on its way to the next word, the field comes back as it was left, space and all, for as
+    // long as what was typed is still what the line says.
+    const held: string = lineOption_get(line.text, word) ?? '';
+    const typed: string | undefined = this.typed.get(input.id);
+    input.value = typed !== undefined && typed.trim() === held ? typed : held;
     input.placeholder = placeholder;
     input.spellcheck = false;
     input.autocomplete = 'off';
@@ -1536,6 +1544,7 @@ export class ScriptScreen {
       // The line takes the value without the spaces around it; the field keeps what was typed, so a space
       // typed on the way to the next word is still there for that word to follow.
       line.text = lineOption_set(line.text, word, input.value.trim());
+      this.typed.set(input.id, input.value);
       this.edited = true;
       // SAVE, the difference against what stands and the line's state follow the hand, each where it stands:
       // the field is not drawn again.
@@ -1549,11 +1558,44 @@ export class ScriptScreen {
   protected lineShown_redraw(line: ScriptLine): void {
     const text: HTMLElement | null = this.parts.body.querySelector(`.ss-line[data-line='${line.number}'] .ss-line-text`);
     if (text !== null) text.textContent = line.text;
+    // Each pill says what pressing it would do as it said when it was drawn: refused, asking first, or sending.
     const run: HTMLButtonElement | null = this.parts.body.querySelector(`.ss-run[data-line='${line.number}']`);
-    if (run !== null) run.title = `sends: ${line.text}`;
+    if (run !== null) run.title = this.runTitle_derive(line.text);
     const build: HTMLButtonElement | null = this.parts.body.querySelector(`.ss-build[data-line='${line.number}']`);
-    if (build !== null) build.title = `sends: ${line.text}, then ${build.dataset['build'] ?? ''}`;
+    if (build !== null) build.title = this.buildTitle_derive(line.text, build.dataset['build'] ?? '');
     this.header_draw();
+  }
+
+  /**
+   * What a RUN pill says pressing it would do with a line, under the mode
+   * the screen is in: refused, asking for the right to first, or sending.
+   *
+   * @param text - The line the pill sends.
+   * @returns The pill's title.
+   *
+   * @example
+   * run.title = this.runTitle_derive(line.text);
+   */
+  protected runTitle_derive(text: string): string {
+    const hold: ReadHold = this.hold_derive(text);
+    return hold === 'held' ? `refused: ${READ_HELD}` : hold === 'asks' ? `${READ_ASKS}: ${text}` : `sends: ${text}`;
+  }
+
+  /**
+   * What a BUILD pill says pressing it would do: the declaration sent and
+   * then the build, or the refusal, as the build's line stands under the
+   * mode the screen is in.
+   *
+   * @param declared - The declaring line.
+   * @param built - The build's line.
+   * @returns The pill's title.
+   *
+   * @example
+   * build.title = this.buildTitle_derive(declared.text, built.text);
+   */
+  protected buildTitle_derive(declared: string, built: string): string {
+    const hold: ReadHold = this.hold_derive(built);
+    return hold === 'held' ? `refused: ${READ_HELD}` : `sends: ${declared}, then ${built}${hold === 'asks' ? ` (${READ_ASKS})` : ''}`;
   }
 
   protected runRow_make(step: ScriptStep, line: ScriptLine, tone: 'plain' | 'bill' = 'plain', extra: HTMLElement[] = [], word: string = 'RUN'): HTMLElement {
@@ -1563,7 +1605,7 @@ export class ScriptScreen {
     const run: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone} ss-run${hold === 'asks' ? ' tdc-pill-asks' : ''}`, hold === 'held' ? `${word} · REFUSED` : word);
     run.type = 'button';
     run.dataset['line'] = String(line.number);
-    run.title = hold === 'held' ? `refused: ${READ_HELD}` : hold === 'asks' ? `${READ_ASKS}: ${line.text}` : `sends: ${line.text}`;
+    run.title = this.runTitle_derive(line.text);
     run.disabled = hold === 'held' || this.acting_is();
     run.addEventListener('click', (): void => { this.hooks.voice.pill(word); void this.line_sendRaised(line.text, step.key); });
     commands.append(run, ...extra);
@@ -1605,7 +1647,7 @@ export class ScriptScreen {
     build.type = 'button';
     build.dataset['line'] = String(declared.number);
     build.dataset['build'] = built.text;
-    build.title = hold === 'held' ? `refused: ${READ_HELD}` : `sends: ${declared.text}, then ${built.text}${hold === 'asks' ? ` (${READ_ASKS})` : ''}`;
+    build.title = this.buildTitle_derive(declared.text, built.text);
     build.disabled = hold === 'held' || this.acting_is();
     build.addEventListener('click', (): void => { this.hooks.voice.pill('BUILD'); void this.declaredBuild_send(declared.text, built.text, step.key); });
     commands.append(build, ...extra);
@@ -2119,6 +2161,7 @@ export class ScriptScreen {
     const line: ScriptLine | undefined = step.lines[0];
     if (line === undefined) return side;
     side.append(this.chrisPlanNote_make(line));
+    side.append(this.editedSlot_make());
     return side;
   }
 
@@ -2151,6 +2194,7 @@ export class ScriptScreen {
     side.append(this.pairs_make([['CUBE', `none deployed on ${vm}`], ['PORTER', 'none deployed'], ['ACCOUNTS', 'none: CUBE is not there']]));
     const line: ScriptLine | undefined = step.lines[0];
     if (line !== undefined) side.append(this.chrisPlanNote_make(line));
+    side.append(this.editedSlot_make());
     return side;
   }
 
@@ -2181,6 +2225,27 @@ export class ScriptScreen {
   }
 
   /**
+   * Shows a plan that has come back, where the seat says what a deploy
+   * would do, and nowhere else: the seat is not drawn again, so a field
+   * being typed in while the plan was read is left as it is. A plan for a
+   * text the line has since moved on from is kept for when the line reads
+   * so again, and shows nothing now.
+   *
+   * @param text - The deploy line the plan was read for.
+   *
+   * @example
+   * this.chrisPlans.set(text, plan);
+   * this.chrisPlan_show(text);
+   */
+  protected chrisPlan_show(text: string): void {
+    const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
+    const line: ScriptLine | undefined = step?.lines[0];
+    const note: Element | null = this.parts.body.querySelector('.ss-note-deploy');
+    if (line === undefined || note === null || line.text !== text) return;
+    note.replaceWith(this.chrisPlanNote_make(line));
+  }
+
+  /**
    * Asks what a deploy line would do, once per text of it.
    *
    * @param text - The `chris deploy` line.
@@ -2189,7 +2254,7 @@ export class ScriptScreen {
     this.chrisPlans.set(text, null);
     void this.hooks.ask(`${text} --plan`).then((answer: QuietAnswer): void => {
       this.chrisPlans.set(text, model_extract(answer, STRATUS_CHRIS_PLAN_MODEL_KIND, (data: unknown) => chrisPlanModelSchema.safeParse(data)));
-      this.draw();
+      this.chrisPlan_show(text);
     }, (): void => undefined);
   }
 

@@ -2310,6 +2310,19 @@ export class VmScreen extends ScriptScreen {
     this.header_draw();
   }
 
+  /**
+   * A plan that has come back, on the VM controller: its panes say what a
+   * deploy would do in places of their own (the CHRIS pane, its settings
+   * listing), which are drawn with the pane, so the pane is drawn again as
+   * it always was, whichever line the plan was read for.
+   *
+   * @example
+   * this.chrisPlan_show();
+   */
+  protected override chrisPlan_show(): void {
+    this.draw();
+  }
+
   /** The script's line as it will run: an edit not built yet never reads as done (the operator, 2026-11-06). */
   protected override lineBox_make(line: ScriptLine): HTMLElement {
     const box: HTMLElement = super.lineBox_make(line);
