@@ -351,12 +351,13 @@ describe('how often a password may be tried', () => {
     mixed.try_fail(taken(mixed, 'b'));
     // a cannot be dated (a try in the air); b is wholly gone at 70 s.
     expect(mixed.try_begin('c')).toEqual({ ok: false, wait: 60 });
-    // The try in the air ends as a failure of 0 s: a is gone at 60 s, sooner than was said, and the count
-    // works that out afresh once a key is let go, never later than it said.
+    // The try in the air ends as a failure of 0 s: a is now wholly gone at 60 s, sooner than b. What was
+    // worked out is discarded at that telling, and a new key is told the sooner moment and admitted at it.
     mixed.try_fail(air);
+    expect(mixed.try_begin('c')).toEqual({ ok: false, wait: 50 });
+    at = 59_999;
+    expect(mixed.try_begin('c')).toEqual({ ok: false, wait: 1 });
     at = 60_000;
-    expect(mixed.try_begin('c')).toEqual({ ok: false, wait: 10 });
-    at = 70_000;
     expect(mixed.try_begin('c').ok).toBe(true);
   });
 
@@ -372,6 +373,9 @@ describe('how often a password may be tried', () => {
     for (let n = 0; n < 20; n++) expect(hits.hit_take(`other${n}`)).toBe(50);
     expect(hits.hit_take('a')).toBe(0);
     expect(hits.hit_take('a')).toBe(50);
+    // a's accepted hit at 10 s moved when a is wholly aged out (70 s, as b): the answer follows it at once.
+    expect(hits.hit_take('c')).toBe(60);
+    for (let n = 0; n < 20; n++) expect(hits.hit_take(`again${n}`)).toBe(60);
     at = 60_000;
     // a's first hit has aged out but its second counts: still held. b's has not aged out either.
     expect(hits.hit_take('c')).toBe(10);

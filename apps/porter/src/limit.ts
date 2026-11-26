@@ -73,6 +73,8 @@ export class HitLimit {
     }
     recent.push(at);
     this.hits.set(client, recent);
+    // A hit taken moves when its client will be wholly aged out: what was worked out for a full table no longer holds.
+    this.fullUntil = 0;
     return 0;
   }
 }
@@ -168,8 +170,11 @@ export class AttemptLimit {
    * nobody can date, a short fixed wait after which to ask again.
    *
    * The table is walked once when it is found full; until the moment that
-   * walk worked out, or until a key is let go, a refusal is answered from
-   * that result and changes nothing.
+   * walk worked out, a refusal is answered from that result and changes
+   * nothing. Anything that moves when a key will be gone (a try taken up,
+   * a try told failed or forgiven, a key let go) discards the result, so
+   * the next refusal walks afresh and nobody is turned away past the
+   * moment a place came free.
    *
    * @param key - Who would try.
    * @returns Zero when the key is held already or there is room; otherwise the whole seconds to wait.
@@ -202,6 +207,8 @@ export class AttemptLimit {
     const counted: Attempt[] = this.counted_read(key);
     counted.push(attempt);
     this.tries.set(key, counted);
+    // A try taken up changes when its key will be gone: what was worked out for a full table no longer holds.
+    this.fullUntil = 0;
     return { ok: true, attempt };
   }
 
@@ -212,6 +219,9 @@ export class AttemptLimit {
    */
   public try_fail(attempt: Attempt): void {
     attempt.pending = false;
+    // A key that could not be dated while this try was in the air can be now, and may be gone sooner than
+    // was worked out: the next refusal walks afresh.
+    this.fullUntil = 0;
     this.counted_read(attempt.key);
   }
 
