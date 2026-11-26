@@ -31,7 +31,10 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { HostedEngine, CompletionResult } from './engine.js';
-import { staticRequest_handle, contentDisposition_format, contentType_derive } from './static.js';
+import { staticRequest_handle } from './static.js';
+import { vfsHeaders_build } from './vfsHeaders.js';
+import { attachRequest_refusal, attachOrigins_read } from './attachOrigin.js';
+import { UploadHold, upload_take, uploadCeiling_read, type UploadRefusal, type UploadTaken } from './uploadHold.js';
 import { token_matches } from './token.js';
 import { RequestBroker } from './broker.js';
 import { CONTRACT_VERSION } from '@fnndsc/menu';
@@ -252,6 +255,8 @@ export interface DaemonOptions {
   /** The session's backend id, reported on attach so a surface draws its composition. */
   backend?: string;
   webRoot?: string;
+  /** The most bytes of uploads held at once; `CALYPSO_UPLOAD_HELD`, else 512 MiB, when not given. */
+  uploadHeld?: number;
   /** The host-control tiers this daemon declares (empty or absent when off). */
   hostControl?: string[];
   /** The door a surface can be raised at with the person's password (`elevate`); absent, a session stays as it was started. */
@@ -393,6 +398,8 @@ export class CalypsoDaemon {
   private readonly shells: RequestBroker<number> = new RequestBroker<number>('h', 'surface disconnected before returning the shell result');
   /** The downloads this daemon is serving, for their progress (downloads.ts). */
   private readonly downloads: DownloadLedger = new DownloadLedger();
+  /** The bytes this daemon holds for uploads in flight, under its ceiling (uploadHold.ts). */
+  private readonly uploads: UploadHold;
   private readonly edits: RequestBroker<EditOutcome> = new RequestBroker<EditOutcome>('e', 'surface disconnected before returning the edit');
   /** Lines run by a surface's own language, by the surface that claims them. */
   private readonly surfaceLines: RequestBroker<{ rendered: string; status: 'ok' | 'error' }> = new RequestBroker<{ rendered: string; status: 'ok' | 'error' }>('l', 'the surface that answers for this line went away before answering');
@@ -419,6 +426,7 @@ export class CalypsoDaemon {
     this.stack = options.stack;
     this.backend = options.backend;
     this.webRoot = options.webRoot;
+    this.uploads = new UploadHold(options.uploadHeld ?? uploadCeiling_read(process.env));
     this.hostControl = options.hostControl ?? [];
     this.elevation = options.elevation;
     this.codeCheck = options.codeCheck;
@@ -568,7 +576,19 @@ export class CalypsoDaemon {
           response.end('not found');
         },
       );
-      const wss: WebSocketServer = new WebSocketServer({ server: httpServer });
+      // An attach from a browser says which page asked; only this daemon's own page, or one named by its
+      // operator, is taken (attachOrigin.ts). A program sends no origin and is asked for its token as ever.
+      // The names are read at each attach, so an operator's word is the word at the time it is asked.
+      const wss: WebSocketServer = new WebSocketServer({
+        server: httpServer,
+        verifyClient: (info: { origin?: string; req: IncomingMessage }): boolean => {
+          // Read from the request's own headers, not from what the socket library chose among them: version
+          // 13 only, one place for the origin, and two `Origin` lines (joined by a comma) are no origin.
+          const refusal: string | null = attachRequest_refusal(info.req.headers, attachOrigins_read(process.env));
+          if (refusal !== null) console.error(`[calypso] refused an attach: ${refusal}`);
+          return refusal === null;
+        },
+      });
       wss.on('connection', (socket: WebSocket, request: IncomingMessage) => this.connection_handle(socket, request));
       httpServer.on('error', reject);
       httpServer.listen(this.port, this.host, () => {
@@ -683,11 +703,25 @@ export class CalypsoDaemon {
       refuse(404, 'not found');
       return;
     }
-    if (request.method === 'POST') {
+    // A download's stop changes something, and so is a POST: a GET changes nothing here, which is what
+    // lets a door in front ask only a request that is not a GET where it came from.
+    const stopping: boolean = query.has('cancel');
+    // One ask names one download for one purpose: a stop and a progress ask together, or either twice, would
+    // leave it to the order of reading which download is meant.
+    if (query.getAll('cancel').length + query.getAll('progress').length > 1) {
+      refuse(400, 'one of progress or cancel, once');
+      return;
+    }
+    if (request.method === 'POST' && !stopping) {
       await this.vfs_receive(request, response, query, refuse);
       return;
     }
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
+    if (stopping && request.method !== 'POST') {
+      response.setHeader('allow', 'POST');
+      refuse(405, 'a download is stopped by POST');
+      return;
+    }
+    if (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'POST') {
       refuse(405, 'method not allowed');
       return;
     }
@@ -695,7 +729,7 @@ export class CalypsoDaemon {
     const asked: string | null = query.get('progress') ?? query.get('cancel');
     if (asked !== null) {
       const id: string | null = downloadId_valid(asked) ? asked : null;
-      if (id !== null && query.has('cancel')) this.downloads.cancel(id);
+      if (id !== null && stopping) this.downloads.cancel(id);
       const report: DownloadReport | null = id === null ? null : this.downloads.report(id);
       response.writeHead(report === null ? 404 : 200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       response.end(JSON.stringify(report ?? { reason: 'no such download' }));
@@ -715,14 +749,7 @@ export class CalypsoDaemon {
     }
     try {
       const bytes: Buffer = await read(filePath);
-      const headers: Record<string, string | number> = {
-        'content-type': contentType_derive(filePath),
-        'content-length': bytes.length,
-      };
-      if (query.get('download') === '1') {
-        headers['content-disposition'] = contentDisposition_format(filePath);
-      }
-      response.writeHead(200, headers);
+      response.writeHead(200, vfsHeaders_build(filePath, query.get('download') === '1', bytes.length));
       response.end(request.method === 'HEAD' ? undefined : bytes);
     } catch (error: unknown) {
       // The kernel says why it refused (status and a line); the route
@@ -789,9 +816,7 @@ export class CalypsoDaemon {
         return;
       }
     }
-    const headers: Record<string, string | number> = { 'content-type': contentType_derive(filePath) };
-    if (opened.size !== undefined) headers['content-length'] = opened.size;
-    if (query.get('download') === '1') headers['content-disposition'] = contentDisposition_format(filePath);
+    const headers: Record<string, string | number> = vfsHeaders_build(filePath, query.get('download') === '1', opened.size);
     if (probe && dl !== null) {
       // The probe's answer is the file's headers; the bytes wait for the save.
       if (!this.downloads.park(dl, opened)) {
@@ -873,6 +898,10 @@ export class CalypsoDaemon {
    * can post unbounded bytes to a loopback port is a surface that can fill
    * the machine.
    *
+   * One request is capped, and so is what all requests in flight hold
+   * together (`uploadHold.ts`): the body's bytes are reserved before they
+   * are read and stay reserved until the store has them or has refused.
+   *
    * @param request - The incoming request, whose body is the file.
    * @param response - The response to write.
    * @param query - The parsed query string (path and token).
@@ -890,32 +919,25 @@ export class CalypsoDaemon {
       refuse(404, 'not found');
       return;
     }
-    const chunks: Buffer[] = [];
-    let received: number = 0;
-    let refused: boolean = false;
-    try {
-      for await (const chunk of request) {
-        const part: Buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-        received += part.length;
-        if (received > VFS_POST_LIMIT) {
-          refused = true;
-          break;
-        }
-        chunks.push(part);
-      }
-    } catch {
-      refuse(400, 'could not read the request body');
+    const taken: UploadTaken | { refusal: UploadRefusal } = await upload_take(request, this.uploads, VFS_POST_LIMIT);
+    if ('refusal' in taken) {
+      // The body may not have been read to its end: the answer is sent, the
+      // connection is closed with it, and nothing more is taken from it.
+      response.setHeader('connection', 'close');
+      if (taken.refusal.retryAfter !== undefined) response.setHeader('retry-after', String(taken.refusal.retryAfter));
+      response.once('finish', (): void => { request.destroy(); });
+      refuse(taken.refusal.status, taken.refusal.message);
       return;
     }
-    if (refused) {
-      refuse(413, `file too large: this route takes at most ${VFS_POST_LIMIT} bytes`);
-      return;
-    }
+    const received: number = taken.bytes.length;
     try {
-      await write(filePath, Buffer.concat(chunks));
+      await write(filePath, taken.bytes);
     } catch (error: unknown) {
       refuse(502, error instanceof Error ? error.message : 'the store refused the write');
       return;
+    } finally {
+      // Held through the write, and given back however it ended.
+      taken.release();
     }
     response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
     response.end(JSON.stringify({ path: filePath, bytes: received }));
@@ -1956,10 +1978,13 @@ export class CalypsoDaemon {
     if (!origin.capabilities.fileDelivery) {
       return Promise.reject(new Error('this surface cannot receive a file'));
     }
+    // The surface's own id for the line that is asking: it binds the delivery to that line.
+    const line: string | null = this.currentId;
     return this.deliveries.open(origin.socket, (deliverId: string): void => {
       this.send(origin.socket, {
         type: 'deliver',
         deliverId,
+        ...(line !== null ? { id: line } : {}),
         path: request.path,
         filename: request.filename,
         ...(request.destination !== undefined ? { destination: request.destination } : {}),

@@ -487,6 +487,8 @@ OCI sells E5.Flex by the OCPU (two vCPUs) and bounds memory per OCPU (1 to 64 GB
 
 The script screen's rail (D17) wears each line's state, read from the kept records and never from the cloud, by one verb every surface shares. Read live against the store's script, now in HARBOR-Medical-AI/infra, from a private daemon with the operator's state (nothing run, nothing changed; the password files' paths elided here):
 
+A path on the daemon's own disk, as here, is read only by a session started with the `files` tier of host control (`--host-control=files`): without it `play` refuses by name and reads nothing there. The same script through the library, `/scripts/chrisproject/store.mise` below, is one of the session's own files and needs no tier. The two lines of the script that name a password file (`--admin-password-file`, `--password-file`) read the daemon's disk too, and need the tier the same way.
+
 [source]
 ----
 play /home/rudolph/src/infra/chrisproject/store.mise --status

@@ -28,6 +28,13 @@ describe('fileRefusal_name', () => {
     expect(refusal.reason).toBe('CUBE could not serve it (500)');
   });
 
+  it('lets a status CUBE gave decide before any words: a 5xx that says "not found" is an outage, not an absence', () => {
+    const refusal: FileReadRefusal = fileRefusal_name('/a', [note('file_download', 'File ID 9 could not be read: CUBE answered 503.'), note('pathFileId_resolve', 'File not found: f.dcm in /a')]);
+    expect(refusal.status).toBe(502);
+    expect(refusal.reason).toBe('CUBE could not serve it (503)');
+    expect(fileRefusal_name('/a', [note('folderIds_list', 'No files found in directory: /a (CUBE answered 502)')]).status).toBe(502);
+  });
+
   it('passes the kernel\'s own last note through, stripped of its function tag, when no status is known', () => {
     const refusal: FileReadRefusal = fileRefusal_name('/a', [note('x', 'first'), note('file_download', 'File ID 9 is not in the file collections this client can read.')]);
     expect(refusal.status).toBe(502);

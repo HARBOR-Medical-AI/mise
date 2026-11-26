@@ -405,7 +405,9 @@ describe('CalypsoDaemon /vfs route', () => {
     const streamPort: number = await streaming.start();
     const base: string = `http://127.0.0.1:${streamPort}/vfs?path=${encodeURIComponent('/home/demo/big.dcm')}&token=${TOKEN}&download=1&dl=abc123`;
     const progress = async (id: string, verb: string = 'progress') => {
-      const reply = await http_get(`http://127.0.0.1:${streamPort}/vfs?${verb}=${id}&token=${TOKEN}`);
+      // A stop is asked by POST; progress is a read.
+      const address: string = `http://127.0.0.1:${streamPort}/vfs?${verb}=${id}&token=${TOKEN}`;
+      const reply = verb === 'cancel' ? await http_post(address, '') : await http_get(address);
       return { status: reply.status, report: JSON.parse(reply.body) as { phase: string; bytes: number; size?: number; reason?: string } };
     };
     try {

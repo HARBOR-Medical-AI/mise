@@ -36,7 +36,6 @@
  * @module
  */
 import chalk from 'chalk';
-import { path_resolve } from '../utils.js';
 import { duration_parse } from '../../lib/duration.js';
 import { recorderMuted_run } from '../../session/recorder.js';
 import { session } from '../../session/index.js';
@@ -49,7 +48,7 @@ import { pipes_parse } from '../../core/preprocess.js';
 import { commandList_parse, semicolons_parse, type ListCommand } from '../../lib/semicolonParser.js';
 import { VARIABLE_NAME, assignment_parse, variable_get, variableScope_run, type Assignment, type Variable } from '../../core/variables.js';
 import { shellWord_literal, shellWords_referencesExpand, shellWords_tokenize, type ReferenceExpansion, type ReferenceValue, type ShellWord } from '../../lib/parser.js';
-import { errorStack, type Result } from '@fnndsc/fond';
+import { manifestText_read, type ManifestRead } from './manifestRead.js';
 import { CommandEnvelope, envelope_ok, envelope_error, LINE_DECLINED_MODEL_KIND, MANIFEST_STATUS_MODEL_KIND } from '@fnndsc/menu';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
@@ -183,48 +182,6 @@ async function pause_take(ms: number, signal: AbortSignal | undefined): Promise<
     }, ms);
     signal?.addEventListener('abort', onAbort, { once: true });
   });
-}
-
-
-/**
- * Reads a manifest, from the backend's filesystem (ChRIS: CFS) or from the
- * engine's own disk.
- *
- * A manifest is a ChRIS file: that is what makes one shareable, and sharing
- * it is `setfacl`, like any other file. But a repository's battery lives
- * beside the code that it tests, and uploading itself before it can run
- * would be a ritual, not a requirement — so a path that names no CFS file
- * is looked for on the host the ENGINE runs on. In a daemon that is the
- * daemon's disk, never the surface's, which is why CFS is asked first.
- *
- * @param target - The manifest, as the operator wrote it.
- * @returns The text and where it came from, or a refusal when neither has it.
- */
-async function manifestText_read(target: string): Promise<Result<{ text: string; from: string }>> {
-  const resolved: string = await path_resolve(target);
-  // Asking CFS is how we find out whether the manifest lives there. The
-  // miss is an ANSWER, not a fault: left on the stack it made a play that
-  // ran a host-side battery perfectly exit non-zero.
-  // The backend's files are asked first (ChRIS: CFS); a backend with no
-  // files of its own (stratus) has only the engine's disk.
-  const files = backendInstalled_get()?.files;
-  if (files !== undefined) {
-    const mark: number = errorStack.checkpoint_mark();
-    try {
-      const bytes: Buffer = await files.read(resolved);
-      return { ok: true, value: { text: bytes.toString('utf8'), from: resolved } };
-    } catch {
-      errorStack.checkpoint_drain(mark);
-    }
-  }
-
-  try {
-    const { readFile } = await import('node:fs/promises');
-    const text: string = await readFile(target, 'utf8');
-    return { ok: true, value: { text, from: target } };
-  } catch {
-    return { ok: false };
-  }
 }
 
 
@@ -502,10 +459,10 @@ async function play_run(parsed: PlayArgs): Promise<CommandEnvelope> {
     return envelope_error('', undefined, `${chalk.red(`play: ${parsed.manifest} is nested too deep — a manifest may play a manifest, not a chain of them.`)}\n`);
   }
 
-  const source: Result<{ text: string; from: string }> = parsed.text !== null ? { ok: true, value: { text: parsed.text, from: parsed.manifest } } : await manifestText_read(parsed.manifest);
+  const source: ManifestRead = parsed.text !== null ? { ok: true, value: { text: parsed.text, from: parsed.manifest } } : await manifestText_read(parsed.manifest);
   if (!source.ok) {
     exitCode_set(1);
-    return envelope_error('', undefined, `${chalk.red(`play: cannot read ${parsed.manifest} — no such manifest in the session's filesystem, and none beside the engine.`)}\n`);
+    return envelope_error('', undefined, `${chalk.red(`play: ${source.reason}`)}\n`);
   }
 
   const manifest: Manifest = manifest_parse(source.value.text);

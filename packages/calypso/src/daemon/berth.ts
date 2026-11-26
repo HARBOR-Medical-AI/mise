@@ -276,14 +276,35 @@ function berthFile_read(path: string, identity: string): Berth | null {
  *   or holds none.
  */
 export function berthAll_read(): Berth[] {
-  const berths: Berth[] = [];
+  return berthAllLocated_read().map((located: LocatedBerth): Berth => located.berth);
+}
+
+/** A berth and the file it was read from. */
+export interface LocatedBerth {
+  /** The berth. */
+  readonly berth: Berth;
+  /** The record that holds it: this runtime's, or a porter session's. */
+  readonly path: string;
+}
+
+/**
+ * Reads every advertised berth with the file each was read from.
+ *
+ * A berth is found in this runtime's directory or in a porter session's,
+ * so the file is not something an identity alone gives back: a listing
+ * that must name where a berth's token is kept names this path.
+ *
+ * @returns All well-formed berths, one per identity, each with its record's path.
+ */
+export function berthAllLocated_read(): LocatedBerth[] {
+  const found: LocatedBerth[] = [];
   // This runtime's berths, then each porter session's, one per identity.
   for (const dir of [berthDir_path(), ...porterSessionDirs_get()]) {
-    for (const berth of berthDir_read(dir)) {
-      if (!berths.some((one: Berth): boolean => one.identity === berth.identity)) berths.push(berth);
+    for (const located of berthDir_read(dir)) {
+      if (!found.some((one: LocatedBerth): boolean => one.berth.identity === located.berth.identity)) found.push(located);
     }
   }
-  return berths;
+  return found;
 }
 
 /**
@@ -309,13 +330,13 @@ function porterSessionDirs_get(): string[] {
  * Reads every well-formed berth in one directory.
  *
  * @param dir - The directory.
- * @returns Its berths.
+ * @returns Its berths, each with its file.
  */
-function berthDir_read(dir: string): Berth[] {
+function berthDir_read(dir: string): LocatedBerth[] {
   if (!existsSync(dir)) {
     return [];
   }
-  const berths: Berth[] = [];
+  const berths: LocatedBerth[] = [];
   for (const name of readdirSync(dir)) {
     if (!name.startsWith(BERTH_FILE_PREFIX) || !name.endsWith('.json')) {
       continue;
@@ -323,7 +344,7 @@ function berthDir_read(dir: string): Berth[] {
     try {
       const berth: Berth | null = berth_validate(JSON.parse(readFileSync(join(dir, name), 'utf-8')));
       if (berth) {
-        berths.push(berth);
+        berths.push({ berth, path: join(dir, name) });
       }
     } catch (error: unknown) {
       // Skipped, but named: a corrupted berth silently vanishing from the
@@ -447,16 +468,25 @@ export class LocalBerthResolver implements BerthResolver {
 
   /** @inheritdoc */
   public async list(): Promise<Berth[]> {
-    const berths: Berth[] = berthAll_read();
+    return (await this.listLocated()).map((located: LocatedBerth): Berth => located.berth);
+  }
+
+  /**
+   * Every live berth with the record it was read from.
+   *
+   * @returns The berths and their files; dead ones reaped when a probe is present.
+   */
+  public async listLocated(): Promise<LocatedBerth[]> {
+    const berths: LocatedBerth[] = berthAllLocated_read();
     if (!this.liveness_probe) {
       return berths;
     }
-    const live: Berth[] = [];
-    for (const berth of berths) {
-      if (await this.liveness_probe(berth)) {
-        live.push(berth);
+    const live: LocatedBerth[] = [];
+    for (const located of berths) {
+      if (await this.liveness_probe(located.berth)) {
+        live.push(located);
       } else {
-        berth_remove(berth.identity);
+        berth_remove(located.berth.identity);
       }
     }
     return live;

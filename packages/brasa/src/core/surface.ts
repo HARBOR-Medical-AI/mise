@@ -173,6 +173,30 @@ export function aside_await<T>(waiting: Promise<T>): Promise<T> {
 }
 
 /**
+ * Why a command may not touch the engine's own disk, when it may not.
+ *
+ * The engine's disk is the operator's only where the surface says so
+ * (`engineFilesystem`): a local shell, or a daemon started with the files
+ * tier of host control. Anywhere else it is the disk of a machine nobody
+ * attending the session sits at, and a command that would read or write it
+ * says this instead, naming itself and the tier. Every such command asks
+ * here, so the words are one.
+ *
+ * @param what - What is asking, as the operator would name it (`play`, `redirect (>)`).
+ * @returns The refusal, or null when the disk is the operator's.
+ *
+ * @example
+ * ```ts
+ * const refused: string | null = hostDisk_refusal('play');
+ * if (refused !== null) return envelope_error('', undefined, `${refused}\n`);
+ * ```
+ */
+export function hostDisk_refusal(what: string): string | null {
+  if (surface_get().capabilities.engineFilesystem) return null;
+  return `${what}: the session's host disk is nobody's; start the session with --host-control=files`;
+}
+
+/**
  * Asserts that the active surface has a capability, throwing a
  * {@link CapabilityError} with a clear message when it does not.
  *

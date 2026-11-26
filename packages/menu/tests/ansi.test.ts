@@ -41,6 +41,13 @@ describe('html_escape', () => {
   it('escapes the three characters markup would read', () => {
     expect(html_escape('<a & b>')).toBe('&lt;a &amp; b&gt;');
   });
+
+  it('escapes both quotes, so a value cannot end the attribute it is written into', () => {
+    expect(html_escape(`a"b'c`)).toBe('a&quot;b&#39;c');
+    expect(html_escape('" onmouseover="x')).toBe('&quot; onmouseover=&quot;x');
+    // An ampersand is escaped once, before the quotes' own entities exist.
+    expect(html_escape('&"')).toBe('&amp;&quot;');
+  });
 });
 
 describe('CONSOLE_PALETTE', () => {

@@ -184,7 +184,9 @@ function state_renderStyle(state: SgrState): string {
 }
 
 /**
- * Escapes text for safe HTML interpolation.
+ * Escapes text for safe HTML interpolation, as content or inside a quoted
+ * attribute: both quotes are escaped, so a value cannot end the attribute
+ * it was written into.
  *
  * @param text - The raw text.
  * @returns The entity-escaped text.
@@ -193,7 +195,9 @@ export function html_escape(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**

@@ -1,0 +1,6 @@
+jobs:
+  x:
+    steps:
+      - run: |
+          mkdir -p "$RUNNER_TEMP/x"
+          node dist/index.js "$CUBE_USER@$CUBE_URL" --auth-token-stdin -c version < "$tokenfile"

@@ -12,7 +12,7 @@
  */
 import { httpGet_default } from './chris/live.js';
 import { commands_register, FileReadRefusal, type Backend, type JobRecord, type JobRun, type PromptLastCommand } from '@fnndsc/brasa/core';
-import { VFSDispatcher, type VfsOutcome } from '@fnndsc/fond';
+import { VFSDispatcher, type PathStanding, type VfsOutcome } from '@fnndsc/fond';
 import type { PromptContext } from '@fnndsc/menu';
 import type { CloudDriver } from './cloud/driver.js';
 import { AnswerCache } from './cache.js';
@@ -181,6 +181,10 @@ export function stratusBackend_make(options: StratusBackendOptions): StratusBack
         if (!bytes.ok) throw new FileReadRefusal(path, bytes.errno === 'ENOENT' ? 404 : 403, bytes.reason ?? bytes.errno);
         return bytes.value;
       },
+      // Where a path stands when a read of it failed: outside every mount (a
+      // checkout on this host), proved absent by the mount that owns it (only
+      // /scripts can), or unknown, which is every failed read of the tenancy.
+      standing: (path: string): Promise<PathStanding> => dispatcher.path_standing(path),
       write: async (path: string, bytes: Buffer): Promise<void> => {
         const written: VfsOutcome = await dispatcher.write(path, bytes);
         if (!written.ok) throw new Error(`cannot write ${path}: ${written.reason ?? (written.errno === 'EROFS' ? READ_ONLY_REASON : written.errno)}`);

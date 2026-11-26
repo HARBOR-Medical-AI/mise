@@ -34,7 +34,7 @@
 import * as fs from 'fs';
 import chalk from 'chalk';
 import { berthCapacity_derive, CHRIS_PROFILE_OFFERS, envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, type ChrisProfileOffer, type ChrisStatusRow, type CommandEnvelope } from '@fnndsc/menu';
-import { command_declare, declaredCommand_run, repl_confirm, repl_questionHidden, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
+import { command_declare, declaredCommand_run, hostDisk_refusal, repl_confirm, repl_questionHidden, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
 import type { CloudBuilder } from '../cloud/builder.js';
 import type { NetStore } from '../net/state.js';
 import type { VmSpec } from '../vm/spec.js';
@@ -139,6 +139,9 @@ function chrisLive_lines(live: ChrisLive): string[] {
  */
 async function adminPassword_get(file: string | undefined): Promise<{ password: string; generated: boolean } | { error: string }> {
   if (file !== undefined) {
+    // The file is on the disk of the machine this session runs on.
+    const refused: string | null = hostDisk_refusal(`--admin-password-file ${file}`);
+    if (refused !== null) return { error: refused };
     try {
       const password: string = fs.readFileSync(file, 'utf-8').trim();
       return password.length >= 8 ? { password, generated: false } : { error: `--admin-password-file ${file}: shorter than eight characters` };
@@ -161,6 +164,9 @@ async function adminPassword_get(file: string | undefined): Promise<{ password: 
 async function userPassword_get(username: string, file: string | undefined): Promise<{ password: string; generated: boolean } | { error: string }> {
   const fits = (password: string): string | null => password.length < 8 ? 'shorter than eight characters' : password.length > 100 ? 'longer than a hundred characters' : null;
   if (file !== undefined) {
+    // The file is on the disk of the machine this session runs on.
+    const refused: string | null = hostDisk_refusal(`--password-file ${file}`);
+    if (refused !== null) return { error: refused };
     try {
       const password: string = fs.readFileSync(file, 'utf-8').trim();
       const wrong: string | null = fits(password);

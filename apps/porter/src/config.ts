@@ -13,6 +13,8 @@ import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { isIP } from 'node:net';
+import { doorOrigins_resolve, type DoorOrigins } from './origin.js';
 
 /** Everything a porter needs to know, resolved. */
 export interface PorterConfig {
@@ -26,6 +28,18 @@ export interface PorterConfig {
   port: number;
   /** The chell entry to start a session with (`dist/index.js`). */
   chellEntry: string;
+  /**
+   * The origins a browser reaches this door as (`PORTER_PUBLIC_ORIGIN`), and
+   * whether the operator named them; absent, this machine's own names at
+   * the port (origin.ts). A request on the cookie must come from one.
+   */
+  origins?: DoorOrigins;
+  /**
+   * The proxies whose forwarded headers are believed (`PORTER_TRUSTED_PROXIES`):
+   * addresses, CIDR ranges, or `loopback`, `linklocal`, `uniquelocal`.
+   * Absent or empty, none: a request is from the socket's own peer.
+   */
+  trustedProxies?: ReadonlyArray<string>;
   /** What the door signs its cookie with. */
   secret: string;
   /** Whether the secret was made up at start: cookies die with this porter. */
@@ -60,6 +74,10 @@ export interface PorterEnv {
   PORTER_STATE_DIR?: string;
   PORTER_HOST?: string;
   PORTER_PORT?: string;
+  /** The proxies whose forwarded headers are believed, comma-separated; unset, none. */
+  PORTER_TRUSTED_PROXIES?: string;
+  /** The origins a browser reaches this door as, comma-separated; unset, only this machine's own names at the port. */
+  PORTER_PUBLIC_ORIGIN?: string;
   PORTER_CHELL?: string;
   PORTER_SECRET?: string;
   PORTER_COOKIE_HOURS?: string;
@@ -148,6 +166,28 @@ export function porterStateDir_resolve(env: PorterEnv): string {
   return env.PORTER_STATE_DIR ?? join(stateBase, 'porter');
 }
 
+/** The ranges a proxy may be named by, besides an address or a CIDR range. */
+const PROXY_RANGES: ReadonlySet<string> = new Set(['loopback', 'linklocal', 'uniquelocal']);
+
+/**
+ * Reads the proxies whose forwarded headers the door believes.
+ *
+ * @param configured - `PORTER_TRUSTED_PROXIES`: addresses, CIDR ranges, or `loopback`, `linklocal`, `uniquelocal`, comma-separated.
+ * @returns The list; empty when unsaid.
+ * @throws {Error} When an entry is none of those.
+ */
+export function trustedProxies_read(configured: string | undefined): string[] {
+  const named: string[] = (configured ?? '').split(',').map((one: string): string => one.trim()).filter((one: string): boolean => one !== '');
+  for (const one of named) {
+    const [address, bits, more] = one.split('/');
+    const family: number = isIP(address ?? '');
+    const ranged: boolean = bits === undefined || (/^\d{1,3}$/.test(bits) && Number(bits) <= (family === 4 ? 32 : 128));
+    if (PROXY_RANGES.has(one) || (family !== 0 && ranged && more === undefined)) continue;
+    throw new Error(`PORTER_TRUSTED_PROXIES is an address, a CIDR range, or loopback, linklocal or uniquelocal; not ${one}`);
+  }
+  return named;
+}
+
 /**
  * Resolves the porter's configuration from the environment.
  *
@@ -205,6 +245,8 @@ export function porterConfig_resolve(env: PorterEnv, locateChell: () => string =
     stateDir,
     host: env.PORTER_HOST ?? '127.0.0.1',
     port,
+    origins: doorOrigins_resolve(env.PORTER_PUBLIC_ORIGIN, port),
+    trustedProxies: trustedProxies_read(env.PORTER_TRUSTED_PROXIES),
     chellEntry: env.PORTER_CHELL ?? locateChell(),
     secret: secretGiven ? (env.PORTER_SECRET as string) : randomBytes(32).toString('hex'),
     secretGenerated: !secretGiven,

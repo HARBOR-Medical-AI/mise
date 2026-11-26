@@ -264,3 +264,52 @@ describe('a copy across mounts', () => {
     expect(copies(seen)).toEqual(['/scripts:cp:/scripts/a.sh>/scripts/b.sh', 'fallback:cp:/home/a>/home/b']);
   });
 });
+
+describe('where a path stands', () => {
+  it('is outside when no mount serves it and the session has no fallback of its own', async () => {
+    const seen: string[] = [];
+    const d = new VFSDispatcher();
+    d.provider_register(mount('/net/oci', seen, { absence_prove: async (): Promise<boolean> => true }));
+    d.provider_register(mount('/scripts', seen));
+    expect(await d.path_standing('/home/someone/checkout/store.mise')).toBe('outside');
+    expect(await d.path_standing('/etc/passwd')).toBe('outside');
+    expect(await d.path_standing('/nets')).toBe('outside');
+  });
+
+  it('is unknown above a mount, which is nobody\'s to prove empty', async () => {
+    const d = new VFSDispatcher();
+    d.provider_register(mount('/net/oci', [], { absence_prove: async (): Promise<boolean> => true }));
+    expect(await d.path_standing('/net')).toBe('unknown');
+  });
+
+  it('is unknown under a mount that cannot prove absence, whatever its read said', async () => {
+    const d = new VFSDispatcher();
+    d.provider_register(mount('/net/oci', [], { readBinary: async (): Promise<VfsOutcome<Buffer>> => vfs_fail('ENOENT') }));
+    expect(await d.path_standing('/net/oci/tenancy/clusters/x.mise')).toBe('unknown');
+  });
+
+  it('is absent only when the mount that owns it proves so, asked with the canonical path', async () => {
+    const asked: string[] = [];
+    const d = new VFSDispatcher();
+    d.provider_register(mount('/scripts', [], { absence_prove: async (path: string): Promise<boolean> => { asked.push(path); return path.endsWith('gone.mise'); } }));
+    expect(await d.path_standing('/scripts/mine/../mine/gone.mise')).toBe('absent');
+    expect(await d.path_standing('/scripts/mine/unreadable.mise')).toBe('unknown');
+    expect(asked).toEqual(['/scripts/mine/gone.mise', '/scripts/mine/unreadable.mise']);
+  });
+
+  it('is unknown when the proof itself fails', async () => {
+    const d = new VFSDispatcher();
+    d.provider_register(mount('/scripts', [], { absence_prove: async (): Promise<boolean> => { throw new Error('the disk went away'); } }));
+    expect(await d.path_standing('/scripts/mine/x.mise')).toBe('unknown');
+  });
+
+  it('asks a session\'s own fallback, which owns every path no mount does: never outside', async () => {
+    const proving = new VFSDispatcher(mount('', [], { absence_prove: async (path: string): Promise<boolean> => path === '/home/u/gone.txt' }));
+    proving.provider_register(mount('/proc', []));
+    expect(await proving.path_standing('/home/u/gone.txt')).toBe('absent');
+    expect(await proving.path_standing('/home/u/there.txt')).toBe('unknown');
+    expect(await proving.path_standing('/proc/jobs/7/note')).toBe('unknown');
+    const silent = new VFSDispatcher(mount('', []));
+    expect(await silent.path_standing('/home/u/gone.txt')).toBe('unknown');
+  });
+});

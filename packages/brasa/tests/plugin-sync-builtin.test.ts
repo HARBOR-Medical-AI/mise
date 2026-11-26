@@ -54,6 +54,17 @@ jest.unstable_mockModule('../src/core/paths.js', () => ({
 }));
 
 const verbs = await import('../src/builtins/res/plugin.sync.js');
+const { surface_set: hostSurface_set, HeadlessSurface: HostSurface } = await import('../src/core/surface.js');
+
+/** Says whose the engine's disk is: its operator's (a local shell), or nobody's (a daemon without the files tier). */
+function hostDisk_set(operators: boolean): void {
+  const surface = new HostSurface();
+  Object.assign(surface.capabilities, { engineFilesystem: operators });
+  hostSurface_set(surface);
+}
+// These verbs read indexes and descriptors from the engine's disk: a local shell's, unless a case says otherwise.
+beforeEach(() => hostDisk_set(true));
+
 const indexConfig = await import('../src/config/indexConfig.js');
 
 const PLAN = {
@@ -196,6 +207,40 @@ describe('plugin validate', () => {
     expect((await verbs.pluginValidate_run({ _: ['validate', '/nonexistent/pl-x.json'] })).renderedErr).toContain('could not read');
     mockValidate.mockRejectedValueOnce(new Error("the index's schema does not compile"));
     expect((await verbs.pluginValidate_run({ _: ['validate', 'FNNDSC/chris-plugins'] })).renderedErr).toContain('does not compile');
+  });
+});
+
+describe('an index or a descriptor on a disk that is nobody\'s', () => {
+  const NOBODYS: string = "the session's host disk is nobody's; start the session with --host-control=files";
+
+  beforeEach(() => hostDisk_set(false));
+
+  it('plugin validate refuses a host folder, a host: source and a host descriptor file, and reads none of them', async () => {
+    mockIndexLoad.mockClear();
+    expect((await verbs.pluginValidate_run({ _: ['validate', './plugins'], offline: true })).renderedErr).toContain(`plugin validate: host:./plugins: ${NOBODYS}`);
+    expect((await verbs.pluginValidate_run({ _: ['validate', 'host:/srv/plugins'] })).renderedErr).toContain(`plugin validate: host:/srv/plugins: ${NOBODYS}`);
+    expect((await verbs.pluginValidate_run({ _: ['validate', '/etc/pl-x.json'] })).renderedErr).toContain(`plugin: /etc/pl-x.json: ${NOBODYS}`);
+    expect(mockIndexLoad).not.toHaveBeenCalled();
+  });
+
+  it('plugin sync refuses a host: index, typed or set as the session\'s, and loads nothing', async () => {
+    mockIndexLoad.mockClear();
+    expect((await verbs.pluginSync_run({ _: ['sync', 'host:/srv/plugins'] })).renderedErr).toContain(`plugin sync: host:/srv/plugins: ${NOBODYS}`);
+    expect(mockIndexLoad).not.toHaveBeenCalled();
+  });
+
+  it('plugin add --json refuses a host file, and still reads one in CUBE', async () => {
+    expect((await verbs.pluginAdd_run({ _: ['add'], json: 'host:/etc/x.json' }, ['add'])).renderedErr).toContain(`plugin: /etc/x.json: ${NOBODYS}`);
+    mockAddJson.mockResolvedValue({ outcome: 'installed', name: 'pl-x', version: '1' });
+    mockFileContent.mockResolvedValue({ ok: true, value: '{"name":"pl-x"}' });
+    expect((await verbs.pluginAdd_run({ _: ['add'], json: 'cube:/home/u/pl-x.json', compute: 'host' }, ['add'])).rendered).toContain('Registered pl-x 1.');
+  });
+
+  it('a source in CUBE or on GitHub is no host file, and is read as before', async () => {
+    mockValidate.mockResolvedValue({ label: 'plugins', commit: null, descriptors: 0, ok: true, findings: [], rules: [] });
+    mockIndexLoad.mockClear();
+    await verbs.pluginValidate_run({ _: ['validate', 'FNNDSC/chris-plugins'], offline: true });
+    expect(mockIndexLoad).toHaveBeenCalledTimes(1);
   });
 });
 

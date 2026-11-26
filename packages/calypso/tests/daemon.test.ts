@@ -1107,6 +1107,8 @@ describe('CalypsoDaemon file delivery over the wire', () => {
       const deliver = await asked;
       // Only the request crosses; the surface fetches the bytes itself.
       expect(deliver.type).toBe('deliver');
+      // It says which of the surface's lines is asking, by the surface's own id for it.
+      expect(deliver.id).toBe('1');
       expect(deliver.path).toBe('/home/me/scan.dcm');
       expect(deliver.filename).toBe('scan.dcm');
       expect(deliver.destination).toBe('/tmp');

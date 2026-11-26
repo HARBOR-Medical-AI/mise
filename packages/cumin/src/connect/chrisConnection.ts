@@ -162,8 +162,9 @@ export class ChRISConnection {
       this.authToken = await adapterAuthToken_get(authUrl, user, password);
       if (this.authToken) {
         // console.log("Auth token: " + this.authToken);
-        await this.token_saveToFile(this.tokenFile, this.authToken);
-        console.log("Auth token saved successfully");
+        const saved: boolean = await this.token_saveToFile(this.tokenFile, this.authToken);
+        // Said only when it is so: a token that could not be saved privately is held for this session and not on disk.
+        console.log(saved ? "Auth token saved successfully" : "Auth token held for this session; it was not saved");
         console.log("ChRIS URL saved successfully");
         return this.authToken;
       } else {
@@ -448,13 +449,19 @@ export class ChRISConnection {
    * Saves data to a specified file using the storage provider.
    * @param file - The path to the file.
    * @param info - The string data to save.
+   * @returns Whether it was saved; false when it could not be, or could not be saved privately.
    */
-  private async token_saveToFile(file: string, info: string): Promise<void> {
+  private async token_saveToFile(file: string, info: string): Promise<boolean> {
+    const store: IStorageProvider = this.storageProvider!;
     try {
-      await this.storageProvider!.write(file, info || "");
+      // A token is a credential: its owner's alone on disk, where the store has such a notion.
+      if (store.writePrivate !== undefined) await store.writePrivate(file, info || "");
+      else await store.write(file, info || "");
+      return true;
     } catch (error: unknown) {
-      console.error("For info: ", info);
+      // What failed to be saved is never said: it is the token.
       console.error("Error saving to file ", file, ": ", error);
+      return false;
     }
   }
 
@@ -464,6 +471,8 @@ export class ChRISConnection {
    */
   private async token_load(): Promise<void> {
     try {
+      // A token saved before files were made private is made so when it is next read.
+      await this.storageProvider!.private_tighten?.(this.tokenFile);
       this.authToken = await this.storageProvider!.read(this.tokenFile);
     } catch (error: unknown) {
       // A missing token file is the normal logged-out state; any other read

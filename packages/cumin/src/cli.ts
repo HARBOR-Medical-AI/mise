@@ -51,7 +51,8 @@ async function main() {
   console.log(
     "For this set of configuration values read during initialization,"
   );
-  console.log("the authorization token is: ", await chrisConnection.authToken_get());
+  // Whether a token is held is said; the token is a credential and is not printed.
+  console.log("an authorization token is", (await chrisConnection.authToken_get()) ? "held" : "not held");
   console.log("the chris URL is ", await chrisConnection.chrisURL_get());
   console.log(connectionConfig);
 }

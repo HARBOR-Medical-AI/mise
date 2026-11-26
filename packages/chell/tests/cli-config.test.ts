@@ -4,7 +4,7 @@
  * @module
  */
 import { describe, it, expect } from '@jest/globals';
-import { cliConfig_parse } from '../src/core/cli.js';
+import { attachTokenEnv_take, cli_parse, cliConfig_parse } from '../src/core/cli.js';
 
 const noFile = () => false;
 const anyFile = () => true;
@@ -13,6 +13,43 @@ const anyFile = () => true;
 const noDoor = (): null => null;
 
 describe('cliConfig_parse', () => {
+  it('gives a shell that is attaching the token a daemon handed over, unless one was typed, and gives it to no other mode', () => {
+    expect(cliConfig_parse(undefined, { remote: true, attach: 'ws://127.0.0.1:9' }, noFile, noDoor, 'from-the-daemon').attachToken).toBe('from-the-daemon');
+    // A token typed on the command line wins.
+    expect(cliConfig_parse(undefined, { remote: true, attach: 'ws://127.0.0.1:9', token: 'typed' }, noFile, noDoor, 'from-the-daemon').attachToken).toBe('typed');
+    expect(cliConfig_parse(undefined, { remote: true, attach: 'ws://127.0.0.1:9' }, noFile, noDoor, undefined).attachToken).toBeUndefined();
+    for (const options of [{}, { command: 'ls' }, { daemon: true }]) {
+      expect(cliConfig_parse(undefined, options, noFile, noDoor, 'from-the-daemon').attachToken).toBeUndefined();
+    }
+  });
+
+  it('takes the handed token out of the environment once, at the public entry, on every path out of it', async () => {
+    const cases: Array<[string, string[]]> = [
+      ['a shell that attaches', ['node', 'chell', '--remote', '--attach', 'ws://127.0.0.1:9']],
+      ['a typed token winning', ['node', 'chell', '--remote', '--attach', 'ws://127.0.0.1:9', '--token', 'typed']],
+      ['an interactive shell', ['node', 'chell']],
+      ['one command', ['node', 'chell', '-c', 'ls']],
+      ['auth', ['node', 'chell', 'auth', 'status']],
+      ['auth, refused', ['node', 'chell', 'auth', 'nosuchverb']],
+      ['--info', ['node', 'chell', '--info']],
+      ['--help', ['node', 'chell', '--help']],
+      ['--version', ['node', 'chell', '--version']],
+      ['a line that does not parse', ['node', 'chell', '--nosuchoption']],
+    ];
+    for (const [what, argv] of cases) {
+      const env: NodeJS.ProcessEnv = { CHELL_ATTACH_TOKEN: 'from-the-daemon', OTHER: 'kept' };
+      const config = await cli_parse(argv, '1.2.3', 'the stack', env);
+      expect([what, env]).toEqual([what, { OTHER: 'kept' }]);
+      const wanted: string | undefined = what === 'a shell that attaches' ? 'from-the-daemon' : what === 'a typed token winning' ? 'typed' : undefined;
+      expect([what, (config as { attachToken?: string }).attachToken]).toEqual([what, wanted]);
+    }
+    // An empty one is no token, and is removed too.
+    const empty: NodeJS.ProcessEnv = { CHELL_ATTACH_TOKEN: '' };
+    expect(((await cli_parse(['node', 'chell', '--remote', '--attach', 'ws://127.0.0.1:9'], '1', '', empty)) as { attachToken?: string }).attachToken).toBeUndefined();
+    expect('CHELL_ATTACH_TOKEN' in empty).toBe(false);
+    expect(attachTokenEnv_take({})).toBeUndefined();
+  });
+
   it('defaults to interactive with no args', () => {
     expect(cliConfig_parse(undefined, {}, noFile, noDoor)).toEqual({ mode: 'interactive', physicalFS: undefined });
   });

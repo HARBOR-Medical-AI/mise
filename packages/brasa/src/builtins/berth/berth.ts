@@ -44,7 +44,7 @@ import { pipeline } from 'node:stream/promises';
 
 import chalk from 'chalk';
 import { transferPool_run, type TransferFailure, type TransferPoolResult } from '@fnndsc/cumin/transfer-pool';
-import { size_format } from '@fnndsc/fond';
+import { size_format, wireName_place, type HostPlace } from '@fnndsc/fond';
 import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
 
 import { command_declare, type CommandArguments, type CommandGrammar, type SubcommandArguments } from '../../core/commandDeclaration.js';
@@ -217,6 +217,32 @@ async function file_download(file: RemoteFile, target: string, bytes_add: (count
 }
 
 /**
+ * Where each file is written under a folder, every one of them inside it.
+ *
+ * The names come from a listing ChRIS made. Each is placed with
+ * `wireName_place`, which refuses a name that would leave the folder; one
+ * such name refuses them all, before anything is written or removed.
+ *
+ * @param files - The files.
+ * @param folder - The folder they are written under.
+ * @returns Each file's place, by its relative name.
+ * @throws {Error} Naming every file that has no place inside the folder.
+ */
+function filePlaces_plan(files: readonly RemoteFile[], folder: string): Map<string, string> {
+  const places: Map<string, string> = new Map<string, string>();
+  const refused: string[] = [];
+  for (const file of files) {
+    const placed: HostPlace = wireName_place(folder, file.name);
+    if (placed.ok) places.set(file.name, placed.place);
+    else refused.push(placed.reason);
+  }
+  if (refused.length > 0) {
+    throw new Error(`${count_say(refused.length, 'file')} of ${files.length} cannot be placed: ${refused.join('; ')}`);
+  }
+  return places;
+}
+
+/**
  * Downloads files into a folder through the transfer pool, saying the bytes
  * as they arrive across every file in flight.
  *
@@ -224,9 +250,10 @@ async function file_download(file: RemoteFile, target: string, bytes_add: (count
  * @param folder - The folder they are written under, by their relative names.
  * @param label - The anchor's name, for the progress.
  * @param jobs - How many files move at once.
- * @throws {Error} Naming each file that failed after its retry, or saying the line was cancelled.
+ * @throws {Error} Naming each file that failed after its retry, each that has no place in the folder, or saying the line was cancelled.
  */
 async function files_download(files: readonly RemoteFile[], folder: string, label: string, jobs: number): Promise<void> {
+  const places: Map<string, string> = filePlaces_plan(files, folder);
   mkdirSync(folder, { recursive: true });
   const total: number = bytes_sum(files);
   let current: number = 0;
@@ -237,7 +264,7 @@ async function files_download(files: readonly RemoteFile[], folder: string, labe
   commandCancellation_enable();
   const signal: AbortSignal | undefined = commandCancellation_signalGet();
   const result: TransferPoolResult<RemoteFile, void> = await remoteFiles_memoRun(() => transferPool_run(files,
-    (file: RemoteFile, poolSignal: AbortSignal): Promise<void> => file_download(file, join(folder, ...file.name.split('/')),
+    (file: RemoteFile, poolSignal: AbortSignal): Promise<void> => file_download(file, places.get(file.name) as string,
       (count: number): void => { current += count; progress('transferring'); }, poolSignal),
     { jobs, ...(signal !== undefined ? { signal } : {}) }));
   if (result.cancelled.length > 0) {
@@ -340,12 +367,20 @@ async function anchor_run(request: AnchorRequest): Promise<CommandEnvelope> {
 
   const final: string = join(places.anchors, name);
   const partial: string = join(places.anchors, `${PARTIAL_PREFIX}${name}`);
+  // What a download left behind is cleared first, and every name is placed
+  // before the anchor that stands is let go: a listing with a name that
+  // cannot be placed refuses the refresh with the old copy still there.
+  rmSync(partial, { recursive: true, force: true });
+  try {
+    filePlaces_plan(files, partial);
+  } catch (error: unknown) {
+    throw new BerthRefusal(`anchor: ${name}: ${error instanceof Error ? error.message : String(error)}; nothing anchored${standing !== null ? ', and the anchor that stands is kept' : ''}`);
+  }
   if (standing !== null) {
     // A refresh lets the old copy go first, as drop does: ChRIS still holds it.
     rmSync(final, { recursive: true, force: true });
     berthState_update(places.anchors, (state: BerthState): BerthState => ({ ...state, anchors: state.anchors.filter((anchor: BerthAnchor): boolean => anchor.name !== name) }));
   }
-  rmSync(partial, { recursive: true, force: true });
   try {
     await files_download(files, partial, name, jobs.jobs);
   } catch (error: unknown) {

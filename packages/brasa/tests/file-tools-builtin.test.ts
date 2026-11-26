@@ -36,6 +36,15 @@ jest.unstable_mockModule('../src/core/filesystem.js', () => ({
 }));
 
 const { builtin_touch } = await import('../src/builtins/fs/touch.js');
+const { surface_set: hostSurface_set, HeadlessSurface: HostSurface } = await import('../src/core/surface.js');
+
+/** Says whose the engine's disk is: its operator's (a local shell), or nobody's (a daemon without the files tier). */
+function hostDisk_set(operators: boolean): void {
+  const surface = new HostSurface();
+  Object.assign(surface.capabilities, { engineFilesystem: operators });
+  hostSurface_set(surface);
+}
+
 const { builtin_mv } = await import('../src/builtins/fs/mv.js');
 const { builtin_cp } = await import('../src/builtins/fs/cp.js');
 
@@ -94,7 +103,22 @@ describe('touch', () => {
     expect(await text_extract('/home/chris/b.txt')).toBe('beta');
   });
 
+  it('refuses a local file\'s text where the engine\'s disk is nobody\'s, and writes nothing', async () => {
+    const local: string = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'touch-')), 'from.txt');
+    fs.writeFileSync(local, 'from disk');
+    hostDisk_set(false);
+    try {
+      const refused: CommandEnvelope = await builtin_touch(['--withContentsFromFile', local, 'refused.txt']);
+      expect(refused.status).toBe('error');
+      expect(refused.renderedErr).toContain(`touch --withContentsFromFile ${local}: the session's host disk is nobody's; start the session with --host-control=files`);
+      expect(await itemNames_list('/home/chris')).not.toContain('refused.txt:file');
+    } finally {
+      hostDisk_set(true);
+    }
+  });
+
   it('writes a local file\'s text, and says when that file is not there', async () => {
+    hostDisk_set(true);
     const local: string = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'touch-')), 'from.txt');
     fs.writeFileSync(local, 'from disk');
     expect((await builtin_touch(['--withContentsFromFile', local, 'c.txt'])).status).toBe('ok');

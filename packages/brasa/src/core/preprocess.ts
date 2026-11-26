@@ -21,6 +21,21 @@ export function command_shellEscape_detect(line: string): boolean {
 }
 
 /**
+ * The word that decides where a pipeline's later segment runs: its leading
+ * word as written, split on white space, quoting unread.
+ *
+ * A segment whose word names a builtin runs in the engine; any other is
+ * the surface's host shell's. One function, so the engine that runs a
+ * pipeline and a reader that must know what it will run cannot disagree.
+ *
+ * @param segment - One segment of a pipeline.
+ * @returns Its raw leading word; empty for an empty segment.
+ */
+export function pipeSegment_word(segment: string): string {
+  return segment.trim().split(/\s+/)[0] ?? '';
+}
+
+/**
  * Parses a command line for pipe operators and returns segments.
  * Respects single and double quotes.
  *

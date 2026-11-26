@@ -4254,6 +4254,122 @@ try {
     JSON.stringify({ lines: dl.lines, handed }));
   }
 
+  if (await stage('file-kinds')) {
+  // The byte route serves a file as nothing a browser would run: every file
+  // says nosniff, a page or a script is plain bytes to save, and an SVG or a
+  // PDF is an attachment. What a surface does with a file must survive that:
+  // a PNG and an SVG are drawn in the pane (an `img` draws an attachment), and
+  // DOWNLOAD hands a PDF over under its own name, whole. Proven at the
+  // hand-off, as file-download is.
+  await evalIn(`
+    window.__argusHandoffs = [];
+    if (!window.__argusHandoffWrapped) {
+      window.__argusHandoffWrapped = true;
+      const press = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () {
+        if (this.download) {
+          const entry = { name: this.download, href: this.href, text: null };
+          window.__argusHandoffs.push(entry);
+          if (this.href.startsWith('blob:')) fetch(this.href).then((r) => r.text()).then((t) => { entry.text = t; }).catch(() => { entry.text = '(unreadable)'; });
+          return;
+        }
+        return press.call(this);
+      };
+    }
+    return true;`);
+  const PDF_TEXT = '%PDF-1.4 a stand-in, every byte of it invented';
+  const kinds = await evalIn(`
+    document.getElementById('gutter-files').click(); await sleep(800);
+    const fp = () => [...document.querySelectorAll('.pane-files')].find(p => p.offsetParent !== null);
+    const term = console_input();
+    const say = async (line, ms) => { term.value = line;
+      term.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await sleep(ms); await console_settled(); };
+    const named = (n) => [...fp().querySelectorAll('.files-row')].find(r => r.querySelector('.files-name')?.textContent.trim() === n);
+    const click = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const settle = async (want, tries = 60) => { for (let i = 0; i < tries; i++) { await sleep(500); if (want()) return true; } return false; };
+    const close_press = () => [...fp().querySelectorAll('.files-content-header button')].find((b) => b.textContent.trim() === 'CLOSE')?.click();
+    const downloadVerb = () => [...fp().querySelectorAll('.files-row-zone .listing-action')].find(b => b.textContent.trim() === 'DOWNLOAD') ?? null;
+    // A folder of this run's own, under a name no other run or person has: the
+    // session may be one somebody is using. Nothing is sent up until the
+    // session stands in exactly that folder, and only that folder is removed
+    // afterwards, whatever happened in between.
+    const folder = 'smoke-kinds-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    await say('cd ~', 2500);
+    const homeAt = () => window.__argusPromptContext?.cwd ?? '';
+    await settle(() => /^[/]home[/][^/]+$/.test(homeAt()), 20);
+    const place = homeAt() + '/' + folder;
+    if (!/^[/]home[/][^/]+[/]smoke-kinds-[a-z0-9]+-[a-z0-9]+$/.test(place)) return { error: 'no home to make the folder in: ' + homeAt() };
+    // The folder is this run's only when this run made it: mkdir without -p
+    // fails on a name that is taken, and then nothing is removed afterwards.
+    // The receipt is mkdir's own line for this exact path, read from what the
+    // console said after this line was sent: a status shared by every line the
+    // session runs could be another line's.
+    const mkdirMark = console_mark();
+    await say('mkdir ' + place, 2500);
+    const receipt = 'Created directory: ' + place;
+    const made = await settle(() => console_since(mkdirMark, '\\n').split('\\n').some((l) => l.trim() === receipt), 20);
+    if (!made) return { error: 'mkdir ' + place + ' gave no receipt: nothing was sent up, nothing is removed' };
+    try {
+    await say('cd ' + place, 2500);
+    const there = await settle(() => homeAt() === place, 60);
+    if (!there) return { error: 'the session did not move to ' + place + ' (it is at ' + homeAt() + '): nothing was sent up' };
+    // A pane sends files to the folder it shows, which is its own and may lag
+    // the session's: the chooser is touched only when the pane shows this folder.
+    const paneAt = () => fp()?.querySelector('.files-crumb-here')?.dataset.path ?? null;
+    const shown = await settle(() => paneAt() === place, 60);
+    if (!shown) return { error: 'the files pane shows ' + paneAt() + ', not ' + place + ': nothing was sent up' };
+    const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEklEQVR4nGP4z8DwH4QZYAwAR8oH+Rq28akAAAAASUVORK5CYII='), (c) => c.charCodeAt(0));
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="7" height="5"><rect width="7" height="5" fill="red"/></svg>';
+    const chooser = fp().querySelector('.files-upload-input');
+    if (paneAt() !== place) return { error: 'the files pane moved to ' + paneAt() + ' before the files were chosen: nothing was sent up' };
+    const dt = new DataTransfer();
+    dt.items.add(new File([png], 'dot.png', { type: 'image/png' }));
+    dt.items.add(new File([svg], 'dot.svg', { type: 'image/svg+xml' }));
+    dt.items.add(new File([${JSON.stringify(PDF_TEXT)}], 'paper.pdf', { type: 'application/pdf' }));
+    chooser.files = dt.files;
+    chooser.dispatchEvent(new Event('change', { bubbles: true }));
+    const uploaded = await settle(() => named('dot.png') && named('dot.svg') && named('paper.pdf'), 140);
+    // One image opened in the pane: its drawn size, and what the route said of its bytes.
+    const drawn = async (name) => {
+      const row = named(name); if (!row) return { error: 'no row' };
+      click(row.querySelector('.listing-control') ?? row);
+      let image = null;
+      await settle(() => { image = fp().querySelector('.files-image'); return image !== null && image.complete && image.naturalWidth > 0; }, 40);
+      if (image === null) return { error: 'no image view' };
+      const said = await fetch(image.src).then((r) => ({ sniff: r.headers.get('x-content-type-options'), type: r.headers.get('content-type'), saved: (r.headers.get('content-disposition') ?? '').startsWith('attachment'), policy: r.headers.get('content-security-policy') })).catch(() => null);
+      const out = { width: image.naturalWidth, height: image.naturalHeight, said };
+      close_press(); await sleep(600);
+      await settle(() => named(name), 20);
+      return out;
+    };
+    const pngDrawn = await drawn('dot.png');
+    const svgDrawn = await drawn('dot.svg');
+    let pressed = false;
+    if (named('paper.pdf')) {
+      click(named('paper.pdf')); await sleep(700);
+      const verb = downloadVerb();
+      if (verb !== null) { verb.click(); pressed = true; }
+      await settle(() => /download: paper\\.pdf/.test(console_text()), 60);
+    }
+    for (let i = 0; i < 20 && (window.__argusHandoffs ?? []).some((h) => h.text === null); i++) await sleep(150);
+    const handed = (window.__argusHandoffs ?? []).map((h) => ({ name: h.name, blob: h.href.startsWith('blob:'), text: h.text }));
+    close_press(); await sleep(300);
+    return { uploaded, pngDrawn, svgDrawn, pressed, handed };
+    } finally {
+      await say('cd ~', 2500);
+      await say('rm -r ' + place, 3000);
+    }`);
+  check('a PNG and an SVG from the store are drawn in the files pane',
+    kinds.error === undefined && kinds.uploaded && kinds.pngDrawn.width === 2 && kinds.pngDrawn.height === 3 && kinds.svgDrawn.width === 7 && kinds.svgDrawn.height === 5,
+    JSON.stringify(kinds));
+  check('their bytes say nosniff and a sandbox, and the SVG is an attachment that an img still draws',
+    kinds.error === undefined && kinds.pngDrawn.said?.sniff === 'nosniff' && kinds.svgDrawn.said?.sniff === 'nosniff' && /^sandbox/.test(kinds.svgDrawn.said?.policy ?? '') && kinds.svgDrawn.said?.type === 'image/svg+xml' && kinds.svgDrawn.said?.saved === true && kinds.pngDrawn.said?.saved === false,
+    JSON.stringify(kinds.error ?? { png: kinds.pngDrawn, svg: kinds.svgDrawn }));
+  check('DOWNLOAD hands a PDF over under its own name, whole',
+    kinds.error === undefined && kinds.pressed && kinds.handed.length === 1 && kinds.handed[0].name === 'paper.pdf' && kinds.handed[0].blob && kinds.handed[0].text === PDF_TEXT,
+    JSON.stringify(kinds.error ?? { pressed: kinds.pressed, handed: kinds.handed }));
+  }
+
   if (await stage('folder-download')) {
   // DOWNLOAD on a folder row: a browser has no directory to fill, so the
   // row runs the kernel's `download "<folder>" .` in the console, which

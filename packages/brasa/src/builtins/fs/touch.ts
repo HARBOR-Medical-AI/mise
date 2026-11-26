@@ -32,6 +32,7 @@ import { errno_words, touch_render, vfs_fail, type VFSDispatcher, type VFSItem, 
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
+import { hostDisk_refusal } from '../../core/surface.js';
 
 /** Outcome of one touch target, for the envelope model. */
 export interface TouchOutcome {
@@ -56,6 +57,8 @@ export interface TouchRunOptions {
  * @returns Its text, or why it could not be read.
  */
 function localFile_read(localFilePath: string): { text: string } | { reason: string } {
+  const refused: string | null = hostDisk_refusal(`touch --withContentsFromFile ${localFilePath}`);
+  if (refused !== null) return { reason: refused };
   try {
     if (!fs.existsSync(localFilePath)) return { reason: `Local file not found: ${localFilePath}` };
     return { text: fs.readFileSync(localFilePath, 'utf-8') };

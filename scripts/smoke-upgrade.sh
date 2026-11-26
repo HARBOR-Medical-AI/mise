@@ -83,7 +83,8 @@ grep -q "adopted $E2E_USER's session" "$WORK/porter.log" || fail "the porter did
 # The password goes in a 0600 file, never on a command line (law a-secret-is-never-on-the-command-line).
 umask 077
 node -e "require('fs').writeFileSync('$WORK/login.json', JSON.stringify({ username: process.env.E2E_USER, password: process.env.E2E_PASSWORD }))"
-login() { curl -s -c "$WORK/cj" -H 'content-type: application/json' -d @"$WORK/login.json" "http://127.0.0.1:$PORT/login"; }
+# A login says where it comes from, as a browser at this door would: the door takes a password only from itself.
+login() { curl -s -c "$WORK/cj" -H 'content-type: application/json' -H "origin: http://127.0.0.1:$PORT" -d @"$WORK/login.json" "http://127.0.0.1:$PORT/login"; }
 
 # 3. The first login: the door sees an older kernel and restarts it, once.
 first=$(login); say "first login: $first"

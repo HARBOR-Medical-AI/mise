@@ -904,6 +904,13 @@ export const editMessageSchema = z.object({
 export const deliverMessageSchema = z.object({
   type: z.literal('deliver'),
   deliverId: z.string(),
+  /**
+   * The surface's own id for the line whose command asked for this delivery.
+   * A surface on another machine honours a delivery only against what that
+   * line said, so it must be told which line; a delivery that does not say
+   * is refused by such a surface.
+   */
+  id: z.string().optional(),
   path: z.string(),
   filename: z.string(),
   destination: z.string().optional(),
@@ -912,7 +919,7 @@ export const deliverMessageSchema = z.object({
 });
 
 /** What to deliver, before the daemon adds the correlation id. */
-export type FileDeliverRequest = Omit<z.infer<typeof deliverMessageSchema>, 'type' | 'deliverId'>;
+export type FileDeliverRequest = Omit<z.infer<typeof deliverMessageSchema>, 'type' | 'deliverId' | 'id'>;
 
 /** Where a delivered file landed, as the surface reports it. */
 export type FileDeliverResult = Omit<

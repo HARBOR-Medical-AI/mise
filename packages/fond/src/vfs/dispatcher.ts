@@ -45,6 +45,9 @@ const VFS_FALLBACK_NONE: VFSProvider = {
   },
 };
 
+/** Where a path stands in a session's tree (`VFSDispatcher.path_standing`). */
+export type PathStanding = 'outside' | 'absent' | 'unknown';
+
 /**
  * Routes filesystem requests to the mount that owns each path, or to the
  * fallback.
@@ -114,6 +117,38 @@ export class VFSDispatcher {
       (p: VFSProvider) => absolutePath === p.prefix || absolutePath.startsWith(p.prefix + "/")
     );
     return match || this.defaultProvider;
+  }
+
+  /**
+   * Where a path stands for the session that owns this tree.
+   *
+   * `outside`: no mount serves it and the fallback holds nothing, so the
+   * path is not this tree's at all. `absent`: the mount that owns it has
+   * proved nothing is there (`absence_prove`). `unknown`: anything else,
+   * a mount that cannot prove absence, a proof that failed, or a path
+   * above a mount.
+   *
+   * A caller that would look somewhere else for a file (the engine's own
+   * disk) may do so on `outside` or `absent`, and never on `unknown`: a
+   * read that failed is not a file that is missing.
+   *
+   * @param pathStr - The absolute path.
+   * @returns Where it stands.
+   */
+  async path_standing(pathStr: string): Promise<PathStanding> {
+    const target: string = path_canonicalize(pathStr);
+    const provider: VFSProvider = this.provider_get(target);
+    if (provider === this.defaultProvider && !this.path_isVirtual(target)) {
+      if (provider === VFS_FALLBACK_NONE) return 'outside';
+    } else if (provider === this.defaultProvider) {
+      return 'unknown';
+    }
+    if (provider.absence_prove === undefined) return 'unknown';
+    try {
+      return (await provider.absence_prove(target)) ? 'absent' : 'unknown';
+    } catch {
+      return 'unknown';
+    }
   }
 
   /**

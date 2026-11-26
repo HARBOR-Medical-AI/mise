@@ -27,6 +27,7 @@ import {
   LocalBerthResolver,
   type Berth,
 } from '../src/daemon/berth.js';
+import { berthLines_say } from '../src/daemon/token.js';
 import { createServer, type Server } from 'node:net';
 import type { AddressInfo } from 'node:net';
 
@@ -250,6 +251,28 @@ describe('a porter\'s sessions', () => {
     berth_write(berth_of(identity, 'ws://127.0.0.1:1111'));
     expect(berth_read(identity)?.url).toBe('ws://127.0.0.1:1111');
     expect(berthAll_read().filter((one) => one.identity === identity)).toHaveLength(1);
+  });
+
+  it('a berth only a porter session holds is listed with that session\'s record, and off a terminal its lines name that file and hold no token', async () => {
+    const identity: string = identity_normalise('chris', 'http://cube/api/v1/');
+    const root: string = join(runtimeDir, 'state', 'porter');
+    const path: string = berth_pathIn(join(root, berthKey_compute(identity), 'run'), identity);
+    mkdirSync(join(path, '..'), { recursive: true });
+    const berth = berth_of(identity, 'ws://127.0.0.1:9999');
+    writeFileSync(path, JSON.stringify(berth));
+    const located = await new LocalBerthResolver().listLocated();
+    expect(located).toEqual([{ berth: expect.objectContaining({ identity, token: berth.token }), path }]);
+    // Not the path an identity alone would give in this runtime, where no such file is.
+    expect(path).not.toBe(berth_path(identity));
+    expect(existsSync(berth_path(identity))).toBe(false);
+    expect(existsSync(path)).toBe(true);
+    const off: string = berthLines_say(berth.identity, berth.url, berth.token, false, located[0]!.path).join('\n');
+    expect(off).not.toContain(berth.token);
+    expect(off).toContain(`--token <the token kept in ${path}>`);
+    expect(off).toContain(`http://127.0.0.1:9999/ (its token is kept in ${path})`);
+    const on: string = berthLines_say(berth.identity, berth.url, berth.token, true, located[0]!.path).join('\n');
+    expect(on).toContain(`http://127.0.0.1:9999/?token=${berth.token}`);
+    expect(on).toContain(`--token ${berth.token}`);
   });
 
   it('honours PORTER_STATE_DIR', () => {

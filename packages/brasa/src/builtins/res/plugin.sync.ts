@@ -71,6 +71,7 @@ import { authorizationFailure_is, sudoHint_build } from '../../core/elevation.js
 import { exitCode_set } from '../../core/handlerRun.js';
 import { repl_confirm } from '../../core/question.js';
 import { sink_dataLine } from '../../core/sink.js';
+import { hostDisk_refusal } from '../../core/surface.js';
 import { path_resolve, type ParsedArgs } from '../utils.js';
 import { storePath_resolve } from '../../core/paths.js';
 
@@ -133,6 +134,8 @@ export async function pluginAdd_run(parsed: ParsedArgs, words: readonly string[]
   const salsa: Salsa = await salsa_load();
   let result: PluginAddResult;
   if (jsonFile !== undefined) {
+    const hostRefused: string | null = hostFile_refusal(jsonFile);
+    if (hostRefused !== null) return verb_fail(hostRefused);
     const text: string | null = await fileText_read(jsonFile, salsa);
     if (text === null) return verb_fail(`plugin add: could not read ${jsonFile}: ${errorStack.stack_pop()?.message ?? 'no such file'}`);
     result = await salsa.plugin_addJson(text, options, note);
@@ -180,6 +183,8 @@ export async function pluginSync_run(parsed: ParsedArgs, words: readonly string[
   const seams: SyncSeams = seamsGiven ?? syncSeams_cube;
   const source: PluginIndexSource | null = await syncSource_resolve(parsed, salsa);
   if (source === null) return verb_fail('plugin sync: no index to read.');
+  const hostRefused: string | null = hostSource_refusal('plugin sync', source);
+  if (hostRefused !== null) return verb_fail(hostRefused);
   const index: Result<PluginIndex> = await pluginIndex_load(source);
   if (!index.ok) return verb_fail(errorStack.stack_pop()?.message ?? 'plugin sync: the index could not be read.');
 
@@ -258,6 +263,10 @@ export async function pluginValidate_run(parsed: ParsedArgs, fetcher: typeof fet
   const ref: string | undefined = typeof parsed['ref'] === 'string' ? parsed['ref'] : undefined;
   const single: boolean = word.endsWith('.json');
   const source: PluginIndexSource | null = single ? null : await sourcePath_resolve(pluginIndexSource_parse(word, 'host', ref));
+  const hostRefused: string | null = source === null ? null : hostSource_refusal('plugin validate', source);
+  if (hostRefused !== null) return verb_fail(hostRefused);
+  const fileRefused: string | null = single ? hostFile_refusal(word) : null;
+  if (fileRefused !== null) return verb_fail(fileRefused);
   const index: Result<PluginIndex> = single ? await singleFileIndex_read(word, salsa) : source === null ? { ok: false } : await pluginIndex_load(source, fetcher);
   if (!index.ok) return verb_fail(errorStack.stack_pop()?.message ?? `plugin validate: could not read ${word}`);
   let report: ValidateReport;
@@ -416,6 +425,31 @@ async function sourcePath_resolve(source: PluginIndexSource | null): Promise<Plu
 }
 
 /**
+ * Why an index on the engine's own disk may not be read, when it may not.
+ *
+ * An index named `host:<folder>` (typed, or set as the session's index) is a
+ * folder on the machine the session runs on. A CUBE or GitHub source is not.
+ *
+ * @param verb - The verb asking (`plugin sync`).
+ * @param source - The index's source.
+ * @returns The refusal, or null for a source that is not the host's disk or a disk that is the operator's.
+ */
+function hostSource_refusal(verb: string, source: PluginIndexSource): string | null {
+  return source.kind === 'host' ? hostDisk_refusal(`${verb}: host:${source.path}`) : null;
+}
+
+/**
+ * Why a descriptor file on the engine's own disk may not be read, when it may not.
+ *
+ * @param word - The file as typed: a host path, `host:<path>`, or `cube:<path>`.
+ * @returns The refusal, or null for a file in CUBE or a disk that is the operator's.
+ */
+function hostFile_refusal(word: string): string | null {
+  if (word.startsWith('cube:')) return null;
+  return hostDisk_refusal(`plugin: ${word.startsWith('host:') ? word.slice('host:'.length) : word}`);
+}
+
+/**
  * Reads one descriptor file as a one-descriptor index (no schema).
  *
  * @param word - The file (a host path, or `cube:<path>`).
@@ -440,6 +474,11 @@ async function fileText_read(word: string, salsa: Salsa): Promise<string | null>
   if (word.startsWith('cube:')) {
     const text: Result<string> = await salsa.fileContent_get(await storePath_resolve(word.slice('cube:'.length)));
     return text.ok ? text.value : null;
+  }
+  const refused: string | null = hostFile_refusal(word);
+  if (refused !== null) {
+    errorStack.stack_push('error', refused);
+    return null;
   }
   const path: string = word.startsWith('host:') ? word.slice('host:'.length) : word;
   try {

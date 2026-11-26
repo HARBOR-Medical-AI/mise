@@ -41,6 +41,18 @@ export type DoorFetch = (url: string, init?: RequestInit) => Promise<Response>;
  * @returns The URL ending in `/`.
  * @throws Error naming the door when it is not an HTTP(S) address.
  */
+/**
+ * The origin of a door, as a browser standing at it would send: its scheme,
+ * host and port, nothing after.
+ *
+ * @param door - The door, as typed or as normalised.
+ * @returns The origin.
+ * @throws {Error} When the door is no address.
+ */
+export function doorOrigin_derive(door: string): string {
+  return new URL(door_normalise(door)).origin;
+}
+
 export function door_normalise(door: string): string {
   const typed: string = door.trim();
   const withScheme: string = /^[a-z][a-z0-9+.-]*:\/\//i.test(typed) ? typed : `http://${typed}`;
@@ -109,7 +121,9 @@ export function doorWire_build(door: string, key: string): string {
 export async function door_login(door: string, username: string, password: string, fetchLike: DoorFetch = fetch): Promise<DoorEntry | { refused: string }> {
   const response = await fetchLike(`${door_normalise(door)}login`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    // A login by password says where it comes from, as a browser at this door would: the door takes a
+    // password, and anything on its cookie, only from itself.
+    headers: { 'content-type': 'application/json', accept: 'application/json', origin: doorOrigin_derive(door) },
     body: JSON.stringify({ username, password }),
   });
   if (!response.ok) {
@@ -304,7 +318,7 @@ export async function door_loginByToken(door: string, token: string, fetchLike: 
 export async function door_loginForToken(door: string, username: string, password: string, tokenName: string, fetchLike: DoorFetch = fetch): Promise<{ entry: DoorEntry; grant: DoorTokenGrant } | { refused: string }> {
   const response = await fetchLike(`${door_normalise(door)}login`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    headers: { 'content-type': 'application/json', accept: 'application/json', origin: doorOrigin_derive(door) },
     body: JSON.stringify({ username, password, tokenName }),
   });
   if (!response.ok) return { refused: await refusal_read(response) };
@@ -566,7 +580,8 @@ export async function door_enter(door: string, username: string | undefined, pas
   return {
     identity: `${user} through the door at ${doorUrl}`,
     url: doorWire_build(doorUrl, entered.key),
-    headers: { cookie: entered.cookie },
+    // The wire is opened on the door's cookie, and so says it is opened from the door.
+    headers: { cookie: entered.cookie, origin: doorOrigin_derive(doorUrl) },
   };
 }
 
@@ -610,6 +625,7 @@ async function doorByToken_enter(doorUrl: string, token: string, name: string | 
   return {
     identity: `${entered.user || 'you'} through the door at ${doorUrl}`,
     url: doorWire_build(doorUrl, entered.key),
-    headers: { cookie: entered.cookie },
+    // The wire is opened on the door's cookie, and so says it is opened from the door.
+    headers: { cookie: entered.cookie, origin: doorOrigin_derive(doorUrl) },
   };
 }

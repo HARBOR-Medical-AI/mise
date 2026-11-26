@@ -203,3 +203,30 @@ describe('a name is the name its folder gives it', () => {
     expect(deleteAsked).not.toHaveBeenCalled();
   });
 });
+
+describe('the native mount proves a path absent only on a whole look', () => {
+  it('says so when the parent was listed whole and nothing there holds the name', async () => {
+    cube_answer({ 'dirs /home': [folderRow], 'files /home/x': [{ id: 3, fname: 'home/x/other.mise' }] });
+    expect(await provider.absence_prove('/home/x/gone.mise')).toBe(true);
+    expect(errorStack.stack_getAll?.() ?? []).toEqual([]);
+  });
+
+  it('does not when a file, a folder or a link holds the name', async () => {
+    cube_answer({ 'dirs /home': [folderRow], 'files /home/x': [{ id: 3, fname: 'home/x/there.mise' }] });
+    expect(await provider.absence_prove('/home/x/there.mise')).toBe(false);
+    cube_answer({ 'dirs /home': [folderRow], 'dirs /home/x': [{ id: 9, path: 'home/x/there' }] });
+    expect(await provider.absence_prove('/home/x/there')).toBe(false);
+    cube_answer({ 'dirs /home': [folderRow], 'links /home/x': [{ id: 4, fname: 'home/x/there.chrislink' }] });
+    expect(await provider.absence_prove('/home/x/there')).toBe(false);
+  });
+
+  it.each([
+    ['could not be read at all', new Error('Files: the answer at offset 0 is not a list')],
+    ['came back short of its second page', new Error('Files: the answer at offset 100 is not a list')],
+    ['was refused', new Error('Files: 403 Forbidden')],
+  ])('does not when a listing of the parent %s, and leaves no note of the try behind', async (_what: string, failure: Error) => {
+    cube_answer({ 'dirs /home': [folderRow], 'files /home/x': failure });
+    expect(await provider.absence_prove('/home/x/gone.mise')).toBe(false);
+    expect(errorStack.stack_getAll?.() ?? []).toEqual([]);
+  });
+});
