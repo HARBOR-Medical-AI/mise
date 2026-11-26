@@ -118,6 +118,13 @@ describe('file_moveById field drift', () => {
     expect(put).toHaveBeenCalledTimes(1);
   });
 
+  it('asks for no second move when a held destination is named in words that happen to hold "required"', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ["Folder with path 'home/ada/required' already exists."] } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/home/ada/required')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
   it('asks the caller again before the older field, and stops when the place is no longer shown free', async () => {
     const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['This field is required.'] } } }); });
     mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });

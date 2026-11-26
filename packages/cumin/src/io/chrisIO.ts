@@ -113,8 +113,12 @@ const LEGACY_RENAME_FIELD: string = 'path';
  */
 const LEGACY_FIELD_MISSING: RegExp = /At least one of the fields 'public' or 'path' must be provided/;
 
-/** What a serializer says of a field it requires and did not get. */
-const FIELD_REQUIRED: RegExp = /required/i;
+/**
+ * What CUBE's serializers say of a field they require and did not get: the
+ * whole message, since CUBE writes path names into its other refusals and
+ * a folder may be called `required`.
+ */
+const FIELD_REQUIRED: string = 'This field is required.';
 
 /**
  * The messages a refusal's body carries under one key.
@@ -149,7 +153,7 @@ function fieldRefusal_detect(error: unknown): boolean {
   if (typeof body === 'string') return LEGACY_FIELD_MISSING.test(body);
   if (body === null || typeof body !== 'object') return false;
   if (refusalMessages_read(body, 'non_field_errors').some((said: string): boolean => LEGACY_FIELD_MISSING.test(said))) return true;
-  return refusalMessages_read(body, LEGACY_RENAME_FIELD).some((said: string): boolean => FIELD_REQUIRED.test(said));
+  return refusalMessages_read(body, LEGACY_RENAME_FIELD).some((said: string): boolean => said.trim() === FIELD_REQUIRED);
 }
 
 export class ChrisIO {
