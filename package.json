@@ -11,7 +11,7 @@
     "build": "npm run build -w @fnndsc/fond && npm run build -w @fnndsc/menu && npm run build -w @fnndsc/orrery && npm run build -w bsd-trek && npm run build -w @fnndsc/argus && npm run build -w @fnndsc/cumin && npm run build -w @fnndsc/salsa && npm run build -w @fnndsc/chili && npm run build -w @fnndsc/brasa && npm run build -w @fnndsc/calypso && npm run build -w @fnndsc/stratus && npm run build -w @fnndsc/chell && npm run build -w @fnndsc/porter",
     "test": "npm test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
-    "lint:tests": "eslint --config eslint.tests.config.mjs \"packages/*/tests/**/*.{ts,js}\" \"packages/*/test/**/*.{ts,js}\" \"apps/*/tests/**/*.{ts,js}\"",
+    "lint:tests": "eslint --config eslint.tests.config.mjs \"packages/*/{test,tests}/**/*.{ts,js}\" \"apps/*/{test,tests}/**/*.{ts,js}\"",
     "lint:seam": "eslint --config eslint.seam.config.mjs \"packages/*/src/**/*.ts\" \"apps/*/src/**/*.ts\"",
     "lint:casts": "node scripts/cast-ratchet.mjs",
     "test:ratchets": "node scripts/ratchets.test.mjs",

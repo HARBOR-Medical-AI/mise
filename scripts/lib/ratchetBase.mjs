@@ -105,15 +105,43 @@ export function fileAtCommit_read(sha, file, cwd) {
 }
 
 /**
+ * Reads one section of a baseline file as ceilings: a map from a name to a
+ * count that is a whole number, zero or more. Anything else is refused,
+ * since a ceiling that is not a number compares as neither above nor below
+ * and would pass everything; and a file without the section has no
+ * ceilings, which is not the same as having none to enforce.
+ *
+ * @param {string} text - The baseline file's text.
+ * @param {string} section - The section's name.
+ * @param {string} where - What the text is (a file, a file at a commit), for the words.
+ * @returns {Record<string, number>} The ceilings.
+ * @throws {Error} When the text is not JSON, the section is missing or is not a map, or a ceiling is not a non-negative safe integer.
+ */
+export function ceilings_read(text, section, where) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${where} is not JSON: ${error.message}`);
+  }
+  const map = parsed === null || typeof parsed !== 'object' ? undefined : parsed[section];
+  if (map === undefined) throw new Error(`${where} has no "${section}" section`);
+  if (map === null || typeof map !== 'object' || Array.isArray(map)) throw new Error(`${where}: "${section}" is not a map of names to counts`);
+  for (const [key, count] of Object.entries(map)) {
+    if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) throw new Error(`${where}: the ceiling of ${key} in "${section}" is ${JSON.stringify(count)}, which is not a whole number of zero or more`);
+  }
+  return map;
+}
+
+/**
  * Compares one section's ceilings with the same section at the base.
  *
  * @param {Record<string, number>} here - The ceilings committed in this change.
- * @param {Record<string, number> | undefined} atBase - The same section at the base; undefined when the base had no such section (it is new).
+ * @param {Record<string, number>} atBase - The same section at the base.
  * @param {string} what - The section's name, for the words.
  * @returns {string[]} One line per ceiling that is higher here than at the base; a key the base's section did not have had a ceiling of zero.
  */
 export function ceilings_compare(here, atBase, what) {
-  if (atBase === undefined) return [];
   const risen = [];
   for (const [key, count] of Object.entries(here)) {
     const was = atBase[key] ?? 0;

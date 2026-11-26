@@ -26,7 +26,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { base_resolve, ceilings_compare, fileAtCommit_read } from './lib/ratchetBase.mjs';
+import { base_resolve, ceilings_compare, ceilings_read, fileAtCommit_read } from './lib/ratchetBase.mjs';
 
 const PATTERN = /as unknown as/g;
 
@@ -54,7 +54,13 @@ function sourceFiles_collect(dir, out) {
 
 const root = resolve(process.argv[2] ?? fileURLToPath(new URL('..', import.meta.url)));
 const baselinePath = resolve(process.argv[3] ?? join(root, BASELINE_FILE));
-const ceilings = JSON.parse(readFileSync(baselinePath, 'utf8')).casts ?? {};
+let ceilings;
+try {
+  ceilings = ceilings_read(readFileSync(baselinePath, 'utf8'), 'casts', process.argv[3] ?? BASELINE_FILE);
+} catch (error) {
+  console.error(`cast-ratchet: ${error.message}`);
+  process.exit(1);
+}
 
 const counts = {};
 const hits = {};
@@ -96,7 +102,12 @@ if (process.argv[3] === undefined) {
   try {
     const base = base_resolve(process.env, root);
     const text = fileAtCommit_read(base.sha, BASELINE_FILE, root);
-    if (text !== null) faults.push(...ceilings_compare(ceilings, JSON.parse(text).casts, 'casts').map((line) => `${line} (base: ${base.how}, ${base.sha.slice(0, 8)})`));
+    // Nothing to compare with in one case only: the base's tree has no baseline file. A file there that
+    // lacks the section, or holds something that is not a count, is an error and not a fresh start.
+    if (text !== null) {
+      const atBase = ceilings_read(text, 'casts', `${BASELINE_FILE} at the base (${base.sha.slice(0, 8)})`);
+      faults.push(...ceilings_compare(ceilings, atBase, 'casts').map((line) => `${line} (base: ${base.how}, ${base.sha.slice(0, 8)})`));
+    }
   } catch (error) {
     faults.push(`the ceilings could not be compared with the base's: ${error.message}`);
   }
