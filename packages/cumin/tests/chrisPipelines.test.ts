@@ -220,6 +220,20 @@ describe('pipeline_resolve', () => {
     expect(pipelineResource_recall(client, 43)).toBeNull();
   });
 
+  it('refuses a search whose rows hold and whose served item is not a pipeline, and keeps none of it', async () => {
+    const client = {
+      getPipelines: jest.fn(async () => {
+        const list: ListResource = listResource_make([{ id: 45, name: 'Qux' }]);
+        Object.defineProperty(list, 'getItems', { value: (): unknown[] => [{ data: { id: 45, name: 4500 } }] });
+        return list;
+      }),
+    };
+    mockClientGet.mockResolvedValue(client);
+    expect((await pipeline_resolve('Qux')).ok).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', expect.stringContaining('name is a number, where a string is read'));
+    expect(pipelineResource_recall(client, 45)).toBeNull();
+  });
+
   it('keeps the items of a search that holds, so the good path is unchanged', async () => {
     const client = {
       getPipelines: jest.fn(async () => {

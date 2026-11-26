@@ -253,6 +253,19 @@ describe('feed notes', () => {
     if (result.ok) expect(result.value).toEqual({ title: '', content: '' });
   });
 
+  it('keeps the field a note has and reads a missing or null one as empty text', async () => {
+    const note_ask = async (data: unknown): Promise<unknown> => {
+      mockClientGet.mockResolvedValue({ getFeed: jest.fn(async () => ({ getNote: jest.fn(async () => ({ data })) })) });
+      const result = await feedNote_get(5);
+      return result.ok ? result.value : 'Err';
+    };
+    expect(await note_ask({ title: 'Only a title' })).toEqual({ title: 'Only a title', content: '' });
+    expect(await note_ask({ title: null, content: 'Body' })).toEqual({ title: '', content: 'Body' });
+    // There, and not text: refused.
+    expect(await note_ask({ title: 'T', content: 7 })).toBe('Err');
+    expect(await note_ask({ title: {}, content: 'Body' })).toBe('Err');
+  });
+
   it('updates the note in place', async () => {
     const put = jest.fn(async () => ({}));
     mockClientGet.mockResolvedValue({

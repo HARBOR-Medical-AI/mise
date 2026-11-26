@@ -396,13 +396,14 @@ const DATA_CARRIER_OR_NONE_SHAPE: Shape<DataCarrier | null> = shape_nullable(DAT
 const FEED_DATA_SHAPE: Shape<FeedData> = shape_build<FeedData>('a feed')(['id', 'number'], ['name', 'string']);
 
 /**
- * A plugin instance as this contract hands it on. Those it is handed to read
- * each field through a conversion, a default or a check of their own (its
- * id through `Number`, its status through `?? ''`, its output path through
- * `?.`), so nothing in it is read unchecked and it is held only to being an
- * object.
+ * A plugin instance, in a listing or read by itself. Instances are a feed's
+ * topology: each is keyed by its id, joined to its feed and its parent by
+ * theirs, and named by its plugin, so those are held, where a row with
+ * none of them would otherwise be handed on as a job with no number. Its
+ * other fields are held to their kinds when they are there.
  */
-const PLUGIN_INSTANCE_DATA_SHAPE: Shape<PluginInstanceData> = shape_build<PluginInstanceData>('a plugin instance')(
+const PLUGIN_INSTANCE_ROW_SHAPE: Shape<PluginInstanceData> = shape_build<PluginInstanceData>('a plugin instance')(
+  ['id', 'number'], ['feed_id', 'number'], ['plugin_name', 'string'], ['previous_id', 'number?|null'],
   ['plugin_type', 'string?|null'], ['status', 'string?|null'], ['output_path', 'string?|null'], ['start_date', 'string?|null'], ['end_date', 'string?|null'], ['size', 'number?|null'], ['compute_resource_name', 'string?|null'], ['raw', 'string?|null'],
 );
 
@@ -531,7 +532,7 @@ export async function pluginInstancesPage_get(
   client: Client,
   params: Record<string, unknown>,
 ): Promise<ListPage<PluginInstanceData>> {
-  return listPage_wrap(PLUGIN_INSTANCE_DATA_SHAPE, await resource_call(client, WIRE_PAGE_SHAPE, 'getPluginInstances', params),
+  return listPage_wrap(PLUGIN_INSTANCE_ROW_SHAPE, await resource_call(client, WIRE_PAGE_SHAPE, 'getPluginInstances', params),
   );
 }
 
@@ -554,7 +555,7 @@ export async function pluginInstance_get(
     instanceID,
   );
   if (!resource) return null;
-  const data: PluginInstanceData | null = itemData_get(resource, PLUGIN_INSTANCE_DATA_SHAPE);
+  const data: PluginInstanceData | null = itemData_get(resource, PLUGIN_INSTANCE_ROW_SHAPE);
 
   return {
     data,
@@ -762,6 +763,23 @@ export interface PipelineHandle {
  * @returns The typed page; totalCount is null when the server sent none.
  */
 /**
+ * Whether a page serves its items through `getItems`. A page with no
+ * `getItems` does not; one whose `getItems` is there and cannot be called
+ * is malformed, and is refused, not read as a page with nothing in it.
+ *
+ * @param page - The page.
+ * @param what - What a row of it is, for the refusal's words.
+ * @returns True when `getItems` is there and callable.
+ * @throws {ShapeError} When `getItems` is there and is not a function.
+ */
+function pageServes_check(page: WirePage | null | undefined, what: string): boolean {
+  const serve: unknown = page?.getItems;
+  if (serve === undefined || serve === null) return false;
+  if (typeof serve !== 'function') throw new ShapeError(`a list of ${what}`, 'getItems', Array.isArray(serve) ? 'an array' : `a ${typeof serve}`, 'a function');
+  return true;
+}
+
+/**
  * Reads the data of each item a page served, by its place. An item that
  * was served carries a row: one with no data is a malformed row, refused
  * with its place, and never dropped from the page.
@@ -785,7 +803,7 @@ function listPageFlexible_wrap<T>(shape: Shape<T>, page: WirePage | null | undef
   // A page that carries `data` is read from it, whatever else it has: data that is there and is not a list
   // is malformed, and is refused there, not passed over in favour of the page's items.
   const carriesData: boolean = page?.data !== undefined && page.data !== null;
-  if (carriesData || typeof page?.getItems !== 'function') {
+  if (carriesData || !pageServes_check(page, shape.what)) {
     return listPage_wrap(shape, page);
   }
   const served: Array<{ data?: unknown }> = items_get(page, DATA_CARRIER_SHAPE);
@@ -937,14 +955,19 @@ export async function pipeline_get(
     ? (kept as { data?: unknown })
     : await resource_call(client, DATA_CARRIER_OR_NONE_SHAPE, 'getPipeline', pipelineID);
   if (!resource) return null;
+  // Held to what a pipeline is before it is kept: an answer that is not one is refused now and asked for
+  // again next time, never recalled.
+  const data: PipelineRecord | null = itemData_get(resource, PIPELINE_DATA_SHAPE);
   if (kept === null) pipelineResource_keep(client, pipelineID, resource);
 
   const pipingsPage_get = async (params: Record<string, unknown>): Promise<ListPage<PluginPipingItem>> => {
     const page: WirePage | null = await resource_call(resource, WIRE_PAGE_SHAPE, 'getPluginPipings', params);
-    const rawItems: Array<{ data?: unknown }> =
-      typeof page?.getItems === 'function'
-        ? items_get(page, DATA_CARRIER_SHAPE)
-        : listData_get(page, PLUGIN_PIPING_DATA_SHAPE).map((row: PluginPipingData): { data?: unknown } => ({ data: row }));
+    // The page's own rows are held whenever they are there, whichever way the pipings are then read: the
+    // served items are read when the page serves them, since a piping's plugin hangs off its item.
+    const rows: PluginPipingData[] = listData_get(page, PLUGIN_PIPING_DATA_SHAPE);
+    const rawItems: Array<{ data?: unknown }> = pageServes_check(page, 'a plugin piping')
+      ? items_get(page, DATA_CARRIER_SHAPE)
+      : rows.map((row: PluginPipingData): { data?: unknown } => ({ data: row }));
     // Each served item carries a piping: one with no data is a malformed row, refused with its place.
     const served: PluginPipingData[] = servedRows_read(rawItems, PLUGIN_PIPING_DATA_SHAPE);
     const pipings: PluginPipingItem[] = rawItems
@@ -968,7 +991,7 @@ export async function pipeline_get(
   };
 
   return {
-    data: itemData_get(resource, PIPELINE_DATA_SHAPE),
+    data,
 
     pluginPipingsPage_get: pipingsPage_get,
 

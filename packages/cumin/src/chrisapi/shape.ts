@@ -122,6 +122,14 @@ interface NullableOf<S> {
   readonly nullable: S;
 }
 
+/**
+ * The name of a shape of `T`: text, when `T` is an object that is neither a
+ * list nor callable, and nothing at all otherwise. A shape's check asks for
+ * such an object, so a shape of a list or of a function has no name it can
+ * be given, and does not compile.
+ */
+export type RecordName<T> = T extends readonly unknown[] ? never : T extends (...args: never[]) => unknown ? never : string;
+
 /** The kind a field's type is checked as, or a shape of it when it is an object. */
 type KindOf<V> =
   V extends string ? 'string'
@@ -290,7 +298,7 @@ function field_check(found: unknown, check: FieldCheck, at: string, outer: strin
  * @example
  * const FEED: Shape<Feed> = shape_build<Feed>('a feed')(['id', 'number'], ['name', 'string?']);
  */
-export function shape_build<T extends object>(what: string): (...fields: ShapeField<T>[]) => Shape<T> {
+export function shape_build<T extends object>(what: RecordName<T>): (...fields: ShapeField<T>[]) => Shape<T> {
   return (...fields: ShapeField<T>[]): Shape<T> => {
     const checks: FieldCheck[] = (fields as ReadonlyArray<readonly [string, unknown]>).map(([name, spec]: readonly [string, unknown]): FieldCheck => fieldCheck_read(name, spec));
     return {
@@ -315,7 +323,7 @@ export function shape_build<T extends object>(what: string): (...fields: ShapeFi
  * @example
  * const ROW: Shape<Record<string, unknown>> = shape_object('a permission row');
  */
-export function shape_object<T extends object = Record<string, unknown>>(what: string): Shape<T> {
+export function shape_object<T extends object = Record<string, unknown>>(what: RecordName<T>): Shape<T> {
   return shape_build<T>(what)();
 }
 

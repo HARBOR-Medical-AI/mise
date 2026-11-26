@@ -32,11 +32,13 @@ interface FakeInstance {
 }
 
 function instance(status?: string, extra: Partial<FakeInstance> = {}): FakeInstance {
+  // An instance as CUBE serves one: its id, its feed's and its plugin's name are always there.
+  const whole = { id: 42, feed_id: 9, plugin_name: 'pl-pfdorun', previous_id: null };
   return {
-    data: status === undefined ? {} : { status },
     put: jest.fn().mockResolvedValue(undefined),
     delete: jest.fn().mockResolvedValue(undefined),
     ...extra,
+    data: { ...whole, ...(status === undefined ? {} : { status }), ...(extra.data ?? {}) },
   };
 }
 
@@ -205,7 +207,7 @@ describe('jobs_statusBatch', () => {
 
   it('maps ids to statuses, skipping failures and misses', async () => {
     const getPluginInstance = jest.fn(async (id: number) => {
-      if (id === 1) return { data: { status: 'running' } };
+      if (id === 1) return { data: { id: 1, feed_id: 9, plugin_name: 'pl-x', status: 'running' } };
       if (id === 2) throw new Error('nope');
       return null; // id === 3
     });
@@ -264,7 +266,7 @@ describe('jobs_find', () => {
 describe('job_feedID_get', () => {
   it('returns the feed id', async () => {
     clientGet.mockResolvedValue(
-      client({ getPluginInstances: jest.fn().mockResolvedValue({ data: [{ feed_id: 1107 }] }) })
+      client({ getPluginInstances: jest.fn().mockResolvedValue({ data: [{ id: 1, feed_id: 1107, plugin_name: 'pl-x' }] }) })
     );
     const r = await job_feedID_get(1);
     expect(r.ok && r.value).toBe(1107);

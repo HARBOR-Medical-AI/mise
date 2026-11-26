@@ -44,9 +44,6 @@ interface IdRecord {
 /** A record whose id is used as a number. */
 const ID_SHAPE: Shape<IdRecord> = shape_build<IdRecord>('a record')(['id', 'number']);
 
-/** A record whose id is looked at before it is used: nothing in it is read unchecked. */
-const ID_SEEN_SHAPE: Shape<IdRecord> = shape_object<IdRecord>('a record');
-
 /** A list item that carries a record with an id. */
 interface IdItem {
   /** The record. */
@@ -216,15 +213,17 @@ interface KeptItem {
  * may be refused, before any of it goes into the memo.
  *
  * @param page - The list response.
- * @returns The items that carry a numeric id, with it.
- * @throws {ShapeError} When the page's items are not a list of resources.
+ * @returns The items that carry a pipeline, each with its id.
+ * @throws {ShapeError} When the page's items are not a list of resources, or one carries data that is not a pipeline's.
  */
 function pipelineItems_read(page: PipelinePage): KeptItem[] {
   const items: DataCarrier[] = items_get(page, DATA_CARRIER_SHAPE);
   const kept: KeptItem[] = [];
   for (const item of items) {
-    const data: IdRecord | null = itemData_get(item, ID_SEEN_SHAPE);
-    if (data && typeof data.id === 'number') kept.push({ id: data.id, item });
+    // Held to what a pipeline is, as a later read of the kept item will hold it: an item that is not one
+    // fails the page here, and is never kept to fail that later read instead.
+    const data: PipelineRecord | null = itemData_get(item, PIPELINE_RECORD_SHAPE);
+    if (data !== null) kept.push({ id: data.id, item });
   }
   return kept;
 }

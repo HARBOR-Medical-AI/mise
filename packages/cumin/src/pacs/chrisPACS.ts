@@ -106,7 +106,9 @@ export interface PACSQueryRecord {
 const PACS_SERVER_SHAPE: Shape<PACSServer> = shape_build<PACSServer>('a PACS server')(['id', 'number']);
 
 /** A PACS query just made: its id is the number everything after refers to it by. */
-const PACS_QUERY_MADE_SHAPE: Shape<PACSQueryRecord> = shape_build<PACSQueryRecord>('a PACS query')(['id', 'number']);
+const PACS_QUERY_MADE_SHAPE: Shape<PACSQueryRecord> = shape_build<PACSQueryRecord>('a PACS query')(
+  ['id', 'number'], ['title', 'string?|null'], ['status', 'string?|null'], ['pacs_id', 'number?|null'],
+);
 
 /** A PACS query read back: each of its fields is read through a check of its own. */
 const PACS_QUERY_READ_SHAPE: Shape<PACSQueryRecord> = shape_build<PACSQueryRecord>('a PACS query')(
@@ -349,13 +351,19 @@ export async function pacsQueries_create(
       return Err();
     }
     const query: Awaited<ReturnType<typeof client.createPACSQuery>> = await client.createPACSQuery(id, data);
+    // CUBE's receipt for the query it made. With none there is no id to refer to the query by: said, as a
+    // failure, and the create is not sent again (CUBE may well have made it).
     const queryData: PACSQueryRecord | null = itemData_get(query, PACS_QUERY_MADE_SHAPE);
+    if (queryData === null) {
+      errorStack.stack_push("error", "CUBE took the PACS query and did not say which query it made of it.");
+      return Err();
+    }
     const record: PACSQueryRecord = {
-      id: queryData?.id as number,
-      title: queryData?.title as string,
-      status: queryData?.status as string,
-      pacs_id: queryData?.pacs_id as number,
-      result: queryData?.result,
+      id: queryData.id,
+      title: queryData.title,
+      status: queryData.status,
+      pacs_id: queryData.pacs_id,
+      result: queryData.result,
     };
     return Ok(record);
   } catch (error: unknown) {

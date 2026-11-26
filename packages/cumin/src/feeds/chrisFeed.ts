@@ -461,10 +461,16 @@ export interface FeedComment {
   owner_username: string;
 }
 
-/** A feed's note: its title and content are read with a default each. */
-const FEED_NOTE_SHAPE: Shape<FeedNote> = shape_build<FeedNote>('a feed note')(
-  ['title', 'string'], ['content', 'string'],
-);
+/** A feed's note as CUBE answers it: either field may be missing or null, and is text when it is there. */
+interface FeedNoteWire {
+  /** The note's title. */
+  title?: string | null;
+  /** The note's body. */
+  content?: string | null;
+}
+
+/** A feed note on the wire; a missing or null field is read as empty text by the reader. */
+const FEED_NOTE_SHAPE: Shape<FeedNoteWire> = shape_build<FeedNoteWire>('a feed note')(['title', 'string?|null'], ['content', 'string?|null']);
 
 /** A comment on a feed: its id is shown and its owner's name padded as text. */
 const FEED_COMMENT_SHAPE: Shape<FeedComment> = shape_build<FeedComment>('a feed comment')(['id', 'number'], ['owner_username', 'string']);
@@ -488,7 +494,7 @@ export async function feedNote_get(feedId: number): Promise<Result<FeedNote>> {
       return Err();
     }
     const note: Note = await feed.getNote();
-    const data: FeedNote | null = itemData_get(note, FEED_NOTE_SHAPE);
+    const data: FeedNoteWire | null = itemData_get(note, FEED_NOTE_SHAPE);
     return Ok({ title: data?.title ?? '', content: data?.content ?? '' });
   } catch (error: unknown) {
     const msg: string = error instanceof Error ? error.message : String(error);

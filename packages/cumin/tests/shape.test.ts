@@ -149,6 +149,15 @@ describe('what a shape may be of', () => {
     const wrongKind: unknown = shape_build<Piping>('a piping')(['id', 'string']);
     // @ts-expect-error a field the type requires may not be called optional
     const wrongAbsence: unknown = shape_build<Piping>('a piping')(['id', 'number?']);
+    // @ts-expect-error a list is not what a shape's check passes
+    const ofList: unknown = shape_build<string[]>('a list');
+    // @ts-expect-error nor is something callable
+    const ofCallable: unknown = shape_build<() => number>('a function');
+    // @ts-expect-error the same through the object-only builder: a list
+    const objectOfList: unknown = shape_object<string[]>('a list');
+    // @ts-expect-error and something callable
+    const objectOfCallable: unknown = shape_object<() => number>('a function');
+    expect([ofList, ofCallable, objectOfList, objectOfCallable]).toHaveLength(4);
     expect([ofNumber, ofText, wrongKind, wrongAbsence]).toHaveLength(4);
   });
 });
