@@ -327,11 +327,12 @@ export async function queryCheckpoint_prime(user: string | undefined): Promise<v
   const identity: string | null = await sessionIdentity_name();
   if (identity === null) return;
   flushIdentity = identity;
-  // The index in memory is this identity's from here: if it leaves during the run, it is written under its name.
-  queryIndexCheckpoint_hold(identity);
-  await queryIndexCheckpoint_restore(identity).catch((): QueryIndexRestoreResult => (
-    { restored: false, count: 0 }
+  const restored: QueryIndexRestoreResult = await queryIndexCheckpoint_restore(identity).catch((): QueryIndexRestoreResult => (
+    { restored: false, count: 0, reason: 'unread' }
   ));
+  // The index holds the whole of the checkpoint (or there was none to hold): from here it is written as it
+  // stands. A checkpoint that could not be read is not claimed: what this run learns is added to the file.
+  if (restored.restored || restored.reason === 'no query index') queryIndexCheckpoint_hold(identity);
 }
 
 /**
@@ -426,7 +427,6 @@ async function startupWarmup_walk(
     if (identity !== null) {
       checkpointIdentity = identity;
       flushIdentity = identity;
-      queryIndexCheckpoint_hold(identity);
       const listings: ListCheckpointRestoreResult = await listCheckpoint_restore(identity);
       listCheckpoint_watch(identity);
       reporter?.log(
@@ -440,6 +440,10 @@ async function startupWarmup_walk(
       // row of the collection drags its compressed result — and cheap to
       // keep, so it is restored rather than swept again.
       const queries: QueryIndexRestoreResult = await queryIndexCheckpoint_restore(identity);
+      // The index now holds the whole of this identity's checkpoint, and is written as it stands from here.
+      // Said after the restore, never before it: until then a write adds to the file and replaces nothing.
+      // (Not heard, as the watcher is not installed, if someone else connected while the disk was read.)
+      if (queries.restored || queries.reason === 'no query index') queryIndexCheckpoint_hold(identity);
       queryIndexCheckpoint_watch(identity);
       reporter?.log(
         queries.restored ? 'ok' : 'skip',

@@ -57,7 +57,7 @@ import { type ProcRosterSyncKind,
   feed_rename,
   type FeedNote,
 } from '@fnndsc/cumin';
-import { identityCache_usable, identityChange_listen } from '@fnndsc/cumin/identity-epoch';
+import { identityCache_usable, identityOwned_make } from '@fnndsc/cumin/identity-epoch';
 import { VFSProvider, VFSItem, CpOptions } from '../provider.js';
 import { job_cancel, job_delete, job_statusFetch, job_logFetch, jobs_statusBatch } from '../../jobs/index.js';
 import { procJoins_sweep } from '../../dag/feedJoins.js';
@@ -114,14 +114,6 @@ interface FeedVisit {
   cursor: string | null;
 }
 
-const feedVisits: Map<number, FeedVisit> = new Map();
-const feedVisitInflight: Map<number, Promise<boolean>> = new Map();
-let rosterWalkedAt: number = 0;
-let rosterSyncInflight: Promise<number[]> | null = null;
-/** Whether the sync in flight walks the whole index (a forced one waits out a delta, then walks). */
-let rosterSyncInflightFull: boolean = false;
-/** When the last roster sync settled (0: none yet). */
-let rosterSyncedAt: number = 0;
 
 /**
  * Each feed collection's total as the last walk read it: the yardstick a
@@ -139,7 +131,6 @@ interface RosterTotals {
   public: number | null;
 }
 
-let rosterTotals: RosterTotals = { owned: null, public: null };
 
 /**
  * What a roster delta reads from one collection's newest page.
@@ -154,8 +145,6 @@ interface RosterPeek {
   total: number | null;
   overflow: boolean;
 }
-let procTopologyPromise: Promise<void> | null = null;
-let procTopologyFailure: string | undefined;
 
 /** Private continuation state retained when a topology page request fails. */
 interface ProcTopologySweepState {
@@ -166,8 +155,74 @@ interface ProcTopologySweepState {
   seenFeedIDs: Set<number>;
 }
 
-let procTopologyResumeState: ProcTopologySweepState | null = null;
-let procTopologyScopedResumeFeedIDs: number[] | null = null;
+/**
+ * The bookkeeping of the proc tree's reading, for one identity: what has
+ * been visited and when, what is being read now, where an interrupted walk
+ * left off. It is one identity's. The session's own current work shares
+ * one; it is made anew at each change of identity; and work begun before
+ * such a change, or done as another user, has one of its own (see
+ * `identityOwned_make`): so a visit begun as one identity neither tells the
+ * next that a feed of the same number is fresh, nor moves its cursor, nor
+ * is joined by it.
+ */
+interface ProcBookkeeping {
+  /** When each feed was last checked, and the newest timestamp seen on its rows. */
+  feedVisits: Map<number, FeedVisit>;
+  /** The visits under way, by feed, which a second asker joins. */
+  feedVisitInflight: Map<number, Promise<boolean>>;
+  /** When the whole roster was last walked (0: never). */
+  rosterWalkedAt: number;
+  /** The roster sync under way, which a second asker joins. */
+  rosterSyncInflight: Promise<number[]> | null;
+  /** Whether the sync in flight walks the whole index (a forced one waits out a delta, then walks). */
+  rosterSyncInflightFull: boolean;
+  /** When the last roster sync settled (0: none yet). */
+  rosterSyncedAt: number;
+  /** Each feed collection's total as the last walk read it. */
+  rosterTotals: RosterTotals;
+  /** The topology sweep under way. */
+  procTopologyPromise: Promise<void> | null;
+  /** Why the last topology sweep failed, when it did. */
+  procTopologyFailure: string | undefined;
+  /** Where an interrupted topology sweep left off. */
+  procTopologyResumeState: ProcTopologySweepState | null;
+  /** The feeds an interrupted scoped sweep still owes. */
+  procTopologyScopedResumeFeedIDs: number[] | null;
+  /** The feed-index walk in flight, which every caller that needs one joins. */
+  procCacheBuildPromise: Promise<number[]> | null;
+  /** The backfill of jobs' pipeline runs, once per identity; null until started. */
+  pipelineBackfill: Promise<void> | null;
+  /** How far the backfill has read: pages known so far, pages read, and whether it is reading. */
+  pipelineBackfillProgress: { pages: number; read: number; running: boolean };
+  /** Feeds waiting for their topology walk, in the order the roster found them. */
+  topologyCatchupQueue: number[];
+  /** The feeds queued, for a cheap membership test. */
+  topologyCatchupQueued: Set<number>;
+  /** The runner draining the queue, when one is. */
+  topologyCatchupRun: Promise<void> | null;
+}
+
+/** The bookkeeping for the work that asks: see {@link ProcBookkeeping}. */
+const book_get: () => ProcBookkeeping = identityOwned_make((): ProcBookkeeping => ({
+  feedVisits: new Map(),
+  feedVisitInflight: new Map(),
+  rosterWalkedAt: 0,
+  rosterSyncInflight: null,
+  rosterSyncInflightFull: false,
+  rosterSyncedAt: 0,
+  rosterTotals: { owned: null, public: null },
+  procTopologyPromise: null,
+  procTopologyFailure: undefined,
+  procTopologyResumeState: null,
+  procTopologyScopedResumeFeedIDs: null,
+  procCacheBuildPromise: null,
+  pipelineBackfill: null,
+  pipelineBackfillProgress: { pages: 0, read: 0, running: false },
+  topologyCatchupQueue: [],
+  topologyCatchupQueued: new Set(),
+  topologyCatchupRun: null,
+}));
+
 
 /** Lifecycle states for the session's global topology sweep. */
 export type ProcTopologyState = 'idle' | 'running' | 'complete' | 'failed';
@@ -224,8 +279,6 @@ async function procFeeds_index(page_fetch: FeedPageFetch, indexed: Map<number, P
 
 // ── Cache build ────────────────────────────────────────────────────────────
 
-/** The feed-index walk in flight, which every caller that needs one joins. */
-let procCacheBuildPromise: Promise<number[]> | null = null;
 
 /**
  * Builds the feed index, joining a walk already in flight. A cold boot
@@ -239,11 +292,12 @@ function procCache_build(): Promise<number[]> {
   // The walk that is joined is the session's own identity's. Work begun under another identity, or done as
   // another user, walks for itself into a tree of its own, and neither joins this one nor is joined.
   if (!identityCache_usable()) return procCache_buildRun();
-  if (procCacheBuildPromise) return procCacheBuildPromise;
+  const book: ProcBookkeeping = book_get();
+  if (book.procCacheBuildPromise) return book.procCacheBuildPromise;
   const build: Promise<number[]> = procCache_buildRun().finally((): void => {
-    if (procCacheBuildPromise === build) procCacheBuildPromise = null;
+    if (book.procCacheBuildPromise === build) book.procCacheBuildPromise = null;
   });
-  procCacheBuildPromise = build;
+  book_get().procCacheBuildPromise = build;
   return build;
 }
 
@@ -290,11 +344,11 @@ async function procCache_buildRun(): Promise<number[]> {
       publicTotal = null;
     }
   }
-  rosterTotals = { owned: ownedTotal, public: publicTotal };
+  book_get().rosterTotals = { owned: ownedTotal, public: publicTotal };
 
   const knownBefore: Set<number> = new Set(cache.feedIDs_get());
   const reconciliationTargets: number[] = cache.feeds_reconcile(Array.from(indexed.values()));
-  for (const feedID of reconciliationTargets) feedVisits.delete(feedID);
+  for (const feedID of reconciliationTargets) book_get().feedVisits.delete(feedID);
   // Feeds the walk brought in — created since, or shared to this identity —
   // are annunciated; a first build has no "before", so nothing arrives.
   if (knownBefore.size > 0) {
@@ -303,7 +357,7 @@ async function procCache_buildRun(): Promise<number[]> {
     await arrivalsUnseen_mark(cache, arrived);
   }
   cache.built_set();
-  rosterWalkedAt = Date.now();
+  book_get().rosterWalkedAt = Date.now();
   // The feeds this walk leaves without topology — arrivals, and a restored
   // roster's feeds whose shards were never written — land behind the prompt.
   procTopologyCatchup_roster(cache);
@@ -494,7 +548,7 @@ export function feedInstances_ensureStarted(feedID: number): FeedTopologyReadine
  */
 async function procFeed_evict(feedID: number): Promise<void> {
   const cache: ProcCache = procCache_get();
-  feedVisits.delete(feedID);
+  book_get().feedVisits.delete(feedID);
   cache.feedTopology_evict(feedID);
   const client = await chrisConnection.client_get();
   if (!client) return;
@@ -1288,8 +1342,8 @@ async function procFeedAbsent_probe(feedID: number): Promise<ProcFeed | null> {
 
 /** Moves one collection's yardstick by one adopted feed; an unknown yardstick stays unknown. */
 function rosterTotal_bump(collection: keyof RosterTotals): void {
-  const total: number | null = rosterTotals[collection];
-  if (total !== null) rosterTotals[collection] = total + 1;
+  const total: number | null = book_get().rosterTotals[collection];
+  if (total !== null) book_get().rosterTotals[collection] = total + 1;
 }
 
 export async function feedStatus_refresh(feedID: number): Promise<void> {
@@ -1350,11 +1404,7 @@ function feedCursor_derive(cache: ProcCache, feedID: number): string | null {
 /** How many pages the pipeline backfill reads at once. */
 const PIPELINE_BACKFILL_LANES: number = 6;
 
-/** The backfill of jobs' pipeline runs, once per session; null until started. */
-let pipelineBackfill: Promise<void> | null = null;
 
-/** How far the backfill has read: pages known so far, pages read, and whether it is reading. */
-const pipelineBackfillProgress: { pages: number; read: number; running: boolean } = { pages: 0, read: 0, running: false };
 
 /**
  * How far the backfill of jobs' pipeline runs has read, for `proc stat`.
@@ -1362,7 +1412,7 @@ const pipelineBackfillProgress: { pages: number; read: number; running: boolean 
  * @returns Pages known so far, pages read, and whether it is reading now.
  */
 export function procPipelineBackfill_status(): { pages: number; read: number; running: boolean } {
-  return { ...pipelineBackfillProgress };
+  return { ...book_get().pipelineBackfillProgress };
 }
 
 /**
@@ -1395,7 +1445,7 @@ async function tasks_runInLanes(tasks: ReadonlyArray<() => Promise<void>>, lanes
  * @returns Nothing; the walk runs on.
  */
 export function procPipeline_backfillStart(): void {
-  if (pipelineBackfill !== null) return;
+  if (book_get().pipelineBackfill !== null) return;
   const cache: ProcCache = procCache_get();
   let unknown: boolean = false;
   for (const id of cache.feedIDs_get()) {
@@ -1405,10 +1455,10 @@ export function procPipeline_backfillStart(): void {
     if (unknown) break;
   }
   if (!unknown) return;
-  pipelineBackfill = (async (): Promise<void> => {
+  book_get().pipelineBackfill = (async (): Promise<void> => {
     const client = await chrisConnection.client_get();
     if (!client) return;
-    pipelineBackfillProgress.running = true;
+    book_get().pipelineBackfillProgress.running = true;
     const feeds: number[] = cache.feedIDs_get().filter((id: number): boolean =>
       cache.feedInstanceIDs_get(id).some((instID: number): boolean => cache.instance_get(instID)?.pipelineName === undefined));
     const merge = (page: ListPage<PluginInstanceData>): void => {
@@ -1416,7 +1466,7 @@ export function procPipeline_backfillStart(): void {
         const instID: number = Number(inst.id);
         if (cache.instance_get(instID) !== undefined) cache.instanceMetrics_set(instID, instanceMetrics_extract(inst));
       }
-      pipelineBackfillProgress.read += 1;
+      book_get().pipelineBackfillProgress.read += 1;
     };
     const page_read = async (feedID: number, offset: number): Promise<ListPage<PluginInstanceData>> =>
       await pluginInstancesPage_get(client, { feed_id: feedID, limit: PAGE, offset });
@@ -1428,12 +1478,12 @@ export function procPipeline_backfillStart(): void {
       for (const { feedID, from, total } of lists) {
         for (let offset: number = from; offset < total; offset += PAGE) rest.push({ feedID, offset });
       }
-      pipelineBackfillProgress.pages += rest.length;
+      book_get().pipelineBackfillProgress.pages += rest.length;
       await tasks_runInLanes(rest.map(({ feedID, offset }) => async (): Promise<void> => {
         merge(await page_read(feedID, offset));
       }), PIPELINE_BACKFILL_LANES);
     };
-    pipelineBackfillProgress.pages = feeds.length;
+    book_get().pipelineBackfillProgress.pages = feeds.length;
     const lists: Array<{ feedID: number; from: number; total: number }> = [];
     await tasks_runInLanes(feeds.map((feedID: number) => async (): Promise<void> => {
       const first: ListPage<PluginInstanceData> = await page_read(feedID, 0);
@@ -1461,9 +1511,9 @@ export function procPipeline_backfillStart(): void {
   })().catch((error: unknown): void => {
     const msg: string = error instanceof Error ? error.message : String(error);
     errorStack.stack_push('warning', `proc: reading jobs' pipeline runs failed (${msg})`);
-    pipelineBackfill = null;
+    book_get().pipelineBackfill = null;
   }).finally((): void => {
-    pipelineBackfillProgress.running = false;
+    book_get().pipelineBackfillProgress.running = false;
   });
 }
 
@@ -1521,7 +1571,7 @@ async function feedRows_merge(
 export async function feedVisit_sync(feedID: number, force: boolean = false): Promise<boolean> {
   // As with the walk: only the session's own identity's work joins a visit in flight, or leaves one to be joined.
   const shared: boolean = identityCache_usable();
-  const inflight: Promise<boolean> | undefined = shared ? feedVisitInflight.get(feedID) : undefined;
+  const inflight: Promise<boolean> | undefined = shared ? book_get().feedVisitInflight.get(feedID) : undefined;
   if (inflight) return inflight;
   const run: Promise<boolean> = feedVisit_run(feedID, force)
     .then((): boolean => true)
@@ -1531,8 +1581,8 @@ export async function feedVisit_sync(feedID: number, force: boolean = false): Pr
       return false;
     })
     // Its own entry only: a visit that outlived a change of identity does not remove the next identity's.
-    .finally((): void => { if (feedVisitInflight.get(feedID) === run) feedVisitInflight.delete(feedID); });
-  if (shared) feedVisitInflight.set(feedID, run);
+    .finally((): void => { if (book_get().feedVisitInflight.get(feedID) === run) book_get().feedVisitInflight.delete(feedID); });
+  if (shared) book_get().feedVisitInflight.set(feedID, run);
   return run;
 }
 
@@ -1541,7 +1591,7 @@ async function feedVisit_run(feedID: number, force: boolean): Promise<void> {
   const feed: ProcFeed | undefined = cache.feed_get(feedID);
   if (!feed || !cache.topologyLoaded_has(feedID)) return;
 
-  const visit: FeedVisit | undefined = feedVisits.get(feedID);
+  const visit: FeedVisit | undefined = book_get().feedVisits.get(feedID);
   const settled: boolean = feedCached_isSettled(cache, feedID) && !feed_isActive(feed);
   const now: number = Date.now();
   if (!force && visit && now - visit.checkedAt < FEED_VISIT_COALESCE_MS) return;
@@ -1559,7 +1609,7 @@ async function feedVisit_run(feedID: number, force: boolean): Promise<void> {
     cache.feed_add(fresh);
   }
   if (!moved) {
-    feedVisits.set(feedID, { checkedAt: now, cursor: visit?.cursor ?? null });
+    book_get().feedVisits.set(feedID, { checkedAt: now, cursor: visit?.cursor ?? null });
     return;
   }
 
@@ -1567,7 +1617,7 @@ async function feedVisit_run(feedID: number, force: boolean): Promise<void> {
   const since: Record<string, unknown> = cursor ? { min_end_date: cursor } : {};
   cursor = await feedRows_merge(cache, client, since, feedID, cursor);
   cursor = await feedRows_merge(cache, client, { active: true }, feedID, cursor);
-  feedVisits.set(feedID, { checkedAt: Date.now(), cursor });
+  book_get().feedVisits.set(feedID, { checkedAt: Date.now(), cursor });
 }
 
 /**
@@ -1594,11 +1644,12 @@ export async function procRoster_sync(force: boolean = false): Promise<number[]>
       return [];
     });
   }
-  if (rosterSyncInflight) {
+  if (book_get().rosterSyncInflight) {
     // A forced walk asked during a delta is not that delta: it waits for it,
     // then walks (the operator's REFRESH would otherwise see nothing new).
-    if (!force || rosterSyncInflightFull) return rosterSyncInflight;
-    await rosterSyncInflight.catch((): number[] => []);
+    const under: Promise<number[]> = book_get().rosterSyncInflight as Promise<number[]>;
+    if (!force || book_get().rosterSyncInflightFull) return under;
+    await under.catch((): number[] => []);
     return procRoster_sync(true);
   }
   const cache: ProcCache = procCache_get();
@@ -1613,11 +1664,11 @@ export async function procRoster_sync(force: boolean = false): Promise<number[]>
     })
     .finally((): void => {
       // Its own bookkeeping only: a sync that outlived a change of identity leaves the next identity's as it is.
-      if (rosterSyncInflight !== run) return;
-      rosterSyncInflight = null; rosterSyncInflightFull = false; rosterSyncedAt = Date.now(); cache.rosterSync_clear();
+      if (book_get().rosterSyncInflight !== run) return;
+      book_get().rosterSyncInflight = null; book_get().rosterSyncInflightFull = false; book_get().rosterSyncedAt = Date.now(); cache.rosterSync_clear();
     });
-  rosterSyncInflight = run;
-  rosterSyncInflightFull = kind === 'full';
+  book_get().rosterSyncInflight = run;
+  book_get().rosterSyncInflightFull = kind === 'full';
   return run;
 }
 
@@ -1632,15 +1683,15 @@ export async function procRoster_sync(force: boolean = false): Promise<number[]>
  * @returns True when it is skipped.
  */
 function rosterDelta_throttled(kind: ProcRosterSyncKind | null, force: boolean): boolean {
-  if (force || kind !== 'delta' || rosterSyncedAt === 0) return false;
-  const since: number = Date.now() - rosterSyncedAt;
+  if (force || kind !== 'delta' || book_get().rosterSyncedAt === 0) return false;
+  const since: number = Date.now() - book_get().rosterSyncedAt;
   return since >= 0 && since < ROSTER_DELTA_MIN_MS;
 }
 
 /** Which roster walk a sync would run now, or null when the cache is not in service. */
 function procRosterSync_kind(cache: ProcCache, force: boolean): ProcRosterSyncKind | null {
   if (!cache.built || cache.lifecycle_get().state !== 'current') return null;
-  return force || Date.now() - rosterWalkedAt >= ROSTER_FULL_WALK_MS ? 'full' : 'delta';
+  return force || Date.now() - book_get().rosterWalkedAt >= ROSTER_FULL_WALK_MS ? 'full' : 'delta';
 }
 
 /**
@@ -1692,7 +1743,7 @@ async function procRoster_run(force: boolean): Promise<number[]> {
   const cache: ProcCache = procCache_get();
   if (!cache.built || cache.lifecycle_get().state !== 'current') return [];
 
-  if (force || Date.now() - rosterWalkedAt >= ROSTER_FULL_WALK_MS) {
+  if (force || Date.now() - book_get().rosterWalkedAt >= ROSTER_FULL_WALK_MS) {
     return procCache_build();
   }
 
@@ -1731,7 +1782,7 @@ async function rosterCollection_peek(page_fetch: FeedPageFetch, maxKnown: number
  * @returns True when the total moved.
  */
 function rosterTotal_moved(collection: keyof RosterTotals, peek: RosterPeek): boolean {
-  const expected: number | null = rosterTotals[collection];
+  const expected: number | null = book_get().rosterTotals[collection];
   if (expected === null || peek.total === null || peek.overflow) return false;
   return peek.total !== expected + peek.newer.length;
 }
@@ -1780,7 +1831,7 @@ async function procRosterDelta_run(
       fresh,
     );
   }
-  rosterTotals = { owned: owned.total, public: pub.total };
+  book_get().rosterTotals = { owned: owned.total, public: pub.total };
   for (const feed of fresh.values()) cache.feed_add(feed);
   cache.arrivals_note(Array.from(fresh.keys()));
   await arrivalsUnseen_mark(cache, Array.from(fresh.keys()));
@@ -1819,12 +1870,6 @@ export async function procRoster_bootSync(): Promise<number[]> {
 // detached walk at a time lands them: a feed-scoped page or two each, off
 // the lane, annunciated by the load register like a visit's walk.
 
-/** Feeds waiting for their topology walk, in the order the roster found them. */
-const topologyCatchupQueue: number[] = [];
-/** The feeds queued, for a cheap membership test. */
-const topologyCatchupQueued: Set<number> = new Set();
-/** The runner draining the queue, when one is. */
-let topologyCatchupRun: Promise<void> | null = null;
 
 /**
  * Queues roster feeds whose topology the cache lacks, and starts the walk
@@ -1837,17 +1882,17 @@ let topologyCatchupRun: Promise<void> | null = null;
  */
 export function procTopologyCatchup_enqueue(feedIDs: number[]): number {
   const cache: ProcCache = procCache_get();
-  if (!cache.warmupComplete || procTopologyPromise !== null) return 0;
+  if (!cache.warmupComplete || book_get().procTopologyPromise !== null) return 0;
   let queued: number = 0;
   for (const feedID of feedIDs) {
     if (!cache.feed_get(feedID) || cache.topologyLoaded_has(feedID)) continue;
-    if (cache.loading_get(feedID) !== undefined || topologyCatchupQueued.has(feedID)) continue;
-    topologyCatchupQueue.push(feedID);
-    topologyCatchupQueued.add(feedID);
+    if (cache.loading_get(feedID) !== undefined || book_get().topologyCatchupQueued.has(feedID)) continue;
+    book_get().topologyCatchupQueue.push(feedID);
+    book_get().topologyCatchupQueued.add(feedID);
     queued++;
   }
-  if (queued > 0 && topologyCatchupRun === null) {
-    topologyCatchupRun = procTopologyCatchup_run().finally((): void => { topologyCatchupRun = null; });
+  if (queued > 0 && book_get().topologyCatchupRun === null) {
+    book_get().topologyCatchupRun = procTopologyCatchup_run().finally((): void => { book_get().topologyCatchupRun = null; });
   }
   return queued;
 }
@@ -1856,12 +1901,12 @@ export function procTopologyCatchup_enqueue(feedIDs: number[]): number {
 async function procTopologyCatchup_run(): Promise<void> {
   const cache: ProcCache = procCache_get();
   for (;;) {
-    const feedID: number | undefined = topologyCatchupQueue.shift();
+    const feedID: number | undefined = book_get().topologyCatchupQueue.shift();
     if (feedID === undefined) return;
-    topologyCatchupQueued.delete(feedID);
+    book_get().topologyCatchupQueued.delete(feedID);
     if (!cache.feed_get(feedID) || cache.topologyLoaded_has(feedID)) continue;
     // A sweep that started meanwhile covers the rest.
-    if (procTopologyPromise !== null) { procTopologyCatchup_reset(); return; }
+    if (book_get().procTopologyPromise !== null) { procTopologyCatchup_reset(); return; }
     feedInstances_ensureStarted(feedID);
     const walk: Promise<void> | undefined = cache.loading_get(feedID);
     if (walk) await walk.catch((): void => { /* named in the load register; the next sync queues it again */ });
@@ -1874,7 +1919,7 @@ async function procTopologyCatchup_run(): Promise<void> {
  * @returns The catch-up's state.
  */
 export function procTopologyCatchup_status(): { queued: number; running: boolean } {
-  return { queued: topologyCatchupQueue.length, running: topologyCatchupRun !== null };
+  return { queued: book_get().topologyCatchupQueue.length, running: book_get().topologyCatchupRun !== null };
 }
 
 /**
@@ -1883,13 +1928,13 @@ export function procTopologyCatchup_status(): { queued: number; running: boolean
  * @returns Resolves when no walk is queued or running.
  */
 export async function procTopologyCatchup_await(): Promise<void> {
-  while (topologyCatchupRun !== null) await topologyCatchupRun;
+  while (book_get().topologyCatchupRun !== null) await book_get().topologyCatchupRun;
 }
 
 /** Forgets the queue (a sweep took over, or a cache cleared underneath us). */
 function procTopologyCatchup_reset(): void {
-  topologyCatchupQueue.length = 0;
-  topologyCatchupQueued.clear();
+  book_get().topologyCatchupQueue.length = 0;
+  book_get().topologyCatchupQueued.clear();
 }
 
 /**
@@ -1995,21 +2040,18 @@ async function procNode_find(nodeId: number): Promise<{ feedId: number; pluginNa
  * Forgets all visit bookkeeping (tests, and a cache cleared underneath us).
  */
 export function procVisitState_reset(): void {
-  procCacheBuildPromise = null;
-  feedVisits.clear();
-  feedVisitInflight.clear();
-  rosterWalkedAt = 0;
-  rosterSyncInflight = null;
-  rosterSyncInflightFull = false;
-  rosterSyncedAt = 0;
-  pipelineBackfill = null;
-  Object.assign(pipelineBackfillProgress, { pages: 0, read: 0, running: false });
-  rosterTotals = { owned: null, public: null };
+  book_get().procCacheBuildPromise = null;
+  book_get().feedVisits.clear();
+  book_get().feedVisitInflight.clear();
+  book_get().rosterWalkedAt = 0;
+  book_get().rosterSyncInflight = null;
+  book_get().rosterSyncInflightFull = false;
+  book_get().rosterSyncedAt = 0;
+  book_get().pipelineBackfill = null;
+  Object.assign(book_get().pipelineBackfillProgress, { pages: 0, read: 0, running: false });
+  book_get().rosterTotals = { owned: null, public: null };
   procTopologyCatchup_reset();
 }
-// What was visited, walked and is in flight is one identity's: at a change of identity it is all forgotten,
-// so that whoever connects next is neither told the roster is fresh nor handed a sync begun for another.
-identityChange_listen(procVisitState_reset);
 
 /**
  * Background topology warm-up — single paginated sweep of all plugin instances
@@ -2090,28 +2132,28 @@ function procTopologyState_create(): ProcTopologySweepState {
  * @returns The in-flight topology sweep promise.
  */
 function procTopology_start(state: ProcTopologySweepState): Promise<void> {
-  procTopologyFailure = undefined;
-  procTopologyResumeState = state;
-  procTopologyScopedResumeFeedIDs = null;
+  book_get().procTopologyFailure = undefined;
+  book_get().procTopologyResumeState = state;
+  book_get().procTopologyScopedResumeFeedIDs = null;
   const sweep: Promise<void> = procTopology_run(state);
-  procTopologyPromise = sweep;
+  book_get().procTopologyPromise = sweep;
   sweep.then(
     (): void => {
-      if (procTopologyPromise !== sweep) return;
-      procTopologyPromise = null;
+      if (book_get().procTopologyPromise !== sweep) return;
+      book_get().procTopologyPromise = null;
       if (procCache_get().warmupComplete) {
-        procTopologyFailure = undefined;
-        procTopologyResumeState = null;
+        book_get().procTopologyFailure = undefined;
+        book_get().procTopologyResumeState = null;
         procSettlementTails_run();
       } else {
-        procTopologyFailure = 'the topology sweep ended before the index completed';
+        book_get().procTopologyFailure = 'the topology sweep ended before the index completed';
       }
     },
     (error: unknown): void => {
-      if (procTopologyPromise !== sweep) return;
-      procTopologyPromise = null;
+      if (book_get().procTopologyPromise !== sweep) return;
+      book_get().procTopologyPromise = null;
       procCache_get().warmup_abort();
-      procTopologyFailure = error instanceof Error ? error.message : String(error);
+      book_get().procTopologyFailure = error instanceof Error ? error.message : String(error);
     },
   );
   return sweep;
@@ -2172,27 +2214,27 @@ async function procTopologyScoped_run(feedIDs: number[]): Promise<void> {
  */
 function procTopologyScoped_start(feedIDs: number[]): Promise<void> {
   const targets: number[] = [...feedIDs];
-  procTopologyFailure = undefined;
-  procTopologyResumeState = null;
-  procTopologyScopedResumeFeedIDs = targets;
+  book_get().procTopologyFailure = undefined;
+  book_get().procTopologyResumeState = null;
+  book_get().procTopologyScopedResumeFeedIDs = targets;
   const sweep: Promise<void> = procTopologyScoped_run(targets);
-  procTopologyPromise = sweep;
+  book_get().procTopologyPromise = sweep;
   sweep.then(
     (): void => {
-      if (procTopologyPromise !== sweep) return;
-      procTopologyPromise = null;
+      if (book_get().procTopologyPromise !== sweep) return;
+      book_get().procTopologyPromise = null;
       if (procCache_get().warmupComplete) {
-        procTopologyFailure = undefined;
-        procTopologyScopedResumeFeedIDs = null;
+        book_get().procTopologyFailure = undefined;
+        book_get().procTopologyScopedResumeFeedIDs = null;
       } else {
-        procTopologyFailure = 'the scoped topology reconciliation ended before the index completed';
+        book_get().procTopologyFailure = 'the scoped topology reconciliation ended before the index completed';
       }
     },
     (error: unknown): void => {
-      if (procTopologyPromise !== sweep) return;
-      procTopologyPromise = null;
+      if (book_get().procTopologyPromise !== sweep) return;
+      book_get().procTopologyPromise = null;
       procCache_get().warmup_abort();
-      procTopologyFailure = error instanceof Error ? error.message : String(error);
+      book_get().procTopologyFailure = error instanceof Error ? error.message : String(error);
     },
   );
   return sweep;
@@ -2204,7 +2246,8 @@ function procTopologyScoped_start(feedIDs: number[]): Promise<void> {
  * @returns The single in-flight sweep promise.
  */
 export function procTopology_warmup(): Promise<void> {
-  if (procTopologyPromise) return procTopologyPromise;
+  const sweeping: Promise<void> | null = book_get().procTopologyPromise;
+  if (sweeping) return sweeping;
   return procTopology_start(procTopologyState_create());
 }
 
@@ -2217,7 +2260,8 @@ export function procTopology_warmup(): Promise<void> {
  * @returns A promise that resolves after all supplied feeds have been refreshed.
  */
 export function procTopology_reconcileFeeds(feedIDs: number[]): Promise<void> {
-  if (procTopologyPromise) return procTopologyPromise;
+  const sweeping: Promise<void> | null = book_get().procTopologyPromise;
+  if (sweeping) return sweeping;
   return procTopologyScoped_start(feedIDs);
 }
 
@@ -2229,12 +2273,15 @@ export function procTopology_reconcileFeeds(feedIDs: number[]): Promise<void> {
  * @throws {Error} When there is no failed sweep continuation to retry.
  */
 export function procTopology_retry(): Promise<void> {
-  if (procTopologyPromise) return procTopologyPromise;
-  if (procTopologyFailure === undefined) {
+  const sweeping: Promise<void> | null = book_get().procTopologyPromise;
+  if (sweeping) return sweeping;
+  if (book_get().procTopologyFailure === undefined) {
     throw new Error('no failed topology sweep to retry');
   }
-  if (procTopologyResumeState) return procTopology_start(procTopologyResumeState);
-  if (procTopologyScopedResumeFeedIDs) return procTopologyScoped_start(procTopologyScopedResumeFeedIDs);
+  const resume: ProcTopologySweepState | null = book_get().procTopologyResumeState;
+  if (resume) return procTopology_start(resume);
+  const owed: number[] | null = book_get().procTopologyScopedResumeFeedIDs;
+  if (owed) return procTopologyScoped_start(owed);
   throw new Error('no failed topology sweep to retry');
 }
 
@@ -2244,8 +2291,8 @@ export function procTopology_retry(): Promise<void> {
  * @returns A snapshot of the lifecycle state and any failure reason.
  */
 export function procTopology_status(): ProcTopologyStatus {
-  if (procTopologyPromise) return { state: 'running', failure: undefined };
-  if (procTopologyFailure !== undefined) return { state: 'failed', failure: procTopologyFailure };
+  if (book_get().procTopologyPromise) return { state: 'running', failure: undefined };
+  if (book_get().procTopologyFailure !== undefined) return { state: 'failed', failure: book_get().procTopologyFailure };
   if (procCache_get().warmupComplete) return { state: 'complete', failure: undefined };
   return { state: 'idle', failure: undefined };
 }
@@ -2257,7 +2304,7 @@ export function procTopology_status(): ProcTopologyStatus {
  * immediately when no sweep is running.
  */
 export async function procTopology_await(): Promise<void> {
-  const sweep: Promise<void> | null = procTopologyPromise;
+  const sweep: Promise<void> | null = book_get().procTopologyPromise;
   if (sweep) await sweep;
 }
 
@@ -2277,7 +2324,7 @@ export async function procCache_refresh(feedID?: number): Promise<number[]> {
     await feedInstances_ensureLoaded(feedID);
     return [feedID];
   } else {
-    const activeSweep: Promise<void> | null = procTopologyPromise;
+    const activeSweep: Promise<void> | null = book_get().procTopologyPromise;
     if (activeSweep) {
       try {
         await activeSweep;
@@ -2285,12 +2332,12 @@ export async function procCache_refresh(feedID?: number): Promise<number[]> {
         // A full refresh replaces any failed sweep with a new idle lifecycle.
       }
     }
-    procTopologyPromise = null;
-    procTopologyFailure = undefined;
-    procTopologyResumeState = null;
-    procTopologyScopedResumeFeedIDs = null;
+    book_get().procTopologyPromise = null;
+    book_get().procTopologyFailure = undefined;
+    book_get().procTopologyResumeState = null;
+    book_get().procTopologyScopedResumeFeedIDs = null;
     procCache_get().warmup_reset();
-    feedVisits.clear();
+    book_get().feedVisits.clear();
     return procCache_build();
   }
 }

@@ -866,9 +866,11 @@ describe('the replay index in a run with no warm-up', () => {
   });
 
   it('writes what this run learned, since the debounced writer never fires: for whoever is connected at the end', async () => {
+    mockQueryIndexRestore.mockResolvedValueOnce({ restored: true, count: 3 });
     await queryCheckpoint_prime('chris');
-    // From the restore on, the index in memory is that identity's: if it leaves, it is written under its name.
+    // From the restore on, the index in memory is the whole of that identity's checkpoint, and is written as it stands.
     expect(mockQueryIndexHold).toHaveBeenCalledWith('chris@https://cube.example.org/api/v1/');
+    expect(mockQueryIndexRestore.mock.invocationCallOrder[0]).toBeLessThan(mockQueryIndexHold.mock.invocationCallOrder[0] as number);
     await queryCheckpoint_flush();
     expect(mockQueryIndexFinish).toHaveBeenCalledWith('chris@https://cube.example.org/api/v1/');
   });
@@ -881,6 +883,12 @@ describe('the replay index in a run with no warm-up', () => {
     // (That the first one's was written as it left, and that the two files hold each its own, is cumin's to test with real files.)
     expect(mockQueryIndexFinish).toHaveBeenCalledTimes(1);
     expect(mockQueryIndexFinish).toHaveBeenCalledWith('other@https://cube.example.org/api/v1/');
+  });
+
+  it('does not claim the index when the checkpoint could not be read: what the run learns is then added to the file', async () => {
+    mockQueryIndexRestore.mockRejectedValueOnce(new Error('disk'));
+    await queryCheckpoint_prime('chris');
+    expect(mockQueryIndexHold).not.toHaveBeenCalled();
   });
 
   it('does nothing without an identity to key the index by', async () => {

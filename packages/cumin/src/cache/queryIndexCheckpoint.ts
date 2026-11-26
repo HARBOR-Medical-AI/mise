@@ -23,7 +23,7 @@ import {
   type QueryIndexSnapshot,
   queryIndexForget_listen,
 } from './queryIndex';
-import { identityCache_usable, identityChange_listen, identityEpoch_get } from '../connect/identityEpoch';
+import { identityCache_usable, identityChange_listen, identityEpoch_get, identityName_get } from '../connect/identityEpoch';
 
 const QUERY_INDEX_SCHEMA: number = 1;
 
@@ -116,7 +116,7 @@ export async function queryIndexCheckpoint_restore(
 ): Promise<QueryIndexRestoreResult> {
   try {
     const began: number = identityEpoch_get();
-    const raw: string = await fs.readFile(queryIndexCheckpointPath_get(identity, root), 'utf8');
+    const raw: string = await checkpoint_text(identity, root);
     // The identity changed while the checkpoint was being read: it is the one before's, and is not put into
     // the cache of whoever is connected now.
     if (began !== identityEpoch_get() || !identityCache_usable()) return { restored: false, count: 0, reason: 'the identity changed' };
@@ -149,10 +149,63 @@ export async function queryIndexCheckpoint_save(
   root: string = queryIndexRoot_get(),
 ): Promise<void> {
   // Written only by the session's own identity's work: what other work sees of the index is not its to save
-  // under this name.
+  // under this name. And only under the name of whoever the index in memory is: a save asked for under a
+  // name that has since left (an old watcher's, a sweep begun before a switch) writes nothing.
   if (!identityCache_usable()) return;
+  if (held !== null && held.identity !== identity) return;
+  const whose: CheckpointHolder = held ?? { identity, root, restored: true };
   // The index as it stands now, taken before anything is waited for.
-  await snapshot_write(identity, root, queryIndex_get().snapshot_create());
+  await holder_write(whose, queryIndex_get().snapshot_create());
+}
+
+/** Whose checkpoint the index in memory is, and where its file is kept. */
+interface CheckpointHolder {
+  /** The identity the index is being kept for. */
+  identity: string;
+  /** The checkpoint directory. */
+  root: string;
+  /**
+   * Whether the identity's checkpoint on disk has been read into the
+   * index. When it has, the index is the whole of what is known, and is
+   * written as it stands. When it has not (the identity connected part-way
+   * through a run), the index holds only what this run learnt, and a write
+   * adds it to what the file already holds.
+   */
+  restored: boolean;
+}
+
+/** Whose checkpoint the index in memory is: whoever is connected, once they are known by name. */
+let held: CheckpointHolder | null = null;
+
+/** Where checkpoints are kept for an identity that becomes the holder by connecting (a test names its own). */
+let rootNow: string | null = null;
+
+/** The last write begun for each file: a write waits for the one before it, so they land in the order asked. */
+const writes: Map<string, Promise<void>> = new Map<string, Promise<void>>();
+
+/** Writes of an identity's index begun when that identity left, still under way. */
+const leaving: Set<Promise<void>> = new Set<Promise<void>>();
+
+/**
+ * Writes one snapshot of the index as its holder's checkpoint, after any
+ * write of the same file already asked for: so what a watcher began to
+ * save a moment before its identity left cannot land after, and over, what
+ * was written as it left.
+ *
+ * @param whose - The holder.
+ * @param snapshot - The index as it stood for that identity.
+ * @returns When the write has landed.
+ */
+function holder_write(whose: CheckpointHolder, snapshot: QueryIndexSnapshot): Promise<void> {
+  const path: string = queryIndexCheckpointPath_get(whose.identity, whose.root);
+  const before: Promise<void> = writes.get(path) ?? Promise.resolve();
+  const merged: boolean = !whose.restored;
+  const written: Promise<void> = before.then((): Promise<void> => snapshot_write(whose.identity, whose.root, snapshot, merged));
+  const settled: Promise<void> = written.then((): void => undefined, (): void => undefined).then((): void => {
+    if (writes.get(path) === settled) writes.delete(path);
+  });
+  writes.set(path, settled);
+  return written;
 }
 
 /**
@@ -161,16 +214,28 @@ export async function queryIndexCheckpoint_save(
  * @param identity - Canonical ChRIS identity string.
  * @param root - Checkpoint directory.
  * @param snapshot - The index as it stood for that identity.
+ * @param merged - Whether to add the snapshot to what the file already
+ *   holds (an entry in both is the snapshot's; the floor is the earlier).
  */
-async function snapshot_write(identity: string, root: string, snapshot: QueryIndexSnapshot): Promise<void> {
+async function snapshot_write(identity: string, root: string, snapshot: QueryIndexSnapshot, merged: boolean): Promise<void> {
   const path: string = queryIndexCheckpointPath_get(identity, root);
   const temporaryPath: string = `${path}.${process.pid}-${randomUUID()}.tmp`;
+  let entries: QueryIndexEntrySnapshot[] = snapshot.entries;
+  let floor: string | null = snapshot.floor;
+  if (merged) {
+    const kept: QueryIndexCheckpointFile | null = await file_read(identity, root);
+    if (kept !== null) {
+      const noted: Set<number> = new Set<number>(snapshot.entries.map((entry: QueryIndexEntrySnapshot): number => entry.queryId));
+      entries = [...kept.entries.filter((entry: QueryIndexEntrySnapshot): boolean => !noted.has(entry.queryId)), ...snapshot.entries];
+      if (kept.floor !== null && (floor === null || Date.parse(kept.floor) < Date.parse(floor))) floor = kept.floor;
+    }
+  }
   const file: QueryIndexCheckpointFile = {
     schemaVersion: QUERY_INDEX_SCHEMA,
     identity,
     writtenAt: new Date().toISOString(),
-    floor: snapshot.floor,
-    entries: snapshot.entries,
+    floor,
+    entries,
   };
   await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await fs.chmod(dirname(path), 0o700);
@@ -179,72 +244,95 @@ async function snapshot_write(identity: string, root: string, snapshot: QueryInd
   await fs.chmod(path, 0o600);
 }
 
-/** Whose checkpoint the index in memory is, and where its file is kept. */
-interface CheckpointHolder {
-  /** The identity the index was restored for. */
-  identity: string;
-  /** The checkpoint directory. */
-  root: string;
+/**
+ * Reads the text of an identity's checkpoint file.
+ *
+ * @param identity - Canonical ChRIS identity string.
+ * @param root - Checkpoint directory.
+ * @returns The file's text; rejected when the file is not there or cannot be read.
+ */
+function checkpoint_text(identity: string, root: string): Promise<string> {
+  const text: Promise<string> = fs.readFile(queryIndexCheckpointPath_get(identity, root), 'utf8');
+  return text;
 }
 
-/** Whose checkpoint the index in memory is: the identity it was restored for. */
-let held: CheckpointHolder | null = null;
-
-/** Writes of an identity's index begun when that identity left, still under way. */
-const leaving: Set<Promise<void>> = new Set<Promise<void>>();
+/**
+ * Reads an identity's checkpoint as it is on disk.
+ *
+ * @param identity - Canonical ChRIS identity string.
+ * @param root - Checkpoint directory.
+ * @returns The file, or null when there is none or it is not one of this identity's.
+ */
+async function file_read(identity: string, root: string): Promise<QueryIndexCheckpointFile | null> {
+  try {
+    const parsed: unknown = JSON.parse(await checkpoint_text(identity, root));
+    return file_check(parsed, identity) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
- * Says whose checkpoint the index in memory is: the identity it has been
- * restored for. From here, when that identity leaves (someone else
- * connects, or it logs out), what the index holds is written under its
- * name before the index is emptied.
+ * Says that the index in memory holds the whole of an identity's
+ * checkpoint: it has been restored for them. From here it is written as it
+ * stands, under their name, when they leave and at the end of the run.
+ * Said by the session's own current work only, and only of whoever is
+ * connected: work begun before a change of identity, saying it of the one
+ * who was connected then, is not heard.
  *
  * @param identity - Canonical ChRIS identity string.
  * @param root - Checkpoint directory override.
  *
  * @example
- * await queryIndexCheckpoint_restore(identity);
- * queryIndexCheckpoint_hold(identity);
+ * const restored = await queryIndexCheckpoint_restore(identity);
+ * if (restored.reason !== 'the identity changed') queryIndexCheckpoint_hold(identity);
  */
 export function queryIndexCheckpoint_hold(identity: string, root: string = queryIndexRoot_get()): void {
-  held = { identity, root };
+  if (!identityCache_usable()) return;
+  const now: string | null = identityName_get();
+  if (now !== null && now !== identity) return;
+  rootNow = root;
+  held = { identity, root, restored: true };
 }
 
-// The identity that is leaving has its index written under its own name: entries and floor as they stood,
-// handed over before the index is emptied. Nothing of it is in the next identity's file, and nothing of the
-// next identity's is in its.
-queryIndexForget_listen((left: QueryIndexSnapshot): void => {
+// At a change of identity: whoever is leaving has their index written under their own name, entries and
+// floor as they stood, handed over before the index is emptied; and whoever is connected after it becomes
+// the holder at once, by name. Their checkpoint on disk has not been read in, so what the index gathers
+// for them from here is added to their file when it is written, and replaces nothing in it.
+queryIndexForget_listen((left: QueryIndexSnapshot, now: string | null): void => {
   const whose: CheckpointHolder | null = held;
-  held = null;
+  held = now === null ? null : { identity: now, root: rootNow ?? queryIndexRoot_get(), restored: false };
   if (whose === null) return;
-  const written: Promise<void> = snapshot_write(whose.identity, whose.root, left)
+  // Nothing learnt and nothing restored: there is nothing of theirs to write, and no file is made for it.
+  if (!whose.restored && left.entries.length === 0 && left.floor === null) return;
+  const written: Promise<void> = holder_write(whose, left)
     .catch((): void => { /* the index rebuilds itself from CUBE at the next boot */ })
     .finally((): void => { leaving.delete(written); });
   leaving.add(written);
 });
 
 /**
- * Writes the index at the end of a run: waits for the checkpoint of any
- * identity that left during the run, then writes what the index holds now
- * under the name of the identity connected now. If the index was never
- * restored for that identity (it connected part-way through the run), its
- * checkpoint on disk is read in first, so that what this run learnt is
- * added to what it already had and does not replace it.
+ * Writes the index at the end of a run: what it holds now, under the name
+ * of whoever it is being kept for, and waits for the checkpoint of every
+ * identity that left during the run. What is written is settled before
+ * anything is waited for: a change of identity while the files are being
+ * written changes nothing of it.
  *
- * @param identity - The identity connected now, or null when nobody is.
+ * @param identity - The identity connected now, when the caller knows it
+ *   and nobody has become the holder by connecting (a run that never
+ *   changed identity and never restored). Null when nobody is connected.
  * @param root - Checkpoint directory override.
  *
  * @example
  * await queryIndexCheckpoint_finish(await sessionIdentity_name());
  */
 export async function queryIndexCheckpoint_finish(identity: string | null, root: string = queryIndexRoot_get()): Promise<void> {
-  await Promise.all([...leaving]);
-  if (identity === null) return;
-  if (held?.identity !== identity) {
-    await queryIndexCheckpoint_restore(identity, root);
-    queryIndexCheckpoint_hold(identity, root);
-  }
-  await queryIndexCheckpoint_save(identity, root);
+  // Whose the index is now: the holder, or failing one the identity named, whose file has not been read in.
+  const whose: CheckpointHolder | null = held ?? (identity === null ? null : { identity, root, restored: false });
+  const last: Promise<void> = whose === null || !identityCache_usable()
+    ? Promise.resolve()
+    : holder_write(whose, queryIndex_get().snapshot_create());
+  await Promise.all([...leaving, last]);
 }
 
 /**
@@ -264,6 +352,9 @@ export function queryIndexCheckpoint_watch(
   delayMs: number = 2000,
   floorMs: number = QUERY_INDEX_CHECKPOINT_FLOOR_MS,
 ): () => void {
+  // Installed only by the session's own identity's work: a warm-up that outlived a change of identity (its
+  // restore came back after someone else connected) watches nothing, and writes nothing under its name.
+  if (!identityCache_usable()) return (): void => undefined;
   let timer: NodeJS.Timeout | null = null;
   let lastWrite: number = 0;
   // The identity this watcher writes for is the one connected when it was started. Once another has

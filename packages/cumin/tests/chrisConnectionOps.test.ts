@@ -41,6 +41,9 @@ import { errorStack } from '../src/error/errorStack';
 import { ConnectionConfig } from '../src/config/config';
 import { IStorageProvider } from '../src/io/io';
 
+// Anything kept "in the default place" on a change of identity goes to a folder of this file's own.
+process.env['XDG_CACHE_HOME'] = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'connection-cache-')) as string;
+
 const mockAuthToken: jest.Mock = authToken_get as unknown as jest.Mock;
 const mockClientCreate: jest.Mock = client_create as unknown as jest.Mock;
 const mockTokenVerify: jest.Mock = token_verify as unknown as jest.Mock;
@@ -593,6 +596,52 @@ describe('a change of who is connected is one step', () => {
     expect(conn.connection_isConnected()).toBe(false);
     expect(await conn.client_get()).toBeNull();
     expect(identityEpoch_get()).toBe(before + 1);
+  });
+
+  it('a login still writing its token and a logout asked for meanwhile happen in that order: nobody is connected after, and no token is left for them', async () => {
+    // Each identity's token is kept in a file of its own, as the real configuration keeps them.
+    const store: FakeStore = { files: { '/cfg/first.token': 'FIRST' } };
+    const config = { tokenFilepath: '/cfg/first.token', chrisURL_load: jest.fn(async () => 'https://cube/api/v1/'), context_set: jest.fn() } as unknown as ConnectionConfig & { tokenFilepath: string };
+    const contextHeld = gate_make<void>();
+    (config.context_set as unknown as jest.Mock).mockImplementation(async (user: string): Promise<void> => {
+      // The second login's context is slow to be written; when it is, the token file is the second's.
+      if (user === 'second') await contextHeld.wait;
+      config.tokenFilepath = `/cfg/${user}.token`;
+    });
+    const conn: ChRISConnection = new ChRISConnection(config, storage_make(store));
+    conn.loginProbe = async (): Promise<string | null> => null;
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    mockAuthToken.mockResolvedValue('SECOND');
+    const login: Promise<string | null> = conn.connection_connect({ user: 'second', password: 'pw', debug: true, url: 'https://cube/api/v1/' });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    // A logout is asked for while the login is still writing.
+    const logout: Promise<void> = conn.connection_logout();
+    contextHeld.open();
+    await login;
+    await logout;
+    // The login finished first, and the logout then ended it: its token is not on disk, and nobody is connected.
+    expect(store.files['/cfg/second.token']).toBeUndefined();
+    expect(conn.connection_isConnected()).toBe(false);
+    expect(await conn.client_get()).toBeNull();
+    // The first one's file was not the logout's to remove: it was no longer the connection's.
+    expect(store.files['/cfg/first.token']).toBe('FIRST');
+  });
+
+  it('an address still being read when someone else connects is not put in place of theirs', async () => {
+    const store: FakeStore = { files: { '/cfg/token': 'FIRST' } };
+    const loaded = gate_make<string>();
+    const config = { tokenFilepath: '/cfg/token', chrisURL_load: jest.fn((): Promise<string> => loaded.wait), context_set: jest.fn(async () => undefined) } as unknown as ConnectionConfig;
+    const conn: ChRISConnection = new ChRISConnection(config, storage_make(store));
+    conn.loginProbe = async (): Promise<string | null> => null;
+    // Nobody has said where CUBE is: the saved address is being read, slowly.
+    const reading: Promise<string | null> = conn.chrisURL_get();
+    await Promise.resolve();
+    mockAuthToken.mockResolvedValue('SECOND');
+    await conn.connection_connect({ user: 'second', password: 'pw', debug: true, url: 'https://other/api/v1/' });
+    loaded.open('https://saved/api/v1/');
+    // The read comes back with the address saved before: the one connected to stands.
+    expect(await reading).toBe('https://other/api/v1/');
+    expect(await conn.chrisURL_get()).toBe('https://other/api/v1/');
   });
 
   it('a token that has gone from disk is a loss of who was connected, though the user and the CUBE named are the same', async () => {

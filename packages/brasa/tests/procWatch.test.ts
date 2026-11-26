@@ -6,6 +6,13 @@
  * ProcCache runs so change events drive the sampler as they would live.
  */
 import { jest } from '@jest/globals';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// A change of identity is made in this file: anything kept "in the default place" because of it goes to a
+// folder of the file's own, never to the cache of whoever runs the tests.
+process.env['XDG_CACHE_HOME'] = mkdtempSync(join(tmpdir(), 'procwatch-cache-'));
 import { cuminMock_install } from './support/cuminMock.js';
 import type { ProcFeed, ProcInstance, ProcCacheChange } from '@fnndsc/cumin';
 
@@ -224,6 +231,36 @@ describe('feed watches', () => {
     jest.advanceTimersByTime(WATCH_CAP_MS);
     await flush();
     expect(events.at(-1)).toEqual({ kind: 'watched', subject: '/proc/jobs/feed_7', state: 'live' });
+  });
+
+  it('a tick still out when someone else connects says nothing more and arms nothing; the next identity\'s watch of the same number is its own', async () => {
+    const { identityEpoch_raise } = await import('@fnndsc/cumin/identity-epoch');
+    activeFeed_seed();
+    feedDag_handle.mockResolvedValue({ status: 'ok', rendered: 'the first one\'s graph' });
+    procWatch_add(7, 'pane-a');
+    await flush();
+    // The first identity's watch ticks, and its visit is out.
+    let land: (ok: boolean) => void = (): void => undefined;
+    feedVisit_sync.mockImplementationOnce((): Promise<boolean> => new Promise((resolve: (ok: boolean) => void): void => { land = resolve; }));
+    await jest.advanceTimersByTimeAsync(WATCH_FLOOR_MS);
+    await flush();
+    expect(feedVisit_sync).toHaveBeenCalledTimes(1);
+    // Someone else connects. Every watch is retired; a surface asks again for feed 7, now theirs.
+    identityEpoch_raise('other@cube');
+    expect(procWatch_list()).toEqual([]);
+    feedDag_handle.mockResolvedValue({ status: 'ok', rendered: 'the second one\'s graph' });
+    procWatch_add(7, 'pane-a');
+    await flush();
+    expect(procWatch_list()).toEqual([{ feedID: 7, owners: 1, state: 'live' }]);
+    const before: number = events.length;
+    // The first one's visit lands now, with a change it would have published.
+    feedDag_handle.mockResolvedValue({ status: 'ok', rendered: 'the first one\'s graph, late' });
+    cache.emit({ scope: 'feed', feedID: 7 });
+    land(true);
+    await flush();
+    // Nothing was said for it, and the second one's watch is still the one in place.
+    expect(events.slice(before).filter((event: unknown): boolean => JSON.stringify(event).includes('late'))).toEqual([]);
+    expect(procWatch_list()).toEqual([{ feedID: 7, owners: 1, state: 'live' }]);
   });
 
   it('watches are refcounted per owner, and a release drops every watch an owner held', async () => {

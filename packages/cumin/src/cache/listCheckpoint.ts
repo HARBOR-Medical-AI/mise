@@ -166,6 +166,9 @@ export function listCheckpoint_watch(
   delayMs: number = 2000,
   floorMs: number = LIST_CHECKPOINT_FLOOR_MS,
 ): () => void {
+  // Installed only by the session's own identity's work: a warm-up that outlived a change of identity (its
+  // restore came back after someone else connected) watches nothing, and writes nothing under its name.
+  if (!identityCache_usable()) return (): void => undefined;
   let timer: NodeJS.Timeout | null = null;
   let lastWrite: number = 0;
   // The identity this watcher writes for is the one connected when it was started. Once another has

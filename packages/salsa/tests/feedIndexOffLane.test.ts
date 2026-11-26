@@ -227,4 +227,3 @@ describe('a walk through a change of identity', () => {
     expect(procCache_get().topologyLoaded_has(21)).toBe(true);
   });
 });
-

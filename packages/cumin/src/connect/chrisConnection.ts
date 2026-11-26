@@ -167,9 +167,11 @@ export class ChRISConnection {
         return null;
       }
       // The new identity is published in one step, with nothing awaited inside it: there is no moment at
-      // which the user is the new one and the client the old.
-      this.identity_publish(user, url, token);
+      // which the user is the new one and the client the old. It is published in its turn among the
+      // changes of identity under way (a logout asked for meanwhile comes after it, and ends it), and what
+      // it writes to disk is written before the next change begins.
       await this.transition_run(async (): Promise<void> => {
+        this.identity_publish(user, url, token);
         await this._config!.context_set(user, url);
         this.tokenFile = this._config!.tokenFilepath;
         const saved: boolean = await this.token_saveToFile(this.tokenFile, token);
@@ -245,8 +247,8 @@ export class ChRISConnection {
     }
     // Published in one step, with the client the token was proved for (its folder lookups remembered, as
     // client_get makes them).
-    this.identity_publish(user, url, token, folderLookup_memoize(client));
     await this.transition_run(async (): Promise<void> => {
+      this.identity_publish(user, url, token, folderLookup_memoize(client));
       await this._config!.context_set(user, url);
       this.tokenFile = this._config!.tokenFilepath;
       await this.token_saveToFile(this.tokenFile, token);
@@ -274,14 +276,17 @@ export class ChRISConnection {
     let status: boolean = true;
 
     if (parsedContext.user || parsedContext.URL) {
-      const user: string | null = parsedContext.user || this.user;
-      const url: string | null = parsedContext.URL || this.chrisURL;
-      // The same user on the same CUBE named again is no change of identity, and empties nothing.
-      const changed: boolean = `${user ?? ''}\n${url ?? ''}` !== `${this.user ?? ''}\n${this.chrisURL ?? ''}`;
       await this.transition_run(async (): Promise<void> => {
+        // Who the context names is compared with who is connected when this change's turn comes, not when
+        // it was asked for: a login that finished in between is what it is compared with.
+        const user: string | null = parsedContext.user || this.user;
+        const url: string | null = parsedContext.URL || this.chrisURL;
+        // The same user on the same CUBE named again is no change of identity, and empties nothing.
+        const changed: boolean = `${user ?? ''}\n${url ?? ''}` !== `${this.user ?? ''}\n${this.chrisURL ?? ''}`;
         // Another user or another CUBE: from this moment nobody is connected as the one before, and until
         // the new one's token has been read nobody is connected at all. (Nothing is awaited before this.)
-        if (changed) this.identity_publish(user, url, null);
+        // The change is made known once, below, when it is known who is connected after it.
+        if (changed) this.identity_publish(user, url, null, null, false);
         if (parsedContext.user) {
           status = status && (await chrisContext.current_set(Context.ChRISuser, parsedContext.user));
           await this._config!.context_set(parsedContext.user, parsedContext.URL || '');
@@ -290,8 +295,10 @@ export class ChRISConnection {
           status = status && (await chrisContext.current_set(Context.ChRISURL, parsedContext.URL));
           await this._config!.context_set(this.user || "", parsedContext.URL);
         }
-        // The client for who the context now names, from their own saved token.
+        // The client for who the context now names, from their own saved token; and, now that it is known
+        // whether they have one, who is connected is said by name.
         await this.client_rebuild();
+        if (changed) identityEpoch_raise(this.authToken !== null ? `${this.user ?? ''}@${this.chrisURL ?? ''}` : null);
       });
     }
 
@@ -353,7 +360,11 @@ export class ChRISConnection {
       if (!this._config) {
         return null; // config not initialized
       }
-      this.chrisURL = await this._config.chrisURL_load();
+      // Read for who is connected now: if that changes before the read comes back, what was read is of the
+      // context as it was, and is not put in place of the new one's.
+      const began: number = this.credentials;
+      const loaded: string | null = await this._config.chrisURL_load();
+      if (began === this.credentials && !this.chrisURL) this.chrisURL = loaded;
     }
     return this.chrisURL;
   }
@@ -375,9 +386,13 @@ export class ChRISConnection {
    * @returns The client, or null when no token is saved for them.
    */
   private async client_rebuild(): Promise<Client | null> {
-    this.tokenFile = this._config!.tokenFilepath;
-    if (!this.chrisURL) this.chrisURL = this._config ? await this._config.chrisURL_load() : null;
     const began: number = this.credentials;
+    this.tokenFile = this._config!.tokenFilepath;
+    if (!this.chrisURL) {
+      const loaded: string | null = this._config ? await this._config.chrisURL_load() : null;
+      if (began !== this.credentials) return this.client;
+      if (!this.chrisURL) this.chrisURL = loaded;
+    }
     await this.token_load();
     // Someone logged in or out while the token was being read: the client is theirs to make.
     if (began !== this.credentials) return this.client;
@@ -463,8 +478,10 @@ export class ChRISConnection {
     // Nobody is connected from this moment: the token and the client that carries it go together, a read
     // of the saved token that is under way is not taken when it comes back, and what is cached of who was
     // connected is emptied.
-    this.identity_publish(this.user, this.chrisURL, null);
     await this.transition_run(async (): Promise<void> => {
+      // In its turn: a login still writing its token finishes first, and this then ends it. The file
+      // removed is the one that is current when this turn comes.
+      this.identity_publish(this.user, this.chrisURL, null);
       try {
         await this.storageProvider!.remove(this.tokenFile);
         console.log("Logged out successfully");
@@ -484,25 +501,31 @@ export class ChRISConnection {
    * @param url - Their CUBE.
    * @param token - Their token, or null when nobody is connected.
    * @param client - A client already made for that token, when there is one.
+   * @param announce - False when the caller makes the change known itself, once it knows who is connected after it.
    */
-  private identity_publish(user: string | null, url: string | null, token: string | null, client: Client | null = null): void {
+  private identity_publish(user: string | null, url: string | null, token: string | null, client: Client | null = null, announce: boolean = true): void {
     this.user = user;
     this.chrisURL = url;
     this.authToken = token;
     this.client = client;
     this.credentials += 1;
-    identityEpoch_raise();
+    // Named when someone is connected (`user@url`, the name their checkpoints are kept under); null when nobody is.
+    if (announce) identityEpoch_raise(token !== null && user !== null && url !== null ? `${user}@${url}` : null);
   }
 
   /**
-   * Runs the awaited part of a change of identity (what is written to
-   * disk, what is read back), during which {@link client_get} and
-   * {@link authToken_get} wait.
+   * Runs a change of identity: its publication and what it writes to and
+   * reads from disk. Changes run one at a time, in the order they were
+   * asked for, and {@link client_get} and {@link authToken_get} wait for
+   * all of them.
    *
-   * @param work - The awaited part.
+   * @param work - The change.
    */
   private async transition_run(work: () => Promise<void>): Promise<void> {
-    const run: Promise<void> = work();
+    // One at a time, in the order asked: a change begins when the one before it has finished everything
+    // it does, what it writes to disk included.
+    const before: Promise<void> = this.transition ?? Promise.resolve();
+    const run: Promise<void> = before.then(work);
     const held: Promise<void> = run.then((): void => undefined, (): void => undefined).then((): void => {
       if (this.transition === held) this.transition = null;
     });
@@ -566,7 +589,7 @@ export class ChRISConnection {
     if (lost) {
       this.client = null;
       this.credentials += 1;
-      identityEpoch_raise();
+      identityEpoch_raise(null);
     }
   }
 }

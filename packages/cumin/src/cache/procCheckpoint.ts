@@ -622,6 +622,9 @@ export function procCheckpoint_watch(
   delayMs: number = 1000,
   floorMs: number = PROC_CHECKPOINT_FLOOR_MS,
 ): () => void {
+  // Installed only by the session's own identity's work: a warm-up that outlived a change of identity (its
+  // restore came back after someone else connected) watches nothing, and writes nothing under its name.
+  if (!identityCache_usable()) return (): void => undefined;
   const timers: Map<ShardKey, NodeJS.Timeout> = new Map();
   const lastWrite: Map<ShardKey, number> = new Map();
   // Layouts are kept beside the index this watcher keeps.

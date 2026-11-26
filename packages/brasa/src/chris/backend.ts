@@ -11,7 +11,7 @@
  * @module
  */
 import { chrisConnection, chrisConnection_init, NodeStorageProvider, chrisContext, Context } from '@fnndsc/cumin';
-import { identityScope_run } from '@fnndsc/cumin/identity-epoch';
+import { identityScope_fork, identityScope_run } from '@fnndsc/cumin/identity-epoch';
 import { runtimeOutput_set } from '@fnndsc/cumin/runtime-output';
 import type { Backend, SessionIdentity } from '../core/backend.js';
 import { Session } from '../session/index.js';
@@ -64,7 +64,7 @@ export const chrisBackend: Backend = {
   id: 'chris',
   // A line is one piece of work begun under whoever is connected when it starts: what it fetches is kept
   // only while that is still who is connected.
-  work_run: <T>(work: () => Promise<T>): Promise<T> => identityScope_run(work),
+  work_run: <T>(work: () => Promise<T>, apart?: boolean): Promise<T> => (apart === true ? identityScope_fork(work) : identityScope_run(work)),
   session: {
     async init(): Promise<void> {
       chrisMounts_register();

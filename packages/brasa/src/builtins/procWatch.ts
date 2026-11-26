@@ -16,6 +16,7 @@
  * @module
  */
 import type { ProcCache, ProcCacheChange, ProcFeed } from '@fnndsc/cumin';
+import { identityChange_listen, identityEpoch_get, identityScope_fork } from '@fnndsc/cumin/identity-epoch';
 import type { WatchState, CommandEnvelope } from '@fnndsc/menu';
 import { ambient_publish } from '../core/ambient.js';
 
@@ -74,6 +75,8 @@ interface Watch {
   first: boolean;
   /** The last build answered `feed.indexing`: the topology is on its way. */
   pending: boolean;
+  /** The identity epoch the watch was asked for under: it is that identity's, whoever's work wakes it. */
+  began: number;
 }
 
 const watches: Map<number, Watch> = new Map();
@@ -144,6 +147,8 @@ async function model_publish(dag: DagBuilder, watch: Watch): Promise<boolean> {
     return false;
   }
   watch.pending = false;
+  // Someone else connected while the graph was being built: it is the one before's, and is not sent.
+  if (identityEpoch_get() !== watch.began) return false;
   ambient_publish({ kind: 'envelope', envelope });
   return true;
 }
@@ -177,7 +182,14 @@ async function watch_tick(watch: Watch): Promise<void> {
       listener_remove();
     }
     watch.first = false;
-    if (!watches.has(watch.feedID)) return;
+    // A watch is one identity's: begun as whoever was connected when it was asked for. Once someone else
+    // has connected it says nothing more, arms nothing more, and gives up its place (which the next
+    // identity's watch of a feed of the same number may already have taken).
+    if (identityEpoch_get() !== watch.began) {
+      watch_stop(watch);
+      return;
+    }
+    if (watches.get(watch.feedID) !== watch) return;
 
     if (watch.pending) {
       // Indexing: not stale, not settled (an empty topology looks settled
@@ -216,8 +228,16 @@ function watch_arm(watch: Watch, delayMs: number): void {
 function watch_stop(watch: Watch): void {
   if (watch.timer) clearTimeout(watch.timer);
   watch.timer = null;
-  watches.delete(watch.feedID);
+  // Its own place only: a watch that has been replaced does not remove its replacement.
+  if (watches.get(watch.feedID) === watch) watches.delete(watch.feedID);
 }
+
+// At a change of identity every watch is retired: what it watched was the one before's feed, whatever its
+// number. A surface that still wants a feed watched asks again, and is given a watch begun as who is
+// connected now.
+identityChange_listen((): void => {
+  for (const watch of Array.from(watches.values())) watch_stop(watch);
+});
 
 /**
  * Opens (or joins) a watch on a feed for one owner. A new watch samples
@@ -244,10 +264,13 @@ export function procWatch_add(feedID: number, owner: string): WatchState {
     ticking: false,
     first: true,
     pending: false,
+    began: identityEpoch_get(),
   };
   watches.set(feedID, watch);
   void kickListener_ensure();
-  void watch_tick(watch);
+  // Begun as a piece of work of its own, under whoever is connected now: its ticks, and the timers they
+  // arm, are that identity's for as long as the watch lives.
+  void identityScope_fork((): Promise<void> => watch_tick(watch));
   return watch.state;
 }
 

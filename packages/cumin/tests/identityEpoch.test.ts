@@ -8,6 +8,8 @@ import {
   identityElevated_is,
   identityElevated_run,
   identityEpoch_get,
+  identityOwned_make,
+  identityScope_fork,
   identityEpoch_raise,
   identityScopeEpoch_get,
   identityScope_passed,
@@ -23,6 +25,10 @@ import type { QueryIndexEntry } from '../src/cache/queryIndex';
 import { mkdtempSync, existsSync, readdirSync, readFileSync, promises as fsp } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// Checkpoints kept "in the default place" by anything in this file go to a folder of the file's own, never
+// to the cache of whoever runs the tests.
+process.env['XDG_CACHE_HOME'] = mkdtempSync(join(tmpdir(), 'identity-cache-'));
 
 /** A promise and the hand that settles it. */
 function gate_make<T>(): { wait: Promise<T>; open: (value: T) => void } {
@@ -84,6 +90,63 @@ describe('the epoch', () => {
       await lookup;
     });
     expect(listCache_get().cache_get('/bin')).toBeNull();
+  });
+
+  it('the line that connects hands on to its next command: that is the new identity\'s; what the line had started before is not', async () => {
+    const answered = gate_make<void>();
+    let early: Promise<boolean> = Promise.resolve(true);
+    const seen: { connecting: boolean; next: boolean; after: boolean } = await identityScope_run(async () => {
+      // A line of several commands, each begun in turn as the engine begins them.
+      // Its first command starts something that is still out when its second connects as someone else.
+      early = (async (): Promise<boolean> => { await answered.wait; return identityScope_run((): boolean => identityCache_usable()); })();
+      const connecting: boolean = await identityScope_run(async (): Promise<boolean> => { identityEpoch_raise('other@cube'); await Promise.resolve(); return identityCache_usable(); });
+      // The next command of the same line is the new identity's: `connect other; ls` lists as the other.
+      const next: boolean = await identityScope_run(async (): Promise<boolean> => { await Promise.resolve(); return identityCache_usable(); });
+      const after: boolean = await identityScope_run((): boolean => identityCache_usable());
+      return { connecting, next, after };
+    });
+    expect(seen).toEqual({ connecting: false, next: true, after: true });
+    // What the line had started before the change stays the first one's, and its own next piece of work too:
+    // it is handed on only in the order the line runs, so it is told apart by being a piece of work of its own.
+    answered.open();
+    expect(typeof (await early)).toBe('boolean');
+  });
+
+  it('work that goes on beside its beginner (a joblet, a watch) is a scope of its own: it is not handed on when its beginner connects', async () => {
+    const answered = gate_make<void>();
+    let beside: Promise<boolean> = Promise.resolve(true);
+    await identityScope_run(async () => {
+      beside = identityScope_fork(async (): Promise<boolean> => {
+        await answered.wait;
+        // It begins a piece of work of its own after the change, as a joblet runs its next line.
+        return identityScope_run((): boolean => identityCache_usable());
+      });
+      identityEpoch_raise('other@cube');
+    });
+    answered.open();
+    expect(await beside).toBe(false);
+  });
+
+  it('bookkeeping owned by an identity is made anew at a change, and other work has its own', async () => {
+    const book_get = identityOwned_make((): { visited: Set<number> } => ({ visited: new Set<number>() }));
+    book_get().visited.add(7);
+    expect(book_get().visited.has(7)).toBe(true);
+    // Work as another user starts with none of it, and what it adds is not the session's.
+    await identityScope_run((): Promise<void> => identityElevated_run({ of: 'the admin' }, async (): Promise<void> => {
+      expect(book_get().visited.size).toBe(0);
+      book_get().visited.add(8);
+      await Promise.resolve();
+      expect(book_get().visited.has(8)).toBe(true);
+    }));
+    expect([...book_get().visited]).toEqual([7]);
+    // Work begun before a change keeps none of the next identity's, and the next identity starts empty.
+    const held = gate_make<void>();
+    const old: Promise<number> = identityScope_run(async (): Promise<number> => { await held.wait; book_get().visited.add(9); return book_get().visited.size; });
+    identityEpoch_raise('other@cube');
+    expect(book_get().visited.size).toBe(0);
+    held.open();
+    expect(await old).toBe(1);
+    expect(book_get().visited.size).toBe(0);
   });
 
   it('work already in a scope stays in it: stale work cannot make itself current by starting something', async () => {
@@ -361,6 +424,74 @@ describe('checkpoints through a change of identity', () => {
     expect(second.entries.map((entry) => entry.queryId).sort()).toEqual([20, 21]);
     expect(second.floor).toBe('2026-06-01T00:00:00.000Z');
     expect([...first.entries, ...second.entries].every((entry) => (entry.queryId < 10) === (entry.owner === 'first'))).toBe(true);
+  });
+
+  it('three identities in one run, none primed after the first: each one\'s queries and floor are in its own file, added to what it had', async () => {
+    const root: string = mkdtempSync(join(tmpdir(), 'identity-chain-'));
+    const file = (identity: string): { floor: string | null; entries: Array<{ queryId: number }> } =>
+      JSON.parse(readFileSync(queryIndexCheckpointPath_get(identity, root), 'utf8')) as { floor: string | null; entries: Array<{ queryId: number }> };
+    const ids = (identity: string): number[] => file(identity).entries.map((entry) => entry.queryId).sort((a, b) => a - b);
+    // The second and third already have checkpoints, from runs before this one.
+    for (const [identity, queryId] of [['second@cube', 20], ['third@cube', 30]] as Array<[string, number]>) {
+      identityEpoch_raise(identity);
+      queryIndexCheckpoint_hold(identity, root);
+      queryIndex_get().entry_note(query_make(queryId, identity));
+      await queryIndexCheckpoint_finish(identity, root);
+    }
+    // This run: the first connects and is restored for; then the second connects, then the third. Each
+    // makes a query in a command of the line that connected it, as a script does.
+    identityEpoch_raise('first@cube');
+    queryIndexCheckpoint_hold('first@cube', root);
+    queryIndex_get().entry_note(query_make(1, 'first'));
+    queryIndex_get().floor_set('2026-03-01T00:00:00.000Z');
+    await identityScope_run(async (): Promise<void> => {
+      await identityScope_run(async (): Promise<void> => { identityEpoch_raise('second@cube'); });
+      await identityScope_run(async (): Promise<void> => { queryIndex_get().entry_note(query_make(21, 'second')); queryIndex_get().floor_set('2026-04-01T00:00:00.000Z'); });
+      await identityScope_run(async (): Promise<void> => { identityEpoch_raise('third@cube'); });
+      await identityScope_run(async (): Promise<void> => { queryIndex_get().entry_note(query_make(31, 'third')); });
+    });
+    // The run ends, with nobody having said whose the index is since the first.
+    await queryIndexCheckpoint_finish(null, root);
+    expect(ids('first@cube')).toEqual([1]);
+    expect(file('first@cube').floor).toBe('2026-03-01T00:00:00.000Z');
+    expect(ids('second@cube')).toEqual([20, 21]);
+    expect(file('second@cube').floor).toBe('2026-04-01T00:00:00.000Z');
+    expect(ids('third@cube')).toEqual([30, 31]);
+  });
+
+  it('a watcher asked for by a warm-up whose identity has since been replaced is not installed: nothing of the next identity is saved under its name', async () => {
+    const root: string = mkdtempSync(join(tmpdir(), 'identity-install-'));
+    const queries = (identity: string): number[] => {
+      try { return (JSON.parse(readFileSync(queryIndexCheckpointPath_get(identity, root), 'utf8')) as { entries: Array<{ queryId: number }> }).entries.map((entry) => entry.queryId); } catch { return []; }
+    };
+    identityEpoch_raise('first@cube');
+    queryIndexCheckpoint_hold('first@cube', root);
+    queryIndex_get().entry_note(query_make(1, 'first'));
+    const slow = gate_make<void>();
+    // The first identity's warm-up: its listings restore is slow, and it installs its watcher after it.
+    const warmup: Promise<void> = identityScope_run(async (): Promise<void> => {
+      await slow.wait;
+      listCheckpoint_watch('first@cube', root, 5, 0);
+      queryIndexCheckpoint_hold('first@cube', root);
+    });
+    identityEpoch_raise('second@cube');
+    slow.open();
+    await warmup;
+    // The second's listings and queries change.
+    jest.useFakeTimers();
+    try {
+      listCache_get().cache_set('/bin', [{ name: 'the second one\'s plugin' }]);
+      queryIndex_get().entry_note(query_make(21, 'second'));
+      await jest.advanceTimersByTimeAsync(500);
+    } finally {
+      jest.useRealTimers();
+    }
+    await queryIndexCheckpoint_finish(null, root);
+    // No listing checkpoint was written at all (the only watcher asked for was the first's, after it had left).
+    expect(readdirSync(root).filter((name: string): boolean => name.startsWith('listings-'))).toEqual([]);
+    // The first's queries are the first's, written as it left; the second's are in the second's file.
+    expect(queries('first@cube')).toEqual([1]);
+    expect(queries('second@cube')).toEqual([21]);
   });
 
   it('a layout is the identity\'s whose home it was kept in: after a change there is none, and none is written into the old home', async () => {

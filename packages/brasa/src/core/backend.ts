@@ -329,11 +329,14 @@ export interface Backend {
    * must know which of its sessions a piece of work was begun under (ChRIS:
    * who was connected then, so that an answer that comes back after someone
    * else has connected is not kept as theirs) begins that knowledge here.
+   * `apart` says the line goes on by itself beside the work that began it
+   * (a joblet left in the background): it is then a piece of work of its
+   * own, and is not carried along with whatever its beginner goes on to do.
    * It may be called again for a line run inside a line (a batch's command,
    * a manifest's line), inside the outer call: it must be safe to make
    * within itself. Absent, a line is simply run.
    */
-  readonly work_run?: <T>(work: () => Promise<T>) => Promise<T>;
+  readonly work_run?: <T>(work: () => Promise<T>, apart?: boolean) => Promise<T>;
   /** Runs one command with administrator rights (`sudo`); absent, `sudo` is refused. */
   readonly elevate?: (credentials: ElevationCredentials, run: () => Promise<CommandEnvelope>) => Promise<CommandEnvelope>;
   /** Watches a subject a surface named (ChRIS: a feed's jobs), on behalf of an owner. */

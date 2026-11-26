@@ -24,6 +24,8 @@
  * - {@link identityCache_usable}: what a cache asks before a read or a fill.
  * - {@link identityChange_listen}: what a cache does when the identity changes.
  * - {@link identityPartition_make}: a cache that other work sees a spare of.
+ * - {@link identityOwned_make}: the same, for bookkeeping that is not a cache.
+ * - {@link identityScope_fork}: begins work that goes on beside its beginner.
  *
  * Typical usage:
  * ```typescript
@@ -46,16 +48,27 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 /** What a scope of work remembers. */
 interface IdentityScope {
   /** The epoch the work began under. It never changes. */
-  epoch: number;
+  readonly epoch: number;
   /** The client of another user the work is being done with (a `sudo`), or null for the session's own. */
-  elevatedWith: object | null;
+  readonly elevatedWith: object | null;
+  /**
+   * Whether this work itself changed the identity (it is the line that
+   * said `connect`). Such work stays under the epoch it began under, as
+   * everything it had already started does; but the next piece of work it
+   * begins in turn (the next command of its line) is begun afresh, under
+   * the identity it brought about.
+   */
+  changed: boolean;
 }
 
 /** The current epoch. */
 let current: number = 0;
 
-/** What is called at each change. */
-const listeners: Set<() => void> = new Set<() => void>();
+/** What is called at each change, with the name of who is connected after it, or null when nobody is. */
+const listeners: Set<(now: string | null) => void> = new Set<(now: string | null) => void>();
+
+/** The name of who is connected now (`user@url`), or null. */
+let named: string | null = null;
 
 /** The scope a piece of work runs in: the one store this module keeps. */
 const scopes: AsyncLocalStorage<IdentityScope> = new AsyncLocalStorage<IdentityScope>();
@@ -108,32 +121,50 @@ export function identityScopeEpoch_get(): number {
 /**
  * Says that the identity has changed: someone connected, the context was
  * moved to another user or CUBE, or the session logged out. Every listener
- * is called, at once and in turn. Every piece of work already begun,
- * the one that made the change included, stays under the epoch it began
- * under: a scope is never moved to a later epoch, since work it started
- * before the change shares it. What the new identity fills, it fills from
- * work begun after the change (the next line, the warm-up that follows a
- * login).
+ * is called, at once and in turn, with the name of who is connected now.
+ * Every piece of work already begun, the one that made the change
+ * included, stays under the epoch it began under: a scope is never moved
+ * to a later epoch, since work it started before the change shares it.
+ * The work that made the change is marked as having done so, and what it
+ * begins next in turn (see {@link identityScope_run}) is the new
+ * identity's.
+ *
+ * @param now - The name of who is connected after the change (`user@url`), or null when nobody is.
  *
  * @example
  * this.authToken = token;
- * identityEpoch_raise();
+ * identityEpoch_raise('chris@https://cube/api/v1/');
  */
-export function identityEpoch_raise(): void {
+export function identityEpoch_raise(now: string | null = null): void {
   current += 1;
-  for (const change_tell of [...listeners]) change_tell();
+  named = now;
+  const scope: IdentityScope | undefined = scope_get();
+  if (scope !== undefined) scope.changed = true;
+  for (const change_tell of [...listeners]) change_tell(now);
+}
+
+/**
+ * The name of who is connected now.
+ *
+ * @returns `user@url`, or null when nobody is connected (or nobody has said).
+ *
+ * @example
+ * const identity: string | null = identityName_get();
+ */
+export function identityName_get(): string | null {
+  return named;
 }
 
 /**
  * Registers what to do when the identity changes (a cache empties itself).
  *
- * @param listener - Called at each change, after the epoch has moved.
+ * @param listener - Called at each change, after the epoch has moved, with the name of who is connected now.
  * @returns A function that removes the listener.
  *
  * @example
  * const stop = identityChange_listen((): void => { cache.clear(); });
  */
-export function identityChange_listen(listener: () => void): () => void {
+export function identityChange_listen(listener: (now: string | null) => void): () => void {
   listeners.add(listener);
   return (): void => { listeners.delete(listener); };
 }
@@ -142,9 +173,15 @@ export function identityChange_listen(listener: () => void): () => void {
  * Runs a piece of work in a scope, begun under the current epoch.
  * Everything it awaits, and every timer it starts, is in that scope. A
  * command, a request to the daemon, a warm-up and a watcher are each begun
- * this way. Work already in a scope stays in it (a command run by a
- * command is part of the same work): so work begun under an identity since
- * replaced cannot make itself current by starting something.
+ * this way.
+ *
+ * Work already in a scope stays in it (a command run by a command is part
+ * of the same work): so work begun under an identity since replaced cannot
+ * make itself current by starting something. There is one exception, and
+ * it is what makes `connect other; ls` list as the other: work that itself
+ * changed the identity begins its next piece of work in a scope of the new
+ * epoch. What that work had started before the change shares its old
+ * scope, and stays stale.
  *
  * @param work - The work.
  * @returns What the work returns.
@@ -153,8 +190,30 @@ export function identityChange_listen(listener: () => void): () => void {
  * await identityScope_run((): Promise<void> => command_run(line));
  */
 export function identityScope_run<T>(work: () => T): T {
-  if (scope_get() !== undefined) return work();
-  return scope_run({ epoch: current, elevatedWith: null }, work);
+  const scope: IdentityScope | undefined = scope_get();
+  if (scope === undefined) return scope_run({ epoch: current, elevatedWith: null, changed: false }, work);
+  if (!scope.changed || scope.epoch === current) return work();
+  // Begun by the work that made the change: under the new epoch, and itself able to hand on in turn.
+  return scope_run({ epoch: current, elevatedWith: scope.elevatedWith, changed: true }, work);
+}
+
+/**
+ * Runs a piece of work that goes on by itself beside the work that began
+ * it (a job left in the background, a watch, a timer's tick): in a scope
+ * of its own, under the epoch its beginner is under. It is stale when its
+ * beginner is, and it is never handed on to a later identity: if the line
+ * that began it goes on to connect as someone else, this is still the
+ * first identity's work.
+ *
+ * @param work - The work.
+ * @returns What the work returns.
+ *
+ * @example
+ * void identityScope_fork((): Promise<void> => watch_tick(feedID));
+ */
+export function identityScope_fork<T>(work: () => T): T {
+  const scope: IdentityScope | undefined = scope_get();
+  return scope_run({ epoch: scope?.epoch ?? current, elevatedWith: scope?.elevatedWith ?? null, changed: false }, work);
 }
 
 /**
@@ -170,7 +229,7 @@ export function identityScope_run<T>(work: () => T): T {
  * return identityElevated_run(elevatedClient, operation);
  */
 export function identityElevated_run<T>(client: object, work: () => T): T {
-  return scope_run({ epoch: identityScopeEpoch_get(), elevatedWith: client }, work);
+  return scope_run({ epoch: identityScopeEpoch_get(), elevatedWith: client, changed: false }, work);
 }
 
 /**
@@ -261,6 +320,44 @@ export function identityPartition_make<T extends object>(own: T, spareMake: () =
       };
     },
   });
+}
+
+/**
+ * State that belongs to one identity, as each piece of work is to see it:
+ * a plain object of bookkeeping (what has been visited, what is in flight)
+ * that the session's own current work shares, that is made anew at each
+ * change of identity, and of which any other work (begun before the
+ * change, or done as another user) has a copy of its own. The same rule as
+ * {@link identityPartition_make}, for state that is not a cache.
+ *
+ * @param make - Makes the state, empty.
+ * @returns A function that answers the state for the work that calls it.
+ *
+ * @example
+ * const visits_get = identityOwned_make((): Visits => ({ byFeed: new Map(), inflight: new Map() }));
+ * visits_get().byFeed.set(feedID, visit);
+ */
+export function identityOwned_make<T extends object>(make: () => T): () => T {
+  let own: T = make();
+  let ownEpoch: number = current;
+  const spares: WeakMap<object, T> = new WeakMap<object, T>();
+  return (): T => {
+    const scope: IdentityScope | undefined = scope_get();
+    if (scope === undefined || identityCache_usable()) {
+      // Made anew for each identity, the first time that identity's work asks.
+      if (ownEpoch !== current) {
+        own = make();
+        ownEpoch = current;
+      }
+      return own;
+    }
+    let spare: T | undefined = spares.get(scope);
+    if (spare === undefined) {
+      spare = make();
+      spares.set(scope, spare);
+    }
+    return spare;
+  };
 }
 
 /**

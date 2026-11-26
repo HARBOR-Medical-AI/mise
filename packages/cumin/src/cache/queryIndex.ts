@@ -367,19 +367,19 @@ export class QueryIndex {
 let queryIndex: QueryIndex | null = null;
 
 /** Who is told what the index held, when it is about to be emptied for a change of identity. */
-const forgetListeners: Set<(snapshot: QueryIndexSnapshot) => void> = new Set<(snapshot: QueryIndexSnapshot) => void>();
+const forgetListeners: Set<(snapshot: QueryIndexSnapshot, now: string | null) => void> = new Set<(snapshot: QueryIndexSnapshot, now: string | null) => void>();
 
 /**
  * Registers to be told what the index held for the identity that is
  * leaving, at the moment it is emptied for the next.
  *
- * @param listener - Handed the index as it stood.
+ * @param listener - Handed the index as it stood, and the name of who is connected after (or null).
  * @returns A function that removes the listener.
  *
  * @example
  * queryIndexForget_listen((left: QueryIndexSnapshot): void => { void file_write(left); });
  */
-export function queryIndexForget_listen(listener: (snapshot: QueryIndexSnapshot) => void): () => void {
+export function queryIndexForget_listen(listener: (snapshot: QueryIndexSnapshot, now: string | null) => void): () => void {
   forgetListeners.add(listener);
   return (): void => { forgetListeners.delete(listener); };
 }
@@ -396,10 +396,11 @@ export function queryIndex_get(): QueryIndex {
     // handed an index of its own (see identityPartition_make); at a change of identity the session's is
     // emptied, entries and floor.
     queryIndex = identityPartition_make(own, (): QueryIndex => new QueryIndex());
-    identityChange_listen((): void => {
+    identityChange_listen((now: string | null): void => {
       // Whoever keeps the index on disk is shown it as it stood for the identity that is leaving, before it
-      // is emptied: what that identity learnt and had not yet saved is theirs to save.
-      for (const forget_hear of [...forgetListeners]) forget_hear(own.snapshot_create());
+      // is emptied, and told who is connected after: what the one learnt and had not yet saved is theirs to
+      // save, and what is gathered from here is the other's.
+      for (const forget_hear of [...forgetListeners]) forget_hear(own.snapshot_create(), now);
       own.reset();
     });
   }

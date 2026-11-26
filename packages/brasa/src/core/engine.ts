@@ -87,6 +87,8 @@ export interface LineOptions {
   ended?: (code: number) => void;
   /** Set by the engine once the backend has marked this call as a piece of its work. */
   marked?: boolean;
+  /** The line goes on by itself beside the work that began it (a joblet): it is a piece of work of its own. */
+  apart?: boolean;
 }
 
 /**
@@ -368,7 +370,7 @@ export async function line_execute(line: string, options: LineOptions = {}): Pro
   // a backend's mark is written to be made within itself.
   const work_mark: Backend['work_run'] = backendInstalled_get()?.work_run;
   if (work_mark !== undefined && options.marked !== true) {
-    return await work_mark((): Promise<CommandEnvelope[]> => line_execute(line, { ...options, marked: true }));
+    return await work_mark((): Promise<CommandEnvelope[]> => line_execute(line, { ...options, marked: true }), options.apart === true);
   }
   // A host that names the line's surface scopes it there: what it lists is
   // that surface's answer (#1273).
