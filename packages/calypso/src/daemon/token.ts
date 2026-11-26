@@ -34,6 +34,14 @@ export function token_writeFile(token: string, path: string): void {
   writeFileSync(path, `${token}\n`, { mode: 0o600 });
 }
 
+/**
+ * The environment variable a daemon hands its attach token to a surface it
+ * starts in, and the surface reads it from. Never an argument: a command
+ * line is world-readable on the host (`ps`), an environment is its
+ * process's user's alone.
+ */
+export const ATTACH_TOKEN_ENV: string = 'CHELL_ATTACH_TOKEN';
+
 /** How a token is written into lines a daemon prints. */
 export interface TokenWords {
   /** For a line that states the token. */

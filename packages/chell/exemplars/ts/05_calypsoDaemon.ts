@@ -29,7 +29,7 @@ import {
 } from '@fnndsc/calypso';
 import type { CommandEnvelope } from '@fnndsc/cumin';
 import {
-  env_load, config_isolate, check, section, summary_exit, runId_make, sleep,
+  env_load, config_isolate, check, section, summary_exit, runId_make, sleep, restToken_get,
   CubeEnv,
 } from './lib/harness.js';
 
@@ -67,8 +67,11 @@ const BERTH_DIR: string = path.join(RUNTIME_DIR, 'calypso');
 async function daemon_start(env: CubeEnv, useSavedSession: boolean): Promise<DaemonHandle> {
   rmSync(BERTH_DIR, { recursive: true, force: true });
   const args: string[] = ['dist/index.js'];
-  if (!useSavedSession) {
-    args.push(`${env.user}@${env.url}`, '-p', env.password);
+  // The daemon logs in with a token handed to it on its standard input, never with a password on its command
+  // line, which every user of the host can list.
+  const token: string | null = useSavedSession ? null : await restToken_get(env.url, env.user, env.password);
+  if (token !== null) {
+    args.push(`${env.user}@${env.url}`, '--auth-token-stdin');
   }
   args.push('--daemon', '--no-logo', '--no-prefetch-feeds', '--no-prefetch-plugins', '--no-prefetch-jobs');
 
@@ -76,6 +79,7 @@ async function daemon_start(env: CubeEnv, useSavedSession: boolean): Promise<Dae
     cwd: PACKAGE_ROOT,
     env: { ...process.env, XDG_CONFIG_HOME: STABLE_CONFIG_DIR, XDG_RUNTIME_DIR: RUNTIME_DIR },
   });
+  child.stdin.end(token !== null ? `${token}\n` : '');
   const output: string[] = [];
   child.stdout.on('data', (chunk: Buffer) => output.push(chunk.toString('utf-8')));
   child.stderr.on('data', (chunk: Buffer) => output.push(chunk.toString('utf-8')));

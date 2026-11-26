@@ -105,6 +105,23 @@ export interface CliActionOptions {
   info?: boolean;
 }
 
+/** The environment variable a daemon hands its attach token in (calypso's `ATTACH_TOKEN_ENV`). */
+export const ATTACH_TOKEN_ENV: string = 'CHELL_ATTACH_TOKEN';
+
+/**
+ * Takes the attach token a daemon handed over in the environment, and
+ * removes it from there: read once, then gone, so a program this shell
+ * starts (a `!` line, an editor, a pipe segment) does not inherit it.
+ *
+ * @param env - The environment.
+ * @returns The token, or undefined when none was handed over.
+ */
+export function attachTokenEnv_take(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const handed: string | undefined = env[ATTACH_TOKEN_ENV];
+  delete env[ATTACH_TOKEN_ENV];
+  return handed !== undefined && handed !== '' ? handed : undefined;
+}
+
 /**
  * Builds a {@link ChellCLIConfig} from the parsed target/options, determining
  * the run mode (script/execute/connect/interactive) and applying startup
@@ -113,6 +130,8 @@ export interface CliActionOptions {
  * @param target - The positional target argument (user@url, url, or script path).
  * @param options - The parsed CLI options.
  * @param fileExists - Predicate testing whether a path exists (for script auto-detect).
+ * @param defaultDoor - Reads the default door, when one is set.
+ * @param env - The environment, from which a daemon's attach token is taken, and removed.
  * @returns The resolved configuration.
  */
 export function cliConfig_parse(
@@ -120,6 +139,7 @@ export function cliConfig_parse(
   options: CliActionOptions,
   fileExists: (path: string) => boolean,
   defaultDoor: () => string | null = doorDefault_read,
+  env: NodeJS.ProcessEnv = process.env,
 ): ChellCLIConfig {
   let user: string | undefined = options.user;
   let url: string | undefined = target;
@@ -156,8 +176,15 @@ export function cliConfig_parse(
     if (options.attach !== undefined) {
       config.attach = options.attach;
     }
+    // The attach token comes on the command line when a person types it, and in the environment when a
+    // daemon starts this shell: a daemon never puts it on a command line, which every user of the host can
+    // list. The variable is taken out of the environment whichever wins, so nothing this shell starts
+    // inherits it.
+    const handed: string | undefined = attachTokenEnv_take(env);
     if (options.token !== undefined) {
       config.attachToken = options.token;
+    } else if (handed !== undefined) {
+      config.attachToken = handed;
     }
     // A door takes a name and a password rather than an address and a token;
     // `-u` and `-p` reach it without a `<user>@<url>` target, which names a

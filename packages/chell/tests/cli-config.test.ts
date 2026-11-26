@@ -4,7 +4,7 @@
  * @module
  */
 import { describe, it, expect } from '@jest/globals';
-import { cliConfig_parse } from '../src/core/cli.js';
+import { attachTokenEnv_take, cliConfig_parse } from '../src/core/cli.js';
 
 const noFile = () => false;
 const anyFile = () => true;
@@ -13,6 +13,21 @@ const anyFile = () => true;
 const noDoor = (): null => null;
 
 describe('cliConfig_parse', () => {
+  it('takes a daemon\'s attach token from the environment when none is typed, and removes it from there whichever wins', () => {
+    const handed: NodeJS.ProcessEnv = { CHELL_ATTACH_TOKEN: 'from-the-daemon', OTHER: 'kept' };
+    expect(cliConfig_parse(undefined, { attach: 'ws://127.0.0.1:9' }, noFile, noDoor, handed).attachToken).toBe('from-the-daemon');
+    expect(handed).toEqual({ OTHER: 'kept' });
+    // A token typed on the command line wins, and the variable is still taken out.
+    const both: NodeJS.ProcessEnv = { CHELL_ATTACH_TOKEN: 'from-the-daemon' };
+    expect(cliConfig_parse(undefined, { attach: 'ws://127.0.0.1:9', token: 'typed' }, noFile, noDoor, both).attachToken).toBe('typed');
+    expect('CHELL_ATTACH_TOKEN' in both).toBe(false);
+    // An empty one is no token, and is removed too.
+    const empty: NodeJS.ProcessEnv = { CHELL_ATTACH_TOKEN: '' };
+    expect(cliConfig_parse(undefined, { attach: 'ws://127.0.0.1:9' }, noFile, noDoor, empty).attachToken).toBeUndefined();
+    expect('CHELL_ATTACH_TOKEN' in empty).toBe(false);
+    expect(attachTokenEnv_take({})).toBeUndefined();
+  });
+
   it('defaults to interactive with no args', () => {
     expect(cliConfig_parse(undefined, {}, noFile, noDoor)).toEqual({ mode: 'interactive', physicalFS: undefined });
   });
