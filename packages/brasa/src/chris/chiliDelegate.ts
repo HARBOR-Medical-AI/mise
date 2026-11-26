@@ -45,86 +45,134 @@ export function chiliDelegationNotice_build(command: string): string {
   return `${chalk.yellow(`Unknown chell command '${command}' -- delegating to chili`)}\n`;
 }
 
-/** One of chili's top-level words, and when a line of it touches the host's disk. */
-interface HostWordRule {
-  /** The words the rule is for. */
-  readonly words: ReadonlyArray<string>;
-  /** Whether these arguments make the word read or write a file on the engine's host. */
-  readonly touches: (args: ReadonlyArray<string>) => boolean;
+/** A line's arguments, told apart by role: which are options (and their values) and which are operands. */
+export interface ArgvRoles {
+  /** The options given, by the name they were spelt with (`--save`, `-f`), each with its value when it takes one. */
+  readonly options: ReadonlyMap<string, string | true>;
+  /** The operands, in order: subcommands and positional words, including any after `--`. */
+  readonly operands: ReadonlyArray<string>;
 }
 
 /**
- * The arguments that are not options: subcommands and operands, wherever
- * options stand among them.
+ * Tells a line's arguments apart by role, as Commander reads them.
  *
- * @param args - The arguments after the word.
- * @returns Those that do not begin with a dash.
- */
-function bareWords_list(args: ReadonlyArray<string>): string[] {
-  return args.filter((arg: string): boolean => !arg.startsWith('-'));
-}
-
-/**
- * Whether an option is among the arguments, however it is written: its long
- * name alone or with `=value`, or its letter alone or in a cluster of
- * single-dash letters (`-nf x`).
+ * `--` ends the options: every word after it is an operand, a
+ * dash-prefixed one included. `--name=value` carries its value; a valued
+ * `--name` or `-n` takes the next word, so that word is never an operand;
+ * single-dash letters cluster (`-ab`), and a valued letter takes the rest
+ * of its cluster or the next word. An option not named as valued is a flag.
  *
- * @param args - The arguments after the word.
- * @param long - The long names, with their dashes.
- * @param letters - The single letters, without a dash.
- * @returns True when any is given.
+ * @param args - The arguments.
+ * @param valued - The options that take a value: long names with their dashes, and single letters.
+ * @returns The options and the operands.
+ *
+ * @example
+ * ```ts
+ * argvRoles_read(['scan', '--filter', 'download', '--tree'], ['--filter']); // operands: ['scan'], options: --filter=download, --tree
+ * ```
  */
-function option_given(args: ReadonlyArray<string>, long: ReadonlyArray<string>, letters: string = ''): boolean {
-  return args.some((arg: string): boolean => {
-    if (arg.startsWith('--')) return long.some((name: string): boolean => arg === name || arg.startsWith(`${name}=`));
-    if (!arg.startsWith('-') || arg.length < 2) return false;
-    return [...letters].some((letter: string): boolean => arg.slice(1).includes(letter));
-  });
+export function argvRoles_read(args: ReadonlyArray<string>, valued: ReadonlyArray<string>): ArgvRoles {
+  const options: Map<string, string | true> = new Map<string, string | true>();
+  const operands: string[] = [];
+  for (let at: number = 0; at < args.length; at++) {
+    const arg: string = args[at] as string;
+    if (arg === '--') {
+      operands.push(...args.slice(at + 1));
+      break;
+    }
+    if (arg.startsWith('--')) {
+      const equals: number = arg.indexOf('=');
+      const name: string = equals === -1 ? arg : arg.slice(0, equals);
+      if (equals !== -1) options.set(name, arg.slice(equals + 1));
+      else if (valued.includes(name)) { options.set(name, args[at + 1] ?? ''); at++; }
+      else options.set(name, true);
+      continue;
+    }
+    if (arg.startsWith('-') && arg.length > 1) {
+      for (let letterAt: number = 1; letterAt < arg.length; letterAt++) {
+        const letter: string = arg[letterAt] as string;
+        if (!valued.includes(letter)) { options.set(`-${letter}`, true); continue; }
+        const rest: string = arg.slice(letterAt + 1);
+        if (rest !== '') options.set(`-${letter}`, rest);
+        else { options.set(`-${letter}`, args[at + 1] ?? ''); at++; }
+        break;
+      }
+      continue;
+    }
+    operands.push(arg);
+  }
+  return { options, operands };
+}
+
+/** One subcommand of a chili word, and whether a line of it reads or writes a file on the host. */
+export interface HostSubcommand {
+  /** `always`: its purpose is a host file. `never`: it touches none. Otherwise the options (as spelt, every spelling listed) that make it touch one. */
+  readonly touches: 'always' | 'never' | ReadonlyArray<string>;
+  /** Its options that take a value, long names and single letters, so a value is not taken for an operand. */
+  readonly valued?: ReadonlyArray<string>;
+  /** Whether an operand of it, given after the subcommand, makes it touch the host (a manual topic that climbs out of the manual). */
+  readonly operand_touches?: (operand: string) => boolean;
 }
 
 /**
- * chili's words that read or write the disk of the machine they run on.
+ * chili's words that can read or write the disk of the machine they run
+ * on, by subcommand.
  *
  * chili was written as a program at its operator's own terminal, where
  * that disk is the operator's. Run in-process by an engine that somebody
- * attends from elsewhere, the same words reach the engine's host. Each rule
- * says when; a line that matches is refused where the disk is nobody's
- * (`hostDisk_refusal`). A rule errs toward refusing: `path` is let through
- * only as a plain `scan`.
- *
- * A test (`chiliDelegate.test.ts`) holds this table to chili's sources:
- * every file there that opens the host's disk is either one of these
- * words' or is listed as reading only chili's own packaged files.
+ * attends from elsewhere, the same words reach the engine's host. Every
+ * subcommand each word registers is named here and classified; one that is
+ * not named is refused, so a subcommand chili gains is refused until it is
+ * classified. `scripts/chiliHostWords.mjs` holds this table to what the
+ * built chili actually registers, and `chiliDelegate.test.ts` to chili's
+ * sources.
  */
-const HOST_WORD_RULES: ReadonlyArray<HostWordRule> = [
-  {
-    // `path upload <hostpath>`, `path download [hostpath]`, and `path scan` when it maps to, or saves onto, the host.
-    words: ['path'],
-    touches: (args: ReadonlyArray<string>): boolean => {
-      const bare: string[] = bareWords_list(args);
-      return !bare.includes('scan') || bare.includes('upload') || bare.includes('download') || option_given(args, ['--hostpath', '--mermaid', '--save']);
-    },
+export const CHILI_HOST_WORDS: Readonly<Record<string, Readonly<Record<string, HostSubcommand>>>> = {
+  path: {
+    upload: { touches: 'always' },
+    download: { touches: 'always' },
+    // A plain scan lists CUBE. It maps onto the host with --hostpath, and writes the host with --mermaid (a page) and --save.
+    scan: { touches: ['--hostpath', '--mermaid', '--save'], valued: ['--hostpath', '--filter', '--endsWith', '--save'] },
+    help: { touches: 'never' },
   },
-  {
-    // `chefs upload <local> <remote>`.
-    words: ['chefs'],
-    touches: (args: ReadonlyArray<string>): boolean => bareWords_list(args).includes('upload'),
+  chefs: {
+    upload: { touches: 'always' },
+    ls: { touches: 'never' }, cp: { touches: 'never' }, mv: { touches: 'never' }, cat: { touches: 'never' }, mkdir: { touches: 'never' },
+    touch: { touches: 'never' }, cd: { touches: 'never' }, pwd: { touches: 'never' }, rm: { touches: 'never' }, help: { touches: 'never' },
   },
-  {
-    // `files create --from-file <localPath>` (and `links`, `dirs`, which share the handler); `-f` is `--force` on their other subcommands.
-    words: ['files', 'links', 'dirs'],
-    touches: (args: ReadonlyArray<string>): boolean => bareWords_list(args).includes('create') && option_given(args, ['--from-file'], 'f'),
+  man: {
+    // The topic is joined to chili's own manual folder: one that holds a separator or `..` names a file elsewhere. --browser opens a browser on the host.
+    doc: { touches: ['--browser', '-b'], valued: ['--style', '--width'], operand_touches: (topic: string): boolean => /[\\/]/.test(topic) || topic.includes('..') },
+    topics: { touches: 'never' },
+    help: { touches: 'never' },
   },
-  {
-    // `man doc <topic>` reads `<topic>.adoc` beside chili's own pages, and `--browser` opens a browser on the host.
-    words: ['man'],
-    touches: (args: ReadonlyArray<string>): boolean => option_given(args, ['--browser'], 'b') || bareWords_list(args).some((word: string): boolean => /[\\/]|\.\./.test(word)),
-  },
-];
+};
+
+/** Options of `inode <path> file create` that take a value; `--from-file`/`-f` names a file on the host. */
+const INODE_CREATE_VALUED: ReadonlyArray<string> = ['--content', 'c', '--from-file', 'f', '--path', 'p', '--name', 'n'];
+
+/**
+ * Whether an `inode` line creates a file from one on the host:
+ * `inode <path> file create [name] --from-file <local>` (the one place
+ * chili registers `create`; `files`, `links` and `dirs` have none).
+ *
+ * @param args - The arguments after `inode`.
+ * @returns True when the line is a `file create` that names a host file.
+ */
+function inodeCreate_touches(args: ReadonlyArray<string>): boolean {
+  const roles: ArgvRoles = argvRoles_read(args, INODE_CREATE_VALUED);
+  const [, kind, verb] = roles.operands;
+  return kind === 'file' && verb === 'create' && (roles.options.has('--from-file') || roles.options.has('-f'));
+}
 
 /**
  * Why a chili line may not run here, when it would touch the host's disk
  * and that disk is nobody's.
+ *
+ * The line is read by role: the subcommand is the first operand, and an
+ * option's value is never mistaken for one, so `chefs ls upload` lists a
+ * path called upload and `path scan --filter download` is a plain scan. A
+ * subcommand the table does not name is refused.
  *
  * @param command - chili's top-level word.
  * @param args - Its arguments.
@@ -136,14 +184,21 @@ const HOST_WORD_RULES: ReadonlyArray<HostWordRule> = [
  * ```
  */
 export function chiliHostWord_refusal(command: string, args: ReadonlyArray<string>): string | null {
-  const rule: HostWordRule | undefined = HOST_WORD_RULES.find((one: HostWordRule): boolean => one.words.includes(command));
-  if (rule === undefined || !rule.touches(args)) return null;
-  const sub: string | undefined = bareWords_list(args)[0];
-  return hostDisk_refusal(sub !== undefined ? `${command} ${sub}` : command);
+  if (command === 'inode') return inodeCreate_touches(args) ? hostDisk_refusal('inode file create --from-file') : null;
+  const word: Readonly<Record<string, HostSubcommand>> | undefined = CHILI_HOST_WORDS[command];
+  if (word === undefined) return null;
+  // The word's own options are flags (`-s`, `-h`): the subcommand is the first operand.
+  const leading: ArgvRoles = argvRoles_read(args, []);
+  const name: string | undefined = leading.operands[0];
+  const sub: HostSubcommand | undefined = name === undefined ? undefined : word[name];
+  const what: string = name === undefined ? command : `${command} ${name}`;
+  if (sub === undefined || sub.touches === 'always') return hostDisk_refusal(what);
+  const roles: ArgvRoles = argvRoles_read(args, sub.valued ?? []);
+  const given: string | undefined = sub.touches === 'never' ? undefined : sub.touches.find((option: string): boolean => roles.options.has(option));
+  if (given !== undefined) return hostDisk_refusal(`${what} ${given}`);
+  if (sub.operand_touches !== undefined && roles.operands.slice(1).some(sub.operand_touches)) return hostDisk_refusal(what);
+  return null;
 }
-
-/** chili's top-level words that have a host-disk rule, for the test that holds the table to chili's sources. */
-export const CHILI_HOST_WORDS: ReadonlyArray<string> = HOST_WORD_RULES.flatMap((rule: HostWordRule): string[] => [...rule.words]);
 
 /**
  * Runs a chili command in-process and returns its output as an envelope.

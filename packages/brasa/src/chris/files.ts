@@ -24,8 +24,9 @@ export function fileRefusal_name(filePath: string, notes: ReadonlyArray<string>)
   const last: string = notes[notes.length - 1] ?? '';
   const status: number | undefined = notes.map((note: string): number => Number(/\b(40[0-9]|41[0-9]|5[0-9][0-9])\b/.exec(note)?.[1] ?? NaN)).find((n: number): boolean => !Number.isNaN(n));
   if (status === 403 || status === 401) return new FileReadRefusal(filePath, 403, 'not yours to read: CUBE refused the bytes (403)');
-  if (status === 404 || /not found|no files found/i.test(last)) return new FileReadRefusal(filePath, 404, 'no such file in CUBE (404)');
+  // A status CUBE gave decides before any words do: a 5xx whose text says "not found" is an outage, not an absence.
   if (status !== undefined && status >= 500) return new FileReadRefusal(filePath, 502, `CUBE could not serve it (${status})`);
+  if (status === 404 || (status === undefined && /not found|no files found/i.test(last))) return new FileReadRefusal(filePath, 404, 'no such file in CUBE (404)');
   // A note reads `[function     ] | message`; the operator gets the message.
   return new FileReadRefusal(filePath, 502, last.replace(/^\[[^\]]*\]\s*\|\s*/, '').trim() || 'could not be read');
 }
@@ -88,20 +89,25 @@ async function file_read(filePath: string): Promise<Buffer> {
 /**
  * Where a path stands in ChRIS, asked after a read of it failed.
  *
- * The path is resolved as the read resolved it, and the session's tree
- * answers for where that leads: a native CUBE path is `absent` only on the
- * strict proof (its parent listed whole, nothing holding the name), and a
- * projected one (`/proc`, `/pacs`, `/net`, `/bin`) is never proved absent,
- * since a projection that fails has said nothing about what is there.
+ * Who owns the path is settled by the path as it was asked for, made
+ * absolute and nothing more: a path a projection owns (`/proc`, `/pacs`,
+ * `/net`, `/bin`) is `unknown` whatever it stands for in the store, since a
+ * projection that failed has said nothing about what is there, and the
+ * store's being empty at the place it maps to is not the projection's
+ * word. Only a path that is the native tree's own is then resolved where
+ * the store keeps it (its links followed) and put to the strict proof: its
+ * parent listed whole, nothing holding the name.
  *
  * @param filePath - The file's path, as the read took it.
- * @returns Where it stands; `unknown` when even the resolution failed.
+ * @returns Where it stands; `unknown` when even that could not be worked out.
  */
 async function file_standing(filePath: string): Promise<PathStanding> {
   try {
-    const { storePath_resolve } = await import('../builtins/utils.js');
+    const { path_resolve, storePath_resolve } = await import('../builtins/utils.js');
     const { vfsDispatcher_get } = await import('../core/filesystem.js');
-    return await vfsDispatcher_get().path_standing(await storePath_resolve(filePath));
+    const dispatcher = vfsDispatcher_get();
+    if (dispatcher.path_isVirtual(await path_resolve(filePath))) return 'unknown';
+    return await dispatcher.path_standing(await storePath_resolve(filePath));
   } catch {
     return 'unknown';
   }

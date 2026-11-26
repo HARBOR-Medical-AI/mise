@@ -9,7 +9,7 @@ cuminMock_install(() => ({
   envelope_error: (rendered: string, _errors?: unknown, renderedErr?: string) => (renderedErr !== undefined ? { status: 'error', rendered, renderedErr } : { status: 'error', rendered }),
 }));
 
-const { chiliCommand_run, chiliCommand_exists, chiliHostWord_refusal, CHILI_HOST_WORDS } = await import('../src/chris/chiliDelegate.js');
+const { chiliCommand_run, chiliCommand_exists, chiliHostWord_refusal, argvRoles_read, CHILI_HOST_WORDS } = await import('../src/chris/chiliDelegate.js');
 const { surface_set, HeadlessSurface } = await import('../src/core/surface.js');
 
 /** Installs a surface whose engine disk is, or is not, its operator's; answers how to put the old one back. */
@@ -59,6 +59,20 @@ describe('chiliCommand_exists', () => {
   });
 });
 
+describe('argvRoles_read', () => {
+  it('tells options, their values and operands apart, as Commander does', () => {
+    const roles = argvRoles_read(['scan', '--filter', 'download', '--tree', '--endsWith=upload', '-ab', '--', '--hostpath', '-x'], ['--filter', '--endsWith']);
+    expect(roles.operands).toEqual(['scan', '--hostpath', '-x']);
+    expect([...roles.options.entries()]).toEqual([['--filter', 'download'], ['--tree', true], ['--endsWith', 'upload'], ['-a', true], ['-b', true]]);
+  });
+
+  it('gives a valued letter the rest of its cluster or the next word', () => {
+    expect([...argvRoles_read(['-nf', '/etc/passwd', 'x'], ['f']).options.entries()]).toEqual([['-n', true], ['-f', '/etc/passwd']]);
+    expect([...argvRoles_read(['-f/etc/passwd', 'x'], ['f']).options.entries()]).toEqual([['-f', '/etc/passwd']]);
+    expect(argvRoles_read(['-nf', '/etc/passwd', 'x'], ['f']).operands).toEqual(['x']);
+  });
+});
+
 describe('chili\'s words that touch the host\'s disk', () => {
   /** Lines that read or write a file on the machine chili runs on, however their options are placed. */
   const TOUCHING: ReadonlyArray<[string, string[]]> = [
@@ -68,36 +82,52 @@ describe('chili\'s words that touch the host\'s disk', () => {
     ['path', ['download', '-f', '/tmp/out']],
     ['path', ['scan', '--hostpath', '/etc']],
     ['path', ['scan', '--hostpath=/etc']],
-    ['path', ['--hostpath', '/etc', 'scan']],
+    ['path', ['scan', '--tree', '--mermaid']],
     ['path', ['scan', '--mermaid', '--save', '/tmp/x.html']],
     ['path', ['scan', '--save=/tmp/x.html']],
+    ['path', ['scan', '--filter', 'x', '--save', '/tmp/x.html']],
     ['path', []],
+    ['path', ['-s']],
     ['path', ['somethingnew', '/etc']],
     ['chefs', ['upload', '/etc/passwd', '/home/x']],
     ['chefs', ['-s', 'upload', '/etc/passwd', '/home/x']],
-    ['files', ['create', 'x.txt', '--from-file', '/etc/passwd']],
-    ['files', ['create', '--from-file=/etc/passwd', 'x.txt']],
-    ['files', ['--from-file', '/etc/passwd', 'create', 'x.txt']],
-    ['files', ['create', 'x.txt', '-f', '/etc/passwd']],
-    ['files', ['create', '-nf', 'x.txt', '/etc/passwd']],
-    ['links', ['create', 'x', '-f', '/etc/passwd']],
-    ['dirs', ['create', 'x', '--from-file', '/etc/passwd']],
+    ['chefs', ['somethingnew']],
+    ['inode', ['/home/x', 'file', 'create', 'x.txt', '--from-file', '/etc/passwd']],
+    ['inode', ['/home/x', 'file', 'create', '--from-file=/etc/passwd', 'x.txt']],
+    ['inode', ['/home/x', 'file', 'create', 'x.txt', '-f', '/etc/passwd']],
+    ['inode', ['/home/x', 'file', 'create', '-n', 'x.txt', '-f', '/etc/passwd']],
+    ['inode', ['/home/x', 'file', 'create', '-f/etc/passwd']],
     ['man', ['doc', '../../../../etc/notes']],
     ['man', ['doc', '/etc/notes']],
     ['man', ['doc', 'chell', '--browser']],
     ['man', ['doc', '-b', 'chell']],
+    ['man', ['doc', '--style', 'ascii', '../x']],
+    // A topic that begins with a dash is an operand after the end of options, and is read as one.
+    ['man', ['doc', '--', '-x/../../etc/notes']],
+    ['man', ['doc', '--', '--/..']],
+    ['man', ['somethingnew']],
   ];
 
-  /** Lines of the same words that touch no host file. */
+  /** Lines of the same words that touch no host file, some of them carrying a touching word as a mere operand or value. */
   const HARMLESS: ReadonlyArray<[string, string[]]> = [
     ['path', ['scan']],
     ['path', ['-s', 'scan', '--tree', '--follow', '--filter', 'nii']],
+    ['path', ['scan', '--filter', 'download']],
+    ['path', ['scan', '--endsWith', 'upload', '--filter=--hostpath']],
     ['chefs', ['ls', '/home/x']],
+    ['chefs', ['ls', 'upload']],
+    ['chefs', ['-s', 'cat', 'upload']],
     ['chefs', ['touch', '/home/x/a.txt']],
-    ['files', ['create', 'x.txt', '--content', 'hello']],
+    ['chefs', ['rm', 'download']],
+    ['inode', ['/home/x', 'file', 'create', 'x.txt', '--content', 'hello']],
+    ['inode', ['/home/x', 'file', 'create', 'x.txt', '--content', '--from-file']],
+    ['inode', ['/home/x', 'files', 'delete', 'id:7', '-f']],
+    ['inode', ['/home/x', 'file', 'cat']],
     ['files', ['delete', 'id:7', '-f']],
     ['files', ['share', '--force']],
     ['man', ['doc', 'chell']],
+    ['man', ['doc', '--style', '../figlet', 'chell']],
+    ['man', ['doc', '--', '-topic']],
     ['man', ['topics']],
     ['feeds', ['-s', 'list']],
   ];
@@ -153,7 +183,7 @@ describe('chili\'s words that touch the host\'s disk', () => {
       'path/pathCommand.ts': 'path',
       'commands/fs/download.ts': 'path',
       'commands/fs/upload.ts': 'chefs',
-      'commands/fs/create.ts': 'files',
+      'commands/fs/create.ts': 'inode',
       'commands/fs/touch.ts': 'chefs touch takes no file; the kernel\'s own touch calls it and gates --withContentsFromFile itself',
       'lfs/lfs.ts': 'not registered: no command reaches it',
       'man/renderer.ts': 'man',
@@ -171,8 +201,19 @@ describe('chili\'s words that touch the host\'s disk', () => {
     };
     walk(root);
     expect(opening.sort()).toEqual(Object.keys(ACCOUNTED).sort());
-    for (const word of ['path', 'chefs', 'files', 'man']) expect(CHILI_HOST_WORDS).toContain(word);
+    expect(Object.keys(CHILI_HOST_WORDS).sort()).toEqual(['chefs', 'man', 'path']);
     // lfs stays unreachable: were it registered, its words would need a rule.
     expect(readFileSync(join(root, 'run.ts'), 'utf8')).not.toMatch(/lfsCommand_setup/);
+    // `create`, with its --from-file, is registered once: on a single file, under `inode`. The group words have none.
+    const handler: string = readFileSync(join(root, 'filesystem', 'fileGroupHandler.ts'), 'utf8');
+    const group: string = handler.slice(handler.indexOf('fileGroupCommand_setup(program'), handler.indexOf('fileMemberCommand_setup(program'));
+    const member: string = handler.slice(handler.indexOf('fileMemberCommand_setup(program'));
+    expect(group).not.toMatch(/\.command\("create/);
+    expect(member).toMatch(/\.command\("create \[fileIdentifier\]"\)/);
+    expect(member).toMatch(/"-f, --from-file <localPath>"/);
+    expect(member).toMatch(/"-c, --content <text>"/);
+    expect(member).toMatch(/"-p, --path <path>"/);
+    expect(member).toMatch(/"-n, --name <name>"/);
+    expect(readFileSync(join(root, 'filesystem', 'inodeCommand.ts'), 'utf8')).toMatch(/subcommand === "file"\)[\s\S]*fileMemberCommand_setup/);
   });
 });

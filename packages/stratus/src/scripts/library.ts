@@ -12,6 +12,7 @@ import { spawnSync, type SpawnSyncReturns } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { wireName_place, type HostPlace } from '@fnndsc/fond';
 
 /** One source: a repository, and the folder in it the library shows (its root when absent). */
 export interface ScriptSource {
@@ -92,10 +93,24 @@ export class ScriptLibrary {
     return path.join(this.root, name);
   }
 
-  /** The folder a source shows: its clone, or the folder in it. */
-  shown_derive(source: ScriptSource): string {
+  /**
+   * The folder a source shows: its clone, or the folder in it.
+   *
+   * The folder comes from a configuration file and from what an operator
+   * typed. It is a name inside the clone or it is nothing: one that is
+   * absolute, climbs with `..`, or passes through a link that leads out of
+   * the clone has no place there (`wireName_place`), and the source then
+   * shows nothing.
+   *
+   * @param source - The source.
+   * @returns The folder on disk, or null when the source's name or folder does not stay inside the library.
+   */
+  shown_place(source: ScriptSource): string | null {
+    if (!SOURCE_NAME.test(source.name) || source.name === MINE) return null;
     const clone: string = this.clone_derive(source.name);
-    return source.folder === undefined || source.folder === '' ? clone : path.join(clone, source.folder);
+    if (source.folder === undefined || source.folder === '') return clone;
+    const placed: HostPlace = wireName_place(clone, source.folder);
+    return placed.ok ? placed.place : null;
   }
 
   /** The folder of this host's own scripts, made on first ask. */
@@ -103,6 +118,26 @@ export class ScriptLibrary {
     const folder: string = path.join(this.root, MINE);
     fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
     return folder;
+  }
+
+  /**
+   * Whether a repository is on this host's own disk, not somewhere git
+   * reaches over a network: a path (`/srv/repo`, `./repo`, `~/repo`), a
+   * `file:` address, or a bare word with no host in it. `https://…`,
+   * `ssh://…`, `git://…` and `git@host:owner/repo` are not.
+   *
+   * Cloning or pulling such a repository reads the host's disk at a place
+   * the operator chose, which is what the files tier of host control is for.
+   *
+   * @param repo - The repository as written.
+   * @returns True when it names a place on this host.
+   */
+  static repo_isLocal(repo: string): boolean {
+    if (/^file:/i.test(repo)) return true;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(repo)) return false;
+    if (/^[/.~]/.test(repo)) return true;
+    // scp-like: user@host:path, or host:path with no slash before the colon.
+    return !/^[^/]+:/.test(repo);
   }
 
   /** Whether a source is cloned. */
@@ -120,15 +155,24 @@ export class ScriptLibrary {
     if (!SOURCE_NAME.test(source.name)) return { ok: false, text: `${source.name}: a source's name is lower-case letters, digits and hyphens, starting with a letter, at most 32` };
     if (source.name === MINE) return { ok: false, text: `${MINE} is this host's own folder, not a source` };
     if (this.source_read(source.name) !== null) return { ok: false, text: `${source.name}: already a source (scripts remove ${source.name} first)` };
+    // Before anything is cloned: a folder that is no name inside a repository is refused as written.
+    if (source.folder !== undefined && source.folder !== '') {
+      const named: HostPlace = wireName_place(this.clone_derive(source.name), source.folder);
+      if (!named.ok) return { ok: false, text: `--folder ${source.folder}: a folder inside the repository, and ${named.reason}` };
+    }
     fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
     const clone: string = this.clone_derive(source.name);
     if (!this.cloned(source.name)) {
       const cloned: GitAnswer = this.git(['clone', '--quiet', source.repo, clone]);
       if (!cloned.ok) return { ok: false, text: `git clone ${source.repo}: ${cloned.text}` };
     }
-    if (source.folder !== undefined && source.folder !== '' && !fs.existsSync(path.join(clone, source.folder))) {
-      fs.rmSync(clone, { recursive: true, force: true });
-      return { ok: false, text: `${source.repo} has no folder ${source.folder}` };
+    if (source.folder !== undefined && source.folder !== '') {
+      // Again now that the clone is there: the folder may be, or pass through, a link the repository carries.
+      const shown: string | null = this.shown_place(source);
+      if (shown === null || !fs.existsSync(shown)) {
+        fs.rmSync(clone, { recursive: true, force: true });
+        return { ok: false, text: shown === null ? `--folder ${source.folder}: it leads out of the repository's clone` : `${source.repo} has no folder ${source.folder}` };
+      }
     }
     this.sources_write([...this.sources_list(), source]);
     return { ok: true, text: `${source.name}: ${source.repo}${source.folder !== undefined && source.folder !== '' ? ` (${source.folder})` : ''} cloned to ${clone}` };

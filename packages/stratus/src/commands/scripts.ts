@@ -13,8 +13,8 @@
  */
 import chalk from 'chalk';
 import { envelope_error, envelope_ok, type CommandEnvelope } from '@fnndsc/menu';
-import { command_declare, declaredCommand_run, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
-import { MINE, type GitAnswer, type ScriptLibrary, type ScriptSource } from '../scripts/library.js';
+import { command_declare, declaredCommand_run, hostDisk_refusal, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
+import { MINE, ScriptLibrary, type GitAnswer, type ScriptSource } from '../scripts/library.js';
 import { SCRIPTS_PREFIX } from '../vfs/scripts.js';
 
 /** What `scripts` reads from the session. */
@@ -30,6 +30,9 @@ function scriptsList_run(context: ScriptsCommandContext): CommandEnvelope {
 }
 
 function scriptsAdd_run(context: ScriptsCommandContext, name: string, repo: string, folder: string | undefined): CommandEnvelope {
+  // A repository on this host's own disk is a place on that disk the operator chose to have read.
+  const refused: string | null = ScriptLibrary.repo_isLocal(repo) ? hostDisk_refusal(`scripts add: ${repo} is a repository on the session's host`) : null;
+  if (refused !== null) return envelope_error('', undefined, `${refused}\n`);
   const added: GitAnswer = context.library.source_add({ name, repo, ...(folder !== undefined ? { folder } : {}) });
   return added.ok ? envelope_ok(`${added.text}; its scripts are at ${SCRIPTS_PREFIX}/${name}/\n`) : envelope_error('', undefined, `scripts add: ${added.text}\n`);
 }
@@ -37,7 +40,12 @@ function scriptsAdd_run(context: ScriptsCommandContext, name: string, repo: stri
 function scriptsPull_run(context: ScriptsCommandContext, named: string | undefined): CommandEnvelope {
   const names: string[] = named !== undefined ? [named] : context.library.sources_list().map((source: ScriptSource): string => source.name);
   if (names.length === 0) return envelope_ok('no sources to pull\n');
-  const answers: GitAnswer[] = names.map((name: string): GitAnswer => context.library.source_pull(name));
+  const answers: GitAnswer[] = names.map((name: string): GitAnswer => {
+    // A source kept from before, whose repository is on this host's disk, is read from that disk by a pull as by an add.
+    const source: ScriptSource | null = context.library.source_read(name);
+    const refused: string | null = source !== null && ScriptLibrary.repo_isLocal(source.repo) ? hostDisk_refusal(`scripts pull: ${name} is ${source.repo}, a repository on the session's host`) : null;
+    return refused !== null ? { ok: false, text: refused } : context.library.source_pull(name);
+  });
   const text: string = `${answers.map((answer: GitAnswer): string => answer.ok ? answer.text : chalk.red(answer.text)).join('\n')}\n`;
   return answers.every((answer: GitAnswer): boolean => answer.ok) ? envelope_ok(text) : envelope_error('', undefined, text);
 }

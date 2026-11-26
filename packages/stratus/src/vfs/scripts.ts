@@ -9,7 +9,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { Err, Ok, errorStack, vfs_fail, vfs_ok, type Result, type VFSItem, type VFSProvider, type VfsOutcome } from '@fnndsc/fond';
+import { Err, Ok, errorStack, vfs_fail, vfs_ok, wireName_place, type HostPlace, type Result, type VFSItem, type VFSProvider, type VfsOutcome } from '@fnndsc/fond';
 import { MINE, type ScriptLibrary, type ScriptSource } from '../scripts/library.js';
 
 /** The prefix the library is mounted at. */
@@ -54,14 +54,24 @@ export class ScriptsProvider implements VFSProvider {
     const [first, ...rest] = segments;
     if (first === undefined) return null;
     if (rest.some((segment: string): boolean => segment === '..' || segment === '.git')) return 'unknown';
-    if (first === MINE) {
-      const base: string = this.library.mine_derive();
-      return { base, disk: path.join(base, ...rest), writable: true };
-    }
+    if (first === MINE) return this.within_place(this.library.mine_derive(), rest, true);
     const source: ScriptSource | null = this.library.source_read(first);
     if (source === null) return 'unknown';
-    const base: string = this.library.shown_derive(source);
-    return { base, disk: path.join(base, ...rest), writable: false };
+    // A source whose configured folder does not stay inside its clone shows nothing.
+    const base: string | null = this.library.shown_place(source);
+    return base === null ? 'unknown' : this.within_place(base, rest, false);
+  }
+
+  /**
+   * A path below a base folder of the library, held inside it: the words
+   * of the path are a name in that folder (`wireName_place`), so one that
+   * passes through a link leading out of the folder, a clone's own link to
+   * somewhere on this host included, has no place and is unknown.
+   */
+  private within_place(base: string, rest: ReadonlyArray<string>, writable: boolean): Placed | 'unknown' {
+    if (rest.length === 0) return { base, disk: base, writable };
+    const placed: HostPlace = wireName_place(base, rest.join('/'));
+    return placed.ok ? { base, disk: placed.place, writable } : 'unknown';
   }
 
   private item_make(name: string, disk: string, type: string): VFSItem {
@@ -79,7 +89,7 @@ export class ScriptsProvider implements VFSProvider {
 
   private root_list(): VFSItem[] {
     const sources: VFSItem[] = this.library.sources_list().map((source: ScriptSource): VFSItem => ({
-      ...this.item_make(source.name, this.library.shown_derive(source), SOURCE_TYPE),
+      ...this.item_make(source.name, this.library.shown_place(source) ?? this.library.clone_derive(source.name), SOURCE_TYPE),
       title: `${source.repo}${source.folder !== undefined && source.folder !== '' ? ` ${source.folder}` : ''}`,
       // Where the clone stands, read from git: its head's commit, date and subject, so a pull's receipt is the head moving.
       status: this.library.cloned(source.name) ? `cloned · at ${this.library.head_read(source.name)}` : 'not cloned',
@@ -140,9 +150,17 @@ export class ScriptsProvider implements VFSProvider {
   async readBinary(pathStr: string): Promise<VfsOutcome<Buffer>> {
     const placed = this.place(this.segments_split(pathStr));
     if (placed === null) return vfs_fail('EISDIR');
-    if (placed === 'unknown' || !fs.existsSync(placed.disk)) return vfs_fail('ENOENT');
-    if (fs.statSync(placed.disk).isDirectory()) return vfs_fail('EISDIR');
-    return vfs_ok(fs.readFileSync(placed.disk));
+    if (placed === 'unknown') return vfs_fail('ENOENT');
+    // The file system's own answer is kept: a script that may not be read is not a script that is not there.
+    try {
+      if (fs.statSync(placed.disk).isDirectory()) return vfs_fail('EISDIR');
+      return vfs_ok(fs.readFileSync(placed.disk));
+    } catch (error: unknown) {
+      const code: string | undefined = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return vfs_fail('ENOENT');
+      if (code === 'EACCES' || code === 'EPERM') return vfs_fail('EACCES', `${pathStr}: permission denied on the session's host`);
+      return vfs_fail('EIO', `${pathStr}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async write(pathStr: string, content: string | Buffer): Promise<VfsOutcome> {
