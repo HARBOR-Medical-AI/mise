@@ -17,6 +17,7 @@
  * @module
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { format } from "util";
 
 /**
@@ -55,8 +56,25 @@ const consoleWriter: ChiliWriter = {
   write: (chunk: string | Buffer): void => { process.stdout.write(chunk); },
 };
 
-/** The writer in effect. Swapped for the duration of a captured run. */
+/** The writer in effect when nothing is being captured. */
 let activeWriter: ChiliWriter = consoleWriter;
+
+/**
+ * The writer of a captured run, held for that run's own asynchronous work
+ * and for nothing else: two captured runs under way at once each write to
+ * their own, and neither's end puts the other's output on the console.
+ */
+const capturing: AsyncLocalStorage<ChiliWriter> = new AsyncLocalStorage<ChiliWriter>();
+
+/**
+ * The writer a write goes to: the captured run's when the write is made
+ * inside one, the installed writer otherwise.
+ *
+ * @returns The writer.
+ */
+function writer_current(): ChiliWriter {
+  return capturing.getStore() ?? activeWriter;
+}
 
 /**
  * Installs a writer as the active output destination.
@@ -76,7 +94,7 @@ export function chiliWriter_set(writer: ChiliWriter): ChiliWriter {
  * @param args - The values to format, exactly as passed to `console.log`.
  */
 export function chiliLog(...args: unknown[]): void {
-  activeWriter.log(...args);
+  writer_current().log(...args);
 }
 
 /**
@@ -85,7 +103,7 @@ export function chiliLog(...args: unknown[]): void {
  * @param args - The values to format, exactly as passed to `console.error`.
  */
 export function chiliErrLog(...args: unknown[]): void {
-  activeWriter.errLog(...args);
+  writer_current().errLog(...args);
 }
 
 /**
@@ -95,7 +113,7 @@ export function chiliErrLog(...args: unknown[]): void {
  * @param chunk - The text or bytes to write.
  */
 export function chiliWrite(chunk: string | Buffer): void {
-  activeWriter.write(chunk);
+  writer_current().write(chunk);
 }
 
 /**
@@ -110,7 +128,9 @@ export interface ChiliCaptured {
 
 /**
  * Runs `fn` with both channels captured into memory and returns the collected
- * text, restoring the previous writer afterwards even if `fn` throws.
+ * text. The capture belongs to `fn`'s own asynchronous work: the installed
+ * writer is not touched, so it needs no restoring, whether `fn` returns or
+ * throws, and captures under way at the same time do not see each other.
  *
  * Formatting matches `console.log`: arguments are rendered with `util.format`
  * and each `log`/`errLog` call contributes a trailing newline, exactly as the
@@ -122,17 +142,15 @@ export interface ChiliCaptured {
 export async function chili_capture(fn: () => Promise<void>): Promise<ChiliCaptured> {
   const outChunks: string[] = [];
   const errChunks: string[] = [];
-  const previous: ChiliWriter = chiliWriter_set({
+  const writer: ChiliWriter = {
     log: (...args: unknown[]): void => { outChunks.push(`${format(...args)}\n`); },
     errLog: (...args: unknown[]): void => { errChunks.push(`${format(...args)}\n`); },
     write: (chunk: string | Buffer): void => {
       outChunks.push(typeof chunk === "string" ? chunk : chunk.toString("utf-8"));
     },
-  });
-  try {
-    await fn();
-  } finally {
-    chiliWriter_set(previous);
-  }
+  };
+  // Held for this run's own work, not installed for the process: what another run writes meanwhile is not
+  // taken, and this run's end changes nothing for any other.
+  await capturing.run(writer, fn);
   return { out: outChunks.join(""), err: errChunks.join("") };
 }

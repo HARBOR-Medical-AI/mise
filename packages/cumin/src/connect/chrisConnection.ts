@@ -9,6 +9,7 @@
  * @module
  */
 
+import { identityElevatedClient_get, identityElevated_run, identityEpoch_raise } from "./identityEpoch.js";
 import { folderLookup_memoize } from '../filebrowser/folderMemo';
 import { requestLedger_start } from '../net/requestLedger';
 import { Client, authToken_get as adapterAuthToken_get, client_create, token_verify, TOKEN_CHECK_TIMEOUT_MS } from "../chrisapi/adapter.js";
@@ -24,7 +25,6 @@ import { IStorageProvider } from "../io/io.js";
 import { chrisIO } from "../io/chrisIO.js";
 import { errorStack } from "../error/errorStack.js";
 import chalk from "chalk";
-import { AsyncLocalStorage } from "node:async_hooks";
 
 /**
  * Re-exports the ChRIS API client for convenience.
@@ -97,7 +97,6 @@ export class ChRISConnection {
   private client: Client | null = null;
   private _config?: ConnectionConfig; // Renamed backing field
   private storageProvider?: IStorageProvider; // Made optional
-  private readonly elevatedClientContext: AsyncLocalStorage<Client> = new AsyncLocalStorage<Client>();
 
   /**
    * Constructs a new ChRISConnection instance.
@@ -160,6 +159,11 @@ export class ChRISConnection {
     this.tokenFile = this._config!.tokenFilepath;
     try {
       this.authToken = await adapterAuthToken_get(authUrl, user, password);
+      // Whoever was connected before is not connected now: the client made for them goes, whether or not
+      // this login was given a token, and the next ask makes one for this login.
+      this.client = null;
+      // A change of identity: what is cached of the one before is emptied, and nothing it began is taken.
+      identityEpoch_raise();
       if (this.authToken) {
         // console.log("Auth token: " + this.authToken);
         const saved: boolean = await this.token_saveToFile(this.tokenFile, this.authToken);
@@ -243,6 +247,8 @@ export class ChRISConnection {
     this.authToken = token;
     // One folder lookup per path per session, as client_get makes it.
     this.client = folderLookup_memoize(client);
+    // A change of identity: what is cached of the one before is emptied, and nothing it began is taken.
+    identityEpoch_raise();
     await this.token_saveToFile(this.tokenFile, token);
     return { connected: true };
   }
@@ -266,6 +272,8 @@ export class ChRISConnection {
 
     let status: boolean = true;
     let needsRefresh: boolean = false;
+    // Who was connected before the context was set, to tell a change of identity from the same one named again.
+    const before: string = `${this.user ?? ''}\n${this.chrisURL ?? ''}`;
 
     if (parsedContext.user) {
       status =
@@ -308,6 +316,9 @@ export class ChRISConnection {
     // Refresh the client with the new context
     if (needsRefresh) {
       await this.client_refresh();
+      // The context names another user or another CUBE: a change of identity. (The same user on the same
+      // CUBE named again is not one, and empties nothing.)
+      if (`${this.user ?? ''}\n${this.chrisURL ?? ''}` !== before) identityEpoch_raise();
     }
 
     return status;
@@ -362,9 +373,8 @@ export class ChRISConnection {
     this.tokenFile = this._config!.tokenFilepath;
     this.chrisURL = await this.chrisURL_get();
     this.authToken = await this.authToken_get(true); // Pass true directly
-    if (this.chrisURL && this.authToken) {
-      this.client = folderLookup_memoize(client_create(this.chrisURL, this.authToken));
-    }
+    // A client for who the context now names, or none: one made for whoever was named before is never kept.
+    this.client = this.chrisURL && this.authToken ? folderLookup_memoize(client_create(this.chrisURL, this.authToken)) : null;
     return this.client;
   }
 
@@ -373,8 +383,9 @@ export class ChRISConnection {
    * @returns A Promise resolving to the Client instance or null.
    */
   async client_get(): Promise<Client | null> {
-    const elevatedClient: Client | undefined = this.elevatedClientContext.getStore();
-    if (elevatedClient) return elevatedClient;
+    // Work being done as another user (a `sudo`) has that user's client for its own length.
+    const elevatedClient: object | null = identityElevatedClient_get();
+    if (elevatedClient !== null) return elevatedClient as Client;
 
     if (
       (await this.authToken_get()) &&
@@ -421,7 +432,9 @@ export class ChRISConnection {
       throw error;
     }
     const elevatedClient: Client = client_create(url, token);
-    return await this.elevatedClientContext.run(elevatedClient, operation);
+    // Run as that user for the length of the operation: given their client, and marked so that the
+    // session's caches are neither read nor filled by it.
+    return await identityElevated_run(elevatedClient, operation);
   }
 
   /**
@@ -437,6 +450,10 @@ export class ChRISConnection {
    */
   async connection_logout(): Promise<void> {
     this.authToken = null;
+    // The client carries the token: it goes with it.
+    this.client = null;
+    // Nobody is connected: what is cached of who was is emptied.
+    identityEpoch_raise();
     try {
       await this.storageProvider!.remove(this.tokenFile);
       console.log("Logged out successfully");

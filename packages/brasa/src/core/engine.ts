@@ -85,6 +85,8 @@ export interface LineOptions {
   id?: string;
   /** Hears the line's exit status when it ends. */
   ended?: (code: number) => void;
+  /** Set by the engine once the backend has marked this call as a piece of its work. */
+  marked?: boolean;
 }
 
 /**
@@ -361,6 +363,13 @@ async function batch_execute(
  * @returns The envelopes of the executed commands, in execution order.
  */
 export async function line_execute(line: string, options: LineOptions = {}): Promise<CommandEnvelope[]> {
+  // The backend marks the line as a piece of its work, when it has a use for that (see `Backend.work_run`).
+  // A line run inside a line (a batch's command, a manifest's line) is marked too, inside the outer mark:
+  // a backend's mark is written to be made within itself.
+  const work_mark: Backend['work_run'] = backendInstalled_get()?.work_run;
+  if (work_mark !== undefined && options.marked !== true) {
+    return await work_mark((): Promise<CommandEnvelope[]> => line_execute(line, { ...options, marked: true }));
+  }
   // A host that names the line's surface scopes it there: what it lists is
   // that surface's answer (#1273).
   if (options.origin !== undefined) {

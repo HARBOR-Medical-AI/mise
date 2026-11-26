@@ -22,6 +22,7 @@ import {
   type QueryIndexEntrySnapshot,
   type QueryIndexSnapshot,
 } from './queryIndex';
+import { identityEpoch_get } from '../connect/identityEpoch';
 
 const QUERY_INDEX_SCHEMA: number = 1;
 
@@ -178,12 +179,16 @@ export function queryIndexCheckpoint_watch(
 ): () => void {
   let timer: NodeJS.Timeout | null = null;
   let lastWrite: number = 0;
+  // The identity this watcher writes for is the one connected when it was started. Once another has
+  // connected, what the cache holds is the other's: nothing more is written under this name.
+  const began: number = identityEpoch_get();
   const listener_remove: () => void = queryIndex_get().changeListener_add((): void => {
-    if (timer) return;
+    if (timer || identityEpoch_get() !== began) return;
     const wait: number = Math.max(delayMs, lastWrite + floorMs - Date.now());
     timer = setTimeout((): void => {
       timer = null;
       lastWrite = Date.now();
+      if (identityEpoch_get() !== began) return;
       void queryIndexCheckpoint_save(identity, root).catch((): void => { /* next mutation retries */ });
     }, wait);
     timer.unref();

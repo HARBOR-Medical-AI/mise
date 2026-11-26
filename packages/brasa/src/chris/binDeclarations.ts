@@ -42,6 +42,7 @@
  *
  * @module
  */
+import { identityCache_usable, identityChange_listen } from '@fnndsc/cumin/identity-epoch';
 import type { PipelineManifest, PipelineManifestNode } from '@fnndsc/salsa';
 import type { CommandEnvelope } from '@fnndsc/menu';
 
@@ -623,6 +624,9 @@ const declarations: Map<string, CommandDeclaration> = new Map();
 export function binDeclarations_forget(): void {
   declarations.clear();
 }
+// What `/bin` declares is one CUBE's plugins and pipelines, as one user may run them: at a change of
+// identity every declaration made is forgotten.
+identityChange_listen(binDeclarations_forget);
 
 /**
  * The `/bin` entry a word names: a plugin by its full `/bin` name, a
@@ -726,7 +730,9 @@ async function entryDeclaration_get(entry: BinEntry): Promise<CommandDeclaration
     made = null;
   }
   errorStack.checkpoint_drain(checkpoint);
-  if (made !== null) declarations.set(key, made);
+  // Kept only for whoever is connected now, by work begun as them: a declaration read as another user, or
+  // by a line begun before someone else connected, is its caller's to use and is not kept.
+  if (made !== null && identityCache_usable()) declarations.set(key, made);
   return made;
 }
 

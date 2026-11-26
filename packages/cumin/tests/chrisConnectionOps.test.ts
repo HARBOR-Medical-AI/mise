@@ -36,6 +36,7 @@ jest.mock('../src/io/chrisIO', () => ({
 import { authToken_get, client_create, token_verify } from '../src/chrisapi/adapter';
 import { chrisContextURL_parse, chrisContext } from '../src/context/chrisContext';
 import { ChRISConnection, chrisConnection_init } from '../src/connect/chrisConnection';
+import { identityCache_usable, identityEpoch_get } from '../src/connect/identityEpoch';
 import { errorStack } from '../src/error/errorStack';
 import { ConnectionConfig } from '../src/config/config';
 import { IStorageProvider } from '../src/io/io';
@@ -428,6 +429,94 @@ describe('elevation_runWithCredentials', () => {
     expect(await conn.client_get()).toBe(normalClient);
     releaseElevatedWork?.();
     await expect(elevatedOperation).resolves.toBe(elevatedClient);
+  });
+});
+
+describe('who is connected', () => {
+  it('a password login drops the client made for whoever was connected before, and is a change of identity', async () => {
+    const conn: ChRISConnection = connection_make({ files: { '/cfg/token': 'FIRST' } });
+    const first: object = { of: 'the first' };
+    const second: object = { of: 'the second' };
+    mockClientCreate.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    expect(await conn.client_get()).toBe(first);
+    const before: number = identityEpoch_get();
+    mockAuthToken.mockResolvedValue('SECOND');
+    await conn.connection_connect({ user: 'other', password: 'pw', debug: false, url: 'https://cube/api/v1/' });
+    expect(identityEpoch_get()).toBe(before + 1);
+    expect(await conn.client_get()).toBe(second);
+    expect(mockClientCreate).toHaveBeenLastCalledWith('https://cube/api/v1/', 'SECOND');
+  });
+
+  it('a token login is a change of identity, with a client of its own', async () => {
+    const conn: ChRISConnection = connection_make({ files: { '/cfg/token': 'FIRST' } });
+    const first: object = { of: 'the first' };
+    const second: object = { of: 'the second' };
+    mockClientCreate.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    expect(await conn.client_get()).toBe(first);
+    const before: number = identityEpoch_get();
+    mockTokenVerify.mockResolvedValue(undefined);
+    expect(await conn.connection_connectWithToken({ user: 'other', url: 'https://cube/api/v1/', token: 'SECOND' })).toEqual({ connected: true });
+    expect(identityEpoch_get()).toBe(before + 1);
+    expect(await conn.client_get()).toBe(second);
+  });
+
+  it('a refused token login changes nothing: the client and the epoch are as they were', async () => {
+    const conn: ChRISConnection = connection_make({ files: { '/cfg/token': 'FIRST' } });
+    const first: object = { of: 'the first' };
+    mockClientCreate.mockReturnValue(first);
+    expect(await conn.client_get()).toBe(first);
+    const before: number = identityEpoch_get();
+    mockTokenVerify.mockRejectedValue(Object.assign(new Error('Unauthorized'), { response: { status: 401 } }));
+    expect((await conn.connection_connectWithToken({ user: 'other', url: 'https://cube/api/v1/', token: 'BAD' })).connected).toBe(false);
+    expect(identityEpoch_get()).toBe(before);
+    expect(await conn.client_get()).toBe(first);
+  });
+
+  it('logout leaves no client, and is a change of identity', async () => {
+    const store: FakeStore = { files: { '/cfg/token': 'T' } };
+    const conn: ChRISConnection = connection_make(store);
+    mockClientCreate.mockReturnValue({ of: 'the one who logs out' });
+    expect(await conn.client_get()).not.toBeNull();
+    const before: number = identityEpoch_get();
+    await conn.connection_logout();
+    expect(identityEpoch_get()).toBe(before + 1);
+    // Nothing on disk and nothing kept: nobody is connected.
+    expect(await conn.client_get()).toBeNull();
+  });
+
+  it('a context that names another user is a change of identity; the same user named again is not', async () => {
+    const conn: ChRISConnection = connection_make({ files: { '/cfg/token': 'T' } });
+    mockContextSet.mockResolvedValue(true);
+    mockClientCreate.mockReturnValue({});
+    mockParse.mockResolvedValue({ user: 'chris', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    await conn.context_set('chris@https://cube/api/v1/');
+    const settled: number = identityEpoch_get();
+    await conn.context_set('chris@https://cube/api/v1/');
+    expect(identityEpoch_get()).toBe(settled);
+    mockParse.mockResolvedValue({ user: 'other', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    await conn.context_set('other@https://cube/api/v1/');
+    expect(identityEpoch_get()).toBe(settled + 1);
+    mockParse.mockResolvedValue({ user: 'other', URL: 'https://elsewhere/api/v1/', folder: null, feed: null, plugin: null });
+    await conn.context_set('other@https://elsewhere/api/v1/');
+    expect(identityEpoch_get()).toBe(settled + 2);
+  });
+
+  it('a refresh that finds no token leaves no client', async () => {
+    const store: FakeStore = { files: { '/cfg/token': 'T' } };
+    const conn: ChRISConnection = connection_make(store);
+    mockClientCreate.mockReturnValue({ of: 'the first' });
+    expect(await conn.client_refresh()).not.toBeNull();
+    delete store.files['/cfg/token'];
+    expect(await conn.client_refresh()).toBeNull();
+  });
+
+  it('work under sudo is marked as another user\'s for its own length', async () => {
+    const conn: ChRISConnection = connection_make({ files: { '/cfg/token': 'NORMAL' } });
+    mockClientCreate.mockReturnValue({});
+    mockAuthToken.mockResolvedValue('ELEVATED');
+    expect(identityCache_usable()).toBe(true);
+    await expect(conn.elevation_runWithCredentials({ username: 'admin', password: 'secret' }, async (): Promise<boolean> => identityCache_usable())).resolves.toBe(false);
+    expect(identityCache_usable()).toBe(true);
   });
 });
 

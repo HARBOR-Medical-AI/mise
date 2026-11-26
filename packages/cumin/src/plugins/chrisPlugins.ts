@@ -200,8 +200,6 @@ function collectionItem_convertToPluginData(item: CollectionItem): Record<string
  * Class for managing individual ChRIS plugins.
  */
 export class ChRISPlugin {
-  private _client: Client | null = null;
-
   constructor() {
     // Client is fetched lazily
   }
@@ -211,10 +209,9 @@ export class ChRISPlugin {
    * @returns A Promise resolving to the Client instance or null.
    */
   async client_get(): Promise<Client | null> {
-    if (!this._client) {
-      this._client = await chrisConnection.client_get();
-    }
-    return this._client;
+    // Asked of the connection each time, never kept: the connection knows who is connected now, and whose
+    // client a `sudo` scope is running under.
+    return chrisConnection.client_get();
   }
 
   /**

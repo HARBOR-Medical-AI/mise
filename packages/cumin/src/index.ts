@@ -17,6 +17,7 @@ export * from "./feeds/chrisFeed";
 export * from "./feeds/chrisTags";
 export * from "./feeds/chrisAccess";
 export * from "./connect/chrisConnection";
+export * from "./connect/identityEpoch";
 export * from "./connect/loginFailure";
 export * from "./context/chrisContext";
 export * from "./plugins/chrisPlugins";

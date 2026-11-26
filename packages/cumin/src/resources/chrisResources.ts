@@ -127,7 +127,6 @@ export interface Dictionary {
  * Base class for managing ChRIS resources.
  */
 export class ChRISResource {
-  private _client: Client | null = null;
   private _resourceName: string = "";
   private _resourceCollection: ListResource | Resource | null = null;
   private _resourceArrayItems: Item[] | null = null;
@@ -146,10 +145,9 @@ export class ChRISResource {
    * @returns A Promise resolving to the Client instance or null.
    */
   async client_get(): Promise<Client | null> {
-    if (!this._client) {
-      this._client = await chrisConnection.client_get();
-    }
-    return this._client;
+    // Asked of the connection each time, never kept: the connection knows who is connected now, and whose
+    // client a `sudo` scope is running under.
+    return chrisConnection.client_get();
   }
 
   get resourceName(): string {

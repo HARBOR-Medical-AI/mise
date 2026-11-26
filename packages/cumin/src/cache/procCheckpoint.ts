@@ -38,6 +38,7 @@ import {
   type ProcInstance,
   type ProcFeedDataFacts,
 } from './procCache';
+import { identityEpoch_get } from '../connect/identityEpoch';
 import { errorStack } from '../error/errorStack';
 
 // v3: per-feed shards. v2 (one file, instances with metrics) is still read
@@ -607,14 +608,19 @@ export function procCheckpoint_watch(
   // Layouts are kept beside the index this watcher keeps.
   procLayoutHome_set({ identity, root });
 
+  // The identity this watcher writes for is the one connected when it was started. Once another has
+  // connected, the tree is the other's: nothing more is written under this name.
+  const began: number = identityEpoch_get();
+
   const shard_write = async (key: ShardKey): Promise<void> => {
+    if (identityEpoch_get() !== began) return;
     if (key === 'roster') await procCheckpointRoster_save(identity, root);
     else if (key === 'all') await procCheckpoint_save(identity, root);
     else await procCheckpointFeed_save(identity, key, root);
   };
 
   const shard_schedule = (key: ShardKey): void => {
-    if (timers.has(key)) return;
+    if (timers.has(key) || identityEpoch_get() !== began) return;
     const earliest: number = (lastWrite.get(key) ?? 0) + floorMs;
     const wait: number = Math.max(delayMs, earliest - Date.now());
     const timer: NodeJS.Timeout = setTimeout((): void => {

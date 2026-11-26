@@ -72,4 +72,29 @@ describe('chili output seam', () => {
     chiliLog('after');
     expect(logSpy).toHaveBeenCalledWith('after');
   });
+
+  it('two captures under way at once each hold their own lines, and neither puts the other on the console', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation((): void => undefined);
+    try {
+      let firstGo: () => void = (): void => undefined;
+      let secondGo: () => void = (): void => undefined;
+      const firstHeld: Promise<void> = new Promise((resolve: () => void): void => { firstGo = resolve; });
+      const secondHeld: Promise<void> = new Promise((resolve: () => void): void => { secondGo = resolve; });
+      const first = chili_capture(async (): Promise<void> => { chiliLog('first, before'); await firstHeld; chiliLog('first, after'); });
+      const second = chili_capture(async (): Promise<void> => { chiliLog('second, before'); await secondHeld; chiliLog('second, after'); });
+      // The first ends while the second is still running: the second's later line is still the second's.
+      firstGo();
+      const firstOut = await first;
+      secondGo();
+      const secondOut = await second;
+      expect(firstOut.out).toBe('first, before\nfirst, after\n');
+      expect(secondOut.out).toBe('second, before\nsecond, after\n');
+      expect(logSpy).not.toHaveBeenCalled();
+      // Outside any capture a write goes to the console as it always did.
+      chiliLog('outside');
+      expect(logSpy).toHaveBeenCalledWith('outside');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
 });

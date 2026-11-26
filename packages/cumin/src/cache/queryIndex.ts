@@ -27,6 +27,8 @@
  * @module
  */
 
+import { identityCache_usable, identityChange_listen } from '../connect/identityEpoch';
+
 /**
  * Separates the server from the criteria in a key, and one criterion from
  * the next.
@@ -171,6 +173,9 @@ export class QueryIndex {
    * @param entry - What was asked, of whom, and what came back.
    */
   public entry_note(entry: QueryIndexEntry): void {
+    // A query made as another user, or noted by work begun under an identity since replaced, is not this
+    // identity's to replay.
+    if (!identityCache_usable()) return;
     this.entries.set(entry.queryId, entry);
     const key: string = queryKey_build(entry.criteria, entry.server, entry.owner);
     const heldId: number | undefined = this.byQuestion.get(key);
@@ -294,6 +299,7 @@ export class QueryIndex {
    * @param at - The oldest record walked, as an ISO timestamp.
    */
   public floor_set(at: string): void {
+    if (!identityCache_usable()) return;
     if (this.floor !== null && Date.parse(this.floor) <= Date.parse(at)) return;
     this.floor = at;
     this.change_emit();
@@ -370,6 +376,11 @@ let queryIndex: QueryIndex | null = null;
  * @returns The singleton.
  */
 export function queryIndex_get(): QueryIndex {
-  if (queryIndex === null) queryIndex = new QueryIndex();
+  if (queryIndex === null) {
+    const made: QueryIndex = new QueryIndex();
+    queryIndex = made;
+    // The index is one identity's queries: at a change of identity it is emptied, entries and floor.
+    identityChange_listen((): void => { made.reset(); });
+  }
   return queryIndex;
 }

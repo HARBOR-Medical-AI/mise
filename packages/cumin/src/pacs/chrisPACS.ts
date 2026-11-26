@@ -6,6 +6,7 @@
  * @module
  */
 
+import { identityCache_usable, identityChange_listen } from '../connect/identityEpoch.js';
 import { errorStack } from "../error/errorStack.js";
 import { Result, Ok, Err } from "../utils/result.js";
 import { retry_untilValue } from "../utils/retry.js";
@@ -713,14 +714,18 @@ export async function pacsSeriesFacts_fetch(path: string): Promise<PACSSeriesFac
   const patientID: string = at.patient.split('-')[0] ?? '';
   if (patientID.length === 0) return null;
   const key: string = `${at.pacs}/${at.patient}`;
-  let asked: Promise<Map<string, PACSSeriesFacts>> | undefined = seriesByPatient.get(key);
+  // What is kept is what the session's identity was shown: work done as another user, or begun before the
+  // identity changed, asks CUBE and keeps nothing.
+  const kept: boolean = identityCache_usable();
+  let asked: Promise<Map<string, PACSSeriesFacts>> | undefined = kept ? seriesByPatient.get(key) : undefined;
   if (asked === undefined) {
-    asked = patientSeries_fetch(at.pacs, patientID).catch((): Map<string, PACSSeriesFacts> => {
+    const fresh: Promise<Map<string, PACSSeriesFacts>> = patientSeries_fetch(at.pacs, patientID).catch((): Map<string, PACSSeriesFacts> => {
       // A failed ask is forgotten, so the next feed of this patient asks again.
-      seriesByPatient.delete(key);
+      if (seriesByPatient.get(key) === fresh) seriesByPatient.delete(key);
       return new Map();
     });
-    seriesByPatient.set(key, asked);
+    asked = fresh;
+    if (kept) seriesByPatient.set(key, fresh);
   }
   return (await asked).get(at.folder) ?? null;
 }
@@ -756,6 +761,7 @@ async function patientSeries_fetch(pacs: string, patientID: string): Promise<Map
 export function pacsSeriesFacts_clear(): void {
   seriesByPatient.clear();
 }
+identityChange_listen(pacsSeriesFacts_clear);
 
 /**
  * Resolves a series' CUBE storage state: its registered file count and the

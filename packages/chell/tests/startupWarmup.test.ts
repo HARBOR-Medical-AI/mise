@@ -867,6 +867,23 @@ describe('the replay index in a run with no warm-up', () => {
     expect(mockQueryIndexSave).toHaveBeenCalledWith('chris@https://cube.example.org/api/v1/');
   });
 
+  it('writes nothing under the first identity\'s name once another has connected, and writes the second\'s under its own', async () => {
+    const { identityEpoch_raise } = await import('@fnndsc/cumin/identity-epoch');
+    // A run that begins as the first identity.
+    await queryCheckpoint_prime('chris');
+    // Someone else connects in the same run: what the index holds from here is theirs.
+    identityEpoch_raise();
+    await queryCheckpoint_flush();
+    // The first one's checkpoint is left as it was last written: not overwritten, and given none of the second's entries.
+    expect(mockQueryIndexSave).not.toHaveBeenCalled();
+    // Primed for the second, the exit writes the second's, under the second's name.
+    identityUser = 'other';
+    await queryCheckpoint_prime('other');
+    await queryCheckpoint_flush();
+    expect(mockQueryIndexSave).toHaveBeenCalledTimes(1);
+    expect(mockQueryIndexSave).toHaveBeenCalledWith('other@https://cube.example.org/api/v1/');
+  });
+
   it('does nothing without an identity to key the index by', async () => {
     await queryCheckpoint_prime(undefined);
     expect(mockQueryIndexRestore).not.toHaveBeenCalled();

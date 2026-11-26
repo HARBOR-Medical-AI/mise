@@ -52,6 +52,7 @@ import {
   type Result,
   type StackMessage,
 } from '@fnndsc/cumin';
+import { identityEpoch_get, identityScope_run } from '@fnndsc/cumin/identity-epoch';
 import type { ListingItem } from '@fnndsc/menu';
 import {
   procCache_refresh,
@@ -293,6 +294,13 @@ function restoreAge_describe(): string {
  */
 let flushIdentity: string | null = null;
 
+/**
+ * Which identity epoch that name was taken under. The flush at exit writes
+ * only while it is still the epoch: once someone else has connected, what
+ * the index holds is theirs, and is not written under this name.
+ */
+let flushEpoch: number = -1;
+
 
 /**
  * The connected session's identity, the name its checkpoints are kept under:
@@ -324,6 +332,7 @@ export async function queryCheckpoint_prime(user: string | undefined): Promise<v
   const identity: string | null = await sessionIdentity_name();
   if (identity === null) return;
   flushIdentity = identity;
+  flushEpoch = identityEpoch_get();
   await queryIndexCheckpoint_restore(identity).catch((): QueryIndexRestoreResult => (
     { restored: false, count: 0 }
   ));
@@ -342,6 +351,9 @@ export async function queryCheckpoint_prime(user: string | undefined): Promise<v
  */
 export async function queryCheckpoint_flush(): Promise<void> {
   if (flushIdentity === null) return;
+  // The identity the name was taken under is no longer the one connected: its checkpoint is left as it
+  // was last written, and nothing of whoever connected since is put under its name.
+  if (flushEpoch !== identityEpoch_get()) return;
   await queryIndexCheckpoint_save(flushIdentity).catch((): void => {
     /* the index rebuilds itself from CUBE on the next boot */
   });
@@ -366,6 +378,31 @@ export async function startupWarmup_run(
   interactive: boolean,
   reporter: StartupWarmupReporter | null,
   reportSettlement: boolean = false,
+): Promise<StartupWarmupCache> {
+  // One piece of work, begun as whoever is connected at boot: the walks it leaves running behind the prompt
+  // put nothing in the caches once someone else has connected.
+  return identityScope_run((): Promise<StartupWarmupCache> => startupWarmup_walk(flags, user, interactive, reporter, reportSettlement));
+}
+
+/**
+ * The warm-up itself: see {@link startupWarmup_run}, whose arguments these are.
+ *
+ * @param flags - Resource caches selected by the host's boot flags.
+ * @param user - Authenticated username used to construct the feed path.
+ * @param interactive - Whether progress may use an interactive spinner.
+ * @param reporter - Host status logger, or null for silent status reporting.
+ * @param reportSettlement - Whether to report outcomes that arrive after boot.
+ * @returns Cache counts and the labels of any failed warm-up operations.
+ *
+ * @example
+ * const cache: StartupWarmupCache = await startupWarmup_walk(flags, user, true, null, false);
+ */
+async function startupWarmup_walk(
+  flags: StartupWarmupFlags,
+  user: string | undefined,
+  interactive: boolean,
+  reporter: StartupWarmupReporter | null,
+  reportSettlement: boolean,
 ): Promise<StartupWarmupCache> {
   const result: StartupWarmupCache = { failures: [], deferred: [] };
   /** The identity whose checkpoints this boot restored, once known. */
@@ -392,6 +429,7 @@ export async function startupWarmup_run(
     if (identity !== null) {
       checkpointIdentity = identity;
       flushIdentity = identity;
+      flushEpoch = identityEpoch_get();
       const listings: ListCheckpointRestoreResult = await listCheckpoint_restore(identity);
       listCheckpoint_watch(identity);
       reporter?.log(

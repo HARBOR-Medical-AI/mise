@@ -16,6 +16,7 @@ import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { listCache_get, type ListCacheEntrySnapshot, type ListCacheSnapshot } from './listCache';
+import { identityEpoch_get } from '../connect/identityEpoch';
 
 const LIST_CHECKPOINT_SCHEMA: number = 1;
 
@@ -161,12 +162,16 @@ export function listCheckpoint_watch(
 ): () => void {
   let timer: NodeJS.Timeout | null = null;
   let lastWrite: number = 0;
+  // The identity this watcher writes for is the one connected when it was started. Once another has
+  // connected, what the cache holds is the other's: nothing more is written under this name.
+  const began: number = identityEpoch_get();
   const listener_remove: () => void = listCache_get().changeListener_add((): void => {
-    if (timer) return;
+    if (timer || identityEpoch_get() !== began) return;
     const wait: number = Math.max(delayMs, lastWrite + floorMs - Date.now());
     timer = setTimeout((): void => {
       timer = null;
       lastWrite = Date.now();
+      if (identityEpoch_get() !== began) return;
       void listCheckpoint_save(identity, root).catch((): void => { /* next mutation retries */ });
     }, wait);
     timer.unref();

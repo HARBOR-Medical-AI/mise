@@ -26,6 +26,7 @@ import {
   type Shape,
 } from "../chrisapi/adapter.js";
 import { chrisConnection } from "../connect/chrisConnection.js";
+import { identityCache_usable, identityChange_listen } from "../connect/identityEpoch.js";
 import { collectionPage_wrap, listPages_drain, type ListPage } from "../chrisapi/contract.js";
 import { errorStack } from "../error/errorStack.js";
 import { Result, Ok, Err } from "../utils/result.js";
@@ -78,10 +79,11 @@ export const TAGS_MAP_TTL_MS: number = 60_000;
 /** The tags index, and when it was read; null until first asked. */
 let tagsMap: { at: number; tags: Map<string, TagEntry>; resources: Map<string, Tag>; byFeed: Map<number, string[]> } | null = null;
 
-/** Forgets the tags index: a tag changed here, or a test starts clean. */
+/** Forgets the tags index: a tag changed here, the identity changed, or a test starts clean. */
 export function feedTagsMap_forget(): void {
   tagsMap = null;
 }
+identityChange_listen(feedTagsMap_forget);
 
 /**
  * The message a name the vocabulary does not hold earns, naming the cure.
@@ -215,7 +217,10 @@ export async function feedTag_remove(feedId: number, name: string): Promise<Resu
  * @returns The index, or Err with the reason stacked.
  */
 async function tagsIndex_read(now: number): Promise<Result<NonNullable<typeof tagsMap>>> {
-  if (tagsMap !== null && now - tagsMap.at < TAGS_MAP_TTL_MS) return Ok(tagsMap);
+  // The index kept is the session's identity's: work done as another user, or begun before the identity
+  // changed, reads CUBE and keeps nothing.
+  const kept: boolean = identityCache_usable();
+  if (kept && tagsMap !== null && now - tagsMap.at < TAGS_MAP_TTL_MS) return Ok(tagsMap);
   const client: Client | null = await chrisConnection.client_get();
   if (!client) {
     errorStack.stack_push('error', 'Not connected to ChRIS.');
@@ -243,8 +248,10 @@ async function tagsIndex_read(now: number): Promise<Result<NonNullable<typeof ta
       resources.set(name, tag);
       for (const feed of feeds) byFeed.set(feed.id, [...(byFeed.get(feed.id) ?? []), name]);
     }
-    tagsMap = { at: now, tags, resources, byFeed };
-    return Ok(tagsMap);
+    const read: NonNullable<typeof tagsMap> = { at: now, tags, resources, byFeed };
+    // Kept only if whoever asked is still who is connected (and asked as themselves).
+    if (kept && identityCache_usable()) tagsMap = read;
+    return Ok(read);
   } catch (error: unknown) {
     errorStack.stack_push('error', `Failed to read the tags: ${error instanceof Error ? error.message : String(error)}`);
     return Err();

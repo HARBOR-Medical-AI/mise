@@ -12,6 +12,7 @@
  *
  * @module
  */
+import { identityCache_usable, identityChange_listen } from '../connect/identityEpoch';
 import { errorStack } from '../error/errorStack';
 
 /**
@@ -136,6 +137,21 @@ export interface CacheStats {
 
   /** Age of the oldest retained entry in milliseconds, or null when empty. */
   oldestAge: number | null;
+}
+
+/**
+ * Spells a folder's path the one way its record is kept under: one leading
+ * slash, none trailing. A caller that writes `home/a`, `/home/a` or
+ * `/home/a/` means one folder, and is given, and drops, one record.
+ *
+ * @param path - The path as its caller spelled it.
+ * @returns The path as records are keyed.
+ *
+ * @example
+ * folderKey_spell('home/a/'); // '/home/a'
+ */
+export function folderKey_spell(path: string): string {
+  return `/${path.replace(/^\/+|\/+$/g, '')}`;
 }
 
 /**
@@ -307,7 +323,10 @@ export class ListCache {
    */
   static instance_get(): ListCache {
     if (!ListCache.instance) {
-      ListCache.instance = new ListCache();
+      const made: ListCache = new ListCache();
+      ListCache.instance = made;
+      // What is listed is what one identity sees: at a change of identity all of it goes.
+      identityChange_listen((): void => { made.cache_invalidate(); });
     }
     return ListCache.instance;
   }
@@ -319,6 +338,12 @@ export class ListCache {
    * @returns CacheResult with freshness info, or null if not cached.
    */
   cache_get<T = unknown>(path: string): CacheResult<T> | null {
+    // Work done as another user (a `sudo`), or begun before the identity changed, is answered by CUBE, not
+    // by what the session's identity was shown.
+    if (!identityCache_usable()) {
+      this.stats.misses++;
+      return null;
+    }
     const entry: CacheEntry<unknown> | undefined = this.cache.get(path);
 
     if (!entry) {
@@ -351,6 +376,9 @@ export class ListCache {
    * @param options - Optional TTL and dirty flag.
    */
   cache_set<T = unknown>(path: string, data: T, options?: CacheOptions): void {
+    // A listing fetched as another user, or by work begun under an identity since replaced, is its caller's
+    // to use and is not kept: it is not what the identity now connected would be shown.
+    if (!identityCache_usable()) return;
     if (options?.since !== undefined && this.stamp_isStale(path, options.since)) return;
     // LRU: If exists, delete and re-add (moves to end)
     if (this.cache.has(path)) {
@@ -444,10 +472,12 @@ export class ListCache {
    * @returns The lookup's promise, or null when none is kept or it expired.
    */
   folder_get(path: string): Promise<unknown> | null {
-    const kept = this.folders.get(path);
+    if (!identityCache_usable()) return null;
+    const key: string = folderKey_spell(path);
+    const kept = this.folders.get(key);
     if (kept === undefined) return null;
     if (Date.now() - kept.timestamp > kept.ttl) {
-      this.folders.delete(path);
+      this.folders.delete(key);
       return null;
     }
     return kept.promise;
@@ -467,11 +497,14 @@ export class ListCache {
    * @param promise - The lookup under way.
    */
   folder_set(path: string, promise: Promise<unknown>): void {
-    const record: { promise: Promise<unknown>; timestamp: number; ttl: number; missed?: boolean } = { promise, timestamp: Date.now(), ttl: this.ttl_get(path) };
-    this.folders.set(path, record);
+    if (!identityCache_usable()) return;
+    // One record for a folder however its path was spelled, kept as long as its listing would be.
+    const key: string = folderKey_spell(path);
+    const record: { promise: Promise<unknown>; timestamp: number; ttl: number; missed?: boolean } = { promise, timestamp: Date.now(), ttl: this.ttl_get(key) };
+    this.folders.set(key, record);
     promise.then(
       (folder: unknown): void => { if (folder === null || folder === undefined) record.missed = true; },
-      (): void => { if (this.folders.get(path) === record) this.folders.delete(path); },
+      (): void => { if (this.folders.get(key) === record) this.folders.delete(key); },
     );
   }
 
@@ -486,8 +519,9 @@ export class ListCache {
    */
   private folders_drop(path?: string): void {
     if (path === undefined) { this.folders.clear(); return; }
-    this.folders.delete(path);
-    const prefix: string = path.endsWith('/') ? path : `${path}/`;
+    const own: string = folderKey_spell(path);
+    this.folders.delete(own);
+    const prefix: string = own.endsWith('/') ? own : `${own}/`;
     for (const [key, record] of this.folders) {
       if (key.startsWith(prefix)) this.folders.delete(key);
       else if (record.missed === true && (key === '/' || prefix.startsWith(`${key}/`))) this.folders.delete(key);
@@ -515,6 +549,7 @@ export class ListCache {
    * @param updater - Function to transform cached data.
    */
   cache_update<T = unknown>(path: string, updater: (data: T) => T): void {
+    if (!identityCache_usable()) return;
     const entry: CacheEntry<unknown> | undefined = this.cache.get(path);
     if (entry) {
       entry.data = updater(entry.data as T);

@@ -41,12 +41,13 @@ afterEach(() => {
 });
 
 describe('client access', () => {
-  it('fetches and caches the shared client', async () => {
-    mockClientGet.mockResolvedValue({ me: true });
+  it('asks the connection for its client each time, and keeps none of its own', async () => {
+    mockClientGet.mockResolvedValueOnce({ who: 'the first' }).mockResolvedValueOnce({ who: 'the second' });
     const resource: ChRISResource = new ChRISResource();
-    expect(await resource.client_get()).toEqual({ me: true });
-    expect(await resource.client_get()).toEqual({ me: true });
-    expect(mockClientGet).toHaveBeenCalledTimes(1);
+    expect(await resource.client_get()).toEqual({ who: 'the first' });
+    // Someone else has connected since: the resource follows, where it once went on as the first.
+    expect(await resource.client_get()).toEqual({ who: 'the second' });
+    expect(mockClientGet).toHaveBeenCalledTimes(2);
   });
 });
 

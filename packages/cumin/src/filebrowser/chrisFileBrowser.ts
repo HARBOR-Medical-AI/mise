@@ -32,7 +32,6 @@ export enum BrowserType {
  * Class for browsing ChRIS filesystem objects.
  */
 export class ChRISFileBrowser {
-  private _client: Client | null = null;
   private _chrisFileBrowserFolder: FileBrowserFolder | null = null;
   private _resource: ChRISResource | null = null;
   private _bindOp: BoolString = {"status": false, "message": ""};
@@ -48,10 +47,9 @@ export class ChRISFileBrowser {
    * @returns A Promise resolving to the Client instance or null.
    */
   async client_get(): Promise<Client | null> {
-    if (!this._client) {
-      this._client = await chrisConnection.client_get();
-    }
-    return this._client;
+    // Asked of the connection each time, never kept: the connection knows who is connected now, and whose
+    // client a `sudo` scope is running under.
+    return chrisConnection.client_get();
   }
 
   /**

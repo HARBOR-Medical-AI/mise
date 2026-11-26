@@ -7,6 +7,7 @@
  * @module
  */
 
+import { folderKey_spell, listCache_get } from "../cache/listCache.js";
 import { chrisConnection } from "../connect/chrisConnection.js";
 import {
   client_userFileUpload,
@@ -168,9 +169,16 @@ function fieldRefusal_detect(error: unknown): boolean {
   return refusalMessages_read(body, LEGACY_RENAME_FIELD).some((said: string): boolean => said.trim() === FIELD_REQUIRED);
 }
 
+/** What a lookup of a file's resource found: the resource, or none and what CUBE refused it with. */
+interface FileLookup {
+  /** The file's resource, or null when no collection this client can read holds it. */
+  file: UserFile | FileBytesSource | null;
+  /** The HTTP status CUBE refused the lookup with, when it gave one. */
+  refusal: number | null;
+}
+
 export class ChrisIO {
   private _chrisFolder: string = "";
-  private _client: Client | null = null;
   private storageProvider: IStorageProvider | null = null;
 
   constructor() {
@@ -190,10 +198,9 @@ export class ChrisIO {
    * @returns A Promise resolving to the Client instance or null.
    */
   async client_get(): Promise<Client | null> {
-    if (!this._client) {
-      this._client = await chrisConnection.client_get();
-    }
-    return this._client;
+    // Asked of the connection each time, never kept: the connection knows who is connected now, and whose
+    // client a `sudo` scope is running under.
+    return chrisConnection.client_get();
   }
 
   get chrisFolder(): string {
@@ -253,44 +260,43 @@ export class ChrisIO {
    *
    * @param client - The connected ChRIS client.
    * @param fileId - The file id from a folder listing.
-   * @returns The file resource, or null when neither collection knows the id.
+   * @returns The file resource, or none with the status CUBE refused the lookup with.
    */
-  private async downloadableFile_get(client: Client, fileId: number): Promise<UserFile | FileBytesSource | null> {
-    this.lastFileRefusal = null;
+  private async downloadableFile_get(client: Client, fileId: number): Promise<FileLookup> {
+    // What CUBE refused with, for this lookup alone: held here and handed back with the answer, so that two
+    // lookups under way at once each say their own reason.
+    let refusal: number | null = null;
     try {
       const userFile: UserFile | null = await client.getUserFile(fileId);
-      if (userFile) return userFile;
+      if (userFile) return { file: userFile, refusal: null };
     } catch (error: unknown) {
       // A refusal is not an absence. CUBE answers 403 for a file this
       // identity may see listed but not read — the shape a shared feed
       // takes — and reporting that as "not found" sends an operator
       // looking for a missing file that is in fact right there.
-      this.lastFileRefusal = httpStatus_extract(error);
+      refusal = httpStatus_extract(error);
     }
     try {
       const pacsFile: UserFile | null = await resource_call(client, shape_nullable(DOWNLOADABLE_FILE_SHAPE), 'getPACSFile', fileId);
-      if (pacsFile) return pacsFile;
+      if (pacsFile) return { file: pacsFile, refusal: null };
     } catch (error: unknown) {
-      this.lastFileRefusal ??= httpStatus_extract(error);
+      refusal ??= httpStatus_extract(error);
     }
     // A file in a feed shared with this identity: CUBE serves it through
     // the file browser while `/userfiles/` answers 403.
     try {
       const shared: FileBytesSource | null = await filebrowserFile_get(client, fileId);
-      if (shared) {
-        this.lastFileRefusal = null;
-        return shared;
-      }
+      if (shared) return { file: shared, refusal: null };
     } catch (error: unknown) {
-      this.lastFileRefusal ??= httpStatus_extract(error);
+      refusal ??= httpStatus_extract(error);
     }
     // The client answers a refusal with null as readily as it does an
     // absence, so neither branch above necessarily carries a status. Ask
     // CUBE plainly what it thinks of this file, once, on the failure path
     // only: an operator told "not found" about a file they can see listed
     // will go looking for the wrong problem.
-    this.lastFileRefusal ??= await this.fileStatus_probe(fileId);
-    return null;
+    refusal ??= await this.fileStatus_probe(fileId);
+    return { file: null, refusal };
   }
 
   /**
@@ -313,24 +319,22 @@ export class ChrisIO {
     }
   }
 
-  /** HTTP status of the most recent failed file lookup, when CUBE gave one. */
-  private lastFileRefusal: number | null = null;
-
   /**
    * Explains why a file lookup came back empty, in CUBE's own terms.
    *
    * @param fileId - The file the operator asked for.
+   * @param refusal - The status CUBE refused that lookup with, when it gave one.
    * @returns A sentence naming what CUBE actually answered.
    */
-  private fileRefusal_describe(fileId: number): string {
-    if (this.lastFileRefusal === 403) {
-      return `File ID ${fileId}: CUBE refused access (403). It is listed but not readable by this identity — a feed shared with you grants the listing, not the contents.`;
+  private fileRefusal_describe(fileId: number, refusal: number | null): string {
+    if (refusal === 403) {
+      return `File ID ${fileId}: CUBE refused access (403). It is listed but not readable by this identity — a feed shared with you grants the listing, not the contents.`
     }
-    if (this.lastFileRefusal === 404) {
+    if (refusal === 404) {
       return `File ID ${fileId} does not exist (404).`;
     }
-    if (this.lastFileRefusal !== null) {
-      return `File ID ${fileId} could not be read: CUBE answered ${this.lastFileRefusal}.`;
+    if (refusal !== null) {
+      return `File ID ${fileId} could not be read: CUBE answered ${refusal}.`;
     }
     return `File ID ${fileId} is not in the file collections this client can read.`;
   }
@@ -345,12 +349,13 @@ export class ChrisIO {
     }
 
     try {
-      const userFile: UserFile | FileBytesSource | null = await this.downloadableFile_get(client, fileId);
+      const looked: FileLookup = await this.downloadableFile_get(client, fileId);
+      const userFile: UserFile | FileBytesSource | null = looked.file;
 
       if (!userFile) {
         errorStack.stack_push(
           "error",
-          this.fileRefusal_describe(fileId)
+          this.fileRefusal_describe(fileId, looked.refusal)
         );
         return Err();
       }
@@ -400,7 +405,8 @@ export class ChrisIO {
     const client: Client | null = await this.client_get();
     if (!client) return null;
     try {
-      const userFile: UserFile | FileBytesSource | null = await this.downloadableFile_get(client, fileId);
+      const looked: FileLookup = await this.downloadableFile_get(client, fileId);
+      const userFile: UserFile | FileBytesSource | null = looked.file;
       const fsize: unknown = (userFile as UserFileWithData | null)?.data?.fsize;
       return typeof fsize === "number" ? fsize : null;
     } catch {
@@ -421,12 +427,13 @@ export class ChrisIO {
     }
 
     try {
-      const userFile: UserFile | FileBytesSource | null = await this.downloadableFile_get(client, fileId);
+      const looked: FileLookup = await this.downloadableFile_get(client, fileId);
+      const userFile: UserFile | FileBytesSource | null = looked.file;
 
       if (!userFile) {
         // This is a common case: the file ID was scraped from a listing, but
         // the file itself is not retrievable (e.g. 404, or permissions)
-        errorStack.stack_push("error", this.fileRefusal_describe(fileId));
+        errorStack.stack_push("error", this.fileRefusal_describe(fileId, looked.refusal));
         return null;
       }
 
@@ -801,6 +808,9 @@ export class ChrisIO {
 
       const deadline: number = Date.now() + (options.timeoutMs ?? 10_000);
       while (Date.now() < deadline) {
+        // What is remembered of this folder is from before the delete: it is dropped before each look, so
+        // that the look asks CUBE and is not answered with the folder that was just deleted.
+        listCache_get().cache_invalidateTree(folderKey_spell(cleanPath));
         if (!(await client.getFileBrowserFolderByPath(cleanPath))) {
           return Ok(true);
         }
