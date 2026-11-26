@@ -21,7 +21,7 @@
  * @module
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -218,16 +218,45 @@ for (let round = 0; round < 3; round++) {
   expect_that(`round ${round}: two workspaces lowered at once: both reductions survive`, both['packages/alpha']?.['no-empty'] === undefined && both['apps/beta']?.['no-empty'] === undefined && JSON.stringify(both) !== pristine.trim(), JSON.stringify(both));
   expect_that(`round ${round}: nothing is left behind beside the baseline`, readdirSync(join(tree, 'scripts')).filter((name) => name.startsWith('eslint-baseline.json.')).length === 0, readdirSync(join(tree, 'scripts')).join(' '));
 }
-// A claim left by a run that is gone is taken over; one held by a run that is here is respected.
+// A claim that is there is never taken over. Whatever it holds (nothing yet, a process that is gone, one
+// that is here), a writer that finds it writes nothing, and the claim and the baseline are as they were.
 writeFileSync(BASELINE, pristine);
-writeFileSync(`${BASELINE}.lock`, '2147483646');
-const stale = await ratchet_start('--only', 'packages/alpha', '--lower');
-expect_that('a claim left by a run that is no longer running is taken over', stale.status === 0, stale.said);
-writeFileSync(`${BASELINE}.lock`, String(process.pid));
-const held = await ratchet_start('--only', 'apps/beta', '--lower');
-const heldBaseline = readFileSync(BASELINE, 'utf8');
-expect_that('a claim held by a run that is here stops another writer, which writes nothing', held.status === 1 && held.said.includes(`another run is writing scripts/eslint-baseline.json (process ${process.pid})`) && JSON.parse(heldBaseline)['apps/beta']?.['no-empty'] === 1, held.said);
-renameSync(`${BASELINE}.lock`, `${BASELINE}.lock.aside`);
+const CLAIM = `${BASELINE}.lock`;
+const claims = [
+  ['an empty claim, as one being made would look to a careless reader', '', 'was left by a run that is no longer running. Look that no ratchet is running, remove that file'],
+  ['a claim left by a run that is gone', '2147483646', 'was left by a run that is no longer running (process 2147483646)'],
+  ['a claim held by a run that is here', String(process.pid), `another run is writing scripts/eslint-baseline.json (process ${process.pid})`],
+];
+for (const [what, holds, words] of claims) {
+  // Held open by this process for as long as the other runs, as a claimant's would be.
+  const handle = openSync(CLAIM, 'w');
+  writeSync(handle, holds);
+  const refused = await ratchet_start('--only', 'packages/alpha', '--lower');
+  const claimAfter = readFileSync(CLAIM, 'utf8');
+  closeSync(handle);
+  expect_that(`${what} stops a writer, which writes nothing and leaves the claim alone`,
+    refused.status === 1 && refused.said.includes(words) && claimAfter === holds && readFileSync(BASELINE, 'utf8') === pristine && existsSync(CLAIM),
+    `${refused.said} | claim after: ${JSON.stringify(claimAfter)}`);
+  renameSync(CLAIM, `${CLAIM}.aside-${claims.findIndex((one) => one[0] === what)}`);
+}
+// With the claim out of the way the same run lowers, and lets its own claim go.
+const freed = await ratchet_start('--only', 'packages/alpha', '--lower');
+expect_that('with no claim in the way the writer lowers, and its own claim is gone when it ends', freed.status === 0 && !existsSync(CLAIM), freed.said);
+
+// A long report is delivered whole down a pipe, to its last finding, with the failing status.
+const MANY = 4000;
+// The small tree as it was, so that the only faults are rules that rose.
+file_put(join(tree, 'packages/alpha/src/tally.ts'), SOURCE);
+file_put(join(tree, 'apps/beta/src/tally.ts'), SOURCE);
+file_put(join(tree, 'apps/beta/src/many.ts'), Array.from({ length: MANY }, (_unused, at) => `export function many${at}(): void {\n  try { void ${at}; } catch { }\n}\n`).join(''));
+writeFileSync(BASELINE, pristine);
+const long = await ratchet_start();
+const lastFinding = `apps/beta/src/many.ts:${MANY * 3 - 1}:`;
+expect_that('a report of thousands of findings reaches the reader whole: its last finding is there, and the status is 1',
+  long.status === 1 && long.said.length > 300000 && long.said.includes(lastFinding) && /apps\/beta\/src\/(many|tally)\.ts:\d+:\d+ /.test(long.said.trimEnd().split('\n').pop() ?? '') && !long.said.includes('each rule in each workspace at its ceiling'),
+  `status ${long.status}, ${long.said.length} bytes, last line: ${long.said.trimEnd().split('\n').pop()?.slice(0, 160)}`);
+// A file with every rule switched off for it stays in its place: it adds no finding to the cases below.
+file_put(join(tree, 'apps/beta/src/many.ts'), '/* eslint-disable */\nexport const none = 0;\n');
 // Back to the small tree and its baseline for the cases below.
 file_put(join(tree, 'packages/alpha/src/tally.ts'), SOURCE);
 file_put(join(tree, 'apps/beta/src/tally.ts'), SOURCE);

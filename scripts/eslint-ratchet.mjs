@@ -40,14 +40,15 @@
  * rest, since a change can make a finding on a line nobody touched.
  *
  * One run at a time writes the baseline: `--lower` and `--bootstrap`
- * claim it before they read it, and a run that finds it claimed by one
- * still running writes nothing and says so.
+ * claim it before they read it, and a run that finds it claimed writes
+ * nothing and says so. A claim is never taken over: one left by a run
+ * that was killed is a person's to remove.
  *
  * @module
  */
 
 import { execFileSync } from 'node:child_process';
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { existsSync, linkSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
@@ -164,32 +165,43 @@ function baseline_put(next) {
 /**
  * Claims the baseline for writing, for the rest of this process: one writer at a time reads it, works out
  * what to write and writes it, so two runs lowering different workspaces cannot each write over the other's
- * change. The claim is a file beside the baseline, made only if it is not there, holding this process's
- * id; it is let go when the process ends. A claim whose holder is no longer running is taken over.
+ * change.
+ *
+ * The claim is a file beside the baseline that holds the claimant's process id. It is made whole or not at
+ * all: written under a name of this process's own, then linked to the claim's name, which fails if the
+ * claim is there. So a claim is never seen empty or half-written, and there is no moment in which two runs
+ * each believe they made it. A claim that is there is never taken over, by anyone: a run that finds one
+ * writes nothing. If its holder is still running, it says to run again; if not (a run that was killed), it
+ * says so and names the file to remove, which is a person's to do after looking. The claim is let go when
+ * this process ends, and only if it is still this process's.
  *
  * @returns {string | null} Null when the claim is this process's; otherwise why not.
  */
 function writer_claim() {
   const claim = `${baselinePath}.lock`;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const mine = `${claim}.${process.pid}`;
+  try {
+    writeFileSync(mine, String(process.pid));
     try {
-      const handle = openSync(claim, 'wx');
-      writeSync(handle, String(process.pid));
-      closeSync(handle);
-      process.on('exit', () => { try { unlinkSync(claim); } catch { /* already gone */ } });
-      return null;
-    } catch (error) {
-      if (error.code !== 'EEXIST') return `the baseline could not be claimed for writing: ${error.message}`;
-      let holder = Number.NaN;
-      try { holder = Number(readFileSync(claim, 'utf8')); } catch { continue; }
-      let running = Number.isInteger(holder) && holder > 0;
-      if (running) { try { process.kill(holder, 0); } catch { running = false; } }
-      if (running) return `another run is writing ${BASELINE_FILE} (process ${holder}): nothing was written by this one; run it again`;
-      // Left behind by a run that ended without letting go.
-      try { unlinkSync(claim); } catch { /* another took it over first */ }
+      linkSync(mine, claim);
+    } finally {
+      unlinkSync(mine);
     }
+  } catch (error) {
+    if (error.code !== 'EEXIST') return `the baseline could not be claimed for writing: ${error.message}`;
+    let said = '';
+    try { said = readFileSync(claim, 'utf8').trim(); } catch { /* gone again already: the next run will find it free */ }
+    const holder = /^[0-9]+$/.test(said) ? Number(said) : null;
+    let running = false;
+    if (holder !== null) { try { process.kill(holder, 0); running = true; } catch (probe) { running = probe.code === 'EPERM'; } }
+    if (running) return `another run is writing ${BASELINE_FILE} (process ${holder}): nothing was written by this one; run it again`;
+    return `${BASELINE_FILE}.lock is there and nothing was written: it was left by a run that is no longer running${holder === null ? '' : ` (process ${holder})`}. Look that no ratchet is running, remove that file, and run again`;
   }
-  return `the baseline could not be claimed for writing`;
+  process.on('exit', () => {
+    // Let go only of a claim that is still this process's.
+    try { if (readFileSync(claim, 'utf8').trim() === String(process.pid)) unlinkSync(claim); } catch { /* already gone */ }
+  });
+  return null;
 }
 // A mode that writes claims the baseline before it reads it: what it merges into is then what it writes over.
 if (bootstrap || lower) {
@@ -316,6 +328,9 @@ for (const one of fallen) {
 if (faults.length > 0) {
   console.error(`eslint-ratchet: ${faults.length} fault(s) (${files} files, ${seconds} s):`);
   for (const fault of faults) console.error(`  ${fault}`);
-  process.exit(1);
+  // The status is set and the process left to end by itself: an exit called here can end it before a long
+  // report has gone down a pipe, and the end of the report is where the last finding is.
+  process.exitCode = 1;
+} else {
+  console.log(`eslint-ratchet: ${total} findings over ${workspaces.length} workspace(s) (${files} files, ${seconds} s), each rule in each workspace at its ceiling.`);
 }
-console.log(`eslint-ratchet: ${total} findings over ${workspaces.length} workspace(s) (${files} files, ${seconds} s), each rule in each workspace at its ceiling.`);
