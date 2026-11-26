@@ -358,7 +358,7 @@ ${chalk.bold.cyan('INTERACTIVE COMMANDS')}
 
 ${chalk.bold.cyan('SHELL FEATURES')}
   ${chalk.bold('Pipes')}              Chain command stdout: ${chalk.dim('cat file.txt | wc -l')}
-  ${chalk.bold('Output Redirection')} Write/append to virtual files: ${chalk.dim('ls -lh > output.txt')}
+  ${chalk.bold('Output Redirection')} Write/append to a file on the session's host disk: ${chalk.dim('ls -lh > output.txt')} ${chalk.dim('(under a daemon: --host-control=files)')}
   ${chalk.bold('Semicolons')}         Run sequentially: ${chalk.dim('cd /tmp; ls; pwd')}
   ${chalk.bold('Shell Escape')}       Run host OS commands inside the REPL with ${chalk.bold.green('!')} prefix
 

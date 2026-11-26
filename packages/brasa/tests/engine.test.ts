@@ -236,6 +236,8 @@ beforeEach(() => {
       tty: false,
       pipeSegments: true,
       shellCommands: true,
+      // A local shell: the engine's disk is its operator's.
+      engineFilesystem: true,
     },
     prompt: async (): Promise<string> => '',
     pipeSegment: (command: string, input: Buffer): Promise<Buffer> => mockSegmentPipe(command, input) as Promise<Buffer>,
@@ -472,6 +474,24 @@ describe('output redirection', () => {
   it('appends captured output with >>', async () => {
     await line_execute('whoami >> out.txt');
     expect(mockAppendFile).toHaveBeenCalledWith('out.txt', expect.any(Buffer));
+  });
+
+  it.each([['>'], ['>>']])('refuses %s by name where the engine\'s disk is nobody\'s: nothing is written and the command does not run', async (operator: string) => {
+    surface_set({
+      capabilities: { hiddenInput: false, localEdit: false, tty: false, pipeSegments: true, shellCommands: true, engineFilesystem: false },
+      prompt: async (): Promise<string> => '',
+      pipeSegment: (_c: string, i: Buffer): Promise<Buffer> => Promise.resolve(i),
+      shellCommand: async (): Promise<number> => 0,
+      localEdit: async (r: { content: string }): Promise<{ content: string; changed: boolean }> => ({ content: r.content, changed: false }),
+    });
+    process.exitCode = 0;
+    const envelopes = await line_execute(`whoami ${operator} out.txt`);
+    expect(envelopes).toEqual([{ status: 'error', rendered: '' }]);
+    expect(mockWhoami).not.toHaveBeenCalled();
+    expect(mockWriteFile).not.toHaveBeenCalled();
+    expect(mockAppendFile).not.toHaveBeenCalled();
+    expect(mockStatSync).not.toHaveBeenCalled();
+    expect(output.errText_get()).toContain(`redirect (${operator} out.txt): the session's host disk is nobody's; start the session with --host-control=files`);
   });
 
   it('numbers the rows a redirected listing answered with, as the listing itself would', async () => {

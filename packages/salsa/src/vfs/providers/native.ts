@@ -308,6 +308,21 @@ export class NativeVfsProvider implements VFSProvider {
     return this.failure_classify(target, (type) => (type === 'dir' ? 'EISDIR' : 'EIO'));
   }
 
+  /**
+   * Proves that nothing in CUBE holds a path: its parent was listed whole
+   * and no folder, file or link there has the name (`pathHolders_prove`).
+   * A listing that was refused, failed or came back short proves nothing.
+   *
+   * @param target - An absolute CUBE path.
+   * @returns True only on that proof.
+   */
+  async absence_prove(target: string): Promise<boolean> {
+    const mark: number = errorStack.checkpoint_mark();
+    const proof: Result<PathProof> = await pathHolders_prove(target);
+    errorStack.checkpoint_drain(mark);
+    return proof.ok && proof.value.kind === 'absent';
+  }
+
   /** @inheritdoc */
   async readBinary(target: string): Promise<VfsOutcome<Buffer>> {
     const bytes: Result<Buffer> = await fileContent_getBinary(target);

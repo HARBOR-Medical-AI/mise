@@ -94,6 +94,26 @@ export class ScriptsProvider implements VFSProvider {
       .map((entry: fs.Dirent): VFSItem => this.item_make(entry.name, path.join(disk, entry.name), entry.isDirectory() ? 'dir' : entry.name.endsWith('.mise') ? SCRIPT_TYPE : 'file'));
   }
 
+  /**
+   * Proves that a path under the library is not there: the file system
+   * itself answered `ENOENT` for its place on disk. A place that cannot be
+   * looked at (`EACCES`, or any other answer), the mount's own root, and a
+   * source the library does not know prove nothing.
+   *
+   * @param pathStr - A path at or under `/scripts`.
+   * @returns True only on that answer.
+   */
+  async absence_prove(pathStr: string): Promise<boolean> {
+    const placed = this.place(this.segments_split(pathStr));
+    if (placed === null || placed === 'unknown') return false;
+    try {
+      fs.lstatSync(placed.disk);
+      return false;
+    } catch (error: unknown) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT';
+    }
+  }
+
   async list(pathStr: string): Promise<Result<VFSItem[]>> {
     const placed = this.place(this.segments_split(pathStr));
     if (placed === null) return Ok(this.root_list());

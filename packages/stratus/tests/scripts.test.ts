@@ -5,7 +5,7 @@
  * written to, `.git` never shown, `play` reading through it.
  */
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -14,6 +14,7 @@ import { stratusBackend_make } from '../src/backend.js';
 import { ClusterStore } from '../src/cluster/state.js';
 import { ScriptLibrary, git_run, scriptsRoot_derive } from '../src/scripts/library.js';
 import { scripts_run } from '../src/commands/scripts.js';
+import { ScriptsProvider } from '../src/vfs/scripts.js';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 
@@ -46,6 +47,62 @@ describe('the library of scripts', () => {
     library = new ScriptLibrary(join(root, 'config'), join(root, 'state', 'scripts'));
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('proves a script absent only when the file system itself says it is not there', async () => {
+    const mount = new ScriptsProvider(library, (): string => 'rudolph');
+    const mine: string = library.mine_derive();
+    mkdirSync(mine, { recursive: true });
+    writeFileSync(join(mine, 'there.mise'), 'net new n\n');
+    expect(await mount.absence_prove('/scripts/mine/gone.mise')).toBe(true);
+    expect(await mount.absence_prove('/scripts/mine/deeper/gone.mise')).toBe(true);
+    expect(await mount.absence_prove('/scripts/mine/there.mise')).toBe(false);
+    // The mount itself, a source the library does not know, and a path that climbs: nothing is proved.
+    expect(await mount.absence_prove('/scripts')).toBe(false);
+    expect(await mount.absence_prove('/scripts/nosuchsource/x.mise')).toBe(false);
+    expect(await mount.absence_prove('/scripts/mine/../x.mise')).toBe(false);
+    if (process.getuid?.() !== 0) {
+      // A folder that may not be looked into: not knowing is not absence.
+      const closed: string = join(mine, 'closed');
+      mkdirSync(closed);
+      chmodSync(closed, 0o000);
+      try {
+        expect(await mount.absence_prove('/scripts/mine/closed/x.mise')).toBe(false);
+      } finally {
+        chmodSync(closed, 0o700);
+      }
+    }
+  });
+
+  it('says where a path stands after a read of it failed: outside for a checkout, absent for a script proved missing, unknown for the tenancy', async () => {
+    const configDir: string = join(root, 'config');
+    mkdirSync(library.mine_derive(), { recursive: true });
+    const made = stratusBackend_make({ driver: new FakeDriver(fakeCloud_sample()), configDir, store: new ClusterStore(join(configDir, 'clusters')), library });
+    const files = made.backend.files!;
+    // A checkout on this host: no mount serves it, so it is none of the session's files.
+    await expect(files.read('/home/someone/src/infra/store.mise')).rejects.toThrow();
+    expect(await files.standing!('/home/someone/src/infra/store.mise')).toBe('outside');
+    // The library looked at its own folder and the file system said no such file.
+    await expect(files.read('/scripts/mine/gone.mise')).rejects.toThrow();
+    expect(await files.standing!('/scripts/mine/gone.mise')).toBe('absent');
+    await made.backend.session.init();
+    // Connected, a name the tenancy does not hold: still its mount's word alone, and still unknown.
+    await expect(files.read('/net/oci/fnndsc/clusters/nothing.mise')).rejects.toThrow();
+    expect(await files.standing!('/net/oci/fnndsc/clusters/nothing.mise')).toBe('unknown');
+    expect(await files.standing!('/net/oci/nosuchtenancy/x.mise')).toBe('unknown');
+    // A cloud that cannot be reached: every call of the driver fails. The tenancy's mount reports that as missing
+    // ("not connected"), which reads as ENOENT; it is a failure, and the standing stays unknown.
+    const unreachable = new Proxy(new FakeDriver(fakeCloud_sample()), {
+      get: (target: FakeDriver, name: string | symbol): unknown => {
+        const own: unknown = Reflect.get(target, name);
+        return typeof own === 'function' && name !== 'constructor' && !String(name).startsWith('cloud') ? async (): Promise<never> => { throw new Error('connect ETIMEDOUT'); } : own;
+      },
+    });
+    const down = stratusBackend_make({ driver: unreachable, configDir: join(root, 'config-down'), store: new ClusterStore(join(root, 'config-down', 'clusters')), library });
+    await expect(down.backend.files!.read('/net/oci/fnndsc/clusters/tenant.mise')).rejects.toThrow();
+    expect(await down.backend.files!.standing!('/net/oci/fnndsc/clusters/tenant.mise')).toBe('unknown');
+    // And with the cloud down a checkout path is still simply not the session's.
+    expect(await down.backend.files!.standing!('/home/someone/src/infra/store.mise')).toBe('outside');
+  });
 
   it('derives its root under the state directory', () => {
     expect(scriptsRoot_derive({ XDG_STATE_HOME: '/s' })).toBe('/s/stratus/scripts');

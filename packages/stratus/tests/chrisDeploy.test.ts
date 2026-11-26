@@ -340,6 +340,12 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const file: string = join(root, 'josh-password');
     writeFileSync(file, 'from-a-file-1\n', { mode: 0o600 });
     surface.asked = [];
+    // The file is on the session's own disk: nobody's, until the operator who started it says it is theirs.
+    const refused = await chris_run(context, ['user', 'add', 'joshua', '--email', 'josh@example.org', '--password-file', file, '--on', 'store']);
+    expect(plain(refused.renderedErr ?? '')).toContain(`--password-file ${file}: the session's host disk is nobody's; start the session with --host-control=files`);
+    expect(surface.asked).toEqual([]);
+    expect(vm.made).toHaveLength(1);
+    (surface.capabilities as { engineFilesystem: boolean }).engineFilesystem = true;
     surface.answers = ['y'];
     await chris_run(context, ['user', 'add', 'joshua', '--email', 'josh@example.org', '--password-file', file, '--on', 'store']);
     expect(surface.asked).toHaveLength(1);
@@ -347,6 +353,15 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(vm.made[1]).toEqual({ username: 'joshua', email: 'josh@example.org', password: 'from-a-file-1' });
     writeFileSync(file, 'short\n');
     expect((await chris_run(context, ['user', 'add', 'joshua2', '--email', 'josh2@example.org', '--password-file', file])).renderedErr).toContain('shorter than eight characters');
+  });
+
+  it('refuses an admin password file on a disk that is nobody\'s, and deploys nothing', async () => {
+    const file: string = join(root, 'admin-password');
+    writeFileSync(file, 'an-admin-password\n', { mode: 0o600 });
+    surface.answers = ['y'];
+    const refused = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--admin-password-file', file]);
+    expect(plain(refused.renderedErr ?? '')).toContain(`--admin-password-file ${file}: the session's host disk is nobody's; start the session with --host-control=files`);
+    expect(vm.files.size).toBe(0);
   });
 
   it('refuses without an email, a bad name, a VM with no ChRIS, and more than one ChRIS without --on', async () => {

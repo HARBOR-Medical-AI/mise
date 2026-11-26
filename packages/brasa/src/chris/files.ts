@@ -5,7 +5,7 @@
  * @module
  */
 import { vfsOutcome_convertToResult } from '@fnndsc/fond';
-import type { Result } from '@fnndsc/fond';
+import type { PathStanding, Result } from '@fnndsc/fond';
 import type { Backend, FileByteStream } from '../core/backend.js';
 import { FileReadRefusal } from '../core/fileRefusal.js';
 
@@ -86,6 +86,28 @@ async function file_read(filePath: string): Promise<Buffer> {
 }
 
 /**
+ * Where a path stands in ChRIS, asked after a read of it failed.
+ *
+ * The path is resolved as the read resolved it, and the session's tree
+ * answers for where that leads: a native CUBE path is `absent` only on the
+ * strict proof (its parent listed whole, nothing holding the name), and a
+ * projected one (`/proc`, `/pacs`, `/net`, `/bin`) is never proved absent,
+ * since a projection that fails has said nothing about what is there.
+ *
+ * @param filePath - The file's path, as the read took it.
+ * @returns Where it stands; `unknown` when even the resolution failed.
+ */
+async function file_standing(filePath: string): Promise<PathStanding> {
+  try {
+    const { storePath_resolve } = await import('../builtins/utils.js');
+    const { vfsDispatcher_get } = await import('../core/filesystem.js');
+    return await vfsDispatcher_get().path_standing(await storePath_resolve(filePath));
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
  * Opens one ChRIS file's bytes as a stream, at the path {@link file_read}
  * resolves, so a download is served as CUBE sends it and never held whole
  * in the daemon. A file a mount makes itself (a job's `log`) is small and
@@ -123,5 +145,6 @@ async function file_stream(filePath: string): Promise<FileByteStream> {
 export const chrisFiles: NonNullable<Backend['files']> = {
   read: file_read,
   write: file_write,
+  standing: file_standing,
   stream: file_stream,
 };
