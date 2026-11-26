@@ -46,6 +46,12 @@ const EXPECTED = [
   'scripts/run.sh:14: -p is given a variable on a command line',
   'scripts/run.sh:16: --password is given a variable on a command line',
   'scripts/run.sh:17: -p is given a variable on a command line',
+  'scripts/run.sh:19: -p is given a variable on a command line',
+  'scripts/run.sh:20: -p is given a variable on a command line',
+  'scripts/run.sh:21: -p is given a variable on a command line',
+  'scripts/run.sh:22: -p is given a variable on a command line',
+  'scripts/run.sh:23: -p is given a variable on a command line',
+  'scripts/run.sh:24: -p is given a variable on a command line',
   'scripts/tool.mjs:3: -p is given its value in an argument list',
 ].sort();
 

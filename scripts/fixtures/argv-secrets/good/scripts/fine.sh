@@ -9,3 +9,6 @@ cp -p "$SRC" \
 mkdir -p "$dir" && chell --version
 chell --version; mkdir -p "$dir"
 mkdir -p "$HOME/.config/chell"
+echo "chell & co; chell | more" ; mkdir -p "$dir"
+chell "x@https://cube.example.invalid/?a=1&b=2" --version && mkdir -p "$dir"
+made="$(mkdir -p "$dir" && chell --version)"

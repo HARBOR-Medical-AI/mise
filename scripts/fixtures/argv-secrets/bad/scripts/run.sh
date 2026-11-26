@@ -16,3 +16,9 @@ node dist/index.js x@y -p \
 mkdir -p "$D"; tool --password "$PW"
 mkdir -p "$dir" && chell x@y -p "$PW" -c version
 chell --version && mkdir -p "$dir"
+chell "x@https://cube.example.invalid/api/v1/?a=1&b=2" -p "$PW" -c version
+chell 'x@host;port|other' -p "$PW"
+chell x@host\&more -p "$PW"
+chell "$(hostname | tr a-z A-Z)" -p "$PW"
+chell $(hostname | tr a-z A-Z) -p "$PW"
+(cd "$dir" && chell x@y -p "$PW")

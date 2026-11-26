@@ -25,7 +25,8 @@
  *   options followed by, or joined with `=` to, a variable; and `-p`
  *   followed by a variable in a command that runs chell, calypso, stratus
  *   or porter, each command of a line that joins several (`&&`, `;`, `|`)
- *   being judged by itself. An option and its value are two words of a command however
+ *   being judged by itself; a joining word inside quotes, after a
+ *   backslash or inside a substitution joins nothing. An option and its value are two words of a command however
  *   they are parted: spaces, tabs, or a backslash and a new line, a
  *   continued command being read as the one command it is.
  *
@@ -156,6 +157,45 @@ function listOwner_read(text, position) {
 }
 
 /**
+ * Takes a shell line apart into its commands, at the words that join
+ * commands (`&&`, `||`, `;`, `|`, `&`, and the parentheses of a subshell)
+ * where they stand as such: not inside single or double quotes, not after
+ * a backslash, and not inside a substitution (`$( … )`, backticks), whose
+ * text stays with the command it is an argument of.
+ *
+ * @param {string} command - One logical line.
+ * @returns {string[]} Its commands, each with its quotes and substitutions as written.
+ */
+function shellParts_split(command) {
+  const parts = [];
+  let part = '';
+  let quote = null;
+  let depth = 0;
+  for (let at = 0; at < command.length; at++) {
+    const here = command[at];
+    if (here === '\\' && quote !== "'") { part += here + (command[at + 1] ?? ''); at++; continue; }
+    if (quote !== null) {
+      if (here === quote) quote = null;
+      part += here;
+    } else if (here === "'" || here === '"' || here === '`') {
+      quote = here; part += here;
+    } else if (here === '$' && command[at + 1] === '(') {
+      depth++; part += '$('; at++;
+    } else if (depth > 0) {
+      if (here === '(') depth++;
+      if (here === ')') depth--;
+      part += here;
+    } else if (here === ';' || here === '|' || here === '&' || here === '(' || here === ')') {
+      parts.push(part); part = '';
+    } else {
+      part += here;
+    }
+  }
+  parts.push(part);
+  return parts.filter((one) => one.trim() !== '');
+}
+
+/**
  * Whether one shell command gives `-p` a variable as a password: it does
  * when one of this project's programs is named before the `-p`, and the
  * command's own program is not one to which `-p` means something else.
@@ -214,7 +254,7 @@ for (const file of shellFiles) {
     for (const found of long) findings.push(`${relative(root, file)}:${first + 1}: ${found[1]} is given a variable on a command line`);
     // `-p` belongs to the one command it is an argument of: a line of several (`a && b`, `a; b`, `a | b`) is
     // taken apart, and each part judged by its own program.
-    if (long.length === 0 && command.split(/&&|\|\||[;|&()]/).some(shellPart_carries)) findings.push(`${relative(root, file)}:${first + 1}: -p is given a variable on a command line`);
+    if (long.length === 0 && shellParts_split(command).some(shellPart_carries)) findings.push(`${relative(root, file)}:${first + 1}: -p is given a variable on a command line`);
   }
 }
 
