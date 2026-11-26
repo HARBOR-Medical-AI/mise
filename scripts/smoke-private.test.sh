@@ -124,6 +124,46 @@ touch "$WORK/stores/config/chell/token.json" "$WORK/stores/upgrade.Ab12Cd34/toke
   && [ -f "$WORK/stores/daemon.log" ] && [ -f "$WORK/stores/upgrade.Ab12Cd34/porter.log" ] && [ -d "$WORK/stores/upgrade.Ab12Cd34/state/abc/run" ] && [ -f "$WORK/stores/old/node_modules/pkg/config/login.js" ] ) \
   && ok "the daemons' config folders and the porter's credential store are removed, in the run's folder and a step's inside it; logs and what was installed stay" || bad "credential stores: $(find "$WORK/stores" -name config -o -name creds | tr '\n' ' ')"
 ( mkdir -p "$WORK/stuck/config"; rm() { :; }; secrets_remove "$WORK/stuck"; [ $? -eq 1 ] ) && ok "a credential store that could not be removed is a failure of the removing" || bad "a store left behind was not reported"
+( mkdir -p "$WORK/stuck2/config"; rm() { return 1; }; secrets_remove "$WORK/stuck2"; [ $? -eq 1 ] ) && ok "a removal that reports an error is a failure of the removing" || bad "a failed removal was not reported"
+# The daemons' berths and attach notes carry a session token; a killed daemon leaves them.
+mkdir -p "$WORK/berths/run/calypso" "$WORK/berths/tmp" "$WORK/berths/upgrade.Ab12Cd34/state/abc/run/calypso" "$WORK/berths/upgrade.Ab12Cd34/state/abc/tmp"
+touch "$WORK/berths/run/calypso/berth-1.json" "$WORK/berths/tmp/calypso-me.attach" "$WORK/berths/upgrade.Ab12Cd34/state/abc/run/calypso/berth-2.json" "$WORK/berths/upgrade.Ab12Cd34/state/abc/tmp/calypso-me.attach" \
+  "$WORK/berths/started.pids" "$WORK/berths/daemon.log" "$WORK/berths/upgrade.Ab12Cd34/started.pids" "$WORK/berths/upgrade.Ab12Cd34/porter.log"
+( secrets_remove "$WORK/berths" && [ -z "$(find "$WORK/berths" -name 'berth-*.json' -o -name '*.attach')" ] && [ "$(find "$WORK/berths" -name started.pids -o -name '*.log' | wc -l)" = 4 ] ) \
+  && ok "a daemon's berth and attach note are removed, in the run's folder and a step's; the lists of pids and the logs stay" || bad "berths or attach notes left: $(find "$WORK/berths" -name 'berth-*.json' -o -name '*.attach' | tr '\n' ' ')"
+# Nothing is removed through a link: a state folder that is a link elsewhere is left alone, and that is a failure.
+mkdir -p "$WORK/elsewhere/abc/config" "$WORK/linked"; touch "$WORK/elsewhere/abc/config/token.json"; ln -s "$WORK/elsewhere" "$WORK/linked/state"
+( secrets_remove "$WORK/linked"; status=$?; [ "$status" -eq 1 ] && [ -f "$WORK/elsewhere/abc/config/token.json" ] ) && ok "a store reached by way of a link is not removed through it, and the removing fails" || bad "a link was followed, or passed over in silence"
+mkdir -p "$WORK/linkstep/real.Ab12Cd34" "$WORK/elsewhere2/config"; ln -s "$WORK/elsewhere2" "$WORK/linkstep/upgrade.Zz99Zz99"
+( secrets_remove "$WORK/linkstep"; status=$?; [ "$status" -eq 1 ] && [ -d "$WORK/elsewhere2/config" ] ) && ok "a step's folder that is a link is not gone into, and the removing fails" || bad "a linked step folder was followed"
+# A folder that cannot be looked into may hold what cannot be seen: a failure, not a clean bill.
+mkdir -p "$WORK/blind/state/abc/config"; chmod 000 "$WORK/blind/state"
+( secrets_remove "$WORK/blind"; [ $? -eq 1 ] ) && ok "a folder that cannot be looked into is a failure of the removing" || bad "an unreadable folder was passed as clean"
+chmod 700 "$WORK/blind/state"
+# The proof of ownership is one whole entry of the environment, read as the kernel keeps it.
+( RUN_ROOT="$WORK/environ"; mkdir -m 700 "$RUN_ROOT"
+  MARK="$WORK/environ/run" OTHER=$'first line\nMARK=/a/forged/entry' PAD=$(head -c 100000 /dev/zero | tr '\0' x) PAD2=$(head -c 100000 /dev/zero | tr '\0' y) sh -c 'exec sleep 300' & ours=$!
+  sleep 0.2
+  daemon_note_owned "$ours" "MARK=$WORK/environ/run" || { echo "a real entry in a large environment was not found"; kill "$ours"; exit 1; }
+  daemon_note_owned "$ours" "MARK=/a/forged/entry" && { echo "a line inside another entry's value passed for an entry"; kill "$ours"; exit 1; }
+  daemon_note_owned "$ours" "MARK=$WORK/environ" && { echo "the start of an entry passed for the whole of it"; kill "$ours"; exit 1; }
+  daemons_reap; wait "$ours" 2>/dev/null; true
+) > "$WORK/environ.txt" 2>&1 && ok "ownership is proved by one whole environment entry: found in a large environment, and not forged by a newline in another's value" || bad "environ: $(cat "$WORK/environ.txt")"
+# The password is read again only for the user and the CUBE that were checked at the start.
+( cp "$WORK/creds.env" "$WORK/creds-bound.env"; chmod 600 "$WORK/creds-bound.env"; mkdir -m 700 "$WORK/bound"
+  curl() { echo asked >> "$WORK/bound/requests.txt"; echo '{"token":"t"}'; }
+  credentials_load "$WORK/creds-bound.env" || exit 1
+  cube_token_get "$WORK/bound" > /dev/null || { echo "a good file did not get a token"; exit 1; }
+  [ "$(wc -l < "$WORK/bound/requests.txt")" = 1 ] || exit 1
+  printf 'E2E_USER=stand-in\nE2E_PASSWORD=the-password\nE2E_CUBE=http://another.invalid/api/v1/\n' > "$WORK/creds-bound.env"
+  cube_token_get "$WORK/bound" > /dev/null && { echo "a file that now names another CUBE got a token"; exit 1; }
+  printf 'E2E_USER=someone-else\nE2E_PASSWORD=the-password\nE2E_CUBE=http://cube.invalid/api/v1/\n' > "$WORK/creds-bound.env"
+  cube_token_get "$WORK/bound" > /dev/null && { echo "a file that now names another user got a token"; exit 1; }
+  cp "$WORK/creds.env" "$WORK/creds-bound.env"; chmod 644 "$WORK/creds-bound.env"
+  cube_token_get "$WORK/bound" > /dev/null && { echo "a file since opened to others got a token"; exit 1; }
+  [ "$(wc -l < "$WORK/bound/requests.txt")" = 1 ] || { echo "a request was sent: $(wc -l < "$WORK/bound/requests.txt") in all"; exit 1; }
+  [ -z "$(ls "$WORK/bound" | grep '^login')" ]
+) > "$WORK/bound.txt" 2>&1 && ok "a credentials file that changes its user or its CUBE, or is opened to others, mid-run sends nothing: no request is made" || bad "bound credentials: $(cat "$WORK/bound.txt")"
 mkdir -m 700 "$WORK/secrets"; touch "$WORK/secrets/token" "$WORK/secrets/login.json" "$WORK/secrets/login.Ab12Cd34" "$WORK/secrets/cj" "$WORK/secrets/porter.log"
 ( secrets_remove "$WORK/secrets"; [ "$(ls "$WORK/secrets")" = porter.log ] ) && ok "a token, a login payload and a cookie jar are removed from a folder that is kept; its logs stay" || bad "secrets were left, or more than secrets removed: $(ls "$WORK/secrets" | tr '\n' ' ')"
 

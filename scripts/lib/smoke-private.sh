@@ -95,14 +95,21 @@ credentials_load() { # the file
 }
 
 # Runs one command with the e2e password in its environment, and only it:
-# the file is read in a shell that becomes that command. A file that does
-# not read, or no longer names the password, runs nothing.
+# the file is read in a shell that becomes that command. The file is held
+# again to what it was held to at the start (this user's alone), and must
+# still name the user and the CUBE that were taken up then: a file that has
+# since been opened to others, no longer reads, no longer names the
+# password, or now names another account or another CUBE runs nothing, so a
+# password is never sent to an address it was not checked against.
 password_run() { # the command and its arguments
   # shellcheck disable=SC1090
   (
-    set +u; unset E2E_PASSWORD
+    set +u
+    want_user=$E2E_USER; want_cube=$E2E_CUBE
+    [ -f "$E2E_CREDENTIALS" ] && private_check "$E2E_CREDENTIALS" "the e2e credentials" > /dev/null || exit 1
+    unset E2E_USER E2E_PASSWORD E2E_CUBE
     set -a; . "$E2E_CREDENTIALS" > /dev/null 2>&1 || exit 1; set +a
-    [ -n "${E2E_PASSWORD:-}" ] || exit 1
+    [ -n "${E2E_PASSWORD:-}" ] && [ "${E2E_USER:-}" = "$want_user" ] && [ "${E2E_CUBE:-}" = "$want_cube" ] || exit 1
     exec "$@"
   )
 }
@@ -129,23 +136,49 @@ cube_token_get() { # the private folder to work in
   printf '%s\n' "$token"
 }
 
-# Removes what a run may have left that is a secret: a token, a login
-# payload or a cookie jar in the run's folder or a folder of a step inside
-# it, and the stores its daemons and porter kept credentials in (each
-# daemon's config folder, where a login writes its token and a door login
-# its door's; the porter's credential store). Done at every ending, after
-# what the run started is stopped, so that a folder kept for a person to
-# look at holds none. Logs are left. Returns 1 if any of it is still there.
+# Removes what a run may have left that is a secret, each by the path the
+# run itself put it at, in the run's folder and in the folder of a step
+# inside it:
+#
+#   - a token, a login payload, a cookie jar;
+#   - the stores its daemons and porter kept credentials in: each daemon's
+#     config folder (where a login saves its token, and a door login its
+#     door's) and the porter's credential store;
+#   - each daemon's berth and its attach note, which carry the token its
+#     sessions are let in by, and which a daemon that had to be killed did
+#     not remove itself.
+#
+# Done at every ending, after what the run started is stopped, so that a
+# folder kept for a person to look at holds none. Logs and the list of
+# what was started are left. Nothing is removed through a link: a path
+# that reaches its place by way of one is left and counted as a failure.
+# Returns 1 if anything could not be looked at, could not be removed, or
+# is still there.
 secrets_remove() { # the run's folder
-  local dir=$1 store left=0
+  local dir=$1 root place path parent left=0
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
-  find "$dir" -maxdepth 2 -type f \( -name token -o -name 'login.*' -o -name cj \) -exec rm -f -- {} + 2>/dev/null
-  for store in "$dir"/config "$dir"/state/*/config "$dir"/state/creds "$dir"/*/config "$dir"/*/state/*/config "$dir"/*/state/creds; do
-    [ -e "$store" ] || continue
-    rm -rf -- "$store" 2>/dev/null
-    [ -e "$store" ] && left=1
+  dir=$(realpath -- "$dir") || return 1
+  for root in "$dir" "$dir"/*; do
+    [ -d "$root" ] || continue
+    # A step's folder is a folder the run made, never a link to one.
+    if [ -L "$root" ]; then left=1; continue; fi
+    # Every folder that is looked into must be one this user can look into, or what is in it goes unseen.
+    for place in "$root" "$root"/state "$root"/state/* "$root"/run "$root"/run/calypso "$root"/state/*/run "$root"/state/*/run/calypso "$root"/tmp "$root"/state/*/tmp; do
+      [ -d "$place" ] || continue
+      [ -r "$place" ] && [ -x "$place" ] || left=1
+    done
+    for path in "$root"/token "$root"/login.* "$root"/cj \
+                "$root"/config "$root"/state/creds "$root"/state/*/config \
+                "$root"/run/calypso/berth-*.json "$root"/state/*/run/calypso/berth-*.json \
+                "$root"/tmp/calypso-*.attach "$root"/state/*/tmp/calypso-*.attach; do
+      [ -e "$path" ] || [ -L "$path" ] || continue
+      parent=$(dirname -- "$path")
+      # Reached by way of a link: not the run's own place, and not removed through it.
+      if [ "$(realpath -- "$parent" 2>/dev/null)" != "$parent" ]; then left=1; continue; fi
+      rm -rf -- "$path" 2>/dev/null || left=1
+      if [ -e "$path" ] || [ -L "$path" ]; then left=1; fi
+    done
   done
-  [ -z "$(find "$dir" -maxdepth 2 -type f \( -name token -o -name 'login.*' -o -name cj \) -print -quit 2>/dev/null)" ] || left=1
   [ "$left" -eq 0 ]
 }
 
@@ -183,7 +216,10 @@ daemon_note_owned() { # pid, the environment entry that proves it (NAME=value)
   local pid=$1 proof=$2 before after
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   before=$(process_stat_read "$pid") || return 1
-  tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF -- "$proof" || return 1
+  # One whole entry of the environment, as the kernel keeps them: each ended by a NUL. Read from the file by
+  # the one command, so that no pipe's status stands in for the answer and a value with a newline in it
+  # cannot pass for an entry.
+  grep -zqxF -- "$proof" "/proc/$pid/environ" 2>/dev/null || return 1
   after=$(process_stat_read "$pid") || return 1
   [ "${before#* }" = "${after#* }" ] || return 1
   grep -qxF -- "$pid ${before#* }" "$RUN_ROOT/started.pids" 2>/dev/null || echo "$pid ${before#* }" >> "$RUN_ROOT/started.pids"
@@ -264,15 +300,16 @@ run_root_keep() { # the folder to keep (the parent's), the reason
 }
 
 # Removes the run's folder, if and only if this run made it by itself and
-# nothing in it asked to be kept. Returns 1, removing nothing, when a step
-# asked for that: RUN_ROOT_KEPT then holds its reasons.
+# nothing in it asked to be kept. Returns 1 when a step asked for that
+# (nothing is removed) or when the folder could not be removed:
+# RUN_ROOT_KEPT then says which.
 run_root_remove() {
   RUN_ROOT_KEPT=""
   [ "${RUN_ROOT_OWNED:-0}" = 1 ] || return 0
   if [ -s "$RUN_ROOT/kept" ]; then RUN_ROOT_KEPT=$(tr '\n' ';' < "$RUN_ROOT/kept"); return 1; fi
   # Only a folder mktemp made here: its name is checked for what it must be before it is removed.
   case "$RUN_ROOT" in
-    */mise-smoke-*.????????) rm -rf -- "$RUN_ROOT" ;;
+    */mise-smoke-*.????????) rm -rf -- "$RUN_ROOT" 2>/dev/null; [ ! -e "$RUN_ROOT" ] || { RUN_ROOT_KEPT="it could not be removed"; return 1; } ;;
   esac
 }
 

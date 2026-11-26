@@ -28,6 +28,9 @@
 # Needs: ~/.config/mise/e2e.env (E2E_USER, E2E_PASSWORD, E2E_CUBE), readable
 # by this user alone, and a built repo (`make cook`); runs from a systemd
 # user timer on pangea (mise-smoke.timer).
+# A password the caller's environment came with is dropped before anything at all is run: the credentials
+# file is the one source, and is read only for the one command that needs it.
+unset E2E_PASSWORD
 set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=scripts/lib/smoke-private.sh

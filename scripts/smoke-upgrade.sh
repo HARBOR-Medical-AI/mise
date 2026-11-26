@@ -24,6 +24,9 @@
 #
 #   scripts/smoke-upgrade.sh              the previous published chell
 #   OLD_CHELL=5.10.3 scripts/smoke-upgrade.sh   that release, and no other
+# A password the caller's environment came with is dropped before anything at all is run: the credentials
+# file is the one source, and is read only for the one command that needs it.
+unset E2E_PASSWORD
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -66,7 +69,7 @@ ending() {
     # No secret outlives the run, whether or not its folder does.
     secrets_remove "$WORK" || { say "a credential store could not be removed from $WORK"; verdict "FAIL: credentials the run made could not be removed from $WORK (see $log)"; status=1; }
     if [ "$stopped" -eq 0 ]; then
-      run_root_remove
+      run_root_remove || { say "the run's folder was not removed: $RUN_ROOT_KEPT"; verdict "FAIL: the run's folder is left at $WORK ($RUN_ROOT_KEPT) (see $log)"; status=1; }
     else
       # Something the run started could not be stopped: a failure, said, with the folder and its list of
       # what was started kept for whoever has to stop it by hand; a parent that handed the folder down is
