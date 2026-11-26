@@ -4,7 +4,7 @@
  * being read, its first prompt being drawn) is clean in recall the moment
  * it is read, is not lost, and runs as typed once the first prompt stands.
  */
-import { jest, describe, it, expect, afterAll } from '@jest/globals';
+import { jest, describe, it, expect, afterAll, beforeEach } from '@jest/globals';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,12 +31,18 @@ jest.unstable_mockModule('@fnndsc/brasa', () => ({
   wireName_place: jest.fn(),
 }));
 jest.unstable_mockModule('../src/config/settings.js', () => ({ settings: { config: { historyFile, historySize: 100 } } }));
-/** Lets the first prompt finish; the shell is still starting until it is called. */
+/** Lets a held prompt finish; the shell is still starting until it is called. */
 let prompt_finish: () => void = (): void => undefined;
+/** Whether the next prompt is held back, as a session's first is while it warms; each test says. */
+let promptHeld: boolean = false;
 let prompts: number = 0;
 jest.unstable_mockModule('../src/core/prompt/session.js', () => ({
-  // The first prompt is slow, as a session's is while it warms: start-up waits on it.
-  sessionPrompt_render: (): Promise<string> => { prompts += 1; return prompts === 1 ? new Promise((resolve) => { prompt_finish = (): void => resolve('> '); }) : Promise.resolve('> '); },
+  sessionPrompt_render: (): Promise<string> => {
+    prompts += 1;
+    if (!promptHeld) return Promise.resolve('> ');
+    promptHeld = false;
+    return new Promise((resolve) => { prompt_finish = (): void => resolve('> '); });
+  },
 }));
 /** The lines the shell ran, as it handed them to the engine. */
 const ran: string[] = [];
@@ -63,8 +69,18 @@ const settle = (ms: number = 30): Promise<void> => new Promise((resolve) => setT
 
 afterAll(() => { process.stdout.write = stdoutWrite; delete process.env['CHELL_TERMINAL']; rmSync(root, { recursive: true, force: true }); });
 
+beforeEach(() => {
+  // Each test stands alone: its own history file, its own count of prompts and lines run, its own marks.
+  writeFileSync(historyFile, 'an older line\nconnect --password oldsecret url\n', { mode: 0o600 });
+  prompts = 0;
+  promptHeld = false;
+  ran.length = 0;
+  states.length = 0;
+});
+
 describe('the REPL while it starts', () => {
   it('a line typed before the first prompt is clean in recall at once, is not lost, and runs as typed when start-up ends', async () => {
+    promptHeld = true;
     const repl = new REPL({ line_complete: async () => ({ candidates: [], prefix: '' }) } as never);
     const rl = (repl as unknown as { rl: import('readline').Interface }).rl;
     const recall = (): string[] => [...(Reflect.get(rl, 'history') as string[])];
@@ -104,14 +120,13 @@ describe('the REPL while it starts', () => {
   });
 
   it('with nothing typed ahead, the shell says it is at rest once its first prompt stands', async () => {
-    states.length = 0;
     const repl = new REPL({ line_complete: async () => ({ candidates: [], prefix: '' }) } as never);
     const rl = (repl as unknown as { rl: import('readline').Interface }).rl;
     await repl.start();
     await settle();
     // A page that hosts this terminal waits for this mark before it sends its first line.
     expect(states).toEqual(['idle']);
-    expect(ran).toHaveLength(2);
+    expect(ran).toEqual([]);
     rl.removeAllListeners('close');
     rl.close();
   });

@@ -84,6 +84,9 @@ export function historyFile_resolve(configured: string, env: NodeJS.ProcessEnv =
   return { file: path.join(state, 'chell', 'history'), ownFolder: true };
 }
 
+/** The characters a backslash escapes inside double quotes, as the shell reads them (brasa's `lib/quoting.ts`). */
+const DOUBLE_QUOTE_ESCAPES: ReadonlySet<string> = new Set(['"', '\\', '$', '`', '\n']);
+
 /** One piece of a line: a word, or an operator that ends a command. */
 interface LinePiece {
   /** `word`, or `op` for `;`, `|`, `||`, `&&`, `&`. */
@@ -133,7 +136,9 @@ function line_scan(line: string): LinePiece[] | null {
         let closed: boolean = false;
         while (inner < line.length) {
           const quoted: string = line[inner] as string;
-          if (quoted === '\\' && inner + 1 < line.length) { value += line[inner + 1]; inner += 2; continue; }
+          // Inside double quotes a backslash escapes only what the shell says it does (`"`, `\`, `$`, a
+          // backquote); before anything else it is a character of its own and stays with what follows.
+          if (quoted === '\\' && inner + 1 < line.length && DOUBLE_QUOTE_ESCAPES.has(line[inner + 1] as string)) { value += line[inner + 1]; inner += 2; continue; }
           if (quoted === '"') { closed = true; break; }
           value += quoted;
           inner++;
@@ -151,7 +156,7 @@ function line_scan(line: string): LinePiece[] | null {
 }
 
 /** Whether a line that cannot be read word by word still shows the mark of a secret. */
-const SECRET_MARK: RegExp = /--password|--adminPassword|--token|--auth-token|(^|\s)-p(\s|=|$)|:[^@/]+@|(^|[?&\s])token=/;
+const SECRET_MARK: RegExp = /--password|--adminPassword|--token|--auth-token|(^|\s)-[A-Za-z]*p|:[^@/]+@|(^|[?&\s])token=/;
 
 /** `scheme://user:password@…` at the start of a word. */
 const SCHEME_FIRST: RegExp = /^([a-z][a-z0-9+.-]*:\/\/[^:@/]+):([^@]+)@(.+)$/i;
@@ -200,7 +205,10 @@ function word_quote(value: string, typed: string): string {
  * host shell, a bare `***` would be matched against file names.
  *
  * A line with a quote left open cannot be read that way. If it shows any
- * mark of a secret it is not kept; otherwise it is kept as typed.
+ * mark of a secret it is not kept; otherwise it is kept as typed. A
+ * `connect`, `chell` or `calypso` command with a run of single-dash letters
+ * that holds a `p` or a `c` (other than `-pVALUE`) is not kept either: what
+ * such a run attaches is not this reader's to guess.
  *
  * @param line - The line as typed.
  * @returns The line to keep, or null for one that must not be kept at all.
@@ -240,6 +248,10 @@ export function historyLine_redact(line: string): string | null {
       swaps.push({ start: piece.start, end: piece.end, text: `-p${REDACTED_WORD}` });
       continue;
     }
+    // Any other run of single-dash letters on such a command that holds a `p` or a `c` may carry a
+    // password, or a whole line with one in it, attached or as its next word (`-ep x`, `-cLINE`). Which
+    // letter takes what is the command's to say, not this reader's to guess: the entry is not kept.
+    if (!first && passwordVerb && /^-[A-Za-z]{2,}/.test(piece.value) && /[pc]/.test(piece.value.slice(1))) return null;
     // `chell -c "<line>"` carries a whole line of this shell's own: it is kept as that line would be, or the
     // entry is not kept at all when that line would not be.
     if (verb === 'chell' && (COMMAND_OPTIONS.includes(piece.value) || COMMAND_OPTIONS.some((option: string): boolean => piece.value.startsWith(`${option}=`)))) {

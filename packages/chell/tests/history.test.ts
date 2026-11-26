@@ -99,6 +99,8 @@ describe('historyLine_redact', () => {
     ['echo \'connect -p x\''],
     ['cd /x; mkdir -p a/b; ls'],
     ['chell x@y -c ls'],
+    ['chell x@y -s -e -c ls'],
+    ['mkdir -pv a/b'],
     ['chell x@y -c "ls -lh; pwd"'],
     ['ls -pa'],
     [''],
@@ -113,6 +115,34 @@ describe('historyLine_redact', () => {
     expect(historyLine_redact('echo "an open quote')).toBe('echo "an open quote');
     // The line chell -c carries cannot be read, and shows a secret's mark: the whole entry is not kept.
     expect(historyLine_redact('!chell x@y -c "connect --password \\"open url"')).toBeNull();
+  });
+
+  it('reads a backslash inside double quotes as the shell does, so a password with an escaped space inside chell -c stays one word and goes whole', () => {
+    // Inside the double quotes `\\ ` is a backslash and a space, not an escaped space: the inner line keeps its own escape.
+    const typed: string = '!chell x@y -c "connect --password my\\ secret\\ pass url"';
+    const kept: string | null = historyLine_redact(typed);
+    expect(kept).toBe("!chell x@y -c 'connect --password '\\''***'\\'' url'");
+    for (const fragment of ['my', 'secret', 'pass ']) expect(kept).not.toContain(fragment);
+    expect(historyLine_redact('!chell x@y -c "connect -p \\"hunter 2\\" url"')).toBe("!chell x@y -c 'connect -p '\\''***'\\'' url'");
+  });
+
+  it.each([
+    ['an attached command', '!chell x@y -c"connect --password hunter2 url"'],
+    ['an attached command, unquoted', '!chell x@y -cconnect\\ --password\\ hunter2'],
+    ['a valued option after a flag in a cluster', '!chell x@y -ep hunter2 -c version'],
+    ['a command after a flag in a cluster', '!chell x@y -ec "connect --password hunter2 url"'],
+    ['a password attached after a flag in a cluster', '!chell x@y -ephunter2'],
+    ['the same on connect', 'connect -xp hunter2 url'],
+  ])('does not keep %s, which it cannot read with certainty', (_what: string, typed: string) => {
+    expect(historyLine_redact(typed)).toBeNull();
+    const recall: string[] = [typed, 'ls'];
+    recall_accept(recall, typed);
+    expect(recall).toEqual(['ls']);
+  });
+
+  it('does not let an unrelated open quote restore an attached password', () => {
+    expect(historyLine_redact('connect -phunter2 url "open')).toBeNull();
+    expect(historyLine_redact('!chell x@y -ephunter2 \'open')).toBeNull();
   });
 
   it('writes the mark as one literal argument, so a recalled line run in a host shell matches no file names', () => {
