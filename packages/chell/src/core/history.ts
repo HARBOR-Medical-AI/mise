@@ -29,6 +29,15 @@ export const LEGACY_HISTORY_NAME: string = '.chell_history';
 /** What stands where a secret was. */
 export const REDACTED: string = '***';
 
+/**
+ * The mark as one literal argument of a shell: quoted, since recalled and
+ * run in a host shell a bare `***` would be matched against file names.
+ */
+const REDACTED_WORD: string = `'${REDACTED}'`;
+
+/** The options of `chell` that carry a whole line of the shell's own to run. */
+const COMMAND_OPTIONS: ReadonlyArray<string> = ['-c', '--command'];
+
 /** A history file: its owner reads and writes it, nobody else anything. */
 const HISTORY_FILE_MODE: number = 0o600;
 
@@ -164,7 +173,7 @@ const BARE: RegExp = /^([^:@/\s]+):([^@]+)@([^@\s]+)$/;
  */
 function word_quote(value: string, typed: string): string {
   const wasQuoted: boolean = /['"\\]/.test(typed);
-  if (!wasQuoted && !/[\s;&|'"\\$`<>()]/.test(value)) return value;
+  if (!wasQuoted && !/[\s;&|'"\\$`<>()*?[\]{}~!#]/.test(value)) return value;
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
@@ -177,13 +186,18 @@ function word_quote(value: string, typed: string): string {
  *
  * - `--password x`, `--password=x`, `--password "x y"`, `--password 'it''s'`,
  *   and the same for `--adminPassword`, `--token` and `--auth-token`;
- * - `-p x` (and `-p=x`) in a command whose verb is `connect`, `chell` or
- *   `calypso`, wherever on the line that command stands (`cd /x; connect -p x`);
- *   elsewhere `-p` is not a password;
+ * - `-p x`, `-p=x` and the attached `-px` in a command whose verb is
+ *   `connect`, `chell` or `calypso`, wherever on the line that command
+ *   stands (`cd /x; connect -p x`); elsewhere `-p` is not a password;
+ * - the line `chell -c "<line>"` carries, kept as that line would be kept;
  * - the password of `scheme://user:password@host` and of
  *   `user:password@scheme://host` in any word, and of a bare
  *   `user:password@host` in a `connect`, `chell` or `calypso` command;
  * - the `token=` of an address.
+ *
+ * Where a secret stood, the mark stands as one quoted argument (`'***'`),
+ * and a word rewritten around it is quoted whole: recalled and run in a
+ * host shell, a bare `***` would be matched against file names.
  *
  * A line with a quote left open cannot be read that way. If it shows any
  * mark of a secret it is not kept; otherwise it is kept as typed.
@@ -193,7 +207,7 @@ function word_quote(value: string, typed: string): string {
  *
  * @example
  * ```ts
- * historyLine_redact('connect --user rudolph --password "my secret" https://cube/api/v1/'); // 'connect --user rudolph --password *** https://cube/api/v1/'
+ * historyLine_redact('connect --user rudolph --password "my secret" https://cube/api/v1/'); // "connect --user rudolph --password '***' https://cube/api/v1/"
  * ```
  */
 export function historyLine_redact(line: string): string | null {
@@ -213,12 +227,30 @@ export function historyLine_redact(line: string): string | null {
     const next: LinePiece | undefined = pieces[at + 1];
     const takesNext: boolean = SECRET_OPTIONS.includes(piece.value) || (passwordVerb && piece.value === '-p');
     if (takesNext) {
-      if (next !== undefined && next.kind === 'word') { swaps.push({ start: next.start, end: next.end, text: REDACTED }); at++; }
+      if (next !== undefined && next.kind === 'word') { swaps.push({ start: next.start, end: next.end, text: REDACTED_WORD }); at++; }
       continue;
     }
     const inline: string | undefined = [...SECRET_OPTIONS, ...(passwordVerb ? ['-p'] : [])].find((option: string): boolean => piece.value.startsWith(`${option}=`));
     if (inline !== undefined) {
-      swaps.push({ start: piece.start, end: piece.end, text: `${inline}=${REDACTED}` });
+      swaps.push({ start: piece.start, end: piece.end, text: `${inline}=${REDACTED_WORD}` });
+      continue;
+    }
+    // Commander takes a short option's value attached to it: `-pVALUE` is `-p VALUE`.
+    if (!first && passwordVerb && /^-p./.test(piece.value)) {
+      swaps.push({ start: piece.start, end: piece.end, text: `-p${REDACTED_WORD}` });
+      continue;
+    }
+    // `chell -c "<line>"` carries a whole line of this shell's own: it is kept as that line would be, or the
+    // entry is not kept at all when that line would not be.
+    if (verb === 'chell' && (COMMAND_OPTIONS.includes(piece.value) || COMMAND_OPTIONS.some((option: string): boolean => piece.value.startsWith(`${option}=`)))) {
+      const attached: string | undefined = COMMAND_OPTIONS.find((option: string): boolean => piece.value.startsWith(`${option}=`));
+      const carrier: LinePiece | undefined = attached !== undefined ? piece : (next !== undefined && next.kind === 'word' ? next : undefined);
+      if (carrier === undefined) continue;
+      const inner: string = attached !== undefined ? piece.value.slice(attached.length + 1) : carrier.value;
+      const innerKept: string | null = historyLine_redact(inner);
+      if (innerKept === null) return null;
+      if (innerKept !== inner) swaps.push({ start: carrier.start, end: carrier.end, text: `${attached !== undefined ? `${attached}=` : ''}'${innerKept.replace(/'/g, `'\\''`)}'` });
+      if (attached === undefined) at++;
       continue;
     }
     // An address is no verb, but a `token=` is a token wherever it stands: an unquoted address is cut at its

@@ -188,6 +188,10 @@ export class REPL {
     this.busy = false;
     const early: string | undefined = typeahead_take();
     if (early !== undefined) void this.line_receive(early);
+    // Nothing waited: the shell is at rest at its first prompt, and says so. The prompt was painted while
+    // start-up still counted as a command in flight, which holds the mark back; a surface that waits for it
+    // (a browser's terminal) would otherwise wait for ever.
+    else terminalState_mark('idle');
   }
 
   /**

@@ -32,45 +32,52 @@ describe('historyFile_resolve', () => {
 
 describe('historyLine_redact', () => {
   it.each([
-    ['connect --user rudolph --password hunter2 https://cube/api/v1/', 'connect --user rudolph --password *** https://cube/api/v1/'],
-    ['connect --password=hunter2 --user rudolph https://cube/api/v1/', 'connect --password=*** --user rudolph https://cube/api/v1/'],
-    ['connect --password "my secret pass" --user r url', 'connect --password *** --user r url'],
+    ['connect --user rudolph --password hunter2 https://cube/api/v1/', "connect --user rudolph --password '***' https://cube/api/v1/"],
+    ['connect --password=hunter2 --user rudolph https://cube/api/v1/', "connect --password='***' --user rudolph https://cube/api/v1/"],
+    ['connect --password "my secret pass" --user r url', "connect --password '***' --user r url"],
     // Quotes joined to quotes are one word, and the whole word goes.
-    ["connect --password 'it''s' --user r url", 'connect --password *** --user r url'],
-    ['connect --password "a b"\'c d\'e --user r url', 'connect --password *** --user r url'],
-    ['connect --password my\\ secret\\ pass --user r url', 'connect --password *** --user r url'],
-    ['connect --password "say \\"hi\\" there" url', 'connect --password *** url'],
-    ['connect --password="a b" url', 'connect --password=*** url'],
-    ["connect --password='a b'\"c\" url", 'connect --password=*** url'],
-    ['connect -p hunter2 rudolph@https://cube/api/v1/', 'connect -p *** rudolph@https://cube/api/v1/'],
-    ['connect -p=hunter2 url', 'connect -p=*** url'],
+    ["connect --password 'it''s' --user r url", "connect --password '***' --user r url"],
+    ['connect --password "a b"\'c d\'e --user r url', "connect --password '***' --user r url"],
+    ['connect --password my\\ secret\\ pass --user r url', "connect --password '***' --user r url"],
+    ['connect --password "say \\"hi\\" there" url', "connect --password '***' url"],
+    ['connect --password="a b" url', "connect --password='***' url"],
+    ["connect --password='a b'\"c\" url", "connect --password='***' url"],
+    ['connect -p hunter2 rudolph@https://cube/api/v1/', "connect -p '***' rudolph@https://cube/api/v1/"],
+    ['connect -p=hunter2 url', "connect -p='***' url"],
     // A password command later on the line is still one.
-    ['cd /home/x; connect -p hunter2 url', 'cd /home/x; connect -p *** url'],
-    ['ls && connect -p "hunter 2" url || pwd', 'ls && connect -p *** url || pwd'],
-    ['!chell rudolph@https://cube/ -p hunter2 -c version', '!chell rudolph@https://cube/ -p *** -c version'],
-    ['plugin add pl-x --adminUser chris --adminPassword chris1234', 'plugin add pl-x --adminUser chris --adminPassword ***'],
-    ['plugin add pl-x --adminPassword=chris1234 --compute host', 'plugin add pl-x --adminPassword=*** --compute host'],
-    ['!chell --remote --attach ws://127.0.0.1:9 --token 0123abcd', '!chell --remote --attach ws://127.0.0.1:9 --token ***'],
-    ['!chell x@y --auth-token abcdef', '!chell x@y --auth-token ***'],
-    ['connect rudolph:hunter2@https://cube/api/v1/', 'connect rudolph:***@https://cube/api/v1/'],
+    ['cd /home/x; connect -p hunter2 url', "cd /home/x; connect -p '***' url"],
+    ['ls && connect -p "hunter 2" url || pwd', "ls && connect -p '***' url || pwd"],
+    ['!chell rudolph@https://cube/ -p hunter2 -c version', "!chell rudolph@https://cube/ -p '***' -c version"],
+    ['plugin add pl-x --adminUser chris --adminPassword chris1234', "plugin add pl-x --adminUser chris --adminPassword '***'"],
+    ['plugin add pl-x --adminPassword=chris1234 --compute host', "plugin add pl-x --adminPassword='***' --compute host"],
+    ['!chell --remote --attach ws://127.0.0.1:9 --token 0123abcd', "!chell --remote --attach ws://127.0.0.1:9 --token '***'"],
+    ['!chell x@y --auth-token abcdef', "!chell x@y --auth-token '***'"],
+    ['connect rudolph:hunter2@https://cube/api/v1/', "connect 'rudolph:***@https://cube/api/v1/'"],
     // The bare form, with no scheme, where an identity is expected.
-    ['connect rudolph:hunter2@cube.example.org', 'connect rudolph:***@cube.example.org'],
-    ['!chell rudolph:hunter2@cube.example.org -c version', '!chell rudolph:***@cube.example.org -c version'],
-    ['!curl https://rudolph:hunter2@cube.example.org/api/v1/', '!curl https://rudolph:***@cube.example.org/api/v1/'],
+    ['connect rudolph:hunter2@cube.example.org', "connect 'rudolph:***@cube.example.org'"],
+    ['!chell rudolph:hunter2@cube.example.org -c version', "!chell 'rudolph:***@cube.example.org' -c version"],
+    ['!curl https://rudolph:hunter2@cube.example.org/api/v1/', "!curl 'https://rudolph:***@cube.example.org/api/v1/'"],
     // A word typed quoted is kept quoted, so the kept line has the words the typed line had.
     ['!curl "https://rudolph:hunter 2@cube.example.org/api/v1/"', "!curl 'https://rudolph:***@cube.example.org/api/v1/'"],
     // The host-shell mark standing alone before its command.
-    ['! chell rudolph@https://cube/ -p hunter2 -c version', '! chell rudolph@https://cube/ -p *** -c version'],
-    ['!  connect -p "hunter 2" url', '!  connect -p *** url'],
+    ['! chell rudolph@https://cube/ -p hunter2 -c version', "! chell rudolph@https://cube/ -p '***' -c version"],
+    ['!  connect -p "hunter 2" url', "!  connect -p '***' url"],
     // A bare identity typed quoted, its password holding a space.
     ['connect "rudolph:hunter 2@cube.example.org"', "connect 'rudolph:***@cube.example.org'"],
     ["!chell 'rudolph:my secret@cube.example.org' -c version", "!chell 'rudolph:***@cube.example.org' -c version"],
     // An unquoted address is cut at its & like any line; the token after the cut is still a token.
-    ['!open http://pangea:42479/?x=1&token=0123abcd', '!open http://pangea:42479/?x=1&token=***'],
-    ['!open http://pangea:42479/?x=1&token=0123abcd&y=2', '!open http://pangea:42479/?x=1&token=***&y=2'],
-    ['!chell --remote --attach ws://h:9/?a=b&token=0123abcd', '!chell --remote --attach ws://h:9/?a=b&token=***'],
-    ['!open http://pangea:42479/?token=0123abcd&x=1', '!open http://pangea:42479/?token=***&x=1'],
+    ['!open http://pangea:42479/?x=1&token=0123abcd', "!open http://pangea:42479/?x=1&'token=***'"],
+    ['!open http://pangea:42479/?x=1&token=0123abcd&y=2', "!open http://pangea:42479/?x=1&'token=***'&y=2"],
+    ['!chell --remote --attach ws://h:9/?a=b&token=0123abcd', "!chell --remote --attach ws://h:9/?a=b&'token=***'"],
+    ['!open http://pangea:42479/?token=0123abcd&x=1', "!open 'http://pangea:42479/?token=***'&x=1"],
     ['!curl "http://127.0.0.1:9/vfs?path=%2Fa&token=0123abcd"', "!curl 'http://127.0.0.1:9/vfs?path=%2Fa&token=***'"],
+    // Commander takes a short option's value attached to it.
+    ['connect -phunter2 url', "connect -p'***' url"],
+    ['!chell x@y -phunter2 -c version', "!chell x@y -p'***' -c version"],
+    // The line chell -c carries is kept as that line would be.
+    ['!chell x@y -c "connect --password hunter2 url"', "!chell x@y -c 'connect --password '\\''***'\\'' url'"],
+    ['!chell x@y --command="connect -p hunter2 url; ls"', "!chell x@y --command='connect -p '\\''***'\\'' url; ls'"],
+    ['chell x@y -c "plugin add pl-x --adminPassword \\"chris 1234\\""', "chell x@y -c 'plugin add pl-x --adminPassword '\\''***'\\'''"],
   ])('%j is kept as %j', (typed: string, kept: string) => {
     const out: string | null = historyLine_redact(typed);
     expect(out).toBe(kept);
@@ -91,6 +98,9 @@ describe('historyLine_redact', () => {
     ['echo "the --password option takes a word"; pwd'],
     ['echo \'connect -p x\''],
     ['cd /x; mkdir -p a/b; ls'],
+    ['chell x@y -c ls'],
+    ['chell x@y -c "ls -lh; pwd"'],
+    ['ls -pa'],
     [''],
   ])('%j carries no secret and is kept as typed', (typed: string) => {
     expect(historyLine_redact(typed)).toBe(typed);
@@ -101,6 +111,17 @@ describe('historyLine_redact', () => {
     expect(historyLine_redact("connect -p 'hunter2 url")).toBeNull();
     expect(historyLine_redact('!curl "https://rudolph:hunter2@cube/')).toBeNull();
     expect(historyLine_redact('echo "an open quote')).toBe('echo "an open quote');
+    // The line chell -c carries cannot be read, and shows a secret's mark: the whole entry is not kept.
+    expect(historyLine_redact('!chell x@y -c "connect --password \\"open url"')).toBeNull();
+  });
+
+  it('writes the mark as one literal argument, so a recalled line run in a host shell matches no file names', () => {
+    for (const typed of ['connect --password hunter2 url', 'connect -p hunter2 url', 'connect -phunter2 url', 'connect --password=hunter2 url', '!curl https://r:hunter2@h/', 'connect r:hunter2@h.example.org']) {
+      const kept: string = historyLine_redact(typed) as string;
+      // Every *** stands inside single quotes.
+      expect(kept.replace(/'[^']*'/g, '')).not.toContain('*');
+      expect(kept).toContain('***');
+    }
   });
 });
 
@@ -108,7 +129,7 @@ describe('recall_accept', () => {
   it('puts the kept form where the typed line stood, drops a line that is not kept, and leaves any other entry alone', () => {
     const recall: string[] = ['connect --password hunter2 url', 'ls'];
     recall_accept(recall, 'connect --password hunter2 url');
-    expect(recall).toEqual(['connect --password *** url', 'ls']);
+    expect(recall).toEqual(["connect --password '***' url", 'ls']);
     const broken: string[] = ['connect --password "hunter2', 'ls'];
     recall_accept(broken, 'connect --password "hunter2');
     expect(broken).toEqual(['ls']);
@@ -163,7 +184,7 @@ describe('the history file', () => {
   it('redacts what an older shell wrote, as it is read', async () => {
     const place = { file: join(root, 'old-history'), ownFolder: false };
     writeFileSync(place.file, 'ls\nconnect --password hunter2 url\nconnect --password "open\n\npwd\n', { mode: 0o600 });
-    expect(await history_readPrivate(place)).toEqual(['ls', 'connect --password *** url', 'pwd']);
+    expect(await history_readPrivate(place)).toEqual(['ls', "connect --password '***' url", 'pwd']);
   });
 
   it('writes nothing through a link, and nothing into what is not a file', async () => {

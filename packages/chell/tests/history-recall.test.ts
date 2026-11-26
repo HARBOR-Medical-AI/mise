@@ -41,7 +41,7 @@ describe('recall, as the shell wires it', () => {
     input.write('connect --user r --password hunter2 https://cube/api/v1/\r');
     input.write('plugin add pl-x --adminPassword "chris 1234"\r');
     await settle();
-    expect(recall()).toEqual(['plugin add pl-x --adminPassword ***', 'connect --user r --password *** https://cube/api/v1/']);
+    expect(recall()).toEqual(["plugin add pl-x --adminPassword '***'", "connect --user r --password '***' https://cube/api/v1/"]);
     // What waits to be run is what was typed: the command needs its password.
     expect(typeahead_take()).toBe('connect --user r --password hunter2 https://cube/api/v1/');
     expect(typeahead_take()).toBe('plugin add pl-x --adminPassword "chris 1234"');
@@ -53,7 +53,7 @@ describe('recall, as the shell wires it', () => {
     input.write('connect --password "half open\r');
     await settle();
     typeahead_clear();
-    expect(recall()).toEqual(['connect -p *** rudolph@https://cube/']);
+    expect(recall()).toEqual(["connect -p '***' rudolph@https://cube/"]);
     expect(recall().join('\n')).not.toContain('hunter2');
     expect(recall().join('\n')).not.toContain('half open');
   });

@@ -46,11 +46,22 @@ jest.unstable_mockModule('../src/core/surfaceDispatch.js', () => ({
 jest.unstable_mockModule('../src/core/gamePlayer.js', () => ({ game_play: jest.fn(), gameShow_find: (): null => null, gameTerminal_is: (): boolean => false }));
 jest.unstable_mockModule('../src/core/progressRenderer.js', () => ({ TerminalProgressRenderer: class { clear(): void { /* nothing drawn */ } } }));
 
+// This shell is a browser's terminal: it marks its state for the page that hosts it (OSC 6677).
+process.env['CHELL_TERMINAL'] = '0123abcd';
+/** The states the shell marked, in order, read off what it wrote to its terminal. */
+const states: string[] = [];
+const stdoutWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+  const text: string = String(chunk);
+  for (const mark of text.matchAll(/\u001b\]6677;state=([a-z]+)\u0007/g)) states.push(mark[1] as string);
+  return text.includes('\u001b]6677;') ? true : (stdoutWrite as (...args: unknown[]) => boolean)(chunk, ...rest);
+}) as typeof process.stdout.write;
+
 const { REPL } = await import('../src/core/repl.js');
 
 const settle = (ms: number = 30): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-afterAll(() => { rmSync(root, { recursive: true, force: true }); });
+afterAll(() => { process.stdout.write = stdoutWrite; delete process.env['CHELL_TERMINAL']; rmSync(root, { recursive: true, force: true }); });
 
 describe('the REPL while it starts', () => {
   it('a line typed before the first prompt is clean in recall at once, is not lost, and runs as typed when start-up ends', async () => {
@@ -60,7 +71,7 @@ describe('the REPL while it starts', () => {
     // Typed before start() is even called: the reader is live from its construction.
     input.write('connect --user r --password hunter2 https://cube/api/v1/\r');
     await settle();
-    expect(recall()).toEqual(['connect --user r --password *** https://cube/api/v1/']);
+    expect(recall()).toEqual(["connect --user r --password '***' https://cube/api/v1/"]);
     expect(ran).toEqual([]);
 
     const started: Promise<void> = repl.start();
@@ -70,9 +81,9 @@ describe('the REPL while it starts', () => {
     input.write('plugin add pl-x --adminPassword "chris 1234"\r');
     await settle();
     expect(recall()).toEqual([
-      'plugin add pl-x --adminPassword ***',
-      'connect --user r --password *** https://cube/api/v1/',
-      'connect --password *** url',
+      "plugin add pl-x --adminPassword '***'",
+      "connect --user r --password '***' https://cube/api/v1/",
+      "connect --password '***' url",
       'an older line',
     ]);
     expect(recall().join('\n')).not.toMatch(/hunter2|chris 1234|oldsecret/);
@@ -85,7 +96,22 @@ describe('the REPL while it starts', () => {
     // Both ran, in the order typed, each with the secret its command needs.
     expect(ran).toEqual(['connect --user r --password hunter2 https://cube/api/v1/', 'plugin add pl-x --adminPassword "chris 1234"']);
     // And the file holds them as the history keeps them, after the older lines.
-    expect(readFileSync(historyFile, 'utf8')).toBe('an older line\nconnect --password oldsecret url\nconnect --user r --password *** https://cube/api/v1/\nplugin add pl-x --adminPassword ***\n');
+    expect(readFileSync(historyFile, 'utf8')).toBe("an older line\nconnect --password oldsecret url\nconnect --user r --password '***' https://cube/api/v1/\nplugin add pl-x --adminPassword '***'\n");
+    // At rest again after the two lines: the last state marked is idle.
+    expect(states[states.length - 1]).toBe('idle');
+    rl.removeAllListeners('close');
+    rl.close();
+  });
+
+  it('with nothing typed ahead, the shell says it is at rest once its first prompt stands', async () => {
+    states.length = 0;
+    const repl = new REPL({ line_complete: async () => ({ candidates: [], prefix: '' }) } as never);
+    const rl = (repl as unknown as { rl: import('readline').Interface }).rl;
+    await repl.start();
+    await settle();
+    // A page that hosts this terminal waits for this mark before it sends its first line.
+    expect(states).toEqual(['idle']);
+    expect(ran).toHaveLength(2);
     rl.removeAllListeners('close');
     rl.close();
   });
