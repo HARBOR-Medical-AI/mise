@@ -23,7 +23,7 @@ import { tmpdir } from 'os';
 import * as path from 'path';
 import { join } from 'path';
 import type { Surface, SurfaceCapabilities, PromptRequest, LocalEditRequest, LocalEditResult } from '@fnndsc/brasa';
-import { segment_pipeThrough, file_read } from '@fnndsc/brasa';
+import { segment_pipeThrough, file_read, wireName_place, type HostPlace } from '@fnndsc/brasa';
 import { promptKind_derive, type FileDeliverRequest, type FileDeliverResult, type PromptKind } from '@fnndsc/menu';
 import { interrupt_pending, question_openSet, terminalState_mark, typeahead_take } from './lineDiscipline.js';
 
@@ -304,19 +304,26 @@ export type BytesFetch = (path: string) => Promise<Buffer>;
  * suggested name; anything else is taken as the filename itself. With no
  * destination the file lands in the working directory.
  *
+ * The destination is the operator's own word and is taken as written. The
+ * suggested name is not: it comes from the engine, which may be across a
+ * wire, out of a listing a store made. It is placed inside the folder it
+ * belongs in or refused (`wireName_place`): never absolute, never climbing
+ * out with `..`, never through a link that leads elsewhere.
+ *
  * @param destination - Where the operator asked for it, if they said.
  * @param filename - The suggested name.
  * @returns An absolute path to write.
+ * @throws {Error} When the suggested name has no place inside the folder.
  */
 function destination_resolve(destination: string | undefined, filename: string): string {
-  if (destination === undefined || destination.length === 0) {
-    return path.resolve(filename);
+  const given: boolean = destination !== undefined && destination.length > 0;
+  const resolved: string = given ? path.resolve(destination as string) : process.cwd();
+  if (given && !(existsSync(resolved) && statSync(resolved).isDirectory())) {
+    return resolved;
   }
-  const resolved: string = path.resolve(destination);
-  if (existsSync(resolved) && statSync(resolved).isDirectory()) {
-    return path.join(resolved, filename);
-  }
-  return resolved;
+  const placed: HostPlace = wireName_place(resolved, filename);
+  if (!placed.ok) throw new Error(`refused: the name ${placed.reason}; nothing was written`);
+  return placed.place;
 }
 
 /**
@@ -329,7 +336,7 @@ function destination_resolve(destination: string | undefined, filename: string):
  * @param request - What to deliver and where the operator asked for it.
  * @param bytes_fetch - How to obtain the file's bytes.
  * @returns The absolute path written and the byte count.
- * @throws {Error} When the bytes cannot be read or the write fails.
+ * @throws {Error} When the name is refused, the bytes cannot be read or the write fails.
  */
 async function fileDeliver_run(
   request: FileDeliverRequest,

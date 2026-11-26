@@ -47,9 +47,12 @@ jest.unstable_mockModule('child_process', () => ({
 // erased types). file_read is the default byte source for delivery, so a
 // stub stands in for a real session.
 const fileReadMock = jest.fn(async (): Promise<Buffer> => Buffer.from('delivered bytes'));
+// The placing of a delivered name is fond's own function, as brasa hands it on.
+const { wireName_place } = await import('@fnndsc/fond');
 jest.unstable_mockModule('@fnndsc/brasa', () => ({
   segment_pipeThrough: jest.fn(async (): Promise<Buffer> => Buffer.from('')),
   file_read: fileReadMock,
+  wireName_place,
 }));
 
 const { cliSurface_create, promptLine_render, promptAnswer_take, oneShotPrompt_ask, INPUT_ENDED_REASON } =
@@ -293,6 +296,101 @@ describe('local editing', () => {
       expect(result.location).toBe(path.join(dir, 'x.dcm'));
       expect(fs.existsSync(result.location)).toBe(true);
       fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    describe('a name that came from the engine stays in its folder', () => {
+      /** A folder to deliver into and one beside it that nothing may reach. */
+      async function folders_make(): Promise<{ base: string; into: string; beside: string }> {
+        const fs = await import('fs');
+        const os = await import('os');
+        const path = await import('path');
+        const base: string = fs.mkdtempSync(path.join(os.tmpdir(), 'chell-deliver-place-'));
+        const into: string = path.join(base, 'into');
+        const beside: string = path.join(base, 'beside');
+        fs.mkdirSync(into);
+        fs.mkdirSync(beside);
+        return { base, into, beside };
+      }
+
+      /** Every file under a folder, by relative path. */
+      async function files_under(folder: string): Promise<string[]> {
+        const fs = await import('fs');
+        return (fs.readdirSync(folder, { recursive: true, withFileTypes: true }) as import('fs').Dirent[])
+          .filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
+      }
+
+      it('keeps a name with folders of its own under the destination', async () => {
+        const fs = await import('fs');
+        const path = await import('path');
+        const { base, into } = await folders_make();
+        const result = await cliSurface_create().fileDeliver({ path: '/remote/s/anat/t1.nii', filename: 'anat/t1.nii', destination: into });
+        expect(result.location).toBe(path.join(into, 'anat', 't1.nii'));
+        expect(fs.readFileSync(result.location, 'utf8')).toBe('delivered bytes');
+        fs.rmSync(base, { recursive: true, force: true });
+      });
+
+      it.each([
+        ['../beside/x.txt', "has a '..' part"],
+        ['a/../../beside/x.txt', "has a '..' part"],
+        ['a\\..\\..\\beside\\x.txt', "has a '..' part"],
+        ['', 'an empty name'],
+      ])('refuses %j, writes nothing, and says why', async (filename: string, why: string) => {
+        const fs = await import('fs');
+        const { base, into, beside } = await folders_make();
+        await expect(cliSurface_create().fileDeliver({ path: '/remote/x', filename, destination: into })).rejects.toThrow(why);
+        await expect(cliSurface_create().fileDeliver({ path: '/remote/x', filename, destination: into })).rejects.toThrow('nothing was written');
+        expect(await files_under(base)).toEqual([]);
+        expect(fs.readdirSync(beside)).toEqual([]);
+        fs.rmSync(base, { recursive: true, force: true });
+      });
+
+      it('refuses an absolute name, which would otherwise be written where it says', async () => {
+        const fs = await import('fs');
+        const path = await import('path');
+        const { base, into, beside } = await folders_make();
+        const absolute: string = path.join(beside, 'x.txt');
+        await expect(cliSurface_create().fileDeliver({ path: '/remote/x', filename: absolute, destination: into })).rejects.toThrow('is an absolute path');
+        expect(fs.existsSync(absolute)).toBe(false);
+        fs.rmSync(base, { recursive: true, force: true });
+      });
+
+      it('refuses a name that passes through a link out of the destination', async () => {
+        const fs = await import('fs');
+        const path = await import('path');
+        const { base, into, beside } = await folders_make();
+        fs.symlinkSync(beside, path.join(into, 'sub'));
+        await expect(cliSurface_create().fileDeliver({ path: '/remote/x', filename: 'sub/x.txt', destination: into })).rejects.toThrow('a link that leads outside');
+        expect(fs.readdirSync(beside)).toEqual([]);
+        fs.rmSync(base, { recursive: true, force: true });
+      });
+
+      it('with no destination, places the name in the working directory and nowhere above it', async () => {
+        const fs = await import('fs');
+        const path = await import('path');
+        const { base, into, beside } = await folders_make();
+        const cwd = jest.spyOn(process, 'cwd').mockReturnValue(into);
+        try {
+          const result = await cliSurface_create().fileDeliver({ path: '/remote/x.txt', filename: 'x.txt' });
+          expect(result.location).toBe(path.join(into, 'x.txt'));
+          await expect(cliSurface_create().fileDeliver({ path: '/remote/x', filename: '../beside/x.txt' })).rejects.toThrow("has a '..' part");
+          await expect(cliSurface_create().fileDeliver({ path: '/remote/x', filename: path.join(beside, 'x.txt') })).rejects.toThrow('is an absolute path');
+          expect(fs.readdirSync(beside)).toEqual([]);
+        } finally {
+          cwd.mockRestore();
+          fs.rmSync(base, { recursive: true, force: true });
+        }
+      });
+
+      it('a destination that names a file is the file written, whatever name was suggested', async () => {
+        const fs = await import('fs');
+        const path = await import('path');
+        const { base, into } = await folders_make();
+        const named: string = path.join(into, 'mine.dcm');
+        const result = await cliSurface_create().fileDeliver({ path: '/remote/x', filename: '../../elsewhere.dcm', destination: named });
+        expect(result.location).toBe(named);
+        expect(await files_under(base)).toEqual(['mine.dcm']);
+        fs.rmSync(base, { recursive: true, force: true });
+      });
     });
 
     it('fetches through the supplied source, not the engine, when one is given', async () => {

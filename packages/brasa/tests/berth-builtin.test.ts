@@ -18,6 +18,9 @@ const cubeFiles: Map<string, FakeFile> = new Map();
 /** Links in the fake CUBE: path to target. */
 const cubeLinks: Map<string, string> = new Map();
 
+/** Extra names a folder's listing holds, as written: a name with a separator, `..`, and the like. */
+const cubeOddNames: Map<string, string[]> = new Map<string, string[]>();
+
 /**
  * Puts a file in the fake CUBE.
  *
@@ -53,6 +56,8 @@ function cubeFolder_list(folder: string): { ok: true; value: Array<{ name: strin
       if (!entries.has(name)) entries.set(name, { name, type: 'dir', size: 0, owner: 'alice', date: '' });
     }
   }
+  // Names a store should never list, put there to see them refused.
+  for (const name of cubeOddNames.get(folder) ?? []) entries.set(name, { name, type: 'file', size: 1, owner: 'alice', date: '' });
   if (entries.size === 0 && ![...cubeFiles.keys()].some((path: string): boolean => path.startsWith(prefix))) return { ok: false };
   return { ok: true, value: [...entries.values()] };
 }
@@ -124,6 +129,18 @@ backendKinds.kinds = (await import('../src/chris/kinds.js')).chrisArgumentKinds;
 const { builtin_berth, ANCHOR_ASK_BYTES } = await import('../src/builtins/berth/berth.js');
 const { berthState_read, berthState_update, berthState_write, berthPlaces_read, BerthStateError, BERTH_STATE_FILE } = await import('../src/builtins/berth/berthState.js');
 
+/**
+ * Files named for an escape, anywhere a bad name could have put one: under
+ * the test's root, beside it, and at the absolute place one of them names.
+ */
+function escaped_find(): string[] {
+  const found: string[] = (readdirSync(root, { recursive: true }) as string[]).filter((name: string): boolean => name.includes('escape'));
+  for (const place of [join(root, '..', 'escape.pt'), join(root, '..', '..', 'escape.pt'), '/etc/escape.pt']) {
+    if (existsSync(place)) found.push(place);
+  }
+  return found;
+}
+
 /** Colour codes, gone. */
 const strip = (text: string | undefined): string => (text ?? '').replace(/\u001b\[[0-9;]*m/g, '');
 
@@ -146,6 +163,7 @@ beforeEach(() => {
   process.env['MISE_BERTH_OUTGOING'] = outgoing;
   cubeFiles.clear();
   cubeLinks.clear();
+  cubeOddNames.clear();
   cubeFile_put(`${NODE_DATA}/sub-01/anat/t1.nii`, 'T1T1');
   cubeFile_put(`${NODE_DATA}/sub-01/func/bold.nii`, 'BOLDBO');
   cubeFile_put(`${NODE_DATA}/sub-02/t1.nii`, 'T2T');
@@ -274,6 +292,34 @@ describe('berth anchor: names', () => {
     expect(readFileSync(join(anchors, 'weights', 'model.pt'), 'utf8')).toBe('MODEL');
     expect((await builtin_berth(['anchor', '/PUBLIC/atlas/weights', 'atlas'])).status).toBe('ok');
     expect(berthState_read(anchors).anchors.map((anchor) => anchor.name)).toEqual(['weights', 'atlas']);
+  });
+
+  it.each([
+    ['../escape.pt'], ['sub/../../escape.pt'], ['..'], ['a\\b.pt'], ['/etc/escape.pt'], ['nul\0.pt'],
+  ])('a listing that holds the name %j is refused, and nothing is written', async (odd: string) => {
+    cubeOddNames.set('/home/alice/uploads/weights', [odd]);
+    const refused = await builtin_berth(['anchor', '~/uploads/weights']);
+    expect(refused.status).toBe('error');
+    expect(strip(refused.renderedErr)).toContain(`/home/alice/uploads/weights lists ${JSON.stringify(odd)}, which is not a name a file can have here`);
+    expect(existsSync(join(anchors, 'weights'))).toBe(false);
+    expect(readdirSync(anchors).filter((name: string): boolean => name !== BERTH_STATE_FILE)).toEqual([]);
+    expect(escaped_find()).toEqual([]);
+  });
+
+  it('a refresh whose listing holds a bad name, deep under a link, keeps the anchor that stands', async () => {
+    await builtin_berth(['anchor', '~/uploads/weights']);
+    const before: string = readFileSync(join(anchors, 'weights', 'model.pt'), 'utf8');
+    cubeFile_put('/home/alice/elsewhere/deep/fine.pt', 'F');
+    cubeLinks.set('/home/alice/uploads/weights/linked', '/home/alice/elsewhere');
+    cubeOddNames.set('/home/alice/elsewhere/deep', ['../../../escape.pt']);
+    process.exitCode = 0;
+    const refused = await builtin_berth(['anchor', '~/uploads/weights', '--refresh']);
+    expect(refused.status).toBe('error');
+    expect(strip(refused.renderedErr)).toContain('/home/alice/elsewhere/deep lists "../../../escape.pt"');
+    // The old copy is whole and still recorded: nothing was removed before the listing was known good.
+    expect(readFileSync(join(anchors, 'weights', 'model.pt'), 'utf8')).toBe(before);
+    expect(berthState_read(anchors).anchors.map((anchor) => anchor.name)).toEqual(['weights']);
+    expect(escaped_find()).toEqual([]);
   });
 
   it('an anchor that stands is refused without --refresh, and downloaded again with it', async () => {

@@ -503,6 +503,38 @@ export async function commandLine_parse(declaration: CommandDeclaration, words: 
 }
 
 /**
+ * Which words of a line a declaration gives to which operand, with nothing
+ * expanded and nothing checked against the session: the shape alone.
+ *
+ * A caller that must know what a line asked for without running it, and
+ * without the backend a wildcard or a path kind would reach, reads it here:
+ * the same options are set aside and the same operands assigned as when the
+ * line runs.
+ *
+ * @param declaration - The command.
+ * @param words - The words after the command, quoting kept.
+ * @returns Each operand's words by name; null for a line the declaration refuses.
+ *
+ * @example
+ * ```ts
+ * commandOperands_place(downloadCommand, shellWords_tokenize('-f /a/b "./my folder"')).get('destination'); // the one word `./my folder`
+ * ```
+ */
+export function commandOperands_place(declaration: CommandDeclaration, words: readonly ShellWord[]): Map<string, ShellWord[]> | null {
+  const grammar: CommandGrammar = declaration.grammar;
+  try {
+    const shape: LineShape = lineShape_parse(grammar, words);
+    const scope: SubcommandGrammar | null = shape.subcommand === null ? null : (grammar.subcommands?.[shape.subcommand] ?? null);
+    const operandGrammars: readonly OperandGrammar[] = (scope !== null ? (scope.operands ?? []) : (grammar.operands ?? []))
+      .filter((operand: OperandGrammar): boolean => operand.unless === undefined || !shape.options.has(operand.unless));
+    return operandWords_assign(operandGrammars, shape.operands, shape.subcommand);
+  } catch (error: unknown) {
+    if (!(error instanceof LineRefusal)) throw error;
+    return null;
+  }
+}
+
+/**
  * Words as a line hands them on: the shell words the line carried, quoting
  * kept, when they came with it; otherwise each string as a literal word,
  * which globs nothing (a caller that split its own words expands nothing).

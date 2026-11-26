@@ -16,7 +16,7 @@ import { serverMessage_parse, CONTRACT_VERSION, RequestBroker, type ServerMessag
 import type { CommandEnvelope } from '@fnndsc/cumin';
 import type { BrasaEngine, CompletionResult } from '@fnndsc/brasa';
 import { SERVER_MESSAGE_TYPES, type ClosingCause, type FileDeliverRequest, type FileDeliverResult } from '@fnndsc/menu';
-import { envelope_deliver, sink_get, sink_set, surface_set, type OutputSink, type Surface } from '@fnndsc/brasa';
+import { deliveryIntent_matches, deliveryIntents_read, envelope_deliver, sink_get, sink_set, surface_set, type DeliveryIntent, type OutputSink, type Surface } from '@fnndsc/brasa';
 import { promptFromContext_render } from '../core/prompt/session.js';
 import { output_above } from '../core/lineDiscipline.js';
 import { terminalId_parse } from '../core/terminalId.js';
@@ -90,6 +90,8 @@ export class RemoteEngine implements BrasaEngine {
   private readonly onShell: ((command: string) => Promise<number>) | undefined;
   private readonly onEdit: ((content: string, extension: string | undefined) => Promise<{ content: string; changed: boolean }>) | undefined;
   private readonly onDeliver: ((request: FileDeliverRequest) => Promise<FileDeliverResult>) | undefined;
+  /** What each line in flight asked to have delivered here, by its request id. */
+  private readonly deliveryIntents: Map<string, DeliveryIntent[]> = new Map<string, DeliveryIntent[]>();
   private readonly onClosing: ((cause: ClosingCause) => void) | undefined;
   private readonly onStale: ((stale: boolean) => void) | undefined;
   /** Hands this terminal to a program on the daemon's pty, when this chell is in one. */
@@ -209,6 +211,9 @@ export class RemoteEngine implements BrasaEngine {
     const id: string = String(this.nextId++);
     this.activeExecuteId = id;
     this.requestSinks.set(id, sink_get());
+    // What this line asks to have written here, read from the line itself
+    // before the daemon sees it: a delivery is honoured only against this.
+    this.deliveryIntents.set(id, deliveryIntents_read(line));
     try {
       const envelopes: CommandEnvelope[] = await this.request<CommandEnvelope[]>('execute', { line }, id);
       // A daemon that names no status leaves the envelopes to say it.
@@ -228,6 +233,7 @@ export class RemoteEngine implements BrasaEngine {
     } finally {
       if (this.activeExecuteId === id) this.activeExecuteId = undefined;
       this.requestSinks.delete(id);
+      this.deliveryIntents.delete(id);
       this.resultExits.delete(id);
     }
   }
@@ -508,6 +514,31 @@ export class RemoteEngine implements BrasaEngine {
   }
 
   /**
+   * Refuses a delivery this client did not ask for.
+   *
+   * The daemon names where on this machine a file is to be written. That is
+   * honoured only while a line sent from here is in flight, and only when
+   * the place named is the destination that line's own delivering command
+   * gave (`deliveryIntents_read`). A source path, a word of another command,
+   * a delivery after its line has ended, or a destination the daemon made
+   * up are all refused, by name.
+   *
+   * @param request - The delivery the daemon asked for.
+   * @throws {Error} When no line in flight asked for a delivery to that place.
+   */
+  private delivery_require(request: FileDeliverRequest): void {
+    const where: string = request.destination !== undefined && request.destination.length > 0 ? JSON.stringify(request.destination) : 'the working directory';
+    const intents: DeliveryIntent[] = [...this.deliveryIntents.values()].flat();
+    if (intents.length === 0) {
+      throw new Error(`refused: no line sent from here is asking for a file, and the session asked to write ${JSON.stringify(request.filename)} to ${where}; nothing was written`);
+    }
+    if (!deliveryIntent_matches(intents, request.destination)) {
+      const asked: string = intents.map((intent: DeliveryIntent): string => (intent.destination === null ? 'the working directory' : JSON.stringify(intent.destination))).join(', ');
+      throw new Error(`refused: the session asked to write to ${where}, and the line sent from here named ${asked}; nothing was written. A destination written as a variable is not known here: type the path itself`);
+    }
+  }
+
+  /**
    * Places a file on this client's machine at the daemon's request.
    *
    * @param deliverId - The delivery correlation id.
@@ -520,6 +551,7 @@ export class RemoteEngine implements BrasaEngine {
         // failing: the operator would go looking for it.
         throw new Error('this surface cannot receive a file');
       }
+      this.delivery_require(request);
       const result: FileDeliverResult = await this.onDeliver(request);
       this.ws.send(JSON.stringify({
         type: 'deliverResult', deliverId, location: result.location, bytes: result.bytes,
