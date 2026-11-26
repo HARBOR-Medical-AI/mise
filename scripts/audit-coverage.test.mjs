@@ -1,7 +1,12 @@
 /**
  * @file The audit coverage check, held to small repositories kept beside
- * it: one whose lockfile describes what is shipped, and one for each way
+ * it: ones whose lockfile describes what is shipped, and one for each way
  * it can fail to.
+ *
+ * Each case names a fixture under `scripts/fixtures/audit-coverage/`, the
+ * status the check must end with, the faults it must give (each by words
+ * it must contain; exactly that many), and, where it matters, the
+ * production tree it must list for `packages/a`.
  *
  * Run via `npm run test:audit-coverage`.
  *
@@ -14,54 +19,79 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const check = join(here, 'audit-coverage.mjs');
 
-/** Each fixture, whether it passes, and what its one fault must say. */
+const RECORD_LACKS_F = `packages/a's package.json has f: "^1.0.0" in dependencies and the lockfile's record of packages/a does not`;
+const BASE_TREE = ['b@1.2.0', 'c@2.1.0'];
+
+/** @type {Array<{ name: string, faults?: string[], tree?: string[], note?: string }>} */
 const CASES = [
-  ['good', 0, null],
-  ['missing-dependency', 1, 'b@^1.0.0, a dependency of packages/a, is not in the root lockfile'],
-  ['incompatible-version', 1, 'packages/a asks for b@^1.0.0 (a dependency) and the lockfile resolves it to b@2.0.0'],
-  ['missing-peer', 1, 'c@^2.0.0, a peer dependency of node_modules/b, is not in the root lockfile'],
-  ['dev-only-peer', 1, 'c@2.1.0 (at node_modules/c, a peer dependency of node_modules/b) is marked development-only'],
-  ['dev-or-optional-peer', 1, 'c@2.1.0 (at node_modules/c, a required peer dependency of node_modules/b) is marked development-or-optional'],
-  ['stale-workspace-version', 1, 'the lockfile records packages/a as 0.9.0, and its package.json says 1.0.0'],
-  // Two faults from one cause: the record lacks the edge, and the package is not installed.
-  ['manifest-ahead-of-lock', 1, "packages/a's package.json declares f@^1.0.0 (a dependency) and the lockfile's record of packages/a does not have it", 2],
+  { name: 'good', tree: BASE_TREE },
+  // What is missing, or is not what was asked for.
+  { name: 'missing-dependency', faults: ['b@^1.0.0 (a dependency of packages/a) is not in the root lockfile'] },
+  { name: 'incompatible-version', faults: ['b@^1.0.0 (a dependency of packages/a) is resolved outside the range asked: b@2.0.0 at node_modules/b'] },
+  { name: 'prerelease-for-a-plain-range', faults: ['b@^1.0.0 (a dependency of packages/a) is resolved outside the range asked: b@1.3.0-beta.1'] },
+  { name: 'missing-peer', faults: ['c@^2.0.0 (a peer dependency of node_modules/b) is not in the root lockfile'] },
+  // Where a peer stands. Only inside its dependent, or inside it with another copy above: npm resolves the
+  // nearest, and a peer may not be local to a package that is not at the top.
+  { name: 'peer-only-inside-its-dependent', faults: ['c@^2.0.0 (a peer dependency of node_modules/b) is a peer installed inside its dependent, not at or above it where a peer must be: c@2.1.0 at node_modules/b/node_modules/c'] },
+  { name: 'peer-two-copies', faults: ['c@^2.0.0 (a peer dependency of node_modules/b) is a peer installed inside its dependent'] },
+  // A workspace is at the top: npm allows its own peer to stand inside it.
+  { name: 'workspace-local-peer', tree: [...BASE_TREE, 'p@1.0.0'] },
+  // A package that both depends on a name and names it as a peer loads its own copy.
+  { name: 'peer-that-is-also-a-dependency', tree: BASE_TREE },
+  // What the audit leaves out. Development-only on a required edge: a fault.
+  { name: 'dev-only-peer', faults: ['c@2.1.0 at node_modules/c, c@^2.0.0 (a peer dependency of node_modules/b), is taken for development-only, so the audit leaves it out'] },
+  // Development-or-optional is kept under --omit=dev: it and its child are part of the graph.
+  { name: 'dev-or-optional-peer', tree: [...BASE_TREE, 'k@1.0.0'] },
+  // An installed optional dependency is walked, and so is a required child on that optional branch.
+  { name: 'optional-branch-with-a-required-child', tree: [...BASE_TREE, 'd@1.0.0', 'h@1.0.0'] },
+  // Reached only optionally and left out by the audit: not shipped, no part of the graph, not a fault.
+  { name: 'installed-optional-dev-only', tree: BASE_TREE },
+  { name: 'optional-peer-development-only', tree: BASE_TREE },
+  // An optional peer installed out of range: passed, walked, and said.
+  { name: 'optional-peer-out-of-range', tree: [...BASE_TREE, 'e@8.0.0'], note: 'e@^9.0.0 (an optional peer dependency of node_modules/b) is resolved outside the range asked: e@8.0.0 at node_modules/e' },
+  // The root's overrides, by the dependency's name and by its dependent's.
+  { name: 'override-honoured', tree: ['b@1.0.0'] },
+  { name: 'override-not-met', faults: ['b@npm:empty@1.0.0 (a dependency of packages/a) is to be empty and the lockfile has other@1.0.0 at node_modules/b'] },
+  { name: 'parent-scoped-override-honoured', tree: ['b@1.2.0', 'c@3.0.0'] },
+  { name: 'parent-scoped-override-not-met', faults: ['c@3.0.0 (a peer dependency of node_modules/b) is resolved outside the range asked: c@2.1.0 at node_modules/c'] },
+  // The lockfile's record of a workspace against the workspace's own manifest.
+  { name: 'stale-workspace-version', faults: ['the lockfile records packages/a as 0.9.0, and its package.json says 1.0.0'] },
+  { name: 'manifest-ahead-of-lock', faults: [RECORD_LACKS_F, 'f@^1.0.0 (a dependency of packages/a) is not in the root lockfile'] },
   // The package is installed, for a sibling, where node would find it: the record still lacks the edge.
-  ['new-dependency-hoisted-for-a-sibling', 1, "packages/a's package.json declares f@^1.0.0 (a dependency) and the lockfile's record of packages/a does not have it"],
-  ['record-states-another-range', 1, "packages/a's package.json declares b@^1.0.0 (a dependency) and the lockfile's record of packages/a has b@^1.1.0 (a dependency)"],
-  ['parent-scoped-override-honoured', 0, null],
-  ['parent-scoped-override-not-met', 1, 'node_modules/b asks for c@^2.0.0, overridden at the root to 3.0.0, (a peer dependency) and the lockfile resolves it to c@2.1.0'],
-  ['peer-only-inside-its-dependent', 1, 'c@^2.0.0, a peer dependency of node_modules/b, is installed only inside node_modules/b, not at or above it'],
-  ['prerelease-for-a-plain-range', 1, 'packages/a asks for b@^1.0.0 (a dependency) and the lockfile resolves it to b@1.3.0-beta.1'],
-  ['optional-peer-development-only', 0, null],
-  ['peer-that-is-also-a-dependency', 0, null],
-  ['installed-optional-dev-only', 1, 'd@1.0.0 (at node_modules/d, a optional dependency of packages/a) is marked development-only'],
-  ['override-honoured', 0, null],
-  ['override-not-met', 1, 'overridden at the root to empty@1.0.0, (a dependency) and the lockfile resolves it to other@1.0.0'],
-  ['optional-peer-out-of-range', 0, null],
-  ['nothing-published', 1, 'no published workspace was found'],
+  { name: 'new-dependency-hoisted-for-a-sibling', faults: [RECORD_LACKS_F] },
+  { name: 'record-states-another-range', faults: [`packages/a's package.json has b: "^1.0.0" in dependencies and the lockfile's record of packages/a has "^1.1.0"`] },
+  // A name declared as a dependency and as a peer: each declaration is compared, though one edge is walked.
+  { name: 'stale-peer-declaration', faults: [`packages/a's package.json has c: "^2.1.0" in peerDependencies and the lockfile's record of packages/a has "^2.0.0"`] },
+  { name: 'stale-peer-optional-flag', faults: [`packages/a's package.json has c: {"optional":true} in peerDependenciesMeta and the lockfile's record of packages/a does not`] },
+  { name: 'nothing-published', faults: ['no published workspace was found'] },
 ];
 
 let failed = 0;
-for (const [name, status, words, count = 1] of CASES) {
-  const ran = spawnSync(process.execPath, [check, '--root', join(here, 'fixtures', 'audit-coverage', name)], { encoding: 'utf8' });
+/** Records a failure. */
+function fail_say(words) { failed++; console.log(`FAIL  ${words}`); }
+
+for (const one of CASES) {
+  const root = join(here, 'fixtures', 'audit-coverage', one.name);
+  const wanted = one.faults ?? [];
+  const ran = spawnSync(process.execPath, [check, '--root', root], { encoding: 'utf8' });
   const faults = ran.stderr.split('\n').filter((line) => line.startsWith('  '));
-  const ok = ran.status === status && (words === null ? faults.length === 0 : faults.length === count && faults.some((fault) => fault.includes(words)));
-  if (!ok) { failed++; console.log(`FAIL  ${name}: ended ${ran.status} (wanted ${status}) saying ${JSON.stringify(faults)}${words === null ? '' : `; wanted ${count} fault(s), one with "${words}"`}`); }
+  const status = wanted.length === 0 ? 0 : 1;
+  if (ran.status !== status || faults.length !== wanted.length || !wanted.every((words) => faults.some((fault) => fault.includes(words)))) {
+    fail_say(`${one.name}: ended ${ran.status} (wanted ${status}) with faults ${JSON.stringify(faults)}; wanted exactly ${JSON.stringify(wanted)}${ran.status > 1 || faults.length === 0 ? ` | ${ran.stderr.slice(0, 300)}` : ''}`);
+  }
+  if (one.note !== undefined && !(ran.stdout.includes(`note: an optional peer is installed outside the range asked: ${one.note}`) && ran.stdout.includes('1 optional peer(s) installed out of range'))) {
+    fail_say(`${one.name}: the out-of-range optional peer is not said, or the summary does not count it: ${ran.stdout}`);
+  }
+  if (one.note === undefined && ran.stdout.includes('note:')) fail_say(`${one.name}: a note nobody expected: ${ran.stdout}`);
+  if (one.tree !== undefined) {
+    const listed = spawnSync(process.execPath, [check, '--root', root, '--list', 'packages/a'], { encoding: 'utf8' });
+    const tree = listed.stdout.trim().split('\n').filter((line) => line !== '');
+    if (listed.status !== 0 || JSON.stringify(tree) !== JSON.stringify([...one.tree].sort())) fail_say(`${one.name}: listed ${JSON.stringify(tree)} (ended ${listed.status}); wanted ${JSON.stringify([...one.tree].sort())}`);
+  }
 }
-// An optional peer installed out of range passes, and is said: the summary does not call it in range.
-const noted = spawnSync(process.execPath, [check, '--root', join(here, 'fixtures', 'audit-coverage', 'optional-peer-out-of-range')], { encoding: 'utf8' });
-if (noted.status !== 0 || !noted.stdout.includes('note: an optional peer is installed outside the range asked: node_modules/b asks for e@^9.0.0 (an optional peer dependency) and the lockfile resolves it to e@8.0.0') || !noted.stdout.includes('1 optional peer(s) installed out of range')) { failed++; console.log(`FAIL  an out-of-range optional peer is not said: ${noted.stdout}`); }
-// One carried only for development is no part of the graph: neither it nor what it needs is listed.
-const devPeer = spawnSync(process.execPath, [check, '--root', join(here, 'fixtures', 'audit-coverage', 'optional-peer-development-only'), '--list', 'packages/a'], { encoding: 'utf8' });
-if (devPeer.status !== 0 || devPeer.stdout.trim() !== 'b@1.2.0\nc@2.1.0') { failed++; console.log(`FAIL  a development-only optional peer was walked: ${JSON.stringify(devPeer.stdout)} ${devPeer.stderr}`); }
-// A package that depends on what it also names as a peer is listed with its own copy.
-const ownCopy = spawnSync(process.execPath, [check, '--root', join(here, 'fixtures', 'audit-coverage', 'peer-that-is-also-a-dependency'), '--list', 'packages/a'], { encoding: 'utf8' });
-if (ownCopy.status !== 0 || ownCopy.stdout.trim() !== 'b@1.2.0\nc@2.1.0') { failed++; console.log(`FAIL  a peer that is also a dependency: ${JSON.stringify(ownCopy.stdout)} ${ownCopy.stderr}`); }
 // The listing says what is wrong with a walk too, and fails with it.
-const listed = spawnSync(process.execPath, [check, '--root', join(here, 'fixtures', 'audit-coverage', 'incompatible-version'), '--list', 'packages/a'], { encoding: 'utf8' });
-if (listed.status !== 1 || !listed.stdout.includes('b@2.0.0') || !listed.stderr.includes('fault: packages/a: packages/a asks for b@^1.0.0')) { failed++; console.log(`FAIL  --list of a faulty walk: ended ${listed.status} saying ${listed.stdout} ${listed.stderr}`); }
-const listedGood = spawnSync(process.execPath, [check, '--root', join(here, 'fixtures', 'audit-coverage', 'good'), '--list', '@x/a'], { encoding: 'utf8' });
-if (listedGood.status !== 0 || listedGood.stdout.trim() !== 'b@1.2.0\nc@2.1.0') { failed++; console.log(`FAIL  --list of a good walk: ended ${listedGood.status} saying ${JSON.stringify(listedGood.stdout)}`); }
+const listed = spawnSync(process.execPath, [check, '--root', join(here, 'fixtures', 'audit-coverage', 'incompatible-version'), '--list', '@x/a'], { encoding: 'utf8' });
+if (listed.status !== 1 || !listed.stdout.includes('b@2.0.0') || !listed.stderr.includes('fault: packages/a: b@^1.0.0 (a dependency of packages/a) is resolved outside the range asked')) fail_say(`--list of a faulty walk: ended ${listed.status} saying ${listed.stdout} ${listed.stderr}`);
 
 console.log(failed === 0 ? `audit-coverage: ${CASES.length} repositories judged as they should be, and the listing carries its faults` : `audit-coverage test: ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

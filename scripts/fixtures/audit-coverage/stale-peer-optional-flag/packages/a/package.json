@@ -1,0 +1,19 @@
+{
+  "name": "@x/a",
+  "version": "1.0.0",
+  "dependencies": {
+    "b": "^1.0.0",
+    "c": "^2.0.0"
+  },
+  "optionalDependencies": {
+    "d": "^1.0.0"
+  },
+  "peerDependencies": {
+    "c": "^2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "c": {
+      "optional": true
+    }
+  }
+}
