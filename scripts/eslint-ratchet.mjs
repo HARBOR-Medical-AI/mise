@@ -155,8 +155,16 @@ if (lower) {
     console.error('eslint-ratchet: nothing lowered: the tree does not pass as it is (run without --lower to see why).');
     process.exit(1);
   }
-  const next = only === undefined ? ceilings_lower(counts, ceilings) : { ...ceilings, ...ceilings_lower(counts, judgedCeilings) };
-  if (only !== undefined && next[only] === undefined) delete next[only];
+  let next;
+  if (only === undefined) {
+    next = ceilings_lower(counts, ceilings);
+  } else {
+    // One workspace: its ceilings are replaced by what lowering leaves of them, which is nothing at all
+    // when its last finding is gone; every other workspace's stay as they were.
+    const loweredOnly = ceilings_lower(counts, judgedCeilings)[only];
+    next = { ...ceilings };
+    if (loweredOnly === undefined) delete next[only]; else next[only] = loweredOnly;
+  }
   writeFileSync(baselinePath, baseline_write(next));
   console.log(`eslint-ratchet: lowered ${fallen.length} ceiling(s) in ${BASELINE_FILE}; none raised.`);
   process.exit(0);

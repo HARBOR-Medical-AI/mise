@@ -124,10 +124,7 @@ const planted = ratchet_run(withBaseline);
 expect_that('a violation put in on purpose fails, naming the rule, the workspace, the file and the line',
   planted.status === 1 && planted.said.includes('apps/beta: 2 findings of no-empty, its ceiling is 1') && planted.said.includes('apps/beta/src/tally.ts:8:'), planted.said);
 // The ceiling raised beside it: the tree is at its ceilings again, and the base says no.
-const raisedText = JSON.parse(readFileSync(BASELINE, 'utf8'));
 const pristine = readFileSync(BASELINE, 'utf8');
-const plantedCounts = ratchet_run(withBaseline).said;
-void plantedCounts;
 // Every count the planted function added is taken into the baseline by hand, as someone hiding it would.
 const hidden = spawnSync(process.execPath, ['-e', `
   import('${join(tree, 'scripts/lib/eslintCounts.mjs')}').then(async ({ baseline_write }) => {
@@ -138,7 +135,6 @@ const hidden = spawnSync(process.execPath, ['-e', `
     process.stdout.write(baseline_write(counts));
   });`], { cwd: tree, encoding: 'utf8' });
 writeFileSync(BASELINE, hidden.stdout);
-void raisedText;
 const raised = ratchet_run(withBaseline);
 expect_that('a ceiling raised beside its count fails against the base', raised.status === 1 && raised.said.includes('apps/beta: the ceiling of no-empty is 2 here and was 1 at the base'), raised.said);
 const unnamed = spawnSync('npm', ['run', '-s', 'lint'], { cwd: tree, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, GITHUB_EVENT_NAME: 'push', RATCHET_BEFORE: '0'.repeat(40) } });
@@ -160,6 +156,23 @@ file_put(join(tree, 'apps/beta/src/tally.ts'), `${SOURCE}export function second(
 const refusedLower = ratchet_run(withBaseline, '--lower');
 expect_that('--lower on a tree with a count above its ceiling lowers nothing', refusedLower.status === 1 && readFileSync(BASELINE, 'utf8') === baseline_write(after), refusedLower.said);
 file_put(join(tree, 'apps/beta/src/tally.ts'), SOURCE);
+
+// One workspace lowered alone, down to nothing: its entry goes, and the other workspace's ceilings stay.
+const beforeOnly = JSON.parse(readFileSync(BASELINE, 'utf8'));
+// A file with every rule switched off for it: a workspace with a source and not one finding.
+file_put(join(tree, 'apps/beta/src/tally.ts'), '/* eslint-disable */\nexport const nothing = 0;\n');
+const onlyFallen = ratchet_run(withBaseline, '--only', 'apps/beta');
+expect_that('one workspace emptied of findings fails until lowered', onlyFallen.status === 1 && onlyFallen.said.includes('apps/beta:') && onlyFallen.said.includes('fell to 0'), onlyFallen.said);
+const onlyLowered = ratchet_run(withBaseline, '--only', 'apps/beta', '--lower');
+const afterOnly = JSON.parse(readFileSync(BASELINE, 'utf8'));
+expect_that('--only <workspace> --lower down to nothing removes that workspace and leaves the others',
+  onlyLowered.status === 0 && afterOnly['apps/beta'] === undefined && JSON.stringify(afterOnly['packages/alpha']) === JSON.stringify(beforeOnly['packages/alpha']) && Object.keys(beforeOnly).includes('apps/beta'),
+  `${onlyLowered.said} before ${JSON.stringify(Object.keys(beforeOnly))} after ${JSON.stringify(Object.keys(afterOnly))}`);
+const onlyAfter = ratchet_run(withBaseline, '--only', 'apps/beta');
+expect_that('after that the workspace passes, alone and with the rest', onlyAfter.status === 0 && ratchet_run(withBaseline).status === 0, onlyAfter.said);
+// The workspace as it was, findings and ceilings, for the cases below.
+file_put(join(tree, 'apps/beta/src/tally.ts'), SOURCE);
+writeFileSync(BASELINE, baseline_write(beforeOnly));
 
 // A file ESLint cannot read.
 file_put(join(tree, 'apps/beta/src/broken.ts'), 'export const = ;\n');
