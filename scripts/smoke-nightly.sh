@@ -128,7 +128,11 @@ door_commands() (
 door_step() {
   # In a shell of its own: the porter's environment file holds its signing secret, which is exported for
   # the porter's own words here and reaches nothing the run starts afterwards.
-  ( door_step_scoped ) || failures=$((failures + 1))
+  # Run as a command of its own, never as one side of `||`: there the door commands' trap on a failing
+  # command would not fire, and a failed login would be written down as ok.
+  ( door_step_scoped )
+  local status=$?
+  [ "$status" -eq 0 ] || failures=$((failures + 1))
 }
 door_step_scoped() {
   PORTER_BIN=${PORTER_BIN:-$HOME/.local/share/porter-published/node_modules/.bin/porter}
