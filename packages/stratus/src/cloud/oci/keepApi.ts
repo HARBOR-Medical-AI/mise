@@ -158,7 +158,7 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
   };
 
   /** Waits a secret out of its passing states, and answers its tag as it then stands: what a write is bound to. */
-  const secret_settle = async (secretId: string): Promise<string> => {
+  const secret_settle = async (secretId: string): Promise<string | undefined> => {
     for (let tries: number = 0; tries < 60; tries += 1) {
       const answer = await secretsOf.getSecret({ secretId });
       const state: string = answer.secret.lifecycleState;
@@ -201,32 +201,47 @@ export function ociKeepApi_make(options: OciKeepApiOptions): OciKeepApi {
       // does not say whether the write was made (a 5xx, no answer), the
       // secret is read again before anything else: a write that did land
       // then compares equal, and no second version is made of it.
-      for (let tries: number = 1; ; tries += 1) {
-        const tag: string = await secret_settle(kept.id);
+      /** What the secret holds now, with the tag it stands at; unread, it is left as it is. */
+      const held_read = async (): Promise<{ tag: string | undefined; held: string }> => {
+        const tag: string | undefined = await secret_settle(kept.id);
         let held: string | undefined;
         try {
           held = content_decode(await bundles.getSecretBundleByName({ secretName: name, vaultId: found.id }));
         } catch (error: unknown) {
-          // Unread, the secret is left as it is: writing unread is how the
-          // thirty are spent on a vault that answers no reads.
+          // Writing unread is how the thirty are spent on a vault that answers no reads.
           const why: string = error instanceof KeepFault ? error.message : errorStatus_describe(error);
           throw new KeepFault(`the secret ${name} is kept and could not be read (${why}), so it was left as it is`);
         }
         if (held === undefined) throw new KeepFault(`the secret ${name} is kept and the cloud answered no content for it, so it was left as it is`);
-        if (held === content) return;
+        return { tag, held };
+      };
+      let last: string = 'no status';
+      for (let tries: number = 1; tries <= WRITE_TRIES; tries += 1) {
+        const now: { tag: string | undefined; held: string } = await held_read();
+        if (now.held === content) return;
+        // Without a tag the write would be bound to nothing, and the cloud
+        // would take it whatever the secret had become.
+        if (typeof now.tag !== 'string' || now.tag.trim() === '') {
+          throw new KeepFault(`the secret ${name} is kept and the cloud gave no version tag for it, so it was left as it is`);
+        }
         try {
-          await secretsOf.updateSecret({ secretId: kept.id, ifMatch: tag, updateSecretDetails: { secretContent: body } });
+          await secretsOf.updateSecret({ secretId: kept.id, ifMatch: now.tag, updateSecretDetails: { secretContent: body } });
         } catch (error: unknown) {
           const status: number | undefined = (error as { statusCode?: number }).statusCode;
           const changedSince: boolean = status !== undefined && HTTP_CONFLICTS.includes(status);
           const unsure: boolean = status === undefined || status >= 500;
-          if ((!changedSince && !unsure) || tries >= WRITE_TRIES) throw new KeepFault(`the secret ${name} could not be written (${errorStatus_describe(error)})`);
-          if (unsure) await pause(10_000);
+          last = errorStatus_describe(error);
+          if (!changedSince && !unsure) throw new KeepFault(`the secret ${name} could not be written (${last})`);
+          if (unsure && tries < WRITE_TRIES) await pause(10_000);
           continue;
         }
         await secret_settle(kept.id);
         return;
       }
+      // The last write's fate is not known either. One more look, and no
+      // more writes: if it landed, the secret holds what was to be kept.
+      if ((await held_read()).held === content) return;
+      throw new KeepFault(`the secret ${name} could not be written (${last}, after ${WRITE_TRIES} tries)`);
     },
 
     async secret_drop(name: string): Promise<boolean> {

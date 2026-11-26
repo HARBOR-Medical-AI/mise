@@ -21,10 +21,14 @@ const world: {
   versions: number;
   /** The next update is made and its reply lost: the caller sees a 503. */
   replyLost: boolean;
+  /** How many of the next updates are refused as "changed since", whatever tag they carry. */
+  conflictsFirst: number;
+  /** The cloud's answers carry no version tag. */
+  tagless: boolean;
   /** Every update is refused outright, in words that quote what was sent. */
   refused: boolean;
   asked: string[];
-} = { secret: null, unreadable: null, contentless: false, rawContent: null, versions: 1, replyLost: false, refused: false, asked: [] };
+} = { secret: null, unreadable: null, contentless: false, rawContent: null, versions: 1, replyLost: false, conflictsFirst: 0, tagless: false, refused: false, asked: [] };
 
 class StandInClient {
   regionId?: string;
@@ -32,7 +36,7 @@ class StandInClient {
   listVaults = async () => ({ items: [{ id: 'vault-1', displayName: 'mise', lifecycleState: 'ACTIVE', managementEndpoint: 'https://kms' }] });
   listKeys = async () => ({ items: [{ id: 'key-1', displayName: 'mise', lifecycleState: 'ENABLED' }] });
   listSecrets = async () => ({ items: world.secret === null ? [] : [{ id: world.secret.id, secretName: 'store', lifecycleState: world.secret.state }] });
-  getSecret = async () => { world.asked.push('getSecret'); return { etag: String(world.versions), secret: { lifecycleState: world.secret?.state === 'PENDING_DELETION' ? 'PENDING_DELETION' : 'ACTIVE' } }; };
+  getSecret = async () => { world.asked.push('getSecret'); return { ...(world.tagless ? {} : { etag: String(world.versions) }), secret: { lifecycleState: world.secret?.state === 'PENDING_DELETION' ? 'PENDING_DELETION' : 'ACTIVE' } }; };
   cancelSecretDeletion = async () => { world.asked.push('cancelSecretDeletion'); if (world.secret !== null) world.secret.state = 'ACTIVE'; };
   getSecretBundleByName = async () => {
     world.asked.push('getSecretBundleByName');
@@ -45,7 +49,8 @@ class StandInClient {
     world.asked.push('updateSecret');
     if (world.refused) throw Object.assign(new Error(`cannot store ${Buffer.from(request.updateSecretDetails.secretContent.content, 'base64').toString('utf-8')}`), { statusCode: 400, serviceCode: 'InvalidParameter' });
     // The cloud refuses a write bound to a tag the secret no longer has.
-    if (request.ifMatch !== String(world.versions)) throw Object.assign(new Error('Precondition Failed'), { statusCode: 412 });
+    if (world.conflictsFirst > 0) { world.conflictsFirst -= 1; throw Object.assign(new Error('Precondition Failed'), { statusCode: 412 }); }
+    if (request.ifMatch !== undefined && request.ifMatch !== String(world.versions)) throw Object.assign(new Error('Precondition Failed'), { statusCode: 412 });
     if (world.secret !== null) world.secret.content = Buffer.from(request.updateSecretDetails.secretContent.content, 'base64').toString('utf-8');
     world.versions += 1;
     if (world.replyLost) { world.replyLost = false; throw Object.assign(new Error('Service Unavailable'), { statusCode: 503 }); }
@@ -85,6 +90,8 @@ beforeEach(() => {
   world.versions = 1;
   world.replyLost = false;
   world.refused = false;
+  world.conflictsFirst = 0;
+  world.tagless = false;
   world.asked = [];
 });
 
@@ -151,6 +158,36 @@ describe('a write is bound to the version it compared', () => {
     world.versions = 7;
     await keep().secret_write('store', 'something new', quiet);
     expect(world.versions).toBe(8);
+  });
+
+  it('writes nothing when the cloud gives no tag to bind the write to: an unbound write would be taken whatever the secret had become', async () => {
+    world.tagless = true;
+    await expect(keep().secret_write('store', 'something new', quiet)).rejects.toThrow('the cloud gave no version tag for it, so it was left as it is');
+    expect(count('updateSecret')).toBe(0);
+    expect(world.secret?.content).toBe('what is kept');
+  });
+
+  it('still writes nothing, and succeeds, when there is no tag and the content is already what is kept', async () => {
+    world.tagless = true;
+    await keep().secret_write('store', 'what is kept', quiet);
+    expect(count('updateSecret')).toBe(0);
+  });
+
+  it('looks once more after its fifth write\'s reply is lost, and succeeds with no sixth write when that write landed', async () => {
+    // Four writes are refused as changed since, and the fifth lands with its reply lost.
+    world.conflictsFirst = 4;
+    world.replyLost = true;
+    await keep().secret_write('store', 'something new', quiet);
+    expect(world.secret?.content).toBe('something new');
+    expect(count('updateSecret')).toBe(5);
+    expect(world.versions).toBe(2);
+  });
+
+  it('fails after its fifth write when the last look still shows other content, and writes no sixth time', async () => {
+    world.conflictsFirst = 5;
+    await expect(keep().secret_write('store', 'something new', quiet)).rejects.toThrow('the secret store could not be written (HTTP 412, after 5 tries)');
+    expect(count('updateSecret')).toBe(5);
+    expect(world.secret?.content).toBe('what is kept');
   });
 
   it('gives up after one try, saying only a status, when the cloud refuses the write outright', async () => {
