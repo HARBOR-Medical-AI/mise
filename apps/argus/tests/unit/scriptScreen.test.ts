@@ -696,6 +696,36 @@ describe('the script screen', () => {
     screen.root.remove();
   });
 
+  it('typing into the form of a script that is being replaced by another changes nothing of the other', async () => {
+    const { screen, hooks } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const first: HTMLInputElement = screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    // The other script's text is held back: its open is under way, and the first one's form is still on the screen.
+    const answer: ScriptHooks['ask'] = hooks.ask;
+    let read: () => void = (): void => undefined;
+    const held: Promise<void> = new Promise((resolve: () => void): void => { read = resolve; });
+    hooks.ask = async (line: string): Promise<QuietAnswer> => { if (line.startsWith('cat ')) await held; return answer(line); };
+    const opening: Promise<void> = screen.open('/scripts/chrisproject/other.mise');
+    await settle();
+    first.value = '10.20.0.0/16 ';
+    first.dispatchEvent(new Event('input'));
+    read();
+    await opening;
+    await settle();
+    expect(screen.path_get()).toBe('/scripts/chrisproject/other.mise');
+    // The other script is as it was read: not edited, and nothing typed into the first is in its field.
+    expect(screen.root.textContent).not.toContain('NOT SAVED');
+    expect(button_named(screen.root, 'SAVE')).toBeUndefined();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    expect((screen.root.querySelector('#ss-cidr-1') as HTMLInputElement).value).toBe('10.20.0.0/16');
+    screen.dispose();
+    screen.root.remove();
+  });
+
   it('an edit in READ leaves each pill saying what a pill drawn fresh would: refused, or asking first, never plainly "sends"', async () => {
     for (const elevate of [null, async (): Promise<boolean> => true]) {
       const { screen } = screen_make(['done', 'done', 'ready', 'not yet', 'not yet'], false, false, elevate);

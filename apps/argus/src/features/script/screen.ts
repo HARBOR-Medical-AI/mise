@@ -299,14 +299,20 @@ export class ScriptScreen {
   /** The script as it was read (or last saved): an edit is said against it. */
   protected readText: string = '';
   /**
-   * What was typed into each option field, as typed, for the script that is
-   * open and the edits now being made to it: a field drawn again is given
-   * it back while the line still says it. Keyed by the script and the
-   * field; emptied when a script is opened or read again and when a SAVE
-   * has written the edits, so nothing typed into one script is ever put
-   * into another's field.
+   * What was typed into each option field, as typed, during the edit
+   * session now under way: a field drawn again is given it back while the
+   * line still says it. Emptied when a session begins, so nothing typed
+   * into one script, or before a write, is ever put into a later field.
    */
   protected readonly typed: Map<string, string> = new Map<string, string>();
+  /**
+   * Which edit session is under way. One begins whenever the script on the
+   * screen is replaced: opened, opened again, or read back after its edits
+   * were written. A field belongs to the session it was drawn in, and what
+   * is typed into a field of a session that has ended (its form still on
+   * the screen while the next script is being read) changes nothing.
+   */
+  protected editSession: number = 0;
   /** The last SAVE, where and when: its receipt stands on the seat until the next edit. */
   protected saved: { path: string; at: string; view: string } | null = null;
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
@@ -413,7 +419,7 @@ export class ScriptScreen {
     this.path = path;
     this.edited = false;
     // A script opened, or opened again: what was typed into the one before is not this one's.
-    this.typed.clear();
+    this.editSession_begin();
     this.stepLogs.clear();
     await this.script_read();
     // The rail opens on the step running now, else on the first that needs the operator.
@@ -989,7 +995,7 @@ export class ScriptScreen {
     this.path = copy;
     this.edited = false;
     // The edits are written: the lines are read again from the copy, and what was typed on the way is done with.
-    this.typed.clear();
+    this.editSession_begin();
     await this.script_read();
     this.draw();
     this.libraryRead = false;
@@ -1545,17 +1551,21 @@ export class ScriptScreen {
     // the hand is on its way to the next word, the field comes back as it was left, space and all, for as
     // long as what was typed is still what the line says.
     const held: string = lineOption_get(line.text, word) ?? '';
-    const typed: string | undefined = this.typed.get(`${this.typedScope_get()}\n${input.id}`);
+    const typed: string | undefined = this.typed.get(input.id);
+    const session: number = this.editSession;
     input.value = typed !== undefined && typed.trim() === held ? typed : held;
     input.placeholder = placeholder;
     input.spellcheck = false;
     input.autocomplete = 'off';
     input.disabled = this.busy !== null;
     input.addEventListener('input', (): void => {
+      // A field left on the screen from a script since replaced: its line is no longer the screen's, and what
+      // is typed into it is neither kept nor counted as an edit of the script now being read.
+      if (session !== this.editSession) return;
       // The line takes the value without the spaces around it; the field keeps what was typed, so a space
       // typed on the way to the next word is still there for that word to follow.
       line.text = lineOption_set(line.text, word, input.value.trim());
-      this.typed.set(`${this.typedScope_get()}\n${input.id}`, input.value);
+      this.typed.set(input.id, input.value);
       this.edited = true;
       // SAVE, the difference against what stands and the line's state follow the hand, each where it stands:
       // the field is not drawn again.
@@ -1566,15 +1576,17 @@ export class ScriptScreen {
   }
 
   /**
-   * Whose the typed values are: the script that is open.
-   *
-   * @returns What tells this script's fields from another's.
+   * Begins an edit session: the script on the screen is being replaced, so
+   * the fields now drawn are of the session that ends here, and what was
+   * typed into them is done with.
    *
    * @example
-   * this.typed.get(`${this.typedScope_get()}\n${input.id}`);
+   * this.path = path;
+   * this.editSession_begin();
    */
-  protected typedScope_get(): string {
-    return this.path;
+  protected editSession_begin(): void {
+    this.editSession += 1;
+    this.typed.clear();
   }
 
   /** Redraws the line's box and the header after an edit, without losing the field's focus. */

@@ -226,6 +226,8 @@ export class VmScreen extends ScriptScreen {
   public async vm_open(name: string): Promise<void> {
     await this.vms_read();
     this.vm = name;
+    // A machine opened, or opened again: what was typed into the script before is not this one's.
+    this.editSession_begin();
     this.stepLogs.clear();
     if (name === '') {
       this.path = '';
@@ -487,6 +489,8 @@ export class VmScreen extends ScriptScreen {
       this.path = target;
       this.unsaved = false;
       this.edited = false;
+      // The edits are written and the script read back: what was typed on the way is done with.
+      this.editSession_begin();
       await this.script_read();
       this.steps = this.steps_derive(this.lines);
       this.draw();
@@ -2328,19 +2332,6 @@ export class VmScreen extends ScriptScreen {
     const shown: ScriptStep | undefined = this.steps.find((step: ScriptStep): boolean => step.key === this.view);
     if (shown?.kind !== 'chris deploy' || shown.lines[0]?.text !== text) return;
     this.draw();
-  }
-
-  /**
-   * Whose the typed values are: one machine's script. Another machine's,
-   * with the same option on a line of the same number, is another's.
-   *
-   * @returns The machine and its script.
-   *
-   * @example
-   * this.typed.get(`${this.typedScope_get()}\n${input.id}`);
-   */
-  protected override typedScope_get(): string {
-    return `${this.vm}\n${this.path}`;
   }
 
   /** The script's line as it will run: an edit not built yet never reads as done (the operator, 2026-11-06). */

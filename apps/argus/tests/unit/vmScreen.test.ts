@@ -939,6 +939,36 @@ describe('the VM controller', () => {
     }
   });
 
+  it('a machine opened again, or its script written before a command, gives its fields as the script reads, not as they were left', async () => {
+    const { screen, sent } = screen_make();
+    const seat = (label: string): HTMLButtonElement | undefined => [...screen.root.querySelectorAll<HTMLButtonElement>('.takeover-gutter button[data-view]')].find((button: HTMLButtonElement): boolean => (button.textContent ?? '').includes(label));
+    const os = (): HTMLInputElement => screen.root.querySelector('input[id^="ss-os-"]') as HTMLInputElement;
+    await screen.vm_open('lone');
+    await settle(12);
+    seat('SPEC')?.click();
+    await settle(12);
+    const stood: string = os().value;
+    // What stands, with a space after it: trimmed, it is what the line says, so only its being typed tells it apart.
+    os().value = `${stood} `;
+    os().dispatchEvent(new Event('input'));
+    await screen.vm_open('lone');
+    await settle(12);
+    seat('SPEC')?.click();
+    await settle(12);
+    expect(os().value).toBe(stood);
+    // Typed again, then a command that writes the script first.
+    os().value = 'ubuntu-24.04 ';
+    os().dispatchEvent(new Event('input'));
+    const pill: HTMLButtonElement | undefined = [...screen.root.querySelectorAll<HTMLButtonElement>('button.ss-run, button.ss-build')].find((button: HTMLButtonElement): boolean => !button.disabled);
+    expect(pill).toBeDefined();
+    pill?.click();
+    await settle(12);
+    expect(sent.some((line: string): boolean => line.startsWith('touch --withContents='))).toBe(true);
+    expect(os().value.endsWith(' ')).toBe(false);
+    screen.dispose();
+    screen.root.remove();
+  });
+
   it('a plan that comes back while CHRIS is showing is shown there at once', async () => {
     let open: () => void = (): void => undefined;
     planGate = new Promise((resolve: () => void): void => { open = resolve; });
