@@ -86,6 +86,23 @@ export const PORTER_STATE: string = '/var/lib/porter/sessions';
 /** The port porter answers on, inside the network. */
 export const PORTER_PORT: number = 4180;
 
+/**
+ * The link between Caddy and porter: a network of its own that only those
+ * two are on, with an address each that the files can name. porter believes
+ * forwarded headers from Caddy's address on it and from nothing else, so no
+ * other container (a berth, a plugin's job) can say who a visitor is.
+ */
+export const DOOR_NETWORK: string = 'door';
+
+/** The door link's range: room for the two of them. */
+export const DOOR_SUBNET: string = '10.213.76.0/29';
+
+/** Caddy's address on the door link. */
+export const DOOR_CADDY_ADDRESS: string = '10.213.76.2';
+
+/** porter's address on the door link. */
+export const DOOR_PORTER_ADDRESS: string = '10.213.76.3';
+
 /** The berth launcher's files on the VM: its secret, its policy and the folder of its socket. */
 export const BERTH_DIR: string = `${CHRIS_DIR}/berth`;
 
@@ -202,9 +219,9 @@ export function porterEnv_render(target: ChrisTarget, secrets: ChrisSecrets): st
     // What browsers reach this porter as: the name Caddy serves it under, over HTTPS. The porter takes a
     // password, and anything on its cookie, only from a page of that origin.
     ...(target.porter !== undefined && target.porter !== null ? [['PORTER_PUBLIC_ORIGIN', `https://${target.porter}`]] as Array<[string, string]> : []),
-    // Who a visitor is, is Caddy's word: it reaches porter over the compose network, a private range, and
-    // nothing else is published to this port.
-    ['PORTER_TRUSTED_PROXIES', 'uniquelocal'],
+    // Who a visitor is, is Caddy's word and nobody else's: Caddy reaches porter over the door link, from
+    // the one address named here.
+    ['PORTER_TRUSTED_PROXIES', DOOR_CADDY_ADDRESS],
     ['PORTER_SECRET', secrets.porterSecret],
     ...(berths_has(target) ? [['PORTER_BERTHS', 'launcher'], ['PORTER_LAUNCHER', BERTH_SOCKET], ['PORTER_LAUNCHER_SECRET_FILE', `${BERTH_MOUNT}/launcher.secret`]] as Array<[string, string]> : []),
   ];
@@ -241,7 +258,7 @@ export function launcherEnv_render(profile: ChrisProfile, target: ChrisTarget): 
  */
 export function caddyfile_render(target: ChrisTarget): string {
   const site: string = target.host !== null ? target.host : ':80';
-  const porter: string = target.porter !== undefined && target.porter !== null ? `\n${target.porter} {\n\treverse_proxy porter:${PORTER_PORT}\n}\n` : '';
+  const porter: string = target.porter !== undefined && target.porter !== null ? `\n${target.porter} {\n\treverse_proxy ${DOOR_PORTER_ADDRESS}:${PORTER_PORT}\n}\n` : '';
   return `${site} {\n\treverse_proxy chris:8000\n}\n${porter}`;
 }
 
@@ -321,13 +338,14 @@ export function compose_render(profile: ChrisProfile, target: ChrisTarget | null
       image: CHRIS_IMAGES.caddy,
       ports: ['80:80', '443:443'],
       volumes: ['./Caddyfile:/etc/caddy/Caddyfile:ro', 'caddy-data:/data', 'caddy-config:/config'],
-      ...(porter ? { networks: { default: { aliases: [target?.host as string] } } } : {}),
+      ...(porter ? { networks: { default: { aliases: [target?.host as string] }, [DOOR_NETWORK]: { ipv4_address: DOOR_CADDY_ADDRESS } } } : {}),
       restart: 'unless-stopped',
       depends_on: { chris: { condition: 'service_started' } },
     },
     porter: {
       ...porterBuild,
       env_file: ['porter.env'],
+      networks: { default: {}, [DOOR_NETWORK]: { ipv4_address: DOOR_PORTER_ADDRESS } },
       volumes: ['porter:/var/lib/porter', ...(berths ? [`./berth/launcher.secret:${BERTH_MOUNT}/launcher.secret:ro`, `./berth/run:${BERTH_MOUNT}/run`] : [])],
       restart: 'unless-stopped',
       depends_on: { caddy: { condition: 'service_started' }, ...(berths ? { 'berth-launcher': { condition: 'service_started' } } : {}) },
@@ -351,5 +369,5 @@ export function compose_render(profile: ChrisProfile, target: ChrisTarget | null
     return [name, service];
   }));
   const volumes: Record<string, null> = { files: null, db: null, 'caddy-data': null, 'caddy-config': null, ...(porter ? { porter: null } : {}) };
-  return `# ChRIS, profile ${profile.name}${porter ? `, with porter${berths ? ' and berths' : ''}` : ''}: written by stratus's chris deploy; replay the script to change it.\n${yaml.dump({ name: CHRIS_PROJECT, services, volumes }, { lineWidth: -1, noRefs: true })}`;
+  return `# ChRIS, profile ${profile.name}${porter ? `, with porter${berths ? ' and berths' : ''}` : ''}: written by stratus's chris deploy; replay the script to change it.\n${yaml.dump({ name: CHRIS_PROJECT, services, volumes, ...(porter ? { networks: { [DOOR_NETWORK]: { internal: true, ipam: { config: [{ subnet: DOOR_SUBNET }] } } } } : {}) }, { lineWidth: -1, noRefs: true })}`;
 }

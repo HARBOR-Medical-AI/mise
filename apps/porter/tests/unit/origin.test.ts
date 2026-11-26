@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { porterApp_build, cookie_carried, DEVICE_CODES_PER_MINUTE, LOGIN_FAILURES_PER_ADDRESS, LOGIN_FAILURES_PER_NAME, type PorterApp } from '../../src/app.js';
 import { porterConfig_resolve, trustedProxies_read, type PorterConfig } from '../../src/config.js';
-import { AttemptLimit, type Attempt } from '../../src/limit.js';
+import { AttemptLimit, HitLimit, type Attempt } from '../../src/limit.js';
 import { cubeToken_mint, type FetchLike } from '../../src/cube/auth.js';
 import { doorOrigins_resolve, method_isSafe, origin_isDoors, origin_normalise, originHeader_read, originRefusal_say } from '../../src/origin.js';
 import type { Berth, SessionHost } from '../../src/host.js';
@@ -50,7 +50,7 @@ function cookie_of(response: { headers: Record<string, unknown> }): string {
 interface Stand { door: PorterApp; minted: string[]; said: string[]; clock: { at: number } }
 
 /** A door, the passwords CUBE was asked about, what it logged, and its clock. */
-async function door_stand(extra: Partial<PorterConfig> = {}, mintMs: number = 0): Promise<Stand> {
+async function door_stand(extra: Partial<PorterConfig> = {}, mintMs: number = 0, countCap?: number): Promise<Stand> {
   const minted: string[] = [];
   const said: string[] = [];
   const clock = { at: 1_000_000 };
@@ -60,6 +60,7 @@ async function door_stand(extra: Partial<PorterConfig> = {}, mintMs: number = 0)
     config: { ...config, tokensFile: join(dir, 'tokens.json'), ...extra },
     host,
     now: (): number => clock.at,
+    ...(countCap === undefined ? {} : { countCap }),
     log: (line: string): void => { said.push(line); },
     mint: async (_cube: string, username: string, password: string) => {
       minted.push(username);
@@ -226,9 +227,9 @@ describe('how often a password may be tried', () => {
     let at = 0;
     const limit = new AttemptLimit(2, 60_000, (): number => at);
     expect(limit.wait_read('a')).toBe(0);
-    limit.try_forgive(limit.try_begin('a'));
-    limit.try_fail(limit.try_begin('a'));
-    limit.try_fail(limit.try_begin('a'));
+    limit.try_forgive(limit.try_begin('a') as Attempt);
+    limit.try_fail(limit.try_begin('a') as Attempt);
+    limit.try_fail(limit.try_begin('a') as Attempt);
     expect(limit.wait_read('a')).toBe(60);
     expect(limit.wait_read('b')).toBe(0);
     at = 59_500;
@@ -242,14 +243,14 @@ describe('how often a password may be tried', () => {
     const limit = new AttemptLimit(2, 60_000, (): number => at);
     // An old try that will turn out right, then a newer one that fails: forgiving the old one must not
     // take the newer failure's place in the count.
-    const slowRight: Attempt = limit.try_begin('a');
+    const slowRight: Attempt = limit.try_begin('a') as Attempt;
     at = 30_000;
-    const quickWrong: Attempt = limit.try_begin('a');
+    const quickWrong: Attempt = limit.try_begin('a') as Attempt;
     limit.try_fail(quickWrong);
     limit.try_forgive(slowRight);
     at = 60_000;
     // The failure of 30 s still stands; had the newest been popped, the old stamp would have aged out by now.
-    limit.try_fail(limit.try_begin('a'));
+    limit.try_fail(limit.try_begin('a') as Attempt);
     expect(limit.wait_read('a')).toBe(30);
     // Forgiving twice, or a try already aged out, takes nothing else with it.
     limit.try_forgive(slowRight);
@@ -261,30 +262,70 @@ describe('how often a password may be tried', () => {
   it('counts a try for as long as it is in the air, past the span, and a failure from when it began', () => {
     let at = 0;
     const limit = new AttemptLimit(1, 60_000, (): number => at);
-    const slow: Attempt = limit.try_begin('a');
+    const slow: Attempt = limit.try_begin('a') as Attempt;
     at = 120_000;
     // Still unanswered after two spans: it is still a try, and the key is held for it.
     expect(limit.wait_read('a')).toBe(1);
     limit.try_fail(slow);
     // Told at last, it is a failure of two minutes ago, and has aged out.
     expect(limit.wait_read('a')).toBe(0);
-    const again: Attempt = limit.try_begin('a');
+    const again: Attempt = limit.try_begin('a') as Attempt;
     at = 200_000;
     limit.try_forgive(again);
     expect(limit.wait_read('a')).toBe(0);
   });
 
-  it('never lets go of a key with a try in the air to make room, and lets the told ones go oldest first', () => {
-    const limit = new AttemptLimit(1, 60_000, (): number => 0);
-    const first: Attempt = limit.try_begin('in-the-air');
-    limit.try_fail(limit.try_begin('told-first'));
-    for (let n = 0; n < 1100; n++) limit.try_fail(limit.try_begin(`filler-${n}`));
-    // The oldest told key went; the one whose outcome is still to be told is held, and still counted.
-    expect(limit.wait_read('told-first')).toBe(0);
+  it('at capacity lets go of nothing that still counts, turns a new key away, and has room again when one ages out', () => {
+    let at = 0;
+    const limit = new AttemptLimit(1, 60_000, (): number => at, 3);
+    const inTheAir: Attempt | null = limit.try_begin('in-the-air');
+    at = 10_000;
+    limit.try_fail(limit.try_begin('failed-at-10') as Attempt);
+    at = 20_000;
+    limit.try_fail(limit.try_begin('failed-at-20') as Attempt);
+    // Full of keys that count: a fourth is not admitted, and is told how long until the first failure ages out.
+    expect(limit.try_begin('new')).toBeNull();
+    expect(limit.room_wait('new')).toBe(50);
+    // Nothing was let go for it: every held key is still held, and a held key may still be asked about.
     expect(limit.wait_read('in-the-air')).toBe(1);
-    expect(limit.wait_read('filler-1099')).toBe(60);
-    limit.try_fail(first);
-    expect(limit.wait_read('in-the-air')).toBe(60);
+    expect(limit.wait_read('failed-at-10')).toBe(50);
+    expect(limit.wait_read('failed-at-20')).toBe(60);
+    expect(limit.room_wait('failed-at-20')).toBe(0);
+    // A forgiven try frees its key at once.
+    limit.try_forgive(inTheAir as Attempt);
+    expect(limit.room_wait('new')).toBe(0);
+    limit.try_fail(limit.try_begin('new') as Attempt);
+    expect(limit.try_begin('another')).toBeNull();
+    // And an aged-out failure frees its key in time.
+    at = 70_000;
+    expect(limit.try_begin('another')).not.toBeNull();
+    expect(limit.wait_read('failed-at-20')).toBe(10);
+    // Every key in the air: none is let go, the new key waits, and the count never grows past its cap.
+    const full = new AttemptLimit(1, 60_000, (): number => at, 2);
+    full.try_begin('a'); full.try_begin('b');
+    at = 500_000;
+    expect(full.try_begin('c')).toBeNull();
+    expect(full.room_wait('c')).toBe(1);
+    expect(full.wait_read('a')).toBe(1);
+    expect(full.wait_read('b')).toBe(1);
+  });
+
+  it('holds device-code counts the same way: a full count forgets only what has aged out', () => {
+    let at = 0;
+    const hits = new HitLimit(2, 60_000, (): number => at, 2);
+    expect(hits.hit_take('a')).toBe(0);
+    at = 10_000;
+    expect(hits.hit_take('b')).toBe(0);
+    // Full of clients whose hits count: a third is turned away until the first ages out, and neither is forgotten.
+    expect(hits.hit_take('c')).toBe(50);
+    expect(hits.hit_take('a')).toBe(0);
+    expect(hits.hit_take('a')).toBe(50);
+    at = 60_000;
+    // a's first hit has aged out but its second counts: still held. b's has not aged out either.
+    expect(hits.hit_take('c')).toBe(10);
+    at = 70_000;
+    expect(hits.hit_take('c')).toBe(0);
+    expect(hits.hit_take('a')).toBe(0);
   });
 
   it('holds a name after its failures from anywhere, says how long, and lets a right password in once the span has passed', async () => {
@@ -321,6 +362,30 @@ describe('how often a password may be tried', () => {
     expect(minted).toHaveLength(LOGIN_FAILURES_PER_NAME);
     expect(burst.filter((one): boolean => one.statusCode === 401)).toHaveLength(LOGIN_FAILURES_PER_NAME);
     expect(burst.filter((one): boolean => one.statusCode === 429)).toHaveLength(20 - LOGIN_FAILURES_PER_NAME);
+    await door.app.close();
+  });
+
+  it('takes a login into both counts or neither: a count with no room turns it away and the other gives it back', async () => {
+    const { door, minted, said } = await door_stand({}, 0, 2);
+    // Two names fail from this address: the name count is full (two keys), the address count holds one key.
+    expect((await login(door, 'a', 'wrong')).statusCode).toBe(401);
+    expect((await login(door, 'b', 'wrong')).statusCode).toBe(401);
+    // Twenty logins under new names: the name count has no room, so each is turned away before CUBE is
+    // asked, with the wait until a held name ages out.
+    for (let n = 0; n < 20; n++) {
+      const away = await login(door, `new${n}`, 'right');
+      expect(away.statusCode).toBe(429);
+      expect(away.headers['retry-after']).toBe('60');
+      expect((away.json() as { error: string }).error).toBe('the door is under too many failed logins to take another; try again in 60 s');
+    }
+    expect(minted).toEqual(['a', 'b']);
+    expect(said.filter((line: string): boolean => line.includes('counting as many failed logins as it can hold'))).toHaveLength(20);
+    // None of the twenty was left in the address count: had they been, this address (two failures, bound of
+    // ten) would be held now. A held name with room in both counts is still heard, and is right.
+    expect((await login(door, 'a', 'right')).statusCode).toBe(200);
+    // And the names that were held are still held as they were: one failure each, four more allowed.
+    for (let n = 0; n < LOGIN_FAILURES_PER_NAME - 1; n++) expect((await login(door, 'b', 'wrong')).statusCode).toBe(401);
+    expect((await login(door, 'b', 'right')).statusCode).toBe(429);
     await door.app.close();
   });
 
@@ -370,6 +435,15 @@ describe('how often a password may be tried', () => {
     const other = await login(door, 'another', 'right', via('203.0.113.8'));
     expect(other.statusCode).toBe(200);
     expect(String(other.headers['set-cookie'])).toContain('Secure');
+    // The generated deployment names Caddy's one address on its link with porter. A sibling container on
+    // another private address is not Caddy: what it forwards is not believed, for logins or for device codes.
+    const deployed = await door_stand({ trustedProxies: ['10.213.76.2'], origins: doorOrigins_resolve('https://porter.example.org', 4180) });
+    const code = (peer: string, visitor: string) => deployed.door.app.inject({ method: 'POST', url: '/auth/device', remoteAddress: peer, headers: { 'x-forwarded-for': visitor }, payload: { host: 'pangea' } });
+    for (let n = 0; n < DEVICE_CODES_PER_MINUTE; n++) expect((await code('172.18.0.9', `203.0.113.${n}`)).statusCode).toBe(200);
+    expect((await code('172.18.0.9', '203.0.113.250')).statusCode).toBe(429);
+    // Through Caddy each visitor has a count of their own.
+    for (let n = 0; n < DEVICE_CODES_PER_MINUTE + 5; n++) expect((await code('10.213.76.2', `203.0.113.${n}`)).statusCode).toBe(200);
+    await deployed.door.app.close();
     // A peer that is not the named proxy is counted by its own address, and may say what it likes.
     for (let n = 0; n < LOGIN_FAILURES_PER_ADDRESS; n++) await door.app.inject({ method: 'POST', url: '/login', remoteAddress: '198.51.100.9', headers: { accept: 'application/json', origin: 'https://porter.example.org', 'x-forwarded-for': `203.0.113.${50 + n}` }, payload: { username: `n${n}`, password: 'wrong' } });
     expect((await door.app.inject({ method: 'POST', url: '/login', remoteAddress: '198.51.100.9', headers: { accept: 'application/json', origin: 'https://porter.example.org', 'x-forwarded-for': '203.0.113.99' }, payload: { username: 'fresh', password: 'right' } })).statusCode).toBe(429);

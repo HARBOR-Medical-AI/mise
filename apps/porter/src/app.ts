@@ -106,6 +106,8 @@ export interface PorterAppOptions {
   adminCheck?: (cubeUrl: string, authorization: string) => Promise<AdminVerdict>;
   /** The clock, in ms, for the `/berths` rate limit and verdict cache; the system's by default (a test steps its own). */
   now?: () => number;
+  /** The most addresses or names a login count holds at once; the counts' own default otherwise (a test gives a small one). */
+  countCap?: number;
   /** Whether a logout ends the person's session (a berth stops; its volumes stay); otherwise it lives on. */
   logoutEnds?: boolean;
 }
@@ -304,9 +306,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   const berthsVerdicts: VerdictCache<AdminVerdict> = new VerdictCache<AdminVerdict>(BERTHS_VERDICT_MS, options.now);
   // A password is checked by asking CUBE, which hashes it each time. Failed tries are counted two ways: by
   // the address they come from, and by the name tried, since behind a proxy the address is the proxy's word.
-  const loginsByAddress: AttemptLimit = new AttemptLimit(LOGIN_FAILURES_PER_ADDRESS, 60_000, options.now);
-  const loginsByName: AttemptLimit = new AttemptLimit(LOGIN_FAILURES_PER_NAME, 60_000, options.now);
-  const deviceHits: HitLimit = new HitLimit(DEVICE_CODES_PER_MINUTE, 60_000, options.now);
+  const loginsByAddress: AttemptLimit = new AttemptLimit(LOGIN_FAILURES_PER_ADDRESS, 60_000, options.now, options.countCap);
+  const loginsByName: AttemptLimit = new AttemptLimit(LOGIN_FAILURES_PER_NAME, 60_000, options.now, options.countCap);
+  const deviceHits: HitLimit = new HitLimit(DEVICE_CODES_PER_MINUTE, 60_000, options.now, options.countCap);
   const adminCheck = options.adminCheck ?? ((cubeUrl: string, authorization: string): Promise<AdminVerdict> => cubeAdmin_check(cubeUrl, authorization));
   const registry: SessionRegistry = new SessionRegistry();
   const creds: CredentialStore = new CredentialStore(config.stateDir);
@@ -543,8 +545,19 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
         // A form is answered with its own page and the reason on it: the status and the wait are the answer's, not a redirect's.
         return reply.type('text/html; charset=utf-8').send(loginPage_render(config.cubeUrl, words, fromDevice ? 'ask' : null));
       }
-      const byAddress: Attempt = loginsByAddress.try_begin(request.ip);
-      const byName: Attempt = loginsByName.try_begin(name);
+      // Both counts take this try, or neither does: a count with no room for a new address or name turns the
+      // login away, and the one that had taken it gives it back.
+      const byAddress: Attempt | null = loginsByAddress.try_begin(request.ip);
+      const byName: Attempt | null = byAddress === null ? null : loginsByName.try_begin(name);
+      if (byAddress === null || byName === null) {
+        if (byAddress !== null) loginsByAddress.try_forgive(byAddress);
+        const wait: number = Math.max(1, loginsByAddress.room_wait(request.ip), loginsByName.room_wait(name));
+        options.log?.(`refused a login as ${username}: the door is counting as many failed logins as it can hold (${wait} s to wait)`);
+        const words: string = `the door is under too many failed logins to take another; try again in ${wait} s`;
+        void reply.code(429).header('retry-after', String(wait));
+        if (wantsJson) return reply.send({ error: words });
+        return reply.type('text/html; charset=utf-8').send(loginPage_render(config.cubeUrl, words, fromDevice ? 'ask' : null));
+      }
       /** Tells both counts how this try ended: only a password CUBE refused is a failure. */
       const tries_tell = (failed: boolean): void => {
         if (failed) { loginsByAddress.try_fail(byAddress); loginsByName.try_fail(byName); } else { loginsByAddress.try_forgive(byAddress); loginsByName.try_forgive(byName); }

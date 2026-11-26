@@ -7,7 +7,7 @@ import { jest } from '@jest/globals';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { WebSocket } from 'ws';
 import { CalypsoDaemon } from '../src/daemon/server';
-import { attachOrigin_allowed, attachOrigins_read } from '../src/daemon/attachOrigin';
+import { attachOrigin_allowed, attachOrigins_read, attachRequest_refusal } from '../src/daemon/attachOrigin';
 import type { HostedEngine } from '../src/daemon/engine';
 import type { CommandEnvelope } from '@fnndsc/cumin';
 
@@ -22,9 +22,9 @@ function stubEngine_create(): HostedEngine {
 }
 
 /** Tries an attach and says how it ended. */
-function attach_try(port: number, headers: Record<string, string>): Promise<string> {
+function attach_try(port: number, headers: Record<string, string>, protocolVersion: number = 13): Promise<string> {
   return new Promise((resolve) => {
-    const socket: WebSocket = new WebSocket(`ws://127.0.0.1:${port}/?token=${TOKEN}`, { headers });
+    const socket: WebSocket = new WebSocket(`ws://127.0.0.1:${port}/?token=${TOKEN}`, { headers, protocolVersion });
     socket.once('open', () => { socket.close(); resolve('open'); });
     socket.once('unexpected-response', (_request: unknown, response: IncomingMessage) => { socket.terminate(); resolve(`refused ${response.statusCode}`); });
     socket.once('error', (error: Error) => resolve(`error ${error.message}`));
@@ -49,14 +49,16 @@ describe('where an attach came from', () => {
     expect(attachOrigin_allowed(undefined, '127.0.0.1:4000', [])).toBe(true);
     expect(attachOrigin_allowed('http://127.0.0.1:4000', '127.0.0.1:4000', [])).toBe(true);
     expect(attachOrigin_allowed('http://pangea.example.org:4000', 'Pangea.example.org:4000', [])).toBe(true);
-    // A port left off is the one the page's scheme means, on either side.
+    // The daemon speaks plain HTTP: its own page is http:// and the request's Host, exactly. Port 80 may
+    // be written or left off the Host; nothing is inferred from the page's side.
     expect(attachOrigin_allowed('http://pangea.example.org', 'pangea.example.org:80', [])).toBe(true);
     expect(attachOrigin_allowed('http://pangea.example.org', 'pangea.example.org', [])).toBe(true);
-    expect(attachOrigin_allowed('https://pangea.example.org', 'pangea.example.org:443', [])).toBe(true);
-    expect(attachOrigin_allowed('https://pangea.example.org', 'pangea.example.org', [])).toBe(true);
-    expect(attachOrigin_allowed('https://pangea.example.org', 'pangea.example.org:80', [])).toBe(false);
-    expect(attachOrigin_allowed('http://pangea.example.org', 'pangea.example.org:443', [])).toBe(false);
     expect(attachOrigin_allowed('http://pangea.example.org:8080', 'pangea.example.org', [])).toBe(false);
+    expect(attachOrigin_allowed('http://pangea.example.org', 'pangea.example.org:443', [])).toBe(false);
+    // An https page is never the daemon's own as far as the daemon can tell, whatever the Host says: a
+    // daemon behind a proxy that ends TLS has that origin named by its operator.
+    for (const host of ['pangea.example.org', 'pangea.example.org:443', 'pangea.example.org:80']) expect(attachOrigin_allowed('https://pangea.example.org', host, [])).toBe(false);
+    expect(attachOrigin_allowed('https://pangea.example.org', 'pangea.example.org', ['https://pangea.example.org'])).toBe(true);
     expect(attachOrigin_allowed('http://[::1]:4000', '[::1]:4000', [])).toBe(true);
     // Only one origin, as a browser serializes it; a hand-written spelling of the right one is refused.
     for (const hand of ['HTTP://127.0.0.1:4000', 'http://127.0.0.1:4000/', ' http://127.0.0.1:4000', 'http://127.0.0.1:4000, http://127.0.0.1:4000', 'http://user@127.0.0.1:4000', 'http://Pangea.example.org:4000']) {
@@ -72,6 +74,21 @@ describe('where an attach came from', () => {
     expect(attachOrigin_allowed('null', '127.0.0.1:4000', [])).toBe(false);
     expect(attachOrigin_allowed('http://127.0.0.1:4000', undefined, [])).toBe(false);
     expect(attachOrigin_allowed('http://127.0.0.1:5173', '127.0.0.1:4000', ['http://127.0.0.1:5173'])).toBe(true);
+  });
+
+  it('takes WebSocket version 13 only, and no upgrade with a second place for the origin', () => {
+    const own = { host: '127.0.0.1:4000', 'sec-websocket-version': '13' };
+    expect(attachRequest_refusal(own, [])).toBeNull();
+    expect(attachRequest_refusal({ ...own, origin: 'http://127.0.0.1:4000' }, [])).toBeNull();
+    expect(attachRequest_refusal({ ...own, origin: 'https://elsewhere.example' }, [])).toContain('not this daemon\'s own page');
+    // An older draft says the origin in another field; it is not read, and not let by.
+    expect(attachRequest_refusal({ host: '127.0.0.1:4000', 'sec-websocket-version': '8', 'sec-websocket-origin': 'https://elsewhere.example' }, [])).toContain('version 8 is not taken');
+    expect(attachRequest_refusal({ host: '127.0.0.1:4000', 'sec-websocket-version': '8' }, [])).toContain('version 8 is not taken');
+    expect(attachRequest_refusal({ host: '127.0.0.1:4000' }, [])).toContain('version undefined is not taken');
+    // Version 13 with the older field beside Origin, agreeing or not: two places, refused.
+    expect(attachRequest_refusal({ ...own, origin: 'http://127.0.0.1:4000', 'sec-websocket-origin': 'https://elsewhere.example' }, [])).toContain('a second place');
+    expect(attachRequest_refusal({ ...own, origin: 'http://127.0.0.1:4000', 'sec-websocket-origin': 'http://127.0.0.1:4000' }, [])).toContain('a second place');
+    expect(attachRequest_refusal({ ...own, 'sec-websocket-origin': 'https://elsewhere.example' }, [])).toContain('a second place');
   });
 
   it('reads the named origins from the environment, leaving out what is not one', () => {
@@ -90,7 +107,14 @@ describe('where an attach came from', () => {
       expect(await attach_try(port, { origin: 'https://elsewhere.example' })).toBe('refused 401');
       expect(await attach_try(port, { origin: `http://127.0.0.1:${port + 1}` })).toBe('refused 401');
       expect(await attach_try(port, { origin: 'null' })).toBe('refused 401');
-      expect(errors.filter((line: string): boolean => line.includes('refused an attach from'))).toHaveLength(3);
+      // At the socket itself: the older protocol version, whose origin field the library would have read
+      // in Origin's place, and version 13 carrying that field beside or without Origin.
+      expect(await attach_try(port, { 'sec-websocket-origin': 'https://elsewhere.example' }, 8)).toBe('refused 401');
+      expect(await attach_try(port, {}, 8)).toBe('refused 401');
+      expect(await attach_try(port, { origin: `http://127.0.0.1:${port}`, 'sec-websocket-origin': 'https://elsewhere.example' })).toBe('refused 401');
+      expect(await attach_try(port, { 'sec-websocket-origin': `http://127.0.0.1:${port}` })).toBe('refused 401');
+      expect(await attach_try(port, { origin: `http://127.0.0.1:${port}, http://127.0.0.1:${port}` })).toBe('refused 401');
+      expect(errors.filter((line: string): boolean => line.includes('refused an attach'))).toHaveLength(8);
     } finally {
       await daemon.stop();
       spy.mockRestore();

@@ -33,7 +33,7 @@ import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { HostedEngine, CompletionResult } from './engine.js';
 import { staticRequest_handle } from './static.js';
 import { vfsHeaders_build } from './vfsHeaders.js';
-import { attachOrigin_allowed, attachOrigins_read } from './attachOrigin.js';
+import { attachRequest_refusal, attachOrigins_read } from './attachOrigin.js';
 import { UploadHold, upload_take, uploadCeiling_read, type UploadRefusal, type UploadTaken } from './uploadHold.js';
 import { token_matches } from './token.js';
 import { RequestBroker } from './broker.js';
@@ -582,11 +582,11 @@ export class CalypsoDaemon {
       const wss: WebSocketServer = new WebSocketServer({
         server: httpServer,
         verifyClient: (info: { origin?: string; req: IncomingMessage }): boolean => {
-          // Two `Origin` lines arrive joined by a comma, which is no origin and is refused as none.
-          const origin: string | string[] | undefined = info.req.headers.origin;
-          const allowed: boolean = attachOrigin_allowed(origin, info.req.headers.host, attachOrigins_read(process.env));
-          if (!allowed) console.error(`[calypso] refused an attach from ${String(origin)}: not this daemon's own page, and not named in CALYPSO_ORIGINS`);
-          return allowed;
+          // Read from the request's own headers, not from what the socket library chose among them: version
+          // 13 only, one place for the origin, and two `Origin` lines (joined by a comma) are no origin.
+          const refusal: string | null = attachRequest_refusal(info.req.headers, attachOrigins_read(process.env));
+          if (refusal !== null) console.error(`[calypso] refused an attach: ${refusal}`);
+          return refusal === null;
         },
       });
       wss.on('connection', (socket: WebSocket, request: IncomingMessage) => this.connection_handle(socket, request));

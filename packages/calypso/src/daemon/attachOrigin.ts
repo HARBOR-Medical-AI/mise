@@ -10,10 +10,11 @@
  * replacement for the first.
  *
  * The daemon's own page is the one served from the address the browser is
- * speaking to, so its `Origin` names the same host and port as the
- * request's own `Host`. Other origins are let in only by name
- * (`CALYPSO_ORIGINS`): a surface served from elsewhere (a development
- * server). A door in front (porter) checks the browser's origin against
+ * speaking to, over the plain HTTP the daemon speaks: its `Origin` is
+ * `http://` and the request's own `Host`. Other origins are let in only by
+ * name (`CALYPSO_ORIGINS`): a surface served from elsewhere (a development
+ * server), or the daemon's page reached through something that changes its
+ * address (a proxy that ends TLS). A door in front (porter) checks the browser's origin against
  * its own name and relays the attach without one.
  *
  * @module
@@ -49,13 +50,15 @@ function origin_parse(text: string): string | null {
   }
 }
 
-/** The port a scheme means when none is written. */
-function schemePort_default(protocol: string): string {
-  return protocol === 'https:' ? '443' : '80';
-}
-
 /**
  * Whether an attach may go on, by where it says it came from.
+ *
+ * The daemon's own page is the one served from the address this very
+ * request was sent to, and the daemon speaks plain HTTP: so the page's
+ * origin is `http://` and the request's own `Host`, exactly. Nothing is
+ * inferred from the page's side. A page reached another way (through a
+ * proxy that ends TLS, under another name) is not the daemon's own as far
+ * as the daemon can tell, and is let in by name or not at all.
  *
  * @param origin - The upgrade request's `Origin`; undefined from a program.
  * @param host - The upgrade request's `Host`: the address the client is speaking to.
@@ -67,18 +70,49 @@ export function attachOrigin_allowed(origin: string | string[] | undefined, host
   // One origin, as a browser serializes it; anything else was written by hand.
   if (Array.isArray(origin) || origin_parse(origin) !== origin) return false;
   if (named.includes(origin)) return true;
-  // The daemon's own page: the same host and the same port the request itself was sent to. A port left
-  // off either is the one the page's scheme means, since that is the port the browser spoke to.
   if (host === undefined || host === '') return false;
-  let page: URL;
   let spoken: URL;
   try {
-    page = new URL(origin);
-    spoken = new URL(`${page.protocol}//${host}`);
+    spoken = new URL(`http://${host}`);
   } catch {
     return false;
   }
-  if (spoken.host === '' || spoken.pathname !== '/' || spoken.username !== '' || spoken.search !== '' || spoken.hash !== '') return false;
-  const port = (url: URL): string => (url.port === '' ? schemePort_default(page.protocol) : url.port);
-  return page.hostname === spoken.hostname && port(page) === port(spoken);
+  // A Host that is more than a host and a port is not compared at all.
+  if (spoken.pathname !== '/' || spoken.username !== '' || spoken.password !== '' || spoken.search !== '' || spoken.hash !== '' || host.includes('/') || host.includes('?') || host.includes('#') || host.includes('@')) return false;
+  return origin === spoken.origin;
+}
+
+/** The one WebSocket version a browser speaks, and the only one this daemon takes. */
+const WEBSOCKET_VERSION: string = '13';
+
+/** The headers of an upgrade that the check reads. */
+export interface AttachHeaders {
+  /** `Origin`, as node gives it: several lines joined by a comma. */
+  origin?: string | undefined;
+  /** `Host`. */
+  host?: string | undefined;
+  /** `Sec-WebSocket-Version`. */
+  'sec-websocket-version'?: string | string[] | undefined;
+  /** `Sec-WebSocket-Origin`: where older drafts of the protocol said the page's origin. */
+  'sec-websocket-origin'?: string | string[] | undefined;
+}
+
+/**
+ * Whether an upgrade may go on, and why not.
+ *
+ * The origin is read from `Origin`, which is where version 13 says it. An
+ * older draft said it in `Sec-WebSocket-Origin`; rather than read two
+ * fields and choose, the daemon takes version 13 only, and an upgrade that
+ * carries the older field at all is refused, so there is never a second
+ * field that says something else.
+ *
+ * @param headers - The upgrade request's headers.
+ * @param named - The origins let in by name.
+ * @returns Null when it may go on; otherwise the reason, for the log.
+ */
+export function attachRequest_refusal(headers: AttachHeaders, named: ReadonlyArray<string>): string | null {
+  if (headers['sec-websocket-version'] !== WEBSOCKET_VERSION) return `WebSocket version ${String(headers['sec-websocket-version'])} is not taken (only ${WEBSOCKET_VERSION})`;
+  if (headers['sec-websocket-origin'] !== undefined) return 'it carries Sec-WebSocket-Origin, a second place to say where it came from';
+  if (!attachOrigin_allowed(headers.origin, headers.host, named)) return `it came from ${String(headers.origin)}: not this daemon's own page, and not named in CALYPSO_ORIGINS`;
+  return null;
 }

@@ -6,8 +6,17 @@
  */
 import { createHash } from 'node:crypto';
 
-/** The most clients or headers either memory holds; the oldest are let go past it. */
+/** The most headers the verdict memory holds; the oldest are let go past it. */
 const MEMORY_CAP: number = 1024;
+
+/**
+ * The most keys a count holds. A count never lets go of a key that still
+ * counts to make room for another: past this many live keys a new one is
+ * turned away until an old one has aged out, which is the count failing
+ * closed. Large enough that only a flood from very many addresses or
+ * names reaches it.
+ */
+export const COUNT_CAP: number = 16_384;
 
 /** A per-client allowance: so many hits in a sliding span. */
 export class HitLimit {
@@ -15,16 +24,19 @@ export class HitLimit {
   private readonly allowed: number;
   private readonly spanMs: number;
   private readonly now: () => number;
+  private readonly cap: number;
 
   /**
    * @param allowed - The hits one client may make in the span.
    * @param spanMs - The span, in ms.
    * @param now - The clock, in ms; the system's by default.
+   * @param cap - The most clients remembered at once.
    */
-  constructor(allowed: number, spanMs: number, now: () => number = Date.now) {
+  constructor(allowed: number, spanMs: number, now: () => number = Date.now, cap: number = COUNT_CAP) {
     this.allowed = allowed;
     this.spanMs = spanMs;
     this.now = now;
+    this.cap = cap;
   }
 
   /**
@@ -40,15 +52,19 @@ export class HitLimit {
       this.hits.set(client, recent);
       return Math.max(1, Math.ceil(((recent[0] as number) + this.spanMs - at) / 1000));
     }
-    recent.push(at);
-    this.hits.delete(client);
-    this.hits.set(client, recent);
-    if (this.hits.size > MEMORY_CAP) {
+    if (!this.hits.has(client) && this.hits.size >= this.cap) {
+      // Full: clients whose hits have all aged out are forgotten; one whose hits still count never is.
+      let soonest: number = Infinity;
       for (const [one, times] of this.hits) {
-        if (times.every((time: number): boolean => at - time >= this.spanMs)) this.hits.delete(one);
+        const newest: number = times[times.length - 1] ?? -Infinity;
+        if (at - newest >= this.spanMs) this.hits.delete(one);
+        else soonest = Math.min(soonest, newest + this.spanMs);
       }
-      while (this.hits.size > MEMORY_CAP) this.hits.delete(this.hits.keys().next().value as string);
+      // Still full of clients that count: this one is turned away until the first of them ages out.
+      if (this.hits.size >= this.cap) return Math.max(1, Math.ceil((soonest - at) / 1000));
     }
+    recent.push(at);
+    this.hits.set(client, recent);
     return 0;
   }
 }
@@ -68,7 +84,8 @@ export interface Attempt {
  *
  * A try is taken up when it begins and is counted from then, so tries made
  * all at once cannot all get through on a count that has not caught up
- * with them. Its outcome is told on the try itself: failed, and it stays
+ * with them; a count that is full of keys that still count takes no new
+ * key until one has aged out, and lets none of them go. Its outcome is told on the try itself: failed, and it stays
  * counted for the span from when it began; forgiven (the password was
  * right, or no verdict on it was ever given), and that very try is taken
  * out, whichever others began or ended meanwhile. A try whose outcome is
@@ -79,16 +96,19 @@ export class AttemptLimit {
   private readonly allowed: number;
   private readonly spanMs: number;
   private readonly now: () => number;
+  private readonly cap: number;
 
   /**
    * @param allowed - The failed tries one key may hold in the span.
    * @param spanMs - The span, in ms.
    * @param now - The clock, in ms; the system's by default.
+   * @param cap - The most keys held at once.
    */
-  constructor(allowed: number, spanMs: number, now: () => number = Date.now) {
+  constructor(allowed: number, spanMs: number, now: () => number = Date.now, cap: number = COUNT_CAP) {
     this.allowed = allowed;
     this.spanMs = spanMs;
     this.now = now;
+    this.cap = cap;
   }
 
   /** The tries of a key that still count: in the air, or failed inside the span. Forgets the rest. */
@@ -118,18 +138,37 @@ export class AttemptLimit {
   }
 
   /**
+   * How long until there is room for a key the count does not hold.
+   *
+   * @param key - Who would try.
+   * @returns Zero when the key is held already or there is room; otherwise the whole seconds until a held key ages out.
+   */
+  public room_wait(key: string): number {
+    if (this.tries.has(key) || this.tries.size < this.cap) return 0;
+    // Full: keys with nothing left that counts are forgotten. A failure inside its span and a try in the
+    // air are never let go to make room.
+    const at: number = this.now();
+    let soonest: number = Infinity;
+    for (const one of [...this.tries.keys()]) {
+      const counted: Attempt[] = this.counted_read(one);
+      for (const held of counted) if (!held.pending) soonest = Math.min(soonest, held.at + this.spanMs);
+    }
+    if (this.tries.size < this.cap) return 0;
+    return soonest === Infinity ? 1 : Math.max(1, Math.ceil((soonest - at) / 1000));
+  }
+
+  /**
    * Takes up a try for a key, before its outcome is known.
    *
    * @param key - Who is trying.
-   * @returns The try, to tell its outcome by.
+   * @returns The try, to tell its outcome by; or null when the count is full of keys that still count and has no room for a new one.
    */
-  public try_begin(key: string): Attempt {
+  public try_begin(key: string): Attempt | null {
+    if (this.room_wait(key) > 0) return null;
     const attempt: Attempt = { key, at: this.now(), pending: true };
     const counted: Attempt[] = this.counted_read(key);
     counted.push(attempt);
-    this.tries.delete(key);
     this.tries.set(key, counted);
-    this.room_make();
     return attempt;
   }
 
@@ -153,21 +192,6 @@ export class AttemptLimit {
     const kept: Attempt[] = (this.tries.get(attempt.key) ?? []).filter((one: Attempt): boolean => one !== attempt);
     if (kept.length === 0) this.tries.delete(attempt.key);
     else this.tries.set(attempt.key, kept);
-  }
-
-  /**
-   * Keeps the memory inside its cap: keys with nothing left that counts go
-   * first, then the keys longest untouched whose tries have all been told.
-   * A key with a try in the air is never let go, since its outcome is
-   * still to be told on it.
-   */
-  private room_make(): void {
-    if (this.tries.size <= MEMORY_CAP) return;
-    for (const key of [...this.tries.keys()]) this.counted_read(key);
-    for (const [key, held] of this.tries) {
-      if (this.tries.size <= MEMORY_CAP) return;
-      if (held.every((one: Attempt): boolean => !one.pending)) this.tries.delete(key);
-    }
   }
 }
 
