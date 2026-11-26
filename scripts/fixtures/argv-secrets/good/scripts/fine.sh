@@ -6,3 +6,6 @@ curl -sf -d @"$login" "${CUBE_URL}auth-token/" | node dist/index.js "$CUBE_USER@
 "$PORTER_BIN" --mint "$E2E_USER" --name "nightly" | chell --with-token
 cp -p "$SRC" \
   "$DEST"
+mkdir -p "$dir" && chell --version
+chell --version; mkdir -p "$dir"
+mkdir -p "$HOME/.config/chell"

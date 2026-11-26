@@ -24,7 +24,8 @@
  * - in shell (`scripts/*.sh`, `.github/workflows`): one of the long
  *   options followed by, or joined with `=` to, a variable; and `-p`
  *   followed by a variable in a command that runs chell, calypso, stratus
- *   or porter. An option and its value are two words of a command however
+ *   or porter, each command of a line that joins several (`&&`, `;`, `|`)
+ *   being judged by itself. An option and its value are two words of a command however
  *   they are parted: spaces, tabs, or a backslash and a new line, a
  *   continued command being read as the one command it is.
  *
@@ -154,6 +155,23 @@ function listOwner_read(text, position) {
   return null;
 }
 
+/**
+ * Whether one shell command gives `-p` a variable as a password: it does
+ * when one of this project's programs is named before the `-p`, and the
+ * command's own program is not one to which `-p` means something else.
+ *
+ * @param {string} part - One command, as it stands between the shell's joining words.
+ * @returns {boolean} True when it does.
+ */
+function shellPart_carries(part) {
+  const short = SHELL_SHORT.exec(part);
+  if (short === null) return false;
+  // The command's program: its first word that is not a variable being set for it.
+  const program = part.trim().split(/\s+/).find((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) ?? '';
+  if (OTHER_P.has(program.replace(/^["']|["']$/g, '').split('/').pop())) return false;
+  return OUR_PROGRAM.test(part.slice(0, short.index));
+}
+
 /** The line (from 1) a position in a text falls on. */
 const line_of = (text, position) => text.slice(0, position).split('\n').length;
 
@@ -194,7 +212,9 @@ for (const file of shellFiles) {
     if (/^\s*#/.test(command)) continue;
     const long = [...command.matchAll(SHELL_LONG)];
     for (const found of long) findings.push(`${relative(root, file)}:${first + 1}: ${found[1]} is given a variable on a command line`);
-    if (long.length === 0 && OUR_PROGRAM.test(command) && SHELL_SHORT.test(command)) findings.push(`${relative(root, file)}:${first + 1}: -p is given a variable on a command line`);
+    // `-p` belongs to the one command it is an argument of: a line of several (`a && b`, `a; b`, `a | b`) is
+    // taken apart, and each part judged by its own program.
+    if (long.length === 0 && command.split(/&&|\|\||[;|&()]/).some(shellPart_carries)) findings.push(`${relative(root, file)}:${first + 1}: -p is given a variable on a command line`);
   }
 }
 

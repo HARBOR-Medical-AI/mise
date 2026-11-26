@@ -14,3 +14,5 @@ calypso --daemon --token \
 node dist/index.js x@y -p \
 	"$PW"
 mkdir -p "$D"; tool --password "$PW"
+mkdir -p "$dir" && chell x@y -p "$PW" -c version
+chell --version && mkdir -p "$dir"

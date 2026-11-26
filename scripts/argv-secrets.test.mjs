@@ -45,14 +45,21 @@ const EXPECTED = [
   'scripts/run.sh:12: --token is given a variable on a command line',
   'scripts/run.sh:14: -p is given a variable on a command line',
   'scripts/run.sh:16: --password is given a variable on a command line',
+  'scripts/run.sh:17: -p is given a variable on a command line',
   'scripts/tool.mjs:3: -p is given its value in an argument list',
 ].sort();
 
 let failed = 0;
 const bad = tree_check('bad');
 if (bad.status !== 1) { console.log(`FAIL  the tree of faults ended ${bad.status}, not 1`); failed++; }
-for (const line of EXPECTED) if (!bad.found.includes(line)) { console.log(`FAIL  not found: ${line}`); failed++; }
-for (const line of bad.found) if (!EXPECTED.includes(line)) { console.log(`FAIL  found, and not a fault that was planted: ${line}`); failed++; }
+// What was found is the list of what was planted, line for line: a fault missed, a line found that was not
+// planted, and a fault found twice each make the two lists differ.
+const count = (list, line) => list.filter((one) => one === line).length;
+for (const line of new Set([...EXPECTED, ...bad.found])) {
+  const [wanted, got] = [count(EXPECTED, line), count(bad.found, line)];
+  if (wanted !== got) { console.log(`FAIL  found ${got} time(s), planted ${wanted}: ${line}`); failed++; }
+}
+if (JSON.stringify(bad.found) !== JSON.stringify(EXPECTED) && failed === 0) { console.log('FAIL  what was found is not what was planted'); failed++; }
 if (failed === 0) console.log(`ok    ${EXPECTED.length} faults found, each at its own line`);
 
 const good = tree_check('good');
