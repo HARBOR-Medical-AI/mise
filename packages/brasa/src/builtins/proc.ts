@@ -808,7 +808,11 @@ async function procWatch_handle(subject: string | undefined): Promise<CommandEnv
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red(`proc watch: not a feed: '${subject}'`)}\n`);
   }
-  const state: string = procWatch_add(feedID, OPERATOR_OWNER);
+  const state: string | null = procWatch_add(feedID, OPERATOR_OWNER);
+  if (state === null) {
+    exitCode_set(1);
+    return envelope_error('', undefined, `${chalk.red('proc watch: a watch is the session\'s own, and is not kept for work done as another user')}\n`);
+  }
   return envelope_ok(`${chalk.green(`watching /proc/jobs/feed_${feedID}`)} ${chalk.cyan(state)}\n`);
 }
 

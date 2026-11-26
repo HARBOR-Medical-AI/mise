@@ -9,7 +9,7 @@
  * @module
  */
 
-import { identityElevatedClient_get, identityElevated_run, identityEpoch_raise } from "./identityEpoch.js";
+import { identityElevatedClient_get, identityElevated_run, identityEpoch_raise, identityName_spell } from "./identityEpoch.js";
 import { folderLookup_memoize } from '../filebrowser/folderMemo';
 import { requestLedger_start } from '../net/requestLedger';
 import { Client, authToken_get as adapterAuthToken_get, client_create, token_verify, TOKEN_CHECK_TIMEOUT_MS } from "../chrisapi/adapter.js";
@@ -46,6 +46,12 @@ export interface TokenConnectOptions {
   user: string;
   url: string;
   token: string;
+}
+
+/** What became of a login's answer when its turn came. */
+interface LoginAnswer {
+  /** A later login, logout or move of context had been asked for: the answer was not acted on. */
+  superseded: boolean;
 }
 
 /** Whether a handed-over token was accepted, and if not, what the server said. */
@@ -97,6 +103,8 @@ export class ChRISConnection {
   private client: Client | null = null;
   /** Counts every change of who is connected: a read of a saved token notes it, and is not taken if it has moved. */
   private credentials: number = 0;
+  /** Counts every login, logout and move of context as it is asked for: an answer that comes back after a later one was asked is not acted on. */
+  private asked: number = 0;
   /** The awaited part of a change of identity that is under way, or null. */
   private transition: Promise<void> | null = null;
   private _config?: ConnectionConfig; // Renamed backing field
@@ -157,6 +165,10 @@ export class ChRISConnection {
 
     const authUrl: string = url + "auth-token/";
     console.log(`Connecting to ${url} with user ${user}`);
+    // Its place in the order is taken now, as it is asked for. Whoever is connected stays readable while
+    // CUBE is asked; if a later login or logout is asked before CUBE answers, this one's answer is dropped.
+    const mine: number = this.asked_take();
+    const answer: LoginAnswer = { superseded: false };
     try {
       // Nothing of the connection is changed until CUBE has answered: while the password is being
       // exchanged, and if it is refused, whoever was connected is still wholly connected (their user, their
@@ -171,6 +183,10 @@ export class ChRISConnection {
       // changes of identity under way (a logout asked for meanwhile comes after it, and ends it), and what
       // it writes to disk is written before the next change begins.
       await this.transition_run(async (): Promise<void> => {
+        if (mine !== this.asked) {
+          answer.superseded = true;
+          return;
+        }
         this.identity_publish(user, url, token);
         await this._config!.context_set(user, url);
         this.tokenFile = this._config!.tokenFilepath;
@@ -179,6 +195,10 @@ export class ChRISConnection {
         console.log(saved ? "Auth token saved successfully" : "Auth token held for this session; it was not saved");
         console.log("ChRIS URL saved successfully");
       });
+      if (answer.superseded) {
+        console.log(`The login of ${user} was answered after a later login or logout was asked for; it was not acted on`);
+        return null;
+      }
       return token;
     } catch (error: unknown) {
       // The real cause, said as what it is: only CUBE's refusal blames the
@@ -230,6 +250,8 @@ export class ChRISConnection {
       this._config = connectionConfig;
     }
     const client: Client = client_create(url, token);
+    const mine: number = this.asked_take();
+    const answer: LoginAnswer = { superseded: false };
     try {
       await token_verify(url, token);
     } catch (error: unknown) {
@@ -248,11 +270,16 @@ export class ChRISConnection {
     // Published in one step, with the client the token was proved for (its folder lookups remembered, as
     // client_get makes them).
     await this.transition_run(async (): Promise<void> => {
+      if (mine !== this.asked) {
+        answer.superseded = true;
+        return;
+      }
       this.identity_publish(user, url, token, folderLookup_memoize(client));
       await this._config!.context_set(user, url);
       this.tokenFile = this._config!.tokenFilepath;
       await this.token_saveToFile(this.tokenFile, token);
     });
+    if (answer.superseded) return { connected: false, reason: `the login of ${user} was answered after a later login or logout was asked for; it was not acted on` };
     return { connected: true };
   }
 
@@ -276,6 +303,7 @@ export class ChRISConnection {
     let status: boolean = true;
 
     if (parsedContext.user || parsedContext.URL) {
+      this.asked_take();
       await this.transition_run(async (): Promise<void> => {
         // Who the context names is compared with who is connected when this change's turn comes, not when
         // it was asked for: a login that finished in between is what it is compared with.
@@ -287,18 +315,31 @@ export class ChRISConnection {
         // the new one's token has been read nobody is connected at all. (Nothing is awaited before this.)
         // The change is made known once, below, when it is known who is connected after it.
         if (changed) this.identity_publish(user, url, null, null, false);
-        if (parsedContext.user) {
-          status = status && (await chrisContext.current_set(Context.ChRISuser, parsedContext.user));
-          await this._config!.context_set(parsedContext.user, parsedContext.URL || '');
+        try {
+          if (parsedContext.user) {
+            status = status && (await chrisContext.current_set(Context.ChRISuser, parsedContext.user));
+            await this._config!.context_set(parsedContext.user, parsedContext.URL || '');
+          }
+          if (parsedContext.URL) {
+            status = status && (await chrisContext.current_set(Context.ChRISURL, parsedContext.URL));
+            await this._config!.context_set(this.user || "", parsedContext.URL);
+          }
+          // The client for who the context now names, from their own saved token; and, now that it is known
+          // whether they have one, who is connected is said by name.
+          await this.client_rebuild();
+        } catch (error: unknown) {
+          // The fields have moved and the write of it failed part way: nobody's client or token is kept
+          // from before, so what is held is one coherent thing (the named context, not signed in).
+          if (changed) {
+            this.client = null;
+            this.authToken = null;
+          }
+          throw error;
+        } finally {
+          // The change is said whether or not the write of it went through: the caches were the one
+          // before's either way.
+          if (changed) identityEpoch_raise(this.authToken !== null ? identityName_spell(this.user ?? '', this.chrisURL ?? '') : null);
         }
-        if (parsedContext.URL) {
-          status = status && (await chrisContext.current_set(Context.ChRISURL, parsedContext.URL));
-          await this._config!.context_set(this.user || "", parsedContext.URL);
-        }
-        // The client for who the context now names, from their own saved token; and, now that it is known
-        // whether they have one, who is connected is said by name.
-        await this.client_rebuild();
-        if (changed) identityEpoch_raise(this.authToken !== null ? `${this.user ?? ''}@${this.chrisURL ?? ''}` : null);
       });
     }
 
@@ -475,6 +516,7 @@ export class ChRISConnection {
    * Logs out the user by clearing the authentication token from storage.
    */
   async connection_logout(): Promise<void> {
+    this.asked_take();
     // Nobody is connected from this moment: the token and the client that carries it go together, a read
     // of the saved token that is under way is not taken when it comes back, and what is cached of who was
     // connected is emptied.
@@ -489,6 +531,17 @@ export class ChRISConnection {
         console.error("Error during logout:", error);
       }
     });
+  }
+
+  /**
+   * Takes the next place in the order of logins, logouts and moves of
+   * context, as one is asked for.
+   *
+   * @returns The place taken: an answer that comes back when it is no longer the latest is not acted on.
+   */
+  private asked_take(): number {
+    this.asked += 1;
+    return this.asked;
   }
 
   /**
@@ -510,7 +563,7 @@ export class ChRISConnection {
     this.client = client;
     this.credentials += 1;
     // Named when someone is connected (`user@url`, the name their checkpoints are kept under); null when nobody is.
-    if (announce) identityEpoch_raise(token !== null && user !== null && url !== null ? `${user}@${url}` : null);
+    if (announce) identityEpoch_raise(token !== null && user !== null && url !== null ? identityName_spell(user, url) : null);
   }
 
   /**

@@ -16,7 +16,7 @@
  * @module
  */
 import type { ProcCache, ProcCacheChange, ProcFeed } from '@fnndsc/cumin';
-import { identityChange_listen, identityEpoch_get, identityScope_fork } from '@fnndsc/cumin/identity-epoch';
+import { identityChange_listen, identityElevated_is, identityEpoch_get, identityScope_hold } from '@fnndsc/cumin/identity-epoch';
 import type { WatchState, CommandEnvelope } from '@fnndsc/menu';
 import { ambient_publish } from '../core/ambient.js';
 
@@ -80,6 +80,9 @@ interface Watch {
 }
 
 const watches: Map<number, Watch> = new Map();
+
+// Each watch's own place: every tick of it runs there, whoever's work armed or kicked it.
+const places: WeakMap<Watch, <T>(work: () => T) => T> = new WeakMap<Watch, <T>(work: () => T) => T>();
 
 // A pending watch is kicked by the cache itself: the walk that lands a
 // feed's topology emits the feed's change event, and the watch answers it
@@ -214,12 +217,24 @@ async function watch_tick(watch: Watch): Promise<void> {
   }
 }
 
+/**
+ * Runs one tick of a watch in the watch's own place.
+ *
+ * @param watch - The watch.
+ * @returns When the tick is done.
+ */
+function place_run(watch: Watch): Promise<void> {
+  const held_run: (<T>(work: () => T) => T) | undefined = places.get(watch);
+  return held_run === undefined ? watch_tick(watch) : held_run((): Promise<void> => watch_tick(watch));
+}
+
 /** Schedules the next tick. */
 function watch_arm(watch: Watch, delayMs: number): void {
   if (watch.timer) clearTimeout(watch.timer);
   watch.timer = setTimeout((): void => {
     watch.timer = null;
-    void watch_tick(watch);
+    // In the watch's own place, not that of whoever armed it (a change in the cache made by other work).
+    void place_run(watch);
   }, delayMs);
   watch.timer.unref();
 }
@@ -249,7 +264,10 @@ identityChange_listen((): void => {
  * @param owner - Who holds the watch.
  * @returns The watch's current state.
  */
-export function procWatch_add(feedID: number, owner: string): WatchState {
+export function procWatch_add(feedID: number, owner: string): WatchState | null {
+  // A watch outlives the command that asked for it and says what it sees to every surface: it is the
+  // session's own, and is not kept for work done as another user.
+  if (identityElevated_is()) return null;
   const existing: Watch | undefined = watches.get(feedID);
   if (existing) {
     existing.owners.add(owner);
@@ -267,10 +285,11 @@ export function procWatch_add(feedID: number, owner: string): WatchState {
     began: identityEpoch_get(),
   };
   watches.set(feedID, watch);
+  places.set(watch, identityScope_hold());
   void kickListener_ensure();
-  // Begun as a piece of work of its own, under whoever is connected now: its ticks, and the timers they
-  // arm, are that identity's for as long as the watch lives.
-  void identityScope_fork((): Promise<void> => watch_tick(watch));
+  // Begun in a place of its own, under whoever is connected now: its ticks are there for as long as the
+  // watch lives.
+  void place_run(watch);
   return watch.state;
 }
 

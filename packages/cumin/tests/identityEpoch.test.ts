@@ -10,6 +10,7 @@ import {
   identityEpoch_get,
   identityOwned_make,
   identityScope_fork,
+  identityScope_turn,
   identityEpoch_raise,
   identityScopeEpoch_get,
   identityScope_passed,
@@ -92,24 +93,58 @@ describe('the epoch', () => {
     expect(listCache_get().cache_get('/bin')).toBeNull();
   });
 
-  it('the line that connects hands on to its next command: that is the new identity\'s; what the line had started before is not', async () => {
+  it('the line that connects hands on to its next command, and to nothing else: not to what it had started, not to what merely starts work later', async () => {
     const answered = gate_make<void>();
     let early: Promise<boolean> = Promise.resolve(true);
-    const seen: { connecting: boolean; next: boolean; after: boolean } = await identityScope_run(async () => {
-      // A line of several commands, each begun in turn as the engine begins them.
-      // Its first command starts something that is still out when its second connects as someone else.
+    let earlyInCommand: Promise<boolean> = Promise.resolve(true);
+    const seen: { connecting: boolean; next: boolean; after: boolean } = await identityScope_turn(async () => {
+      // A line of several commands, each begun in turn as the engine begins them. The line itself, and its
+      // first command, each start something that is still out when the second command connects as someone else.
       early = (async (): Promise<boolean> => { await answered.wait; return identityScope_run((): boolean => identityCache_usable()); })();
-      const connecting: boolean = await identityScope_run(async (): Promise<boolean> => { identityEpoch_raise('other@cube'); await Promise.resolve(); return identityCache_usable(); });
+      await identityScope_turn(async (): Promise<void> => {
+        earlyInCommand = (async (): Promise<boolean> => { await answered.wait; return identityScope_run((): boolean => identityCache_usable()); })();
+        await Promise.resolve();
+      });
+      const connecting: boolean = await identityScope_turn(async (): Promise<boolean> => { identityEpoch_raise('other@cube'); await Promise.resolve(); return identityCache_usable(); });
       // The next command of the same line is the new identity's: `connect other; ls` lists as the other.
-      const next: boolean = await identityScope_run(async (): Promise<boolean> => { await Promise.resolve(); return identityCache_usable(); });
-      const after: boolean = await identityScope_run((): boolean => identityCache_usable());
+      const next: boolean = await identityScope_turn(async (): Promise<boolean> => { await Promise.resolve(); return identityCache_usable(); });
+      const after: boolean = await identityScope_turn((): boolean => identityCache_usable());
       return { connecting, next, after };
     });
     expect(seen).toEqual({ connecting: false, next: true, after: true });
-    // What the line had started before the change stays the first one's, and its own next piece of work too:
-    // it is handed on only in the order the line runs, so it is told apart by being a piece of work of its own.
+    // What was started before the change stays the first one's, and so does the work it begins after it.
     answered.open();
-    expect(typeof (await early)).toBe('boolean');
+    expect(await early).toBe(false);
+    expect(await earlyInCommand).toBe(false);
+  });
+
+  it('a line handed on to one identity does not adopt another that unrelated work connects later', async () => {
+    const elsewhere = gate_make<void>();
+    const line: Promise<{ next: boolean; later: boolean; laterStill: boolean }> = identityScope_turn(async () => {
+      await identityScope_turn(async (): Promise<void> => { identityEpoch_raise('second@cube'); await Promise.resolve(); });
+      const next: boolean = await identityScope_turn((): boolean => identityCache_usable());
+      await elsewhere.wait;
+      const later: boolean = await identityScope_turn((): boolean => identityCache_usable());
+      const laterStill: boolean = await identityScope_turn((): boolean => identityScope_run((): boolean => identityCache_usable()));
+      return { next, later, laterStill };
+    });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    // Another line, on another surface, connects as a third.
+    await identityScope_turn(async (): Promise<void> => { identityEpoch_raise('third@cube'); });
+    elsewhere.open();
+    // The first line's later commands are still the second's, which is no longer who is connected.
+    expect(await line).toEqual({ next: true, later: false, laterStill: false });
+  });
+
+  it('a roster sync still out, and a feed that failed to load, are the one before\'s: the next identity is told of neither', () => {
+    const cache = procCache_get();
+    cache.rosterSync_progress('full');
+    cache.feedLoad_fail(7, 'CUBE answered 503');
+    expect(cache.rosterSync_get()).toBe('full');
+    expect(cache.feedLoad_read(7)).not.toBeNull();
+    identityEpoch_raise('other@cube');
+    expect(procCache_get().rosterSync_get()).toBeNull();
+    expect(procCache_get().feedLoad_read(7)).toBeNull();
   });
 
   it('work that goes on beside its beginner (a joblet, a watch) is a scope of its own: it is not handed on when its beginner connects', async () => {
@@ -444,11 +479,11 @@ describe('checkpoints through a change of identity', () => {
     queryIndexCheckpoint_hold('first@cube', root);
     queryIndex_get().entry_note(query_make(1, 'first'));
     queryIndex_get().floor_set('2026-03-01T00:00:00.000Z');
-    await identityScope_run(async (): Promise<void> => {
-      await identityScope_run(async (): Promise<void> => { identityEpoch_raise('second@cube'); });
-      await identityScope_run(async (): Promise<void> => { queryIndex_get().entry_note(query_make(21, 'second')); queryIndex_get().floor_set('2026-04-01T00:00:00.000Z'); });
-      await identityScope_run(async (): Promise<void> => { identityEpoch_raise('third@cube'); });
-      await identityScope_run(async (): Promise<void> => { queryIndex_get().entry_note(query_make(31, 'third')); });
+    await identityScope_turn(async (): Promise<void> => {
+      await identityScope_turn(async (): Promise<void> => { identityEpoch_raise('second@cube'); });
+      await identityScope_turn(async (): Promise<void> => { queryIndex_get().entry_note(query_make(21, 'second')); queryIndex_get().floor_set('2026-04-01T00:00:00.000Z'); });
+      await identityScope_turn(async (): Promise<void> => { identityEpoch_raise('third@cube'); });
+      await identityScope_turn(async (): Promise<void> => { queryIndex_get().entry_note(query_make(31, 'third')); });
     });
     // The run ends, with nobody having said whose the index is since the first.
     await queryIndexCheckpoint_finish(null, root);

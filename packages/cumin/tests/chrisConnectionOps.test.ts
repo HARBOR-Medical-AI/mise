@@ -627,6 +627,76 @@ describe('a change of who is connected is one step', () => {
     expect(store.files['/cfg/first.token']).toBe('FIRST');
   });
 
+  it('a login whose answer from CUBE comes after a logout was asked for signs nobody in; the first stays readable while CUBE is asked', async () => {
+    const store: FakeStore = { files: { '/cfg/token': 'FIRST' } };
+    const conn: ChRISConnection = connection_make(store);
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    expect(await conn.client_get()).toEqual({ of: 'FIRST' });
+    const answer = gate_make<string>();
+    mockAuthToken.mockImplementation((): Promise<string> => answer.wait);
+    const before: number = identityEpoch_get();
+    const login: Promise<string | null> = conn.connection_connect({ user: 'second', password: 'pw', debug: true, url: 'https://cube/api/v1/' });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    // CUBE has not answered: the first is still who is connected, and can be read.
+    expect(await conn.client_get()).toEqual({ of: 'FIRST' });
+    expect(identityEpoch_get()).toBe(before);
+    // A logout is asked for, and finishes.
+    await conn.connection_logout();
+    expect(await conn.client_get()).toBeNull();
+    const afterLogout: number = identityEpoch_get();
+    // CUBE answers the login now.
+    answer.open('SECOND');
+    expect(await login).toBeNull();
+    expect(conn.connection_isConnected()).toBe(false);
+    expect(await conn.client_get()).toBeNull();
+    expect(identityEpoch_get()).toBe(afterLogout);
+    expect(Object.values(store.files)).not.toContain('SECOND');
+  });
+
+  it('of two logins asked one after the other, the later is who is connected, whichever CUBE answers first', async () => {
+    const store: FakeStore = { files: {} };
+    const conn: ChRISConnection = connection_make(store);
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    const slow = gate_make<string>();
+    mockAuthToken.mockImplementationOnce((): Promise<string> => slow.wait).mockResolvedValueOnce('LATER');
+    const earlier: Promise<string | null> = conn.connection_connect({ user: 'earlier', password: 'pw', debug: true, url: 'https://cube/api/v1/' });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(await conn.connection_connect({ user: 'later', password: 'pw', debug: true, url: 'https://cube/api/v1/' })).toBe('LATER');
+    slow.open('EARLIER');
+    expect(await earlier).toBeNull();
+    expect(await conn.user_get()).toBe('later');
+    expect(await conn.client_get()).toEqual({ of: 'LATER' });
+  });
+
+  it('a token login verified after a logout was asked for is not acted on', async () => {
+    const conn: ChRISConnection = connection_make({ files: {} });
+    const verified = gate_make<void>();
+    mockTokenVerify.mockImplementation((): Promise<void> => verified.wait);
+    const login = conn.connection_connectWithToken({ user: 'second', url: 'https://cube/api/v1/', token: 'SECOND' });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    await conn.connection_logout();
+    verified.open();
+    const outcome = await login;
+    expect(outcome.connected).toBe(false);
+    expect(conn.connection_isConnected()).toBe(false);
+  });
+
+  it('a move of context whose write fails leaves nobody connected and says the change', async () => {
+    const conn: ChRISConnection = connection_make({ files: { '/cfg/token': 'T' } });
+    mockClientCreate.mockReturnValue({ of: 'the first' });
+    mockContextSet.mockResolvedValue(true);
+    mockParse.mockResolvedValue({ user: 'chris', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    await conn.context_set('chris@https://cube/api/v1/');
+    expect(await conn.client_get()).toEqual({ of: 'the first' });
+    const before: number = identityEpoch_get();
+    mockParse.mockResolvedValue({ user: 'other', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    mockContextSet.mockRejectedValueOnce(new Error('the disk is full'));
+    await expect(conn.context_set('other@https://cube/api/v1/')).rejects.toThrow('the disk is full');
+    // The caches were emptied (the change was said), and the one before's client is not kept under the new name.
+    expect(identityEpoch_get()).toBe(before + 1);
+    expect(conn.connection_isConnected()).toBe(false);
+  });
+
   it('an address still being read when someone else connects is not put in place of theirs', async () => {
     const store: FakeStore = { files: { '/cfg/token': 'FIRST' } };
     const loaded = gate_make<string>();

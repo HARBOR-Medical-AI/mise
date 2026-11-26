@@ -1445,6 +1445,10 @@ export class ProcCache {
     this.cache_clear();
     this.unseen.clear();
     this.rosterFolders = {};
+    // A sync of the one before's roster still out is not the next one's sync, and a feed that failed to
+    // load for the one before has not failed for the next.
+    this.rosterSync = null;
+    this.feedLoadFailedAt.clear();
   }
 }
 

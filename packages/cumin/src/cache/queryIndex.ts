@@ -366,6 +366,9 @@ export class QueryIndex {
 
 let queryIndex: QueryIndex | null = null;
 
+/** The session's own index behind the partition, once anything has asked for it. */
+let queryIndexOwn: QueryIndex | null = null;
+
 /** Who is told what the index held, when it is about to be emptied for a change of identity. */
 const forgetListeners: Set<(snapshot: QueryIndexSnapshot, now: string | null) => void> = new Set<(snapshot: QueryIndexSnapshot, now: string | null) => void>();
 
@@ -396,13 +399,17 @@ export function queryIndex_get(): QueryIndex {
     // handed an index of its own (see identityPartition_make); at a change of identity the session's is
     // emptied, entries and floor.
     queryIndex = identityPartition_make(own, (): QueryIndex => new QueryIndex());
-    identityChange_listen((now: string | null): void => {
-      // Whoever keeps the index on disk is shown it as it stood for the identity that is leaving, before it
-      // is emptied, and told who is connected after: what the one learnt and had not yet saved is theirs to
-      // save, and what is gathered from here is the other's.
-      for (const forget_hear of [...forgetListeners]) forget_hear(own.snapshot_create(), now);
-      own.reset();
-    });
+    queryIndexOwn = own;
   }
   return queryIndex;
 }
+
+// Heard from the moment the module is loaded, whether or not anything has used the index yet: whoever keeps
+// the index on disk is shown it as it stood for the identity that is leaving (empty, if it was never used),
+// before it is emptied, and told who is connected after. What the one learnt and had not yet saved is theirs
+// to save, and what is gathered from here is the other's.
+identityChange_listen((now: string | null): void => {
+  const left: QueryIndexSnapshot = queryIndexOwn?.snapshot_create() ?? new QueryIndex().snapshot_create();
+  for (const forget_hear of [...forgetListeners]) forget_hear(left, now);
+  queryIndexOwn?.reset();
+});

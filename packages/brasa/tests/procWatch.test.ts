@@ -263,6 +263,41 @@ describe('feed watches', () => {
     expect(procWatch_list()).toEqual([{ feedID: 7, owners: 1, state: 'live' }]);
   });
 
+  it('a watch woken by a change that other work made ticks in its own place, not in that work\'s', async () => {
+    const { identityElevated_run, identityElevated_is, identityScope_run } = await import('@fnndsc/cumin/identity-epoch');
+    cache.feed_add(feed({ id: 7 }));
+    // Indexing: the watch holds the floor and waits to be kicked.
+    feedDag_handle.mockResolvedValue({ status: 'ok', rendered: '', model: { kind: 'feed.indexing' } } as never);
+    procWatch_add(7, 'pane-a');
+    await flush();
+    const seen: boolean[] = [];
+    feedDag_handle.mockImplementation(async (): Promise<{ status: string; rendered: string }> => {
+      seen.push(identityElevated_is());
+      return { status: 'ok', rendered: 'dag' };
+    });
+    // The topology lands in a walk done as another user: the cache says so from inside that work.
+    await identityScope_run((): Promise<void> => identityElevated_run({ of: 'the admin' }, async (): Promise<void> => {
+      cache.topologyLoaded_mark(7);
+    }));
+    await jest.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(seen).toEqual([false]);
+  });
+
+  it('a watch is not kept for work done as another user: it would outlive the command and speak to every surface', async () => {
+    const { identityElevated_run, identityScope_run } = await import('@fnndsc/cumin/identity-epoch');
+    activeFeed_seed();
+    const state = await identityScope_run((): Promise<unknown> => identityElevated_run({ of: 'the admin' }, async (): Promise<unknown> => procWatch_add(7, 'pane-a')));
+    await flush();
+    expect(state).toBeNull();
+    expect(procWatch_list()).toEqual([]);
+    expect(feedDag_handle).not.toHaveBeenCalled();
+    // The ordinary watch of the same feed is the session's, and is made as usual.
+    expect(procWatch_add(7, 'pane-a')).toBe('live');
+    await flush();
+    expect(procWatch_list()).toEqual([{ feedID: 7, owners: 1, state: 'live' }]);
+  });
+
   it('watches are refcounted per owner, and a release drops every watch an owner held', async () => {
     activeFeed_seed();
     cache.feed_add(feed({ id: 8 }));

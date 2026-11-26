@@ -47,18 +47,16 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 /** What a scope of work remembers. */
 interface IdentityScope {
-  /** The epoch the work began under. It never changes. */
+  /** The identity epoch the work was begun under. */
   readonly epoch: number;
-  /** The client of another user the work is being done with (a `sudo`), or null for the session's own. */
+  /** The client of another user the work is done as, or null. */
   readonly elevatedWith: object | null;
-  /**
-   * Whether this work itself changed the identity (it is the line that
-   * said `connect`). Such work stays under the epoch it began under, as
-   * everything it had already started does; but the next piece of work it
-   * begins in turn (the next command of its line) is begun afresh, under
-   * the identity it brought about.
-   */
-  changed: boolean;
+  /** The work that began this one in turn, or null for work that stands alone. */
+  readonly parent: IdentityScope | null;
+  /** What caches made for other work are filed under: shared by work begun in turn under one identity. */
+  readonly key: object;
+  /** The epoch a change of identity made inside this work raised to, or null: what its next step is begun under. */
+  handed: number | null;
 }
 
 /** The current epoch. */
@@ -125,9 +123,9 @@ export function identityScopeEpoch_get(): number {
  * Every piece of work already begun, the one that made the change
  * included, stays under the epoch it began under: a scope is never moved
  * to a later epoch, since work it started before the change shares it.
- * The work that made the change is marked as having done so, and what it
- * begins next in turn (see {@link identityScope_run}) is the new
- * identity's.
+ * The work that made the change, and whatever began it in turn, are told
+ * the new epoch, and the next step each begins (see
+ * {@link identityScope_turn}) is the new identity's.
  *
  * @param now - The name of who is connected after the change (`user@url`), or null when nobody is.
  *
@@ -138,9 +136,32 @@ export function identityScopeEpoch_get(): number {
 export function identityEpoch_raise(now: string | null = null): void {
   current += 1;
   named = now;
-  const scope: IdentityScope | undefined = scope_get();
-  if (scope !== undefined) scope.changed = true;
+  for (let scope: IdentityScope | null = scope_get() ?? null; scope !== null; scope = scope.parent) scope.handed = current;
   for (const change_tell of [...listeners]) change_tell(now);
+}
+
+/**
+ * Spells an identity's name the one way it is spelt everywhere: the
+ * user exactly as given, the address with its scheme and host in lower
+ * case and its path as written. The daemon's berth, the checkpoints and
+ * the change of identity all use this spelling, so one user at one CUBE
+ * is one name however the address was typed.
+ *
+ * @param user - The CUBE user name.
+ * @param cubeUrl - The CUBE address.
+ * @returns `user@address`.
+ *
+ * @example
+ * identityName_spell('chris', 'HTTPS://Cube.Example/api/v1/'); // 'chris@https://cube.example/api/v1/'
+ */
+export function identityName_spell(user: string, cubeUrl: string): string {
+  const schemeSplit: number = cubeUrl.indexOf('://');
+  if (schemeSplit === -1) return `${user}@${cubeUrl}`;
+  const rest: string = cubeUrl.slice(schemeSplit + 3);
+  const pathStart: number = rest.indexOf('/');
+  const authority: string = pathStart === -1 ? rest : rest.slice(0, pathStart);
+  const path: string = pathStart === -1 ? '' : rest.slice(pathStart);
+  return `${user}@${cubeUrl.slice(0, schemeSplit).toLowerCase()}://${authority.toLowerCase()}${path}`;
 }
 
 /**
@@ -177,11 +198,8 @@ export function identityChange_listen(listener: (now: string | null) => void): (
  *
  * Work already in a scope stays in it (a command run by a command is part
  * of the same work): so work begun under an identity since replaced cannot
- * make itself current by starting something. There is one exception, and
- * it is what makes `connect other; ls` list as the other: work that itself
- * changed the identity begins its next piece of work in a scope of the new
- * epoch. What that work had started before the change shares its old
- * scope, and stays stale.
+ * make itself current by starting something. Steps that go in turn are
+ * begun with {@link identityScope_turn}.
  *
  * @param work - The work.
  * @returns What the work returns.
@@ -191,10 +209,55 @@ export function identityChange_listen(listener: (now: string | null) => void): (
  */
 export function identityScope_run<T>(work: () => T): T {
   const scope: IdentityScope | undefined = scope_get();
-  if (scope === undefined) return scope_run({ epoch: current, elevatedWith: null, changed: false }, work);
-  if (!scope.changed || scope.epoch === current) return work();
-  // Begun by the work that made the change: under the new epoch, and itself able to hand on in turn.
-  return scope_run({ epoch: current, elevatedWith: scope.elevatedWith, changed: true }, work);
+  if (scope === undefined) return scope_run({ epoch: current, elevatedWith: null, parent: null, key: {}, handed: null }, work);
+  return work();
+}
+
+/**
+ * Runs the next step of work that goes in turn: a command of a line, a
+ * line of a script.
+ *
+ * A step is begun as its beginner was, unless a step before it changed
+ * who is connected: then it is begun under the identity that step
+ * connected, so `connect other; ls` lists as the other. Only a step begun
+ * here is handed on to. What a step started and left running, and anything
+ * that merely calls {@link identityScope_run} later, stays what it was
+ * begun as; and a change made by unrelated work (another line, another
+ * surface) is handed to nobody here.
+ *
+ * @param work - The step.
+ * @returns Whatever the step returns.
+ *
+ * @example
+ * await identityScope_turn((): Promise<void> => command_run('connect other'));
+ * await identityScope_turn((): Promise<void> => command_run('ls'));
+ */
+export function identityScope_turn<T>(work: () => T): T {
+  const scope: IdentityScope | undefined = scope_get();
+  if (scope === undefined) return scope_run({ epoch: current, elevatedWith: null, parent: null, key: {}, handed: null }, work);
+  const epoch: number = scope.handed ?? scope.epoch;
+  return scope_run({ epoch, elevatedWith: scope.elevatedWith, parent: scope, key: epoch === scope.epoch ? scope.key : {}, handed: null }, work);
+}
+
+/**
+ * Takes hold of a place for work that goes on beside its beginner and
+ * comes back to itself later: a watch and its timers.
+ *
+ * The place is begun under the identity current to the caller, as
+ * {@link identityScope_fork} begins one, and never as another user: what
+ * outlives a `sudo` is not the other user's. Every piece of work run
+ * through what is returned runs in that same place, whoever's work calls
+ * it.
+ *
+ * @returns A runner: it runs the work it is given in the held place.
+ *
+ * @example
+ * const within = identityScope_hold();
+ * setTimeout((): void => { within((): void => { tick(); }); }, 1000);
+ */
+export function identityScope_hold(): <T>(work: () => T) => T {
+  const held: IdentityScope = { epoch: scope_get()?.epoch ?? current, elevatedWith: null, parent: null, key: {}, handed: null };
+  return <T>(work: () => T): T => scope_run(held, work);
 }
 
 /**
@@ -213,7 +276,7 @@ export function identityScope_run<T>(work: () => T): T {
  */
 export function identityScope_fork<T>(work: () => T): T {
   const scope: IdentityScope | undefined = scope_get();
-  return scope_run({ epoch: scope?.epoch ?? current, elevatedWith: scope?.elevatedWith ?? null, changed: false }, work);
+  return scope_run({ epoch: scope?.epoch ?? current, elevatedWith: scope?.elevatedWith ?? null, parent: null, key: {}, handed: null }, work);
 }
 
 /**
@@ -229,7 +292,7 @@ export function identityScope_fork<T>(work: () => T): T {
  * return identityElevated_run(elevatedClient, operation);
  */
 export function identityElevated_run<T>(client: object, work: () => T): T {
-  return scope_run({ epoch: identityScopeEpoch_get(), elevatedWith: client, changed: false }, work);
+  return scope_run({ epoch: identityScopeEpoch_get(), elevatedWith: client, parent: scope_get() ?? null, key: {}, handed: null }, work);
 }
 
 /**
@@ -295,10 +358,10 @@ export function identityPartition_make<T extends object>(own: T, spareMake: () =
   const recipient_get = (): T => {
     const scope: IdentityScope | undefined = scope_get();
     if (scope === undefined || identityCache_usable()) return own;
-    let spare: T | undefined = spares.get(scope);
+    let spare: T | undefined = spares.get(scope.key);
     if (spare === undefined) {
       spare = spareMake();
-      spares.set(scope, spare);
+      spares.set(scope.key, spare);
     }
     return spare;
   };
@@ -351,10 +414,10 @@ export function identityOwned_make<T extends object>(make: () => T): () => T {
       }
       return own;
     }
-    let spare: T | undefined = spares.get(scope);
+    let spare: T | undefined = spares.get(scope.key);
     if (spare === undefined) {
       spare = make();
-      spares.set(scope, spare);
+      spares.set(scope.key, spare);
     }
     return spare;
   };

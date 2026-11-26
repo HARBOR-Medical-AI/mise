@@ -264,8 +264,17 @@ function checkpoint_text(identity: string, root: string): Promise<string> {
  * @returns The file, or null when there is none or it is not one of this identity's.
  */
 async function file_read(identity: string, root: string): Promise<QueryIndexCheckpointFile | null> {
+  let text: string;
   try {
-    const parsed: unknown = JSON.parse(await checkpoint_text(identity, root));
+    text = await checkpoint_text(identity, root);
+  } catch (error: unknown) {
+    // Not there: nothing kept. Any other failure of the read (the disk, a permission) is not absence, and
+    // is the caller's to stop at: a file that could not be read is not one to write over.
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
     return file_check(parsed, identity) ? parsed : null;
   } catch {
     return null;
