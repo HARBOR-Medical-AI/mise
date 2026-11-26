@@ -314,13 +314,20 @@ export class ScriptScreen {
    */
   protected editSession: number = 0;
   /**
-   * How many times something has been opened on the screen: a script, the
-   * library, a machine. An open notes the count it made, and gives way,
-   * when its read comes back, to any later one. Opening the library is
-   * counted and begins no edit session: a script already open keeps its
-   * edits while the library is looked at.
+   * How many times a script or a machine has been opened on the screen.
+   * An open notes the count it made, and gives way, when a wait of its own
+   * ends, to any later one.
    */
   protected opening: number = 0;
+  /**
+   * How many times the operator has chosen a seat by hand: the library, a
+   * step, a pane. Counted apart from `opening`: choosing a seat stops
+   * nothing that is being read and begins no edit session (a script
+   * already open keeps its edits while the library is looked at). An open
+   * notes the count when it starts, and if it has moved when its read
+   * comes back, it chooses no seat of its own over the operator's.
+   */
+  protected chosen: number = 0;
   /**
    * The read of a script now under way for the screen, or null when none
    * is. While one is, the lines on the screen are about to be replaced: a
@@ -427,10 +434,9 @@ export class ScriptScreen {
    * @param path - The script, or `''` for the library.
    */
   public async open(path: string): Promise<void> {
-    // The latest thing opened (a script, or the library) is what the screen shows: an open still waiting on
-    // its read when a later one is made finishes without choosing a seat or drawing.
-    const mine: number = ++this.opening;
     if (path === '') {
+      // The library, asked for: a seat chosen, as by the rail's button. Nothing being read is stopped by it.
+      this.chosen += 1;
       this.view = LIBRARY_VIEW;
       this.draw();
       void this.standing_read();
@@ -442,14 +448,20 @@ export class ScriptScreen {
     // A script opened, or opened again: what was typed into the one before is not this one's.
     this.editSession_begin();
     const session: number = this.editSession;
+    // The latest script opened is the screen's; and a seat the operator chooses while this one is being
+    // read is kept when it comes back.
+    const mine: number = ++this.opening;
+    const chose: number = this.chosen;
     this.stepLogs.clear();
     await this.script_read();
     // Another script was opened while this one was being read: the screen is that one's.
-    if (session !== this.editSession) return;
-    // The operator chose a seat meanwhile (the library, or a step): that choice stands. The script that has
-    // now been read is drawn under it, and no seat is chosen for them.
-    if (mine !== this.opening) {
+    if (session !== this.editSession || mine !== this.opening) return;
+    // The operator chose a seat meanwhile: it stands, if the script that has now been read has it (the
+    // library always is; a step of the script before may not be), and the script is drawn under it.
+    if (chose !== this.chosen && (this.view === LIBRARY_VIEW || this.steps.some((step: ScriptStep): boolean => step.key === this.view))) {
       this.draw();
+      void this.standing_read();
+      this.running_follow();
       return;
     }
     // The rail opens on the step running now, else on the first that needs the operator.
@@ -1062,10 +1074,9 @@ export class ScriptScreen {
   protected view_press(key: string): void {
     const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === key);
     this.hooks.voice.pill(key === LIBRARY_VIEW ? 'LIBRARY' : step?.label ?? key);
-    // A seat chosen by hand is the latest thing the operator asked to see: an open still waiting on its
-    // read does not choose another over it when it comes back. (It begins no edit session: what is being
-    // edited stays as it is.)
-    this.opening += 1;
+    // A seat chosen by hand: counted apart from what is opened, so that a script's open still waiting on
+    // its read chooses no seat over this one when it comes back, and nothing that is being read is stopped.
+    this.chosen += 1;
     this.view = key;
     if (key === LIBRARY_VIEW && !this.libraryRead) void this.library_read();
     if (step?.kind === 'vm new') { void this.limits_need(); this.stepCost_ask(step.lines[0]?.text ?? ''); }

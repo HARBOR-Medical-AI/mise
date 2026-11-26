@@ -81,6 +81,8 @@ let planGate: Promise<void> | null = null;
 let storeGate: Promise<void> | null = null;
 /** While set, the next roster asked for is not answered until it resolves. */
 let rosterGate: Promise<void> | null = null;
+/** While set, no listing (a look for a machine's script) is answered until it resolves. */
+let lookupGate: Promise<void> | null = null;
 
 function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; asked: string[]; fed: Array<string | null> } {
   WRITTEN.clear();
@@ -109,6 +111,8 @@ function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; a
       if (planGate !== null && line.endsWith(' --plan')) await planGate;
       // And so is the text of the store's script, while a test holds that one.
       if (storeGate !== null && line.startsWith('cat ') && line.includes('store')) await storeGate;
+      // And a look for a machine's script, while a test holds those.
+      if (lookupGate !== null && line.startsWith('ls ')) await lookupGate;
       // And the first roster asked for, while a test holds that (later asks for it are answered at once).
       if (rosterGate !== null && line === 'vm status') { const held: Promise<void> = rosterGate; rosterGate = null; await held; }
       return answer_make(line, mine);
@@ -1037,6 +1041,44 @@ describe('the VM controller', () => {
       screen.root.remove();
     } finally {
       rosterGate = null;
+    }
+  });
+
+  it('a pane chosen on the rail while another machine is being read does not stop that machine from opening', async () => {
+    const { screen } = screen_make();
+    await screen.vm_open('lone');
+    await settle(12);
+    let found: () => void = (): void => undefined;
+    lookupGate = new Promise((resolve: () => void): void => { found = resolve; });
+    try {
+      const second: Promise<void> = screen.vm_open('store');
+      await settle(12);
+      // A pane of the rail, pressed while the store's script is still being looked for.
+      const before: string = screen.view_get();
+      const pane: HTMLButtonElement | undefined = [...screen.root.querySelectorAll<HTMLButtonElement>('.takeover-gutter button[data-view]')].find((button: HTMLButtonElement): boolean => !button.disabled && button.dataset['view'] !== before);
+      expect(pane).toBeDefined();
+      pane?.click();
+      await settle(12);
+      // The press was taken: another pane is showing.
+      expect(screen.view_get()).not.toBe(before);
+      found();
+      await second;
+      await settle(12);
+      // The store is the machine open, with its own script and lines, and its fields are the operator's.
+      expect(screen.path_get()).toBe('/scripts/chrisproject/store.mise');
+      [...screen.root.querySelectorAll<HTMLButtonElement>('.takeover-gutter button[data-view]')].find((button: HTMLButtonElement): boolean => (button.textContent ?? '').includes('SPEC'))?.click();
+      await settle(12);
+      // The lines on the seat are the store's, none of them the machine's that was open before.
+      const shown: string[] = [...screen.root.querySelectorAll('.ss-line-text')].map((line: Element): string => line.textContent ?? '');
+      expect(shown.length).toBeGreaterThan(0);
+      expect(shown.every((text: string): boolean => text.includes('store') && !text.includes('lone'))).toBe(true);
+      const fields: HTMLInputElement[] = [...screen.root.querySelectorAll<HTMLInputElement>('input')];
+      expect(fields.length).toBeGreaterThan(0);
+      expect(fields.some((input: HTMLInputElement): boolean => !input.disabled)).toBe(true);
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      lookupGate = null;
     }
   });
 
