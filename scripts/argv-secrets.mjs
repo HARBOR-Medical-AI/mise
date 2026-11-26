@@ -15,16 +15,18 @@
  *   `'--auth-token'`, `'--adminPassword'` or `'-p'` as an element of a list
  *   with a value after it, however the list is laid out over lines, the
  *   value being anything but another option's name (a list of option
- *   names is not a command line), and `-p` not counting in the list of a
- *   program named just before it to which `-p` is no password (`mkdir`,
- *   `cp`, `ssh` and the like); and one of the long options joined to
+ *   names is not a command line), and `-p` not counting in a list handed
+ *   to a program to which `-p` is no password (`mkdir`, `cp`, `ssh` and
+ *   the like: the program that list is the argument list of, not one
+ *   named nearby); and one of the long options joined to
  *   its value in one string (`'--token=' + t`, a template with
  *   `--token=${t}`);
  * - in shell (`scripts/*.sh`, `.github/workflows`): one of the long
  *   options followed by, or joined with `=` to, a variable; and `-p`
  *   followed by a variable in a command that runs chell, calypso, stratus
- *   or porter. A command continued over lines with a backslash is read as
- *   the one command it is.
+ *   or porter. An option and its value are two words of a command however
+ *   they are parted: spaces, tabs, or a backslash and a new line, a
+ *   continued command being read as the one command it is.
  *
  * A hard check with no baseline: the count is zero and stays zero. Run via
  * `npm run lint:argv`; the path to check from may be given as the first
@@ -45,14 +47,14 @@ const CODE_LIST = new RegExp(String.raw`(['"\`])(${LONG}|-p)\1\s*,\s*(?!['"\`]-)
 /** In code: a long secret option joined to a value inside one string, by a template or by concatenation. */
 const CODE_JOINED = new RegExp(String.raw`(?:\`[^\`]*?(${LONG})=\$\{|(['"])(${LONG})=\2\s*\+)`, 'g');
 
-/** Programs whose `-p` is no password, as named in code shortly before an argument list. */
-const OTHER_P = /['"`](mkdir|cp|install|ssh|scp|rsync|sftp)['"`]/;
+/** Programs whose `-p` is no password. */
+const OTHER_P = new Set(['mkdir', 'cp', 'install', 'ssh', 'scp', 'rsync', 'sftp']);
 
 /** In shell: a long secret option followed by, or joined to, a variable. */
-const SHELL_LONG = new RegExp(String.raw`(?:^|\s)(${LONG})[ =]["']?\$`, 'g');
+const SHELL_LONG = new RegExp(String.raw`(?:^|[\s;|&(])(${LONG})(?:\s+|=)["']?[^\s"';|&]*\$`, 'g');
 
 /** In shell: `-p <variable>`. */
-const SHELL_SHORT = /(?:^|\s)-p[ =]["']?\$/;
+const SHELL_SHORT = /(?:^|[\s;|&(])-p(?:\s+|=)["']?[^\s"';|&]*\$/;
 
 /** What marks a shell command as running one of this project's programs. */
 const OUR_PROGRAM = /\b(chell|calypso|stratus|porter)\b|dist\/index\.js/;
@@ -130,6 +132,28 @@ function comments_blank(text) {
   return out;
 }
 
+/**
+ * The program an argument list is handed to: the string that is the
+ * argument just before the list, in the call the list stands in
+ * (`spawn('mkdir', [ … ])`).
+ *
+ * @param {string} text - The file's text, comments blanked.
+ * @param {number} position - A position inside the list.
+ * @returns {string | null} The program's name without its folders, or null when the list is handed to none by name.
+ */
+function listOwner_read(text, position) {
+  let depth = 0;
+  for (let at = position - 1; at >= 0; at--) {
+    if (text[at] === ']') depth++;
+    else if (text[at] === '[') {
+      if (depth > 0) { depth--; continue; }
+      const named = /(['"`])([^'"`\s]+)\1\s*,\s*$/.exec(text.slice(Math.max(0, at - 200), at));
+      return named === null ? null : named[2].split('/').pop();
+    }
+  }
+  return null;
+}
+
 /** The line (from 1) a position in a text falls on. */
 const line_of = (text, position) => text.slice(0, position).split('\n').length;
 
@@ -145,9 +169,10 @@ for (const file of codeFiles) {
   if (resolve(file) === resolve(new URL(import.meta.url).pathname)) continue;
   const text = comments_blank(readFileSync(file, 'utf8'));
   for (const found of text.matchAll(CODE_LIST)) {
-    // `-p` is a password only to this project's programs. In the argument list of a program named just before
-    // it, to which `-p` means something else (make parents, keep times, a port), it is that.
-    if (found[2] === '-p' && OTHER_P.test(text.slice(Math.max(0, found.index - 160), found.index))) continue;
+    // `-p` is a password only to this project's programs. In the argument list of a program to which `-p`
+    // means something else (make parents, keep times, a port), it is that: the program being the one this
+    // very list is handed to, never one named in a call that merely stands near it.
+    if (found[2] === '-p' && OTHER_P.has(listOwner_read(text, found.index) ?? '')) continue;
     findings.push(`${relative(root, file)}:${line_of(text, found.index)}: ${found[2]} is given its value in an argument list`);
   }
   for (const found of text.matchAll(CODE_JOINED)) {

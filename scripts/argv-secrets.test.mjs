@@ -29,6 +29,9 @@ const EXPECTED = [
   'packages/x/exemplars/joined.ts:2: --password is joined to its value in one argument',
   'packages/x/exemplars/joined.ts:3: --token is joined to its value in one argument',
   'packages/x/exemplars/joined.ts:5: --auth-token is given its value in an argument list',
+  'packages/x/src/adjacent.ts:3: -p is given its value in an argument list',
+  'packages/x/src/adjacent.ts:4: -p is given its value in an argument list',
+  'packages/x/src/adjacent.ts:5: -p is given its value in an argument list',
   'packages/x/src/manyLines.ts:7: --token is given its value in an argument list',
   'packages/x/src/oneLine.ts:2: --token is given its value in an argument list',
   'packages/x/src/oneLine.ts:3: -p is given its value in an argument list',
@@ -37,6 +40,11 @@ const EXPECTED = [
   'scripts/run.sh:4: --token is given a variable on a command line',
   'scripts/run.sh:5: -p is given a variable on a command line',
   'scripts/run.sh:9: --password is given a variable on a command line',
+  'scripts/run.sh:10: --token is given a variable on a command line',
+  'scripts/run.sh:11: -p is given a variable on a command line',
+  'scripts/run.sh:12: --token is given a variable on a command line',
+  'scripts/run.sh:14: -p is given a variable on a command line',
+  'scripts/run.sh:16: --password is given a variable on a command line',
   'scripts/tool.mjs:3: -p is given its value in an argument list',
 ].sort();
 
