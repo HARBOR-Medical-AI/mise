@@ -577,6 +577,31 @@ SH
   grep -q "interrupted (TERM)" "$SMOKE_STATE/ledger.txt" || { echo "the interruption is not in the ledger"; exit 1; }
   grep -q "the run's folder is kept at .*the run ended while the upgrade step was running" "$SMOKE_STATE/ledger.txt" || { echo "the keeping is not in the ledger"; exit 1; }
 ) > "$WORK/signalled.txt" 2>&1 && ok "the nightly signalled while it waits for the upgrade step keeps its folder: the step's folder survives as it was left, and the ledger says both" || bad "signalled while the upgrade ran: $(cat "$WORK/signalled.txt" | tr '\n' ' ')"
+# The upgrade step itself ends as a killed process does (status 137), the nightly unsignalled: its ending may
+# never have run, so its folder, with the list of what it started, is kept, and the status is in the ledger.
+for ended in 137 143; do
+  cat > "$WORK/upgrade-ended-$ended.sh" <<SH
+child="\$SMOKE_RUN_ROOT/upgrade.Dead0000"; mkdir -p "\$child"; echo "888888888 1" > "\$child/started.pids"; echo "said" > "\$child/porter.log"
+exit $ended
+SH
+  (
+    export SMOKE_STATE="$WORK/ended-$ended-state" XDG_RUNTIME_DIR="$WORK/ended-$ended-runtime" NIGHTLY="$HERE/smoke-nightly.sh" SMOKE_UPGRADE="$WORK/upgrade-ended-$ended.sh"
+    mkdir -p "$SMOKE_STATE"; mkdir -m 700 "$XDG_RUNTIME_DIR"
+    bash "$WORK/nightly-driver.sh" > "$WORK/ended-$ended-said.txt" 2>&1; status=$?
+    child=$(find "$XDG_RUNTIME_DIR" -mindepth 2 -maxdepth 2 -name 'upgrade.Dead0000' | head -1)
+    [ "$status" -eq 1 ] && [ -n "$child" ] && [ "$(cat "$child/started.pids")" = "888888888 1" ] && [ -f "$child/porter.log" ] \
+      && grep -q "upgrade  FAIL: the upgrade step was ended by a signal (status $ended)" "$SMOKE_STATE/ledger.txt" \
+      && grep -q "the run's folder is kept at .*ended by a signal (status $ended)" "$SMOKE_STATE/ledger.txt"
+  ) && ok "an upgrade step ended by a signal (status $ended): its folder and list of pids are kept, and the ledger has the status" || bad "an upgrade ended with status $ended: $(tail -2 "$WORK/ended-$ended-state/ledger.txt" 2>/dev/null | tr '\n' ' ')"
+done
+# And one that merely fails (status 1) keeps nothing: the folder goes, as before.
+printf 'mkdir -p "$SMOKE_RUN_ROOT/upgrade.Fail0000"\nexit 1\n' > "$WORK/upgrade-fails.sh"
+(
+  export SMOKE_STATE="$WORK/fails-state" XDG_RUNTIME_DIR="$WORK/fails-runtime" NIGHTLY="$HERE/smoke-nightly.sh" SMOKE_UPGRADE="$WORK/upgrade-fails.sh"
+  mkdir -p "$SMOKE_STATE"; mkdir -m 700 "$XDG_RUNTIME_DIR"
+  bash "$WORK/nightly-driver.sh" > "$WORK/fails-said.txt" 2>&1; status=$?
+  [ "$status" -eq 1 ] && [ -z "$(ls "$XDG_RUNTIME_DIR")" ] && ! grep -q "is kept" "$SMOKE_STATE/ledger.txt"
+) && ok "an upgrade step that only fails (status 1) keeps nothing: the run's folder is removed as before" || bad "a plain failure kept the folder"
 
 echo
 echo "$((cases - failed_cases)) ok, $failed_cases failed (state left in $WORK)"

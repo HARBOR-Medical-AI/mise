@@ -184,6 +184,12 @@ upgrade_step() {
   # It could not finish its own ending, and left its folder as it was: this run's folder, which holds it,
   # is kept too. The reason is in the upgrade's own line in the ledger.
   if [ "$status" -eq "$KEEP_STATUS" ]; then run_root_keep "the upgrade step left its folder as it was"; fi
+  # Ended by a signal (a status above 128): its own ending may never have run, so what it started may still
+  # be running and its list of that is in its folder. Said, with the status, and the folder kept.
+  if [ "$status" -gt 128 ]; then
+    echo "$day  upgrade  FAIL: the upgrade step was ended by a signal (status $status); whether it stopped what it started is not known" | tee -a "$ledger"
+    run_root_keep "the upgrade step was ended by a signal (status $status)"
+  fi
   UPGRADE_IN_FLIGHT=0
 }
 
