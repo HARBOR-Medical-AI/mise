@@ -803,7 +803,10 @@ function listPageFlexible_wrap<T>(shape: Shape<T>, page: WirePage | null | undef
   // A page that carries `data` is read from it, whatever else it has: data that is there and is not a list
   // is malformed, and is refused there, not passed over in favour of the page's items.
   const carriesData: boolean = page?.data !== undefined && page.data !== null;
-  if (carriesData || !pageServes_check(page, shape.what)) {
+  // What the page gives for its items is looked at whichever way the rows are then read: a `getItems` that
+  // is there and cannot be called is malformed beside good data as much as without it.
+  const serves: boolean = pageServes_check(page, shape.what);
+  if (carriesData || !serves) {
     return listPage_wrap(shape, page);
   }
   const served: Array<{ data?: unknown }> = items_get(page, DATA_CARRIER_SHAPE);
@@ -958,7 +961,10 @@ export async function pipeline_get(
   // Held to what a pipeline is before it is kept: an answer that is not one is refused now and asked for
   // again next time, never recalled.
   const data: PipelineRecord | null = itemData_get(resource, PIPELINE_DATA_SHAPE);
-  if (kept === null) pipelineResource_keep(client, pipelineID, resource);
+  // The pipeline asked for, and no other: an answer that is another's is refused, and never kept under this id.
+  if (data !== null && data.id !== pipelineID) throw new ShapeError('a pipeline', 'data.id', "another pipeline's", `pipeline ${String(pipelineID)}'s`);
+  // An answer with no data is handed on as it always was, and not kept: the next ask reads CUBE again.
+  if (kept === null && data !== null) pipelineResource_keep(client, pipelineID, resource);
 
   const pipingsPage_get = async (params: Record<string, unknown>): Promise<ListPage<PluginPipingItem>> => {
     const page: WirePage | null = await resource_call(resource, WIRE_PAGE_SHAPE, 'getPluginPipings', params);
@@ -972,7 +978,7 @@ export async function pipeline_get(
     const served: PluginPipingData[] = servedRows_read(rawItems, PLUGIN_PIPING_DATA_SHAPE);
     const pipings: PluginPipingItem[] = rawItems
       .map((item: { data?: unknown }, at: number): PluginPipingItem => {
-        const data: PluginPipingData = served[at] as PluginPipingData;
+        const data: PluginPipingData = served[at];
         return {
           data,
           async plugin_get(): Promise<PluginHandle | null> {

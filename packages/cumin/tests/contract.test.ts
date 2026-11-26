@@ -681,6 +681,28 @@ describe('a page that is malformed is refused, not read as empty', () => {
     expect(getPipeline).toHaveBeenCalledTimes(2);
   });
 
+  test('a pipeline answered with no data is handed on and not kept; another pipeline\'s is refused and not kept', async () => {
+    const getPipeline = jest.fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ data: { id: 80, name: 'another' } })
+      .mockResolvedValueOnce({ data: { id: 78, name: 'the one' } });
+    const client: Client = client_fake({ getPipeline });
+    expect((await pipeline_get(client, 78))?.data).toBeNull();
+    await expect(pipeline_get(client, 78)).rejects.toThrow("whose data.id is another pipeline's, where pipeline 78's is read");
+    expect((await pipeline_get(client, 78))?.data).toEqual({ id: 78, name: 'the one' });
+    expect(getPipeline).toHaveBeenCalledTimes(3);
+    // The corrected answer is the one kept.
+    expect((await pipeline_get(client, 78))?.data?.name).toBe('the one');
+    expect(getPipeline).toHaveBeenCalledTimes(3);
+  });
+
+  test('a getItems that cannot be called is refused beside data too, populated or empty; data alone is still a page', async () => {
+    await expect(parameters_ask({ data: [{ param_name: 'dir', value: '/in' }], getItems: 7 })).rejects.toThrow('whose getItems is a number, where a function is read');
+    await expect(parameters_ask({ data: [], getItems: 'gone' })).rejects.toThrow('whose getItems is a string, where a function is read');
+    expect(await parameters_ask({ data: [{ param_name: 'dir', value: '/in' }], totalCount: 1 })).toMatchObject({ data: [{ param_name: 'dir', value: '/in' }], totalCount: 1 });
+    expect(await parameters_ask({ data: [], totalCount: 0 })).toMatchObject({ data: [], totalCount: 0 });
+  });
+
   test('a listing of plugin instances holds each row to its id, its feed, its plugin and its parent', async () => {
     const instances_ask = (rows: unknown[]): Promise<unknown> =>
       pluginInstancesPage_get(client_fake({ getPluginInstances: async () => ({ data: rows, totalCount: rows.length }) }), { feed_id: 9 });

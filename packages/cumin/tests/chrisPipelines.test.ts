@@ -42,7 +42,8 @@ function listResource_make(rows: Array<Record<string, unknown>>): ListResource {
         })),
       },
     },
-    getItems: { value: (): unknown[] => rows.map(() => ({})), configurable: true },
+    // Each served item carries its row, as chrisapi's do.
+    getItems: { value: (): unknown[] => rows.map((row: Record<string, unknown>) => ({ data: row })), configurable: true },
     totalCount: { value: rows.length },
     hasNext: { value: false },
   });
@@ -232,6 +233,43 @@ describe('pipeline_resolve', () => {
     expect((await pipeline_resolve('Qux')).ok).toBe(false);
     expect(pushSpy).toHaveBeenCalledWith('error', expect.stringContaining('name is a number, where a string is read'));
     expect(pipelineResource_recall(client, 45)).toBeNull();
+  });
+
+  it('refuses a search that served an item with nothing in it, at its place, and keeps none of it', async () => {
+    const client = {
+      getPipelines: jest.fn(async () => {
+        const list: ListResource = listResource_make([{ id: 46, name: 'Quux' }, { id: 47, name: 'Quux two' }]);
+        Object.defineProperty(list, 'getItems', { value: (): unknown[] => [{ data: { id: 46, name: 'Quux' } }, {}] });
+        return list;
+      }),
+    };
+    mockClientGet.mockResolvedValue(client);
+    expect((await pipeline_resolve('Quux')).ok).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', 'pipelines_list: CUBE answered a list of a pipeline whose items[1].data is missing, where an object is read');
+    expect(pipelineResource_recall(client, 46)).toBeNull();
+    // Nothing of the failed answer is remembered: the next ask reads CUBE again, and a good answer is taken.
+    client.getPipelines.mockImplementation(async () => listResource_make([{ id: 46, name: 'Quux' }]));
+    expect((await pipeline_resolve('Quux')).ok).toBe(true);
+    expect(client.getPipelines).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a pipeline read by id, or by a slug that names an id, that is another pipeline\'s, and keeps nothing', async () => {
+    const getPipeline = jest.fn(async () => ({ data: { id: 20, name: 'Twenty' } }));
+    const client = { getPipeline, getPipelines: jest.fn(async () => listResource_make([])), getPipelineSourceFiles: jest.fn(async () => ({ getItems: (): unknown[] => [] })) };
+    mockClientGet.mockResolvedValue(client);
+    expect((await pipeline_resolve('19')).ok).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', expect.stringContaining("whose data.id is another pipeline's, where pipeline 19's is read"));
+    expect((await pipeline_resolve('thing_id19')).ok).toBe(false);
+    expect(pipelineResource_recall(client, 19)).toBeNull();
+    expect(pipelineResource_recall(client, 20)).toBeNull();
+    // Corrected, the answer is taken and then kept: asked for once more, and not again.
+    getPipeline.mockImplementation(async () => ({ data: { id: 19, name: 'Nineteen' } }));
+    const before: number = getPipeline.mock.calls.length;
+    const again: Result<PipelineRecord> = await pipeline_resolve('19');
+    expect(again.ok && again.value.name).toBe('Nineteen');
+    expect((await pipeline_resolve('19')).ok).toBe(true);
+    expect(getPipeline.mock.calls.length).toBe(before + 1);
+    expect(pipelineResource_recall(client, 19)).not.toBeNull();
   });
 
   it('keeps the items of a search that holds, so the good path is unchanged', async () => {

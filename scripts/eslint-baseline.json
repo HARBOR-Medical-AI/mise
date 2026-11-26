@@ -234,7 +234,7 @@
     "@typescript-eslint/no-redundant-type-constituents": 13,
     "@typescript-eslint/no-unnecessary-condition": 51,
     "@typescript-eslint/no-unnecessary-type-arguments": 10,
-    "@typescript-eslint/no-unnecessary-type-assertion": 31,
+    "@typescript-eslint/no-unnecessary-type-assertion": 30,
     "@typescript-eslint/no-unnecessary-type-conversion": 3,
     "@typescript-eslint/no-unnecessary-type-parameters": 1,
     "@typescript-eslint/no-unsafe-argument": 27,
