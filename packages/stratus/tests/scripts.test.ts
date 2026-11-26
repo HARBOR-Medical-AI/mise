@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { stratusBackend_make } from '../src/backend.js';
 import { ClusterStore } from '../src/cluster/state.js';
-import { ScriptLibrary, git_run, networkProtocols_allow, scriptsRoot_derive } from '../src/scripts/library.js';
+import { ScriptLibrary, git_run, networkProtocols_allow, protocolPolicy_read, scriptsRoot_derive } from '../src/scripts/library.js';
 import { scripts_run } from '../src/commands/scripts.js';
 import { ScriptsProvider } from '../src/vfs/scripts.js';
 import { backend_install, HeadlessSurface, manifestText_read, surface_set } from '@fnndsc/brasa/core';
@@ -413,6 +413,47 @@ describe('the library stays inside itself', () => {
     }
   });
 
+  it('an add over a clone name that is a link out of the library looks at nothing under it, whatever folder is named', async () => {
+    const scripts: string = join(root, 'state', 'scripts');
+    mkdirSync(scripts, { recursive: true });
+    // The link's target holds a folder of the very name asked for: were it looked at, the add would go on.
+    mkdirSync(join(root, 'outside', 'there'));
+    symlinkSync(join(root, 'outside'), join(scripts, 'linked'));
+    const ran: string[][] = [];
+    const watched = new ScriptLibrary(join(root, 'config'), scripts, (args: ReadonlyArray<string>): { ok: boolean; text: string } => { ran.push([...args]); return { ok: true, text: '' }; });
+    for (const folder of ['there', 'missing', '../x']) {
+      const refused = await scripts_run({ library: watched }, ['add', 'linked', 'https://git.example.invalid/x/y.git', '--folder', folder]);
+      expect(plain(refused.renderedErr)).toContain('linked: its clone would not be inside the library');
+    }
+    expect(ran).toEqual([]);
+  });
+
+  it('keeps git\'s own configuration when it narrows to the network: a transport the operator set to never stays off', () => {
+    const config: string = join(root, 'gitconfig');
+    writeFileSync(config, '[protocol "ssh"]\n\tallow = never\n[protocol "git"]\n\tallow = user\n');
+    const saved = { global: process.env['GIT_CONFIG_GLOBAL'], system: process.env['GIT_CONFIG_NOSYSTEM'], allow: process.env['GIT_ALLOW_PROTOCOL'] };
+    try {
+      process.env['GIT_CONFIG_GLOBAL'] = config;
+      process.env['GIT_CONFIG_NOSYSTEM'] = '1';
+      delete process.env['GIT_ALLOW_PROTOCOL'];
+      expect(protocolPolicy_read('ssh')).toBe('never');
+      expect(protocolPolicy_read('git')).toBe('user');
+      expect(protocolPolicy_read('https')).toBeNull();
+      expect(networkProtocols_allow(undefined, protocolPolicy_read)).toBe('https:git:http:ftp:ftps');
+      // And git itself, run as the library runs it, refuses ssh under that configuration.
+      const refused = git_run(['ls-remote', 'ssh://git@git.example.invalid/x.git'], undefined, true);
+      expect(refused.ok).toBe(false);
+      expect(refused.text).toMatch(/not allowed|transport/);
+      // A blanket never in the configuration leaves nothing.
+      writeFileSync(config, '[protocol]\n\tallow = never\n');
+      expect(networkProtocols_allow(undefined, protocolPolicy_read)).toBe('');
+    } finally {
+      for (const [name, value] of [['GIT_CONFIG_GLOBAL', saved.global], ['GIT_CONFIG_NOSYSTEM', saved.system], ['GIT_ALLOW_PROTOCOL', saved.allow]] as const) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    }
+  });
+
   it('keeps the file system\'s own answer for a script that may not be read', async () => {
     if (process.getuid?.() === 0) return;
     const mine: string = library.mine_derive();
@@ -515,6 +556,24 @@ describe('play over stratus\'s own files, with the files tier on', () => {
       expect(diskReads).toEqual([]);
     } finally {
       chmodSync(closed, 0o700);
+    }
+  });
+
+  it('this host\'s own folder that could not be made is said as that, and the disk is read zero times', async () => {
+    if (process.getuid?.() === 0) return;
+    await backend_set(new FakeDriver(fakeCloud_sample()));
+    // The library's root can be read and not written, and `mine` is not there yet.
+    const scripts: string = join(root, 'state', 'scripts');
+    mkdirSync(scripts, { recursive: true });
+    chmodSync(scripts, 0o555);
+    try {
+      expect(library.mine_place()).toMatchObject({ ok: false, unseen: 'EACCES' });
+      const answer = await manifestText_read('/scripts/mine/x.mise', disk_read);
+      expect(answer.ok).toBe(false);
+      expect(answer.ok === false && answer.reason).toContain("/scripts/mine/x.mise: permission denied on the session's host");
+      expect(diskReads).toEqual([]);
+    } finally {
+      chmodSync(scripts, 0o755);
     }
   });
 

@@ -54,7 +54,7 @@ export interface GitAnswer {
 export function git_run(args: ReadonlyArray<string>, cwd?: string, network: boolean = false): GitAnswer {
   // With `network`, git itself is held to transports that leave this host: whatever a clone's configured
   // upstream or a redirect says, `file` and every local helper are refused by git (GIT_ALLOW_PROTOCOL).
-  const ran: SpawnSyncReturns<string> = spawnSync('git', [...args], { encoding: 'utf-8', ...(cwd !== undefined ? { cwd } : {}), env: { ...process.env, ...(network ? { GIT_ALLOW_PROTOCOL: networkProtocols_allow(process.env['GIT_ALLOW_PROTOCOL']) } : {}), GIT_TERMINAL_PROMPT: '0' } });
+  const ran: SpawnSyncReturns<string> = spawnSync('git', [...args], { encoding: 'utf-8', ...(cwd !== undefined ? { cwd } : {}), env: { ...process.env, ...(network ? { GIT_ALLOW_PROTOCOL: networkProtocols_allow(process.env['GIT_ALLOW_PROTOCOL'], (protocol: string): string | null => protocolPolicy_read(protocol, cwd)) } : {}), GIT_TERMINAL_PROMPT: '0' } });
   const text: string = ((ran.status === 0 ? ran.stdout : ran.stderr) || ran.error?.message || '').trim().split('\n').at(-1) ?? '';
   return { ok: ran.status === 0, text };
 }
@@ -73,15 +73,40 @@ export const NETWORK_PROTOCOLS: ReadonlyArray<string> = ['https', 'ssh', 'git', 
  * started under a `GIT_ALLOW_PROTOCOL` of its own (an HTTPS-only host),
  * the answer is what that policy and the network transports have in
  * common, which may be nothing. With no such policy it is the network
- * transports, so a `git://` source that worked before still does.
+ * transports that git's own configuration does not forbid: a list given
+ * in the environment overrides `protocol.<name>.allow`, so a transport the
+ * operator set to `never` there is left out of the list, and a `git://`
+ * source that worked before still does.
  *
  * @param inherited - The `GIT_ALLOW_PROTOCOL` the process was started with, when it has one.
+ * @param configured - What git's own configuration says of a transport (`always`, `never`, `user`), or null when it says nothing; asked only when the environment holds no policy.
  * @returns The value to give git.
  */
-export function networkProtocols_allow(inherited: string | undefined): string {
-  if (inherited === undefined) return NETWORK_PROTOCOLS.join(':');
-  const own: string[] = inherited.split(':').map((one: string): string => one.trim()).filter((one: string): boolean => one !== '');
-  return NETWORK_PROTOCOLS.filter((protocol: string): boolean => own.includes(protocol)).join(':');
+export function networkProtocols_allow(inherited: string | undefined, configured: (protocol: string) => string | null = (): null => null): string {
+  if (inherited !== undefined) {
+    const own: string[] = inherited.split(':').map((one: string): string => one.trim()).filter((one: string): boolean => one !== '');
+    return NETWORK_PROTOCOLS.filter((protocol: string): boolean => own.includes(protocol)).join(':');
+  }
+  // No policy in the environment: git's own configuration is the operator's policy, and giving git a list in
+  // the environment would override it. So the list given is the network transports that configuration allows.
+  return NETWORK_PROTOCOLS.filter((protocol: string): boolean => (configured(protocol) ?? 'always') !== 'never').join(':');
+}
+
+/**
+ * What git's configuration says of one transport, as git would read it
+ * where it is about to run: `protocol.<name>.allow`, else `protocol.allow`.
+ *
+ * @param protocol - The transport.
+ * @param cwd - Where git will run, so a repository's own configuration counts.
+ * @returns `always`, `never` or `user`; null when the configuration says nothing.
+ */
+export function protocolPolicy_read(protocol: string, cwd?: string): string | null {
+  for (const key of [`protocol.${protocol}.allow`, 'protocol.allow']) {
+    const ran: SpawnSyncReturns<string> = spawnSync('git', ['config', '--get', key], { encoding: 'utf-8', env: { ...process.env }, ...(cwd !== undefined && fs.existsSync(cwd) ? { cwd } : {}) });
+    const value: string = ran.status === 0 ? ran.stdout.trim() : '';
+    if (value !== '') return value;
+  }
+  return null;
 }
 
 /** The library: its sources, as configured and as cloned. */
@@ -187,8 +212,12 @@ export class ScriptLibrary {
   mine_place(): HostPlace {
     try {
       this.mine_derive();
-    } catch {
-      // What stands at the name is no folder to make; the placing below says what it is.
+    } catch (error: unknown) {
+      // A folder that could not be made is not a folder that is absent: the file system's own reason is
+      // kept, so nothing downstream takes "not there" for proof. Only a name already taken by something
+      // that is no folder goes on to the placing, which says what it is.
+      const code: string = (error as NodeJS.ErrnoException).code ?? 'EIO';
+      if (code !== 'EEXIST') return { ok: false, reason: `${MINE} could not be made in the library (${code})`, unseen: code };
     }
     return wireName_place(this.root, MINE);
   }
@@ -230,16 +259,18 @@ export class ScriptLibrary {
     if (!SOURCE_NAME.test(source.name)) return { ok: false, text: `${source.name}: a source's name is lower-case letters, digits and hyphens, starting with a letter, at most 32` };
     if (source.name === MINE) return { ok: false, text: `${MINE} is this host's own folder, not a source` };
     if (this.source_read(source.name) !== null) return { ok: false, text: `${source.name}: already a source (scripts remove ${source.name} first)` };
-    // Before anything is cloned: a folder that is no name inside a repository is refused as written.
-    if (source.folder !== undefined && source.folder !== '') {
-      const named: HostPlace = wireName_place(this.clone_derive(source.name), source.folder);
-      if (!named.ok) return { ok: false, text: `--folder ${source.folder}: a folder inside the repository, and ${named.reason}` };
-    }
     fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
-    // Whatever already stands at the clone's name is the library's own folder, or git is not run there.
+    // First of all: whatever already stands at the clone's name is the library's own folder, or nothing under
+    // it is looked at and git is not run there.
     const placed: HostPlace = this.clone_place(source.name);
     if (!placed.ok) return { ok: false, text: `${source.name}: its clone would not be inside the library: ${placed.reason}` };
     const clone: string = placed.place;
+    // Then, before anything is cloned: a folder that is no name inside a repository is refused as written,
+    // read against the clone's checked place.
+    if (source.folder !== undefined && source.folder !== '') {
+      const named: HostPlace = wireName_place(clone, source.folder);
+      if (!named.ok) return { ok: false, text: `--folder ${source.folder}: a folder inside the repository, and ${named.reason}` };
+    }
     // A clone that stood here before this add is not this add's to remove when the add fails.
     const fresh: boolean = !this.cloned(source.name);
     if (fresh) {
