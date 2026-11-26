@@ -168,6 +168,35 @@ const BROKEN = {
   DETACHED: 'has no dependent in the tree',
 };
 
+/** The words for each kind of production edge. */
+const KIND_WORDS = { prod: 'a', optional: 'an optional', peer: 'a peer', peerOptional: 'an optional peer' };
+
+/**
+ * What a spec asks for when it is read by hand: an alias's package and range, or a range.
+ *
+ * @param {string} spec - The spec as written (`^1.0.0`, `npm:other@^1`, `npm:other`, a tag, a file).
+ * @returns {{ alias: string | null, range: string | null }} The package an alias names, and the range when the spec has one that is a version range.
+ */
+function spec_read(spec) {
+  const alias = /^npm:((?:@[^/@]+\/)?[^@]+)(?:@(.*))?$/.exec(spec ?? '');
+  const range = alias === null ? spec : (alias[2] ?? '*');
+  return { alias: alias === null ? null : alias[1], range: semver.validRange(range) === null ? null : range };
+}
+
+/**
+ * The production declarations a workspace publishes, one per name: what those who install it are given.
+ *
+ * @param {Record<string, unknown>} manifest - The workspace's `package.json`.
+ * @returns {Map<string, { type: string, spec: string }>} Name to kind and spec. A name in several fields is what npm installs it as: optional before required, a dependency before a peer.
+ */
+function published_read(manifest) {
+  const declared = new Map();
+  for (const [name, spec] of Object.entries(manifest.peerDependencies ?? {})) declared.set(name, { type: manifest.peerDependenciesMeta?.[name]?.optional === true ? 'peerOptional' : 'peer', spec });
+  for (const [name, spec] of Object.entries(manifest.dependencies ?? {})) declared.set(name, { type: 'prod', spec });
+  for (const [name, spec] of Object.entries(manifest.optionalDependencies ?? {})) declared.set(name, { type: 'optional', spec });
+  return declared;
+}
+
 /**
  * Walks one workspace's production graph.
  *
@@ -200,63 +229,70 @@ function tree_walk(dir) {
     seen.add(target);
     queue.push(target);
   };
+  /**
+   * Judges one production edge and, if what it leads to is shipped, takes that into the graph.
+   *
+   * @param {object} node - The package the edge leaves.
+   * @param {{ name: string, type: string, spec: string, also?: string }} asks - What is asked: the name, the kind, the spec, and the development spec that shadows it, if one does.
+   * @param {object | null} target - What it resolves to, a link followed; null for nothing.
+   * @param {string | null} error - What is wrong with the edge: npm's word for it, or one worked out here for an edge npm does not keep.
+   */
+  const edge_judge = (node, asks, target, error) => {
+    const optional = asks.type === 'optional' || asks.type === 'peerOptional';
+    const asked = `${asks.name}@${asks.spec} (${KIND_WORDS[asks.type]} dependency of ${place_of(node)}${asks.also === undefined ? '' : `, which also lists it for development as ${asks.also}`})`;
+    if (target === null) {
+      // Absent. An optional one is simply not installed; a required one is missing.
+      if (!optional) faults.add(`${dir}: ${asked} ${BROKEN.MISSING}`);
+      return;
+    }
+    // An optional peer the lockfile carries only for development is not shipped with its dependent: a
+    // production install does not have it, and it is no part of this graph. (An optional dependency that
+    // is installed is another matter: it is shipped, and one left out by the audit is a fault, below.)
+    if (asks.type === 'peerOptional' && target.shouldOmit(OMIT)) return;
+    // An override or a declaration that puts another package in a name's place (`npm:other`,
+    // `npm:other@range`) is held to that package by name: npm itself judges such an edge by version alone.
+    const { alias } = spec_read(asks.spec);
+    if (alias !== null && target.packageName !== alias) {
+      faults.add(`${dir}: ${asked} is to be ${alias} and the lockfile has ${target.packageName}@${target.version} at ${place_of(target)}`);
+    }
+    if (error !== null && error !== undefined && error !== 'MISSING') {
+      const said = `${dir}: ${asked} ${BROKEN[error] ?? `is broken (${error})`}: ${target.name}@${target.version} at ${place_of(target)}`;
+      // An optional peer that is installed but out of range: its dependent does without it. Said, not failed.
+      if (asks.type === 'peerOptional' && error === 'INVALID') notes.add(said);
+      else faults.add(said);
+    }
+    if (target.shouldOmit(OMIT)) {
+      // Installed, wanted in production (an optional dependency that is installed is shipped), and left
+      // out by the audit.
+      faults.add(`${dir}: ${target.name}@${target.version} at ${place_of(target)}, ${asked}, is taken for development-only, so the audit leaves it out`);
+      return;
+    }
+    node_take(target);
+  };
+  /** What an edge of npm's leads to, a link followed. */
+  const target_of = (edge) => (edge === undefined || edge.to === null || edge.to === undefined ? null : (edge.to.isLink ? edge.to.target : edge.to));
   while (queue.length > 0) {
     const node = queue.shift();
-    // A workspace's peer that it also lists for development: npm keeps one edge for the name, the development
-    // one, at the development range. What is published is the peer, at the peer's range: judged here.
+    // A name a workspace publishes (as a dependency, an optional one, or a peer) and also lists for
+    // development has, in npm's tree, one edge: the development one, at the development spec. What is
+    // published is the other declaration. Each such name is judged here as what is published, by hand:
+    // the same checks, with the range read by semver since npm has no edge to ask.
     const own = workspaces.get(node.location);
-    for (const [name, range] of Object.entries(own?.peerDependencies ?? {})) {
-      const edge = node.edgesOut.get(name);
-      if (edge === undefined || edge.type !== 'dev') continue;
-      const optional = own.peerDependenciesMeta?.[name]?.optional === true;
-      const asked = `${name}@${range} (${optional ? 'an optional peer' : 'a peer'} dependency of ${place_of(node)}, which also lists it for development as ${edge.spec})`;
-      const target = edge.to === null || edge.to === undefined ? null : (edge.to.isLink ? edge.to.target : edge.to);
-      if (target === null) {
-        if (!optional) faults.add(`${dir}: ${asked} is not in the root lockfile`);
-        continue;
+    const shadowed = new Set();
+    if (own !== undefined) {
+      for (const [name, declared] of published_read(own)) {
+        const edge = node.edgesOut.get(name);
+        if (edge !== undefined && edge.type !== 'dev') continue;
+        shadowed.add(name);
+        const target = target_of(edge);
+        const { range } = spec_read(declared.spec);
+        const invalid = target !== null && range !== null && !semver.satisfies(target.version ?? '', range);
+        edge_judge(node, { name, ...declared, ...(edge === undefined ? {} : { also: edge.spec }) }, target, invalid ? 'INVALID' : null);
       }
-      if (target.shouldOmit(OMIT)) {
-        // The only copy is development's: those who install the workspace need the peer, and the audit leaves it out.
-        if (!optional) faults.add(`${dir}: ${target.name}@${target.version} at ${place_of(target)}, ${asked}, is taken for development-only, so the audit leaves it out`);
-        continue;
-      }
-      if (semver.validRange(range) !== null && !semver.satisfies(target.version ?? '', range)) {
-        const said = `${dir}: ${asked} is resolved outside the range asked: ${target.name}@${target.version} at ${place_of(target)}`;
-        if (optional) notes.add(said); else faults.add(said);
-      }
-      node_take(target);
     }
     for (const edge of node.edgesOut.values()) {
-      if (edge.type === 'dev') continue;
-      const optional = edge.type === 'optional' || edge.type === 'peerOptional';
-      const asked = `${edge.name}@${edge.spec} (${edge.type === 'peerOptional' ? 'an optional peer' : edge.type === 'peer' ? 'a peer' : edge.type === 'optional' ? 'an optional' : 'a'} dependency of ${place_of(node)})`;
-      const target = edge.to === null || edge.to === undefined ? null : (edge.to.isLink ? edge.to.target : edge.to);
-      // An optional peer the lockfile carries only for development is not shipped with its dependent: a
-      // production install does not have it, and it is no part of this graph. (An optional dependency that
-      // is installed is another matter: it is shipped, and one left out by the audit is a fault, below.)
-      if (target !== null && edge.type === 'peerOptional' && target.shouldOmit(OMIT)) continue;
-      // An override that puts another package in a dependency's place (`npm:other` or `npm:other@range`) is
-      // held to that package by name: npm itself judges such an edge by the version alone.
-      const alias = /^npm:((?:@[^/@]+\/)?[^@]+)(?:@.*)?$/.exec(edge.spec ?? '');
-      if (target !== null && alias !== null && target.packageName !== alias[1]) {
-        faults.add(`${dir}: ${asked} is to be ${alias[1]} and the lockfile has ${target.packageName}@${target.version} at ${place_of(target)}`);
-      }
-      if (edge.error !== null && edge.error !== undefined) {
-        const found = target === null ? '' : `: ${target.name}@${target.version} at ${place_of(target)}`;
-        if (edge.error === 'MISSING' && optional) continue;
-        const said = `${dir}: ${asked} ${BROKEN[edge.error] ?? `is broken (${edge.error})`}${found}`;
-        // An optional peer that is installed but out of range: its dependent does without it. Said, not failed.
-        if (edge.type === 'peerOptional' && edge.error === 'INVALID') notes.add(said);
-        else faults.add(said);
-      }
-      if (target === null) continue;
-      if (target.shouldOmit(OMIT)) {
-        // Installed, wanted in production (an optional dependency that is installed is shipped), and left
-        // out by the audit.
-        faults.add(`${dir}: ${target.name}@${target.version} at ${place_of(target)}, ${asked}, is taken for development-only, so the audit leaves it out`);
-        continue;
-      }
-      node_take(target);
+      if (edge.type === 'dev' || shadowed.has(edge.name)) continue;
+      edge_judge(node, { name: edge.name, type: edge.type, spec: edge.spec }, target_of(edge), edge.error ?? null);
     }
   }
   return { tree: reached, faults: [...faults], notes: [...notes] };

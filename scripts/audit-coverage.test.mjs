@@ -54,6 +54,16 @@ const CASES = [
   { name: 'workspace-peer-also-for-development', tree: [...BASE_TREE, 'p@1.2.0'] },
   { name: 'workspace-peer-only-copy-development-only', faults: ['p@1.2.0 at node_modules/p, p@^1.0.0 (a peer dependency of packages/a, which also lists it for development as ^1.0.0), is taken for development-only, so the audit leaves it out'] },
   { name: 'workspace-peer-development-range-incompatible', faults: ['p@^1.0.0 (a peer dependency of packages/a, which also lists it for development as ^2.0.0) is resolved outside the range asked: p@2.0.0 at node_modules/p'] },
+  // The same shadowing of a dependency, and of an optional dependency, by a development entry of the name.
+  { name: 'workspace-dependency-also-for-development', tree: [...BASE_TREE, 'q@1.1.0'] },
+  { name: 'workspace-dependency-also-for-development-missing', faults: ['q@^1.0.0 (a dependency of packages/a, which also lists it for development as ^1.0.0) is not in the root lockfile'] },
+  { name: 'workspace-dependency-also-for-development-dev-only', faults: ['q@1.1.0 at node_modules/q, q@^1.0.0 (a dependency of packages/a, which also lists it for development as ^1.0.0), is taken for development-only, so the audit leaves it out'] },
+  { name: 'workspace-optional-also-for-development-absent', tree: BASE_TREE },
+  { name: 'workspace-optional-also-for-development-dev-only', faults: ['q@1.1.0 at node_modules/q, q@^1.0.0 (an optional dependency of packages/a, which also lists it for development as ^1.0.0), is taken for development-only, so the audit leaves it out'] },
+  // A shadowed name that is an alias: held to the package and to the range, though npm has no edge to ask.
+  { name: 'workspace-peer-alias-also-for-development', tree: [...BASE_TREE, 'right@1.3.0 (installed as p)'] },
+  { name: 'workspace-peer-alias-also-for-development-wrong-package', faults: ['p@npm:right@^1.0.0 (a peer dependency of packages/a, which also lists it for development as npm:right@^1.0.0) is to be right and the lockfile has wrong@1.3.0 at node_modules/p'] },
+  { name: 'workspace-peer-alias-also-for-development-out-of-range', faults: ['p@npm:right@^1.0.0 (a peer dependency of packages/a, which also lists it for development as npm:right@^1.0.0) is resolved outside the range asked: p@2.0.0 at node_modules/p'] },
   // npm sees nothing wrong with "*" resolved to an entry with no version; the audit has nothing to look up.
   { name: 'registry-package-without-a-version', faults: ['b at node_modules/b has no version in the root lockfile, so the audit cannot look it up'] },
   // An optional peer installed out of range: passed, walked, and said.
