@@ -130,12 +130,17 @@ export async function upload_take(request: IncomingMessage, hold: UploadHold, li
     if (!hold.reserve(stated)) return { refusal: noRoom };
     reserved = stated;
   }
-  const whole: Buffer | null = stated !== null ? Buffer.allocUnsafe(stated) : null;
   const pieces: Buffer[] = [];
   let received: number = 0;
   let refusal: UploadRefusal | null = null;
+  // Everything from here to the return can fail after bytes were reserved,
+  // the allocations included: whatever happens, what is not handed to the
+  // caller with its release is given back.
   try {
-    for await (const chunk of request) {
+    const whole: Buffer | null = stated !== null ? Buffer.allocUnsafe(stated) : null;
+    // Leaving the loop early must leave the request alone: a request that is
+    // destroyed takes its socket with it, and the refusal could not be sent.
+    for await (const chunk of request.iterator({ destroyOnReturn: false })) {
       const part: Buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
       if (whole !== null) {
         if (received + part.length > whole.length) { refusal = { status: 400, message: 'the body is longer than its stated length' }; break; }
@@ -149,15 +154,15 @@ export async function upload_take(request: IncomingMessage, hold: UploadHold, li
       }
       received += part.length;
     }
-  } catch {
-    refusal = { status: 400, message: 'could not read the request body' };
+    if (refusal === null && whole !== null && received !== whole.length) {
+      refusal = { status: 400, message: 'the body is shorter than its stated length' };
+    }
+    if (refusal === null) return { bytes: whole ?? Buffer.concat(pieces, received), release: give };
+  } catch (error: unknown) {
+    refusal = error instanceof RangeError
+      ? { status: 503, message: 'the session could not hold the body: try again shortly', retryAfter: UPLOAD_RETRY_SECONDS }
+      : { status: 400, message: 'could not read the request body' };
   }
-  if (refusal === null && whole !== null && received !== whole.length) {
-    refusal = { status: 400, message: 'the body is shorter than its stated length' };
-  }
-  if (refusal !== null) {
-    give();
-    return { refusal };
-  }
-  return { bytes: whole ?? Buffer.concat(pieces, received), release: give };
+  give();
+  return { refusal };
 }

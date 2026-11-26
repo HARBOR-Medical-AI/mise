@@ -3,6 +3,7 @@
  * taking of one body under it, and a daemon answering uploads that fit,
  * that must wait, that lie about their length, and that fail.
  */
+import { jest } from '@jest/globals';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { Readable } from 'node:stream';
 import { CalypsoDaemon } from '../src/daemon/server';
@@ -125,6 +126,30 @@ describe('upload_take', () => {
     }
   });
 
+  it('an allocation that fails gives the reserved bytes back, stated or not, and the next upload fits', async () => {
+    const hold: UploadHold = new UploadHold(50);
+    const whole = jest.spyOn(Buffer, 'allocUnsafe').mockImplementationOnce((): never => { throw new RangeError('Array buffer allocation failed'); });
+    const stated: UploadRefusal = refusal_of(await upload_take(body_make(['hello world'], '11'), hold, LIMIT));
+    whole.mockRestore();
+    expect(stated.status).toBe(503);
+    expect(stated.retryAfter).toBe(5);
+    expect(hold.held).toBe(0);
+    const joined = jest.spyOn(Buffer, 'concat').mockImplementationOnce((): never => { throw new RangeError('Array buffer allocation failed'); });
+    const unstated: UploadRefusal = refusal_of(await upload_take(body_make(['hello ', 'world']), hold, LIMIT));
+    joined.mockRestore();
+    expect(unstated.status).toBe(503);
+    expect(hold.held).toBe(0);
+    const next = await upload_take(body_make(['x'.repeat(50)], '50'), hold, LIMIT);
+    expect('refusal' in next).toBe(false);
+  });
+
+  it('a body refused part way is left open, so the refusal can still be sent on its connection', async () => {
+    const hold: UploadHold = new UploadHold(30);
+    const body: IncomingMessage = body_make(['x'.repeat(10), 'y'.repeat(10), 'z'.repeat(10)]);
+    expect(refusal_of(await upload_take(body, hold, LIMIT)).status).toBe(503);
+    expect((body as unknown as Readable).destroyed).toBe(false);
+  });
+
   it('no stated length: cut at the request limit, and at the ceiling, with nothing left held', async () => {
     const big: UploadHold = new UploadHold(1000);
     expect(refusal_of(await upload_take(body_make(['x'.repeat(60), 'y'.repeat(60)]), big, LIMIT)).status).toBe(413);
@@ -231,6 +256,23 @@ describe('a daemon taking uploads under a ceiling', () => {
     expect(written.length).toBe(1);
     // Nothing is left held: an upload of the whole ceiling fits.
     expect((await file_post(port, 'whole.bin', 'w'.repeat(20))).status).toBe(200);
+  });
+
+  it('a body with no stated length that is still being sent is answered 503 with Retry-After, on its own connection', async () => {
+    const answer: Answer = await new Promise((resolve, reject) => {
+      const request = httpRequest({ hostname: '127.0.0.1', port, path: `/vfs?path=${encodeURIComponent('/home/demo/open.bin')}&token=${TOKEN}`, method: 'POST', headers: { 'transfer-encoding': 'chunked' } }, (response: IncomingMessage) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(chunk));
+        response.on('end', () => { request.destroy(); resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf-8'), retry: String(response.headers['retry-after'] ?? '') }); });
+      });
+      request.on('error', reject);
+      // More than fits, and never ended: the daemon must answer while the body is open.
+      request.write('x'.repeat(11));
+    });
+    expect(answer.status).toBe(503);
+    expect(answer.retry).toBe('5');
+    expect(written).toEqual([]);
+    expect((await file_post(port, 'after.bin', 'a'.repeat(20))).status).toBe(200);
   });
 
   it('a length over the ceiling is refused without a byte read, and one that is no length is refused', async () => {
