@@ -8,20 +8,27 @@
  * file whose name is the argument.
  *
  * This reads the places a command line is put together and fails on a
- * secret option followed by its value:
+ * secret option given its value:
  *
- * - in source (`packages/<pkg>/src`, `apps/<app>/src`, `packages/<pkg>/exemplars`): an array of
- *   arguments holding `'--password'`, `'--token'`, `'--auth-token'`,
- *   `'--adminPassword'` or `'-p'` with a value after it, the value being
- *   anything but another option's name (a list of option names is not a
- *   command line);
- * - in `scripts/` shell files and `.github/workflows`: one of the long
- *   options, or `-p` on a line that runs chell, calypso, stratus or porter,
- *   followed by a variable.
+ * - in code (`packages/<pkg>/src`, `apps/<app>/src`, `packages/<pkg>/exemplars`,
+ *   and the JavaScript under `scripts/`): `'--password'`, `'--token'`,
+ *   `'--auth-token'`, `'--adminPassword'` or `'-p'` as an element of a list
+ *   with a value after it, however the list is laid out over lines, the
+ *   value being anything but another option's name (a list of option
+ *   names is not a command line), and `-p` not counting in the list of a
+ *   program named just before it to which `-p` is no password (`mkdir`,
+ *   `cp`, `ssh` and the like); and one of the long options joined to
+ *   its value in one string (`'--token=' + t`, a template with
+ *   `--token=${t}`);
+ * - in shell (`scripts/*.sh`, `.github/workflows`): one of the long
+ *   options followed by, or joined with `=` to, a variable; and `-p`
+ *   followed by a variable in a command that runs chell, calypso, stratus
+ *   or porter. A command continued over lines with a backslash is read as
+ *   the one command it is.
  *
  * A hard check with no baseline: the count is zero and stays zero. Run via
  * `npm run lint:argv`; the path to check from may be given as the first
- * argument (used by its own test).
+ * argument, as `scripts/argv-secrets.test.mjs` does with its fixtures.
  *
  * @module
  */
@@ -30,18 +37,24 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 /** The options whose value is a secret. */
-const SECRET = String.raw`--password|--token|--auth-token|--adminPassword|-p`;
+const LONG = String.raw`--password|--token|--auth-token|--adminPassword`;
 
-/** In source: a secret option as an element of a list, then an element that is not itself an option's name. */
-const SOURCE_PATTERN = new RegExp(String.raw`['"\`](${SECRET})['"\`]\s*,\s*(?!['"\`]-)(?![\]\)])\S`, 'g');
+/** In code: a secret option as an element of a list, then an element that is not itself an option's name, across any white space. */
+const CODE_LIST = new RegExp(String.raw`(['"\`])(${LONG}|-p)\1\s*,\s*(?!['"\`]-)(?![\]\)])\S`, 'g');
 
-/** In shell and workflows: a long secret option followed by a variable. */
-const SHELL_LONG = /(?:^|\s)(--password|--token|--auth-token|--adminPassword)[ =]["']?\$/;
+/** In code: a long secret option joined to a value inside one string, by a template or by concatenation. */
+const CODE_JOINED = new RegExp(String.raw`(?:\`[^\`]*?(${LONG})=\$\{|(['"])(${LONG})=\2\s*\+)`, 'g');
 
-/** In shell and workflows: `-p <variable>` on a line that runs one of this project's programs. */
+/** Programs whose `-p` is no password, as named in code shortly before an argument list. */
+const OTHER_P = /['"`](mkdir|cp|install|ssh|scp|rsync|sftp)['"`]/;
+
+/** In shell: a long secret option followed by, or joined to, a variable. */
+const SHELL_LONG = new RegExp(String.raw`(?:^|\s)(${LONG})[ =]["']?\$`, 'g');
+
+/** In shell: `-p <variable>`. */
 const SHELL_SHORT = /(?:^|\s)-p[ =]["']?\$/;
 
-/** What marks a line as running one of this project's programs. */
+/** What marks a shell command as running one of this project's programs. */
 const OUR_PROGRAM = /\b(chell|calypso|stratus|porter)\b|dist\/index\.js/;
 
 /**
@@ -55,7 +68,7 @@ const OUR_PROGRAM = /\b(chell|calypso|stratus|porter)\b|dist\/index\.js/;
 function files_collect(dir, names, out) {
   if (!existsSync(dir)) return out;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+    if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === 'fixtures') continue;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) files_collect(full, names, out);
     else if (names.test(entry.name)) out.push(full);
@@ -82,31 +95,82 @@ function workspaceFolders_list(root, leaf) {
   return found;
 }
 
+/**
+ * Code with its comments blanked, every character kept in its place so a
+ * position in the result is the same position in the file: a comment may
+ * speak of the options, and what it says is not a command line.
+ *
+ * @param {string} text - The file's text.
+ * @returns {string} The text with comment bodies replaced by spaces, line breaks kept.
+ */
+function comments_blank(text) {
+  let out = '';
+  let at = 0;
+  let quote = null;
+  while (at < text.length) {
+    const here = text[at];
+    const two = text.slice(at, at + 2);
+    if (quote !== null) {
+      out += here;
+      if (here === '\\') { out += text[at + 1] ?? ''; at += 2; continue; }
+      if (here === quote) quote = null;
+      at++;
+    } else if (here === '"' || here === "'" || here === '`') {
+      quote = here; out += here; at++;
+    } else if (two === '//') {
+      while (at < text.length && text[at] !== '\n') { out += ' '; at++; }
+    } else if (two === '/*') {
+      const end = text.indexOf('*/', at + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      for (; at < stop; at++) out += text[at] === '\n' ? '\n' : ' ';
+    } else {
+      out += here; at++;
+    }
+  }
+  return out;
+}
+
+/** The line (from 1) a position in a text falls on. */
+const line_of = (text, position) => text.slice(0, position).split('\n').length;
+
 const root = resolve(process.argv[2] ?? '.');
 const findings = [];
 
-for (const folder of [...workspaceFolders_list(root, 'src'), ...workspaceFolders_list(root, 'exemplars')]) {
-  for (const file of files_collect(folder, /\.(ts|tsx|mts|mjs|js)$/, [])) {
-    const lines = readFileSync(file, 'utf8').split('\n');
-    lines.forEach((line, at) => {
-      // A comment may speak of the options; a line of code may not put one before its value.
-      if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
-      SOURCE_PATTERN.lastIndex = 0;
-      const found = SOURCE_PATTERN.exec(line);
-      if (found !== null) findings.push(`${relative(root, file)}:${at + 1}: ${found[1]} is given its value in an argument list`);
-    });
+const codeFiles = [
+  ...[...workspaceFolders_list(root, 'src'), ...workspaceFolders_list(root, 'exemplars')].flatMap((folder) => files_collect(folder, /\.(ts|tsx|mts|mjs|cjs|js)$/, [])),
+  ...files_collect(join(root, 'scripts'), /\.(mjs|cjs|js|ts)$/, []),
+];
+for (const file of codeFiles) {
+  // This file names the options in order to look for them.
+  if (resolve(file) === resolve(new URL(import.meta.url).pathname)) continue;
+  const text = comments_blank(readFileSync(file, 'utf8'));
+  for (const found of text.matchAll(CODE_LIST)) {
+    // `-p` is a password only to this project's programs. In the argument list of a program named just before
+    // it, to which `-p` means something else (make parents, keep times, a port), it is that.
+    if (found[2] === '-p' && OTHER_P.test(text.slice(Math.max(0, found.index - 160), found.index))) continue;
+    findings.push(`${relative(root, file)}:${line_of(text, found.index)}: ${found[2]} is given its value in an argument list`);
+  }
+  for (const found of text.matchAll(CODE_JOINED)) {
+    findings.push(`${relative(root, file)}:${line_of(text, found.index)}: ${found[1] ?? found[3]} is joined to its value in one argument`);
   }
 }
 
 const shellFiles = [...files_collect(join(root, 'scripts'), /\.(sh|bash)$/, []), ...files_collect(join(root, '.github', 'workflows'), /\.ya?ml$/, [])];
 for (const file of shellFiles) {
   const lines = readFileSync(file, 'utf8').split('\n');
-  lines.forEach((line, at) => {
-    if (/^\s*#/.test(line)) return;
-    const long = SHELL_LONG.exec(line);
-    if (long !== null) findings.push(`${relative(root, file)}:${at + 1}: ${long[1]} is given a variable on a command line`);
-    else if (OUR_PROGRAM.test(line) && SHELL_SHORT.test(line)) findings.push(`${relative(root, file)}:${at + 1}: -p is given a variable on a command line`);
-  });
+  // A command continued with a backslash is one command: its lines are read together, and reported at its first.
+  for (let at = 0; at < lines.length; at++) {
+    const first = at;
+    let command = lines[at];
+    while (/\\\s*$/.test(command) && at + 1 < lines.length) {
+      command = `${command.replace(/\\\s*$/, ' ')}${lines[at + 1]}`;
+      at++;
+    }
+    if (/^\s*#/.test(command)) continue;
+    const long = [...command.matchAll(SHELL_LONG)];
+    for (const found of long) findings.push(`${relative(root, file)}:${first + 1}: ${found[1]} is given a variable on a command line`);
+    if (long.length === 0 && OUR_PROGRAM.test(command) && SHELL_SHORT.test(command)) findings.push(`${relative(root, file)}:${first + 1}: -p is given a variable on a command line`);
+  }
 }
 
 if (findings.length > 0) {

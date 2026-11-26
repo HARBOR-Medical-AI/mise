@@ -109,6 +109,7 @@ jobs:
       # lays a graph out (checked on the build).
       - run: npm run lint:workers
       - run: npm run lint:argv
+      - run: npm run test:argv
       - run: npm run test:layout-worker --workspace @fnndsc/brasa
       # The nightly's accounting: a red stage or step is a non-zero exit.
       - run: npm run test:nightly
