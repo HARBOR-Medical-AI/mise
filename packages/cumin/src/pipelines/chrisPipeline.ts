@@ -97,12 +97,12 @@ export class ChRISPipelineGroup extends ChRISResourceGroup {
 export interface PipelineRecord {
   id: number;
   name: string;
-  description?: string;
-  authors?: string;
-  category?: string;
-  locked?: boolean;
+  description?: string | null;
+  authors?: string | null;
+  category?: string | null;
+  locked?: boolean | null;
   /** Filesystem-safe slug derived from the pipeline source filename (e.g. "Varus_valgus_full_4crg2N7"). */
-  slug?: string;
+  slug?: string | null;
   [key: string]: unknown;
 }
 
@@ -115,7 +115,9 @@ const PIPELINE_RECORD_SHAPE: Shape<PipelineRecord> = shape_build<PipelineRecord>
  * address unless the id field was asked for), so nothing in it is held to
  * a kind here; those who read it check what they read.
  */
-const PIPELINE_TABLE_ROW_SHAPE: Shape<PipelineRecord> = shape_object<PipelineRecord>('a pipeline row');
+const PIPELINE_TABLE_ROW_SHAPE: Shape<PipelineRecord> = shape_build<PipelineRecord>('a pipeline row')(
+  ['id', 'number'], ['name', 'string'], ['description', 'string?|null'], ['authors', 'string?|null'], ['category', 'string?|null'], ['locked', 'boolean?|null'], ['slug', 'string?|null'],
+);
 
 /**
  * Per-node override for a workflow execution.
@@ -199,19 +201,32 @@ export async function pipeline_resolve(
   return resolved;
 }
 
+/** A pipeline's item as a listing served it, with the id it is kept under. */
+interface KeptItem {
+  /** The pipeline's id. */
+  id: number;
+  /** The chrisapi item. */
+  item: DataCarrier;
+}
+
 /**
- * Keeps the chrisapi items a pipeline listing served, by id, so the
- * pipings can be read off them without listing the pipeline again.
+ * Reads the chrisapi items a pipeline listing served, each with its id,
+ * so that they can be kept and the pipings read off them without listing
+ * the pipeline again. Nothing is kept here: the whole page is read, and
+ * may be refused, before any of it goes into the memo.
  *
- * @param client - The connection's client.
  * @param page - The list response.
+ * @returns The items that carry a numeric id, with it.
+ * @throws {ShapeError} When the page's items are not a list of resources.
  */
-function pipelineItems_keep(client: Client, page: PipelinePage): void {
-  const items: Array<{ data?: unknown }> = items_get(page, DATA_CARRIER_SHAPE);
+function pipelineItems_read(page: PipelinePage): KeptItem[] {
+  const items: DataCarrier[] = items_get(page, DATA_CARRIER_SHAPE);
+  const kept: KeptItem[] = [];
   for (const item of items) {
     const data: IdRecord | null = itemData_get(item, ID_SEEN_SHAPE);
-    if (data && typeof data.id === 'number') pipelineResource_keep(client, data.id, item);
+    if (data && typeof data.id === 'number') kept.push({ id: data.id, item });
   }
+  return kept;
 }
 
 /**
@@ -264,16 +279,20 @@ async function pipelineResolve_fetch(
 
   // The search is read as a page, not through pipelines_list, so the items
   // it served can be kept: a pipeline's pipings hang off its item.
-  let page: PipelinePage;
+  // The whole answer is read, and held to what is read of it, before any of it is kept: a page whose items
+  // or rows are not what they should be is an error on the stack, and leaves the memo as it was.
+  let found: PipelineRecord[];
+  let served: KeptItem[];
   try {
-    page = await resource_call(client, PIPELINE_PAGE_SHAPE, 'getPipelines', { name: nameOrId, limit: PIPELINE_SEARCH_LIMIT });
+    const page: PipelinePage = await resource_call(client, PIPELINE_PAGE_SHAPE, 'getPipelines', { name: nameOrId, limit: PIPELINE_SEARCH_LIMIT });
+    found = listData_get(page, PIPELINE_RECORD_SHAPE);
+    served = pipelineItems_read(page);
   } catch (error: unknown) {
     const msg: string = error instanceof Error ? error.message : String(error);
     errorStack.stack_push('error', `pipelines_list: ${msg}`);
     return Err();
   }
-  pipelineItems_keep(client, page);
-  const found: PipelineRecord[] = listData_get(page, PIPELINE_RECORD_SHAPE);
+  for (const one of served) pipelineResource_keep(client, one.id, one.item);
   const exact: PipelineRecord | undefined = found.find(
     (p: PipelineRecord) => p.name === nameOrId
   );

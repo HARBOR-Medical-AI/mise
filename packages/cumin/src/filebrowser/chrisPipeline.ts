@@ -13,7 +13,6 @@ import {
   type Client,
   type PipelineSourceFile,
   type PipelineSourceFileList,
-  shape_object,
   shape_build,
   type Shape,
 } from "../chrisapi/adapter.js";
@@ -30,7 +29,9 @@ interface PipelineSourceFileData {
 const SOURCE_FILE_SHAPE: Shape<PipelineSourceFile> = shape_build<PipelineSourceFile>('a pipeline source file')(['getFileBlob', 'function']);
 
 /** Its data: the name is only compared, so nothing in it is read without a check. */
-const SOURCE_FILE_DATA_SHAPE: Shape<PipelineSourceFileData> = shape_object<PipelineSourceFileData>('a pipeline source file');
+const SOURCE_FILE_DATA_SHAPE: Shape<PipelineSourceFileData> = shape_build<PipelineSourceFileData>('a pipeline source file')(
+  ['fname', 'string'],
+);
 
 /**
  * Downloads a pipeline source file by path and returns the raw binary content.

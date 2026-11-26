@@ -21,7 +21,6 @@ import {
   type CommentList,
   type Note,
   type Comment,
-  shape_object,
   shape_build,
   type Shape,
 } from "../chrisapi/adapter.js";
@@ -64,11 +63,13 @@ const FEED_RECORD_SHAPE: Shape<FeedRecord> = shape_build<FeedRecord>('a feed')([
 /** A row of a feed's user permissions. */
 interface UserPermissionRow {
   /** Who holds the permission; read through a conversion. */
-  username?: string;
+  username?: string | null;
 }
 
 /** A row of a feed's user permissions: an object, the name read through a check of its own. */
-const USER_PERMISSION_SHAPE: Shape<UserPermissionRow> = shape_object<UserPermissionRow>('a feed permission');
+const USER_PERMISSION_SHAPE: Shape<UserPermissionRow> = shape_build<UserPermissionRow>('a feed permission')(
+  ['username', 'string?|null'],
+);
 
 /**
  * Class for managing individual ChRIS feeds.
@@ -381,7 +382,7 @@ export async function feedShares_list(feedId: number): Promise<Result<string[]>>
       const permissions = await resource_call(
         feed, DATA_CARRIER_SHAPE, 'getUserPermissions', { limit: pageSize, offset },
       );
-      const rows: Array<{ username?: string }> = listData_get(permissions, USER_PERMISSION_SHAPE);
+      const rows: UserPermissionRow[] = listData_get(permissions, USER_PERMISSION_SHAPE);
       for (const row of rows) {
         const name: string = String(row.username ?? '');
         if (name !== '') names.push(name);
@@ -461,7 +462,9 @@ export interface FeedComment {
 }
 
 /** A feed's note: its title and content are read with a default each. */
-const FEED_NOTE_SHAPE: Shape<FeedNote> = shape_object<FeedNote>('a feed note');
+const FEED_NOTE_SHAPE: Shape<FeedNote> = shape_build<FeedNote>('a feed note')(
+  ['title', 'string'], ['content', 'string'],
+);
 
 /** A comment on a feed: its id is shown and its owner's name padded as text. */
 const FEED_COMMENT_SHAPE: Shape<FeedComment> = shape_build<FeedComment>('a feed comment')(['id', 'number'], ['owner_username', 'string']);

@@ -223,6 +223,13 @@ describe('payload extractors', () => {
     expect(() => collectionItems_get({ collection: { items: {} } }, ROW)).toThrow('whose collection.items is an object, where an array is read');
     expect(() => collectionItems_get({ collection: { items: [{ id: 4 }] } }, ROW)).toThrow('whose collection.items[0].name is missing');
   });
+
+
+  it('collectionItems_get refuses a collection that is there and is not a document', () => {
+    expect(() => collectionItems_get({ collection: 'gone' }, ROW)).toThrow('whose collection is a string, where an object is read');
+    expect(() => collectionItems_get({ collection: [] }, ROW)).toThrow('whose collection is an array, where an object is read');
+    expect(() => collectionItems_get({ collection: 7 }, ROW)).toThrow('whose collection is a number, where an object is read');
+  });
 });
 
 describe('resource_invoke and resource_call', () => {

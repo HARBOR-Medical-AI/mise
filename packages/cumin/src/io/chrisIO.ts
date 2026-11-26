@@ -19,7 +19,6 @@ import {
   type FileBrowserFolder,
   type UserFile,
   shape_nullable,
-  shape_object,
   shape_build,
   type Shape,
 } from "../chrisapi/adapter.js";
@@ -54,12 +53,14 @@ export interface UploadReceipt {
  * UserFile data with fname field.
  */
 interface UserFileData {
-  fname?: string;
+  fname?: string | null;
   [key: string]: unknown;
 }
 
 /** A file's data where its name is read: through a default, so nothing is read unchecked. */
-const USER_FILE_DATA_SHAPE: Shape<UserFileData> = shape_object<UserFileData>('a file');
+const USER_FILE_DATA_SHAPE: Shape<UserFileData> = shape_build<UserFileData>('a file')(
+  ['fname', 'string?|null'],
+);
 
 /** A file resource that can be downloaded: its bytes are fetched by calling it, as a stream or as a blob. */
 const DOWNLOADABLE_FILE_SHAPE: Shape<UserFile> = shape_build<UserFile>('a file resource')(['getFileStream', 'function'], ['getFileBlob', 'function']);
@@ -377,7 +378,7 @@ export class ChrisIO {
       return Ok({
         stream: watched,
         size: Number.isFinite(size) ? size : undefined,
-        filename: (userFile as UserFileWithData).data?.fname,
+        filename: ((name: unknown): string | undefined => (typeof name === 'string' ? name : undefined))((userFile as UserFileWithData).data?.fname),
       });
     } catch (error: unknown) {
       const msg: string = error instanceof Error ? error.message : String(error);

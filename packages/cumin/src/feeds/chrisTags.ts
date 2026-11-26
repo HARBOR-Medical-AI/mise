@@ -22,7 +22,6 @@ import {
   type Tagging,
   type Tag,
   type TagFeedList,
-  shape_object,
   shape_build,
   type Shape,
 } from "../chrisapi/adapter.js";
@@ -47,7 +46,7 @@ const OWNED_TAG_SHAPE: Shape<FeedTag> = shape_build<FeedTag>('a tag')(['id', 'nu
 /** The data of a tagging: what joins a tag to a feed. */
 interface TaggingData {
   /** The tag's id; only compared. */
-  ['tag_id']?: number;
+  ['tag_id']?: number | null;
 }
 
 /** A feed that wears a tag. */
@@ -57,7 +56,9 @@ interface TaggedFeed {
 }
 
 /** A tagging: an object, its tag's id only compared. */
-const TAGGING_SHAPE: Shape<TaggingData> = shape_object<TaggingData>('a tagging');
+const TAGGING_SHAPE: Shape<TaggingData> = shape_build<TaggingData>('a tagging')(
+  ['tag_id', 'number?|null'],
+);
 
 /** A feed that wears a tag: its id is kept as a number. */
 const TAGGED_FEED_SHAPE: Shape<TaggedFeed> = shape_build<TaggedFeed>('a tagged feed')(['id', 'number']);

@@ -487,15 +487,18 @@ export function items_get<T>(list: ItemsCarrier | null | undefined, shape: Shape
  *
  * @param resource - A chrisapi resource carrying a `collection` document.
  * @param shape - The shape of an item.
- * @returns The items; empty when the collection has none.
- * @throws {ShapeError} When the items are present and are not a list of the shape.
+ * @returns The items; empty when there is no collection, or it has no items.
+ * @throws {ShapeError} When the collection is present and is not a document, or its items are present and are not a list of the shape.
  */
 export function collectionItems_get<T>(
   resource: { collection?: unknown } | null | undefined,
   shape: Shape<T>,
 ): T[] {
   const collection: unknown = resource?.collection;
-  const items: unknown = typeof collection === 'object' && collection !== null ? (collection as { items?: unknown }).items : undefined;
+  if (collection === undefined || collection === null) return [];
+  // A collection that is there and is not a document is malformed, not empty.
+  if (typeof collection !== 'object' || Array.isArray(collection)) throw new ShapeError(`a list of ${shape.what}`, 'collection', Array.isArray(collection) ? 'an array' : `a ${typeof collection}`, 'an object');
+  const items: unknown = (collection as { items?: unknown }).items;
   if (items === undefined || items === null) return [];
   return rows_check(items, shape, 'collection.items');
 }

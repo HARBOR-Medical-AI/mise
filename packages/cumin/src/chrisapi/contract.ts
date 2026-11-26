@@ -34,6 +34,7 @@ import {
   resource_call,
   resource_invoke,
   DATA_CARRIER_SHAPE,
+  ShapeError,
   type DataCarrier,
   shape_nullable,
   shape_object,
@@ -299,18 +300,18 @@ export interface PluginInstanceData {
   feed_id: number;
   previous_id?: number | null;
   plugin_name: string;
-  plugin_type?: string;
-  status?: string;
-  output_path?: string;
+  plugin_type?: string | null;
+  status?: string | null;
+  output_path?: string | null;
   /** ISO timestamp CUBE recorded for execution start. */
-  start_date?: string;
+  start_date?: string | null;
   /** ISO timestamp CUBE recorded for execution end. */
-  end_date?: string;
+  end_date?: string | null;
   /** Output size in bytes, as CUBE reports it on the list row. */
-  size?: number;
+  size?: number | null;
   /** The compute resource the instance ran on, as CUBE reports it. */
-  compute_resource_name?: string;
-  raw?: string;
+  compute_resource_name?: string | null;
+  raw?: string | null;
   [key: string]: unknown;
 }
 
@@ -321,7 +322,7 @@ export interface PluginInstanceData {
  * @property value - The recorded invocation value.
  */
 export interface InstanceParameterData {
-  param_name?: string;
+  param_name?: string | null;
   value?: unknown;
 }
 
@@ -401,10 +402,14 @@ const FEED_DATA_SHAPE: Shape<FeedData> = shape_build<FeedData>('a feed')(['id', 
  * `?.`), so nothing in it is read unchecked and it is held only to being an
  * object.
  */
-const PLUGIN_INSTANCE_DATA_SHAPE: Shape<PluginInstanceData> = shape_object<PluginInstanceData>('a plugin instance');
+const PLUGIN_INSTANCE_DATA_SHAPE: Shape<PluginInstanceData> = shape_build<PluginInstanceData>('a plugin instance')(
+  ['plugin_type', 'string?|null'], ['status', 'string?|null'], ['output_path', 'string?|null'], ['start_date', 'string?|null'], ['end_date', 'string?|null'], ['size', 'number?|null'], ['compute_resource_name', 'string?|null'], ['raw', 'string?|null'],
+);
 
 /** A parameter set on a plugin instance: its name and value are read through checks of their own. */
-const INSTANCE_PARAMETER_SHAPE: Shape<InstanceParameterData> = shape_object<InstanceParameterData>('a plugin instance parameter');
+const INSTANCE_PARAMETER_SHAPE: Shape<InstanceParameterData> = shape_build<InstanceParameterData>('a plugin instance parameter')(
+  ['param_name', 'string?|null'],
+);
 
 /** A row of a plugin instance's log. */
 interface LogRow {
@@ -428,10 +433,14 @@ const PIPING_DEFAULT_PARAMETER_SHAPE: Shape<PipingDefaultParameterData> = shape_
 const PLUGIN_PARAMETER_SHAPE: Shape<PluginParameterData> = shape_build<PluginParameterData>('a plugin parameter')(['name', 'string']);
 
 /** A compute resource a plugin runs on: its name is read through a check of its own. */
-const COMPUTE_RESOURCE_DATA_SHAPE: Shape<ComputeResourceData> = shape_object<ComputeResourceData>('a compute resource');
+const COMPUTE_RESOURCE_DATA_SHAPE: Shape<ComputeResourceData> = shape_build<ComputeResourceData>('a compute resource')(
+  ['name', 'string?|null'],
+);
 
 /** A plugin: each of its fields is read through a check or a default. */
-const PLUGIN_DATA_SHAPE: Shape<PluginData> = shape_object<PluginData>('a plugin');
+const PLUGIN_DATA_SHAPE: Shape<PluginData> = shape_build<PluginData>('a plugin')(
+  ['id', 'number?|null'], ['name', 'string?|null'], ['version', 'string?|null'], ['type', 'string?|null'], ['title', 'string?|null'], ['authors', 'string?|null'], ['description', 'string?|null'], ['documentation', 'string?|null'], ['category', 'string?|null'], ['creation_date', 'string?|null'],
+);
 
 /** A plugin resource fetched from a piping, or nothing: its parameters and compute resources are fetched by calls that check the method is there. */
 const PLUGIN_RESOURCE_OR_NONE_SHAPE: Shape<object | null> = shape_nullable(shape_object<object>('a plugin'));
@@ -645,7 +654,7 @@ export interface PluginParameterData {
  * @property name - The compute environment's name.
  */
 export interface ComputeResourceData {
-  name?: string;
+  name?: string | null;
   [key: string]: unknown;
 }
 
@@ -664,16 +673,16 @@ export interface ComputeResourceData {
  * @property creation_date - ISO registration timestamp.
  */
 export interface PluginData {
-  id?: number;
-  name?: string;
-  version?: string;
-  type?: string;
-  title?: string;
-  authors?: string;
-  description?: string;
-  documentation?: string;
-  category?: string;
-  creation_date?: string;
+  id?: number | null;
+  name?: string | null;
+  version?: string | null;
+  type?: string | null;
+  title?: string | null;
+  authors?: string | null;
+  description?: string | null;
+  documentation?: string | null;
+  category?: string | null;
+  creation_date?: string | null;
   [key: string]: unknown;
 }
 
@@ -752,14 +761,35 @@ export interface PipelineHandle {
  * @param page - The raw list resource.
  * @returns The typed page; totalCount is null when the server sent none.
  */
+/**
+ * Reads the data of each item a page served, by its place. An item that
+ * was served carries a row: one with no data is a malformed row, refused
+ * with its place, and never dropped from the page.
+ *
+ * @param served - The items, as the page's `getItems` answered them.
+ * @param shape - The shape of a row.
+ * @returns One row per item, in order.
+ * @throws {ShapeError} When an item has no data, or its data is not what the shape says is read.
+ */
+function servedRows_read<T>(served: ReadonlyArray<{ data?: unknown }>, shape: Shape<T>): T[] {
+  const rows: T[] = [];
+  for (let at: number = 0; at < served.length; at++) {
+    const data: unknown = served[at]?.data;
+    if (data === undefined || data === null) throw new ShapeError(`a list of ${shape.what}`, `items[${String(at)}].data`, data === null ? 'null' : 'missing', 'an object');
+    rows.push(shape.value_check(data, `items[${String(at)}].data`, `a list of ${shape.what}`));
+  }
+  return rows;
+}
+
 function listPageFlexible_wrap<T>(shape: Shape<T>, page: WirePage | null | undefined): ListPage<T> {
-  if (Array.isArray(page?.data) || typeof page?.getItems !== 'function') {
+  // A page that carries `data` is read from it, whatever else it has: data that is there and is not a list
+  // is malformed, and is refused there, not passed over in favour of the page's items.
+  const carriesData: boolean = page?.data !== undefined && page.data !== null;
+  if (carriesData || typeof page?.getItems !== 'function') {
     return listPage_wrap(shape, page);
   }
   const served: Array<{ data?: unknown }> = items_get(page, DATA_CARRIER_SHAPE);
-  const rows: T[] = served
-    .map((item: { data?: unknown }): T | null => itemData_get(item, shape))
-    .filter((row: T | null): row is T => row !== null);
+  const rows: T[] = servedRows_read(served, shape);
   const total: unknown = page?.totalCount;
   return {
     data: rows,
@@ -915,10 +945,11 @@ export async function pipeline_get(
       typeof page?.getItems === 'function'
         ? items_get(page, DATA_CARRIER_SHAPE)
         : listData_get(page, PLUGIN_PIPING_DATA_SHAPE).map((row: PluginPipingData): { data?: unknown } => ({ data: row }));
+    // Each served item carries a piping: one with no data is a malformed row, refused with its place.
+    const served: PluginPipingData[] = servedRows_read(rawItems, PLUGIN_PIPING_DATA_SHAPE);
     const pipings: PluginPipingItem[] = rawItems
-      .map((item: { data?: unknown }): PluginPipingItem | null => {
-        const data: PluginPipingData | null = itemData_get(item, PLUGIN_PIPING_DATA_SHAPE);
-        if (!data) return null;
+      .map((item: { data?: unknown }, at: number): PluginPipingItem => {
+        const data: PluginPipingData = served[at] as PluginPipingData;
         return {
           data,
           async plugin_get(): Promise<PluginHandle | null> {
@@ -927,8 +958,7 @@ export async function pipeline_get(
             return plugin ? pluginHandle_wrap(plugin) : null;
           },
         };
-      })
-      .filter((item: PluginPipingItem | null): item is PluginPipingItem => item !== null);
+      });
     const total: unknown = page?.totalCount;
     return {
       data: pipings,

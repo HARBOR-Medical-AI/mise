@@ -358,6 +358,17 @@ describe('file_upload', () => {
     expect(pushSpy).toHaveBeenCalledWith('warning', expect.stringContaining('already exists'));
   });
 
+  it('treats a held file whose name is not text as a probe that cannot answer: occupied', async () => {
+    cube_fake({ fname: () => 'home/chris/up/a_XYZ.txt' });
+    const getUserFile = jest.fn();
+    mockClientGet.mockResolvedValue(uploadClient({
+      getUserFile,
+      getUserFiles: jest.fn(async () => ({ getItems: () => [{ data: { fname: 7 } }] })),
+    }));
+    expect(await io().file_upload(new Blob(['x']), 'home/chris/up/', 'a.txt')).toBe(true);
+    expect(getUserFile).not.toHaveBeenCalled();
+  });
+
   it('treats a probe that cannot answer as occupied', async () => {
     cube_fake({ fname: () => 'home/chris/up/a_XYZ.txt' });
     const getUserFile = jest.fn();

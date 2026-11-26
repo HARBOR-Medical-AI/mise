@@ -123,3 +123,32 @@ describe('a list of a shape', () => {
     expect(() => rows_check([{ id: 1 }, 'not a row'], piping, 'data')).toThrow('CUBE answered a list of a piping whose data[1] is a string, where an object (a piping) is read');
   });
 });
+
+describe('a list with a place nothing was put in', () => {
+  interface Holder { rows: Piping[] }
+  const holder: Shape<Holder> = shape_build<Holder>('a holder')(['rows', { rows: piping }]);
+
+  it('is refused at that place, by its number, and never handed on with nothing there', () => {
+    const holed: unknown[] = new Array<unknown>(2);
+    holed[1] = { id: 2 };
+    expect(() => rows_check(holed, piping, 'data')).toThrow('CUBE answered a list of a piping whose data[0] is missing, where an object (a piping) is read');
+    expect(() => holder.value_check({ rows: holed })).toThrow('CUBE answered a holder whose rows[0] is missing, where an object (a piping) is read');
+    const tail: unknown[] = [{ id: 1 }];
+    tail.length = 3;
+    expect(() => rows_check(tail, piping, 'data')).toThrow('whose data[1] is missing');
+  });
+});
+
+describe('what a shape may be of', () => {
+  it('is an object: a shape of a number or of text does not compile', () => {
+    // @ts-expect-error a shape's check asks for an object, so it cannot promise a number
+    const ofNumber: unknown = shape_build<number>('a number');
+    // @ts-expect-error nor text
+    const ofText: unknown = shape_build<string>('text');
+    // @ts-expect-error a field is held to its type's kind: an id that is a number is not read as text
+    const wrongKind: unknown = shape_build<Piping>('a piping')(['id', 'string']);
+    // @ts-expect-error a field the type requires may not be called optional
+    const wrongAbsence: unknown = shape_build<Piping>('a piping')(['id', 'number?']);
+    expect([ofNumber, ofText, wrongKind, wrongAbsence]).toHaveLength(4);
+  });
+});

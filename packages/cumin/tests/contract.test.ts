@@ -627,3 +627,50 @@ describe('pluginParameters_drain', () => {
     expect(await pluginParameters_drain(served.handle as never)).toEqual([]);
   });
 });
+
+describe('a page that is malformed is refused, not read as empty', () => {
+  /** An instance handle whose parameters answer with the given page. */
+  async function parameters_ask(page: unknown): Promise<unknown> {
+    const client: Client = client_fake({
+      getPluginInstance: async () => ({ data: { id: 5, feed_id: 2, plugin_name: 'pl-x' }, getParameters: async () => page }),
+    });
+    const handle: PluginInstanceHandle | null = await pluginInstance_get(client, 5);
+    return handle?.parametersPage_get({ limit: 10, offset: 0 });
+  }
+
+  test('data that is there and is not a list fails, even when the page also serves items', async () => {
+    await expect(parameters_ask({ data: { param_name: 'dir' }, getItems: () => [{ data: { param_name: 'dir' } }] }))
+      .rejects.toThrow('whose data is an object, where an array is read');
+    await expect(parameters_ask({ data: 'none', getItems: () => [] })).rejects.toThrow('whose data is a string, where an array is read');
+  });
+
+  test('a served item with no data, or with data of another kind, fails the page at its place', async () => {
+    await expect(parameters_ask({ getItems: () => [{ data: { param_name: 'a' } }, {}] })).rejects.toThrow('whose items[1].data is missing, where an object is read');
+    await expect(parameters_ask({ getItems: () => [{ data: null }] })).rejects.toThrow('whose items[0].data is null, where an object is read');
+    await expect(parameters_ask({ getItems: () => [{ data: { param_name: 'a' } }, { data: { param_name: 4 } }] })).rejects.toThrow('items[1].data.param_name is a number, where a string is read');
+  });
+
+  test('a page with no data and no items is still an empty page', async () => {
+    expect(await parameters_ask({ getItems: () => [], totalCount: 0 })).toEqual({ data: [], totalCount: 0, fetchedCount: 0 });
+  });
+
+  test('a piping served with no data fails the pipings at its place', async () => {
+    const client: Client = client_fake({
+      getPipeline: async () => ({
+        data: { id: 9, name: 'brain-flow' },
+        getPluginPipings: async () => ({ getItems: () => [{ data: { id: 1, plugin_name: 'pl-a', previous_id: null } }, { getPlugin: async () => null }] }),
+      }),
+    });
+    const handle = await pipeline_get(client, 9);
+    await expect(handle?.pluginPipings_get({ limit: 100 })).rejects.toThrow('whose items[1].data is missing, where an object is read');
+  });
+
+  test('a field read as text is refused when it is there and is not text; absent or null it is as before', async () => {
+    const instance_ask = (data: Record<string, unknown>): Promise<PluginInstanceHandle | null> =>
+      pluginInstance_get(client_fake({ getPluginInstance: async () => ({ data }) }), 5);
+    await expect(instance_ask({ id: 5, feed_id: 2, plugin_name: 'pl-x', output_path: 7 })).rejects.toThrow('CUBE answered a plugin instance whose data.output_path is a number, where a string is read');
+    await expect(instance_ask({ id: 5, feed_id: 2, plugin_name: 'pl-x', status: {} })).rejects.toThrow('whose data.status is an object, where a string is read');
+    expect((await instance_ask({ id: 5, feed_id: 2, plugin_name: 'pl-x', output_path: null }))?.data?.output_path).toBeNull();
+    expect((await instance_ask({ id: 5, feed_id: 2, plugin_name: 'pl-x' }))?.data?.output_path).toBeUndefined();
+  });
+});

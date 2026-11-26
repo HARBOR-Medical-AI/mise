@@ -18,7 +18,6 @@ import {
   client_authGet,
   pacsRetrieve_deleteByUrl,
   type Client,
-  shape_object,
   shape_build,
   type Shape,
 } from "../chrisapi/adapter.js";
@@ -61,7 +60,7 @@ export class ChRISPACSGroup extends ChRISResourceGroup {
  * PACSQuery data structure from ChRIS API.
  */
 interface PACSQueryData {
-  result?: string;
+  result?: string | null;
   [key: string]: unknown;
 }
 
@@ -96,9 +95,9 @@ interface PACSRetrieveItem {
  */
 export interface PACSQueryRecord {
   id: number;
-  title?: string;
-  status?: string;
-  pacs_id?: number;
+  title?: string | null;
+  status?: string | null;
+  pacs_id?: number | null;
   result?: unknown;
   [key: string]: unknown;
 }
@@ -110,10 +109,14 @@ const PACS_SERVER_SHAPE: Shape<PACSServer> = shape_build<PACSServer>('a PACS ser
 const PACS_QUERY_MADE_SHAPE: Shape<PACSQueryRecord> = shape_build<PACSQueryRecord>('a PACS query')(['id', 'number']);
 
 /** A PACS query read back: each of its fields is read through a check of its own. */
-const PACS_QUERY_READ_SHAPE: Shape<PACSQueryRecord> = shape_object<PACSQueryRecord>('a PACS query');
+const PACS_QUERY_READ_SHAPE: Shape<PACSQueryRecord> = shape_build<PACSQueryRecord>('a PACS query')(
+  ['title', 'string?|null'], ['status', 'string?|null'], ['pacs_id', 'number?|null'],
+);
 
 /** A PACS query's data where its result is decoded: the result is looked at before it is used. */
-const PACS_QUERY_DATA_SHAPE: Shape<PACSQueryData> = shape_object<PACSQueryData>('a PACS query');
+const PACS_QUERY_DATA_SHAPE: Shape<PACSQueryData> = shape_build<PACSQueryData>('a PACS query')(
+  ['result', 'string?|null'],
+);
 
 /** A PACS retrieve's data: its id is a number. (Its other fields cannot be checked against a live PACS under this project's rules, and are left as they were.) */
 const PACS_RETRIEVE_DATA_SHAPE: Shape<PACSRetrieveItemData> = shape_build<PACSRetrieveItemData>('a PACS retrieve')(['id', 'number']);
@@ -124,17 +127,19 @@ const PACS_RETRIEVE_ITEM_SHAPE: Shape<PACSRetrieveItem> = shape_build<PACSRetrie
 /** What a PACS series record says of where it is and what it is: each field is read through a default or a check of its own. */
 interface PACSSeriesData {
   /** Where the series' files are, as CUBE's path. */
-  ['folder_path']?: string;
+  ['folder_path']?: string | null;
   /** The series' modality. */
-  ['Modality']?: string;
+  ['Modality']?: string | null;
   /** The series' description. */
-  ['SeriesDescription']?: string;
+  ['SeriesDescription']?: string | null;
   /** The series' instance UID. */
-  ['SeriesInstanceUID']?: string;
+  ['SeriesInstanceUID']?: string | null;
 }
 
 /** A PACS series record. */
-const PACS_SERIES_SHAPE: Shape<PACSSeriesData> = shape_object<PACSSeriesData>('a PACS series');
+const PACS_SERIES_SHAPE: Shape<PACSSeriesData> = shape_build<PACSSeriesData>('a PACS series')(
+  ['folder_path', 'string?|null'], ['Modality', 'string?|null'], ['SeriesDescription', 'string?|null'], ['SeriesInstanceUID', 'string?|null'],
+);
 
 /**
  * Options for listing PACS queries.
@@ -395,7 +400,7 @@ export async function pacsQuery_resultDecode(
     }
 
     const queryData: PACSQueryData | null = itemData_get(query, PACS_QUERY_DATA_SHAPE);
-    const raw: string | undefined = queryData?.result;
+    const raw: string | null | undefined = queryData?.result;
     if (!raw || typeof raw !== "string") {
       errorStack.stack_push("error", `PACS query ${queryId} has no result payload.`);
       return Err();
@@ -723,7 +728,7 @@ async function patientSeries_fetch(pacs: string, patientID: string): Promise<Map
     const items: ReturnType<typeof page.getItems> = page.getItems();
     if (!items || items.length === 0) break;
     for (const item of items) {
-      const data: { folder_path?: string; Modality?: string; SeriesDescription?: string } | null =
+      const data: PACSSeriesData | null =
         itemData_get(item, PACS_SERIES_SHAPE);
       const folder: string | undefined = data?.folder_path?.replace(/^\/+/, '');
       if (!folder) continue;
@@ -792,9 +797,9 @@ export async function seriesStorage_resolve(
       return Ok(empty);
     }
 
-    const seriesData: { folder_path?: string } | null =
+    const seriesData: PACSSeriesData | null =
       itemData_get(seriesItems[0], PACS_SERIES_SHAPE);
-    const rawFolder: string | undefined = seriesData?.folder_path;
+    const rawFolder: string | null | undefined = seriesData?.folder_path;
     if (!rawFolder) {
       return Ok(empty);
     }
@@ -940,10 +945,10 @@ export async function seriesStorage_resolveMany(
         const items: ReturnType<typeof page.getItems> = page.getItems();
         if (!items || items.length === 0) return;
         for (const item of items) {
-          const data: { folder_path?: string; SeriesInstanceUID?: string } | null =
+          const data: PACSSeriesData | null =
             itemData_get(item, PACS_SERIES_SHAPE);
-          const uid: string | undefined = data?.SeriesInstanceUID;
-          const rawFolder: string | undefined = data?.folder_path;
+          const uid: string | null | undefined = data?.SeriesInstanceUID;
+          const rawFolder: string | null | undefined = data?.folder_path;
           if (!uid || !rawFolder) continue;
           found.set(uid, {
             fileCount: 0,

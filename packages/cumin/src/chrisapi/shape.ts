@@ -268,7 +268,9 @@ function field_check(found: unknown, check: FieldCheck, at: string, outer: strin
   if (!kind_matches(found, check.kind)) throw new ShapeError(outer, at, kind_name(found), wanted_say(check));
   const rows: Shape<unknown> | undefined = check.rows;
   if (rows !== undefined) {
-    (found as unknown[]).forEach((row: unknown, index: number): void => { rows.value_check(row, `${at}[${String(index)}]`, outer); });
+    // Every place in the list by its number, a place nothing was put in included: such a hole is a missing row.
+    const list = found as unknown[];
+    for (let index: number = 0; index < list.length; index++) rows.value_check(list[index], `${at}[${String(index)}]`, outer);
   }
 }
 
@@ -276,7 +278,9 @@ function field_check(found: unknown, check: FieldCheck, at: string, outer: strin
  * Makes the shape of an object: a value that is an object (not null, not
  * an array) whose named fields are each what is read.
  *
- * The type is named once, here, and each field's spec is held to what the
+ * The type is named once, here, and must be an object's (a shape of a
+ * number or of text would promise a type its check, which asks for an
+ * object, never holds a value to). Each field's spec is held to what the
  * type says of that field, so a shape cannot say `string` of a field the
  * type calls a number, nor allow an absence the type does not.
  *
@@ -286,7 +290,7 @@ function field_check(found: unknown, check: FieldCheck, at: string, outer: strin
  * @example
  * const FEED: Shape<Feed> = shape_build<Feed>('a feed')(['id', 'number'], ['name', 'string?']);
  */
-export function shape_build<T>(what: string): (...fields: ShapeField<T>[]) => Shape<T> {
+export function shape_build<T extends object>(what: string): (...fields: ShapeField<T>[]) => Shape<T> {
   return (...fields: ShapeField<T>[]): Shape<T> => {
     const checks: FieldCheck[] = (fields as ReadonlyArray<readonly [string, unknown]>).map(([name, spec]: readonly [string, unknown]): FieldCheck => fieldCheck_read(name, spec));
     return {
@@ -348,5 +352,10 @@ export function shape_nullable<T>(shape: Shape<T>): Shape<T | null> {
  */
 export function rows_check<T>(value: unknown, shape: Shape<T>, field: string): T[] {
   if (!Array.isArray(value)) throw new ShapeError(`a list of ${shape.what}`, field, kind_name(value), 'an array');
-  return value.map((row: unknown, at: number): T => shape.value_check(row, `${field}[${String(at)}]`, `a list of ${shape.what}`));
+  // Every place in the list by its number: a list with a hole in it has a missing row there, and a walk that
+  // skipped holes would hand back a list typed as rows with nothing in that place.
+  const list = value as unknown[];
+  const rows: T[] = [];
+  for (let at: number = 0; at < list.length; at++) rows.push(shape.value_check(list[at], `${field}[${String(at)}]`, `a list of ${shape.what}`));
+  return rows;
 }

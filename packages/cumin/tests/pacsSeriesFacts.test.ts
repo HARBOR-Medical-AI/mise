@@ -55,3 +55,18 @@ describe('pacsSeriesFacts_fetch', () => {
     expect(getPACSSeriesList).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('a series record whose folder is not text', () => {
+  it('is a failed ask, not a crash in the middle of one: nothing is answered and nothing kept', async () => {
+    const getPACSSeriesList = jest.fn()
+      .mockResolvedValueOnce(list_of([{ data: { folder_path: 7, Modality: 'MR' } }]))
+      .mockResolvedValueOnce(list_of([{ data: { folder_path: FOLDER, Modality: {} } }]))
+      .mockResolvedValueOnce(list_of([{ data: { folder_path: null } }, { data: { folder_path: FOLDER, Modality: null, SeriesDescription: 'T1' } }]));
+    mockClientGet.mockResolvedValue({ getPACSSeriesList });
+    expect(await pacsSeriesFacts_fetch(`/${FOLDER}/1.dcm`)).toBeNull();
+    expect(await pacsSeriesFacts_fetch(`/${FOLDER}/1.dcm`)).toBeNull();
+    // Absent and null are as they were: the row without a folder is passed over, a null modality is no modality.
+    expect(await pacsSeriesFacts_fetch(`/${FOLDER}/1.dcm`)).toEqual({ seriesDescription: 'T1' });
+    expect(getPACSSeriesList).toHaveBeenCalledTimes(3);
+  });
+});

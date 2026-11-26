@@ -20,6 +20,7 @@ import {
   WorkflowResult,
 } from '../src/pipelines/chrisPipeline';
 import { errorStack } from '../src/error/errorStack';
+import { pipelineResource_recall } from '../src/pipelines/pipelineMemo';
 import { Result } from '../src/utils/result';
 
 const mockClientGet: jest.Mock = chrisConnection.client_get as unknown as jest.Mock;
@@ -41,7 +42,7 @@ function listResource_make(rows: Array<Record<string, unknown>>): ListResource {
         })),
       },
     },
-    getItems: { value: (): unknown[] => rows.map(() => ({})) },
+    getItems: { value: (): unknown[] => rows.map(() => ({})), configurable: true },
     totalCount: { value: rows.length },
     hasNext: { value: false },
   });
@@ -186,6 +187,50 @@ describe('pipeline_resolve', () => {
     });
     expect((await pipeline_resolve('ghost')).ok).toBe(false);
     expect(pushSpy).toHaveBeenCalledWith('error', expect.stringContaining("No pipeline matching 'ghost'"));
+  });
+
+
+  it('refuses a search whose second row is malformed, by its place, and keeps none of it', async () => {
+    const client = {
+      getPipelines: jest.fn(async () => {
+        const list: ListResource = listResource_make([{ id: 41, name: 'Foo' }, { id: 'forty-two', name: 'Foo two' }]);
+        Object.defineProperty(list, 'getItems', { value: (): unknown[] => [{ data: { id: 41, name: 'Foo' } }, { data: { id: 'forty-two' } }] });
+        return list;
+      }),
+    };
+    mockClientGet.mockResolvedValue(client);
+    const result: Result<PipelineRecord> = await pipeline_resolve('Foo');
+    expect(result.ok).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', expect.stringMatching(/^pipelines_list: CUBE answered a list of a pipeline whose \S*\[1\]\S*id is a string, where a number is read$/));
+    // The first row was good, and still nothing of the page went into the memo.
+    expect(pipelineResource_recall(client, 41)).toBeNull();
+  });
+
+  it('refuses a search whose served items are not a list, and keeps none of it', async () => {
+    const client = {
+      getPipelines: jest.fn(async () => {
+        const list: ListResource = listResource_make([{ id: 43, name: 'Bar' }]);
+        Object.defineProperty(list, 'getItems', { value: (): unknown => ({ not: 'a list' }) });
+        return list;
+      }),
+    };
+    mockClientGet.mockResolvedValue(client);
+    expect((await pipeline_resolve('Bar')).ok).toBe(false);
+    expect(pushSpy).toHaveBeenCalledWith('error', expect.stringContaining('pipelines_list: CUBE answered'));
+    expect(pipelineResource_recall(client, 43)).toBeNull();
+  });
+
+  it('keeps the items of a search that holds, so the good path is unchanged', async () => {
+    const client = {
+      getPipelines: jest.fn(async () => {
+        const list: ListResource = listResource_make([{ id: 44, name: 'Baz' }]);
+        Object.defineProperty(list, 'getItems', { value: (): unknown[] => [{ data: { id: 44, name: 'Baz' } }] });
+        return list;
+      }),
+    };
+    mockClientGet.mockResolvedValue(client);
+    expect((await pipeline_resolve('Baz')).ok).toBe(true);
+    expect(pipelineResource_recall(client, 44)).not.toBeNull();
   });
 });
 
