@@ -59,7 +59,10 @@ export function git_run(args: ReadonlyArray<string>, cwd?: string, network: bool
   const inherited: string | undefined = process.env['GIT_ALLOW_PROTOCOL'];
   let held: ReadonlyArray<string> = args;
   if (network && inherited === undefined) {
-    const keys: ReadonlyArray<string> | { readonly refused: string } = networkOnly_keys((key: string): string | null | ConfigUnread => gitConfig_read(key, cwd));
+    const keys: ReadonlyArray<string> | { readonly refused: string } = networkOnly_keys(
+      (key: string): string | null | ConfigUnread => gitConfig_read(key, cwd),
+      (): ReadonlyArray<string> | ConfigUnread => gitProtocols_configured(cwd),
+    );
     // A policy that could not be read is not guessed at: git is not run.
     if (!Array.isArray(keys)) return { ok: false, text: (keys as { readonly refused: string }).refused };
     held = [...keys, ...args];
@@ -104,13 +107,34 @@ export function gitConfig_read(key: string, cwd?: string): string | null | Confi
 }
 
 /**
+ * Every transport git's configuration gives a policy of its own, by name:
+ * each `protocol.<name>.allow` key, wherever it is set (the system's, the
+ * user's, the repository's where git is about to run).
+ *
+ * @param cwd - Where git will run, so a repository's own configuration counts.
+ * @returns The names; none when no such key is set; or that the configuration could not be read.
+ */
+export function gitProtocols_configured(cwd?: string): ReadonlyArray<string> | ConfigUnread {
+  const ran: SpawnSyncReturns<string> = spawnSync('git', ['config', '--name-only', '--get-regexp', '^protocol\\..+\\.allow$'], { encoding: 'utf-8', env: { ...process.env }, ...(cwd !== undefined && fs.existsSync(cwd) ? { cwd } : {}) });
+  if (ran.status === 1) return [];
+  if (ran.status !== 0) return { unread: `protocol.*.allow: ${(ran.stderr || ran.error?.message || `git config ended with ${String(ran.status)}`).trim().split('\n').at(-1) ?? ''}` };
+  const names: string[] = ran.stdout.split('\n').map((key: string): string => key.trim()).filter((key: string): boolean => key !== '')
+    .map((key: string): string => key.slice('protocol.'.length, key.length - '.allow'.length).toLowerCase());
+  return [...new Set(names)];
+}
+
+/**
  * git's own configuration, for its command line, that leaves it only the
  * transports that leave this host and keeps the operator's policy for
  * each of those as it is.
  *
  * `protocol.allow=never` makes `never` the policy of every transport that
  * has no key of its own: `file`, `ext`, and any remote helper installed on
- * this host, by whatever name. That same key would also take over from
+ * this host, by whatever name. A transport that does have a key of its own
+ * is decided by that key, which a default cannot reach; so `file` and
+ * `ext`, and every other transport the configuration names that is not a
+ * network one, is given `never` by name as well, whatever it was set to.
+ * That default would also take over from
  * git's built-in policy for the network transports, so each of those is
  * given a key of its own, unless the operator already gave it one: the
  * value the operator set as their general policy (`protocol.allow`) where
@@ -120,14 +144,27 @@ export function gitConfig_read(key: string, cwd?: string): string | null | Confi
  * its own key and is not touched.
  *
  * @param read - How a configuration key is read.
+ * @param configured - The transports the configuration gives a key of their own.
  * @returns The `-c` arguments, or a refusal when the operator's policy could not be read or is no policy git knows.
  */
-export function networkOnly_keys(read: (key: string) => string | null | ConfigUnread): ReadonlyArray<string> | { readonly refused: string } {
+export function networkOnly_keys(
+  read: (key: string) => string | null | ConfigUnread,
+  configured: () => ReadonlyArray<string> | ConfigUnread = (): ReadonlyArray<string> => [],
+): ReadonlyArray<string> | { readonly refused: string } {
   const refuse = (why: string): { readonly refused: string } => ({ refused: `git's transport policy could not be read (${why}); nothing was fetched` });
   const general: string | null | ConfigUnread = read('protocol.allow');
   if (general !== null && typeof general !== 'string') return refuse(general.unread);
   if (general !== null && !POLICIES.includes(general)) return refuse(`protocol.allow is ${JSON.stringify(general)}`);
+  const named: ReadonlyArray<string> | ConfigUnread = configured();
+  if (!Array.isArray(named)) return refuse((named as ConfigUnread).unread);
   const keys: string[] = ['-c', 'protocol.allow=never'];
+  // This host's transports by name: the two git ships, and any the configuration names that is not a network one.
+  // A name is used only when it is one a key can be made of; a configuration that names anything else is not read as a policy.
+  const local: string[] = ['file', 'ext', ...(named as ReadonlyArray<string>).filter((name: string): boolean => !(name in NETWORK_PROTOCOLS))];
+  for (const name of [...new Set(local)]) {
+    if (!/^[a-z0-9][a-z0-9+.-]*$/.test(name)) return refuse(`a transport is configured under a name that is not one: ${JSON.stringify(name)}`);
+    keys.push('-c', `protocol.${name}.allow=never`);
+  }
   for (const [protocol, builtIn] of Object.entries(NETWORK_PROTOCOLS)) {
     const own: string | null | ConfigUnread = read(`protocol.${protocol}.allow`);
     if (own !== null && typeof own !== 'string') return refuse(own.unread);
