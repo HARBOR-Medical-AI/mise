@@ -36,15 +36,23 @@ export { deliveryIntent_matches, type DeliveryIntent } from './deliveryMatch.js'
 
 /** A command that delivers, and the operand that names where. */
 interface DeliveringCommand {
+  /** The backend whose sessions have the command (`Backend.id`). */
+  readonly backend: string;
   /** The command's declaration. */
   readonly declaration: CommandDeclaration;
   /** The name of its destination operand. */
   readonly operand: string;
 }
 
-/** Every command whose handler asks the surface to write a file. */
+/**
+ * Every command whose handler asks the surface to write a file, with the
+ * backend whose sessions register it. A session of another backend has no
+ * such builtin: there the same word, typed, is not the engine's command at
+ * all (later in a pipeline it is the host shell's program), and asks for
+ * no delivery.
+ */
 const DELIVERING: ReadonlyArray<DeliveringCommand> = [
-  { declaration: downloadCommand, operand: 'destination' },
+  { backend: 'chris', declaration: downloadCommand, operand: 'destination' },
 ];
 
 /**
@@ -52,12 +60,13 @@ const DELIVERING: ReadonlyArray<DeliveringCommand> = [
  * engine tokenizes them, against its declaration.
  *
  * @param command - One command, with no list, pipe or redirect left in it.
+ * @param delivering_ - The delivering commands the session has.
  * @returns Its intent, or none when it is not a delivering command or its declaration refuses the line.
  */
-function commandIntents_read(command: string): DeliveryIntent[] {
+function commandIntents_read(command: string, delivering_: ReadonlyArray<DeliveringCommand>): DeliveryIntent[] {
   const words: ShellWord[] = shellWords_tokenize(command);
   const verb: string | undefined = words[0]?.value;
-  const delivering: DeliveringCommand | undefined = DELIVERING.find((one: DeliveringCommand): boolean => one.declaration.name === verb);
+  const delivering: DeliveringCommand | undefined = delivering_.find((one: DeliveringCommand): boolean => one.declaration.name === verb);
   if (verb === undefined || delivering === undefined) return [];
   const placed: Map<string, ShellWord[]> | null = commandOperands_place(delivering.declaration, words.slice(1));
   if (placed === null) return [];
@@ -84,11 +93,12 @@ function commandIntents_read(command: string): DeliveryIntent[] {
  * is {@link pipeSegment_word}, which `pipe_execute` uses too.
  *
  * @param segment - A segment after the first.
- * @returns True when its raw leading word is a delivering command's name.
+ * @param delivering - The delivering commands the session has.
+ * @returns True when its raw leading word is one of their names.
  */
-function laterSegment_runsInEngine(segment: string): boolean {
+function laterSegment_runsInEngine(segment: string, delivering: ReadonlyArray<DeliveringCommand>): boolean {
   const word: string = pipeSegment_word(segment);
-  return DELIVERING.some((one: DeliveringCommand): boolean => one.declaration.name === word);
+  return delivering.some((one: DeliveringCommand): boolean => one.declaration.name === word);
 }
 
 /**
@@ -104,26 +114,39 @@ function laterSegment_runsInEngine(segment: string): boolean {
  * command.
  *
  * @param line - The line as typed.
+ * @param backend - The backend of the session the line is sent to (`Backend.id`); a session of a backend with no delivering command, or of none named, asks for nothing.
  * @returns The intents, in order; empty when the line delivers nothing the reader can bind.
  *
  * @example
  * ```ts
- * deliveryIntents_read('cd /x; download -f a.txt "./my folder" > log'); // [{ verb: 'download', destination: './my folder' }]
+ * deliveryIntents_read('cd /x; download -f a.txt "./my folder" > log', 'chris'); // [{ verb: 'download', destination: './my folder' }]
  * ```
  */
-export function deliveryIntents_read(line: string): DeliveryIntent[] {
+export function deliveryIntents_read(line: string, backend: string | undefined): DeliveryIntent[] {
+  const delivering: ReadonlyArray<DeliveringCommand> = DELIVERING.filter((one: DeliveringCommand): boolean => one.backend === backend);
+  return delivering.length === 0 ? [] : lineIntents_read(line, delivering);
+}
+
+/**
+ * Reads one line's intents against the delivering commands a session has.
+ *
+ * @param line - The line, or one command of a list.
+ * @param delivering - The delivering commands the session has.
+ * @returns The intents, in order.
+ */
+function lineIntents_read(line: string, delivering: ReadonlyArray<DeliveringCommand>): DeliveryIntent[] {
   const trimmed: string = line.trim();
   if (trimmed === '') return [];
   if (command_shellEscape_detect(trimmed)) return [];
   if (quoteOpen_find(trimmed) !== null) return [];
   if (jobletLine_parse(trimmed) !== null) return [];
   const listed: ListCommand[] = commandList_parse(trimmed);
-  if (listed.length > 1) return listed.flatMap((one: ListCommand): DeliveryIntent[] => deliveryIntents_read(one.command));
+  if (listed.length > 1) return listed.flatMap((one: ListCommand): DeliveryIntent[] => lineIntents_read(one.command, delivering));
   if (assignment_parse(trimmed) !== null) return [];
   const segments: string[] = pipes_parse(trimmed);
   if (segments.length > 1) {
-    return segments.flatMap((segment: string, at: number): DeliveryIntent[] => (at === 0 || laterSegment_runsInEngine(segment) ? commandIntents_read(segment) : []));
+    return segments.flatMap((segment: string, at: number): DeliveryIntent[] => (at === 0 || laterSegment_runsInEngine(segment, delivering) ? commandIntents_read(segment, delivering) : []));
   }
   const redirect: RedirectInfo | null = redirect_parse(trimmed);
-  return commandIntents_read(redirect !== null ? redirect.command : trimmed);
+  return commandIntents_read(redirect !== null ? redirect.command : trimmed, delivering);
 }

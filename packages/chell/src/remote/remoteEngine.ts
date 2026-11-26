@@ -213,7 +213,7 @@ export class RemoteEngine implements BrasaEngine {
     this.requestSinks.set(id, sink_get());
     // What this line asks to have written here, read from the line itself
     // before the daemon sees it: a delivery is honoured only against this.
-    this.deliveryIntents.set(id, deliveryIntents_read(line));
+    this.deliveryIntents.set(id, deliveryIntents_read(line, this.backendId));
     try {
       const envelopes: CommandEnvelope[] = await this.request<CommandEnvelope[]>('execute', { line }, id);
       // A daemon that names no status leaves the envelopes to say it.

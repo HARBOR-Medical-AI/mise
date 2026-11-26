@@ -91,7 +91,9 @@ const DELIVERY_LINES: ReadonlyArray<{ line: string; intents: Array<{ verb: strin
   (JSON.parse(readFileSync(new URL('../../brasa/tests/fixtures/deliveryLines.json', import.meta.url), 'utf8')) as { lines: Array<{ line: string; intents: Array<{ verb: string; destination: string | null }> }> }).lines;
 const { deliveryIntent_matches } = await import('../../brasa/dist/builtins/fs/deliveryMatch.js');
 jest.unstable_mockModule('@fnndsc/brasa', () => ({
-  deliveryIntents_read: (line: string): Array<{ verb: string; destination: string | null }> => {
+  deliveryIntents_read: (line: string, backend: string | undefined): Array<{ verb: string; destination: string | null }> => {
+    // The table is the ChRIS reader's. Any other backend has no delivering command (held in brasa's test too).
+    if (backend !== 'chris') return [];
     const row = DELIVERY_LINES.find((one) => one.line === line);
     // Lines that are not about delivery at all (the rest of this file) ask for nothing.
     if (row === undefined && /download/.test(line)) throw new Error(`not in the shared table: ${line}`);
@@ -552,6 +554,7 @@ describe('RemoteEngine live output', () => {
       });
     };
 
+    attachResponse = { ...attachResponse, backend: 'chris' };
     remote = await RemoteEngine.connect({
       url: 'ws://127.0.0.1:1',
       token: 'token',
@@ -572,6 +575,22 @@ describe('RemoteEngine live output', () => {
   });
 
   describe('a delivery is bound to the download that asked for it', () => {
+    // A ChRIS session, which is the one that has `download`.
+    beforeEach(() => { attachResponse = { ...attachResponse, backend: 'chris' }; });
+
+    it('the same line asks for a file in a ChRIS session and for none in a stratus one, which has no download', async () => {
+      const line: string = 'ls /x | download /a ./later';
+      expect((await delivery_during(line, './later')).delivered).toEqual(['./later']);
+      attachResponse = { ...attachResponse, backend: 'stratus' };
+      const stratus = await delivery_during(line, './later');
+      expect(stratus.delivered).toEqual([]);
+      expect(refusal_of(stratus.sent)).toContain('asks for no file');
+      const plain = await delivery_during('download /home/me/scan.dcm ./scans', './scans');
+      expect(plain.delivered).toEqual([]);
+      delete attachResponse['backend'];
+      expect((await delivery_during('download /home/me/scan.dcm ./scans', './scans')).delivered).toEqual([]);
+    });
+
     /** The refusal the client sent for a delivery, if it sent one. */
     function refusal_of(sent: Array<Record<string, unknown>>, deliverId: string = 'd1'): string | undefined {
       const error: Record<string, unknown> | undefined = sent.find((one: Record<string, unknown>): boolean => one['type'] === 'deliverError' && one['deliverId'] === deliverId);

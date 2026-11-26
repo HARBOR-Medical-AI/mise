@@ -907,8 +907,8 @@ export const deliverMessageSchema = z.object({
   /**
    * The surface's own id for the line whose command asked for this delivery.
    * A surface on another machine honours a delivery only against what that
-   * line said, so it must be told which line; a daemon that does not say
-   * leaves the surface to refuse unless exactly one of its lines is running.
+   * line said, so it must be told which line; a delivery that does not say
+   * is refused by such a surface.
    */
   id: z.string().optional(),
   path: z.string(),

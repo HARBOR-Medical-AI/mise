@@ -40,7 +40,14 @@ const TABLE: ReadonlyArray<TableLine> = (JSON.parse(readFileSync(new URL('./fixt
 
 describe('deliveryIntents_read', () => {
   it.each(TABLE.map((row: TableLine): [string, TableLine] => [row.line, row]))('%j', (_line: string, row: TableLine) => {
-    expect(deliveryIntents_read(row.line)).toEqual(row.intents);
+    expect(deliveryIntents_read(row.line, 'chris')).toEqual(row.intents);
+  });
+});
+
+describe('deliveryIntents_read, by the session\'s backend', () => {
+  it.each(TABLE.map((row: TableLine): [string] => [row.line]))('%j asks for nothing in a stratus session, which has no download, nor in one that names no backend', (line: string) => {
+    expect(deliveryIntents_read(line, 'stratus')).toEqual([]);
+    expect(deliveryIntents_read(line, undefined)).toEqual([]);
   });
 });
 
@@ -68,14 +75,14 @@ describe('deliveryIntent_matches', () => {
   });
 
   it('an intent that cannot be bound matches nothing, not even the spelling it was written with', () => {
-    const unbound = deliveryIntents_read('download /a $OUT');
+    const unbound = deliveryIntents_read('download /a $OUT', 'chris');
     expect(unbound).toHaveLength(1);
     expect(unbound[0]?.unbound).toContain('written with a reference');
     expect(deliveryIntent_matches(unbound, '$OUT')).toBe(false);
     expect(deliveryIntent_matches(unbound, undefined)).toBe(false);
     expect(deliveryIntent_matches(unbound, '/data/out')).toBe(false);
     // The same letters, quoted so they are text, are a place like any other.
-    expect(deliveryIntent_matches(deliveryIntents_read("download /a '$OUT'"), '$OUT')).toBe(true);
+    expect(deliveryIntent_matches(deliveryIntents_read("download /a '$OUT'", 'chris'), '$OUT')).toBe(true);
   });
 
   it('a delivery with no destination matches only an intent with none', () => {
