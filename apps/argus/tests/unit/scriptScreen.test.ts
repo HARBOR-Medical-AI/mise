@@ -738,6 +738,45 @@ describe('the script screen', () => {
     screen.root.remove();
   });
 
+  it('of two scripts opened one after the other, the later is the screen\'s, whichever is read first', async () => {
+    const { screen, hooks } = screen_make();
+    const answer: ScriptHooks['ask'] = hooks.ask;
+    let slow: () => void = (): void => undefined;
+    const held: Promise<void> = new Promise((resolve: () => void): void => { slow = resolve; });
+    hooks.ask = async (line: string): Promise<QuietAnswer> => {
+      // The first script's text is slow to come; the second's is its own text, told apart by its network.
+      if (line === 'cat /scripts/chrisproject/store.mise') await held;
+      const answered: QuietAnswer = await answer(line);
+      if (line !== 'cat /scripts/chrisproject/other.mise') return answered;
+      return { envelopes: [{ rendered: (answered.envelopes[0]?.rendered ?? '').replace('10.20.0.0/16', '10.77.0.0/16'), status: 'ok' }] } as QuietAnswer;
+    };
+    const first: Promise<void> = screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    await screen.open('/scripts/chrisproject/other.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const field = (): HTMLInputElement => screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    expect(field().value).toBe('10.77.0.0/16');
+    // The second is the operator's to edit though the first is still out.
+    expect(field().disabled).toBe(false);
+    field().focus();
+    field().value = '10.88.0.0/16';
+    field().dispatchEvent(new Event('input'));
+    expect(button_named(screen.root, 'SAVE')).toBeDefined();
+    // The first comes back now: nothing of it is put on the screen.
+    slow();
+    await first;
+    await settle();
+    expect(screen.path_get()).toBe('/scripts/chrisproject/other.mise');
+    expect(field().value).toBe('10.88.0.0/16');
+    expect(field().disabled).toBe(false);
+    expect(lineOption_get(screen.root.querySelector('.ss-line-text')?.textContent ?? '', '--cidr')).toBe('10.88.0.0/16');
+    expect(button_named(screen.root, 'SAVE')).toBeDefined();
+    screen.dispose();
+    screen.root.remove();
+  });
+
   it('an edit in READ leaves each pill saying what a pill drawn fresh would: refused, or asking first, never plainly "sends"', async () => {
     for (const elevate of [null, async (): Promise<boolean> => true]) {
       const { screen } = screen_make(['done', 'done', 'ready', 'not yet', 'not yet'], false, false, elevate);

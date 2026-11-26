@@ -224,30 +224,38 @@ export class VmScreen extends ScriptScreen {
    * @param name - The VM, or `''` to start one.
    */
   public async vm_open(name: string): Promise<void> {
-    // Held as being read until the machine's script is the screen's: see `reading`.
-    this.reading += 1;
+    // Held as being read until the machine's script is the screen's, by this open until a later one takes
+    // the hold: see `reading`.
+    const hold: object = {};
+    this.reading = hold;
+    let latest: boolean = false;
     try {
-      await this.vm_openHeld(name);
+      latest = await this.vm_openHeld(name);
     } finally {
-      this.reading -= 1;
+      if (this.reading === hold) this.reading = null;
     }
     // Drawn while it was being read, the fields were held; drawn again now, they are the machine's to edit.
-    this.draw();
+    // (Not when another machine was opened meanwhile: the screen is that one's to draw.)
+    if (latest) this.draw();
   }
 
   /**
    * Reads a machine, or starts a new one, and makes its script the screen's.
    *
    * @param name - The VM, or `''` to start one.
+   * @returns Whether this open is still the latest when it ends. When
+   *   another machine was opened while this one was being read, nothing of
+   *   this one is installed after that point, and false is returned.
    *
    * @example
-   * await this.vm_openHeld('store');
+   * const latest: boolean = await this.vm_openHeld('store');
    */
-  private async vm_openHeld(name: string): Promise<void> {
+  private async vm_openHeld(name: string): Promise<boolean> {
     await this.vms_read();
     this.vm = name;
     // A machine opened, or opened again: what was typed into the script before is not this one's.
     this.editSession_begin();
+    const session: number = this.editSession;
     this.stepLogs.clear();
     if (name === '') {
       this.path = '';
@@ -265,10 +273,12 @@ export class VmScreen extends ScriptScreen {
       this.draw();
       void this.limits_need();
       void this.standing_read();
-      return;
+      return true;
     }
     const opened: VmStatusRow | undefined = this.vms.find((each: VmStatusRow): boolean => each.name === name);
     const path: string | null = vmKeyless_is(opened ?? null) ? null : await this.vmScript_find(name);
+    // Another machine was opened while this one's script was being looked for: the screen is that one's.
+    if (session !== this.editSession) return false;
     if (vmKeyless_is(opened ?? null)) {
       // Seen, not built on from here: no script is made for it, so no act writes one that would declare it anew.
       this.path = '';
@@ -280,6 +290,7 @@ export class VmScreen extends ScriptScreen {
       this.unsaved = false;
       this.edited = false;
       await this.script_read();
+      if (session !== this.editSession) return false;
     } else {
       // No script declares it: its record is its script until the first act writes one.
       const row: VmStatusRow | undefined = this.vms.find((each: VmStatusRow): boolean => each.name === name);
@@ -288,7 +299,9 @@ export class VmScreen extends ScriptScreen {
       // Read from its record, not edited: written at the first act, as the header's chip says; its lines' states are read from the text.
       this.unsaved = true;
       this.edited = false;
-      this.lines = lines_build(text, (await this.status_read(this.path, text))?.lines ?? []);
+      const standings = await this.status_read(this.path, text);
+      if (session !== this.editSession) return false;
+      this.lines = lines_build(text, standings?.lines ?? []);
     }
     this.steps = this.steps_derive(this.lines);
     // A machine opens on its SIZE; a line running takes the seat it runs in; one this session can only see, on what it is.
@@ -308,6 +321,7 @@ export class VmScreen extends ScriptScreen {
     void this.standing_read();
     void this.chris_read();
     this.running_follow();
+    return true;
   }
 
   /** The title the tab wears. */

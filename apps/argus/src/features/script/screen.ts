@@ -314,12 +314,15 @@ export class ScriptScreen {
    */
   protected editSession: number = 0;
   /**
-   * How many reads of a script are under way. While one is, the lines on
-   * the screen are about to be replaced: a field is drawn disabled, and
-   * what is typed into any field (one left from before, or one a redraw
-   * made meanwhile) changes nothing.
+   * The read of a script now under way for the screen, or null when none
+   * is. While one is, the lines on the screen are about to be replaced: a
+   * field is drawn disabled, and what is typed into any field (one left
+   * from before, or one a redraw made meanwhile) changes nothing. It is the
+   * latest read that holds it: an earlier one still out (a script opened
+   * and then another before the first came back) neither keeps the hold
+   * when the later has ended nor installs what it read.
    */
-  protected reading: number = 0;
+  protected reading: object | null = null;
   /** The last SAVE, where and when: its receipt stands on the seat until the next edit. */
   protected saved: { path: string; at: string; view: string } | null = null;
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
@@ -427,8 +430,11 @@ export class ScriptScreen {
     this.edited = false;
     // A script opened, or opened again: what was typed into the one before is not this one's.
     this.editSession_begin();
+    const session: number = this.editSession;
     this.stepLogs.clear();
     await this.script_read();
+    // Another script was opened while this one was being read: the screen is that one's.
+    if (session !== this.editSession) return;
     // The rail opens on the step running now, else on the first that needs the operator.
     const first: ScriptStep | undefined = runningStep_find(this.steps) ?? this.steps.find((step: ScriptStep): boolean => step.state === 'changed' || step.state === 'ready') ?? this.steps[0];
     this.view = first?.key ?? LIBRARY_VIEW;
@@ -588,30 +594,38 @@ export class ScriptScreen {
   // ---------------------------------------------------------------- reading
 
   protected async script_read(): Promise<void> {
-    // Held as being read for the whole of it: see `reading`.
-    this.reading += 1;
+    // Held as being read for the whole of it, by this read until a later one takes the hold: see `reading`.
+    const hold: object = {};
+    this.reading = hold;
     try {
-      await this.scriptText_read();
+      await this.scriptText_read(this.editSession);
     } finally {
-      this.reading -= 1;
+      if (this.reading === hold) this.reading = null;
     }
   }
 
   /**
    * Reads the script at the path and what stands of each of its lines, and
-   * makes them the screen's.
+   * makes them the screen's: unless, by the time an answer comes back, a
+   * later edit session has begun (another script was opened meanwhile), in
+   * which case nothing of this read is installed.
+   *
+   * @param session - The edit session the read is for.
    *
    * @example
-   * await this.scriptText_read();
+   * await this.scriptText_read(this.editSession);
    */
-  protected async scriptText_read(): Promise<void> {
+  protected async scriptText_read(session: number): Promise<void> {
+    const path: string = this.path;
     let text: string = '';
     try {
-      text = text_extract(await this.hooks.ask(`cat ${this.path}`));
+      text = text_extract(await this.hooks.ask(`cat ${path}`));
     } catch (error: unknown) {
-      this.log_add(`cat ${this.path}: ${error instanceof Error ? error.message : String(error)}`, 'note');
+      if (session === this.editSession) this.log_add(`cat ${path}: ${error instanceof Error ? error.message : String(error)}`, 'note');
     }
-    const standings = await this.status_read(this.path);
+    if (session !== this.editSession) return;
+    const standings = await this.status_read(path);
+    if (session !== this.editSession) return;
     this.lines = this.accountsHeld_apply(lines_build(text, standings?.lines ?? []));
     this.readText = text;
     this.stoodFor = new Map(this.lines.map((line: ScriptLine): [number, string] => [line.number, line.text]));
@@ -621,6 +635,7 @@ export class ScriptScreen {
     if (draft !== null && draft.path === this.path) {
       this.draftOffered = null;
       const edited = await this.status_read(this.path, draft.text);
+      if (session !== this.editSession) return;
       this.lines = this.accountsHeld_apply(lines_build(draft.text, edited?.lines ?? []));
       this.edited = true;
       this.draftRestored = { at: new Date().toISOString(), edits: draft.edits, moved: draft.read !== text };
@@ -1581,12 +1596,12 @@ export class ScriptScreen {
     input.placeholder = placeholder;
     input.spellcheck = false;
     input.autocomplete = 'off';
-    input.disabled = this.busy !== null || this.reading > 0;
+    input.disabled = this.busy !== null || this.reading !== null;
     input.addEventListener('input', (): void => {
       // A field left on the screen from a script since replaced, or drawn while the next one is being read:
       // its line is not, or is about to be no longer, the screen's, and what is typed into it is neither
       // kept nor counted as an edit of the script being read.
-      if (session !== this.editSession || this.reading > 0) return;
+      if (session !== this.editSession || this.reading !== null) return;
       // The line takes the value without the spaces around it; the field keeps what was typed, so a space
       // typed on the way to the next word is still there for that word to follow.
       line.text = lineOption_set(line.text, word, input.value.trim());
