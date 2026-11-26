@@ -370,15 +370,39 @@ describe('resources_getAll is steered by what the server sent, not by what was k
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('does not read a later fetch that yields nothing as the page before it, again', async () => {
+  it('says the walk stopped short when a later page does not come, and does not read the page before it again', async () => {
     const fetch = jest.fn()
       .mockResolvedValueOnce(listResource_make(rows_make(100), 'resources', true))
       .mockResolvedValue(null);
     const resource: ChRISResource = new ChRISResource();
-    resource.binding_applyGet({}, fetch as never);
+    resource.binding_applyGet({}, fetch as never, 'Missing');
     const all: FilteredResourceData | null = await resource.resources_getAll();
     expect(all?.tableData).toHaveLength(100);
+    expect(all?.incomplete?.gathered).toBe(100);
+    expect(all?.incomplete?.reason).toContain('the page at offset 100 did not come as a list');
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('says the walk stopped short when a later page is not a list, with no row counted twice', async () => {
+    const fetch = jest.fn()
+      .mockResolvedValueOnce(listResource_make(rows_make(100), 'resources', true))
+      .mockResolvedValue({ data: { id: 7 } });
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never, 'Missing');
+    const all: FilteredResourceData | null = await resource.resources_getAll();
+    expect(all?.tableData).toHaveLength(100);
+    expect(new Set(all?.tableData.map((row: Record<string, unknown>) => row.id)).size).toBe(100);
+    expect(all?.incomplete?.reason).toContain('the page at offset 100 did not come as a list');
+  });
+
+  it('fails when a later page does not come and nothing had matched: the match may be on it', async () => {
+    const fetch = jest.fn(async (params: Record<string, unknown>) => {
+      if ('name' in params) throw new Error('400 unknown query param');
+      return Number(params.offset ?? 0) === 0 ? listResource_make(rows_make(100), 'resources', true) : null;
+    });
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never, 'Missing');
+    await expect(resource.resources_getAll({ name: 'item-150' })).rejects.toThrow('the page at offset 100 did not come as a list');
   });
 });
 

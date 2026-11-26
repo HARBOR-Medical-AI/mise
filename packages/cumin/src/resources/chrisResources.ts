@@ -333,7 +333,14 @@ export class ChRISResource {
       this._resourceCollection = null;
       try {
         const asked: ListOptions | null = await this.resources_getList(pageOptions);
-        if (this.collection_read() === null) break;
+        if (!resource_isList(this.collection_read())) {
+          // Nothing came, or something that is not a list. For the first
+          // page that is how a collection with nothing in it answers. For a
+          // later page it is a page that went missing: the one before it
+          // was not the last, and its rows are not the whole answer.
+          if (offset === 0) break;
+          throw new Error(`${this._resourceName}: the page at offset ${offset} did not come as a list`);
+        }
         result = this.resources_filterByFields(await this.resourceFields_get(asked));
       } catch (error: unknown) {
         // A walk that never started is a FAILED listing and stays a failure:
