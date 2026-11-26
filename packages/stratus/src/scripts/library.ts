@@ -48,16 +48,22 @@ export interface GitAnswer {
  *
  * @param args - git's arguments.
  * @param cwd - Where.
- * @param network - Whether git is kept off this host's own transports (`file`, `ext`), within what the operator's own policy allows.
+ * @param network - Whether git is held to the transports that leave this host, within what the operator's own policy allows; every transport of this host (`file`, `ext`, any installed remote helper) is then refused by git itself.
  * @returns Whether it succeeded, and its last line.
  */
 export function git_run(args: ReadonlyArray<string>, cwd?: string, network: boolean = false): GitAnswer {
-  // With `network`, git itself is held off this host's own transports, whatever a clone's configured upstream
-  // or a redirect says: by two keys on its command line where the operator's policy is git's configuration,
-  // and by a shortened list where the operator's policy is a list in the environment (which git lets replace
-  // its configuration). No part of the operator's policy is widened either way.
+  // With `network`, git itself is held to the transports that leave this host, whatever a clone's configured
+  // upstream or a redirect says: by keys on its command line where the operator's policy is git's
+  // configuration, and by a shortened list where the operator's policy is a list in the environment (which
+  // git lets replace its configuration). No part of the operator's policy is widened either way.
   const inherited: string | undefined = process.env['GIT_ALLOW_PROTOCOL'];
-  const held: ReadonlyArray<string> = network ? [...LOCAL_TRANSPORTS_OFF, ...args] : args;
+  let held: ReadonlyArray<string> = args;
+  if (network && inherited === undefined) {
+    const keys: ReadonlyArray<string> | { readonly refused: string } = networkOnly_keys((key: string): string | null | ConfigUnread => gitConfig_read(key, cwd));
+    // A policy that could not be read is not guessed at: git is not run.
+    if (!Array.isArray(keys)) return { ok: false, text: (keys as { readonly refused: string }).refused };
+    held = [...keys, ...args];
+  }
   const ran: SpawnSyncReturns<string> = spawnSync('git', [...held], {
     encoding: 'utf-8',
     ...(cwd !== undefined ? { cwd } : {}),
@@ -68,37 +74,86 @@ export function git_run(args: ReadonlyArray<string>, cwd?: string, network: bool
 }
 
 /**
- * The transports of git's own that leave this host. `file`, and every
- * helper that is a program on this host (`ext`), are not among them.
+ * The transports of git's own that leave this host, each with the policy
+ * git gives it when nothing is configured (`git help config`,
+ * `protocol.allow`): the four it knows as safe are `always`, any other is
+ * `user`. `file`, `ext` and every other remote helper, each of which is a
+ * program on this host, are not among them.
  */
-export const NETWORK_PROTOCOLS: ReadonlyArray<string> = ['https', 'ssh', 'git', 'http', 'ftp', 'ftps'];
+export const NETWORK_PROTOCOLS: Readonly<Record<string, 'always' | 'user'>> = { https: 'always', ssh: 'always', git: 'always', http: 'always', ftp: 'user', ftps: 'user' };
+
+/** A configuration key that could not be read: neither set nor shown to be unset. */
+export interface ConfigUnread {
+  /** Why. */
+  readonly unread: string;
+}
 
 /**
- * git's own configuration, given on its command line, that turns the
- * transports of this host off and says nothing of any other.
+ * Reads one key of git's configuration as git would where it is about to
+ * run, telling a key that is not set from a read that failed.
  *
- * A key given with `-c` overrides that one key and no more. So every
- * other part of the operator's policy stands exactly as git reads it: a
- * transport set to `never` stays never, one set to `user` stays subject to
- * `GIT_PROTOCOL_FROM_USER`, and the defaults stay the defaults. Nothing is
- * read out of the configuration and re-stated, so nothing can be re-stated
- * wrongly.
+ * @param key - The key.
+ * @param cwd - Where git will run, so a repository's own configuration counts.
+ * @returns The value; null when the key is not set (git's exit status 1); or that it could not be read.
  */
-export const LOCAL_TRANSPORTS_OFF: ReadonlyArray<string> = ['-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never'];
+export function gitConfig_read(key: string, cwd?: string): string | null | ConfigUnread {
+  const ran: SpawnSyncReturns<string> = spawnSync('git', ['config', '--get', key], { encoding: 'utf-8', env: { ...process.env }, ...(cwd !== undefined && fs.existsSync(cwd) ? { cwd } : {}) });
+  if (ran.status === 0) return ran.stdout.trim();
+  if (ran.status === 1) return null;
+  return { unread: `${key}: ${(ran.stderr || ran.error?.message || `git config ended with ${String(ran.status)}`).trim().split('\n').at(-1) ?? ''}` };
+}
+
+/**
+ * git's own configuration, for its command line, that leaves it only the
+ * transports that leave this host and keeps the operator's policy for
+ * each of those as it is.
+ *
+ * `protocol.allow=never` makes `never` the policy of every transport that
+ * has no key of its own: `file`, `ext`, and any remote helper installed on
+ * this host, by whatever name. That same key would also take over from
+ * git's built-in policy for the network transports, so each of those is
+ * given a key of its own, unless the operator already gave it one: the
+ * value the operator set as their general policy (`protocol.allow`) where
+ * they set one, and otherwise the policy git has built in. A value of
+ * `user` is passed on as `user`, so it stays subject to
+ * `GIT_PROTOCOL_FROM_USER`; a transport the operator set to `never` has
+ * its own key and is not touched.
+ *
+ * @param read - How a configuration key is read.
+ * @returns The `-c` arguments, or a refusal when the operator's policy could not be read or is no policy git knows.
+ */
+export function networkOnly_keys(read: (key: string) => string | null | ConfigUnread): ReadonlyArray<string> | { readonly refused: string } {
+  const refuse = (why: string): { readonly refused: string } => ({ refused: `git's transport policy could not be read (${why}); nothing was fetched` });
+  const general: string | null | ConfigUnread = read('protocol.allow');
+  if (general !== null && typeof general !== 'string') return refuse(general.unread);
+  if (general !== null && !POLICIES.includes(general)) return refuse(`protocol.allow is ${JSON.stringify(general)}`);
+  const keys: string[] = ['-c', 'protocol.allow=never'];
+  for (const [protocol, builtIn] of Object.entries(NETWORK_PROTOCOLS)) {
+    const own: string | null | ConfigUnread = read(`protocol.${protocol}.allow`);
+    if (own !== null && typeof own !== 'string') return refuse(own.unread);
+    if (own !== null && !POLICIES.includes(own)) return refuse(`protocol.${protocol}.allow is ${JSON.stringify(own)}`);
+    // The operator's own key for this transport stands as it is; only where there is none is one given.
+    if (own === null) keys.push('-c', `protocol.${protocol}.allow=${general ?? builtIn}`);
+  }
+  return keys;
+}
+
+/** The policies git knows for a transport. */
+const POLICIES: ReadonlyArray<string> = ['always', 'never', 'user'];
 
 /**
  * The `GIT_ALLOW_PROTOCOL` to give git when the process was started under
  * one: what that policy and the network transports have in common, which
  * may be nothing. A list in the environment replaces git's configuration
- * wholesale, the `-c` keys above included, so here the list itself is
- * what must lose the local transports; it is only ever made shorter.
+ * wholesale, any `-c` key included, so here the list itself is what must
+ * lose every transport of this host; it is only ever made shorter.
  *
  * @param inherited - The `GIT_ALLOW_PROTOCOL` the process was started with.
  * @returns The value to give git.
  */
 export function networkProtocols_allow(inherited: string): string {
   const own: string[] = inherited.split(':').map((one: string): string => one.trim()).filter((one: string): boolean => one !== '');
-  return NETWORK_PROTOCOLS.filter((protocol: string): boolean => own.includes(protocol)).join(':');
+  return Object.keys(NETWORK_PROTOCOLS).filter((protocol: string): boolean => own.includes(protocol)).join(':');
 }
 
 /** The library: its sources, as configured and as cloned. */

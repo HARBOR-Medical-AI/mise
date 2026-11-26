@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { stratusBackend_make } from '../src/backend.js';
 import { ClusterStore } from '../src/cluster/state.js';
-import { LOCAL_TRANSPORTS_OFF, ScriptLibrary, git_run, networkProtocols_allow, scriptsRoot_derive } from '../src/scripts/library.js';
+import { ScriptLibrary, git_run, gitConfig_read, networkOnly_keys, networkProtocols_allow, scriptsRoot_derive } from '../src/scripts/library.js';
 import { scripts_run } from '../src/commands/scripts.js';
 import { ScriptsProvider } from '../src/vfs/scripts.js';
 import { backend_install, HeadlessSurface, manifestText_read, surface_set } from '@fnndsc/brasa/core';
@@ -431,8 +431,75 @@ describe('the library stays inside itself', () => {
     expect(ran).toEqual([]);
   });
 
+  it('builds git\'s keys from the operator\'s policy, and refuses to run git on a policy it could not read', () => {
+    const none = (): null => null;
+    expect(networkOnly_keys(none)).toEqual(['-c', 'protocol.allow=never',
+      '-c', 'protocol.https.allow=always', '-c', 'protocol.ssh.allow=always', '-c', 'protocol.git.allow=always', '-c', 'protocol.http.allow=always',
+      '-c', 'protocol.ftp.allow=user', '-c', 'protocol.ftps.allow=user']);
+    // A transport the operator configured has no key given for it: theirs stands. Their general policy fills the rest.
+    const set: Record<string, string> = { 'protocol.allow': 'user', 'protocol.ssh.allow': 'never' };
+    expect(networkOnly_keys((key: string): string | null => set[key] ?? null)).toEqual(['-c', 'protocol.allow=never',
+      '-c', 'protocol.https.allow=user', '-c', 'protocol.git.allow=user', '-c', 'protocol.http.allow=user', '-c', 'protocol.ftp.allow=user', '-c', 'protocol.ftps.allow=user']);
+    // A read that failed, and a value that is no policy, are neither of them taken for "not set".
+    expect(networkOnly_keys((key: string) => (key === 'protocol.ssh.allow' ? { unread: 'protocol.ssh.allow: bad config line 3' } : null))).toEqual({ refused: "git's transport policy could not be read (protocol.ssh.allow: bad config line 3); nothing was fetched" });
+    expect(networkOnly_keys((key: string) => (key === 'protocol.allow' ? 'sometimes' : null))).toEqual({ refused: 'git\'s transport policy could not be read (protocol.allow is "sometimes"); nothing was fetched' });
+    // And through git itself: a configuration file that cannot be parsed stops the fetch before git is asked for anything.
+    const config: string = join(root, 'broken-gitconfig');
+    writeFileSync(config, '[protocol\n\tallow = ');
+    const saved = [process.env['GIT_CONFIG_GLOBAL'], process.env['GIT_ALLOW_PROTOCOL']];
+    try {
+      process.env['GIT_CONFIG_GLOBAL'] = config;
+      delete process.env['GIT_ALLOW_PROTOCOL'];
+      expect(gitConfig_read('protocol.allow')).toMatchObject({ unread: expect.stringContaining('protocol.allow') });
+      expect(git_run(['ls-remote', 'https://git.example.invalid/x.git'], undefined, true)).toMatchObject({ ok: false, text: expect.stringContaining("git's transport policy could not be read") });
+    } finally {
+      if (saved[0] === undefined) delete process.env['GIT_CONFIG_GLOBAL']; else process.env['GIT_CONFIG_GLOBAL'] = saved[0];
+      if (saved[1] === undefined) delete process.env['GIT_ALLOW_PROTOCOL']; else process.env['GIT_ALLOW_PROTOCOL'] = saved[1];
+    }
+  });
+
+  it('refuses a remote helper installed on this host, by whatever name, before the helper is run', () => {
+    // A helper git would run for `leak://…`: a program on this host that says it ran by leaving a file.
+    const bin: string = join(root, 'bin');
+    const ranMark: string = join(root, 'helper-ran');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'git-remote-leak'), `#!/bin/sh\ntouch '${ranMark}'\nexit 1\n`, { mode: 0o755 });
+    const names = ['PATH', 'GIT_ALLOW_PROTOCOL', 'GIT_PROTOCOL_FROM_USER', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
+    const saved = names.map((name) => process.env[name]);
+    try {
+      process.env['PATH'] = `${bin}:${process.env['PATH'] ?? ''}`;
+      process.env['GIT_CONFIG_GLOBAL'] = join(root, 'empty-gitconfig');
+      writeFileSync(join(root, 'empty-gitconfig'), '');
+      process.env['GIT_CONFIG_NOSYSTEM'] = '1';
+      delete process.env['GIT_ALLOW_PROTOCOL'];
+      delete process.env['GIT_PROTOCOL_FROM_USER'];
+      // Without the restriction git runs it: the helper is real, and this is what is being kept out.
+      git_run(['ls-remote', 'leak://anything']);
+      expect(existsSync(ranMark)).toBe(true);
+      rmSync(ranMark);
+      // With it, and no list in the environment, git refuses the transport and the helper is never started.
+      const refused = git_run(['ls-remote', 'leak://anything'], undefined, true);
+      expect(refused.ok).toBe(false);
+      expect(refused.text).toMatch(/not allowed/);
+      expect(existsSync(ranMark)).toBe(false);
+      // The same under a list in the environment, which names it and loses it.
+      process.env['GIT_ALLOW_PROTOCOL'] = 'leak:https';
+      expect(git_run(['ls-remote', 'leak://anything'], undefined, true).text).toMatch(/not allowed/);
+      expect(existsSync(ranMark)).toBe(false);
+      // And for a clone's own configured upstream: a pull in a repository whose origin is that helper.
+      delete process.env['GIT_ALLOW_PROTOCOL'];
+      const work: string = join(root, 'helper-clone');
+      mkdirSync(work);
+      expect(git_run(['init', '-q'], work).ok).toBe(true);
+      expect(git_run(['remote', 'add', 'origin', 'leak://anything'], work).ok).toBe(true);
+      expect(git_run(['pull', '--quiet', '--ff-only', 'origin', 'main'], work, true).text).toMatch(/not allowed/);
+      expect(existsSync(ranMark)).toBe(false);
+    } finally {
+      names.forEach((name, at) => { const value = saved[at]; if (value === undefined) delete process.env[name]; else process.env[name] = value; });
+    }
+  });
+
   it('with no policy in the environment, leaves git\'s own configuration exactly as the operator set it, and turns off only this host\'s transports', () => {
-    expect(LOCAL_TRANSPORTS_OFF).toEqual(['-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never']);
     const config: string = join(root, 'gitconfig');
     // ssh is never; git is user, which git allows a person at a terminal and refuses when told the request is not theirs.
     writeFileSync(config, '[protocol "ssh"]\n\tallow = never\n[protocol "git"]\n\tallow = user\n');
@@ -462,10 +529,16 @@ describe('the library stays inside itself', () => {
       expect(byPolicy(`file://${repo}`)).toBe(true);
       expect(byPolicy(repo)).toBe(true);
       expect(git_run(['ls-remote', repo]).ok).toBe(true);
-      // A configuration that allowed file outright is overridden for file alone.
-      writeFileSync(config, '[protocol "file"]\n\tallow = always\n[protocol "ssh"]\n\tallow = never\n');
+      // The operator's general policy is what an unconfigured network transport gets, not git's built-in one.
+      writeFileSync(config, '[protocol]\n\tallow = user\n[protocol "ssh"]\n\tallow = always\n');
+      process.env['GIT_PROTOCOL_FROM_USER'] = '0';
+      expect(byPolicy('https://git.example.invalid/x.git')).toBe(true);
+      expect(byPolicy('ssh://git@git.example.invalid/x.git')).toBe(false);
       expect(byPolicy(`file://${repo}`)).toBe(true);
-      expect(byPolicy('ssh://git@git.example.invalid/x.git')).toBe(true);
+      process.env['GIT_PROTOCOL_FROM_USER'] = '1';
+      expect(byPolicy('https://git.example.invalid/x.git')).toBe(false);
+      // Even told the request is the user's own, this host's transports stay off.
+      expect(byPolicy(`file://${repo}`)).toBe(true);
     } finally {
       names.forEach((name, at) => { const value = saved[at]; if (value === undefined) delete process.env[name]; else process.env[name] = value; });
     }
