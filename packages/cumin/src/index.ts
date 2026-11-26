@@ -58,6 +58,8 @@ export * from "./output/runtimeOutput";
 
 // Re-export chrisapi types so downstream packages don't import chrisapi directly
 export { listData_get, itemData_get, items_get, client_adminPluginUpload, type PluginAdminSource } from "./chrisapi/adapter";
+// What an answer must look like before it is used as its type: each of the three readers above takes one.
+export { shape_build, shape_object, shape_nullable, rows_check, ShapeError, type Shape, type ShapeField, type FieldKind, type FieldSpec, type RowsOf } from "./chrisapi/shape";
 export { pace_get, pace_note, pace_reset, pace_isPageMethod, PACE_WINDOW, type CubePace } from "./chrisapi/pace";
 
 // Typed wire contract over the hot API surfaces (jobs, PACS): downstream

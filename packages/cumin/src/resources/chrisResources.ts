@@ -14,6 +14,8 @@ import {
   type ListResource,
   type Resource,
   type ItemResource,
+  shape_build,
+  type Shape,
 } from "../chrisapi/adapter.js";
 import { chrisConnection } from "../connect/chrisConnection.js";
 import { connectionConfig } from "../config/config.js";
@@ -52,6 +54,12 @@ export interface Item {
   href: string;
   links: Array<unknown>;
 }
+
+/** A field of a collection item: its name is read as text. */
+const ITEM_FIELD_SHAPE: Shape<Item['data'][number]> = shape_build<Item['data'][number]>('a field of a collection item')(['name', 'string']);
+
+/** A collection item: its fields are walked as a list, each by name, and its address is split as text. */
+const ITEM_SHAPE: Shape<Item> = shape_build<Item>('a collection item')(['data', { rows: ITEM_FIELD_SHAPE }], ['href', 'string']);
 
 interface ResourcesFromOptions {
   resources: ListResource | Resource | null;
@@ -209,7 +217,7 @@ export class ChRISResource {
     if (!resources || !resources.collection) {
       return null;
     }
-    return collectionItems_get<Item>(resources).map((item: Item) => ({
+    return collectionItems_get(resources, ITEM_SHAPE).map((item: Item) => ({
       data: item.data,
       href: item.href,
       links: item.links,

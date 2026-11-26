@@ -11,10 +11,23 @@
  *
  * @module
  */
-import { itemData_get, listData_get, type Client, type Feed } from "../chrisapi/adapter.js";
+import { itemData_get, listData_get, type Client, type Feed, shape_object, type Shape } from "../chrisapi/adapter.js";
 import { chrisConnection } from "../connect/chrisConnection.js";
 import { errorStack } from "../error/errorStack.js";
 import { Result, Ok, Err } from "../utils/result.js";
+
+/** A row of a feed's permissions: its fields are read only after a check of their own. */
+const PERMISSION_ROW_SHAPE: Shape<Record<string, unknown>> = shape_object('a feed permission');
+
+/** A feed's own record, as far as its visibility is read. */
+interface FeedVisibility {
+  /** Whether the feed is public: compared with `true`, never trusted to be a boolean. */
+  public?: unknown;
+}
+
+/** A feed read for its visibility: an object, its one field compared and never trusted. */
+const FEED_VISIBILITY_SHAPE: Shape<FeedVisibility> = shape_object<FeedVisibility>('a feed');
+
 
 /** Who can read a feed besides its owner. */
 export interface FeedAccess {
@@ -63,7 +76,7 @@ async function feed_reach(feedId: number, doing: string): Promise<Feed | null> {
 async function holders_drain(fetch: (offset: number) => Promise<{ data?: unknown } | null>, field: string): Promise<string[]> {
   const names: string[] = [];
   for (let offset: number = 0; ; offset += PERMISSIONS_PAGE) {
-    const rows: Array<Record<string, unknown>> = listData_get<Record<string, unknown>>(await fetch(offset));
+    const rows: Array<Record<string, unknown>> = listData_get(await fetch(offset), PERMISSION_ROW_SHAPE);
     for (const row of rows) {
       const name: string = String(row[field] ?? row['group_name'] ?? '');
       if (name !== '') names.push(name);
@@ -85,7 +98,7 @@ export async function feedAccess_read(feedId: number): Promise<Result<FeedAccess
     if (feed === null) return Err();
     const users: string[] = await holders_drain((offset: number) => feed.getUserPermissions({ limit: PERMISSIONS_PAGE, offset }), 'username');
     const groups: string[] = await holders_drain((offset: number) => feed.getGroupPermissions({ limit: PERMISSIONS_PAGE, offset }), 'grp_name');
-    const data: { public?: unknown } | null = itemData_get<{ public?: unknown }>(feed);
+    const data: { public?: unknown } | null = itemData_get(feed, FEED_VISIBILITY_SHAPE);
     return Ok({ users, groups, public: data?.public === true });
   } catch (error: unknown) {
     errorStack.stack_push('error', `Failed to read the access list of feed ${feedId}: ${error instanceof Error ? error.message : String(error)}`);

@@ -13,6 +13,9 @@ import {
   type GroupUser,
   type GroupUserList,
   type User,
+  shape_object,
+  shape_build,
+  type Shape,
 } from '../chrisapi/adapter.js';
 import { collectionPage_wrap, listPages_drain, listPages_walk, type ListPage } from '../chrisapi/contract.js';
 import { errorStack } from '../error/errorStack.js';
@@ -25,11 +28,26 @@ export interface ChrisGroup {
   name: string;
 }
 
+/** A group as CUBE lists it: its id is used as a number (a gid, an argument) and its name as text. */
+export const CHRIS_GROUP_SHAPE: Shape<ChrisGroup> = shape_build<ChrisGroup>('a group')(['id', 'number'], ['name', 'string']);
+
 /** Represents a user's membership in a ChRIS group. */
 export interface ChrisGroupMember {
   id: number;
   username: string;
 }
+
+/** A member of a group: the name is read as text. */
+const GROUP_MEMBER_SHAPE: Shape<ChrisGroupMember> = shape_build<ChrisGroupMember>('a group member')(['username', 'string']);
+
+/** A group's data where it is only kept under its id, after the id has been looked at: nothing is read unchecked. */
+const GROUP_KEY_SHAPE: Shape<ChrisGroup> = shape_object<ChrisGroup>('a group');
+
+/** A group resource kept from a listing so that its members can be listed off it: that is done by calling it. */
+const GROUP_RESOURCE_SHAPE: Shape<Group> = shape_build<Group>('a group resource')(['getUsers', 'function']);
+
+/** A membership resource: its user is fetched by calling it. */
+const GROUP_USER_SHAPE: Shape<GroupUser> = shape_build<GroupUser>('a group membership')(['getUser', 'function']);
 
 /** The group items a session's groups listing served, by id, per client. */
 const groupItems: WeakMap<object, Map<number, Group>> = new WeakMap();
@@ -54,6 +72,9 @@ interface MembershipRow {
   user_username?: unknown;
 }
 
+/** A membership row: each field is looked at before it is used. */
+const MEMBERSHIP_ROW_SHAPE: Shape<MembershipRow> = shape_object<MembershipRow>('a group membership');
+
 /**
  * Reads the member a membership row names, without a request.
  *
@@ -61,7 +82,7 @@ interface MembershipRow {
  * @returns The member, or null when the row carries no user id and name.
  */
 function membershipMember_read(membership: { data?: unknown }): ChrisGroupMember | null {
-  const row: MembershipRow | null = itemData_get<MembershipRow>(membership);
+  const row: MembershipRow | null = itemData_get(membership, MEMBERSHIP_ROW_SHAPE);
   if (!row || typeof row.user_id !== 'number' || typeof row.user_username !== 'string') return null;
   return { id: row.user_id, username: row.user_username };
 }
@@ -113,12 +134,12 @@ export class ChRISGroupGroup extends ChRISResourceGroup {
         async (offset: number, limit: number): Promise<ListPage<ChrisGroup>> => {
           const page: GroupList = await client.getGroups({ limit, offset });
           // The items are kept by id: a group's members are read off its item.
-          const served: Group[] = typeof (page as { getItems?: unknown }).getItems === 'function' ? items_get<Group>(page) : [];
+          const served: Group[] = typeof (page as { getItems?: unknown }).getItems === 'function' ? items_get(page, GROUP_RESOURCE_SHAPE) : [];
           for (const item of served) {
-            const data: ChrisGroup | null = itemData_get<ChrisGroup>(item);
+            const data: ChrisGroup | null = itemData_get(item, GROUP_KEY_SHAPE);
             if (data && typeof data.id === 'number') items.set(data.id, item);
           }
-          return collectionPage_wrap(page, listData_get<ChrisGroup>(page));
+          return collectionPage_wrap(page, listData_get(page, CHRIS_GROUP_SHAPE));
         },
       );
       return Ok(groups);
@@ -143,7 +164,7 @@ export class ChRISGroupGroup extends ChRISResourceGroup {
       for await (const step of listPages_walk(
         async (offset: number, limit: number): Promise<ListPage<GroupUser>> => {
           const page: GroupUserList = await group.getUsers({ limit, offset });
-          return collectionPage_wrap(page, items_get<GroupUser>(page));
+          return collectionPage_wrap(page, items_get(page, GROUP_USER_SHAPE));
         },
       )) {
         // A membership row names its user (user_id, user_username): the
@@ -155,7 +176,7 @@ export class ChRISGroupGroup extends ChRISResourceGroup {
             const named: ChrisGroupMember | null = membershipMember_read(membershipResource);
             if (named) return named;
             const userResource: User = await membershipResource.getUser();
-            const member: ChrisGroupMember | null = itemData_get<ChrisGroupMember>(userResource);
+            const member: ChrisGroupMember | null = itemData_get(userResource, GROUP_MEMBER_SHAPE);
             if (!member) throw new Error('group membership carried no linked user data');
             return member;
           }),
@@ -183,7 +204,7 @@ export class ChRISGroupGroup extends ChRISResourceGroup {
       if (!group) return Err();
       const membershipResource: GroupUser = await group.adminAddUser(username);
       const membership: ChrisGroupMember | null = membershipMember_read(membershipResource)
-        ?? itemData_get<ChrisGroupMember>(await membershipResource.getUser());
+        ?? itemData_get(await membershipResource.getUser(), GROUP_MEMBER_SHAPE);
       if (!membership) {
         errorStack.stack_push('error', `CUBE returned no membership for ${username}.`);
         return Err();

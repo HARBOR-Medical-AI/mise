@@ -22,6 +22,9 @@ import {
   type Tagging,
   type Tag,
   type TagFeedList,
+  shape_object,
+  shape_build,
+  type Shape,
 } from "../chrisapi/adapter.js";
 import { chrisConnection } from "../connect/chrisConnection.js";
 import { collectionPage_wrap, listPages_drain, type ListPage } from "../chrisapi/contract.js";
@@ -34,6 +37,30 @@ export interface FeedTag {
   name: string;
   color: string;
 }
+
+/** A tag in a list: its name is compared and shown as text, its id used as a number. */
+const FEED_TAG_SHAPE: Shape<FeedTag> = shape_build<FeedTag>('a tag')(['id', 'number'], ['name', 'string']);
+
+/** One of the user's own tags, read for the roster: its id and colour are kept as they are; its name is looked at first. */
+const OWNED_TAG_SHAPE: Shape<FeedTag> = shape_build<FeedTag>('a tag')(['id', 'number'], ['color', 'string']);
+
+/** The data of a tagging: what joins a tag to a feed. */
+interface TaggingData {
+  /** The tag's id; only compared. */
+  ['tag_id']?: number;
+}
+
+/** A feed that wears a tag. */
+interface TaggedFeed {
+  /** The feed's id. */
+  id: number;
+}
+
+/** A tagging: an object, its tag's id only compared. */
+const TAGGING_SHAPE: Shape<TaggingData> = shape_object<TaggingData>('a tagging');
+
+/** A feed that wears a tag: its id is kept as a number. */
+const TAGGED_FEED_SHAPE: Shape<TaggedFeed> = shape_build<TaggedFeed>('a tagged feed')(['id', 'number']);
 
 /** One of the user's tags, and the feeds that wear it. */
 export interface TagEntry {
@@ -98,7 +125,7 @@ async function feed_reach(feedId: number, doing: string): Promise<{ client: Clie
 async function tags_drain(feed: Feed): Promise<FeedTag[]> {
   return listPages_drain(async (offset: number, limit: number): Promise<ListPage<FeedTag>> => {
     const list: FeedTagList = await feed.getTags({ limit, offset });
-    return collectionPage_wrap(list, listData_get<FeedTag>(list));
+    return collectionPage_wrap(list, listData_get(list, FEED_TAG_SHAPE));
   });
 }
 
@@ -135,7 +162,7 @@ export async function feedTag_add(feedId: number, name: string): Promise<Result<
     if (worn.some((tag: FeedTag): boolean => tag.name === name)) return Ok(false);
     // CUBE lists a user their own tags: a name found here is theirs.
     const owned: TagList = await reached.client.getTags({ name });
-    const found: FeedTag | undefined = listData_get<FeedTag>(owned).find((tag: FeedTag): boolean => tag.name === name);
+    const found: FeedTag | undefined = listData_get(owned, FEED_TAG_SHAPE).find((tag: FeedTag): boolean => tag.name === name);
     if (found === undefined) {
       errorStack.stack_push('error', tagMissing_message(name));
       return Err();
@@ -165,7 +192,7 @@ export async function feedTag_remove(feedId: number, name: string): Promise<Resu
     if (tag === undefined) return Ok(false);
     const taggings: FeedTaggingList = await reached.feed.getTaggings({ limit: 100, offset: 0 });
     const tagging: Tagging | undefined = ((taggings.getItems() ?? []) as Tagging[])
-      .find((one: Tagging): boolean => itemData_get<{ tag_id?: number }>(one)?.tag_id === tag.id);
+      .find((one: Tagging): boolean => itemData_get(one, TAGGING_SHAPE)?.tag_id === tag.id);
     if (tagging === undefined) return Ok(false);
     await tagging.delete();
     feedTagsMap_forget();
@@ -204,12 +231,12 @@ async function tagsIndex_read(now: number): Promise<Result<NonNullable<typeof ta
       if (!page.hasNextPage) break;
     }
     for (const tag of found) {
-      const data: FeedTag | null = itemData_get<FeedTag>(tag);
+      const data: FeedTag | null = itemData_get(tag, OWNED_TAG_SHAPE);
       const name: string = data?.name ?? '';
       if (name === '' || data === null) continue;
       const feeds: Array<{ id: number }> = await listPages_drain(async (offset: number, limit: number): Promise<ListPage<{ id: number }>> => {
         const list: TagFeedList = await tag.getTaggedFeeds({ limit, offset });
-        return collectionPage_wrap(list, listData_get<{ id: number }>(list));
+        return collectionPage_wrap(list, listData_get(list, TAGGED_FEED_SHAPE));
       });
       tags.set(name, { id: data.id, name, color: data.color, feeds: feeds.map((feed: { id: number }): number => feed.id) });
       resources.set(name, tag);
@@ -261,7 +288,7 @@ export async function tag_create(name: string): Promise<Result<boolean>> {
   }
   try {
     const owned: TagList = await client.getTags({ name });
-    if (listData_get<FeedTag>(owned).some((tag: FeedTag): boolean => tag.name === name)) {
+    if (listData_get(owned, FEED_TAG_SHAPE).some((tag: FeedTag): boolean => tag.name === name)) {
       errorStack.stack_push('error', `${name}: File exists`);
       return Err();
     }

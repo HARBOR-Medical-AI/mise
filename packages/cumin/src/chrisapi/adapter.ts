@@ -20,6 +20,7 @@
  */
 
 import { pace_isPageMethod, pace_note } from './pace.js';
+import { rows_check, shape_object, ShapeError, type Shape } from './shape.js';
 import Client, { ListResource, PACSRetrieve, Request } from '@fnndsc/chrisapi';
 
 /**
@@ -399,83 +400,164 @@ export function resource_isList(resource: unknown): resource is ListResource {
   return resource instanceof ListResource;
 }
 
+// What an answer must look like before it is used as its type: every reader below takes a shape, and those
+// who read through this seam get the means to write one from it.
+export { rows_check, shape_build, shape_nullable, shape_object, ShapeError, type Shape, type ShapeField } from './shape.js';
+
 /**
- * Extracts the `data` payload of a list resource as a typed array.
+ * Anything that may carry a `data` payload.
+ *
+ * @example
+ * const logs: DataCarrier = await resource_call(resource, DATA_CARRIER_SHAPE, 'getLogs');
+ */
+export interface DataCarrier {
+  /** The payload, when there is one; read through a shape of its own. */
+  data?: unknown;
+}
+
+/**
+ * A list resource, as far as its items are read.
+ *
+ * @example
+ * const page: ItemsCarrier = await client.getGroups();
+ */
+export interface ItemsCarrier {
+  /** What is called for the items; looked at before it is called. */
+  getItems?: unknown;
+}
+
+/**
+ * Anything that may carry a `data` payload: held only to being an object,
+ * its `data` read through `listData_get` or `itemData_get` with a shape of
+ * its own.
+ */
+export const DATA_CARRIER_SHAPE: Shape<DataCarrier> = shape_object<DataCarrier>('a resource');
+
+/**
+ * Reads the `data` of a list resource as rows of a shape.
+ *
+ * Absence and malformation are two answers. No `data` at all (or no list)
+ * is an empty list. `data` that is there and is not an array, or a row
+ * that is not what the shape says is read, is a `ShapeError`: a listing
+ * short by rows it does not mention is never returned.
  *
  * @param list - A chrisapi list resource (or anything carrying `data`).
- * @returns The `data` array as `T[]`, or an empty array when absent.
+ * @param shape - The shape of a row.
+ * @returns The rows; empty when there is no `data`.
+ * @throws {ShapeError} When `data` is present and is not a list of the shape.
  */
-export function listData_get<T>(list: { data?: unknown } | null | undefined): T[] {
+export function listData_get<T>(list: { data?: unknown } | null | undefined, shape: Shape<T>): T[] {
   const data: unknown = list?.data;
-  return Array.isArray(data) ? (data as T[]) : [];
+  if (data === undefined || data === null) return [];
+  return rows_check(data, shape, 'data');
 }
 
 /**
- * Extracts the `data` payload of an item resource as a typed object.
+ * Reads the `data` of an item resource as a shape.
  *
  * @param item - A chrisapi item resource (or anything carrying `data`).
- * @returns The `data` object as `T`, or null when absent.
+ * @param shape - The shape of the data.
+ * @returns The data; null when there is none.
+ * @throws {ShapeError} When `data` is present and is not what the shape says is read.
  */
-export function itemData_get<T>(item: { data?: unknown } | null | undefined): T | null {
+export function itemData_get<T>(item: { data?: unknown } | null | undefined, shape: Shape<T>): T | null {
   const data: unknown = item?.data;
-  return data === undefined || data === null ? null : (data as T);
+  return data === undefined || data === null ? null : shape.value_check(data, 'data');
 }
 
 /**
- * Returns the items of a list resource as a typed array.
+ * Reads the items of a list resource as a shape each.
  *
- * @param list - A chrisapi list resource exposing `getItems()`.
- * @returns The items as `T[]`, or an empty array when absent.
+ * @param list - A chrisapi list resource exposing `getItems()`; null or undefined for none.
+ * @param shape - The shape of an item.
+ * @returns The items; empty when there is no list, or it has no items.
+ * @throws {ShapeError} When the list has no `getItems` to call, what it returns is not a list, or an item is not what the shape says is read.
  */
-export function items_get<T>(list: { getItems(): unknown } | null | undefined): T[] {
-  const items: unknown = list?.getItems();
-  return Array.isArray(items) ? (items as T[]) : [];
+export function items_get<T>(list: ItemsCarrier | null | undefined, shape: Shape<T>): T[] {
+  if (list === undefined || list === null) return [];
+  const read: unknown = list.getItems;
+  if (typeof read !== 'function') throw new ShapeError(`a list of ${shape.what}`, 'getItems', read === undefined ? 'missing' : `a ${typeof read}`, 'a function');
+  const items: unknown = (read as () => unknown).call(list);
+  if (items === undefined || items === null) return [];
+  return rows_check(items, shape, 'items');
 }
 
 /**
- * Returns the collection+json items embedded in a resource as a typed array.
+ * Reads the collection+json items embedded in a resource as a shape each.
  *
  * @param resource - A chrisapi resource carrying a `collection` document.
- * @returns The collection items as `T[]`, or an empty array when absent.
+ * @param shape - The shape of an item.
+ * @returns The items; empty when the collection has none.
+ * @throws {ShapeError} When the items are present and are not a list of the shape.
  */
 export function collectionItems_get<T>(
   resource: { collection?: unknown } | null | undefined,
+  shape: Shape<T>,
 ): T[] {
-  const items: unknown = (resource?.collection as { items?: unknown } | undefined)?.items;
-  return Array.isArray(items) ? (items as T[]) : [];
+  const collection: unknown = resource?.collection;
+  const items: unknown = typeof collection === 'object' && collection !== null ? (collection as { items?: unknown }).items : undefined;
+  if (items === undefined || items === null) return [];
+  return rows_check(items, shape, 'collection.items');
 }
 
 /**
- * Invokes a method on a chrisapi object that its typings do not declare.
+ * Invokes a method on a chrisapi object that its typings do not declare,
+ * and hands back what it answered as it is: unknown.
  *
  * Used for client/resource methods that exist at runtime but are missing or
  * mistyped in `@fnndsc/chrisapi` (e.g. `createWorkflow`,
- * `getPipelineSourceFiles`, `_post`, `put` with a `path` body).
+ * `getPipelineSourceFiles`, `_post`, `put` with a `path` body). For a call
+ * whose answer is not read (a delete, a put), or is read only after checks
+ * of the caller's own. A caller that reads the answer as a type uses
+ * `resource_call`, which holds it to a shape.
  *
  * @param obj - The chrisapi object to dispatch on.
  * @param methodName - Name of the runtime method to invoke.
  * @param args - Arguments forwarded to the method.
- * @returns The method's resolved value as `T`.
+ * @returns The method's resolved value, unchecked and untyped.
  * @throws {Error} When the named method does not exist on the object.
  */
-export async function resource_call<T>(
+export async function resource_invoke(
   obj: object,
   methodName: string,
   ...args: unknown[]
-): Promise<T> {
+): Promise<unknown> {
   const method: unknown = (obj as Record<string, unknown>)[methodName];
   if (typeof method !== 'function') {
     throw new Error(`chrisapi object has no method '${methodName}'`);
   }
   if (!pace_isPageMethod(methodName)) {
-    return (method as (...callArgs: unknown[]) => Promise<T>).apply(obj, args);
+    return (method as (...callArgs: unknown[]) => Promise<unknown>).apply(obj, args);
   }
   // A page fetch is timed: the pace register is how a surface turns a
   // walk's page count into minutes.
   const startedAt: number = performance.now();
-  const result: T = await (method as (...callArgs: unknown[]) => Promise<T>).apply(obj, args);
+  const result: unknown = await (method as (...callArgs: unknown[]) => Promise<unknown>).apply(obj, args);
   pace_note(Math.round(performance.now() - startedAt));
   return result;
+}
+
+/**
+ * Invokes a method on a chrisapi object and holds what it answers to a shape.
+ *
+ * @param obj - The chrisapi object to dispatch on.
+ * @param shape - The shape of the answer.
+ * @param methodName - Name of the runtime method to invoke.
+ * @param args - Arguments forwarded to the method.
+ * @returns The answer, as the shape's type.
+ * @throws {Error} When the named method does not exist on the object.
+ * @throws {ShapeError} When the answer is not what the shape says is read.
+ *
+ * @example
+ * const logs: DataCarrier = await resource_call(resource, DATA_CARRIER_SHAPE, 'getLogs');
+ */
+export async function resource_call<T>(
+  obj: object,
+  shape: Shape<T>,
+  methodName: string,
+  ...args: unknown[]
+): Promise<T> {
+  return shape.value_check(await resource_invoke(obj, methodName, ...args));
 }
 
 /**

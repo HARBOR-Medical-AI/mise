@@ -18,6 +18,9 @@ import {
   client_authGet,
   pacsRetrieve_deleteByUrl,
   type Client,
+  shape_object,
+  shape_build,
+  type Shape,
 } from "../chrisapi/adapter.js";
 import { chrisConnection } from "../connect/chrisConnection.js";
 import { tag_extractRaw, studies_extractFromDecoded, series_extractFromStudy } from "./dicomPayload.js";
@@ -100,6 +103,39 @@ export interface PACSQueryRecord {
   [key: string]: unknown;
 }
 
+/** A PACS server in a list: its id is the number a query is made with. */
+const PACS_SERVER_SHAPE: Shape<PACSServer> = shape_build<PACSServer>('a PACS server')(['id', 'number']);
+
+/** A PACS query just made: its id is the number everything after refers to it by. */
+const PACS_QUERY_MADE_SHAPE: Shape<PACSQueryRecord> = shape_build<PACSQueryRecord>('a PACS query')(['id', 'number']);
+
+/** A PACS query read back: each of its fields is read through a check of its own. */
+const PACS_QUERY_READ_SHAPE: Shape<PACSQueryRecord> = shape_object<PACSQueryRecord>('a PACS query');
+
+/** A PACS query's data where its result is decoded: the result is looked at before it is used. */
+const PACS_QUERY_DATA_SHAPE: Shape<PACSQueryData> = shape_object<PACSQueryData>('a PACS query');
+
+/** A PACS retrieve's data: its id is a number. (Its other fields cannot be checked against a live PACS under this project's rules, and are left as they were.) */
+const PACS_RETRIEVE_DATA_SHAPE: Shape<PACSRetrieveItemData> = shape_build<PACSRetrieveItemData>('a PACS retrieve')(['id', 'number']);
+
+/** A PACS retrieve in a list: its data is read field by field. */
+const PACS_RETRIEVE_ITEM_SHAPE: Shape<PACSRetrieveItem> = shape_build<PACSRetrieveItem>('a PACS retrieve')(['data', PACS_RETRIEVE_DATA_SHAPE]);
+
+/** What a PACS series record says of where it is and what it is: each field is read through a default or a check of its own. */
+interface PACSSeriesData {
+  /** Where the series' files are, as CUBE's path. */
+  ['folder_path']?: string;
+  /** The series' modality. */
+  ['Modality']?: string;
+  /** The series' description. */
+  ['SeriesDescription']?: string;
+  /** The series' instance UID. */
+  ['SeriesInstanceUID']?: string;
+}
+
+/** A PACS series record. */
+const PACS_SERIES_SHAPE: Shape<PACSSeriesData> = shape_object<PACSSeriesData>('a PACS series');
+
 /**
  * Options for listing PACS queries.
  */
@@ -150,7 +186,7 @@ export async function pacsServer_resolve(
       identifier: pacsserver,
       limit: 5,
     });
-    const matches: PACSServer[] = listData_get<PACSServer>(list);
+    const matches: PACSServer[] = listData_get(list, PACS_SERVER_SHAPE);
     if (matches.length === 1) {
       const match: PACSServer = matches[0];
       return Ok({ id: match.id, identifier: match.identifier });
@@ -308,7 +344,7 @@ export async function pacsQueries_create(
       return Err();
     }
     const query: Awaited<ReturnType<typeof client.createPACSQuery>> = await client.createPACSQuery(id, data);
-    const queryData: PACSQueryRecord | null = itemData_get<PACSQueryRecord>(query);
+    const queryData: PACSQueryRecord | null = itemData_get(query, PACS_QUERY_MADE_SHAPE);
     const record: PACSQueryRecord = {
       id: queryData?.id as number,
       title: queryData?.title as string,
@@ -358,7 +394,7 @@ export async function pacsQuery_resultDecode(
       return Err();
     }
 
-    const queryData: PACSQueryData | null = itemData_get<PACSQueryData>(query);
+    const queryData: PACSQueryData | null = itemData_get(query, PACS_QUERY_DATA_SHAPE);
     const raw: string | undefined = queryData?.result;
     if (!raw || typeof raw !== "string") {
       errorStack.stack_push("error", `PACS query ${queryId} has no result payload.`);
@@ -428,7 +464,7 @@ export async function pacsQuery_get(queryId: number): Promise<Result<PACSQueryRe
       errorStack.stack_push("error", `PACS query ${queryId} not found.`);
       return Err();
     }
-    const qData: PACSQueryRecord | null = itemData_get<PACSQueryRecord>(query);
+    const qData: PACSQueryRecord | null = itemData_get(query, PACS_QUERY_READ_SHAPE);
     return Ok({
       id: queryId,
       title: qData?.title as string | undefined,
@@ -481,7 +517,7 @@ export async function pacsRetrieve_create(
     }
 
     const retrieve: Awaited<ReturnType<typeof client.createPACSRetrieve>> = await client.createPACSRetrieve(queryId);
-    const retrieveData: PACSRetrieveItemData | null = itemData_get<PACSRetrieveItemData>(retrieve);
+    const retrieveData: PACSRetrieveItemData | null = itemData_get(retrieve, PACS_RETRIEVE_DATA_SHAPE);
     const record: PACSRetrieveRecord = {
       id: retrieveData?.id as number,
       pacs_query_id: queryId,
@@ -521,7 +557,7 @@ export async function pacsRetrieves_list(
     }
 
     const retrieveList: Awaited<ReturnType<NonNullable<typeof query>["getRetrieves"]>> = await query.getRetrieves(options);
-    const items: PACSRetrieveItem[] = items_get<PACSRetrieveItem>(retrieveList);
+    const items: PACSRetrieveItem[] = items_get(retrieveList, PACS_RETRIEVE_ITEM_SHAPE);
 
     const records: PACSRetrieveRecord[] = items.map((item: PACSRetrieveItem): PACSRetrieveRecord => ({
       id: item.data.id,
@@ -688,7 +724,7 @@ async function patientSeries_fetch(pacs: string, patientID: string): Promise<Map
     if (!items || items.length === 0) break;
     for (const item of items) {
       const data: { folder_path?: string; Modality?: string; SeriesDescription?: string } | null =
-        itemData_get<{ folder_path?: string; Modality?: string; SeriesDescription?: string }>(item);
+        itemData_get(item, PACS_SERIES_SHAPE);
       const folder: string | undefined = data?.folder_path?.replace(/^\/+/, '');
       if (!folder) continue;
       const facts: PACSSeriesFacts = {};
@@ -757,7 +793,7 @@ export async function seriesStorage_resolve(
     }
 
     const seriesData: { folder_path?: string } | null =
-      itemData_get<{ folder_path?: string }>(seriesItems[0]);
+      itemData_get(seriesItems[0], PACS_SERIES_SHAPE);
     const rawFolder: string | undefined = seriesData?.folder_path;
     if (!rawFolder) {
       return Ok(empty);
@@ -905,7 +941,7 @@ export async function seriesStorage_resolveMany(
         if (!items || items.length === 0) return;
         for (const item of items) {
           const data: { folder_path?: string; SeriesInstanceUID?: string } | null =
-            itemData_get<{ folder_path?: string; SeriesInstanceUID?: string }>(item);
+            itemData_get(item, PACS_SERIES_SHAPE);
           const uid: string | undefined = data?.SeriesInstanceUID;
           const rawFolder: string | undefined = data?.folder_path;
           if (!uid || !rawFolder) continue;

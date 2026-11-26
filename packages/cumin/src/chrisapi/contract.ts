@@ -32,6 +32,13 @@ import {
   listData_get,
   method_exists,
   resource_call,
+  resource_invoke,
+  DATA_CARRIER_SHAPE,
+  type DataCarrier,
+  shape_nullable,
+  shape_object,
+  shape_build,
+  type Shape,
 } from './adapter';
 import type { PipelineRecord } from '../pipelines/chrisPipeline';
 import { pipelineResource_keep, pipelineResource_recall } from '../pipelines/pipelineMemo';
@@ -374,15 +381,99 @@ interface WirePage {
 }
 
 /**
+ * A page as CUBE serves one, or nothing. Each thing read off a page (its
+ * rows, its count, its items) is looked at before it is used, so the page
+ * itself is held only to being an object; a call that answers nothing is
+ * an empty page, as it has always been.
+ */
+const WIRE_PAGE_SHAPE: Shape<WirePage | null> = shape_nullable(shape_object<WirePage>('a page'));
+
+/** A resource that may carry data, or nothing: a lookup by id answers nothing when there is none. */
+const DATA_CARRIER_OR_NONE_SHAPE: Shape<DataCarrier | null> = shape_nullable(DATA_CARRIER_SHAPE);
+
+/** A feed in a listing: its id is a number and its name text; everything else is read through a conversion. */
+const FEED_DATA_SHAPE: Shape<FeedData> = shape_build<FeedData>('a feed')(['id', 'number'], ['name', 'string']);
+
+/**
+ * A plugin instance as this contract hands it on. Those it is handed to read
+ * each field through a conversion, a default or a check of their own (its
+ * id through `Number`, its status through `?? ''`, its output path through
+ * `?.`), so nothing in it is read unchecked and it is held only to being an
+ * object.
+ */
+const PLUGIN_INSTANCE_DATA_SHAPE: Shape<PluginInstanceData> = shape_object<PluginInstanceData>('a plugin instance');
+
+/** A parameter set on a plugin instance: its name and value are read through checks of their own. */
+const INSTANCE_PARAMETER_SHAPE: Shape<InstanceParameterData> = shape_object<InstanceParameterData>('a plugin instance parameter');
+
+/** A row of a plugin instance's log. */
+interface LogRow {
+  /** The row's text; looked at before it is used. */
+  log?: unknown;
+}
+
+/** A row of a plugin instance's log: an object, its text looked at before it is used. */
+const LOG_ROW_SHAPE: Shape<LogRow> = shape_object<LogRow>('a log row');
+
+/** A pipeline source file: its file name is joined into a path as text. */
+const PIPELINE_SOURCE_FILE_DATA_SHAPE: Shape<PipelineSourceFileData> = shape_build<PipelineSourceFileData>('a pipeline source file')(['fname', 'string']);
+
+/** A piping of a pipeline: its id is a number (a key, an argument). */
+const PLUGIN_PIPING_DATA_SHAPE: Shape<PluginPipingData> = shape_build<PluginPipingData>('a plugin piping')(['id', 'number']);
+
+/** A default parameter of a piping: the piping's id is a number when it is given. */
+const PIPING_DEFAULT_PARAMETER_SHAPE: Shape<PipingDefaultParameterData> = shape_build<PipingDefaultParameterData>('a piping default parameter')(['plugin_piping_id', 'number?']);
+
+/** A parameter a plugin declares: its name is text. */
+const PLUGIN_PARAMETER_SHAPE: Shape<PluginParameterData> = shape_build<PluginParameterData>('a plugin parameter')(['name', 'string']);
+
+/** A compute resource a plugin runs on: its name is read through a check of its own. */
+const COMPUTE_RESOURCE_DATA_SHAPE: Shape<ComputeResourceData> = shape_object<ComputeResourceData>('a compute resource');
+
+/** A plugin: each of its fields is read through a check or a default. */
+const PLUGIN_DATA_SHAPE: Shape<PluginData> = shape_object<PluginData>('a plugin');
+
+/** A plugin resource fetched from a piping, or nothing: its parameters and compute resources are fetched by calls that check the method is there. */
+const PLUGIN_RESOURCE_OR_NONE_SHAPE: Shape<object | null> = shape_nullable(shape_object<object>('a plugin'));
+
+/**
+ * A pipeline's own record: its id is a number and its name text. (The same
+ * fields as the pipelines module holds a pipeline to; said again here
+ * because that module is built on this one.)
+ */
+const PIPELINE_DATA_SHAPE: Shape<PipelineRecord> = shape_build<PipelineRecord>('a pipeline')(['id', 'number'], ['name', 'string']);
+
+/** A download token's resource. */
+interface DownloadTokenResource {
+  /** The token's data; read through a shape of its own. */
+  data?: unknown;
+  /** The address the token is used at; read through a conversion. */
+  url?: unknown;
+}
+
+/** A download token's data. */
+interface DownloadTokenData {
+  /** The token; read through a conversion. */
+  token?: unknown;
+}
+
+/** A download token's resource: an object, its address read through a conversion. */
+const DOWNLOAD_TOKEN_RESOURCE_SHAPE: Shape<DownloadTokenResource> = shape_object<DownloadTokenResource>('a download token');
+
+/** A download token's data: an object, the token read through a conversion. */
+const DOWNLOAD_TOKEN_SHAPE: Shape<DownloadTokenData> = shape_object<DownloadTokenData>('a download token');
+
+/**
  * Normalizes a raw chrisapi list response into a typed ListPage.
  *
+ * @param shape - The shape of a row.
  * @param page - The raw list resource (or null/undefined).
  * @returns The typed page; totalCount is null when the server sent none.
  */
-function listPage_wrap<T>(page: WirePage | null | undefined): ListPage<T> {
+function listPage_wrap<T>(shape: Shape<T>, page: WirePage | null | undefined): ListPage<T> {
   const total: unknown = page?.totalCount;
   return {
-    data: listData_get<T>(page ?? undefined),
+    data: listData_get(page ?? undefined, shape),
     totalCount: typeof total === 'number' && total >= 0 ? total : null,
   };
 }
@@ -399,7 +490,7 @@ export async function feedsPage_get(
   client: Client,
   params: Record<string, unknown>,
 ): Promise<ListPage<FeedData>> {
-  return listPage_wrap<FeedData>(await resource_call<WirePage>(client, 'getFeeds', params, FEED_LIST_TIMEOUT_MS));
+  return listPage_wrap(FEED_DATA_SHAPE, await resource_call(client, WIRE_PAGE_SHAPE, 'getFeeds', params, FEED_LIST_TIMEOUT_MS));
 }
 
 /**
@@ -416,7 +507,7 @@ export async function publicFeedsPage_get(
   params: Record<string, unknown>,
 ): Promise<ListPage<FeedData> | null> {
   if (!method_exists(client, 'getPublicFeeds')) return null;
-  return listPage_wrap<FeedData>(await resource_call<WirePage>(client, 'getPublicFeeds', params, FEED_LIST_TIMEOUT_MS));
+  return listPage_wrap(FEED_DATA_SHAPE, await resource_call(client, WIRE_PAGE_SHAPE, 'getPublicFeeds', params, FEED_LIST_TIMEOUT_MS));
 }
 
 /**
@@ -431,8 +522,7 @@ export async function pluginInstancesPage_get(
   client: Client,
   params: Record<string, unknown>,
 ): Promise<ListPage<PluginInstanceData>> {
-  return listPage_wrap<PluginInstanceData>(
-    await resource_call<WirePage>(client, 'getPluginInstances', params),
+  return listPage_wrap(PLUGIN_INSTANCE_DATA_SHAPE, await resource_call(client, WIRE_PAGE_SHAPE, 'getPluginInstances', params),
   );
 }
 
@@ -448,13 +538,14 @@ export async function pluginInstance_get(
   client: Client,
   instanceID: number,
 ): Promise<PluginInstanceHandle | null> {
-  const resource: { data?: unknown } | null = await resource_call<{ data?: unknown } | null>(
+  const resource: { data?: unknown } | null = await resource_call(
     client,
+    DATA_CARRIER_OR_NONE_SHAPE,
     'getPluginInstance',
     instanceID,
   );
   if (!resource) return null;
-  const data: PluginInstanceData | null = itemData_get<PluginInstanceData>(resource);
+  const data: PluginInstanceData | null = itemData_get(resource, PLUGIN_INSTANCE_DATA_SHAPE);
 
   return {
     data,
@@ -463,23 +554,22 @@ export async function pluginInstance_get(
       params: { limit: number; offset: number },
     ): Promise<ListPage<InstanceParameterData>> {
       // Some chrisapi versions serve rows in `data`, others only via getItems().
-      return listPageFlexible_wrap<InstanceParameterData>(
-        await resource_call<WirePage>(resource, 'getParameters', params),
+      return listPageFlexible_wrap(INSTANCE_PARAMETER_SHAPE, await resource_call(resource, WIRE_PAGE_SHAPE, 'getParameters', params),
       );
     },
 
     async status_set(status: string): Promise<void> {
-      await resource_call<unknown>(resource, 'put', { status });
+      await resource_invoke(resource, 'put', { status });
     },
 
     async delete(): Promise<void> {
-      await resource_call<unknown>(resource, 'delete');
+      await resource_invoke(resource, 'delete');
     },
 
     async logs_get(): Promise<string | null> {
       if (!method_exists(resource, 'getLogs')) return null;
-      const logs: { data?: unknown } = await resource_call<{ data?: unknown }>(resource, 'getLogs');
-      const rows: Array<{ log?: unknown }> = listData_get<{ log?: unknown }>(logs);
+      const logs: { data?: unknown } = await resource_call(resource, DATA_CARRIER_SHAPE, 'getLogs');
+      const rows: Array<{ log?: unknown }> = listData_get(logs, LOG_ROW_SHAPE);
       return rows.map((row: { log?: unknown }): string => (typeof row.log === 'string' ? row.log : '')).join('\n');
     },
   };
@@ -658,16 +748,17 @@ export interface PipelineHandle {
  * Normalizes a chrisapi list response that may serve rows in `data` or only
  * via `getItems()` into a typed ListPage.
  *
+ * @param shape - The shape of a row.
  * @param page - The raw list resource.
  * @returns The typed page; totalCount is null when the server sent none.
  */
-function listPageFlexible_wrap<T>(page: WirePage | null | undefined): ListPage<T> {
+function listPageFlexible_wrap<T>(shape: Shape<T>, page: WirePage | null | undefined): ListPage<T> {
   if (Array.isArray(page?.data) || typeof page?.getItems !== 'function') {
-    return listPage_wrap<T>(page);
+    return listPage_wrap(shape, page);
   }
-  const served: Array<{ data?: unknown }> = items_get<{ data?: unknown }>(page as { getItems(): unknown });
+  const served: Array<{ data?: unknown }> = items_get(page, DATA_CARRIER_SHAPE);
   const rows: T[] = served
-    .map((item: { data?: unknown }): T | null => itemData_get<T>(item))
+    .map((item: { data?: unknown }): T | null => itemData_get(item, shape))
     .filter((row: T | null): row is T => row !== null);
   const total: unknown = page?.totalCount;
   return {
@@ -708,13 +799,11 @@ export function collectionPage_wrap<T>(
 function pluginHandle_wrap(resource: object): PluginHandle {
   return {
     async parametersPage_get(params: Record<string, unknown>): Promise<ListPage<PluginParameterData>> {
-      return listPageFlexible_wrap<PluginParameterData>(
-        await resource_call<WirePage>(resource, 'getPluginParameters', params),
+      return listPageFlexible_wrap(PLUGIN_PARAMETER_SHAPE, await resource_call(resource, WIRE_PAGE_SHAPE, 'getPluginParameters', params),
       );
     },
     async computeResourcesPage_get(params: Record<string, unknown>): Promise<ListPage<ComputeResourceData>> {
-      return listPageFlexible_wrap<ComputeResourceData>(
-        await resource_call<WirePage>(resource, 'getPluginComputeResources', params),
+      return listPageFlexible_wrap(COMPUTE_RESOURCE_DATA_SHAPE, await resource_call(resource, WIRE_PAGE_SHAPE, 'getPluginComputeResources', params),
       );
     },
   };
@@ -744,7 +833,7 @@ export async function pluginsPage_get(
   client: Client,
   params: Record<string, unknown>,
 ): Promise<ListPage<PluginData>> {
-  return listPage_wrap<PluginData>(await resource_call<WirePage>(client, 'getPlugins', params));
+  return listPage_wrap(PLUGIN_DATA_SHAPE, await resource_call(client, WIRE_PAGE_SHAPE, 'getPlugins', params));
 }
 
 /**
@@ -762,18 +851,18 @@ export async function plugin_find(
   name: string,
   version: string,
 ): Promise<PluginFound | null> {
-  const page: WirePage = await resource_call<WirePage>(client, 'getPlugins', {
+  const page: WirePage | null = await resource_call(client, WIRE_PAGE_SHAPE, 'getPlugins', {
     name_exact: name,
     version,
     limit: 1,
   });
   const resources: Array<{ data?: unknown }> =
     typeof page?.getItems === 'function'
-      ? items_get<{ data?: unknown }>(page as { getItems(): unknown })
+      ? items_get(page, DATA_CARRIER_SHAPE)
       : [];
   const resource: { data?: unknown } | undefined = resources[0];
   if (resource === undefined) return null;
-  const data: PluginData | null = itemData_get<PluginData>(resource);
+  const data: PluginData | null = itemData_get(resource, PLUGIN_DATA_SHAPE);
   if (data === null) return null;
   return { data, handle: pluginHandle_wrap(resource) };
 }
@@ -816,25 +905,25 @@ export async function pipeline_get(
   const kept: object | null = pipelineResource_recall(client, pipelineID);
   const resource: { data?: unknown } | null = kept !== null
     ? (kept as { data?: unknown })
-    : await resource_call<{ data?: unknown } | null>(client, 'getPipeline', pipelineID);
+    : await resource_call(client, DATA_CARRIER_OR_NONE_SHAPE, 'getPipeline', pipelineID);
   if (!resource) return null;
   if (kept === null) pipelineResource_keep(client, pipelineID, resource);
 
   const pipingsPage_get = async (params: Record<string, unknown>): Promise<ListPage<PluginPipingItem>> => {
-    const page: WirePage = await resource_call<WirePage>(resource, 'getPluginPipings', params);
+    const page: WirePage | null = await resource_call(resource, WIRE_PAGE_SHAPE, 'getPluginPipings', params);
     const rawItems: Array<{ data?: unknown }> =
       typeof page?.getItems === 'function'
-        ? items_get<{ data?: unknown }>(page as { getItems(): unknown })
-        : listData_get<PluginPipingData>(page).map((row: PluginPipingData): { data?: unknown } => ({ data: row }));
+        ? items_get(page, DATA_CARRIER_SHAPE)
+        : listData_get(page, PLUGIN_PIPING_DATA_SHAPE).map((row: PluginPipingData): { data?: unknown } => ({ data: row }));
     const pipings: PluginPipingItem[] = rawItems
       .map((item: { data?: unknown }): PluginPipingItem | null => {
-        const data: PluginPipingData | null = itemData_get<PluginPipingData>(item);
+        const data: PluginPipingData | null = itemData_get(item, PLUGIN_PIPING_DATA_SHAPE);
         if (!data) return null;
         return {
           data,
           async plugin_get(): Promise<PluginHandle | null> {
             if (!method_exists(item, 'getPlugin')) return null;
-            const plugin: object | null = await resource_call<object | null>(item, 'getPlugin');
+            const plugin: object | null = await resource_call(item, PLUGIN_RESOURCE_OR_NONE_SHAPE, 'getPlugin');
             return plugin ? pluginHandle_wrap(plugin) : null;
           },
         };
@@ -849,7 +938,7 @@ export async function pipeline_get(
   };
 
   return {
-    data: itemData_get<PipelineRecord>(resource),
+    data: itemData_get(resource, PIPELINE_DATA_SHAPE),
 
     pluginPipingsPage_get: pipingsPage_get,
 
@@ -860,8 +949,7 @@ export async function pipeline_get(
     async defaultParametersPage_get(
       params: Record<string, unknown>,
     ): Promise<ListPage<PipingDefaultParameterData>> {
-      return listPageFlexible_wrap<PipingDefaultParameterData>(
-        await resource_call<WirePage>(resource, 'getDefaultParameters', params),
+      return listPageFlexible_wrap(PIPING_DEFAULT_PARAMETER_SHAPE, await resource_call(resource, WIRE_PAGE_SHAPE, 'getDefaultParameters', params),
       );
     },
   };
@@ -879,8 +967,7 @@ export async function pipelineSourceFilesPage_get(
   client: Client,
   params: Record<string, unknown>,
 ): Promise<ListPage<PipelineSourceFileData>> {
-  return listPageFlexible_wrap<PipelineSourceFileData>(
-    await resource_call<WirePage>(client, 'getPipelineSourceFiles', params),
+  return listPageFlexible_wrap(PIPELINE_SOURCE_FILE_DATA_SHAPE, await resource_call(client, WIRE_PAGE_SHAPE, 'getPipelineSourceFiles', params),
   );
 }
 
@@ -915,8 +1002,8 @@ export async function pipelineSourceFiles_drain(
  */
 export async function downloadToken_create(client: Client): Promise<DownloadToken> {
   const resource: { data?: unknown; url?: unknown } =
-    await resource_call<{ data?: unknown; url?: unknown }>(client, 'createDownloadToken');
-  const data: { token?: unknown } | null = itemData_get<{ token?: unknown }>(resource);
+    await resource_call(client, DOWNLOAD_TOKEN_RESOURCE_SHAPE, 'createDownloadToken');
+  const data: { token?: unknown } | null = itemData_get(resource, DOWNLOAD_TOKEN_SHAPE);
   return {
     token: String(data?.token ?? ''),
     url: String(resource?.url ?? ''),

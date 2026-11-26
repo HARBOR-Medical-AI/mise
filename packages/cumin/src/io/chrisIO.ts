@@ -13,10 +13,15 @@ import {
   filebrowserFile_get,
   itemData_get,
   resource_call,
+  resource_invoke,
   type FileBytesSource,
   type Client,
   type FileBrowserFolder,
   type UserFile,
+  shape_nullable,
+  shape_object,
+  shape_build,
+  type Shape,
 } from "../chrisapi/adapter.js";
 import { errorStack } from "../error/errorStack.js";
 import { IStorageProvider } from "./io.js";
@@ -52,6 +57,12 @@ interface UserFileData {
   fname?: string;
   [key: string]: unknown;
 }
+
+/** A file's data where its name is read: through a default, so nothing is read unchecked. */
+const USER_FILE_DATA_SHAPE: Shape<UserFileData> = shape_object<UserFileData>('a file');
+
+/** A file resource that can be downloaded: its bytes are fetched by calling it, as a stream or as a blob. */
+const DOWNLOADABLE_FILE_SHAPE: Shape<UserFile> = shape_build<UserFile>('a file resource')(['getFileStream', 'function'], ['getFileBlob', 'function']);
 
 /**
  * UserFile with data property.
@@ -256,7 +267,7 @@ export class ChrisIO {
       this.lastFileRefusal = httpStatus_extract(error);
     }
     try {
-      const pacsFile: UserFile | null = await resource_call<UserFile | null>(client, 'getPACSFile', fileId);
+      const pacsFile: UserFile | null = await resource_call(client, shape_nullable(DOWNLOADABLE_FILE_SHAPE), 'getPACSFile', fileId);
       if (pacsFile) return pacsFile;
     } catch (error: unknown) {
       this.lastFileRefusal ??= httpStatus_extract(error);
@@ -630,7 +641,7 @@ export class ChrisIO {
         errorStack.stack_push("error", `File not found with ID ${fileId}`);
         return Err<boolean>();
       }
-      await resource_call<unknown>(userFile, '_delete');
+      await resource_invoke(userFile, '_delete');
       return Ok(true);
     } catch (error: unknown) {
       const message: string = error instanceof Error ? error.message : String(error);
@@ -659,7 +670,7 @@ export class ChrisIO {
       const held = await client.getUserFiles({ limit: 5, fname_exact: wanted });
       const items: unknown[] = held.getItems() ?? [];
       for (const item of items) {
-        const fname: string = itemData_get<UserFileData>(item as never)?.fname ?? '';
+        const fname: string = itemData_get(item as never, USER_FILE_DATA_SHAPE)?.fname ?? '';
         const normalized: string = fname.startsWith('/') ? fname.substring(1) : fname;
         if (normalized !== mine) return false;
       }
@@ -751,7 +762,7 @@ export class ChrisIO {
         return Err<boolean>();
       }
       // chrisapi typings omit the path field, but API supports it for renames
-      await resource_call<unknown>(folder, 'put', { path: destPath });
+      await resource_invoke(folder, 'put', { path: destPath });
       return Ok(true);
     } catch (error: unknown) {
       const errorMsg: string = error instanceof Error ? error.message : String(error);
@@ -785,7 +796,7 @@ export class ChrisIO {
       if (!folder) {
         return Ok(true);
       }
-      await resource_call<unknown>(folder, 'delete');
+      await resource_invoke(folder, 'delete');
 
       const deadline: number = Date.now() + (options.timeoutMs ?? 10_000);
       while (Date.now() < deadline) {
@@ -837,7 +848,7 @@ export class ChrisIO {
         return Err<boolean>();
       }
       try {
-        await resource_call<unknown>(userFile, 'put', { upload_path: destPath });
+        await resource_invoke(userFile, 'put', { upload_path: destPath });
         return Ok(true);
       } catch (first: unknown) {
         if (!fieldRefusal_detect(first)) throw first;
@@ -846,7 +857,7 @@ export class ChrisIO {
         errorStack.stack_push("error", `Did not move file ID ${fileId} to ${destPath}: the place could not be shown free a second time`);
         return Err<boolean>();
       }
-      await resource_call<unknown>(userFile, 'put', { path: destPath });
+      await resource_invoke(userFile, 'put', { path: destPath });
       return Ok(true);
     } catch (error: unknown) {
       const errorMsg: string = error instanceof Error ? error.message : String(error);

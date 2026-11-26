@@ -12,7 +12,7 @@
  */
 
 import { chrisConnection } from "../connect/chrisConnection.js";
-import { itemData_get, items_get, listData_get, resource_call, type Client } from "../chrisapi/adapter.js";
+import { DATA_CARRIER_SHAPE, itemData_get, items_get, listData_get, resource_call, type Client, type DataCarrier, shape_nullable, shape_object, shape_build, type Shape } from "../chrisapi/adapter.js";
 import { pipelineRecord_keep, pipelineRecord_recall, pipelineResource_keep } from "./pipelineMemo.js";
 import { listPages_drain, type ListPage } from "../chrisapi/contract.js";
 import { ChRISResourceGroup } from "../resources/chrisResourceGroup.js";
@@ -41,6 +41,43 @@ interface IdRecord {
   id: number;
 }
 
+/** A record whose id is used as a number. */
+const ID_SHAPE: Shape<IdRecord> = shape_build<IdRecord>('a record')(['id', 'number']);
+
+/** A record whose id is looked at before it is used: nothing in it is read unchecked. */
+const ID_SEEN_SHAPE: Shape<IdRecord> = shape_object<IdRecord>('a record');
+
+/** A list item that carries a record with an id. */
+interface IdItem {
+  /** The record. */
+  data: IdRecord;
+}
+
+/** A list item whose data's id is used as a number. */
+const ID_ITEM_SHAPE: Shape<IdItem> = shape_build<IdItem>('a list item')(['data', ID_SHAPE]);
+
+/** A list resource read for its items: they are fetched by calling it; whether there is a next page is read when it says. */
+const ITEM_LIST_SLICE_SHAPE: Shape<ItemListSlice> = shape_build<ItemListSlice>('a list')(['getItems', 'function'], ['hasNextPage', 'boolean?']);
+
+/** A pipeline source file in a list: its file name is split as text, and its pipeline's name read as text when there. */
+const SOURCE_FILE_ITEM_SHAPE: Shape<PipelineSourceFileItem> = shape_build<PipelineSourceFileItem>('a pipeline source file')(
+  ['data', shape_build<PipelineSourceFileItem['data']>('a pipeline source file')(['fname', 'string'], ['pipeline_name', 'string?'])],
+);
+
+/** A page of pipelines: its items are fetched by calling it, and its rows read from its data. */
+interface PipelinePage {
+  /** Fetches the page's items. */
+  getItems: () => unknown;
+  /** The page's rows; read through a shape of their own. */
+  data?: unknown;
+}
+
+/** A page of pipelines as searched by name. */
+const PIPELINE_PAGE_SHAPE: Shape<PipelinePage> = shape_build<PipelinePage>('a page of pipelines')(['getItems', 'function']);
+
+/** A workflow just made: a resource whose data and instances are read through checks of their own. */
+const WORKFLOW_SHAPE: Shape<DataCarrier> = shape_object<DataCarrier>('a workflow');
+
 /** How many pipelines a name search reads: exact names seldom collide. */
 const PIPELINE_SEARCH_LIMIT: number = 100;
 
@@ -68,6 +105,17 @@ export interface PipelineRecord {
   slug?: string;
   [key: string]: unknown;
 }
+
+/** A pipeline as CUBE answers: its id is used as a number (a key, an argument) and its name as text. */
+const PIPELINE_RECORD_SHAPE: Shape<PipelineRecord> = shape_build<PipelineRecord>('a pipeline')(['id', 'number'], ['name', 'string']);
+
+/**
+ * A pipeline as a row of a listing table. Such a row holds the fields that
+ * were asked for, as the table made them (its id is text cut from an
+ * address unless the id field was asked for), so nothing in it is held to
+ * a kind here; those who read it check what they read.
+ */
+const PIPELINE_TABLE_ROW_SHAPE: Shape<PipelineRecord> = shape_object<PipelineRecord>('a pipeline row');
 
 /**
  * Per-node override for a workflow execution.
@@ -117,7 +165,7 @@ export async function pipelines_list(
     const params: PipelineSearchParams = search ? { name: search } : {};
     const result = await group.asset.resources_getAll(params);
     if (!result || !result.tableData) return Ok([]);
-    return Ok(listData_get<PipelineRecord>({ data: result.tableData }));
+    return Ok(listData_get({ data: result.tableData }, PIPELINE_TABLE_ROW_SHAPE));
   } catch (error: unknown) {
     const msg: string = error instanceof Error ? error.message : String(error);
     errorStack.stack_push('error', `pipelines_list: ${msg}`);
@@ -158,10 +206,10 @@ export async function pipeline_resolve(
  * @param client - The connection's client.
  * @param page - The list response.
  */
-function pipelineItems_keep(client: Client, page: unknown): void {
-  const items: Array<{ data?: unknown }> = items_get<{ data?: unknown }>(page as { getItems(): unknown });
+function pipelineItems_keep(client: Client, page: PipelinePage): void {
+  const items: Array<{ data?: unknown }> = items_get(page, DATA_CARRIER_SHAPE);
   for (const item of items) {
-    const data: IdRecord | null = itemData_get<IdRecord>(item);
+    const data: IdRecord | null = itemData_get(item, ID_SEEN_SHAPE);
     if (data && typeof data.id === 'number') pipelineResource_keep(client, data.id, item);
   }
 }
@@ -182,7 +230,7 @@ async function pipelineResolve_fetch(
     const numericId: number = parseInt(nameOrId, 10);
     try {
       const pipeline = await client.getPipeline(numericId);
-      const data: PipelineRecord | null = itemData_get<PipelineRecord>(pipeline);
+      const data: PipelineRecord | null = itemData_get(pipeline, PIPELINE_RECORD_SHAPE);
       if (!data) {
         errorStack.stack_push('error', `Pipeline with ID ${numericId} not found`);
         return Err();
@@ -206,7 +254,7 @@ async function pipelineResolve_fetch(
   if (slugID) {
     try {
       const pipeline = await client.getPipeline(parseInt(slugID[1], 10));
-      const data: PipelineRecord | null = itemData_get<PipelineRecord>(pipeline);
+      const data: PipelineRecord | null = itemData_get(pipeline, PIPELINE_RECORD_SHAPE);
       if (data) {
         pipelineResource_keep(client, data.id, pipeline as object);
         return Ok(data);
@@ -216,16 +264,16 @@ async function pipelineResolve_fetch(
 
   // The search is read as a page, not through pipelines_list, so the items
   // it served can be kept: a pipeline's pipings hang off its item.
-  let page: unknown;
+  let page: PipelinePage;
   try {
-    page = await resource_call<unknown>(client, 'getPipelines', { name: nameOrId, limit: PIPELINE_SEARCH_LIMIT });
+    page = await resource_call(client, PIPELINE_PAGE_SHAPE, 'getPipelines', { name: nameOrId, limit: PIPELINE_SEARCH_LIMIT });
   } catch (error: unknown) {
     const msg: string = error instanceof Error ? error.message : String(error);
     errorStack.stack_push('error', `pipelines_list: ${msg}`);
     return Err();
   }
   pipelineItems_keep(client, page);
-  const found: PipelineRecord[] = listData_get<PipelineRecord>(page as { data?: unknown });
+  const found: PipelineRecord[] = listData_get(page, PIPELINE_RECORD_SHAPE);
   const exact: PipelineRecord | undefined = found.find(
     (p: PipelineRecord) => p.name === nameOrId
   );
@@ -239,7 +287,7 @@ async function pipelineResolve_fetch(
       const directId: number = parseInt(idSuffixMatch[1], 10);
       try {
         const pipeline = await fallbackClient.getPipeline(directId);
-        const directData: PipelineRecord | null = itemData_get<PipelineRecord>(pipeline);
+        const directData: PipelineRecord | null = itemData_get(pipeline, PIPELINE_RECORD_SHAPE);
         if (directData) {
           pipelineResource_keep(client, directData.id, pipeline as object);
           return Ok(directData);
@@ -249,10 +297,10 @@ async function pipelineResolve_fetch(
 
     // Slug fallback: treat nameOrId as a source file fname fragment
     try {
-      const sfList: ItemListSlice = await resource_call<ItemListSlice>(
-        fallbackClient, 'getPipelineSourceFiles', { fname: nameOrId, limit: 1 }
+      const sfList: ItemListSlice = await resource_call(
+        fallbackClient, ITEM_LIST_SLICE_SHAPE, 'getPipelineSourceFiles', { fname: nameOrId, limit: 1 }
       );
-      const sfItems: PipelineSourceFileItem[] = items_get<PipelineSourceFileItem>(sfList).filter(
+      const sfItems: PipelineSourceFileItem[] = items_get(sfList, SOURCE_FILE_ITEM_SHAPE).filter(
         (item: PipelineSourceFileItem) => {
           const base: string = item.data.fname.split('/').pop() ?? '';
           return base.replace(/\.(ya?ml)$/i, '') === nameOrId;
@@ -311,16 +359,16 @@ export async function pipeline_createWorkflow(
 
       const pipings: Array<{ data: IdRecord }> = await listPages_drain(
         async (offset: number, limit: number): Promise<ListPage<{ data: IdRecord }>> => {
-          const response: ItemListSlice = await resource_call<ItemListSlice>(
-            pipeline, 'getPluginPipings', { limit, offset }
+          const response: ItemListSlice = await resource_call(
+            pipeline, ITEM_LIST_SLICE_SHAPE, 'getPluginPipings', { limit, offset }
           );
-          return { data: items_get<{ data: IdRecord }>(response), totalCount: null, hasMore: response.hasNextPage };
+          return { data: items_get(response, ID_ITEM_SHAPE), totalCount: null, hasMore: response.hasNextPage };
         },
       );
       nodes_info = pipings.map((p: { data: IdRecord }) => ({ piping_id: p.data.id }));
     }
 
-    const workflow: object | null = await resource_call<object | null>(client, 'createWorkflow', pipelineId, {
+    const workflow: object | null = await resource_call(client, shape_nullable(WORKFLOW_SHAPE), 'createWorkflow', pipelineId, {
       previous_plugin_inst_id: options.previousPluginInstId,
       nodes_info: JSON.stringify(nodes_info),
     });
@@ -330,7 +378,7 @@ export async function pipeline_createWorkflow(
       return Err();
     }
 
-    const workflowRecord: IdRecord | null = itemData_get<IdRecord>(workflow);
+    const workflowRecord: IdRecord | null = itemData_get(workflow, ID_SHAPE);
     if (!workflowRecord) {
       errorStack.stack_push('error', 'createWorkflow response carried no data');
       return Err();
@@ -339,10 +387,10 @@ export async function pipeline_createWorkflow(
 
     const instances: Array<{ data: IdRecord }> = await listPages_drain(
       async (offset: number, limit: number): Promise<ListPage<{ data: IdRecord }>> => {
-        const response: ItemListSlice = await resource_call<ItemListSlice>(
-          workflow, 'getPluginInstances', { limit, offset }
+        const response: ItemListSlice = await resource_call(
+          workflow, ITEM_LIST_SLICE_SHAPE, 'getPluginInstances', { limit, offset }
         );
-        return { data: items_get<{ data: IdRecord }>(response), totalCount: null, hasMore: response.hasNextPage };
+        return { data: items_get(response, ID_ITEM_SHAPE), totalCount: null, hasMore: response.hasNextPage };
       },
     );
     const pluginInstanceIds: number[] = instances.map(
