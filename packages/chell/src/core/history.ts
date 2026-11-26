@@ -9,8 +9,8 @@
  * that carries a secret (a password or a token given as an option, a
  * password in a `user:password@host`, a token in an attach address) is
  * kept with the secret's place marked and the secret gone, in the file and
- * in the reader's own recall alike; a line too broken to read word by word
- * that mentions a secret is not kept at all.
+ * in the reader's own recall alike; a line that cannot be read word by word
+ * is not kept at all.
  *
  * Privacy is established before a byte is written: the file is opened,
  * looked at, and written through that same open file only when it is a
@@ -155,9 +155,6 @@ function line_scan(line: string): LinePiece[] | null {
   return pieces;
 }
 
-/** Whether a line that cannot be read word by word still shows the mark of a secret. */
-const SECRET_MARK: RegExp = /--password|--adminPassword|--token|--auth-token|(^|\s)-[A-Za-z]*p|:[^@/]+@|(^|[?&\s])token=/;
-
 /** `scheme://user:password@…` at the start of a word. */
 const SCHEME_FIRST: RegExp = /^([a-z][a-z0-9+.-]*:\/\/[^:@/]+):([^@]+)@(.+)$/i;
 
@@ -204,11 +201,12 @@ function word_quote(value: string, typed: string): string {
  * and a word rewritten around it is quoted whole: recalled and run in a
  * host shell, a bare `***` would be matched against file names.
  *
- * A line with a quote left open cannot be read that way. If it shows any
- * mark of a secret it is not kept; otherwise it is kept as typed. A
- * `connect`, `chell` or `calypso` command with a run of single-dash letters
- * that holds a `p` or a `c` (other than `-pVALUE`) is not kept either: what
- * such a run attaches is not this reader's to guess.
+ * A line with a quote left open cannot be read that way, and so cannot be
+ * shown to hold no secret: it is not kept, whatever it seems to say. A
+ * `connect`, `chell` or `calypso` command with a single-dash word that
+ * begins with a run of letters holding a `p` or a `c` (other than
+ * `-pVALUE`) is not kept either: what such a run attaches is not this
+ * reader's to guess.
  *
  * @param line - The line as typed.
  * @returns The line to keep, or null for one that must not be kept at all.
@@ -220,7 +218,8 @@ function word_quote(value: string, typed: string): string {
  */
 export function historyLine_redact(line: string): string | null {
   const pieces: LinePiece[] | null = line_scan(line);
-  if (pieces === null) return SECRET_MARK.test(line) ? null : line;
+  // A line that cannot be read into words cannot be shown to hold no secret: it is not kept.
+  if (pieces === null) return null;
   /** Replacements, each a span of the line and what stands there instead. */
   const swaps: Array<{ start: number; end: number; text: string }> = [];
   let verb: string | null = null;
@@ -251,7 +250,8 @@ export function historyLine_redact(line: string): string | null {
     // Any other run of single-dash letters on such a command that holds a `p` or a `c` may carry a
     // password, or a whole line with one in it, attached or as its next word (`-ep x`, `-cLINE`). Which
     // letter takes what is the command's to say, not this reader's to guess: the entry is not kept.
-    if (!first && passwordVerb && /^-[A-Za-z]{2,}/.test(piece.value) && /[pc]/.test(piece.value.slice(1))) return null;
+    // The run is read off the front of the word, whatever follows it: `-c` with its line attached begins `-c `.
+    if (!first && passwordVerb && !piece.value.startsWith('--') && piece.value.length > 2 && /^-[A-Za-z]*[pc]/.test(piece.value)) return null;
     // `chell -c "<line>"` carries a whole line of this shell's own: it is kept as that line would be, or the
     // entry is not kept at all when that line would not be.
     if (verb === 'chell' && (COMMAND_OPTIONS.includes(piece.value) || COMMAND_OPTIONS.some((option: string): boolean => piece.value.startsWith(`${option}=`)))) {
