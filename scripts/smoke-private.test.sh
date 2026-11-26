@@ -543,6 +543,40 @@ JS
   while read -r _ pid; do ! kill -0 "$pid" 2>/dev/null || { echo "pid $pid of the run is still running"; kill "$pid"; exit 1; }; done < "$STARTED_LOG"
   grep -q '^old-daemon ' "$STARTED_LOG" && grep -q '^porter ' "$STARTED_LOG"
 ) > "$WORK/swapped.txt" 2>&1 && ok "an upgrade whose folder is swapped under it: its processes are stopped, the folder now there is untouched (config, list of pids, keep note), both failures are in the ledger, and the nightly keeps its own folder" || bad "swapped upgrade folder: $(tail -2 "$WORK/swapped.txt" | tr '\n' ' ')"
+# The nightly is signalled while it waits for the upgrade step, and the step then ends having left its folder
+# as it was (status 3): the signal is acted on before that status can be read, and the folder is kept all the same.
+cat > "$WORK/upgrade-slow-keep.sh" <<'SH'
+child="$SMOKE_RUN_ROOT/upgrade.Kept0000"; mkdir -p "$child/config"; echo "888888888 1" > "$child/started.pids"; echo "theirs" > "$child/kept"
+touch "$MARK"
+# Outlives the signal sent to the nightly: this step is not the one signalled.
+trap '' TERM
+sleep 2
+exit 3
+SH
+cat > "$WORK/nightly-driver.sh" <<'SH'
+export SMOKE_NIGHTLY_SOURCED=1
+. "$NIGHTLY"
+run_root_settle "" "" "" mise-smoke-nightly || exit 9
+P=$RUN_ROOT
+trap nightly_ending EXIT
+trap 'nightly_interrupted INT' INT
+trap 'nightly_interrupted TERM' TERM
+upgrade_step
+nightly_finish
+SH
+(
+  export SMOKE_STATE="$WORK/signalled-state" XDG_RUNTIME_DIR="$WORK/signalled-runtime" MARK="$WORK/signalled-started" NIGHTLY="$HERE/smoke-nightly.sh" SMOKE_UPGRADE="$WORK/upgrade-slow-keep.sh"
+  mkdir -p "$SMOKE_STATE"; mkdir -m 700 "$XDG_RUNTIME_DIR"
+  bash "$WORK/nightly-driver.sh" > "$WORK/signalled-said.txt" 2>&1 & driver=$!
+  for _ in $(seq 1 100); do [ -e "$MARK" ] && break; sleep 0.1; done
+  [ -e "$MARK" ] || { kill "$driver"; echo "the step never started"; exit 1; }
+  kill -TERM "$driver"; wait "$driver"; status=$?
+  child=$(find "$XDG_RUNTIME_DIR" -mindepth 2 -maxdepth 2 -name 'upgrade.Kept0000' | head -1)
+  [ "$status" -eq 1 ] || { echo "the nightly's status was $status"; exit 1; }
+  [ -n "$child" ] && [ -d "$child/config" ] && [ "$(cat "$child/started.pids")" = "888888888 1" ] && [ "$(cat "$child/kept")" = theirs ] || { echo "the step's folder did not survive as it was left"; exit 1; }
+  grep -q "interrupted (TERM)" "$SMOKE_STATE/ledger.txt" || { echo "the interruption is not in the ledger"; exit 1; }
+  grep -q "the run's folder is kept at .*the run ended while the upgrade step was running" "$SMOKE_STATE/ledger.txt" || { echo "the keeping is not in the ledger"; exit 1; }
+) > "$WORK/signalled.txt" 2>&1 && ok "the nightly signalled while it waits for the upgrade step keeps its folder: the step's folder survives as it was left, and the ledger says both" || bad "signalled while the upgrade ran: $(cat "$WORK/signalled.txt" | tr '\n' ' ')"
 
 echo
 echo "$((cases - failed_cases)) ok, $failed_cases failed (state left in $WORK)"

@@ -173,12 +173,18 @@ door_step_scoped() {
 # porter from this checkout, two logins; one line in the ledger of its own.
 upgrade_step() {
   # It works in a folder inside this run's own, which stays this run's to remove.
+  # Marked as running before it is started and until its status has been read here. A signal that arrives
+  # while this shell waits for it is acted on the moment it returns, before the next line can read how it
+  # ended: the ending then finds the mark, and keeps the folder, since the step may have had to leave its
+  # own as it was and nothing here has heard.
+  UPGRADE_IN_FLIGHT=1
   SMOKE_RUN_ROOT="$P" bash "${SMOKE_UPGRADE:-$ROOT/scripts/smoke-upgrade.sh}"
   local status=$?
   if [ "$status" -ne 0 ]; then failures=$((failures + 1)); fi
   # It could not finish its own ending, and left its folder as it was: this run's folder, which holds it,
   # is kept too. The reason is in the upgrade's own line in the ledger.
   if [ "$status" -eq "$KEEP_STATUS" ]; then run_root_keep "the upgrade step left its folder as it was"; fi
+  UPGRADE_IN_FLIGHT=0
 }
 
 # The run's last line in the ledger, and its verdict as a status.
@@ -195,6 +201,9 @@ nightly_ending() {
   trap - EXIT INT TERM
   if [ -n "${RUN_ROOT:-}" ]; then
     local stopped=0
+    # The run ended while the upgrade step was running, with its status never read: how that step left its
+    # folder is not known here, so the folder that holds it is kept.
+    if [ "${UPGRADE_IN_FLIGHT:-0}" = 1 ]; then run_root_keep "the run ended while the upgrade step was running, and how that step left its folder is not known"; fi
     daemons_reap || stopped=1
     # No secret outlives the run, whether or not its folder does: after what could write one is stopped.
     secrets_remove "$RUN_ROOT" || { echo "$day  credentials the run made could not be removed from $RUN_ROOT" | tee -a "$ledger"; [ "$status" -eq 0 ] && status=1; }
