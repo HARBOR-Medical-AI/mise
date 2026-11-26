@@ -138,9 +138,13 @@ describe('the script screen', () => {
     expect(stands).toContain('admits 134.174.21.21/32');
     const cidr: HTMLInputElement | null = screen.root.querySelector('#ss-cidr-1');
     expect(cidr?.value).toBe('10.20.0.0/16');
+    // The hand is in the field, as it is when a person types.
+    cidr!.focus();
     cidr!.value = '10.30.0.0/16';
     cidr!.dispatchEvent(new Event('input'));
     expect(screen.root.querySelector('.ss-line-text')?.textContent).toBe('net new chrisproject-services --cidr 10.30.0.0/16');
+    // The field is the one that was typed in, not one drawn in its place: what is being composed, undone or selected in it stays.
+    expect(screen.root.querySelector('#ss-cidr-1')).toBe(cidr);
     // At the edit: the difference against what stands, beside the line, and SAVE at once; the field keeps the hand.
     expect(screen.root.querySelector('.ss-col-side')?.textContent).toContain('THIS LINE10.20.0.0/16 → 10.30.0.0/16: replaces the VCN and subnet and every machine on them (refused unless --allow-alter)');
     expect(button_named(screen.root, 'SAVE')).toBeDefined();
@@ -159,6 +163,42 @@ describe('the script screen', () => {
     expect(sent[1]?.startsWith("touch --withContents='net new chrisproject-services --cidr 10.30.0.0/16")).toBe(true);
     expect(sent[1]?.endsWith("' '/scripts/mine/store.mise'")).toBe(true);
     expect(screen.path_get()).toBe('/scripts/mine/store.mise');
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('an option is typed where it stands: a space on the way to the next word is kept, and what is saved has it', async () => {
+    const { screen, sent } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const field: HTMLInputElement = screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    field.focus();
+    // The first keystroke: SAVE and the line's standing are current at once, and the field is still the field.
+    field.value = 'two';
+    field.setSelectionRange(3, 3);
+    field.dispatchEvent(new Event('input'));
+    expect(screen.root.querySelector('#ss-cidr-1')).toBe(field);
+    expect(document.activeElement).toBe(field);
+    expect(field.selectionStart).toBe(3);
+    expect(button_named(screen.root, 'SAVE')).toBeDefined();
+    expect(screen.root.querySelector('.tdc-chip')?.parentElement?.textContent).toContain('EDITED · NOT SAVED');
+    expect(screen.root.querySelector(".ss-line[data-line='1'] .ss-line-state")?.textContent).toContain('EDITED');
+    // A space typed before the next word: the field keeps it (it was lost at each keystroke, so no second word could follow).
+    field.value = 'two ';
+    field.dispatchEvent(new Event('input'));
+    expect(field.value).toBe('two ');
+    expect(screen.root.querySelector('.ss-line-text')?.textContent).toBe('net new chrisproject-services --cidr two');
+    field.value = 'two words';
+    field.dispatchEvent(new Event('input'));
+    expect(field.value).toBe('two words');
+    const shown: string = screen.root.querySelector('.ss-line-text')?.textContent ?? '';
+    expect(shown).toContain('two words');
+    // Saved, the working copy holds the value whole.
+    button_named(screen.root, 'SAVE')?.click();
+    await settle();
+    expect(sent.find((line: string): boolean => line.startsWith('touch --withContents='))).toContain('two words');
     screen.dispose();
     screen.root.remove();
   });

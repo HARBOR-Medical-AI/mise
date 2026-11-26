@@ -1357,15 +1357,29 @@ export class ScriptScreen {
       other: (): HTMLElement[] => this.other_make(step),
     };
     form.append(...bodies[step.kind]());
+    const side: HTMLElement = this.side_make(step);
+    const log: HTMLElement = this.stepLog_make(step);
+    return [form, side, log];
+  }
+
+  /**
+   * The column beside a step's form: what stands of what the step makes,
+   * read against the line as it is now.
+   *
+   * @param step - The step.
+   * @returns The column.
+   *
+   * @example
+   * side.replaceWith(this.side_make(step));
+   */
+  protected side_make(step: ScriptStep): HTMLElement {
     const vm: string = line_parse(step.lines[0]?.text ?? '').subject ?? '';
     const chris: ChrisStatusRow | null = step.kind === 'chris deploy' ? this.chrisRow_get(vm) : step.kind === 'users' ? this.chrisRow_get(this.usersVm_get(step)) : null;
-    const side: HTMLElement = step.kind === 'vm new' ? this.cost_make(step)
+    return step.kind === 'vm new' ? this.cost_make(step)
       : step.kind === 'net new' || step.kind === 'net build' ? this.netSide_make(step, vm)
       : step.kind === 'chris deploy' && chris !== null ? this.chrisSide_make(step, chris)
         : step.kind === 'chris deploy' && this.chrisAbsent_read(vm) !== null ? this.chrisFirstSide_make(step, vm, this.chrisAbsent_read(vm) as { at: string | null })
         : step.kind === 'users' && chris !== null ? this.usersSide_make(step, chris) : this.state_make(step);
-    const log: HTMLElement = this.stepLog_make(step);
-    return [form, side, log];
   }
 
   /** The line as it will run, and its state. */
@@ -1397,26 +1411,85 @@ export class ScriptScreen {
     if (step.lines.length === 1 && (step.lines[0]?.detail ?? '') !== '') side.append(this.pairs_make([['SAID', step.lines[0]?.detail ?? '']]));
     const running: HTMLElement | null = this.runningNote_make(step);
     if (running !== null) side.append(running);
-    if (this.edited && this.saveOffered()) {
-      const note: HTMLElement = el('div', 'tdc-note tdc-note-bill');
-      note.append(el('span', 'tdc-note-title', 'EDITED · NOT SAVED'), el('span', 'tdc-prose', `A form changed a line. Its pills send the line as shown; SAVE writes the whole script to ${workingCopy_derive(this.path)} (this host's copy; it builds and bills nothing) and opens it from there.`));
-      // What changed, line by line, against the copy as it was read: the offer as a difference (a-change-is-a-loop, clause 2).
-      const before: string[] = this.readText.split('\n').filter((line: string): boolean => line.trim() !== '' && !line.trim().startsWith('#'));
-      const changed: Array<[string, string]> = this.lines.map((line: ScriptLine, index: number): [string, string] => [before[index] ?? '', line.text]).filter(([was, now]): boolean => was !== now).slice(0, 4);
-      for (const [was, now] of changed) note.append(el('span', 'tdc-mono ss-edit-was', `− ${was === '' ? '(no line)' : was}`), el('span', 'tdc-mono ss-edit-now', `+ ${now}`));
-      // loop: ss-save
-      const save: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'SAVE');
-      save.type = 'button';
-      save.title = `sends: touch --withContents=… ${workingCopy_derive(this.path)}`;
-      save.disabled = this.busy !== null;
-      save.addEventListener('click', (): void => { this.hooks.voice.pill('SAVE'); void this.save_send(); });
-      const commands: HTMLElement = el('div', 'tdc-commands');
-      commands.append(save);
-      note.append(commands);
-      side.append(note);
-    }
+    side.append(this.editedSlot_make());
     return side;
   }
+
+  /**
+   * What an unsaved edit says of itself, with SAVE: the lines that differ
+   * from the copy as it was read, and the control that writes them.
+   *
+   * @returns The note, or null when nothing is edited or the screen offers no SAVE of its own.
+   *
+   * @example
+   * const note: HTMLElement | null = this.editedNote_make();
+   */
+  protected editedNote_make(): HTMLElement | null {
+    if (!this.edited || !this.saveOffered()) return null;
+    const note: HTMLElement = el('div', 'tdc-note tdc-note-bill');
+    note.append(el('span', 'tdc-note-title', 'EDITED · NOT SAVED'), el('span', 'tdc-prose', `A form changed a line. Its pills send the line as shown; SAVE writes the whole script to ${workingCopy_derive(this.path)} (this host's copy; it builds and bills nothing) and opens it from there.`));
+    // What changed, line by line, against the copy as it was read: the offer as a difference (a-change-is-a-loop, clause 2).
+    const before: string[] = this.readText.split('\n').filter((line: string): boolean => line.trim() !== '' && !line.trim().startsWith('#'));
+    const changed: Array<[string, string]> = this.lines.map((line: ScriptLine, index: number): [string, string] => [before[index] ?? '', line.text]).filter(([was, now]): boolean => was !== now).slice(0, 4);
+    for (const [was, now] of changed) note.append(el('span', 'tdc-mono ss-edit-was', `− ${was === '' ? '(no line)' : was}`), el('span', 'tdc-mono ss-edit-now', `+ ${now}`));
+    // loop: ss-save
+    const save: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'SAVE');
+    save.type = 'button';
+    save.title = `sends: touch --withContents=… ${workingCopy_derive(this.path)}`;
+    save.disabled = this.busy !== null;
+    save.addEventListener('click', (): void => { this.hooks.voice.pill('SAVE'); void this.save_send(); });
+    const commands: HTMLElement = el('div', 'tdc-commands');
+    commands.append(save);
+    note.append(commands);
+    return note;
+  }
+
+  /**
+   * The place on a seat where the unsaved-edit note stands. It is there
+   * whether or not anything is edited (hidden while nothing is), so that an
+   * edit can fill it where it is, without the seat being drawn again.
+   *
+   * @returns The place, holding the note when there is one.
+   *
+   * @example
+   * side.append(this.editedSlot_make());
+   */
+  protected editedSlot_make(): HTMLElement {
+    const slot: HTMLElement = el('div', 'ss-edited-slot');
+    const note: HTMLElement | null = this.editedNote_make();
+    if (note === null) slot.hidden = true; else slot.append(note);
+    return slot;
+  }
+
+  /**
+   * Brings a seat up to date with an edit to one of its lines, where it
+   * stands: the line as shown and its state, the column beside the form
+   * (what stands, against the line as it now is, with the unsaved-edit
+   * note, SAVE and the lines that differ), the header's chip, the receipt
+   * of a SAVE the edit has outdated, and the note of kept edits. The form
+   * under the hand is not drawn again, so the field being typed in keeps
+   * its focus, its caret, its undo and whatever is being composed in it.
+   *
+   * @param line - The line that was edited.
+   *
+   * @example
+   * line.text = lineOption_set(line.text, '--host', input.value.trim());
+   * this.edit_redraw(line);
+   */
+  protected edit_redraw(line: ScriptLine): void {
+    const shown: Element | null = this.parts.body.querySelector(`.ss-line[data-line='${String(line.number)}']`);
+    if (shown !== null) shown.replaceWith(this.lineBoxNumbered_make(line));
+    this.lineShown_redraw(line);
+    // The column beside the form is made again whole, unless the hand is in it; then only its note is.
+    const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
+    const side: Element | null = this.parts.body.querySelector('.ss-col-side');
+    if (step !== undefined && side !== null && !side.contains(document.activeElement)) side.replaceWith(this.side_make(step));
+    else for (const slot of this.parts.body.querySelectorAll('.ss-edited-slot')) slot.replaceWith(this.editedSlot_make());
+    // An edit ends SAVE's receipt: what was saved is no longer what the seat says.
+    this.parts.body.querySelector('.ss-note-saved')?.remove();
+    if (this.parts.body.querySelector('.ss-note-draft') === null) this.draft_place();
+  }
+
 
   /** The note a step whose task runs now wears, or null. */
   protected runningNote_make(step: ScriptStep): HTMLElement | null {
@@ -1460,14 +1533,13 @@ export class ScriptScreen {
     input.autocomplete = 'off';
     input.disabled = this.busy !== null;
     input.addEventListener('input', (): void => {
+      // The line takes the value without the spaces around it; the field keeps what was typed, so a space
+      // typed on the way to the next word is still there for that word to follow.
       line.text = lineOption_set(line.text, word, input.value.trim());
       this.edited = true;
-      // The seat is drawn again at each edit, so SAVE and the difference against what stands follow the hand; the field keeps it.
-      const at: number | null = input.selectionStart;
-      this.draw();
-      const again: HTMLInputElement | null = this.parts.body.querySelector<HTMLInputElement>(`#${input.id}`);
-      again?.focus();
-      if (at !== null) again?.setSelectionRange(at, at);
+      // SAVE, the difference against what stands and the line's state follow the hand, each where it stands:
+      // the field is not drawn again.
+      this.edit_redraw(line);
     });
     row.append(field, input);
     return row;
@@ -1712,7 +1784,7 @@ export class ScriptScreen {
     if (declared !== null) side.append(declared);
     side.append(box);
     this.cost_fill(box, step);
-    if (this.edited) side.append(this.state_make(step).querySelector('.tdc-note') ?? el('span', ''));
+    side.append(this.editedSlot_make());
     return side;
   }
 
@@ -1997,8 +2069,7 @@ export class ScriptScreen {
     const running: HTMLElement | null = this.runningNote_make(step);
     if (running !== null) side.append(running);
     // An edit not saved is said here as on any seat, with SAVE.
-    const edited: Element | undefined = this.edited ? [...this.state_make(step).querySelectorAll('.tdc-note')].find((note: Element): boolean => (note.textContent ?? '').includes('EDITED')) : undefined;
-    if (edited !== undefined) side.append(edited);
+    side.append(this.editedSlot_make());
     return side;
   }
 
