@@ -25,6 +25,8 @@ export class HitLimit {
   private readonly spanMs: number;
   private readonly now: () => number;
   private readonly cap: number;
+  /** While the table is full of clients that count: when the first of them will be wholly aged out. */
+  private fullUntil: number = 0;
 
   /**
    * @param allowed - The hits one client may make in the span.
@@ -53,15 +55,21 @@ export class HitLimit {
       return Math.max(1, Math.ceil(((recent[0] as number) + this.spanMs - at) / 1000));
     }
     if (!this.hits.has(client) && this.hits.size >= this.cap) {
+      // Known full until a moment already worked out: turned away again without the table being walked.
+      if (at < this.fullUntil) return Math.max(1, Math.ceil((this.fullUntil - at) / 1000));
       // Full: clients whose hits have all aged out are forgotten; one whose hits still count never is.
+      // A client is gone when its newest hit has aged out, so that is when its place comes free.
       let soonest: number = Infinity;
       for (const [one, times] of this.hits) {
         const newest: number = times[times.length - 1] ?? -Infinity;
         if (at - newest >= this.spanMs) this.hits.delete(one);
         else soonest = Math.min(soonest, newest + this.spanMs);
       }
-      // Still full of clients that count: this one is turned away until the first of them ages out.
-      if (this.hits.size >= this.cap) return Math.max(1, Math.ceil((soonest - at) / 1000));
+      // Still full of clients that count: this one is turned away until the first of them is wholly aged out.
+      if (this.hits.size >= this.cap) {
+        this.fullUntil = soonest;
+        return Math.max(1, Math.ceil((soonest - at) / 1000));
+      }
     }
     recent.push(at);
     this.hits.set(client, recent);
@@ -79,6 +87,12 @@ export interface Attempt {
   pending: boolean;
 }
 
+/** What asking to begin a try comes to: the try, or how long to wait for room in a full count. */
+export type Admission = { ok: true; attempt: Attempt } | { ok: false; wait: number };
+
+/** How long to wait before asking a full count again when every key it holds has a try in the air, in ms. */
+export const ALL_IN_THE_AIR_RETRY_MS: number = 5_000;
+
 /**
  * A count of tries that failed, per key, in a sliding span.
  *
@@ -93,6 +107,8 @@ export interface Attempt {
  */
 export class AttemptLimit {
   private readonly tries: Map<string, Attempt[]> = new Map();
+  /** While the table is full of keys that count: when the first of them will be wholly gone. */
+  private fullUntil: number = 0;
   private readonly allowed: number;
   private readonly spanMs: number;
   private readonly now: () => number;
@@ -111,11 +127,16 @@ export class AttemptLimit {
     this.cap = cap;
   }
 
+  /** Lets a key go, and with it whatever was worked out about when a full table would next have room. */
+  private key_release(key: string): void {
+    if (this.tries.delete(key)) this.fullUntil = 0;
+  }
+
   /** The tries of a key that still count: in the air, or failed inside the span. Forgets the rest. */
   private counted_read(key: string): Attempt[] {
     const at: number = this.now();
     const counted: Attempt[] = (this.tries.get(key) ?? []).filter((one: Attempt): boolean => one.pending || at - one.at < this.spanMs);
-    if (counted.length === 0) this.tries.delete(key);
+    if (counted.length === 0) this.key_release(key);
     else this.tries.set(key, counted);
     return counted;
   }
@@ -140,36 +161,48 @@ export class AttemptLimit {
   /**
    * How long until there is room for a key the count does not hold.
    *
+   * A held key's place comes free when the whole key is gone: when its
+   * newest failure has aged out, and never while one of its tries is in
+   * the air. So the wait is to the earliest such moment among the held
+   * keys; and when every one of them has a try in the air, whose ending
+   * nobody can date, a short fixed wait after which to ask again.
+   *
+   * The table is walked once when it is found full; until the moment that
+   * walk worked out, or until a key is let go, a refusal is answered from
+   * that result and changes nothing.
+   *
    * @param key - Who would try.
-   * @returns Zero when the key is held already or there is room; otherwise the whole seconds until a held key ages out.
+   * @returns Zero when the key is held already or there is room; otherwise the whole seconds to wait.
    */
   public room_wait(key: string): number {
     if (this.tries.has(key) || this.tries.size < this.cap) return 0;
-    // Full: keys with nothing left that counts are forgotten. A failure inside its span and a try in the
-    // air are never let go to make room.
     const at: number = this.now();
-    let soonest: number = Infinity;
+    if (at < this.fullUntil) return Math.max(1, Math.ceil((this.fullUntil - at) / 1000));
+    let earliest: number = Infinity;
     for (const one of [...this.tries.keys()]) {
       const counted: Attempt[] = this.counted_read(one);
-      for (const held of counted) if (!held.pending) soonest = Math.min(soonest, held.at + this.spanMs);
+      if (counted.length === 0 || counted.some((held: Attempt): boolean => held.pending)) continue;
+      earliest = Math.min(earliest, Math.max(...counted.map((held: Attempt): number => held.at)) + this.spanMs);
     }
     if (this.tries.size < this.cap) return 0;
-    return soonest === Infinity ? 1 : Math.max(1, Math.ceil((soonest - at) / 1000));
+    this.fullUntil = earliest === Infinity ? at + ALL_IN_THE_AIR_RETRY_MS : earliest;
+    return Math.max(1, Math.ceil((this.fullUntil - at) / 1000));
   }
 
   /**
    * Takes up a try for a key, before its outcome is known.
    *
    * @param key - Who is trying.
-   * @returns The try, to tell its outcome by; or null when the count is full of keys that still count and has no room for a new one.
+   * @returns The try, to tell its outcome by; or, when the count is full of keys that still count, the seconds to wait for room.
    */
-  public try_begin(key: string): Attempt | null {
-    if (this.room_wait(key) > 0) return null;
+  public try_begin(key: string): Admission {
+    const wait: number = this.room_wait(key);
+    if (wait > 0) return { ok: false, wait };
     const attempt: Attempt = { key, at: this.now(), pending: true };
     const counted: Attempt[] = this.counted_read(key);
     counted.push(attempt);
     this.tries.set(key, counted);
-    return attempt;
+    return { ok: true, attempt };
   }
 
   /**
@@ -190,7 +223,7 @@ export class AttemptLimit {
   public try_forgive(attempt: Attempt): void {
     attempt.pending = false;
     const kept: Attempt[] = (this.tries.get(attempt.key) ?? []).filter((one: Attempt): boolean => one !== attempt);
-    if (kept.length === 0) this.tries.delete(attempt.key);
+    if (kept.length === 0) this.key_release(attempt.key);
     else this.tries.set(attempt.key, kept);
   }
 }

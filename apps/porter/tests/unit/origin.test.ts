@@ -41,6 +41,13 @@ const host = {
   restart_begin: (): void => undefined,
 } as unknown as SessionHost;
 
+/** Begins a try that the count has room for. */
+function taken(limit: AttemptLimit, key: string): Attempt {
+  const asked = limit.try_begin(key);
+  if (!asked.ok) throw new Error(`no room for ${key}`);
+  return asked.attempt;
+}
+
 /** The door's cookie as a browser would send it back. */
 function cookie_of(response: { headers: Record<string, unknown> }): string {
   const header: unknown = response.headers['set-cookie'];
@@ -227,9 +234,9 @@ describe('how often a password may be tried', () => {
     let at = 0;
     const limit = new AttemptLimit(2, 60_000, (): number => at);
     expect(limit.wait_read('a')).toBe(0);
-    limit.try_forgive(limit.try_begin('a') as Attempt);
-    limit.try_fail(limit.try_begin('a') as Attempt);
-    limit.try_fail(limit.try_begin('a') as Attempt);
+    limit.try_forgive(taken(limit, 'a'));
+    limit.try_fail(taken(limit, 'a'));
+    limit.try_fail(taken(limit, 'a'));
     expect(limit.wait_read('a')).toBe(60);
     expect(limit.wait_read('b')).toBe(0);
     at = 59_500;
@@ -243,14 +250,14 @@ describe('how often a password may be tried', () => {
     const limit = new AttemptLimit(2, 60_000, (): number => at);
     // An old try that will turn out right, then a newer one that fails: forgiving the old one must not
     // take the newer failure's place in the count.
-    const slowRight: Attempt = limit.try_begin('a') as Attempt;
+    const slowRight: Attempt = taken(limit, 'a');
     at = 30_000;
-    const quickWrong: Attempt = limit.try_begin('a') as Attempt;
+    const quickWrong: Attempt = taken(limit, 'a');
     limit.try_fail(quickWrong);
     limit.try_forgive(slowRight);
     at = 60_000;
     // The failure of 30 s still stands; had the newest been popped, the old stamp would have aged out by now.
-    limit.try_fail(limit.try_begin('a') as Attempt);
+    limit.try_fail(taken(limit, 'a'));
     expect(limit.wait_read('a')).toBe(30);
     // Forgiving twice, or a try already aged out, takes nothing else with it.
     limit.try_forgive(slowRight);
@@ -262,14 +269,14 @@ describe('how often a password may be tried', () => {
   it('counts a try for as long as it is in the air, past the span, and a failure from when it began', () => {
     let at = 0;
     const limit = new AttemptLimit(1, 60_000, (): number => at);
-    const slow: Attempt = limit.try_begin('a') as Attempt;
+    const slow: Attempt = taken(limit, 'a');
     at = 120_000;
     // Still unanswered after two spans: it is still a try, and the key is held for it.
     expect(limit.wait_read('a')).toBe(1);
     limit.try_fail(slow);
     // Told at last, it is a failure of two minutes ago, and has aged out.
     expect(limit.wait_read('a')).toBe(0);
-    const again: Attempt = limit.try_begin('a') as Attempt;
+    const again: Attempt = taken(limit, 'a');
     at = 200_000;
     limit.try_forgive(again);
     expect(limit.wait_read('a')).toBe(0);
@@ -278,13 +285,13 @@ describe('how often a password may be tried', () => {
   it('at capacity lets go of nothing that still counts, turns a new key away, and has room again when one ages out', () => {
     let at = 0;
     const limit = new AttemptLimit(1, 60_000, (): number => at, 3);
-    const inTheAir: Attempt | null = limit.try_begin('in-the-air');
+    const inTheAir: Attempt = taken(limit, 'in-the-air');
     at = 10_000;
-    limit.try_fail(limit.try_begin('failed-at-10') as Attempt);
+    limit.try_fail(taken(limit, 'failed-at-10'));
     at = 20_000;
-    limit.try_fail(limit.try_begin('failed-at-20') as Attempt);
+    limit.try_fail(taken(limit, 'failed-at-20'));
     // Full of keys that count: a fourth is not admitted, and is told how long until the first failure ages out.
-    expect(limit.try_begin('new')).toBeNull();
+    expect(limit.try_begin('new').ok).toBe(false);
     expect(limit.room_wait('new')).toBe(50);
     // Nothing was let go for it: every held key is still held, and a held key may still be asked about.
     expect(limit.wait_read('in-the-air')).toBe(1);
@@ -292,22 +299,65 @@ describe('how often a password may be tried', () => {
     expect(limit.wait_read('failed-at-20')).toBe(60);
     expect(limit.room_wait('failed-at-20')).toBe(0);
     // A forgiven try frees its key at once.
-    limit.try_forgive(inTheAir as Attempt);
+    limit.try_forgive(inTheAir);
     expect(limit.room_wait('new')).toBe(0);
-    limit.try_fail(limit.try_begin('new') as Attempt);
-    expect(limit.try_begin('another')).toBeNull();
+    limit.try_fail(taken(limit, 'new'));
+    expect(limit.try_begin('another').ok).toBe(false);
     // And an aged-out failure frees its key in time.
     at = 70_000;
-    expect(limit.try_begin('another')).not.toBeNull();
+    expect(limit.try_begin('another').ok).toBe(true);
     expect(limit.wait_read('failed-at-20')).toBe(10);
     // Every key in the air: none is let go, the new key waits, and the count never grows past its cap.
     const full = new AttemptLimit(1, 60_000, (): number => at, 2);
     full.try_begin('a'); full.try_begin('b');
     at = 500_000;
-    expect(full.try_begin('c')).toBeNull();
-    expect(full.room_wait('c')).toBe(1);
+    // Nobody can date the end of a try in the air: the wait is the short fixed one, to ask again.
+    expect(full.try_begin('c')).toEqual({ ok: false, wait: 5 });
+    expect(full.room_wait('c')).toBe(5);
     expect(full.wait_read('a')).toBe(1);
     expect(full.wait_read('b')).toBe(1);
+  });
+
+  it('advertises the wait until a whole key is gone, not until its first failure ages out, and admits at that moment', () => {
+    let at = 0;
+    const limit = new AttemptLimit(5, 60_000, (): number => at, 1);
+    // One key holds the only place, with failures staggered at 0 s and 30 s.
+    limit.try_fail(taken(limit, 'held'));
+    at = 30_000;
+    limit.try_fail(taken(limit, 'held'));
+    at = 40_000;
+    // The first failure ages out at 60 s, but the key stays until the second does, at 90 s: that is the wait.
+    expect(limit.try_begin('new')).toEqual({ ok: false, wait: 50 });
+    // Refused again and again, the count is as it was: the same answer counted down, the held key untouched.
+    const before: string = JSON.stringify([...(limit as unknown as { tries: Map<string, Attempt[]> }).tries]);
+    at = 45_000;
+    for (let n = 0; n < 50; n++) expect(limit.try_begin(`other${n}`)).toEqual({ ok: false, wait: 45 });
+    expect(JSON.stringify([...(limit as unknown as { tries: Map<string, Attempt[]> }).tries])).toBe(before);
+    // Past the first failure's age-out there is still no place, as advertised.
+    at = 60_000;
+    expect(limit.try_begin('new')).toEqual({ ok: false, wait: 30 });
+    at = 89_999;
+    expect(limit.try_begin('new')).toEqual({ ok: false, wait: 1 });
+    // At the advertised moment there is.
+    at = 90_000;
+    expect(limit.try_begin('new').ok).toBe(true);
+    // A key with a try in the air beside an old failure is not dated by the failure.
+    at = 0;
+    const mixed = new AttemptLimit(5, 60_000, (): number => at, 2);
+    mixed.try_fail(taken(mixed, 'a'));
+    const air: Attempt = taken(mixed, 'a');
+    mixed.try_fail(taken(mixed, 'b'));
+    at = 10_000;
+    mixed.try_fail(taken(mixed, 'b'));
+    // a cannot be dated (a try in the air); b is wholly gone at 70 s.
+    expect(mixed.try_begin('c')).toEqual({ ok: false, wait: 60 });
+    // The try in the air ends as a failure of 0 s: a is gone at 60 s, sooner than was said, and the count
+    // works that out afresh once a key is let go, never later than it said.
+    mixed.try_fail(air);
+    at = 60_000;
+    expect(mixed.try_begin('c')).toEqual({ ok: false, wait: 10 });
+    at = 70_000;
+    expect(mixed.try_begin('c').ok).toBe(true);
   });
 
   it('holds device-code counts the same way: a full count forgets only what has aged out', () => {
@@ -316,8 +366,10 @@ describe('how often a password may be tried', () => {
     expect(hits.hit_take('a')).toBe(0);
     at = 10_000;
     expect(hits.hit_take('b')).toBe(0);
-    // Full of clients whose hits count: a third is turned away until the first ages out, and neither is forgotten.
+    // Full of clients whose hits count: a third is turned away until the first is wholly aged out, and
+    // neither is forgotten. b's one hit ages out at 70 s; a's at 60 s, until a asks again below.
     expect(hits.hit_take('c')).toBe(50);
+    for (let n = 0; n < 20; n++) expect(hits.hit_take(`other${n}`)).toBe(50);
     expect(hits.hit_take('a')).toBe(0);
     expect(hits.hit_take('a')).toBe(50);
     at = 60_000;

@@ -80,7 +80,7 @@ import { DOOR_COOKIE, doorCookie_options } from './door.js';
 import { loginPage_render, greetPage_render, authorisedPage_render } from './greeter.js';
 import { DeviceCodes, TokenStore, token_looksLike, type DeviceGrant, type DoorToken, type TokenCheck } from './tokens.js';
 import { idleSweep_run } from './sweep.js';
-import { AttemptLimit, HitLimit, VerdictCache, type Attempt } from './limit.js';
+import { AttemptLimit, HitLimit, VerdictCache, type Admission, type Attempt } from './limit.js';
 import { doorOrigins_resolve, method_isSafe, origin_isDoors, originRefusal_say, type DoorOrigins } from './origin.js';
 import { answer_watch, bodyStream_pass, relayBreak_format, relayFailure_describe, relayTarget_name, relayTimeout_derive } from './relay.js';
 
@@ -547,17 +547,20 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       }
       // Both counts take this try, or neither does: a count with no room for a new address or name turns the
       // login away, and the one that had taken it gives it back.
-      const byAddress: Attempt | null = loginsByAddress.try_begin(request.ip);
-      const byName: Attempt | null = byAddress === null ? null : loginsByName.try_begin(name);
-      if (byAddress === null || byName === null) {
-        if (byAddress !== null) loginsByAddress.try_forgive(byAddress);
-        const wait: number = Math.max(1, loginsByAddress.room_wait(request.ip), loginsByName.room_wait(name));
+      const addressAsk: Admission = loginsByAddress.try_begin(request.ip);
+      const nameAsk: Admission | null = addressAsk.ok ? loginsByName.try_begin(name) : null;
+      if (!addressAsk.ok || nameAsk === null || !nameAsk.ok) {
+        if (addressAsk.ok) loginsByAddress.try_forgive(addressAsk.attempt);
+        // The wait is the one the refusing count gave when it refused: it is not asked again.
+        const wait: number = !addressAsk.ok ? addressAsk.wait : nameAsk !== null && !nameAsk.ok ? nameAsk.wait : 1;
         options.log?.(`refused a login as ${username}: the door is counting as many failed logins as it can hold (${wait} s to wait)`);
         const words: string = `the door is under too many failed logins to take another; try again in ${wait} s`;
         void reply.code(429).header('retry-after', String(wait));
         if (wantsJson) return reply.send({ error: words });
         return reply.type('text/html; charset=utf-8').send(loginPage_render(config.cubeUrl, words, fromDevice ? 'ask' : null));
       }
+      const byAddress: Attempt = addressAsk.attempt;
+      const byName: Attempt = nameAsk.attempt;
       /** Tells both counts how this try ended: only a password CUBE refused is a failure. */
       const tries_tell = (failed: boolean): void => {
         if (failed) { loginsByAddress.try_fail(byAddress); loginsByName.try_fail(byName); } else { loginsByAddress.try_forgive(byAddress); loginsByName.try_forgive(byName); }
