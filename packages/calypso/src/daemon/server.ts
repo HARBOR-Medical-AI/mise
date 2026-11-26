@@ -31,7 +31,8 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { HostedEngine, CompletionResult } from './engine.js';
-import { staticRequest_handle, contentDisposition_format, contentType_derive } from './static.js';
+import { staticRequest_handle } from './static.js';
+import { vfsHeaders_build } from './vfsHeaders.js';
 import { token_matches } from './token.js';
 import { RequestBroker } from './broker.js';
 import { CONTRACT_VERSION } from '@fnndsc/menu';
@@ -715,14 +716,7 @@ export class CalypsoDaemon {
     }
     try {
       const bytes: Buffer = await read(filePath);
-      const headers: Record<string, string | number> = {
-        'content-type': contentType_derive(filePath),
-        'content-length': bytes.length,
-      };
-      if (query.get('download') === '1') {
-        headers['content-disposition'] = contentDisposition_format(filePath);
-      }
-      response.writeHead(200, headers);
+      response.writeHead(200, vfsHeaders_build(filePath, query.get('download') === '1', bytes.length));
       response.end(request.method === 'HEAD' ? undefined : bytes);
     } catch (error: unknown) {
       // The kernel says why it refused (status and a line); the route
@@ -789,9 +783,7 @@ export class CalypsoDaemon {
         return;
       }
     }
-    const headers: Record<string, string | number> = { 'content-type': contentType_derive(filePath) };
-    if (opened.size !== undefined) headers['content-length'] = opened.size;
-    if (query.get('download') === '1') headers['content-disposition'] = contentDisposition_format(filePath);
+    const headers: Record<string, string | number> = vfsHeaders_build(filePath, query.get('download') === '1', opened.size);
     if (probe && dl !== null) {
       // The probe's answer is the file's headers; the bytes wait for the save.
       if (!this.downloads.park(dl, opened)) {

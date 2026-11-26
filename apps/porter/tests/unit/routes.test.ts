@@ -631,6 +631,24 @@ describe('the relay to the session', () => {
     expect(said.some((one: string) => one.includes('did not answer'))).toBe(false);
   });
 
+  it('a file\'s headers from the session reach the browser as sent: its type, nosniff, its policy, its attachment', async () => {
+    const sent: Record<string, string> = {
+      'content-type': 'application/octet-stream',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "sandbox; default-src 'none'",
+      'content-disposition': `attachment; filename="page.html"; filename*=UTF-8''page.html`,
+    };
+    handle = (_request, response) => {
+      response.writeHead(200, { ...sent, 'content-length': 4 });
+      response.end('<p>x');
+    };
+    const { cookie, key } = await attach();
+    const answer = await built.app.inject({ method: 'GET', url: `/s/${key}/vfs?path=%2Fhome%2Fchris%2Fpage.html`, headers: { cookie } });
+    expect(answer.statusCode).toBe(200);
+    expect(answer.body).toBe('<p>x');
+    for (const [name, value] of Object.entries(sent)) expect(answer.headers[name]).toBe(value);
+  });
+
   it('a browser that leaves part way is not a break', async () => {
     handle = (_request, response) => {
       response.writeHead(200, { 'content-length': 1_000_000 });
