@@ -2,6 +2,11 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      base:
+        description: The commit or ref the ratchets' ceilings are compared with (default, the commit before this one on main; elsewhere, the merge base with main)
+        required: false
+        default: ''
   pull_request:
   push:
     branches: [main]
@@ -32,8 +37,16 @@ jobs:
     strategy:
       matrix:
         node: [22, 24]
+    # What a ratchet's ceilings are compared with (scripts/lib/ratchetBase.mjs): a pull request's base is in
+    # GITHUB_BASE_REF; a push's is the commit the branch was at before it; a manual run may name one.
+    env:
+      RATCHET_BEFORE: ${{ github.event.before }}
+      RATCHET_BASE: ${{ inputs.base }}
     steps:
+      # The whole history: a ratchet reads its baseline at the change's base, which must be here to be read.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -86,8 +99,9 @@ jobs:
           fail_ci_if_error: false
       - run: npm run lint:tests
       - run: npm run lint:seam
-      # Cast ratchet: the repo's `as unknown as` count may only decrease.
+      # Cast ratchet: each workspace's `as unknown as` count may only decrease, and its ceiling with it.
       - run: npm run lint:casts
+      - run: npm run test:ratchets
       # Principle checks (docs/principles.adoc). Two are hard checks; two are
       # ratchets that cannot repair what exists but stop it growing.
       - run: npm run lint:kernel

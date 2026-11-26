@@ -15,7 +15,7 @@ const RESTRICTED_MESSAGE =
 
 export default [
   {
-    files: ['packages/*/src/**/*.ts'],
+    files: ['packages/*/src/**/*.ts', 'apps/*/src/**/*.ts'],
     ignores: ['packages/cumin/src/chrisapi/adapter.ts'],
     languageOptions: { parser: tseslint.parser },
     rules: {

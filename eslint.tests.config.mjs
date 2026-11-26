@@ -14,7 +14,7 @@ import tseslint from 'typescript-eslint';
 import jest from 'eslint-plugin-jest';
 
 export default tseslint.config({
-  files: ['packages/*/tests/**/*.{ts,js}', 'packages/*/test/**/*.{ts,js}'],
+  files: ['packages/*/tests/**/*.{ts,js}', 'packages/*/test/**/*.{ts,js}', 'apps/*/tests/**/*.{ts,js}', 'apps/*/test/**/*.{ts,js}'],
   languageOptions: {
     parser: tseslint.parser,
     parserOptions: { sourceType: 'module' },
