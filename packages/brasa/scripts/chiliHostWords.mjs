@@ -15,7 +15,7 @@
  * Exits 1 on any difference.
  */
 const { run_capture } = await import('@fnndsc/chili/run.js');
-const { CHILI_HOST_WORDS } = await import('../dist/chris/chiliDelegate.js');
+const { CHILI_HOST_WORDS, chiliLine_read } = await import('../dist/chris/chiliDelegate.js');
 
 /** The help chili prints for a command line, as text without colour. */
 async function help_read(argv) {
@@ -79,6 +79,40 @@ for (const group of ['files', 'links', 'dirs']) {
   if (registered.length === 0) fail(`${group}: chili's help lists no commands; the check cannot see what it registers`);
   else if (registered.includes('create')) fail(`${group}: chili registers create here; the table knows it only under inode`);
   else console.log(`ok    ${group}: no create (${registered.join(', ')})`);
+}
+
+// The kernel's reading of a line against chili's own parser. Asked for help at its end, a line makes Commander
+// print the usage of the command it resolved the line to; that is compared with the word and subcommand the
+// kernel read. No line here carries a context (a word with `=`): chili acts on one before it parses, by
+// changing the session's context, which this check must not do; that rule is held to chili's source in the
+// unit test.
+const LINES = [
+  ['path', 'scan'],
+  ['path', 'scan', '--filter', 'download'],
+  ['path', 'scan', '--endsWith', 'upload', '--tree'],
+  ['path', 'upload', '/etc'],
+  ['path', '-s', 'upload', '/etc'],
+  ['path', '-c', 'upload', 'scan'],
+  ['path', '--config', 'scan', 'upload', '/etc'],
+  ['path', 'download', '-f', '/tmp/out'],
+  ['chefs', 'ls', 'upload'],
+  ['chefs', '-s', 'cat', 'upload'],
+  ['chefs', 'upload', '/etc/passwd', '/home/x'],
+  ['chefs', '-c', 'ls', 'upload', '/etc/passwd', '/home/x'],
+  ['chefs', '--config=upload', 'ls', '/home/x'],
+  ['man', 'doc', 'chell'],
+  ['man', 'doc', '--style', '../figlet', 'chell'],
+  ['man', 'topics'],
+  ['path'],
+  ['chefs', '-s'],
+];
+for (const line of LINES) {
+  const usage = (/^Usage: chili ?(.*?)(?: \[options\])?(?: \[command\])?(?: [<[].*)?$/m.exec(await help_read(line)) ?? [])[1];
+  const read = chiliLine_read(line[0], line.slice(1));
+  const expected = [read.word, read.sub].filter((part) => part !== undefined).join(' ');
+  if (usage === undefined) fail(`${line.join(' ')}: chili printed no usage to compare with`);
+  else if (usage.trim() !== expected) fail(`${line.join(' ')}: chili resolves it to "${usage.trim()}", the kernel reads "${expected}"`);
+  else console.log(`ok    ${line.join(' ')}  ->  ${expected}`);
 }
 
 console.log(failed === 0 ? 'chili host words: the table matches what chili registers' : `chili host words: ${failed} failed`);

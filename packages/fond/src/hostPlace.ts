@@ -19,7 +19,8 @@ import * as path from 'node:path';
 /** Where a name belongs under a folder, or why it has no place there. */
 export type HostPlace =
   | { readonly ok: true; readonly place: string }
-  | { readonly ok: false; readonly reason: string };
+  /** `unseen` is set when the name was not refused for what it says but because a part of its way could not be looked at: a failure of this host, not of the name. */
+  | { readonly ok: false; readonly reason: string; readonly unseen?: true };
 
 /** A path that could not be looked at: neither there nor proved missing. */
 class Uninspectable extends Error {}
@@ -125,7 +126,8 @@ export function wireName_place(folder: string, name: string): HostPlace {
   const realPlace = existingPart_resolve(place);
   for (const resolved of [realRoot, realPlace]) {
     if (typeof resolved === 'string') continue;
-    return { ok: false, reason: resolved.failed === 'dangling' ? `${shown} passes through a link that leads nowhere` : `${shown} passes through a place that could not be looked at` };
+    if (resolved.failed === 'dangling') return { ok: false, reason: `${shown} passes through a link that leads nowhere` };
+    return { ok: false, reason: `${shown} passes through a place that could not be looked at`, unseen: true };
   }
   if (typeof realRoot !== 'string' || typeof realPlace !== 'string') return { ok: false, reason: `${shown} could not be placed` };
   if (!path_within(realPlace, realRoot) || realPlace === realRoot) {

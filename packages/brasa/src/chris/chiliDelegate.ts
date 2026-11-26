@@ -152,29 +152,70 @@ export const CHILI_HOST_WORDS: Readonly<Record<string, Readonly<Record<string, H
 const INODE_CREATE_VALUED: ReadonlyArray<string> = ['--content', 'c', '--from-file', 'f', '--path', 'p', '--name', 'n'];
 
 /**
- * Whether an `inode` line creates a file from one on the host:
- * `inode <path> file create [name] --from-file <local>` (the one place
- * chili registers `create`; `files`, `links` and `dirs` have none).
- *
- * @param args - The arguments after `inode`.
- * @returns True when the line is a `file create` that names a host file.
+ * chili's own options, which Commander reads wherever they stand on the
+ * line, before or after the command word: `-c, --config <path>` takes a
+ * value, so the word after it is never the command or a subcommand.
  */
-function inodeCreate_touches(args: ReadonlyArray<string>): boolean {
-  const roles: ArgvRoles = argvRoles_read(args, INODE_CREATE_VALUED);
-  const [, kind, verb] = roles.operands;
-  return kind === 'file' && verb === 'create' && (roles.options.has('--from-file') || roles.options.has('-f'));
+const PROGRAM_VALUED: ReadonlyArray<string> = ['--config', 'c'];
+
+/**
+ * The arguments chili acts on, after its own first step.
+ *
+ * Before any parsing, chili takes the first argument that holds an `=` and
+ * does not begin with a dash to be a context (`user@url?folder=…`) and
+ * removes it (`run.ts`, `context_parse`). What is left is what Commander
+ * reads, so it is what is classified here: `path a=b upload /etc` is an
+ * upload.
+ *
+ * @param argv - The word and its arguments, as handed to chili.
+ * @returns The arguments with that one removed, when there is one.
+ */
+export function chiliArgv_effective(argv: ReadonlyArray<string>): string[] {
+  const at: number = argv.findIndex((arg: string): boolean => arg.includes('=') && !arg.startsWith('-'));
+  return at === -1 ? [...argv] : [...argv.slice(0, at), ...argv.slice(at + 1)];
+}
+
+/** What a chili line is, read as chili reads it: its top-level word, its subcommand, and its roles. */
+export interface ChiliLine {
+  /** The top-level word chili will run; undefined when the line names none. */
+  readonly word: string | undefined;
+  /** Its subcommand; undefined when none is named. */
+  readonly sub: string | undefined;
+  /** The whole line's options and operands, read with every option of the word and subcommand that takes a value. */
+  readonly roles: ArgvRoles;
+}
+
+/**
+ * Reads a chili line as chili will: its context removed, its program
+ * options set aside with their values, the first operand its top-level
+ * word and the second that word's subcommand.
+ *
+ * @param command - The word the line was handed over under.
+ * @param args - Its arguments.
+ * @returns The line as read.
+ */
+export function chiliLine_read(command: string, args: ReadonlyArray<string>): ChiliLine {
+  const effective: string[] = chiliArgv_effective([command, ...args]);
+  const first: ArgvRoles = argvRoles_read(effective, PROGRAM_VALUED);
+  const word: string | undefined = first.operands[0];
+  const sub: string | undefined = first.operands[1];
+  const known: HostSubcommand | undefined = word !== undefined && sub !== undefined ? CHILI_HOST_WORDS[word]?.[sub] : undefined;
+  const valued: ReadonlyArray<string> = [...PROGRAM_VALUED, ...(known?.valued ?? []), ...(word === 'inode' ? INODE_CREATE_VALUED : [])];
+  return { word, sub, roles: argvRoles_read(effective, valued) };
 }
 
 /**
  * Why a chili line may not run here, when it would touch the host's disk
  * and that disk is nobody's.
  *
- * The line is read by role: the subcommand is the first operand, and an
- * option's value is never mistaken for one, so `chefs ls upload` lists a
- * path called upload and `path scan --filter download` is a plain scan. A
- * subcommand the table does not name is refused.
+ * The line is read as chili reads it (`chiliLine_read`), by role: an
+ * option's value is never mistaken for a subcommand, so `chefs ls upload`
+ * lists a path called upload and `path scan --filter download` is a plain
+ * scan; `path -c upload scan` is a scan too, `upload` being the value of
+ * chili's own `--config`. A word asked only for its help touches nothing.
+ * A subcommand the table does not name is refused.
  *
- * @param command - chili's top-level word.
+ * @param command - chili's top-level word, as the line was handed over.
  * @param args - Its arguments.
  * @returns The refusal, or null when the line touches no host file or the disk is the operator's.
  *
@@ -184,19 +225,24 @@ function inodeCreate_touches(args: ReadonlyArray<string>): boolean {
  * ```
  */
 export function chiliHostWord_refusal(command: string, args: ReadonlyArray<string>): string | null {
-  if (command === 'inode') return inodeCreate_touches(args) ? hostDisk_refusal('inode file create --from-file') : null;
-  const word: Readonly<Record<string, HostSubcommand>> | undefined = CHILI_HOST_WORDS[command];
+  const line: ChiliLine = chiliLine_read(command, args);
+  if (line.word === undefined) return null;
+  if (line.word === 'inode') {
+    // `inode <path> file create [name] --from-file <local>`: the one place chili registers `create`.
+    const [, , kind, verb] = line.roles.operands;
+    const creates: boolean = kind === 'file' && verb === 'create' && (line.roles.options.has('--from-file') || line.roles.options.has('-f'));
+    return creates ? hostDisk_refusal('inode file create --from-file') : null;
+  }
+  const word: Readonly<Record<string, HostSubcommand>> | undefined = CHILI_HOST_WORDS[line.word];
   if (word === undefined) return null;
-  // The word's own options are flags (`-s`, `-h`): the subcommand is the first operand.
-  const leading: ArgvRoles = argvRoles_read(args, []);
-  const name: string | undefined = leading.operands[0];
-  const sub: HostSubcommand | undefined = name === undefined ? undefined : word[name];
-  const what: string = name === undefined ? command : `${command} ${name}`;
+  const what: string = line.sub === undefined ? line.word : `${line.word} ${line.sub}`;
+  // Asked only for the word's own help, with no subcommand: Commander prints it and runs nothing.
+  if (line.sub === undefined && (line.roles.options.has('--help') || line.roles.options.has('-h'))) return null;
+  const sub: HostSubcommand | undefined = line.sub === undefined ? undefined : word[line.sub];
   if (sub === undefined || sub.touches === 'always') return hostDisk_refusal(what);
-  const roles: ArgvRoles = argvRoles_read(args, sub.valued ?? []);
-  const given: string | undefined = sub.touches === 'never' ? undefined : sub.touches.find((option: string): boolean => roles.options.has(option));
+  const given: string | undefined = sub.touches === 'never' ? undefined : sub.touches.find((option: string): boolean => line.roles.options.has(option));
   if (given !== undefined) return hostDisk_refusal(`${what} ${given}`);
-  if (sub.operand_touches !== undefined && roles.operands.slice(1).some(sub.operand_touches)) return hostDisk_refusal(what);
+  if (sub.operand_touches !== undefined && line.roles.operands.slice(2).some(sub.operand_touches)) return hostDisk_refusal(what);
   return null;
 }
 

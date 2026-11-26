@@ -29,11 +29,23 @@ function scriptsList_run(context: ScriptsCommandContext): CommandEnvelope {
   return envelope_ok(`${lines.join('\n')}\n${chalk.gray(`${MINE}  this host's own scripts`)}\n`);
 }
 
+/**
+ * Whether git is to be held to network transports: so wherever the session's
+ * host disk is nobody's. What `scripts.json` says a source's repository is
+ * decides nothing by itself, since a clone pulls from its own configured
+ * upstream; git is told, and refuses `file` and local helpers itself.
+ *
+ * @returns True without the files tier.
+ */
+function network_only(): boolean {
+  return hostDisk_refusal('scripts') !== null;
+}
+
 function scriptsAdd_run(context: ScriptsCommandContext, name: string, repo: string, folder: string | undefined): CommandEnvelope {
   // A repository on this host's own disk is a place on that disk the operator chose to have read.
   const refused: string | null = ScriptLibrary.repo_isLocal(repo) ? hostDisk_refusal(`scripts add: ${repo} is a repository on the session's host`) : null;
   if (refused !== null) return envelope_error('', undefined, `${refused}\n`);
-  const added: GitAnswer = context.library.source_add({ name, repo, ...(folder !== undefined ? { folder } : {}) });
+  const added: GitAnswer = context.library.source_add({ name, repo, ...(folder !== undefined ? { folder } : {}) }, network_only());
   return added.ok ? envelope_ok(`${added.text}; its scripts are at ${SCRIPTS_PREFIX}/${name}/\n`) : envelope_error('', undefined, `scripts add: ${added.text}\n`);
 }
 
@@ -44,7 +56,7 @@ function scriptsPull_run(context: ScriptsCommandContext, named: string | undefin
     // A source kept from before, whose repository is on this host's disk, is read from that disk by a pull as by an add.
     const source: ScriptSource | null = context.library.source_read(name);
     const refused: string | null = source !== null && ScriptLibrary.repo_isLocal(source.repo) ? hostDisk_refusal(`scripts pull: ${name} is ${source.repo}, a repository on the session's host`) : null;
-    return refused !== null ? { ok: false, text: refused } : context.library.source_pull(name);
+    return refused !== null ? { ok: false, text: refused } : context.library.source_pull(name, network_only());
   });
   const text: string = `${answers.map((answer: GitAnswer): string => answer.ok ? answer.text : chalk.red(answer.text)).join('\n')}\n`;
   return answers.every((answer: GitAnswer): boolean => answer.ok) ? envelope_ok(text) : envelope_error('', undefined, text);

@@ -257,6 +257,81 @@ describe('the library stays inside itself', () => {
     expect((await mount.list('/scripts/kept')).ok).toBe(false);
   });
 
+  it('a source kept under a name that is no source\'s name is no source: not listed, not pulled, not removed, and no path is made from it', async () => {
+    mkdirSync(join(root, 'config'), { recursive: true });
+    writeFileSync(library.sourcesFile, JSON.stringify({ sources: [
+      { name: '../../outside', repo },
+      { name: '/etc', repo },
+      { name: 'mine', repo },
+      { name: 'Bad Name', repo },
+      { repo },
+    ] }));
+    expect(library.sources_list()).toEqual([]);
+    const listed = await new ScriptsProvider(library, (): string => 'rudolph').list('/scripts');
+    expect(listed.ok && listed.value.map((item) => item.name)).toEqual(['mine']);
+    for (const name of ['../../outside', '/etc', 'Bad Name']) {
+      expect(plain((await scripts_run({ library }, ['remove', name])).renderedErr)).toContain('not a source');
+      expect(plain((await scripts_run({ library }, ['pull', name])).renderedErr ?? '')).toContain('not a source');
+    }
+    // The folder those names pointed at stands untouched.
+    expect(readFileSync(secret, 'utf8')).toBe('not a script: a file elsewhere on this host\n');
+    expect(existsSync(join(root, 'outside'))).toBe(true);
+  });
+
+  it('a failed add leaves a clone that stood there before it', async () => {
+    const standing: string = library.clone_derive('kept');
+    mkdirSync(join(standing, '.git'), { recursive: true });
+    writeFileSync(join(standing, 'theirs.mise'), 'net new n\n');
+    const refused = await scripts_run({ library }, ['add', 'kept', repo, '--folder', 'nosuchfolder']);
+    expect(plain(refused.renderedErr)).toContain('has no folder nosuchfolder');
+    expect(readFileSync(join(standing, 'theirs.mise'), 'utf8')).toBe('net new n\n');
+    expect(library.sources_list()).toEqual([]);
+  });
+
+  it('with the tier off, git itself refuses a clone or a pull from this host, whatever the library\'s file says the source is', async () => {
+    // Added while the tier was on; its clone's own upstream is the repository on this host.
+    expect((await scripts_run({ library }, ['add', 'local', repo, '--folder', 'real'])).renderedErr ?? '').toBe('');
+    // The file now says it is a repository elsewhere: the check of the file passes, and git is asked.
+    writeFileSync(library.sourcesFile, JSON.stringify({ sources: [{ name: 'local', repo: 'https://git.example.invalid/x/y.git', folder: 'real' }] }));
+    hostDisk_set(false);
+    const pulled = await scripts_run({ library }, ['pull', 'local']);
+    expect(plain(pulled.renderedErr ?? pulled.rendered)).toMatch(/local: git pull: .*(not allowed|transport)/);
+    // And a clone by a spelling the check of the file does not know as local is refused by git the same way.
+    expect(git_run(['clone', '--quiet', `file://${repo}`, join(root, 'state', 'scripts', 'direct')], undefined, true)).toMatchObject({ ok: false });
+    expect(existsSync(join(root, 'state', 'scripts', 'direct', '.git'))).toBe(false);
+    // With the tier on the same pull goes through.
+    hostDisk_set(true);
+    writeFileSync(library.sourcesFile, JSON.stringify({ sources: [{ name: 'local', repo, folder: 'real' }] }));
+    expect(plain((await scripts_run({ library }, ['pull', 'local'])).rendered)).toMatch(/^local: at [0-9a-f]{7} /);
+  });
+
+  it('lists a link in a clone as itself: its size and date are the link\'s, not those of what it points at', async () => {
+    expect((await scripts_run({ library }, ['add', 'leaky', repo, '--folder', 'real'])).renderedErr ?? '').toBe('');
+    writeFileSync(secret, 'x'.repeat(5000));
+    const listed = await new ScriptsProvider(library, (): string => 'rudolph').list('/scripts/leaky');
+    const leak = listed.ok ? listed.value.find((item) => item.name === 'leak.mise') : undefined;
+    expect(leak).toBeDefined();
+    expect(leak!.size).toBeLessThan(5000);
+    expect(leak!.size).toBe(secret.length);
+  });
+
+  it('says permission denied, not no such file, for a script under a folder that may not be looked into', async () => {
+    if (process.getuid?.() === 0) return;
+    const closed: string = join(library.mine_derive(), 'closed');
+    mkdirSync(closed);
+    writeFileSync(join(closed, 'x.mise'), 'net new n\n');
+    chmodSync(closed, 0o000);
+    try {
+      const mount = new ScriptsProvider(library, (): string => 'rudolph');
+      const read = await mount.readBinary('/scripts/mine/closed/x.mise');
+      expect(read).toMatchObject({ ok: false, errno: 'EACCES' });
+      expect(read.ok === false && read.reason).toContain("/scripts/mine/closed/x.mise: permission denied on the session's host");
+      expect(await mount.absence_prove('/scripts/mine/closed/x.mise')).toBe(false);
+    } finally {
+      chmodSync(closed, 0o700);
+    }
+  });
+
   it('keeps the file system\'s own answer for a script that may not be read', async () => {
     if (process.getuid?.() === 0) return;
     const mine: string = library.mine_derive();
@@ -341,6 +416,24 @@ describe('play over stratus\'s own files, with the files tier on', () => {
       expect(diskReads).toEqual([]);
     } finally {
       chmodSync(closed, 0o600);
+    }
+  });
+
+  it('a script under a folder that may not be looked into is said as permission denied, and the disk is read zero times', async () => {
+    if (process.getuid?.() === 0) return;
+    await backend_set(new FakeDriver(fakeCloud_sample()));
+    const closed: string = join(library.mine_derive(), 'closed');
+    mkdirSync(closed);
+    writeFileSync(join(closed, 'x.mise'), 'net new n\n');
+    chmodSync(closed, 0o000);
+    try {
+      const answer = await manifestText_read('/scripts/mine/closed/x.mise', disk_read);
+      expect(answer.ok).toBe(false);
+      expect(answer.ok === false && answer.reason).toContain("/scripts/mine/closed/x.mise: permission denied on the session's host");
+      expect(answer.ok === false && answer.reason).toContain("the engine's disk was not looked at");
+      expect(diskReads).toEqual([]);
+    } finally {
+      chmodSync(closed, 0o700);
     }
   });
 

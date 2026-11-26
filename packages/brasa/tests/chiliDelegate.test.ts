@@ -1,4 +1,5 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { readFileSync } from 'node:fs';
 import { cuminMock_install } from './support/cuminMock.js';
 
 const mockRunCapture = jest.fn<(argv: string[]) => Promise<{ out: string; err: string }>>();
@@ -9,7 +10,7 @@ cuminMock_install(() => ({
   envelope_error: (rendered: string, _errors?: unknown, renderedErr?: string) => (renderedErr !== undefined ? { status: 'error', rendered, renderedErr } : { status: 'error', rendered }),
 }));
 
-const { chiliCommand_run, chiliCommand_exists, chiliHostWord_refusal, argvRoles_read, CHILI_HOST_WORDS } = await import('../src/chris/chiliDelegate.js');
+const { chiliCommand_run, chiliCommand_exists, chiliHostWord_refusal, chiliArgv_effective, chiliLine_read, argvRoles_read, CHILI_HOST_WORDS } = await import('../src/chris/chiliDelegate.js');
 const { surface_set, HeadlessSurface } = await import('../src/core/surface.js');
 
 /** Installs a surface whose engine disk is, or is not, its operator's; answers how to put the old one back. */
@@ -73,6 +74,27 @@ describe('argvRoles_read', () => {
   });
 });
 
+describe('a chili line, read as chili reads it', () => {
+  it('removes the first word that holds an = and no leading dash, as chili\'s context_parse does, and only that one', () => {
+    expect(chiliArgv_effective(['path', 'a=b', 'upload', '/etc'])).toEqual(['path', 'upload', '/etc']);
+    expect(chiliArgv_effective(['path', 'scan', '--filter=x', 'a=b', 'c=d'])).toEqual(['path', 'scan', '--filter=x', 'c=d']);
+    expect(chiliArgv_effective(['a=b', 'path', 'upload'])).toEqual(['path', 'upload']);
+    expect(chiliArgv_effective(['path', 'scan'])).toEqual(['path', 'scan']);
+    // Held to chili's source: the rule is these two tests and nothing else.
+    const run: string = readFileSync(new URL('../../chili/src/run.ts', import.meta.url), 'utf8');
+    expect(run).toMatch(/if \(arg\.includes\("="\) && !arg\.startsWith\("-"\)\) \{/);
+    expect(run).toMatch(/\.option\("-c, --config <path>", "path to config file"\)/);
+  });
+
+  it('finds the word and the subcommand past chili\'s own options and a context', () => {
+    expect(chiliLine_read('path', ['-c', 'upload', 'scan'])).toMatchObject({ word: 'path', sub: 'scan' });
+    expect(chiliLine_read('path', ['-s', '-v', 'upload', '/etc'])).toMatchObject({ word: 'path', sub: 'upload' });
+    expect(chiliLine_read('a=b', ['path', 'upload'])).toMatchObject({ word: 'path', sub: 'upload' });
+    expect(chiliLine_read('path', ['--help'])).toMatchObject({ word: 'path', sub: undefined });
+    expect(chiliLine_read('path', ['scan', '--filter', 'download']).roles.operands).toEqual(['path', 'scan']);
+  });
+});
+
 describe('chili\'s words that touch the host\'s disk', () => {
   /** Lines that read or write a file on the machine chili runs on, however their options are placed. */
   const TOUCHING: ReadonlyArray<[string, string[]]> = [
@@ -106,6 +128,16 @@ describe('chili\'s words that touch the host\'s disk', () => {
     ['man', ['doc', '--', '-x/../../etc/notes']],
     ['man', ['doc', '--', '--/..']],
     ['man', ['somethingnew']],
+    // chili removes the first word that holds an `=` and no leading dash as its context: what is left is an upload.
+    ['path', ['user@cube?folder=/x', 'upload', '/etc']],
+    ['path', ['scan', 'a=b', '--hostpath', '/etc']],
+    // chili's own --config takes the word after it, wherever it stands: `scan` is its value here, and the subcommand is upload.
+    ['path', ['-c', 'scan', 'upload', '/etc']],
+    ['path', ['--config', 'scan', 'upload', '/etc']],
+    ['path', ['upload', '--config=/x', '/etc']],
+    ['chefs', ['-c', 'ls', 'upload', '/etc/passwd', '/home/x']],
+    // The context removed is the first such word only; the filter's own `x=y` then stays a value.
+    ['man', ['a=b', 'doc', '../../etc/notes']],
   ];
 
   /** Lines of the same words that touch no host file, some of them carrying a touching word as a mere operand or value. */
@@ -130,6 +162,18 @@ describe('chili\'s words that touch the host\'s disk', () => {
     ['man', ['doc', '--', '-topic']],
     ['man', ['topics']],
     ['feeds', ['-s', 'list']],
+    // `upload` is the value of chili's own --config, and the subcommand is scan.
+    ['path', ['-c', 'upload', 'scan']],
+    ['path', ['--config', 'download', 'scan', '--tree']],
+    ['chefs', ['--config=upload', 'ls', '/home/x']],
+    // A word asked only for its help runs nothing.
+    ['path', ['--help']],
+    ['path', ['-h']],
+    ['chefs', ['-s', '--help']],
+    ['man', ['-h']],
+    ['path', ['help']],
+    // A context is removed, and what is left is a plain scan.
+    ['path', ['user@cube?folder=/x', 'scan']],
   ];
 
   beforeEach(() => {

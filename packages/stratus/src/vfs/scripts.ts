@@ -31,6 +31,17 @@ interface Placed {
   readonly writable: boolean;
 }
 
+/** A path whose way on disk could not be looked at, with the words for why. */
+interface Unseen {
+  /** Why. */
+  readonly unseen: string;
+}
+
+/** Whether a placing came back as a way that could not be looked at. */
+function unseen_is(placed: Placed | null | 'unknown' | Unseen): placed is Unseen {
+  return placed !== null && placed !== 'unknown' && 'unseen' in placed;
+}
+
 /** The library as a mount. */
 export class ScriptsProvider implements VFSProvider {
   readonly prefix: string = SCRIPTS_PREFIX;
@@ -50,7 +61,7 @@ export class ScriptsProvider implements VFSProvider {
   }
 
   /** Where a path below the mount is on disk, or null for the mount itself or an unknown source. */
-  private place(segments: ReadonlyArray<string>): Placed | null | 'unknown' {
+  private place(segments: ReadonlyArray<string>): Placed | null | 'unknown' | Unseen {
     const [first, ...rest] = segments;
     if (first === undefined) return null;
     if (rest.some((segment: string): boolean => segment === '..' || segment === '.git')) return 'unknown';
@@ -68,17 +79,20 @@ export class ScriptsProvider implements VFSProvider {
    * passes through a link leading out of the folder, a clone's own link to
    * somewhere on this host included, has no place and is unknown.
    */
-  private within_place(base: string, rest: ReadonlyArray<string>, writable: boolean): Placed | 'unknown' {
+  private within_place(base: string, rest: ReadonlyArray<string>, writable: boolean): Placed | 'unknown' | Unseen {
     if (rest.length === 0) return { base, disk: base, writable };
     const placed: HostPlace = wireName_place(base, rest.join('/'));
-    return placed.ok ? { base, disk: placed.place, writable } : 'unknown';
+    if (placed.ok) return { base, disk: placed.place, writable };
+    // A way that could not be looked at is a failure of this host, said as one: not a path that is not there.
+    return placed.unseen === true ? { unseen: placed.reason } : 'unknown';
   }
 
   private item_make(name: string, disk: string, type: string): VFSItem {
     let size: number = 0;
     let date: string = new Date().toISOString();
     try {
-      const stat: fs.Stats = fs.statSync(disk);
+      // The entry as itself: a link is not followed to wherever it points for its size or its date.
+      const stat: fs.Stats = fs.lstatSync(disk);
       size = stat.isDirectory() ? fs.readdirSync(disk).filter((entry: string): boolean => entry !== '.git').length : stat.size;
       date = stat.mtime.toISOString();
     } catch {
@@ -115,7 +129,7 @@ export class ScriptsProvider implements VFSProvider {
    */
   async absence_prove(pathStr: string): Promise<boolean> {
     const placed = this.place(this.segments_split(pathStr));
-    if (placed === null || placed === 'unknown') return false;
+    if (placed === null || placed === 'unknown' || unseen_is(placed)) return false;
     try {
       fs.lstatSync(placed.disk);
       return false;
@@ -131,15 +145,26 @@ export class ScriptsProvider implements VFSProvider {
       errorStack.stack_push('error', `Cannot list ${pathStr}: No such file or directory`);
       return Err();
     }
+    if (unseen_is(placed)) {
+      errorStack.stack_push('error', `Cannot list ${pathStr}: permission denied on the session's host (${placed.unseen})`);
+      return Err();
+    }
     if (!fs.existsSync(placed.disk)) {
       errorStack.stack_push('error', `Cannot list ${pathStr}: ${placed.writable || this.library.cloned(this.segments_split(pathStr)[0] as string) ? 'No such file or directory' : 'the source is not cloned (scripts pull)'}`);
       return Err();
     }
-    if (!fs.statSync(placed.disk).isDirectory()) {
-      errorStack.stack_push('error', `Cannot list ${pathStr}: Not a directory`);
+    // A folder that may not be read is said so, in the mount's words, not thrown at whoever asked.
+    try {
+      if (!fs.statSync(placed.disk).isDirectory()) {
+        errorStack.stack_push('error', `Cannot list ${pathStr}: Not a directory`);
+        return Err();
+      }
+      return Ok(this.folder_list(placed.disk));
+    } catch (error: unknown) {
+      const code: string | undefined = (error as NodeJS.ErrnoException).code;
+      errorStack.stack_push('error', `Cannot list ${pathStr}: ${code === 'EACCES' || code === 'EPERM' ? "permission denied on the session's host" : (error instanceof Error ? error.message : String(error))}`);
       return Err();
     }
-    return Ok(this.folder_list(placed.disk));
   }
 
   async read(pathStr: string): Promise<VfsOutcome<string>> {
@@ -151,6 +176,7 @@ export class ScriptsProvider implements VFSProvider {
     const placed = this.place(this.segments_split(pathStr));
     if (placed === null) return vfs_fail('EISDIR');
     if (placed === 'unknown') return vfs_fail('ENOENT');
+    if (unseen_is(placed)) return vfs_fail('EACCES', `${pathStr}: permission denied on the session's host (${placed.unseen})`);
     // The file system's own answer is kept: a script that may not be read is not a script that is not there.
     try {
       if (fs.statSync(placed.disk).isDirectory()) return vfs_fail('EISDIR');
@@ -167,6 +193,7 @@ export class ScriptsProvider implements VFSProvider {
     const segments: string[] = this.segments_split(pathStr);
     const placed = this.place(segments);
     if (placed === null || placed === 'unknown') return vfs_fail('ENOENT');
+    if (unseen_is(placed)) return vfs_fail('EACCES', `${pathStr}: permission denied on the session's host (${placed.unseen})`);
     if (!placed.writable) return vfs_fail('EROFS', `${segments[0]} is a source's clone: the way back into it is git; write under /scripts/${MINE}/`);
     if (segments.length < 2) return vfs_fail('EISDIR');
     fs.mkdirSync(path.dirname(placed.disk), { recursive: true, mode: 0o700 });

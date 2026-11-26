@@ -48,13 +48,19 @@ export interface GitAnswer {
  *
  * @param args - git's arguments.
  * @param cwd - Where.
+ * @param network - Whether git may use only transports that leave this host (`https`, `ssh`).
  * @returns Whether it succeeded, and its last line.
  */
-export function git_run(args: ReadonlyArray<string>, cwd?: string): GitAnswer {
-  const ran: SpawnSyncReturns<string> = spawnSync('git', [...args], { encoding: 'utf-8', ...(cwd !== undefined ? { cwd } : {}), env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+export function git_run(args: ReadonlyArray<string>, cwd?: string, network: boolean = false): GitAnswer {
+  // With `network`, git itself is held to transports that leave this host: whatever a clone's configured
+  // upstream or a redirect says, `file` and every local helper are refused by git (GIT_ALLOW_PROTOCOL).
+  const ran: SpawnSyncReturns<string> = spawnSync('git', [...args], { encoding: 'utf-8', ...(cwd !== undefined ? { cwd } : {}), env: { ...process.env, ...(network ? { GIT_ALLOW_PROTOCOL: NETWORK_PROTOCOLS } : {}), GIT_TERMINAL_PROMPT: '0' } });
   const text: string = ((ran.status === 0 ? ran.stdout : ran.stderr) || ran.error?.message || '').trim().split('\n').at(-1) ?? '';
   return { ok: ran.status === 0, text };
 }
+
+/** The transports git may use when the session's host disk is nobody's: over a network, never `file` or a local helper. */
+export const NETWORK_PROTOCOLS: string = 'https:ssh';
 
 /** The library: its sources, as configured and as cloned. */
 export class ScriptLibrary {
@@ -75,7 +81,21 @@ export class ScriptLibrary {
     if (!fs.existsSync(this.sourcesFile)) return [];
     const read: unknown = JSON.parse(fs.readFileSync(this.sourcesFile, 'utf-8'));
     const sources: unknown = (read as { sources?: unknown }).sources;
-    return Array.isArray(sources) ? (sources as ScriptSource[]) : [];
+    // A source is its name, and its clone is a folder of that name under the library's root. A name kept in
+    // the file that is not one (it climbs, it is absolute, it is `mine`) names no source: it is not listed,
+    // pulled or removed, so no path is ever made from it.
+    return Array.isArray(sources) ? (sources as ScriptSource[]).filter((source: ScriptSource): boolean => ScriptLibrary.name_isSource(source?.name)) : [];
+  }
+
+  /**
+   * Whether a word is a source's name: lower-case letters, digits and
+   * hyphens, starting with a letter, and not this host's own folder.
+   *
+   * @param name - The word.
+   * @returns True when a clone may be named for it.
+   */
+  static name_isSource(name: unknown): name is string {
+    return typeof name === 'string' && SOURCE_NAME.test(name) && name !== MINE;
   }
 
   /** One source by name, or null. */
@@ -106,7 +126,7 @@ export class ScriptLibrary {
    * @returns The folder on disk, or null when the source's name or folder does not stay inside the library.
    */
   shown_place(source: ScriptSource): string | null {
-    if (!SOURCE_NAME.test(source.name) || source.name === MINE) return null;
+    if (!ScriptLibrary.name_isSource(source.name)) return null;
     const clone: string = this.clone_derive(source.name);
     if (source.folder === undefined || source.folder === '') return clone;
     const placed: HostPlace = wireName_place(clone, source.folder);
@@ -149,9 +169,10 @@ export class ScriptLibrary {
    * Adds a source and clones it.
    *
    * @param source - The source.
+   * @param network - Whether git is held to transports that leave this host.
    * @returns What git said, or why not.
    */
-  source_add(source: ScriptSource): GitAnswer {
+  source_add(source: ScriptSource, network: boolean = false): GitAnswer {
     if (!SOURCE_NAME.test(source.name)) return { ok: false, text: `${source.name}: a source's name is lower-case letters, digits and hyphens, starting with a letter, at most 32` };
     if (source.name === MINE) return { ok: false, text: `${MINE} is this host's own folder, not a source` };
     if (this.source_read(source.name) !== null) return { ok: false, text: `${source.name}: already a source (scripts remove ${source.name} first)` };
@@ -162,15 +183,17 @@ export class ScriptLibrary {
     }
     fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
     const clone: string = this.clone_derive(source.name);
-    if (!this.cloned(source.name)) {
-      const cloned: GitAnswer = this.git(['clone', '--quiet', source.repo, clone]);
+    // A clone that stood here before this add is not this add's to remove when the add fails.
+    const fresh: boolean = !this.cloned(source.name);
+    if (fresh) {
+      const cloned: GitAnswer = this.git(['clone', '--quiet', source.repo, clone], undefined, network);
       if (!cloned.ok) return { ok: false, text: `git clone ${source.repo}: ${cloned.text}` };
     }
     if (source.folder !== undefined && source.folder !== '') {
       // Again now that the clone is there: the folder may be, or pass through, a link the repository carries.
       const shown: string | null = this.shown_place(source);
       if (shown === null || !fs.existsSync(shown)) {
-        fs.rmSync(clone, { recursive: true, force: true });
+        if (fresh) fs.rmSync(clone, { recursive: true, force: true });
         return { ok: false, text: shown === null ? `--folder ${source.folder}: it leads out of the repository's clone` : `${source.repo} has no folder ${source.folder}` };
       }
     }
@@ -195,16 +218,19 @@ export class ScriptLibrary {
    * Pulls a source's clone, fast-forward only; clones it when the clone is gone.
    *
    * @param name - The source.
+   * @param network - Whether git is held to transports that leave this host.
    * @returns What git said.
    */
-  source_pull(name: string): GitAnswer {
+  source_pull(name: string, network: boolean = false): GitAnswer {
     const source: ScriptSource | null = this.source_read(name);
     if (source === null) return { ok: false, text: `${name}: not a source` };
     if (!this.cloned(name)) {
-      const cloned: GitAnswer = this.git(['clone', '--quiet', source.repo, this.clone_derive(name)]);
+      const cloned: GitAnswer = this.git(['clone', '--quiet', source.repo, this.clone_derive(name)], undefined, network);
       return cloned.ok ? { ok: true, text: `${name}: cloned again` } : { ok: false, text: `git clone ${source.repo}: ${cloned.text}` };
     }
-    const pulled: GitAnswer = this.git(['pull', '--quiet', '--ff-only'], this.clone_derive(name));
+    // A pull goes where the clone's own configuration says, which need not be what the library's file says:
+    // git itself is told which transports it may use.
+    const pulled: GitAnswer = this.git(['pull', '--quiet', '--ff-only'], this.clone_derive(name), network);
     if (!pulled.ok) return { ok: false, text: `${name}: git pull: ${pulled.text}` };
     const head: GitAnswer = this.git(['log', '-1', '--format=%h %cs %s'], this.clone_derive(name));
     return { ok: true, text: `${name}: at ${head.text}` };
