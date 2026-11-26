@@ -33,7 +33,9 @@ function list_check(paths) {
 }
 
 const DEBRIS = ['cwd.txt', 'packages/chell/cwd.txt', 'packages/trek/coverage/lcov.info', 'apps/porter/coverage/lcov-report/index.html', 'packages/chili/package.json.backup', 'packages/cumin/package-lock.json', 'apps/argus/package-lock.json', 'docs/a name\nwith a line break/cwd.txt'];
-const CLEAN = ['package-lock.json', 'package.json', 'packages/orrery/src/types/census.ts', 'packages/cumin/src/coverageReport.ts', 'docs/cwd.txt.adoc', 'packages/chell/src/backup.ts', 'scripts/coverage-floor.mjs', 'scripts/fixtures/audit-coverage/good/package-lock.json', 'packages/brasa/tests/fixtures/coverage/report.json'];
+const CLEAN = ['package-lock.json', 'package.json', 'packages/orrery/src/types/census.ts', 'packages/cumin/src/coverageReport.ts', 'docs/cwd.txt.adoc', 'packages/chell/src/backup.ts', 'scripts/coverage-floor.mjs', 'scripts/fixtures/audit-coverage/good/package-lock.json'];
+// Being under a fixtures folder excuses nothing but the audit fixtures' own lockfiles.
+const UNDER_FIXTURES = ['scripts/fixtures/audit-coverage/good/cwd.txt', 'scripts/fixtures/audit-coverage/good/packages/a/package-lock.json', 'scripts/fixtures/other/package-lock.json', 'packages/brasa/tests/fixtures/coverage/report.json', 'packages/brasa/tests/fixtures/old.json.backup', 'apps/argus/tests/fixtures/cwd.txt'];
 
 let failed = 0;
 const mixed = list_check([...DEBRIS, ...CLEAN]);
@@ -42,6 +44,8 @@ if (mixed.status !== 1) { console.log(`FAIL  a list with debris ended ${mixed.st
 if (mixed.found.length < DEBRIS.length - 1 || !DEBRIS.slice(0, 7).every((path) => mixed.found.includes(path))) { console.log(`FAIL  found ${JSON.stringify(mixed.found)}, wanted all of ${JSON.stringify(DEBRIS)}`); failed++; }
 const clean = list_check(CLEAN);
 if (clean.status !== 0) { console.log(`FAIL  a clean list ended ${clean.status}: ${clean.found.join(', ')}`); failed++; }
+const fixtures = list_check([...UNDER_FIXTURES, ...CLEAN]);
+if (fixtures.status !== 1 || JSON.stringify(fixtures.found) !== JSON.stringify([...UNDER_FIXTURES].sort())) { console.log(`FAIL  debris under fixtures folders: found ${JSON.stringify(fixtures.found)}, wanted exactly ${JSON.stringify([...UNDER_FIXTURES].sort())}`); failed++; }
 const empty = list_check([]);
 if (empty.status !== 1) { console.log(`FAIL  an empty list ended ${empty.status}: a check of nothing must not pass`); failed++; }
 
@@ -49,6 +53,9 @@ if (empty.status !== 1) { console.log(`FAIL  an empty list ended ${empty.status}
 const repo = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), 'debris-check-'));
 const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 git('init', '-q');
+// Git's own default, said here so the case is the same whatever the person running this has configured:
+// printing for people, it quotes and escapes these names.
+git('config', 'core.quotePath', 'true');
 const planted = ['päckages/ünïcode/cwd.txt', 'données/coverage/lcov.info', 'с пробелом/package-lock.json'];
 const harmless = ['päckages/ünïcode/source.ts', 'package-lock.json'];
 for (const path of [...planted, ...harmless]) {

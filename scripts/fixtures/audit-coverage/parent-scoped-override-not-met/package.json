@@ -1,0 +1,12 @@
+{
+  "name": "fixture",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "overrides": {
+    "b": {
+      "c": "3.0.0"
+    }
+  }
+}

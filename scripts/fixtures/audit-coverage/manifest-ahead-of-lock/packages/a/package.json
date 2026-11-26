@@ -4,5 +4,8 @@
   "dependencies": {
     "b": "^1.0.0",
     "f": "^1.0.0"
+  },
+  "optionalDependencies": {
+    "d": "^1.0.0"
   }
 }
