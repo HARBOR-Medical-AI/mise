@@ -341,6 +341,12 @@ export class ChRISResource {
           if (offset === 0) break;
           throw new Error(`${this._resourceName}: the page at offset ${offset} did not come as a list`);
         }
+        // The SDK answers a body with no collection in it as a list all the
+        // same, one that holds nothing. A later page like that has not said
+        // "no more rows": it has said nothing.
+        if (offset > 0 && this.rawCount_read() === null) {
+          throw new Error(`${this._resourceName}: the page at offset ${offset} did not come as a list of items`);
+        }
         result = this.resources_filterByFields(await this.resourceFields_get(asked));
       } catch (error: unknown) {
         // A walk that never started is a FAILED listing and stays a failure:

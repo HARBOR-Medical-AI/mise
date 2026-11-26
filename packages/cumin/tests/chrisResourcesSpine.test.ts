@@ -395,6 +395,32 @@ describe('resources_getAll is steered by what the server sent, not by what was k
     expect(all?.incomplete?.reason).toContain('the page at offset 100 did not come as a list');
   });
 
+  it('says the walk stopped short when a later page is a list the SDK made of a body with no collection', async () => {
+    // What the SDK's own get() leaves for such a body: a real ListResource, its collection null, its items none.
+    const hollow: ListResource = Object.create(ListResource.prototype) as ListResource;
+    Object.defineProperties(hollow, { collection: { value: null }, getItems: { value: (): unknown[] => [] } });
+    const fetch = jest.fn()
+      .mockResolvedValueOnce(listResource_make(rows_make(100), 'resources', true))
+      .mockResolvedValue(hollow);
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never, 'Missing');
+    const all: FilteredResourceData | null = await resource.resources_getAll();
+    expect(all?.tableData).toHaveLength(100);
+    expect(all?.incomplete?.gathered).toBe(100);
+    expect(all?.incomplete?.reason).toContain('the page at offset 100 did not come as a list of items');
+  });
+
+  it('still takes a later page with an empty list of items and no next link as the end', async () => {
+    const fetch = jest.fn()
+      .mockResolvedValueOnce((() => { const list: ListResource = listResource_make(rows_make(100)); delete (list.collection as { links?: unknown }).links; return list; })())
+      .mockResolvedValue(listResource_make([]));
+    const resource: ChRISResource = new ChRISResource();
+    resource.binding_applyGet({}, fetch as never);
+    const all: FilteredResourceData | null = await resource.resources_getAll();
+    expect(all?.tableData).toHaveLength(100);
+    expect(all?.incomplete).toBeUndefined();
+  });
+
   it('fails when a later page does not come and nothing had matched: the match may be on it', async () => {
     const fetch = jest.fn(async (params: Record<string, unknown>) => {
       if ('name' in params) throw new Error('400 unknown query param');
