@@ -13,12 +13,29 @@
 # running (SMOKE_NIGHTLY_SOURCED=1): scripts/smoke-nightly.test.sh drives
 # them with stand-ins.
 #
-# Needs: ~/.config/mise/e2e.env (E2E_USER, E2E_PASSWORD, E2E_CUBE) and a built
-# repo (`make cook`); runs from a systemd user timer on pangea (mise-smoke.timer).
+# Everything the run makes while it runs (the private daemon's folders, the
+# browsers' profiles, the token it logs in with) is under one folder that is
+# this run's alone: made by mktemp, mode 0700, under the user's runtime
+# folder, and removed when the run ends, however it ends. Nothing of a run
+# is under a name in /tmp that another user could have made first. The
+# ledger and the logs are kept, under the state folder. SMOKE_PRIVATE names
+# a folder to use instead, for a person debugging; it must be private, and
+# is left as it is.
+#
+# The daemon logs in as the e2e identity with a token CUBE issues for the
+# run: no saved login is kept or copied between runs.
+#
+# Needs: ~/.config/mise/e2e.env (E2E_USER, E2E_PASSWORD, E2E_CUBE), readable
+# by this user alone, and a built repo (`make cook`); runs from a systemd
+# user timer on pangea (mise-smoke.timer).
 set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=scripts/lib/smoke-private.sh
+. "$ROOT/scripts/lib/smoke-private.sh"
 STATE=${SMOKE_STATE:-$HOME/.local/state/mise/smoke}
-P=${SMOKE_PRIVATE:-/tmp/pde2e-nightly}
+# The run's folder. Settled in nightly_main; a script that sources this to
+# drive its functions names the folder itself (SMOKE_PRIVATE).
+P=${SMOKE_PRIVATE:-}
 day=$(date +%F)
 # One log per run, never one per day: a second run the same day (a rerun by
 # hand) once overwrote the night's log and took its evidence with it.
@@ -29,12 +46,18 @@ failures=0
 
 daemon_start() { # extra env…: boots the private daemon, sets url and pid
   rm -f "$P"/run/calypso/berth-*.json
+  # A token from CUBE for this daemon, in a file of the run's own, handed over on standard input: no
+  # password and no token is on a command line, and no login saved by another run is read.
+  cube_token_get "$P" > "$P/token" || { echo "$day  no token: CUBE did not issue one for the e2e identity" | tee -a "$ledger"; exit 1; }
   env "$@" TMPDIR=$P/tmp XDG_RUNTIME_DIR=$P/run XDG_CONFIG_HOME=$P/config XDG_CACHE_HOME=$P/cache \
-    setsid nohup node "$ROOT/packages/chell/dist/index.js" --daemon --no-logo --saved-token "$E2E_USER@$E2E_CUBE" > "$P/daemon.log" 2>&1 < /dev/null &
+    setsid nohup node "$ROOT/packages/chell/dist/index.js" "$E2E_USER@$E2E_CUBE" --daemon --no-logo --auth-token-stdin > "$P/daemon.log" 2>&1 < "$P/token" &
+  daemon_note $!
   b=""; for _ in $(seq 1 180); do b=$(ls "$P/run/calypso/" 2>/dev/null | grep berth- | head -1); [ -n "$b" ] && break; sleep 1; done
+  rm -f "$P/token"
   [ -n "$b" ] || { echo "$day  no berth: the daemon did not boot" | tee -a "$ledger"; exit 1; }
   url=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['url'].replace('ws://','http://')+'/?token='+d['token'])" "$P/run/calypso/$b")
   pid=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['pid'])" "$P/run/calypso/$b")
+  daemon_note "$pid"
 }
 # One stage's verdict: its ledger line, its reds beneath, and whether it failed.
 # A stage failed when its runner did (a failed scenario, a crash, 124 from
@@ -52,8 +75,11 @@ run() { # name, port, extra env…
   # A fresh browser every run: the profile holds localStorage (sized columns,
   # the landing), and a run that inherits last night's remembers what the
   # scenarios expect a new device to have forgotten.
-  rm -rf "/tmp/smN/$name"
-  env "$@" TMPDIR=/tmp/smN ARGUS_URL="$url" SMOKE_CDP_PORT="$port" SMOKE_CHROME_FLAGS="--no-sandbox --user-data-dir=/tmp/smN/$name" \
+  # The profile and the fixtures are under the run's own folder, which is new each run.
+  # --no-sandbox: the browser on this host is started so by every smoke run (the sandbox needs a host
+  # setting this script cannot make); it loads only the private daemon's own page.
+  mkdir -p "$P/browser/$name"
+  env "$@" TMPDIR="$P/browser" ARGUS_URL="$url" SMOKE_CDP_PORT="$port" SMOKE_CHROME_FLAGS="--no-sandbox --user-data-dir=$P/browser/$name" \
     timeout 2700 node apps/argus/tests/smoke/smoke.mjs > "$log.$name" 2>&1
   local status=$?
   run_record "$name" "$status" "$log.$name"
@@ -134,7 +160,8 @@ door_step() {
 # The upgrade path (#915): a daemon on the previous published release, a
 # porter from this checkout, two logins; one line in the ledger of its own.
 upgrade_step() {
-  bash "${SMOKE_UPGRADE:-$ROOT/scripts/smoke-upgrade.sh}"
+  # It works in a folder inside this run's own, which stays this run's to remove.
+  SMOKE_RUN_ROOT="$P" bash "${SMOKE_UPGRADE:-$ROOT/scripts/smoke-upgrade.sh}"
   local status=$?
   if [ "$status" -ne 0 ]; then failures=$((failures + 1)); fi
 }
@@ -145,17 +172,39 @@ nightly_finish() {
   [ "$failures" -eq 0 ]
 }
 
+# How the run ends, however it ends: what it started is stopped and waited
+# for, then its folder is removed if the run made it, and the status the
+# run had is the status it leaves with.
+nightly_ending() {
+  local status=$?
+  trap - EXIT INT TERM
+  [ -n "${RUN_ROOT:-}" ] && { daemons_reap; run_root_remove; }
+  exit "$status"
+}
+# A signal is a failure by itself, whatever the command it interrupted had
+# returned: said in the ledger, and the run leaves with a failing status.
+nightly_interrupted() { # the signal's name
+  failures=$((failures + 1))
+  echo "$day  interrupted ($1): the run did not finish" >> "$ledger"
+  echo "$day  log $log" >> "$ledger"
+  exit 1
+}
+
 nightly_main() {
   cd "$ROOT" || exit 1
-  mkdir -p "$STATE" "$P/tmp" "$P/run" "$P/config" "$P/cache" /tmp/smN
+  umask 077
+  mkdir -p "$STATE"
+  local said
+  # The credentials are this user's alone, or the run does not start.
+  said=$(private_check "$HOME/.config/mise/e2e.env" "the e2e credentials") || { echo "$day  not started: $said" | tee -a "$ledger"; exit 1; }
+  run_root_settle "" "" "${SMOKE_PRIVATE:-}" mise-smoke-nightly || { echo "$day  not started: $RUN_ROOT_SAID" | tee -a "$ledger"; exit 1; }
+  P=$RUN_ROOT
+  trap nightly_ending EXIT
+  trap 'nightly_interrupted INT' INT
+  trap 'nightly_interrupted TERM' TERM
+  mkdir -p "$P/tmp" "$P/run" "$P/config" "$P/cache" "$P/browser"
   # A private daemon of our own: its own XDG dirs (cwd.txt and proc shards are per identity).
   set -a; . "$HOME/.config/mise/e2e.env"; set +a
-  # The daemon logs in with the e2e identity's SAVED token, seeded from the
-  # config the e2e daemon keeps (SMOKE_SEED, default /tmp/pde2e/config): a
-  # password on a command line would show in every ps on this host.
-  SEED=${SMOKE_SEED:-/tmp/pde2e/config}
-  [ -d "$SEED/@fnndsc" ] || { echo "$day  no e2e seed at $SEED/@fnndsc: log the e2e identity in once (restart-e2e) and run again" | tee -a "$ledger"; exit 1; }
-  rm -rf "$P/config/@fnndsc" && cp -r "$SEED/@fnndsc" "$P/config/@fnndsc"
   daemon_start
   run desk 9701
   run tablet 9702 SMOKE_ONLY=listing-columns,mode-frame,cards,runs-honesty,roster-order,notes SMOKE_WIDTH=1024 SMOKE_HEIGHT=768

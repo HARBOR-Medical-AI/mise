@@ -6,19 +6,32 @@
 # The class of bug that put an operator on yesterday's kernel twice in a day
 # (law a-login-never-lands-on-an-older-kernel), checked end to end.
 #
-# Needs: ~/.config/mise/e2e.env (E2E_USER, E2E_PASSWORD, E2E_CUBE), the e2e
-# identity's saved login at $SMOKE_SEED (default /tmp/pde2e/config), and a
-# built checkout (`make cook`). Appends one line to the smoke ledger.
+# Needs: ~/.config/mise/e2e.env (E2E_USER, E2E_PASSWORD, E2E_CUBE), readable
+# by this user alone, and a built checkout (`make cook`). Appends one line
+# to the smoke ledger. The old daemon is logged in with a token CUBE issues
+# for the run, on its standard input: no saved login is read or copied.
+#
+# Everything it makes while it runs is under a folder of its own: inside the
+# nightly's when the nightly runs it (SMOKE_RUN_ROOT, the nightly's to
+# remove), else a new one from mktemp, mode 0700, removed when the run ends.
+# UPGRADE_WORK names a folder to use instead, for a person debugging; it
+# must be private, and is left as it is.
+#
+# A run that cannot do its work is a failure, not a skip: with nothing
+# published to start from, or a previous release that cannot be logged in
+# this way, it says so in the ledger and exits 1.
 #
 #   scripts/smoke-upgrade.sh              the previous published chell
-#   OLD_CHELL=5.10.3 scripts/smoke-upgrade.sh
+#   OLD_CHELL=5.10.3 scripts/smoke-upgrade.sh   that release, and no other
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
+# shellcheck source=scripts/lib/smoke-private.sh
+. "$ROOT/scripts/lib/smoke-private.sh"
+umask 077
 STATE=${SMOKE_STATE:-$HOME/.local/state/mise/smoke}
-WORK=${UPGRADE_WORK:-/tmp/mise-upgrade}
 PORT=${UPGRADE_PORT:-4192}   # not 4190: that one is on the fetch spec's blocked list
-SEED=${SMOKE_SEED:-/tmp/pde2e/config}
+CREDENTIALS=${E2E_ENV:-$HOME/.config/mise/e2e.env}
 day=$(date +%F)
 ledger="$STATE/ledger.txt"
 log="$STATE/$day-$(date +%H%M)-upgrade.log"
@@ -27,47 +40,85 @@ exec 3>&1 > "$log" 2>&1
 
 say() { printf '[upgrade] %s\n' "$*"; }
 verdict() { echo "$day  upgrade  $*" | tee -a "$ledger" >&3; }
-fail() { say "FAIL: $*"; verdict "FAIL: $* (see $log)"; cleanup; exit 1; }
+# The run's verdict so far, as the status it will leave with.
+status=0
+fail() { say "FAIL: $*"; verdict "FAIL: $* (see $log)"; status=1; exit 1; }
 
-set -a; . "$HOME/.config/mise/e2e.env"; set +a
-[ -d "$SEED/@fnndsc" ] || { verdict "skipped: no e2e saved login at $SEED"; exit 0; }
+# How the run ends, however it ends: the porter, the old daemon and the
+# daemon the porter started are stopped and waited for; the folder is
+# removed if this run made it; and the status is the run's own.
+PORTER_PID=""
+WORK=""
+ending() {
+  local left=$?
+  trap - EXIT INT TERM
+  [ "$status" -eq 0 ] && status=$left
+  if [ -n "$WORK" ]; then
+    # The daemon the porter started is known only by the berth it wrote.
+    local berth; berth=$(find "$WORK/state" -name 'berth-*.json' 2>/dev/null | head -1)
+    if [ -n "$berth" ]; then daemon_note "$(node -p "require(process.argv[1]).pid" "$berth" 2>/dev/null)"; fi
+    daemons_reap
+    run_root_remove
+  fi
+  exit "$status"
+}
+# A signal is a failure by itself, whatever the command it interrupted had returned.
+interrupted() { # the signal's name
+  status=1
+  say "interrupted ($1)"
+  verdict "FAIL: interrupted ($1): the run did not finish (see $log)"
+  exit 1
+}
+trap ending EXIT
+trap 'interrupted INT' INT
+trap 'interrupted TERM' TERM
+
+# The credentials are this user's alone, or nothing is started.
+said=$(private_check "$CREDENTIALS" "the e2e credentials") || fail "not started: $said"
+set -a; . "$CREDENTIALS"; set +a
+
+run_root_settle "${SMOKE_RUN_ROOT:-}" upgrade "${UPGRADE_WORK:-}" mise-smoke-upgrade || fail "not started: $RUN_ROOT_SAID"
+WORK=$RUN_ROOT
 
 NEW=$(node -p "require('./packages/chell/package.json').version")
-OLD=${OLD_CHELL:-$(npm view @fnndsc/chell versions --json 2>/dev/null | node -e "
-  const v = JSON.parse(require('fs').readFileSync(0, 'utf8')); const at = v.indexOf('$NEW');
-  process.stdout.write(String(at > 0 ? v[at - 1] : v[v.length - 1] === '$NEW' ? v[v.length - 2] : v[v.length - 1]));")}
-[ -n "$OLD" ] && [ "$OLD" != "$NEW" ] || { verdict "skipped: no published chell before $NEW to start from"; exit 0; }
+# The release to start from: the one named, or the newest published before this checkout's. That one is
+# run, or the run fails by name; another is never put in its place.
+if [ -n "${OLD_CHELL:-}" ]; then
+  OLD=$OLD_CHELL
+else
+  OLD=$(npm view @fnndsc/chell versions --json 2>/dev/null | NEW="$NEW" node -e '
+    const versions = JSON.parse(require("fs").readFileSync(0, "utf8")); const at = versions.indexOf(process.env.NEW);
+    const last = versions[versions.length - 1];
+    process.stdout.write(String(at > 0 ? versions[at - 1] : at === 0 ? "" : last === process.env.NEW ? versions[versions.length - 2] ?? "" : last ?? ""));') || OLD=""
+fi
+[ -n "$OLD" ] && [ "$OLD" != "$NEW" ] || fail "no published chell before $NEW to start from"
 say "old chell $OLD (published), new chell $NEW (this checkout)"
 
-PORTER_PID=""; OLD_PID=""
-cleanup() {
-  [ -n "$PORTER_PID" ] && kill "$PORTER_PID" 2>/dev/null
-  local berth; berth=$(find "$WORK/state" -name 'berth-*.json' 2>/dev/null | head -1)
-  if [ -n "$berth" ]; then kill "$(node -p "require('$berth').pid")" 2>/dev/null; fi
-  [ -n "$OLD_PID" ] && kill "$OLD_PID" 2>/dev/null
-  true
-}
-trap cleanup EXIT
-
-rm -rf "$WORK"; mkdir -p "$WORK/old" "$WORK/state"
+mkdir -p "$WORK/old" "$WORK/state"
 npm install --prefix "$WORK/old" "@fnndsc/chell@$OLD" --no-audit --no-fund >/dev/null 2>&1 || fail "npm could not install chell $OLD"
+OLD_ENTRY="$WORK/old/node_modules/@fnndsc/chell/dist/index.js"
+# The old release is logged in with a token on its standard input. One from before that way in cannot be
+# started without a saved login, which this run does not keep: said by name, as a failure.
+grep -rqF -- '--auth-token-stdin' "$WORK/old/node_modules/@fnndsc/chell/dist" || fail "chell $OLD cannot be logged in without a saved login (it has no --auth-token-stdin); the upgrade from it was not run"
 
 CUBE=${E2E_CUBE%/}/
 IDENTITY="$E2E_USER@$CUBE"
-KEY=$(node --input-type=module -e "import { berthKey_compute } from '@fnndsc/calypso/berth'; process.stdout.write(berthKey_compute('$IDENTITY'));")
+KEY=$(node --input-type=module -e "import { berthKey_compute } from '@fnndsc/calypso/berth'; process.stdout.write(berthKey_compute(process.argv[1]));" "$IDENTITY")
 DIR="$WORK/state/$KEY"
 mkdir -p "$DIR/config" "$DIR/run" "$DIR/cache" "$DIR/tmp"
-cp -r "$SEED/@fnndsc" "$DIR/config/@fnndsc"
 
 # 1. The old daemon, in the session's own directories, as an older porter left it.
+cube_token_get "$WORK" > "$WORK/token" || fail "CUBE did not issue a token for the e2e identity"
 TMPDIR=$DIR/tmp XDG_RUNTIME_DIR=$DIR/run XDG_CONFIG_HOME=$DIR/config XDG_CACHE_HOME=$DIR/cache \
-  setsid nohup node "$WORK/old/node_modules/@fnndsc/chell/dist/index.js" "$E2E_USER@$E2E_CUBE" --daemon --saved-token --no-logo \
-  > "$WORK/old-daemon.log" 2>&1 < /dev/null &
-OLD_PID=$!
+  setsid nohup node "$OLD_ENTRY" "$E2E_USER@$E2E_CUBE" --daemon --auth-token-stdin --no-logo \
+  > "$WORK/old-daemon.log" 2>&1 < "$WORK/token" &
+daemon_note $!
 berth=""; for _ in $(seq 1 240); do berth=$(find "$DIR/run" -name 'berth-*.json' 2>/dev/null | head -1); [ -n "$berth" ] && break; sleep 1; done
+rm -f "$WORK/token"
 [ -n "$berth" ] || fail "the old daemon never wrote its berth"
-oldRunning=$(node -p "(require('$berth').versions || {}).chell || 'none'")
-OLD_PID=$(node -p "require('$berth').pid")
+oldRunning=$(node -p "(require(process.argv[1]).versions || {}).chell || 'none'" "$berth")
+OLD_PID=$(node -p "require(process.argv[1]).pid" "$berth")
+daemon_note "$OLD_PID"
 say "old daemon up: pid $OLD_PID, berth says chell $oldRunning"
 [ "$oldRunning" = "$OLD" ] || fail "the old daemon's berth says chell $oldRunning, expected $OLD"
 
@@ -76,13 +127,13 @@ PORTER_CUBE_URL="$E2E_CUBE" PORTER_PORT=$PORT PORTER_HOST=127.0.0.1 PORTER_STATE
   PORTER_SECRET=$(head -c 24 /dev/urandom | base64) PORTER_CHELL="$ROOT/packages/chell/dist/index.js" \
   setsid nohup node apps/porter/dist/porter.js > "$WORK/porter.log" 2>&1 < /dev/null &
 PORTER_PID=$!
+daemon_note "$PORTER_PID"
 for _ in $(seq 1 30); do curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null && break; sleep 1; done
 curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null || fail "the porter did not come up"
 grep -q "adopted $E2E_USER's session" "$WORK/porter.log" || fail "the porter did not adopt the old session"
 
 # The password goes in a 0600 file, never on a command line (law a-secret-is-never-on-the-command-line).
-umask 077
-node -e "require('fs').writeFileSync('$WORK/login.json', JSON.stringify({ username: process.env.E2E_USER, password: process.env.E2E_PASSWORD }))"
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ username: process.env.E2E_USER, password: process.env.E2E_PASSWORD }))' "$WORK/login.json"
 # A login says where it comes from, as a browser at this door would: the door takes a password only from itself.
 login() { curl -s -c "$WORK/cj" -H 'content-type: application/json' -H "origin: http://127.0.0.1:$PORT" -d @"$WORK/login.json" "http://127.0.0.1:$PORT/login"; }
 
@@ -93,7 +144,7 @@ timeout 300 curl -sN -b "$WORK/cj" -H 'accept: text/event-stream' "http://127.0.
 grep -q '^event: ready' "$WORK/boot.sse" || fail "the restarted session did not boot to ready ($(grep -A1 '^event: failed' "$WORK/boot.sse" | tail -1))"
 kill -0 "$OLD_PID" 2>/dev/null && fail "the old daemon (pid $OLD_PID) is still running after the restart"
 berth=$(find "$DIR/run" -name 'berth-*.json' | head -1)
-newRunning=$(node -p "(require('$berth').versions || {}).chell || 'none'")
+newRunning=$(node -p "(require(process.argv[1]).versions || {}).chell || 'none'" "$berth")
 say "after the restart the berth says chell $newRunning"
 [ "$newRunning" = "$NEW" ] || fail "after the restart the kernel is chell $newRunning, not $NEW"
 

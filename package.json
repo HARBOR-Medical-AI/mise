@@ -24,7 +24,7 @@
     "lint:audit-coverage": "node scripts/audit-coverage.mjs",
     "test:audit-coverage": "node scripts/audit-coverage.test.mjs",
     "test:argv": "node scripts/argv-secrets.test.mjs",
-    "test:nightly": "bash scripts/smoke-nightly.test.sh",
+    "test:nightly": "bash scripts/smoke-nightly.test.sh && bash scripts/smoke-private.test.sh",
     "lint:fond": "node scripts/fond-isolation.mjs",
     "lint:trek": "node scripts/trek-isolation.mjs",
     "lint:core-deps": "node scripts/core-dependency-ratchet.mjs",
