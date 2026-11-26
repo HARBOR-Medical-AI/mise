@@ -15,7 +15,20 @@
 import { Result, Ok, Err } from "../result.js";
 import { errorStack } from "../errorStack.js";
 import { VFSProvider, VFSItem, CpOptions, type VFSSubtree } from "./provider.js";
+import * as path from "path";
+
 import { vfs_ok, vfs_fail, type VfsOutcome } from "./outcome.js";
+
+/**
+ * A path in the one spelling mounts are matched by: from the root, with no
+ * `.`, `..`, doubled or trailing slash.
+ *
+ * @param pathStr - The path as written.
+ * @returns The same path, canonical.
+ */
+function path_canonicalize(pathStr: string): string {
+  return path.posix.resolve("/", pathStr);
+}
 
 /**
  * The fallback when none is given: it holds nothing, and says so by name
@@ -282,12 +295,16 @@ export class VFSDispatcher {
    *   resolved as the fallback resolves its own paths;
    * - anything else, a parent of mounts on either side included: `EXDEV`.
    *
-   * @param src - Source path.
-   * @param dest - Destination path.
+   * @param asked - Source path.
+   * @param askedDest - Destination path.
    * @param options - Copy options.
    * @returns Done, or why not.
    */
-  async cp(src: string, dest: string, options: CpOptions): Promise<VfsOutcome> {
+  async cp(asked: string, askedDest: string, options: CpOptions): Promise<VfsOutcome> {
+    // One spelling for every question: `/./etc/x` and `/etc/x` are one path,
+    // and a mount is found by its prefix, letter for letter.
+    const src: string = path_canonicalize(asked);
+    const dest: string = path_canonicalize(askedDest);
     const source: VFSProvider | null = this.owner_find(src);
     const destination: VFSProvider | null = this.owner_find(dest);
     if (source === null) return vfs_fail('EXDEV', `cp: ${src} is a folder of mounts, and holds nothing of its own to copy`);
@@ -300,9 +317,11 @@ export class VFSDispatcher {
     if (!from.ok) return from;
     const to: VfsOutcome<string> = await this.pathFor_provider(destination, dest, 'destination path', 'cp');
     if (!to.ok) return to;
-    if (this.owner_find(from.value) !== source) return vfs_fail('EXDEV', `cp: ${src} resolves to ${from.value}, which another mount owns`);
-    if (this.owner_find(to.value) !== destination) return vfs_fail('EXDEV', `cp: ${dest} resolves to ${to.value}, which another mount owns`);
-    return source.cp(from.value, to.value, options);
+    const fromPath: string = path_canonicalize(from.value);
+    const toPath: string = path_canonicalize(to.value);
+    if (this.owner_find(fromPath) !== source) return vfs_fail('EXDEV', `cp: ${src} resolves to ${fromPath}, which another mount owns`);
+    if (this.owner_find(toPath) !== destination) return vfs_fail('EXDEV', `cp: ${dest} resolves to ${toPath}, which another mount owns`);
+    return source.cp(fromPath, toPath, options);
   }
 
   /**

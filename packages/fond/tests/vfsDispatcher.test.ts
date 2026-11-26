@@ -236,6 +236,27 @@ describe('a copy across mounts', () => {
     expect(copies(seen)).toEqual([]);
   });
 
+  it('is judged by the canonical spelling: a mounted destination written with a dot is still that mount\'s', async () => {
+    const { d, seen } = world();
+    expect(await d.cp('/home/a', '/./scripts/a.sh', {})).toMatchObject({ ok: false, errno: 'EXDEV' });
+    expect(await d.cp('/home/a', '/home/../scripts/a.sh', {})).toMatchObject({ ok: false, errno: 'EXDEV' });
+    expect(await d.cp('/home/a', '//net/', {})).toMatchObject({ ok: false, errno: 'EXDEV' });
+    expect(seen).toEqual([]);
+  });
+
+  it('is routed by the canonical spelling: one mount written two ways is one mount, and is asked with canonical paths', async () => {
+    const { d, seen } = world();
+    expect(await d.cp('/./scripts/a.sh', '/scripts//b.sh', {})).toEqual(vfs_ok(true));
+    expect(copies(seen)).toEqual(['/scripts:cp:/scripts/a.sh>/scripts/b.sh']);
+  });
+
+  it('judges what a resolver answers by its canonical spelling too', async () => {
+    const { d, seen } = world();
+    d.pathResolver_register(async (p: string): Promise<string> => (p === '/home/link' ? '/home/../scripts/target' : p));
+    expect(await d.cp('/home/a', '/home/link', {})).toMatchObject({ ok: false, errno: 'EXDEV' });
+    expect(copies(seen)).toEqual([]);
+  });
+
   it('within one mount, and within the fallback, is as it was', async () => {
     const { d, seen } = world();
     expect(await d.cp('/scripts/a.sh', '/scripts/b.sh', {})).toEqual(vfs_ok(true));
