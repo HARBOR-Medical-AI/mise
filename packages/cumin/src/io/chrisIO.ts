@@ -102,29 +102,33 @@ function httpStatus_extract(error: unknown): number | null {
   return typeof status === "number" ? status : null;
 }
 
-/** What a CUBE that does not know a rename field says of it in its refusal. */
-const FIELD_REFUSAL: RegExp = /upload_path|"path"|At least one of the fields/;
+/** The older rename field, which a CUBE that wants it names as missing. */
+const LEGACY_RENAME_FIELD: string = 'path';
+
+/** What a CUBE says when a rename carried none of the fields it reads. */
+const NO_KNOWN_FIELD: string = 'At least one of the fields';
 
 /**
- * Whether a failed rename was refused over the field it was spelt with.
+ * Whether a failed rename was refused because CUBE does not read the field
+ * it was spelt with.
  *
  * Only then is the other spelling worth a request: CUBE read this one and
- * did nothing with it. A 400 about anything else (the name, the place) will
- * be a 400 again, and is the answer.
+ * did nothing with it. Two answers say so: the older field named as the
+ * one in error (it is required, and was not sent), or the sentence CUBE
+ * gives when it found no field it reads. A 400 keyed by `upload_path` is
+ * the opposite: CUBE knows the field and refuses its value, and would
+ * refuse it again.
  *
  * @param error - The thrown value.
- * @returns True for an HTTP 400 whose body or message speaks of the field.
+ * @returns True for an HTTP 400 that says the field was not read.
  */
 function fieldRefusal_detect(error: unknown): boolean {
   if (httpStatus_extract(error) !== HTTP_BAD_REQUEST) return false;
   const body: unknown = (error as { response?: { data?: unknown } }).response?.data;
-  let said: string = error instanceof Error ? error.message : '';
-  try {
-    said += typeof body === 'string' ? body : JSON.stringify(body ?? '');
-  } catch {
-    // A body that will not serialise says nothing more than the message did.
-  }
-  return FIELD_REFUSAL.test(said);
+  if (typeof body === 'string') return body.includes(NO_KNOWN_FIELD);
+  if (body === null || typeof body !== 'object') return false;
+  if (Object.prototype.hasOwnProperty.call(body, LEGACY_RENAME_FIELD)) return true;
+  return Object.values(body).some((said: unknown): boolean => String(said).includes(NO_KNOWN_FIELD));
 }
 
 export class ChrisIO {
@@ -780,8 +784,8 @@ export class ChrisIO {
    * The rename field drifted across CUBE versions: newer servers take
    * `upload_path`, older ones `path` (chrisapi types neither). The current
    * name is tried first. The older one is tried only when CUBE answered the
-   * first request and refused it over the field itself (HTTP 400 whose
-   * body speaks of the field): a request whose reply was lost may have
+   * first request and refused it as a field it does not read (HTTP 400
+   * naming the older field as missing, or saying no known field came): a request whose reply was lost may have
    * moved the file, and one refused for another reason will be refused
    * again, so a second write then would be a move nobody checked. Such a failure is
    * answered as Err, and the caller asks where the file is.

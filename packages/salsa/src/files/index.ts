@@ -278,15 +278,21 @@ function content_convertToBlob(content: string | Buffer | Blob): Blob {
  * Creates a new empty file at the specified path (like Unix touch).
  * Optionally creates the file with specified content.
  *
- * @param path - The ChRIS path for the new file.
+ * @param written - The ChRIS path for the new file; one written without its
+ *   leading slash is read from the root.
  * @param content - Optional content to write to the file (string, Buffer, or Blob).
  * @returns A Promise resolving to true on success, false on failure.
  */
 export async function files_touch(
-  target: string,
+  written: string,
   content?: string | Buffer | Blob
 ): Promise<boolean> {
   const fileContent: string | Buffer | Blob = content ?? new Blob([""]);
+  // One name, from the root, for every question asked of the path: whether
+  // a projection owns it, what holds it, and where the bytes go. A spelling
+  // such as `./proc/...` is otherwise a projection's file to one and a CUBE
+  // file to another.
+  const target: string = path.posix.resolve('/', written);
 
   // A projection's file (a feed's note under /proc) is written through the
   // projection that owns it, never uploaded into CUBE's store as a file of

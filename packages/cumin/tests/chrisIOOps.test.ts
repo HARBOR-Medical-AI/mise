@@ -59,7 +59,7 @@ describe('file_moveById field drift', () => {
 
   it('falls back to path for older CUBEs, which refuse the newer field outright', async () => {
     const put = jest.fn()
-      .mockRejectedValueOnce(Object.assign(new Error('At least one of the fields'), { response: { status: 400 } }))
+      .mockRejectedValueOnce(Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['This field is required.'] } } }))
       .mockResolvedValueOnce({});
     mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
     expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(true);
@@ -86,6 +86,22 @@ describe('file_moveById field drift', () => {
     mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
     expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
     expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for no second move when CUBE knows the field and refuses its value', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { upload_path: ['Invalid file name.'] } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('tries the older field when CUBE says no field it reads was sent', async () => {
+    const put = jest.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Bad Request'), { response: { status: 400, data: { non_field_errors: ["At least one of the fields 'public' or 'path' must be provided."] } } }))
+      .mockResolvedValueOnce({});
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(true);
+    expect(put).toHaveBeenNthCalledWith(2, { path: '/new/name.txt' });
   });
 
   it('asks the caller again before the older field, and stops when the place is no longer shown free', async () => {
