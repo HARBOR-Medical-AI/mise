@@ -15,17 +15,23 @@ const noDoor = (): null => null;
 describe('cliConfig_parse', () => {
   it('takes a daemon\'s attach token from the environment when none is typed, and removes it from there whichever wins', () => {
     const handed: NodeJS.ProcessEnv = { CHELL_ATTACH_TOKEN: 'from-the-daemon', OTHER: 'kept' };
-    expect(cliConfig_parse(undefined, { attach: 'ws://127.0.0.1:9' }, noFile, noDoor, handed).attachToken).toBe('from-the-daemon');
+    expect(cliConfig_parse(undefined, { remote: true, attach: 'ws://127.0.0.1:9' }, noFile, noDoor, handed).attachToken).toBe('from-the-daemon');
     expect(handed).toEqual({ OTHER: 'kept' });
     // A token typed on the command line wins, and the variable is still taken out.
     const both: NodeJS.ProcessEnv = { CHELL_ATTACH_TOKEN: 'from-the-daemon' };
-    expect(cliConfig_parse(undefined, { attach: 'ws://127.0.0.1:9', token: 'typed' }, noFile, noDoor, both).attachToken).toBe('typed');
+    expect(cliConfig_parse(undefined, { remote: true, attach: 'ws://127.0.0.1:9', token: 'typed' }, noFile, noDoor, both).attachToken).toBe('typed');
     expect('CHELL_ATTACH_TOKEN' in both).toBe(false);
     // An empty one is no token, and is removed too.
     const empty: NodeJS.ProcessEnv = { CHELL_ATTACH_TOKEN: '' };
-    expect(cliConfig_parse(undefined, { attach: 'ws://127.0.0.1:9' }, noFile, noDoor, empty).attachToken).toBeUndefined();
+    expect(cliConfig_parse(undefined, { remote: true, attach: 'ws://127.0.0.1:9' }, noFile, noDoor, empty).attachToken).toBeUndefined();
     expect('CHELL_ATTACH_TOKEN' in empty).toBe(false);
     expect(attachTokenEnv_take({})).toBeUndefined();
+    // A shell that is not attaching at all still takes the variable out, in every mode.
+    for (const options of [{}, { command: 'ls' }, { daemon: true }]) {
+      const stray: NodeJS.ProcessEnv = { CHELL_ATTACH_TOKEN: 'stray' };
+      expect(cliConfig_parse(undefined, options, noFile, noDoor, stray).attachToken).toBeUndefined();
+      expect('CHELL_ATTACH_TOKEN' in stray).toBe(false);
+    }
   });
 
   it('defaults to interactive with no args', () => {

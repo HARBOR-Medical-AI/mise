@@ -159,6 +159,10 @@ export function cliConfig_parse(
     connectConfig = { user, password, url };
   }
 
+  // A daemon's attach token is taken out of the environment in every mode, whether or not this shell is
+  // attaching and whether or not a typed one wins: nothing this shell starts inherits it.
+  const handed: string | undefined = attachTokenEnv_take(env);
+
   let config: ChellCLIConfig;
   if (options.remote) {
     // A remote surface attaches to a daemon; it needs no local engine,
@@ -178,9 +182,7 @@ export function cliConfig_parse(
     }
     // The attach token comes on the command line when a person types it, and in the environment when a
     // daemon starts this shell: a daemon never puts it on a command line, which every user of the host can
-    // list. The variable is taken out of the environment whichever wins, so nothing this shell starts
-    // inherits it.
-    const handed: string | undefined = attachTokenEnv_take(env);
+    // list.
     if (options.token !== undefined) {
       config.attachToken = options.token;
     } else if (handed !== undefined) {
