@@ -4289,10 +4289,21 @@ try {
     const settle = async (want, tries = 60) => { for (let i = 0; i < tries; i++) { await sleep(500); if (want()) return true; } return false; };
     const close_press = () => [...fp().querySelectorAll('.files-content-header button')].find((b) => b.textContent.trim() === 'CLOSE')?.click();
     const downloadVerb = () => [...fp().querySelectorAll('.files-row-zone .listing-action')].find(b => b.textContent.trim() === 'DOWNLOAD') ?? null;
-    await say('rm -r ~/smoke-kinds', 2500);
-    await say('mkdir -p ~/smoke-kinds', 2500);
-    await say('cd ~/smoke-kinds', 2500);
-    await settle(() => (window.__argusPromptContext?.cwd ?? '').endsWith('/smoke-kinds'));
+    // A folder of this run's own, under a name no other run or person has: the
+    // session may be one somebody is using. Nothing is sent up until the
+    // session stands in exactly that folder, and only that folder is removed
+    // afterwards, whatever happened in between.
+    const folder = 'smoke-kinds-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    await say('cd ~', 2500);
+    const homeAt = () => window.__argusPromptContext?.cwd ?? '';
+    await settle(() => /^[/]home[/][^/]+$/.test(homeAt()), 20);
+    const place = homeAt() + '/' + folder;
+    if (!/^[/]home[/][^/]+[/]smoke-kinds-[a-z0-9]+-[a-z0-9]+$/.test(place)) return { error: 'no home to make the folder in: ' + homeAt() };
+    await say('mkdir ' + place, 2500);
+    try {
+    await say('cd ' + place, 2500);
+    const there = await settle(() => homeAt() === place, 60);
+    if (!there) return { error: 'the session did not move to ' + place + ' (it is at ' + homeAt() + '): nothing was sent up' };
     const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEklEQVR4nGP4z8DwH4QZYAwAR8oH+Rq28akAAAAASUVORK5CYII='), (c) => c.charCodeAt(0));
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="7" height="5"><rect width="7" height="5" fill="red"/></svg>';
     const chooser = fp().querySelector('.files-upload-input');
@@ -4328,18 +4339,20 @@ try {
     for (let i = 0; i < 20 && (window.__argusHandoffs ?? []).some((h) => h.text === null); i++) await sleep(150);
     const handed = (window.__argusHandoffs ?? []).map((h) => ({ name: h.name, blob: h.href.startsWith('blob:'), text: h.text }));
     close_press(); await sleep(300);
-    await say('cd ~', 2500);
-    await say('rm -r ~/smoke-kinds', 3000);
-    return { uploaded, pngDrawn, svgDrawn, pressed, handed };`);
+    return { uploaded, pngDrawn, svgDrawn, pressed, handed };
+    } finally {
+      await say('cd ~', 2500);
+      await say('rm -r ' + place, 3000);
+    }`);
   check('a PNG and an SVG from the store are drawn in the files pane',
-    kinds.uploaded && kinds.pngDrawn.width === 2 && kinds.pngDrawn.height === 3 && kinds.svgDrawn.width === 7 && kinds.svgDrawn.height === 5,
+    kinds.error === undefined && kinds.uploaded && kinds.pngDrawn.width === 2 && kinds.pngDrawn.height === 3 && kinds.svgDrawn.width === 7 && kinds.svgDrawn.height === 5,
     JSON.stringify(kinds));
   check('their bytes say nosniff and a sandbox, and the SVG is an attachment that an img still draws',
-    kinds.pngDrawn.said?.sniff === 'nosniff' && kinds.svgDrawn.said?.sniff === 'nosniff' && /^sandbox/.test(kinds.svgDrawn.said?.policy ?? '') && kinds.svgDrawn.said?.type === 'image/svg+xml' && kinds.svgDrawn.said?.saved === true && kinds.pngDrawn.said?.saved === false,
-    JSON.stringify({ png: kinds.pngDrawn, svg: kinds.svgDrawn }));
+    kinds.error === undefined && kinds.pngDrawn.said?.sniff === 'nosniff' && kinds.svgDrawn.said?.sniff === 'nosniff' && /^sandbox/.test(kinds.svgDrawn.said?.policy ?? '') && kinds.svgDrawn.said?.type === 'image/svg+xml' && kinds.svgDrawn.said?.saved === true && kinds.pngDrawn.said?.saved === false,
+    JSON.stringify(kinds.error ?? { png: kinds.pngDrawn, svg: kinds.svgDrawn }));
   check('DOWNLOAD hands a PDF over under its own name, whole',
-    kinds.pressed && kinds.handed.length === 1 && kinds.handed[0].name === 'paper.pdf' && kinds.handed[0].blob && kinds.handed[0].text === PDF_TEXT,
-    JSON.stringify({ pressed: kinds.pressed, handed: kinds.handed }));
+    kinds.error === undefined && kinds.pressed && kinds.handed.length === 1 && kinds.handed[0].name === 'paper.pdf' && kinds.handed[0].blob && kinds.handed[0].text === PDF_TEXT,
+    JSON.stringify(kinds.error ?? { pressed: kinds.pressed, handed: kinds.handed }));
   }
 
   if (await stage('folder-download')) {
