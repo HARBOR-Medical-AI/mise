@@ -298,7 +298,14 @@ export class ScriptScreen {
   protected stoodFor: Map<number, string> = new Map();
   /** The script as it was read (or last saved): an edit is said against it. */
   protected readText: string = '';
-  /** What was typed into each option field, as typed: a field drawn again is given it back while the line still says it. */
+  /**
+   * What was typed into each option field, as typed, for the script that is
+   * open and the edits now being made to it: a field drawn again is given
+   * it back while the line still says it. Keyed by the script and the
+   * field; emptied when a script is opened or read again and when a SAVE
+   * has written the edits, so nothing typed into one script is ever put
+   * into another's field.
+   */
   protected readonly typed: Map<string, string> = new Map<string, string>();
   /** The last SAVE, where and when: its receipt stands on the seat until the next edit. */
   protected saved: { path: string; at: string; view: string } | null = null;
@@ -405,6 +412,8 @@ export class ScriptScreen {
     }
     this.path = path;
     this.edited = false;
+    // A script opened, or opened again: what was typed into the one before is not this one's.
+    this.typed.clear();
     this.stepLogs.clear();
     await this.script_read();
     // The rail opens on the step running now, else on the first that needs the operator.
@@ -979,6 +988,8 @@ export class ScriptScreen {
     this.saved = { path: copy, at: new Date().toISOString(), view: this.view };
     this.path = copy;
     this.edited = false;
+    // The edits are written: the lines are read again from the copy, and what was typed on the way is done with.
+    this.typed.clear();
     await this.script_read();
     this.draw();
     this.libraryRead = false;
@@ -1534,7 +1545,7 @@ export class ScriptScreen {
     // the hand is on its way to the next word, the field comes back as it was left, space and all, for as
     // long as what was typed is still what the line says.
     const held: string = lineOption_get(line.text, word) ?? '';
-    const typed: string | undefined = this.typed.get(input.id);
+    const typed: string | undefined = this.typed.get(`${this.typedScope_get()}\n${input.id}`);
     input.value = typed !== undefined && typed.trim() === held ? typed : held;
     input.placeholder = placeholder;
     input.spellcheck = false;
@@ -1544,7 +1555,7 @@ export class ScriptScreen {
       // The line takes the value without the spaces around it; the field keeps what was typed, so a space
       // typed on the way to the next word is still there for that word to follow.
       line.text = lineOption_set(line.text, word, input.value.trim());
-      this.typed.set(input.id, input.value);
+      this.typed.set(`${this.typedScope_get()}\n${input.id}`, input.value);
       this.edited = true;
       // SAVE, the difference against what stands and the line's state follow the hand, each where it stands:
       // the field is not drawn again.
@@ -1552,6 +1563,18 @@ export class ScriptScreen {
     });
     row.append(field, input);
     return row;
+  }
+
+  /**
+   * Whose the typed values are: the script that is open.
+   *
+   * @returns What tells this script's fields from another's.
+   *
+   * @example
+   * this.typed.get(`${this.typedScope_get()}\n${input.id}`);
+   */
+  protected typedScope_get(): string {
+    return this.path;
   }
 
   /** Redraws the line's box and the header after an edit, without losing the field's focus. */

@@ -75,6 +75,9 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
   return { envelopes: [{ rendered: '', status: 'ok' }] };
 }
 
+/** While set, a `--plan` ask is not answered until it resolves. */
+let planGate: Promise<void> | null = null;
+
 function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; asked: string[]; fed: Array<string | null> } {
   WRITTEN.clear();
   const sent: string[] = [];
@@ -96,7 +99,12 @@ function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; a
       if (save !== null) WRITTEN.set(save[2] as string, (save[1] as string).replace(/'\\''/g, "'"));
       return true;
     },
-    ask: async (line: string): Promise<QuietAnswer> => { asked.push(line); return answer_make(line, mine); },
+    ask: async (line: string): Promise<QuietAnswer> => {
+      asked.push(line);
+      // A plan is held back while a test holds the gate, to come back when the test lets it.
+      if (planGate !== null && line.endsWith(' --plan')) await planGate;
+      return answer_make(line, mine);
+    },
     stop: (): void => { sent.push('<stop>'); },
     leave: (): void => { sent.push('<leave>'); },
     manage_is: (): boolean | null => true,
@@ -892,6 +900,64 @@ describe('the VM controller', () => {
     expect(changeLines(screen.root).some((line) => /password/.test(line))).toBe(false);
     screen.dispose();
     screen.root.remove();
+  });
+
+  it('a plan that comes back after the operator has moved to SPEC leaves the field under the hand as it is', async () => {
+    let open: () => void = (): void => undefined;
+    planGate = new Promise((resolve: () => void): void => { open = resolve; });
+    try {
+      const { screen, asked } = screen_make();
+      await screen.vm_open('lone');
+      await settle(12);
+      const seat = (label: string): HTMLButtonElement | undefined => [...screen.root.querySelectorAll<HTMLButtonElement>('.takeover-gutter button[data-view]')].find((button: HTMLButtonElement): boolean => (button.textContent ?? '').includes(label));
+      seat('CHRIS')?.click();
+      await settle(12);
+      expect(asked.some((line: string): boolean => line.endsWith(' --plan'))).toBe(true);
+      const unread: string = screen.root.querySelector('.vm-chris-change')?.textContent ?? '';
+      expect(unread).toContain('not read yet');
+      // On to SPEC while the plan is still out, and into the OS field.
+      seat('SPEC')?.click();
+      await settle(12);
+      const os: HTMLInputElement = screen.root.querySelector('input[id^="ss-os-"]') as HTMLInputElement;
+      expect(os.disabled).toBe(false);
+      os.focus();
+      os.value = 'ubuntu-24.04 ';
+      os.setSelectionRange(3, 9);
+      os.dispatchEvent(new Event('input'));
+      os.setSelectionRange(3, 9);
+      // The plan comes back now.
+      open();
+      await settle(12);
+      expect(screen.root.querySelector('input[id^="ss-os-"]')).toBe(os);
+      expect(document.activeElement).toBe(os);
+      expect(os.value).toBe('ubuntu-24.04 ');
+      expect([os.selectionStart, os.selectionEnd]).toEqual([3, 9]);
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      planGate = null;
+    }
+  });
+
+  it('a plan that comes back while CHRIS is showing is shown there at once', async () => {
+    let open: () => void = (): void => undefined;
+    planGate = new Promise((resolve: () => void): void => { open = resolve; });
+    try {
+      const { screen } = screen_make();
+      await screen.vm_open('store');
+      await settle(12);
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
+      await settle(12);
+      const unread: string = screen.root.querySelector('.vm-chris-change')?.textContent ?? '';
+      expect(unread).toContain('not read yet');
+      open();
+      await settle(12);
+      expect(screen.root.querySelector('.vm-chris-change')?.textContent ?? '').not.toBe(unread);
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      planGate = null;
+    }
   });
 
   it('CHRIS settings are a listing: FIELD · SET TO · RUNS, a value edited in place, one the engine would refuse marked and never kept, a row that differs from what runs marked', async () => {

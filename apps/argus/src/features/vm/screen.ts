@@ -2311,16 +2311,36 @@ export class VmScreen extends ScriptScreen {
   }
 
   /**
-   * A plan that has come back, on the VM controller: its panes say what a
-   * deploy would do in places of their own (the CHRIS pane, its settings
-   * listing), which are drawn with the pane, so the pane is drawn again as
-   * it always was, whichever line the plan was read for.
+   * A plan that has come back, on the VM controller. Its CHRIS pane says
+   * what a deploy would do in places of its own, drawn with the pane, so
+   * the pane is drawn again: but only when it is the pane that is showing,
+   * and the plan is for the line as it stands there. A plan that comes back
+   * after the operator has moved to another pane (SPEC, with a field under
+   * the hand) draws nothing: it is kept, and the CHRIS pane reads it when
+   * it is next drawn.
+   *
+   * @param text - The deploy line the plan was read for.
    *
    * @example
-   * this.chrisPlan_show();
+   * this.chrisPlan_show(line.text);
    */
-  protected override chrisPlan_show(): void {
+  protected override chrisPlan_show(text: string): void {
+    const shown: ScriptStep | undefined = this.steps.find((step: ScriptStep): boolean => step.key === this.view);
+    if (shown?.kind !== 'chris deploy' || shown.lines[0]?.text !== text) return;
     this.draw();
+  }
+
+  /**
+   * Whose the typed values are: one machine's script. Another machine's,
+   * with the same option on a line of the same number, is another's.
+   *
+   * @returns The machine and its script.
+   *
+   * @example
+   * this.typed.get(`${this.typedScope_get()}\n${input.id}`);
+   */
+  protected override typedScope_get(): string {
+    return `${this.vm}\n${this.path}`;
   }
 
   /** The script's line as it will run: an edit not built yet never reads as done (the operator, 2026-11-06). */

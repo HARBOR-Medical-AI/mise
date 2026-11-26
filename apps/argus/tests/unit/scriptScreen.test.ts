@@ -661,6 +661,41 @@ describe('the script screen', () => {
     screen.root.remove();
   });
 
+  it('what was typed into one script is not put into another, nor into the same one opened afresh or saved', async () => {
+    const { screen } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const typing = (): HTMLInputElement => screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    // The value as it stood, with a space after it: trimmed, it is what the line (and the other script's line) says.
+    typing().value = '10.20.0.0/16 ';
+    typing().dispatchEvent(new Event('input'));
+    // Another script, with the same option on the same line and the same value.
+    await screen.open('/scripts/chrisproject/other.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    expect(screen.path_get()).toBe('/scripts/chrisproject/other.mise');
+    expect(typing().value).toBe('10.20.0.0/16');
+    // The first again, opened afresh: its field is as the script reads, not as it was left.
+    typing().value = '10.20.0.0/16 ';
+    typing().dispatchEvent(new Event('input'));
+    await screen.open('/scripts/chrisproject/other.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    expect(typing().value).toBe('10.20.0.0/16');
+    // And after a SAVE the field is what was saved.
+    typing().value = '10.50.0.0/16 ';
+    typing().dispatchEvent(new Event('input'));
+    button_named(screen.root, 'SAVE')?.click();
+    await settle();
+    expect((screen.root.querySelector('#ss-cidr-1') as HTMLInputElement | null)?.value.endsWith(' ')).toBe(false);
+    screen.dispose();
+    screen.root.remove();
+  });
+
   it('an edit in READ leaves each pill saying what a pill drawn fresh would: refused, or asking first, never plainly "sends"', async () => {
     for (const elevate of [null, async (): Promise<boolean> => true]) {
       const { screen } = screen_make(['done', 'done', 'ready', 'not yet', 'not yet'], false, false, elevate);
