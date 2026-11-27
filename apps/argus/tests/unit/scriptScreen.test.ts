@@ -79,6 +79,7 @@ function screen_make(states: string[] = ['done', 'done', 'done', 'done', 'ready'
   };
   const screen: ScriptScreen = new ScriptScreen(hooks);
   document.body.append(screen.root);
+  screen.screen_show();
   return { screen, sent, asked, hooks, release: (): void => { const pending: Array<() => void> = releases; releases = []; for (const resolve of pending) resolve(); } };
 }
 

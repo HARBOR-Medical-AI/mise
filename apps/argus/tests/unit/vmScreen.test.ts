@@ -19,6 +19,7 @@ import { VmScreen } from '../../src/features/vm/screen.js';
 import { leverFloor_derive, serviceDraft_why, vmServices_change, vmServices_read } from '../../src/features/vm/model.js';
 import { chrisQuestion_plain } from '../../src/features/vm/run.js';
 import type { AskAbout } from '../../src/features/script/model.js';
+import type { ScreenTimers } from '../../src/features/script/timers.js';
 
 const STORE_TEXT: string = [
   'net new chrisproject-services --cidr 10.20.0.0/16',
@@ -140,6 +141,7 @@ function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; a
   };
   screen = new VmScreen(hooks);
   document.body.append(screen.root);
+  screen.screen_show();
   return { screen, sent, asked, fed };
 }
 
@@ -1071,7 +1073,7 @@ describe('the VM controller', () => {
       expect(costsHeld).toBeGreaterThan(costsBefore);
       const drawn: string = screen.root.innerHTML;
       screen.dispose();
-      const inner = screen as unknown as { leverTimer: unknown };
+      const inner = screen as unknown as { timers: ScreenTimers };
       // The held price comes back to a screen that has left.
       costGate = null;
       priced();
@@ -1079,7 +1081,7 @@ describe('the VM controller', () => {
       await new Promise((resolve) => { setTimeout(resolve, 220); });
       expect(asked.filter((line: string): boolean => line.startsWith('vm cost')).length).toBe(costsHeld);
       expect(screen.root.innerHTML).toBe(drawn);
-      expect(inner.leverTimer).toBeNull();
+      expect(inner.timers.timer_runs('lever')).toBe(false);
       screen.root.remove();
     } finally {
       costGate = null;
@@ -1093,7 +1095,7 @@ describe('the VM controller', () => {
       const { screen, asked } = screen_make();
       await screen.vm_open('lone');
       await settle(12);
-      const inner = screen as unknown as { stepCost_ask: (line: string) => void; costTimer: unknown };
+      const inner = screen as unknown as { stepCost_ask: (line: string) => void; timers: ScreenTimers };
       const costs = (): number => asked.filter((line: string): boolean => line.startsWith('vm cost')).length;
       costGate = new Promise<void>((resolve: () => void): void => { priced = resolve; });
       const before: number = costs();
@@ -1110,7 +1112,7 @@ describe('the VM controller', () => {
       expect([...screen.root.querySelectorAll('*')].every((node: Element, at: number): boolean => node === nodes[at])).toBe(true);
       // A command that ends after the close asks for no new price, and arms no wait for one.
       inner.stepCost_ask('vm new unnamed --disk 180');
-      expect(inner.costTimer).toBeNull();
+      expect(inner.timers.timer_runs('cost')).toBe(false);
       await new Promise((resolve) => { setTimeout(resolve, 160); });
       expect(costs()).toBe(before + 1);
       screen.root.remove();
@@ -1120,13 +1122,49 @@ describe('the VM controller', () => {
     }
   });
 
+  it('made, the screen has drawn nothing and runs no clock; shown, it is drawn with its machines; shown again, nothing changes', async () => {
+    jest.useFakeTimers();
+    let made: VmScreen;
+    try {
+      const before: number = jest.getTimerCount();
+      const hooks: ScriptHooks = {
+        run: async (): Promise<boolean> => true,
+        ask: async (): Promise<QuietAnswer> => ({ envelopes: [] }),
+        stop: (): void => undefined, leave: (): void => undefined, manage_is: (): boolean | null => true, elevate_ask: null,
+        voice: { pill: (): void => undefined, cue: (): void => undefined },
+      };
+      made = new VmScreen(hooks);
+      // Whole, and nothing of it drawn: no machines listing, no seat body, no clock.
+      expect(made.root.querySelector('.vm-machines-listing')).toBeNull();
+      expect(made.root.querySelector('.tdc-body')?.childElementCount).toBe(0);
+      expect(jest.getTimerCount()).toBe(before);
+      made.screen_show();
+      expect(made.root.querySelector('.tdc-body')?.childElementCount).toBeGreaterThan(0);
+      expect(jest.getTimerCount()).toBe(before + 1);
+      const drawn: Element[] = [...made.root.querySelectorAll('.tdc-body *')];
+      made.screen_show();
+      expect([...made.root.querySelectorAll('.tdc-body *')].every((node: Element, at: number): boolean => node === drawn[at])).toBe(true);
+      expect(jest.getTimerCount()).toBe(before + 1);
+      made.dispose();
+      expect(jest.getTimerCount()).toBe(before);
+      // Left before it was ever shown, a screen shows nothing after.
+      const never: VmScreen = new VmScreen(hooks);
+      never.dispose();
+      never.screen_show();
+      expect(never.root.querySelector('.tdc-body')?.childElementCount).toBe(0);
+      expect(jest.getTimerCount()).toBe(before);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('a screen left while a line is running, a lever is waiting and a standing is being watched has no clock left, and starts none after', async () => {
     const { screen } = screen_make();
     await screen.vm_open('lone');
     await settle(12);
-    /** The screen's own clocks, reached as the screen reaches them. */
+    /** What starts the screen's clocks, reached as the screen reaches them; and the one holder they are all in. */
     const inner = screen as unknown as {
-      runTick: unknown; leverTimer: unknown; answeredTimer: unknown; answeredGoing: unknown;
+      timers: ScreenTimers; answeredGoing: unknown;
       runTick_set: (on: boolean) => void; answeredGoing_poll: () => void;
     };
     jest.useFakeTimers();
@@ -1135,19 +1173,19 @@ describe('the VM controller', () => {
       // A line that has been sent and has not come back: the run's clock ticks every second.
       inner.runTick_set(true);
       // A lever moved: its price is asked for after a wait.
-      inner.leverTimer = setTimeout((): void => undefined, 400);
+      inner.timers.timeout_set('lever', 400, (): void => undefined);
       // A line answered yes: its standing is read again until it is seen running.
       inner.answeredGoing = 0;
       inner.answeredGoing_poll();
       expect(jest.getTimerCount()).toBe(before + 3);
+      // One call leaves the screen: the VM screen's clocks and the script screen's are the same holder's.
       screen.dispose();
       expect(jest.getTimerCount()).toBe(before);
-      expect(inner.runTick).toBeNull();
-      expect(inner.leverTimer).toBeNull();
-      expect(inner.answeredTimer).toBeNull();
+      expect(['header', 'run', 'lever', 'answered', 'cost', 'refresh'].filter((name: string): boolean => inner.timers.timer_runs(name))).toEqual([]);
       // The line comes back, or something asks again: nothing is started on a screen that has left.
       inner.runTick_set(true);
       inner.answeredGoing_poll();
+      inner.timers.timeout_set('lever', 400, (): void => undefined);
       expect(jest.getTimerCount()).toBe(before);
     } finally {
       jest.useRealTimers();

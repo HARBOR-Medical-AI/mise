@@ -148,6 +148,8 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
     if (draft !== null) { opened.draft_offer(draft); draft = null; }
     screen = opened;
     document.body.append(opened.root);
+    // Made, then shown: the screen is whole before anything of it is drawn.
+    opened.screen_show();
     document.body.dataset['takeover'] = 'script';
     synthVoice.preload();
     synthVoice.cue_play('open');

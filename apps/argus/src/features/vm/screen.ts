@@ -73,19 +73,18 @@ interface Listed {
 
 /** The VM controller. */
 export class VmScreen extends ScriptScreen {
-  // The script screen's constructor draws before a field initializer here would run, so these are set after super().
   /** The VMs the host keeps, as `vm status` reads them. */
-  private vms!: VmStatusRow[];
+  private vms: VmStatusRow[] = [];
   /** The VM shown; `''` for one not yet named. */
-  private vm!: string;
+  private vm: string = '';
   /** The new machine's name and network, before it is declared. */
-  private newForm!: { name: string; net: string };
+  private newForm: { name: string; net: string } = { name: '', net: '' };
   /** The new machine's line as the levers leave it, before anything is sent: its sizes kept across redraws and name edits. */
-  private newDraft!: ScriptLine;
+  private newDraft: ScriptLine = { number: 1, text: vmNewLine_compose(UNNAMED, NET_DEFAULT), state: null, detail: '', running: null };
   /** Whether the script shown is not on the host yet (synthesized from the record, or composed here). */
-  private unsaved!: boolean;
+  private unsaved: boolean = false;
   /** What runs of the machine's ChRIS, as `chris status` read it from the ChRIS; null when none is deployed or it was not read. */
-  private chrisRow!: ChrisStatusRow | null;
+  private chrisRow: ChrisStatusRow | null = null;
   /** What the machine shown bills, for TEARDOWN's guard: asked once per machine. */
   private teardownCost: { vm: string; rate: VmCostRate | null } | null = null;
   /** The machines as an ARGUS listing; its mount stays across redraws, so its caps, widths and order do. */
@@ -123,7 +122,6 @@ export class VmScreen extends ScriptScreen {
   private followDeclined: boolean = false;
   /** Each lever's share of the change, a month, priced against what runs: keyed by the line priced. */
   private leverCosts: { key: string; deltas: Map<string, number | null> } | null = null;
-  private leverTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(hooks: ScriptHooks) {
     super(hooks, {
@@ -136,14 +134,7 @@ export class VmScreen extends ScriptScreen {
       labels: { views: 'The machine', log: 'VM log' },
       seatLabel: 'The machines',
     });
-    this.vms = [];
-    this.vm = '';
-    this.newForm = { name: '', net: '' };
-    this.newDraft = { number: 1, text: vmNewLine_compose(UNNAMED, NET_DEFAULT), state: null, detail: '', running: null };
-    this.unsaved = false;
-    this.chrisRow = null;
     this.logFold_install();
-    this.draw();
   }
 
   /** The label of the seat shown, so the view follows it when its key changes (a template seat gaining its line). */
@@ -179,9 +170,8 @@ export class VmScreen extends ScriptScreen {
     if (open) this.parts.log.scrollTop = this.parts.log.scrollHeight;
   }
 
-  /** The script screen's constructor draws before this screen's fields exist: that first draw waits for them. */
+  /** Draws the screen: the seat shown, kept where the operator was in it. */
   protected override draw(): void {
-    if (this.vms === undefined) return;
     // A redraw of the seat shown keeps where the operator is in it: a row pressed stays in view through its act.
     // The seat's own panes scroll and are made again at each draw: each one's scroll is carried to its new self, by its classes.
     const same: boolean = this.drawnView === this.view;
@@ -224,6 +214,7 @@ export class VmScreen extends ScriptScreen {
    * @param name - The VM, or `''` to start one.
    */
   public async vm_open(name: string): Promise<void> {
+    this.screen_show();
     // Held as being read until the machine's script is the screen's, by this open until a later one takes
     // the hold: see `reading`.
     const hold: object = {};
@@ -2295,7 +2286,7 @@ export class VmScreen extends ScriptScreen {
 
   /** The price of the line shown, asked once per text; each lever's share asked after it. */
   private sizeCost_need(line: ScriptLine): void {
-    if (this.stepCost === null && this.costTimer === null) this.stepCost_ask(line.text);
+    if (this.stepCost === null && !this.timers.timer_runs('cost')) this.stepCost_ask(line.text);
     this.leverCosts_ask(line);
   }
 
@@ -2317,17 +2308,16 @@ export class VmScreen extends ScriptScreen {
     const moved: Array<[string, string]> = ([['--vcpu', levers.vcpu, runs.vcpu], ['--memory', levers.memory, runs.memory], ['--disk', levers.disk, runs.disk], ['--data', levers.data, runs.data], ['--data-backup', levers.dataBackup, runs.backup ?? null]] as const)
       .filter(([, want, now]): boolean => want !== null && now !== null && String(want) !== String(now)).map(([word, want]): [string, string] => [word, String(want)]);
     this.leverCosts = { key, deltas: new Map(moved.map(([word]): [string, number | null] => [word, null])) };
-    if (this.leverTimer !== null) clearTimeout(this.leverTimer);
+    this.timers.timer_stop('lever');
     if (moved.length === 0) { this.change_redraw(); return; }
-    this.leverTimer = setTimeout((): void => {
-      this.leverTimer = null;
+    this.timers.timeout_set('lever', 150, (): void => {
       const priced = async (text: string): Promise<number | null> => {
         const model = this.model_take(await this.hooks.ask(costLine_derive(text)), STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
         const cost: VmCostRate | null | undefined = model?.vms[0]?.cost;
         return cost == null ? null : (cost.machineHour + cost.dataHour) * HOURS_PER_MONTH;
       };
       void this.leverShares_price(key, asRuns, moved, priced).catch((): void => undefined);
-    }, 150);
+    });
   }
 
   /**
@@ -2492,19 +2482,15 @@ export class VmScreen extends ScriptScreen {
     this.header_draw();
   }
 
-  private runTick: ReturnType<typeof setInterval> | null = null;
-
   /**
-   * Stops every clock the screen runs, its own and the script screen's: the
-   * run's one-second tick (which would otherwise redraw a screen nobody
-   * sees until its line came back, and for ever if it did not) and the
-   * lever's wait.
+   * Leaves the screen: its listings let go, and every clock it runs stops
+   * with the script screen's (one holder): the run's one-second tick, which
+   * would otherwise redraw a screen nobody sees until its line came back,
+   * and for ever if it did not, and the lever's wait.
    */
   public override dispose(): void {
-    this.runTick_set(false);
-    if (this.leverTimer !== null) clearTimeout(this.leverTimer);
-    this.leverTimer = null;
-    // The listings the screen made let go of what they took.
+    // The listings the screen made let go of what they took; the clocks, this screen's and the script
+    // screen's, are one holder's and stop with it (super.dispose).
     this.machineListing?.hold_release();
     this.profileListing?.hold_release();
     this.settingListing?.hold_release();
@@ -2516,8 +2502,8 @@ export class VmScreen extends ScriptScreen {
   private runTick_set(on: boolean): void {
     // A screen that has been left starts no clock: the line it sent may never come back.
     if (on && this.left) return;
-    if (on && this.runTick === null) this.runTick = setInterval((): void => { if (this.run?.outcome === null) this.run_redraw(); else this.runTick_set(false); }, 1000);
-    if (!on && this.runTick !== null) { clearInterval(this.runTick); this.runTick = null; }
+    if (on) this.timers.interval_set('run', 1000, (): void => { if (this.run?.outcome === null) this.run_redraw(); else this.runTick_set(false); });
+    else this.timers.timer_stop('run');
   }
 
   /**

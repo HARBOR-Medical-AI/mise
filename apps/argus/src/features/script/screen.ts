@@ -19,6 +19,7 @@
  * @module
  */
 import { CHRIS_PROFILE_OFFERS, chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, chrisStatusModelSchema, vmCostModelSchema, vmLimitsModelSchema, vmStatusModelSchema, type ChrisPlanModel, type ChrisStatusRow, type NetStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel, type VmStatusRow, arg_quote, path_write } from '@fnndsc/menu';
+import { ScreenTimers } from './timers.js';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
 import { saveLine_compose } from '../edit/line.js';
 import { lockWhere_text, modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } from '../takeover/tier.js';
@@ -239,7 +240,6 @@ export class ScriptScreen {
   protected stepCost: VmCostRow | null = null;
   /** Why the last `vm cost` for the step did not answer, or null. */
   protected stepCostRefused: string | null = null;
-  protected costTimer: ReturnType<typeof setTimeout> | null = null;
   /** The last `vm cost` sent for the step: an answer to an older one is dropped, so a slow price never overwrites a newer. */
   protected costAsked: number = 0;
   /** When the session read the price list, as `vm cost` last said; null before the first price. */
@@ -254,8 +254,6 @@ export class ScriptScreen {
   protected readonly chrisPlans: Map<string, ChrisPlanModel | null> = new Map();
   /** The line running, and since when. */
   protected busy: { line: string; step: string | null; since: number } | null = null;
-  /** The standing read again a moment after a task-starting line was sent, so the seat wears the run while the line still holds the lane. */
-  protected refreshTimer: ReturnType<typeof setTimeout> | null = null;
   protected ask: OpenAsk | null = null;
   protected partial: string = '';
   /** What each step's lines printed, for its body. */
@@ -340,11 +338,12 @@ export class ScriptScreen {
   /** The last SAVE, where and when: its receipt stands on the seat until the next edit. */
   protected saved: { path: string; at: string; view: string } | null = null;
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
-  protected ticker: ReturnType<typeof setInterval> | null = null;
+  /** The screen's clocks, its own and those of a screen that extends it: stopped together when it is left. */
+  protected readonly timers: ScreenTimers = new ScreenTimers();
+  /** True once the screen has been shown: its first draw made and its header's clock started. */
+  private shown: boolean = false;
   /** Whether the screen was left: a read that answers after that still redraws it, and must not retitle the tab the page has again. */
   protected left: boolean = false;
-  /** The wait before the standing is read again for a line answered yes; null when none is pending. */
-  private answeredTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Builds the screen.
@@ -401,7 +400,25 @@ export class ScriptScreen {
     foot.append(logColumn);
     this.frame.log.append(foot);
     this.parts = { header, body, strip, log, input, promptLabel };
-    this.ticker = setInterval((): void => { if (this.busy !== null) this.header_draw(); }, 5_000);
+  }
+
+  /**
+   * Shows the screen: its first draw, and its header's clock. Made and
+   * shown are two steps, so a screen that extends this one is whole (its
+   * own fields set) before anything of it is drawn. Opening a script or a
+   * machine shows it too; showing it twice changes nothing.
+   *
+   * @example
+   * ```ts
+   * const screen: ScriptScreen = new ScriptScreen(hooks);
+   * document.body.append(screen.root);
+   * screen.screen_show();
+   * ```
+   */
+  public screen_show(): void {
+    if (this.shown || this.left) return;
+    this.shown = true;
+    this.timers.interval_set('header', 5_000, (): void => { if (this.busy !== null) this.header_draw(); });
     this.draw();
   }
 
@@ -416,14 +433,7 @@ export class ScriptScreen {
   /** Stops the screen's clock; the host calls it on leaving. */
   public dispose(): void {
     this.left = true;
-    if (this.ticker !== null) clearInterval(this.ticker);
-    this.ticker = null;
-    if (this.costTimer !== null) clearTimeout(this.costTimer);
-    this.costTimer = null;
-    if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
-    this.refreshTimer = null;
-    if (this.answeredTimer !== null) clearTimeout(this.answeredTimer);
-    this.answeredTimer = null;
+    this.timers.timers_stop();
     this.ask?.answer(null);
     this.ask = null;
   }
@@ -457,6 +467,7 @@ export class ScriptScreen {
    * @param path - The script, or `''` for the library.
    */
   public async open(path: string): Promise<void> {
+    this.screen_show();
     if (path === '') {
       // The library, asked for: a seat chosen, as by the rail's button. Nothing being read is stopped by it.
       this.chosen += 1;
@@ -877,16 +888,14 @@ export class ScriptScreen {
   protected answeredGoing_poll(): void {
     // A screen that has been left reads nothing more and waits for nothing.
     if (this.left) return;
-    if (this.answeredTimer !== null) clearTimeout(this.answeredTimer);
-    this.answeredTimer = setTimeout((): void => {
-      this.answeredTimer = null;
+    this.timers.timeout_set('answered', ANSWERED_POLL_MS, (): void => {
       if (this.left || this.answeredGoing === null || this.path === '') return;
       void this.standings_refresh().then((): void => {
         if (this.left) return;
         this.draw();
         if (this.answeredGoing !== null) this.answeredGoing_poll();
       });
-    }, ANSWERED_POLL_MS);
+    });
   }
 
   /**
@@ -908,11 +917,9 @@ export class ScriptScreen {
    * @param line - The line sent.
    */
   protected refresh_schedule(line: string): void {
-    if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
-    this.refreshTimer = setTimeout((): void => {
-      this.refreshTimer = null;
+    this.timers.timeout_set('refresh', 3_000, (): void => {
       if (this.busy?.line === line) void this.standings_refresh();
-    }, 3_000);
+    });
   }
 
   protected async library_read(): Promise<void> {
@@ -1004,9 +1011,7 @@ export class ScriptScreen {
     // A screen that has been left asks no price and waits for none: a command that ends after the close
     // arms nothing here.
     if (this.left) return;
-    if (this.costTimer !== null) clearTimeout(this.costTimer);
-    this.costTimer = setTimeout((): void => {
-      this.costTimer = null;
+    this.timers.timeout_set('cost', 100, (): void => {
       this.costAsked += 1;
       const asked: number = this.costAsked;
       void this.hooks.ask(costLine_derive(line)).then((answer: QuietAnswer): void => {
@@ -1024,7 +1029,7 @@ export class ScriptScreen {
         this.stepCostRefused = error instanceof Error ? error.message : String(error);
         this.cost_redraw();
       });
-    }, 100);
+    });
   }
 
   // ---------------------------------------------------------------- sending
@@ -2080,7 +2085,7 @@ export class ScriptScreen {
         return;
       }
       box.append(el('p', 'tdc-prose tdc-quiet', this.pricesRead === null ? 'reading Oracle\'s price list, once for this session; every price after it is worked out from it…' : 'pricing the line as it stands…'));
-      if (this.costTimer === null) this.stepCost_ask(step.lines[0]?.text ?? '');
+      if (!this.timers.timer_runs('cost')) this.stepCost_ask(step.lines[0]?.text ?? '');
       return;
     }
     const rows: HTMLElement = el('div', 'tdc-cost-rows');
