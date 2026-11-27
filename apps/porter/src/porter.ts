@@ -9,6 +9,7 @@
  * @module
  */
 import { CredentialStore } from './creds.js';
+import { sessionEnv_withheld } from './host/sessionEnv.js';
 import { doorOrigins_resolve, type DoorOrigins } from './origin.js';
 import { porterConfig_resolve, porterStateDir_resolve, porterTokensFile_resolve, chellEntry_locate, stratusEntry_locate, PORTER_DEFAULT_TOKEN_DAYS, type PorterConfig } from './config.js';
 import { TokenStore, type DoorToken } from './tokens.js';
@@ -327,6 +328,11 @@ async function porter_start(): Promise<void> {
   const answersAs: DoorOrigins = config.origins ?? doorOrigins_resolve(undefined, config.port);
   console.log(`    origin: answers as ${answersAs.origins.join(', ')}${answersAs.named ? '' : ' — only this machine\'s own names; set PORTER_PUBLIC_ORIGIN to the address browsers use (e.g. https://porter.example.org) if this door is reached by another'}`);
   console.log(`    proxy:  ${(config.trustedProxies ?? []).length === 0 ? 'none trusted — a request is counted by the address of whatever connects; behind a reverse proxy set PORTER_TRUSTED_PROXIES to it, or every visitor shares the proxy\'s count' : `forwarded headers believed from ${(config.trustedProxies ?? []).join(', ')}`}`);
+  // Said by name, never by value: an address that could carry a credential is not given to any session.
+  const withheld: string[] = sessionEnv_withheld(process.env);
+  if (withheld.length > 0) {
+    console.log(`    env:    not given to sessions, not a plain address: ${withheld.join(', ')}`);
+  }
   if (config.secretGenerated) {
     console.log('    secret: made up for this run — set PORTER_SECRET so a restart does not ask every browser again');
   }
