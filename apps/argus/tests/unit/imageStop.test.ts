@@ -39,6 +39,8 @@ class FakeEngine {
   public disposed: boolean = false;
   /** Ends the open in flight. */
   public open_end: () => void = (): void => undefined;
+  /** Fails the open in flight. */
+  public open_fail: (why: string) => void = (): void => undefined;
   /** Ends the layout build in flight: built, or stopped. */
   public layout_end: (built: boolean) => void = (): void => undefined;
 
@@ -50,7 +52,8 @@ class FakeEngine {
   public open(): Promise<void> {
     this.loading = true;
     this.host.readout_set(`LOADING 1 OF ${this.series.files.length}`);
-    return new Promise<void>((resolve): void => {
+    return new Promise<void>((resolve, reject): void => {
+      this.open_fail = (why: string): void => { this.loading = false; reject(new Error(why)); };
       this.open_end = (): void => {
         this.loading = false;
         this.held = Math.max(this.held, 1);
@@ -127,6 +130,16 @@ class FakeEngine {
 
 jest.unstable_mockModule('../../src/features/image/cornerstoneEngine.js', () => ({ CornerstoneEngine: FakeEngine }));
 
+/** The volume viewer's stand-in: the same stand-in, made from a path, and counted apart. */
+class FakeVolumeEngine extends FakeEngine {
+  public static volumes: number = 0;
+  constructor(host: ImageEngineHost, public readonly path: string) {
+    super(host, { files: [path] } as unknown as DicomSeriesModel);
+    FakeVolumeEngine.volumes += 1;
+  }
+}
+jest.unstable_mockModule('../../src/features/image/niivueEngine.js', () => ({ NiivueEngine: FakeVolumeEngine }));
+
 const { ImagePanel, STOP_LABEL, RESUME_LABEL, REOPEN_LABEL, OPENING_STOPPED_READOUT } = await import('../../src/features/image/panel.js');
 const { chrisDicom_make } = await import('../../src/compositions/chris/dicom.js');
 const { PanelRoster } = await import('../../src/app/panes.js');
@@ -202,7 +215,7 @@ function refusal_find(stage: Stage): boolean {
     || /REFUSED|NOT A READABLE/.test(stage.state.textContent ?? '');
 }
 
-beforeEach((): void => { FakeEngine.last = null; FakeEngine.made = 0; });
+beforeEach((): void => { FakeEngine.last = null; FakeEngine.made = 0; FakeVolumeEngine.volumes = 0; });
 
 /** The capsules a person can see on the field, by their words. */
 function fieldControls_read(stage: Stage): string[] {
@@ -561,6 +574,59 @@ describe('a frame closed before its viewer exists', () => {
     await settle();
     await settle();
     expect(FakeEngine.made).toBe(1);
+    stage.panel.dispose();
+  });
+});
+
+describe('one open owns the field, whichever viewer it is', () => {
+  it('a volume shown and the frame closed before its viewer arrives makes no engine', async () => {
+    const stage: Stage = stage_make();
+    void stage.panel.volume_show('/home/someone/uploads/brain.nii.gz');
+    stage.panel.dispose();
+    await settle();
+    await settle();
+    expect(FakeVolumeEngine.volumes).toBe(0);
+    expect(FakeEngine.made).toBe(0);
+  });
+
+  it('a series whose viewer arrives after a volume was shown opens nothing over it', async () => {
+    const stage: Stage = stage_make();
+    void stage.panel.series_show(series_make(10));
+    void stage.panel.volume_show('/home/someone/uploads/brain.nii.gz');
+    await settle();
+    await settle();
+    expect(FakeVolumeEngine.volumes).toBe(1);
+    // One engine in all: the volume's. The series made none.
+    expect(FakeEngine.made).toBe(1);
+    expect(FakeEngine.last).toBeInstanceOf(FakeVolumeEngine);
+    stage.panel.dispose();
+  });
+
+  it.each([['opens', true], ['is refused', false]])('an engine replaced while it opens paints nothing when it then %s: the field, its words and its notes are the later one\'s', async (_name: string, opens: boolean) => {
+    const stage: Stage = stage_make();
+    void stage.panel.series_show(series_make(10));
+    await settle();
+    const first: FakeEngine = FakeEngine.last as FakeEngine;
+    // Another series is shown while the first is still opening, and opens.
+    void stage.panel.series_show(series_make(30));
+    await settle();
+    const second: FakeEngine = FakeEngine.last as FakeEngine;
+    expect(second).not.toBe(first);
+    second.open_end();
+    await settle();
+    const words: string = stage.state.textContent ?? '';
+    const noted: number = stage.notes.length;
+    const working: string | null = stage.pane.querySelector('.image-working')?.textContent ?? null;
+    const pills: string = [...stage.pane.querySelectorAll('.image-layout')].map((pill: Element): string => pill.className).join('|');
+    // The first one's open settles now.
+    if (opens) first.open_end(); else first.open_fail('the first slice could not be read');
+    await settle();
+    expect(stage.state.textContent).toBe(words);
+    expect(stage.state.textContent).not.toBe('REFUSED');
+    expect(stage.notes.length).toBe(noted);
+    expect(stage.pane.querySelector('.image-working')?.textContent ?? null).toBe(working);
+    expect([...stage.pane.querySelectorAll('.image-layout')].map((pill: Element): string => pill.className).join('|')).toBe(pills);
+    expect(stage.panel.state_get()?.path).toBe(series_make(30).path);
     stage.panel.dispose();
   });
 });

@@ -337,7 +337,7 @@ export class ImagePanel {
     // made for a field that is not this series's any more.
     if (this.show_stale(shown)) return;
     const { CornerstoneEngine } = cornerstone;
-    const engine: ImageEngine = new CornerstoneEngine(this.engineHost_get(), model, options.startAt ?? 1);
+    const engine: ImageEngine = new CornerstoneEngine(this.engineHost_get(shown), model, options.startAt ?? 1);
     await this.engine_open(engine);
     if (this.engine !== engine) return;
     // The first slice cost one file. The rest are fetched now, counted,
@@ -386,6 +386,11 @@ export class ImagePanel {
    * @param path - The volume's CFS path.
    */
   public async volume_show(path: string): Promise<void> {
+    // A volume is shown as a series is: one open owns the field, and what an earlier one was waiting for
+    // (its viewer's code, its engine's first image) makes and paints nothing when it arrives.
+    if (this.closed) return;
+    this.showSerial += 1;
+    const shown: number = this.showSerial;
     this.openingStop = null;
     this.openingStopped = false;
     this.engine_dispose();
@@ -400,8 +405,9 @@ export class ImagePanel {
     this.presets_paint('NIFTI');
     const niivue: typeof import('./niivueEngine.js') | null = await this.chunk_import((): Promise<typeof import('./niivueEngine.js')> => import('./niivueEngine.js'));
     if (niivue === null) return;
+    if (this.show_stale(shown)) return;
     const { NiivueEngine } = niivue;
-    await this.engine_open(new NiivueEngine(this.engineHost_get(), path));
+    await this.engine_open(new NiivueEngine(this.engineHost_get(shown), path));
   }
 
   /**
@@ -866,10 +872,15 @@ export class ImagePanel {
     try {
       await engine.open(this.field);
     } catch (error: unknown) {
+      // Refused after the field was given to another open, or the frame closed: it is not this field's
+      // refusal to show.
+      if (this.engine !== engine) return;
       this.stateSpan.textContent = 'REFUSED';
       this.handlers.note(`image: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
+    // Opened after the field was given to another open: the pills, the progress and the readout are that one's.
+    if (this.engine !== engine) return;
     const layout: ImageLayout = engine.state_get().layout;
     this.layoutPills_paint(layout);
     this.modeSpan.textContent = layout === 'single' ? '' : layout.toUpperCase();
@@ -912,24 +923,42 @@ export class ImagePanel {
     }
   }
 
-  private engineHost_get(): ImageEngineHost {
+  /**
+   * Makes the host an engine speaks to the frame through, for one open.
+   * What an engine says, it says for the open it was made for: once the
+   * field has been given to another open, or the frame has closed, its
+   * words, its progress, its notes and its regard reach nothing.
+   *
+   * @param shown - The count of the open the engine is made for.
+   * @returns The host.
+   */
+  private engineHost_get(shown: number): ImageEngineHost {
+    const host_stale = (): boolean => this.show_stale(shown);
+    const note_pass = (line: string): void => {
+      if (!host_stale()) this.handlers.note(line);
+    };
     return {
       source: this.handlers.source,
       readout_set: (text: string): void => {
+        if (host_stale()) return;
         this.stateSpan.textContent = text;
         this.retryPill_paint();
         this.stopPill_paint();
       },
       progress_set: (progress: ImageProgress | null): void => {
+        if (host_stale()) return;
         this.progress_show(progress);
         this.stopPill_paint();
       },
-      note: this.handlers.note,
+      note: note_pass,
       regard: (path: string): void => {
+        if (host_stale()) return;
         this.handlers.regard(path);
         this.overlaySlice_paint();
       },
-      probe_set: (text: string | null): void => this.probe_show(text),
+      probe_set: (text: string | null): void => {
+        if (!host_stale()) this.probe_show(text);
+      },
     };
   }
 

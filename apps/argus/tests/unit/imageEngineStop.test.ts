@@ -43,11 +43,16 @@ const wheelBound: string[] = [];
 
 /** Holds the first slice of a stack on the wire until the test lets it land; null lets it land at once. */
 let firstSlice: Promise<void> | null = null;
+/** How many stacks have been set, and one of them (by its number) held until the test lets it land. */
+let stackCalls: number = 0;
+let heldStack: { at: number; until: Promise<void> } | null = null;
 
 class FakeViewport {
   constructor(private readonly element: HTMLElement, private readonly owner: FakeRenderingEngine) {}
   public async setStack(ids: string[], index: number): Promise<void> {
+    stackCalls += 1;
     if (firstSlice !== null) await firstSlice;
+    if (heldStack !== null && stackCalls === heldStack.at) await heldStack.until;
     stacks.push({ ids: [...ids], index });
     cached.add(ids[index] as string);
     this.element.dispatchEvent(new CustomEvent('STACK_NEW_IMAGE', { detail: { imageIdIndex: index, imageId: ids[index] } }));
@@ -244,6 +249,8 @@ beforeEach((): void => {
   cached.clear();
   groups.clear();
   firstSlice = null;
+  stackCalls = 0;
+  heldStack = null;
   providers.clear();
   volumes.clear();
   volumesSet = 0;
@@ -575,6 +582,40 @@ describe('what an engine put on Cornerstone\'s own objects', () => {
     expect(bench.readouts.at(-1)).not.toContain('STOPPED');
     expect(bench.progress.length).toBe(progressed);
     expect(bench.notes.length).toBe(noted);
+    bench.engine.dispose();
+  });
+
+  it('a layout chosen while a stopped build refits its stack stands: the late stack moves no slice and says nothing', async () => {
+    const bench: Bench = await engine_open(20);
+    const mpr: Promise<boolean> = bench.engine.layout_set('mpr');
+    await settle();
+    await slices_land(3);
+    // The stop puts the stack back (its first set lands) and then refits it: that second set is held.
+    let refitted: () => void = (): void => undefined;
+    heldStack = { at: stackCalls + 2, until: new Promise<void>((resolve: () => void): void => { refitted = resolve; }) };
+    expect(bench.engine.load_stop()).toBe(true);
+    await settle();
+    await settle();
+    expect(stackCalls).toBe((heldStack as { at: number }).at);
+    // 3D is chosen while the refit is held, and is built.
+    const render: Promise<boolean> = bench.engine.layout_set('3d');
+    await slices_landAll();
+    expect(await render).toBe(true);
+    // The field is on a slice of 3D's own.
+    (bench.engine as unknown as { slice: number }).slice = 7;
+    const readout: string | undefined = bench.readouts.at(-1);
+    const noted: number = bench.notes.length;
+    const progressed: number = bench.progress.length;
+    // The held refit lands, bringing the stack's first slice with it.
+    heldStack = null;
+    refitted();
+    expect(await mpr).toBe(false);
+    await settle();
+    expect(bench.engine.state_get().layout).toBe('3d');
+    expect(bench.engine.state_get().slice).toBe(7);
+    expect(bench.readouts.at(-1)).toBe(readout);
+    expect(bench.notes.length).toBe(noted);
+    expect(bench.progress.length).toBe(progressed);
     bench.engine.dispose();
   });
 

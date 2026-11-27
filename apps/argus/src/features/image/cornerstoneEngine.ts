@@ -331,9 +331,11 @@ export class CornerstoneEngine implements ImageEngine {
    * wheel turning through them, and the count in the bar and the console.
    */
   private async stopped_show(): Promise<void> {
+    const began: number = this.fieldSerial;
     this.host.progress_set(null);
     if (this.layout === 'single') await this.stack_refit();
-    if (this.disposed) return;
+    // Another layout took the field while the stack was refitted: STOPPED is not said over it.
+    if (this.build_replaced(began)) return;
     this.host.readout_set(this.sliceReadout_get());
     if (this.stopSaid) return;
     this.stopSaid = true;
@@ -1052,11 +1054,12 @@ export class CornerstoneEngine implements ImageEngine {
       const detail: { imageIdIndex: number; imageId: string } = (event as CustomEvent).detail;
       // The slice's place in the series, whichever stack is on the field.
       const place: number = this.imageIds.indexOf(detail.imageId);
-      this.slice = (place >= 0 ? place : detail.imageIdIndex) + 1;
+      // The slice is on hand whichever stack brought it.
       this.held.add(detail.imageId);
-      // A stack whose field has since been cleared for another layout has a slice in hand and no say: the
-      // readout and the regard are that layout's.
+      // A stack whose field has since been cleared for another layout has no say: the slice the field is
+      // on, the readout and the regard are that layout's.
       if (this.build_replaced(stackBegan)) return;
+      this.slice = (place >= 0 ? place : detail.imageIdIndex) + 1;
       const path: string = this.pathByImageId.get(detail.imageId) ?? '';
       this.host.readout_set(this.sliceReadout_get());
       this.host.regard(path);
