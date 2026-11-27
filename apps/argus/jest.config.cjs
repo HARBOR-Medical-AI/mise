@@ -16,7 +16,8 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  roots: ['<rootDir>/tests/unit'],
+  // The sources are a root too, so that a file no test reaches is still found and counted, at nothing.
+  roots: ['<rootDir>/tests/unit', '<rootDir>/src'],
   collectCoverageFrom: [
     'src/**/*.ts',
     '!src/app/main.ts',

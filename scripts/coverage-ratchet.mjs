@@ -19,12 +19,18 @@
  * workspace the base did not name had no floor, and may be given any.
  *
  * A workspace named in the section whose summary is not there has not had
- * its tests run with coverage, which is not a pass.
+ * its tests run with coverage, which is not a pass; nor is a workspace the
+ * caller requires (`--require <workspace>`) that the section does not name.
  *
- * Run by the workspace's own `test` script, after jest. The tree to read
- * and the baseline file may be given as the first two arguments, as the
- * check's own test does; `--raise` rewrites the floors to what was
- * measured, where that is higher.
+ * On a fall, the files of the workspace in which no line is covered are
+ * named: a file that has lost its only test is among them.
+ *
+ * Run after a workspace's whole test suite by `scripts/jest-with-floor.mjs`.
+ * `--root <dir>` and `--baseline <file>` name another tree and baseline
+ * file, as the check's own test does. `--raise` rewrites the floors to what
+ * was measured, where that is higher: it writes nothing when anything could
+ * not be read, when a measure is below its floor, or when a floor it would
+ * write is below the base's.
  *
  * @module
  */
@@ -91,6 +97,7 @@ export function summary_read(text, where) {
   for (const measure of MEASURES) {
     const pct = parsed?.total?.[measure]?.pct;
     if (typeof pct !== 'number' || !Number.isFinite(pct)) throw new Error(`${where} has no ${measure} total`);
+    if (pct < 0 || pct > 100) throw new Error(`${where}: the ${measure} total is not a percentage (${pct})`);
     totals[measure] = pct;
   }
   return totals;
@@ -102,17 +109,35 @@ export function summary_read(text, where) {
  * @param {string} workspace - The workspace.
  * @param {Record<string, number>} floors - Its floors.
  * @param {Record<string, number>} measured - What was measured.
- * @returns {string[]} One line per fault: a fall, or a rise that has not been kept.
+ * @returns {{ falls: string[], rises: string[] }} A line per measure below its floor, and a line per rise that has not been kept.
  */
 export function coverage_judge(workspace, floors, measured) {
-  const faults = [];
+  const falls = [];
+  const rises = [];
   for (const measure of MEASURES) {
     const floor = floors[measure];
     const now = measured[measure];
-    if (now < floor) faults.push(`${workspace}: ${measure} coverage is ${now}%, below its floor of ${floor}%. A change may not lower coverage: test what it added.`);
-    else if (floor_derive(now) > floor) faults.push(`${workspace}: ${measure} coverage rose to ${now}% (floor ${floor}%) — good. Raise the floor to ${floor_derive(now)} in ${BASELINE_FILE} as part of this change (node scripts/coverage-ratchet.mjs --raise), so the gain is kept.`);
+    if (now < floor) falls.push(`${workspace}: ${measure} coverage is ${now}%, below its floor of ${floor}%. A change may not lower coverage: test what it added.`);
+    else if (floor_derive(now) > floor) rises.push(`${workspace}: ${measure} coverage rose to ${now}% (floor ${floor}%) — good. Raise the floor to ${floor_derive(now)} in ${BASELINE_FILE} as part of this change (node scripts/coverage-ratchet.mjs --raise), so the gain is kept.`);
   }
-  return faults;
+  return { falls, rises };
+}
+
+/**
+ * Names the files of a summary in which no line is covered.
+ *
+ * @param {string} text - The summary file's text.
+ * @param {string} workspaceDir - The workspace's folder, to say each file from.
+ * @returns {string[]} The files, from the workspace's folder, in order.
+ */
+export function uncovered_list(text, workspaceDir) {
+  const parsed = JSON.parse(text);
+  const files = [];
+  for (const [file, totals] of Object.entries(parsed)) {
+    if (file === 'total') continue;
+    if (totals?.lines?.total > 0 && totals.lines.covered === 0) files.push(file.startsWith(`${workspaceDir}/`) ? file.slice(workspaceDir.length + 1) : file);
+  }
+  return files.sort();
 }
 
 /**
@@ -134,71 +159,127 @@ export function floors_compare(here, atBase) {
   return faults;
 }
 
+/**
+ * Reads the command line.
+ *
+ * @param {string[]} argv - The arguments after the script's name.
+ * @returns {{ root: string | null, baseline: string | null, raise: boolean, required: string[] }} What was asked.
+ * @throws {Error} When an argument is not one of the check's own.
+ */
+export function args_read(argv) {
+  const asked = { root: null, baseline: null, raise: false, required: [] };
+  for (let at = 0; at < argv.length; at++) {
+    const arg = argv[at];
+    if (arg === '--raise') asked.raise = true;
+    else if (arg === '--root' || arg === '--baseline' || arg === '--require') {
+      const value = argv[++at];
+      if (value === undefined) throw new Error(`${arg} wants a value`);
+      if (arg === '--root') asked.root = value;
+      else if (arg === '--baseline') asked.baseline = value;
+      else asked.required.push(value);
+    } else {
+      throw new Error(`unknown argument ${JSON.stringify(arg)}: the check takes --root, --baseline, --require and --raise`);
+    }
+  }
+  return asked;
+}
+
+/**
+ * Reads the floors as they stood at the change's base.
+ *
+ * @param {string} root - The repository.
+ * @returns {Record<string, Record<string, number>> | null} The base's floors; null when the base's baseline file is from before this ratchet, or its tree has none.
+ * @throws {Error} When the base cannot be resolved or its file cannot be read as floors.
+ */
+function baseFloors_read(root) {
+  const base = base_resolve(process.env, root);
+  const text = fileAtCommit_read(base.sha, BASELINE_FILE, root);
+  if (text === null) return null;
+  let parsed;
+  try { parsed = JSON.parse(text); } catch (error) { throw new Error(`${BASELINE_FILE} at ${base.how} is not JSON: ${error.message}`); }
+  if (parsed?.coverage === undefined) return null;
+  return floors_read(text, `${BASELINE_FILE} at ${base.how}`);
+}
+
 /** Runs the check; the exit status is whether it passed. */
 function main() {
-  const args = process.argv.slice(2).filter((arg) => arg !== '--raise');
-  const raise = process.argv.includes('--raise');
-  const root = resolve(args[0] ?? fileURLToPath(new URL('..', import.meta.url)));
-  const baselinePath = resolve(args[1] ?? join(root, BASELINE_FILE));
+  let asked;
+  try { asked = args_read(process.argv.slice(2)); } catch (error) { console.error(`coverage-ratchet: ${error.message}`); process.exit(2); }
+  const ownTree = asked.root === null;
+  const root = resolve(asked.root ?? fileURLToPath(new URL('..', import.meta.url)));
+  const baselinePath = resolve(asked.baseline ?? join(root, BASELINE_FILE));
   let floors;
   let baselineText;
   try {
     baselineText = readFileSync(baselinePath, 'utf8');
-    floors = floors_read(baselineText, args[1] ?? BASELINE_FILE);
+    floors = floors_read(baselineText, asked.baseline ?? BASELINE_FILE);
   } catch (error) {
     console.error(`coverage-ratchet: ${error.message}`);
     process.exit(1);
   }
-  const faults = [];
+  // What could not be read or is not there: nothing can be judged, or raised, past one of these.
+  const errors = [];
+  const falls = [];
+  const rises = [];
   const measuredAll = {};
+  for (const workspace of asked.required) {
+    if (floors[workspace] === undefined) errors.push(`${workspace}: it has no coverage floors in ${BASELINE_FILE}, and its tests are held to them. Give it floors (measure, then --raise from floors of 0).`);
+  }
   for (const [workspace, own] of Object.entries(floors)) {
     const summaryPath = join(root, workspace, 'coverage', 'coverage-summary.json');
     if (!existsSync(summaryPath)) {
-      faults.push(`${workspace}: no coverage summary at ${workspace}/coverage/coverage-summary.json. Run its tests with coverage first (npm test in ${workspace}).`);
+      errors.push(`${workspace}: no coverage summary at ${workspace}/coverage/coverage-summary.json. Run its tests with coverage first (npm test in ${workspace}).`);
       continue;
     }
+    let text;
     try {
-      measuredAll[workspace] = summary_read(readFileSync(summaryPath, 'utf8'), `${workspace}/coverage/coverage-summary.json`);
+      text = readFileSync(summaryPath, 'utf8');
+      measuredAll[workspace] = summary_read(text, `${workspace}/coverage/coverage-summary.json`);
     } catch (error) {
-      faults.push(`${workspace}: ${error.message}`);
+      errors.push(`${workspace}: ${error.message}`);
       continue;
     }
-    faults.push(...coverage_judge(workspace, own, measuredAll[workspace]));
+    const judged = coverage_judge(workspace, own, measuredAll[workspace]);
+    rises.push(...judged.rises);
+    if (judged.falls.length > 0) {
+      falls.push(...judged.falls);
+      const bare = uncovered_list(text, join(root, workspace));
+      if (bare.length > 0) falls.push(`${workspace}: ${bare.length} file(s) in which no line is covered: ${bare.join(', ')}`);
+    }
   }
-  if (raise) {
-    const whole = JSON.parse(baselineText);
-    let raised = 0;
+  // The floors as they would stand: as committed, or (for --raise) raised to what was measured.
+  const next = JSON.parse(baselineText);
+  let raised = 0;
+  if (asked.raise) {
     for (const [workspace, measured] of Object.entries(measuredAll)) {
       for (const measure of MEASURES) {
-        if (measured[measure] < floors[workspace][measure]) continue;
-        const next = floor_derive(measured[measure]);
-        if (next > whole.coverage[workspace][measure]) { whole.coverage[workspace][measure] = next; raised++; }
+        const to = floor_derive(measured[measure]);
+        if (to > next.coverage[workspace][measure]) { next.coverage[workspace][measure] = to; raised++; }
       }
     }
-    const below = faults.filter((line) => line.includes('below its floor') || line.includes('no coverage summary') || line.includes('has no '));
-    if (below.length > 0) {
-      for (const line of below) console.error(`  ${line}`);
-      console.error('coverage-ratchet: nothing raised: the tree does not pass as it is.');
+  }
+  // Against the base: only where the tree read is the repository itself.
+  const lowered = [];
+  if (ownTree || process.env.COVERAGE_RATCHET_BASE === '1') {
+    try {
+      const atBase = baseFloors_read(root);
+      if (atBase !== null) lowered.push(...floors_compare(next.coverage, atBase));
+    } catch (error) {
+      errors.push(`the floors could not be compared with the base: ${error.message}`);
+    }
+  }
+  if (asked.raise) {
+    const stops = [...errors, ...falls, ...lowered];
+    if (stops.length > 0) {
+      for (const line of stops) console.error(`  ${line}`);
+      console.error(`coverage-ratchet: nothing raised and ${BASELINE_FILE} not touched: the tree does not pass as it is.`);
       process.exit(1);
     }
-    writeFileSync(baselinePath, `${JSON.stringify(whole, null, 2)}\n`);
+    writeFileSync(baselinePath, `${JSON.stringify(next, null, 2)}\n`);
     console.log(`coverage-ratchet: raised ${raised} floor(s) in ${BASELINE_FILE}; none lowered.`);
     return;
   }
-  // The floors against the base: only when the tree read is the repository itself.
-  if (args[0] === undefined || process.env.COVERAGE_RATCHET_BASE === '1') {
-    try {
-      const base = base_resolve(process.env, root);
-      const atBaseText = fileAtCommit_read(base.sha, BASELINE_FILE, root);
-      if (atBaseText !== null) {
-        const parsed = JSON.parse(atBaseText);
-        // A base from before the ratchet has no section: there was no floor to hold to.
-        if (parsed?.coverage !== undefined) faults.push(...floors_compare(floors, floors_read(atBaseText, `${BASELINE_FILE} at ${base.how}`)));
-      }
-    } catch (error) {
-      faults.push(`the floors could not be compared with the base: ${error.message}`);
-    }
-  }
+  const faults = [...errors, ...falls, ...rises, ...lowered];
   if (faults.length > 0) {
     console.error(`coverage-ratchet: ${faults.length} fault(s):`);
     for (const line of faults) console.error(`  ${line}`);

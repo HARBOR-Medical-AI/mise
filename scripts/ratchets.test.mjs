@@ -199,46 +199,116 @@ for (const lint of lints) {
 
 // The coverage ratchet, over trees made here: a summary as jest writes it, and floors beside it.
 {
-  const { coverage_judge, floor_derive, floors_compare, floors_read, summary_read } = await import('./coverage-ratchet.mjs');
+  const { args_read, coverage_judge, floor_derive, floors_compare, floors_read, summary_read, uncovered_list } = await import('./coverage-ratchet.mjs');
+  const { suite_isWhole } = await import('./jest-with-floor.mjs');
   /** A tree with one workspace's coverage summary and a baseline file; runs the ratchet over it. */
-  const coverage_run = (measured, floors, raise = false) => {
+  const coverage_run = (summary, floors, extra = []) => {
     const tree = folder_make('coverage');
-    if (measured !== null) file_put(join(tree, 'apps/argus/coverage/coverage-summary.json'), JSON.stringify({ total: Object.fromEntries(Object.entries(measured).map(([measure, pct]) => [measure, { total: 1000, covered: Math.round(pct * 10), pct }])) }));
-    file_put(join(tree, 'baseline.json'), JSON.stringify({ casts: {}, coverage: { 'apps/argus': floors } }));
-    const ran = spawnSync('node', [join(here, 'coverage-ratchet.mjs'), tree, join(tree, 'baseline.json'), ...(raise ? ['--raise'] : [])], { encoding: 'utf8' });
-    return { status: ran.status, said: `${ran.stdout}${ran.stderr}`, baseline: JSON.parse(readFileSync(join(tree, 'baseline.json'), 'utf8')) };
+    if (summary !== null) file_put(join(tree, 'apps/argus/coverage/coverage-summary.json'), typeof summary === 'string' ? summary : JSON.stringify(summary));
+    file_put(join(tree, 'baseline.json'), JSON.stringify({ casts: {}, coverage: floors === null ? {} : { 'apps/argus': floors } }));
+    const before = readFileSync(join(tree, 'baseline.json'), 'utf8');
+    const ran = spawnSync('node', [join(here, 'coverage-ratchet.mjs'), '--root', tree, '--baseline', join(tree, 'baseline.json'), ...extra], { encoding: 'utf8' });
+    const after = readFileSync(join(tree, 'baseline.json'), 'utf8');
+    return { status: ran.status, said: `${ran.stdout}${ran.stderr}`, baseline: JSON.parse(after), untouched: before === after, tree };
   };
-  const at = { lines: 68.99, statements: 66.4, branches: 56.52, functions: 63.79 };
-  const floors = { lines: 68.9, statements: 66.4, branches: 56.5, functions: 63.7 };
+  /** A summary with these totals and, beside them, these files' line counts. */
+  const summary_make = (totals, files = {}) => ({
+    total: Object.fromEntries(Object.entries(totals).map(([measure, pct]) => [measure, { total: 1000, covered: Math.round(pct * 10), pct }])),
+    ...files,
+  });
+  const at = { lines: 60.92, statements: 58.83, branches: 50.72, functions: 55.66 };
+  const floors = { lines: 60.9, statements: 58.8, branches: 50.7, functions: 55.6 };
   expect_that('a floor is a measure to one decimal, rounded down', floor_derive(68.99) === 68.9 && floor_derive(66.4) === 66.4 && floor_derive(100) === 100 && floor_derive(0.09) === 0);
-  const held = coverage_run(at, floors);
+  const held = coverage_run(summary_make(at), floors);
   expect_that('coverage at its floors passes', held.status === 0 && held.said.includes('at or above their floors'), held.said);
-  const fell = coverage_run({ ...at, branches: 56.49 }, floors);
-  expect_that('a fall below a floor fails, and names the measure', fell.status !== 0 && fell.said.includes('branches coverage is 56.49%, below its floor of 56.5%'), fell.said);
-  const rose = coverage_run({ ...at, lines: 70.25 }, floors);
+  const fell = coverage_run(summary_make({ ...at, branches: 50.69 }), floors);
+  expect_that('a fall below a floor fails, and names the measure', fell.status !== 0 && fell.said.includes('branches coverage is 50.69%, below its floor of 50.7%'), fell.said);
+  const rose = coverage_run(summary_make({ ...at, lines: 70.25 }), floors);
   expect_that('a rise fails until the floor is raised, and says what to raise it to', rose.status !== 0 && rose.said.includes('lines coverage rose to 70.25%') && rose.said.includes('Raise the floor to 70.2'), rose.said);
-  const raised = coverage_run({ ...at, lines: 70.25 }, floors, true);
-  expect_that('--raise raises the floor that rose and no other', raised.status === 0 && raised.baseline.coverage['apps/argus'].lines === 70.2 && raised.baseline.coverage['apps/argus'].branches === 56.5 && JSON.stringify(raised.baseline.casts) === '{}', JSON.stringify(raised.baseline));
-  const refused = coverage_run({ ...at, branches: 50 }, floors, true);
-  expect_that('--raise lowers nothing: a tree below a floor is refused and the floors stand', refused.status !== 0 && refused.baseline.coverage['apps/argus'].branches === 56.5, refused.said);
+  const raised = coverage_run(summary_make({ ...at, lines: 70.25 }), floors, ['--raise']);
+  expect_that('--raise raises the floor that rose and no other', raised.status === 0 && raised.baseline.coverage['apps/argus'].lines === 70.2 && raised.baseline.coverage['apps/argus'].branches === 50.7 && JSON.stringify(raised.baseline.casts) === '{}', JSON.stringify(raised.baseline));
+  const refused = coverage_run(summary_make({ ...at, branches: 40 }), floors, ['--raise']);
+  expect_that('--raise lowers nothing: a tree below a floor is refused and the baseline is not touched', refused.status !== 0 && refused.untouched, refused.said);
+  const garbled = coverage_run('{ this is not json', floors, ['--raise']);
+  expect_that('--raise over a summary that cannot be read writes nothing and fails', garbled.status !== 0 && garbled.untouched && garbled.said.includes('is not JSON'), garbled.said);
+  const beyond = coverage_run(summary_make({ ...at, lines: 140 }), floors, ['--raise']);
+  expect_that('a measure that is not a percentage is refused, and never written as a floor', beyond.status !== 0 && beyond.untouched && beyond.said.includes('lines total is not a percentage (140)'), beyond.said);
   const absent = coverage_run(null, floors);
   expect_that('a workspace with no summary is not a pass', absent.status !== 0 && absent.said.includes('no coverage summary'), absent.said);
-  const bad = coverage_run(at, { ...floors, lines: 'high' });
+  const absentRaise = coverage_run(null, floors, ['--raise']);
+  expect_that('--raise with no summary writes nothing and fails', absentRaise.status !== 0 && absentRaise.untouched, absentRaise.said);
+  const bad = coverage_run(summary_make(at), { ...floors, lines: 'high' });
   expect_that('a floor that is not a percentage is refused', bad.status !== 0 && bad.said.includes('lines floor of apps/argus is not a percentage'), bad.said);
+  // A workspace the caller requires: an empty section is not "nothing to hold".
+  const empty = coverage_run(summary_make(at), null);
+  expect_that('with nothing required, a section that names no workspace has nothing to judge', empty.status === 0 && empty.said.includes('0 workspace(s)'), empty.said);
+  const required = coverage_run(summary_make(at), null, ['--require', 'apps/argus']);
+  expect_that('a required workspace with no floors fails, whatever the base', required.status !== 0 && required.said.includes('apps/argus: it has no coverage floors'), required.said);
+  const requiredHeld = coverage_run(summary_make(at), floors, ['--require', 'apps/argus']);
+  expect_that('a required workspace with floors is judged as any other', requiredHeld.status === 0, requiredHeld.said);
+  // What is jest's is not the ratchet's: an argument it does not know is refused, not read as a tree.
+  const stray = spawnSync('node', [join(here, 'coverage-ratchet.mjs'), '--coverage'], { encoding: 'utf8' });
+  expect_that('an argument that is not the check\'s own is refused', stray.status === 2 && `${stray.stderr}`.includes('unknown argument "--coverage"'), `${stray.stdout}${stray.stderr}`);
   let threw = '';
+  try { args_read(['tests/unit/one.test.ts']); } catch (error) { threw = error.message; }
+  expect_that('a test\'s path is not read as the tree', threw.includes('unknown argument'), threw);
+  expect_that('the whole suite is the whole suite with options that narrow nothing', suite_isWhole([]) && suite_isWhole(['--coverage']) && suite_isWhole(['--runInBand', '--coverage']));
+  expect_that('a selector, a name filter or an unknown option narrows the run', !suite_isWhole(['tests/unit/one.test.ts']) && !suite_isWhole(['-t', 'one case']) && !suite_isWhole(['--testPathPattern=image']) && !suite_isWhole(['--onlyChanged']));
+  threw = '';
   try { floors_read('{"casts":{}}', 'a file'); } catch (error) { threw = error.message; }
   expect_that('a baseline without the section has no floors, which is not the same as none to hold', threw.includes('no "coverage" section'), threw);
   threw = '';
   try { summary_read('{"total":{"lines":{"pct":"Unknown"}}}', 'a summary'); } catch (error) { threw = error.message; }
   expect_that('a summary without its totals is refused', threw.includes('has no lines total'), threw);
-  expect_that('at its floors nothing is at fault', coverage_judge('apps/argus', floors, at).length === 0);
+  const judged = coverage_judge('apps/argus', floors, at);
+  expect_that('at its floors nothing is at fault', judged.falls.length === 0 && judged.rises.length === 0);
+  // The files no test reaches are named when coverage falls.
+  const withFiles = summary_make({ ...at, lines: 55 }, {
+    '/tree/apps/argus/src/tested.ts': { lines: { total: 10, covered: 10, pct: 100 } },
+    '/tree/apps/argus/src/orphan.ts': { lines: { total: 12, covered: 0, pct: 0 } },
+    '/tree/apps/argus/src/types.ts': { lines: { total: 0, covered: 0, pct: 100 } },
+  });
+  expect_that('the files in which no line is covered are listed, and a file with no lines is not one', JSON.stringify(uncovered_list(JSON.stringify(withFiles), '/tree/apps/argus')) === '["src/orphan.ts"]');
   // The floors against the base: they may rise, and may not fall or be dropped.
   const base = { 'apps/argus': floors };
   expect_that('floors equal to or above the base hold', floors_compare({ 'apps/argus': { ...floors, lines: 70 }, 'apps/porter': floors }, base).length === 0);
-  const lowered = floors_compare({ 'apps/argus': { ...floors, functions: 60 } }, base);
-  expect_that('a floor lowered against the base fails', lowered.length === 1 && lowered[0].includes('functions floor was lowered from 63.7 to 60'), lowered.join('; '));
+  const lowered = floors_compare({ 'apps/argus': { ...floors, functions: 50 } }, base);
+  expect_that('a floor lowered against the base fails', lowered.length === 1 && lowered[0].includes('functions floor was lowered from 55.6 to 50'), lowered.join('; '));
   const dropped = floors_compare({}, base);
   expect_that('a workspace whose floors were removed fails', dropped.length === 1 && dropped[0].includes('were removed'), dropped.join('; '));
+
+  // With jest itself: a file that loses its only test stays in the measure, at nothing, and is named.
+  const tree = folder_make('coverage-jest');
+  symlinkSync(join(repo, 'node_modules'), join(tree, 'node_modules'), 'dir');
+  file_put(join(tree, 'package.json'), JSON.stringify({ name: 'coverage-jest-tree', private: true }));
+  file_put(join(tree, 'apps/argus/jest.config.cjs'), `module.exports = { testEnvironment: 'node', roots: ['<rootDir>/tests', '<rootDir>/src'], collectCoverageFrom: ['src/**/*.js'], coverageProvider: 'babel', coverageReporters: ['json-summary'], transform: {} };\n`);
+  file_put(join(tree, 'apps/argus/src/kept.js'), 'module.exports = { twice: (n) => n * 2 };\n');
+  file_put(join(tree, 'apps/argus/src/orphan.js'), 'module.exports = { thrice: (n) => {\n  const three = 3;\n  return n * three;\n} };\n');
+  file_put(join(tree, 'apps/argus/tests/kept.test.js'), "const { twice } = require('../src/kept.js');\ntest('twice', () => { expect(twice(2)).toBe(4); });\n");
+  const orphanTest = join(tree, 'apps/argus/tests/orphan.test.js');
+  file_put(orphanTest, "const { thrice } = require('../src/orphan.js');\ntest('thrice', () => { expect(thrice(2)).toBe(6); });\n");
+  file_put(join(tree, 'baseline.json'), JSON.stringify({ coverage: { 'apps/argus': { lines: 0, statements: 0, branches: 0, functions: 0 } } }));
+  const jest_run = () => spawnSync(join(repo, 'node_modules/.bin/jest'), ['--coverage', '--silent'], { cwd: join(tree, 'apps/argus'), encoding: 'utf8' });
+  const ratchet_here = (extra = []) => {
+    const ran = spawnSync('node', [join(here, 'coverage-ratchet.mjs'), '--root', tree, '--baseline', join(tree, 'baseline.json'), '--require', 'apps/argus', ...extra], { encoding: 'utf8' });
+    return { status: ran.status, said: `${ran.stdout}${ran.stderr}` };
+  };
+  const both = jest_run();
+  expect_that('jest runs the made tree with both tests', both.status === 0, `${both.stdout}${both.stderr}`.slice(0, 400));
+  const set = ratchet_here(['--raise']);
+  expect_that('with both files tested the floors are set from what jest measured', set.status === 0 && JSON.parse(readFileSync(join(tree, 'baseline.json'), 'utf8')).coverage['apps/argus'].lines === 100, set.said);
+  // The test of one file is taken away (written over with one that reaches nothing of it).
+  file_put(orphanTest, "test('nothing of the orphan', () => { expect(1).toBe(1); });\n");
+  const one = jest_run();
+  const summaryNow = readFileSync(join(tree, 'apps/argus/coverage/coverage-summary.json'), 'utf8');
+  expect_that('a file that lost its only test is still in jest\'s summary, with no line covered', one.status === 0 && Object.keys(JSON.parse(summaryNow)).some((file) => file.endsWith('src/orphan.js')) && uncovered_list(summaryNow, join(tree, 'apps/argus')).includes('src/orphan.js'), summaryNow.slice(0, 300));
+  const caught = ratchet_here();
+  expect_that('and the ratchet fails, naming the measure and the file', caught.status !== 0 && caught.said.includes('lines coverage is') && caught.said.includes('below its floor of 100%') && caught.said.includes('src/orphan.js'), caught.said);
+  // The test comes back: the floors hold again.
+  file_put(orphanTest, "const { thrice } = require('../src/orphan.js');\ntest('thrice', () => { expect(thrice(2)).toBe(6); });\n");
+  const again = jest_run();
+  const back = ratchet_here();
+  expect_that('with the test back the floors hold', again.status === 0 && back.status === 0, back.said);
 }
 
 console.log(failed === 0 ? `ratchets: the cast ratchet, the coverage ratchet, the base it is compared with, and the reach of the test and seam lints all hold (made in ${run})` : `ratchets test: ${failed} failed (made in ${run})`);
