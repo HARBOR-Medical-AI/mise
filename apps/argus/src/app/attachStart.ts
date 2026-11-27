@@ -1,15 +1,19 @@
 /**
- * @file The page's start: one attach at a time, and a second attempt
- * after a failed one from a clean page.
+ * @file The page's start: one attach at a time, and a second attempt in
+ * place after a refusal, or from a clean page after a failure once wiring
+ * had begun.
  *
- * The surface wires its listeners and timers before it attaches, so an
- * attach that is refused leaves the page wired; wiring it again for the
- * next attempt doubled every listener, and a toggle then fired twice and
- * seemed to do nothing. Here an attempt in flight is the only one, and an
- * attempt after a failure is made by a page loaded afresh.
+ * The surface attaches before it wires anything (main.ts, surface_start):
+ * an attach that is refused has wired nothing, and the next attempt is made
+ * on the same page. Wiring a page twice doubled every listener, and a toggle
+ * then fired twice and seemed to do nothing; so a start that failed after
+ * the attach was acknowledged (the wiring threw, or the session went away
+ * before the surface was ready: `AttachWiredError`) leaves the next attempt
+ * to a page loaded afresh, with the token carried over the reload.
  *
  * Key components:
  * - {@link attachStart_make}: makes the page's `start`.
+ * - {@link AttachWiredError}: a start that failed once wiring had begun.
  * - {@link retryToken_keep} and {@link retryToken_take}: carry the token over the reload.
  *
  * Typical usage:
@@ -28,7 +32,7 @@
  * const ports: AttachStartPorts = { surface_start, form_hide, form_show, page_restart };
  */
 export interface AttachStartPorts {
-  /** Wires the surface and attaches it; rejects when the attach is refused or the daemon cannot be reached. */
+  /** Attaches the surface, then wires it; rejects when the attach is refused or the daemon cannot be reached (nothing wired), or with an `AttachWiredError` when wiring had begun. */
   surface_start: (token: string) => Promise<void>;
   /** Hides the attach form: the surface is up. */
   form_hide: () => void;
@@ -39,11 +43,33 @@ export interface AttachStartPorts {
 }
 
 /**
+ * A start that failed once the surface had begun wiring itself (the attach
+ * was acknowledged, then the wiring threw or the session went away before
+ * the surface was ready). The page holds what was wired, so the next
+ * attempt is made by a page loaded afresh.
+ *
+ * @example
+ * ```ts
+ * throw new AttachWiredError(cause);
+ * ```
+ */
+export class AttachWiredError extends Error {
+  /**
+   * @param cause - What went wrong.
+   */
+  public constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'AttachWiredError';
+  }
+}
+
+/**
  * Makes the page's start.
  *
- * While an attach is in flight, another is not begun. After an attach has
- * failed, the page it left wired is not wired again: the next attempt
- * restarts the page.
+ * While an attach is in flight, another is not begun. The surface attaches
+ * before it wires anything, so an attach that was refused leaves nothing
+ * wired, and the next attempt is made in place. One that failed after
+ * wiring had begun leaves the page wired: the next attempt restarts it.
  *
  * @param ports - The surface's start and the form.
  * @returns The start: call it with the token to attach with.
@@ -72,7 +98,8 @@ export function attachStart_make(ports: AttachStartPorts): (token: string) => vo
       },
       (error: unknown): void => {
         starting = false;
-        failed = true;
+        // Refused before anything was wired: the form, here, takes the next attempt. Wired, then failed: the next is a fresh page's.
+        if (error instanceof AttachWiredError) failed = true;
         ports.form_show(error instanceof Error ? error.message : String(error));
       },
     );

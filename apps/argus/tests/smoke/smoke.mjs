@@ -2922,9 +2922,9 @@ try {
   }
 
   if (await stage('attach-retry')) {
-  // A token the daemon refuses leaves the page wired (the surface wires itself before it attaches). The
-  // next attempt must not wire it again: it restarts the page, the good token rides the reload in the
-  // tab's own storage and never in the address, and one press of a toggle then toggles once.
+  // The surface attaches before it wires anything, so a token the daemon refuses leaves nothing wired: the
+  // next attempt is made on the same page (no reload), the good token is never put in the address, and one
+  // press of a toggle then toggles once.
   const here = await evalIn(`return { href: location.href, token: new URLSearchParams(location.search).get('token') ?? '' };`);
   if (here.token === '') {
     console.log('  attach-retry: skipped, this page was not reached by a token in its address');
@@ -2938,15 +2938,17 @@ try {
       for (let i = 0; i < 60 && (form?.classList.contains('attach-hidden') ?? true); i++) await sleep(250);
       return { shown: form !== null && !form.classList.contains('attach-hidden'), why: document.getElementById('attach-error')?.textContent ?? '' };`);
     check('a refused token brings the form back and says why', refused.shown === true && refused.why.length > 0, JSON.stringify(refused));
-    // 2. The good token is typed, and submitted twice at once (the button and Enter).
+    // 2. The good token is typed, and submitted twice at once (the button and Enter). The page is marked
+    //    first: a page loaded afresh would not carry the mark.
     await evalIn(`
+      window.__smokeSamePage = 'the page of the refusal';
       const input = document.getElementById('attach-token');
       input.value = ${JSON.stringify(here.token)};
       document.getElementById('attach-submit').click();
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       return 1;`).catch(() => 1);
     await new Promise((r) => setTimeout(r, 2000));
-    // 3. The fresh page: attached, the handoff used up, the good token nowhere in the address.
+    // 3. The same page: attached, READY said once, nothing handed over a reload, the good token nowhere in the address.
     const fresh = await evalIn(`
       ${ready}
       const drawer = document.getElementById('drawer');
@@ -2959,14 +2961,16 @@ try {
       let kept = null;
       try { kept = sessionStorage.getItem('argus.attach.retry'); } catch { kept = 'storage refused'; }
       return {
+        samePage: window.__smokeSamePage === 'the page of the refusal',
+        readies: [...document.querySelectorAll('.term-line, .console-line, #drawer-status')].filter((el) => /READY/.test(el.textContent ?? '')).length,
         ready: /READY/.test(document.getElementById('drawer-status')?.textContent ?? ''),
         formHidden: document.getElementById('attach-form')?.classList.contains('attach-hidden') ?? false,
         kept,
         inAddress: location.href.includes(${JSON.stringify(here.token)}),
         before, once, twice,
       };`);
-    check('the second attempt attaches from a fresh page', fresh.ready === true && fresh.formHidden === true, JSON.stringify({ ready: fresh.ready, formHidden: fresh.formHidden }));
-    check('the handoff is used once, and the token it carried is not in the address', fresh.kept === null && fresh.inAddress === false, JSON.stringify({ kept: fresh.kept === null ? null : 'left behind', inAddress: fresh.inAddress }));
+    check('the second attempt attaches on the same page: nothing was wired by the refusal, so nothing is reloaded', fresh.samePage === true && fresh.ready === true && fresh.formHidden === true, JSON.stringify({ samePage: fresh.samePage, ready: fresh.ready, formHidden: fresh.formHidden, readies: fresh.readies }));
+    check('nothing is left kept for a reload, and the token is not in the address', fresh.kept === null && fresh.inAddress === false, JSON.stringify({ kept: fresh.kept === null ? null : 'left behind', inAddress: fresh.inAddress }));
     check('one press of the console lid toggles it once, and a second puts it back',
       fresh.once === !fresh.before && fresh.twice === fresh.before, JSON.stringify({ before: fresh.before, once: fresh.once, twice: fresh.twice }));
     // The page is put back as the suite found it: its own address, token and all.

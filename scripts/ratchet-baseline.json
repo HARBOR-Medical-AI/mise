@@ -6,10 +6,10 @@
   },
   "coverage": {
     "apps/argus": {
-      "lines": 60.8,
-      "statements": 58.7,
+      "lines": 61.3,
+      "statements": 59.2,
       "branches": 51,
-      "functions": 55.5,
+      "functions": 56,
       "allowance": {
         "below": 0.3,
         "above": 0.7

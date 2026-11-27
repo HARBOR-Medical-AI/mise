@@ -21,7 +21,7 @@ import { type ClosingCause, type SessionNotes, feedListModelSchema, FEED_LIST_MO
 import { more_wire } from '../features/roster/more.js';
 import { type SceneNode } from '../scene/chrisSpace.js';
 import { element_require, template_stamp, pane_find } from '../frame/dom.js';
-import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type BootChoice } from './attachStart.js';
+import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type BootChoice, AttachWiredError } from './attachStart.js';
 import { DormantRegistry, DORMANT_CAP, localKeyStore, type GroupSnapshot, type DesktopAction, type DesktopShape } from './dormant.js';
 import { linkLanding_parse, type LinkLanding } from './link.js';
 import { shareSheet_open, viewLink_parse, viewScript_compose } from './shareView.js';
@@ -29,16 +29,14 @@ import { PanesPanel } from '../features/panes/panel.js';
 import { logo_linesRender } from '@fnndsc/menu/logo';
 import { tdMark_linesRender } from '@fnndsc/menu/logo/td';
 import { backend_ask, wireUrl_resolve, vfsUrl_build as routeVfsUrl_build, downloadUrl_build as routeDownloadUrl_build, door_isPresent, doorUrl_build } from '../calypso/routes.js';
-import {
-  ArgusClient,
+import { ArgusClient,
   type AttachInfo,
   type ExecuteOutcome,
   type OutputChannel,
   type ProgressMessage,
   type SurfaceAsk,
   type SurfaceEdit,
-  attachBackend_get,
-} from '../calypso/client.js';
+  attachBackend_get, type AttachedSession } from '../calypso/client.js';
 import { ArgusTerminal } from '../console/terminal.js';
 import { consolePalette_publish } from '../console/ansi.js';
 import { ArgusProgress } from '../console/progress.js';
@@ -967,17 +965,39 @@ function panelSounds_wire(): void {
   }
 }
 
-/**
- * Attaches to the daemon and wires every instrument to the session.
- *
- * @param token - The attach token.
- * @returns Resolves when the surface is attached and interactive.
- * @throws {Error} When the attach is refused.
- */
 /** The data cascade, built at page boot and fed by the session's wiring. */
 let cascade: Cascade | null = null;
 
+/**
+ * Attaches to the daemon, then wires every instrument to the session. The
+ * socket is opened and acknowledged before anything is wired; what the
+ * session says meanwhile is held with that socket and handed over once the
+ * handlers exist. A refused attach has wired nothing.
+ *
+ * @param token - The attach token.
+ * @returns Resolves when the surface is attached and interactive.
+ * @throws {Error} When the attach is refused or the daemon cannot be reached; an `AttachWiredError` when the wiring had begun and failed.
+ */
 async function surface_start(token: string): Promise<void> {
+  const held: AttachedSession = await ArgusClient.session_attachHeld(wsUrl_resolve(), token);
+  try {
+    await surface_wire(token, held);
+  } catch (error: unknown) {
+    // Nothing is announced and nothing the socket held is delivered: it is closed, and the page, which holds
+    // what was wired, is the next attempt's to replace.
+    held.client.held_abandon();
+    throw new AttachWiredError(error);
+  }
+}
+
+/**
+ * Wires every instrument to a session already attached.
+ *
+ * @param token - The attach token.
+ * @param held - The attached client, held until its handlers are installed here, and the attach facts.
+ * @returns Resolves when the surface is interactive.
+ */
+async function surface_wire(token: string, held: AttachedSession): Promise<void> {
   // Which console the page shows (consoleMode.ts): wired once attached, read
   // by the questions that have no pane to stand on.
   let consoleMode: ConsoleModeControl | null = null;
@@ -2456,9 +2476,9 @@ async function surface_start(token: string): Promise<void> {
       void client.line_execute('ls', { silent: true });
     }
   };
-  const attached: { client: ArgusClient; attach: AttachInfo } = await ArgusClient.session_attach(
-    wsUrl_resolve(),
-    token,
+  const attached: AttachedSession = held;
+  // The handlers, all of them in place, and only then what the session said since it acknowledged the attach.
+  held.client.handlers_install(
     {
       output_receive: (channel: OutputChannel, chunk: string): void => {
         terminal.output_write(channel, chunk);
@@ -2817,8 +2837,8 @@ function page_boot(): void {
 
   // Where this page attaches: its path and its daemon's socket. A token handed over a reload is for here only.
   const place: string = retryPlace_name(window.location.pathname, wsUrl_resolve());
-  // One attach at a time; and after one that failed, the next is made by a page loaded afresh, since the
-  // surface wires itself before it attaches and must not be wired twice (see attachStart.ts).
+  // One attach at a time. The surface attaches before it wires anything, so after a refusal the next attempt
+  // is made here; after a failure once wiring had begun, by a page loaded afresh (see attachStart.ts).
   const attach_start: (token: string) => void = attachStart_make({
     surface_start,
     form_hide: (): void => { attachForm.classList.add('attach-hidden'); },

@@ -282,6 +282,22 @@ export interface CompleteOutcome {
   prefix: string;
 }
 
+/**
+ * A session attached: the client that speaks to it, and what the daemon said
+ * of it when it acknowledged the attach.
+ *
+ * @example
+ * ```ts
+ * const { client, attach } = await ArgusClient.session_attachHeld(url, token);
+ * ```
+ */
+export interface AttachedSession {
+  /** The client. */
+  client: ArgusClient;
+  /** The attach facts. */
+  attach: AttachInfo;
+}
+
 /** A pending completion request awaiting its correlated reply. */
 interface PendingComplete {
   resolve: (outcome: CompleteOutcome) => void;
@@ -299,7 +315,7 @@ interface PendingComplete {
  */
 export class ArgusClient {
   private readonly socket: WebSocket;
-  private readonly handlers: ClientHandlers;
+  private handlers: ClientHandlers;
   /** The attach token, reused to authorise byte-route fetches. */
   private readonly token: string;
   private readonly pending: Map<string, PendingExecute> = new Map();
@@ -312,12 +328,87 @@ export class ArgusClient {
   /** Whether what this surface runs is mirrored into a terminal console (mirror_set). */
   private mirroring: boolean = false;
 
-  private constructor(socket: WebSocket, handlers: ClientHandlers, token: string) {
+  private constructor(socket: WebSocket, handlers: ClientHandlers, token: string, held: boolean = false) {
     this.socket = socket;
     this.handlers = handlers;
     this.token = token;
-    this.socket.onmessage = (event: MessageEvent): void => this.message_handle(String(event.data));
-    this.socket.onclose = (): void => this.handlers.close_handle?.();
+    this.held = held ? [] : null;
+    this.socket.onmessage = (event: MessageEvent): void => {
+      // Held: what the session says before the page's handlers exist waits for them, in order.
+      if (this.held !== null) { this.held.push(String(event.data)); return; }
+      this.message_handle(String(event.data));
+    };
+    this.socket.onclose = (): void => {
+      if (this.held !== null) { this.heldClosed = true; return; }
+      this.handlers.close_handle?.();
+    };
+  }
+
+  /** What the session sent while the client was held, in the order it came; null once handlers are installed. */
+  private held: string[] | null;
+
+  /** True when the socket closed while the client was held. */
+  private heldClosed: boolean = false;
+
+  /**
+   * Opens a WebSocket to a daemon and performs the attach handshake, with no
+   * handlers yet: whatever the session sends after it acknowledges the attach
+   * is held, with the socket it came on, until `handlers_install`. A page can
+   * so attach first and wire itself only once it is attached, and a refused
+   * attach has wired nothing.
+   *
+   * @param url - The daemon's WebSocket URL.
+   * @param token - The daemon's attach token.
+   * @returns The attached client, held, and the attach facts.
+   * @throws {Error} As `session_attach`.
+   *
+   * @example
+   * ```
+   * const held = await ArgusClient.session_attachHeld(url, token);
+   * // ... wire the page ...
+   * held.client.handlers_install(handlers);
+   * ```
+   */
+  public static session_attachHeld(url: string, token: string): Promise<AttachedSession> {
+    return ArgusClient.attach_open(url, token, {}, true);
+  }
+
+  /**
+   * Gives a held client its handlers, then hands them, in order, what the
+   * session sent meanwhile. Nothing is delivered before every handler is in
+   * place.
+   *
+   * @param handlers - The page's handlers.
+   * @throws {Error} When the socket closed while the client was held: the session is gone, and nothing it sent is delivered.
+   *
+   * @example
+   * ```
+   * held.client.handlers_install({ output_receive, close_handle });
+   * ```
+   */
+  public handlers_install(handlers: ClientHandlers): void {
+    const waiting: string[] | null = this.held;
+    if (waiting === null) { this.handlers = handlers; return; }
+    if (this.heldClosed) throw new Error('the daemon closed the connection before the surface was ready');
+    this.handlers = handlers;
+    this.held = null;
+    for (const payload of waiting) this.message_handle(payload);
+  }
+
+  /**
+   * Gives up a held client: its socket is closed and nothing it held, or
+   * receives after, is delivered to anyone.
+   *
+   * @example
+   * ```
+   * held.client.held_abandon();
+   * ```
+   */
+  public held_abandon(): void {
+    if (this.held === null) return;
+    this.held = [];
+    this.heldClosed = true;
+    this.socket.close();
   }
 
   /**
@@ -334,7 +425,20 @@ export class ArgusClient {
     url: string,
     token: string,
     handlers: ClientHandlers,
-  ): Promise<{ client: ArgusClient; attach: AttachInfo }> {
+  ): Promise<AttachedSession> {
+    return ArgusClient.attach_open(url, token, handlers, false);
+  }
+
+  /**
+   * Opens a socket and performs the attach handshake.
+   *
+   * @param url - The daemon's WebSocket URL.
+   * @param token - The attach token.
+   * @param handlers - The handlers, or none yet when held.
+   * @param held - Whether the client holds what arrives until it is given handlers.
+   * @returns The attached client and the attach facts.
+   */
+  private static attach_open(url: string, token: string, handlers: ClientHandlers, held: boolean): Promise<AttachedSession> {
     return new Promise((resolve, reject) => {
       const socket: WebSocket = new WebSocket(url);
       socket.onerror = (): void => reject(new Error(`cannot reach the daemon at ${url}`));
@@ -389,7 +493,7 @@ export class ArgusClient {
           socket.close();
           return;
         }
-        const client: ArgusClient = new ArgusClient(socket, handlers, token);
+        const client: ArgusClient = new ArgusClient(socket, handlers, token, held);
         resolve({
           client,
           attach: {

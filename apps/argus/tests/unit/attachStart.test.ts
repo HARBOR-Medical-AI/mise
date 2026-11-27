@@ -7,17 +7,18 @@
  * closes before it is answered.
  */
 import { describe, it, expect, afterEach } from '@jest/globals';
-import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
+import { addressManual_derive, addressSame_check, AttachWiredError, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
 import { ArgusClient } from '../../src/calypso/client.js';
 
 /** A surface whose attach the test settles, and which counts how often it was wired. */
-function bench_make(): { start: (token: string) => void; wired: string[]; shown: string[]; hidden: number[]; restarted: string[]; settle: (ok: boolean, why?: string) => Promise<void> } {
+function bench_make(): { start: (token: string) => void; wired: string[]; shown: string[]; hidden: number[]; restarted: string[]; settle: (ok: boolean, why?: string, wired?: boolean) => Promise<void> } {
   const wired: string[] = [];
   const shown: string[] = [];
   const hidden: number[] = [];
   const restarted: string[] = [];
   let resolve: () => void = (): void => undefined;
   let reject: (error: Error) => void = (): void => undefined;
+  // How the next failure fails: refused before anything was wired, or after the wiring had begun.
   const ports: AttachStartPorts = {
     surface_start: (token: string): Promise<void> => {
       // What the surface does before it attaches: every listener and timer of the page.
@@ -28,8 +29,8 @@ function bench_make(): { start: (token: string) => void; wired: string[]; shown:
     form_show: (reason: string): void => { shown.push(reason); },
     page_restart: (token: string): void => { restarted.push(token); },
   };
-  const settle = async (ok: boolean, why: string = 'the token was refused'): Promise<void> => {
-    if (ok) resolve(); else reject(new Error(why));
+  const settle = async (ok: boolean, why: string = 'the token was refused', wired: boolean = false): Promise<void> => {
+    if (ok) resolve(); else reject(wired ? new AttachWiredError(new Error(why)) : new Error(why));
     await Promise.resolve();
     await Promise.resolve();
   };
@@ -48,28 +49,51 @@ describe('the page\'s start', () => {
     expect(bench.shown).toEqual([]);
   });
 
-  it('after an attach that failed, wires nothing again: the form says why, and the next attempt restarts the page with its token', async () => {
+  it('after an attach that was refused, the next attempt is made in place: nothing was wired, and no page is restarted', async () => {
     const bench = bench_make();
     bench.start('wrong');
     await bench.settle(false);
     expect(bench.shown).toEqual(['the token was refused']);
     expect(bench.hidden).toEqual([]);
-    // The second attempt, with a good token: the page that was wired is not wired again.
+    // The second attempt, with a good token: started here, on this page.
     bench.start('good');
-    expect(bench.wired).toEqual(['wrong']);
+    expect(bench.wired).toEqual(['wrong', 'good']);
+    expect(bench.restarted).toEqual([]);
+    await bench.settle(true);
+    expect(bench.hidden).toHaveLength(1);
+    // And while it is in flight, a second press begins nothing.
+  });
+
+  it('after a start that failed once wiring had begun, the page is not wired again: the next attempt restarts it with its token', async () => {
+    const bench = bench_make();
+    bench.start('good');
+    await bench.settle(false, 'the daemon closed the connection before the surface was ready', true);
+    expect(bench.shown).toEqual(['the daemon closed the connection before the surface was ready']);
+    bench.start('good');
+    expect(bench.wired).toEqual(['good']);
     expect(bench.restarted).toEqual(['good']);
   });
 
-  it('of two attempts made together after a failure, the first is the one: one restart, with its token', async () => {
+  it('of two attempts made together after such a failure, the first is the one: one restart, with its token', async () => {
     const bench = bench_make();
     bench.start('wrong');
-    await bench.settle(false);
+    await bench.settle(false, 'wiring threw', true);
     // Enter and the button, before the reload has taken the page away.
     bench.start('good');
     bench.start('other');
     bench.start('good');
     expect(bench.restarted).toEqual(['good']);
     expect(bench.wired).toEqual(['wrong']);
+  });
+
+  it('of two attempts made together after a refusal, the first is the one: one attach in flight', async () => {
+    const bench = bench_make();
+    bench.start('wrong');
+    await bench.settle(false);
+    bench.start('good');
+    bench.start('other');
+    expect(bench.wired).toEqual(['wrong', 'good']);
+    expect(bench.restarted).toEqual([]);
   });
 
   const tab = (): Storage => window.sessionStorage;
@@ -252,5 +276,70 @@ describe('an attach', () => {
     expect(client).toBeDefined();
     socket.onclose?.({ reason: '', code: 1000 });
     expect(closed).toBe(1);
+  });
+});
+
+describe('a held attach', () => {
+  const RealSocket = globalThis.WebSocket;
+  afterEach((): void => { globalThis.WebSocket = RealSocket; FakeSocket.made.length = 0; });
+
+  /** Attaches held over a fake socket; gives back the client and the socket. */
+  async function held_make(): Promise<{ client: ArgusClient; socket: FakeSocket }> {
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const attaching = ArgusClient.session_attachHeld('ws://127.0.0.1:9000', 'T');
+    const socket: FakeSocket = FakeSocket.made[0] as FakeSocket;
+    socket.onopen?.();
+    socket.onmessage?.({ data: JSON.stringify({ type: 'attached', session: 's', protocolVersion: 1 }) });
+    const { client } = await attaching;
+    return { client, socket };
+  }
+  const output = (chunk: string): { data: string } => ({ data: JSON.stringify({ type: 'output', id: 'x', channel: 'data', chunk }) });
+
+  it('holds what the session says until the handlers are installed, and then hands it over, in order, once', async () => {
+    const { client, socket } = await held_make();
+    socket.onmessage?.(output('one'));
+    socket.onmessage?.(output('two'));
+    const got: string[] = [];
+    client.handlers_install({ output_receive: (_channel: string, chunk: string): void => { got.push(chunk); } } as never);
+    expect(got).toEqual(['one', 'two']);
+    socket.onmessage?.(output('three'));
+    expect(got).toEqual(['one', 'two', 'three']);
+    // Installed again (nothing held): nothing is handed over twice.
+    client.handlers_install({ output_receive: (_channel: string, chunk: string): void => { got.push(`again ${chunk}`); } } as never);
+    expect(got).toEqual(['one', 'two', 'three']);
+  });
+
+  it('a close while held is the attach gone: installing throws, nothing it held is delivered, and the close is no handler\'s', async () => {
+    const { client, socket } = await held_make();
+    socket.onmessage?.(output('stale'));
+    socket.onclose?.({ reason: '', code: 1006 });
+    const got: string[] = [];
+    let closed: number = 0;
+    expect(() => { client.handlers_install({ output_receive: (_c: string, chunk: string): void => { got.push(chunk); }, close_handle: (): void => { closed += 1; } } as never); }).toThrow('the daemon closed the connection before the surface was ready');
+    expect(got).toEqual([]);
+    expect(closed).toBe(0);
+  });
+
+  it('abandoned, its socket is closed and nothing it held or receives after reaches anyone', async () => {
+    const { client, socket } = await held_make();
+    let closedSockets: number = 0;
+    const close = socket.close.bind(socket);
+    socket.close = (): void => { closedSockets += 1; close(); };
+    socket.onmessage?.(output('held'));
+    client.held_abandon();
+    expect(closedSockets).toBe(1);
+    socket.onmessage?.(output('late'));
+    const got: string[] = [];
+    expect(() => { client.handlers_install({ output_receive: (_c: string, chunk: string): void => { got.push(chunk); } } as never); }).toThrow();
+    expect(got).toEqual([]);
+  });
+
+  it('a held attach that is refused, or never answered, rejects as an attach does: nothing to install', async () => {
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const refused = ArgusClient.session_attachHeld('ws://127.0.0.1:9000', 'WRONG');
+    const socket: FakeSocket = FakeSocket.made[0] as FakeSocket;
+    socket.onopen?.();
+    socket.onmessage?.({ data: JSON.stringify({ type: 'error', reason: 'the token was refused' }) });
+    await expect(refused).rejects.toThrow('the token was refused');
   });
 });
