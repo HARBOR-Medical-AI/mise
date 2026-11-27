@@ -4348,9 +4348,17 @@ try {
     const realFetch = window.fetch;
     const realSend = XMLHttpRequest.prototype.send;
     const realOpen = XMLHttpRequest.prototype.open;
-    // The byte requests in flight, counted as they begin and end: a press is "mid-flight" only while one is.
-    const flying = { up: 0, down: 0 };
-    const kind_of = (method, url) => (!/(^|[/])vfs[?]/.test(String(url)) ? null : String(method).toUpperCase() === 'POST' ? 'up' : 'down');
+    // The two byte requests for this run's own file, each followed from its beginning to its end: the POST
+    // of its bytes, and the GET that downloads it. Nothing else on the byte route counts (a progress poll,
+    // another file): a press is "mid-flight" only while that very request is.
+    const flights = { up: null, down: null };
+    const kind_of = (method, url) => {
+      const asked = new URL(String(url), window.location.href);
+      if (!/[/]vfs$/.test(asked.pathname) || asked.searchParams.get('path') !== place + '/large.bin') return null;
+      const verb = String(method).toUpperCase();
+      if (verb === 'POST') return 'up';
+      return verb === 'GET' && asked.searchParams.get('download') === '1' ? 'down' : null;
+    };
     try {
     const handoffs = [];
     HTMLAnchorElement.prototype.click = function () {
@@ -4361,9 +4369,9 @@ try {
       const kind = kind_of(init?.method ?? (input instanceof Request ? input.method : 'GET'), input instanceof Request ? input.url : input);
       const flight = realFetch.call(this, input, init);
       if (kind === null) return flight;
-      flying[kind] += 1;
-      let ended = false;
-      const end = () => { if (!ended) { ended = true; flying[kind] -= 1; } };
+      const mine = { done: false };
+      if (flights[kind] === null) flights[kind] = mine;
+      const end = () => { mine.done = true; };
       // A download is in flight until its body has been read, not merely until its headers have come.
       return flight.then((response) => {
         if (kind === 'up' || response.body === null) { end(); return response; }
@@ -4378,21 +4386,24 @@ try {
     XMLHttpRequest.prototype.open = function (method, url, ...rest) { this.__smokeKind = kind_of(method, url); return realOpen.call(this, method, url, ...rest); };
     XMLHttpRequest.prototype.send = function (...args) {
       const kind = this.__smokeKind;
-      if (kind !== null && kind !== undefined) { flying[kind] += 1; this.addEventListener('loadend', () => { flying[kind] -= 1; }, { once: true }); }
+      if (kind !== null && kind !== undefined) { const mine = { done: false }; if (flights[kind] === null) flights[kind] = mine; this.addEventListener('loadend', () => { mine.done = true; }, { once: true }); }
       return realSend.apply(this, args);
     };
     // A press made while a transfer is observed in flight, answered while it still is: the console lid goes
     // there and back. A transfer that had ended before the press, or ends before the answer, does not count.
     const lid_pressDuring = async (which) => {
-      const began = await settle(() => flying[which] > 0, 200, 25);
-      if (!began) return { began: false, answered: false, stillFlying: false };
+      const began = await settle(() => flights[which] !== null, 200, 25);
+      const flight = flights[which];
+      if (!began || flight === null || flight.done) return { began: false, answered: false, stillFlying: false, ms: -1 };
       const drawer = document.getElementById('drawer'); const toggle = document.getElementById('drawer-toggle');
       const before = drawer.classList.contains('drawer-closed');
+      const at = performance.now();
       toggle.click(); await sleep(60);
       const flipped = drawer.classList.contains('drawer-closed') !== before;
       toggle.click(); await sleep(60);
       const back = drawer.classList.contains('drawer-closed') === before;
-      return { began: true, answered: flipped && back, stillFlying: flying[which] > 0 };
+      // The same request that was in flight at the press is in flight still, and the page did not stall.
+      return { began: true, answered: flipped && back, stillFlying: !flight.done, ms: Math.round(performance.now() - at) };
     };
 
     await say('cd ' + place, 2500);
@@ -4442,10 +4453,10 @@ try {
     check(`a ${transferMib} MiB file goes up through the page and comes down the same bytes`,
       moved.pressed && moved.handedOver && moved.name === 'large.bin' && moved.gotSize === moved.size && moved.got === moved.sent,
       JSON.stringify({ ...moved, sent: moved.sent?.slice(0, 12), got: moved.got?.slice(0, 12) }));
-    check('a press made while the upload is seen in flight is answered while it still is',
-      moved.upPress.began && moved.upPress.answered && moved.upPress.stillFlying, JSON.stringify(moved.upPress));
-    check('a press made while the download is seen in flight is answered while it still is',
-      moved.downPress.began && moved.downPress.answered && moved.downPress.stillFlying, JSON.stringify(moved.downPress));
+    check('a press made while the upload is seen in flight is answered within a second, while it still is',
+      moved.upPress.began && moved.upPress.answered && moved.upPress.stillFlying && moved.upPress.ms < 1000, JSON.stringify(moved.upPress));
+    check('a press made while the download is seen in flight is answered within a second, while it still is',
+      moved.downPress.began && moved.downPress.answered && moved.downPress.stillFlying && moved.downPress.ms < 1000, JSON.stringify(moved.downPress));
   }
   }
 

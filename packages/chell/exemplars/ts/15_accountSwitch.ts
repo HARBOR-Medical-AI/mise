@@ -9,26 +9,32 @@
  * What is checked is chosen so that the answer depends on whose client did
  * the asking, through the listing path and through the transfer path:
  *
- * - The first user makes a folder with a file in it, lists it and reads it,
- *   and asks for the second user's home, which it is not given.
- * - The second user connects in the same session. It is the second; it is
- *   given its own home, where the first was not; and it reads a file of its
- *   own. A listing or a transfer still made with the first user's client
- *   would be refused here.
- * - The first user connects again. It is the first; the second's home and
- *   the second's file are refused again; its own file is read afresh.
+ * - The first user makes a folder with a file in it, lists it and reads it.
+ * - The second user connects in the same session. It is the second; it
+ *   makes a folder of its own, writes a file there through the session,
+ *   lists it and reads it back. The first may do none of that there, so
+ *   work still done with the first user's client would fail.
+ * - The first user connects again. It is the first; CUBE, asked directly,
+ *   denies it the second's folder, and the session neither shows that
+ *   folder's file nor hands over its content; its own file is read afresh.
+ *
+ * A session read that failed for some other reason looks, from the session
+ * alone, like a refusal. So the refusal is CUBE's own (a 403 or 404 for
+ * that folder's id with the first's token, anything else an error), asked
+ * before and after, and the session is held only to not producing what the
+ * second was given. Where a CUBE gives the first the second's folder,
+ * those checks are printed as skipped, not passed.
  *
  * What this run does not show: `/bin` and the process tree read the same
  * for both accounts on a CUBE where the second is an administrator, so
  * they are not asked; the unit tests of the connection hold those to the
- * client in use. Where a CUBE lets the first user read the second's home,
- * the checks that rest on that are said to be skipped, not passed.
+ * client in use.
  *
  * The second account is the one the exemplars already use for cleanup
- * (`CUBE_ADMIN_USER`). It only reads here: nothing is written or removed
- * as that account. The folder the first user makes is this run's only on
- * CUBE's own word that this run made it; it is then removed by the id CUBE
- * gave it, and a folder that was already there is never touched.
+ * (`CUBE_ADMIN_USER`). Each account makes one scratch folder under its own
+ * home. A folder is this run's only by CUBE's answer to its making, which
+ * carries its id; a name that is taken makes nothing. Each is removed by
+ * that id, by the account that made it, and nothing else is removed.
  *
  *   node exemplars/ts/dist/15_accountSwitch.js
  *
@@ -40,7 +46,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { files_touch, files_listWhole, fileContent_get } from '@fnndsc/salsa';
-import { chrisIO, currentUser_get, Result, ChrisUser } from '@fnndsc/cumin';
+import { currentUser_get, Result, ChrisUser } from '@fnndsc/cumin';
 import {
   env_load, config_isolate, cube_connect, connection_active, adminEnv_require, check, step, section, summary_exit,
   runId_make, restToken_get, poll_until, CleanupPlan, CubeEnv,
@@ -83,46 +89,73 @@ async function folder_read(path: string, name: string): Promise<FolderRead> {
   return read;
 }
 
+/** A folder this run made: CUBE's own id and path for it, from its answer to the making. */
+interface MadeFolder {
+  /** The id CUBE gave it. */
+  id: number;
+  /** Its path, as CUBE spells it (no leading slash). */
+  path: string;
+}
+
 /**
- * Looks a folder up by its path, as a user, and says plainly what CUBE said.
+ * Makes a folder as a user and keeps CUBE's own answer: the id and the path
+ * come from the making itself, never from a later lookup, so nothing else
+ * that comes to bear the name can be taken for it.
  *
  * @param url - The CUBE.
  * @param token - The user's token.
  * @param folderPath - The folder, without its leading slash.
- * @returns Its id, or null when CUBE says there is none.
- * @throws {Error} When CUBE did not answer the question: not knowing is not "none".
+ * @returns What was made, or null when CUBE did not make it (the name is taken, the answer is not a usable receipt).
  */
-async function folder_look(url: string, token: string, folderPath: string): Promise<number | null> {
-  const response: Response = await fetch(`${url}filebrowser/search/?path=${encodeURIComponent(folderPath)}`, { headers: { Authorization: `Token ${token}`, Accept: 'application/json' } });
-  if (!response.ok) throw new Error(`CUBE answered ${response.status} when asked whether ${folderPath} is there`);
-  const body: unknown = await response.json();
-  const results: unknown = (body as { results?: unknown } | null)?.results;
-  if (!Array.isArray(results)) throw new Error(`CUBE's answer about ${folderPath} was not a list of folders`);
-  if (results.length === 0) return null;
-  // The answer must be about this very folder, and name it by an id that can be acted on.
-  const found = results[0] as { id?: unknown; path?: unknown };
-  if (found.path !== folderPath || typeof found.id !== 'number' || !Number.isSafeInteger(found.id) || found.id <= 0) {
-    throw new Error(`CUBE's answer about ${folderPath} names another folder or no usable id`);
-  }
-  return found.id;
+async function folder_make(url: string, token: string, folderPath: string): Promise<MadeFolder | null> {
+  const response: Response = await fetch(`${url}filebrowser/`, {
+    method: 'POST',
+    headers: { Authorization: `Token ${token}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: folderPath }),
+  });
+  if (response.status !== 201) return null;
+  const body = (await response.json().catch((): null => null)) as { id?: unknown; path?: unknown } | null;
+  if (body === null || body.path !== folderPath || typeof body.id !== 'number' || !Number.isSafeInteger(body.id) || body.id <= 0) return null;
+  return { id: body.id, path: folderPath };
+}
+
+/**
+ * Asks CUBE for a folder by its id, as a user.
+ *
+ * @param url - The CUBE.
+ * @param token - The user's token.
+ * @param folder - The folder.
+ * @returns `given` when CUBE shows that very folder; `denied` when CUBE says it may not be had or is not there for this user (403, 404).
+ * @throws {Error} On any other answer: a failure to ask is neither.
+ */
+async function folder_askById(url: string, token: string, folder: MadeFolder): Promise<'given' | 'denied'> {
+  const response: Response = await fetch(`${url}filebrowser/${String(folder.id)}/`, { headers: { Authorization: `Token ${token}`, Accept: 'application/json' } });
+  if (response.status === 403 || response.status === 404) return 'denied';
+  if (!response.ok) throw new Error(`CUBE answered ${response.status} when asked for folder ${String(folder.id)}`);
+  const body = (await response.json()) as { id?: unknown; path?: unknown };
+  if (body.id !== folder.id || body.path !== folder.path) throw new Error(`CUBE's answer for folder ${String(folder.id)} is about another folder`);
+  return 'given';
+}
+
+/**
+ * Removes a folder this run made, by the id its making gave, and waits for CUBE to say it is gone.
+ *
+ * @param url - The CUBE.
+ * @param token - The token of the user that made it.
+ * @param folder - The folder.
+ * @returns Whether it is gone.
+ */
+async function folder_unmake(url: string, token: string, folder: MadeFolder): Promise<boolean> {
+  const response: Response = await fetch(`${url}filebrowser/${String(folder.id)}/`, { method: 'DELETE', headers: { Authorization: `Token ${token}` } });
+  if (response.status !== 202 && response.status !== 204) return false;
+  const gone = await poll_until<boolean>(async () => ((await folder_askById(url, token, folder).catch((): 'given' => 'given')) === 'denied' ? true : null), 30_000, 2_000);
+  return gone.ok;
 }
 
 /** Connects the session's one connection as a user, as `connect` does. */
 async function user_connect(env: CubeEnv, user: string, password: string): Promise<boolean> {
   const token: string | null = await connection_active().connection_connect({ user, password, url: env.url, debug: true });
   return token !== null && token.length > 0;
-}
-
-/**
- * Asks for a file, as whoever is connected, and says which of three things happened: it was given; CUBE did
- * not give it; or the asking itself broke, which is neither.
- */
-async function file_ask(path: string): Promise<'given' | 'not given' | 'broke'> {
-  try {
-    return (await fileContent_get(path)).ok ? 'given' : 'not given';
-  } catch {
-    return 'broke';
-  }
 }
 
 /**
@@ -135,64 +168,67 @@ async function scenario_run(env: CubeEnv, cleanup: CleanupPlan): Promise<void> {
   const first: string = env.user;
   const second: string = env.adminUser as string;
   const runId: string = `${runId_make()}-${randomBytes(4).toString('hex')}`;
-  const scratchDir: string = `/home/${first}/${runId}`;
-  const marker: string = 'only-the-first.txt';
-  const content: string = `made by ${first} in ${runId}`;
-  const secondHome: string = `/home/${second}`;
+  const firstFile: string = 'only-the-first.txt';
+  const firstContent: string = `made by ${first} in ${runId}`;
+  const secondFile: string = 'only-the-second.txt';
+  const secondContent: string = `made by ${second} in ${runId}`;
+  const firstToken: string = await restToken_get(env.url, env.user, env.password);
+  const secondToken: string = await restToken_get(env.url, second, env.adminPassword as string);
 
   // tag::accountSwitch[]
   section(`as ${first}: make something only ${first} has`);
-  // Made only where there is nothing of that name: a folder that is already there is not this run's, is not
-  // written into, and is not removed.
-  const token: string = await restToken_get(env.url, env.user, env.password);
-  if (!check('no folder of this run\'s name is there yet', (await folder_look(env.url, token, scratchDir.slice(1))) === null)) return;
-  // The receipt is CUBE's own answer to the making: made by this call, not "it is there". A folder that came
-  // to be there in between is somebody else's: nothing is written into it and nothing is removed.
-  const creation: Result<boolean> = await chrisIO.folder_create(scratchDir);
-  if (!check('CUBE says this run made the folder (it was not already there)', creation.ok && creation.value === true)) return;
-  const made: number | null = await folder_look(env.url, token, scratchDir.slice(1));
-  if (!check('CUBE gave the new folder an id', made !== null)) return;
-  cleanup.register('removed the scratch folder, by the id it was given', async (): Promise<boolean> => {
-    const mine: string = await restToken_get(env.url, env.user, env.password);
-    const response: Response = await fetch(`${env.url}filebrowser/${String(made)}/`, { method: 'DELETE', headers: { Authorization: `Token ${mine}` } });
-    if (response.status !== 202 && response.status !== 204) return false;
-    const gone = await poll_until<boolean>(async () => ((await folder_look(env.url, mine, scratchDir.slice(1))) === null ? true : null), 30_000, 2_000);
-    return gone.ok;
-  });
-  if (!check(`wrote ${marker}`, await files_touch(`${scratchDir}/${marker}`, content))) return;
-  check(`${first} lists the folder and sees the file`, (await folder_read(scratchDir, marker)).holds);
-  const mineRead: Result<string> = await step(`${first} reads the file`, fileContent_get(`${scratchDir}/${marker}`));
-  if (mineRead.ok) check('its content is what was written', mineRead.value === content);
-  const asFirst: FolderRead = await folder_read(secondHome, '');
-  // Whether this CUBE tells the two accounts apart by the second's home: if the first is given it, it does not.
-  const apart: boolean = asFirst.kind !== 'listing';
-  if (apart) check(`${first} is not given ${second}'s home`, true);
-  else console.log(`  - skipped: this CUBE gives ${first} the listing of ${second}'s home, so that listing does not tell the two apart here`);
+  // The folder is this run's only by CUBE's answer to its making, which carries its id: a name that is taken
+  // makes nothing, and then nothing is written and nothing is removed.
+  const mine: MadeFolder | null = await folder_make(env.url, firstToken, `home/${first}/${runId}`);
+  if (mine === null) { check(`CUBE made ${first}'s scratch folder for this run and said which it is`, false); return; }
+  check(`CUBE made ${first}'s scratch folder for this run and said which it is`, true);
+  cleanup.register(`removed ${first}'s scratch folder, by the id its making gave`, (): Promise<boolean> => folder_unmake(env.url, firstToken, mine));
+  const minePath: string = `/${mine.path}/${firstFile}`;
+  if (!check(`wrote ${firstFile}`, await files_touch(minePath, firstContent))) return;
+  check(`${first} lists the folder and sees the file`, (await folder_read(`/${mine.path}`, firstFile)).holds);
+  const mineRead: Result<string> = await step(`${first} reads the file`, fileContent_get(minePath));
+  if (mineRead.ok) check('its content is what was written', mineRead.value === firstContent);
 
   section(`connect as ${second}, in the same session`);
   if (!check(`connected as ${second}`, await user_connect(env, second, env.adminPassword as string))) return;
   const who: Result<ChrisUser> = await step('asked who is connected', currentUser_get());
   if (who.ok) check(`the session is ${second}`, who.value.username === second);
-  const asSecond: FolderRead = await folder_read(secondHome, runId);
-  // The second's own home must be read, whatever else: a read that fails shows nothing about anybody.
-  if (!check(`${second} is given its own home${apart ? `, which ${first} was not: the listing was read with ${second}'s client` : ''}`, asSecond.kind === 'listing')) return;
-  check(`${first}'s folder is not in ${second}'s home`, !asSecond.holds);
-  // A file to read as the second: one of its own, which the first cannot be given. Where there is none, or
-  // the first may read the second's home, the transfer path does not tell the two apart here, and is skipped.
-  const secondFile: string | null = apart ? asSecond.aFile : null;
-  if (secondFile === null) console.log(`  - skipped: no file here that ${second} may read and ${first} may not, so the transfer path is not shown to tell them apart`);
-  else check(`${second} reads a file of its own: the transfer was made with ${second}'s client`, (await file_ask(secondFile)) === 'given');
+  // A fixture of the second's own, known to this run: a folder made the same way, with one file in it.
+  const theirs: MadeFolder | null = await folder_make(env.url, secondToken, `home/${second}/${runId}`);
+  if (theirs === null) { check(`CUBE made ${second}'s scratch folder for this run and said which it is`, false); return; }
+  check(`CUBE made ${second}'s scratch folder for this run and said which it is`, true);
+  cleanup.register(`removed ${second}'s scratch folder, by the id its making gave`, (): Promise<boolean> => folder_unmake(env.url, secondToken, theirs));
+  const theirsPath: string = `/${theirs.path}/${secondFile}`;
+  // Whether this CUBE keeps the second's folder from the first: asked of CUBE itself, by the folder's id,
+  // with the first's token. Any answer but "given" or "denied" is an error, not a result.
+  const kept: boolean = (await folder_askById(env.url, firstToken, theirs)) === 'denied';
+  // Written through the session: the first may not write there, so a write made with the first's client fails.
+  if (!check(`${second} wrote ${secondFile} in its own folder, through the session`, await files_touch(theirsPath, secondContent))) return;
+  const theirsListed: FolderRead = await folder_read(`/${theirs.path}`, secondFile);
+  if (!check(`${second} lists its folder and sees the file: the listing was read with ${second}'s client`, theirsListed.kind === 'listing' && theirsListed.holds)) return;
+  const theirsRead: Result<string> = await step(`${second} reads the file`, fileContent_get(theirsPath));
+  if (theirsRead.ok) check(`its content is what was written: the transfer was made with ${second}'s client`, theirsRead.value === secondContent);
 
   section(`connect as ${first} again`);
   if (!check(`connected as ${first}`, await user_connect(env, env.user, env.password))) return;
   const back: Result<ChrisUser> = await step('asked who is connected', currentUser_get());
   if (back.ok) check(`the session is ${first}`, back.value.username === first);
-  if (apart) check(`${second}'s home is not given to ${first} again: nothing ${second} was shown is handed over`, (await folder_read(secondHome, '')).kind !== 'listing');
-  if (secondFile !== null) check(`nor is ${second}'s file (CUBE does not give it; the asking did not break): the transfer is made with ${first}'s client again`, (await file_ask(secondFile)) === 'not given');
-  // And straight after those refusals, a read that must succeed: the refusals were CUBE's answer to the
-  // first user, not a session that had stopped working.
-  const again: Result<string> = await step(`${first} reads its own file afresh`, fileContent_get(`${scratchDir}/${marker}`));
-  if (again.ok) check('its content is what was written', again.value === content);
+  if (!kept) {
+    console.log(`  - skipped: this CUBE gives ${first} the folder ${second} made, so what the session shows of it does not tell the two apart here`);
+  } else {
+    // CUBE itself, asked now with the first's token for that very folder, denies it: so a session that
+    // shows it, or hands over its file, is using what the second was given. A session read that merely
+    // failed would not be told from a refusal by the session alone, which is why CUBE is asked directly
+    // before and after, and a read that must succeed follows.
+    check(`CUBE denies ${first} the folder ${second} made (asked by its id)`, (await folder_askById(env.url, firstToken, theirs)) === 'denied');
+    const shown: FolderRead = await folder_read(`/${theirs.path}`, secondFile);
+    check(`the session does not show ${first} that folder's file`, !shown.holds && shown.kind !== 'listing');
+    const handed: Result<string> = await fileContent_get(theirsPath).catch((): Result<string> => ({ ok: false }) as Result<string>);
+    check(`nor hand over its content: the transfer is made with ${first}'s client again`, !(handed.ok && handed.value === secondContent));
+    check(`CUBE still denies it, and still gives it to ${second}`, (await folder_askById(env.url, firstToken, theirs)) === 'denied' && (await folder_askById(env.url, secondToken, theirs)) === 'given');
+  }
+  const again: Result<string> = await step(`${first} reads its own file afresh`, fileContent_get(minePath));
+  if (again.ok) check('its content is what was written', again.value === firstContent);
   // end::accountSwitch[]
 }
 
