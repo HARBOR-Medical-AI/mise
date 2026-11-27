@@ -219,6 +219,20 @@ export function line_render(parts: LineParts): string {
 }
 
 /**
+ * Writes a value an option is being set to. A value that would itself read
+ * as an option's name (`--example`, `--key=value`) is quoted, so it is read
+ * back as the value it is and never as a second option; any other is
+ * written as a script's word is.
+ *
+ * @param value - The value.
+ * @returns It, as the word after the option.
+ */
+function optionValue_write(value: string): string {
+  const word: string = scriptWord_write(value);
+  return optionToken_read({ raw: word, value, bare: word === value }) === null ? word : arg_quote(value);
+}
+
+/**
  * A line with one option set, kept in place when it stands, appended when it
  * does not, and taken away when the value is empty.
  *
@@ -233,7 +247,7 @@ export function lineOption_set(text: string, word: string, value: string): strin
   // goes (a line that names it twice is left naming it once, or not at all), read by the same rule the
   // getter reads it by.
   const tokens: LineToken[] = lineTokens_read(text);
-  const written: string[] = value === '' ? [] : [word, scriptWord_write(value)];
+  const written: string[] = value === '' ? [] : [word, optionValue_write(value)];
   const kept: string[] = [];
   let placed: boolean = false;
   for (let index: number = 0; index < tokens.length; index++) {
@@ -611,12 +625,13 @@ export function memoryRange_derive(limits: VmLimitsModel, vcpu: number): { min: 
  * words, `cost` for `new`.
  *
  * @param text - The `vm new` line.
- * @returns The `vm cost` line.
+ * @returns The `vm cost` line; null when the line is not a `vm new`, and there is no price to ask for.
  */
-export function costLine_derive(text: string): string {
-  // Only the verb changes: every other word goes into the price request exactly as the declaration spells it.
+export function costLine_derive(text: string): string | null {
+  // Only the verb changes: every other word goes into the price request exactly as the declaration spells
+  // it. The verb is told as a step's kind is told, by its words as read (`vm 'new' store` is a `vm new`).
   const tokens: LineToken[] = lineTokens_read(text);
-  if (tokens[0]?.raw !== 'vm' || tokens[1]?.raw !== 'new') return text;
+  if (tokens[0]?.value !== 'vm' || tokens[1]?.value !== 'new') return null;
   return ['vm', 'cost', ...tokens.slice(2).map((token: LineToken): string => token.raw)].join(' ');
 }
 

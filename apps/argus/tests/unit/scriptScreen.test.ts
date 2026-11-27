@@ -245,6 +245,39 @@ describe('the script screen', () => {
     screen.root.remove();
   });
 
+  it('a declaration whose verb is quoted is priced by a vm cost request, never by sending the declaration; an option typed like an option is its value', async () => {
+    const { screen, asked, hooks } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    const kept = screen as unknown as { stepCost_ask: (line: string) => void };
+    const before: number = asked.length;
+    kept.stepCost_ask("vm 'new' store --net chrisproject-services --disk 50");
+    await new Promise((resolve) => { setTimeout(resolve, 160); });
+    // The quiet request the screen made: the price of the declaration, with the declaration's own operands.
+    expect(asked.slice(before)).toEqual(['vm cost store --net chrisproject-services --disk 50']);
+    // A line that is no declaration asks for no price at all.
+    const after: number = asked.length;
+    kept.stepCost_ask('vm build store');
+    await new Promise((resolve) => { setTimeout(resolve, 160); });
+    expect(asked.slice(after)).toEqual([]);
+    // From the field: a host typed as `--example` is the host's value on the line, read back and cleared whole.
+    void hooks;
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-4"]')?.click();
+    await settle();
+    const host: HTMLInputElement = screen.root.querySelector('#ss-host-4') as HTMLInputElement;
+    const shown = (): string => [...screen.root.querySelectorAll('.ss-line-text')].map((one) => one.textContent ?? '').find((text: string): boolean => text.startsWith('chris deploy')) ?? '';
+    host.focus();
+    host.value = '--example';
+    host.dispatchEvent(new Event('input'));
+    expect(shown()).toBe("chris deploy store --profile minimal --compute NERC --host '--example'");
+    expect(lineOption_get(shown(), '--host')).toBe('--example');
+    host.value = '';
+    host.dispatchEvent(new Event('input'));
+    expect(shown()).toBe('chris deploy store --profile minimal --compute NERC');
+    screen.dispose();
+    screen.root.remove();
+  });
+
   it('VM NEW\'s sliders come from vm limits, move the line and re-ask vm cost; the cost column and the header show it', async () => {
     const { screen, asked } = screen_make();
     await screen.open('/scripts/chrisproject/store.mise');

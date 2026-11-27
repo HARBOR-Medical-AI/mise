@@ -2312,7 +2312,9 @@ export class VmScreen extends ScriptScreen {
     if (moved.length === 0) { this.change_redraw(); return; }
     this.timers.timeout_set('lever', 150, (): void => {
       const priced = async (text: string): Promise<number | null> => {
-        const model = this.model_take(await this.hooks.ask(costLine_derive(text)), STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
+        const priceLine: string | null = costLine_derive(text);
+        if (priceLine === null) return null;
+        const model = this.model_take(await this.hooks.ask(priceLine), STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
         const cost: VmCostRate | null | undefined = model?.vms[0]?.cost;
         return cost == null ? null : (cost.machineHour + cost.dataHour) * HOURS_PER_MONTH;
       };

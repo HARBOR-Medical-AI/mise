@@ -213,6 +213,19 @@ describe('an option is read, set and cleared by one rule', () => {
     expect(line_parse("vm new '--odd-name' --n 1").subject).toBe('--odd-name');
   });
 
+  it('a value set from a field that reads like an option is the value: set, read back and cleared as one option', () => {
+    for (const value of ['--example', '--key=value', '--n']) {
+      const set: string = lineOption_set('vm new store --n 1', '--note', value);
+      expect(lineOption_get(set, '--note')).toBe(value);
+      expect(line_parse(set).options).toEqual([['--n', '1'], ['--note', value]]);
+      // Cleared, nothing of it is left behind.
+      expect(lineOption_set(set, '--note', '')).toBe('vm new store --n 1');
+      // Set again over itself, still one of it.
+      expect(lineOption_set(set, '--note', 'plain')).toBe('vm new store --n 1 --note plain');
+    }
+    expect(lineOption_set('vm new store', '--note', '--example')).toBe("vm new store --note '--example'");
+  });
+
   it('the --key=value spelling is the same option: read, replaced in place, and cleared', () => {
     const line: string = "vm new store --memory=8 --note='two words' --vcpu 2";
     expect(lineOption_get(line, '--memory')).toBe('8');
@@ -229,7 +242,10 @@ describe('a line made from another keeps what it does not change', () => {
     expect(costLine_derive(declared)).toBe("vm cost 'O'\\''Brien' --note '$name' --memory=8 --disk 50");
     // Read by the kernel, the two carry the same operands: the literal stays a literal.
     expect([...args_tokenize(costLine_derive(declared))].slice(2)).toEqual([...args_tokenize(declared)].slice(2));
-    expect(costLine_derive('vm build store')).toBe('vm build store');
+    // A line that is not a declaration has no price request; one whose verb is quoted is still a declaration.
+    expect(costLine_derive('vm build store')).toBeNull();
+    expect(costLine_derive("vm 'new' store --disk 50")).toBe('vm cost store --disk 50');
+    expect(costLine_derive("'vm' \"new\" 'O'\\''Brien' --note '$name'")).toBe("vm cost 'O'\\''Brien' --note '$name'");
   });
 
   it('a user line built from a form carries each field as the value it is, to the kernel', () => {

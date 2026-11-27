@@ -1012,10 +1012,13 @@ export class ScriptScreen {
     // A screen that has been left asks no price and waits for none: a command that ends after the close
     // arms nothing here.
     if (this.left) return;
+    // A line that is not a declaration has no price to ask for: nothing is sent for it.
+    const priceLine: string | null = costLine_derive(line);
+    if (priceLine === null) return;
     this.timers.timeout_set('cost', 100, (): void => {
       this.costAsked += 1;
       const asked: number = this.costAsked;
-      void this.hooks.ask(costLine_derive(line)).then((answer: QuietAnswer): void => {
+      void this.hooks.ask(priceLine).then((answer: QuietAnswer): void => {
         // A price for an earlier ask, or one that comes back to a screen that has been left, draws nothing.
         if (this.price_stale(asked)) return;
         const model = model_extract(answer, STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
@@ -2184,7 +2187,9 @@ export class ScriptScreen {
     this.runsCost = { key, row: null };
     let line: string = step.lines[0]?.text ?? '';
     for (const [word, value] of [['--vcpu', runs.vcpu], ['--memory', runs.memory], ['--disk', runs.disk], ['--data', runs.data]] as const) if (value !== null) line = lineOption_set(line, word, String(value));
-    void this.hooks.ask(costLine_derive(line)).then((answer: QuietAnswer): void => {
+    const priceLine: string | null = costLine_derive(line);
+    if (priceLine === null) return;
+    void this.hooks.ask(priceLine).then((answer: QuietAnswer): void => {
       if (this.runsCost?.key !== key) return;
       const model = model_extract(answer, STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
       // Only the parts that stand bill: a machine torn down is priced at nothing, its kept data at its own.
