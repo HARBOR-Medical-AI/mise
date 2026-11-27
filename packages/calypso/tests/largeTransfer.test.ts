@@ -48,9 +48,11 @@ const base: HostedEngine = {
   line_complete: async (prefix: string) => ({ candidates: [], prefix }),
 };
 
+/** The most a download may ever have in hand ahead of its reader, whatever the file's size. */
+const READ_AHEAD_MAX_MIB: number = 24;
+
 describe('a large download', () => {
-  it('streams: the bytes are right, nothing is read whole, and the daemon never runs far ahead of the reader', async () => {
-    const SIZE: number = 192;
+  it.each([32, 128, 256])('of %d MiB streams: the bytes are right, nothing is read whole, and the read-ahead stays under one fixed bound', async (SIZE: number) => {
     let file: ReturnType<typeof file_make> | null = null;
     const whole: string[] = [];
     const daemon: CalypsoDaemon = new CalypsoDaemon({
@@ -67,14 +69,14 @@ describe('a large download', () => {
       for (let at = 0; at < SIZE; at++) expected.update(piece_make(at));
       const got = createHash('sha256');
       let received: number = 0;
-      /** The furthest the source ever was ahead of what the reader had taken, in mebibytes. */
-      let furthestAhead: number = 0;
+      /** The read-ahead: the furthest the source ever was ahead of what the reader had taken, in mebibytes. */
+      let readAhead: number = 0;
       const status: number = await new Promise<number>((resolve, reject) => {
         const request: ClientRequest = httpRequest({ hostname: '127.0.0.1', port, path: `/vfs?path=${encodeURIComponent('/home/demo/big.bin')}&token=${TOKEN}&download=1` }, (response: IncomingMessage): void => {
           response.on('data', (chunk: Buffer): void => {
             got.update(chunk);
             received += chunk.length;
-            furthestAhead = Math.max(furthestAhead, (file?.made() ?? 0) - received / MIB);
+            readAhead = Math.max(readAhead, (file?.made() ?? 0) - received / MIB);
             // A reader slower than the source: every so often it stops taking for a moment.
             if (received % (16 * MIB) < chunk.length) { response.pause(); setTimeout((): void => { response.resume(); }, 5); }
           });
@@ -89,23 +91,20 @@ describe('a large download', () => {
       expect(got.digest('hex')).toBe(expected.digest('hex'));
       // Never read whole.
       expect(whole).toEqual([]);
-      // The source was asked for bytes as the reader took them: at no time was it more than a small part of
-      // the file ahead. A daemon that gathered the file before sending it would have been the whole file ahead.
-      // That distance is what was in hand for the transfer at its worst (in the daemon, in the socket's
-      // buffers, on the wire): it is the measure of what the transfer held, and it does not grow with the
-      // file. (The process's own memory figures are not used: they count buffers already let go and not yet
-      // collected, the test's own included.)
-      expect(furthestAhead).toBeLessThan(SIZE / 4);
+      // The read-ahead is what was in hand for the transfer at its worst (in the daemon, in the socket's
+      // buffers, on the wire). One bound holds for every size: it does not grow with the file. A daemon that
+      // gathered the file before sending it would have had the whole file in hand.
+      expect(readAhead).toBeLessThan(READ_AHEAD_MAX_MIB);
     } finally {
       await daemon.stop();
     }
-  }, 60_000);
+  }, 120_000);
 });
 
 interface Answer { status: number; body: string }
 
-/** Posts a body of a stated length; `cut` ends the connection after so many bytes are sent. */
-function upload_post(port: number, name: string, length: number, how: { send?: number; cut?: boolean } = {}): Promise<Answer | 'cut'> {
+/** Posts a body of a stated length; `send` sends only so many of its bytes; `cut` then drops the connection, after `cutWhen` when given. */
+function upload_post(port: number, name: string, length: number, how: { send?: number; cut?: boolean; cutWhen?: () => Promise<void> } = {}): Promise<Answer | 'cut'> {
   return new Promise((resolve, reject) => {
     const request: ClientRequest = httpRequest({ hostname: '127.0.0.1', port, path: `/vfs?path=${encodeURIComponent(`/home/demo/${name}`)}&token=${TOKEN}`, method: 'POST', headers: { 'content-length': length } }, (response: IncomingMessage): void => {
       const chunks: Buffer[] = [];
@@ -121,7 +120,9 @@ function upload_post(port: number, name: string, length: number, how: { send?: n
         sent += size;
         if (!request.write(Buffer.alloc(size, 7))) { request.once('drain', more); return; }
       }
-      if (how.cut === true) request.destroy(); else request.end();
+      // Cut once what the test waits for has been seen (the bytes reserved), or at once.
+      if (how.cut === true) void (how.cutWhen?.() ?? Promise.resolve()).then((): void => { request.destroy(); });
+      else request.end();
     };
     if (send === 0 && how.cut !== true) request.end(); else more();
   });
@@ -134,16 +135,25 @@ describe('a large upload', () => {
   let port: number;
   let written: Array<{ path: string; bytes: number }>;
   let failing: boolean;
+  /** Writes held open by the test, each ended by calling its entry. */
+  let waiting: Array<() => void>;
+  let gated: boolean;
   const held = (): number => (daemon as unknown as { uploads: { held: number } }).uploads.held;
-  const settled = async (): Promise<void> => { for (let i = 0; i < 200 && held() !== 0; i++) await new Promise<void>((resolve) => { setTimeout(resolve, 10); }); };
+  const held_await = async (bytes: number): Promise<void> => {
+    for (let i = 0; i < 400 && held() !== bytes; i++) await new Promise<void>((resolve) => { setTimeout(resolve, 10); });
+    expect(held()).toBe(bytes);
+  };
 
   beforeEach(async () => {
     written = [];
     failing = false;
+    waiting = [];
+    gated = false;
     daemon = new CalypsoDaemon({
       engine: {
         ...base,
         file_write: async (filePath: string, bytes: Buffer): Promise<void> => {
+          if (gated) await new Promise<void>((resolve) => { waiting.push(resolve); });
           if (failing) throw new Error('CUBE refused the upload');
           written.push({ path: filePath, bytes: bytes.length });
         },
@@ -153,50 +163,67 @@ describe('a large upload', () => {
     });
     port = await daemon.start();
   });
-  afterEach(async () => { await daemon.stop(); });
+  afterEach(async () => {
+    for (const end of waiting) end();
+    await daemon.stop();
+  });
 
   it('a body as large as the ceiling is reserved whole, lands whole, and is given back', async () => {
-    const landed = await upload_post(port, 'big.bin', SIZE);
-    expect(landed).toMatchObject({ status: 200 });
+    gated = true;
+    const landing = upload_post(port, 'big.bin', SIZE);
+    // The whole of it is reserved, and stays reserved while CUBE takes it.
+    await held_await(SIZE);
+    for (let i = 0; i < 400 && waiting.length === 0; i++) await new Promise<void>((resolve) => { setTimeout(resolve, 10); });
+    expect(held()).toBe(SIZE);
+    gated = false;
+    waiting[0]?.();
+    expect(await landing).toMatchObject({ status: 200 });
     expect(written).toEqual([{ path: '/home/demo/big.bin', bytes: SIZE }]);
-    await settled();
-    expect(held()).toBe(0);
+    await held_await(0);
     // Given back in full: the same again fits.
     expect(await upload_post(port, 'again.bin', SIZE)).toMatchObject({ status: 200 });
-    await settled();
-    expect(held()).toBe(0);
-  }, 60_000);
+    await held_await(0);
+  }, 120_000);
 
-  it('one byte more than the ceiling does not fit, and is told so before it is read', async () => {
-    const refused = await upload_post(port, 'over.bin', SIZE + 1, { send: 0, cut: false }).catch((): 'cut' => 'cut');
-    expect(refused === 'cut' || (refused as Answer).status === 503 || (refused as Answer).status === 413).toBe(true);
-    expect(written).toEqual([]);
-    expect(held()).toBe(0);
-  }, 60_000);
-
-  it('a length over the request\'s own limit is refused without a byte being taken', async () => {
-    const refused = await upload_post(port, 'huge.bin', VFS_POST_LIMIT + 1, { send: 0, cut: false }).catch((): 'cut' => 'cut');
-    expect(refused === 'cut' || (refused as Answer).status === 413).toBe(true);
-    expect(written).toEqual([]);
-    expect(held()).toBe(0);
-  }, 60_000);
+  it('while the ceiling is held, one more byte is told to come back (503); a length over the request\'s own limit is refused outright (413)', async () => {
+    gated = true;
+    const landing = upload_post(port, 'big.bin', SIZE);
+    await held_await(SIZE);
+    // The session holds as many uploaded bytes as it may.
+    const noRoom = await upload_post(port, 'one.bin', 1);
+    expect(noRoom).toMatchObject({ status: 503 });
+    // A length no request may have, whatever is held.
+    const tooLarge = await upload_post(port, 'huge.bin', VFS_POST_LIMIT + 1, { send: 0 });
+    expect(tooLarge).toMatchObject({ status: 413 });
+    expect(held()).toBe(SIZE);
+    gated = false;
+    for (let i = 0; i < 400 && waiting.length === 0; i++) await new Promise<void>((resolve) => { setTimeout(resolve, 10); });
+    waiting[0]?.();
+    expect(await landing).toMatchObject({ status: 200 });
+    await held_await(0);
+    expect(written).toEqual([{ path: '/home/demo/big.bin', bytes: SIZE }]);
+  }, 120_000);
 
   it('an upload that fails at CUBE gives its bytes back', async () => {
+    gated = true;
     failing = true;
-    const failed = await upload_post(port, 'big.bin', SIZE);
-    expect((failed as Answer).status).toBeGreaterThanOrEqual(400);
-    await settled();
-    expect(held()).toBe(0);
+    const failed = upload_post(port, 'big.bin', SIZE);
+    await held_await(SIZE);
+    for (let i = 0; i < 400 && waiting.length === 0; i++) await new Promise<void>((resolve) => { setTimeout(resolve, 10); });
+    waiting[0]?.();
+    expect(((await failed) as Answer).status).toBeGreaterThanOrEqual(400);
+    await held_await(0);
+    gated = false;
     failing = false;
     expect(await upload_post(port, 'big.bin', SIZE)).toMatchObject({ status: 200 });
-  }, 60_000);
+  }, 120_000);
 
   it('an upload abandoned part way (the connection dropped) gives its bytes back, and nothing of it is written', async () => {
-    expect(await upload_post(port, 'half.bin', SIZE, { send: SIZE / 2, cut: true })).toBe('cut');
-    await settled();
-    expect(held()).toBe(0);
+    const abandoned = upload_post(port, 'half.bin', SIZE, { send: SIZE / 2, cut: true, cutWhen: (): Promise<void> => held_await(SIZE) });
+    expect(await abandoned).toBe('cut');
+    await held_await(0);
     expect(written).toEqual([]);
     // The room is there again for a whole one.
     expect(await upload_post(port, 'whole.bin', SIZE)).toMatchObject({ status: 200 });
-  }, 60_000);
+  }, 120_000);
 });

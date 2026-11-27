@@ -4309,6 +4309,88 @@ try {
     JSON.stringify({ lines: dl.lines, handed }));
   }
 
+  if (await stage('large-transfer')) {
+  // A large file up and down again through the page: the bytes are the same bytes, and the page answers a
+  // press while each is in flight. The file is made here (so many mebibytes of a pattern), goes into a
+  // folder of this run's own under the session's home, and the folder is removed at the end. The size is
+  // SMOKE_TRANSFER_MIB (24 unless set): large beside what the other stages move, small beside the upload
+  // limit, since it is written to a real CUBE.
+  const transferMib = Math.max(1, Number(process.env.SMOKE_TRANSFER_MIB ?? '24') || 24);
+  const transferDir = `smoke-transfer-${Date.now()}`;
+  await evalIn(`
+    window.__argusHandoffs = [];
+    if (!window.__argusHandoffWrapped) {
+      window.__argusHandoffWrapped = true;
+      const press = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () {
+        if (this.download) { window.__argusHandoffs.push({ name: this.download, href: this.href, text: '(not read as text)' }); return; }
+        return press.call(this);
+      };
+    }
+    return true;`);
+  const moved = await evalIn(`
+    const MIB = 1024 * 1024;
+    const size = ${transferMib} * MIB;
+    const hex = (buffer) => [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    const bytes = new Uint8Array(size);
+    for (let at = 0; at < size; at += 4096) bytes[at] = (at / 4096) % 251;
+    bytes[size - 1] = 7;
+    const sent = hex(await crypto.subtle.digest('SHA-256', bytes));
+    document.getElementById('gutter-files').click(); await sleep(800);
+    const fp = () => [...document.querySelectorAll('.pane-files')].find(p => p.offsetParent !== null);
+    const term = console_input();
+    const say = async (line, ms) => { term.value = line;
+      term.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await sleep(ms); await console_settled(); };
+    const named = (n) => [...fp().querySelectorAll('.files-row')].find(r => r.querySelector('.files-name')?.textContent.trim() === n);
+    const click = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const settle = async (want, tries = 360) => { for (let i = 0; i < tries; i++) { await sleep(500); if (want()) return true; } return false; };
+    // A press while a transfer is in flight: the console lid, there and back, each within a second.
+    const lid_answers = async () => {
+      const drawer = document.getElementById('drawer'); const toggle = document.getElementById('drawer-toggle');
+      const before = drawer.classList.contains('drawer-closed');
+      const began = performance.now();
+      toggle.click(); await sleep(60);
+      const flipped = drawer.classList.contains('drawer-closed') !== before;
+      toggle.click(); await sleep(60);
+      return flipped && drawer.classList.contains('drawer-closed') === before && performance.now() - began < 1000;
+    };
+    await say('mkdir -p ~/${transferDir}', 2500);
+    await say('cd ~/${transferDir}', 2500);
+    await settle(() => (window.__argusPromptContext?.cwd ?? '').endsWith('/${transferDir}'), 40);
+    const chooser = fp().querySelector('.files-upload-input');
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes], 'large.bin', { type: 'application/octet-stream' }));
+    chooser.files = dt.files;
+    chooser.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(150);
+    const upInFlight = named('large.bin') === undefined;
+    const upAnswered = await lid_answers();
+    const uploaded = await settle(() => named('large.bin'));
+    click(named('large.bin')); await sleep(700);
+    const verb = [...fp().querySelectorAll('.files-row-zone .listing-action')].find(b => b.textContent.trim() === 'DOWNLOAD') ?? null;
+    if (verb !== null) verb.click();
+    await sleep(150);
+    const downInFlight = (window.__argusHandoffs ?? []).length === 0;
+    const downAnswered = await lid_answers();
+    const handedOver = await settle(() => (window.__argusHandoffs ?? []).length > 0);
+    const handoff = (window.__argusHandoffs ?? [])[0] ?? null;
+    let got = null; let gotSize = -1;
+    if (handoff !== null) {
+      const back = await (await fetch(handoff.href)).arrayBuffer();
+      gotSize = back.byteLength;
+      got = hex(await crypto.subtle.digest('SHA-256', back));
+    }
+    await say('cd ~', 2500);
+    await say('rm -r ~/${transferDir}', 6000);
+    return { size, sent, got, gotSize, uploaded: Boolean(uploaded), pressed: verb !== null, handedOver, name: handoff?.name ?? null, upInFlight, upAnswered, downInFlight, downAnswered };`);
+  check(`a ${transferMib} MiB file goes up through the page and comes down the same bytes`,
+    moved.uploaded && moved.pressed && moved.handedOver && moved.name === 'large.bin' && moved.gotSize === moved.size && moved.got === moved.sent,
+    JSON.stringify({ ...moved, sent: moved.sent?.slice(0, 12), got: moved.got?.slice(0, 12) }));
+  check('the page answers a press while the upload is in flight, and while the download is',
+    moved.upAnswered && moved.downAnswered, JSON.stringify({ upInFlight: moved.upInFlight, upAnswered: moved.upAnswered, downInFlight: moved.downInFlight, downAnswered: moved.downAnswered }));
+  if (!moved.upInFlight || !moved.downInFlight) console.log(`  note: ${!moved.upInFlight ? 'the upload' : ''}${!moved.upInFlight && !moved.downInFlight ? ' and ' : ''}${!moved.downInFlight ? 'the download' : ''} had already ended when the press was made; raise SMOKE_TRANSFER_MIB to press mid-flight`);
+  }
+
   if (await stage('file-kinds')) {
   // The byte route serves a file as nothing a browser would run: every file
   // says nosniff, a page or a script is plain bytes to save, and an SVG or a

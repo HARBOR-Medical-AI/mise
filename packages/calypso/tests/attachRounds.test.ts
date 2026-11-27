@@ -201,8 +201,12 @@ describe('attach and detach, many times', () => {
     }
   });
 
+  /** The terminals the store holds, and each one's clock: armed while nobody watches it. */
+  const book_of = (store: Terminals): Map<string, { idle: unknown; viewer: unknown }> => (store as unknown as { terminals: Map<string, { idle: unknown; viewer: unknown }> }).terminals;
+
   it('a terminal outlives its viewer on purpose: detached it stays for a reattach, is the same one when reattached, and closed leaves the baseline', async () => {
     const detached: Measure = measure_take(daemon, engine);
+    expect(book_of(terminals).size).toBe(0);
     let terminalId: string = '';
     for (let round = 0; round < 8; round++) {
       const ws: WebSocket = await attach(port);
@@ -213,12 +217,18 @@ describe('attach and detach, many times', () => {
       if (terminalId === '') terminalId = String(answer['terminalId']);
       expect(answer['terminalId']).toBe(terminalId);
       expect(ptys.all).toHaveLength(1);
+      // Watched: one terminal, and its clock is not running.
+      expect(book_of(terminals).size).toBe(1);
+      expect(book_of(terminals).get(terminalId)?.idle).toBeNull();
       await detach(ws, daemon, 0);
       await new Promise<void>((resolve) => { setTimeout(resolve, 10); });
       // Everything of the viewer and its socket is gone; the terminal, and the timer that would end it, are still there.
       expect(measure_take(daemon, engine)).toEqual(detached);
       expect(ptys.alive()).toBe(1);
       expect(terminals.viewer_get(terminalId)).toBeNull();
+      // Still one terminal, and the detach armed the clock that will end it if nobody comes back.
+      expect(book_of(terminals).size).toBe(1);
+      expect(book_of(terminals).get(terminalId)?.idle).not.toBeNull();
     }
     // Reattached once more and closed: nothing of it is left.
     const last: WebSocket = await attach(port);
@@ -232,5 +242,26 @@ describe('attach and detach, many times', () => {
     await new Promise<void>((resolve) => { setTimeout(resolve, 10); });
     expect(measure_take(daemon, engine)).toEqual(detached);
     expect(ptys.all).toHaveLength(1);
+    expect(book_of(terminals).size).toBe(0);
+  });
+
+  it('a terminal nobody comes back to ends when its time is up, and the count of terminals is back at none', async () => {
+    const brief: Terminals = new Terminals({ spawn: ptys.spawn, launch: { exec: '/usr/bin/node', prefixArgs: ['/opt/chell/index.js'] }, target: { identity: 'someone@cube', url: 'ws://127.0.0.1:1', token: 'tok' }, idleMs: 60 });
+    daemon.terminals_set(brief);
+    const detached: Measure = measure_take(daemon, engine);
+    const ws: WebSocket = await attach(port);
+    const opened = message_wait(ws, 'terminalOpened');
+    send(ws, { type: 'terminalOpen', cols: 80, rows: 24 });
+    const terminalId: string = String((await opened)['terminalId']);
+    expect(book_of(brief).size).toBe(1);
+    await detach(ws, daemon, 0);
+    await new Promise<void>((resolve) => { setTimeout(resolve, 10); });
+    // Detached: still there, its clock armed by the socket's close.
+    expect(book_of(brief).get(terminalId)?.idle).not.toBeNull();
+    for (let waited = 0; waited < 100 && book_of(brief).size !== 0; waited++) await new Promise<void>((resolve) => { setTimeout(resolve, 10); });
+    expect(book_of(brief).size).toBe(0);
+    expect(ptys.alive()).toBe(0);
+    expect(measure_take(daemon, engine)).toEqual(detached);
+    brief.stop();
   });
 });
