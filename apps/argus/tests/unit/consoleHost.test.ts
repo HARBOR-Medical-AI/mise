@@ -80,7 +80,7 @@ describe('argusHost_build', () => {
     const { host, lines } = host_make(['files', 'view-3', 'files-2'], tree, { 'files-2': 'files' });
     expect(host.file_delete('files')).toBe(false);
     expect(lines).toEqual([]);
-    expect(host.desktop_serialize()).toBe(['view files', 'pane %1 bind viewer', 'pane %1 split right', 'pane %2 bind fs', 'pane %2 split below'].join('\n'));
+    expect(host.desktop_serialize()).toBe(['# lines: quoted', 'view files', 'pane %1 bind viewer', 'pane %1 split right', 'pane %2 bind fs', 'pane %2 split below'].join('\n'));
     const empty = host_make([], null);
     expect(empty.host.desktop_serialize()).toBe('# empty desktop');
   });

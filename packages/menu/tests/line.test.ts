@@ -2,7 +2,7 @@
  * @file A value written into a line comes back as one word, as it was.
  */
 import { describe, it, expect } from '@jest/globals';
-import { arg_quote, home_path, line_split, path_quote, path_write, script_lines, word_write } from '../src/line.js';
+import { arg_quote, home_path, line_split, path_quote, line_tokens, path_write, script_commands, script_lines, word_write } from '../src/line.js';
 
 /** Values that are grammar to a shell when left bare. */
 const HOSTILE: string[] = [
@@ -88,5 +88,26 @@ describe('script_lines', () => {
   it('round-trips every hostile value through a script of several lines', () => {
     const script: string = HOSTILE.map((value: string): string => `put ${arg_quote(value)}`).join('\n');
     expect(script_lines(script).map((line: string): string[] | null => line_split(line))).toEqual(HOSTILE.map((value: string): string[] => ['put', value]));
+  });
+});
+
+describe('comments, commands and tokens', () => {
+  it('a comment ends at its own newline: a quote mark in it opens nothing, and the command after it stands', () => {
+    expect(script_lines("# it's a note\nfile open /a\n# and \"another\nfile open /b")).toEqual(["# it's a note", 'file open /a', '# and "another', 'file open /b']);
+    expect(script_commands("  # it's a note\nfile open /a\n\n# and \"another\n  file open /b  \n")).toEqual(['file open /a', 'file open /b']);
+  });
+
+  it('a blank line, an indent or a # inside a quoted value is part of the value, and comes back', () => {
+    const folder: string = '/home/u/one\n\n   # not a comment\n  two';
+    const script: string = `# note\n\nfile open ${arg_quote(folder)}\nview runs\n`;
+    expect(script_commands(script)).toEqual([`file open ${arg_quote(folder)}`, 'view runs']);
+    expect(line_split(script_commands(script)[0] ?? '')).toEqual(['file', 'open', folder]);
+  });
+
+  it('a line\'s tokens are its words as written, and read back to the same values', () => {
+    const line: string = "vm new 'O'\\''Brien'  --note '$x' --n 3";
+    expect(line_tokens(line)).toEqual(['vm', 'new', "'O'\\''Brien'", '--note', "'$x'", '--n', '3']);
+    expect((line_tokens(line) ?? []).map((token: string): string => line_split(token)?.[0] ?? '')).toEqual(line_split(line));
+    expect(line_tokens("open 'never closed")).toBeNull();
   });
 });

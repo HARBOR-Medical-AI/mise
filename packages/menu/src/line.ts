@@ -19,7 +19,7 @@
  * Key components:
  * - arg_quote, path_quote: a value, or a path, always quoted.
  * - word_write, path_write, home_path: the same for a line an operator reads, bare when plain.
- * - line_split, script_lines: such a line, and a script of them, read back.
+ * - line_split, line_tokens, script_lines, script_commands: such a line, and a script of them, read back.
  *
  * Typical usage:
  * ```ts
@@ -180,27 +180,72 @@ export function line_split(line: string): string[] | null {
  */
 export function script_lines(script: string): string[] {
   const lines: string[] = [];
-  let line: string = '';
-  let quote: '\'' | '"' | null = null;
-  for (let at = 0; at < script.length; at++) {
-    const char: string = script.charAt(at);
-    if (quote === null && char === '\n') {
-      lines.push(line);
-      line = '';
-      continue;
-    }
-    line += char;
-    if (quote === '\'') {
-      if (char === '\'') quote = null;
-    } else if (quote === '"') {
-      if (char === '"') quote = null;
-      else if (char === '\\' && at + 1 < script.length) line += script.charAt(++at);
-    } else if (char === '\'' || char === '"') {
-      quote = char;
-    } else if (char === '\\' && at + 1 < script.length) {
-      line += script.charAt(++at);
-    }
+  let at: number = 0;
+  while (at <= script.length) {
+    const end: number = lineEnd_find(script, at);
+    lines.push(script.slice(at, end));
+    at = end + 1;
   }
-  lines.push(line);
   return lines;
+}
+
+/**
+ * Where the line that begins at a place ends: at the next newline outside
+ * quotes. A comment (a line whose first character after any indent is `#`)
+ * ends at its own newline whatever it holds: a quote mark in a comment
+ * opens nothing.
+ *
+ * @param script - The script.
+ * @param start - Where the line begins.
+ * @returns The index of the newline that ends it, or the script's length.
+ */
+function lineEnd_find(script: string, start: number): number {
+  const physical: number = script.indexOf('\n', start);
+  const physicalEnd: number = physical === -1 ? script.length : physical;
+  if (script.slice(start, physicalEnd).trimStart().startsWith('#')) return physicalEnd;
+  let quote: string | null = null;
+  for (let at = start; at < script.length; at++) {
+    const char: string = script.charAt(at);
+    if (quote === null && char === '\n') return at;
+    if (char === '\\' && quote !== '\'') at++;
+    else if (quote !== null) quote = char === quote ? null : quote;
+    else if (char === '\'' || char === '"') quote = char;
+  }
+  return script.length;
+}
+
+/**
+ * The commands of a script: its lines as `script_lines` cuts them, each
+ * without the space around it, and without the blank lines and the comments
+ * between commands. A blank line or a `#` inside a quoted value is part of
+ * that value and stays.
+ *
+ * @param script - The script's text.
+ * @returns Its commands, as written.
+ *
+ * @example
+ * ```typescript
+ * script_commands("# a note\n\nfile open 'a\n\n#b'\n"); // ["file open 'a\n\n#b'"]
+ * ```
+ */
+export function script_commands(script: string): string[] {
+  return script_lines(script).map((line: string): string => line.trim()).filter((line: string): boolean => line !== '' && !line.startsWith('#'));
+}
+
+/**
+ * A line's words as they stand in it, quotes and escapes kept: what
+ * `line_split` reads, before it is read. A word that is not being changed
+ * can be put back exactly as its author spelled it.
+ *
+ * @param line - The line.
+ * @returns Its words, as written; null when a quote is left open.
+ *
+ * @example
+ * ```typescript
+ * line_tokens("vm new 'O'\\''Brien' --note '$x'"); // ['vm', 'new', "'O'\\''Brien'", '--note', "'$x'"]
+ * ```
+ */
+export function line_tokens(line: string): string[] | null {
+  if (line.replace(WORD, '').trim() !== '') return null;
+  return line.match(WORD) ?? [];
 }

@@ -6,12 +6,7 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import type { VmLimitsModel } from '@fnndsc/menu';
-import {
-  buildWould_derive, ports_word,
-  askForm_derive, costLine_derive, counts_words, duration_words, line_parse, line_render, lineOption_get, lineOption_set, lines_build, memoryRange_derive,
-  rate_words, rates_sum, runningStep_find, scriptName_derive, scriptSource_derive, stepBuildLine_get, stepKind_derive, stepKind_isTask, stepLabel_derive, steps_build, states_count, userLine_build,
-  vmLevers_read, vmSliders_build, words_split, workingCopy_derive, script_render, type ScriptStep,
-} from '../../src/features/script/model.js';
+import { buildWould_derive, ports_word, askForm_derive, costLine_derive, counts_words, duration_words, line_parse, line_render, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum, runningStep_find, scriptName_derive, scriptSource_derive, stepBuildLine_get, stepKind_derive, stepKind_isTask, stepLabel_derive, steps_build, states_count, userLine_build, vmLevers_read, vmSliders_build, words_split, workingCopy_derive, script_render, type ScriptStep } from '../../src/features/script/model.js';
 
 const STORE: string = [
   '# the store',
@@ -166,5 +161,31 @@ describe('what BUILD would do against what runs', () => {
     expect(buildWould_derive(vmLevers_read(line('')), { vcpu: null, memory: null, disk: null, data: null })[0]?.change).toBe('the machine and its data made: 2 vCPU · 8 GiB · disk 50 GB · data 50 GB');
     // A part the tenancy was not read for is not compared.
     expect(buildWould_derive(vmLevers_read(line('--os ubuntu-24.04')), { ...RUNS, os: null })).toEqual([]);
+  });
+});
+
+describe('an option set on a line leaves the line\'s other words as their author spelled them', () => {
+  const line: string = "chris user add 'O'\\''Brien' --note '$name' --email ob@example.org";
+
+  it('reads an apostrophe written closed, escaped and opened again as one apostrophe', () => {
+    expect(words_split(line)).toEqual(['chris', 'user', 'add', "O'Brien", '--note', '$name', '--email', 'ob@example.org']);
+    expect(lineOption_get(line, '--note')).toBe('$name');
+  });
+
+  it('two fields changed one after the other: the name keeps its apostrophe and the quoted literal stays quoted', () => {
+    const first: string = lineOption_set(line, '--email', 'o.brien@example.org');
+    expect(first).toBe("chris user add 'O'\\''Brien' --note '$name' --email o.brien@example.org");
+    const second: string = lineOption_set(first, '--groups', 'pacs users');
+    expect(second).toBe("chris user add 'O'\\''Brien' --note '$name' --email o.brien@example.org --groups 'pacs users'");
+    expect(words_split(second)).toEqual(['chris', 'user', 'add', "O'Brien", '--note', '$name', '--email', 'o.brien@example.org', '--groups', 'pacs users']);
+    // The literal's own option changed: only then is it written anew.
+    expect(lineOption_set(second, '--note', "it's")).toBe("chris user add 'O'\\''Brien' --note 'it'\\''s' --email o.brien@example.org --groups 'pacs users'");
+    // And taken away, with its value.
+    expect(lineOption_set(second, '--note', '')).toBe("chris user add 'O'\\''Brien' --email o.brien@example.org --groups 'pacs users'");
+  });
+
+  it('an option with no value gains one in place, and a value that is itself written like an option is its value', () => {
+    expect(lineOption_set('vm new store --public --cidr 10.0.0.0/16', '--public', 'yes')).toBe('vm new store --public yes --cidr 10.0.0.0/16');
+    expect(lineOption_set("vm new store --note '--not-an-option' --n 1", '--note', 'x')).toBe('vm new store --note x --n 1');
   });
 });

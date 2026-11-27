@@ -92,6 +92,44 @@ export function template_read(text, start) {
 }
 
 /**
+ * Finds the templates among a call's arguments, at any depth short of a
+ * nested function's body: from just after the call's opening parenthesis to
+ * the parenthesis that closes it.
+ *
+ * @param {string} text - The source.
+ * @param {number} start - Just after the call's `(`.
+ * @returns {Array<{ tick: number, read: { parts: Array<{ expr: string, before: string, after: string }>, end: number } }>} Each template, with where it begins.
+ */
+export function templates_find(text, start) {
+  const found = [];
+  let depth = 1;
+  let at = start;
+  while (at < text.length && depth > 0) {
+    const char = text[at];
+    if (char === '`') {
+      const read = template_read(text, at);
+      if (read === null) break;
+      found.push({ tick: at, read });
+      at = read.end + 1;
+      continue;
+    }
+    if (char === '\'' || char === '"') {
+      at++;
+      while (at < text.length && text[at] !== char) at += text[at] === '\\' ? 2 : 1;
+    } else if (char === '(' || char === '[') {
+      depth++;
+    } else if (char === ')' || char === ']') {
+      depth--;
+    } else if (char === '{' || (char === '=' && text[at + 1] === '>')) {
+      // An object of options, or a function given as an argument: not the line.
+      break;
+    }
+    at++;
+  }
+  return found;
+}
+
+/**
  * Judges one interpolation of a line.
  *
  * @param {{ expr: string, before: string, after: string }} part - The interpolation and the text around it.
@@ -119,23 +157,23 @@ export function part_judge(part) {
 export function lines_check(root, grammar) {
   const faults = [];
   const seen = new Set();
-  const call = new RegExp(`\\b(?:${RUNNERS.join('|')})\\(\\s*(?:[A-Za-z_.]+,\\s*)?(?:[A-Za-z_]+,\\s*)?\``, 'g');
+  const call = new RegExp(`\\b(?:${RUNNERS.join('|')})\\(`, 'g');
   const dir = join(root, 'apps/argus/src');
   for (const file of existsSync(dir) ? sources_list(dir) : []) {
     const text = readFileSync(file, 'utf8');
     const name = relative(root, file);
     for (const match of text.matchAll(call)) {
-      const tick = match.index + match[0].length - 1;
-      const read = template_read(text, tick);
-      if (read === null) continue;
-      const line = text.slice(0, match.index).split('\n').length;
-      for (const part of read.parts) {
-        const how = part_judge(part);
-        if (how === 'quoted') faults.push(`${name}:${line}  \${${part.expr}} stands between quotes written by hand: write it with arg_quote, path_quote or word_write`);
-        if (how !== 'whole') continue;
-        const key = `${name}\t${part.expr}`;
-        if ((grammar[name] ?? []).includes(part.expr)) seen.add(key);
-        else faults.push(`${name}:${line}  \${${part.expr}} is a whole word of a line and is written by none of ${WRITERS.join(', ')}: quote it, or name it in scripts/line-grammar.json if it is grammar that is meant`);
+      // Every template among the call's arguments: the line itself, and each branch of a line chosen by a condition.
+      for (const { tick, read } of templates_find(text, match.index + match[0].length)) {
+        const line = text.slice(0, tick).split('\n').length;
+        for (const part of read.parts) {
+          const how = part_judge(part);
+          if (how === 'quoted') faults.push(`${name}:${line}  \${${part.expr}} stands between quotes written by hand: write it with arg_quote, path_quote or word_write`);
+          if (how !== 'whole') continue;
+          const key = `${name}\t${part.expr}`;
+          if ((grammar[name] ?? []).includes(part.expr)) seen.add(key);
+          else faults.push(`${name}:${line}  \${${part.expr}} is a whole word of a line and is written by none of ${WRITERS.join(', ')}: quote it, or name it in scripts/line-grammar.json if it is grammar that is meant`);
+        }
       }
     }
   }

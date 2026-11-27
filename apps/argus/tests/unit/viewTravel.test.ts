@@ -8,7 +8,7 @@
 import { describe, it, expect } from '@jest/globals';
 import { path_write } from '@fnndsc/menu';
 import { viewLine_refusal, viewScript_run, type ArgusHost } from '../../src/console/argusLang.js';
-import { viewLink_compose, viewLink_parse, viewSheet_ask } from '../../src/app/shareView.js';
+import { viewLink_compose, viewLink_parse, viewScript_compose, viewSheet_ask, VIEW_QUOTED_MARK } from '../../src/app/shareView.js';
 
 describe('viewLine_refusal', () => {
   it('lets a view through: panes, folders shown, a graph\'s view, the baseline', () => {
@@ -66,7 +66,7 @@ describe('a view\'s line is split once, quotes honoured', () => {
 
   it('a folder with spaces, quotes and a newline in its name opens as that one folder, through a script of several lines', async () => {
     const folders: string[] = ['/home/u/plain', '/home/u/two  words', "/home/u/it's \"q\" $HOME;rm", '/home/u/line one\nline two'];
-    const script: string = folders.map((folder: string): string => `file open ${path_write(folder)}`).join('\n');
+    const script: string = [VIEW_QUOTED_MARK, ...folders.map((folder: string): string => `file open ${path_write(folder)}`)].join('\n');
     const opened: string[] = [];
     const said: string = await viewScript_run(host_make(opened), script, null);
     expect(opened).toEqual(folders);
@@ -82,8 +82,47 @@ describe('a view\'s line is split once, quotes honoured', () => {
 
   it('a line with a quote left open stops the view there, and runs nothing after it', async () => {
     const opened: string[] = [];
-    const said: string = await viewScript_run(host_make(opened), "file open /a\nfile open '/b", null);
+    const said: string = await viewScript_run(host_make(opened), `${VIEW_QUOTED_MARK}\nfile open /a\nfile open '/b`, null);
     expect(opened).toEqual(['/a']);
     expect(said).toContain('stopped here');
+  });
+});
+
+describe('a view shared and replayed, and one kept before values were quoted', () => {
+  /** A host with one files pane, recording what a view opened there. */
+  function host_make(opened: string[]): ArgusHost {
+    return {
+      focused_get: (): string | null => 'files-1',
+      panes_shown: (): string[] => ['files-1'],
+      paneKind_get: (): string | null => 'files',
+      files_open: (_pane: string, path: string): boolean => { opened.push(path); return true; },
+      viewModes_hold: (): void => undefined,
+    } as unknown as ArgusHost;
+  }
+
+  it('SHARE then replay gives back the folder whole: a blank line, an indent, a # and spaces at either end of its name', async () => {
+    const folders: string[] = ['/home/u/one\n\n   # not a comment\n  two', ' /home/u/padded ', "/home/u/it's", '/home/u/plain'];
+    // The stage as the desktop serializes it: its mark, a comment of its own, and a files pane per folder.
+    const steps: string = [VIEW_QUOTED_MARK, "# the operator's note, with an apostrophe", '', ...folders.map((folder: string): string => `file open ${path_write(folder)}`)].join('\n');
+    const shared: string = viewScript_compose(steps);
+    expect(shared.split('\n')[1]).toBe(VIEW_QUOTED_MARK);
+    const opened: string[] = [];
+    const said: string = await viewScript_run({ ...host_make(opened), desktop_clear: (): string => 'cleared' } as unknown as ArgusHost, shared.split('\n').filter((line: string): boolean => line !== 'desktop clear').join('\n'), null);
+    expect(opened).toEqual(folders);
+    expect(said).not.toContain('stopped here');
+  });
+
+  it('a comment with an apostrophe in it swallows nothing: the command after it runs', async () => {
+    const opened: string[] = [];
+    await viewScript_run(host_make(opened), `${VIEW_QUOTED_MARK}\n# it's mine\nfile open /a\n# and "this\nfile open /b`, null);
+    expect(opened).toEqual(['/a', '/b']);
+  });
+
+  it('a desktop kept before values were quoted is read as it was written: an apostrophe in a folder\'s name, and its spaces, still open it', async () => {
+    const opened: string[] = [];
+    // No mark: the old serializer wrote the folder raw.
+    const said: string = await viewScript_run(host_make(opened), "# an older desktop\nfile open /home/u/O'Brien files\nfile open /home/u/it's a 'quoted' one", null);
+    expect(opened).toEqual(["/home/u/O'Brien files", "/home/u/it's a 'quoted' one"]);
+    expect(said).not.toContain('stopped here');
   });
 });

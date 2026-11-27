@@ -14,6 +14,7 @@
  *
  * @module
  */
+import { word_write } from '@fnndsc/menu';
 import type { CapacityModel, CapacityRow } from '@fnndsc/menu';
 import { Listing } from '../roster/listing.js';
 import type { ListingTrait } from '../roster/row.js';
@@ -127,7 +128,7 @@ export class CapacityPanel {
 
   /** Asks the session again, for one family or for every one it offers, and shows the answer. */
   public async family_ask(family: string): Promise<void> {
-    const model: CapacityModel | null = await this.hooks.ask(family === '' ? 'capacity' : `capacity ${family}`);
+    const model: CapacityModel | null = await this.hooks.ask(family === '' ? 'capacity' : `capacity ${word_write(family)}`);
     if (model !== null) this.model_show(model);
   }
 

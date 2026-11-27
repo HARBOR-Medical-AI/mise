@@ -9,7 +9,7 @@ import { describe, it, expect } from '@jest/globals';
 import { arg_quote, line_split as surface_split } from '@fnndsc/menu';
 import { args_tokenize } from '../../../../packages/brasa/src/lib/parser.js';
 import { editLine_compose, saveLine_compose } from '../../src/features/edit/line.js';
-import { runLine_compose, runLine_flagGet, runLine_flagSet, runLine_titleAppend } from '../../src/features/files/runLine.js';
+import { runLine_compose, runLine_executable, runLine_flagGet, runLine_flagSet, runLine_titleAppend } from '../../src/features/files/runLine.js';
 import { scriptWord_write } from '../../src/features/script/model.js';
 import { holderLine_format } from '../../src/app/access.js';
 import { tagLines_compose } from '../../src/app/tags.js';
@@ -55,6 +55,17 @@ describe('a line built from a value carries it as one word', () => {
     const typed: string = 'cd "/x y"; pl-x --prefix "old one"';
     expect(runLine_flagGet(typed, '--prefix')).toBe('old one');
     expect(runLine_flagSet(typed, '--n', '3')).toBe('cd "/x y"; pl-x --prefix "old one" --n 3');
+  });
+
+  it('the executable of a run line is its last command\'s first word, whatever the folder before it holds: a flag edited by hand is kept by RUN', () => {
+    for (const folder of ['/home/u/plain', '/home/u/line one\nline two', '/home/u/a;b', "/home/u/it's -- here"]) {
+      const edited: string = runLine_flagSet(runLine_compose(folder, 'pl-simpledsapp-v2.1.5'), '--prefix', 'mine-');
+      // RUN keeps the line the strip holds when its executable is the bound one (main.ts), and rebuilds it otherwise.
+      expect(runLine_executable(edited)).toBe('pl-simpledsapp-v2.1.5');
+      expect(runLine_flagGet(edited, '--prefix')).toBe('mine-');
+    }
+    expect(runLine_executable('')).toBe('');
+    expect(runLine_executable('pl-x --n 1 -- feed_title=T')).toBe('pl-x');
   });
 
   it('a holder withdrawn, and a tag set', () => {

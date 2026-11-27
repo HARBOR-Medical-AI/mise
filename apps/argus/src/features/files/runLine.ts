@@ -23,6 +23,8 @@ interface RunLineParts {
   head: string;
   args: string;
   tail: string;
+  /** The last command's first word. */
+  executable: string;
 }
 
 /** The kernel's context delimiter, as it stands on a line. */
@@ -76,7 +78,7 @@ function runLine_split(line: string): RunLineParts {
   const command: string = before.slice(commandStart);
   const exe: RegExpExecArray | null = /^\s*\S+/.exec(command);
   const headEnd: number = commandStart + (exe === null ? command.length : exe[0].length);
-  return { head: before.slice(0, headEnd), args: before.slice(headEnd), tail };
+  return { head: before.slice(0, headEnd), args: before.slice(headEnd), tail, executable: (exe?.[0] ?? '').trim() };
 }
 
 /**
@@ -203,7 +205,7 @@ export function runLine_titleAppend(line: string, title: string): string {
  * @returns The executable, or '' when the line has none.
  */
 export function runLine_executable(line: string): string {
-  return runLine_split(line).head.replace(/^.*;\s*/, '').trim();
+  return runLine_split(line).executable;
 }
 
 /**

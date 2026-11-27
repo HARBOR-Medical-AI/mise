@@ -17,7 +17,8 @@
   ],
   "apps/argus/src/features/dag/panel.ts": [
     "this.shownFeedId",
-    "feedID"
+    "feedID",
+    "feedIds.map((id: number): string => `feed_${id}`).join(' ')"
   ],
   "apps/argus/src/features/gather/panel.ts": [
     "paths"

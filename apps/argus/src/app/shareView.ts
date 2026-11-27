@@ -11,7 +11,16 @@
  *
  * @module
  */
+import { script_commands } from '@fnndsc/menu';
 import { more_wire } from '../features/roster/more.js';
+
+/**
+ * The line that says a view's values are written quoted (`arg_quote`), and
+ * are to be read so. A view without it is from before values were quoted:
+ * its lines are read as they were then, word by word at each space, so a
+ * folder kept with an apostrophe in its name still opens.
+ */
+export const VIEW_QUOTED_MARK: string = '# lines: quoted';
 
 /** The line every shared view starts from. */
 export const VIEW_BASELINE: string = 'desktop clear';
@@ -23,8 +32,9 @@ export const VIEW_BASELINE: string = 'desktop clear';
  * @returns The script.
  */
 export function viewScript_compose(steps: string): string {
-  const lines: string[] = steps.split('\n').map((line: string): string => line.trim()).filter((line: string): boolean => line !== '' && !line.startsWith('#'));
-  return ['# ARGUS view: run these lines in the ARGUS console to see what I see', VIEW_BASELINE, ...lines].join('\n');
+  // The steps are read as the replay reads them: a command ends at a newline outside quotes, so a folder
+  // whose name holds a blank line or a `#` goes into the script whole.
+  return ['# ARGUS view: run these lines in the ARGUS console to see what I see', VIEW_QUOTED_MARK, VIEW_BASELINE, ...script_commands(steps)].join('\n');
 }
 
 /** How long the sheet's COPY says COPIED. */

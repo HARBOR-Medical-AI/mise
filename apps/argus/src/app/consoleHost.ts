@@ -10,6 +10,7 @@
  */
 import { path_quote, path_write } from '@fnndsc/menu';
 import { session_switch } from './sessionSwitch.js';
+import { VIEW_QUOTED_MARK } from './shareView.js';
 import { feedModes_hold } from '../features/feed/view.js';
 import type { DicomSeriesModel } from '@fnndsc/menu';
 import type { ExecuteOutcome } from '../calypso/client.js';
@@ -182,7 +183,7 @@ export function argusHost_build(context: Pick<HostContext, 'layout' | 'panels' |
   const desktop_serialize = (): string => {
     const tree: LayoutNode | null = layout.tree_get();
     if (tree === null) return '# empty desktop';
-    const lines: string[] = [];
+    const lines: string[] = [VIEW_QUOTED_MARK];
     const firstLeaf = (node: LayoutNode): string => ('pane' in node ? node.pane : firstLeaf(node.first));
     const anchorId: string = firstLeaf(tree);
     const anchorKind: string | null = paneKind_get(anchorId);

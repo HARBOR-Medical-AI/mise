@@ -18,9 +18,9 @@
  *
  * @module
  */
-import { home_path, line_split, path_write, script_lines } from '@fnndsc/menu';
+import { home_path, line_split, path_write, script_commands } from '@fnndsc/menu';
 import { side_is, side_findByFocusWord, splitSelector_format, type Side } from '../app/sides.js';
-import { viewScript_compose, viewSheet_ask } from '../app/shareView.js';
+import { viewScript_compose, viewSheet_ask, VIEW_QUOTED_MARK } from '../app/shareView.js';
 
 /** How a stratus session is entered: looking only, or able to act (docs/stratus.adoc, D14). */
 export type CloudEntry = 'read' | 'manage';
@@ -185,8 +185,20 @@ export function claims_list(): Array<{ subject: string; verbs?: string[] }> {
  * @returns The sentence, or null when the session owns the line.
  */
 export function sentence_parse(line: string): Sentence | null {
-  const words: string[] | null = line_split(line);
-  return words === null ? null : sentence_build(words);
+  // A line typed with one stray apostrophe is still a line: it is read word by word at each space, as it
+  // was before quotes were honoured.
+  return sentence_build(line_split(line) ?? words_legacy(line));
+}
+
+/**
+ * A line's words as lines were read before quotes were honoured: at each
+ * space, nothing removed.
+ *
+ * @param line - The line.
+ * @returns Its words.
+ */
+function words_legacy(line: string): string[] {
+  return line.trim().split(/\s+/);
 }
 
 /**
@@ -740,7 +752,8 @@ export async function argusLine_run(host: ArgusHost, line: string, parsed?: read
     // through the host, which is what the row's own track presses too.
     // A folder by name: the pane lists it, rooted there, as a desktop records it.
     if (verb === 'open') {
-      const path: string = words.slice(1).join(' ').trim();
+      // The folder as the line gave it: one quoted word, or (unquoted) its words with a space between.
+      const path: string = words.slice(1).join(' ');
       if (path === '') return 'file open <folder>';
       return host.files_open(filesId, path) ? `file open ${path}` : `file open: '${filesId}' is not a files pane`;
     }
@@ -834,6 +847,30 @@ export function viewWords_refusal(words: readonly string[]): string | null {
   return verbs.has(verb) ? null : `${subject} ${verb} is not part of a view`;
 }
 
+/** A view's commands as read, and the words of each. */
+interface ViewLines {
+  /** The commands, as written. */
+  lines: string[];
+  /** Each command's words; null where a quote is left open. */
+  parsed: Array<string[] | null>;
+}
+
+/**
+ * Reads a view's commands, and each command's words. A view that says its
+ * values are quoted is read so: a command ends at a newline outside quotes,
+ * and is split into its words once, the same words for the allow-list and
+ * for the run. A view from before values were quoted is read as it was
+ * written: line by line, word by word at each space.
+ *
+ * @param script - The view.
+ * @returns Its commands, and each one's words (null where a quote is left open).
+ */
+function viewLines_read(script: string): ViewLines {
+  const quoted: boolean = script.split('\n').some((line: string): boolean => line.trim() === VIEW_QUOTED_MARK);
+  const lines: string[] = quoted ? script_commands(script) : script.split('\n').map((line: string): string => line.trim()).filter((line: string): boolean => line !== '' && !line.startsWith('#'));
+  return { lines, parsed: lines.map((line: string): string[] | null => (quoted ? line_split(line) : words_legacy(line))) };
+}
+
 /** Whether a line's answer says it could not be done (a usage line, or `x: no …`). */
 function viewAnswer_failed(answer: string): boolean {
   return /^[\w-]+( [\w%@-]+)?: (no |unknown|not |nothing|cannot)/i.test(answer) || /^[\w-]+ [\w|<>%@ []+\|/.test(answer);
@@ -850,11 +887,8 @@ function viewAnswer_failed(answer: string): boolean {
  * @returns What ran, or why it stopped.
  */
 export async function viewScript_run(host: ArgusHost, script: string, received: string | null): Promise<string> {
-  // A line ends at a newline outside quotes, and is split into its words once: what the allow-list judges
-  // and what is run are those same words.
-  const lines: string[] = script_lines(script).map((line: string): string => line.trim()).filter((line: string): boolean => line !== '' && !line.startsWith('#'));
+  const { lines, parsed } = viewLines_read(script);
   if (lines.length === 0) return 'the view holds no lines';
-  const parsed: Array<string[] | null> = lines.map((line: string): string[] | null => line_split(line));
   if (received !== null) {
     const refusals: Map<number, string> = new Map();
     lines.forEach((_line: string, index: number): void => {

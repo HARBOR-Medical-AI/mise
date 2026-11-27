@@ -4,8 +4,8 @@
  * as the VM controller (features/vm/screen.ts); LEAVE or Esc gives it back
  * (docs/stratus.adoc, D17 revised). Shaped as the script screen's host.
  */
+import { STRATUS_VM_STATE_EVENT, vmStatusRowSchema, word_write } from '@fnndsc/menu';
 import type { ExecuteOutcome, SurfaceAsk } from '../calypso/client.js';
-import { STRATUS_VM_STATE_EVENT, vmStatusRowSchema } from '@fnndsc/menu';
 import { VmScreen } from '../features/vm/screen.js';
 import type { ScriptDraft } from '../features/script/screen.js';
 import { synthVoice } from '../lcars/synth.js';
@@ -86,7 +86,7 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     if (window.innerWidth < CONTROLLER_MIN_WIDTH) {
       const said: string = `vm: the controller needs a display at least ${CONTROLLER_MIN_WIDTH} px wide; this one is ${window.innerWidth}, so the line runs as text`;
       try {
-        const answer: ExecuteOutcome = await context.client.line_execute(name === '' ? 'vm status' : `vm status ${name}`, { silent: true, observe: false });
+        const answer: ExecuteOutcome = await context.client.line_execute(name === '' ? 'vm status' : `vm status ${word_write(name)}`, { silent: true, observe: false });
         return [said, ...answer.envelopes.map((envelope) => `${envelope.rendered ?? ''}${envelope.renderedErr ?? ''}`.trimEnd())].join('\n');
       } catch (error: unknown) {
         return `${said}\n${error instanceof Error ? error.message : String(error)}`;

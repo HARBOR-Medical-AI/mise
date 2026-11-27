@@ -16,7 +16,7 @@
  * @module
  */
 import type { LineStandingModel, LineState, VmCostRate, VmLimitsModel, VmSpecModel } from '@fnndsc/menu';
-import { arg_quote } from '@fnndsc/menu';
+import { arg_quote, line_split, line_tokens } from '@fnndsc/menu';
 
 /** A line of the script, with what `play --status` said of it. */
 export interface ScriptLine {
@@ -84,26 +84,9 @@ const STATE_RANK: ReadonlyArray<LineState> = ['changed', 'not yet', 'ready', 'do
  * @returns Its words, quotes removed.
  */
 export function words_split(text: string): string[] {
-  const words: string[] = [];
-  let word: string = '';
-  let quote: string | null = null;
-  let open: boolean = false;
-  for (const char of text) {
-    if (quote !== null) {
-      if (char === quote) quote = null; else word += char;
-      continue;
-    }
-    if (char === '\'' || char === '"') { quote = char; open = true; continue; }
-    if (/\s/.test(char)) {
-      if (word !== '' || open) words.push(word);
-      word = '';
-      open = false;
-      continue;
-    }
-    word += char;
-  }
-  if (word !== '' || open) words.push(word);
-  return words;
+  // Read as the shell reads the line (a quote closed, escaped and opened again is one apostrophe); a line
+  // with a quote left open is read word by word at each space, so it still shows.
+  return line_split(text) ?? text.trim().split(/\s+/).filter((word: string): boolean => word !== '');
 }
 
 /** What a script's word cannot hold and stand bare: whitespace, a quote, a backslash, or what ends or joins a command. */
@@ -195,6 +178,30 @@ export function line_render(parts: LineParts): string {
  * @returns The line.
  */
 export function lineOption_set(text: string, word: string, value: string): string {
+  // The line's words as its author spelled them: only the option being set is written anew, so a quoted
+  // literal elsewhere on the line stays quoted, and stays the literal it was.
+  const tokens: string[] | null = line_tokens(text);
+  if (tokens === null) return line_optionRender(text, word, value);
+  const read: string[] = tokens.map((token: string): string => line_split(token)?.[0] ?? token);
+  const at: number = read.findIndex((each: string, index: number): boolean => index > 0 && each === word && tokens[index] === word);
+  const written: string[] = value === '' ? [] : [word, scriptWord_write(value)];
+  if (at === -1) return [...tokens, ...written].join(' ');
+  const next: string | undefined = read[at + 1];
+  const taken: number = next !== undefined && !(OPTION_WORD.test(next) && tokens[at + 1] === next) ? 2 : 1;
+  return [...tokens.slice(0, at), ...written, ...tokens.slice(at + taken)].join(' ');
+}
+
+/**
+ * A line with one option set, by taking the line apart and putting it
+ * together again: for a line whose words cannot be told apart as written (a
+ * quote left open).
+ *
+ * @param text - The line.
+ * @param word - The option.
+ * @param value - Its value; `''` removes the option.
+ * @returns The line.
+ */
+function line_optionRender(text: string, word: string, value: string): string {
   const parts: LineParts = line_parse(text);
   const options: Array<[string, string]> = parts.options.filter(([each]): boolean => each !== word);
   if (value !== '') {
