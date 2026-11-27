@@ -20,6 +20,7 @@ import { spawn as childSpawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { berthKey_compute, berth_pathIn, berthUrl_isAlive, closing_write } from '@fnndsc/calypso/berth';
+import { sessionEnv_build } from './sessionEnv.js';
 import { restartLine_render, type Berth, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
 import { bootLine_note } from './bootLines.js';
 
@@ -381,14 +382,17 @@ export class ProcessHost implements SessionHost {
   private async boot_run(record: SessionRecord, launch: SessionLaunch): Promise<Berth> {
     const dirs: SessionDirs = this.dirs_build(record.identity);
     for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    // A stratus session keeps its clusters and its home beside its other
-    // directories: never porter's own, which every session it starts shares.
-    const own: Record<string, string> = {};
+    // Every session keeps its home, state and data (a stratus session's
+    // clusters, chell's history) beside its other directories: never
+    // porter's own, which every session it starts would share.
+    const root: string = join(this.stateDir, berthKey_compute(record.identity));
+    const own: Record<string, string> = {
+      HOME: join(root, 'home'),
+      XDG_STATE_HOME: join(root, 'state'),
+      XDG_DATA_HOME: join(root, 'data'),
+    };
+    for (const dir of Object.values(own)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (launch.kind === 'stratus') {
-      const root: string = join(this.stateDir, berthKey_compute(record.identity));
-      own['XDG_STATE_HOME'] = join(root, 'state');
-      own['HOME'] = join(root, 'home');
-      for (const dir of Object.values(own)) mkdirSync(dir, { recursive: true, mode: 0o700 });
       // The daemon's berth names its cloud identity; this names the session's,
       // so a porter restarted adopts it under the key its cookie holds.
       writeFileSync(join(root, 'identity'), `${record.identity}\n`, { encoding: 'utf-8', mode: 0o600 });
@@ -398,8 +402,8 @@ export class ProcessHost implements SessionHost {
         own['CALYPSO_ELEVATION_USER'] = launch.door.user;
       }
     }
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
+    // Never porter's own environment: it holds the key that signs every door cookie (sessionEnv.ts).
+    const env: NodeJS.ProcessEnv = sessionEnv_build(process.env, {
       XDG_CONFIG_HOME: dirs.config,
       XDG_RUNTIME_DIR: dirs.runtime,
       XDG_CACHE_HOME: dirs.cache,
@@ -409,7 +413,7 @@ export class ProcessHost implements SessionHost {
       FORCE_COLOR: '3',
       // Last, so the session's own HOME and state win over porter's.
       ...own,
-    };
+    });
     // The greeter draws the brain itself, from the same frames; the boot's
     // own copy on stdout would stand a second, still brain under the rows.
     let argv: string[];
