@@ -16,7 +16,7 @@
  * @module
  */
 import type { LineStandingModel, LineState, VmCostRate, VmLimitsModel, VmSpecModel } from '@fnndsc/menu';
-import { arg_quote, line_split, line_tokens, type PromptKind } from '@fnndsc/menu';
+import { arg_quote, line_split, line_tokens, type PromptKind, path_write, word_write, home_path } from '@fnndsc/menu';
 
 /** A line of the script, with what `play --status` said of it. */
 export interface ScriptLine {
@@ -127,6 +127,54 @@ export function stepKind_derive(text: string): StepKind {
   return 'other';
 }
 
+/** One word of a script line: as written, as read, and whether it was written with no quoting at all. */
+interface LineToken {
+  /** The word as it stands in the line. */
+  raw: string;
+  /** The value it carries, quotes removed. */
+  value: string;
+  /** True when it was written bare: only a bare word can be an option's name. */
+  bare: boolean;
+}
+
+/** An option as a word of a line names it: `--memory`, or `--memory=8` with its value in the same word. */
+interface OptionToken {
+  /** The option (`--memory`). */
+  word: string;
+  /** Its value when the word carries it after `=`; null when the value is the next word, or there is none. */
+  inline: string | null;
+}
+
+/**
+ * Reads a script line into its words, each as written and as read. A line
+ * with a quote left open is read word by word at each space.
+ *
+ * @param text - The line.
+ * @returns Its words.
+ */
+function lineTokens_read(text: string): LineToken[] {
+  const raws: string[] = line_tokens(text) ?? text.trim().split(/\s+/).filter((word: string): boolean => word !== '');
+  return raws.map((raw: string): LineToken => {
+    const value: string = line_split(raw)?.[0] ?? raw;
+    return { raw, value, bare: raw === value };
+  });
+}
+
+/**
+ * Reads a word as an option's name. Only a word written bare names an
+ * option (`--memory`), or one whose name is bare before an `=`
+ * (`--note='two words'`); a quoted word that merely looks like one
+ * (`'--example'`) is a value.
+ *
+ * @param token - The word.
+ * @returns The option, or null when the word is a value.
+ */
+function optionToken_read(token: LineToken): OptionToken | null {
+  if (token.bare && OPTION_WORD.test(token.raw)) return { word: token.raw, inline: null };
+  const named: RegExpExecArray | null = /^(--[a-z][a-z0-9-]*)=/.exec(token.raw);
+  return named === null ? null : { word: named[1] as string, inline: token.value.slice((named[1] as string).length + 1) };
+}
+
 /**
  * Takes a line apart.
  *
@@ -134,20 +182,22 @@ export function stepKind_derive(text: string): StepKind {
  * @returns Its verb words, subject and options.
  */
 export function line_parse(text: string): LineParts {
-  const words: string[] = words_split(text);
+  const tokens: LineToken[] = lineTokens_read(text);
+  const words: string[] = tokens.map((token: LineToken): string => token.value);
   const kind: StepKind = stepKind_derive(text);
   const verbLength: number = kind === 'other' ? Math.min(1, words.length) : (STEP_VERBS.find(([, each]): boolean => each === kind)?.[0].split(' ').length ?? 1);
   const verb: string[] = words.slice(0, verbLength);
   let subject: string | null = null;
   const options: Array<[string, string]> = [];
-  for (let index: number = verbLength; index < words.length; index++) {
-    const word: string = words[index] as string;
-    if (OPTION_WORD.test(word)) {
-      const next: string | undefined = words[index + 1];
-      if (next !== undefined && !OPTION_WORD.test(next)) { options.push([word, next]); index++; } else options.push([word, '']);
-    } else if (subject === null) {
-      subject = word;
+  for (let index: number = verbLength; index < tokens.length; index++) {
+    const option: OptionToken | null = optionToken_read(tokens[index] as LineToken);
+    if (option === null) {
+      if (subject === null) subject = (tokens[index] as LineToken).value;
+      continue;
     }
+    if (option.inline !== null) { options.push([option.word, option.inline]); continue; }
+    const next: LineToken | undefined = tokens[index + 1];
+    if (next !== undefined && optionToken_read(next) === null) { options.push([option.word, next.value]); index++; } else options.push([option.word, '']);
   }
   return { verb, subject, options };
 }
@@ -179,36 +229,24 @@ export function line_render(parts: LineParts): string {
  */
 export function lineOption_set(text: string, word: string, value: string): string {
   // The line's words as its author spelled them: only the option being set is written anew, so a quoted
-  // literal elsewhere on the line stays quoted, and stays the literal it was.
-  const tokens: string[] | null = line_tokens(text);
-  if (tokens === null) return line_optionRender(text, word, value);
-  const read: string[] = tokens.map((token: string): string => line_split(token)?.[0] ?? token);
-  const at: number = read.findIndex((each: string, index: number): boolean => index > 0 && each === word && tokens[index] === word);
+  // literal elsewhere on the line stays quoted, and stays the literal it was. Every standing of the option
+  // goes (a line that names it twice is left naming it once, or not at all), read by the same rule the
+  // getter reads it by.
+  const tokens: LineToken[] = lineTokens_read(text);
   const written: string[] = value === '' ? [] : [word, scriptWord_write(value)];
-  if (at === -1) return [...tokens, ...written].join(' ');
-  const next: string | undefined = read[at + 1];
-  const taken: number = next !== undefined && !(OPTION_WORD.test(next) && tokens[at + 1] === next) ? 2 : 1;
-  return [...tokens.slice(0, at), ...written, ...tokens.slice(at + taken)].join(' ');
-}
-
-/**
- * A line with one option set, by taking the line apart and putting it
- * together again: for a line whose words cannot be told apart as written (a
- * quote left open).
- *
- * @param text - The line.
- * @param word - The option.
- * @param value - Its value; `''` removes the option.
- * @returns The line.
- */
-function line_optionRender(text: string, word: string, value: string): string {
-  const parts: LineParts = line_parse(text);
-  const options: Array<[string, string]> = parts.options.filter(([each]): boolean => each !== word);
-  if (value !== '') {
-    const at: number = parts.options.findIndex(([each]): boolean => each === word);
-    if (at === -1) options.push([word, value]); else options.splice(at, 0, [word, value]);
+  const kept: string[] = [];
+  let placed: boolean = false;
+  for (let index: number = 0; index < tokens.length; index++) {
+    const token: LineToken = tokens[index] as LineToken;
+    const option: OptionToken | null = index === 0 ? null : optionToken_read(token);
+    if (option === null || option.word !== word) { kept.push(token.raw); continue; }
+    // Its value goes with it: the next word, unless that names an option or the value rode in the same word.
+    const next: LineToken | undefined = tokens[index + 1];
+    if (option.inline === null && next !== undefined && optionToken_read(next) === null) index++;
+    if (!placed) { kept.push(...written); placed = true; }
   }
-  return line_render({ ...parts, options });
+  if (!placed) kept.push(...written);
+  return kept.join(' ');
 }
 
 /**
@@ -576,8 +614,10 @@ export function memoryRange_derive(limits: VmLimitsModel, vcpu: number): { min: 
  * @returns The `vm cost` line.
  */
 export function costLine_derive(text: string): string {
-  const parts: LineParts = line_parse(text);
-  return line_render({ ...parts, verb: ['vm', 'cost'] });
+  // Only the verb changes: every other word goes into the price request exactly as the declaration spells it.
+  const tokens: LineToken[] = lineTokens_read(text);
+  if (tokens[0]?.raw !== 'vm' || tokens[1]?.raw !== 'new') return text;
+  return ['vm', 'cost', ...tokens.slice(2).map((token: LineToken): string => token.raw)].join(' ');
 }
 
 /**
@@ -638,10 +678,13 @@ export function spec_words(spec: VmSpecModel): string {
  * @returns The line.
  */
 export function userLine_build(name: string, email: string, passwordFile: string, on: string): string {
-  const options: Array<[string, string]> = [['--email', email]];
-  if (passwordFile !== '') options.push(['--password-file', passwordFile]);
-  if (on !== '') options.push(['--on', on]);
-  return line_render({ verb: ['chris', 'user', 'add'], subject: name, options });
+  // What a form holds is a value, never grammar: an address such as `ops$team@example.org` is written so the
+  // shell reads it as itself.
+  const words: string[] = ['chris', 'user', 'add', word_write(name), '--email', word_write(email)];
+  // A file named under the home is under the home: the tilde stays the shell's, the rest is the value.
+  if (passwordFile !== '') words.push('--password-file', passwordFile === '~' || passwordFile.startsWith('~/') ? home_path(passwordFile.slice(2)) : path_write(passwordFile));
+  if (on !== '') words.push('--on', word_write(on));
+  return words.join(' ');
 }
 
 /**

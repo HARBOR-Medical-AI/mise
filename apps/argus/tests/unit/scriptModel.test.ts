@@ -7,6 +7,7 @@
 import { describe, it, expect } from '@jest/globals';
 import type { VmLimitsModel } from '@fnndsc/menu';
 import { buildWould_derive, ports_word, askForm_derive, costLine_derive, counts_words, duration_words, line_parse, line_render, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum, runningStep_find, scriptName_derive, scriptSource_derive, stepBuildLine_get, stepKind_derive, stepKind_isTask, stepLabel_derive, steps_build, states_count, userLine_build, vmLevers_read, vmSliders_build, words_split, workingCopy_derive, script_render, type ScriptStep } from '../../src/features/script/model.js';
+import { args_tokenize } from '../../../../packages/brasa/src/lib/parser.js';
 
 const STORE: string = [
   '# the store',
@@ -189,5 +190,53 @@ describe('an option set on a line leaves the line\'s other words as their author
   it('an option with no value gains one in place, and a value that is itself written like an option is its value', () => {
     expect(lineOption_set('vm new store --public --cidr 10.0.0.0/16', '--public', 'yes')).toBe('vm new store --public yes --cidr 10.0.0.0/16');
     expect(lineOption_set("vm new store --note '--not-an-option' --n 1", '--note', 'x')).toBe('vm new store --note x --n 1');
+  });
+});
+
+describe('an option is read, set and cleared by one rule', () => {
+  it('a line that names an option twice is left naming it once when set, and not at all when cleared', () => {
+    const twice: string = 'vm new store --memory 8 --vcpu 2 --memory 16';
+    expect(lineOption_set(twice, '--memory', '32')).toBe('vm new store --memory 32 --vcpu 2');
+    expect(lineOption_get(lineOption_set(twice, '--memory', '32'), '--memory')).toBe('32');
+    expect(lineOption_set(twice, '--memory', '')).toBe('vm new store --vcpu 2');
+    expect(line_parse(lineOption_set(twice, '--memory', '')).options).toEqual([['--vcpu', '2']]);
+  });
+
+  it('a quoted word that looks like an option is a value: the getter reads it, the setter replaces it, and it never names an option', () => {
+    const line: string = "vm new store --note '--example' --n 1";
+    expect(lineOption_get(line, '--note')).toBe('--example');
+    expect(lineOption_get(line, '--example')).toBeNull();
+    expect(line_parse(line).options).toEqual([['--note', '--example'], ['--n', '1']]);
+    expect(lineOption_set(line, '--note', 'x')).toBe('vm new store --note x --n 1');
+    expect(lineOption_set(line, '--example', 'y')).toBe("vm new store --note '--example' --n 1 --example y");
+    // A quoted word standing where a subject does is the subject, though it begins with dashes.
+    expect(line_parse("vm new '--odd-name' --n 1").subject).toBe('--odd-name');
+  });
+
+  it('the --key=value spelling is the same option: read, replaced in place, and cleared', () => {
+    const line: string = "vm new store --memory=8 --note='two words' --vcpu 2";
+    expect(lineOption_get(line, '--memory')).toBe('8');
+    expect(lineOption_get(line, '--note')).toBe('two words');
+    expect(lineOption_set(line, '--memory', '16')).toBe("vm new store --memory 16 --note='two words' --vcpu 2");
+    expect(lineOption_set(line, '--note', '')).toBe('vm new store --memory=8 --vcpu 2');
+    expect(lineOption_set('vm new store --memory=8 --memory 16', '--memory', '')).toBe('vm new store');
+  });
+});
+
+describe('a line made from another keeps what it does not change', () => {
+  it('the price request is the declaration with its verb changed, every other word as spelled', () => {
+    const declared: string = "vm new 'O'\\''Brien' --note '$name' --memory=8 --disk 50";
+    expect(costLine_derive(declared)).toBe("vm cost 'O'\\''Brien' --note '$name' --memory=8 --disk 50");
+    // Read by the kernel, the two carry the same operands: the literal stays a literal.
+    expect([...args_tokenize(costLine_derive(declared))].slice(2)).toEqual([...args_tokenize(declared)].slice(2));
+    expect(costLine_derive('vm build store')).toBe('vm build store');
+  });
+
+  it('a user line built from a form carries each field as the value it is, to the kernel', () => {
+    const line: string = userLine_build("o'brien", 'ops$team@example.org', '/keys/pass word $1', 'store');
+    expect([...args_tokenize(line)]).toEqual(['chris', 'user', 'add', "o'brien", '--email', 'ops$team@example.org', '--password-file', '/keys/pass word $1', '--on', 'store']);
+    // A file named under the home stays under the home; a plain form reads as it always did.
+    expect(userLine_build('jennings', 'j@example.org', '~/p', 'store')).toBe('chris user add jennings --email j@example.org --password-file ~/p --on store');
+    expect([...args_tokenize(userLine_build('jennings', 'j@example.org', '~/my keys/p', ''))]).toEqual(['chris', 'user', 'add', 'jennings', '--email', 'j@example.org', '--password-file', '~/my keys/p']);
   });
 });

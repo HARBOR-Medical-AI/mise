@@ -13,6 +13,7 @@
 import { describe, it, expect } from '@jest/globals';
 import { ScriptScreen, type QuietAnswer, type ScriptHooks } from '../../src/features/script/screen.js';
 import { lineOption_get } from '../../src/features/script/model.js';
+import { args_tokenize } from '../../../../packages/brasa/src/lib/parser.js';
 
 const STORE_TEXT: string = [
   'net new chrisproject-services --cidr 10.20.0.0/16',
@@ -202,6 +203,43 @@ describe('the script screen', () => {
     await settle();
     // (The command quotes its contents for the shell; unquoted, they are the script's lines.)
     expect((sent.find((line: string): boolean => line.startsWith('touch --withContents=')) ?? '').replaceAll("'\\''", "'")).toContain(shown);
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('two options edited on one line: each keeps what the other wrote, through a redraw and a save, and the kernel reads both back as typed', async () => {
+    const { screen, sent } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-4"]')?.click();
+    await settle();
+    const field = (word: string): HTMLInputElement => screen.root.querySelector(`#ss-${word}-4`) as HTMLInputElement;
+    const type = (word: string, value: string): void => { const input: HTMLInputElement = field(word); input.focus(); input.value = value; input.dispatchEvent(new Event('input')); };
+    // A host with an apostrophe and a dollar in it, then the compute: the second edit must leave the first as it was written.
+    type('host', "o'brien's $HOME box");
+    type('compute', 'two words');
+    const shown = (): string => [...screen.root.querySelectorAll('.ss-line-text')].map((one) => one.textContent ?? '').find((text: string): boolean => text.startsWith('chris deploy')) ?? '';
+    expect(lineOption_get(shown(), '--host')).toBe("o'brien's $HOME box");
+    expect(lineOption_get(shown(), '--compute')).toBe('two words');
+    expect(lineOption_get(shown(), '--profile')).toBe('minimal');
+    // The first field again, after the second: still one of each on the line.
+    type('host', 'cube.example.org');
+    expect(shown()).toBe("chris deploy store --profile minimal --compute 'two words' --host cube.example.org");
+    type('host', "o'brien's $HOME box");
+    // Drawn again from the line, each field shows what it holds.
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-4"]')?.click();
+    await settle();
+    expect(field('host').value).toBe("o'brien's $HOME box");
+    expect(field('compute').value).toBe('two words');
+    // Saved: the kernel reads the save line's content back as the script, and that script's line back as the two values.
+    button_named(screen.root, 'SAVE')?.click();
+    await settle();
+    const save: string = sent.find((line: string): boolean => line.startsWith('touch --withContents=')) ?? '';
+    const written: string = [...args_tokenize(save)][1]?.replace(/^--withContents=/, '') ?? '';
+    const deploy: string = written.split('\n').find((line: string): boolean => line.startsWith('chris deploy')) ?? '';
+    expect([...args_tokenize(deploy)]).toEqual(['chris', 'deploy', 'store', '--profile', 'minimal', '--compute', 'two words', '--host', "o'brien's $HOME box"]);
     screen.dispose();
     screen.root.remove();
   });
