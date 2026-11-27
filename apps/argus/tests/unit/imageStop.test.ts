@@ -469,6 +469,102 @@ describe('STOP while LOADING', () => {
   });
 });
 
+describe('a layout asked for while one is being built', () => {
+  const lit = (stage: Stage, layout: string): boolean => !(stage.pane.querySelector(`.image-layout[data-layout="${layout}"]`) as HTMLElement).classList.contains('rail-off');
+
+  it('the same layout pressed again joins the build under way: one build, and a stop of it still waits for LOAD REST', async () => {
+    const stage: Stage = stage_make();
+    const engine: FakeEngine = await loading_reach(stage, 40);
+    engine.slices_land(39);
+    const first: Promise<boolean> = stage.panel.layout_set('mpr');
+    await settle();
+    // MPR is pressed again while its slices arrive.
+    const second: Promise<boolean> = stage.panel.layout_set('mpr');
+    await settle();
+    expect(engine.layoutsAsked).toEqual(['mpr']);
+    // STOP ends the build.
+    stage.stop.click();
+    engine.layout_end(false);
+    expect(await first).toBe(false);
+    expect(await second).toBe(false);
+    // The field is back on the stack, the pill says so, and the layout waits for LOAD REST.
+    expect(stage.panel.state_get()?.waiting).toBe('mpr');
+    expect(lit(stage, 'single')).toBe(true);
+    expect(lit(stage, 'mpr')).toBe(false);
+    expect(stage.stop.textContent).toBe(RESUME_LABEL);
+    stage.stop.click();
+    await settle();
+    expect(engine.layoutsAsked).toEqual(['mpr', 'mpr']);
+    engine.layout_end(true);
+    await settle();
+    expect(stage.panel.state_get()?.layout).toBe('mpr');
+  });
+
+  it('another layout chosen meanwhile is the one that stands: the first one\'s late answer repaints no pill and clears no progress', async () => {
+    const stage: Stage = stage_make();
+    const engine: FakeEngine = await loading_reach(stage, 40);
+    engine.slices_land(40);
+    const mpr: Promise<boolean> = stage.panel.layout_set('mpr');
+    await settle();
+    const mpr_end: (built: boolean) => void = engine.layout_end;
+    // 3D is chosen before MPR is built, and is built.
+    const render: Promise<boolean> = stage.panel.layout_set('3d');
+    await settle();
+    expect(lit(stage, '3d')).toBe(true);
+    const mode: HTMLElement = stage.pane.querySelector('.pane-mode') as HTMLElement;
+    const progress: string | null = stage.pane.querySelector('.image-working')?.textContent ?? null;
+    // MPR's build, replaced, answers late and says it did not stand.
+    mpr_end(false);
+    expect(await mpr).toBe(false);
+    await settle();
+    expect(lit(stage, '3d')).toBe(true);
+    expect(lit(stage, 'mpr')).toBe(false);
+    expect(lit(stage, 'single')).toBe(false);
+    expect(mode.textContent).toBe('3D');
+    expect(stage.pane.querySelector('.image-working')?.textContent ?? null).toBe(progress);
+    expect(stage.notes.some((line: string): boolean => line.includes('not offered'))).toBe(false);
+    engine.layout_end(true);
+    expect(await render).toBe(true);
+    expect(lit(stage, '3d')).toBe(true);
+  });
+});
+
+describe('a frame closed before its viewer exists', () => {
+  it('makes no engine when the viewer\'s code arrives after the close', async () => {
+    const stage: Stage = stage_make();
+    // The series is shown, and the frame closes before the viewer's code has been fetched.
+    void stage.panel.series_show(series_make(10));
+    stage.panel.dispose();
+    await settle();
+    await settle();
+    expect(FakeEngine.made).toBe(0);
+    expect(FakeEngine.last).toBeNull();
+    // And a series handed to a closed frame afterwards makes none either.
+    await stage.panel.series_show(series_make(10));
+    await settle();
+    expect(FakeEngine.made).toBe(0);
+  });
+
+  it('an open still asking for its header when the frame closes is no longer the frame\'s latest', () => {
+    const stage: Stage = stage_make();
+    const asking: number = stage.panel.opening_show('/home/someone/uploads/series-a', (): void => undefined);
+    expect(stage.panel.opening_checkIsLatest(asking)).toBe(true);
+    stage.panel.dispose();
+    // Its header comes back now: whoever holds the answer is told it is stale, and shows nothing.
+    expect(stage.panel.opening_checkIsLatest(asking)).toBe(false);
+  });
+
+  it('a series asked for before another makes no engine for the first when its viewer code arrives', async () => {
+    const stage: Stage = stage_make();
+    void stage.panel.series_show(series_make(10));
+    void stage.panel.series_show(series_make(20));
+    await settle();
+    await settle();
+    expect(FakeEngine.made).toBe(1);
+    stage.panel.dispose();
+  });
+});
+
 describe('STOP while OPENING', () => {
   it('ends the ask, and the frame says it was stopped in its own voice', () => {
     const stage: Stage = stage_make();

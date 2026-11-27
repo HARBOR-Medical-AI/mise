@@ -523,13 +523,16 @@ describe('what an engine put on Cornerstone\'s own objects', () => {
   afterEach((): void => { globalThis.requestAnimationFrame = realFrame; });
 
   /** Gives every frame asked for, and those asked for in turn, until none is. */
-  async function frames_give(): Promise<void> {
+  async function frames_give(): Promise<number> {
+    let given: number = 0;
     for (let round = 0; round < 80 && frames.length > 0; round++) {
       (frames.shift() as () => void)();
+      given += 1;
       await Promise.resolve();
       await Promise.resolve();
     }
     await settle();
+    return given;
   }
 
   /**
@@ -544,6 +547,36 @@ describe('what an engine put on Cornerstone\'s own objects', () => {
     expect(frames.length).toBe(1);
     return { building };
   }
+
+  it('a layout chosen while a stopped build is putting the stack back stands: STOPPED is not said over it', async () => {
+    const bench: Bench = await engine_open(20);
+    const mpr: Promise<boolean> = bench.engine.layout_set('mpr');
+    await settle();
+    await slices_land(3);
+    // The stack the stop goes back to is held as its first slice is set.
+    let shown: () => void = (): void => undefined;
+    firstSlice = new Promise<void>((resolve: () => void): void => { shown = resolve; });
+    expect(bench.engine.load_stop()).toBe(true);
+    await settle();
+    // 3D is chosen while that stack is still being put back, and is built.
+    const render: Promise<boolean> = bench.engine.layout_set('3d');
+    await slices_landAll();
+    expect(await render).toBe(true);
+    const readout: string | undefined = bench.readouts.at(-1);
+    const progressed: number = bench.progress.length;
+    const noted: number = bench.notes.length;
+    // The held stack lands now.
+    firstSlice = null;
+    shown();
+    expect(await mpr).toBe(false);
+    await settle();
+    expect(bench.engine.state_get().layout).toBe('3d');
+    expect(bench.readouts.at(-1)).toBe(readout);
+    expect(bench.readouts.at(-1)).not.toContain('STOPPED');
+    expect(bench.progress.length).toBe(progressed);
+    expect(bench.notes.length).toBe(noted);
+    bench.engine.dispose();
+  });
 
   it('a slab build left alone opens one scene on an element that is on the field', async () => {
     const bench: Bench = await engine_open(3);
@@ -560,8 +593,10 @@ describe('what an engine put on Cornerstone\'s own objects', () => {
     const bench: Bench = await engine_open(3);
     const { building } = await slab_begin(bench);
     bench.engine.dispose();
-    await frames_give();
+    const given: number = await frames_give();
     expect(await building).toBe(false);
+    // The wait ended at the first frame that saw the engine gone, not after all sixty.
+    expect(given).toBe(1);
     expect(slabScenes).toHaveLength(0);
     expect(volumes.size).toBe(0);
   }, 15_000);

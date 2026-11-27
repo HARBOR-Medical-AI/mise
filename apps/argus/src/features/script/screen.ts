@@ -961,18 +961,33 @@ export class ScriptScreen {
   }
 
   /**
+   * Says whether a price that has come back is no longer wanted: a later
+   * one was asked for, or the screen has been left.
+   *
+   * @param asked - The count when the price was asked for.
+   * @returns True when the price is to be dropped.
+   */
+  private price_stale(asked: number): boolean {
+    return this.left || asked !== this.costAsked;
+  }
+
+  /**
    * Prices the VM NEW line as it stands, a moment after the last lever moved.
    *
    * @param line - The `vm new` line.
    */
   protected stepCost_ask(line: string): void {
+    // A screen that has been left asks no price and waits for none: a command that ends after the close
+    // arms nothing here.
+    if (this.left) return;
     if (this.costTimer !== null) clearTimeout(this.costTimer);
     this.costTimer = setTimeout((): void => {
       this.costTimer = null;
       this.costAsked += 1;
       const asked: number = this.costAsked;
       void this.hooks.ask(costLine_derive(line)).then((answer: QuietAnswer): void => {
-        if (asked !== this.costAsked) return;
+        // A price for an earlier ask, or one that comes back to a screen that has been left, draws nothing.
+        if (this.price_stale(asked)) return;
         const model = model_extract(answer, STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
         this.stepCost = model?.vms[0] ?? null;
         this.pricesRead = model?.pricesRead ?? this.pricesRead;
@@ -980,7 +995,7 @@ export class ScriptScreen {
         this.cost_redraw();
         this.header_draw();
       }, (error: unknown): void => {
-        if (asked !== this.costAsked) return;
+        if (this.price_stale(asked)) return;
         this.stepCost = null;
         this.stepCostRefused = error instanceof Error ? error.message : String(error);
         this.cost_redraw();

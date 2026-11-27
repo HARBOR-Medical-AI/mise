@@ -122,6 +122,18 @@ function modalityHue_derive(modality: string): string {
   return 'OT';
 }
 
+/** A layout being built: which, on which engine, and what it will end in. */
+interface LayoutFlight {
+  /** The layout asked for. */
+  layout: ImageLayout;
+  /** The engine it was asked of. */
+  engine: ImageEngine | null;
+  /** Settles with whether the layout stands. */
+  done: Promise<boolean>;
+  /** Which build this is, told apart from a later one of the same layout. */
+  mark: object;
+}
+
 /** The image pane controller. */
 export class ImagePanel {
   private readonly pane: HTMLElement;
@@ -159,8 +171,24 @@ export class ImagePanel {
   private forced: boolean = false;
   /** The layout LOAD will apply. */
   private pendingLayout: ImageLayout | null = null;
+  /** Counts each series shown: what an earlier one was waiting for makes nothing when it arrives. */
+  private showSerial: number = 0;
+  /** The layout being built now, so that the same one asked for again joins it; null when none is. */
+  private layoutFlight: LayoutFlight | null = null;
+  /** True once the frame has closed: nothing is opened on it after. */
+  private closed: boolean = false;
   /** Counts each layout chosen: an answer that comes back for an earlier choice paints nothing. */
   private layoutAsked: number = 0;
+
+  /**
+   * Says whether what a series was waiting for arrives too late: the frame has closed, or another series was shown.
+   *
+   * @param shown - The count when the series was shown.
+   * @returns True when nothing is to be made of it.
+   */
+  private show_stale(shown: number): boolean {
+    return this.closed || shown !== this.showSerial;
+  }
 
   /**
    * Says whether a layout's answer has been overtaken: another series took the field, or another layout was chosen.
@@ -281,6 +309,9 @@ export class ImagePanel {
    * @param options - Sibling series for a study folder, and the slice to start at.
    */
   public async series_show(model: DicomSeriesModel, options: { siblings?: SeriesChoice[]; startAt?: number; force?: boolean } = {}): Promise<void> {
+    if (this.closed) return;
+    this.showSerial += 1;
+    const shown: number = this.showSerial;
     this.openingStop = null;
     this.openingStopped = false;
     this.engine_dispose();
@@ -302,6 +333,9 @@ export class ImagePanel {
     }
     const cornerstone: typeof import('./cornerstoneEngine.js') | null = await this.chunk_import((): Promise<typeof import('./cornerstoneEngine.js')> => import('./cornerstoneEngine.js'));
     if (cornerstone === null) return;
+    // The frame closed, or another series was asked for, while the viewer's code was fetched: no engine is
+    // made for a field that is not this series's any more.
+    if (this.show_stale(shown)) return;
     const { CornerstoneEngine } = cornerstone;
     const engine: ImageEngine = new CornerstoneEngine(this.engineHost_get(), model, options.startAt ?? 1);
     await this.engine_open(engine);
@@ -592,7 +626,32 @@ export class ImagePanel {
   /**
    * Sets the layout; false when the field has no engine or it refused.
    */
-  public async layout_set(layout: ImageLayout): Promise<boolean> {
+  public layout_set(layout: ImageLayout): Promise<boolean> {
+    // The same layout pressed again while it is being built joins that build: it is not a new choice that
+    // overtakes it, and whatever the build ends in (built, stopped, refused) is the answer to both.
+    const flying: LayoutFlight | null = this.layoutFlight;
+    if (flying !== null && flying.layout === layout && flying.engine === this.engine) return flying.done;
+    const mark: object = {};
+    // The build is no longer under way from the moment it settles, before whoever waits on it goes on: a
+    // press that follows its end (LOAD REST after a stop) is a new build, not a join.
+    const done: Promise<boolean> = (async (): Promise<boolean> => {
+      try {
+        return await this.layout_apply(layout);
+      } finally {
+        if (this.layoutFlight?.mark === mark) this.layoutFlight = null;
+      }
+    })();
+    this.layoutFlight = { layout, engine: this.engine, done, mark };
+    return done;
+  }
+
+  /**
+   * Builds a layout and paints what it ended in.
+   *
+   * @param layout - The layout.
+   * @returns Whether it stands on the field.
+   */
+  private async layout_apply(layout: ImageLayout): Promise<boolean> {
     if (this.engine === null) return false;
     // A volume layout pulls every slice; over the guard it waits for LOAD.
     // The stack never asks: its first slice costs one file.
@@ -781,6 +840,12 @@ export class ImagePanel {
 
   /** Releases the field. */
   public dispose(): void {
+    // Closed: an open that is still asking (its header, or the viewer's code) is no longer the frame's
+    // latest, and what it brings back makes no engine.
+    this.closed = true;
+    this.openingSerial += 1;
+    this.openingStop = null;
+    this.openingAgain = null;
     this.engine_dispose();
   }
 

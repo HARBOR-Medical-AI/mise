@@ -1025,6 +1025,39 @@ describe('the VM controller', () => {
     }
   });
 
+  it('a screen left while the price of a new machine is being asked for draws nothing when it comes back, and asks no price after', async () => {
+    let priced: () => void = (): void => undefined;
+    try {
+      const { screen, asked } = screen_make();
+      await screen.vm_open('lone');
+      await settle(12);
+      const inner = screen as unknown as { stepCost_ask: (line: string) => void; costTimer: unknown };
+      const costs = (): number => asked.filter((line: string): boolean => line.startsWith('vm cost')).length;
+      costGate = new Promise<void>((resolve: () => void): void => { priced = resolve; });
+      const before: number = costs();
+      inner.stepCost_ask('vm new unnamed --disk 120');
+      await new Promise((resolve) => { setTimeout(resolve, 160); });
+      expect(costs()).toBe(before + 1);
+      // Every node of the screen as it stands: a redraw would replace them, even with the same markup.
+      const nodes: Element[] = [...screen.root.querySelectorAll('*')];
+      screen.dispose();
+      costGate = null;
+      priced();
+      await settle(12);
+      expect([...screen.root.querySelectorAll('*')]).toEqual(nodes);
+      expect([...screen.root.querySelectorAll('*')].every((node: Element, at: number): boolean => node === nodes[at])).toBe(true);
+      // A command that ends after the close asks for no new price, and arms no wait for one.
+      inner.stepCost_ask('vm new unnamed --disk 180');
+      expect(inner.costTimer).toBeNull();
+      await new Promise((resolve) => { setTimeout(resolve, 160); });
+      expect(costs()).toBe(before + 1);
+      screen.root.remove();
+    } finally {
+      costGate = null;
+      priced();
+    }
+  });
+
   it('a screen left while a line is running, a lever is waiting and a standing is being watched has no clock left, and starts none after', async () => {
     const { screen } = screen_make();
     await screen.vm_open('lone');

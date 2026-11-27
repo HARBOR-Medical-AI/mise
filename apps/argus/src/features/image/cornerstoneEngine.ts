@@ -1044,6 +1044,7 @@ export class CornerstoneEngine implements ImageEngine {
     const element: HTMLDivElement = this.viewport_make('stack');
     const engineId: string = this.engineId_get();
     const viewportId: string = `${engineId}-stack`;
+    const stackBegan: number = this.fieldSerial;
     this.renderingEngine = new core.RenderingEngine(engineId);
     this.renderingEngine.enableElement({ viewportId, type: core.Enums.ViewportType.STACK, element });
     const viewport = this.renderingEngine.getViewport(viewportId) as import('@cornerstonejs/core').Types.IStackViewport;
@@ -1053,6 +1054,9 @@ export class CornerstoneEngine implements ImageEngine {
       const place: number = this.imageIds.indexOf(detail.imageId);
       this.slice = (place >= 0 ? place : detail.imageIdIndex) + 1;
       this.held.add(detail.imageId);
+      // A stack whose field has since been cleared for another layout has a slice in hand and no say: the
+      // readout and the regard are that layout's.
+      if (this.build_replaced(stackBegan)) return;
       const path: string = this.pathByImageId.get(detail.imageId) ?? '';
       this.host.readout_set(this.sliceReadout_get());
       this.host.regard(path);
@@ -1232,7 +1236,12 @@ export class CornerstoneEngine implements ImageEngine {
     // on it nor says it stopped.
     if (this.build_replaced(began)) return false;
     if (!whole) {
+      // Stopped: the field goes back to the stack of the slices on hand, and says so. The stack is a
+      // build of its own (it clears the field once); if anything clears the field again while it waits,
+      // another layout has been chosen, and STOPPED is not said over it.
+      const stack: number = this.fieldSerial + 1;
       await this.stack_show();
+      if (this.build_replaced(stack)) return false;
       await this.stopped_show();
       return false;
     }
@@ -1348,7 +1357,8 @@ export class CornerstoneEngine implements ImageEngine {
     grid.className = 'image-render';
     grid.appendChild(element);
     this.field.appendChild(grid);
-    for (let i = 0; i < 60 && element.offsetWidth === 0; i++) {
+    // The wait ends as soon as the build has been replaced: an element taken off the field never has a size.
+    for (let i = 0; i < 60 && element.offsetWidth === 0 && !this.build_replaced(began); i++) {
       await new Promise<void>((resolve): void => { requestAnimationFrame((): void => resolve()); });
     }
     if (this.build_replaced(began)) {
