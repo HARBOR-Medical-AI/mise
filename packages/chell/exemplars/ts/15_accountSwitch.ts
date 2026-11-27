@@ -21,11 +21,11 @@
  * A session read that failed for some other reason looks, from the session
  * alone, like a refusal. So the refusal is CUBE's own (a 403 or 404 for
  * that folder's id with the first's token, anything else an error), asked
- * before and after. The session must say of that folder's files "no such
- * folder" (anything shown, or an asking that broke, fails), and must hand
- * over no content of the file; that it gives none is reported as
- * inconclusive by itself, and which client served a request is held by the
- * two-client case in cumin's connection tests. Where a CUBE gives the first the second's folder,
+ * before and after. Through the session, anything shown of that folder,
+ * any content of its file, or an asking that throws, fails; showing
+ * nothing is reported as inconclusive and counted as nothing. Which client
+ * carries a transfer after a change of user is held by cumin's
+ * `transferClient.test.ts`, which drives the session's own adapter. Where a CUBE gives the first the second's folder,
  * those checks are printed as skipped, not passed.
  *
  * What this run does not show: `/bin` and the process tree read the same
@@ -230,14 +230,18 @@ async function scenario_run(env: CubeEnv, cleanup: CleanupPlan): Promise<void> {
     // before and after, and a read that must succeed follows.
     check(`CUBE denies ${first} the folder ${second} made (asked by its id)`, (await folder_askById(env.url, firstToken, theirs)) === 'denied');
     // The files of that folder, asked through the session, alone: nothing asked afterwards can undo what
-    // this shows. Shown anything at all (the file, another, or an empty folder it could enter) is red; so
-    // is an asking that broke, which shows nothing either way. Green is the session's own "no such folder".
-    const shown = await files_listWhole('files', `/${theirs.path}`).catch((error: unknown): { kind: 'broke'; error: unknown } => ({ kind: 'broke', error }));
-    check(`the session, asked for that folder's files as ${first}, says there is no such folder (it said: ${shown.kind})`, shown.kind === 'missing');
+    // this shows. Shown anything at all (the file, another, or an empty folder it could enter) is red, and so
+    // is an asking that threw. "No such folder" is what a hidden folder looks like through the session, and
+    // also what a failed lookup looks like (the session does not say which), so it is reported as it is and
+    // counted as nothing: the refusal is CUBE's own answer, either side.
+    const shown = await files_listWhole('files', `/${theirs.path}`).catch((): { kind: 'threw' } => ({ kind: 'threw' }));
+    if (shown.kind !== 'missing' && shown.kind !== 'refused') check(`the session shows ${first} nothing of that folder, and the asking does not throw (it: ${shown.kind})`, false);
+    else console.log(`  - inconclusive, not counted: asked for that folder's files as ${first}, the session said "${shown.kind}", which a hidden folder and a failed lookup share`);
     // The file itself. Any content handed over is red, whatever the bytes; so is an asking that threw. A
     // plain failure is what a refusal looks like here, and also what a broken request looks like: the
-    // session does not say which, so it is reported as it is and passes nothing. That the request was made
-    // with the first's client is held by the two-client case in cumin's connection tests.
+    // session does not say which, so it is reported as it is and passes nothing. That the request is made
+    // with the first's client is held by cumin's `transferClient.test.ts`, which drives the session's own
+    // adapter across first, second, first.
     let handed: 'content' | 'none' | 'threw' = 'threw';
     try {
       handed = (await fileContent_get(theirsPath)).ok ? 'content' : 'none';
