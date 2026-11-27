@@ -13,6 +13,7 @@
  *
  * A module of the host, shaped as the TD controller's.
  */
+import { path_write } from '@fnndsc/menu';
 import type { ExecuteOutcome, SurfaceAsk } from '../calypso/client.js';
 import { ScriptScreen, type ScriptDraft } from '../features/script/screen.js';
 import { synthVoice } from '../lcars/synth.js';
@@ -106,7 +107,7 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
     if (window.innerWidth < CONTROLLER_MIN_WIDTH) {
       const said: string = `scripts: the screen needs a display at least ${CONTROLLER_MIN_WIDTH} px wide; this one is ${window.innerWidth}, so the line runs as text`;
       try {
-        const answer: ExecuteOutcome = await context.client.line_execute(path === '' ? 'scripts' : `play ${path} --status`, { silent: true, observe: false });
+        const answer: ExecuteOutcome = await context.client.line_execute(path === '' ? 'scripts' : `play ${path_write(path)} --status`, { silent: true, observe: false });
         return [said, ...answer.envelopes.map((envelope) => `${envelope.rendered ?? ''}${envelope.renderedErr ?? ''}`.trimEnd())].join('\n');
       } catch (error: unknown) {
         return `${said}\n${error instanceof Error ? error.message : String(error)}`;

@@ -17,6 +17,7 @@
  *
  * @module
  */
+import { PROC_LAYOUT_MODEL_KIND, PROC_UNIVERSE_MODEL_KIND, UNIVERSE_REACH, procLayoutModelSchema, procUniverseModelSchema, universeKey_derive, universeReach_derive, type ProcUniverseModel, arg_quote } from '@fnndsc/menu';
 import { feedGraph_build } from '../../scene/feedGraph.js';
 import { FEED_MODES_DEFAULT, FeedViewFrame, feedHueLegend_build, feedShape_same, feedStatuses_patch, type FeedModes, type FeedVerb } from '../feed/view.js';
 import { FeedFrame, type FeedFrameFacts } from '../dag/feedFrame.js';
@@ -24,7 +25,6 @@ import { feedFacts_render } from '../feed/facts.js';
 import { ranked_layout } from '@fnndsc/orrery';
 import type { FeedDagModel, FeedDagNode, PromptContext, WireEnvelope, WatchState } from '@fnndsc/menu';
 import { barState_clear, barState_set, type BarState } from '../roster/bar.js';
-import { PROC_LAYOUT_MODEL_KIND, PROC_UNIVERSE_MODEL_KIND, UNIVERSE_REACH, procLayoutModelSchema, procUniverseModelSchema, universeKey_derive, universeReach_derive, type ProcUniverseModel } from '@fnndsc/menu';
 import { ChrisSpace, PHYSICS_DEFAULT, type DrawMode, type PhysicsTerms, type SceneGraph, type SceneNode, type SettleMode, type ScenePlan } from '../../scene/chrisSpace.js';
 import {
   LandedFeeds, universeGraph_build, universeTip_render, universeStoreKey_format, storedPositions_parse,
@@ -1860,6 +1860,6 @@ export class UniversePanel {
     if (this.putSignatures.get(name) === signature) return;
     this.putSignatures.set(name, signature);
     this.sessionPlaces.set(name, Object.keys(positions).length);
-    this.handlers.command_run(`proc layout put ${name} '${JSON.stringify(positions).replace(/'/g, "'\\''")}'`);
+    this.handlers.command_run(`proc layout put ${name} ${arg_quote(JSON.stringify(positions))}`);
   }
 }

@@ -18,6 +18,7 @@
  *
  * @module
  */
+import { home_path, line_split, path_write, script_lines } from '@fnndsc/menu';
 import { side_is, side_findByFocusWord, splitSelector_format, type Side } from '../app/sides.js';
 import { viewScript_compose, viewSheet_ask } from '../app/shareView.js';
 
@@ -161,7 +162,8 @@ let replayPanes: string[] | null = null;
 /** localStorage keys for desktops. */
 const DESKTOP_PREFIX: string = 'argus.desktop.';
 /** The CFS home for desktops, when the daemon can write it. */
-const DESKTOP_CFS_DIR: string = '~/.config/argus/desktops';
+/** Where desktops are kept in the session's store, under its home. */
+const DESKTOP_CFS_DIR: string = '.config/argus/desktops';
 
 /**
  * The subjects this language answers for, as the daemon is told them: whole
@@ -183,7 +185,24 @@ export function claims_list(): Array<{ subject: string; verbs?: string[] }> {
  * @returns The sentence, or null when the session owns the line.
  */
 export function sentence_parse(line: string): Sentence | null {
-  const words: string[] = line.trim().split(/\s+/);
+  const words: string[] | null = line_split(line);
+  return words === null ? null : sentence_build(words);
+}
+
+/**
+ * Makes a sentence of a line's words when its subject is reserved. The words
+ * are the line split once, quotes honoured (`line_split`): what is judged
+ * and what is run are the same words.
+ *
+ * @param words - The line's words.
+ * @returns The sentence, or null when the session owns the line.
+ *
+ * @example
+ * ```typescript
+ * sentence_build(['file', '%2', 'open', '/home/u/my folder']); // { subject: 'file', target: '%2', words: ['open', '/home/u/my folder'] }
+ * ```
+ */
+export function sentence_build(words: readonly string[]): Sentence | null {
   const subject: string = (words[0] ?? '').toLowerCase();
   if (!SUBJECTS.has(subject)) return null;
   const claimed: ReadonlySet<string> | undefined = SHARED_SUBJECTS[subject];
@@ -504,10 +523,11 @@ function attachLines_compose(host: ArgusHost, reveal: boolean): string {
  *
  * @param host - The surface bindings.
  * @param line - The raw line (already known to start with a reserved subject).
+ * @param parsed - The line's words when the caller has split it already, so it is split once.
  * @returns The result text to print; null when the session owns the line.
  */
-export async function argusLine_run(host: ArgusHost, line: string): Promise<string | null> {
-  const sentence: Sentence | null = sentence_parse(line);
+export async function argusLine_run(host: ArgusHost, line: string, parsed?: readonly string[]): Promise<string | null> {
+  const sentence: Sentence | null = parsed === undefined ? sentence_parse(line) : sentence_build(parsed);
   if (sentence === null) return null;
   const { subject, words } = sentence;
   const verb: string = (words[0] ?? '').toLowerCase();
@@ -789,7 +809,22 @@ export const VIEW_LINES_ALLOWED: Readonly<Record<string, ReadonlySet<string> | n
  * @returns The refusal.
  */
 export function viewLine_refusal(line: string): string | null {
-  const words: string[] = line.trim().split(/\s+/);
+  const words: string[] | null = line_split(line);
+  return words === null ? 'a quote is left open' : viewWords_refusal(words);
+}
+
+/**
+ * Why a received view may not run a line, from the line's words.
+ *
+ * @param words - The line's words, split once (`line_split`).
+ * @returns The refusal, or null when it may run.
+ *
+ * @example
+ * ```typescript
+ * viewWords_refusal(['file', 'delete']); // 'file delete is not part of a view'
+ * ```
+ */
+export function viewWords_refusal(words: readonly string[]): string | null {
   const subject: string = words[0] ?? '';
   if (!(subject in VIEW_LINES_ALLOWED)) return 'not a view line: it would run in your session';
   const verbs: ReadonlySet<string> | null | undefined = VIEW_LINES_ALLOWED[subject];
@@ -815,12 +850,16 @@ function viewAnswer_failed(answer: string): boolean {
  * @returns What ran, or why it stopped.
  */
 export async function viewScript_run(host: ArgusHost, script: string, received: string | null): Promise<string> {
-  const lines: string[] = script.split('\n').map((line: string): string => line.trim()).filter((line: string): boolean => line !== '' && !line.startsWith('#'));
+  // A line ends at a newline outside quotes, and is split into its words once: what the allow-list judges
+  // and what is run are those same words.
+  const lines: string[] = script_lines(script).map((line: string): string => line.trim()).filter((line: string): boolean => line !== '' && !line.startsWith('#'));
   if (lines.length === 0) return 'the view holds no lines';
+  const parsed: Array<string[] | null> = lines.map((line: string): string[] | null => line_split(line));
   if (received !== null) {
     const refusals: Map<number, string> = new Map();
-    lines.forEach((line: string, index: number): void => {
-      const refused: string | null = viewLine_refusal(line);
+    lines.forEach((_line: string, index: number): void => {
+      const words: string[] | null = parsed[index] ?? null;
+      const refused: string | null = words === null ? 'a quote is left open' : viewWords_refusal(words);
       if (refused !== null) refusals.set(index, refused);
     });
     const run: boolean = await viewSheet_ask(lines, refusals, received);
@@ -831,9 +870,10 @@ export async function viewScript_run(host: ArgusHost, script: string, received: 
   replayPanes = [];
   const ran: string[] = [];
   try {
-    for (const line of lines) {
-      const answer: string | null = await argusLine_run(host, line);
-      if (answer === null || viewAnswer_failed(answer)) {
+    for (const [index, line] of lines.entries()) {
+      const words: string[] | null = parsed[index] ?? null;
+      const answer: string | null = words === null ? 'a quote is left open' : await argusLine_run(host, line, words);
+      if (answer === null || words === null || viewAnswer_failed(answer)) {
         return [...ran, `${line}  →  ${answer ?? 'not a view line'}`, `stopped here: ${answer ?? 'not a view line'}`].join('\n');
       }
       ran.push(`${line}  →  ${answer}`);
@@ -893,7 +933,7 @@ async function desktop_handle(host: ArgusHost, verb: string, name: string | unde
     // Write-through to the durable layer, honestly reported either way.
     const encoded: string = window.btoa(unescape(encodeURIComponent(script)));
     const output: string = await host.session_run(
-      `config write ${DESKTOP_CFS_DIR}/${name}.desk ${encoded}`,
+      `config write ${home_path(`${DESKTOP_CFS_DIR}/${name}.desk`)} ${encoded}`,
     );
     const durable: boolean = output.includes('wrote');
     return `saved '${name}' (local${durable ? ' + CFS' : '; CFS unavailable: ' + output.trim().split('\n')[0]})`;
@@ -906,7 +946,7 @@ async function desktop_handle(host: ArgusHost, verb: string, name: string | unde
     // A path is a file in ChRIS: a colleague's view, or one of the
     // operator's own kept outside the desktops folder.
     if (name.includes('/')) {
-      const text: string = await host.session_run(`cat ${name}`);
+      const text: string = await host.session_run(`cat ${name.startsWith('~/') ? home_path(name.slice(2)) : path_write(name)}`);
       if (text.trim() === '' || /No such|cannot|error/i.test(text.split('\n')[0] ?? '')) return `desktop load: cannot read ${name}`;
       const me: string = (host.identity_get() ?? '').split('@')[0] ?? '';
       const own: boolean = me !== '' && (name === `~` || name.startsWith('~/') || name.startsWith(`/home/${me}/`));
@@ -914,7 +954,7 @@ async function desktop_handle(host: ArgusHost, verb: string, name: string | unde
     }
     let script: string | null = window.localStorage.getItem(DESKTOP_PREFIX + name);
     if (script === null) {
-      const remote: string = await host.session_run(`cat ${DESKTOP_CFS_DIR}/${name}.desk`);
+      const remote: string = await host.session_run(`cat ${home_path(`${DESKTOP_CFS_DIR}/${name}.desk`)}`);
       if (remote.trim().length > 0 && !remote.includes('No such') && !remote.toLowerCase().includes('error')) {
         script = remote;
       }

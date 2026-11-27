@@ -12,7 +12,7 @@
  * asks, the cohort and the /bin view as hooks; the module keeps each
  * browser's binding and history, the preview provider and the readers.
  */
-import { DAG_MODEL_KINDS, EDIT_CONFIRM_BYTES, path_isEditable, pipelineDiagramModelSchema, type PipelineDiagramNode } from '@fnndsc/menu';
+import { DAG_MODEL_KINDS, EDIT_CONFIRM_BYTES, path_isEditable, pipelineDiagramModelSchema, type PipelineDiagramNode, path_quote, arg_quote } from '@fnndsc/menu';
 import { editAsk_render, editLine_compose } from '../features/edit/line.js';
 import type { ExecuteOutcome } from '../calypso/client.js';
 import type { PaneAskRequest } from '../features/ask/paneAsk.js';
@@ -219,7 +219,7 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
    * it, so the line names the working directory, as a person would type it.
    */
   const download_press = (id: string, path: string, directory: boolean): void => {
-    if (directory) hooks.verbLine_run(id, `download "${path}" .`);
+    if (directory) hooks.verbLine_run(id, `download ${path_quote(path)} .`);
     else file_save(path);
   };
 
@@ -232,7 +232,7 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
 
   const fileText_fetch = (path: string): Promise<FileText> =>
     context.client
-      .line_execute(`cat "${path}"`, { silent: true, observe: false })
+      .line_execute(`cat ${path_quote(path)}`, { silent: true, observe: false })
       .then((outcome: ExecuteOutcome): FileText => {
         // A refusal is an answer: CUBE lists files a shared feed's guest may
         // not read, and joining the rendered text alone turned a 403 into an
@@ -277,7 +277,7 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
   /** A pipeline's authored graph, for a card-sized glimpse; a plugin is one node whatever it declares. */
   const pipelineGlimpse_fetch = async (path: string): Promise<GlimpseNode[] | null> => {
     const specifier: string = /_id(\d+)$/.exec(path)?.[1] ?? path.replace(/^.*\//, '');
-    const outcome: ExecuteOutcome = await context.client.line_execute(`pipeline diagram ${specifier}`, { silent: true, observe: false });
+    const outcome: ExecuteOutcome = await context.client.line_execute(`pipeline diagram ${arg_quote(specifier)}`, { silent: true, observe: false });
     for (const envelope of outcome.envelopes) {
       if (envelope.model?.kind !== DAG_MODEL_KINDS.pipelineDiagram) continue;
       const parsed = pipelineDiagramModelSchema.safeParse(envelope.model.data);
@@ -299,7 +299,7 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
 
   const rootedListing_show = (id: string, panel: FilesPanel, path: string): void => {
     // A bare `~` must reach the shell unquoted or it would not expand.
-    const line: string = path === '~' ? 'ls ~' : `ls "${path}"`;
+    const line: string = path === '~' ? 'ls ~' : `ls ${path_quote(path)}`;
     void context.client
       .line_execute(line, { silent: true, observe: false })
       .then((outcome: ExecuteOutcome): void => {
@@ -364,7 +364,7 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
         const wanted: string = (name ?? '').trim();
         // An abandoned question makes nothing, and says nothing.
         if (wanted === '') return;
-        context.terminal.line_run(`mkdir "${place}/${wanted}"`);
+        context.terminal.line_run(`mkdir ${path_quote(`${place}/${wanted}`)}`);
         // `mkdir` renders what it made; it does not re-list the folder.
         listing_refresh(id, place);
       });
@@ -398,7 +398,7 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
   /** Lowers a file activation: a walk (by `cd` or rooted), a /bin entry, an image, or a file shown. */
   const action_take = (id: string, panel: FilesPanel, action: FileAction): void => {
     if (action.kind === 'dir') {
-      if (filesFollow.get(id) === true) context.terminal.line_run(`cd "${action.path}"`);
+      if (filesFollow.get(id) === true) context.terminal.line_run(`cd ${path_quote(action.path)}`);
       else rooted_walk(id, panel, action.path);
       return;
     }
@@ -444,7 +444,7 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
    * missing destination is the ask that opens the errand.
    */
   const rowVerbs_build = (id: string, entry: FsListingEntry, path: string): ReadonlyArray<ListingAction<FsListingEntry>> => {
-    const quoted: string = `"${path}"`;
+    const quoted: string = path_quote(path);
     const directory: boolean = entry.type === 'dir' || entry.type === 'vfs' || entry.type === 'job';
     // Which verbs a row is offered is the roster's to say (features/roster/verbs.ts); what each one does is this pane's.
     const feed: number | null = feedOf_path(path);
@@ -515,7 +515,7 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
    */
   const selectionVerbs_build = (id: string, rows: ReadonlyArray<[string, FsListingEntry]>): ReadonlyArray<ListingAction<void>> => {
     const paths: string[] = rows.map(([path]): string => path);
-    const quoted: string = paths.map((path: string): string => `"${path}"`).join(' ');
+    const quoted: string = paths.map((path: string): string => path_quote(path)).join(' ');
     const feeds: number[] = [];
     for (const path of paths) {
       const feed: number | null = feedOf_path(path);
@@ -556,7 +556,7 @@ export function browser_wire(context: Pick<HostContext, 'panels' | 'subjects' | 
         // is silent and lands beside the verbs when it arrives.
         if (feedOf_path(path) === null) return;
         void context.client
-          .line_execute(`getfacl "${path}"`, { silent: true, observe: false })
+          .line_execute(`getfacl ${path_quote(path)}`, { silent: true, observe: false })
           .then((outcome: ExecuteOutcome): void => { panel.rowReadout_show(path, shares_read(outcome)); })
           .catch((): void => { panel.rowReadout_show(path, 'ACCESS UNREAD'); });
       },

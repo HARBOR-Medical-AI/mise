@@ -16,6 +16,7 @@
  * @module
  */
 import type { LineStandingModel, LineState, VmCostRate, VmLimitsModel, VmSpecModel } from '@fnndsc/menu';
+import { arg_quote } from '@fnndsc/menu';
 
 /** A line of the script, with what `play --status` said of it. */
 export interface ScriptLine {
@@ -105,16 +106,27 @@ export function words_split(text: string): string[] {
   return words;
 }
 
+/** What a script's word cannot hold and stand bare: whitespace, a quote, a backslash, or what ends or joins a command. */
+const SCRIPT_WORD_QUOTED: RegExp = new RegExp('[\\s\\u0027\\u0022\\\\;|&<>()\\u0060]');
+
 /**
- * Quotes a word for a line when it needs it.
+ * Writes one word of a script line back as the operator had it. A script's
+ * words are the operator's own grammar (a variable, an index, the home), so
+ * they stay as they are; only a word that cannot have been typed bare is
+ * quoted: one that is empty, or holds whitespace, a quote, a backslash, or
+ * a character that would end or join a command.
  *
- * @param word - The word.
- * @returns It, quoted when it holds a space or a quote.
+ * @param word - The word, as it was read from the line.
+ * @returns It, quoted when it could not stand bare.
+ *
+ * @example
+ * ```typescript
+ * scriptWord_write('$name');     // $name
+ * scriptWord_write('two words'); // 'two words'
+ * ```
  */
-export function word_quote(word: string): string {
-  if (word === '') return '\'\'';
-  if (!/[\s'"]/.test(word)) return word;
-  return `'${word.replace(/'/g, '\'\\\'\'')}'`;
+export function scriptWord_write(word: string): string {
+  return word === '' || SCRIPT_WORD_QUOTED.test(word) ? arg_quote(word) : word;
 }
 
 /**
@@ -165,10 +177,10 @@ export function line_parse(text: string): LineParts {
  */
 export function line_render(parts: LineParts): string {
   const words: string[] = [...parts.verb];
-  if (parts.subject !== null) words.push(word_quote(parts.subject));
+  if (parts.subject !== null) words.push(scriptWord_write(parts.subject));
   for (const [word, value] of parts.options) {
     words.push(word);
-    if (value !== '') words.push(word_quote(value));
+    if (value !== '') words.push(scriptWord_write(value));
   }
   return words.join(' ');
 }

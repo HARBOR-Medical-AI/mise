@@ -8,6 +8,7 @@
  * A module of the host: the host hands in its verbs and opens as hooks;
  * the module builds the `ArgusHost` the language reads.
  */
+import { path_quote, path_write } from '@fnndsc/menu';
 import { session_switch } from './sessionSwitch.js';
 import { feedModes_hold } from '../features/feed/view.js';
 import type { DicomSeriesModel } from '@fnndsc/menu';
@@ -194,7 +195,7 @@ export function argusHost_build(context: Pick<HostContext, 'layout' | 'panels' |
       // A files pane says the folder it shows (a view never moves the
       // receiver's working directory, so it is listed there, rooted).
       const folder: string | null = kind === 'files' ? panels.get('files', paneId)?.path_current() ?? null : null;
-      if (folder !== null) lines.push(`file %${ordinal} open ${folder}`);
+      if (folder !== null) lines.push(`file %${ordinal} open ${path_write(folder)}`);
       // A graph on stage says its whole view and where it stands, as the
       // PANES cards do (DagPanel.view_lines).
       const graph = kind === 'dag' ? panels.get('dag', paneId) : undefined;
@@ -321,7 +322,7 @@ export function argusHost_build(context: Pick<HostContext, 'layout' | 'panels' |
       if (regard === null || regard.modelKind !== 'fs.file') return false;
       // A destructive verb runs as a VISIBLE terminal command: auditable in
       // the transcript, never a silent mutation behind a control.
-      context.terminal.line_run(`rm "${regard.address}"`);
+      context.terminal.line_run(`rm ${path_quote(regard.address)}`);
       return true;
     },
     session_run: async (line: string): Promise<string> => {

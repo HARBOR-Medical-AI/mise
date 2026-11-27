@@ -18,10 +18,7 @@
  *
  * @module
  */
-import {
-  CHRIS_PROFILE_OFFERS, chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, chrisStatusModelSchema, vmCostModelSchema, vmLimitsModelSchema, vmStatusModelSchema,
-  type ChrisPlanModel, type ChrisStatusRow, type NetStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel, type VmStatusRow,
-} from '@fnndsc/menu';
+import { CHRIS_PROFILE_OFFERS, chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, chrisStatusModelSchema, vmCostModelSchema, vmLimitsModelSchema, vmStatusModelSchema, type ChrisPlanModel, type ChrisStatusRow, type NetStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel, type VmStatusRow, arg_quote, path_write } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
 import { saveLine_compose } from '../edit/line.js';
 import { lockWhere_text, modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } from '../takeover/tier.js';
@@ -29,7 +26,7 @@ import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../t
 import {
   askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
   buildWould_derive, ports_word, runningStep_find, words_split, script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, stepBuildLine_get, stepKind_derive, stepKind_isTask, steps_build, userLine_build, vmLevers_read, vmSliders_build,
-  word_quote, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts, type VmRuns,
+  workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts, type VmRuns,
 } from './model.js';
 
 /** An answer the session gave a quiet line: what the screen reads of it. */
@@ -652,7 +649,7 @@ export class ScriptScreen {
     const path: string = this.path;
     let text: string = '';
     try {
-      text = text_extract(await this.hooks.ask(`cat ${path}`));
+      text = text_extract(await this.hooks.ask(`cat ${path_write(path)}`));
     } catch (error: unknown) {
       if (session === this.editSession) this.log_add(`cat ${path}: ${error instanceof Error ? error.message : String(error)}`, 'note');
     }
@@ -732,7 +729,7 @@ export class ScriptScreen {
   protected async status_read(path: string, text: string | null = null): Promise<{ lines: LineStandingModel[] } | null> {
     try {
       // A script not written yet is read from the screen's own lines (`--text`), so its seats wear their states before the first act.
-      const answer: QuietAnswer = await this.hooks.ask(`play ${path} --status${text === null ? '' : ` --text=${word_quote(text)}`}`);
+      const answer: QuietAnswer = await this.hooks.ask(`play ${path_write(path)} --status${text === null ? '' : ` --text=${arg_quote(text)}`}`);
       return model_extract(answer, MANIFEST_STATUS_MODEL_KIND, (data: unknown) => manifestStatusModelSchema.safeParse(data));
     } catch (error: unknown) {
       this.log_add(`play ${path} --status: ${error instanceof Error ? error.message : String(error)}`, 'note');
@@ -903,7 +900,7 @@ export class ScriptScreen {
       }
       for (const folder of folders) {
         let listed: Listed[] = [];
-        try { listed = listings_extract(await this.hooks.ask(`ls /scripts/${folder}`)); } catch { continue; }
+        try { listed = listings_extract(await this.hooks.ask(`ls ${path_write(`/scripts/${folder}`)}`)); } catch { continue; }
         for (const item of listed[0]?.items ?? []) {
           if (item.type !== 'script' && !item.name.endsWith('.mise')) continue;
           scripts.push({ path: `/scripts/${folder}/${item.name}`, source: folder, name: scriptName_derive(item.name), counts: null });

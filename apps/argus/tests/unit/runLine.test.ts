@@ -17,13 +17,13 @@ describe('runLine', () => {
   const base: string = runLine_compose('/home/me/data a', 'pl-simpledsapp-v2.1.5');
 
   it('composes the console line: cd into the input, then the executable', () => {
-    expect(base).toBe('cd "/home/me/data a"; pl-simpledsapp-v2.1.5');
+    expect(base).toBe("cd '/home/me/data a'; pl-simpledsapp-v2.1.5");
     expect(runLine_executable(base)).toBe('pl-simpledsapp-v2.1.5');
   });
 
   it('writes a value as the flag the console takes, and reads it back', () => {
     const line: string = runLine_flagSet(base, '--prefix', 'run-');
-    expect(line).toBe('cd "/home/me/data a"; pl-simpledsapp-v2.1.5 --prefix run-');
+    expect(line).toBe("cd '/home/me/data a'; pl-simpledsapp-v2.1.5 --prefix run-");
     expect(runLine_flagGet(line, '--prefix')).toBe('run-');
     expect(runLine_flagGet(line, '--dummyInt')).toBeNull();
   });
@@ -31,7 +31,7 @@ describe('runLine', () => {
   it('replaces a flag where it stands and leaves hand edits alone', () => {
     const typed: string = 'cd "/x"; pl-a --prefix old --dummyInt 3 -- feed_title="T"';
     const line: string = runLine_flagSet(typed, '--prefix', 'new one');
-    expect(line).toBe('cd "/x"; pl-a --prefix "new one" --dummyInt 3 -- feed_title="T"');
+    expect(line).toBe('cd "/x"; pl-a --prefix \'new one\' --dummyInt 3 -- feed_title="T"');
     expect(runLine_flagGet(line, '--prefix')).toBe('new one');
     expect(runLine_hasTitle(line)).toBe(true);
   });
@@ -55,7 +55,7 @@ describe('runLine', () => {
   it('appends the title the kernel takes, once', () => {
     expect(runLine_hasTitle(base)).toBe(false);
     const titled: string = runLine_titleAppend(base, 'say "hi"');
-    expect(titled).toBe(`${base} -- feed_title="say \\"hi\\""`);
+    expect(titled).toBe(`${base} -- feed_title='say "hi"'`);
     expect(runLine_hasTitle(titled)).toBe(true);
   });
 

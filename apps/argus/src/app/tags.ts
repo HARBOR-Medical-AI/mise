@@ -12,9 +12,9 @@
  * show the roster again once a tag changed.
  */
 import type { WireEnvelope } from '@fnndsc/menu';
+import { arg_quote } from '@fnndsc/menu';
 import type { ExecuteOutcome } from '../calypso/client.js';
 import type { PaneAskChoice, PaneAskRequest } from '../features/ask/paneAsk.js';
-import { word_quote } from '../features/edit/line.js';
 import type { HostContext } from './hostContext.js';
 import { lineVisible_run } from './lines.js';
 
@@ -58,8 +58,8 @@ export function tagNames_extract(outcome: ExecuteOutcome): string[] {
  * @returns The lines, in order.
  */
 export function tagLines_compose(feedId: number, tag: string, known: ReadonlyArray<string>): string[] {
-  const set: string = `setfattr -n tag -v ${word_quote(tag)} feed_${feedId}`;
-  return known.includes(tag) ? [set] : [`mkdir ${word_quote(`/proc/tags/${tag}`)}`, set];
+  const set: string = `setfattr -n tag -v ${arg_quote(tag)} feed_${feedId}`;
+  return known.includes(tag) ? [set] : [`mkdir ${arg_quote(`/proc/tags/${tag}`)}`, set];
 }
 
 /**
@@ -107,7 +107,7 @@ export function tags_wire(context: Pick<HostContext, 'terminal' | 'client'>, hoo
   };
 
   const tag_remove = async (feedId: number, tag: string): Promise<boolean> => {
-    const took: boolean = await lineVisible_run(context, `setfattr -x tag -v ${word_quote(tag)} feed_${feedId}`);
+    const took: boolean = await lineVisible_run(context, `setfattr -x tag -v ${arg_quote(tag)} feed_${feedId}`);
     if (took) hooks.tags_changed(feedId);
     return took;
   };

@@ -10,6 +10,7 @@
  * pill spawn, the opens and the home as hooks; the module wires one pane's
  * mount.
  */
+import { path_quote } from '@fnndsc/menu';
 import { DRAWER_CHORDS, type DrawerChord } from '../console/argusLang.js';
 import type { FilesPanel } from '../features/files/panel.js';
 import type { Browser } from './browser.js';
@@ -229,7 +230,7 @@ export function paneChrome_wire(context: Pick<HostContext, 'layout' | 'panels' |
       const regard: RegardValue | null = subjects.regard_get(id);
       const feedId: number | null = panels.get('dag', id)?.feed_get() ?? null;
       const place: string | null = regard === null ? (feedId === null ? null : `/proc/jobs/feed_${feedId}`) : place_derive(regard);
-      if (place !== null) context.terminal.line_run(`cd "${place}"`);
+      if (place !== null) context.terminal.line_run(`cd ${path_quote(place)}`);
     });
     child_offer('PROCESS NODE', 'run an executable on the indicated node\'s output (a catalogue opens beside)', (): void => {
       const regard: RegardValue | null = subjects.regard_get(id);

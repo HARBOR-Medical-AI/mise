@@ -6,7 +6,8 @@
  * received view runs only view lines, and it asks before it runs.
  */
 import { describe, it, expect } from '@jest/globals';
-import { viewLine_refusal } from '../../src/console/argusLang.js';
+import { path_write } from '@fnndsc/menu';
+import { viewLine_refusal, viewScript_run, type ArgusHost } from '../../src/console/argusLang.js';
 import { viewLink_compose, viewLink_parse, viewSheet_ask } from '../../src/app/shareView.js';
 
 describe('viewLine_refusal', () => {
@@ -48,5 +49,41 @@ describe('viewSheet_ask', () => {
     expect(second.querySelector('.view-refused')?.textContent).toContain('← not a view line');
     (second.querySelector('.share-close') as HTMLButtonElement).click();
     expect(await refused).toBe(false);
+  });
+});
+
+describe('a view\'s line is split once, quotes honoured', () => {
+  /** A host with one files pane, recording what the view opened there. */
+  function host_make(opened: string[]): ArgusHost {
+    return {
+      focused_get: (): string | null => 'files-1',
+      panes_shown: (): string[] => ['files-1'],
+      paneKind_get: (): string | null => 'files',
+      files_open: (_pane: string, path: string): boolean => { opened.push(path); return true; },
+      viewModes_hold: (): void => undefined,
+    } as unknown as ArgusHost;
+  }
+
+  it('a folder with spaces, quotes and a newline in its name opens as that one folder, through a script of several lines', async () => {
+    const folders: string[] = ['/home/u/plain', '/home/u/two  words', "/home/u/it's \"q\" $HOME;rm", '/home/u/line one\nline two'];
+    const script: string = folders.map((folder: string): string => `file open ${path_write(folder)}`).join('\n');
+    const opened: string[] = [];
+    const said: string = await viewScript_run(host_make(opened), script, null);
+    expect(opened).toEqual(folders);
+    expect(said).not.toContain('stopped here');
+  });
+
+  it('the allow-list judges the words that would run: a verb hidden in a quoted folder is a folder, and a quoted subject is still the subject', () => {
+    expect(viewLine_refusal(`file open ${path_write('/home/u/x delete')}`)).toBeNull();
+    expect(viewLine_refusal("file 'delete'")).toBe('file delete is not part of a view');
+    expect(viewLine_refusal("'rm' -r /x")).toBe('not a view line: it would run in your session');
+    expect(viewLine_refusal("file open '/never closed")).toBe('a quote is left open');
+  });
+
+  it('a line with a quote left open stops the view there, and runs nothing after it', async () => {
+    const opened: string[] = [];
+    const said: string = await viewScript_run(host_make(opened), "file open /a\nfile open '/b", null);
+    expect(opened).toEqual(['/a']);
+    expect(said).toContain('stopped here');
   });
 });

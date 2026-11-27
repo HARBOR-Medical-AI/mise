@@ -10,15 +10,7 @@
  * A module of the host: the host hands in the catalogue bindings and RUN
  * as hooks; the module keeps the dive in progress.
  */
-import {
-  DAG_MODEL_KINDS,
-  PLUGIN_INFO_MODEL_KIND,
-  pipelineDiagramModelSchema,
-  pluginInfoModelSchema,
-  type PipelineDiagramNode,
-  type PluginInfoModel,
-  type PluginParameter,
-} from '@fnndsc/menu';
+import { DAG_MODEL_KINDS, PLUGIN_INFO_MODEL_KIND, pipelineDiagramModelSchema, pluginInfoModelSchema, type PipelineDiagramNode, type PluginInfoModel, type PluginParameter, path_quote, arg_quote } from '@fnndsc/menu';
 import type { ExecuteOutcome } from '../calypso/client.js';
 import { ansi_renderHtml, html_escape } from '../console/ansi.js';
 import type { FilesPanel } from '../features/files/panel.js';
@@ -369,7 +361,7 @@ export function binView_wire(context: Pick<HostContext, 'client'>, hooks: BinVie
     // Asked together: the summary is a cache-only read and the diagram a
     // slow one, and making the stage wait on the text buys nothing.
     const [summary, diagram]: [ExecuteOutcome, ExecuteOutcome] = await Promise.all([
-      context.client.line_execute(`cat "${path}"`, { silent: true, observe: false }),
+      context.client.line_execute(`cat ${path_quote(path)}`, { silent: true, observe: false }),
       context.client.line_execute(`pipeline diagram ${specifier}`, { silent: true, observe: false }),
     ]);
     const text: string = summary.envelopes.map((envelope): string => envelope.rendered).join('\n');
@@ -400,7 +392,7 @@ export function binView_wire(context: Pick<HostContext, 'client'>, hooks: BinVie
   /** Reads a registered plugin as the one-node graph it is, or null when the kernel could not read it. */
   const pluginGraph_fetch = async (path: string): Promise<BinGraph | null> => {
     const entry: string = path.replace(/^.*\//, '');
-    const outcome: ExecuteOutcome = await context.client.line_execute(`plugin info "${entry}"`, { silent: true, observe: false });
+    const outcome: ExecuteOutcome = await context.client.line_execute(`plugin info ${arg_quote(entry)}`, { silent: true, observe: false });
     for (const envelope of outcome.envelopes) {
       if (envelope.model?.kind !== PLUGIN_INFO_MODEL_KIND) continue;
       const parsed = pluginInfoModelSchema.safeParse(envelope.model.data);

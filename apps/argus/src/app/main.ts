@@ -17,8 +17,8 @@
  *
  * @module
  */
+import { type ClosingCause, type SessionNotes, feedListModelSchema, FEED_LIST_MODEL_KIND, feedDagModelSchema, dicomSeriesModelSchema, dicomTagsModelSchema, imageViewModelSchema, DICOM_MODEL_KINDS, IMAGE_MODEL_KINDS, type DicomSeriesModel, type DicomTagsModel, DAG_MODEL_KINDS, type PromptContext, type WireEnvelope, type WatchState, type FeedDagModel, type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry, path_quote } from '@fnndsc/menu';
 import { more_wire } from '../features/roster/more.js';
-import { type ClosingCause, type SessionNotes, feedListModelSchema, FEED_LIST_MODEL_KIND, feedDagModelSchema, dicomSeriesModelSchema, dicomTagsModelSchema, imageViewModelSchema, DICOM_MODEL_KINDS, IMAGE_MODEL_KINDS, type DicomSeriesModel, type DicomTagsModel, DAG_MODEL_KINDS, type PromptContext, type WireEnvelope, type WatchState, type FeedDagModel, type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry } from '@fnndsc/menu';
 import { type SceneNode } from '../scene/chrisSpace.js';
 import { element_require, template_stamp, pane_find } from '../frame/dom.js';
 import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type BootChoice } from './attachStart.js';
@@ -1766,7 +1766,7 @@ async function surface_start(token: string): Promise<void> {
   const launcherTiles_build = dashboardTiles_build({
     ask: (line: string): Promise<ExecuteOutcome> => client.line_execute(line, { silent: true, observe: false }),
     home_open: (): void => { dagShown = false; home_apply(); layout.focus_set('files'); },
-    home_cd: (path: string): void => { dagShown = false; home_apply(); terminal.line_run(`cd "${path}"`); },
+    home_cd: (path: string): void => { dagShown = false; home_apply(); terminal.line_run(`cd ${path_quote(path)}`); },
     desktops: (): GroupSnapshot[] => dormant.list(),
     desktop_restore: (id: string): void => { void group_restore(id); },
     panes_open: (): void => { domain_enter('panes'); panesPanel.render(); layout.focus_set('panes'); },

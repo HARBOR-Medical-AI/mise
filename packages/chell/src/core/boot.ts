@@ -42,6 +42,7 @@ import { surfaceLine_execute } from './surfaceDispatch.js';
 import { game_play, gameShow_find, gameTerminal_is, type GameShow } from './gamePlayer.js';
 import { greeting_print } from './greeting.js';
 import { versionReport_build, infoReport_build, stackInfo_get, welcomeLine_build, type PackageInfo } from '@fnndsc/brasa';
+import { path_quote } from '@fnndsc/menu';
 import {
   daemonSession_run,
   queryCheckpoint_flush,
@@ -168,7 +169,7 @@ async function script_execute(engine: BrasaEngine, scriptPath: string): Promise<
     process.exit(1);
   }
   const absolute: string = path.resolve(scriptPath);
-  await surfaceLine_execute(engine, `play '${absolute.replace(/'/g, `'\\''`)}'`);
+  await surfaceLine_execute(engine, `play ${path_quote(absolute)}`);
 }
 
 type BootLogger = ReturnType<typeof bootLogger_create>;

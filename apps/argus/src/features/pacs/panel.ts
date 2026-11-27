@@ -29,20 +29,7 @@
  *
  * @module
  */
-import {
-  pacsQueryModelSchema,
-  pacsServersModelSchema,
-  PACS_QUERY_MODEL_KIND,
-  PACS_SERVERS_MODEL_KIND,
-  type PacsPatient,
-  type PacsProvenance,
-  type PacsQueryModel,
-  type PacsSeries,
-  type PacsServer,
-  type PacsStudy,
-  type WireEnvelope,
-  patientAddress_format,
-} from '@fnndsc/menu';
+import { pacsQueryModelSchema, pacsServersModelSchema, PACS_QUERY_MODEL_KIND, PACS_SERVERS_MODEL_KIND, type PacsPatient, type PacsProvenance, type PacsQueryModel, type PacsSeries, type PacsServer, type PacsStudy, type WireEnvelope, patientAddress_format, arg_quote, word_write } from '@fnndsc/menu';
 import type { ProgressMessage } from '../../calypso/client.js';
 import { Listing, listingChild_declare, type ListingStateParts } from '../roster/listing.js';
 import { PACS_PATIENT_ROSTER, PACS_SERIES_ROSTER, PACS_STUDY_ROSTER, verbRule_get, type PacsSeriesFacts } from '../roster/verbs.js';
@@ -52,7 +39,6 @@ import {
   type ListingAction, type ListingProgress, type ListingTrait,
 } from '../roster/row.js';
 import { PACS_LEAD_TRACKS } from './tracks.js';
-import { word_quote } from '../edit/line.js';
 
 /** What the workspace asks of its host. */
 export interface PacsPanelHandlers {
@@ -475,7 +461,7 @@ function jobletLine_derive(line: string): string {
  * ```
  */
 export function pullLine_compose(paths: ReadonlyArray<string>): string {
-  return `pull ${paths.map((path: string): string => word_quote(path)).join(' ')} &`;
+  return `pull ${paths.map((path: string): string => arg_quote(path)).join(' ')} &`;
 }
 
 /** A pull pressed for in this pane, held from the press to its end. */
@@ -1486,11 +1472,11 @@ export class PacsPanel {
     // fan-out, which the line must say so the operator can read what will
     // run before it runs.
     const fanout: string = this.chosen.size > 1
-      ? ` --pacsserver ${[...this.chosen].join(',')}`
+      ? ` --pacsserver ${word_write([...this.chosen].join(','))}`
       : '';
     const stoodIn: string = this.anon ? ` ${ANON_FLAG}` : '';
     this.command.value = terms.length > 0 || fanout !== ''
-      ? `pacs query ${terms.join(',')}${fanout}${stoodIn}`
+      ? `pacs query ${word_write(terms.join(','))}${fanout}${stoodIn}`
       : '';
   }
 
@@ -1657,7 +1643,7 @@ export class PacsPanel {
       const only: string = [...this.chosen][0] as string;
       // Visible, not silent: moving the session is the operator's own act
       // and belongs in the console where they can read it.
-      this.handlers.command_show(`pacs connect ${only}`);
+      this.handlers.command_show(`pacs connect ${word_write(only)}`);
     }
     this.serverStrip_paint();
     this.serverCell_sync();

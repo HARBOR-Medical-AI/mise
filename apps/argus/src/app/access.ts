@@ -13,9 +13,10 @@
  * user and what to refresh once something changed.
  */
 import type { WireEnvelope } from '@fnndsc/menu';
+import { arg_quote } from '@fnndsc/menu';
 import type { ExecuteOutcome } from '../calypso/client.js';
 import type { PaneAskChoice, PaneAskRequest } from '../features/ask/paneAsk.js';
-import { saveLine_compose, word_quote } from '../features/edit/line.js';
+import { saveLine_compose } from '../features/edit/line.js';
 import type { HostContext } from './hostContext.js';
 import { lineVisible_run } from './lines.js';
 
@@ -102,7 +103,7 @@ export function shareEntry_derive(answer: string): string {
  */
 export function holderLine_format(feedId: number, holder: FeedHolder): string {
   if (holder.kind === 'public') return `setfacl -m o::- feed_${feedId}`;
-  return `setfacl -x ${holder.kind === 'user' ? 'u' : 'g'}:${word_quote(holder.name)} feed_${feedId}`;
+  return `setfacl -x ${holder.kind === 'user' ? 'u' : 'g'}:${arg_quote(holder.name)} feed_${feedId}`;
 }
 
 /**
@@ -202,7 +203,7 @@ export function access_wire(context: Pick<HostContext, 'terminal' | 'client'>, h
         close: 'DONE',
       })) ?? '').trim();
       if (answer === '') return;
-      if (!(await lineVisible_run(context, `setfacl -m ${shareEntry_derive(answer)} feed_${feedId}`))) return;
+      if (!(await lineVisible_run(context, `setfacl -m ${arg_quote(shareEntry_derive(answer))} feed_${feedId}`))) return;
       hooks.changed(feedId);
     }
   };

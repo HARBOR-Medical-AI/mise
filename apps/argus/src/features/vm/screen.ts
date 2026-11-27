@@ -20,8 +20,8 @@
  * same lines; this file holds what differs.
  */
 import type { ChrisBerthModel, ChrisPlanModel, ChrisStatusRow, PromptKind, VmCostRate, VmCostRow, VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
+import { CHRIS_PROFILE_OFFERS, chrisStatusModelSchema, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema, path_write } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
-import { CHRIS_PROFILE_OFFERS, chrisStatusModelSchema, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema } from '@fnndsc/menu';
 import { lockWhere_text, modePill_make, READ_HELD, type ReadHold } from '../takeover/tier.js';
 import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
@@ -409,7 +409,7 @@ export class VmScreen extends ScriptScreen {
    */
   private async vmScript_find(name: string): Promise<string | null> {
     const listed = async (path: string): Promise<Listed[]> => {
-      try { return this.listings_take(await this.hooks.ask(`ls ${path}`)); } catch { return []; }
+      try { return this.listings_take(await this.hooks.ask(`ls ${path_write(path)}`)); } catch { return []; }
     };
     const top: Listed[] = await listed('/scripts');
     const folders: string[] = (top[0]?.items ?? []).map((item): string => item.name);
