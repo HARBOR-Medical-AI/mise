@@ -13,17 +13,24 @@
  * An import of chili from any other workspace's sources fails outright:
  * brasa is the only way in.
  *
- * Type-only and dynamic imports count: each is still a reason chili cannot
- * be removed.
+ * Type-only and dynamic imports and a literal `require` count: each is
+ * still a reason chili cannot be removed. Every workspace's sources and
+ * scripts are read; an import that is commented out is not one. The
+ * baseline itself is held to the change's base (`scripts/lib/ratchetBase.mjs`):
+ * a change that adds an import and raises the baseline to admit it fails.
  *
  * Usage: node scripts/chili-ratchet.mjs [--root <dir>] [--lower]
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { base_resolve, ceilings_compare, ceilings_read, fileAtCommit_read } from './lib/ratchetBase.mjs';
 
-/** An import, re-export or dynamic import naming chili, with or without a subpath. */
-const CHILI_IMPORT = /(?:\bfrom|\bimport)\s*\(?\s*['"]@fnndsc\/chili(?:\/[^'"]*)?['"]/g;
+/** The baseline file, from the repository's root. */
+const BASELINE_FILE = 'scripts/ratchet-baseline.json';
+
+/** An import, re-export, dynamic import or `require` naming chili, with or without a subpath. */
+const CHILI_IMPORT = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*['"]@fnndsc\/chili(?:\/[^'"]*)?['"]/g;
 
 /** The one workspace that may import chili, and whose imports are counted. */
 const KEEPER = 'packages/brasa';
@@ -46,6 +53,36 @@ function sources_list(dir) {
 }
 
 /**
+ * A source's text with its comments taken out: a block comment, and a line
+ * that is only a comment. An import that was commented out is no import.
+ *
+ * @param {string} text - The source.
+ * @returns {string} The code.
+ */
+export function code_read(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((line) => !/^\s*\/\//.test(line)).join('\n');
+}
+
+/**
+ * Compares the baseline as it would stand with the same section at the
+ * change's base: neither count may be higher here. A base whose baseline
+ * file has no chili section is from before this ratchet, and holds nothing
+ * to compare with.
+ *
+ * @param {{ files: number, sites: number }} here - The baseline in this change.
+ * @param {string} root - The repository.
+ * @returns {string[]} One line per count raised against the base.
+ * @throws {Error} When the base cannot be resolved or its file cannot be read.
+ */
+export function chiliBase_compare(here, root) {
+  const base = base_resolve(process.env, root);
+  const text = fileAtCommit_read(base.sha, BASELINE_FILE, root);
+  if (text === null || JSON.parse(text).chili === undefined) return [];
+  const atBase = ceilings_read(text, 'chili', `${BASELINE_FILE} at the base (${base.sha.slice(0, 8)})`);
+  return ceilings_compare(here, atBase, 'chili').map((line) => `${line} (base: ${base.how}, ${base.sha.slice(0, 8)})`);
+}
+
+/**
  * Counts the imports of chili under a root.
  *
  * @param {string} root - The repository.
@@ -61,8 +98,9 @@ export function chili_count(root) {
     for (const entry of readdirSync(groupDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || `${group}/${entry.name}` === 'packages/chili') continue;
       const workspace = `${group}/${entry.name}`;
-      for (const file of [...sources_list(join(root, workspace, 'src')), ...(workspace === KEEPER ? sources_list(join(root, workspace, 'scripts')) : [])]) {
-        const found = readFileSync(file, 'utf8').match(CHILI_IMPORT);
+      // Its sources and its scripts: what ships and what builds it.
+      for (const file of [...sources_list(join(root, workspace, 'src')), ...sources_list(join(root, workspace, 'scripts'))]) {
+        const found = code_read(readFileSync(file, 'utf8')).match(CHILI_IMPORT);
         if (found === null) continue;
         if (workspace === KEEPER) { files++; sites += found.length; }
         else outside.push(relative(root, file));
@@ -95,26 +133,30 @@ export function chili_judge(now, baseline) {
 function main() {
   const argv = process.argv.slice(2);
   const root = resolve(argv.includes('--root') ? argv[argv.indexOf('--root') + 1] : fileURLToPath(new URL('..', import.meta.url)));
-  const baselinePath = join(root, 'scripts/ratchet-baseline.json');
+  const baselinePath = join(root, BASELINE_FILE);
   const kept = JSON.parse(readFileSync(baselinePath, 'utf8'));
   const baseline = kept.chili;
-  if (baseline === undefined || typeof baseline.files !== 'number' || typeof baseline.sites !== 'number') { console.error('chili-ratchet: scripts/ratchet-baseline.json has no "chili" section of files and sites'); process.exit(2); }
+  if (baseline === undefined || typeof baseline.files !== 'number' || typeof baseline.sites !== 'number') { console.error(`chili-ratchet: ${BASELINE_FILE} has no "chili" section of files and sites`); process.exit(2); }
   const now = chili_count(root);
-  if (argv.includes('--lower')) {
-    const stops = chili_judge(now, baseline).faults.filter((fault) => !fault.includes('— good'));
-    if (stops.length > 0) { for (const line of stops) console.error(`  ${line}`); console.error('chili-ratchet: nothing lowered: the tree does not pass as it is.'); process.exit(1); }
-    kept.chili = { files: Math.min(baseline.files, now.files), sites: Math.min(baseline.sites, now.sites) };
-    writeFileSync(baselinePath, `${JSON.stringify(kept, null, 2)}\n`);
-    console.log(`chili-ratchet: the baseline is ${kept.chili.files} file(s), ${kept.chili.sites} import(s); none raised.`);
-    return;
-  }
-  const { faults } = chili_judge(now, baseline);
+  const lowering = argv.includes('--lower');
+  // The baseline as it would stand: as committed, or (for --lower) lowered to what was counted.
+  const next = lowering ? { files: Math.min(baseline.files, now.files), sites: Math.min(baseline.sites, now.sites) } : baseline;
+  const faults = chili_judge(now, baseline).faults.filter((fault) => !(lowering && fault.includes('— good')));
+  // Against the base: a baseline raised in the same change as the import it admits is no baseline.
+  try { faults.push(...chiliBase_compare(next, root)); } catch (error) { faults.push(`the baseline could not be compared with the base's: ${error.message}`); }
   if (faults.length > 0) {
     console.error(`chili-ratchet: ${faults.length} fault(s):`);
     for (const line of faults) console.error(`  ${line}`);
+    if (lowering) console.error('chili-ratchet: nothing lowered: the tree does not pass as it is.');
     process.exit(1);
   }
-  console.log(`chili-ratchet: ${KEEPER} imports @fnndsc/chili from ${now.files} file(s), ${now.sites} import(s), at its baseline; no other workspace imports it.`);
+  if (lowering) {
+    kept.chili = next;
+    writeFileSync(baselinePath, `${JSON.stringify(kept, null, 2)}\n`);
+    console.log(`chili-ratchet: the baseline is ${next.files} file(s), ${next.sites} import(s); none raised.`);
+    return;
+  }
+  console.log(`chili-ratchet: ${KEEPER} imports @fnndsc/chili from ${now.files} file(s), ${now.sites} import(s), at its baseline and no higher than the base's; no other workspace imports it.`);
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

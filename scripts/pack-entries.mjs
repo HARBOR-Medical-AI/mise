@@ -21,6 +21,44 @@ import { join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
+ * What a package must go on offering, and must no longer hold, by name: an
+ * entry point a README documents is kept under its own name (renaming a bin
+ * to another valid file would otherwise pass), and a module that was
+ * retired stays out of what is published.
+ */
+export const PINNED = {
+  // chili is deprecated and kept as it is published: the command its README installs, its root and its
+  // utilities; and without the two modules retired with stage 5 of the audit fixes (#1541).
+  'packages/chili': { bins: ['chili'], exports: ['.', './utils'], absent: ['dist/lfs/lfs.js', 'dist/commands/pipeline/run.js'] },
+};
+
+/**
+ * Checks a manifest and its packed files against what is pinned for it.
+ *
+ * @param {Record<string, unknown>} manifest - The package's manifest.
+ * @param {string[]} packed - The paths npm would pack.
+ * @param {{ bins: string[], exports: string[], absent: string[] }} pinned - What is pinned.
+ * @returns {string[]} One line per pin that does not hold.
+ */
+export function pinned_check(manifest, packed, pinned) {
+  const faults = [];
+  const held = new Set(packed.map((path) => posix.normalize(path)));
+  const bins = typeof manifest.bin === 'string' ? { [String(manifest.name)]: manifest.bin } : manifest.bin ?? {};
+  for (const name of pinned.bins) {
+    if (bins[name] === undefined) faults.push(`its command ${name} is gone from bin: it is documented and kept`);
+    else if (!held.has(posix.normalize(String(bins[name])))) faults.push(`its command ${name} names ${bins[name]}, which is not in the package`);
+  }
+  const exported = manifest.exports !== null && typeof manifest.exports === 'object' ? manifest.exports : {};
+  for (const key of pinned.exports) {
+    const targets = exportTargets_list(exported[key]);
+    if (targets.length === 0) faults.push(`its export ${key} is gone: it is kept`);
+    for (const target of targets) if (!held.has(posix.normalize(target))) faults.push(`its export ${key} names ${posix.normalize(target)}, which is not in the package`);
+  }
+  for (const path of pinned.absent) if (held.has(posix.normalize(path))) faults.push(`it would publish ${path}, which was retired (a stale build folder: build it clean)`);
+  return faults;
+}
+
+/**
  * Lists the published workspaces of a root.
  *
  * @param {string} root - The repository.
@@ -101,6 +139,7 @@ function main() {
     }
     const readmePath = join(dir, 'README.md');
     for (const fault of entries_check(manifest, packed, existsSync(readmePath) ? readFileSync(readmePath, 'utf8') : '')) faults.push(`${workspace} (${manifest.name}): ${fault}`);
+    if (PINNED[workspace] !== undefined) for (const fault of pinned_check(manifest, packed, PINNED[workspace])) faults.push(`${workspace} (${manifest.name}): ${fault}`);
   }
   if (faults.length > 0) {
     console.error(`pack-entries: ${faults.length} fault(s):`);
