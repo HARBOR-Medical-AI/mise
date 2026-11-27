@@ -57,7 +57,7 @@ import { type ProcRosterSyncKind,
   feed_rename,
   type FeedNote,
 } from '@fnndsc/cumin';
-import { identityCache_usable, identityOwned_make } from '@fnndsc/cumin/identity-epoch';
+import { identityCache_usable, identityOwned_make } from '@fnndsc/cumin';
 import { VFSProvider, VFSItem, CpOptions } from '../provider.js';
 import { job_cancel, job_delete, job_statusFetch, job_logFetch, jobs_statusBatch } from '../../jobs/index.js';
 import { procJoins_sweep } from '../../dag/feedJoins.js';
