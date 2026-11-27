@@ -15,7 +15,9 @@
  *
  * Type-only and dynamic imports and a literal `require` count: each is
  * still a reason chili cannot be removed. Every workspace's sources and
- * scripts are read; an import that is commented out is not one. The
+ * scripts are read (`.ts`, `.js`, `.mjs`, `.cjs` and their kin) as the
+ * compiler reads them, so a comment or a string that shows an import is
+ * not one. The
  * baseline itself is held to the change's base (`scripts/lib/ratchetBase.mjs`):
  * a change that adds an import and raises the baseline to admit it fails.
  *
@@ -24,13 +26,17 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { base_resolve, ceilings_compare, ceilings_read, fileAtCommit_read } from './lib/ratchetBase.mjs';
 
 /** The baseline file, from the repository's root. */
 const BASELINE_FILE = 'scripts/ratchet-baseline.json';
 
-/** An import, re-export, dynamic import or `require` naming chili, with or without a subpath. */
-const CHILI_IMPORT = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*['"]@fnndsc\/chili(?:\/[^'"]*)?['"]/g;
+/** A module specifier that is chili, with or without a subpath. */
+const CHILI_MODULE = /^@fnndsc\/chili(?:\/|$)/;
+
+/** The sources read: TypeScript and JavaScript, modules and scripts. */
+const SOURCE_FILE = /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/;
 
 /** The one workspace that may import chili, and whose imports are counted. */
 const KEEPER = 'packages/brasa';
@@ -47,20 +53,23 @@ function sources_list(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) { if (entry.name !== 'node_modules' && entry.name !== 'dist') found.push(...sources_list(path)); }
-    else if (/\.(ts|mjs)$/.test(entry.name) && !entry.name.endsWith('.d.ts')) found.push(path);
+    else if (SOURCE_FILE.test(entry.name) && !entry.name.endsWith('.d.ts')) found.push(path);
   }
   return found;
 }
 
 /**
- * A source's text with its comments taken out: a block comment, and a line
- * that is only a comment. An import that was commented out is no import.
+ * The references to chili a source makes, read as the compiler reads them
+ * (`ts.preProcessFile`): `import` and `export … from`, a type-only import,
+ * a dynamic `import()` and a `require()` of a literal. A comment, a string
+ * that merely holds such a line, and an example in a doc block are not
+ * references.
  *
  * @param {string} text - The source.
- * @returns {string} The code.
+ * @returns {string[]} Each chili specifier it references, once per reference.
  */
-export function code_read(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((line) => !/^\s*\/\//.test(line)).join('\n');
+export function chiliRefs_read(text) {
+  return ts.preProcessFile(text, true, true).importedFiles.map((imported) => imported.fileName).filter((name) => CHILI_MODULE.test(name));
 }
 
 /**
@@ -100,8 +109,8 @@ export function chili_count(root) {
       const workspace = `${group}/${entry.name}`;
       // Its sources and its scripts: what ships and what builds it.
       for (const file of [...sources_list(join(root, workspace, 'src')), ...sources_list(join(root, workspace, 'scripts'))]) {
-        const found = code_read(readFileSync(file, 'utf8')).match(CHILI_IMPORT);
-        if (found === null) continue;
+        const found = chiliRefs_read(readFileSync(file, 'utf8'));
+        if (found.length === 0) continue;
         if (workspace === KEEPER) { files++; sites += found.length; }
         else outside.push(relative(root, file));
       }
