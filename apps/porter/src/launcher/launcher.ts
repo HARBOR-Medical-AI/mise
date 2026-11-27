@@ -605,38 +605,42 @@ export class BerthLauncher {
    *
    * @param user - The CUBE user.
    * @param cubeUrl - The CUBE.
+   * @param restart - True when the berth is stopped to be started again at once: the login held for it is kept, for the start that follows.
    * @returns Whether there was one.
+   * @throws {BerthRefusal} When the engine did not stop or remove a container: the berth may still be there.
    */
-  public async stop(user: string, cubeUrl: string): Promise<boolean> {
+  public async stop(user: string, cubeUrl: string, restart: boolean = false): Promise<boolean> {
     const identity: string = identity_normalise(user, cubeUrl);
     const names: BerthNames = berthNames_derive(this.options.prefix, identity, user);
-    this.held.delete(identity);
-    const legacy: boolean = await this.legacy_remove(names);
-    const found: DockerAnswer = await this.options.docker.call('GET', `/containers/${names.container}/json`);
-    const was: boolean = found.status !== 404;
-    if (was) {
-      await this.options.docker.call('POST', `/containers/${names.container}/stop?t=10`);
-      await this.options.docker.call('DELETE', `/containers/${names.container}?force=true`);
-    }
+    const legacy: boolean = await this.container_remove(names.containerLegacy);
+    const was: boolean = await this.container_remove(names.container);
+    // The held login goes once the berth is gone, and only at an end: a stop that failed keeps it, and so
+    // does a stop that a start follows.
+    if (!restart) this.held.delete(identity);
     await this.porter_leave(names.network);
     await this.options.docker.call('DELETE', `/networks/${names.network}`);
     return was || legacy;
   }
 
   /**
-   * Stops and removes the container a berth has under its legacy name,
-   * `<prefix>-<key>`, so one identity never has two containers; its wire and
-   * volumes, named the same either way, stay.
+   * Stops and removes one container, and is held to what the engine
+   * answers: a berth has one under its name and may have one under its
+   * legacy name, `<prefix>-<key>`, so that one identity never has two.
    *
-   * @param names - The berth's names.
+   * @param name - The container's name.
    * @returns Whether there was one.
+   * @throws {BerthRefusal} When the engine could not say whether it is there, or did not stop or remove it.
    */
-  private async legacy_remove(names: BerthNames): Promise<boolean> {
+  private async container_remove(name: string): Promise<boolean> {
     const docker: DockerApi = this.options.docker;
-    const found: DockerAnswer = await docker.call('GET', `/containers/${names.containerLegacy}/json`);
+    const found: DockerAnswer = await docker.call('GET', `/containers/${name}/json`);
     if (found.status === 404) return false;
-    await docker.call('POST', `/containers/${names.containerLegacy}/stop?t=10`);
-    await docker.call('DELETE', `/containers/${names.containerLegacy}?force=true`);
+    if (found.status !== 200) throw new BerthRefusal(502, `the engine could not say whether ${name} is there (it answered ${String(found.status)})`);
+    // Stopped already (304) or gone meanwhile (404) is as good as stopped.
+    const stopped: DockerAnswer = await docker.call('POST', `/containers/${name}/stop?t=10`);
+    if (![204, 304, 404].includes(stopped.status)) throw new BerthRefusal(502, `the engine did not stop ${name} (it answered ${String(stopped.status)})`);
+    const removed: DockerAnswer = await docker.call('DELETE', `/containers/${name}?force=true`);
+    if (![204, 404].includes(removed.status)) throw new BerthRefusal(502, `the engine did not remove ${name} (it answered ${String(removed.status)})`);
     return true;
   }
 
@@ -733,7 +737,7 @@ export class BerthLauncher {
     const names: BerthNames = berthNames_derive(this.options.prefix, identity, ask.user);
     const token: string | null = ask.token;
     if (token === null) throw new BerthRefusal(409, `${ask.user}: no token to start a berth on; log in again`);
-    await this.legacy_remove(names);
+    await this.container_remove(names.containerLegacy);
     const found: DockerAnswer = await docker.call('GET', `/containers/${names.container}/json`);
     const cohortHeld: unknown = field_get(found.body, 'Config', 'Labels', `${BERTH_LABEL}.cohort`);
     if (found.status === 200 && field_get(found.body, 'State', 'Running') === true && cohortHeld === cohort_word(ask.cohort) && berthPlaces_check(found.body, names.work)) {

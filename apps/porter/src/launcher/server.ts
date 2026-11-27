@@ -6,7 +6,7 @@
  *
  *   POST /berths/start   {user, uid, gid, cubeUrl, token, cohort?}  → the berth, running
  *   POST /berths/start?follow=lines                        → the berth's log as it boots, then the answer (NDJSON)
- *   POST /berths/stop    {user, cubeUrl}                   → {stopped}
+ *   POST /berths/stop    {user, cubeUrl, restart?}         → {stopped}
  *   GET  /berths/status  [?user=…&cubeUrl=…]               → {berths: […]}
  *   GET  /berths/access?cubeUrl=…                          → {berths: […]}, each person's berth or kept home with its usage
  *
@@ -33,7 +33,7 @@ const startSchema = z.object({
   cohort: z.number().int().positive().nullable().optional(),
 }).strict();
 
-const stopSchema = z.object({ user: z.string().min(1), cubeUrl: z.string().min(1) }).strict();
+const stopSchema = z.object({ user: z.string().min(1), cubeUrl: z.string().min(1), restart: z.boolean().optional() }).strict();
 
 /**
  * Whether a request carries the secret, compared in constant time.
@@ -134,8 +134,8 @@ export function launcherServer_create(launcher: BerthLauncher, secret: string, l
         }
         if (req.method === 'POST' && url.pathname === '/berths/stop') {
           const ask = stopSchema.safeParse(await body_read(req));
-          if (!ask.success) throw new BerthRefusal(400, 'stop wants {user, cubeUrl}');
-          const stopped: boolean = await launcher.stop(ask.data.user, ask.data.cubeUrl);
+          if (!ask.success) throw new BerthRefusal(400, 'stop wants {user, cubeUrl} and at most restart');
+          const stopped: boolean = await launcher.stop(ask.data.user, ask.data.cubeUrl, ask.data.restart === true);
           log(`${ask.data.user}: berth ${stopped ? 'stopped; its volumes kept' : 'was not running'}`);
           answer(200, { stopped });
           return;

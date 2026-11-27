@@ -46,18 +46,26 @@ interface SignalledPid {
  * process this is, since a pid is given to another once its process is gone.
  *
  * @param pid - The pid.
- * @returns The start time as the kernel keeps it (clock ticks since boot), or null when there is no such process or no `/proc`.
+ * @returns The start time as the kernel keeps it (clock ticks since boot); null when there is no such process; undefined when it cannot be told (no `/proc`, or its entry cannot be read).
  */
-function processStart_read(pid: number): string | null {
+function processStart_read(pid: number): string | null | undefined {
   try {
     const stat: string = readFileSync(`/proc/${String(pid)}/stat`, 'utf-8');
     // The command's name is in brackets and may hold spaces: the fields are counted after it.
     const fields: string[] = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return fields[19] ?? null;
-  } catch {
-    return null;
+    return fields[19];
+  } catch (error: unknown) {
+    const missing: boolean = typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+    // Not there, on a host that has a `/proc`: no such process. Anything else is not knowing.
+    return missing && existsSync('/proc/self/stat') ? null : undefined;
   }
 }
+
+/** Said when a daemon stops answering and its exit cannot be proved. */
+const STOP_SILENT: string = 'the calypso daemon no longer answers, but its exit could not be confirmed (its process cannot be read from /proc)';
+
+/** What is known of a signalled daemon: gone, still there, or silent with its exit not provable. */
+type StopState = 'gone' | 'there' | 'silent';
 
 /** The four directories a session owns. */
 export interface SessionDirs {
@@ -108,8 +116,8 @@ export interface ProcessHostOptions {
   stopWaitMs?: number;
   /** How long a killed daemon is waited for before the stop is called failed, in ms. */
   killWaitMs?: number;
-  /** When a process started (which process a pid is); `/proc` by default. Null: it cannot be told, or there is none. */
-  processStart_read?: (pid: number) => string | null;
+  /** When a process started (which process a pid is); `/proc` by default. Null: there is no such process. Undefined: it cannot be told. */
+  processStart_read?: (pid: number) => string | null | undefined;
 }
 
 /** One session this host knows about. */
@@ -189,7 +197,7 @@ export class ProcessHost implements SessionHost {
   private readonly kill: (pid: number, signal: NodeJS.Signals) => void;
   private readonly stopWaitMs: number;
   private readonly killWaitMs: number;
-  private readonly startReader: (pid: number) => string | null;
+  private readonly startReader: (pid: number) => string | null | undefined;
   private readonly sessions: Map<string, SessionRecord> = new Map();
 
   constructor(options: ProcessHostOptions) {
@@ -283,7 +291,7 @@ export class ProcessHost implements SessionHost {
             identity,
             child: null,
             adoptedPid: berth.pid ?? null,
-            adoptedStart: berth.pid !== undefined ? this.startReader(berth.pid) : null,
+            adoptedStart: berth.pid !== undefined ? this.startReader(berth.pid) ?? null : null,
             lines: [],
             serial: 0,
             open: new Map(),
@@ -463,10 +471,12 @@ export class ProcessHost implements SessionHost {
   /** @inheritdoc */
   public async evict(identity: string, cause: 'restart' | 'end' = 'end'): Promise<boolean> {
     const record: SessionRecord | undefined = this.sessions.get(identity);
-    // The session is forgotten from the first: nothing new is given its berth while it is being stopped.
     // The answer waits for the daemon to be gone, and a daemon that will not go is an error, not "ended".
-    this.sessions.delete(identity);
-    return await this.daemon_stop(identity, record, cause);
+    // The session is forgotten only once it is: a stop that failed keeps what is known of the daemon (its
+    // child, or the pid adopted and when that process started), so the next try is held to the same proof.
+    const stopped: boolean = await this.daemon_stop(identity, record, cause);
+    if (this.sessions.get(identity) === record) this.sessions.delete(identity);
+    return stopped;
   }
 
   /** @inheritdoc */
@@ -497,6 +507,7 @@ export class ProcessHost implements SessionHost {
       try {
         await this.daemon_stop(identity, old, 'restart');
       } catch (error: unknown) {
+        ProcessHost.evidence_keep(record, old);
         return this.boot_end(record, 'failed', error instanceof Error ? error.message : String(error));
       }
       if (why.kind !== 'saved-login') say('Starting a fresh calypso daemon on the saved login');
@@ -524,6 +535,7 @@ export class ProcessHost implements SessionHost {
       try {
         await this.daemon_stop(identity, old, 'restart');
       } catch (error: unknown) {
+        ProcessHost.evidence_keep(record, old);
         return this.boot_end(record, 'failed', error instanceof Error ? error.message : String(error));
       }
       return this.boot_run(record, launch);
@@ -532,29 +544,49 @@ export class ProcessHost implements SessionHost {
   }
 
   /**
+   * Keeps, on the record of a restart whose stop failed, what was known of
+   * the daemon that would not stop: the next try is held to the same proof.
+   *
+   * @param record - The failed restart's record, which now stands for the session.
+   * @param old - What the host knew of the daemon before the restart.
+   */
+  private static evidence_keep(record: SessionRecord, old: SessionRecord | undefined): void {
+    if (old === undefined) return;
+    record.child = old.child;
+    record.adoptedPid = old.adoptedPid;
+    if (old.adoptedStart !== undefined) record.adoptedStart = old.adoptedStart;
+  }
+
+  /**
    * Stops a session's daemon and waits until it is gone: asked first
    * (`SIGTERM`), and killed if it outlives the wait. A pid this host did not
-   * start is signalled only while it is still the process it was.
+   * start is killed only when it is proved to be the process that was asked.
    *
    * @param identity - The session.
    * @param record - What the host knew of it, when it knew anything.
    * @param cause - Why it ends, left for the daemon to say.
    * @returns Whether there was a daemon to stop.
-   * @throws {Error} When the daemon is still there after being killed, or the pid is no longer the daemon's.
+   * @throws {Error} When the daemon is still there after being killed, could not be proved to be the one to kill, or went silent with its exit not provable.
    */
   private async daemon_stop(identity: string, record: SessionRecord | undefined, cause: 'restart' | 'end'): Promise<boolean> {
     const ended: SpawnedSession | SignalledPid | null = await this.process_signal(identity, record, cause);
     if (ended === null) return false;
-    if (await this.gone_wait(identity, ended, this.stopWaitMs)) return true;
+    const asked: StopState = await this.gone_wait(identity, ended, this.stopWaitMs);
+    if (asked === 'gone') return true;
+    if (asked === 'silent') throw new Error(STOP_SILENT);
     if ('pid' in ended && 'started' in ended) {
       // Proved again before the harder signal: the process asked to stop may have gone at the last moment
-      // and its pid been given to another.
-      if (!this.pid_isSame(ended)) return true;
+      // and its pid been given to another. Where it cannot be proved, it is not killed.
+      const now: 'same' | 'gone' | 'unknown' = this.pid_state(ended);
+      if (now === 'gone') return true;
+      if (now === 'unknown') throw new Error(`pid ${String(ended.pid)} could not be proved to be the session's calypso daemon (its process cannot be read from /proc); it was asked to stop and did not, and was not killed`);
       this.kill(ended.pid, 'SIGKILL');
     } else {
       ended.kill('SIGKILL');
     }
-    if (await this.gone_wait(identity, ended, this.killWaitMs)) return true;
+    const killed: StopState = await this.gone_wait(identity, ended, this.killWaitMs);
+    if (killed === 'gone') return true;
+    if (killed === 'silent') throw new Error(STOP_SILENT);
     throw new Error('the old calypso daemon did not stop, even when killed');
   }
 
@@ -564,41 +596,49 @@ export class ProcessHost implements SessionHost {
    *
    * @param pid - The pid.
    * @param record - What the host knew of the session.
-   * @returns When the process started, or null where that cannot be told.
-   * @throws {Error} When the pid has become another process.
+   * @returns When the process started; null where that cannot be told and nothing was known of it (the berth's answer is then the only proof, and it is asked to stop but never killed).
+   * @throws {Error} When the pid has become another process, is gone, or was known and can no longer be read.
    */
   private adopted_prove(pid: number, record: SessionRecord | undefined): string | null {
-    const started: string | null = this.startReader(pid);
+    const started: string | null | undefined = this.startReader(pid);
     const adopted: string | null = record?.adoptedPid === pid ? record.adoptedStart ?? null : null;
-    if (adopted !== null && started !== adopted) {
+    if (adopted !== null && started === undefined) {
+      throw new Error(`pid ${String(pid)} could not be proved to be the session's calypso daemon (its process can no longer be read from /proc); it was not signalled`);
+    }
+    if ((adopted !== null && started !== adopted) || started === null) {
       throw new Error(`pid ${String(pid)} is no longer the session's calypso daemon; it was not signalled`);
     }
-    return started;
+    return started ?? null;
   }
 
   /**
-   * Says whether what was signalled is gone now.
+   * Says what is known of what was signalled.
    *
    * @param identity - The session.
    * @param ended - The child or pid signalled.
-   * @returns True once it is gone.
+   * @returns Gone, still there, or silent: no longer answering, with nothing to prove its exit by.
    */
-  private async gone_check(identity: string, ended: SpawnedSession | SignalledPid): Promise<boolean> {
-    if (!('pid' in ended && 'started' in ended)) return ended.exitCode !== null || (ended.signalCode ?? null) !== null;
-    if (ended.started !== null) return !this.pid_isSame(ended);
+  private async gone_check(identity: string, ended: SpawnedSession | SignalledPid): Promise<StopState> {
+    if (!('pid' in ended && 'started' in ended)) return ended.exitCode !== null || (ended.signalCode ?? null) !== null ? 'gone' : 'there';
+    const now: 'same' | 'gone' | 'unknown' = this.pid_state(ended);
+    if (now !== 'unknown') return now === 'gone' ? 'gone' : 'there';
+    // Nothing says whether the process is there. Its berth still answering says it is; its berth silent
+    // says only that: a process can stop answering and live on.
     const berth: Berth | null = this.berth_read(identity);
-    return berth === null || !(await this.alive(berth.url));
+    return berth !== null && (await this.alive(berth.url)) ? 'there' : 'silent';
   }
 
   /**
    * Says whether a pid is still the process that was signalled.
    *
    * @param signalled - The pid and when its process started.
-   * @returns True while it is; where the start cannot be told, true (the berth's answer was the proof).
+   * @returns Same; gone (no such process, or another started since); or unknown, where it cannot be told.
    */
-  private pid_isSame(signalled: SignalledPid): boolean {
-    if (signalled.started === null) return true;
-    return this.startReader(signalled.pid) === signalled.started;
+  private pid_state(signalled: SignalledPid): 'same' | 'gone' | 'unknown' {
+    if (signalled.started === null) return 'unknown';
+    const now: string | null | undefined = this.startReader(signalled.pid);
+    if (now === undefined) return 'unknown';
+    return now === signalled.started ? 'same' : 'gone';
   }
 
   /**
@@ -638,20 +678,18 @@ export class ProcessHost implements SessionHost {
   }
 
   /**
-   * Waits until a signalled daemon is gone: its child has exited, or the
-   * pid is no longer that process (where that cannot be told, its berth no
-   * longer answers).
+   * Waits until a signalled daemon is gone, or can no longer be told about.
    *
    * @param identity - The session.
    * @param ended - The child or pid signalled.
    * @param waitMs - How long to wait.
-   * @returns True once it is gone; false when it outlived the wait.
+   * @returns Gone; silent (see {@link gone_check}); or still there when the wait ran out.
    */
-  private async gone_wait(identity: string, ended: SpawnedSession | SignalledPid, waitMs: number): Promise<boolean> {
+  private async gone_wait(identity: string, ended: SpawnedSession | SignalledPid, waitMs: number): Promise<StopState> {
     const deadline: number = Date.now() + waitMs;
     for (;;) {
-      if (await this.gone_check(identity, ended)) return true;
-      if (Date.now() >= deadline) return false;
+      const state: StopState = await this.gone_check(identity, ended);
+      if (state !== 'there' || Date.now() >= deadline) return state;
       await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, this.pollMs); });
     }
   }

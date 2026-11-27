@@ -3,7 +3,8 @@
  * followed, its mount addressed. The proxy itself needs a daemon and is
  * proved live.
  */
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { berthKey_compute } from '@fnndsc/calypso/berth';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { AddressInfo } from 'node:net';
 import { createServer, get as httpGet, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -385,6 +386,43 @@ describe('the door', () => {
     await door.app.close();
   });
 
+  it('a logout whose berth could not be stopped still logs the person out, and says the berth was not stopped', async () => {
+    const berths = new FakeBerthHost();
+    berths.evict = async (): Promise<boolean> => { throw new Error('the berth was not stopped: docker could not stop the container'); };
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, log: (line: string): void => { said.push(line); }, mint: async () => ({ token: 'T' }) });
+    berths.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://10.213.77.2:4444', token: 'ATTACH' };
+    const login = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const out = await door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    expect(out.json()).toEqual({ ok: true, berth: 'not stopped', reason: 'the berth was not stopped: docker could not stop the container' });
+    expect(String(out.headers['set-cookie'])).toContain('porter_session=;');
+    expect(said).toContain('chris logged out; their berth could not be stopped: the berth was not stopped: docker could not stop the container');
+    await door.app.close();
+  });
+
+  it('a login that arrives while a logout is stopping the berth waits for the stop, and is not attached to the berth going', async () => {
+    const berths = new FakeBerthHost();
+    let stopped: (ended: boolean) => void = (): void => undefined;
+    berths.evict = async (): Promise<boolean> => new Promise<boolean>((resolve: (ended: boolean) => void): void => { stopped = resolve; });
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, mint: async () => ({ token: 'T' }) });
+    berths.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://10.213.77.2:4444', token: 'GOING' };
+    const first = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (first.json() as { key: string }).key;
+    const out = door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(first) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    let looks: number = 0;
+    berths.find = async (): Promise<Berth | null> => { looks += 1; return berths.found; };
+    const login = door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    // The berth still answers, and the login has not looked for it.
+    expect(looks).toBe(0);
+    berths.found = null;
+    stopped(true);
+    expect((await out).json()).toEqual({ ok: true });
+    expect(((await login).json() as { state: string }).state).toBe('starting');
+    expect(door.registry.get(key)?.berth.token).not.toBe('GOING');
+    await door.app.close();
+  });
+
   it('logs a browser out by clearing its cookie, and leaves the session alone', async () => {
     const out = await built.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json' } });
     expect(out.json()).toEqual({ ok: true });
@@ -426,6 +464,56 @@ describe('a login never lands on a kernel older than the door\'s', () => {
     expect(older.restarted).toEqual([{ identity: 'chris@https://cube.example.org/api/v1/', user: 'chris' }]);
     expect(older.spawned.length).toBe(0);
     expect(said.some((line: string): boolean => /restarting chris's session for the new release \(brasa 0.31.5 → 0.33.0/.test(line))).toBe(true);
+    await door.app.close();
+  });
+
+  it('a login held while it asks an older berth for its joblets, across an ending that leaves a current berth up, attaches to that one and restarts nothing', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const older: FakeHost = new FakeHost();
+    older.found = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD', versions: { brasa: '0.31.5', calypso: '0.19.2', chell: '5.10.1' } };
+    const door: PorterApp = await porterApp_build({ config, host: older, mint: async () => ({ token: 'x' }), installed: { brasa: '0.33.0', calypso: '0.19.5', chell: '5.10.4' } });
+    // The berth's answer about its joblets is held.
+    let answer: (response: Response) => void = (): void => undefined;
+    const fetched = jest.spyOn(globalThis, 'fetch').mockImplementation((): Promise<Response> => new Promise<Response>((resolve: (response: Response) => void): void => { answer = resolve; }));
+    try {
+      const login = door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+      await new Promise((resolve) => { setTimeout(resolve, 40); });
+      expect(fetched).toHaveBeenCalledTimes(1);
+      // An ending of the session comes and goes, and a berth on current code is up in its place.
+      door.registry.generation_raise(berthKey_compute(identity));
+      older.found = { identity, url: 'ws://127.0.0.1:5555', token: 'FRESH', versions: { brasa: '0.33.0', calypso: '0.19.5', chell: '5.10.4' } };
+      // The old berth's answer comes back saying it runs nothing: once, that meant "restart it".
+      answer(new Response(JSON.stringify({ joblets: [] }), { status: 200 }));
+      expect(((await login).json() as { state: string }).state).toBe('attached');
+      expect(older.restarted).toEqual([]);
+      expect(older.spawned).toEqual([]);
+      expect(door.registry.get(berthKey_compute(identity))?.berth.token).toBe('FRESH');
+    } finally {
+      fetched.mockRestore();
+      await door.app.close();
+    }
+  });
+
+  it('a login held while its new token is taken to the berth, across an ending, does not attach to the berth that was ended', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const berths = new FakeBerthHost();
+    berths.found = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    let taken: () => void = (): void => undefined;
+    let renews: number = 0;
+    berths.token_renew = async (): Promise<void> => {
+      renews += 1;
+      if (renews === 1) await new Promise<void>((resolve: () => void): void => { taken = resolve; });
+    };
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, mint: async () => ({ token: 'T' }) });
+    const login = door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    await new Promise((resolve) => { setTimeout(resolve, 40); });
+    expect(renews).toBe(1);
+    door.registry.generation_raise(berthKey_compute(identity));
+    berths.found = { identity, url: 'ws://127.0.0.1:5555', token: 'FRESH' };
+    taken();
+    expect(((await login).json() as { state: string }).state).toBe('attached');
+    expect(door.registry.get(berthKey_compute(identity))?.berth.token).toBe('FRESH');
+    expect(berths.restarted).toEqual([]);
     await door.app.close();
   });
 

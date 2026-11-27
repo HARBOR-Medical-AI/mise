@@ -632,10 +632,26 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // and compares it again after every wait and before every act: if an ending has begun, or has come and
     // gone, the round is thrown away and the login looks again. So it never attaches to, renews a token
     // on, or restarts a berth that the sweep, a restart or a logout was stopping.
+    // Whether a boot of this session is under way now, read from its record and let go of at once.
+    const boot_isUnderWay = (): boolean => {
+      const followed = host.boot_follow(identity, { line: (): void => undefined, done: (): void => undefined });
+      followed?.release();
+      return followed?.report.state === 'booting';
+    };
     for (let round: number = 0; round < LOGIN_ROUNDS; round++) {
-      await registry.eviction_wait(key);
+      // The generation is read before anything is awaited, the wait for an ending under way included: an
+      // ending that begins while this login waits is then seen as one, and the round is thrown away.
       const began: number = registry.generation_get(key);
       const generation_moved = (): boolean => registry.generation_get(key) !== began;
+      await registry.eviction_wait(key);
+      if (generation_moved()) continue;
+      // A boot already under way is joined before the berth is looked for: its record is what there is to
+      // know, and a lookup that fails or is slow does not stand between a login and the boot it joins.
+      if (boot_isUnderWay()) {
+        registry.pending_note(identity, username);
+        options.log?.(`${username} joins the boot already under way`);
+        return starting_answer();
+      }
       const found: Berth | null = await host.find(identity);
       if (generation_moved()) continue;
       // A boot already under way is joined, never restarted: two scripts
@@ -643,14 +659,10 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       // turns killing each other's boot and nobody would ever get in. It is
       // joined whether or not the berth it replaces still answers: while a
       // restart is booting, its record is followed, not the old berth.
-      const booting = host.boot_follow(identity, { line: (): void => undefined, done: (): void => undefined });
-      if (booting !== null) {
-        booting.release();
-        if (booting.report.state === 'booting') {
-          registry.pending_note(identity, username);
-          options.log?.(`${username} joins the boot already under way`);
-          return starting_answer();
-        }
+      if (boot_isUnderWay()) {
+        registry.pending_note(identity, username);
+        options.log?.(`${username} joins the boot already under way`);
+        return starting_answer();
       }
       // A login never lands on a kernel older than the door's: a session whose
       // daemon runs code this porter no longer ships is ended here and boots
@@ -831,14 +843,22 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // On a door that starts berths a logout stops the person's berth; its volumes, and so their home, stay.
     const leaving: string | null = options.logoutEnds === true ? requestKey_read(request) : null;
     const identity: string | null = leaving === null ? null : registry.identity_find(leaving);
+    let unstopped: string | null = null;
     if (identity !== null) {
-      // The berth is about to be stopped: a login that learnt of it before now looks again.
-      if (leaving !== null) registry.generation_raise(leaving);
-      const ended: boolean = await host.evict(identity, 'end').catch((): boolean => false);
-      options.log?.(`${user_extract(identity)} logged out${ended ? '; their berth stopped, its volumes kept' : ''}`);
+      // The person is logged out of the door either way. The stop is the one ending under way for the key
+      // until it is over: a login that arrives meanwhile waits for it, and the sweep claims nothing. A berth
+      // that could not be stopped is said as that, not passed over as if there had been none.
+      try {
+        const ended: boolean = await registry.ending_run(leaving ?? '', (): Promise<boolean> => host.evict(identity, 'end'));
+        options.log?.(`${user_extract(identity)} logged out${ended ? '; their berth stopped, its volumes kept' : ''}`);
+      } catch (error: unknown) {
+        unstopped = error instanceof Error ? error.message : String(error);
+        options.log?.(`${user_extract(identity)} logged out; their berth could not be stopped: ${unstopped}`);
+      }
     }
     void reply.clearCookie(DOOR_COOKIE, { path: '/' });
-    return request_wantsJson(request) ? { ok: true } : reply.redirect('/login', 303);
+    if (!request_wantsJson(request)) return reply.redirect('/login', 303);
+    return unstopped === null ? { ok: true } : { ok: true, berth: 'not stopped', reason: unstopped };
   });
 
   app.get('/boot/:key', async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {

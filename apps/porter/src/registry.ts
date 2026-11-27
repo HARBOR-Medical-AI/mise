@@ -235,6 +235,35 @@ export class SessionRegistry {
   }
 
   /**
+   * Runs an ending of a key's session that is not the sweep's (a logout,
+   * an administrator's end) as the one ending under way for the key: it
+   * waits for any that is, raises the generation, and until it is over a
+   * login for the key waits and the sweep claims nothing under the key.
+   *
+   * @param key - The session key.
+   * @param work - The stop.
+   * @returns What the stop returns.
+   *
+   * @example
+   * const ended: boolean = await registry.ending_run(key, (): Promise<boolean> => host.evict(identity));
+   */
+  public async ending_run<T>(key: string, work: () => Promise<T>): Promise<T> {
+    // One at a time for a key: each waits for the one before, in the order asked.
+    const before: Promise<void> | undefined = this.evictions.get(key);
+    let wait_settle: () => void = (): void => undefined;
+    const done: Promise<void> = new Promise((resolve: () => void): void => { wait_settle = resolve; });
+    this.evictions.set(key, done);
+    this.generation_raise(key);
+    try {
+      if (before !== undefined) await before;
+      return await work();
+    } finally {
+      if (this.evictions.get(key) === done) this.evictions.delete(key);
+      wait_settle();
+    }
+  }
+
+  /**
    * Waits for an ending of a key's session that is under way.
    *
    * @param key - The session key.
@@ -243,8 +272,8 @@ export class SessionRegistry {
    * await registry.eviction_wait(key);
    */
   public async eviction_wait(key: string): Promise<void> {
-    const under: Promise<void> | undefined = this.evictions.get(key);
-    if (under !== undefined) await under;
+    // Until none is: another may have been asked for while the one before was awaited.
+    for (let under: Promise<void> | undefined = this.evictions.get(key); under !== undefined; under = this.evictions.get(key)) await under;
   }
 
   /** Every entry, for a status listing. */

@@ -19,6 +19,8 @@ import { launcherServer_create, secret_matches } from '../../src/launcher/server
 import { launcherSecret_read } from '../../src/launcher/secret.js';
 import { LauncherHost, identity_split, launcher_call } from '../../src/host/launcherHost.js';
 import { porterConfig_resolve } from '../../src/config.js';
+import { SessionRegistry } from '../../src/registry.js';
+import { idleSweep_run } from '../../src/sweep.js';
 
 const CUBE: string = 'http://cube.example.org/api/v1/';
 const SECRET: string = 's'.repeat(40);
@@ -29,6 +31,8 @@ class FakeDocker implements DockerApi {
   volumes: Map<string, Record<string, string>> = new Map();
   containers: Map<string, { spec: Record<string, unknown>; running: boolean; ip: string; token: string | null }> = new Map();
   execs: Array<{ container: string; cmd: string[]; user: string; stdin: string | null }> = [];
+  /** What the engine answers a container stop with; 204 unless a test has it refuse. */
+  stopStatus: number = 204;
   /** A berth whose session never writes its berth file. */
   silent: boolean = false;
   /** Each container's log, a line each; absent: nothing written. */
@@ -151,7 +155,11 @@ class FakeDocker implements DockerApi {
     }
     if (route.endsWith('/start')) { if (found !== undefined) found.running = true; return { status: 204, body: null }; }
     if (route.endsWith('/wait')) { if (found !== undefined) found.running = false; return { status: 200, body: { StatusCode: name.endsWith('-own') ? this.ownExit : 0 } }; }
-    if (route.endsWith('/stop')) { if (found !== undefined) found.running = false; return { status: 204, body: null }; }
+    if (route.endsWith('/stop')) {
+      if (this.stopStatus !== 204) return { status: this.stopStatus, body: { message: 'cannot stop container: permission denied' } };
+      if (found !== undefined) found.running = false;
+      return { status: 204, body: null };
+    }
     if (method === 'DELETE' && parts[1] === 'containers') { for (const net of this.networks.values()) net.members.delete(name); this.containers.delete(name); return { status: found === undefined ? 404 : 204, body: null }; }
     return { status: 404, body: {} };
   }
@@ -833,6 +841,57 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     expect(refused.status).toBe(401);
     const unknown = await launcher_call({ listen: join(dir, 'launcher.sock'), secret: SECRET }, 'POST', '/berths/exec', {});
     expect(unknown.status).toBe(404);
+  });
+
+  it('an engine that refuses the stop is a failed stop all the way up: the berth stays, the sweep keeps its session, a restart starts nothing', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    docker.stopStatus = 500;
+    await expect(host.evict(ANA)).rejects.toThrow(`the berth was not stopped: the engine did not stop ${container} (it answered 500)`);
+    expect(docker.containers.has(container)).toBe(true);
+    // The sweep: the session is still remembered, and it is said.
+    const registry: SessionRegistry = new SessionRegistry((): number => 1_000_000_000);
+    const entry = registry.note(ANA, 'ana', { identity: ANA, url: 'ws://10.9.0.2:1', token: 'a' });
+    entry.activeAt = 0;
+    const said: string[] = [];
+    expect(await idleSweep_run(registry, host, 1000, (line: string): void => { said.push(line); })).toEqual([]);
+    expect(registry.get(entry.key)).toBe(entry);
+    expect(said.join('\n')).toContain('could not end ana\'s idle session');
+    // A restart: its boot fails with the reason, and no second berth is made beside the first.
+    const made: number = docker.made.length;
+    host.restart_begin(ANA, 'ana', CUBE, { kind: 'asked' });
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report).toMatchObject({ state: 'failed', reason: expect.stringContaining('the engine did not stop') });
+    expect(docker.made.length).toBe(made);
+    expect(docker.containers.has(container)).toBe(true);
+  });
+
+  it('a restart stops the berth and starts it again on the login the launcher holds; an end forgets that login', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    const made: number = docker.made.filter((one) => one.name === container).length;
+    host.restart_begin(ANA, 'ana', CUBE, { kind: 'asked' });
+    await new Promise((resolve) => { setTimeout(resolve, 400); });
+    expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report.state).toBe('ready');
+    expect(docker.made.filter((one) => one.name === container).length).toBe(made + 1);
+    expect(docker.containers.get(container)?.running).toBe(true);
+    // An end is not a restart: the login held is forgotten, and a start with no token is refused.
+    expect(await host.evict(ANA)).toBe(true);
+    host.restart_begin(ANA, 'ana', CUBE, { kind: 'saved-login' });
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report).toMatchObject({ state: 'failed', reason: 'ana: no token to start a berth on; log in again' });
+  });
+
+  it('a launcher answer that does not say whether a berth was stopped is not taken for "none was running"', async () => {
+    const odd: Server = createServer((_req, res): void => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}'); });
+    await new Promise<void>((resolve) => { odd.listen(join(dir, 'odd.sock'), resolve); });
+    const host: LauncherHost = new LauncherHost({ listen: join(dir, 'odd.sock'), secret: SECRET }, async (): Promise<number> => 7);
+    await expect(host.evict(ANA)).rejects.toThrow('the launcher did not say whether it stopped one');
+    await new Promise<void>((resolve) => { odd.close(() => resolve()); });
   });
 
   it('answers the operator\'s read over the API, and porter\'s host asks for it', async () => {
