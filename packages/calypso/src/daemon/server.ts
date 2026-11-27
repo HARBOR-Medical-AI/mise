@@ -56,7 +56,7 @@ import { byteStream_normalise, errorFacts_read, vfsBreak_format } from './vfsBre
  * looking at, and a surface able to post unbounded bytes to a loopback port
  * is a surface able to fill the machine.
  */
-const VFS_POST_LIMIT: number = 256 * 1024 * 1024;
+export const VFS_POST_LIMIT: number = 256 * 1024 * 1024;
 import type { CommandEnvelope } from '@fnndsc/cumin';
 
 /**
