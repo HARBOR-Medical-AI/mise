@@ -9,6 +9,7 @@
  * the module builds the `ArgusHost` the language reads.
  */
 import { path_quote, path_write } from '@fnndsc/menu';
+import { runEnd_read } from './lineRun.js';
 import { session_switch } from './sessionSwitch.js';
 import { VIEW_QUOTED_MARK } from './shareView.js';
 import type { SessionAnswer } from '../console/argusLang.js';
@@ -330,8 +331,9 @@ export function argusHost_build(context: Pick<HostContext, 'layout' | 'panels' |
     session_run: async (line: string): Promise<SessionAnswer> => {
       try {
         const outcome: ExecuteOutcome = await context.client.line_execute(line, { silent: true, observe: false });
-        // Done is what the results say, by their status; a line that returned nothing was not done.
-        const ok: boolean = outcome.envelopes.length > 0 && outcome.envelopes.every((envelope): boolean => envelope.status !== 'error');
+        // Done is how the line ended, as every screen reads it (its answers and its exit status), and it
+        // returned something: a line that returned nothing gave no receipt.
+        const ok: boolean = outcome.envelopes.length > 0 && runEnd_read(outcome).ok;
         return { ok, text: outcome.envelopes.map((envelope): string => (envelope.status === 'error' ? envelope.renderedErr ?? envelope.rendered : envelope.rendered)).join('\n') };
       } catch (error: unknown) {
         return { ok: false, text: error instanceof Error ? error.message : String(error) };

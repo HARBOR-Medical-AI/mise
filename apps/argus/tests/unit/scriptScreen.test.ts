@@ -643,6 +643,31 @@ describe('the script screen', () => {
     for (const one of [again, elsewhere]) { one.dispose(); one.root.remove(); }
   });
 
+  it('a question standing when the screen is left is carried with what was known of it, and stands again as the same question', async () => {
+    const { screen } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    const about = { mine: true, line: 'vm build store', purpose: 'stratus.vm.build', subject: { vm: 'store' } };
+    void screen.ask_take('reworded entirely', 'confirm', about);
+    await settle();
+    // Left with it on the strip: what the host keeps is the question whole.
+    const carried = screen.ask_detach();
+    expect(carried).toMatchObject({ message: 'reworded entirely', kind: 'confirm', about });
+    screen.dispose();
+    screen.root.remove();
+    // Opened again: the host gives the screen what it kept, and the question is the build's own, over its own line.
+    const { screen: again } = screen_make();
+    await again.open('/scripts/chrisproject/store.mise');
+    await settle();
+    void again.ask_take(carried?.message ?? '', carried?.kind ?? 'text', carried?.about);
+    await settle();
+    const kept = again as unknown as { ask: { about: unknown } | null; askLine: string | null };
+    expect(kept.ask?.about).toEqual(about);
+    expect(kept.askLine).toBe('vm build store');
+    again.dispose();
+    again.root.remove();
+  });
+
   it('a hidden word carried away stands again on the errand bar of the screen opened after, and its SEND answers the first ask', async () => {
     const { screen } = screen_make();
     await screen.open('/scripts/chrisproject/store.mise');
