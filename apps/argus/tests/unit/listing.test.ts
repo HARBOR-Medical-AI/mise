@@ -356,6 +356,25 @@ describe('a-selection-belongs-to-the-field', () => {
     });
   }
 
+  it('let go, it hears nothing more: a word from the language, a press on its chrome and a closing row zone change nothing', async () => {
+    const { listing, root, mount } = selectable();
+    listing.rows_set([{ key: '/x', rows: ENTRIES }], { field: '/x' });
+    root.dispatchEvent(new CustomEvent('argus:roster', { detail: { op: 'filter', text: 'alp' } }));
+    await frame();
+    expect(names_onStage(mount)).toEqual(['alpha']);
+    listing.hold_release();
+    // The language says to show everything again, and to sort: the listing is no longer listening.
+    root.dispatchEvent(new CustomEvent('argus:roster', { detail: { op: 'filter', text: '' } }));
+    root.dispatchEvent(new CustomEvent('argus:roster', { detail: { op: 'sort', key: 'size', dir: 'desc' } }));
+    await frame();
+    expect(names_onStage(mount)).toEqual(['alpha']);
+    // SELECT is pressed on the pane's chrome: nothing turns on.
+    (root.querySelector('.files-select') as HTMLElement).click();
+    expect(root.querySelector('.files-select')?.textContent).not.toBe('SELECT ON');
+    // Let go twice is let go once.
+    expect((): void => { listing.hold_release(); }).not.toThrow();
+  });
+
   it('refuses a listing that selects without a row zone for the verbs', () => {
     expect((): Listing<Entry> => listing_build({
       selection: { verbs: (): [] => [] },

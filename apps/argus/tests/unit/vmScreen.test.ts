@@ -13,7 +13,7 @@
  * RUN; a machine the host keeps with no script gets one synthesized and
  * written at its first act.
  */
-import { describe, it, expect } from '@jest/globals';
+import { describe, it, expect, jest } from '@jest/globals';
 import type { QuietAnswer, ScriptHooks } from '../../src/features/script/screen.js';
 import { VmScreen } from '../../src/features/vm/screen.js';
 import { leverFloor_derive, serviceDraft_why, vmServices_change, vmServices_read } from '../../src/features/vm/model.js';
@@ -978,6 +978,41 @@ describe('the VM controller', () => {
     expect(sent.some((line: string): boolean => line.startsWith('touch --withContents='))).toBe(true);
     expect(os().value.endsWith(' ')).toBe(false);
     screen.dispose();
+    screen.root.remove();
+  });
+
+  it('a screen left while a line is running, a lever is waiting and a standing is being watched has no clock left, and starts none after', async () => {
+    const { screen } = screen_make();
+    await screen.vm_open('lone');
+    await settle(12);
+    /** The screen's own clocks, reached as the screen reaches them. */
+    const inner = screen as unknown as {
+      runTick: unknown; leverTimer: unknown; answeredTimer: unknown; answeredGoing: unknown;
+      runTick_set: (on: boolean) => void; answeredGoing_poll: () => void;
+    };
+    jest.useFakeTimers();
+    try {
+      const before: number = jest.getTimerCount();
+      // A line that has been sent and has not come back: the run's clock ticks every second.
+      inner.runTick_set(true);
+      // A lever moved: its price is asked for after a wait.
+      inner.leverTimer = setTimeout((): void => undefined, 400);
+      // A line answered yes: its standing is read again until it is seen running.
+      inner.answeredGoing = 0;
+      inner.answeredGoing_poll();
+      expect(jest.getTimerCount()).toBe(before + 3);
+      screen.dispose();
+      expect(jest.getTimerCount()).toBe(before);
+      expect(inner.runTick).toBeNull();
+      expect(inner.leverTimer).toBeNull();
+      expect(inner.answeredTimer).toBeNull();
+      // The line comes back, or something asks again: nothing is started on a screen that has left.
+      inner.runTick_set(true);
+      inner.answeredGoing_poll();
+      expect(jest.getTimerCount()).toBe(before);
+    } finally {
+      jest.useRealTimers();
+    }
     screen.root.remove();
   });
 

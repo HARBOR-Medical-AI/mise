@@ -2461,8 +2461,28 @@ export class VmScreen extends ScriptScreen {
 
   private runTick: ReturnType<typeof setInterval> | null = null;
 
+  /**
+   * Stops every clock the screen runs, its own and the script screen's: the
+   * run's one-second tick (which would otherwise redraw a screen nobody
+   * sees until its line came back, and for ever if it did not) and the
+   * lever's wait.
+   */
+  public override dispose(): void {
+    this.runTick_set(false);
+    if (this.leverTimer !== null) clearTimeout(this.leverTimer);
+    this.leverTimer = null;
+    // The listings the screen made let go of what they took.
+    this.machineListing?.hold_release();
+    this.profileListing?.hold_release();
+    this.settingListing?.hold_release();
+    this.accountListing?.hold_release();
+    super.dispose();
+  }
+
   /** The run's clock: the band and the block say how long, every second, while it runs. */
   private runTick_set(on: boolean): void {
+    // A screen that has been left starts no clock: the line it sent may never come back.
+    if (on && this.left) return;
     if (on && this.runTick === null) this.runTick = setInterval((): void => { if (this.run?.outcome === null) this.run_redraw(); else this.runTick_set(false); }, 1000);
     if (!on && this.runTick !== null) { clearInterval(this.runTick); this.runTick = null; }
   }

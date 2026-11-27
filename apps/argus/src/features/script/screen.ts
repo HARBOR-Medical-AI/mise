@@ -343,7 +343,9 @@ export class ScriptScreen {
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
   protected ticker: ReturnType<typeof setInterval> | null = null;
   /** Whether the screen was left: a read that answers after that still redraws it, and must not retitle the tab the page has again. */
-  private left: boolean = false;
+  protected left: boolean = false;
+  /** The wait before the standing is read again for a line answered yes; null when none is pending. */
+  private answeredTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Builds the screen.
@@ -421,6 +423,8 @@ export class ScriptScreen {
     this.costTimer = null;
     if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
+    if (this.answeredTimer !== null) clearTimeout(this.answeredTimer);
+    this.answeredTimer = null;
     this.ask?.answer(null);
     this.ask = null;
   }
@@ -847,9 +851,14 @@ export class ScriptScreen {
 
   /** Reads the standing again until the line answered yes here is seen running, moved, or past its bound. */
   protected answeredGoing_poll(): void {
-    setTimeout((): void => {
-      if (this.answeredGoing === null || this.path === '') return;
+    // A screen that has been left reads nothing more and waits for nothing.
+    if (this.left) return;
+    if (this.answeredTimer !== null) clearTimeout(this.answeredTimer);
+    this.answeredTimer = setTimeout((): void => {
+      this.answeredTimer = null;
+      if (this.left || this.answeredGoing === null || this.path === '') return;
       void this.standings_refresh().then((): void => {
+        if (this.left) return;
         this.draw();
         if (this.answeredGoing !== null) this.answeredGoing_poll();
       });

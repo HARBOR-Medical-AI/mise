@@ -307,7 +307,7 @@ export class DagPanel {
     this.linkLine.classList.add('dag-linkline');
     this.linkLine.hidden = true;
     facts.parentElement?.appendChild(this.linkLine);
-    new MutationObserver((): void => this.linkLine_refresh()).observe(facts, { childList: true });
+    this.observe_keep(new MutationObserver((): void => this.linkLine_refresh())).observe(facts, { childList: true });
     this.stateSpan = paneRootEl?.querySelector<HTMLElement>('.pane-state') ?? null;
     this.modeSpan = paneRootEl?.querySelector<HTMLElement>('.pane-mode') ?? null;
     const verbs: DagPanelHandlers['feed_verbs'] = handlers.feed_verbs;
@@ -439,16 +439,38 @@ export class DagPanel {
       this.scene.physics_set({ [detail.term]: detail.on } as Partial<PhysicsTerms>);
     });
     // The THEME pill re-seats the palette on the root element; follow it.
-    new MutationObserver((): void => this.scene.palette_refresh()).observe(
+    this.observe_keep(new MutationObserver((): void => this.scene.palette_refresh())).observe(
       document.documentElement,
       { attributes: true, attributeFilter: ['data-theme'] },
     );
-    window.addEventListener('resize', (): void => this.scene.size_fit());
+    window.addEventListener('resize', (): void => this.scene.size_fit(), { signal: this.released.signal });
     // A zoom glide resizes the canvas without a window resize; refit once
     // the transition has settled.
-    new MutationObserver((): void => {
-      window.setTimeout((): void => this.scene.size_fit(), 600);
-    }).observe(document.body, { attributes: true, attributeFilter: ['data-zoom'] });
+    this.observe_keep(new MutationObserver((): void => {
+      if (this.zoomTimer !== null) window.clearTimeout(this.zoomTimer);
+      this.zoomTimer = window.setTimeout((): void => {
+        this.zoomTimer = null;
+        this.scene.size_fit();
+      }, 600);
+    })).observe(document.body, { attributes: true, attributeFilter: ['data-zoom'] });
+  }
+
+  /** The observers the pane put on the document and on its own nodes, kept so a closed pane lets them go. */
+  private readonly observers: MutationObserver[] = [];
+  /** Aborted when the pane closes: its listener on the window hears nothing more. */
+  private readonly released: AbortController = new AbortController();
+  /** The wait before the scene is refitted after a zoom glide; null when none is pending. */
+  private zoomTimer: number | null = null;
+
+  /**
+   * Keeps an observer so that closing the pane disconnects it.
+   *
+   * @param observer - The observer.
+   * @returns The same observer.
+   */
+  private observe_keep(observer: MutationObserver): MutationObserver {
+    this.observers.push(observer);
+    return observer;
   }
 
   /**
@@ -1022,10 +1044,25 @@ export class DagPanel {
     this.scene.size_fit();
   }
 
-  /** Releases the pane's scene (a disposed instance). */
+  /**
+   * Releases everything the pane took, so that a closed pane is held by
+   * nothing: its watch, its timers, its observers (two of them on the
+   * document), its listener on the window, its listing and its scene.
+   */
   public dispose(): void {
     this.watch_release();
     if (this.rosterTimer !== null) clearInterval(this.rosterTimer);
+    this.rosterTimer = null;
+    if (this.rosterCheckTimer !== null) clearTimeout(this.rosterCheckTimer);
+    this.rosterCheckTimer = null;
+    if (this.zoomTimer !== null) window.clearTimeout(this.zoomTimer);
+    this.zoomTimer = null;
+    for (const observer of this.observers) observer.disconnect();
+    this.observers.length = 0;
+    this.rosterFrameObserver?.disconnect();
+    this.rosterFrameObserver = null;
+    this.released.abort();
+    this.listing.hold_release();
     this.scene.dispose();
   }
 

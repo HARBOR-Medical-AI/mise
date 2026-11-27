@@ -1214,19 +1214,20 @@ export class Listing<T> {
     this.filterBlock = chrome?.root.querySelector<HTMLElement>(`.${chrome.prefix}-filter`) ?? null;
     this.selectBlock = chrome?.root.querySelector<HTMLElement>(`.${chrome.prefix}-select`) ?? null;
     this.filterBlock?.classList.add('rail-off');
-    this.filterBlock?.addEventListener('click', (): void => this.filter_toggle());
+    const heard: AddEventListenerOptions = { signal: this.released.signal };
+    this.filterBlock?.addEventListener('click', (): void => this.filter_toggle(), heard);
     chrome?.root.querySelector<HTMLElement>(`.${chrome.prefix}-refresh`)
-      ?.addEventListener('click', (): void => this.declaration.refresh?.());
+      ?.addEventListener('click', (): void => this.declaration.refresh?.(), heard);
     this.columns_wire(chrome);
     this.level.order.stripChange_observe((): void => this.filterBlock_sync());
-    this.selectBlock?.addEventListener('click', (): void => this.select_toggle());
+    this.selectBlock?.addEventListener('click', (): void => this.select_toggle(), heard);
     // The language reaches ordering through a DOM event on the pane.
     chrome?.root.addEventListener('argus:roster', (event: Event): void => {
       const detail: RosterEventDetail = (event as CustomEvent<RosterEventDetail>).detail;
       if (detail.op === 'sort') this.level.sort_set(detail.key, detail.dir ?? 'asc');
       else if (detail.text === '') this.level.order.strip_toggle(false);
       else this.level.order.filter_set(detail.text);
-    });
+    }, heard);
     this.filterBlock_sync();
   }
 
@@ -1359,6 +1360,27 @@ export class Listing<T> {
 
   /** Watches the pane's width, so columns give way and come back as it moves. */
   private shedObserver: ResizeObserver | null = null;
+  /** Watches the pane's row zone closing; kept so it can be let go. */
+  private modesObserver: MutationObserver | null = null;
+  /** Aborted when the listing is let go: every listener it put up hears nothing more. */
+  private readonly released: AbortController = new AbortController();
+
+  /**
+   * Lets go of everything the listing took: its listeners on the pane's
+   * chrome and frame, its two observers, and a column drag in hand (whose
+   * listeners are on the window). The panel that owns the listing calls it
+   * when its pane closes.
+   *
+   * @example
+   * listing.hold_release();
+   */
+  public hold_release(): void {
+    this.released.abort();
+    this.shedObserver?.disconnect();
+    this.shedObserver = null;
+    this.modesObserver?.disconnect();
+    this.modesObserver = null;
+  }
   /** The width the columns were last fitted to. */
   private shedWidth: number = -1;
 
@@ -1535,7 +1557,7 @@ export class Listing<T> {
   private columns_wire(chrome: ListingChrome | undefined): void {
     this.columnsPrefix = chrome?.prefix ?? null;
     this.columnsBlock = chrome?.root.querySelector<HTMLElement>(`.${chrome.prefix}-columns`) ?? null;
-    this.columnsBlock?.addEventListener('click', (): void => this.columns_reset());
+    this.columnsBlock?.addEventListener('click', (): void => this.columns_reset(), { signal: this.released.signal });
     // What this device remembers applies before any row lands.
     if (this.columnsPrefix !== null) {
       for (const [key, px] of columns_read(columnStore_default(), this.columnsPrefix, this.level.traitKeys())) {
@@ -1557,6 +1579,7 @@ export class Listing<T> {
     if (caps === null) return;
     const store: ColumnStore | null = columnStore_default();
     grips_wire(caps, {
+      signal: this.released.signal,
       key_read: (cap: HTMLElement): string | null => cap.dataset['key'] ?? null,
       expanse_is: (key: string): boolean => track_isExpanse(this.level.track_find(key) ?? ''),
       floor_measure: (key: string): number => length_px(floor_parse(this.level.track_find(key) ?? '3em'), caps),
@@ -1719,13 +1742,14 @@ export class Listing<T> {
     zone.closest<HTMLElement>('.mode-frame')?.addEventListener('click', (event: Event): void => {
       if (event.target instanceof Node && zone.contains(event.target)) return;
       this.zoneOpened = false;
-    }, true);
+    }, { capture: true, signal: this.released.signal });
     const observer: MutationObserver = new MutationObserver((): void => {
       if (pane.dataset['modes'] === 'open') return;
       this.zoneOpened = false;
       if (this.claim !== null) this.row_indicate(null);
     });
     observer.observe(pane, { attributes: true, attributeFilter: ['data-modes'] });
+    this.modesObserver = observer;
   }
 
   /**

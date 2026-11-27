@@ -63,6 +63,10 @@ class FakeViewport {
 class FakeRenderingEngine {
   public destroyed: boolean = false;
   private readonly viewports: Map<string, FakeViewport> = new Map<string, FakeViewport>();
+  constructor() { engines.push(this); }
+  public setViewports(inputs: Array<{ viewportId: string; element: HTMLElement }>): void {
+    for (const input of inputs) this.enableElement(input);
+  }
   public enableElement(input: { viewportId: string; element: HTMLElement }): void {
     this.viewports.set(input.viewportId, new FakeViewport(input.element, this));
   }
@@ -70,9 +74,18 @@ class FakeRenderingEngine {
   public getViewports(): FakeViewport[] { return []; }
   public destroy(): void { this.destroyed = true; this.viewports.clear(); }
   public resize(): void { /* nothing to size */ }
+  public renderViewports(): void { /* nothing to draw */ }
 }
 
 const groups: Map<string, Record<string, unknown>> = new Map<string, Record<string, unknown>>();
+/** The metadata providers Cornerstone holds, the volumes in its cache, and how often volumes were given to viewports. */
+const providers: Set<unknown> = new Set<unknown>();
+const volumes: Set<string> = new Set<string>();
+let volumesSet: number = 0;
+/** Holds a volume's making until the test lets it finish; null lets it finish at once. */
+let volumeGate: Promise<void> | null = null;
+/** Every rendering engine made, to say which are still alive. */
+const engines: FakeRenderingEngine[] = [];
 const tool = (toolName: string): { toolName: string } => ({ toolName });
 
 jest.unstable_mockModule('@cornerstonejs/core', () => ({
@@ -83,7 +96,22 @@ jest.unstable_mockModule('@cornerstonejs/core', () => ({
     ViewportType: { STACK: 'stack', ORTHOGRAPHIC: 'orthographic', VOLUME_3D: 'volume3d' },
     OrientationAxis: { AXIAL: 'axial', CORONAL: 'coronal', SAGITTAL: 'sagittal' },
   },
-  metaData: { addProvider: (): void => undefined },
+  metaData: {
+    addProvider: (provider: unknown): void => { providers.add(provider); },
+    removeProvider: (provider: unknown): void => { providers.delete(provider); },
+  },
+  cache: {
+    getVolume: (volumeId: string): unknown => (volumes.has(volumeId) ? {} : undefined),
+    removeVolumeLoadObject: (volumeId: string): void => { volumes.delete(volumeId); },
+  },
+  volumeLoader: {
+    createAndCacheVolume: async (volumeId: string): Promise<unknown> => {
+      if (volumeGate !== null) await volumeGate;
+      volumes.add(volumeId);
+      return { load: (): void => undefined };
+    },
+  },
+  setVolumesForViewports: async (): Promise<void> => { volumesSet += 1; },
   RenderingEngine: FakeRenderingEngine,
   imageLoader: {
     loadAndCacheImage: (imageId: string): Promise<unknown> => {
@@ -197,6 +225,11 @@ beforeEach((): void => {
   cached.clear();
   groups.clear();
   firstSlice = null;
+  providers.clear();
+  volumes.clear();
+  volumesSet = 0;
+  volumeGate = null;
+  engines.length = 0;
 });
 
 describe('a stack fill, stopped', () => {
@@ -371,5 +404,88 @@ describe('a frame that closes', () => {
     await settle();
     expect(onWire.every((flight: Flight): boolean => flight.aborted)).toBe(true);
     expect(flights).toHaveLength(8);
+  });
+});
+
+describe('what an engine put on Cornerstone\'s own objects', () => {
+  /** Lands every request as it is made, so a layout's slices are whole at once. */
+  async function slices_landAll(): Promise<void> {
+    for (let round = 0; round < 12 && flying().length > 0; round++) await slices_land(8);
+  }
+
+  it('is taken back when the engine is let go: its metadata provider is removed, and a slice that fails afterwards is not its to report', async () => {
+    const bench: Bench = await engine_open(3);
+    expect(providers.size).toBe(1);
+    bench.engine.dispose();
+    expect(providers.size).toBe(0);
+    const before: number = bench.readouts.length;
+    const noted: number = bench.notes.length;
+    // A slice of this very series fails to load, for whoever else asked for it.
+    eventTarget.dispatchEvent(new CustomEvent('IMAGE_LOAD_FAILED', { detail: { imageId: `wadouri:/vfs?path=${encodeURIComponent('/home/someone/uploads/series-a/0002-9.9.9.2.dcm')}`, error: { message: 'gone' } } }));
+    await settle();
+    expect(bench.readouts.length).toBe(before);
+    expect(bench.notes.length).toBe(noted);
+  });
+
+  it('a volume goes with the layout that used it: ten slab builds leave one slab volume, and letting the engine go leaves none', async () => {
+    const bench: Bench = await engine_open(3);
+    const inner = bench.engine as unknown as { slab_show: () => Promise<boolean> };
+    for (let build = 0; build < 10; build++) {
+      const building: Promise<boolean> = inner.slab_show();
+      await slices_landAll();
+      await building;
+      expect([...volumes].filter((id: string): boolean => id.includes('-slab-'))).toHaveLength(1);
+    }
+    // Back to a volume layout: the slab's volume goes, and the layout's own is the one in the cache.
+    const mpr: Promise<boolean> = bench.engine.layout_set('mpr');
+    await slices_landAll();
+    await mpr;
+    expect([...volumes].some((id: string): boolean => id.includes('-slab-'))).toBe(false);
+    expect(volumes.size).toBe(1);
+    bench.engine.dispose();
+    expect(volumes.size).toBe(0);
+  });
+
+  it('an engine let go while a volume is being made has, once it is made, no volume, no engine, no tool group and no provider of its own', async () => {
+    const bench: Bench = await engine_open(3);
+    let made: () => void = (): void => undefined;
+    volumeGate = new Promise<void>((resolve: () => void): void => { made = resolve; });
+    const building: Promise<boolean> = bench.engine.layout_set('mpr');
+    await slices_landAll();
+    await settle();
+    // The slices are in and the volume is being made: the frame closes.
+    bench.engine.dispose();
+    volumeGate = null;
+    made();
+    expect(await building).toBe(false);
+    await settle();
+    expect(volumes.size).toBe(0);
+    expect(volumesSet).toBe(0);
+    expect(engines.every((engine: FakeRenderingEngine): boolean => engine.destroyed)).toBe(true);
+    expect(groups.size).toBe(0);
+    expect(providers.size).toBe(0);
+    expect(document.body.querySelector('.image-mpr')).toBeNull();
+  });
+
+  it('a layout chosen while another\'s volume is being made is the one that stands: the first build installs nothing', async () => {
+    const bench: Bench = await engine_open(3);
+    let made: () => void = (): void => undefined;
+    volumeGate = new Promise<void>((resolve: () => void): void => { made = resolve; });
+    const first: Promise<boolean> = bench.engine.layout_set('mpr');
+    await slices_landAll();
+    await settle();
+    volumeGate = null;
+    // Another layout is chosen before the first one's volume is made.
+    const second: Promise<boolean> = bench.engine.layout_set('3d');
+    await slices_landAll();
+    await second;
+    const setBefore: number = volumesSet;
+    made();
+    expect(await first).toBe(false);
+    await settle();
+    expect(volumesSet).toBe(setBefore);
+    expect(bench.engine.state_get().layout).toBe('3d');
+    expect(engines.filter((engine: FakeRenderingEngine): boolean => !engine.destroyed)).toHaveLength(1);
+    bench.engine.dispose();
   });
 });
