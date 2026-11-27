@@ -200,7 +200,7 @@ for (const lint of lints) {
 // The coverage ratchet, over trees made here: a summary as jest writes it, and floors beside it.
 {
   const { args_read, coverage_judge, floor_derive, floors_compare, floors_read, summary_read, uncovered_list } = await import('./coverage-ratchet.mjs');
-  const { coverageDir_resolve, report_publish, run_plan, suiteReport_keep, suiteReport_restore, PARTIAL_DIR, SUITE_DIR } = await import('./jest-with-floor.mjs');
+  const { coverageDir_effective, report_publish, run_plan, PARTIAL_DIR, SUITE_DIR } = await import('./jest-with-floor.mjs');
   const { buildArgv } = await import('jest-cli');
   /** A tree with one workspace's coverage summary and a baseline file; runs the ratchet over it. */
   const coverage_run = (summary, floors, extra = []) => {
@@ -257,19 +257,14 @@ for (const lint of lints) {
   const plan_of = async (args) => run_plan(await buildArgv(args), args, '/w/apps/argus', '/tmp/run-own');
   for (const args of [[], ['--coverage'], ['--runInBand', '--coverage'], ['--maxWorkers=2'], ['--maxWorkers', '2'], ['--max-workers=2'], ['-w', '4', '--ci', '--testTimeout=10000'], ['--test-timeout', '10000'], ['--passWithNoTests']]) {
     const plan = await plan_of(args);
-    expect_that(`the whole suite is run and judged with ${JSON.stringify(args)}`, plan.whole && plan.refused === null && plan.jestArgs[1] === '--coverageDirectory=/tmp/run-own' && plan.jestArgs.includes('--coverageReporters=json-summary') && !plan.jestArgs.some((arg) => arg.includes(`/${SUITE_DIR}`)), JSON.stringify(plan));
+    expect_that(`the whole suite is run and judged with ${JSON.stringify(args)}`, plan.whole && plan.jestArgs[1] === '--coverageDirectory=/tmp/run-own' && plan.jestArgs.includes('--coverageReporters=json-summary') && !plan.jestArgs.some((arg) => arg.includes(`/${SUITE_DIR}`)), JSON.stringify(plan));
   }
   for (const args of [['tests/unit/one.test.ts'], ['-t', 'one case'], ['--testNamePattern=one'], ['--test-name-pattern=one'], ['--testPathPatterns=image'], ['--test-path-patterns', 'image'], ['--onlyChanged'], ['-o'], ['--maxWorkers=2', 'image'], ['--shard=1/3'],
     ['--collectCoverageFrom=src/app/*.ts'], ['--coveragePathIgnorePatterns=src/features/image'], ['--coverageReporters=text'], ['--coverageDirectory=elsewhere'], ['--coverage=false'], ['--no-coverage'], ['--rootDir=/tmp']]) {
     const plan = await plan_of(args);
     const elsewhere = plan.jestArgs[1] === `--coverageDirectory=/w/apps/argus/${PARTIAL_DIR}` || args.some((arg) => arg.startsWith('--coverageDirectory'));
-    expect_that(`a run of its own is not judged and does not write the suite's report with ${JSON.stringify(args)}`, !plan.whole && plan.refused === null && elsewhere && !plan.jestArgs.some((arg) => arg.endsWith(`/${SUITE_DIR}`)), JSON.stringify(plan));
+    expect_that(`a run of its own is not judged and does not write the suite's report with ${JSON.stringify(args)}`, !plan.whole && elsewhere && !plan.jestArgs.some((arg) => arg.endsWith(`/${SUITE_DIR}`)), JSON.stringify(plan));
   }
-  for (const args of [['-t', 'one', '--coverageDirectory=coverage'], ['--coverageReporters=text', '--coverageDirectory', './coverage'], ['--coverage-directory=coverage', 'image'], ['-t', 'one', '--coverageDirectory=<rootDir>/coverage'], ['-t', 'one', '--coverageDirectory=/w/apps/argus/coverage']]) {
-    const plan = await plan_of(args);
-    expect_that(`a run of its own that would write to the suite's folder is refused with ${JSON.stringify(args)}`, !plan.whole && plan.refused !== null && plan.refused.includes('may not write to the suite\'s folder'), JSON.stringify(plan));
-  }
-  expect_that('a folder is read as jest reads it', coverageDir_resolve('<rootDir>/coverage', '/w/apps/argus') === '/w/apps/argus/coverage' && coverageDir_resolve('coverage', '/w/apps/argus') === '/w/apps/argus/coverage' && coverageDir_resolve('/elsewhere', '/w/apps/argus') === '/elsewhere');
   {
     // After an end-of-options mark everything is a test's name: what the runner adds is before it, and stays an option.
     const marked = await plan_of(['--', 'tests/unit/imageStop.test.ts']);
@@ -297,19 +292,6 @@ for (const lint of lints) {
     let threw = '';
     try { args_read(['--summary', 'apps/argus']); } catch (error) { threw = error.message; }
     expect_that('--summary wants a workspace and a file', threw.includes('--summary wants <workspace>=<file>'), threw);
-  }
-  {
-    // The suite's report, kept before a run of its own and held to afterwards, whatever the run did to it.
-    const suite = folder_make('coverage-kept');
-    file_put(join(suite, 'coverage-summary.json'), '{"the suite":true}');
-    const kept = suiteReport_keep(suite);
-    expect_that('a run that left the suite\'s report alone is found to have', suiteReport_restore(suite, kept) === true);
-    file_put(join(suite, 'coverage-summary.json'), '{"a partial run":true}');
-    expect_that('a run that wrote over it is found out, and the report is put back', suiteReport_restore(suite, kept) === false && readFileSync(join(suite, 'coverage-summary.json'), 'utf8') === '{"the suite":true}');
-    const bare = folder_make('coverage-kept-none');
-    const none = suiteReport_keep(bare);
-    file_put(join(bare, 'coverage-summary.json'), '{"a partial run":true}');
-    expect_that('where there was none, none is left', none === null && suiteReport_restore(bare, none) === false && suiteReport_keep(bare) === null);
   }
   for (const args of [['--testPathPattern=image'], ['--some-flag-jest-does-not-know']]) {
     let refusedByJest = '';
@@ -405,8 +387,29 @@ for (const lint of lints) {
     file_put(join(made, 'apps/argus/tests/jest.rooted.cjs'), `module.exports = { rootDir: __dirname, testEnvironment: 'node', roots: ['<rootDir>', '<rootDir>/../src'], collectCoverageFrom: ['../src/**/*.js'], coverageProvider: 'babel', coverageReporters: ['json-summary'], transform: {} };\n`);
     file_put(summaryPath, full);
     const rooted = runner('--config', 'tests/jest.rooted.cjs', '-t', 'twice', '--coverageDirectory=../coverage');
-    expect_that('a partial run that lands on the suite\'s folder through its config\'s root leaves the full summary byte-for-byte', readFileSync(summaryPath, 'utf8') === full && !rooted.said.includes('at or above'), rooted.said.slice(-500));
-    expect_that('and is said to have written over it, and fails', rooted.status === 2 && rooted.said.includes('wrote over the suite\'s report'), rooted.said.slice(-500));
+    expect_that('a partial run that would land on the suite\'s folder through its config\'s root is refused before jest runs, and the full summary is byte-for-byte', rooted.status === 2 && rooted.said.includes('jest would write its coverage there') && readFileSync(summaryPath, 'utf8') === full, rooted.said.slice(-500));
+    // Where jest will write is asked of jest: the same folder, by every road to it.
+    const argusDir = join(made, 'apps/argus');
+    expect_that('the effective folder is jest\'s own answer', (await coverageDir_effective(['--coverage', '-t', 'twice', '--coverageDirectory=<rootDir>/coverage'], argusDir)) === join(argusDir, 'coverage')
+      && (await coverageDir_effective(['--coverage', '--config', join(argusDir, 'tests/jest.rooted.cjs'), '-t', 'twice', '--coverageDirectory=../coverage'], argusDir)) === join(argusDir, 'coverage')
+      && (await coverageDir_effective(['--coverage', `--coverageDirectory=${join(argusDir, 'coverage-partial')}`, '--', 'tests/kept.test.js'], argusDir)) === join(argusDir, 'coverage-partial'));
+    // A filtered run held while a whole run publishes: the filtered run ends well and the new full report stands,
+    // whether or not there was a report when the filtered run began.
+    for (const startsWith of ['a report', 'no report']) {
+      const { rmSync } = await import('node:fs');
+      if (startsWith === 'no report') rmSync(summaryPath, { force: true }); else file_put(summaryPath, '{"an older full report":true}');
+      file_put(join(made, 'slow-jest.sh'), `#!/bin/sh\n# A filtered jest that takes its time: the whole run publishes while it is under way.\nsleep 1\nexit 0\n`);
+      chmodSync(join(made, 'slow-jest.sh'), 0o755);
+      const { spawn } = await import('node:child_process');
+      const filteredRun = spawn('node', [join(made, 'scripts/jest-with-floor.mjs'), '-t', 'twice'], { cwd: argusDir, env: { ...process.env, RATCHET_BASE: sha, JEST_WITH_FLOOR_JEST: join(made, 'slow-jest.sh') }, stdio: 'ignore' });
+      const filteredDone = new Promise((resolve) => { filteredRun.on('exit', (code) => resolve(code)); });
+      await new Promise((resolve) => { setTimeout(resolve, 300); });
+      // Meanwhile a whole run publishes a new full report.
+      file_put(summaryPath, full);
+      const code = await filteredDone;
+      expect_that(`a filtered run under way while a whole run publishes ends well and leaves the new full report, having begun with ${startsWith}`, code === 0 && readFileSync(summaryPath, 'utf8') === full, String(code));
+    }
+    file_put(summaryPath, full);
     const over = runner('-t', 'twice', '--coverageDirectory=coverage');
     expect_that('a filtered run pointed at the suite\'s report is refused before jest runs', over.status === 2 && over.said.includes('may not write to the suite\'s folder') && readFileSync(summaryPath, 'utf8') === full, over.said.slice(-400));
     // With a test taken away the whole run falls below its floors, and fails.
