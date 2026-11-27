@@ -352,6 +352,28 @@ for (const lint of lints) {
   expect_that('an allowance widened above against the base fails, the reference unchanged', widerAbove.length === 1 && widerAbove[0].includes('allowance above was widened from 0.7 to 1.5'), widerAbove.join('; '));
   expect_that('a workspace the base held with no allowance may not gain one: none is an allowance of nothing', fromNone.filter((line) => line.includes('allowance')).length === 2, fromNone.join('; '));
   expect_that('an allowance narrowed passes, and a workspace new to the base sets its own', narrower.length === 0, narrower.join('; '));
+  threw = '';
+  try { floors_read(JSON.stringify({ coverage: { 'apps/argus': { ...reference, allowance: { below: 0.3, above: 0.1 } } } }), 'a baseline'); } catch (error) { threw = error.message; }
+  expect_that('an allowance with more below than above is refused: its raise would not raise', threw.includes('allows more below (0.3) than above (0.1)'), threw);
+  threw = '';
+  try { floors_read(JSON.stringify({ coverage: { 'apps/argus': { ...reference, branches: 50.44 } } }), 'a baseline'); } catch (error) { threw = error.message; }
+  expect_that('a reference with an allowance is written to one decimal', threw.includes('must be written to one decimal (50.44)'), threw);
+  // Every raise the rule can ask for raises, and the same measure then passes: over each allowance that
+  // may be written, and each measure a tenth apart.
+  let unsettled = '';
+  for (const below of [0, 0.1, 0.3]) for (const above of [below, below + 0.4, 1]) for (let tenth = 480; tenth <= 530; tenth++) {
+    const placed = measure_place(50.4, { below, above }, tenth / 10 + 0.05);
+    if (placed.kind !== 'rise') continue;
+    if (!(placed.to > 50.4) || measure_place(placed.to, { below, above }, tenth / 10 + 0.05).kind !== 'pass') unsettled = `${below}/${above} at ${tenth / 10}: to ${placed.to}`;
+  }
+  expect_that('every raise asked for is higher than the floor it replaces, and the same measure then passes', unsettled === '', unsettled);
+  // Without an allowance nothing is rounded before the comparison, as before there were allowances.
+  const exact = { ...floors, branches: 50.04 };
+  const justUnder = coverage_run(summary_make({ ...at, branches: 50.02 }), exact);
+  const justOver = coverage_run(summary_make({ ...at, branches: 50.05 }), exact);
+  expect_that('with no allowance a floor written to hundredths holds to hundredths: 50.02 falls under 50.04, 50.05 passes', justUnder.status !== 0 && justUnder.said.includes('branches coverage is 50.02%, below its floor of 50.04%') && justOver.status === 0, `${justUnder.said} | ${justOver.said}`);
+  threw = '';
+  try { floors_read(JSON.stringify({ coverage: { 'apps/argus': { ...floors, allowance: { below: 0.3 } } } }), 'a baseline'); } catch (error) { threw = error.message; }
   expect_that('an allowance must say both sides', threw.includes('allowance above of apps/argus is not a number of points'), threw);
   // The files no test reaches are named when coverage falls.
   const withFiles = summary_make({ ...at, lines: 55 }, {

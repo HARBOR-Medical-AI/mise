@@ -96,6 +96,13 @@ export function floors_read(text, where) {
       const points = allowance[side];
       if (typeof points !== 'number' || !Number.isFinite(points) || points < 0 || points > 5) throw new Error(`${where}: the allowance ${side} of ${workspace} is not a number of points from 0 to 5 (${JSON.stringify(points)})`);
     }
+    // A raise is to the measure less `below`, and is asked for past `above`: were `below` the larger, a
+    // raise could write a floor no higher than the one it replaces, and be asked for again.
+    if (allowance.below > allowance.above) throw new Error(`${where}: the allowance of ${workspace} allows more below (${allowance.below}) than above (${allowance.above}); a raise would then not raise`);
+    // With an allowance the comparison is in tenths: the reference is written in tenths.
+    for (const measure of MEASURES) {
+      if (Math.abs(floors[measure] * 10 - Math.round(floors[measure] * 10)) > 1e-9) throw new Error(`${where}: the ${measure} floor of ${workspace} carries an allowance and must be written to one decimal (${floors[measure]})`);
+    }
   }
   return section;
 }
@@ -116,6 +123,12 @@ export function floors_read(text, where) {
  * @returns {{ kind: 'fall', least: number } | { kind: 'pass' } | { kind: 'rise', to: number }} Where it falls; `least` is the least that passes, `to` the floor a raise writes.
  */
 export function measure_place(floor, allowance, pct) {
+  // No allowance: the floor as it is written, compared with the measure as it is. Nothing is rounded before
+  // the comparison, so a floor written to hundredths holds to hundredths.
+  if (allowance === undefined) {
+    if (pct < floor) return { kind: 'fall', least: floor };
+    return floor_derive(pct) > floor ? { kind: 'rise', to: floor_derive(pct) } : { kind: 'pass' };
+  }
   const tenths = (points) => Math.round(points * 10);
   const reference = tenths(floor);
   const measured = tenths(floor_derive(pct));
