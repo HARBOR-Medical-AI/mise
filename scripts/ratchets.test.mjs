@@ -618,6 +618,12 @@ for (const lint of lints) {
   expect_that('an import, a type import, a re-export, a dynamic import and a require are each one', chiliRefs_read("import a from '@fnndsc/chili';\nimport type { B } from '@fnndsc/chili/b.js';\nexport { c } from '@fnndsc/chili/c.js';\nconst d = await import('@fnndsc/chili/d.js');\nconst e = require('@fnndsc/chili/e.js');\nimport f from '@fnndsc/chilix';\n").length === 5);
   file_put(join(tree, 'packages/brasa/scripts/old.cjs'), "const lazy = require('@fnndsc/chili/run.js'); // and not: require('@fnndsc/chili/never.js')\n");
   const withCjs = chili_count(tree);
+  // A tree of its own (this test deletes nothing): a hand-written declaration file that type-imports chili.
+  const declared = join(run, 'chili-declared');
+  file_put(join(declared, 'packages/menu/src/shim.d.ts'), "import type { Listing } from '@fnndsc/chili/models/listing.js';\ndeclare module 'x' { export const l: Listing; }\n");
+  file_put(join(declared, 'packages/menu/dist/built.d.ts'), "import type { Listing } from '@fnndsc/chili/models/listing.js';\n");
+  const typed = chili_count(declared);
+  expect_that('a hand-written declaration file under another workspace\'s src that type-imports chili fails by file; a built one in dist is not read', typed.outside.length === 1 && typed.outside[0] === 'packages/menu/src/shim.d.ts', JSON.stringify(typed.outside));
   expect_that('a .cjs script with a literal require counts as one', withCjs.files === counted.files + 1 && withCjs.sites === counted.sites + 1, JSON.stringify(withCjs));
   expect_that('at the baseline the ratchet passes', chili_judge(withCjs, { files: 5, sites: 7 }).faults.length === 0);
   const more = chili_judge({ ...withCjs, sites: 8 }, { files: 5, sites: 7 }).faults;

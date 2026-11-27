@@ -53,7 +53,9 @@ function sources_list(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) { if (entry.name !== 'node_modules' && entry.name !== 'dist') found.push(...sources_list(path)); }
-    else if (SOURCE_FILE.test(entry.name) && !entry.name.endsWith('.d.ts')) found.push(path);
+    // A declaration file under a source root is hand-written (built ones are in dist, not read): its type
+    // imports are dependencies like any other.
+    else if (SOURCE_FILE.test(entry.name)) found.push(path);
   }
   return found;
 }
