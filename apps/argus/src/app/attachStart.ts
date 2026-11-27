@@ -124,18 +124,21 @@ export interface SurfaceWired {
  *
  * @example
  * ```ts
- * const ports: SurfaceStartPorts = { attach_held, surface_wire };
+ * const ports: SurfaceStartPorts = { attach_held, backend_ask, surface_wire };
  * ```
  */
 export interface SurfaceStartPorts {
   /** Attaches, held: nothing reaches a handler until it is released. */
   attach_held: (token: string) => Promise<AttachedSession>;
-  /** Wires the page to the attached session: installs its handlers, binds its client, applies the attach's facts. */
-  surface_wire: (token: string, held: AttachedSession) => Promise<SurfaceWired>;
+  /** Which backend the session runs over, when the attach did not say: asked of the daemon. */
+  backend_ask: (token: string) => Promise<string>;
+  /** Wires the page to the attached session, all at once: installs its handlers, binds its client, applies the attach's facts. */
+  surface_wire: (token: string, held: AttachedSession, backend: string) => SurfaceWired;
 }
 
 /**
- * The page's start, in order: attach (held); wire the page, which installs
+ * The page's start, in order: attach (held); learn the backend when the
+ * attach did not say it (raced against a close); wire the page, all at once, which installs
  * the handlers and applies what the attach said, while the session's own
  * messages wait; then hand those over, in order, so a later word of the
  * session wins over the attach's; then say READY. A close while the page
@@ -150,19 +153,42 @@ export interface SurfaceStartPorts {
  *
  * @example
  * ```ts
- * await surfaceStart_run(token, { attach_held, surface_wire });
+ * await surfaceStart_run(token, { attach_held, backend_ask, surface_wire });
  * ```
  */
 export async function surfaceStart_run(token: string, ports: SurfaceStartPorts): Promise<void> {
   const held: AttachedSession = await ports.attach_held(token);
   try {
-    const wired: SurfaceWired = await Promise.race([ports.surface_wire(token, held), held.client.held_closed()]);
+    // The one thing the start waits on before it wires (which backend, when the attach did not say), raced
+    // against the socket's close: a close settles the start, and an answer after it wires nothing.
+    const backend: string = held.attach.backend ?? await Promise.race([ports.backend_ask(token), held.client.held_closed()]);
+    if (held.client.held_isClosed()) throw new Error('the daemon closed the connection before the surface was ready');
+    // From here the wiring runs to its end with nothing to wait for: no close can come in between.
+    const wired: SurfaceWired = ports.surface_wire(token, held, backend);
     held.client.held_release();
     wired.ready_show();
   } catch (error: unknown) {
     held.client.held_abandon();
     throw new AttachWiredError(error);
   }
+}
+
+/**
+ * Whether the attach form may be submitted. Behind a door the door holds
+ * the token, and the page attaches with none: an empty form is a retry
+ * through the door. Elsewhere a token must be given.
+ *
+ * @param token - What the form holds, trimmed.
+ * @param throughDoor - Whether the page stands behind a door.
+ * @returns True when it may be submitted.
+ *
+ * @example
+ * ```ts
+ * attachSubmit_allowed('', true); // true: through the door
+ * ```
+ */
+export function attachSubmit_allowed(token: string, throughDoor: boolean): boolean {
+  return token.length > 0 || throughDoor;
 }
 
 /** Where the reason a start failed is kept over the move to a clean page, for that one load. */

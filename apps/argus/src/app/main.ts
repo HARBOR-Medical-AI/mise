@@ -21,7 +21,7 @@ import { type ClosingCause, type SessionNotes, feedListModelSchema, FEED_LIST_MO
 import { more_wire } from '../features/roster/more.js';
 import { type SceneNode } from '../scene/chrisSpace.js';
 import { element_require, template_stamp, pane_find } from '../frame/dom.js';
-import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_take, type BootChoice, failReason_keep, failReason_take, surfaceStart_run, type SurfaceWired } from './attachStart.js';
+import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_take, type BootChoice, failReason_keep, failReason_take, surfaceStart_run, type SurfaceWired, attachSubmit_allowed } from './attachStart.js';
 import { DormantRegistry, DORMANT_CAP, localKeyStore, type GroupSnapshot, type DesktopAction, type DesktopShape } from './dormant.js';
 import { linkLanding_parse, type LinkLanding } from './link.js';
 import { shareSheet_open, viewLink_parse, viewScript_compose } from './shareView.js';
@@ -979,7 +979,7 @@ let cascade: Cascade | null = null;
  * @throws {Error} When the attach is refused or the daemon cannot be reached; an `AttachWiredError` when the wiring had begun and failed.
  */
 async function surface_start(token: string): Promise<void> {
-  await surfaceStart_run(token, { attach_held: (asked: string): Promise<AttachedSession> => ArgusClient.session_attachHeld(wsUrl_resolve(), asked), surface_wire: (asked: string, held: AttachedSession): Promise<SurfaceWired> => surface_wire(asked, held) });
+  await surfaceStart_run(token, { attach_held: (asked: string): Promise<AttachedSession> => ArgusClient.session_attachHeld(wsUrl_resolve(), asked), backend_ask: (asked: string): Promise<string> => backend_ask(asked), surface_wire: (asked: string, held: AttachedSession, backend: string): SurfaceWired => surface_wire(asked, held, backend) });
 }
 
 /**
@@ -987,17 +987,16 @@ async function surface_start(token: string): Promise<void> {
  *
  * @param token - The attach token.
  * @param held - The attached client, held until its handlers are installed here, and the attach facts.
+ * @param backend - Which backend the session runs over.
  * @returns How to say the surface is ready, once what was held has been handed over.
  */
-async function surface_wire(token: string, held: AttachedSession): Promise<SurfaceWired> {
+function surface_wire(token: string, held: AttachedSession, backend: string): SurfaceWired {
   // Which console the page shows (consoleMode.ts): wired once attached, read
   // by the questions that have no pane to stand on.
   let consoleMode: ConsoleModeControl | null = null;
   // Which backend the session runs over decides the composition: ChRIS's
   // panes, words, tiles and instruments, or the frame alone. Asked before
   // anything is built; a daemon older than the question is ChRIS.
-  // The attach's own word for the backend; a daemon older than it is asked.
-  const backend: string = held.attach.backend ?? await backend_ask(token);
   const chris: boolean = backend === 'chris';
   // One declaration on the body: what a composition owns in the page's own
   // markup (its gutter domains, its header band and instrument) stands only
@@ -2851,13 +2850,14 @@ function page_boot(): void {
   });
 
   const tokenInput: HTMLInputElement = element_require('attach-token') as HTMLInputElement;
+  // Behind a door an empty form is a retry through the door, which holds the token.
   element_require('attach-submit').addEventListener('click', (): void => {
-    if (tokenInput.value.trim().length > 0) {
+    if (attachSubmit_allowed(tokenInput.value.trim(), throughDoor)) {
       attach_start(tokenInput.value.trim());
     }
   });
   tokenInput.addEventListener('keydown', (event: KeyboardEvent): void => {
-    if (event.key === 'Enter' && tokenInput.value.trim().length > 0) {
+    if (event.key === 'Enter' && attachSubmit_allowed(tokenInput.value.trim(), throughDoor)) {
       attach_start(tokenInput.value.trim());
     }
   });

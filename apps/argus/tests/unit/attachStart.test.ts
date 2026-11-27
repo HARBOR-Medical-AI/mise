@@ -7,7 +7,7 @@
  * closes before it is answered.
  */
 import { describe, it, expect, afterEach } from '@jest/globals';
-import { addressManual_derive, addressSame_check, AttachWiredError, attachStart_make, failReason_keep, failReason_take, surfaceStart_run, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
+import { addressManual_derive, addressSame_check, AttachWiredError, attachStart_make, attachSubmit_allowed, failReason_keep, failReason_take, surfaceStart_run, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
 import { ArgusClient, type AttachedSession } from '../../src/calypso/client.js';
 import type { SurfaceWired } from '../../src/app/attachStart.js';
 
@@ -395,11 +395,14 @@ describe('the start, in order', () => {
     let stale: boolean | null = null;
     const running = surfaceStart_run('T', {
       attach_held: control.attach_held,
-      surface_wire: async (_token: string, held: AttachedSession): Promise<SurfaceWired> => {
-        held.client.handlers_install({ stale_receive: (now: boolean): void => { stale = now; said.push(`stale ${String(now)}`); } } as never);
-        // The session spoke after its ack, while the page was still setting up.
+      backend_ask: async (): Promise<string> => {
+        // The session spoke after its ack, while the page was still learning its backend.
         control.socket().onmessage?.({ data: JSON.stringify({ type: 'stale', stale: false }) });
         await Promise.resolve();
+        return 'chris';
+      },
+      surface_wire: (_token: string, held: AttachedSession): SurfaceWired => {
+        held.client.handlers_install({ stale_receive: (now: boolean): void => { stale = now; said.push(`stale ${String(now)}`); } } as never);
         // The attach's facts, applied by the wiring.
         stale = held.attach.stale === true;
         said.push(`attach says stale ${String(stale)}`);
@@ -412,25 +415,28 @@ describe('the start, in order', () => {
     expect(stale).toBe(false);
   });
 
-  it('a close while the page is still setting up settles the start at once: nothing is handed over, no READY, and its socket is let go', async () => {
+  it('a close while the backend is being asked settles the start at once; the answer that comes after wires nothing and says no READY', async () => {
     const control = attach_controlled(false);
     const said: string[] = [];
-    let wiringFinished: () => void = (): void => undefined;
+    let answer: (backend: string) => void = (): void => undefined;
     const running = surfaceStart_run('T', {
       attach_held: control.attach_held,
-      surface_wire: async (_token: string, held: AttachedSession): Promise<SurfaceWired> => {
+      backend_ask: (): Promise<string> => new Promise<string>((resolve: (backend: string) => void): void => { answer = resolve; }),
+      surface_wire: (_token: string, held: AttachedSession): SurfaceWired => {
+        // The first of the wiring's effects: none may happen after the close.
+        said.push('wired');
         held.client.handlers_install({ output_receive: (_c: string, chunk: string): void => { said.push(chunk); } } as never);
-        control.socket().onmessage?.({ data: JSON.stringify({ type: 'output', id: 'x', channel: 'data', chunk: 'from the first socket' }) });
-        // Waiting on something slow (the backend asked over HTTP, say).
-        await new Promise<void>((resolve: () => void): void => { wiringFinished = resolve; });
         return { ready_show: (): void => { said.push('READY'); } };
       },
     });
     control.ack();
     await Promise.resolve();
+    control.socket().onmessage?.({ data: JSON.stringify({ type: 'output', id: 'x', channel: 'data', chunk: 'from the first socket' }) });
     control.socket().onclose?.({ reason: '', code: 1006 });
     await expect(running).rejects.toBeInstanceOf(AttachWiredError);
-    wiringFinished();
+    // The backend answers late.
+    answer('chris');
+    await Promise.resolve();
     await Promise.resolve();
     expect(said).toEqual([]);
     expect(control.socket().onmessage).toBeNull();
@@ -442,7 +448,8 @@ describe('the start, in order', () => {
     let closed: number = 0;
     const running = surfaceStart_run('T', {
       attach_held: control.attach_held,
-      surface_wire: async (_token: string, held: AttachedSession): Promise<SurfaceWired> => {
+      backend_ask: async (): Promise<string> => 'chris',
+      surface_wire: (_token: string, held: AttachedSession): SurfaceWired => {
         held.client.handlers_install({ output_receive: (): void => { throw new Error('a handler broke'); }, close_handle: (): void => { closed += 1; } } as never);
         control.socket().onmessage?.({ data: JSON.stringify({ type: 'output', id: 'x', channel: 'data', chunk: 'boom' }) });
         return { ready_show: (): void => { said.push('READY'); } };
@@ -461,7 +468,8 @@ describe('the start, in order', () => {
     const said: string[] = [];
     const ports = {
       attach_held: control.attach_held,
-      surface_wire: async (_token: string, held: AttachedSession): Promise<SurfaceWired> => {
+      backend_ask: async (): Promise<string> => 'chris',
+      surface_wire: (_token: string, held: AttachedSession): SurfaceWired => {
         wired += 1;
         held.client.handlers_install({ output_receive: (_c: string, chunk: string): void => { said.push(chunk); } } as never);
         return { ready_show: (): void => { said.push('READY'); } };
@@ -479,5 +487,55 @@ describe('the start, in order', () => {
     control.socket().onmessage?.({ data: JSON.stringify({ type: 'output', id: 'x', channel: 'data', chunk: 'press' }) });
     expect(wired).toBe(1);
     expect(said).toEqual(['READY', 'press']);
+  });
+});
+
+describe('behind a door', () => {
+  const RealSocket = globalThis.WebSocket;
+  afterEach((): void => { globalThis.WebSocket = RealSocket; FakeSocket.made.length = 0; });
+
+  it('an empty form may be submitted (the door holds the token); elsewhere a token must be given', () => {
+    expect(attachSubmit_allowed('', true)).toBe(true);
+    expect(attachSubmit_allowed('', false)).toBe(false);
+    expect(attachSubmit_allowed('T', false)).toBe(true);
+  });
+
+  it('a door attach that fails after its ack goes to a clean form; a deliberate empty retry there attaches through the door and says READY once', async () => {
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const said: string[] = [];
+    const cleaned: string[] = [];
+    const tokens: string[] = [];
+    const surface_start = (token: string): Promise<void> => surfaceStart_run(token, {
+      attach_held: (asked: string): Promise<AttachedSession> => { tokens.push(asked); return ArgusClient.session_attachHeld('ws://127.0.0.1:9000', asked); },
+      backend_ask: async (): Promise<string> => 'chris',
+      surface_wire: (_token: string, held: AttachedSession): SurfaceWired => {
+        held.client.handlers_install({} as never);
+        return { ready_show: (): void => { said.push('READY'); } };
+      },
+    });
+    const socket = (): FakeSocket => FakeSocket.made[FakeSocket.made.length - 1] as FakeSocket;
+    const ack = (): void => { socket().onopen?.(); socket().onmessage?.({ data: JSON.stringify({ type: 'attached', session: 's', protocolVersion: 1 }) }); };
+    // The first page: through the door, with no token of its own. Its socket closes after the ack, before the
+    // page is ready (the backend not yet known).
+    const first = attachStart_make({ surface_start, form_hide: (): void => undefined, form_show: (): void => undefined, page_clean: (reason: string): void => { cleaned.push(reason); } });
+    first('');
+    await Promise.resolve();
+    socket().onopen?.();
+    socket().onmessage?.({ data: JSON.stringify({ type: 'attached', session: 's', protocolVersion: 1 }) });
+    socket().onclose?.({ reason: '', code: 1006 });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(cleaned).toEqual(['the daemon closed the connection before the surface was ready']);
+    expect(said).toEqual([]);
+    // The clean page, behind the same door: its form, and the operator presses it with nothing typed.
+    expect(attachSubmit_allowed('', true)).toBe(true);
+    let hidden: number = 0;
+    const second = attachStart_make({ surface_start, form_hide: (): void => { hidden += 1; }, form_show: (): void => undefined, page_clean: (reason: string): void => { cleaned.push(reason); } });
+    second('');
+    await Promise.resolve();
+    ack();
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(tokens).toEqual(['', '']);
+    expect(said).toEqual(['READY']);
+    expect(hidden).toBe(1);
   });
 });

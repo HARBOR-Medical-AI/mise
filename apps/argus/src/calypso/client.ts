@@ -441,6 +441,20 @@ export class ArgusClient {
   }
 
   /**
+   * Whether the socket has closed (or the client was abandoned) while held.
+   *
+   * @returns True when nothing can be handed over any more.
+   *
+   * @example
+   * ```
+   * if (held.client.held_isClosed()) return;
+   * ```
+   */
+  public held_isClosed(): boolean {
+    return this.held !== null && this.heldClosed;
+  }
+
+  /**
    * Gives up the client, at any point of a hand-over: its handlers are
    * taken away, nothing it held or receives after reaches anyone, and its
    * socket is closed.
