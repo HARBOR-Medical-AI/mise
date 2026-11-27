@@ -161,6 +161,32 @@ describe('a question kept while its screen is away', () => {
     expect(keeper.held_take()).toBeNull();
   });
 
+  it('the newest question wins across held and shown: one that arrives while the screen is still opening retires the one held, which is never handed over after', () => {
+    jest.useFakeTimers();
+    try {
+      const keeper: AskKeeper = new AskKeeper(1000);
+      const older: Array<string | null> = [];
+      const newer: Array<string | null> = [];
+      // A is held for the screen; the screen is published and is still opening.
+      keeper.held_keep({ request, resolve: (value: string | null): void => { older.push(value); } });
+      // B arrives meanwhile and is shown on the screen at once.
+      const later = { ...request, executeId: 'argus-10', message: 'the newer question' };
+      keeper.standing_note(later);
+      expect(older).toEqual([null]);
+      expect(jest.getTimerCount()).toBe(0);
+      // The open finishes: there is nothing held to replay over B.
+      expect(keeper.held_take()).toBeNull();
+      // B is still the one standing: left now, it is B that is kept; and A's bound, long past, abandons nothing more.
+      jest.advanceTimersByTime(5000);
+      keeper.standing_keep({ message: 'shown', kind: 'secret' }, (value: string | null): void => { newer.push(value); });
+      expect(keeper.held_take()?.request).toBe(later);
+      expect(older).toEqual([null]);
+      expect(newer).toEqual([]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('one held is abandoned when another takes its place, and when nobody comes for it within its bound', () => {
     jest.useFakeTimers();
     try {

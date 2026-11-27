@@ -189,7 +189,8 @@ export class AskKeeper {
   public constructor(private readonly boundMs: number) {}
 
   /**
-   * Notes the question a screen has just been given to show.
+   * Notes the question a screen has just been given to show. The newest
+   * question wins: one held for the screen from before is abandoned.
    *
    * @param request - The question, as it arrived.
    *
@@ -199,7 +200,19 @@ export class AskKeeper {
    * ```
    */
   public standing_note(request: SurfaceAsk): void {
+    // The newest question is the one that stands. One still held from before (the screen was opening when
+    // this arrived) is retired here, with its bound: it is not handed over afterwards to push this one off.
+    if (this.held !== null && this.held.request !== request) this.held_retire();
     this.standing = request;
+  }
+
+  /** Abandons the held question and its bound. */
+  private held_retire(): void {
+    const one: HeldAsk | null = this.held;
+    this.held = null;
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+    one?.resolve(null);
   }
 
   /**
@@ -246,9 +259,8 @@ export class AskKeeper {
    * ```
    */
   public held_keep(one: HeldAsk): void {
-    this.held?.resolve(null);
+    this.held_retire();
     this.held = one;
-    if (this.timer !== null) clearTimeout(this.timer);
     this.timer = setTimeout((): void => { if (this.held === one) { this.held = null; one.resolve(null); } }, this.boundMs);
   }
 

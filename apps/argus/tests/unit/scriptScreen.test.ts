@@ -730,6 +730,36 @@ describe('the script screen', () => {
     expect(await leave_return(null)).toMatchObject({ about: { mine: false, line: null }, askLine: null });
   });
 
+  it('a question that arrives while the screen is still opening stays: the older one held for it is not replayed over it, and its answer is the operator\'s alone', async () => {
+    const keeper: AskKeeper = new AskKeeper(60_000);
+    const olderSaid: Array<string | null> = [];
+    const newerSaid: Array<string | null> = [];
+    const older: SurfaceAsk = { message: 'the older question', kind: 'confirm', executeId: 'argus-7' };
+    const newer: SurfaceAsk = { message: 'the newer question', kind: 'confirm', executeId: 'argus-9' };
+    keeper.held_keep({ request: older, resolve: (value: string | null): void => { olderSaid.push(value); } });
+    // The host publishes the screen and starts its open; before the open finishes, the newer question arrives.
+    const { screen } = screen_make();
+    const opening: Promise<void> = screen.open('/scripts/chrisproject/store.mise');
+    keeper.standing_note(newer);
+    void screen.ask_take(newer.message, newer.kind, askAbout_read(newer, null)).finally((): void => { keeper.standing_clear(newer); }).then((value: string | null): void => { newerSaid.push(value); });
+    // The open finishes, and the host looks for a held question to show.
+    await opening;
+    await settle();
+    const waiting = keeper.held_take();
+    if (waiting !== null) void screen.ask_take(waiting.request.message, waiting.request.kind, askAbout_read(waiting.request, null));
+    await settle();
+    expect(waiting).toBeNull();
+    expect(olderSaid).toEqual([null]);
+    // The newer question still stands, untouched, and takes the operator's answer and nothing before it.
+    expect(screen.root.querySelector('.tdc-strip-text')?.textContent).toBe('the newer question');
+    expect(newerSaid).toEqual([]);
+    button_named(screen.root, 'CONTINUE')?.click();
+    await settle();
+    expect(newerSaid).toEqual(['y']);
+    screen.dispose();
+    screen.root.remove();
+  });
+
   it('a hidden word carried away stands again on the errand bar of the screen opened after, and its SEND answers the first ask', async () => {
     const { screen } = screen_make();
     await screen.open('/scripts/chrisproject/store.mise');
