@@ -12,7 +12,7 @@
  *
  * @module
  */
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { DicomSeriesModel } from '@fnndsc/menu';
 import type { ImageEngineHost, ImageProgress } from '../../src/features/image/engine.js';
 
@@ -84,6 +84,8 @@ const volumes: Set<string> = new Set<string>();
 let volumesSet: number = 0;
 /** Holds a volume's making until the test lets it finish; null lets it finish at once. */
 let volumeGate: Promise<void> | null = null;
+/** Whether a volume made has what a slab is drawn from. */
+let volumeDrawable: boolean = false;
 /** Every rendering engine made, to say which are still alive. */
 const engines: FakeRenderingEngine[] = [];
 const tool = (toolName: string): { toolName: string } => ({ toolName });
@@ -108,7 +110,9 @@ jest.unstable_mockModule('@cornerstonejs/core', () => ({
     createAndCacheVolume: async (volumeId: string): Promise<unknown> => {
       if (volumeGate !== null) await volumeGate;
       volumes.add(volumeId);
-      return { load: (): void => undefined };
+      if (!volumeDrawable) return { load: (): void => undefined };
+      // A volume a slab can be drawn from: its size and its pixels.
+      return { load: (): void => undefined, dimensions: [2, 2, 3], spacing: [1, 1, 1], voxelManager: { getCompleteScalarDataArray: (): Float32Array => new Float32Array(12) } };
     },
   },
   setVolumesForViewports: async (): Promise<void> => { volumesSet += 1; },
@@ -157,8 +161,23 @@ jest.unstable_mockModule('@cornerstonejs/tools', () => ({
 jest.unstable_mockModule('@cornerstonejs/dicom-image-loader', () => ({
   init: (options: { beforeSend: typeof beforeSend }): void => { beforeSend = options.beforeSend; },
 }));
-jest.unstable_mockModule('@kitware/vtk.js/Common/Core/DataArray.js', () => ({ default: {} }));
-jest.unstable_mockModule('@kitware/vtk.js/Common/DataModel/ImageData.js', () => ({ default: {} }));
+jest.unstable_mockModule('@kitware/vtk.js/Common/Core/DataArray.js', () => ({ default: { newInstance: (): object => ({ getRange: (): number[] => [0, 1] }) } }));
+jest.unstable_mockModule('@kitware/vtk.js/Common/DataModel/ImageData.js', () => ({
+  default: {
+    newInstance: (): object => ({
+      setDimensions: (): void => undefined, setSpacing: (): void => undefined, setOrigin: (): void => undefined, setDirection: (): void => undefined,
+      getPointData: (): object => ({ setScalars: (): void => undefined }),
+    }),
+  },
+}));
+/** Every slab scene opened, by the element it was opened on. */
+const slabScenes: HTMLElement[] = [];
+jest.unstable_mockModule('../../src/features/image/slabScene.js', () => ({
+  slabScene_open: (element: HTMLElement): object => {
+    slabScenes.push(element);
+    return new Proxy({}, { get: (): (() => undefined) => (): undefined => undefined });
+  },
+}));
 
 const { CornerstoneEngine } = await import('../../src/features/image/cornerstoneEngine.js');
 type Engine = InstanceType<typeof CornerstoneEngine>;
@@ -229,6 +248,8 @@ beforeEach((): void => {
   volumes.clear();
   volumesSet = 0;
   volumeGate = null;
+  volumeDrawable = false;
+  slabScenes.length = 0;
   engines.length = 0;
 });
 
@@ -486,6 +507,78 @@ describe('what an engine put on Cornerstone\'s own objects', () => {
     expect(volumesSet).toBe(setBefore);
     expect(bench.engine.state_get().layout).toBe('3d');
     expect(engines.filter((engine: FakeRenderingEngine): boolean => !engine.destroyed)).toHaveLength(1);
+    // The late build released its own volume and not the one that stands: that one is in the cache until the end.
+    expect(volumes.size).toBe(1);
     bench.engine.dispose();
+    expect(volumes.size).toBe(0);
   });
+
+  /** The frames the page has been asked for and has not yet given: the test gives them. */
+  const frames: Array<() => void> = [];
+  const realFrame = globalThis.requestAnimationFrame;
+  beforeEach((): void => {
+    frames.length = 0;
+    globalThis.requestAnimationFrame = ((callback: () => void): number => { frames.push(callback); return frames.length; }) as typeof requestAnimationFrame;
+  });
+  afterEach((): void => { globalThis.requestAnimationFrame = realFrame; });
+
+  /** Gives every frame asked for, and those asked for in turn, until none is. */
+  async function frames_give(): Promise<void> {
+    for (let round = 0; round < 80 && frames.length > 0; round++) {
+      (frames.shift() as () => void)();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    await settle();
+  }
+
+  /**
+   * A slab build up to where it waits for its element to have a size: with no layout here the element never
+   * has one, so the build waits on a frame, held until the test gives it.
+   */
+  async function slab_begin(bench: Bench): Promise<{ building: Promise<boolean> }> {
+    volumeDrawable = true;
+    const building: Promise<boolean> = (bench.engine as unknown as { slab_show: () => Promise<boolean> }).slab_show();
+    await slices_landAll();
+    await settle();
+    expect(frames.length).toBe(1);
+    return { building };
+  }
+
+  it('a slab build left alone opens one scene on an element that is on the field', async () => {
+    const bench: Bench = await engine_open(3);
+    const { building } = await slab_begin(bench);
+    expect(slabScenes).toHaveLength(0);
+    await frames_give();
+    expect(await building).toBe(true);
+    expect(slabScenes).toHaveLength(1);
+    expect(document.body.contains(slabScenes[0] as HTMLElement)).toBe(true);
+    bench.engine.dispose();
+  }, 15_000);
+
+  it('an engine let go while a slab waits for its element to be sized opens no scene, and keeps no volume', async () => {
+    const bench: Bench = await engine_open(3);
+    const { building } = await slab_begin(bench);
+    bench.engine.dispose();
+    await frames_give();
+    expect(await building).toBe(false);
+    expect(slabScenes).toHaveLength(0);
+    expect(volumes.size).toBe(0);
+  }, 15_000);
+
+  it('a layout chosen while a slab waits for its element to be sized stands: the slab opens no scene on the element it had made', async () => {
+    const bench: Bench = await engine_open(3);
+    const { building } = await slab_begin(bench);
+    volumeDrawable = false;
+    const mpr: Promise<boolean> = bench.engine.layout_set('mpr');
+    await slices_landAll();
+    expect(await mpr).toBe(true);
+    await frames_give();
+    expect(await building).toBe(false);
+    expect(slabScenes).toHaveLength(0);
+    expect(bench.engine.state_get().layout).toBe('mpr');
+    expect([...volumes].some((id: string): boolean => id.includes('-slab-'))).toBe(false);
+    expect(volumes.size).toBe(1);
+    bench.engine.dispose();
+  }, 15_000);
 });

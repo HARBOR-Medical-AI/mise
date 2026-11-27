@@ -97,6 +97,9 @@ function one_release(one: THREE.Object3D): void {
   if (held.geometry instanceof THREE.BufferGeometry && !(one instanceof THREE.Sprite) && !shared.has(held.geometry)) held.geometry.dispose();
   const materials: unknown[] = Array.isArray(held.material) ? held.material as unknown[] : [held.material];
   for (const material of materials) if (material instanceof THREE.Material) material_release(material as THREE.Material);
+  // An instanced mesh holds its instances' matrices and colours on the card itself, apart from its
+  // geometry: they are let go by the mesh's own dispose.
+  if (one instanceof THREE.InstancedMesh) one.dispose();
 }
 
 /**

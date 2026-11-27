@@ -159,6 +159,19 @@ export class ImagePanel {
   private forced: boolean = false;
   /** The layout LOAD will apply. */
   private pendingLayout: ImageLayout | null = null;
+  /** Counts each layout chosen: an answer that comes back for an earlier choice paints nothing. */
+  private layoutAsked: number = 0;
+
+  /**
+   * Says whether a layout's answer has been overtaken: another series took the field, or another layout was chosen.
+   *
+   * @param engine - The engine the layout was asked of.
+   * @param asked - The count when it was asked.
+   * @returns True when the answer is no longer the field's to paint.
+   */
+  private layout_superseded(engine: ImageEngine, asked: number): boolean {
+    return this.engine !== engine || asked !== this.layoutAsked;
+  }
 
   /** The field's working notice, while there is one. */
   private progressNote: HTMLElement | null = null;
@@ -598,9 +611,12 @@ export class ImagePanel {
     this.modeSpan.textContent = layout === 'single' ? '' : layout.toUpperCase();
     this.overlay_hide();
     const engine: ImageEngine = this.engine;
+    this.layoutAsked += 1;
+    const asked: number = this.layoutAsked;
     const ok: boolean = await engine.layout_set(layout);
-    // Another series took the field while this one built: nothing here is its to paint.
-    if (this.engine !== engine) return false;
+    // Another series took the field while this one built, or another layout was chosen: nothing here is
+    // its to paint. The pill, the mode and the progress are the later choice's.
+    if (this.layout_superseded(engine, asked)) return false;
     if (!ok && engine.state_get().stopped) {
       // Stopped while its slices arrived: the layout waits, and LOAD REST builds it.
       const standing: ImageLayout = engine.state_get().layout;

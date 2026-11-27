@@ -54,6 +54,15 @@ function pane_make(): { root: HTMLElement; parts: HTMLElement[] } {
   return { root, parts };
 }
 
+/** How many observers of size have been made: a listing let go makes no more. */
+let resizeObserversMade: number = 0;
+globalThis.ResizeObserver = class {
+  constructor() { resizeObserversMade += 1; }
+  observe(): void { /* nothing is laid out here */ }
+  unobserve(): void { /* nothing is laid out here */ }
+  disconnect(): void { /* nothing is laid out here */ }
+} as unknown as typeof ResizeObserver;
+
 describe('a DAG pane closed', () => {
   it('disconnects every observer, takes its listener off the window, stops its timers, and lets go of its listing and scene', () => {
     const watch = observers_watch();
@@ -87,6 +96,15 @@ describe('a DAG pane closed', () => {
         document.documentElement.dataset['theme'] = 'other';
         expect(sceneCalls['size_fit'] ?? 0).toBe(fitsBefore);
         expect(sceneCalls['palette_refresh'] ?? 0).toBe(0);
+        // A feed's graph that was asked for before the close comes back now, and so does a roster.
+        const drawsBefore: number = Object.entries(sceneCalls).filter(([name]) => name !== 'dispose').reduce((sum, [, count]) => sum + count, 0);
+        const resizeObservers: number = resizeObserversMade;
+        panel.envelope_observe({ status: 'ok', rendered: '', model: { kind: 'feed.dag', data: { feedId: 7, feedName: 'a feed', nodes: [] } } } as never);
+        panel.envelope_observe({ status: 'ok', rendered: '', model: { kind: 'feed.list', data: { feeds: [] } } } as never);
+        jest.advanceTimersByTime(5000);
+        expect(Object.entries(sceneCalls).filter(([name]) => name !== 'dispose').reduce((sum, [, count]) => sum + count, 0)).toBe(drawsBefore);
+        expect(resizeObserversMade).toBe(resizeObservers);
+        expect(jest.getTimerCount()).toBe(0);
         root.remove();
       }).finally((): void => { jest.useRealTimers(); });
     } catch (error: unknown) {

@@ -77,6 +77,8 @@ function answer_make(line: string, mine: string[]): QuietAnswer {
 
 /** While set, a `--plan` ask is not answered until it resolves. */
 let planGate: Promise<void> | null = null;
+/** While set, no price (`vm cost`) is answered until it resolves. */
+let costGate: Promise<void> | null = null;
 /** While set, the store's script is not read until it resolves. */
 let storeGate: Promise<void> | null = null;
 /** While set, the next roster asked for is not answered until it resolves. */
@@ -109,6 +111,8 @@ function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; a
       asked.push(line);
       // A plan is held back while a test holds the gate, to come back when the test lets it.
       if (planGate !== null && line.endsWith(' --plan')) await planGate;
+      // And a price, while a test holds those.
+      if (costGate !== null && line.startsWith('vm cost')) await costGate;
       // And so is the text of the store's script, while a test holds that one.
       if (storeGate !== null && line.startsWith('cat ') && line.includes('store')) await storeGate;
       // And a look for a machine's script, while a test holds those.
@@ -979,6 +983,46 @@ describe('the VM controller', () => {
     expect(os().value.endsWith(' ')).toBe(false);
     screen.dispose();
     screen.root.remove();
+  });
+
+  it('a screen left while a lever\'s price is being asked for asks for no further price, redraws nothing and arms no wait when it comes back', async () => {
+    STORE_RUNS = { at: '2026-11-05T04:48:00.000Z', vcpu: 2, memory: 8, disk: 50, data: 50 };
+    let priced: () => void = (): void => undefined;
+    try {
+      const { screen, asked } = screen_make();
+      await screen.vm_open('store');
+      await settle();
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
+      await settle();
+      // Prices asked from here are held.
+      costGate = new Promise<void>((resolve: () => void): void => { priced = resolve; });
+      // Two levers move: each one's share of the change is priced, after the price as it runs.
+      for (const [id, value] of [['#ss-slider-disk', '180'], ['#ss-slider-data', '120']] as const) {
+        const lever: HTMLInputElement = screen.root.querySelector(id) as HTMLInputElement;
+        lever.value = value;
+        lever.dispatchEvent(new Event('input'));
+      }
+      const costsBefore: number = asked.filter((line: string): boolean => line.startsWith('vm cost')).length;
+      // The lever's wait passes, and the first price (the line as it runs) is asked for and held.
+      await new Promise((resolve) => { setTimeout(resolve, 220); });
+      const costsHeld: number = asked.filter((line: string): boolean => line.startsWith('vm cost')).length;
+      expect(costsHeld).toBeGreaterThan(costsBefore);
+      const drawn: string = screen.root.innerHTML;
+      screen.dispose();
+      const inner = screen as unknown as { leverTimer: unknown };
+      // The held price comes back to a screen that has left.
+      costGate = null;
+      priced();
+      await settle(12);
+      await new Promise((resolve) => { setTimeout(resolve, 220); });
+      expect(asked.filter((line: string): boolean => line.startsWith('vm cost')).length).toBe(costsHeld);
+      expect(screen.root.innerHTML).toBe(drawn);
+      expect(inner.leverTimer).toBeNull();
+      screen.root.remove();
+    } finally {
+      costGate = null;
+      priced();
+    }
   });
 
   it('a screen left while a line is running, a lever is waiting and a standing is being watched has no clock left, and starts none after', async () => {

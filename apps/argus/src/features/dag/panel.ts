@@ -459,8 +459,21 @@ export class DagPanel {
   private readonly observers: MutationObserver[] = [];
   /** Aborted when the pane closes: its listener on the window hears nothing more. */
   private readonly released: AbortController = new AbortController();
+  /** The wait before ENTER NODE is pressed for a jump that asked for it; null when none is pending. */
+  private enterTimer: number | null = null;
+  /** True once the pane has closed: nothing that arrives after is acted on. */
+  private closed: boolean = false;
   /** The wait before the scene is refitted after a zoom glide; null when none is pending. */
   private zoomTimer: number | null = null;
+
+  /** Presses ENTER NODE as by hand, once the facts chip has been drawn for the node; a closed pane presses nothing. */
+  private enter_queue(): void {
+    if (this.enterTimer !== null) window.clearTimeout(this.enterTimer);
+    this.enterTimer = window.setTimeout((): void => {
+      this.enterTimer = null;
+      [...this.facts.querySelectorAll<HTMLButtonElement>('button')].find((button: HTMLButtonElement): boolean => button.textContent?.trim() === 'ENTER NODE')?.click();
+    }, 0);
+  }
 
   /**
    * Keeps an observer so that closing the pane disconnects it.
@@ -481,6 +494,8 @@ export class DagPanel {
    * @param envelope - Any envelope crossing the session.
    */
   public envelope_observe(envelope: WireEnvelope): void {
+    // A reply that comes back to a pane that has closed draws nothing and opens no watch.
+    if (this.closed) return;
     if (this.jump_take(envelope)) return;
     if (this.feedAsk_take(envelope)) return;
     if (envelope.model?.kind === FEED_LIST_MODEL_KIND) {
@@ -595,9 +610,7 @@ export class DagPanel {
         // `dag enter`: once the node is selected, ENTER NODE is pressed as by hand.
         if (this.jumpEnter) {
           this.jumpEnter = false;
-          window.setTimeout((): void => {
-            [...this.facts.querySelectorAll<HTMLButtonElement>('button')].find((button: HTMLButtonElement): boolean => button.textContent?.trim() === 'ENTER NODE')?.click();
-          }, 0);
+          this.enter_queue();
         }
       }
     }
@@ -1050,7 +1063,10 @@ export class DagPanel {
    * document), its listener on the window, its listing and its scene.
    */
   public dispose(): void {
+    this.closed = true;
     this.watch_release();
+    if (this.enterTimer !== null) window.clearTimeout(this.enterTimer);
+    this.enterTimer = null;
     if (this.rosterTimer !== null) clearInterval(this.rosterTimer);
     this.rosterTimer = null;
     if (this.rosterCheckTimer !== null) clearTimeout(this.rosterCheckTimer);

@@ -25,6 +25,8 @@ export function held_watch(parent: THREE.Object3D): HeldWatch {
     thing.addEventListener('dispose', (): void => { watch.disposed.add(thing); });
   };
   parent.traverse((one: THREE.Object3D): void => {
+    // An instanced mesh holds its instances on the card itself, and says so when it lets them go.
+    if (one instanceof THREE.InstancedMesh) note(one as unknown as { addEventListener: (type: 'dispose', heard: () => void) => void });
     const drawn = one as THREE.Object3D & { geometry?: unknown; material?: unknown };
     if (drawn.geometry instanceof THREE.BufferGeometry) note(drawn.geometry);
     for (const material of Array.isArray(drawn.material) ? drawn.material : [drawn.material]) {

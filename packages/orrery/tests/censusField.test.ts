@@ -54,6 +54,7 @@ describe('CensusField', () => {
     field.clear();
     tubes.clear();
     stars.clear();
+    expect(watch.disposed.has(mesh!)).toBe(true);
     expect(watch.disposed.has(mesh!.geometry)).toBe(true);
     expect(watch.disposed.has(mesh!.material as THREE.Material)).toBe(true);
     const spriteShape: THREE.BufferGeometry = new THREE.Sprite().geometry;

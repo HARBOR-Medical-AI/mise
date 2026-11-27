@@ -986,6 +986,8 @@ export class CornerstoneEngine implements ImageEngine {
       // sent an operator hunting through three layers for a 403.
       if (syntax === undefined) {
         void refusal_explain(detail.imageId).then((why: string): void => {
+          // The engine was let go while the route was asked why: the readout is the next series's now.
+          if (this.disposed) return;
           this.host.readout_set(`REFUSED ${this.refused.size} OF ${this.imageIds.length} · ${why}`);
           this.host.note(`image: ${this.pathByImageId.get(detail.imageId ?? '') ?? detail.imageId}: ${why.toLowerCase()}`);
         });
@@ -1102,11 +1104,13 @@ export class CornerstoneEngine implements ImageEngine {
     this.host.progress_set({ label: `BUILDING ${layout.toUpperCase()}`, done: 0, total });
     // A volume exists only once every header is known; the loader learns
     // them by loading. This is the cost the LOAD guard stands in front of.
-    if (!(await this.layoutSlices_load(`BUILDING ${layout.toUpperCase()}`))) return false;
+    if (!(await this.layoutSlices_load(`BUILDING ${layout.toUpperCase()}`, began))) return false;
     // Let go, or cleared for another layout, while the slices loaded: nothing is made for a field that has moved on.
     if (this.build_replaced(began)) return false;
     const engineId: string = this.engineId_get();
-    const volumeId: string = `cornerstoneStreamingImageVolume:${engineId}`;
+    // The volume is this build's own: a build that is replaced while it waits releases its volume, and
+    // must not release the one the build that replaced it has made.
+    const volumeId: string = `cornerstoneStreamingImageVolume:${engineId}-${String(began)}`;
     const grid: HTMLElement = document.createElement('div');
     grid.className = layout === 'mpr' ? 'image-mpr' : 'image-render';
     this.field.appendChild(grid);
@@ -1211,18 +1215,22 @@ export class CornerstoneEngine implements ImageEngine {
    * goes back to the stack of the slices on hand.
    *
    * @param label - The field's words while the slices arrive.
-   * @returns Whether every slice was asked for; false when stopped or disposed.
+   * @param began - The field's count when the build that asks began (see {@link build_replaced}).
+   * @returns Whether every slice was asked for; false when stopped, disposed, or replaced by another build.
    */
-  private async layoutSlices_load(label: string): Promise<boolean> {
+  private async layoutSlices_load(label: string, began: number): Promise<boolean> {
     const total: number = this.imageIds.length;
     this.stopped = false;
     this.abandoned.clear();
     let loaded: number = 0;
     const whole: boolean = await this.images_load(this.imageIds, (): void => {
       loaded++;
-      if (!this.disposed) this.host.progress_set({ label, done: loaded, total });
+      // The progress is the build's that owns the field: one that has been replaced says nothing.
+      if (!this.build_replaced(began)) this.host.progress_set({ label, done: loaded, total });
     });
-    if (this.disposed || this.field === null) return false;
+    // Replaced while the slices loaded: the field is another build's, and this one neither shows the stack
+    // on it nor says it stopped.
+    if (this.build_replaced(began)) return false;
     if (!whole) {
       await this.stack_show();
       await this.stopped_show();
@@ -1291,7 +1299,7 @@ export class CornerstoneEngine implements ImageEngine {
     const began: number = this.fieldSerial;
     this.layout = 'slab';
     this.host.progress_set({ label: 'BUILDING SLAB', done: 0, total });
-    if (!(await this.layoutSlices_load('BUILDING SLAB'))) return false;
+    if (!(await this.layoutSlices_load('BUILDING SLAB', began))) return false;
     if (this.build_replaced(began)) return false;
     // A Cornerstone volume is the easiest way to stack the slices with the
     // right geometry; its pixels and geometry are copied into a fresh
@@ -1343,8 +1351,17 @@ export class CornerstoneEngine implements ImageEngine {
     for (let i = 0; i < 60 && element.offsetWidth === 0; i++) {
       await new Promise<void>((resolve): void => { requestAnimationFrame((): void => resolve()); });
     }
-    if (this.disposed) return false;
+    if (this.build_replaced(began)) {
+      this.volume_release(volumeId);
+      return false;
+    }
     const { slabScene_open } = await import('./slabScene.js');
+    // Let go, or replaced, while the scene's code was fetched: no scene is opened on an element that is
+    // no longer on the field.
+    if (this.build_replaced(began)) {
+      this.volume_release(volumeId);
+      return false;
+    }
     this.slabScene = slabScene_open(element, {
       imageData,
       range: this.slabRange,

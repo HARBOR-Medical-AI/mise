@@ -371,6 +371,9 @@ describe('a-selection-belongs-to-the-field', () => {
     // SELECT is pressed on the pane's chrome: nothing turns on.
     (root.querySelector('.files-select') as HTMLElement).click();
     expect(root.querySelector('.files-select')?.textContent).not.toBe('SELECT ON');
+    // Rows handed to it afterwards are not drawn: let go is let go.
+    listing.rows_set([{ key: '/y', rows: [{ name: 'late', kind: 'file', size: 1 }] }], { field: '/y' });
+    expect(names_onStage(mount)).toEqual(['alpha']);
     // Let go twice is let go once.
     expect((): void => { listing.hold_release(); }).not.toThrow();
   });

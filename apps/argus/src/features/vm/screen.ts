@@ -2302,6 +2302,8 @@ export class VmScreen extends ScriptScreen {
    * session's, read once, so these are worked out, not fetched.
    */
   private leverCosts_ask(line: ScriptLine): void {
+    // A screen that has been left prices nothing and waits for nothing.
+    if (this.left) return;
     const runs = this.runs_get(line_parse(line.text).subject ?? '');
     if (runs === null) { this.leverCosts = null; return; }
     const key: string = `${line.text}@${runs.at}`;
@@ -2321,20 +2323,46 @@ export class VmScreen extends ScriptScreen {
         const cost: VmCostRate | null | undefined = model?.vms[0]?.cost;
         return cost == null ? null : (cost.machineHour + cost.dataHour) * HOURS_PER_MONTH;
       };
-      void (async (): Promise<void> => {
-        const base: number | null = await priced(asRuns);
-        for (const [word, value] of moved) {
-          if (this.leverCosts?.key !== key) return;
-          const one: number | null = await priced(lineOption_set(asRuns, word, value));
-          this.leverCosts.deltas.set(word, base === null || one === null ? null : one - base);
-        }
-        if (this.leverCosts?.key === key) this.change_redraw();
-      })().catch((): void => undefined);
+      void this.leverShares_price(key, asRuns, moved, priced).catch((): void => undefined);
     }, 150);
+  }
+
+  /**
+   * Prices each moved lever's share of the change, one after another, and
+   * redraws the change block when all are in. It stops at once, asking for
+   * no further price and drawing nothing, when the screen has been left or
+   * the levers have moved on.
+   *
+   * @param key - What the prices are for: the line and the reading it is priced against.
+   * @param asRuns - The line as it runs.
+   * @param moved - Each lever that differs from what runs, with the value wanted.
+   * @param priced - Asks the price of a line.
+   */
+  private async leverShares_price(key: string, asRuns: string, moved: Array<[string, string]>, priced: (text: string) => Promise<number | null>): Promise<void> {
+    const prices_stand = (): boolean => !this.screen_left() && this.leverCosts?.key === key;
+    const base: number | null = await priced(asRuns);
+    for (const [word, value] of moved) {
+      if (!prices_stand()) return;
+      const one: number | null = await priced(lineOption_set(asRuns, word, value));
+      if (!prices_stand()) return;
+      this.leverCosts?.deltas.set(word, base === null || one === null ? null : one - base);
+    }
+    if (prices_stand()) this.change_redraw();
+  }
+
+  /**
+   * Says whether the screen has been left.
+   *
+   * @returns True once `dispose` has run.
+   */
+  private screen_left(): boolean {
+    return this.left;
   }
 
   /** A price arrived: SIZE's change block is redrawn in place; + NEW's price column as before. */
   protected override cost_redraw(): void {
+    // A price that comes back to a screen that has been left redraws nothing and arms no wait.
+    if (this.left) return;
     if (this.view === NEW_KEY) {
       const box: HTMLElement | null = this.parts.body.querySelector('.ss-cost');
       if (box !== null) this.cost_fill(box, this.newStep_get());

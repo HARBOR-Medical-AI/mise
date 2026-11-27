@@ -62,6 +62,21 @@ describe('TubeField', () => {
     for (const kept of held_left(watch)) expect(kept instanceof THREE.CylinderGeometry || kept instanceof THREE.Texture || kept === spriteShape).toBe(true);
     expect([...watch.disposed].some((thing) => thing instanceof THREE.ShaderMaterial)).toBe(true);
     expect([...watch.disposed].some((thing) => thing instanceof THREE.BufferGeometry)).toBe(true);
+    // Each instanced mesh lets go of its instances itself (their matrices and colours are held apart from the shape).
+    const meshes: object[] = [...watch.held].filter((thing) => thing instanceof THREE.InstancedMesh);
+    expect(meshes.length).toBeGreaterThanOrEqual(2);
+    expect(meshes.every((mesh) => watch.disposed.has(mesh))).toBe(true);
+  });
+
+  it('one set of tubes let go by itself lets go of its instances too, and the tube shape they share is kept', () => {
+    const { field, owner, entries, members, parent } = scene({});
+    field.build(owner, entries, members);
+    const mesh = owner.tubes as THREE.InstancedMesh;
+    const watch: HeldWatch = held_watch(parent);
+    field.release(mesh);
+    expect(watch.disposed.has(mesh)).toBe(true);
+    expect(watch.disposed.has(mesh.material as THREE.Material)).toBe(true);
+    for (const kept of held_left(watch)) expect(kept instanceof THREE.CylinderGeometry || kept instanceof THREE.Texture).toBe(true);
   });
 
   it('joins solid spheres: one tube per parent and join, coloured by the stage it runs into', () => {

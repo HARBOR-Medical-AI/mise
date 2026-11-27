@@ -1243,6 +1243,8 @@ export class Listing<T> {
    * @param context - The field the rows belong to.
    */
   public rows_set(blocks: ReadonlyArray<ListingBlock<T>>, context: { field: string }): void {
+    // Let go is let go: rows handed to a listing after that are not drawn, and nothing is taken again.
+    if (this.released.signal.aborted) return;
     if (this.field !== null && context.field !== this.field) {
       this.selection.clear();
       // Navigation: what was pointed at is not here any more.
@@ -1396,7 +1398,7 @@ export class Listing<T> {
   private shed_fit(force: boolean = false): void {
     const order: string[] = this.level.shedOrder();
     if (order.length === 0) return;
-    if (this.shedObserver === null && typeof ResizeObserver !== 'undefined') {
+    if (this.shedObserver === null && typeof ResizeObserver !== 'undefined' && !this.released.signal.aborted) {
       this.shedObserver = new ResizeObserver((): void => this.shed_fit());
       this.shedObserver.observe(this.gridHost);
     }
