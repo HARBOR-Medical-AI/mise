@@ -213,7 +213,10 @@ describe('sessionDir_settle', () => {
     try {
       mkdirSync(join(stateDir, 'k'));
       symlinkSync(elsewhere, join(stateDir, 'k', 'home'));
+      chmodSync(elsewhere, 0o755);
       expect(() => sessionDir_settle(join(stateDir, 'k', 'home'), join(stateDir, 'k'))).toThrow('not a folder of its own');
+      // Only the folder checked is ever changed: what a link points at keeps its mode.
+      expect(statSync(elsewhere).mode & 0o777).toBe(0o755);
       writeFileSync(join(stateDir, 'k', 'cache'), 'x');
       expect(() => sessionDir_settle(join(stateDir, 'k', 'cache'), join(stateDir, 'k'))).toThrow();
       expect(() => sessionDir_settle(elsewhere, join(stateDir, 'k'))).toThrow('lies outside');

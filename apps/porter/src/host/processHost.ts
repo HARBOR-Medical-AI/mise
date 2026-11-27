@@ -17,7 +17,7 @@
  * @module
  */
 import { spawn as childSpawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, type Stats } from 'node:fs';
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, type Stats } from 'node:fs';
 import { join, sep } from 'node:path';
 import { berthKey_compute, berth_pathIn, berthUrl_isAlive, closing_write } from '@fnndsc/calypso/berth';
 import { sessionEnv_build } from './sessionEnv.js';
@@ -197,11 +197,14 @@ interface SettledFolders {
 /**
  * Makes a session's folder, or settles one already there: it must be a real
  * folder (not a link), this account's, inside `within`, and it is left 0700
- * whatever mode it had.
+ * whatever mode it had. The folder is opened as a directory without
+ * following a link at its own name, and looked at, and tightened, through
+ * that open handle: what is checked is what is changed. Its name must still
+ * name that same folder afterwards, or the start is refused.
  *
  * @param dir - The folder.
  * @param within - The folder it must lie inside.
- * @throws {Error} When the path is a link, not a folder, another account's, or outside `within`.
+ * @throws {Error} When the path is a link, not a folder, another account's, outside `within`, or no longer the folder checked.
  *
  * @example
  * ```ts
@@ -210,11 +213,27 @@ interface SettledFolders {
  */
 export function sessionDir_settle(dir: string, within: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const found: Stats = lstatSync(dir);
-  if (found.isSymbolicLink() || !found.isDirectory()) throw new Error(`the session folder ${dir} is not a folder of its own`);
-  if (typeof process.getuid === 'function' && found.uid !== process.getuid()) throw new Error(`the session folder ${dir} belongs to another account`);
-  if (!realpathSync(dir).startsWith(`${realpathSync(within)}${sep}`)) throw new Error(`the session folder ${dir} lies outside ${within}`);
-  if ((found.mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
+  let handle: number;
+  try {
+    handle = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  } catch {
+    throw new Error(`the session folder ${dir} is not a folder of its own`);
+  }
+  try {
+    let found: Stats = fstatSync(handle);
+    if (!found.isDirectory()) throw new Error(`the session folder ${dir} is not a folder of its own`);
+    if (typeof process.getuid === 'function' && found.uid !== process.getuid()) throw new Error(`the session folder ${dir} belongs to another account`);
+    if (!realpathSync(dir).startsWith(`${realpathSync(within)}${sep}`)) throw new Error(`the session folder ${dir} lies outside ${within}`);
+    if ((found.mode & 0o777) !== 0o700) {
+      fchmodSync(handle, 0o700);
+      found = fstatSync(handle);
+    }
+    if ((found.mode & 0o777) !== 0o700) throw new Error(`the session folder ${dir} could not be made private`);
+    const named: Stats = lstatSync(dir);
+    if (named.isSymbolicLink() || named.dev !== found.dev || named.ino !== found.ino) throw new Error(`the session folder ${dir} changed while it was checked`);
+  } finally {
+    closeSync(handle);
+  }
 }
 
 /** Sessions as child processes on this host. */
