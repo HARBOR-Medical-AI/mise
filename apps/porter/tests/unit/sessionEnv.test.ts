@@ -11,6 +11,7 @@ import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hostControl_parseArgv } from '@fnndsc/calypso';
+import { berthKey_compute } from '@fnndsc/calypso/berth';
 import * as nodeFs from 'node:fs';
 import { identityFile_read, identityFile_write, ProcessHost, sessionDir_settle, type SettleFs, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
 import { address_isPlain, sessionEnv_build, sessionEnv_withheld } from '../../src/host/sessionEnv.js';
@@ -260,13 +261,15 @@ describe('a folder swapped while it is checked', () => {
     return { fs, opened, changed, closed };
   }
 
-  it('refuses, having changed only the folder it opened, and closes it', () => {
+  it('refuses before changing anything, and closes what it opened', () => {
     const dir: string = join(stateDir, 'k');
     mkdirSync(dir, { mode: 0o755 });
     chmodSync(dir, 0o755);
     const seen = swapping();
     expect(() => sessionDir_settle(dir, stateDir, seen.fs)).toThrow('changed while it was checked');
-    expect(seen.changed).toEqual(seen.opened);
+    expect(seen.opened.length).toBe(1);
+    expect(seen.changed).toEqual([]);
+    expect(statSync(dir).mode & 0o777).toBe(0o755);
     expect(seen.closed).toEqual(seen.opened);
   });
 
@@ -347,22 +350,30 @@ describe('what agy broke, held', () => {
 });
 
 describe('the identity marker at adoption and at setup', () => {
-  it('reads a marker only from a file of this account\'s own, and skips a sighting whose marker is not one', async () => {
+  it('adopts by a marker only from a file of this account\'s own that names the folder\'s own identity', async () => {
     const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (): Promise<boolean> => true });
-    const plant = (dir: string, identity: string): void => {
-      mkdirSync(join(stateDir, dir, 'run', 'calypso'), { recursive: true });
-      writeFileSync(join(stateDir, dir, 'run', 'calypso', 'berth-x.json'), JSON.stringify({ identity, url: 'ws://127.0.0.1:1', token: 'T' }));
+    const GOOD: string = 'stratus:oci@good@https://cube.example.org/api/v1/';
+    const LINKED: string = 'stratus:oci@linked@https://cube.example.org/api/v1/';
+    const MISPLACED: string = 'stratus:oci@misplaced@https://cube.example.org/api/v1/';
+    const VICTIM: string = 'stratus:oci@victim@https://cube.example.org/api/v1/';
+    const PLAIN: string = 'chris@https://cube.example.org/api/v1/';
+    const plant = (identity: string, berthIdentity: string): string => {
+      const dir: string = join(stateDir, berthKey_compute(identity));
+      mkdirSync(join(dir, 'run', 'calypso'), { recursive: true });
+      writeFileSync(join(dir, 'run', 'calypso', 'berth-x.json'), JSON.stringify({ identity: berthIdentity, url: 'ws://127.0.0.1:1', token: 'T' }));
+      return dir;
     };
-    plant('good', 'me@cloud');
-    identityFile_write(join(stateDir, 'good', 'identity'), 'stratus:oci@good@https://cube.example.org/api/v1/');
-    plant('bad', 'other@cloud');
-    writeFileSync(join(stateDir, 'elsewhere'), 'stratus:oci@victim@https://cube.example.org/api/v1/\n');
-    symlinkSync(join(stateDir, 'elsewhere'), join(stateDir, 'bad', 'identity'));
-    plant('plain', 'chris@https://cube.example.org/api/v1/');
+    identityFile_write(join(plant(GOOD, 'me@cloud'), 'identity'), GOOD);
+    // A link at the marker's name: not believed.
+    writeFileSync(join(stateDir, 'elsewhere'), `${VICTIM}\n`);
+    symlinkSync(join(stateDir, 'elsewhere'), join(plant(LINKED, 'other@cloud'), 'identity'));
+    // A real file of porter's, but naming another session's identity (copied from its folder): not believed.
+    identityFile_write(join(plant(MISPLACED, 'third@cloud'), 'identity'), VICTIM);
+    plant(PLAIN, PLAIN);
     const seen: string[] = (await host.sessions_adopt()).map((sighting) => sighting.identity).sort();
-    expect(seen).toEqual(['chris@https://cube.example.org/api/v1/', 'stratus:oci@good@https://cube.example.org/api/v1/']);
+    expect(seen).toEqual([PLAIN, GOOD].sort());
     expect(identityFile_read(join(stateDir, 'nothing'))).toBeUndefined();
-    expect(identityFile_read(join(stateDir, 'bad', 'identity'))).toBeNull();
+    expect(identityFile_read(join(stateDir, berthKey_compute(LINKED), 'identity'))).toBeNull();
   });
 
   it('fails a stratus start whose marker cannot be written, once and for good, spawning nothing', async () => {
@@ -381,6 +392,14 @@ describe('the identity marker at adoption and at setup', () => {
     }
     expect(report?.state).toBe('failed');
     expect(spawnCalls).toEqual([]);
+    // Refused again and again, it leaves nothing new in the session's folder.
+    const before: string[] = nodeFs.readdirSync(root).sort();
+    for (let i = 0; i < 3; i++) {
+      host.stratus_begin(STRATUS, '/creds/oci/config', false, false);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(nodeFs.readdirSync(root).sort()).toEqual(before);
+    expect(before.some((name: string): boolean => name.endsWith('.tmp'))).toBe(false);
   });
 
   it('changes nothing under a root put in place of the one verified, part way through setup', async () => {
@@ -412,4 +431,74 @@ describe('the identity marker at adoption and at setup', () => {
     expect(statSync(join(root, 'config')).mode & 0o777).toBe(0o755);
     expect(spawnCalls).toEqual([]);
   });
+
+  it('makes nothing in a root put at the name while the session is set up: all of it lands in the folder verified', async () => {
+    process.env = { PATH: '/usr/bin' };
+    const host0: ProcessHost = host_make();
+    const root: string = join(host0.dirs_build(STRATUS).config, '..');
+    let swapped: boolean = false;
+    const fs: SettleFs = {
+      dir_make: (path, options) => {
+        // At the first folder made inside the root, the root is moved away and another put at its name.
+        if (!swapped && path.endsWith('/config')) {
+          swapped = true;
+          nodeFs.renameSync(root, `${root}.moved`);
+          nodeFs.mkdirSync(root, { mode: 0o700 });
+        }
+        return nodeFs.mkdirSync(path, options);
+      },
+      dir_open: (path, flags) => nodeFs.openSync(path, flags),
+      open_stat: (fd) => nodeFs.fstatSync(fd),
+      open_chmod: (fd, mode) => { nodeFs.fchmodSync(fd, mode); },
+      name_stat: (path) => nodeFs.lstatSync(path),
+      path_real: (path) => nodeFs.realpathSync(path),
+      open_close: (fd) => { nodeFs.closeSync(fd); },
+    };
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn, alive: async (): Promise<boolean> => false, bootTimeoutMs: 60, pollMs: 10, settleFs: fs });
+    host.stratus_begin(STRATUS, '/creds/oci/config', false, false);
+    let report: { state: string; reason?: string } | undefined;
+    for (let i = 0; i < 50; i++) {
+      const followed = host.boot_follow(STRATUS, { line: () => undefined, done: () => undefined });
+      report = followed?.report;
+      followed?.release();
+      if (report !== undefined && report.state !== 'booting') break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(swapped).toBe(true);
+    expect(report).toMatchObject({ state: 'failed' });
+    expect(report?.reason).toContain('changed while it was set up');
+    // The replacement holds nothing: no folder, no marker, no temporary file.
+    expect(nodeFs.readdirSync(root)).toEqual([]);
+    // Everything was made in the folder that was verified.
+    expect(nodeFs.readdirSync(`${root}.moved`).sort()).toEqual(['cache', 'config', 'data', 'home', 'identity', 'run', 'state', 'tmp']);
+    expect(spawnCalls).toEqual([]);
+  });
+
+  it('changes nothing it opened when the name has moved on by the time it would change it (agy, attack 0c)', () => {
+    const root: string = join(stateDir, 'r');
+    const outside: string = join(stateDir, 'outside');
+    mkdirSync(join(root, 'home'), { recursive: true });
+    mkdirSync(join(outside, 'home'), { recursive: true });
+    chmodSync(join(outside, 'home'), 0o755);
+    // The root is swapped for `outside` just before the folder is opened, and back just after.
+    const fs: SettleFs = {
+      dir_make: (path, options) => nodeFs.mkdirSync(path, options),
+      dir_open: (path, flags) => {
+        nodeFs.renameSync(root, `${root}.away`);
+        nodeFs.renameSync(outside, root);
+        const fd: number = nodeFs.openSync(path, flags);
+        nodeFs.renameSync(root, outside);
+        nodeFs.renameSync(`${root}.away`, root);
+        return fd;
+      },
+      open_stat: (fd) => nodeFs.fstatSync(fd),
+      open_chmod: (fd, mode) => { nodeFs.fchmodSync(fd, mode); },
+      name_stat: (path) => nodeFs.lstatSync(path),
+      path_real: (path) => nodeFs.realpathSync(path),
+      open_close: (fd) => { nodeFs.closeSync(fd); },
+    };
+    expect(() => sessionDir_settle(join(root, 'home'), root, fs)).toThrow();
+    expect(statSync(join(outside, 'home')).mode & 0o777).toBe(0o755);
+  });
 });
+

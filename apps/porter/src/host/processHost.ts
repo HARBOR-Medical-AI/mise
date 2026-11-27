@@ -18,7 +18,7 @@
  */
 import { spawn as childSpawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, existsSync, realpathSync, renameSync, writeSync, type Stats } from 'node:fs';
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, writeSync, type Stats } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { berthKey_compute, berth_pathIn, berthUrl_isAlive, closing_write } from '@fnndsc/calypso/berth';
 import { sessionEnv_build } from './sessionEnv.js';
@@ -267,7 +267,7 @@ const SETTLE_FS: SettleFs = {
  *
  * @param path - The file.
  * @param identity - The identity it names.
- * @throws {Error} When the file cannot be written whole.
+ * @throws {Error} When the file cannot be written whole; the fresh file is removed.
  *
  * @example
  * ```ts
@@ -277,13 +277,20 @@ const SETTLE_FS: SettleFs = {
 export function identityFile_write(path: string, identity: string): void {
   const fresh: string = `${path}.${String(process.pid)}.${randomBytes(6).toString('hex')}.tmp`;
   const handle: number = openSync(fresh, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  let placed: boolean = false;
   try {
-    const bytes: Buffer = Buffer.from(`${identity}\n`, 'utf-8');
-    for (let written: number = 0; written < bytes.length;) written += writeSync(handle, bytes, written, bytes.length - written);
+    try {
+      const bytes: Buffer = Buffer.from(`${identity}\n`, 'utf-8');
+      for (let written: number = 0; written < bytes.length;) written += writeSync(handle, bytes, written, bytes.length - written);
+    } finally {
+      closeSync(handle);
+    }
+    renameSync(fresh, path);
+    placed = true;
   } finally {
-    closeSync(handle);
+    // The fresh file never outlives a write that did not land: a refused start leaves nothing behind.
+    if (!placed) rmSync(fresh, { force: true });
   }
-  renameSync(fresh, path);
 }
 
 /** The most an identity file holds: an identity is a short line. */
@@ -313,9 +320,12 @@ export function identityFile_read(path: string): string | null | undefined {
     const found: Stats = fstatSync(handle);
     if (!found.isFile() || found.size > IDENTITY_FILE_MAX || (typeof process.getuid === 'function' && found.uid !== process.getuid())) return null;
     const bytes: Buffer = Buffer.alloc(found.size);
-    const read: number = readSync(handle, bytes, 0, found.size, 0);
-    const text: string = bytes.subarray(0, read).toString('utf-8').trim();
+    // A read short of the size it said is not the file it said it was.
+    if (readSync(handle, bytes, 0, found.size, 0) !== found.size) return null;
+    const text: string = bytes.toString('utf-8').trim();
     return text.length > 0 && !text.includes('\n') ? text : null;
+  } catch {
+    return null;
   } finally {
     closeSync(handle);
   }
@@ -342,6 +352,24 @@ function parent_confirm(dir: string, parent: FolderId, fs: SettleFs): void {
 }
 
 /**
+ * Shows that a name still names the folder held open.
+ *
+ * @param dir - The name.
+ * @param found - What the open handle saw.
+ * @param fs - The filesystem calls.
+ * @throws {Error} When the name is a link now, or names another folder.
+ *
+ * @example
+ * ```ts
+ * name_confirm('/var/lib/porter/ab12/home', found, SETTLE_FS);
+ * ```
+ */
+function name_confirm(dir: string, found: Stats, fs: SettleFs): void {
+  const named: Stats = fs.name_stat(dir);
+  if (named.isSymbolicLink() || named.dev !== found.dev || named.ino !== found.ino) throw new Error(`the session folder ${dir} changed while it was checked`);
+}
+
+/**
  * Leaves an open folder 0700, every mode bit counted (setgid and sticky
  * among them), changed through its handle and read back through it.
  *
@@ -363,6 +391,32 @@ function mode_tighten(handle: number, found: Stats, dir: string, fs: SettleFs): 
   const now: Stats = fs.open_stat(handle);
   if ((now.mode & 0o7777) !== 0o700) throw new Error(`the session folder ${dir} could not be made private`);
   return now;
+}
+
+/**
+ * The path through which a folder held open is reached as that folder: on
+ * Linux `/proc/self/fd/<fd>`, which resolves to the opened folder itself;
+ * where there is no such path, the folder's name.
+ *
+ * @param fd - The open folder.
+ * @param name - Its name.
+ * @param fs - The filesystem calls.
+ * @returns The path to make things in it through.
+ *
+ * @example
+ * ```ts
+ * anchor_find(rootFd, '/var/lib/porter/ab12', SETTLE_FS); // '/proc/self/fd/23'
+ * ```
+ */
+function anchor_find(fd: number, name: string, fs: SettleFs): string {
+  const through: string = `/proc/self/fd/${String(fd)}`;
+  try {
+    const seen: Stats = fs.name_stat(`${through}/.`);
+    const held: Stats = fs.open_stat(fd);
+    return seen.dev === held.dev && seen.ino === held.ino ? through : name;
+  } catch {
+    return name;
+  }
 }
 
 /**
@@ -402,10 +456,11 @@ export function sessionDir_settle(dir: string, within: string, fs: SettleFs = SE
     if (parent !== undefined) parent_confirm(dir, parent, fs);
     if (typeof process.getuid === 'function' && found.uid !== process.getuid()) throw new Error(`the session folder ${dir} belongs to another account`);
     if (!fs.path_real(dir).startsWith(`${fs.path_real(within)}${sep}`)) throw new Error(`the session folder ${dir} lies outside ${within}`);
+    // The name still names what is open, asked before anything is changed and again after (agy, attack 0c).
+    name_confirm(dir, found, fs);
     // Every mode bit, setgid and sticky among them: the folder is its owner's, and nothing else.
     found = mode_tighten(handle, found, dir, fs);
-    const named: Stats = fs.name_stat(dir);
-    if (named.isSymbolicLink() || named.dev !== found.dev || named.ino !== found.ino) throw new Error(`the session folder ${dir} changed while it was checked`);
+    name_confirm(dir, found, fs);
     return { dev: found.dev, ino: found.ino };
   } finally {
     fs.open_close(handle);
@@ -500,6 +555,24 @@ export class ProcessHost implements SessionHost {
     return berths.length === 1 ? this.berthFile_read(join(calypso, berths[0] as string)) : null;
   }
 
+  /**
+   * Whose a sighted berth is: the identity its folder's marker names (a
+   * stratus session's), else the berth's own. A marker that is not a file of
+   * this account's own, or an identity that is not the folder's own (its key
+   * names the folder; a marker copied from another session's folder is not
+   * believed), makes the sighting one to skip.
+   *
+   * @param folder - The session folder's name, its identity's key.
+   * @param berth - The berth found in it.
+   * @returns The identity, or null to skip the sighting.
+   */
+  private sightingIdentity_read(folder: string, berth: Berth): string | null {
+    const marked: string | null | undefined = identityFile_read(join(this.stateDir, folder, 'identity'));
+    if (marked === null) return null;
+    const identity: string = marked ?? berth.identity;
+    return berthKey_compute(identity) === folder ? identity : null;
+  }
+
   /** @inheritdoc */
   public async sessions_adopt(): Promise<SessionSighting[]> {
     const sightings: SessionSighting[] = [];
@@ -514,10 +587,8 @@ export class ProcessHost implements SessionHost {
         if (berth === null) continue;
         const alive: boolean = await this.alive(berth.url);
         // A stratus session's own identity is kept beside its berth.
-        // One that is not a file of this account's own is not believed: that sighting is skipped, the rest are adopted.
-        const marked: string | null | undefined = identityFile_read(join(this.stateDir, entry.name, 'identity'));
-        if (marked === null) continue;
-        const identity: string = marked ?? berth.identity;
+        const identity: string | null = this.sightingIdentity_read(entry.name, berth);
+        if (identity === null) continue;
         sightings.push({ identity, berth, alive });
         if (alive && !this.sessions.has(identity)) {
           this.sessions.set(identity, {
@@ -617,20 +688,33 @@ export class ProcessHost implements SessionHost {
    * @throws {Error} When a folder is a link, not a folder, another account's, or outside porter's state.
    */
   private folders_settle(identity: string, marked: boolean): SettledFolders {
+    const fs: SettleFs = this.settleFs ?? SETTLE_FS;
     const dirs: SessionDirs = this.dirs_build(identity);
     const root: string = join(this.stateDir, berthKey_compute(identity));
     const own: Record<string, string> = { HOME: join(root, 'home'), XDG_STATE_HOME: join(root, 'state'), XDG_DATA_HOME: join(root, 'data') };
-    const rootId: FolderId = sessionDir_settle(root, this.stateDir, this.settleFs);
-    const folders: string[] = [dirs.config, dirs.runtime, dirs.cache, dirs.tmp, join(root, 'home'), join(root, 'state'), join(root, 'data')];
-    for (const dir of folders) sessionDir_settle(dir, root, this.settleFs, rootId);
-    // The daemon's berth names its cloud identity; this names the session's,
-    // so a porter restarted adopts it under the key its cookie holds.
-    if (marked) identityFile_write(join(root, 'identity'), identity);
-    // The root is still the folder everything above was made in, or the start is refused.
-    const again: Stats = (this.settleFs ?? SETTLE_FS).name_stat(root);
-    if (again.isSymbolicLink() || again.dev !== rootId.dev || again.ino !== rootId.ino) throw new Error(`the session folder ${root} changed while it was set up`);
+    const rootId: FolderId = sessionDir_settle(root, this.stateDir, fs);
+    // The root stays open while everything in it is made, and everything is made through it: on Linux a
+    // name under /proc/self/fd/<root> resolves inside the folder that was opened, whatever has since been
+    // put at the root's name (Node has no mkdirat or openat). Without /proc, through the name, with each
+    // folder's parent checked against the root before anything is changed.
+    const rootFd: number = fs.dir_open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const opened: Stats = fs.open_stat(rootFd);
+      if (opened.dev !== rootId.dev || opened.ino !== rootId.ino) throw new Error(`the session folder ${root} changed while it was checked`);
+      const anchor: string = anchor_find(rootFd, root, fs);
+      for (const name of ['config', 'run', 'cache', 'tmp', 'home', 'state', 'data']) sessionDir_settle(join(anchor, name), anchor, fs, rootId);
+      // The daemon's berth names its cloud identity; this names the session's,
+      // so a porter restarted adopts it under the key its cookie holds.
+      if (marked) identityFile_write(join(anchor, 'identity'), identity);
+      // The session is handed names, so the root's name must still be the folder all this was made in.
+      const again: Stats = fs.name_stat(root);
+      if (again.isSymbolicLink() || again.dev !== rootId.dev || again.ino !== rootId.ino) throw new Error(`the session folder ${root} changed while it was set up`);
+    } finally {
+      fs.open_close(rootFd);
+    }
     return { dirs, root, own };
   }
+
 
 
   /**
