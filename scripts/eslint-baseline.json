@@ -42,7 +42,7 @@
     "max-depth": 12
   },
   "apps/porter": {
-    "@typescript-eslint/naming-convention": 173,
+    "@typescript-eslint/naming-convention": 172,
     "@typescript-eslint/no-confusing-void-expression": 4,
     "@typescript-eslint/no-deprecated": 2,
     "@typescript-eslint/no-unnecessary-condition": 4,
@@ -50,18 +50,18 @@
     "@typescript-eslint/no-unnecessary-type-conversion": 4,
     "@typescript-eslint/require-await": 5,
     "@typescript-eslint/restrict-plus-operands": 1,
-    "@typescript-eslint/restrict-template-expressions": 49,
+    "@typescript-eslint/restrict-template-expressions": 46,
     "complexity": 12,
     "eslint/unused-disable-directive": 3,
     "import/order": 61,
     "jsdoc/check-param-names": 1,
     "jsdoc/check-tag-names": 22,
     "jsdoc/escape-inline-tags": 1,
-    "jsdoc/require-example": 151,
-    "jsdoc/require-jsdoc": 266,
+    "jsdoc/require-example": 148,
+    "jsdoc/require-jsdoc": 260,
     "jsdoc/require-param": 43,
-    "jsdoc/require-returns": 25,
-    "jsdoc/require-throws": 2,
+    "jsdoc/require-returns": 24,
+    "jsdoc/require-throws": 1,
     "local/file-overview-sections": 76
   },
   "packages/brasa": {

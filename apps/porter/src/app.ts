@@ -334,6 +334,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   const creds: CredentialStore = new CredentialStore(config.stateDir);
   const tokens: TokenStore = options.tokens ?? new TokenStore(config.tokensFile, config.tokenDays);
   tokens.load();
+  if (tokens.skipped > 0) options.log?.(`the door's token store holds ${String(tokens.skipped)} record(s) of the wrong shape; they were left out`);
   const codes: DeviceCodes = options.codes ?? new DeviceCodes();
   // Who a request is from, and whether it came by https, is the socket's word unless the peer is a proxy
   // the operator named (`PORTER_TRUSTED_PROXIES`): only such a peer's forwarded headers are believed. A
@@ -480,6 +481,11 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       return null;
     }
     const checked: TokenCheck = tokens.check(bearer);
+    // A token minted for another CUBE's identity is not this door's to answer for.
+    if (checked.ok && identity_normalise(checked.record.user, config.cubeUrl) !== checked.record.identity) {
+      await reply.code(401).send({ error: `the door token "${checked.record.name}" was minted for another CUBE than this door's` });
+      return null;
+    }
     if (!checked.ok) {
       await reply.code(401).send({ error: checked.why === 'expired' ? `the door token "${checked.record.name}" expired on ${checked.record.expires.slice(0, 10)}` : 'the door does not know that token' });
       return null;
@@ -501,9 +507,11 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   app.delete('/auth/token', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
     const holder: DoorToken | null = await bearer_check(request, reply);
     if (holder === null) return reply;
-    tokens.revoke(holder.user, holder.name);
-    options.log?.(`${holder.user} revoked their door token "${holder.name}"`);
-    return { revoked: true, name: holder.name };
+    // The token in hand and only it, found again by its hash in the same change: a replacement of the same name stays.
+    const gone: DoorToken | null = tokens.revoke_presented(bearer_extract(request) ?? '');
+    if (gone === null) return reply.code(401).send({ error: 'the door does not know that token (revoked, or minted elsewhere)' });
+    options.log?.(`${gone.user} revoked their door token "${gone.name}"`);
+    return { revoked: true, name: gone.name };
   });
 
   app.get('/auth/device/:code', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
@@ -530,17 +538,21 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     let wanted: { tokenName?: string; code?: string } = {};
     if (bearer !== null) {
       if (!token_looksLike(bearer)) return refuse(401, 'that is not a door token');
-      const checked: TokenCheck = tokens.check(bearer);
+      // One change of the store, read afresh: found by its hash, alive, for the identity this door serves, its use noted.
+      const checked: TokenCheck = tokens.authorize(bearer, (user: string): string => identity_normalise(user, config.cubeUrl));
       if (!checked.ok) {
         if (checked.why === 'expired') {
           options.log?.(`refused ${checked.record.user}'s door token "${checked.record.name}": it expired on ${checked.record.expires.slice(0, 10)}`);
           return refuse(401, `the door token "${checked.record.name}" expired on ${checked.record.expires.slice(0, 10)}; run chell auth login`);
         }
+        if (checked.why === 'foreign') {
+          options.log?.(`refused ${checked.record.user}'s door token "${checked.record.name}": it was minted for ${checked.record.identity}, not this door's CUBE`);
+          return refuse(401, `the door token "${checked.record.name}" was minted for another CUBE than this door's (${config.cubeUrl}); run chell auth login`);
+        }
         options.log?.('refused a door token nobody holds (revoked, or never minted here)');
         return refuse(401, 'the door does not know that token (revoked, or minted elsewhere); run chell auth login');
       }
       byToken = checked.record;
-      tokens.touch(byToken);
       username = byToken.user;
       cubeToken = null;
     } else {
@@ -597,7 +609,8 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       tries_tell(false);
       cubeToken = minted.token;
     }
-    const identity: string = identity_normalise(username, config.cubeUrl);
+    // A token's identity is the record's own, whole: never rebuilt from its username.
+    const identity: string = byToken !== null ? byToken.identity : identity_normalise(username, config.cubeUrl);
     // A device code: the human came to authorise a chell, not to open a
     // session here. The token is minted, handed to the waiting poll, and
     // the browser is told it can go.

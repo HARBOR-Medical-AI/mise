@@ -1003,7 +1003,7 @@ describe('door tokens (chell auth)', () => {
     expect(body.token?.token.startsWith('pdt_')).toBe(true);
     expect(said.some((line) => line.includes('minted a door token "cron@titan" for chris'))).toBe(true);
     // The store on disk holds the hash, never the plaintext.
-    const kept: string = await (await import('node:fs/promises')).readFile(join(tokensDir, 'tokens.json'), 'utf8');
+    const kept: string = await (await import('node:fs/promises')).readFile(join(tokensDir, 'tokens.json.d', '1.json'), 'utf8');
     expect(kept).not.toContain(body.token?.token as string);
 
     const byToken = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${body.token?.token}` } });

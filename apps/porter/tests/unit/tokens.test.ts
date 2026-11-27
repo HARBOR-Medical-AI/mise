@@ -19,10 +19,11 @@ describe('TokenStore', () => {
     expect(token_looksLike(token)).toBe(true);
     expect(token.startsWith(DOOR_TOKEN_PREFIX)).toBe(true);
     expect(record.hash).not.toContain(token.slice(DOOR_TOKEN_PREFIX.length, DOOR_TOKEN_PREFIX.length + 8));
-    const kept: string = await readFile(join(dir, 'state', 'tokens.json'), 'utf8');
+    const kept: string = await readFile(join(dir, 'state', 'tokens.json.d', '1.json'), 'utf8');
     expect(kept).not.toContain(token);
     expect(kept).toContain('cron@titan');
-    expect((await stat(join(dir, 'state', 'tokens.json'))).mode & 0o777).toBe(0o600);
+    expect((await stat(join(dir, 'state', 'tokens.json.d', '1.json'))).mode & 0o777).toBe(0o600);
+    expect((await stat(join(dir, 'state', 'tokens.json.d'))).mode & 0o777).toBe(0o700);
     expect(store.check(token)).toMatchObject({ ok: true, record: { user: 'chris', name: 'cron@titan' } });
     expect(store.check(`${DOOR_TOKEN_PREFIX}not-the-one-${'x'.repeat(30)}`)).toEqual({ ok: false, why: 'unknown' });
   });
@@ -52,7 +53,7 @@ describe('TokenStore', () => {
     expect(again.check(c.token).ok).toBe(false); // kim's also died on the day
   });
 
-  it('minting the same name for the same identity replaces the old token, and touch records the use', () => {
+  it('minting the same name for the same identity replaces the old token, and a token login records the use', () => {
     const store = new TokenStore(join(dir, 'tokens.json'), 30);
     store.load();
     const first = store.mint('chris@c/', 'chris', 'cron@titan');
@@ -63,7 +64,7 @@ describe('TokenStore', () => {
     expect(checked.ok).toBe(true);
     if (checked.ok) {
       expect(checked.record.lastUsed).toBeNull();
-      store.touch(checked.record);
+      expect(store.authorize(second.token, (user: string): string => `${user}@c/`).ok).toBe(true);
       expect(store.list()[0]?.lastUsed).not.toBeNull();
     }
   });
