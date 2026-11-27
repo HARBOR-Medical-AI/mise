@@ -659,17 +659,19 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     for (let round: number = 0; round < LOGIN_ROUNDS; round++) {
       // The generation is read before anything is awaited, the wait for an ending under way included: an
       // ending that begins while this login waits is then seen as one, and the round is thrown away.
-      const began: number = registry.generation_get(key);
-      const generation_moved = (): boolean => registry.generation_get(key) !== began;
-      await registry.eviction_wait(key);
-      if (generation_moved()) continue;
-      // A boot already under way is joined before the berth is looked for: its record is what there is to
-      // know, and a lookup that fails or is slow does not stand between a login and the boot it joins.
+      // A boot already under way is joined at once, before any wait and before the berth is looked for: its
+      // record is what there is to know. A restart's stop is such a boot's first step, so a login does not
+      // wait it out and then miss that it failed: it follows the record, where the failure is said.
       if (boot_isUnderWay()) {
         registry.pending_note(identity, username);
         options.log?.(`${username} joins the boot already under way`);
         return starting_answer();
       }
+      const began: number = registry.generation_get(key);
+      const generation_moved = (): boolean => registry.generation_get(key) !== began;
+      // An ending that is not a boot (a logout's, the sweep's) is waited for.
+      await registry.eviction_wait(key);
+      if (generation_moved()) continue;
       const found: Berth | null = await host.find(identity);
       if (generation_moved()) continue;
       // A boot already under way is joined, never restarted: two scripts

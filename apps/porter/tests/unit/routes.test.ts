@@ -484,6 +484,32 @@ describe('the door', () => {
     await door.app.close();
   });
 
+  it('a login during a restart\'s stop follows the restart at once, without looking for the berth, and the greeter is told when that stop fails', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    let restartStopped: () => void = (): void => undefined;
+    host.restartStop = new Promise<void>((resolve: () => void): void => { restartStopped = resolve; });
+    host.found = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    const first = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (first.json() as { key: string }).key;
+    // RESTART: the host opens the boot's record at once and begins stopping the old daemon.
+    const pressed = await built.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(first) } });
+    expect(pressed.json()).toMatchObject({ state: 'restarting' });
+    host.report = { lines: [{ channel: 'out', text: 'Restarting the calypso daemon, as asked' }], state: 'booting' };
+    let looks: number = 0;
+    host.find = async (): Promise<Berth | null> => { looks += 1; return host.found; };
+    // A login while the stop is still held: answered at once, with no look for the berth.
+    const login = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    expect((login.json() as { state: string }).state).toBe('starting');
+    expect(looks).toBe(0);
+    // The stop fails: the old daemon still answers, and the boot's record says why.
+    host.report = { lines: [{ channel: 'out', text: 'Restarting the calypso daemon, as asked' }], state: 'failed', reason: 'the old calypso daemon did not stop, even when killed' };
+    restartStopped();
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    const boot = await built.app.inject({ method: 'GET', url: `/boot/${key}`, headers: { cookie: cookie_of(login) } });
+    expect(boot.body).toContain('event: failed');
+    expect(boot.body).toContain('the old calypso daemon did not stop, even when killed');
+  });
+
   it('logs a browser out by clearing its cookie, and leaves the session alone', async () => {
     const out = await built.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json' } });
     expect(out.json()).toEqual({ ok: true });

@@ -296,13 +296,13 @@ export class LauncherHost implements SessionHost {
           this.line_add(record, `[FAIL]    Berth        ${reason}`);
           this.boot_end(record, 'failed', reason);
           return;
-        } finally {
-          stop_settle();
         }
       }
-      stop_settle();
       await this.boot_run(identity, user, cubeUrl, null, null, record);
-    })().catch((): void => undefined);
+    })().catch((): void => undefined).finally((): void => { stop_settle(); });
+    // On this host the whole restart is the session's one ending under way, the start included: the
+    // launcher holds the login for the start it is making, so a logout that came between the stop and the
+    // start would find no berth, report it gone, and leave the one about to be made. It comes after.
     return stopped;
   }
 

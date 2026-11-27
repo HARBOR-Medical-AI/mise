@@ -86,6 +86,8 @@ class FakeDocker implements DockerApi {
   pullStatus: number = 200;
   /** Whether the engine never answers a pull. */
   pullHangs: boolean = false;
+  /** A pull that waits on this before it answers; null: it answers at once. */
+  pullGate: Promise<void> | null = null;
   /** What a pull that lands says last. */
   pullSays: string = 'Status: Image is up to date for the image';
   private serial: number = 2;
@@ -98,6 +100,7 @@ class FakeDocker implements DockerApi {
       const image: string = new URLSearchParams(query).get('fromImage') ?? '';
       this.pulls.push(image);
       if (this.pullHangs) return new Promise<DockerAnswer>((): void => undefined);
+      if (this.pullGate !== null) await this.pullGate;
       if (this.pullStatus !== 200) return { status: this.pullStatus, body: { message: 'the registry is away' } };
       if (this.pullError !== null) return { status: 200, body: `{"status":"Pulling from mise-berth"}\r\n${JSON.stringify({ errorDetail: { message: this.pullError }, error: this.pullError })}\r\n` };
       this.images.add(image);
@@ -872,6 +875,40 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report).toMatchObject({ state: 'failed', reason: expect.stringContaining('the engine did not stop') });
     expect(docker.made.length).toBe(made);
     expect(docker.containers.has(container)).toBe(true);
+  });
+
+  it('a logout that arrives while a restart is making the new berth comes after it: both settled, there is no berth and no login held to restart on', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    const registry: SessionRegistry = new SessionRegistry();
+    const key: string = berthKey_compute(ANA);
+    // The restart: the old berth is stopped, and the image step of the new one is held.
+    let pulled: () => void = (): void => undefined;
+    docker.pullGate = new Promise<void>((resolve: () => void): void => { pulled = resolve; });
+    const pullsBefore: number = docker.pulls.length;
+    const restarting: Promise<void> = registry.ending_run(key, (): Promise<void> => host.restart_begin(ANA, 'ana', CUBE, { kind: 'asked' }));
+    for (let waited: number = 0; waited < 100 && docker.pulls.length === pullsBefore; waited++) await new Promise((resolve) => { setTimeout(resolve, 10); });
+    expect(docker.pulls.length).toBe(pullsBefore + 1);
+    expect(docker.containers.has(container)).toBe(false);
+    // The logout, as the door runs it: the key's next ending.
+    let loggedOut: boolean | null = null;
+    const out: Promise<void> = registry.ending_run(key, (): Promise<boolean> => host.evict(ANA, 'end')).then((ended: boolean): void => { loggedOut = ended; });
+    await new Promise((resolve) => { setTimeout(resolve, 50); });
+    expect(loggedOut).toBeNull();
+    docker.pullGate = null;
+    pulled();
+    await restarting;
+    await out;
+    // The logout stopped the berth the restart made.
+    expect(loggedOut).toBe(true);
+    expect(docker.containers.has(container)).toBe(false);
+    // And nothing is held to start another on.
+    void host.restart_begin(ANA, 'ana', CUBE, { kind: 'saved-login' });
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report).toMatchObject({ state: 'failed', reason: 'ana: no token to start a berth on; log in again' });
+    expect(docker.containers.has(container)).toBe(false);
   });
 
   it('a stop whose container went but whose wire the engine would not remove is said as that, and asking again finishes it', async () => {
