@@ -2921,6 +2921,61 @@ try {
     JSON.stringify({ tokenLength: attach.token, leaks: attach.leaks, reveals: attach.reveals }));
   }
 
+  if (await stage('attach-retry')) {
+  // A token the daemon refuses leaves the page wired (the surface wires itself before it attaches). The
+  // next attempt must not wire it again: it restarts the page, the good token rides the reload in the
+  // tab's own storage and never in the address, and one press of a toggle then toggles once.
+  const here = await evalIn(`return { href: location.href, token: new URLSearchParams(location.search).get('token') ?? '' };`);
+  if (here.token === '') {
+    console.log('  attach-retry: skipped, this page was not reached by a token in its address');
+  } else {
+    const ready = `for (let i = 0; i < 120 && !/READY/.test(document.getElementById('drawer-status')?.textContent ?? ''); i++) await sleep(500);`;
+    // 1. The page is opened with a token the daemon refuses.
+    await evalIn(`const to = new URL(location.href); to.searchParams.set('token', 'refused-by-the-smoke'); location.assign(to.href); return 1;`).catch(() => 1);
+    await new Promise((r) => setTimeout(r, 1500));
+    const refused = await evalIn(`
+      const form = document.getElementById('attach-form');
+      for (let i = 0; i < 60 && (form?.classList.contains('attach-hidden') ?? true); i++) await sleep(250);
+      return { shown: form !== null && !form.classList.contains('attach-hidden'), why: document.getElementById('attach-error')?.textContent ?? '' };`);
+    check('a refused token brings the form back and says why', refused.shown === true && refused.why.length > 0, JSON.stringify(refused));
+    // 2. The good token is typed, and submitted twice at once (the button and Enter).
+    await evalIn(`
+      const input = document.getElementById('attach-token');
+      input.value = ${JSON.stringify(here.token)};
+      document.getElementById('attach-submit').click();
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      return 1;`).catch(() => 1);
+    await new Promise((r) => setTimeout(r, 2000));
+    // 3. The fresh page: attached, the handoff used up, the good token nowhere in the address.
+    const fresh = await evalIn(`
+      ${ready}
+      const drawer = document.getElementById('drawer');
+      const toggle = document.getElementById('drawer-toggle');
+      const before = drawer.classList.contains('drawer-closed');
+      toggle.click(); await sleep(500);
+      const once = drawer.classList.contains('drawer-closed');
+      toggle.click(); await sleep(500);
+      const twice = drawer.classList.contains('drawer-closed');
+      let kept = null;
+      try { kept = sessionStorage.getItem('argus.attach.retry'); } catch { kept = 'storage refused'; }
+      return {
+        ready: /READY/.test(document.getElementById('drawer-status')?.textContent ?? ''),
+        formHidden: document.getElementById('attach-form')?.classList.contains('attach-hidden') ?? false,
+        kept,
+        inAddress: location.href.includes(${JSON.stringify(here.token)}),
+        before, once, twice,
+      };`);
+    check('the second attempt attaches from a fresh page', fresh.ready === true && fresh.formHidden === true, JSON.stringify({ ready: fresh.ready, formHidden: fresh.formHidden }));
+    check('the handoff is used once, and the token it carried is not in the address', fresh.kept === null && fresh.inAddress === false, JSON.stringify({ kept: fresh.kept === null ? null : 'left behind', inAddress: fresh.inAddress }));
+    check('one press of the console lid toggles it once, and a second puts it back',
+      fresh.once === !fresh.before && fresh.twice === fresh.before, JSON.stringify({ before: fresh.before, once: fresh.once, twice: fresh.twice }));
+    // The page is put back as the suite found it: its own address, token and all.
+    await evalIn(`location.assign(${JSON.stringify(here.href)}); return 1;`).catch(() => 1);
+    await new Promise((r) => setTimeout(r, 1500));
+    await evalIn(`${ready} return 1;`);
+  }
+  }
+
   if (await stage('pane-ask')) {
   // A question the surface asks stands on the pane that asked it. The
   // console is closed here on purpose: that is the state the question used
