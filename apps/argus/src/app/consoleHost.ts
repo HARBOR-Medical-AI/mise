@@ -11,6 +11,7 @@
 import { path_quote, path_write } from '@fnndsc/menu';
 import { session_switch } from './sessionSwitch.js';
 import { VIEW_QUOTED_MARK } from './shareView.js';
+import type { SessionAnswer } from '../console/argusLang.js';
 import { feedModes_hold } from '../features/feed/view.js';
 import type { DicomSeriesModel } from '@fnndsc/menu';
 import type { ExecuteOutcome } from '../calypso/client.js';
@@ -326,12 +327,14 @@ export function argusHost_build(context: Pick<HostContext, 'layout' | 'panels' |
       context.terminal.line_run(`rm ${path_quote(regard.address)}`);
       return true;
     },
-    session_run: async (line: string): Promise<string> => {
+    session_run: async (line: string): Promise<SessionAnswer> => {
       try {
         const outcome: ExecuteOutcome = await context.client.line_execute(line, { silent: true, observe: false });
-        return outcome.envelopes.map((envelope): string => envelope.renderedErr ?? envelope.rendered).join('\n');
+        // Done is what the results say, by their status; a line that returned nothing was not done.
+        const ok: boolean = outcome.envelopes.length > 0 && outcome.envelopes.every((envelope): boolean => envelope.status !== 'error');
+        return { ok, text: outcome.envelopes.map((envelope): string => (envelope.status === 'error' ? envelope.renderedErr ?? envelope.rendered : envelope.rendered)).join('\n') };
       } catch (error: unknown) {
-        return error instanceof Error ? error.message : String(error);
+        return { ok: false, text: error instanceof Error ? error.message : String(error) };
       }
     },
     desktop_serialize,

@@ -8,7 +8,7 @@
     "apps/argus": {
       "lines": 60.8,
       "statements": 58.7,
-      "branches": 50.4,
+      "branches": 51,
       "functions": 55.5,
       "allowance": {
         "below": 0.3,

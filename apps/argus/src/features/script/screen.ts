@@ -24,9 +24,9 @@ import { saveLine_compose } from '../edit/line.js';
 import { lockWhere_text, modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } from '../takeover/tier.js';
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
-  askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
+  ASK_UNNAMED, askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
   buildWould_derive, ports_word, runningStep_find, words_split, script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, stepBuildLine_get, stepKind_derive, stepKind_isTask, steps_build, userLine_build, vmLevers_read, vmSliders_build,
-  workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts, type VmRuns,
+  workingCopy_derive, type AskAbout, type BuildWould, type RunEnd, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts, type VmRuns,
 } from './model.js';
 
 /** An answer the session gave a quiet line: what the screen reads of it. */
@@ -48,8 +48,8 @@ export interface QuietAnswer {
 
 /** What the screen needs from its host. */
 export interface ScriptHooks {
-  /** Runs an operator's line (it may ask); its output arrives through `output_take`; resolves when it ends, true when no answer was an error. */
-  run: (line: string) => Promise<boolean>;
+  /** Runs an operator's line (it may ask); its output arrives through `output_take`; resolves when it ends, with how it ended (or, from an older host, true when no answer was an error). */
+  run: (line: string) => Promise<boolean | RunEnd>;
   /** Asks a line quietly, for a model; rejects when the session refused. */
   ask: (line: string) => Promise<QuietAnswer>;
   /** Stops following the running line. */
@@ -68,6 +68,8 @@ export interface ScriptHooks {
 export interface OpenAsk {
   message: string;
   kind: PromptKind;
+  /** Whose line raised it, and what it is for and about. */
+  about: AskAbout;
   answer: (value: string | null) => void;
   /** Answers the session alone, the screen untouched: for a question carried away when the screen is left. */
   settle: (value: string | null) => void;
@@ -585,16 +587,19 @@ export class ScriptScreen {
    * @param message - The question.
    * @param kind - What answers it.
    * @returns The answer, or null when abandoned.
+   * @param about - Whose line raised it, and what it is for and about; nothing known when the host does not say.
    */
-  public ask_take(message: string, kind: PromptKind): Promise<string | null> {
+  public ask_take(message: string, kind: PromptKind, about: AskAbout = ASK_UNNAMED): Promise<string | null> {
     this.ask?.answer(null);
     this.hooks.voice.cue('hail');
     return new Promise((resolve: (value: string | null) => void): void => {
-      this.askLine = this.lines.find((line: ScriptLine): boolean => message.startsWith(`${line.text}:`) || message.startsWith(`${line.text} `))?.text ?? null;
+      // The line the question is of: the one its asker says raised it, or the one this screen has in flight. Never read off the question's words.
+      const raised: string | null = about.line ?? this.busy?.line ?? null;
+      this.askLine = raised === null ? null : this.lines.find((line: ScriptLine): boolean => line.text === raised)?.text ?? null;
       // The question stands over its own offer: the seat of the line it asks for is shown (a-change-is-a-loop, clause 4).
       const seat: ScriptStep | undefined = this.askLine === null ? undefined : this.steps.find((step: ScriptStep): boolean => step.lines.some((line: ScriptLine): boolean => line.text === this.askLine));
       if (seat !== undefined) this.view = seat.key;
-      this.ask = { message, kind, settle: resolve, answer: (value: string | null): void => {
+      this.ask = { message, kind, about, settle: resolve, answer: (value: string | null): void => {
         const answeredLine: string | null = this.askLine;
         this.ask = null;
         this.askLine = null;
@@ -1030,8 +1035,15 @@ export class ScriptScreen {
     // The line's own kind, not its seat's: a seat that declares and builds starts a task only with its build.
     if (step !== null && stepKind_isTask(stepKind_derive(line)) && !line.startsWith('wait ')) this.refresh_schedule(line);
     let failed: boolean = false;
+    /** What the session said was wrong, in its own answer; '' when it said nothing there. */
+    let endWhy: string = '';
     try {
-      failed = !(await this.hooks.run(line));
+      const ended: boolean | RunEnd = await this.hooks.run(line);
+      const end: RunEnd = typeof ended === 'boolean' ? { ok: ended, declined: false, why: [] } : ended;
+      failed = !end.ok;
+      // A NO is the session's own word for how the line ended, never read off what was typed or printed.
+      if (end.declined) this.busyDeclined = true;
+      endWhy = end.why.join(' ').trim();
     } catch (error: unknown) {
       failed = true;
       const said: string = error instanceof Error ? error.message : String(error);
@@ -1043,7 +1055,7 @@ export class ScriptScreen {
       this.busy = null;
       // A refusal is said where its control stands, with why, and stays there until that seat sends again (a-change-is-a-loop, clauses 5 and 6).
       if (line === 'scripts pull') this.pulled = { at: new Date().toISOString(), said: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-6) };
-      if (failed || this.busyDeclined) this.refusal = { view: step ?? this.view, line, at: new Date().toISOString(), declined: this.busyDeclined, why: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ') || 'the session refused it' };
+      if (failed || this.busyDeclined) this.refusal = { view: step ?? this.view, line, at: new Date().toISOString(), declined: this.busyDeclined, why: endWhy || this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ') || 'the session refused it' };
       this.hooks.voice.cue(failed ? 'redalert' : 'ack');
       await this.standings_refresh();
       // A declaration sent moves what the price compares with: VM NEW's price is asked again of what now stands.
@@ -2555,7 +2567,7 @@ export class ScriptScreen {
     strip.hidden = this.ask === null || this.ask.kind === 'secret';
     if (this.ask === null || this.ask.kind === 'secret') return;
     const ask: OpenAsk = this.ask;
-    const form = askForm_derive(ask.message);
+    const form = askForm_derive(ask.message, ask.kind);
     const destroying: boolean = /teardown|destroy|remove/i.test(ask.message) || form === 'name';
     const billing: boolean = /an hour|a month|\$|bill/i.test(ask.message);
     strip.dataset['tone'] = destroying ? 'destroy' : billing ? 'bill' : 'plain';
@@ -2612,7 +2624,6 @@ export class ScriptScreen {
     if (kind === 'out' && this.busy !== null) this.busyOut.push(text);
     // A task followed with no line in this lane (its question answered here): what it prints lands under its seat.
     if (kind === 'out' && this.busy === null && this.followStep !== null) this.stepLogs.set(this.followStep, [...(this.stepLogs.get(this.followStep) ?? []), text].slice(-200));
-    if (kind === 'answer' && this.busy !== null && (text === 'n' || text === '(declined)')) this.busyDeclined = true;
     if (kind === 'out' && this.busy !== null && this.busy.step !== null) {
       const lines: string[] = this.stepLogs.get(this.busy.step) ?? [];
       lines.push(text);

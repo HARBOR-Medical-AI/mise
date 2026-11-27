@@ -294,6 +294,10 @@ export interface PromptRelay {
   wants?: PromptKind;
   path?: PromptPath;
   commit?: string;
+  /** What the question is for, as a name a surface may know. */
+  purpose?: string;
+  /** What it is about, by name. */
+  subject?: Record<string, string>;
 }
 
 /**
@@ -1736,6 +1740,8 @@ export class CalypsoDaemon {
       this.questionsOpen.delete(origin);
       void this.promptline_push();
     };
+    // The command that asks, by the id its surface gave it: read now, while it is the one running.
+    const executeId: string | null = this.currentId;
     return this.person_await((): Promise<string> => this.prompts.open(origin.socket, (promptId: string): void => {
       this.send(origin.socket, {
         type: 'prompt',
@@ -1745,6 +1751,9 @@ export class CalypsoDaemon {
         ...(request.wants === undefined ? {} : { wants: request.wants }),
         ...(request.path === undefined ? {} : { path: request.path }),
         ...(request.commit === undefined ? {} : { commit: request.commit }),
+        ...(executeId === null ? {} : { executeId }),
+        ...(request.purpose === undefined ? {} : { purpose: request.purpose }),
+        ...(request.subject === undefined ? {} : { subject: request.subject }),
       });
     }).finally(settled));
   }

@@ -4,8 +4,10 @@
  * as the VM controller (features/vm/screen.ts); LEAVE or Esc gives it back
  * (docs/stratus.adoc, D17 revised). Shaped as the script screen's host.
  */
-import { STRATUS_VM_STATE_EVENT, vmStatusRowSchema, word_write } from '@fnndsc/menu';
+import { STRATUS_VM_STATE_EVENT, STRATUS_VM_STEP_EVENT, vmStatusRowSchema, vmStepEventSchema, word_write } from '@fnndsc/menu';
+import { askAbout_read, flight_owns, runEnd_read, type LineInFlight } from './lineRun.js';
 import type { ExecuteOutcome, SurfaceAsk } from '../calypso/client.js';
+import type { RunEnd } from '../features/script/model.js';
 import { VmScreen } from '../features/vm/screen.js';
 import type { ScriptDraft } from '../features/script/screen.js';
 import { synthVoice } from '../lcars/synth.js';
@@ -27,7 +29,7 @@ export interface VmControllerModule {
   /** A task of the session ended: the controller, when up, reads its script's standing again. */
   task_ended: () => void;
   /** A session event: a VM's row, sent as its teardown's steps begin and end. */
-  event_take: (kind: string, data: unknown) => void;
+  event_take: (id: string, kind: string, data: unknown) => void;
   /** The door's answer changed (the session was raised): the controller, when up, draws it. */
   mode_refresh: () => void;
 }
@@ -98,14 +100,18 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     }
     titleBefore = document.title;
     const opened: VmScreen = new VmScreen({
-      run: async (line: string): Promise<boolean> => {
+      run: async (line: string): Promise<RunEnd> => {
         lineRunning = true;
+        let mine: LineInFlight | null = null;
         try {
-          const outcome: ExecuteOutcome = await context.client.line_execute(line, { operator: true });
+          // The id the client gives the line is kept while it runs: its steps and its questions are told by it.
+          const outcome: ExecuteOutcome = await context.client.line_execute(line, { operator: true, line_sent: (id: string): void => { mine = { id, line }; flight = mine; } });
           // An answer the session refused stops what was to follow it (BUILD after its DECLARE).
-          return !outcome.envelopes.some((envelope): boolean => envelope.status === 'error');
+          return runEnd_read(outcome);
         } finally {
           lineRunning = false;
+          // Ended: nothing that arrives for it afterwards is this screen's to act on.
+          if (flight === mine) flight = null;
         }
       },
       ask: (line: string): Promise<ExecuteOutcome> => context.client.line_execute(line, { silent: true, observe: false }),
@@ -126,11 +132,13 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
       // A question the screen's line asked while the screen was away stands on the strip again (a-change-is-a-loop, clauses 4 and 6).
       const waiting = held;
       leftWithLine = 0;
-      if (waiting !== null && screen === opened) { held = null; void opened.ask_take(waiting.request.message, waiting.request.kind).then(waiting.resolve); }
+      if (waiting !== null && screen === opened) { held = null; void opened.ask_take(waiting.request.message, waiting.request.kind, askAbout_read(waiting.request, flight)).then(waiting.resolve); }
     });
     return `vm: the VM controller takes the display${name === '' ? ' on a new machine' : ` on ${name}`} (Esc or LEAVE gives it back)`;
   };
 
+  /** The line the screen sent and is waiting on, with the id the client gave it; null when none runs. */
+  let flight: LineInFlight | null = null;
   /** Until when a question is the left screen's: it was left with a line in flight, whose question waits for it to open again (a bound, so a forgotten screen never holds the console's questions). */
   let leftWithLine: number = 0;
   /** A question the screen's line asked while the screen was away, held for the screen when it opens again. */
@@ -152,14 +160,22 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     // The screen's line runs on after the screen is left: its question is the screen's still, held until it opens again.
     running_is: (): boolean => lineRunning || Date.now() < leftWithLine,
     ask: (request: SurfaceAsk): Promise<string | null> => {
-      if (screen !== null) return screen.ask_take(request.message, request.kind);
+      if (screen !== null) return screen.ask_take(request.message, request.kind, askAbout_read(request, flight));
       return new Promise((resolve: (value: string | null) => void): void => { heldKeep({ request, resolve }); });
     },
     output_take: (chunk: string): void => { screen?.output_take(chunk); },
     task_ended: (): void => { screen?.taskEnded_take(); },
     // A VM's teardown sends its row as each step begins and ends: the controller draws it without asking.
-    event_take: (kind: string, data: unknown): void => {
-      if (kind !== STRATUS_VM_STATE_EVENT || screen === null) return;
+    event_take: (id: string, kind: string, data: unknown): void => {
+      if (screen === null) return;
+      if (kind === STRATUS_VM_STEP_EVENT) {
+        // A step belongs to its run: only the line this screen sent and still waits on moves the run it shows.
+        if (!flight_owns(flight, id)) return;
+        const step = vmStepEventSchema.safeParse(data);
+        if (step.success) screen.step_take(step.data);
+        return;
+      }
+      if (kind !== STRATUS_VM_STATE_EVENT) return;
       const parsed = vmStatusRowSchema.safeParse(data);
       if (parsed.success) screen.row_take(parsed.data);
     },

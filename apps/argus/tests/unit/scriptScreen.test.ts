@@ -486,7 +486,8 @@ describe('the script screen', () => {
       await screen.open('/scripts/chrisproject/store.mise');
       await settle();
       screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-2"]')?.click();
-      void screen.ask_take('vm build store: its data stands; the machine plan 3 to create. It bills: $0.052 an hour. Continue? [y/N]', 'confirm');
+      // The line is one sent before the screen was left: its host still holds it in flight, and says so.
+      void screen.ask_take('vm build store: its data stands; the machine plan 3 to create. It bills: $0.052 an hour. Continue? [y/N]', 'confirm', { mine: true, line: 'vm build store', purpose: 'stratus.vm.build', subject: { vm: 'store' } });
       await settle();
       button_named(screen.root, 'CONTINUE')?.click();
       await settle();

@@ -25,6 +25,24 @@ import { viewScript_compose, viewSheet_ask, VIEW_QUOTED_MARK } from '../app/shar
 /** How a stratus session is entered: looking only, or able to act (docs/stratus.adoc, D14). */
 export type CloudEntry = 'read' | 'manage';
 
+/**
+ * What a line run quietly in the session came to: whether it was done, by
+ * the status of what it returned, and the text it printed. A surface acts
+ * on `ok`; the text is for showing, and is never read for what happened.
+ *
+ * @example
+ * ```typescript
+ * const read: SessionAnswer = await host.session_run('cat ~/x');
+ * if (read.ok) show(read.text);
+ * ```
+ */
+export interface SessionAnswer {
+  /** True when every result the line returned says it was done. */
+  ok: boolean;
+  /** What the line printed: its output when done, what it said was wrong when not. */
+  text: string;
+}
+
 /** What the language needs from its host (assembled in main.ts). */
 export interface ArgusHost {
   /** The focused pane id, or null. */
@@ -62,7 +80,8 @@ export interface ArgusHost {
   /** Removes the file a browser regards, visibly; false when none. */
   file_delete(paneId: string): boolean;
   /** Runs a session command silently, returning rendered output. */
-  session_run(line: string): Promise<string>;
+  /** Runs a line in the session, quietly, and says whether it was done and what it printed. */
+  session_run(line: string): Promise<SessionAnswer>;
   /** Opens a path as an image beside the pane (or the focused one); returns the console line. */
   image_open(paneId: string | null, path: string, options?: { force?: boolean }): Promise<string>;
   /** Toggles the console's full-screen zoom (the bar carries no control). */
@@ -966,11 +985,10 @@ async function desktop_handle(host: ArgusHost, verb: string, name: string | unde
     }
     // Write-through to the durable layer, honestly reported either way.
     const encoded: string = window.btoa(unescape(encodeURIComponent(script)));
-    const output: string = await host.session_run(
+    const kept: SessionAnswer = await host.session_run(
       `config write ${home_path(`${DESKTOP_CFS_DIR}/${name}.desk`)} ${encoded}`,
     );
-    const durable: boolean = output.includes('wrote');
-    return `saved '${name}' (local${durable ? ' + CFS' : '; CFS unavailable: ' + output.trim().split('\n')[0]})`;
+    return `saved '${name}' (local${kept.ok ? ' + CFS' : '; CFS unavailable: ' + (kept.text.trim().split('\n')[0] ?? '')})`;
   }
   if (verb === 'delete') {
     window.localStorage.removeItem(DESKTOP_PREFIX + name);
@@ -980,18 +998,17 @@ async function desktop_handle(host: ArgusHost, verb: string, name: string | unde
     // A path is a file in ChRIS: a colleague's view, or one of the
     // operator's own kept outside the desktops folder.
     if (name.includes('/')) {
-      const text: string = await host.session_run(`cat ${name.startsWith('~/') ? home_path(name.slice(2)) : path_write(name)}`);
-      if (text.trim() === '' || /No such|cannot|error/i.test(text.split('\n')[0] ?? '')) return `desktop load: cannot read ${name}`;
+      const read: SessionAnswer = await host.session_run(`cat ${name.startsWith('~/') ? home_path(name.slice(2)) : path_write(name)}`);
+      if (!read.ok || read.text.trim() === '') return `desktop load: cannot read ${name}`;
+      const text: string = read.text;
       const me: string = (host.identity_get() ?? '').split('@')[0] ?? '';
       const own: boolean = me !== '' && (name === `~` || name.startsWith('~/') || name.startsWith(`/home/${me}/`));
       return `loaded ${name}\n${await viewScript_run(host, text, own ? null : name)}`;
     }
     let script: string | null = window.localStorage.getItem(DESKTOP_PREFIX + name);
     if (script === null) {
-      const remote: string = await host.session_run(`cat ${home_path(`${DESKTOP_CFS_DIR}/${name}.desk`)}`);
-      if (remote.trim().length > 0 && !remote.includes('No such') && !remote.toLowerCase().includes('error')) {
-        script = remote;
-      }
+      const remote: SessionAnswer = await host.session_run(`cat ${home_path(`${DESKTOP_CFS_DIR}/${name}.desk`)}`);
+      if (remote.ok && remote.text.trim().length > 0) script = remote.text;
     }
     if (script === null) return `(no desktop '${name}')`;
     return `loaded '${name}'\n${await viewScript_run(host, script, null)}`;

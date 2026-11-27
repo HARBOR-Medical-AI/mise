@@ -785,6 +785,23 @@ function cohortTally_render(patients: ReadonlyArray<PacsPatient>): string {
 
 
 
+/** What became of an answer's table: shown or written, or why it was not. */
+type CsvDelivery =
+  | {
+    /** The table was shown or written. */
+    ok: true;
+    /** What to print. */
+    rendered: string;
+    /** Where it was written, when it was. */
+    written?: string;
+  }
+  | {
+    /** It was not. */
+    ok: false;
+    /** Why. */
+    message: string;
+  };
+
 /**
  * Renders an answer as CSV, and writes it into ChRIS storage when asked.
  *
@@ -810,7 +827,7 @@ async function csv_deliver(
   force: boolean = false,
   level: PacsAnswerLevel = 'study',
   table: boolean = false,
-): Promise<{ ok: true; rendered: string } | { ok: false; message: string }> {
+): Promise<CsvDelivery> {
   const csv: string = pacsAnswer_renderCsv(model, level);
   let target: string | null = destination;
   if (target === null && ask) {
@@ -837,7 +854,7 @@ async function csv_deliver(
   // The file went where it was sent; the screen, asked for the table,
   // shows the same rows beside the word that they were written.
   const shown: string = table ? `\n${pacsAnswer_renderTable(model, level)}` : '';
-  return { ok: true, rendered: `${made}${gone}${chalk.green(`✓ wrote ${written.path}`)}\n${shown}` };
+  return { ok: true, rendered: `${made}${gone}${chalk.green(`✓ wrote ${written.path}`)}\n${shown}`, written: written.path };
 }
 
 
@@ -949,7 +966,8 @@ async function cohort_answer(
         model: { kind: PACS_QUERY_MODEL_KIND, data: model },
       };
     }
-    return envelope_ok(delivered.rendered, { kind: PACS_QUERY_MODEL_KIND, data: model });
+    // Where the table went is part of the answer: a surface reads it from the model.
+    return envelope_ok(delivered.rendered, { kind: PACS_QUERY_MODEL_KIND, data: delivered.written === undefined ? model : { ...model, written: delivered.written } });
   }
   // A fan-out over something other than patients has no audit table to
   // show; its studies are the answer, and they are already in the model.
@@ -1298,7 +1316,8 @@ export async function queryLine_run(args: QueryLine): Promise<CommandEnvelope> {
         model: { kind: PACS_QUERY_MODEL_KIND, data: model },
       };
     }
-    return envelope_ok(delivered.rendered, { kind: PACS_QUERY_MODEL_KIND, data: model });
+    // Where the table went is part of the answer: a surface reads it from the model.
+    return envelope_ok(delivered.rendered, { kind: PACS_QUERY_MODEL_KIND, data: delivered.written === undefined ? model : { ...model, written: delivered.written } });
   }
 
   if (!renderedResult) {

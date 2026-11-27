@@ -124,6 +124,8 @@ export function daemonSurface_create(daemon: CalypsoDaemon, policy: HostControlP
         ...(request.wants === undefined ? {} : { wants: request.wants }),
         ...(request.path === undefined ? {} : { path: request.path }),
         ...(request.commit === undefined ? {} : { commit: request.commit }),
+        ...(request.purpose === undefined ? {} : { purpose: request.purpose }),
+        ...(request.subject === undefined ? {} : { subject: request.subject }),
       }),
     // Under host control the host wins: the segment or the shell runs here,
     // output on the session bus like any command's. Otherwise both relay to

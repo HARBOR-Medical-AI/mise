@@ -29,6 +29,7 @@ import { NetStore } from '../src/net/state.js';
 import { STEPS_SOURCE } from '../src/cluster/steps.js';
 import { net_run, type NetCommandContext } from '../src/commands/net.js';
 import { sshLine_build, vm_run, type VmCommandContext } from '../src/commands/vm.js';
+import { STRATUS_VM_STEP_EVENT } from '@fnndsc/menu';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 const STORE_LINE: string[] = ['--net', 'scratch', '--open', '443,80', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--data-backup', 'daily', '--os', 'ubuntu-26.04'];
@@ -352,6 +353,31 @@ describe('vm, over the fake cloud', () => {
     surface.asked = [];
     expect(plain((await vm_run(context, ['build', 'store'])).rendered)).toBe('store: built, and the plan reads nothing to do\n');
     expect(surface.asked).toEqual([]);
+  });
+
+  it('a build says each of its steps as an event, begun then ended, and names what each question is for', async () => {
+    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+    const events: Array<{ kind: string; data: unknown }> = [];
+    const sink: BufferSink = new BufferSink();
+    sink.event_write = (kind: string, data: unknown): void => { events.push({ kind, data }); };
+    sink_set(sink);
+    const asked: PromptRequest[] = [];
+    surface.prompt = async (request: PromptRequest): Promise<string> => { asked.push(request); return 'y'; };
+    await vm_run(context, ['build', 'store']);
+    const steps = events.filter((event): boolean => event.kind === STRATUS_VM_STEP_EVENT).map((event) => event.data as { vm: string; step: string; state: string; said?: string });
+    // Each step of the run, in the order taken: begun, then done, and a plan's counts as its own word at its end.
+    expect(steps.map((step): string => `${step.step} ${step.state}`)).toEqual([
+      'plan-data begun', 'plan-data done', 'apply-data begun', 'apply-data done', 'plan-machine begun', 'plan-machine done', 'apply-machine begun', 'apply-machine done',
+    ]);
+    expect(steps.every((step): boolean => step.vm === 'store')).toBe(true);
+    expect(steps[1]?.said).toBe('data plan: 3 to create, 0 to change, 0 to destroy');
+    expect(steps[5]?.said).toBe('machine plan: 3 to create, 0 to change, 0 to destroy');
+    expect(steps[0]?.said).toBeUndefined();
+    // Both questions are the build's, about this machine, and want a yes or a no.
+    expect(asked.map((request) => ({ wants: request.wants, purpose: request.purpose, subject: request.subject }))).toEqual([
+      { wants: 'confirm', purpose: 'stratus.vm.build', subject: { vm: 'store' } },
+      { wants: 'confirm', purpose: 'stratus.vm.build', subject: { vm: 'store' } },
+    ]);
   });
 
   it('opens public SSH on a VM that stands: asked with the warning, the machine set up over the bastion, closed again keeping the user', async () => {

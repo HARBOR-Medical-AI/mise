@@ -25,13 +25,31 @@ export function repl_question(prompt: string): Promise<string> {
 }
 
 /**
+ * What a question is for and about, beyond its wording: a name the command
+ * and a surface share, and the things it concerns. A surface matches these
+ * to know which question it has been asked.
+ *
+ * @example
+ * ```ts
+ * await repl_confirm('Build store?', { purpose: 'stratus.vm.build', subject: { vm: 'store' } });
+ * ```
+ */
+export interface QuestionAbout {
+  /** What the question is for (`stratus.vm.build`). */
+  purpose: string;
+  /** What it is about, by name (`vm`, `account`). */
+  subject?: Record<string, string>;
+}
+
+/**
  * Asks for a secret (no echo) through the active surface.
  *
  * @param prompt - The prompt string to display.
+ * @param about - What the question is for and about, for a surface that knows it.
  * @returns The trimmed secret string.
  */
-export function repl_questionHidden(prompt: string): Promise<string> {
-  return surface_get().prompt({ message: prompt, hidden: true });
+export function repl_questionHidden(prompt: string, about?: QuestionAbout): Promise<string> {
+  return surface_get().prompt({ message: prompt, hidden: true, ...about });
 }
 
 /**
@@ -42,10 +60,11 @@ export function repl_questionHidden(prompt: string): Promise<string> {
  * interpreted here so every caller agrees on what counts as yes.
  *
  * @param prompt - The question string to display.
+ * @param about - What the question is for and about, for a surface that knows it.
  * @returns True when the answer was yes.
  */
-export async function repl_confirm(prompt: string): Promise<boolean> {
-  const answer: string = await surface_get().prompt({ message: prompt, wants: 'confirm' });
+export async function repl_confirm(prompt: string, about?: QuestionAbout): Promise<boolean> {
+  const answer: string = await surface_get().prompt({ message: prompt, wants: 'confirm', ...about });
   const said: string = answer.trim().toLowerCase();
   return said === 'y' || said === 'yes';
 }

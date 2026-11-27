@@ -124,9 +124,11 @@ describe('the script screen model', () => {
   });
 
   it('reads the form of a question and says a duration', () => {
-    expect(askForm_derive('store: build it, $0.052 an hour? [y/N] ')).toBe('yes-no');
-    expect(askForm_derive('teardown --all removes the data too; type the name to go on: ')).toBe('name');
-    expect(askForm_derive('admin password for chris (empty: generate one): ')).toBe('text');
+    // A yes-or-no is one by its kind, whatever it says; words that look like one, with another kind, are not.
+    expect(askForm_derive('store: build it at this price', 'confirm')).toBe('yes-no');
+    expect(askForm_derive('store: build it, $0.052 an hour? [y/N] ', 'text')).toBe('text');
+    expect(askForm_derive('teardown --all removes the data too; type the name to go on: ', 'text')).toBe('name');
+    expect(askForm_derive('admin password for chris (empty: generate one): ', 'text')).toBe('text');
     expect(duration_words(4000)).toBe('4 s');
     expect(duration_words(200_000)).toBe('3 m 20 s');
     expect(duration_words(3_720_000)).toBe('1 h 02 m');

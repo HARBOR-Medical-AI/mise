@@ -1805,14 +1805,6 @@ export class PacsPanel {
    * @param envelope - Any envelope crossing the session.
    */
   public envelope_observe(envelope: WireEnvelope): void {
-    // Where a table went is a fact about this pane's answer, so this pane
-    // says it — the console carries the command, which is a different
-    // thing from the result of it.
-    // The kernel's line is coloured; the path it names is not. Taking the
-    // match raw carried the trailing reset sequence into the readout, where
-    // it showed as stray glyphs after the filename.
-    const wrote: RegExpMatchArray | null = /✓ wrote (\S+)/.exec((envelope.rendered ?? '').replace(/\x1b\[[0-9;]*m/g, ''));
-    if (wrote !== null) this.wrote_show(wrote[1] as string);
     if (envelope.model?.kind === PACS_SERVERS_MODEL_KIND) {
       // What `pacs list` says, whoever asked it: the operator typing it in
       // the console fills the strip exactly as the strip's own ask does.
@@ -1823,6 +1815,9 @@ export class PacsPanel {
     if (envelope.model?.kind !== PACS_QUERY_MODEL_KIND) return;
     const parsed = pacsQueryModelSchema.safeParse(envelope.model.data);
     if (!parsed.success) return;
+    // Where a table went is a fact about this pane's answer, so this pane says it; and it is read from the
+    // answer's model, never out of the words the kernel printed, which any other line could print too.
+    if (parsed.data.written !== undefined) this.wrote_show(parsed.data.written);
     this.results_render(parsed.data);
   }
 

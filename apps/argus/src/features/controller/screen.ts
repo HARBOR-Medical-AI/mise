@@ -1343,7 +1343,7 @@ export class TdController {
     const words: HTMLElement = el('div', 'tdc-strip-words');
     words.append(el('span', 'tdc-strip-title', 'THE ENGINE ASKS'), el('span', 'tdc-strip-text', ask.message));
     strip.append(words);
-    if (askForm_derive(ask.message) === 'yes-no') {
+    if (askForm_derive(ask.kind) === 'yes-no') {
       // loop: confirm
       const yes: HTMLButtonElement = el('button', `tdc-pill ${billing ? 'tdc-pill-bill' : 'tdc-pill-plain'}`, billing ? 'YES · BILL' : 'YES');
       yes.type = 'button';

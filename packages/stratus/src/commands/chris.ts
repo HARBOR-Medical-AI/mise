@@ -33,7 +33,7 @@
  */
 import * as fs from 'fs';
 import chalk from 'chalk';
-import { berthCapacity_derive, CHRIS_PROFILE_OFFERS, envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, type ChrisProfileOffer, type ChrisStatusRow, type CommandEnvelope } from '@fnndsc/menu';
+import { berthCapacity_derive, CHRIS_PROFILE_OFFERS, envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, type ChrisProfileOffer, type ChrisStatusRow, type CommandEnvelope, STRATUS_PROMPT_PURPOSES } from '@fnndsc/menu';
 import { command_declare, declaredCommand_run, hostDisk_refusal, repl_confirm, repl_questionHidden, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
 import type { CloudBuilder } from '../cloud/builder.js';
 import type { NetStore } from '../net/state.js';
@@ -186,16 +186,18 @@ async function userPassword_get(username: string, file: string | undefined): Pro
  *
  * @param username - Whose, for the question.
  * @param file - `--password-file`, when given.
+ * @param vm - The VM whose ChRIS the account is on, so a surface knows which question this is.
  * @returns The password and whether it was generated, or why not.
  */
-async function newPassword_get(username: string, file: string | undefined): Promise<{ password: string; generated: boolean } | { error: string }> {
+async function newPassword_get(username: string, file: string | undefined, vm: string): Promise<{ password: string; generated: boolean } | { error: string }> {
   if (file !== undefined) return await userPassword_get(username, file);
   const fits = (password: string): string | null => password.length < 8 ? 'shorter than eight characters' : password.length > 100 ? 'longer than a hundred characters' : null;
-  const typed: string = (await repl_questionHidden(`${username}'s new password (empty: generate one):`)).trim();
+  const about = { purpose: STRATUS_PROMPT_PURPOSES.chrisPasswordNew, subject: { vm, account: username } };
+  const typed: string = (await repl_questionHidden(`${username}'s new password (empty: generate one):`, about)).trim();
   if (typed === '') return { password: secret_make(), generated: true };
   const wrong: string | null = fits(typed);
   if (wrong !== null) return { error: `the password is ${wrong}` };
-  const again: string = (await repl_questionHidden(`${username}'s new password, again:`)).trim();
+  const again: string = (await repl_questionHidden(`${username}'s new password, again:`, about)).trim();
   return again === typed ? { password: typed, generated: false } : { error: 'the two passwords typed differ; nothing changed' };
 }
 
@@ -429,10 +431,10 @@ async function chrisPasswd_run(context: ChrisCommandContext, user: string | unde
   if (admin && secrets_read(context.vms, target.vm) === null) return envelope_error('', undefined, `chris passwd: ${target.vm}: this host keeps no ChRIS secrets for it (chris deploy ${target.vm})\n`);
   if (!tasks_granted()) return envelope_error('', undefined, `chris passwd: ${TIER_REFUSAL}\n`);
   if (context.builder === null) return envelope_error('', undefined, 'chris passwd: this cloud builds nothing yet\n');
-  if (admin && !await repl_confirm(`chris passwd: ${CHRIS_ADMIN} on ${target.vm}: CUBE at ${target.url} starts again to take the new password, and is down for a minute or so. Continue? [y/N]`)) {
+  if (admin && !await repl_confirm(`chris passwd: ${CHRIS_ADMIN} on ${target.vm}: CUBE at ${target.url} starts again to take the new password, and is down for a minute or so. Continue? [y/N]`, { purpose: STRATUS_PROMPT_PURPOSES.chrisPasswordRestart, subject: { vm: target.vm, account: username } })) {
     return envelope_ok(`${target.vm}: ${CHRIS_ADMIN}'s password not changed\n`);
   }
-  const password = await newPassword_get(username, options.get('--password-file'));
+  const password = await newPassword_get(username, options.get('--password-file'), target.vm);
   if ('error' in password) return envelope_error('', undefined, `chris passwd: ${password.error}\n`);
   const deps: DeployDeps = { store: context.vms, nets: context.nets, builder: context.builder, resolve: context.resolve, status_get: context.status_get, ...(context.remote_open !== undefined ? { remote_open: context.remote_open } : {}), ...(context.tickMs !== undefined ? { tickMs: context.tickMs } : {}) };
   const result: PasswdResult = {};
@@ -552,7 +554,7 @@ async function chrisDeploy_run(context: ChrisCommandContext, name: string, optio
   // a first deploy's admin password is asked after the yes, so the question says what it is for.
   const passwordNext: boolean = secrets_read(context.vms, name) === null && !options.has('--admin-password-file');
   const question: string = `${chrisPlan_words(name, plan)}${passwordNext ? '; the admin password for chris is asked next, hidden (empty: one is generated)' : ''}. A NO changes nothing. Continue? [y/N]`;
-  if (plan.asks && !(await repl_confirm(question))) return envelope_ok(`${chalk.gray(`stopped before the deploy; nothing changed (chris deploy ${name} plans and asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: `chris deploy ${name}`, kept: 'nothing made or changed' } });
+  if (plan.asks && !(await repl_confirm(question, { purpose: STRATUS_PROMPT_PURPOSES.chrisDeploy, subject: { vm: name } }))) return envelope_ok(`${chalk.gray(`stopped before the deploy; nothing changed (chris deploy ${name} plans and asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: `chris deploy ${name}`, kept: 'nothing made or changed' } });
   if (context.builder === null) return envelope_error('', undefined, 'chris deploy: this cloud builds nothing yet\n');
   let generated: string | null = null;
   if (secrets_read(context.vms, name) === null) {

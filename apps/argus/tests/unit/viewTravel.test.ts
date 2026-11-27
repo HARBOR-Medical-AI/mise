@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import { path_write } from '@fnndsc/menu';
-import { viewLine_refusal, viewScript_run, type ArgusHost } from '../../src/console/argusLang.js';
+import { argusLine_run, viewLine_refusal, viewScript_run, type ArgusHost, type SessionAnswer } from '../../src/console/argusLang.js';
 import { viewLink_compose, viewLink_parse, viewScript_compose, viewSheet_ask, VIEW_QUOTED_MARK } from '../../src/app/shareView.js';
 
 describe('viewLine_refusal', () => {
@@ -124,5 +124,59 @@ describe('a view shared and replayed, and one kept before values were quoted', (
     const said: string = await viewScript_run(host_make(opened), "# an older desktop\nfile open /home/u/O'Brien files\nfile open /home/u/it's a 'quoted' one", null);
     expect(opened).toEqual(["/home/u/O'Brien files", "/home/u/it's a 'quoted' one"]);
     expect(said).not.toContain('stopped here');
+  });
+});
+
+describe('a desktop kept in the store is saved and loaded by what the session answered, not by its wording', () => {
+  /** A host whose session answers each line as the test says, and which opens what a loaded view names. */
+  function host_make(answers: (line: string) => SessionAnswer, opened: string[], asked: string[]): ArgusHost {
+    return {
+      focused_get: (): string | null => 'files-1',
+      panes_shown: (): string[] => ['files-1'],
+      paneKind_get: (): string | null => 'files',
+      files_open: (_pane: string, path: string): boolean => { opened.push(path); return true; },
+      viewModes_hold: (): void => undefined,
+      identity_get: (): string | null => 'ada@cube',
+      desktop_serialize: (): string => 'file open /home/ada/kept',
+      session_run: async (line: string): Promise<SessionAnswer> => { asked.push(line); return answers(line); },
+    } as unknown as ArgusHost;
+  }
+
+  it('a file that could not be read is not loaded, whatever the refusal says; one that was read is, whatever its text says', async () => {
+    window.localStorage.clear();
+    const opened: string[] = [];
+    const asked: string[] = [];
+    // Refused, in words the old reading would not have known: no "No such", no "cannot", no "error".
+    const refused: ArgusHost = host_make((): SessionAnswer => ({ ok: false, text: 'that is not yours to see' }), opened, asked);
+    expect(await argusLine_run(refused, 'desktop load /home/ada/views/a.desk')).toBe('desktop load: cannot read /home/ada/views/a.desk');
+    expect(opened).toEqual([]);
+    // Read, and its first line holds every word the old reading took for a failure.
+    const read: ArgusHost = host_make((): SessionAnswer => ({ ok: true, text: `${VIEW_QUOTED_MARK}\nfile open '/home/ada/No such error, cannot'\n` }), opened, asked);
+    expect(await argusLine_run(read, 'desktop load /home/ada/views/a.desk')).toContain('loaded /home/ada/views/a.desk');
+    expect(opened).toEqual(['/home/ada/No such error, cannot']);
+  });
+
+  it('a desktop by name comes from the store when the session read it, and is absent when it did not', async () => {
+    window.localStorage.clear();
+    const opened: string[] = [];
+    const asked: string[] = [];
+    const missing: ArgusHost = host_make((): SessionAnswer => ({ ok: false, text: 'nothing by that name' }), opened, asked);
+    expect(await argusLine_run(missing, 'desktop load mine')).toBe("(no desktop 'mine')");
+    expect(asked).toEqual(['cat ~/.config/argus/desktops/mine.desk']);
+    const kept: ArgusHost = host_make((): SessionAnswer => ({ ok: true, text: 'file open /home/ada/an error log\n' }), opened, asked);
+    expect(await argusLine_run(kept, 'desktop load mine')).toContain("loaded 'mine'");
+    expect(opened).toEqual(['/home/ada/an error log']);
+  });
+
+  it('a save says the store kept it when the session did it, and says what the session said when it did not', async () => {
+    window.localStorage.clear();
+    const asked: string[] = [];
+    // Done, in words that do not hold "wrote".
+    const done: ArgusHost = host_make((): SessionAnswer => ({ ok: true, text: 'kept\n' }), [], asked);
+    expect(await argusLine_run(done, 'desktop save mine')).toBe("saved 'mine' (local + CFS)");
+    expect(asked[0]?.startsWith('config write ~/.config/argus/desktops/mine.desk ')).toBe(true);
+    // Not done, in words that do.
+    const failed: ArgusHost = host_make((): SessionAnswer => ({ ok: false, text: 'config write: the store wrote nothing\n' }), [], asked);
+    expect(await argusLine_run(failed, 'desktop save mine')).toBe("saved 'mine' (local; CFS unavailable: config write: the store wrote nothing)");
   });
 });

@@ -16,7 +16,7 @@
  * @module
  */
 import type { LineStandingModel, LineState, VmCostRate, VmLimitsModel, VmSpecModel } from '@fnndsc/menu';
-import { arg_quote, line_split, line_tokens } from '@fnndsc/menu';
+import { arg_quote, line_split, line_tokens, type PromptKind } from '@fnndsc/menu';
 
 /** A line of the script, with what `play --status` said of it. */
 export interface ScriptLine {
@@ -645,13 +645,77 @@ export function userLine_build(name: string, email: string, passwordFile: string
 }
 
 /**
- * The form an engine's question takes, from its words.
+ * What a question is beyond its words: whose line raised it, and what the
+ * command says it is for and about. A screen acts on these (which seat the
+ * question stands over, whether a row may answer it); the words are shown.
+ *
+ * @example
+ * ```typescript
+ * const about: AskAbout = { mine: true, line: 'vm build store', purpose: 'stratus.vm.build', subject: { vm: 'store' } };
+ * ```
+ */
+export interface AskAbout {
+  /** True when the line that raised it is the one this screen sent and is waiting on. */
+  readonly mine: boolean;
+  /** That line, when it is this screen's. */
+  readonly line: string | null;
+  /** What the question is for, as the command names it; null when it names nothing. */
+  readonly purpose: string | null;
+  /** What it is about, by name (`vm`, `account`). */
+  readonly subject: Readonly<Record<string, string>>;
+}
+
+/** A question nothing is known of but its words: nobody's line, for nothing named. */
+export const ASK_UNNAMED: AskAbout = { mine: false, line: null, purpose: null, subject: {} };
+
+/**
+ * How a line a screen ran came to its end, as the session answered it: by
+ * the status and the models of what it returned, never by what it printed.
+ *
+ * @example
+ * ```typescript
+ * const end: RunEnd = { ok: true, declined: true, why: [] };
+ * ```
+ */
+export interface RunEnd {
+  /** True when no answer was an error. */
+  readonly ok: boolean;
+  /** True when the line stopped at a question answered no (`line.declined`). */
+  readonly declined: boolean;
+  /** What the session said was wrong, a line each; empty when nothing was. */
+  readonly why: ReadonlyArray<string>;
+}
+
+/**
+ * Whether an answer given to a yes-or-no is a yes, as the engine reads it
+ * (`y` or `yes`, any case): what a screen shows of an answer agrees with
+ * what the engine does with it.
+ *
+ * @param value - The answer; null when the question was abandoned.
+ * @returns True for a yes.
+ *
+ * @example
+ * ```typescript
+ * answer_isYes('Y'); // true
+ * answer_isYes('yellow'); // false
+ * ```
+ */
+export function answer_isYes(value: string | null): boolean {
+  const said: string = (value ?? '').trim().toLowerCase();
+  return said === 'y' || said === 'yes';
+}
+
+/**
+ * The form an engine's question takes. A yes-or-no is one by its kind; a
+ * name typed back is still told by the question's words (no command names
+ * that yet), and changes only the field offered, never what is sent.
  *
  * @param message - The question.
- * @returns Yes or no, a name typed back, a hidden word, or text.
+ * @param kind - What kind of value answers it.
+ * @returns Yes or no, a name typed back, or text.
  */
-export function askForm_derive(message: string): 'yes-no' | 'name' | 'text' {
-  if (/\[y\/N\]|\[Y\/n\]|\(y\/n\)|continue\?/i.test(message)) return 'yes-no';
+export function askForm_derive(message: string, kind: PromptKind): 'yes-no' | 'name' | 'text' {
+  if (kind === 'confirm') return 'yes-no';
   if (/type (the|its) name|name typed back|type .* to go on/i.test(message)) return 'name';
   return 'text';
 }

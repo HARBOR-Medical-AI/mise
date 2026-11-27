@@ -13,11 +13,12 @@
  * RUN; a machine the host keeps with no script gets one synthesized and
  * written at its first act.
  */
-import { describe, it, expect, jest } from '@jest/globals';
+import { afterEach, describe, it, expect, jest } from '@jest/globals';
 import type { QuietAnswer, ScriptHooks } from '../../src/features/script/screen.js';
 import { VmScreen } from '../../src/features/vm/screen.js';
 import { leverFloor_derive, serviceDraft_why, vmServices_change, vmServices_read } from '../../src/features/vm/model.js';
 import { chrisQuestion_plain } from '../../src/features/vm/run.js';
+import type { AskAbout } from '../../src/features/script/model.js';
 
 const STORE_TEXT: string = [
   'net new chrisproject-services --cidr 10.20.0.0/16',
@@ -83,6 +84,14 @@ let costGate: Promise<void> | null = null;
 let storeGate: Promise<void> | null = null;
 /** While set, the next roster asked for is not answered until it resolves. */
 let rosterGate: Promise<void> | null = null;
+/**
+ * How the fake engine names and words its password questions; a test changes
+ * these to ask a question that is not the row's, or to word it otherwise.
+ */
+const PASSWD_QUESTIONS: { restart: string; fresh: string; wording: string | null; about: ((line: string, account: string, vm: string) => AskAbout) | null } = {
+  restart: 'stratus.chris.password.restart', fresh: 'stratus.chris.password.new', wording: null, about: null,
+};
+
 /** While set, no listing (a look for a machine's script) is answered until it resolves. */
 let lookupGate: Promise<void> | null = null;
 
@@ -99,9 +108,11 @@ function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; a
       const passwd: RegExpMatchArray | null = line.match(/^chris passwd (\S+) --on (\S+)$/);
       if (passwd !== null && screen !== null) {
         const name: string = passwd[1] as string;
-        if (name === 'chris') fed.push(await screen.ask_take(`chris passwd: chris on ${passwd[2]}: CUBE at https://cube.chrisproject.org/api/v1/ starts again to take the new password, and is down for a minute or so. Continue? [y/N]`, 'confirm'));
-        fed.push(await screen.ask_take(`${name}'s new password (empty: generate one):`, 'secret'));
-        fed.push(await screen.ask_take(`${name}'s new password, again:`, 'secret'));
+        // Each question is the line's own (the host knows it by the id it gave the line), and is named by the engine for what it is.
+        const about = (purpose: string): AskAbout => ({ mine: true, line, purpose, subject: { vm: passwd[2] as string, account: name } });
+        if (name === 'chris') fed.push(await screen.ask_take(`chris passwd: chris on ${passwd[2]}: CUBE at https://cube.chrisproject.org/api/v1/ starts again to take the new password, and is down for a minute or so. Continue? [y/N]`, 'confirm', about(PASSWD_QUESTIONS.restart)));
+        fed.push(await screen.ask_take(PASSWD_QUESTIONS.wording ?? `${name}'s new password (empty: generate one):`, 'secret', PASSWD_QUESTIONS.about?.(line, name, passwd[2] as string) ?? about(PASSWD_QUESTIONS.fresh)));
+        fed.push(await screen.ask_take(`${name}'s new password, again:`, 'secret', PASSWD_QUESTIONS.about?.(line, name, passwd[2] as string) ?? about(PASSWD_QUESTIONS.fresh)));
       }
       const save: RegExpMatchArray | null = line.match(/^touch --withContents='([\s\S]*)' '([^']+)'$/);
       if (save !== null) WRITTEN.set(save[2] as string, (save[1] as string).replace(/'\\''/g, "'"));
@@ -234,7 +245,7 @@ describe('the VM controller', () => {
     const { screen } = screen_make();
     await screen.vm_open('store');
     await settle();
-    const answered: Promise<string | null> = screen.ask_take('vm build store: boot disk 100 → 150 GB. Grown online, no reboot. $39.95 → $42.08 a month. A NO builds nothing. Continue? [y/N]', 'confirm');
+    const answered: Promise<string | null> = screen.ask_take('vm build store: boot disk 100 → 150 GB. Grown online, no reboot. $39.95 → $42.08 a month. A NO builds nothing. Continue? [y/N]', 'confirm', { mine: true, line: 'vm build store', purpose: 'stratus.vm.build', subject: { vm: 'store' } });
     await settle();
     // On the screen the question is the act's, plain; its buttons say what each answer does.
     const strip: HTMLElement = screen.root.querySelector('.tdc-strip') as HTMLElement;
@@ -852,6 +863,57 @@ describe('the VM controller', () => {
     } finally {
       ACCOUNTS = ACCOUNTS.filter((one) => one.username !== 'rudolph');
     }
+  });
+
+  describe('the row answers the engine only for its own question', () => {
+    /** Types a password for jennings twice, presses SET, and gives back what the row fed the engine and the screen. */
+    async function password_set(): Promise<{ fed: Array<string | null>; screen: VmScreen; sent: string[] }> {
+      const { screen, sent, fed } = screen_make();
+      await screen.vm_open('store');
+      await settle(12);
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
+      await settle(12);
+      const row: HTMLElement = [...screen.root.querySelectorAll<HTMLElement>('.vm-account-listing .listing-row')].find((one) => one.querySelector('.vm-cell-name')?.textContent === 'jennings') as HTMLElement;
+      row.click();
+      await settle();
+      for (const id of ['password', 'retype']) {
+        const input = screen.root.querySelector<HTMLInputElement>(`#vm-account-${id}`) as HTMLInputElement;
+        input.value = 'a-secret-for-jennings';
+        input.dispatchEvent(new Event('input'));
+      }
+      screen.root.querySelector<HTMLButtonElement>('.vm-password-set')?.click();
+      await settle(20);
+      return { fed, screen, sent };
+    }
+    afterEach((): void => { PASSWD_QUESTIONS.wording = null; PASSWD_QUESTIONS.about = null; });
+
+    it('worded any way at all, the question named for this line, machine and account is answered from the row', async () => {
+      PASSWD_QUESTIONS.wording = 'Enter the credential to be stored';
+      const { fed, screen, sent } = await password_set();
+      expect(sent).toEqual(['chris passwd jennings --on store']);
+      expect(fed).toEqual(['a-secret-for-jennings', 'a-secret-for-jennings']);
+      screen.dispose();
+      screen.root.remove();
+    });
+
+    it.each([
+      ['the same account on another machine', (line: string, account: string): AskAbout => ({ mine: true, line, purpose: 'stratus.chris.password.new', subject: { vm: 'web', account } })],
+      ['another account on this machine', (line: string, _account: string, vm: string): AskAbout => ({ mine: true, line, purpose: 'stratus.chris.password.new', subject: { vm, account: 'chris' } })],
+      ['another line on this surface', (_line: string, account: string, vm: string): AskAbout => ({ mine: false, line: null, purpose: 'stratus.chris.password.new', subject: { vm, account } })],
+      ['a question the engine did not name, in the old words', (line: string): AskAbout => ({ mine: true, line, purpose: null, subject: {} })],
+      ['a question named for something else', (line: string, account: string, vm: string): AskAbout => ({ mine: true, line, purpose: 'stratus.vm.build', subject: { vm, account } })],
+    ] as const)('a hidden question that is %s is not answered from the row: it stands for the operator, and the password goes nowhere', async (_what: string, about: (line: string, account: string, vm: string) => AskAbout) => {
+      PASSWD_QUESTIONS.about = about;
+      const { fed, screen } = await password_set();
+      expect(fed).toEqual([]);
+      // The question is the operator's: it stands on the errand bar, its field empty.
+      const field: HTMLInputElement | null = screen.root.querySelector<HTMLInputElement>('.ss-errand-input');
+      expect(field).not.toBeNull();
+      expect(field?.value).toBe('');
+      expect(screen.root.textContent).not.toContain('a-secret-for-jennings');
+      screen.dispose();
+      screen.root.remove();
+    });
   });
 
   it('a password is set in its row: typed twice and matched as typed, SET in the row, the engine answered from it, never in the log, a line or the page after', async () => {

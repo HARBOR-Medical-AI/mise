@@ -727,6 +727,22 @@ export const promptMessageSchema = z.object({
    * none leaves the surface to say `USE THIS`.
    */
   commit: z.string().optional(),
+  /**
+   * The command that raised this question: the id its surface gave its
+   * `execute`. A surface that started several lines tells by this whose
+   * question it is. Absent from a daemon that predates it.
+   */
+  executeId: z.string().optional(),
+  /**
+   * What the question is for, as a name the command and a surface share
+   * (`stratus.vm.build`). A surface that acts on a question without the
+   * operator (feeding a password already typed) matches this, never the
+   * wording. Absent when the command names none: such a question is the
+   * operator's to answer.
+   */
+  purpose: z.string().optional(),
+  /** What the question is about, by name (`vm`, `account`), for the same matching. */
+  subject: z.record(z.string(), z.string()).optional(),
 });
 
 export type PromptKind = z.infer<typeof promptKindSchema>;

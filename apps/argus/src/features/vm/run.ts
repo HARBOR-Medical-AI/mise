@@ -1,7 +1,7 @@
 /**
  * @file A machine's build, as one run the VM controller draws: its steps in
  * the order `vm build` takes them, each waiting, under way or done, read from
- * what the line prints, and its outcome once the line ends. `vm build` plans
+ * the step events the line sends, and its outcome once the line ends. `vm build` plans
  * its data, then its machine (two tasks it follows), asks with the cost,
  * applies what changed, and grows a filesystem a bigger disk left ungrown;
  * the screen says where in that it is, so a run never looks idle.
@@ -9,7 +9,7 @@
  * Key components:
  * - BuildRun: one build in flight or just ended.
  * - buildRun_start: a run, at the line sent.
- * - buildRun_take: a printed line moves the run.
+ * - buildRun_step: a step the engine says begun or ended moves the run.
  * - buildRun_ask, buildRun_answer: the question, and its answer.
  * - buildRun_end: the line's end, its outcome.
  * - buildQuestion_plain: the build's console question in the screen's words.
@@ -17,13 +17,15 @@
  * Typical usage:
  * ```ts
  * let run: BuildRun = buildRun_start('store', 'disk 100 → 150 GB', Date.now());
- * run = buildRun_take(run, 'following /proc/steps/vm-store-plan-data; Ctrl-C …');
+ * run = buildRun_step(run, { vm: 'store', step: 'plan-data', state: 'begun' });
  * ```
  *
- * Dependencies: none; the task names are `vm build`'s (/proc/steps/vm-<name>-plan-data, …).
+ * Dependencies: the step event `vm build` sends (`@fnndsc/menu`).
  *
  * @module
  */
+
+import type { VmStepEvent } from '@fnndsc/menu';
 
 /** A step of a build, in the order `vm build` takes them. */
 export type BuildPhaseKey = 'prepare' | 'plan-data' | 'plan-machine' | 'ask' | 'apply-data' | 'apply-machine' | 'grow' | 'host';
@@ -94,19 +96,6 @@ export function buildRun_start(vm: string, change: string, since: number): Build
 }
 
 /**
- * The step a task is, from its path under /proc/steps.
- *
- * @param vm - The machine.
- * @param line - A printed line.
- * @returns The step a line names (`following /proc/steps/vm-store-plan-data`), or null.
- */
-function phase_named(vm: string, line: string): BuildPhaseKey | null {
-  const escaped: string = vm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const found: RegExpMatchArray | null = line.match(new RegExp(`/proc/steps/vm-${escaped}-(plan-data|plan-machine|apply-data|apply-machine|grow|host)\\b`));
-  return found === null ? null : (found[1] as BuildPhaseKey);
-}
-
-/**
  * Moves a step to going; every step before it that went is done, one never
  * started is skipped (a build with nothing to apply to its data skips it).
  *
@@ -125,24 +114,25 @@ function phase_go(run: BuildRun, key: BuildPhaseKey): BuildRun {
 }
 
 /**
- * A printed line moves the run: a task followed is its step under way, a
- * plan's counts are what is said.
+ * A step begun or ended moves the run, as the engine says it in a
+ * `stratus.vm.step` event: begun is that step under way; done is that step
+ * done, with what it had to say (a plan's counts); failed leaves it for the
+ * line's end to say. A step of another machine, or one that arrives after
+ * the run ended, moves nothing.
  *
  * @param run - The run.
- * @param line - The line, as printed (ANSI already stripped).
+ * @param step - The step event.
  * @returns The run moved on, or the same run.
  * @example
  * ```ts
- * buildRun_take(buildRun_start('store', '', 0), 'following /proc/steps/vm-store-plan-machine; …').phases['plan-data']; // 'skipped'
+ * buildRun_step(buildRun_start('store', '', 0), { vm: 'store', step: 'plan-machine', state: 'begun' }).phases['plan-data']; // 'skipped'
  * ```
  */
-export function buildRun_take(run: BuildRun, line: string): BuildRun {
-  if (run.outcome !== null) return run;
-  const key: BuildPhaseKey | null = phase_named(run.vm, line);
-  if (key !== null) return phase_go(run, key);
-  const counts: RegExpMatchArray | null = line.match(/\b(data|machine) plan: (.+)$/);
-  if (counts !== null) return { ...run, said: `${counts[1]} plan: ${counts[2]}` };
-  return run;
+export function buildRun_step(run: BuildRun, step: VmStepEvent): BuildRun {
+  if (run.outcome !== null || step.vm !== run.vm) return run;
+  if (step.state === 'begun') return phase_go(run, step.step);
+  if (step.state === 'failed') return run;
+  return { ...run, phases: { ...run.phases, [step.step]: 'done' }, said: step.said ?? run.said };
 }
 
 /**

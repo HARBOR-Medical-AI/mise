@@ -2467,10 +2467,11 @@ async function surface_start(token: string): Promise<void> {
         if (channel !== 'status' && scriptScreen.running_is()) scriptScreen.output_take(chunk);
         if (channel !== 'status' && vmController.running_is()) vmController.output_take(chunk);
       },
-      event_receive: (_id: string, kind: string, data: unknown): void => {
+      event_receive: (id: string, kind: string, data: unknown): void => {
         if (trekBridge.active_is()) trekBridge.event_take(kind, data);
         tdController.event_take(kind, data);
-        vmController.event_take(kind, data);
+        // The line's id goes with its event: a step belongs to the run that sent it.
+        vmController.event_take(id, kind, data);
       },
       terminalOpened_receive: (terminalId: string, replay: string, refused: string | undefined): void => consoleScreen?.opened(terminalId, replay, refused),
       terminalData_receive: (terminalId: string, data: string): void => consoleScreen?.data(terminalId, data),

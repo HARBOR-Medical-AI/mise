@@ -15,7 +15,7 @@
  * @module
  */
 import { vfsUrl_build } from './routes.js';
-import type { ClosingCause } from '@fnndsc/menu';
+import type { ClosingCause, PromptMessage } from '@fnndsc/menu';
 import type { SurfaceSeen } from '../app/restart.js';
 import { type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry,
   CONTRACT_VERSION,
@@ -51,6 +51,52 @@ export interface SurfaceAsk {
   suggest?: string;
   path?: PromptPath;
   commit?: string;
+  /** The id this surface gave the line that raised the question, when the daemon says. */
+  executeId?: string;
+  /** What the question is for, as a name the command and a surface share, when the command names one. */
+  purpose?: string;
+  /** What it is about, by name (`vm`, `account`). */
+  subject?: Record<string, string>;
+}
+
+/**
+ * How a line is run through the session.
+ *
+ * @example
+ * ```ts
+ * await client.line_execute('vm build store', { operator: true, line_sent: (id) => { mine = id; } });
+ * ```
+ */
+export interface ExecuteOptions {
+  /** Swallows the live output: a pane draws the answer. */
+  silent?: boolean;
+  /** False keeps the envelopes from the observers. */
+  observe?: boolean;
+  /** Marks a silent line as the operator's own act, so it is not instrument traffic and may ask a question. */
+  operator?: boolean;
+  /** Aborted while the line runs, asks the daemon to cancel this one line. */
+  signal?: AbortSignal;
+  /** Told the id this line is given, before it is sent: its events and questions are told from another line's by it. */
+  line_sent?: (id: string) => void;
+}
+
+/**
+ * Reads a question off the wire as the surface is asked it.
+ *
+ * @param message - The prompt message.
+ * @returns The question, with whose line raised it and what it is for when the daemon says.
+ */
+function surfaceAsk_read(message: PromptMessage): SurfaceAsk {
+  return {
+    message: message.message,
+    kind: promptKind_derive(message),
+    ...(message.path?.suggest === undefined ? {} : { suggest: message.path.suggest }),
+    ...(message.path === undefined ? {} : { path: message.path }),
+    ...(message.commit === undefined ? {} : { commit: message.commit }),
+    ...(message.executeId === undefined ? {} : { executeId: message.executeId }),
+    ...(message.purpose === undefined ? {} : { purpose: message.purpose }),
+    ...(message.subject === undefined ? {} : { subject: message.subject }),
+  };
 }
 
 /** The surface tag the daemon puts on session-bus envelopes it originates itself. */
@@ -371,15 +417,18 @@ export class ArgusClient {
    *   envelopes from the observers; `signal`, aborted while the line runs,
    *   asks the daemon to cancel this one line (the session stops it, or
    *   abandons it when it does not end), and the promise settles with what
-   *   the daemon then answers.
+   *   the daemon then answers; `line_sent` is told the id this line is given,
+   *   before it is sent, so its events and questions can be told from
+   *   another line's.
    * @returns The line's envelopes and which channels already streamed live.
    * @throws {Error} When the daemon reports an execution error.
    */
   public line_execute(
     line: string,
-    options?: { silent?: boolean; observe?: boolean; operator?: boolean; signal?: AbortSignal },
+    options?: ExecuteOptions,
   ): Promise<ExecuteOutcome> {
     const id: string = `argus-${this.nextId++}`;
+    options?.line_sent?.(id);
     options?.signal?.addEventListener('abort', (): void => this.line_cancel(id), { once: true });
     if (options?.silent === true) {
       // A silent command feeds instruments (the files panel, a viewer), not
@@ -709,13 +758,7 @@ export class ArgusClient {
           break;
         }
         const promptId: string = message.promptId;
-        void ask({
-          message: message.message,
-          kind: promptKind_derive(message),
-          ...(message.path?.suggest === undefined ? {} : { suggest: message.path.suggest }),
-          ...(message.path === undefined ? {} : { path: message.path }),
-          ...(message.commit === undefined ? {} : { commit: message.commit }),
-        }).then((answer: string | null): void => {
+        void ask(surfaceAsk_read(message)).then((answer: string | null): void => {
           if (answer === null) {
             // Abandoning is an answer: the command is told, and says what
             // it did not do.
