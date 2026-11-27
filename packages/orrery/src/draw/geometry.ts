@@ -5,6 +5,8 @@
  */
 import * as THREE from 'three';
 
+import { shared_mark } from './release.js';
+
 /**
  * A halo's radius by the feeds it gathers: room for a few, more for a crowd,
  * never so much it swallows the neighbouring cluster.
@@ -43,7 +45,7 @@ export class SphereGeometries {
     const key: number = Math.round(radius * 1000);
     let geometry: THREE.SphereGeometry | undefined = this.byKey.get(key);
     if (geometry === undefined) {
-      geometry = new THREE.SphereGeometry(key / 1000, 24, 18);
+      geometry = shared_mark(new THREE.SphereGeometry(key / 1000, 24, 18));
       geometry.computeBoundingSphere();
       this.byKey.set(key, geometry);
     }

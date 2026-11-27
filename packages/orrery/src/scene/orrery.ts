@@ -59,6 +59,7 @@ import { bodies_draw, edges_draw, type DrawnBodies, type DrawPorts } from './bod
 import { FlatMolecule } from './flat.js';
 import { DrawnNodes, censusNodes_map, handoffLook_build, handoffView_compute, perUnit_compute, tubeNode_build } from './drawn.js';
 import { Flights, type Approach, type FlightGraph, type UnfoldPlan } from './flights.js';
+import { SceneFrames } from './frames.js';
 import type { CensusNode } from '../draw/index.js';
 import { HierarchySettle } from './hierarchySettle.js';
 import { PulseWave } from './wave.js';
@@ -286,7 +287,7 @@ export class Orrery<N extends SpaceNode = SpaceNode> {
   private fits: number = 0;
   private strategy: LayoutStrategy = 'ranked';
   private selectedId: string | null = null;
-  private frameHandle: number | null = null;
+  private readonly frames: SceneFrames;
   private disposed: boolean = false;
   /** The active projection: the sculpted 3D stage, or the flat schematic. */
   private projection: '3d' | '2d' = '3d';
@@ -364,10 +365,8 @@ export class Orrery<N extends SpaceNode = SpaceNode> {
     container.appendChild(this.renderer.domElement);
     this.size_fit();
     if (!this.ambient) this.hover = this.pointer_wire(container);
-    // A pane resize (a collapsed console, a divider drag) reshapes the box
-    // without a window resize; an unfitted canvas would stretch the graph.
-    new ResizeObserver((): void => this.size_fit()).observe(container);
-    this.tick();
+    // The frames and the box's observer: drawn while the box has a size, refitted when it changes.
+    this.frames = new SceneFrames(container, { frame_step: (): void => { this.tick(); }, size_fit: (): void => { this.size_fit(); } });
   }
 
   /**
@@ -410,7 +409,7 @@ export class Orrery<N extends SpaceNode = SpaceNode> {
     return hover;
   }
 
-  /** One frame: the motions stepped, the scene rendered, the next frame asked. */
+  /** One frame: the motions stepped, the scene rendered. The next is asked for by {@link SceneFrames}. */
   private tick(): void {
     if (this.disposed) return;
     if (this.ambient) {
@@ -432,7 +431,6 @@ export class Orrery<N extends SpaceNode = SpaceNode> {
     this.starField.frame(now);
     this.labels.declutter(this.camera);
     this.renderer.render(this.scene, this.camera);
-    this.frameHandle = window.requestAnimationFrame((): void => this.tick());
   }
 
   /** Sets physics terms and re-settles (warm-started, so it morphs). */
@@ -833,8 +831,16 @@ export class Orrery<N extends SpaceNode = SpaceNode> {
   public dispose(): void {
     this.disposed = true;
     this.hierarchy.dispose();
-    if (this.frameHandle !== null) window.cancelAnimationFrame(this.frameHandle);
+    this.frames.frames_dispose();
     this.gestures?.detach();
+    this.hover?.tip_dispose();
+    // What the last draw made is let go with the scene: geometries, materials and textures.
+    this.group.clear();
+    this.spheres.clear();
+    this.censusField.clear();
+    this.starField.clear();
+    this.labels.clear();
+    this.tubes.clear();
     this.renderer.dispose();
     this.renderer.domElement.remove();
     this.spheres.dispose();

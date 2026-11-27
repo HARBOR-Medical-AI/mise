@@ -11,6 +11,7 @@
 import * as THREE from 'three';
 import { DIM_OPACITY, HALO_OPACITY } from './constants.js';
 import { SphereGeometries } from './geometry.js';
+import { Made, drawn_release } from './release.js';
 
 /**
  * How a sphere looks.
@@ -40,6 +41,8 @@ interface Edge {
 /** The solid spheres, halos and plain edges of one scene. */
 export class SphereField {
   private readonly parent: THREE.Object3D;
+  /** What this field drew, let go together at a redraw. */
+  private readonly made: Made = new Made();
   private readonly geometries: SphereGeometries = new SphereGeometries();
   private byId: Map<string, THREE.Mesh> = new Map();
   private edges: Edge[] = [];
@@ -95,7 +98,7 @@ export class SphereField {
     // A dimmed node is scenery: drawn behind the graph in hand, it takes no
     // pointer, so a hover or a click never lands on the field behind.
     mesh.userData['dim'] = look.dim === true;
-    this.parent.add(mesh);
+    this.made.thing_add(this.parent, mesh);
     this.byId.set(id, mesh);
     return mesh;
   }
@@ -120,7 +123,7 @@ export class SphereField {
     halo.userData['nodeId'] = id;
     halo.userData['halo'] = true;
     halo.userData['dim'] = dim;
-    this.parent.add(halo);
+    this.made.thing_add(this.parent, halo);
     this.byId.set(id, halo);
   }
 
@@ -146,7 +149,7 @@ export class SphereField {
     } else {
       line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color, transparent: true, opacity: dim ? DIM_OPACITY : 0.75 }));
     }
-    this.parent.add(line);
+    this.made.thing_add(this.parent, line);
     this.edges.push({ line, fromId, toId, dashed });
   }
 
@@ -195,13 +198,20 @@ export class SphereField {
    */
   public remove(mesh: THREE.Mesh): void {
     this.parent.remove(mesh);
-    if (mesh.material instanceof THREE.Material) mesh.material.dispose();
+    this.made.thing_forget(mesh);
+    drawn_release(mesh);
     const id: unknown = mesh.userData['nodeId'];
     if (typeof id === 'string' && this.byId.get(id) === mesh) this.byId.delete(id);
   }
 
-  /** Forgets everything: the scene is being redrawn (its parent already cleared). */
+  /**
+   * Lets go of every sphere, halo and edge it drew, and forgets them: the scene is being redrawn.
+   *
+   * @example
+   * field.clear();
+   */
   public clear(): void {
+    this.made.all_release();
     this.byId = new Map();
     this.edges = [];
   }

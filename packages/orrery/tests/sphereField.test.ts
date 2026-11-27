@@ -5,6 +5,7 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import * as THREE from 'three';
+import { held_watch, held_left, type HeldWatch } from './support/heldWatch.js';
 import { SphereField } from '../src/draw/sphereField.js';
 import { DIM_OPACITY, HALO_OPACITY } from '../src/draw/constants.js';
 
@@ -33,6 +34,26 @@ describe('SphereField', () => {
     expect((d.material as THREE.MeshStandardMaterial).opacity).toBe(0.3);
     expect(a.geometry).toBe(field.sphere_add('e', new THREE.Vector3(), 0.5, { color: new THREE.Color() }).geometry);
     expect(parent.children.length).toBe(5);
+  });
+
+  it('lets go of what it drew at a redraw: each sphere\'s material, a disc\'s geometry, halos and edges whole; the cached sphere shape is kept', () => {
+    const parent = new THREE.Group();
+    const field = new SphereField(parent);
+    const round = field.sphere_add('a', new THREE.Vector3(1, 0, 0), 0.5, { color: new THREE.Color(1, 0, 0) });
+    field.sphere_add('b', new THREE.Vector3(2, 0, 0), 0.5, { color: new THREE.Color(0, 1, 0) });
+    field.sphere_add('c', new THREE.Vector3(3, 0, 0), 0.5, { color: new THREE.Color(0, 0, 1), flat: true });
+    field.halo_add('shape:x', new THREE.Vector3(), 3, new THREE.Color(1, 0.5, 0), false);
+    field.edge_add('a', 'b', new THREE.Vector3(1, 0, 0), new THREE.Vector3(2, 0, 0), new THREE.Color(1, 1, 1), false);
+    field.edge_add('a', 'c', new THREE.Vector3(1, 0, 0), new THREE.Vector3(3, 0, 0), new THREE.Color(1, 1, 1), true);
+    const watch: HeldWatch = held_watch(parent);
+    // Five drawn things with a material each, and four geometries of their own beside the one shared.
+    expect(watch.held.size).toBe(6 + 5);
+    field.clear();
+    expect(parent.children.length).toBe(0);
+    // The one thing left is the sphere shape the two round spheres share: the cache's, let go with the scene.
+    expect(held_left(watch)).toEqual([round.geometry]);
+    field.dispose();
+    expect(held_left(watch)).toEqual([]);
   });
 
   it('marks a cluster with a halo that is picked only when nothing solid is', () => {

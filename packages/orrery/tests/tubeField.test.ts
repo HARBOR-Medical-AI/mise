@@ -5,6 +5,7 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import * as THREE from 'three';
+import { held_watch, held_left, type HeldWatch } from './support/heldWatch.js';
 import { TubeField, tubeMode_derive, type TubeNode, type TubeOwner } from '../src/draw/tubeField.js';
 import type { Palette } from '../src/draw/palette.js';
 import { LAMP_DIM } from '../src/draw/lamps.js';
@@ -46,6 +47,23 @@ describe('tube modes', () => {
 });
 
 describe('TubeField', () => {
+  it('lets go of what it drew at a redraw: each set of tubes and the census tubes, geometry and material; the one tube shape is kept', () => {
+    (globalThis as { document?: unknown }).document ??= { createElement: () => ({ width: 0, height: 0, getContext: () => null }) };
+    const { field, owner, entries, members, parent } = scene({ b: 'live' });
+    field.build(owner, entries, members);
+    field.census_build([{ from: new THREE.Vector3(), to: new THREE.Vector3(0, 1, 0), width: 0.1, color: palette.edge, mode: 2, start: 0 }], 0);
+    field.frame(1000);
+    const watch: HeldWatch = held_watch(parent);
+    expect(watch.held.size).toBeGreaterThanOrEqual(4);
+    field.clear();
+    expect(parent.children.length).toBe(0);
+    // Whatever is left is shared by every draw: the tube shape, and the glow a lamp is drawn with.
+    const spriteShape: THREE.BufferGeometry = new THREE.Sprite().geometry;
+    for (const kept of held_left(watch)) expect(kept instanceof THREE.CylinderGeometry || kept instanceof THREE.Texture || kept === spriteShape).toBe(true);
+    expect([...watch.disposed].some((thing) => thing instanceof THREE.ShaderMaterial)).toBe(true);
+    expect([...watch.disposed].some((thing) => thing instanceof THREE.BufferGeometry)).toBe(true);
+  });
+
   it('joins solid spheres: one tube per parent and join, coloured by the stage it runs into', () => {
     const { field, owner, entries, members, parent } = scene({ c: 'failed', b: 'live' });
     field.build(owner, entries, members);
