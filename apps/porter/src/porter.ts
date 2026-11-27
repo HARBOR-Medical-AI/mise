@@ -81,7 +81,13 @@ async function session_end(stateDir: string, who: string): Promise<void> {
     console.log(`${berthKey_compute(target.identity)}  gone already  ${target.identity}`);
     return;
   }
-  const ended: boolean = await host.evict(target.identity);
+  let ended: boolean;
+  try {
+    ended = await host.evict(target.identity);
+  } catch (error: unknown) {
+    console.error(`${berthKey_compute(target.identity)}  could not be ended: ${error instanceof Error ? error.message : String(error)}  ${target.identity}`);
+    process.exit(1);
+  }
   console.log(`${berthKey_compute(target.identity)}  ${ended ? 'ended' : 'could not be ended'}  ${target.identity}${target.berth.pid !== undefined ? `  pid ${target.berth.pid}` : ''}`);
   if (ended) console.log('    state kept; the next login boots a fresh session on this porter\'s kernel');
 }

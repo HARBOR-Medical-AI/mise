@@ -31,7 +31,6 @@ type ChRISBrowser = ChRISFileBrowser | null;
  * Class representing an inode in the ChRIS filesystem.
  */
 export class ChRISinode {
-  private _client: Client | null = null;
   private _fileBrowserFolderObj: FileBrowserFolder | null = null;
   private _path: string;
   private _browsers: Map<BrowserType, ChRISBrowser> = new Map();
@@ -104,13 +103,13 @@ export class ChRISinode {
    * Initializes the inode and binds browsers.
    */
   private async initAndBind(): Promise<void> {
-    this._client = await chrisConnection.client_get();
-    if (!this._client) {
+    const client: Client | null = await chrisConnection.client_get();
+    if (!client) {
       throw new ChRISConnectionError("Could not access ChRIS. Have you connected with the 'connect' command?");
     }
 
     try {
-      this._fileBrowserFolderObj = await this._client.getFileBrowserFolderByPath(this._path);
+      this._fileBrowserFolderObj = await client.getFileBrowserFolderByPath(this._path);
     } catch (error: unknown) {
       throw new ChRISInitializationError('Failed to get FileBrowserFolder: ' + (error instanceof Error ? error.message : String(error)));
     }

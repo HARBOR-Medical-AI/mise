@@ -76,6 +76,16 @@ jobs:
             if [ -n "$bad" ]; then exit "$code"; fi
           fi
       - run: npm test
+      # The summary the argus coverage floor was judged from, kept whether the
+      # tests passed or not: the measure differs a little from machine to
+      # machine, and a fall is only found by reading it file by file.
+      - name: Keep the argus coverage summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: argus-coverage-node${{ matrix.node }}
+          path: apps/argus/coverage/coverage-summary.json
+          if-no-files-found: ignore
       # Mock-free wire round trip: a real chell RemoteEngine attached to a
       # real in-process CalypsoDaemon (attach, execute, completion, pipes,
       # shell escapes, prompts, local edits). Needs no CUBE or credentials,

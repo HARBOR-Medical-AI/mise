@@ -5,6 +5,7 @@ node_modules/
 
 # What tools leave behind: never tracked (scripts/tracked-debris.mjs holds the tree to it).
 coverage/
+coverage-partial/
 cwd.txt
 *.backup
 # The workspace has one lockfile, at the root.

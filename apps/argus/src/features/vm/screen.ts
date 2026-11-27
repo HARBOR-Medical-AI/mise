@@ -224,8 +224,42 @@ export class VmScreen extends ScriptScreen {
    * @param name - The VM, or `''` to start one.
    */
   public async vm_open(name: string): Promise<void> {
+    // Held as being read until the machine's script is the screen's, by this open until a later one takes
+    // the hold: see `reading`.
+    const hold: object = {};
+    this.reading = hold;
+    const mine: number = ++this.opening;
+    let latest: boolean = false;
+    try {
+      latest = await this.vm_openHeld(name, mine);
+    } finally {
+      if (this.reading === hold) this.reading = null;
+    }
+    // Drawn while it was being read, the fields were held; drawn again now, they are the machine's to edit.
+    // (Not when another machine was opened meanwhile: the screen is that one's to draw.)
+    if (latest) this.draw();
+  }
+
+  /**
+   * Reads a machine, or starts a new one, and makes its script the screen's.
+   *
+   * @param name - The VM, or `''` to start one.
+   * @param mine - This open's place in the count of opens.
+   * @returns Whether this open is still the latest when it ends. When
+   *   another machine was opened while this one was being read, nothing of
+   *   this one is installed after that point, and false is returned.
+   *
+   * @example
+   * const latest: boolean = await this.vm_openHeld('store', mine);
+   */
+  private async vm_openHeld(name: string, mine: number): Promise<boolean> {
     await this.vms_read();
+    // Another machine was opened while the roster was being read: this one selects nothing.
+    if (mine !== this.opening) return false;
     this.vm = name;
+    // A machine opened, or opened again: what was typed into the script before is not this one's.
+    this.editSession_begin();
+    const session: number = this.editSession;
     this.stepLogs.clear();
     if (name === '') {
       this.path = '';
@@ -243,10 +277,12 @@ export class VmScreen extends ScriptScreen {
       this.draw();
       void this.limits_need();
       void this.standing_read();
-      return;
+      return true;
     }
     const opened: VmStatusRow | undefined = this.vms.find((each: VmStatusRow): boolean => each.name === name);
     const path: string | null = vmKeyless_is(opened ?? null) ? null : await this.vmScript_find(name);
+    // Another machine was opened while this one's script was being looked for: the screen is that one's.
+    if (session !== this.editSession || mine !== this.opening) return false;
     if (vmKeyless_is(opened ?? null)) {
       // Seen, not built on from here: no script is made for it, so no act writes one that would declare it anew.
       this.path = '';
@@ -258,6 +294,7 @@ export class VmScreen extends ScriptScreen {
       this.unsaved = false;
       this.edited = false;
       await this.script_read();
+      if (session !== this.editSession || mine !== this.opening) return false;
     } else {
       // No script declares it: its record is its script until the first act writes one.
       const row: VmStatusRow | undefined = this.vms.find((each: VmStatusRow): boolean => each.name === name);
@@ -266,7 +303,9 @@ export class VmScreen extends ScriptScreen {
       // Read from its record, not edited: written at the first act, as the header's chip says; its lines' states are read from the text.
       this.unsaved = true;
       this.edited = false;
-      this.lines = lines_build(text, (await this.status_read(this.path, text))?.lines ?? []);
+      const standings = await this.status_read(this.path, text);
+      if (session !== this.editSession || mine !== this.opening) return false;
+      this.lines = lines_build(text, standings?.lines ?? []);
     }
     this.steps = this.steps_derive(this.lines);
     // A machine opens on its SIZE; a line running takes the seat it runs in; one this session can only see, on what it is.
@@ -286,6 +325,7 @@ export class VmScreen extends ScriptScreen {
     void this.standing_read();
     void this.chris_read();
     this.running_follow();
+    return true;
   }
 
   /** The title the tab wears. */
@@ -340,12 +380,17 @@ export class VmScreen extends ScriptScreen {
     return this.vm;
   }
 
+  /** How many times the roster has been asked for: an answer is taken only if it is to the latest ask. */
+  private vmsAsked: number = 0;
+
   /** `vm status`, for the pills and the header. */
   private async vms_read(): Promise<void> {
+    // The roster shown is the latest one asked for: an older answer that comes back after a newer is not put over it.
+    const mine: number = ++this.vmsAsked;
     try {
       const answer: QuietAnswer = await this.hooks.ask('vm status');
       const model = this.model_take(answer, STRATUS_VM_STATUS_MODEL_KIND, (data: unknown) => vmStatusModelSchema.safeParse(data));
-      if (model !== null) this.vms = model.vms;
+      if (model !== null && mine === this.vmsAsked) this.vms = model.vms;
     } catch (error: unknown) {
       this.log_add(`vm status: ${error instanceof Error ? error.message : String(error)}`, 'note');
     }
@@ -487,6 +532,8 @@ export class VmScreen extends ScriptScreen {
       this.path = target;
       this.unsaved = false;
       this.edited = false;
+      // The edits are written and the script read back: what was typed on the way is done with.
+      this.editSession_begin();
       await this.script_read();
       this.steps = this.steps_derive(this.lines);
       this.draw();
@@ -2255,6 +2302,8 @@ export class VmScreen extends ScriptScreen {
    * session's, read once, so these are worked out, not fetched.
    */
   private leverCosts_ask(line: ScriptLine): void {
+    // A screen that has been left prices nothing and waits for nothing.
+    if (this.left) return;
     const runs = this.runs_get(line_parse(line.text).subject ?? '');
     if (runs === null) { this.leverCosts = null; return; }
     const key: string = `${line.text}@${runs.at}`;
@@ -2274,20 +2323,46 @@ export class VmScreen extends ScriptScreen {
         const cost: VmCostRate | null | undefined = model?.vms[0]?.cost;
         return cost == null ? null : (cost.machineHour + cost.dataHour) * HOURS_PER_MONTH;
       };
-      void (async (): Promise<void> => {
-        const base: number | null = await priced(asRuns);
-        for (const [word, value] of moved) {
-          if (this.leverCosts?.key !== key) return;
-          const one: number | null = await priced(lineOption_set(asRuns, word, value));
-          this.leverCosts.deltas.set(word, base === null || one === null ? null : one - base);
-        }
-        if (this.leverCosts?.key === key) this.change_redraw();
-      })().catch((): void => undefined);
+      void this.leverShares_price(key, asRuns, moved, priced).catch((): void => undefined);
     }, 150);
+  }
+
+  /**
+   * Prices each moved lever's share of the change, one after another, and
+   * redraws the change block when all are in. It stops at once, asking for
+   * no further price and drawing nothing, when the screen has been left or
+   * the levers have moved on.
+   *
+   * @param key - What the prices are for: the line and the reading it is priced against.
+   * @param asRuns - The line as it runs.
+   * @param moved - Each lever that differs from what runs, with the value wanted.
+   * @param priced - Asks the price of a line.
+   */
+  private async leverShares_price(key: string, asRuns: string, moved: Array<[string, string]>, priced: (text: string) => Promise<number | null>): Promise<void> {
+    const prices_stand = (): boolean => !this.screen_left() && this.leverCosts?.key === key;
+    const base: number | null = await priced(asRuns);
+    for (const [word, value] of moved) {
+      if (!prices_stand()) return;
+      const one: number | null = await priced(lineOption_set(asRuns, word, value));
+      if (!prices_stand()) return;
+      this.leverCosts?.deltas.set(word, base === null || one === null ? null : one - base);
+    }
+    if (prices_stand()) this.change_redraw();
+  }
+
+  /**
+   * Says whether the screen has been left.
+   *
+   * @returns True once `dispose` has run.
+   */
+  private screen_left(): boolean {
+    return this.left;
   }
 
   /** A price arrived: SIZE's change block is redrawn in place; + NEW's price column as before. */
   protected override cost_redraw(): void {
+    // A price that comes back to a screen that has been left redraws nothing and arms no wait.
+    if (this.left) return;
     if (this.view === NEW_KEY) {
       const box: HTMLElement | null = this.parts.body.querySelector('.ss-cost');
       if (box !== null) this.cost_fill(box, this.newStep_get());
@@ -2308,6 +2383,26 @@ export class VmScreen extends ScriptScreen {
     if (shown !== null) shown.replaceWith(this.lineBoxNumbered_make(line));
     this.change_redraw();
     this.header_draw();
+  }
+
+  /**
+   * A plan that has come back, on the VM controller. Its CHRIS pane says
+   * what a deploy would do in places of its own, drawn with the pane, so
+   * the pane is drawn again: but only when it is the pane that is showing,
+   * and the plan is for the line as it stands there. A plan that comes back
+   * after the operator has moved to another pane (SPEC, with a field under
+   * the hand) draws nothing: it is kept, and the CHRIS pane reads it when
+   * it is next drawn.
+   *
+   * @param text - The deploy line the plan was read for.
+   *
+   * @example
+   * this.chrisPlan_show(line.text);
+   */
+  protected override chrisPlan_show(text: string): void {
+    const shown: ScriptStep | undefined = this.steps.find((step: ScriptStep): boolean => step.key === this.view);
+    if (shown?.kind !== 'chris deploy' || shown.lines[0]?.text !== text) return;
+    this.draw();
   }
 
   /** The script's line as it will run: an edit not built yet never reads as done (the operator, 2026-11-06). */
@@ -2394,8 +2489,28 @@ export class VmScreen extends ScriptScreen {
 
   private runTick: ReturnType<typeof setInterval> | null = null;
 
+  /**
+   * Stops every clock the screen runs, its own and the script screen's: the
+   * run's one-second tick (which would otherwise redraw a screen nobody
+   * sees until its line came back, and for ever if it did not) and the
+   * lever's wait.
+   */
+  public override dispose(): void {
+    this.runTick_set(false);
+    if (this.leverTimer !== null) clearTimeout(this.leverTimer);
+    this.leverTimer = null;
+    // The listings the screen made let go of what they took.
+    this.machineListing?.hold_release();
+    this.profileListing?.hold_release();
+    this.settingListing?.hold_release();
+    this.accountListing?.hold_release();
+    super.dispose();
+  }
+
   /** The run's clock: the band and the block say how long, every second, while it runs. */
   private runTick_set(on: boolean): void {
+    // A screen that has been left starts no clock: the line it sent may never come back.
+    if (on && this.left) return;
     if (on && this.runTick === null) this.runTick = setInterval((): void => { if (this.run?.outcome === null) this.run_redraw(); else this.runTick_set(false); }, 1000);
     if (!on && this.runTick !== null) { clearInterval(this.runTick); this.runTick = null; }
   }

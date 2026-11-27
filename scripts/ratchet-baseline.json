@@ -3,5 +3,17 @@
     "apps/argus": 27,
     "apps/porter": 3,
     "packages/cumin": 2
+  },
+  "coverage": {
+    "apps/argus": {
+      "lines": 60.8,
+      "statements": 58.7,
+      "branches": 50.4,
+      "functions": 55.5,
+      "allowance": {
+        "below": 0.3,
+        "above": 0.7
+      }
+    }
   }
 }

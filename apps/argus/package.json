@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc --noEmit && vite build && node ../../scripts/notes-build.mjs",
     "dev": "vite",
-    "test": "tsc --noEmit && NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest",
+    "test": "tsc --noEmit && node ../../scripts/jest-with-floor.mjs",
     "smoke": "node tests/smoke/smoke.mjs",
     "sounds": "node scripts/sounds_make.mjs",
     "sounds:import": "node scripts/sounds_import.mjs"

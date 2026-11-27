@@ -23,6 +23,7 @@
  */
 import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
+import { identityName_spell } from '@fnndsc/cumin/identity-epoch';
 import { CLOSING_CAUSES, type ClosingCause } from '@fnndsc/menu';
 import { homedir, tmpdir } from 'os';
 import { createHash } from 'node:crypto';
@@ -71,21 +72,7 @@ export interface Berth {
  * @returns The normalised identity string used as the berth key input.
  */
 export function identity_normalise(user: string, cubeUrl: string): string {
-  const schemeSplit: number = cubeUrl.indexOf('://');
-  let normalisedUrl: string;
-  if (schemeSplit === -1) {
-    normalisedUrl = cubeUrl;
-  } else {
-    const scheme: string = cubeUrl.slice(0, schemeSplit).toLowerCase();
-    const rest: string = cubeUrl.slice(schemeSplit + 3);
-    // Lowercase only the authority (host[:port]); leave the path exactly as
-    // written, including the trailing slash CUBE requires.
-    const pathStart: number = rest.indexOf('/');
-    const authority: string = pathStart === -1 ? rest : rest.slice(0, pathStart);
-    const path: string = pathStart === -1 ? '' : rest.slice(pathStart);
-    normalisedUrl = `${scheme}://${authority.toLowerCase()}${path}`;
-  }
-  return `${user}@${normalisedUrl}`;
+  return identityName_spell(user, cubeUrl);
 }
 
 /** The reserved identity for a daemon started with no restored CUBE session. */

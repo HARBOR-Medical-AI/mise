@@ -40,6 +40,8 @@ import {
   listCache_get,
   listCheckpoint_restore,
   listCheckpoint_watch,
+  queryIndexCheckpoint_finish,
+  queryIndexCheckpoint_hold,
   queryIndexCheckpoint_restore,
   queryIndexCheckpoint_save,
   queryIndexCheckpoint_watch,
@@ -52,6 +54,7 @@ import {
   type Result,
   type StackMessage,
 } from '@fnndsc/cumin';
+import { identityScope_run } from '@fnndsc/cumin/identity-epoch';
 import type { ListingItem } from '@fnndsc/menu';
 import {
   procCache_refresh,
@@ -324,9 +327,12 @@ export async function queryCheckpoint_prime(user: string | undefined): Promise<v
   const identity: string | null = await sessionIdentity_name();
   if (identity === null) return;
   flushIdentity = identity;
-  await queryIndexCheckpoint_restore(identity).catch((): QueryIndexRestoreResult => (
-    { restored: false, count: 0 }
+  const restored: QueryIndexRestoreResult = await queryIndexCheckpoint_restore(identity).catch((): QueryIndexRestoreResult => (
+    { restored: false, count: 0, reason: 'unread' }
   ));
+  // The index holds the whole of the checkpoint (or there was none to hold): from here it is written as it
+  // stands. A checkpoint that could not be read is not claimed: what this run learns is added to the file.
+  if (restored.restored || restored.reason === 'no query index') queryIndexCheckpoint_hold(identity);
 }
 
 /**
@@ -342,7 +348,11 @@ export async function queryCheckpoint_prime(user: string | undefined): Promise<v
  */
 export async function queryCheckpoint_flush(): Promise<void> {
   if (flushIdentity === null) return;
-  await queryIndexCheckpoint_save(flushIdentity).catch((): void => {
+  // Each identity's index goes under its own name: one that left during the run was written as it left (and
+  // is waited for here); what the index holds now is written for whoever is connected now, who may not be
+  // the one the run began as.
+  const now: string | null = await sessionIdentity_name().catch((): null => null);
+  await queryIndexCheckpoint_finish(now).catch((): void => {
     /* the index rebuilds itself from CUBE on the next boot */
   });
 }
@@ -366,6 +376,31 @@ export async function startupWarmup_run(
   interactive: boolean,
   reporter: StartupWarmupReporter | null,
   reportSettlement: boolean = false,
+): Promise<StartupWarmupCache> {
+  // One piece of work, begun as whoever is connected at boot: the walks it leaves running behind the prompt
+  // put nothing in the caches once someone else has connected.
+  return identityScope_run((): Promise<StartupWarmupCache> => startupWarmup_walk(flags, user, interactive, reporter, reportSettlement));
+}
+
+/**
+ * The warm-up itself: see {@link startupWarmup_run}, whose arguments these are.
+ *
+ * @param flags - Resource caches selected by the host's boot flags.
+ * @param user - Authenticated username used to construct the feed path.
+ * @param interactive - Whether progress may use an interactive spinner.
+ * @param reporter - Host status logger, or null for silent status reporting.
+ * @param reportSettlement - Whether to report outcomes that arrive after boot.
+ * @returns Cache counts and the labels of any failed warm-up operations.
+ *
+ * @example
+ * const cache: StartupWarmupCache = await startupWarmup_walk(flags, user, true, null, false);
+ */
+async function startupWarmup_walk(
+  flags: StartupWarmupFlags,
+  user: string | undefined,
+  interactive: boolean,
+  reporter: StartupWarmupReporter | null,
+  reportSettlement: boolean,
 ): Promise<StartupWarmupCache> {
   const result: StartupWarmupCache = { failures: [], deferred: [] };
   /** The identity whose checkpoints this boot restored, once known. */
@@ -405,6 +440,10 @@ export async function startupWarmup_run(
       // row of the collection drags its compressed result — and cheap to
       // keep, so it is restored rather than swept again.
       const queries: QueryIndexRestoreResult = await queryIndexCheckpoint_restore(identity);
+      // The index now holds the whole of this identity's checkpoint, and is written as it stands from here.
+      // Said after the restore, never before it: until then a write adds to the file and replaces nothing.
+      // (Not heard, as the watcher is not installed, if someone else connected while the disk was read.)
+      if (queries.restored || queries.reason === 'no query index') queryIndexCheckpoint_hold(identity);
       queryIndexCheckpoint_watch(identity);
       reporter?.log(
         queries.restored ? 'ok' : 'skip',

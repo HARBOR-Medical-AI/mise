@@ -6,6 +6,8 @@
 
 import * as THREE from 'three';
 
+import { shared_mark } from './release.js';
+
 /** A soft radial glow, shared by every nebula. */
 let nebulaTexture: THREE.Texture | null = null;
 
@@ -24,6 +26,6 @@ export function nebulaTexture_get(): THREE.Texture {
     context.fillStyle = gradient;
     context.fillRect(0, 0, 128, 128);
   }
-  nebulaTexture = new THREE.CanvasTexture(canvas);
+  nebulaTexture = shared_mark(new THREE.CanvasTexture(canvas));
   return nebulaTexture;
 }

@@ -198,6 +198,14 @@ export class CornerstoneEngine implements ImageEngine {
   private startAt: number;
   private disposed: boolean = false;
   private metadataRegistered: boolean = false;
+  /** The provider this engine gave Cornerstone's metadata layer, kept so it can be taken back. */
+  private metadataProvider: ((type: string, query: unknown) => unknown) | null = null;
+  /** What this engine hears of slices that fail to load, kept so it can stop hearing. */
+  private failureListener: ((event: Event) => void) | null = null;
+  /** The volumes this engine has in Cornerstone's cache, by id: each is let go when the layout that used it is replaced. */
+  private readonly volumeIds: Set<string> = new Set<string>();
+  /** Counts each clearing of the field: a build that began under an earlier count has been replaced, and installs nothing. */
+  private fieldSerial: number = 0;
   /** Every slice fetched; the wheel is honoured only then. A one-slice series is whole at once. */
   private filled: boolean = false;
   private filling: Promise<boolean> | null = null;
@@ -323,9 +331,11 @@ export class CornerstoneEngine implements ImageEngine {
    * wheel turning through them, and the count in the bar and the console.
    */
   private async stopped_show(): Promise<void> {
+    const began: number = this.fieldSerial;
     this.host.progress_set(null);
     if (this.layout === 'single') await this.stack_refit();
-    if (this.disposed) return;
+    // Another layout took the field while the stack was refitted: STOPPED is not said over it.
+    if (this.build_replaced(began)) return;
     this.host.readout_set(this.sliceReadout_get());
     if (this.stopSaid) return;
     this.stopSaid = true;
@@ -774,6 +784,14 @@ export class CornerstoneEngine implements ImageEngine {
     this.resizeObserver = null;
     this.field_clear();
     this.field = null;
+    // What was put on Cornerstone's own objects, which outlive every engine, is taken back.
+    if (this.libraries !== null) {
+      const { core } = this.libraries;
+      if (this.metadataProvider !== null) core.metaData.removeProvider(this.metadataProvider);
+      if (this.failureListener !== null) core.eventTarget.removeEventListener(core.Enums.Events.IMAGE_LOAD_FAILED, this.failureListener);
+    }
+    this.metadataProvider = null;
+    this.failureListener = null;
   }
 
   /**
@@ -918,7 +936,8 @@ export class CornerstoneEngine implements ImageEngine {
       sopByImageId.set(imageId, fromName ?? `${series.seriesInstanceUID ?? '0'}.${sopByImageId.size + 1}`);
     }
     const sopClass: string = '1.2.840.10008.5.1.4.1.1.4';
-    this.libraries.core.metaData.addProvider((type: string, imageId: string): unknown => {
+    const metadata_provide = (type: string, imageId: unknown): unknown => {
+      if (typeof imageId !== 'string') return undefined;
       const sop: string | undefined = sopByImageId.get(imageId);
       if (sop === undefined) return undefined;
       if (type === 'sopCommonModule') return { sopInstanceUID: sop, sopClassUID: sopClass };
@@ -940,14 +959,17 @@ export class CornerstoneEngine implements ImageEngine {
         };
       }
       return undefined;
-    }, 10_000);
+    };
+    // Kept: the layer is Cornerstone's own and outlives this engine, which takes its provider back at the end.
+    this.metadataProvider = metadata_provide;
+    this.libraries.core.metaData.addProvider(metadata_provide, 10_000);
   }
 
   /** A slice that cannot be read is counted and named; the canvas is never left blank without a word. */
   private loadFailures_watch(): void {
     if (this.libraries === null) return;
     const { core } = this.libraries;
-    core.eventTarget.addEventListener(core.Enums.Events.IMAGE_LOAD_FAILED, (event: Event): void => {
+    const failure_hear = (event: Event): void => {
       const detail: { imageId?: string; error?: { message?: string } } = (event as CustomEvent).detail ?? {};
       if (detail.imageId === undefined || !this.pathByImageId.has(detail.imageId)) return;
       // A request the person stopped did not fail: it is neither counted nor explained.
@@ -966,11 +988,39 @@ export class CornerstoneEngine implements ImageEngine {
       // sent an operator hunting through three layers for a 403.
       if (syntax === undefined) {
         void refusal_explain(detail.imageId).then((why: string): void => {
+          // The engine was let go while the route was asked why: the readout is the next series's now.
+          if (this.disposed) return;
           this.host.readout_set(`REFUSED ${this.refused.size} OF ${this.imageIds.length} · ${why}`);
           this.host.note(`image: ${this.pathByImageId.get(detail.imageId ?? '') ?? detail.imageId}: ${why.toLowerCase()}`);
         });
       }
-    });
+    };
+    // Kept: the event target is Cornerstone's own and outlives this engine, which stops listening at the end.
+    this.failureListener = failure_hear;
+    core.eventTarget.addEventListener(core.Enums.Events.IMAGE_LOAD_FAILED, failure_hear);
+  }
+
+  /**
+   * Takes a volume of this engine's out of Cornerstone's cache.
+   *
+   * @param volumeId - The volume.
+   */
+  private volume_release(volumeId: string): void {
+    this.volumeIds.delete(volumeId);
+    if (this.libraries === null) return;
+    try { this.libraries.core.cache.removeVolumeLoadObject(volumeId); } catch { /* not in the cache */ }
+  }
+
+  /**
+   * Says whether a build that began when the field stood at a count has
+   * been replaced: the engine let go, or the field cleared for another
+   * layout, while the build waited.
+   *
+   * @param began - The field's count when the build began.
+   * @returns True when the build is no longer the field's.
+   */
+  private build_replaced(began: number): boolean {
+    return this.disposed || this.field === null || began !== this.fieldSerial;
   }
 
   private engineId_get(): string {
@@ -996,6 +1046,7 @@ export class CornerstoneEngine implements ImageEngine {
     const element: HTMLDivElement = this.viewport_make('stack');
     const engineId: string = this.engineId_get();
     const viewportId: string = `${engineId}-stack`;
+    const stackBegan: number = this.fieldSerial;
     this.renderingEngine = new core.RenderingEngine(engineId);
     this.renderingEngine.enableElement({ viewportId, type: core.Enums.ViewportType.STACK, element });
     const viewport = this.renderingEngine.getViewport(viewportId) as import('@cornerstonejs/core').Types.IStackViewport;
@@ -1003,8 +1054,12 @@ export class CornerstoneEngine implements ImageEngine {
       const detail: { imageIdIndex: number; imageId: string } = (event as CustomEvent).detail;
       // The slice's place in the series, whichever stack is on the field.
       const place: number = this.imageIds.indexOf(detail.imageId);
-      this.slice = (place >= 0 ? place : detail.imageIdIndex) + 1;
+      // The slice is on hand whichever stack brought it.
       this.held.add(detail.imageId);
+      // A stack whose field has since been cleared for another layout has no say: the slice the field is
+      // on, the readout and the regard are that layout's.
+      if (this.build_replaced(stackBegan)) return;
+      this.slice = (place >= 0 ? place : detail.imageIdIndex) + 1;
       const path: string = this.pathByImageId.get(detail.imageId) ?? '';
       this.host.readout_set(this.sliceReadout_get());
       this.host.regard(path);
@@ -1051,13 +1106,18 @@ export class CornerstoneEngine implements ImageEngine {
     // leaving the previous image on the field throughout is a viewer that
     // looks like it ignored the press — the operator reported exactly that.
     this.field_clear();
+    const began: number = this.fieldSerial;
     this.layout = layout;
     this.host.progress_set({ label: `BUILDING ${layout.toUpperCase()}`, done: 0, total });
     // A volume exists only once every header is known; the loader learns
     // them by loading. This is the cost the LOAD guard stands in front of.
-    if (!(await this.layoutSlices_load(`BUILDING ${layout.toUpperCase()}`))) return false;
+    if (!(await this.layoutSlices_load(`BUILDING ${layout.toUpperCase()}`, began))) return false;
+    // Let go, or cleared for another layout, while the slices loaded: nothing is made for a field that has moved on.
+    if (this.build_replaced(began)) return false;
     const engineId: string = this.engineId_get();
-    const volumeId: string = `cornerstoneStreamingImageVolume:${engineId}`;
+    // The volume is this build's own: a build that is replaced while it waits releases its volume, and
+    // must not release the one the build that replaced it has made.
+    const volumeId: string = `cornerstoneStreamingImageVolume:${engineId}-${String(began)}`;
     const grid: HTMLElement = document.createElement('div');
     grid.className = layout === 'mpr' ? 'image-mpr' : 'image-render';
     this.field.appendChild(grid);
@@ -1087,10 +1147,21 @@ export class CornerstoneEngine implements ImageEngine {
     if (core.cache.getVolume(volumeId) !== undefined) {
       try { core.cache.removeVolumeLoadObject(volumeId); } catch { /* not loaded yet */ }
     }
+    this.volumeIds.add(volumeId);
     const volume = await core.volumeLoader.createAndCacheVolume(volumeId, { imageIds: this.imageIds });
+    // The engine was let go, or the field cleared, while the volume was made: it is released at once, and
+    // nothing is installed (no viewport, no tool group, no listener comes back after the close).
+    if (this.build_replaced(began)) {
+      this.volume_release(volumeId);
+      return false;
+    }
     void (volume as { load: () => void }).load();
     const viewportIds: string[] = inputs.map((input): string => input.viewportId);
     await core.setVolumesForViewports(this.renderingEngine, [{ volumeId }], viewportIds);
+    if (this.build_replaced(began)) {
+      this.volume_release(volumeId);
+      return false;
+    }
     if (layout === '3d') {
       const render = this.renderingEngine.getViewport(viewportIds[0] ?? '') as {
         setProperties?: (properties: { preset: string }) => void;
@@ -1151,20 +1222,29 @@ export class CornerstoneEngine implements ImageEngine {
    * goes back to the stack of the slices on hand.
    *
    * @param label - The field's words while the slices arrive.
-   * @returns Whether every slice was asked for; false when stopped or disposed.
+   * @param began - The field's count when the build that asks began (see {@link build_replaced}).
+   * @returns Whether every slice was asked for; false when stopped, disposed, or replaced by another build.
    */
-  private async layoutSlices_load(label: string): Promise<boolean> {
+  private async layoutSlices_load(label: string, began: number): Promise<boolean> {
     const total: number = this.imageIds.length;
     this.stopped = false;
     this.abandoned.clear();
     let loaded: number = 0;
     const whole: boolean = await this.images_load(this.imageIds, (): void => {
       loaded++;
-      if (!this.disposed) this.host.progress_set({ label, done: loaded, total });
+      // The progress is the build's that owns the field: one that has been replaced says nothing.
+      if (!this.build_replaced(began)) this.host.progress_set({ label, done: loaded, total });
     });
-    if (this.disposed || this.field === null) return false;
+    // Replaced while the slices loaded: the field is another build's, and this one neither shows the stack
+    // on it nor says it stopped.
+    if (this.build_replaced(began)) return false;
     if (!whole) {
+      // Stopped: the field goes back to the stack of the slices on hand, and says so. The stack is a
+      // build of its own (it clears the field once); if anything clears the field again while it waits,
+      // another layout has been chosen, and STOPPED is not said over it.
+      const stack: number = this.fieldSerial + 1;
       await this.stack_show();
+      if (this.build_replaced(stack)) return false;
       await this.stopped_show();
       return false;
     }
@@ -1228,9 +1308,11 @@ export class CornerstoneEngine implements ImageEngine {
     const total: number = this.imageIds.length;
     this.host.readout_set(`LOADING ${total} SLICES FOR SLAB`);
     this.field_clear();
+    const began: number = this.fieldSerial;
     this.layout = 'slab';
     this.host.progress_set({ label: 'BUILDING SLAB', done: 0, total });
-    if (!(await this.layoutSlices_load('BUILDING SLAB'))) return false;
+    if (!(await this.layoutSlices_load('BUILDING SLAB', began))) return false;
+    if (this.build_replaced(began)) return false;
     // A Cornerstone volume is the easiest way to stack the slices with the
     // right geometry; its pixels and geometry are copied into a fresh
     // vtkImageData for the scene, so nothing Cornerstone renders is touched.
@@ -1239,9 +1321,17 @@ export class CornerstoneEngine implements ImageEngine {
     if (core.cache.getVolume(volumeId) !== undefined) {
       try { core.cache.removeVolumeLoadObject(volumeId); } catch { /* not loaded */ }
     }
+    this.volumeIds.add(volumeId);
     const volume = await core.volumeLoader.createAndCacheVolume(volumeId, { imageIds: this.imageIds });
+    if (this.build_replaced(began)) {
+      this.volume_release(volumeId);
+      return false;
+    }
     await (volume as { load: () => Promise<void> | void }).load();
-    if (this.disposed || this.field === null) return false;
+    if (this.build_replaced(began)) {
+      this.volume_release(volumeId);
+      return false;
+    }
     const volAny = volume as unknown as {
       voxelManager?: { getCompleteScalarDataArray?: () => ArrayLike<number>; scalarData?: ArrayLike<number> };
       dimensions?: number[]; spacing?: number[]; origin?: number[]; direction?: number[];
@@ -1270,11 +1360,21 @@ export class CornerstoneEngine implements ImageEngine {
     grid.className = 'image-render';
     grid.appendChild(element);
     this.field.appendChild(grid);
-    for (let i = 0; i < 60 && element.offsetWidth === 0; i++) {
+    // The wait ends as soon as the build has been replaced: an element taken off the field never has a size.
+    for (let i = 0; i < 60 && element.offsetWidth === 0 && !this.build_replaced(began); i++) {
       await new Promise<void>((resolve): void => { requestAnimationFrame((): void => resolve()); });
     }
-    if (this.disposed) return false;
+    if (this.build_replaced(began)) {
+      this.volume_release(volumeId);
+      return false;
+    }
     const { slabScene_open } = await import('./slabScene.js');
+    // Let go, or replaced, while the scene's code was fetched: no scene is opened on an element that is
+    // no longer on the field.
+    if (this.build_replaced(began)) {
+      this.volume_release(volumeId);
+      return false;
+    }
     this.slabScene = slabScene_open(element, {
       imageData,
       range: this.slabRange,
@@ -1319,6 +1419,11 @@ export class CornerstoneEngine implements ImageEngine {
   }
 
   private field_clear(): void {
+    // Whatever was being built for the field as it stood is replaced from here.
+    this.fieldSerial += 1;
+    // The volumes the layout being replaced used go with it: a slab's is made anew at every build, and
+    // would otherwise stay in Cornerstone's cache, one per build.
+    for (const volumeId of [...this.volumeIds]) this.volume_release(volumeId);
     this.probe_disarm();
     this.slabScene?.dispose();
     this.slabScene = null;

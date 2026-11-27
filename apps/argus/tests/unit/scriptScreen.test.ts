@@ -12,6 +12,7 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import { ScriptScreen, type QuietAnswer, type ScriptHooks } from '../../src/features/script/screen.js';
+import { lineOption_get } from '../../src/features/script/model.js';
 
 const STORE_TEXT: string = [
   'net new chrisproject-services --cidr 10.20.0.0/16',
@@ -138,9 +139,13 @@ describe('the script screen', () => {
     expect(stands).toContain('admits 134.174.21.21/32');
     const cidr: HTMLInputElement | null = screen.root.querySelector('#ss-cidr-1');
     expect(cidr?.value).toBe('10.20.0.0/16');
+    // The hand is in the field, as it is when a person types.
+    cidr!.focus();
     cidr!.value = '10.30.0.0/16';
     cidr!.dispatchEvent(new Event('input'));
     expect(screen.root.querySelector('.ss-line-text')?.textContent).toBe('net new chrisproject-services --cidr 10.30.0.0/16');
+    // The field is the one that was typed in, not one drawn in its place: what is being composed, undone or selected in it stays.
+    expect(screen.root.querySelector('#ss-cidr-1')).toBe(cidr);
     // At the edit: the difference against what stands, beside the line, and SAVE at once; the field keeps the hand.
     expect(screen.root.querySelector('.ss-col-side')?.textContent).toContain('THIS LINE10.20.0.0/16 → 10.30.0.0/16: replaces the VCN and subnet and every machine on them (refused unless --allow-alter)');
     expect(button_named(screen.root, 'SAVE')).toBeDefined();
@@ -159,6 +164,44 @@ describe('the script screen', () => {
     expect(sent[1]?.startsWith("touch --withContents='net new chrisproject-services --cidr 10.30.0.0/16")).toBe(true);
     expect(sent[1]?.endsWith("' '/scripts/mine/store.mise'")).toBe(true);
     expect(screen.path_get()).toBe('/scripts/mine/store.mise');
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('an option is typed where it stands: a space on the way to the next word is kept, and what is saved has it', async () => {
+    const { screen, sent } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const field: HTMLInputElement = screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    field.focus();
+    // The first keystroke: SAVE and the line's standing are current at once, and the field is still the field.
+    field.value = 'two';
+    field.setSelectionRange(3, 3);
+    field.dispatchEvent(new Event('input'));
+    expect(screen.root.querySelector('#ss-cidr-1')).toBe(field);
+    expect(document.activeElement).toBe(field);
+    expect(field.selectionStart).toBe(3);
+    expect(button_named(screen.root, 'SAVE')).toBeDefined();
+    expect(screen.root.querySelector('.tdc-chip')?.parentElement?.textContent).toContain('EDITED · NOT SAVED');
+    expect(screen.root.querySelector(".ss-line[data-line='1'] .ss-line-state")?.textContent).toContain('EDITED');
+    // A space typed before the next word: the field keeps it (it was lost at each keystroke, so no second word could follow).
+    field.value = 'two ';
+    field.dispatchEvent(new Event('input'));
+    expect(field.value).toBe('two ');
+    expect(screen.root.querySelector('.ss-line-text')?.textContent).toBe('net new chrisproject-services --cidr two');
+    field.value = 'two words';
+    field.dispatchEvent(new Event('input'));
+    expect(field.value).toBe('two words');
+    // The line, read as a line is read, holds the one value with its space: not two words that merely appear in it.
+    const shown: string = screen.root.querySelector('.ss-line-text')?.textContent ?? '';
+    expect(lineOption_get(shown, '--cidr')).toBe('two words');
+    // Saved, the working copy holds that very line.
+    button_named(screen.root, 'SAVE')?.click();
+    await settle();
+    // (The command quotes its contents for the shell; unquoted, they are the script's lines.)
+    expect((sent.find((line: string): boolean => line.startsWith('touch --withContents=')) ?? '').replaceAll("'\\''", "'")).toContain(shown);
     screen.dispose();
     screen.root.remove();
   });
@@ -548,6 +591,289 @@ describe('the script screen', () => {
     expect(screen.root.textContent).not.toContain('NOT SAVED');
     screen.dispose();
     screen.root.remove();
+  });
+
+  it('a plan that comes back while an option is being typed is shown where it stands: the field is left as it is', async () => {
+    chrisRows = [];
+    try {
+      const { screen, sent, hooks } = screen_make(['done', 'done', 'done', 'ready', 'not yet']);
+      await screen.open('/scripts/chrisproject/store.mise');
+      await settle();
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-4"]')?.click();
+      await settle();
+      // From here a plan is answered only when the test lets it be.
+      const answer: ScriptHooks['ask'] = hooks.ask;
+      const pending: Array<{ line: string; release: () => void }> = [];
+      hooks.ask = (line: string): Promise<QuietAnswer> => line.endsWith(' --plan')
+        ? new Promise((resolve: (answered: QuietAnswer) => void): void => { pending.push({ line, release: (): void => { void answer(line).then(resolve); } }); })
+        : answer(line);
+      const host: HTMLInputElement = screen.root.querySelector('#ss-host-4') as HTMLInputElement;
+      host.focus();
+      host.value = 'a.example.org';
+      host.dispatchEvent(new Event('input'));
+      host.value = 'b.example.org ';
+      host.setSelectionRange(14, 14);
+      host.dispatchEvent(new Event('input'));
+      expect(pending.map((one) => lineOption_get(one.line.replace(/ --plan$/, ''), '--host'))).toEqual(['a.example.org', 'b.example.org']);
+      expect(screen.root.querySelector('.ss-note-deploy')?.textContent).toContain('reading what a deploy would do');
+      // The plan for what the line no longer says comes back first: nothing is shown of it, and nothing is drawn again.
+      pending[0]?.release();
+      await settle();
+      expect(screen.root.querySelector('.ss-note-deploy')?.textContent).toContain('reading what a deploy would do');
+      expect(screen.root.querySelector('#ss-host-4')).toBe(host);
+      // The plan for the line as it stands: shown, and the field is the same field, with the hand where it was.
+      pending[1]?.release();
+      await settle();
+      expect(screen.root.querySelector('.ss-note-deploy')?.textContent).toContain('DEPLOY WOULDa first deploy');
+      expect(screen.root.querySelector('#ss-host-4')).toBe(host);
+      expect(document.activeElement).toBe(host);
+      expect(host.value).toBe('b.example.org ');
+      expect(host.selectionStart).toBe(14);
+      // SAVE stands on this seat too, and writes the line as edited.
+      const shown: string = screen.root.querySelector(".ss-line[data-line='4'] .ss-line-text")?.textContent ?? '';
+      expect(lineOption_get(shown, '--host')).toBe('b.example.org');
+      button_named(screen.root, 'SAVE')?.click();
+      await settle();
+      expect(sent.find((line: string): boolean => line.startsWith('touch --withContents='))).toContain(shown);
+      screen.dispose();
+      screen.root.remove();
+    } finally {
+      chrisRows = null;
+    }
+  });
+
+  it('a seat drawn again while an option is being typed gives the field back as it was left, space and all', async () => {
+    const { screen } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const field: HTMLInputElement = screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    field.value = 'two ';
+    field.dispatchEvent(new Event('input'));
+    // Something else draws the whole seat (the mode changed, a standing came back).
+    screen.mode_refresh();
+    await settle();
+    const again: HTMLInputElement = screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    expect(again.value).toBe('two ');
+    expect(lineOption_get(screen.root.querySelector('.ss-line-text')?.textContent ?? '', '--cidr')).toBe('two');
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('what was typed into one script is not put into another, nor into the same one opened afresh or saved', async () => {
+    const { screen } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const typing = (): HTMLInputElement => screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    // The value as it stood, with a space after it: trimmed, it is what the line (and the other script's line) says.
+    typing().value = '10.20.0.0/16 ';
+    typing().dispatchEvent(new Event('input'));
+    // Another script, with the same option on the same line and the same value.
+    await screen.open('/scripts/chrisproject/other.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    expect(screen.path_get()).toBe('/scripts/chrisproject/other.mise');
+    expect(typing().value).toBe('10.20.0.0/16');
+    // The first again, opened afresh: its field is as the script reads, not as it was left.
+    typing().value = '10.20.0.0/16 ';
+    typing().dispatchEvent(new Event('input'));
+    await screen.open('/scripts/chrisproject/other.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    expect(typing().value).toBe('10.20.0.0/16');
+    // And after a SAVE the field is what was saved.
+    typing().value = '10.50.0.0/16 ';
+    typing().dispatchEvent(new Event('input'));
+    button_named(screen.root, 'SAVE')?.click();
+    await settle();
+    expect((screen.root.querySelector('#ss-cidr-1') as HTMLInputElement | null)?.value.endsWith(' ')).toBe(false);
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('typing into the form of a script that is being replaced by another changes nothing of the other', async () => {
+    const { screen, hooks } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const first: HTMLInputElement = screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    // The other script's text is held back: its open is under way, and the first one's form is still on the screen.
+    const answer: ScriptHooks['ask'] = hooks.ask;
+    let read: () => void = (): void => undefined;
+    const held: Promise<void> = new Promise((resolve: () => void): void => { read = resolve; });
+    hooks.ask = async (line: string): Promise<QuietAnswer> => { if (line.startsWith('cat ')) await held; return answer(line); };
+    const opening: Promise<void> = screen.open('/scripts/chrisproject/other.mise');
+    await settle();
+    first.value = '10.20.0.0/16 ';
+    first.dispatchEvent(new Event('input'));
+    // Something draws the seat again during the wait (the mode changed): the field it makes is the first
+    // script's still, and is no more open to an edit than the one it replaced.
+    screen.mode_refresh();
+    await settle();
+    const redrawn: HTMLInputElement = screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    expect(redrawn).not.toBe(first);
+    expect(redrawn.disabled).toBe(true);
+    redrawn.value = '10.99.0.0/16';
+    redrawn.dispatchEvent(new Event('input'));
+    read();
+    await opening;
+    await settle();
+    expect(screen.path_get()).toBe('/scripts/chrisproject/other.mise');
+    // The other script is as it was read: not edited, and nothing typed into the first is in its field.
+    expect(screen.root.textContent).not.toContain('NOT SAVED');
+    expect(button_named(screen.root, 'SAVE')).toBeUndefined();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const opened: HTMLInputElement = screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    expect(opened.value).toBe('10.20.0.0/16');
+    // And the script that is now open is the operator's to edit.
+    expect(opened.disabled).toBe(false);
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('of two scripts opened one after the other, the later is the screen\'s, whichever is read first', async () => {
+    const { screen, hooks } = screen_make();
+    const answer: ScriptHooks['ask'] = hooks.ask;
+    let slow: () => void = (): void => undefined;
+    const held: Promise<void> = new Promise((resolve: () => void): void => { slow = resolve; });
+    hooks.ask = async (line: string): Promise<QuietAnswer> => {
+      // The first script's text is slow to come; the second's is its own text, told apart by its network.
+      if (line === 'cat /scripts/chrisproject/store.mise') await held;
+      const answered: QuietAnswer = await answer(line);
+      if (line !== 'cat /scripts/chrisproject/other.mise') return answered;
+      return { envelopes: [{ rendered: (answered.envelopes[0]?.rendered ?? '').replace('10.20.0.0/16', '10.77.0.0/16'), status: 'ok' }] } as QuietAnswer;
+    };
+    const first: Promise<void> = screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    await screen.open('/scripts/chrisproject/other.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const field = (): HTMLInputElement => screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    expect(field().value).toBe('10.77.0.0/16');
+    // The second is the operator's to edit though the first is still out.
+    expect(field().disabled).toBe(false);
+    field().focus();
+    field().value = '10.88.0.0/16';
+    field().dispatchEvent(new Event('input'));
+    expect(button_named(screen.root, 'SAVE')).toBeDefined();
+    // The first comes back now: nothing of it is put on the screen.
+    slow();
+    await first;
+    await settle();
+    expect(screen.path_get()).toBe('/scripts/chrisproject/other.mise');
+    expect(field().value).toBe('10.88.0.0/16');
+    expect(field().disabled).toBe(false);
+    expect(lineOption_get(screen.root.querySelector('.ss-line-text')?.textContent ?? '', '--cidr')).toBe('10.88.0.0/16');
+    expect(button_named(screen.root, 'SAVE')).toBeDefined();
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('the library opened after a script that is still being read stays the library when the script comes back', async () => {
+    const { screen, hooks } = screen_make();
+    const answer: ScriptHooks['ask'] = hooks.ask;
+    let slow: () => void = (): void => undefined;
+    const held: Promise<void> = new Promise((resolve: () => void): void => { slow = resolve; });
+    hooks.ask = async (line: string): Promise<QuietAnswer> => { if (line.startsWith('cat ')) await held; return answer(line); };
+    const script: Promise<void> = screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    await screen.open('');
+    await settle();
+    expect(screen.view_get()).toBe('library');
+    slow();
+    await script;
+    await settle();
+    expect(screen.view_get()).toBe('library');
+    expect(screen.root.querySelector('.ss-script-name')).not.toBeNull();
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('the library chosen from the rail while a second script is being read stays chosen when that script comes back', async () => {
+    const { screen, hooks } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const answer: ScriptHooks['ask'] = hooks.ask;
+    let slow: () => void = (): void => undefined;
+    const held: Promise<void> = new Promise((resolve: () => void): void => { slow = resolve; });
+    hooks.ask = async (line: string): Promise<QuietAnswer> => { if (line.startsWith('cat ')) await held; return answer(line); };
+    const second: Promise<void> = screen.open('/scripts/chrisproject/other.mise');
+    await settle();
+    // By the rail's own button, as a hand does it.
+    const library: HTMLButtonElement | null = screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="library"]');
+    expect(library).not.toBeNull();
+    library?.click();
+    await settle();
+    expect(screen.view_get()).toBe('library');
+    slow();
+    await second;
+    await settle();
+    expect(screen.view_get()).toBe('library');
+    expect(screen.root.querySelector('.ss-script-name')).not.toBeNull();
+    // The script that was read is the one open, under the seat the operator chose.
+    expect(screen.path_get()).toBe('/scripts/chrisproject/other.mise');
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('a visit to the library leaves an open script\'s edits as they were', async () => {
+    const { screen } = screen_make();
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const field = (): HTMLInputElement => screen.root.querySelector('#ss-cidr-1') as HTMLInputElement;
+    field().value = '10.60.0.0/16 ';
+    field().dispatchEvent(new Event('input'));
+    await screen.open('');
+    await settle();
+    expect(screen.view_get()).toBe('library');
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    // The edit stands, the field as it was left, and SAVE is still offered.
+    expect(field().value).toBe('10.60.0.0/16 ');
+    expect(field().disabled).toBe(false);
+    expect(lineOption_get(screen.root.querySelector('.ss-line-text')?.textContent ?? '', '--cidr')).toBe('10.60.0.0/16');
+    expect(button_named(screen.root, 'SAVE')).toBeDefined();
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('an edit in READ leaves each pill saying what a pill drawn fresh would: refused, or asking first, never plainly "sends"', async () => {
+    for (const elevate of [null, async (): Promise<boolean> => true]) {
+      const { screen } = screen_make(['done', 'done', 'ready', 'not yet', 'not yet'], false, false, elevate);
+      await screen.open('/scripts/chrisproject/store.mise');
+      await settle();
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-2"]')?.click();
+      await settle();
+      const pills = (): string[] => [...screen.root.querySelectorAll<HTMLButtonElement>(".ss-run[data-line='2'], .ss-build[data-line='2']")].map((pill: HTMLButtonElement): string => pill.title);
+      const before: string[] = pills();
+      expect(before.length).toBeGreaterThan(0);
+      // In READ these pills are refused, or ask for the right to first: none of them plainly sends.
+      expect(before.some((title: string): boolean => /^sends: [^(]*$/.test(title))).toBe(false);
+      const field: HTMLInputElement = screen.root.querySelector('#ss-open-2') as HTMLInputElement;
+      field.focus();
+      field.value = '8080';
+      field.dispatchEvent(new Event('input'));
+      const after: string[] = pills();
+      expect(after.some((title: string): boolean => /^sends: [^(]*$/.test(title))).toBe(false);
+      // And they are word for word what the seat says when it is drawn whole for the edited line.
+      screen.mode_refresh();
+      await settle();
+      expect(after).toEqual(pills());
+      screen.dispose();
+      screen.root.remove();
+    }
   });
 
   it('a deploy seat with no ChRIS deployed says so, with when it was read, and what the first deploy puts up before RUN', async () => {

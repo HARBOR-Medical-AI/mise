@@ -17,6 +17,7 @@ import { fibonacciPoint_make } from './geometry.js';
 import { LAMP_BLOOM_REACH, LAMP_WHITE } from './lamps.js';
 import { nebulaTexture_get } from './nebula.js';
 import type { Palette } from './palette.js';
+import { Made } from './release.js';
 import type { StarField } from './starField.js';
 import type { StarEntry } from './stars.js';
 import { WAVE_STEP_MS } from './timing.js';
@@ -88,6 +89,8 @@ export interface CensusHost {
 /** Every job of every stage, drawn. */
 export class CensusField {
   private readonly host: CensusHost;
+  /** What this field drew, let go together at a redraw. */
+  private readonly made: Made = new Made();
   private mesh: THREE.InstancedMesh | null = null;
   private base: Float32Array | null = null;
   private memberIds: string[] = [];
@@ -176,7 +179,7 @@ export class CensusField {
       this.host.stars.draw(starred, view.pixelRatio, view.heightPx, view.fovDeg);
     } else {
       if (instanced.instanceColor) instanced.instanceColor.needsUpdate = true;
-      this.host.parent.add(instanced);
+      this.made.thing_add(this.host.parent, instanced);
       this.mesh = instanced;
       this.base = instanced.instanceColor ? Float32Array.from(instanced.instanceColor.array) : null;
     }
@@ -247,7 +250,7 @@ export class CensusField {
     }));
     sprite.position.copy(node.position);
     sprite.visible = false;
-    this.host.parent.add(sprite);
+    this.made.thing_add(this.host.parent, sprite);
     this.glows.push({ id: node.id, sprite, reach });
   }
 
@@ -266,16 +269,18 @@ export class CensusField {
     return this.memberIds[hit.instanceId] ?? null;
   }
 
-  /** Forgets everything: the scene is being redrawn. */
+  /**
+   * Lets go of the census mesh and every glow it drew, and forgets them: the scene is being redrawn.
+   *
+   * @example
+   * field.clear();
+   */
   public clear(): void {
+    this.made.all_release();
     this.mesh = null;
     this.base = null;
     this.memberIds = [];
     this.memberPositions = [];
-    for (const { sprite } of this.glows) {
-      sprite.removeFromParent();
-      sprite.material.dispose();
-    }
     this.glows = [];
   }
 }

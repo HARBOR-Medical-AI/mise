@@ -183,6 +183,8 @@ describe('ProcessHost', () => {
     await starting;
     expect(await host.evict(IDENTITY)).toBe(true);
     expect(child.killed).toBe('SIGTERM');
+    // The daemon is gone and its berth no longer answers: there is nothing more to end.
+    alive = false;
     expect(await host.evict(IDENTITY)).toBe(false);
   });
 });
@@ -190,13 +192,236 @@ describe('ProcessHost', () => {
 describe('a porter restarted', () => {
   it('adopts the sessions its state directory holds, and ends an adopted one by its berth\'s pid', async () => {
     const killed: Array<{ pid: number; signal: string }> = [];
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => alive, kill: (pid: number, signal: NodeJS.Signals): void => { killed.push({ pid, signal }); } });
+    let gone: boolean = false;
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => alive, kill: (pid: number, signal: NodeJS.Signals): void => { killed.push({ pid, signal }); gone = true; }, processStart_read: (): string | null => (gone ? null : '1000') });
     berth_plant(host, 31337);
     const sightings = await host.sessions_adopt();
     expect(sightings).toEqual([{ identity: IDENTITY, berth: { identity: IDENTITY, url: 'ws://127.0.0.1:4444', token: 'ATTACH', pid: 31337 }, alive: true }]);
     expect(host.boot_follow(IDENTITY, { line: (): void => undefined, done: (): void => undefined })?.report.state).toBe('ready');
     expect(await host.evict(IDENTITY)).toBe(true);
     expect(killed).toEqual([{ pid: 31337, signal: 'SIGTERM' }]);
+  });
+
+  /** A host over an adopted pid whose process the test stands in: signals noted, start time as the test says. */
+  function adopted_make(world: { started: string | null | undefined; onSignal: (signal: NodeJS.Signals) => void }, killed: string[]): ProcessHost {
+    return new ProcessHost({
+      stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => alive, pollMs: 5, stopWaitMs: 40, killWaitMs: 40,
+      kill: (_pid: number, signal: NodeJS.Signals): void => { killed.push(signal); world.onSignal(signal); },
+      processStart_read: (): string | null | undefined => world.started,
+    });
+  }
+
+  it('does not signal an adopted pid that has become another process', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    // The daemon went and its pid was given to something else, started later.
+    world.started = '2000';
+    await expect(host.evict(IDENTITY)).rejects.toThrow('pid 31337 is no longer the session\'s calypso daemon; it was not signalled');
+    expect(killed).toEqual([]);
+  });
+
+  it('kills an adopted daemon that outlives the wait, and answers once it is gone', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null, onSignal: (signal: NodeJS.Signals): void => { if (signal === 'SIGKILL') world.started = null; } };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    expect(await host.evict(IDENTITY)).toBe(true);
+    expect(killed).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('does not kill when the pid stopped being the daemon during the wait', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null, onSignal: (): void => { world.started = '2000'; } };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    expect(await host.evict(IDENTITY)).toBe(true);
+    expect(killed).toEqual(['SIGTERM']);
+  });
+
+  it('says so when a daemon is still there after being killed: the stop is not reported done', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    await expect(host.evict(IDENTITY)).rejects.toThrow('the old calypso daemon did not stop, even when killed');
+    expect(killed).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('keeps what proved the pid through a failed stop: a second and a third try are refused the same way', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null | undefined, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    world.started = '2000';
+    for (let attempt: number = 0; attempt < 3; attempt++) {
+      await expect(host.evict(IDENTITY)).rejects.toThrow('pid 31337 is no longer the session\'s calypso daemon; it was not signalled');
+    }
+    // And through a restart that failed on it.
+    host.restart_begin(IDENTITY, 'chris', 'https://cube.example.org/api/v1/');
+    await new Promise((r) => setTimeout(r, 60));
+    await expect(host.evict(IDENTITY)).rejects.toThrow('it was not signalled');
+    expect(killed).toEqual([]);
+  });
+
+  it('where the process cannot be read at all, an adopted pid is asked to stop but never killed, and that is said', async () => {
+    const killed: string[] = [];
+    const world = { started: undefined as string | null | undefined, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    await expect(host.evict(IDENTITY)).rejects.toThrow('pid 31337 could not be proved to be the session\'s calypso daemon (its process cannot be read from /proc); it was asked to stop and did not, and was not killed');
+    expect(killed).toEqual(['SIGTERM']);
+    // A restart says it on its boot record, and starts nothing.
+    host.restart_begin(IDENTITY, 'chris', 'https://cube.example.org/api/v1/');
+    await new Promise((r) => setTimeout(r, 120));
+    expect(host.boot_follow(IDENTITY, { line: (): void => undefined, done: (): void => undefined })?.report).toMatchObject({ state: 'failed', reason: expect.stringContaining('was not killed') });
+    expect(killed).toEqual(['SIGTERM', 'SIGTERM']);
+    expect(spawnCalls).toEqual([]);
+  });
+
+  it('a pid that was proved and can no longer be read is not signalled', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null | undefined, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    world.started = undefined;
+    await expect(host.evict(IDENTITY)).rejects.toThrow('could not be proved to be the session\'s calypso daemon (its process can no longer be read from /proc); it was not signalled');
+    expect(killed).toEqual([]);
+  });
+
+  it('a berth that stops answering is not a daemon that is gone: a live process is killed, and one that cannot be read is reported unconfirmed', async () => {
+    // Its process readable: the berth goes silent at TERM, the process lives on, and is killed.
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null | undefined, onSignal: (signal: NodeJS.Signals): void => { alive = false; if (signal === 'SIGKILL') world.started = null; } };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    expect(await host.evict(IDENTITY)).toBe(true);
+    expect(killed).toEqual(['SIGTERM', 'SIGKILL']);
+    // Its process not readable: silence proves nothing, and the stop is reported unconfirmed.
+    alive = true;
+    const blindKilled: string[] = [];
+    const blind = { started: undefined as string | null | undefined, onSignal: (): void => { alive = false; } };
+    const blindHost: ProcessHost = adopted_make(blind, blindKilled);
+    await blindHost.sessions_adopt();
+    await expect(blindHost.evict(IDENTITY)).rejects.toThrow('the calypso daemon no longer answers, but its exit could not be confirmed');
+    expect(blindKilled).toEqual(['SIGTERM']);
+  });
+
+  it('a proved daemon whose berth is already silent is still stopped: silence before the first signal is not "nothing was running"', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null | undefined, onSignal: (signal: NodeJS.Signals): void => { if (signal === 'SIGTERM') world.started = null; } };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    // The berth stops answering, and its file goes; the process lives.
+    alive = false;
+    rmSync(berth_pathIn(host.dirs_build(IDENTITY).runtime, IDENTITY));
+    expect(await host.evict(IDENTITY)).toBe(true);
+    expect(killed).toEqual(['SIGTERM']);
+    // And one whose process is known to be gone is "nothing was running", with nothing signalled.
+    expect(await host.evict(IDENTITY)).toBe(false);
+    expect(killed).toEqual(['SIGTERM']);
+  });
+
+  it('an adopted daemon that was never proved and has gone silent is not forgotten: each try says its exit could not be confirmed', async () => {
+    const killed: string[] = [];
+    const world = { started: undefined as string | null | undefined, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    alive = false;
+    for (let attempt: number = 0; attempt < 2; attempt++) {
+      await expect(host.evict(IDENTITY)).rejects.toThrow('the calypso daemon no longer answers, but its exit could not be confirmed');
+    }
+    // A restart does not start a daemon beside it.
+    host.restart_begin(IDENTITY, 'chris', 'https://cube.example.org/api/v1/');
+    await new Promise((r) => setTimeout(r, 80));
+    expect(host.boot_follow(IDENTITY, { line: (): void => undefined, done: (): void => undefined })?.report.state).toBe('failed');
+    expect(spawnCalls).toEqual([]);
+    expect(killed).toEqual([]);
+  });
+
+  it('a pid that could not be read when it was adopted is asked to stop on its berth\'s word and never killed, whatever is read of it later', async () => {
+    const killed: string[] = [];
+    const world = { started: undefined as string | null | undefined, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    world.started = '5000';
+    await expect(host.evict(IDENTITY)).rejects.toThrow('it was asked to stop and did not, and was not killed');
+    expect(killed).toEqual(['SIGTERM']);
+  });
+
+  it('a pid that was no process when it was adopted is never signalled: what holds the number later is another', async () => {
+    const killed: string[] = [];
+    const world = { started: null as string | null | undefined, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    world.started = '5000';
+    for (let attempt: number = 0; attempt < 2; attempt++) {
+      await expect(host.evict(IDENTITY)).rejects.toThrow('pid 31337 was not a process when the session was adopted');
+    }
+    expect(killed).toEqual([]);
+  });
+
+  it.each([['no pid', undefined], ['pid 0', 0], ['a negative pid', -31337], ['pid 1', 1]])('a berth that answers and names %s is a daemon not stopped: nothing is signalled, and the stop fails', async (_name: string, pid: number | undefined) => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null | undefined, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, pid);
+    await host.sessions_adopt();
+    await expect(host.evict(IDENTITY)).rejects.toThrow('the session\'s berth answers but names no process that can be stopped; nothing was signalled');
+    expect(killed).toEqual([]);
+  });
+
+  it('an unproved pid is not signalled once the berth names another', async () => {
+    const killed: string[] = [];
+    const world = { started: undefined as string | null | undefined, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    // The berth file is written again, by a daemon with another pid.
+    berth_plant(host, 40404);
+    await expect(host.evict(IDENTITY)).rejects.toThrow('the session\'s berth no longer names pid 31337; nothing was signalled');
+    expect(killed).toEqual([]);
+  });
+
+  it('a restart whose old daemon will not stop ends its boot failed and starts nothing beside it', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    host.restart_begin(IDENTITY, 'chris', 'https://cube.example.org/api/v1/');
+    expect(host.boot_follow(IDENTITY, { line: (): void => undefined, done: (): void => undefined })?.report.state).toBe('booting');
+    await new Promise((r) => setTimeout(r, 200));
+    const report = host.boot_follow(IDENTITY, { line: (): void => undefined, done: (): void => undefined })?.report;
+    expect(report).toMatchObject({ state: 'failed', reason: 'the old calypso daemon did not stop, even when killed' });
+    expect(spawnCalls).toEqual([]);
+  });
+
+  it('kills a child it started that ignores the request to stop', async () => {
+    class Stubborn extends FakeChild {
+      public signals: string[] = [];
+      kill(signal?: NodeJS.Signals): boolean { this.signals.push(signal ?? 'SIGTERM'); if (signal === 'SIGKILL') this.exit(137); return true; }
+    }
+    const stubborn: Stubborn = new Stubborn();
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn: (): SpawnedSession => stubborn, alive: async (): Promise<boolean> => alive, bootTimeoutMs: 2_000, pollMs: 5, stopWaitMs: 40, killWaitMs: 40 });
+    const starting: Promise<unknown> = host.spawn(IDENTITY, 'chris', 'https://cube.example.org/api/v1/', 'MINTED');
+    berth_plant(host);
+    await starting;
+    expect(await host.evict(IDENTITY)).toBe(true);
+    expect(stubborn.signals).toEqual(['SIGTERM', 'SIGKILL']);
   });
 
   it('lists a berth whose daemon is gone as such, and never signals its pid', async () => {

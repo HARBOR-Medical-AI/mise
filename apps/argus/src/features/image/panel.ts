@@ -122,6 +122,18 @@ function modalityHue_derive(modality: string): string {
   return 'OT';
 }
 
+/** A layout being built: which, on which engine, and what it will end in. */
+interface LayoutFlight {
+  /** The layout asked for. */
+  layout: ImageLayout;
+  /** The engine it was asked of. */
+  engine: ImageEngine | null;
+  /** Settles with whether the layout stands. */
+  done: Promise<boolean>;
+  /** Which build this is, told apart from a later one of the same layout. */
+  mark: object;
+}
+
 /** The image pane controller. */
 export class ImagePanel {
   private readonly pane: HTMLElement;
@@ -159,6 +171,35 @@ export class ImagePanel {
   private forced: boolean = false;
   /** The layout LOAD will apply. */
   private pendingLayout: ImageLayout | null = null;
+  /** Counts each series shown: what an earlier one was waiting for makes nothing when it arrives. */
+  private showSerial: number = 0;
+  /** The layout being built now, so that the same one asked for again joins it; null when none is. */
+  private layoutFlight: LayoutFlight | null = null;
+  /** True once the frame has closed: nothing is opened on it after. */
+  private closed: boolean = false;
+  /** Counts each layout chosen: an answer that comes back for an earlier choice paints nothing. */
+  private layoutAsked: number = 0;
+
+  /**
+   * Says whether what a series was waiting for arrives too late: the frame has closed, or another series was shown.
+   *
+   * @param shown - The count when the series was shown.
+   * @returns True when nothing is to be made of it.
+   */
+  private show_stale(shown: number): boolean {
+    return this.closed || shown !== this.showSerial;
+  }
+
+  /**
+   * Says whether a layout's answer has been overtaken: another series took the field, or another layout was chosen.
+   *
+   * @param engine - The engine the layout was asked of.
+   * @param asked - The count when it was asked.
+   * @returns True when the answer is no longer the field's to paint.
+   */
+  private layout_superseded(engine: ImageEngine, asked: number): boolean {
+    return this.engine !== engine || asked !== this.layoutAsked;
+  }
 
   /** The field's working notice, while there is one. */
   private progressNote: HTMLElement | null = null;
@@ -268,6 +309,9 @@ export class ImagePanel {
    * @param options - Sibling series for a study folder, and the slice to start at.
    */
   public async series_show(model: DicomSeriesModel, options: { siblings?: SeriesChoice[]; startAt?: number; force?: boolean } = {}): Promise<void> {
+    if (this.closed) return;
+    this.showSerial += 1;
+    const shown: number = this.showSerial;
     this.openingStop = null;
     this.openingStopped = false;
     this.engine_dispose();
@@ -287,10 +331,13 @@ export class ImagePanel {
       const at: number = this.siblings.findIndex((choice: SeriesChoice): boolean => choice.path === model.path) + 1;
       this.handlers.note(`image: series ${at} of ${this.siblings.length} in this study; image series <n> switches`);
     }
-    const cornerstone: typeof import('./cornerstoneEngine.js') | null = await this.chunk_import((): Promise<typeof import('./cornerstoneEngine.js')> => import('./cornerstoneEngine.js'));
+    const cornerstone: typeof import('./cornerstoneEngine.js') | null = await this.chunk_import((): Promise<typeof import('./cornerstoneEngine.js')> => import('./cornerstoneEngine.js'), shown);
     if (cornerstone === null) return;
+    // The frame closed, or another series was asked for, while the viewer's code was fetched: no engine is
+    // made for a field that is not this series's any more.
+    if (this.show_stale(shown)) return;
     const { CornerstoneEngine } = cornerstone;
-    const engine: ImageEngine = new CornerstoneEngine(this.engineHost_get(), model, options.startAt ?? 1);
+    const engine: ImageEngine = new CornerstoneEngine(this.engineHost_get(shown), model, options.startAt ?? 1);
     await this.engine_open(engine);
     if (this.engine !== engine) return;
     // The first slice cost one file. The rest are fetched now, counted,
@@ -339,6 +386,11 @@ export class ImagePanel {
    * @param path - The volume's CFS path.
    */
   public async volume_show(path: string): Promise<void> {
+    // A volume is shown as a series is: one open owns the field, and what an earlier one was waiting for
+    // (its viewer's code, its engine's first image) makes and paints nothing when it arrives.
+    if (this.closed) return;
+    this.showSerial += 1;
+    const shown: number = this.showSerial;
     this.openingStop = null;
     this.openingStopped = false;
     this.engine_dispose();
@@ -351,10 +403,11 @@ export class ImagePanel {
     this.loadPill.hidden = true;
     this.retryPill.hidden = true;
     this.presets_paint('NIFTI');
-    const niivue: typeof import('./niivueEngine.js') | null = await this.chunk_import((): Promise<typeof import('./niivueEngine.js')> => import('./niivueEngine.js'));
+    const niivue: typeof import('./niivueEngine.js') | null = await this.chunk_import((): Promise<typeof import('./niivueEngine.js')> => import('./niivueEngine.js'), shown);
     if (niivue === null) return;
+    if (this.show_stale(shown)) return;
     const { NiivueEngine } = niivue;
-    await this.engine_open(new NiivueEngine(this.engineHost_get(), path));
+    await this.engine_open(new NiivueEngine(this.engineHost_get(shown), path));
   }
 
   /**
@@ -365,15 +418,19 @@ export class ImagePanel {
    * field now reads the cure.
    *
    * @param load - The dynamic import.
+   * @param shown - The count of the open the import is for: a failure is said only while that open is the field's.
    * @returns The module, or null when it is of an older build than the server's.
    */
-  private async chunk_import<T>(load: () => Promise<T>): Promise<T | null> {
+  private async chunk_import<T>(load: () => Promise<T>, shown: number): Promise<T | null> {
     try {
       const loaded: T | undefined = await load();
       if (loaded !== undefined) return loaded;
     } catch (error: unknown) {
       if (!stalePage_is(error)) throw error;
     }
+    // A viewer's code that fails to arrive for an open the field has since been given away from says
+    // nothing: the words on the frame are the later open's.
+    if (this.show_stale(shown)) return null;
     barState_set(this.stateSpan, 'stale', STALE_PAGE_READOUT);
     this.handlers.note(`image: ${STALE_PAGE_READOUT.toLowerCase()} — the viewer's code is of an older build than the server has`);
     return null;
@@ -579,7 +636,32 @@ export class ImagePanel {
   /**
    * Sets the layout; false when the field has no engine or it refused.
    */
-  public async layout_set(layout: ImageLayout): Promise<boolean> {
+  public layout_set(layout: ImageLayout): Promise<boolean> {
+    // The same layout pressed again while it is being built joins that build: it is not a new choice that
+    // overtakes it, and whatever the build ends in (built, stopped, refused) is the answer to both.
+    const flying: LayoutFlight | null = this.layoutFlight;
+    if (flying !== null && flying.layout === layout && flying.engine === this.engine) return flying.done;
+    const mark: object = {};
+    // The build is no longer under way from the moment it settles, before whoever waits on it goes on: a
+    // press that follows its end (LOAD REST after a stop) is a new build, not a join.
+    const done: Promise<boolean> = (async (): Promise<boolean> => {
+      try {
+        return await this.layout_apply(layout);
+      } finally {
+        if (this.layoutFlight?.mark === mark) this.layoutFlight = null;
+      }
+    })();
+    this.layoutFlight = { layout, engine: this.engine, done, mark };
+    return done;
+  }
+
+  /**
+   * Builds a layout and paints what it ended in.
+   *
+   * @param layout - The layout.
+   * @returns Whether it stands on the field.
+   */
+  private async layout_apply(layout: ImageLayout): Promise<boolean> {
     if (this.engine === null) return false;
     // A volume layout pulls every slice; over the guard it waits for LOAD.
     // The stack never asks: its first slice costs one file.
@@ -598,9 +680,12 @@ export class ImagePanel {
     this.modeSpan.textContent = layout === 'single' ? '' : layout.toUpperCase();
     this.overlay_hide();
     const engine: ImageEngine = this.engine;
+    this.layoutAsked += 1;
+    const asked: number = this.layoutAsked;
     const ok: boolean = await engine.layout_set(layout);
-    // Another series took the field while this one built: nothing here is its to paint.
-    if (this.engine !== engine) return false;
+    // Another series took the field while this one built, or another layout was chosen: nothing here is
+    // its to paint. The pill, the mode and the progress are the later choice's.
+    if (this.layout_superseded(engine, asked)) return false;
     if (!ok && engine.state_get().stopped) {
       // Stopped while its slices arrived: the layout waits, and LOAD REST builds it.
       const standing: ImageLayout = engine.state_get().layout;
@@ -765,6 +850,12 @@ export class ImagePanel {
 
   /** Releases the field. */
   public dispose(): void {
+    // Closed: an open that is still asking (its header, or the viewer's code) is no longer the frame's
+    // latest, and what it brings back makes no engine.
+    this.closed = true;
+    this.openingSerial += 1;
+    this.openingStop = null;
+    this.openingAgain = null;
     this.engine_dispose();
   }
 
@@ -785,10 +876,15 @@ export class ImagePanel {
     try {
       await engine.open(this.field);
     } catch (error: unknown) {
+      // Refused after the field was given to another open, or the frame closed: it is not this field's
+      // refusal to show.
+      if (this.engine !== engine) return;
       this.stateSpan.textContent = 'REFUSED';
       this.handlers.note(`image: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
+    // Opened after the field was given to another open: the pills, the progress and the readout are that one's.
+    if (this.engine !== engine) return;
     const layout: ImageLayout = engine.state_get().layout;
     this.layoutPills_paint(layout);
     this.modeSpan.textContent = layout === 'single' ? '' : layout.toUpperCase();
@@ -831,24 +927,42 @@ export class ImagePanel {
     }
   }
 
-  private engineHost_get(): ImageEngineHost {
+  /**
+   * Makes the host an engine speaks to the frame through, for one open.
+   * What an engine says, it says for the open it was made for: once the
+   * field has been given to another open, or the frame has closed, its
+   * words, its progress, its notes and its regard reach nothing.
+   *
+   * @param shown - The count of the open the engine is made for.
+   * @returns The host.
+   */
+  private engineHost_get(shown: number): ImageEngineHost {
+    const host_stale = (): boolean => this.show_stale(shown);
+    const note_pass = (line: string): void => {
+      if (!host_stale()) this.handlers.note(line);
+    };
     return {
       source: this.handlers.source,
       readout_set: (text: string): void => {
+        if (host_stale()) return;
         this.stateSpan.textContent = text;
         this.retryPill_paint();
         this.stopPill_paint();
       },
       progress_set: (progress: ImageProgress | null): void => {
+        if (host_stale()) return;
         this.progress_show(progress);
         this.stopPill_paint();
       },
-      note: this.handlers.note,
+      note: note_pass,
       regard: (path: string): void => {
+        if (host_stale()) return;
         this.handlers.regard(path);
         this.overlaySlice_paint();
       },
-      probe_set: (text: string | null): void => this.probe_show(text),
+      probe_set: (text: string | null): void => {
+        if (!host_stale()) this.probe_show(text);
+      },
     };
   }
 

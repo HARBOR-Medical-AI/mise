@@ -80,8 +80,11 @@ export function sshRemote_make(args: ReadonlyArray<string>, signal: AbortSignal)
 export function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve): void => {
     if (signal.aborted || ms <= 0) { resolve(); return; }
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener('abort', (): void => { clearTimeout(timer); resolve(); }, { once: true });
+    // Whichever ends the pause takes the other down with it: the timer's end removes the listener (the
+    // callers loop on one signal for a whole build, and a listener left at each pause would pile up on it).
+    const abort_take = (): void => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout((): void => { signal.removeEventListener('abort', abort_take); resolve(); }, ms);
+    signal.addEventListener('abort', abort_take, { once: true });
   });
 }
 

@@ -210,9 +210,15 @@ const { chrisCommands } = await import('../src/chris/chrisCommands.js');
 (await import('../src/core/commandRegistry.js')).commands_register(chrisCommands);
 const { builtinCommand_has } = await import('../src/core/commandRegistry.js');
 // The ChRIS backend's fallback, watch and files: the session itself is mocked.
+/** What the backend's mark of a line saw: when a line's work began and ended. */
+const workMarks: string[] = [];
 (await import('../src/core/backend.js')).backend_install({
   id: 'chris',
   session: {} as never,
+  work_run: async <T>(work: () => Promise<T>): Promise<T> => {
+    workMarks.push('began');
+    try { return await work(); } finally { workMarks.push('ended'); }
+  },
   fallback: (await import('../src/chris/commandFallback.js')).chrisFallback,
   watch: (await import('../src/chris/watch.js')).chrisWatch,
   files: (await import('../src/chris/files.js')).chrisFiles,
@@ -327,6 +333,25 @@ describe('line_execute', () => {
     await line_execute("ls 'it'\\''s' \"a\\\"b\" it\\'s");
     expect(mockLs).toHaveBeenCalledTimes(1);
     expect(mockLs).toHaveBeenCalledWith(expect.objectContaining({ operands: { path: ["it's", 'a"b', "it's"] } }));
+  });
+
+  it('is run as a piece of the backend\'s work: the whole line inside one mark, each command it holds inside that', async () => {
+    workMarks.length = 0;
+    mockWhoami.mockImplementationOnce(async (): Promise<void> => { workMarks.push('whoami'); });
+    const envelopes = await line_execute('whoami; whoami', { origin: 'a-surface' });
+    expect(envelopes).toHaveLength(2);
+    // The outermost mark opens before anything runs and closes after everything has.
+    expect(workMarks[0]).toBe('began');
+    expect(workMarks[workMarks.length - 1]).toBe('ended');
+    expect(workMarks.indexOf('whoami')).toBeGreaterThan(0);
+    // Every mark that was opened was closed, in order: marks nest and never cross.
+    let depth: number = 0;
+    for (const mark of workMarks) {
+      if (mark === 'began') depth += 1;
+      if (mark === 'ended') depth -= 1;
+      expect(depth).toBeGreaterThanOrEqual(mark === 'whoami' ? 1 : 0);
+    }
+    expect(depth).toBe(0);
   });
 
   it('dispatches a plain command end-to-end and returns one envelope', async () => {
@@ -580,6 +605,12 @@ describe('command_handle', () => {
 });
 
 describe('line_complete', () => {
+  it('is run as a piece of the backend\'s work, as a line is: what it fetches to complete with is kept by the same rule', async () => {
+    workMarks.length = 0;
+    await line_complete('l');
+    expect(workMarks).toEqual(['began', 'ended']);
+  });
+
   it('resolves the completer callback into candidates and prefix', async () => {
     const result = await line_complete('l');
     expect(mockInputComplete).toHaveBeenCalledWith('l', expect.any(Function));

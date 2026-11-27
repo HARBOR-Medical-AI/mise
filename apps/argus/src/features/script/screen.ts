@@ -298,12 +298,54 @@ export class ScriptScreen {
   protected stoodFor: Map<number, string> = new Map();
   /** The script as it was read (or last saved): an edit is said against it. */
   protected readText: string = '';
+  /**
+   * What was typed into each option field, as typed, during the edit
+   * session now under way: a field drawn again is given it back while the
+   * line still says it. Emptied when a session begins, so nothing typed
+   * into one script, or before a write, is ever put into a later field.
+   */
+  protected readonly typed: Map<string, string> = new Map<string, string>();
+  /**
+   * Which edit session is under way. One begins whenever the script on the
+   * screen is replaced: opened, opened again, or read back after its edits
+   * were written. A field belongs to the session it was drawn in, and what
+   * is typed into a field of a session that has ended (its form still on
+   * the screen while the next script is being read) changes nothing.
+   */
+  protected editSession: number = 0;
+  /**
+   * How many times a script or a machine has been opened on the screen.
+   * An open notes the count it made, and gives way, when a wait of its own
+   * ends, to any later one.
+   */
+  protected opening: number = 0;
+  /**
+   * How many times the operator has chosen a seat by hand: the library, a
+   * step, a pane. Counted apart from `opening`: choosing a seat stops
+   * nothing that is being read and begins no edit session (a script
+   * already open keeps its edits while the library is looked at). An open
+   * notes the count when it starts, and if it has moved when its read
+   * comes back, it chooses no seat of its own over the operator's.
+   */
+  protected chosen: number = 0;
+  /**
+   * The read of a script now under way for the screen, or null when none
+   * is. While one is, the lines on the screen are about to be replaced: a
+   * field is drawn disabled, and what is typed into any field (one left
+   * from before, or one a redraw made meanwhile) changes nothing. It is the
+   * latest read that holds it: an earlier one still out (a script opened
+   * and then another before the first came back) neither keeps the hold
+   * when the later has ended nor installs what it read.
+   */
+  protected reading: object | null = null;
   /** The last SAVE, where and when: its receipt stands on the seat until the next edit. */
   protected saved: { path: string; at: string; view: string } | null = null;
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
   protected ticker: ReturnType<typeof setInterval> | null = null;
   /** Whether the screen was left: a read that answers after that still redraws it, and must not retitle the tab the page has again. */
-  private left: boolean = false;
+  protected left: boolean = false;
+  /** The wait before the standing is read again for a line answered yes; null when none is pending. */
+  private answeredTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Builds the screen.
@@ -381,6 +423,8 @@ export class ScriptScreen {
     this.costTimer = null;
     if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
+    if (this.answeredTimer !== null) clearTimeout(this.answeredTimer);
+    this.answeredTimer = null;
     this.ask?.answer(null);
     this.ask = null;
   }
@@ -395,6 +439,8 @@ export class ScriptScreen {
    */
   public async open(path: string): Promise<void> {
     if (path === '') {
+      // The library, asked for: a seat chosen, as by the rail's button. Nothing being read is stopped by it.
+      this.chosen += 1;
       this.view = LIBRARY_VIEW;
       this.draw();
       void this.standing_read();
@@ -403,8 +449,25 @@ export class ScriptScreen {
     }
     this.path = path;
     this.edited = false;
+    // A script opened, or opened again: what was typed into the one before is not this one's.
+    this.editSession_begin();
+    const session: number = this.editSession;
+    // The latest script opened is the screen's; and a seat the operator chooses while this one is being
+    // read is kept when it comes back.
+    const mine: number = ++this.opening;
+    const chose: number = this.chosen;
     this.stepLogs.clear();
     await this.script_read();
+    // Another script was opened while this one was being read: the screen is that one's.
+    if (session !== this.editSession || mine !== this.opening) return;
+    // The operator chose a seat meanwhile: it stands, if the script that has now been read has it (the
+    // library always is; a step of the script before may not be), and the script is drawn under it.
+    if (chose !== this.chosen && (this.view === LIBRARY_VIEW || this.steps.some((step: ScriptStep): boolean => step.key === this.view))) {
+      this.draw();
+      void this.standing_read();
+      this.running_follow();
+      return;
+    }
     // The rail opens on the step running now, else on the first that needs the operator.
     const first: ScriptStep | undefined = runningStep_find(this.steps) ?? this.steps.find((step: ScriptStep): boolean => step.state === 'changed' || step.state === 'ready') ?? this.steps[0];
     this.view = first?.key ?? LIBRARY_VIEW;
@@ -564,13 +627,38 @@ export class ScriptScreen {
   // ---------------------------------------------------------------- reading
 
   protected async script_read(): Promise<void> {
+    // Held as being read for the whole of it, by this read until a later one takes the hold: see `reading`.
+    const hold: object = {};
+    this.reading = hold;
+    try {
+      await this.scriptText_read(this.editSession);
+    } finally {
+      if (this.reading === hold) this.reading = null;
+    }
+  }
+
+  /**
+   * Reads the script at the path and what stands of each of its lines, and
+   * makes them the screen's: unless, by the time an answer comes back, a
+   * later edit session has begun (another script was opened meanwhile), in
+   * which case nothing of this read is installed.
+   *
+   * @param session - The edit session the read is for.
+   *
+   * @example
+   * await this.scriptText_read(this.editSession);
+   */
+  protected async scriptText_read(session: number): Promise<void> {
+    const path: string = this.path;
     let text: string = '';
     try {
-      text = text_extract(await this.hooks.ask(`cat ${this.path}`));
+      text = text_extract(await this.hooks.ask(`cat ${path}`));
     } catch (error: unknown) {
-      this.log_add(`cat ${this.path}: ${error instanceof Error ? error.message : String(error)}`, 'note');
+      if (session === this.editSession) this.log_add(`cat ${path}: ${error instanceof Error ? error.message : String(error)}`, 'note');
     }
-    const standings = await this.status_read(this.path);
+    if (session !== this.editSession) return;
+    const standings = await this.status_read(path);
+    if (session !== this.editSession) return;
     this.lines = this.accountsHeld_apply(lines_build(text, standings?.lines ?? []));
     this.readText = text;
     this.stoodFor = new Map(this.lines.map((line: ScriptLine): [number, string] => [line.number, line.text]));
@@ -580,6 +668,7 @@ export class ScriptScreen {
     if (draft !== null && draft.path === this.path) {
       this.draftOffered = null;
       const edited = await this.status_read(this.path, draft.text);
+      if (session !== this.editSession) return;
       this.lines = this.accountsHeld_apply(lines_build(draft.text, edited?.lines ?? []));
       this.edited = true;
       this.draftRestored = { at: new Date().toISOString(), edits: draft.edits, moved: draft.read !== text };
@@ -762,9 +851,14 @@ export class ScriptScreen {
 
   /** Reads the standing again until the line answered yes here is seen running, moved, or past its bound. */
   protected answeredGoing_poll(): void {
-    setTimeout((): void => {
-      if (this.answeredGoing === null || this.path === '') return;
+    // A screen that has been left reads nothing more and waits for nothing.
+    if (this.left) return;
+    if (this.answeredTimer !== null) clearTimeout(this.answeredTimer);
+    this.answeredTimer = setTimeout((): void => {
+      this.answeredTimer = null;
+      if (this.left || this.answeredGoing === null || this.path === '') return;
       void this.standings_refresh().then((): void => {
+        if (this.left) return;
         this.draw();
         if (this.answeredGoing !== null) this.answeredGoing_poll();
       });
@@ -867,18 +961,33 @@ export class ScriptScreen {
   }
 
   /**
+   * Says whether a price that has come back is no longer wanted: a later
+   * one was asked for, or the screen has been left.
+   *
+   * @param asked - The count when the price was asked for.
+   * @returns True when the price is to be dropped.
+   */
+  private price_stale(asked: number): boolean {
+    return this.left || asked !== this.costAsked;
+  }
+
+  /**
    * Prices the VM NEW line as it stands, a moment after the last lever moved.
    *
    * @param line - The `vm new` line.
    */
   protected stepCost_ask(line: string): void {
+    // A screen that has been left asks no price and waits for none: a command that ends after the close
+    // arms nothing here.
+    if (this.left) return;
     if (this.costTimer !== null) clearTimeout(this.costTimer);
     this.costTimer = setTimeout((): void => {
       this.costTimer = null;
       this.costAsked += 1;
       const asked: number = this.costAsked;
       void this.hooks.ask(costLine_derive(line)).then((answer: QuietAnswer): void => {
-        if (asked !== this.costAsked) return;
+        // A price for an earlier ask, or one that comes back to a screen that has been left, draws nothing.
+        if (this.price_stale(asked)) return;
         const model = model_extract(answer, STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
         this.stepCost = model?.vms[0] ?? null;
         this.pricesRead = model?.pricesRead ?? this.pricesRead;
@@ -886,7 +995,7 @@ export class ScriptScreen {
         this.cost_redraw();
         this.header_draw();
       }, (error: unknown): void => {
-        if (asked !== this.costAsked) return;
+        if (this.price_stale(asked)) return;
         this.stepCost = null;
         this.stepCostRefused = error instanceof Error ? error.message : String(error);
         this.cost_redraw();
@@ -977,6 +1086,8 @@ export class ScriptScreen {
     this.saved = { path: copy, at: new Date().toISOString(), view: this.view };
     this.path = copy;
     this.edited = false;
+    // The edits are written: the lines are read again from the copy, and what was typed on the way is done with.
+    this.editSession_begin();
     await this.script_read();
     this.draw();
     this.libraryRead = false;
@@ -987,6 +1098,9 @@ export class ScriptScreen {
   protected view_press(key: string): void {
     const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === key);
     this.hooks.voice.pill(key === LIBRARY_VIEW ? 'LIBRARY' : step?.label ?? key);
+    // A seat chosen by hand: counted apart from what is opened, so that a script's open still waiting on
+    // its read chooses no seat over this one when it comes back, and nothing that is being read is stopped.
+    this.chosen += 1;
     this.view = key;
     if (key === LIBRARY_VIEW && !this.libraryRead) void this.library_read();
     if (step?.kind === 'vm new') { void this.limits_need(); this.stepCost_ask(step.lines[0]?.text ?? ''); }
@@ -1357,15 +1471,29 @@ export class ScriptScreen {
       other: (): HTMLElement[] => this.other_make(step),
     };
     form.append(...bodies[step.kind]());
+    const side: HTMLElement = this.side_make(step);
+    const log: HTMLElement = this.stepLog_make(step);
+    return [form, side, log];
+  }
+
+  /**
+   * The column beside a step's form: what stands of what the step makes,
+   * read against the line as it is now.
+   *
+   * @param step - The step.
+   * @returns The column.
+   *
+   * @example
+   * side.replaceWith(this.side_make(step));
+   */
+  protected side_make(step: ScriptStep): HTMLElement {
     const vm: string = line_parse(step.lines[0]?.text ?? '').subject ?? '';
     const chris: ChrisStatusRow | null = step.kind === 'chris deploy' ? this.chrisRow_get(vm) : step.kind === 'users' ? this.chrisRow_get(this.usersVm_get(step)) : null;
-    const side: HTMLElement = step.kind === 'vm new' ? this.cost_make(step)
+    return step.kind === 'vm new' ? this.cost_make(step)
       : step.kind === 'net new' || step.kind === 'net build' ? this.netSide_make(step, vm)
       : step.kind === 'chris deploy' && chris !== null ? this.chrisSide_make(step, chris)
         : step.kind === 'chris deploy' && this.chrisAbsent_read(vm) !== null ? this.chrisFirstSide_make(step, vm, this.chrisAbsent_read(vm) as { at: string | null })
         : step.kind === 'users' && chris !== null ? this.usersSide_make(step, chris) : this.state_make(step);
-    const log: HTMLElement = this.stepLog_make(step);
-    return [form, side, log];
   }
 
   /** The line as it will run, and its state. */
@@ -1397,26 +1525,85 @@ export class ScriptScreen {
     if (step.lines.length === 1 && (step.lines[0]?.detail ?? '') !== '') side.append(this.pairs_make([['SAID', step.lines[0]?.detail ?? '']]));
     const running: HTMLElement | null = this.runningNote_make(step);
     if (running !== null) side.append(running);
-    if (this.edited && this.saveOffered()) {
-      const note: HTMLElement = el('div', 'tdc-note tdc-note-bill');
-      note.append(el('span', 'tdc-note-title', 'EDITED · NOT SAVED'), el('span', 'tdc-prose', `A form changed a line. Its pills send the line as shown; SAVE writes the whole script to ${workingCopy_derive(this.path)} (this host's copy; it builds and bills nothing) and opens it from there.`));
-      // What changed, line by line, against the copy as it was read: the offer as a difference (a-change-is-a-loop, clause 2).
-      const before: string[] = this.readText.split('\n').filter((line: string): boolean => line.trim() !== '' && !line.trim().startsWith('#'));
-      const changed: Array<[string, string]> = this.lines.map((line: ScriptLine, index: number): [string, string] => [before[index] ?? '', line.text]).filter(([was, now]): boolean => was !== now).slice(0, 4);
-      for (const [was, now] of changed) note.append(el('span', 'tdc-mono ss-edit-was', `− ${was === '' ? '(no line)' : was}`), el('span', 'tdc-mono ss-edit-now', `+ ${now}`));
-      // loop: ss-save
-      const save: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'SAVE');
-      save.type = 'button';
-      save.title = `sends: touch --withContents=… ${workingCopy_derive(this.path)}`;
-      save.disabled = this.busy !== null;
-      save.addEventListener('click', (): void => { this.hooks.voice.pill('SAVE'); void this.save_send(); });
-      const commands: HTMLElement = el('div', 'tdc-commands');
-      commands.append(save);
-      note.append(commands);
-      side.append(note);
-    }
+    side.append(this.editedSlot_make());
     return side;
   }
+
+  /**
+   * What an unsaved edit says of itself, with SAVE: the lines that differ
+   * from the copy as it was read, and the control that writes them.
+   *
+   * @returns The note, or null when nothing is edited or the screen offers no SAVE of its own.
+   *
+   * @example
+   * const note: HTMLElement | null = this.editedNote_make();
+   */
+  protected editedNote_make(): HTMLElement | null {
+    if (!this.edited || !this.saveOffered()) return null;
+    const note: HTMLElement = el('div', 'tdc-note tdc-note-bill');
+    note.append(el('span', 'tdc-note-title', 'EDITED · NOT SAVED'), el('span', 'tdc-prose', `A form changed a line. Its pills send the line as shown; SAVE writes the whole script to ${workingCopy_derive(this.path)} (this host's copy; it builds and bills nothing) and opens it from there.`));
+    // What changed, line by line, against the copy as it was read: the offer as a difference (a-change-is-a-loop, clause 2).
+    const before: string[] = this.readText.split('\n').filter((line: string): boolean => line.trim() !== '' && !line.trim().startsWith('#'));
+    const changed: Array<[string, string]> = this.lines.map((line: ScriptLine, index: number): [string, string] => [before[index] ?? '', line.text]).filter(([was, now]): boolean => was !== now).slice(0, 4);
+    for (const [was, now] of changed) note.append(el('span', 'tdc-mono ss-edit-was', `− ${was === '' ? '(no line)' : was}`), el('span', 'tdc-mono ss-edit-now', `+ ${now}`));
+    // loop: ss-save
+    const save: HTMLButtonElement = el('button', 'tdc-pill tdc-pill-quiet', 'SAVE');
+    save.type = 'button';
+    save.title = `sends: touch --withContents=… ${workingCopy_derive(this.path)}`;
+    save.disabled = this.busy !== null;
+    save.addEventListener('click', (): void => { this.hooks.voice.pill('SAVE'); void this.save_send(); });
+    const commands: HTMLElement = el('div', 'tdc-commands');
+    commands.append(save);
+    note.append(commands);
+    return note;
+  }
+
+  /**
+   * The place on a seat where the unsaved-edit note stands. It is there
+   * whether or not anything is edited (hidden while nothing is), so that an
+   * edit can fill it where it is, without the seat being drawn again.
+   *
+   * @returns The place, holding the note when there is one.
+   *
+   * @example
+   * side.append(this.editedSlot_make());
+   */
+  protected editedSlot_make(): HTMLElement {
+    const slot: HTMLElement = el('div', 'ss-edited-slot');
+    const note: HTMLElement | null = this.editedNote_make();
+    if (note === null) slot.hidden = true; else slot.append(note);
+    return slot;
+  }
+
+  /**
+   * Brings a seat up to date with an edit to one of its lines, where it
+   * stands: the line as shown and its state, the column beside the form
+   * (what stands, against the line as it now is, with the unsaved-edit
+   * note, SAVE and the lines that differ), the header's chip, the receipt
+   * of a SAVE the edit has outdated, and the note of kept edits. The form
+   * under the hand is not drawn again, so the field being typed in keeps
+   * its focus, its caret, its undo and whatever is being composed in it.
+   *
+   * @param line - The line that was edited.
+   *
+   * @example
+   * line.text = lineOption_set(line.text, '--host', input.value.trim());
+   * this.edit_redraw(line);
+   */
+  protected edit_redraw(line: ScriptLine): void {
+    const shown: Element | null = this.parts.body.querySelector(`.ss-line[data-line='${String(line.number)}']`);
+    if (shown !== null) shown.replaceWith(this.lineBoxNumbered_make(line));
+    this.lineShown_redraw(line);
+    // The column beside the form is made again whole, unless the hand is in it; then only its note is.
+    const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
+    const side: Element | null = this.parts.body.querySelector('.ss-col-side');
+    if (step !== undefined && side !== null && !side.contains(document.activeElement)) side.replaceWith(this.side_make(step));
+    else for (const slot of this.parts.body.querySelectorAll('.ss-edited-slot')) slot.replaceWith(this.editedSlot_make());
+    // An edit ends SAVE's receipt: what was saved is no longer what the seat says.
+    this.parts.body.querySelector('.ss-note-saved')?.remove();
+    if (this.parts.body.querySelector('.ss-note-draft') === null) this.draft_place();
+  }
+
 
   /** The note a step whose task runs now wears, or null. */
   protected runningNote_make(step: ScriptStep): HTMLElement | null {
@@ -1454,34 +1641,92 @@ export class ScriptScreen {
     const input: HTMLInputElement = el('input', 'tdc-name-input');
     input.id = `ss-${word.slice(2)}-${line.number}`;
     field.setAttribute('for', input.id);
-    input.value = lineOption_get(line.text, word) ?? '';
+    // The line holds the option without the spaces around it, since everything that reads the line (RUN, SAVE,
+    // the standing, a plan) reads it there. The field holds what was typed: if the seat is drawn again while
+    // the hand is on its way to the next word, the field comes back as it was left, space and all, for as
+    // long as what was typed is still what the line says.
+    const held: string = lineOption_get(line.text, word) ?? '';
+    const typed: string | undefined = this.typed.get(input.id);
+    const session: number = this.editSession;
+    input.value = typed !== undefined && typed.trim() === held ? typed : held;
     input.placeholder = placeholder;
     input.spellcheck = false;
     input.autocomplete = 'off';
-    input.disabled = this.busy !== null;
+    input.disabled = this.busy !== null || this.reading !== null;
     input.addEventListener('input', (): void => {
+      // A field left on the screen from a script since replaced, or drawn while the next one is being read:
+      // its line is not, or is about to be no longer, the screen's, and what is typed into it is neither
+      // kept nor counted as an edit of the script being read.
+      if (session !== this.editSession || this.reading !== null) return;
+      // The line takes the value without the spaces around it; the field keeps what was typed, so a space
+      // typed on the way to the next word is still there for that word to follow.
       line.text = lineOption_set(line.text, word, input.value.trim());
+      this.typed.set(input.id, input.value);
       this.edited = true;
-      // The seat is drawn again at each edit, so SAVE and the difference against what stands follow the hand; the field keeps it.
-      const at: number | null = input.selectionStart;
-      this.draw();
-      const again: HTMLInputElement | null = this.parts.body.querySelector<HTMLInputElement>(`#${input.id}`);
-      again?.focus();
-      if (at !== null) again?.setSelectionRange(at, at);
+      // SAVE, the difference against what stands and the line's state follow the hand, each where it stands:
+      // the field is not drawn again.
+      this.edit_redraw(line);
     });
     row.append(field, input);
     return row;
+  }
+
+  /**
+   * Begins an edit session: the script on the screen is being replaced, so
+   * the fields now drawn are of the session that ends here, and what was
+   * typed into them is done with.
+   *
+   * @example
+   * this.path = path;
+   * this.editSession_begin();
+   */
+  protected editSession_begin(): void {
+    this.editSession += 1;
+    this.typed.clear();
   }
 
   /** Redraws the line's box and the header after an edit, without losing the field's focus. */
   protected lineShown_redraw(line: ScriptLine): void {
     const text: HTMLElement | null = this.parts.body.querySelector(`.ss-line[data-line='${line.number}'] .ss-line-text`);
     if (text !== null) text.textContent = line.text;
+    // Each pill says what pressing it would do as it said when it was drawn: refused, asking first, or sending.
     const run: HTMLButtonElement | null = this.parts.body.querySelector(`.ss-run[data-line='${line.number}']`);
-    if (run !== null) run.title = `sends: ${line.text}`;
+    if (run !== null) run.title = this.runTitle_derive(line.text);
     const build: HTMLButtonElement | null = this.parts.body.querySelector(`.ss-build[data-line='${line.number}']`);
-    if (build !== null) build.title = `sends: ${line.text}, then ${build.dataset['build'] ?? ''}`;
+    if (build !== null) build.title = this.buildTitle_derive(line.text, build.dataset['build'] ?? '');
     this.header_draw();
+  }
+
+  /**
+   * What a RUN pill says pressing it would do with a line, under the mode
+   * the screen is in: refused, asking for the right to first, or sending.
+   *
+   * @param text - The line the pill sends.
+   * @returns The pill's title.
+   *
+   * @example
+   * run.title = this.runTitle_derive(line.text);
+   */
+  protected runTitle_derive(text: string): string {
+    const hold: ReadHold = this.hold_derive(text);
+    return hold === 'held' ? `refused: ${READ_HELD}` : hold === 'asks' ? `${READ_ASKS}: ${text}` : `sends: ${text}`;
+  }
+
+  /**
+   * What a BUILD pill says pressing it would do: the declaration sent and
+   * then the build, or the refusal, as the build's line stands under the
+   * mode the screen is in.
+   *
+   * @param declared - The declaring line.
+   * @param built - The build's line.
+   * @returns The pill's title.
+   *
+   * @example
+   * build.title = this.buildTitle_derive(declared.text, built.text);
+   */
+  protected buildTitle_derive(declared: string, built: string): string {
+    const hold: ReadHold = this.hold_derive(built);
+    return hold === 'held' ? `refused: ${READ_HELD}` : `sends: ${declared}, then ${built}${hold === 'asks' ? ` (${READ_ASKS})` : ''}`;
   }
 
   protected runRow_make(step: ScriptStep, line: ScriptLine, tone: 'plain' | 'bill' = 'plain', extra: HTMLElement[] = [], word: string = 'RUN'): HTMLElement {
@@ -1491,7 +1736,7 @@ export class ScriptScreen {
     const run: HTMLButtonElement = el('button', `tdc-pill tdc-pill-${tone} ss-run${hold === 'asks' ? ' tdc-pill-asks' : ''}`, hold === 'held' ? `${word} · REFUSED` : word);
     run.type = 'button';
     run.dataset['line'] = String(line.number);
-    run.title = hold === 'held' ? `refused: ${READ_HELD}` : hold === 'asks' ? `${READ_ASKS}: ${line.text}` : `sends: ${line.text}`;
+    run.title = this.runTitle_derive(line.text);
     run.disabled = hold === 'held' || this.acting_is();
     run.addEventListener('click', (): void => { this.hooks.voice.pill(word); void this.line_sendRaised(line.text, step.key); });
     commands.append(run, ...extra);
@@ -1533,7 +1778,7 @@ export class ScriptScreen {
     build.type = 'button';
     build.dataset['line'] = String(declared.number);
     build.dataset['build'] = built.text;
-    build.title = hold === 'held' ? `refused: ${READ_HELD}` : `sends: ${declared.text}, then ${built.text}${hold === 'asks' ? ` (${READ_ASKS})` : ''}`;
+    build.title = this.buildTitle_derive(declared.text, built.text);
     build.disabled = hold === 'held' || this.acting_is();
     build.addEventListener('click', (): void => { this.hooks.voice.pill('BUILD'); void this.declaredBuild_send(declared.text, built.text, step.key); });
     commands.append(build, ...extra);
@@ -1712,7 +1957,7 @@ export class ScriptScreen {
     if (declared !== null) side.append(declared);
     side.append(box);
     this.cost_fill(box, step);
-    if (this.edited) side.append(this.state_make(step).querySelector('.tdc-note') ?? el('span', ''));
+    side.append(this.editedSlot_make());
     return side;
   }
 
@@ -1997,8 +2242,7 @@ export class ScriptScreen {
     const running: HTMLElement | null = this.runningNote_make(step);
     if (running !== null) side.append(running);
     // An edit not saved is said here as on any seat, with SAVE.
-    const edited: Element | undefined = this.edited ? [...this.state_make(step).querySelectorAll('.tdc-note')].find((note: Element): boolean => (note.textContent ?? '').includes('EDITED')) : undefined;
-    if (edited !== undefined) side.append(edited);
+    side.append(this.editedSlot_make());
     return side;
   }
 
@@ -2048,6 +2292,7 @@ export class ScriptScreen {
     const line: ScriptLine | undefined = step.lines[0];
     if (line === undefined) return side;
     side.append(this.chrisPlanNote_make(line));
+    side.append(this.editedSlot_make());
     return side;
   }
 
@@ -2080,6 +2325,7 @@ export class ScriptScreen {
     side.append(this.pairs_make([['CUBE', `none deployed on ${vm}`], ['PORTER', 'none deployed'], ['ACCOUNTS', 'none: CUBE is not there']]));
     const line: ScriptLine | undefined = step.lines[0];
     if (line !== undefined) side.append(this.chrisPlanNote_make(line));
+    side.append(this.editedSlot_make());
     return side;
   }
 
@@ -2110,6 +2356,27 @@ export class ScriptScreen {
   }
 
   /**
+   * Shows a plan that has come back, where the seat says what a deploy
+   * would do, and nowhere else: the seat is not drawn again, so a field
+   * being typed in while the plan was read is left as it is. A plan for a
+   * text the line has since moved on from is kept for when the line reads
+   * so again, and shows nothing now.
+   *
+   * @param text - The deploy line the plan was read for.
+   *
+   * @example
+   * this.chrisPlans.set(text, plan);
+   * this.chrisPlan_show(text);
+   */
+  protected chrisPlan_show(text: string): void {
+    const step: ScriptStep | undefined = this.steps.find((each: ScriptStep): boolean => each.key === this.view);
+    const line: ScriptLine | undefined = step?.lines[0];
+    const note: Element | null = this.parts.body.querySelector('.ss-note-deploy');
+    if (line === undefined || note === null || line.text !== text) return;
+    note.replaceWith(this.chrisPlanNote_make(line));
+  }
+
+  /**
    * Asks what a deploy line would do, once per text of it.
    *
    * @param text - The `chris deploy` line.
@@ -2118,7 +2385,7 @@ export class ScriptScreen {
     this.chrisPlans.set(text, null);
     void this.hooks.ask(`${text} --plan`).then((answer: QuietAnswer): void => {
       this.chrisPlans.set(text, model_extract(answer, STRATUS_CHRIS_PLAN_MODEL_KIND, (data: unknown) => chrisPlanModelSchema.safeParse(data)));
-      this.draw();
+      this.chrisPlan_show(text);
     }, (): void => undefined);
   }
 

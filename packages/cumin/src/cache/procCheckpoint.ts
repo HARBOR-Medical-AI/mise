@@ -38,6 +38,7 @@ import {
   type ProcInstance,
   type ProcFeedDataFacts,
 } from './procCache';
+import { identityCache_usable, identityChange_listen, identityEpoch_get } from '../connect/identityEpoch';
 import { errorStack } from '../error/errorStack';
 
 // v3: per-feed shards. v2 (one file, instances with metrics) is still read
@@ -437,8 +438,12 @@ export async function procCheckpoint_restore(
   root: string = procCheckpointRoot_get(),
 ): Promise<ProcCheckpointRestoreResult> {
   const dir: string = procCheckpointDir_get(identity, root);
+  const began: number = identityEpoch_get();
   try {
     const assembled: { snapshot: ProcCacheSnapshot; writtenAt: string; torn: string[] } | null = await shards_assemble(dir, identity);
+    // The identity changed while the checkpoint was being read: it is the one before's, and is not put into
+    // the cache of whoever is connected now.
+    if (began !== identityEpoch_get() || !identityCache_usable()) return { restored: false, count: 0, reason: 'the identity changed' };
     if (assembled) {
       if (!procCacheSnapshot_check(assembled.snapshot)) {
         return { restored: false, count: 0, reason: 'incompatible checkpoint' };
@@ -453,6 +458,7 @@ export async function procCheckpoint_restore(
     }
 
     const legacy: unknown = await json_read(procCheckpointPath_get(identity, root));
+    if (began !== identityEpoch_get() || !identityCache_usable()) return { restored: false, count: 0, reason: 'the identity changed' };
     if (legacy === null) return { restored: false, count: 0, reason: 'no checkpoint' };
     if (!legacyFile_check(legacy, identity)) {
       return { restored: false, count: 0, reason: 'incompatible checkpoint' };
@@ -505,10 +511,15 @@ export async function procCheckpointRoster_save(
   identity: string,
   root: string = procCheckpointRoot_get(),
 ): Promise<void> {
+  // Written only by the session's own identity's work: what other work sees of the tree is not its to save
+  // under this name.
+  if (!identityCache_usable()) return;
   if (!roster_isConsistent()) return;
   const dir: string = procCheckpointDir_get(identity, root);
-  await dir_ensure(dir);
   const cache = procCache_get();
+  // What is written is the roster as it stands now, taken before anything is waited for: a change of
+  // identity while the folder is being made cannot put the next identity's roster in this one's file.
+  const began: number = identityEpoch_get();
   const file: RosterFile = {
     schemaVersion: PROC_CHECKPOINT_SCHEMA,
     identity,
@@ -516,8 +527,9 @@ export async function procCheckpointRoster_save(
     feeds: cache.feedIDs_get().map((id: number): ProcFeed => ({ ...cache.feed_get(id)! })),
     unseen: cache.unseen_get(),
   };
+  await dir_ensure(dir);
   await json_write(join(dir, ROSTER_FILE), file);
-  cache.checkpoint_mark(file.writtenAt);
+  if (began === identityEpoch_get()) cache.checkpoint_mark(file.writtenAt);
 }
 
 /**
@@ -534,6 +546,7 @@ export async function procCheckpointFeed_save(
   feedID: number,
   root: string = procCheckpointRoot_get(),
 ): Promise<void> {
+  if (!identityCache_usable()) return;
   const dir: string = procCheckpointDir_get(identity, root);
   const cache = procCache_get();
   const snapshot: ProcFeedSnapshot = cache.feedSnapshot_create(feedID);
@@ -568,12 +581,19 @@ export async function procCheckpoint_save(
   identity: string,
   root: string = procCheckpointRoot_get(),
 ): Promise<void> {
+  if (!identityCache_usable()) return;
   if (!roster_isConsistent()) return;
   const dir: string = procCheckpointDir_get(identity, root);
   const cache = procCache_get();
-  await procCheckpointRoster_save(identity, root);
+  const began: number = identityEpoch_get();
   const wanted: Set<number> = new Set(cache.shardedFeedIDs_get());
-  for (const feedID of wanted) await procCheckpointFeed_save(identity, feedID, root);
+  await procCheckpointRoster_save(identity, root);
+  for (const feedID of wanted) {
+    // The identity changed part-way: the rest of the tree is the next identity's, and none of it is written here.
+    if (began !== identityEpoch_get()) return;
+    await procCheckpointFeed_save(identity, feedID, root);
+  }
+  if (began !== identityEpoch_get()) return;
   for (const name of await fs.readdir(dir)) {
     const match: RegExpMatchArray | null = SHARD_PATTERN.exec(name);
     if (match && !wanted.has(Number(match[1]))) await fs.rm(join(dir, name), { force: true });
@@ -602,19 +622,27 @@ export function procCheckpoint_watch(
   delayMs: number = 1000,
   floorMs: number = PROC_CHECKPOINT_FLOOR_MS,
 ): () => void {
+  // Installed only by the session's own identity's work: a warm-up that outlived a change of identity (its
+  // restore came back after someone else connected) watches nothing, and writes nothing under its name.
+  if (!identityCache_usable()) return (): void => undefined;
   const timers: Map<ShardKey, NodeJS.Timeout> = new Map();
   const lastWrite: Map<ShardKey, number> = new Map();
   // Layouts are kept beside the index this watcher keeps.
   procLayoutHome_set({ identity, root });
 
+  // The identity this watcher writes for is the one connected when it was started. Once another has
+  // connected, the tree is the other's: nothing more is written under this name.
+  const began: number = identityEpoch_get();
+
   const shard_write = async (key: ShardKey): Promise<void> => {
+    if (identityEpoch_get() !== began) return;
     if (key === 'roster') await procCheckpointRoster_save(identity, root);
     else if (key === 'all') await procCheckpoint_save(identity, root);
     else await procCheckpointFeed_save(identity, key, root);
   };
 
   const shard_schedule = (key: ShardKey): void => {
-    if (timers.has(key)) return;
+    if (timers.has(key) || identityEpoch_get() !== began) return;
     const earliest: number = (lastWrite.get(key) ?? 0) + floorMs;
     const wait: number = Math.max(delayMs, earliest - Date.now());
     const timer: NodeJS.Timeout = setTimeout((): void => {
@@ -658,11 +686,15 @@ export function procCheckpoint_watch(
     shard_schedule(change.scope === 'roster' ? 'roster' : change.feedID);
   });
 
-  return (): void => {
+  const watch_stop = (): void => {
     listener_remove();
     for (const timer of timers.values()) clearTimeout(timer);
     timers.clear();
+    retire_remove();
   };
+  // Retired at a change of identity: the tree it watched is no longer the one it writes for.
+  const retire_remove: () => void = identityChange_listen(watch_stop);
+  return watch_stop;
 }
 
 // ── Layouts ───────────────────────────────────────────────────────────────────
@@ -736,6 +768,9 @@ function layoutPath_get(name: string): string | null {
  */
 export async function procLayout_get(name: string): Promise<ProcLayoutRecord | null> {
   if (!procLayoutName_check(name)) return null;
+  // Layouts are kept for the session's identity, by its own work: other work has none.
+  if (!identityCache_usable()) return null;
+  const home: typeof layoutHome = layoutHome;
   const held: ProcLayoutRecord | undefined = layoutsHeld.get(name);
   if (held !== undefined) return held;
   const path: string | null = layoutPath_get(name);
@@ -748,9 +783,11 @@ export async function procLayout_get(name: string): Promise<ProcLayoutRecord | n
   }
   if (!file || typeof file !== 'object') return null;
   const record: Partial<ProcLayoutRecord> & { schemaVersion?: unknown; identity?: unknown } = file as Partial<ProcLayoutRecord> & { schemaVersion?: unknown; identity?: unknown };
-  if (record.schemaVersion !== PROC_CHECKPOINT_SCHEMA || record.identity !== layoutHome?.identity || record.name !== name
+  if (record.schemaVersion !== PROC_CHECKPOINT_SCHEMA || record.identity !== home?.identity || record.name !== name
     || typeof record.writtenAt !== 'string' || !procLayoutPositions_check(record.positions)) return null;
   const kept: ProcLayoutRecord = { name, positions: record.positions, writtenAt: record.writtenAt };
+  // Read for the identity that was connected when it was asked for: if another is now, it is not theirs to hold.
+  if (layoutHome !== home) return null;
   layoutsHeld.set(name, kept);
   return kept;
 }
@@ -768,11 +805,15 @@ export async function procLayout_set(name: string, positions: Record<string, Pro
   if (!procLayoutName_check(name)) throw new Error(`not a layout name: ${name}`);
   if (!procLayoutPositions_check(positions)) throw new Error('not a set of places');
   const record: ProcLayoutRecord = { name, positions, writtenAt: new Date().toISOString() };
+  // Kept and written for the session's identity, by its own work; other work is handed the record and no more.
+  if (!identityCache_usable()) return record;
   layoutsHeld.set(name, record);
   const path: string | null = layoutPath_get(name);
-  if (path !== null && layoutHome !== null) {
+  // Whose folder it is written in is settled now, before anything is waited for.
+  const home: typeof layoutHome = layoutHome;
+  if (path !== null && home !== null) {
     await dir_ensure(dirname(path));
-    await json_write(path, { schemaVersion: PROC_CHECKPOINT_SCHEMA, identity: layoutHome.identity, ...record });
+    await json_write(path, { schemaVersion: PROC_CHECKPOINT_SCHEMA, identity: home.identity, ...record });
   }
   return record;
 }
@@ -786,3 +827,6 @@ export function procLayoutHome_set(home: { identity: string; root: string } | nu
   layoutHome = home;
   layoutsHeld.clear();
 }
+// Layouts are one identity's: at a change of identity there is no home for them, and none held, until the
+// next identity's watcher names its own.
+identityChange_listen((): void => { procLayoutHome_set(null); });

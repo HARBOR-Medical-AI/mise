@@ -19,6 +19,8 @@ import { launcherServer_create, secret_matches } from '../../src/launcher/server
 import { launcherSecret_read } from '../../src/launcher/secret.js';
 import { LauncherHost, identity_split, launcher_call } from '../../src/host/launcherHost.js';
 import { porterConfig_resolve } from '../../src/config.js';
+import { SessionRegistry } from '../../src/registry.js';
+import { idleSweep_run } from '../../src/sweep.js';
 
 const CUBE: string = 'http://cube.example.org/api/v1/';
 const SECRET: string = 's'.repeat(40);
@@ -29,6 +31,10 @@ class FakeDocker implements DockerApi {
   volumes: Map<string, Record<string, string>> = new Map();
   containers: Map<string, { spec: Record<string, unknown>; running: boolean; ip: string; token: string | null }> = new Map();
   execs: Array<{ container: string; cmd: string[]; user: string; stdin: string | null }> = [];
+  /** What the engine answers a network removal with; 204 unless a test has it refuse. */
+  unwireStatus: number = 204;
+  /** What the engine answers a container stop with; 204 unless a test has it refuse. */
+  stopStatus: number = 204;
   /** A berth whose session never writes its berth file. */
   silent: boolean = false;
   /** Each container's log, a line each; absent: nothing written. */
@@ -80,6 +86,8 @@ class FakeDocker implements DockerApi {
   pullStatus: number = 200;
   /** Whether the engine never answers a pull. */
   pullHangs: boolean = false;
+  /** A pull that waits on this before it answers; null: it answers at once. */
+  pullGate: Promise<void> | null = null;
   /** What a pull that lands says last. */
   pullSays: string = 'Status: Image is up to date for the image';
   private serial: number = 2;
@@ -92,6 +100,7 @@ class FakeDocker implements DockerApi {
       const image: string = new URLSearchParams(query).get('fromImage') ?? '';
       this.pulls.push(image);
       if (this.pullHangs) return new Promise<DockerAnswer>((): void => undefined);
+      if (this.pullGate !== null) await this.pullGate;
       if (this.pullStatus !== 200) return { status: this.pullStatus, body: { message: 'the registry is away' } };
       if (this.pullError !== null) return { status: 200, body: `{"status":"Pulling from mise-berth"}\r\n${JSON.stringify({ errorDetail: { message: this.pullError }, error: this.pullError })}\r\n` };
       this.images.add(image);
@@ -111,7 +120,11 @@ class FakeDocker implements DockerApi {
       const net = this.networks.get(name);
       return net === undefined ? { status: 404, body: {} } : { status: 200, body: { Name: name, Containers: Object.fromEntries([...net.members].map((member) => [member, { Name: member }])), IPAM: { Config: [{ Subnet: '172.18.0.0/16', ...(this.gateway !== null ? { Gateway: this.gateway } : {}) }] } } };
     }
-    if (method === 'DELETE' && parts[1] === 'networks') { const had = this.networks.delete(name); return { status: had ? 204 : 404, body: null }; }
+    if (method === 'DELETE' && parts[1] === 'networks') {
+      if (this.unwireStatus !== 204) return { status: this.unwireStatus, body: { message: 'network has active endpoints' } };
+      const had = this.networks.delete(name);
+      return { status: had ? 204 : 404, body: null };
+    }
     if (route === '/volumes/create') { const spec = body as { Name: string; Labels: Record<string, string> }; this.volumes.set(spec.Name, spec.Labels); return { status: 201, body: {} }; }
     if (method === 'DELETE' && parts[1] === 'volumes') { const had = this.volumes.delete(name); return { status: had ? 204 : 404, body: null }; }
     if (method === 'GET' && route === '/volumes') {
@@ -151,7 +164,11 @@ class FakeDocker implements DockerApi {
     }
     if (route.endsWith('/start')) { if (found !== undefined) found.running = true; return { status: 204, body: null }; }
     if (route.endsWith('/wait')) { if (found !== undefined) found.running = false; return { status: 200, body: { StatusCode: name.endsWith('-own') ? this.ownExit : 0 } }; }
-    if (route.endsWith('/stop')) { if (found !== undefined) found.running = false; return { status: 204, body: null }; }
+    if (route.endsWith('/stop')) {
+      if (this.stopStatus !== 204) return { status: this.stopStatus, body: { message: 'cannot stop container: permission denied' } };
+      if (found !== undefined) found.running = false;
+      return { status: 204, body: null };
+    }
     if (method === 'DELETE' && parts[1] === 'containers') { for (const net of this.networks.values()) net.members.delete(name); this.containers.delete(name); return { status: found === undefined ? 404 : 204, body: null }; }
     return { status: 404, body: {} };
   }
@@ -833,6 +850,177 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     expect(refused.status).toBe(401);
     const unknown = await launcher_call({ listen: join(dir, 'launcher.sock'), secret: SECRET }, 'POST', '/berths/exec', {});
     expect(unknown.status).toBe(404);
+  });
+
+  it('an engine that refuses the stop is a failed stop all the way up: the berth stays, the sweep keeps its session, a restart starts nothing', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    docker.stopStatus = 500;
+    await expect(host.evict(ANA)).rejects.toThrow(`the berth was not stopped: the engine did not stop ${container} (it answered 500)`);
+    expect(docker.containers.has(container)).toBe(true);
+    // The sweep: the session is still remembered, and it is said.
+    const registry: SessionRegistry = new SessionRegistry((): number => 1_000_000_000);
+    const entry = registry.note(ANA, 'ana', { identity: ANA, url: 'ws://10.9.0.2:1', token: 'a' });
+    entry.activeAt = 0;
+    const said: string[] = [];
+    expect(await idleSweep_run(registry, host, 1000, (line: string): void => { said.push(line); })).toEqual([]);
+    expect(registry.get(entry.key)).toBe(entry);
+    expect(said.join('\n')).toContain('could not end ana\'s idle session');
+    // A restart: its boot fails with the reason, and no second berth is made beside the first.
+    const made: number = docker.made.length;
+    host.restart_begin(ANA, 'ana', CUBE, { kind: 'asked' });
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report).toMatchObject({ state: 'failed', reason: expect.stringContaining('the engine did not stop') });
+    expect(docker.made.length).toBe(made);
+    expect(docker.containers.has(container)).toBe(true);
+  });
+
+  it('a logout that arrives while a restart is making the new berth comes after it: both settled, there is no berth and no login held to restart on', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    const registry: SessionRegistry = new SessionRegistry();
+    const key: string = berthKey_compute(ANA);
+    // The restart: the old berth is stopped, and the image step of the new one is held.
+    let pulled: () => void = (): void => undefined;
+    docker.pullGate = new Promise<void>((resolve: () => void): void => { pulled = resolve; });
+    const pullsBefore: number = docker.pulls.length;
+    const restarting: Promise<void> = registry.ending_run(key, (): Promise<void> => host.restart_begin(ANA, 'ana', CUBE, { kind: 'asked' }));
+    for (let waited: number = 0; waited < 100 && docker.pulls.length === pullsBefore; waited++) await new Promise((resolve) => { setTimeout(resolve, 10); });
+    expect(docker.pulls.length).toBe(pullsBefore + 1);
+    expect(docker.containers.has(container)).toBe(false);
+    // The logout, as the door runs it: the key's next ending.
+    let loggedOut: boolean | null = null;
+    const out: Promise<void> = registry.ending_run(key, (): Promise<boolean> => host.evict(ANA, 'end')).then((ended: boolean): void => { loggedOut = ended; });
+    await new Promise((resolve) => { setTimeout(resolve, 50); });
+    expect(loggedOut).toBeNull();
+    docker.pullGate = null;
+    pulled();
+    await restarting;
+    await out;
+    // The logout stopped the berth the restart made.
+    expect(loggedOut).toBe(true);
+    expect(docker.containers.has(container)).toBe(false);
+    // And nothing is held to start another on.
+    void host.restart_begin(ANA, 'ana', CUBE, { kind: 'saved-login' });
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report).toMatchObject({ state: 'failed', reason: 'ana: no token to start a berth on; log in again' });
+    expect(docker.containers.has(container)).toBe(false);
+  });
+
+  it('a stop that arrives while the launcher is still making the berth, for a caller that has gone away, comes after the start: no berth is left, and no login to restart on', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    // A start whose image step is held. Whoever asked for it gives up waiting; the launcher goes on.
+    let pulled: () => void = (): void => undefined;
+    docker.pullGate = new Promise<void>((resolve: () => void): void => { pulled = resolve; });
+    const starting: Promise<unknown> = launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    void starting.catch((): void => undefined);
+    for (let waited: number = 0; waited < 100 && docker.pulls.length === 0; waited++) await new Promise((resolve) => { setTimeout(resolve, 10); });
+    expect(docker.containers.has(container)).toBe(false);
+    // The final stop (a logout) arrives now, with no container yet to find.
+    let stopped: boolean | null = null;
+    const stopping: Promise<void> = launcher.stop('ana', CUBE).then((was: boolean): void => { stopped = was; });
+    await new Promise((resolve) => { setTimeout(resolve, 50); });
+    expect(stopped).toBeNull();
+    docker.pullGate = null;
+    pulled();
+    await starting;
+    await stopping;
+    // The stop removed the berth the start made, and the login held for it.
+    expect(stopped).toBe(true);
+    expect(docker.containers.has(container)).toBe(false);
+    await expect(launcher.start({ user: 'ana', uid: 0, gid: 0, cubeUrl: CUBE, token: null })).rejects.toThrow('no token to start a berth on');
+  });
+
+  it('a stop whose container went but whose wire the engine would not remove is said as that, and asking again finishes it', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const names = berthNames_derive('mbw', ANA, 'ana');
+    docker.unwireStatus = 403;
+    await expect(host.evict(ANA)).rejects.toThrow(`ana's berth is stopped, but its wire ${names.network} could not be removed (the engine answered 403)`);
+    expect(docker.containers.has(names.container)).toBe(false);
+    expect(docker.networks.has(names.network)).toBe(true);
+    docker.unwireStatus = 204;
+    // Asked again: there is no container now, and the wire goes.
+    expect(await host.evict(ANA)).toBe(false);
+    expect(docker.networks.has(names.network)).toBe(false);
+  });
+
+  it('a restart stops the berth and starts it again on the login the launcher holds; an end forgets that login', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    const made: number = docker.made.filter((one) => one.name === container).length;
+    host.restart_begin(ANA, 'ana', CUBE, { kind: 'asked' });
+    await new Promise((resolve) => { setTimeout(resolve, 400); });
+    expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report.state).toBe('ready');
+    expect(docker.made.filter((one) => one.name === container).length).toBe(made + 1);
+    expect(docker.containers.get(container)?.running).toBe(true);
+    // An end is not a restart: the login held is forgotten, and a start with no token is refused.
+    expect(await host.evict(ANA)).toBe(true);
+    host.restart_begin(ANA, 'ana', CUBE, { kind: 'saved-login' });
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report).toMatchObject({ state: 'failed', reason: 'ana: no token to start a berth on; log in again' });
+  });
+
+  it('a launcher whose answer breaks off after a progress line fails the boot, and a logout waiting behind that restart then finishes', async () => {
+    // A launcher that stops a berth as asked, and whose start says one line and then drops the connection.
+    const asked: string[] = [];
+    const dropping: Server = createServer((req, res): void => {
+      asked.push(req.url ?? '');
+      req.resume();
+      req.on('end', (): void => {
+        if ((req.url ?? '').startsWith('/berths/stop')) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ stopped: true })); return; }
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        res.write(`${JSON.stringify({ line: '[PENDING] Image        pulling', channel: 'out' })}\n`);
+        setTimeout((): void => { res.destroy(); }, 20);
+      });
+    });
+    await new Promise<void>((resolve) => { dropping.listen(join(dir, 'dropping.sock'), resolve); });
+    const host: LauncherHost = new LauncherHost({ listen: join(dir, 'dropping.sock'), secret: SECRET }, async (): Promise<number> => 7);
+    const registry: SessionRegistry = new SessionRegistry();
+    const key: string = berthKey_compute(ANA);
+    const restarting: Promise<void> = registry.ending_run(key, (): Promise<void> => host.restart_begin(ANA, 'ana', CUBE, { kind: 'asked' }), 'restart');
+    // A logout is asked for while the restart is under way.
+    let loggedOut: boolean | null = null;
+    const out: Promise<void> = registry.ending_run(key, (): Promise<boolean> => host.evict(ANA, 'end')).then((ended: boolean): void => { loggedOut = ended; });
+    await restarting;
+    await out;
+    // The restart did not hang on the answer that never finished: its boot says it failed, and why.
+    expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report).toMatchObject({ state: 'failed', reason: 'the berth launcher\'s answer broke off before it was whole' });
+    // And the logout, which waited behind it, ran its stop.
+    expect(loggedOut).toBe(true);
+    expect(asked.map((path: string): string => path.split('?')[0] ?? '')).toEqual(['/berths/stop', '/berths/start', '/berths/stop']);
+    await new Promise<void>((resolve) => { dropping.close(() => resolve()); });
+  });
+
+  it('a stop whose answer breaks off part way is a failed stop, not "none was running"', async () => {
+    const partial: Server = createServer((req, res): void => {
+      req.resume();
+      req.on('end', (): void => {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': 64 });
+        res.write('{"stopp');
+        setTimeout((): void => { res.destroy(); }, 20);
+      });
+    });
+    await new Promise<void>((resolve) => { partial.listen(join(dir, 'partial.sock'), resolve); });
+    const host: LauncherHost = new LauncherHost({ listen: join(dir, 'partial.sock'), secret: SECRET }, async (): Promise<number> => 7);
+    await expect(host.evict(ANA)).rejects.toThrow('the berth launcher\'s answer broke off before it was whole');
+    await new Promise<void>((resolve) => { partial.close(() => resolve()); });
+  });
+
+  it('a launcher answer that does not say whether a berth was stopped is not taken for "none was running"', async () => {
+    const odd: Server = createServer((_req, res): void => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}'); });
+    await new Promise<void>((resolve) => { odd.listen(join(dir, 'odd.sock'), resolve); });
+    const host: LauncherHost = new LauncherHost({ listen: join(dir, 'odd.sock'), secret: SECRET }, async (): Promise<number> => 7);
+    await expect(host.evict(ANA)).rejects.toThrow('the launcher did not say whether it stopped one');
+    await new Promise<void>((resolve) => { odd.close(() => resolve()); });
   });
 
   it('answers the operator\'s read over the API, and porter\'s host asks for it', async () => {

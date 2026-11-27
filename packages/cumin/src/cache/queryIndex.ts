@@ -27,6 +27,8 @@
  * @module
  */
 
+import { identityChange_listen, identityPartition_make } from '../connect/identityEpoch';
+
 /**
  * Separates the server from the criteria in a key, and one criterion from
  * the next.
@@ -364,12 +366,50 @@ export class QueryIndex {
 
 let queryIndex: QueryIndex | null = null;
 
+/** The session's own index behind the partition, once anything has asked for it. */
+let queryIndexOwn: QueryIndex | null = null;
+
+/** Who is told what the index held, when it is about to be emptied for a change of identity. */
+const forgetListeners: Set<(snapshot: QueryIndexSnapshot, now: string | null) => void> = new Set<(snapshot: QueryIndexSnapshot, now: string | null) => void>();
+
+/**
+ * Registers to be told what the index held for the identity that is
+ * leaving, at the moment it is emptied for the next.
+ *
+ * @param listener - Handed the index as it stood, and the name of who is connected after (or null).
+ * @returns A function that removes the listener.
+ *
+ * @example
+ * queryIndexForget_listen((left: QueryIndexSnapshot): void => { void file_write(left); });
+ */
+export function queryIndexForget_listen(listener: (snapshot: QueryIndexSnapshot, now: string | null) => void): () => void {
+  forgetListeners.add(listener);
+  return (): void => { forgetListeners.delete(listener); };
+}
+
 /**
  * The process-wide query index.
  *
  * @returns The singleton.
  */
 export function queryIndex_get(): QueryIndex {
-  if (queryIndex === null) queryIndex = new QueryIndex();
+  if (queryIndex === null) {
+    const own: QueryIndex = new QueryIndex();
+    // The index is one identity's queries. Work begun under another identity, or done as another user, is
+    // handed an index of its own (see identityPartition_make); at a change of identity the session's is
+    // emptied, entries and floor.
+    queryIndex = identityPartition_make(own, (): QueryIndex => new QueryIndex());
+    queryIndexOwn = own;
+  }
   return queryIndex;
 }
+
+// Heard from the moment the module is loaded, whether or not anything has used the index yet: whoever keeps
+// the index on disk is shown it as it stood for the identity that is leaving (empty, if it was never used),
+// before it is emptied, and told who is connected after. What the one learnt and had not yet saved is theirs
+// to save, and what is gathered from here is the other's.
+identityChange_listen((now: string | null): void => {
+  const left: QueryIndexSnapshot = queryIndexOwn?.snapshot_create() ?? new QueryIndex().snapshot_create();
+  for (const forget_hear of [...forgetListeners]) forget_hear(left, now);
+  queryIndexOwn?.reset();
+});

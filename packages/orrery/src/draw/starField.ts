@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import { NEBULA_OPACITY, THREAD_OPACITY } from './constants.js';
 import { nebulaTexture_get } from './nebula.js';
+import { Made } from './release.js';
 import { starLayer_make, starScale_compute, type StarEntry, type StarLayer } from './stars.js';
 import { lineMaterial_make, lineWave_set } from './tubes.js';
 
@@ -36,6 +37,8 @@ export interface Nebula {
 /** The stars, threads and nebulae of one scene. */
 export class StarField {
   private readonly parent: THREE.Object3D;
+  /** What this field drew, let go together at a redraw. */
+  private readonly made: Made = new Made();
   private stars: StarEntry[] = [];
   private index: Map<string, number> = new Map();
   private nebulaList: Nebula[] = [];
@@ -104,7 +107,7 @@ export class StarField {
       if (layer.length === 0) continue;
       const drawn: StarLayer = starLayer_make(layer, ember, this.layers.length, pixelRatio, ring);
       this.layers.push({ alpha: drawn.alpha, base: drawn.base, flash: drawn.flash });
-      this.parent.add(drawn.points);
+      this.made.thing_add(this.parent, drawn.points);
       this.materials.push(drawn.material);
     }
     this.scale_update(heightPx, fovDeg);
@@ -143,7 +146,7 @@ export class StarField {
     this.threads = { attribute, base: Float32Array.from(colors), ends };
     if (wave === undefined) {
       geometry.setAttribute('color', attribute);
-      this.parent.add(new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+      this.made.thing_add(this.parent, new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
         vertexColors: true, transparent: true, opacity: THREAD_OPACITY, blending: THREE.AdditiveBlending, depthWrite: false,
       })));
       return;
@@ -154,7 +157,7 @@ export class StarField {
     this.threadMaterial = lineMaterial_make(wave.cycle, { tint: 1, opacity: THREAD_OPACITY, additive: true });
     const lines: THREE.LineSegments = new THREE.LineSegments(geometry, this.threadMaterial);
     lines.frustumCulled = false;
-    this.parent.add(lines);
+    this.made.thing_add(this.parent, lines);
   }
 
   /**
@@ -194,7 +197,7 @@ export class StarField {
     sprite.position.copy(position);
     sprite.scale.setScalar(radius * 2);
     sprite.renderOrder = 0;
-    this.parent.add(sprite);
+    this.made.thing_add(this.parent, sprite);
     this.nebulaList.push({ id, position: position.clone(), radius });
     this.nebulaSprites.set(id, { material: sprite.material, base: sprite.material.opacity });
   }
@@ -238,8 +241,14 @@ export class StarField {
     this.threadsTouched = false;
   }
 
-  /** Forgets everything: the scene is being redrawn (its parent already cleared). */
+  /**
+   * Lets go of every layer of stars, thread and nebula it drew, and forgets them: the scene is being redrawn.
+   *
+   * @example
+   * field.clear();
+   */
   public clear(): void {
+    this.made.all_release();
     this.stars = [];
     this.index = new Map();
     this.nebulaList = [];

@@ -54,6 +54,7 @@ node exemplars/ts/dist/03_feedDcm2niix.js   # pull → dircopy → dcm2niix → 
 node exemplars/ts/dist/04_pacsQR.js         # query → verify existing OR pull fresh → cleanup owned artifacts
 node exemplars/ts/dist/05_calypsoDaemon.js  # live daemon WS surface → restart/context rehydrate
 node exemplars/ts/dist/14_tokenLogin.js     # daemon started with a CUBE token on stdin, off a TTY → berth answers; a bad token is refused
+node exemplars/ts/dist/15_accountSwitch.js  # connect as one user, then as another in the same process → who, what is read and what is held are the second's; needs CUBE_ADMIN_USER
 ```
 
 Each prints ✓/✗ per check and exits 0 only if all passed.

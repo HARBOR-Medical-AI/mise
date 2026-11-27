@@ -6,6 +6,7 @@
  */
 import { beforeAll, describe, it, expect } from '@jest/globals';
 import * as THREE from 'three';
+import { held_watch, held_left, type HeldWatch } from './support/heldWatch.js';
 import { CensusField, censusDetail_derive, type CensusNode } from '../src/draw/censusField.js';
 import { StarField } from '../src/draw/starField.js';
 import { TubeField } from '../src/draw/tubeField.js';
@@ -42,6 +43,23 @@ describe('CensusField', () => {
     expect(field.ids().filter((id) => id === 'f').length).toBe(12);
     expect(cloud.center.x).toBeCloseTo(-10 / 3, 9);
     expect(tubes.censusCount()).toBe(12);
+  });
+
+  it('lets go of the census at a redraw: the mesh of jobs, its shape and its material, and each glow\'s material', () => {
+    const { field, parent, tubes, stars } = census();
+    field.build(nodes(12), false, palette);
+    const watch: HeldWatch = held_watch(parent);
+    const mesh = parent.children.find((one) => one instanceof THREE.InstancedMesh && (one as THREE.InstancedMesh).geometry instanceof THREE.IcosahedronGeometry) as THREE.InstancedMesh | undefined;
+    expect(mesh).toBeDefined();
+    field.clear();
+    tubes.clear();
+    stars.clear();
+    expect(watch.disposed.has(mesh!)).toBe(true);
+    expect(watch.disposed.has(mesh!.geometry)).toBe(true);
+    expect(watch.disposed.has(mesh!.material as THREE.Material)).toBe(true);
+    const spriteShape: THREE.BufferGeometry = new THREE.Sprite().geometry;
+    for (const kept of held_left(watch)) expect(kept instanceof THREE.CylinderGeometry || kept instanceof THREE.Texture || kept === spriteShape).toBe(true);
+    expect(parent.children.length).toBe(0);
   });
 
   it('past the tube cap draws lines that carry the wave from parent to child, on the tubes\' clock', () => {

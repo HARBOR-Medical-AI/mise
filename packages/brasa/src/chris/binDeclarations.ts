@@ -42,6 +42,7 @@
  *
  * @module
  */
+import { identityChange_listen, identityPartition_make } from '@fnndsc/cumin/identity-epoch';
 import type { PipelineManifest, PipelineManifestNode } from '@fnndsc/salsa';
 import type { CommandEnvelope } from '@fnndsc/menu';
 
@@ -610,7 +611,12 @@ export async function pipelineWords_parse(declaration: CommandDeclaration, args:
 }
 
 /** The declarations made, by the `/bin` entry each is for (`plugin:pl-dircopy-v2.1.1`, `pipeline:PHI_id12`). */
-const declarations: Map<string, CommandDeclaration> = new Map();
+const declarationsOwn: Map<string, CommandDeclaration> = new Map();
+/**
+ * As each piece of work sees them: the session's, or for work begun under another identity or done as
+ * another user a set of its own, so that neither reads what the other was shown.
+ */
+const declarations: Map<string, CommandDeclaration> = identityPartition_make(declarationsOwn, (): Map<string, CommandDeclaration> => new Map());
 
 /**
  * Forgets every declaration made, so the next is read from CUBE again.
@@ -621,8 +627,11 @@ const declarations: Map<string, CommandDeclaration> = new Map();
  * ```
  */
 export function binDeclarations_forget(): void {
-  declarations.clear();
+  declarationsOwn.clear();
 }
+// What `/bin` declares is one CUBE's plugins and pipelines, as one user may run them: at a change of
+// identity every declaration made is forgotten.
+identityChange_listen(binDeclarations_forget);
 
 /**
  * The `/bin` entry a word names: a plugin by its full `/bin` name, a
@@ -726,6 +735,8 @@ async function entryDeclaration_get(entry: BinEntry): Promise<CommandDeclaration
     made = null;
   }
   errorStack.checkpoint_drain(checkpoint);
+  // Kept for the work that read it: the session's own, in the session's set; work done as another user, or
+  // begun before someone else connected, in a set of its own (see `declarations`).
   if (made !== null) declarations.set(key, made);
   return made;
 }

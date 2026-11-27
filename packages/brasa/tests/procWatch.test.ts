@@ -6,6 +6,13 @@
  * ProcCache runs so change events drive the sampler as they would live.
  */
 import { jest } from '@jest/globals';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// A change of identity is made in this file: anything kept "in the default place" because of it goes to a
+// folder of the file's own, never to the cache of whoever runs the tests.
+process.env['XDG_CACHE_HOME'] = mkdtempSync(join(tmpdir(), 'procwatch-cache-'));
 import { cuminMock_install } from './support/cuminMock.js';
 import type { ProcFeed, ProcInstance, ProcCacheChange } from '@fnndsc/cumin';
 
@@ -224,6 +231,108 @@ describe('feed watches', () => {
     jest.advanceTimersByTime(WATCH_CAP_MS);
     await flush();
     expect(events.at(-1)).toEqual({ kind: 'watched', subject: '/proc/jobs/feed_7', state: 'live' });
+  });
+
+  it('a tick still out when someone else connects says nothing more and arms nothing; the next identity\'s watch of the same number is its own', async () => {
+    const { identityEpoch_raise } = await import('@fnndsc/cumin/identity-epoch');
+    activeFeed_seed();
+    feedDag_handle.mockResolvedValue({ status: 'ok', rendered: 'the first one\'s graph' });
+    procWatch_add(7, 'pane-a');
+    await flush();
+    // The first identity's watch ticks, and its visit is out.
+    let land: (ok: boolean) => void = (): void => undefined;
+    feedVisit_sync.mockImplementationOnce((): Promise<boolean> => new Promise((resolve: (ok: boolean) => void): void => { land = resolve; }));
+    await jest.advanceTimersByTimeAsync(WATCH_FLOOR_MS);
+    await flush();
+    expect(feedVisit_sync).toHaveBeenCalledTimes(1);
+    // Someone else connects. Every watch is retired; a surface asks again for feed 7, now theirs.
+    identityEpoch_raise('other@cube');
+    expect(procWatch_list()).toEqual([]);
+    feedDag_handle.mockResolvedValue({ status: 'ok', rendered: 'the second one\'s graph' });
+    procWatch_add(7, 'pane-a');
+    await flush();
+    expect(procWatch_list()).toEqual([{ feedID: 7, owners: 1, state: 'live' }]);
+    const before: number = events.length;
+    // The first one's visit lands now, with a change it would have published.
+    feedDag_handle.mockResolvedValue({ status: 'ok', rendered: 'the first one\'s graph, late' });
+    cache.emit({ scope: 'feed', feedID: 7 });
+    land(true);
+    await flush();
+    // Nothing was said for it, and the second one's watch is still the one in place.
+    expect(events.slice(before).filter((event: unknown): boolean => JSON.stringify(event).includes('late'))).toEqual([]);
+    expect(procWatch_list()).toEqual([{ feedID: 7, owners: 1, state: 'live' }]);
+  });
+
+  it('a watch woken by a change that other work made ticks in its own place, not in that work\'s', async () => {
+    const { identityElevated_run, identityElevated_is, identityScope_run } = await import('@fnndsc/cumin/identity-epoch');
+    cache.feed_add(feed({ id: 7 }));
+    // Indexing: the watch holds the floor and waits to be kicked.
+    feedDag_handle.mockResolvedValue({ status: 'ok', rendered: '', model: { kind: 'feed.indexing' } } as never);
+    procWatch_add(7, 'pane-a');
+    await flush();
+    const seen: boolean[] = [];
+    feedDag_handle.mockImplementation(async (): Promise<{ status: string; rendered: string }> => {
+      seen.push(identityElevated_is());
+      return { status: 'ok', rendered: 'dag' };
+    });
+    // The topology lands in a walk done as another user: the cache says so from inside that work.
+    await identityScope_run((): Promise<void> => identityElevated_run({ of: 'the admin' }, async (): Promise<void> => {
+      cache.topologyLoaded_mark(7);
+    }));
+    await jest.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(seen).toEqual([false]);
+  });
+
+  it('a watch is not kept for work done as another user: it would outlive the command and speak to every surface', async () => {
+    const { identityElevated_run, identityScope_run } = await import('@fnndsc/cumin/identity-epoch');
+    activeFeed_seed();
+    const state = await identityScope_run((): Promise<unknown> => identityElevated_run({ of: 'the admin' }, async (): Promise<unknown> => procWatch_add(7, 'pane-a')));
+    await flush();
+    expect(state).toBeNull();
+    expect(procWatch_list()).toEqual([]);
+    expect(feedDag_handle).not.toHaveBeenCalled();
+    // The ordinary watch of the same feed is the session's, and is made as usual.
+    expect(procWatch_add(7, 'pane-a')).toBe('live');
+    await flush();
+    expect(procWatch_list()).toEqual([{ feedID: 7, owners: 1, state: 'live' }]);
+  });
+
+  it('a launch answered after someone else connected makes no watch and joins none: the feed of that number is now another\'s', async () => {
+    const { identityEpoch_raise, identityScope_run } = await import('@fnndsc/cumin/identity-epoch');
+    activeFeed_seed();
+    let launched: () => void = (): void => undefined;
+    // The first identity launches a run; CUBE is slow to answer, and the run is followed when it does.
+    const followed: Promise<unknown> = identityScope_run(async (): Promise<unknown> => {
+      await new Promise<void>((resolve: () => void): void => { launched = resolve; });
+      return procWatch_add(7, 'run');
+    });
+    identityEpoch_raise('other@cube');
+    // No watch yet for the second: the late follow makes none.
+    launched();
+    expect(await followed).toBeNull();
+    await flush();
+    expect(procWatch_list()).toEqual([]);
+    expect(feedDag_handle).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    // The second has its own watch of feed 7: a late follow from the first adds no owner to it.
+    procWatch_add(7, 'pane-a');
+    await flush();
+    const before: number = events.length;
+    const late: Promise<unknown> = identityScope_run(async (): Promise<unknown> => {
+      await new Promise<void>((resolve: () => void): void => { launched = resolve; });
+      return procWatch_add(7, 'run');
+    });
+    identityEpoch_raise('third@cube');
+    procWatch_add(7, 'pane-a');
+    await flush();
+    const published: number = events.length;
+    launched();
+    expect(await late).toBeNull();
+    await flush();
+    expect(procWatch_list()).toEqual([{ feedID: 7, owners: 1, state: 'live' }]);
+    expect(events.length).toBe(published);
+    expect(before).toBeGreaterThan(0);
   });
 
   it('watches are refcounted per owner, and a release drops every watch an owner held', async () => {

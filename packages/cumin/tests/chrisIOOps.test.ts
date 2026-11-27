@@ -11,6 +11,8 @@ jest.mock('../src/connect/chrisConnection', () => ({
 
 import { chrisConnection } from '../src/connect/chrisConnection';
 import { ChrisIO } from '../src/io/chrisIO';
+import { folderLookup_memoize } from '../src/filebrowser/folderMemo';
+import { listCache_get } from '../src/cache/listCache';
 import { errorStack } from '../src/error/errorStack';
 
 const mockClientGet: jest.Mock = chrisConnection.client_get as unknown as jest.Mock;
@@ -151,6 +153,69 @@ describe('file_moveById field drift', () => {
   });
 });
 
+describe('whose client a transfer uses', () => {
+  it('asks the connection each time: after someone else connects, or outside a sudo, it is not the first one\'s', async () => {
+    const one: ChrisIO = io();
+    const elevated: object = { of: 'the admin, under sudo' };
+    const ordinary: object = { of: 'the user' };
+    const another: object = { of: 'whoever connected next' };
+    mockClientGet.mockResolvedValueOnce(elevated).mockResolvedValueOnce(ordinary).mockResolvedValueOnce(another);
+    // The first transfer of the session happens to be under sudo.
+    expect(await one.client_get()).toBe(elevated);
+    // The next is not: it does not go on as the admin.
+    expect(await one.client_get()).toBe(ordinary);
+    expect(await one.client_get()).toBe(another);
+    expect(mockClientGet).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('why a file could not be read', () => {
+  it('is said of each download for itself when two are under way at once', async () => {
+    const refusal = (status: number): Error => Object.assign(new Error(String(status)), { response: { status } });
+    let firstPacs: (reason: Error) => void = (): void => undefined;
+    const client = {
+      url: '',
+      // File 1 is refused (403) at once; file 2 is not there (404).
+      getUserFile: jest.fn(async (id: number) => { throw refusal(id === 1 ? 403 : 404); }),
+      // File 1's second look is still out while file 2 is looked for from start to end.
+      getPACSFile: jest.fn((id: number): Promise<never> => id === 1
+        ? new Promise((_resolve: (value: never) => void, reject: (reason: Error) => void): void => { firstPacs = reject; })
+        : Promise.reject(refusal(404))),
+    };
+    mockClientGet.mockResolvedValue(client);
+    const one: ChrisIO = io();
+    const first: Promise<Buffer | null> = one.file_download(1);
+    await Promise.resolve(); await Promise.resolve();
+    expect(await one.file_download(2)).toBeNull();
+    firstPacs(new Error('no status'));
+    expect(await first).toBeNull();
+    const said: string[] = pushSpy.mock.calls.map((call: unknown[]): string => String(call[1]));
+    expect(said.find((line: string): boolean => line.includes('File ID 2'))).toContain('(404)');
+    // File 1's reason is its own refusal, not what file 2 was told meanwhile.
+    expect(said.find((line: string): boolean => line.includes('File ID 1'))).toContain('refused access (403)');
+  });
+});
+
+describe('what CUBE is asked when a lookup comes back with nothing', () => {
+  it('is asked as the user the lookup was made as: with that client\'s own address and token', async () => {
+    const asked: Array<{ url: string; token: string }> = [];
+    fetchSpy?.mockRestore();
+    fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const token: string = String((init?.headers as Record<string, string> | undefined)?.['Authorization'] ?? '');
+      asked.push({ url: String(input), token });
+      // CUBE refuses the admin and has never heard of the file for the user: two answers, told apart by who asks.
+      return { status: token === 'Token ADMIN' ? 403 : 404 } as Response;
+    });
+    // A lookup made with one client (a sudo's, say) while the connection's current client is another's.
+    const lookupClient = { url: 'https://cube.admin/api/v1/', auth: { token: 'ADMIN' }, getUserFile: jest.fn(async () => null), getPACSFile: jest.fn(async () => null) };
+    mockClientGet.mockResolvedValue(lookupClient);
+    expect(await io().file_download(41)).toBeNull();
+    const said: string = pushSpy.mock.calls.map((call: unknown[]): string => String(call[1])).find((line: string): boolean => line.includes('File ID 41')) ?? '';
+    expect(said).toContain('refused access (403)');
+    expect(asked.filter((one) => one.url.includes('/userfiles/41/'))).toEqual([{ url: 'https://cube.admin/api/v1/userfiles/41/', token: 'Token ADMIN' }]);
+  });
+});
+
 describe('folder_deleteByPath', () => {
   it('deletes and confirms disappearance', async () => {
     const del = jest.fn(async () => undefined);
@@ -163,6 +228,20 @@ describe('folder_deleteByPath', () => {
     expect(del).toHaveBeenCalled();
     // Leading slash stripped for the filebrowser lookup.
     expect(byPath).toHaveBeenCalledWith('home/alice/scratch');
+  });
+
+  it('sees that CUBE has deleted the folder when its lookup is the session\'s remembered one', async () => {
+    listCache_get().cache_invalidate();
+    const del = jest.fn(async () => undefined);
+    // CUBE: there before the delete, gone after it.
+    const byPath = jest.fn(async (): Promise<unknown> => (del.mock.calls.length === 0 ? { delete: del } : null));
+    // The client as the connection hands it out: its folder lookups remembered.
+    mockClientGet.mockResolvedValue(folderLookup_memoize({ getFileBrowserFolderByPath: byPath } as never));
+    const result = await io().folder_deleteByPath('/home/alice/remembered', { timeoutMs: 1000 });
+    expect(result.ok).toBe(true);
+    // Asked again after the delete, not answered with the folder remembered from before it.
+    expect(byPath).toHaveBeenCalledTimes(2);
+    expect(pushSpy).not.toHaveBeenCalledWith('error', expect.stringContaining('still resolves'));
   });
 
   it('treats an absent folder as already deleted', async () => {
