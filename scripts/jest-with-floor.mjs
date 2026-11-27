@@ -33,9 +33,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** Jest's options, by the names jest gives them once read, that say how to run and nothing about what. */
@@ -86,9 +86,30 @@ export function run_plan(read, args, workspaceDir, runDir) {
  */
 export async function coverageDir_effective(jestArgs, workspaceDir) {
   const { buildArgv } = await import('jest-cli');
-  const { readConfig } = await import('jest-config');
-  const { globalConfig } = await readConfig(await buildArgv(jestArgs), workspaceDir);
-  return resolve(globalConfig.coverageDirectory);
+  const { readConfigs } = await import('jest-config');
+  const read = await buildArgv(jestArgs);
+  // The projects jest will run, as jest picks them: those named, or the workspace itself.
+  const projects = Array.isArray(read.projects) && read.projects.length > 0 ? read.projects.map((project) => resolve(workspaceDir, String(project))) : [workspaceDir];
+  const { globalConfig } = await readConfigs(read, projects);
+  return path_physical(resolve(globalConfig.coverageDirectory));
+}
+
+/**
+ * A path as it is on disk, links followed: two spellings of one folder
+ * (through a workspace's link in `node_modules`, say) come out the same. A
+ * folder that is not there yet is placed under the nearest one that is.
+ *
+ * @param {string} path - The path, absolute.
+ * @returns {string} The physical path.
+ */
+export function path_physical(path) {
+  const missing = [];
+  let at = path;
+  while (!existsSync(at) && dirname(at) !== at) {
+    missing.unshift(basename(at));
+    at = dirname(at);
+  }
+  return join(realpathSync(at), ...missing);
 }
 
 /**
@@ -162,7 +183,7 @@ async function run_judge(read, args, root, workspaceDir, workspace, runDir) {
       console.error(String(error?.message ?? error));
       return 1;
     }
-    if (where === suiteDir) {
+    if (where === path_physical(suiteDir)) {
       console.error(`jest-with-floor: a run that is not the whole suite may not write to the suite's folder (${SUITE_DIR}/): ${plan.why}, and jest would write its coverage there. Give it another --coverageDirectory, or none.`);
       return 2;
     }

@@ -200,7 +200,7 @@ for (const lint of lints) {
 // The coverage ratchet, over trees made here: a summary as jest writes it, and floors beside it.
 {
   const { args_read, coverage_judge, floor_derive, floors_compare, floors_read, summary_read, uncovered_list } = await import('./coverage-ratchet.mjs');
-  const { coverageDir_effective, report_publish, run_plan, PARTIAL_DIR, SUITE_DIR } = await import('./jest-with-floor.mjs');
+  const { coverageDir_effective, path_physical, report_publish, run_plan, PARTIAL_DIR, SUITE_DIR } = await import('./jest-with-floor.mjs');
   const { buildArgv } = await import('jest-cli');
   /** A tree with one workspace's coverage summary and a baseline file; runs the ratchet over it. */
   const coverage_run = (summary, floors, extra = []) => {
@@ -390,9 +390,19 @@ for (const lint of lints) {
     expect_that('a partial run that would land on the suite\'s folder through its config\'s root is refused before jest runs, and the full summary is byte-for-byte', rooted.status === 2 && rooted.said.includes('jest would write its coverage there') && readFileSync(summaryPath, 'utf8') === full, rooted.said.slice(-500));
     // Where jest will write is asked of jest: the same folder, by every road to it.
     const argusDir = join(made, 'apps/argus');
-    expect_that('the effective folder is jest\'s own answer', (await coverageDir_effective(['--coverage', '-t', 'twice', '--coverageDirectory=<rootDir>/coverage'], argusDir)) === join(argusDir, 'coverage')
-      && (await coverageDir_effective(['--coverage', '--config', join(argusDir, 'tests/jest.rooted.cjs'), '-t', 'twice', '--coverageDirectory=../coverage'], argusDir)) === join(argusDir, 'coverage')
-      && (await coverageDir_effective(['--coverage', `--coverageDirectory=${join(argusDir, 'coverage-partial')}`, '--', 'tests/kept.test.js'], argusDir)) === join(argusDir, 'coverage-partial'));
+    expect_that('the effective folder is jest\'s own answer', (await coverageDir_effective(['--coverage', '-t', 'twice', '--coverageDirectory=<rootDir>/coverage'], argusDir)) === path_physical(join(argusDir, 'coverage'))
+      && (await coverageDir_effective(['--coverage', '--config', join(argusDir, 'tests/jest.rooted.cjs'), '-t', 'twice', '--coverageDirectory=../coverage'], argusDir)) === path_physical(join(argusDir, 'coverage'))
+      && (await coverageDir_effective(['--coverage', `--coverageDirectory=${join(argusDir, 'coverage-partial')}`, '--', 'tests/kept.test.js'], argusDir)) === path_physical(join(argusDir, 'coverage-partial')));
+    // By a link, and by a project named from elsewhere: the same folder on disk, and refused the same.
+    mkdirSync(join(made, 'links'), { recursive: true });
+    symlinkSync(argusDir, join(made, 'links/argus'), 'dir');
+    expect_that('a path through a link is the folder it leads to', path_physical(join(made, 'links/argus/coverage')) === path_physical(join(argusDir, 'coverage')) && path_physical(join(made, 'links/argus/not-there-yet/deeper')) === join(path_physical(argusDir), 'not-there-yet/deeper'));
+    file_put(summaryPath, full);
+    const linked = runner('-t', 'twice', '--coverageDirectory=../../links/argus/coverage');
+    expect_that('a filtered run aimed at the suite\'s folder through a link is refused before jest runs, and the full summary is byte-for-byte', linked.status === 2 && linked.said.includes('jest would write its coverage there') && readFileSync(summaryPath, 'utf8') === full, linked.said.slice(-400));
+    file_put(join(made, 'jest.config.cjs'), `module.exports = { testEnvironment: 'node', roots: ['<rootDir>/apps/argus/tests', '<rootDir>/apps/argus/src'], collectCoverageFrom: ['apps/argus/src/**/*.js'], coverageProvider: 'babel', coverageReporters: ['json-summary'], transform: {} };\n`);
+    const projected = runner('--projects', '../..', '-t', 'twice', '--coverageDirectory=apps/argus/coverage');
+    expect_that('a filtered run that names the repository as its project and the suite\'s folder from there is refused before jest runs, and the full summary is byte-for-byte', projected.status === 2 && projected.said.includes('jest would write its coverage there') && readFileSync(summaryPath, 'utf8') === full, projected.said.slice(-400));
     // A filtered run held while a whole run publishes: the filtered run ends well and the new full report stands,
     // whether or not there was a report when the filtered run began.
     for (const startsWith of ['a report', 'no report']) {
