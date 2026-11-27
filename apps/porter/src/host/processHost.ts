@@ -17,8 +17,8 @@
  * @module
  */
 import { spawn as childSpawn, type ChildProcess } from 'node:child_process';
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, type Stats } from 'node:fs';
-import { join, sep } from 'node:path';
+import { closeSync, constants, fchmodSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, existsSync, realpathSync, writeSync, type Stats } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { berthKey_compute, berth_pathIn, berthUrl_isAlive, closing_write } from '@fnndsc/calypso/berth';
 import { sessionEnv_build } from './sessionEnv.js';
 import { restartLine_render, type Berth, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
@@ -243,6 +243,40 @@ const SETTLE_FS: SettleFs = {
 };
 
 /**
+ * Writes the file naming a session's identity, never through a link or
+ * something other than a file standing at its name: opened without
+ * following one, as a regular file of this account's, 0600.
+ *
+ * @param path - The file.
+ * @param identity - The identity it names.
+ * @throws {Error} When something other than this account's own file stands at the name.
+ *
+ * @example
+ * ```ts
+ * identityFile_write('/var/lib/porter/ab12/identity', 'stratus:oci@me@https://cube.example.org/api/v1/');
+ * ```
+ */
+export function identityFile_write(path: string, identity: string): void {
+  let handle: number;
+  try {
+    handle = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  } catch {
+    throw new Error(`the session's identity file ${path} is not a file of its own`);
+  }
+  try {
+    const found: Stats = fstatSync(handle);
+    if (!found.isFile() || (typeof process.getuid === 'function' && found.uid !== process.getuid())) {
+      throw new Error(`the session's identity file ${path} is not a file of its own`);
+    }
+    fchmodSync(handle, 0o600);
+    ftruncateSync(handle, 0);
+    writeSync(handle, `${identity}\n`, 0, 'utf-8');
+  } finally {
+    closeSync(handle);
+  }
+}
+
+/**
  * Makes a session's folder, or settles one already there: it must be a real
  * folder (not a link), this account's, inside `within`, and it is left 0700
  * whatever mode it had. The folder is opened as a directory without
@@ -261,6 +295,8 @@ const SETTLE_FS: SettleFs = {
  * ```
  */
 export function sessionDir_settle(dir: string, within: string, fs: SettleFs = SETTLE_FS): void {
+  // Asked of the names first, so nothing is made outside `within` by a path that leaves it.
+  if (!resolve(dir).startsWith(`${resolve(within)}${sep}`)) throw new Error(`the session folder ${dir} lies outside ${within}`);
   fs.dir_make(dir, { recursive: true, mode: 0o700 });
   let handle: number;
   try {
@@ -273,11 +309,12 @@ export function sessionDir_settle(dir: string, within: string, fs: SettleFs = SE
     if (!found.isDirectory()) throw new Error(`the session folder ${dir} is not a folder of its own`);
     if (typeof process.getuid === 'function' && found.uid !== process.getuid()) throw new Error(`the session folder ${dir} belongs to another account`);
     if (!fs.path_real(dir).startsWith(`${fs.path_real(within)}${sep}`)) throw new Error(`the session folder ${dir} lies outside ${within}`);
-    if ((found.mode & 0o777) !== 0o700) {
+    // Every mode bit, setgid and sticky among them: the folder is its owner's, and nothing else.
+    if ((found.mode & 0o7777) !== 0o700) {
       fs.open_chmod(handle, 0o700);
       found = fs.open_stat(handle);
     }
-    if ((found.mode & 0o777) !== 0o700) throw new Error(`the session folder ${dir} could not be made private`);
+    if ((found.mode & 0o7777) !== 0o700) throw new Error(`the session folder ${dir} could not be made private`);
     const named: Stats = fs.name_stat(dir);
     if (named.isSymbolicLink() || named.dev !== found.dev || named.ino !== found.ino) throw new Error(`the session folder ${dir} changed while it was checked`);
   } finally {
@@ -514,7 +551,7 @@ export class ProcessHost implements SessionHost {
     if (launch.kind === 'stratus') {
       // The daemon's berth names its cloud identity; this names the session's,
       // so a porter restarted adopts it under the key its cookie holds.
-      writeFileSync(join(root, 'identity'), `${record.identity}\n`, { encoding: 'utf-8', mode: 0o600 });
+      identityFile_write(join(root, 'identity'), record.identity);
       // The door the session can be raised at: a READ session asks the person's password once and is MANAGE after (D14).
       if (launch.door !== undefined) {
         own['CALYPSO_ELEVATION_URL'] = launch.door.cubeUrl;

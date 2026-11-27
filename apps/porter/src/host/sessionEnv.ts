@@ -52,8 +52,12 @@ const SESSION_ADDRESSES: ReadonlySet<string> = new Set(['HTTP_PROXY', 'HTTPS_PRO
 const PORTER_PREFIX: string = 'PORTER_';
 
 /**
- * Whether a value is a plain web address: `http:` or `https:`, with no
- * user, password, query or fragment, any of which can carry a credential.
+ * Whether a value is a plain web address: `http:` or `https:`, a host and
+ * perhaps a port, and nothing else, written exactly as the address is.
+ * A user, password, path, query or fragment can carry a credential, and a
+ * value a reader would normalise (a backslash, spaces, a line break) is not
+ * passed on as something another reader may take differently: the value
+ * must already be its own origin, with at most a closing `/`.
  *
  * @param value - The value as set.
  * @returns True for a plain address.
@@ -62,17 +66,18 @@ const PORTER_PREFIX: string = 'PORTER_';
  * ```ts
  * address_isPlain('http://proxy.example.org:3128'); // true
  * address_isPlain('http://me:pw@proxy.example.org'); // false
+ * address_isPlain('https://door.example.org/t/abc'); // false
  * ```
  */
 export function address_isPlain(value: string): boolean {
   let url: URL;
   try {
-    url = new URL(value.trim());
+    url = new URL(value);
   } catch {
     return false;
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-  return url.username === '' && url.password === '' && url.search === '' && url.hash === '' && !value.includes('?') && !value.includes('#');
+  return value === url.origin || value === `${url.origin}/`;
 }
 
 /**

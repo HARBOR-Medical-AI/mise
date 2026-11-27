@@ -7,12 +7,12 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hostControl_parseArgv } from '@fnndsc/calypso';
 import * as nodeFs from 'node:fs';
-import { ProcessHost, sessionDir_settle, type SettleFs, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
+import { identityFile_write, ProcessHost, sessionDir_settle, type SettleFs, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
 import { address_isPlain, sessionEnv_build, sessionEnv_withheld } from '../../src/host/sessionEnv.js';
 
 const IDENTITY: string = 'chris@https://cube.example.org/api/v1/';
@@ -277,5 +277,62 @@ describe('a folder swapped while it is checked', () => {
     await expect(host.spawn(IDENTITY, 'chris', 'https://cube.example.org/api/v1/', 'MINTED')).rejects.toThrow('changed while it was checked');
     expect(spawnCalls).toEqual([]);
     expect(seen.closed).toEqual(seen.opened);
+  });
+});
+
+// agy's attack on step 0 (EVIDENCE 2026-11-27, ~/Projects/mise-audit/agy/attack-0/): each case it broke, held.
+describe('what agy broke, held', () => {
+  it('passes on only an address that is exactly its own origin', () => {
+    expect(address_isPlain('http://proxy.example.org:3128')).toBe(true);
+    expect(address_isPlain('http://proxy.example.org:3128/')).toBe(true);
+    for (const bad of [
+      'http:\\\\proxy.example.org:3128', 'http://user\\@evil.example.org:3128',
+      '  http://proxy.example.org:3128\r\n', 'http://proxy\n.example.org:3128', 'http://proxy.example.org:3128 ',
+      'https://door.example.org/t/secret-door-token-999', 'http://proxy.example.org:3128/%40secret', 'HTTP://proxy.example.org',
+    ]) expect(address_isPlain(bad)).toBe(false);
+  });
+
+  it('makes nothing for a path that leaves where it must be', () => {
+    const root: string = join(stateDir, 'k');
+    mkdirSync(root);
+    expect(() => sessionDir_settle(join(root, '..', 'escaped'), root)).toThrow('lies outside');
+    expect(existsSync(join(stateDir, 'escaped'))).toBe(false);
+  });
+
+  it('clears setgid and sticky bits', () => {
+    for (const mode of [0o2700, 0o1700, 0o4700]) {
+      const dir: string = join(stateDir, `m${mode.toString(8)}`);
+      mkdirSync(dir);
+      chmodSync(dir, mode);
+      sessionDir_settle(dir, stateDir);
+      expect(statSync(dir).mode & 0o7777).toBe(0o700);
+    }
+  });
+
+  it('refuses a session whose root is a link, before any folder under it is touched', async () => {
+    process.env = { PATH: '/usr/bin' };
+    const host: ProcessHost = host_make();
+    const elsewhere: string = mkdtempSync(join(tmpdir(), 'porter-elsewhere-'));
+    try {
+      chmodSync(elsewhere, 0o755);
+      symlinkSync(elsewhere, join(host.dirs_build(IDENTITY).config, '..'));
+      await expect(host.spawn(IDENTITY, 'chris', 'https://cube.example.org/api/v1/', 'MINTED')).rejects.toThrow('not a folder of its own');
+      expect(spawnCalls).toEqual([]);
+      expect(statSync(elsewhere).mode & 0o777).toBe(0o755);
+      expect(existsSync(join(elsewhere, 'config'))).toBe(false);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('writes the identity file never through a link', () => {
+    const outside: string = join(stateDir, 'outside.txt');
+    writeFileSync(outside, 'kept\n');
+    symlinkSync(outside, join(stateDir, 'identity'));
+    expect(() => identityFile_write(join(stateDir, 'identity'), 'stratus:oci@x')).toThrow('not a file of its own');
+    expect(readFileSync(outside, 'utf8')).toBe('kept\n');
+    identityFile_write(join(stateDir, 'own'), 'stratus:oci@x');
+    expect(readFileSync(join(stateDir, 'own'), 'utf8')).toBe('stratus:oci@x\n');
+    expect(statSync(join(stateDir, 'own')).mode & 0o777).toBe(0o600);
   });
 });
