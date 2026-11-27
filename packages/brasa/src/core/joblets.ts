@@ -262,7 +262,7 @@ async function joblet_run(joblet: Joblet, context: JobContext, cwd: string): Pro
   try {
     envelopes = await jobletScope_run(joblet.number, (): Promise<CommandEnvelope[]> => sinkScope_run(sink, (): Promise<CommandEnvelope[]> => surfaceScope_run(standIn, (): Promise<CommandEnvelope[]> =>
       variableScope_fork((): Promise<CommandEnvelope[]> => cwdScope_run((): Promise<CommandEnvelope[]> =>
-        line_execute(joblet.line, { origin: `joblet:${joblet.number}`, id: key, ended: (code: number): void => { exit = code; } }), cwd)))));
+        line_execute(joblet.line, { apart: true, origin: `joblet:${joblet.number}`, id: key, ended: (code: number): void => { exit = code; } }), cwd)))));
   } finally {
     hold_give();
   }

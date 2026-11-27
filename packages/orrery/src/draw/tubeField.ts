@@ -16,6 +16,7 @@ import type { NodeState } from '../types/encoding.js';
 import { LAMP_BLOOM_MS, LAMP_BLOOM_REACH, LAMP_DIM, LAMP_FADE_MS, LAMP_WHITE } from './lamps.js';
 import { nebulaTexture_get } from './nebula.js';
 import type { Palette } from './palette.js';
+import { Made, drawn_release } from './release.js';
 import { PULSE_TRIP_MS, REPLAY_REST_MS, WAVE_STEP_MS } from './timing.js';
 import { TUBE_FRAGMENT, TUBE_VERTEX, tubeGeometry_get, tubeMesh_make, lineMesh_make, type LineRest, type TubeSpec } from './tubes.js';
 
@@ -92,6 +93,8 @@ export function tubeMode_derive(state: NodeState): number {
  */
 export class TubeField {
   private readonly host: TubeFieldHost;
+  /** What this field drew, let go together at a redraw. */
+  private readonly made: Made = new Made();
   private sets: TubeSet[] = [];
   private materials: THREE.ShaderMaterial[] = [];
   private glows: Map<string, THREE.Sprite> = new Map();
@@ -222,7 +225,7 @@ export class TubeField {
     geometry.setAttribute('aStart', new THREE.InstancedBufferAttribute(starts, 1));
     mesh.geometry = geometry;
     mesh.frustumCulled = false;
-    this.host.parent.add(mesh);
+    this.made.thing_add(this.host.parent, mesh);
     owner.tubes = mesh;
     if (mesh.material instanceof THREE.ShaderMaterial) {
       this.materials.push(mesh.material);
@@ -241,7 +244,7 @@ export class TubeField {
   public census_build(specs: ReadonlyArray<TubeSpec>, deepest: number): void {
     if (specs.length === 0) return;
     const mesh: THREE.InstancedMesh = tubeMesh_make(specs, (deepest + 1) * WAVE_STEP_MS + PULSE_TRIP_MS / 2 + REPLAY_REST_MS);
-    this.host.parent.add(mesh);
+    this.made.thing_add(this.host.parent, mesh);
     if (mesh.material instanceof THREE.ShaderMaterial) this.materials.push(mesh.material);
     this.census = specs.length;
   }
@@ -258,7 +261,7 @@ export class TubeField {
   public censusLines_build(specs: ReadonlyArray<TubeSpec>, deepest: number, rest: LineRest): void {
     if (specs.length === 0) return;
     const lines: THREE.LineSegments = lineMesh_make(specs, (deepest + 1) * WAVE_STEP_MS + PULSE_TRIP_MS / 2 + REPLAY_REST_MS, rest);
-    this.host.parent.add(lines);
+    this.made.thing_add(this.host.parent, lines);
     if (lines.material instanceof THREE.ShaderMaterial) this.materials.push(lines.material);
     this.censusLines = specs.length;
   }
@@ -309,22 +312,27 @@ export class TubeField {
    */
   public release(mesh: THREE.InstancedMesh): void {
     this.host.parent.remove(mesh);
+    this.made.thing_forget(mesh);
     this.sets = this.sets.filter((set: TubeSet): boolean => set.mesh !== mesh);
-    mesh.geometry.dispose();
     if (mesh.material instanceof THREE.ShaderMaterial) {
       const material: THREE.ShaderMaterial = mesh.material;
       this.materials = this.materials.filter((m: THREE.ShaderMaterial): boolean => m !== material);
-      material.dispose();
     }
+    drawn_release(mesh);
   }
 
-  /** Forgets everything: the scene is being redrawn (its parent already cleared). */
+  /**
+   * Lets go of every set of tubes, line and glow it drew, and forgets them: the scene is being redrawn.
+   *
+   * @example
+   * field.clear();
+   */
   public clear(): void {
+    this.made.all_release();
     this.materials = [];
     this.census = 0;
     this.censusLines = 0;
     this.sets = [];
-    for (const glow of this.glows.values()) glow.material.dispose();
     this.glows = new Map();
   }
 
@@ -335,12 +343,12 @@ export class TubeField {
     this.sets = [];
     for (const set of stale) {
       this.host.parent.remove(set.mesh);
-      set.mesh.geometry.dispose();
+      this.made.thing_forget(set.mesh);
       if (set.mesh.material instanceof THREE.ShaderMaterial) {
         const material: THREE.ShaderMaterial = set.mesh.material;
         this.materials = this.materials.filter((m: THREE.ShaderMaterial): boolean => m !== material);
-        material.dispose();
       }
+      drawn_release(set.mesh);
       set.owner.tubes = null;
       this.build(set.owner, set.entries, set.members);
     }
@@ -379,7 +387,8 @@ export class TubeField {
       glow.visible = false;
       if (this.host.sphere(id) === undefined) {
         this.host.parent.remove(glow);
-        glow.material.dispose();
+        this.made.thing_forget(glow);
+        drawn_release(glow);
         this.glows.delete(id);
       }
     }
@@ -411,7 +420,7 @@ export class TubeField {
         transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
       }));
       this.glows.set(id, glow);
-      this.host.parent.add(glow);
+      this.made.thing_add(this.host.parent, glow);
     }
     const radius: number = (sphere.geometry as THREE.BufferGeometry & { parameters?: { radius?: number } }).parameters?.radius ?? 0.55;
     // Out fast, then settle: the glow swells to its reach and fades.

@@ -89,6 +89,27 @@ export interface VFSProvider {
   prefix: string;
 
   /**
+   * Whether this mount's `cp` copies out of the mount into the fallback's
+   * tree (a PACS pull into a feed's folder). Absent or false, the mount
+   * copies only within itself, and the dispatcher refuses any other pair.
+   */
+  readonly copiesOut?: boolean;
+
+  /**
+   * Proves that nothing stands at a path this mount owns.
+   *
+   * A mount that can tell "not there" from "could not be read" offers this;
+   * true is a proof (the place was looked at, whole, and is empty of that
+   * name), and false is anything less: a refusal, an outage, a listing
+   * that did not come back complete, or simply not knowing. A mount that
+   * does not offer it never proves absence.
+   *
+   * @param path - A path at or under this mount's prefix.
+   * @returns True only when the path is proved absent.
+   */
+  absence_prove?(path: string): Promise<boolean>;
+
+  /**
    * Lists the contents of a directory matching this provider.
    *
    * @param path - The absolute virtual directory path.

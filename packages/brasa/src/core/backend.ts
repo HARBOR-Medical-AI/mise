@@ -15,7 +15,7 @@
 import type { JobSource } from './runner.js';
 import type { PromptContext, CubeTelemetry, JobsStateTelemetry, CommandEnvelope, WatchState, Task } from '@fnndsc/menu';
 import type { ReferenceValue } from '../lib/parser.js';
-import type { ListingLook, VFSDispatcher } from '@fnndsc/fond';
+import type { ListingLook, PathStanding, VFSDispatcher } from '@fnndsc/fond';
 import type { ListingItem } from '@fnndsc/menu';
 import type { ArgumentKind } from './argumentKinds.js';
 import type { CommandDeclaration } from './commandDeclaration.js';
@@ -324,6 +324,19 @@ export interface Backend {
   readonly lineStatuses?: ReadonlyArray<LineStatusProvider>;
   /** What it does with words the registry does not answer. */
   readonly fallback?: BackendFallback;
+  /**
+   * Runs a line of input as one piece of the backend's work. A backend that
+   * must know which of its sessions a piece of work was begun under (ChRIS:
+   * who was connected then, so that an answer that comes back after someone
+   * else has connected is not kept as theirs) begins that knowledge here.
+   * `apart` says the line goes on by itself beside the work that began it
+   * (a joblet left in the background): it is then a piece of work of its
+   * own, and is not carried along with whatever its beginner goes on to do.
+   * It may be called again for a line run inside a line (a batch's command,
+   * a manifest's line), inside the outer call: it must be safe to make
+   * within itself. Absent, a line is simply run.
+   */
+  readonly work_run?: <T>(work: () => Promise<T>, apart?: boolean) => Promise<T>;
   /** Runs one command with administrator rights (`sudo`); absent, `sudo` is refused. */
   readonly elevate?: (credentials: ElevationCredentials, run: () => Promise<CommandEnvelope>) => Promise<CommandEnvelope>;
   /** Watches a subject a surface named (ChRIS: a feed's jobs), on behalf of an owner. */
@@ -337,6 +350,14 @@ export interface Backend {
     readonly write: (path: string, bytes: Buffer) => Promise<void>;
     /** Opens one file's bytes as a stream, never read whole; absent, a surface is served `read`'s buffer. */
     readonly stream?: (path: string) => Promise<FileByteStream>;
+    /**
+     * Where a path stands for this backend, asked after a read of it failed:
+     * `outside` its files altogether, proved `absent` from them, or
+     * `unknown`. Only the first two let a caller look for the file somewhere
+     * else (`play`, on the engine's own disk). Absent, every failed read is
+     * `unknown`.
+     */
+    readonly standing?: (path: string) => Promise<PathStanding>;
   };
   /** The long jobs it hands the core's runner, by kind (core/runner.ts); each is mounted under `/proc` as a task source. */
   readonly jobs?: ReadonlyArray<JobSource>;

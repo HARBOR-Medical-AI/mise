@@ -12,6 +12,7 @@ import * as path from 'path';
 import type { BuildCall, CloudBuilder, ShellSession } from '../cloud/builder.js';
 import type { NetStore } from '../net/state.js';
 import { vm_read, vmNet_read } from './build.js';
+import { sshOption_write, sshProxy_compose } from './quoting.js';
 import { VM_USER, type VmStore } from './state.js';
 
 /** What a line on a VM answered. */
@@ -43,9 +44,23 @@ export const SESSION_TTL_SECONDS: number = 10_800;
  * @returns The arguments, the destination last.
  */
 export function sshArgs_build(session: ShellSession, keyPath: string, privateIp: string): string[] {
+  const common: string[] = sshCommon_build(keyPath);
+  const proxy: string = sshProxy_compose(['ssh', ...common], ['-W', '%h:%p'], ['-o', 'Port=22', `${session.sessionId}@${session.host}`]);
+  return [...common, '-o', `ProxyCommand=${proxy}`, `${VM_USER}@${privateIp}`];
+}
+
+/**
+ * The options both hops share: the VM's key and no other, and the host keys
+ * kept beside it. The key is named by option, not by `-i`: `-i` wants the
+ * file to exist under the name as given and then expands percents in it, so
+ * a path with a percent in it could be written neither way.
+ *
+ * @param keyPath - The VM's private key.
+ * @returns The arguments.
+ */
+export function sshCommon_build(keyPath: string): string[] {
   const known: string = path.join(path.dirname(keyPath), 'known_hosts');
-  const common: string[] = ['-i', keyPath, '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', `UserKnownHostsFile=${known}`];
-  return [...common, '-o', `ProxyCommand=ssh ${common.join(' ')} -W %h:%p -p 22 ${session.sessionId}@${session.host}`, `${VM_USER}@${privateIp}`];
+  return ['-o', sshOption_write('IdentityFile', keyPath), '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', sshOption_write('UserKnownHostsFile', known)];
 }
 
 /**
@@ -80,8 +95,11 @@ export function sshRemote_make(args: ReadonlyArray<string>, signal: AbortSignal)
 export function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve): void => {
     if (signal.aborted || ms <= 0) { resolve(); return; }
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener('abort', (): void => { clearTimeout(timer); resolve(); }, { once: true });
+    // Whichever ends the pause takes the other down with it: the timer's end removes the listener (the
+    // callers loop on one signal for a whole build, and a listener left at each pause would pile up on it).
+    const abort_take = (): void => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout((): void => { signal.removeEventListener('abort', abort_take); resolve(); }, ms);
+    signal.addEventListener('abort', abort_take, { once: true });
   });
 }
 

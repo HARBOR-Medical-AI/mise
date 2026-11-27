@@ -210,9 +210,15 @@ const { chrisCommands } = await import('../src/chris/chrisCommands.js');
 (await import('../src/core/commandRegistry.js')).commands_register(chrisCommands);
 const { builtinCommand_has } = await import('../src/core/commandRegistry.js');
 // The ChRIS backend's fallback, watch and files: the session itself is mocked.
+/** What the backend's mark of a line saw: when a line's work began and ended. */
+const workMarks: string[] = [];
 (await import('../src/core/backend.js')).backend_install({
   id: 'chris',
   session: {} as never,
+  work_run: async <T>(work: () => Promise<T>): Promise<T> => {
+    workMarks.push('began');
+    try { return await work(); } finally { workMarks.push('ended'); }
+  },
   fallback: (await import('../src/chris/commandFallback.js')).chrisFallback,
   watch: (await import('../src/chris/watch.js')).chrisWatch,
   files: (await import('../src/chris/files.js')).chrisFiles,
@@ -236,6 +242,8 @@ beforeEach(() => {
       tty: false,
       pipeSegments: true,
       shellCommands: true,
+      // A local shell: the engine's disk is its operator's.
+      engineFilesystem: true,
     },
     prompt: async (): Promise<string> => '',
     pipeSegment: (command: string, input: Buffer): Promise<Buffer> => mockSegmentPipe(command, input) as Promise<Buffer>,
@@ -325,6 +333,25 @@ describe('line_execute', () => {
     await line_execute("ls 'it'\\''s' \"a\\\"b\" it\\'s");
     expect(mockLs).toHaveBeenCalledTimes(1);
     expect(mockLs).toHaveBeenCalledWith(expect.objectContaining({ operands: { path: ["it's", 'a"b', "it's"] } }));
+  });
+
+  it('is run as a piece of the backend\'s work: the whole line inside one mark, each command it holds inside that', async () => {
+    workMarks.length = 0;
+    mockWhoami.mockImplementationOnce(async (): Promise<void> => { workMarks.push('whoami'); });
+    const envelopes = await line_execute('whoami; whoami', { origin: 'a-surface' });
+    expect(envelopes).toHaveLength(2);
+    // The outermost mark opens before anything runs and closes after everything has.
+    expect(workMarks[0]).toBe('began');
+    expect(workMarks[workMarks.length - 1]).toBe('ended');
+    expect(workMarks.indexOf('whoami')).toBeGreaterThan(0);
+    // Every mark that was opened was closed, in order: marks nest and never cross.
+    let depth: number = 0;
+    for (const mark of workMarks) {
+      if (mark === 'began') depth += 1;
+      if (mark === 'ended') depth -= 1;
+      expect(depth).toBeGreaterThanOrEqual(mark === 'whoami' ? 1 : 0);
+    }
+    expect(depth).toBe(0);
   });
 
   it('dispatches a plain command end-to-end and returns one envelope', async () => {
@@ -474,6 +501,24 @@ describe('output redirection', () => {
     expect(mockAppendFile).toHaveBeenCalledWith('out.txt', expect.any(Buffer));
   });
 
+  it.each([['>'], ['>>']])('refuses %s by name where the engine\'s disk is nobody\'s: nothing is written and the command does not run', async (operator: string) => {
+    surface_set({
+      capabilities: { hiddenInput: false, localEdit: false, tty: false, pipeSegments: true, shellCommands: true, engineFilesystem: false },
+      prompt: async (): Promise<string> => '',
+      pipeSegment: (_c: string, i: Buffer): Promise<Buffer> => Promise.resolve(i),
+      shellCommand: async (): Promise<number> => 0,
+      localEdit: async (r: { content: string }): Promise<{ content: string; changed: boolean }> => ({ content: r.content, changed: false }),
+    });
+    process.exitCode = 0;
+    const envelopes = await line_execute(`whoami ${operator} out.txt`);
+    expect(envelopes).toEqual([{ status: 'error', rendered: '' }]);
+    expect(mockWhoami).not.toHaveBeenCalled();
+    expect(mockWriteFile).not.toHaveBeenCalled();
+    expect(mockAppendFile).not.toHaveBeenCalled();
+    expect(mockStatSync).not.toHaveBeenCalled();
+    expect(output.errText_get()).toContain(`redirect (${operator} out.txt): the session's host disk is nobody's; start the session with --host-control=files`);
+  });
+
   it('numbers the rows a redirected listing answered with, as the listing itself would', async () => {
     const { answerAdapters_register } = await import('../src/session/answerAdapters.js');
     const { answer_get } = await import('../src/session/answer.js');
@@ -560,6 +605,12 @@ describe('command_handle', () => {
 });
 
 describe('line_complete', () => {
+  it('is run as a piece of the backend\'s work, as a line is: what it fetches to complete with is kept by the same rule', async () => {
+    workMarks.length = 0;
+    await line_complete('l');
+    expect(workMarks).toEqual(['began', 'ended']);
+  });
+
   it('resolves the completer callback into candidates and prefix', async () => {
     const result = await line_complete('l');
     expect(mockInputComplete).toHaveBeenCalledWith('l', expect.any(Function));

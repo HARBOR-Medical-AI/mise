@@ -43,6 +43,11 @@
       "types": "./dist/io/transferPool.d.ts",
       "require": "./dist/io/transferPool.js"
     },
+    "./identity-epoch": {
+      "import": "./dist/connect/identityEpoch.js",
+      "types": "./dist/connect/identityEpoch.d.ts",
+      "require": "./dist/connect/identityEpoch.js"
+    },
     "./package.json": "./package.json",
     "./login-failure": {
       "import": "./dist/connect/loginFailure.js",

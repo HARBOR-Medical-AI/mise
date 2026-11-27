@@ -15,7 +15,20 @@
 import { Result, Ok, Err } from "../result.js";
 import { errorStack } from "../errorStack.js";
 import { VFSProvider, VFSItem, CpOptions, type VFSSubtree } from "./provider.js";
+import * as path from "path";
+
 import { vfs_ok, vfs_fail, type VfsOutcome } from "./outcome.js";
+
+/**
+ * A path in the one spelling mounts are matched by: from the root, with no
+ * `.`, `..`, doubled or trailing slash.
+ *
+ * @param pathStr - The path as written.
+ * @returns The same path, canonical.
+ */
+function path_canonicalize(pathStr: string): string {
+  return path.posix.resolve("/", pathStr);
+}
 
 /**
  * The fallback when none is given: it holds nothing, and says so by name
@@ -31,6 +44,9 @@ const VFS_FALLBACK_NONE: VFSProvider = {
     return vfs_fail("ENOENT", `cp: no mount serves ${src}`);
   },
 };
+
+/** Where a path stands in a session's tree (`VFSDispatcher.path_standing`). */
+export type PathStanding = 'outside' | 'absent' | 'unknown';
 
 /**
  * Routes filesystem requests to the mount that owns each path, or to the
@@ -101,6 +117,38 @@ export class VFSDispatcher {
       (p: VFSProvider) => absolutePath === p.prefix || absolutePath.startsWith(p.prefix + "/")
     );
     return match || this.defaultProvider;
+  }
+
+  /**
+   * Where a path stands for the session that owns this tree.
+   *
+   * `outside`: no mount serves it and the fallback holds nothing, so the
+   * path is not this tree's at all. `absent`: the mount that owns it has
+   * proved nothing is there (`absence_prove`). `unknown`: anything else,
+   * a mount that cannot prove absence, a proof that failed, or a path
+   * above a mount.
+   *
+   * A caller that would look somewhere else for a file (the engine's own
+   * disk) may do so on `outside` or `absent`, and never on `unknown`: a
+   * read that failed is not a file that is missing.
+   *
+   * @param pathStr - The absolute path.
+   * @returns Where it stands.
+   */
+  async path_standing(pathStr: string): Promise<PathStanding> {
+    const target: string = path_canonicalize(pathStr);
+    const provider: VFSProvider = this.provider_get(target);
+    if (provider === this.defaultProvider && !this.path_isVirtual(target)) {
+      if (provider === VFS_FALLBACK_NONE) return 'outside';
+    } else if (provider === this.defaultProvider) {
+      return 'unknown';
+    }
+    if (provider.absence_prove === undefined) return 'unknown';
+    try {
+      return (await provider.absence_prove(target)) ? 'absent' : 'unknown';
+    } catch {
+      return 'unknown';
+    }
   }
 
   /**
@@ -251,20 +299,64 @@ export class VFSDispatcher {
   }
 
   /**
-   * Copies within or between paths, through the provider that owns the source.
+   * The mount that owns a path, or none.
    *
-   * @param src - Source path.
-   * @param dest - Destination path.
+   * {@link provider_get} answers the fallback for whatever no mount claims,
+   * and that includes a path that is only a parent of mounts (`/net` above
+   * `/net/pacs`), which the fallback has no folder behind. Such a path has
+   * no owner: nothing can be copied out of it or into it.
+   *
+   * @param pathStr - The absolute path.
+   * @returns The owning mount or the fallback; null for a parent of mounts.
+   */
+  private owner_find(pathStr: string): VFSProvider | null {
+    const provider: VFSProvider = this.provider_get(pathStr);
+    return provider === this.defaultProvider && this.path_isVirtual(pathStr) ? null : provider;
+  }
+
+  /**
+   * Copies within a mount, or out of a mount that offers it into the
+   * fallback; any other pair of mounts answers `EXDEV`.
+   *
+   * A mount's `cp` is given two paths and treats both as its own, so a copy
+   * handed to the source's mount with a destination it does not own writes
+   * somewhere nobody asked for. Who owns each path is settled here, before
+   * either mount is asked anything, and again once the paths are resolved,
+   * since a resolver can answer a path another mount owns:
+   *
+   * - both paths in one mount: that mount copies;
+   * - the source in a mount that declares `copiesOut`, the destination in
+   *   the fallback: the source's mount copies, and the destination is
+   *   resolved as the fallback resolves its own paths;
+   * - anything else, a parent of mounts on either side included: `EXDEV`.
+   *
+   * @param asked - Source path.
+   * @param askedDest - Destination path.
    * @param options - Copy options.
    * @returns Done, or why not.
    */
-  async cp(src: string, dest: string, options: CpOptions): Promise<VfsOutcome> {
-    const provider: VFSProvider = this.provider_get(src);
-    const from: VfsOutcome<string> = await this.pathFor_provider(provider, src, 'source path', 'cp');
+  async cp(asked: string, askedDest: string, options: CpOptions): Promise<VfsOutcome> {
+    // One spelling for every question: `/./etc/x` and `/etc/x` are one path,
+    // and a mount is found by its prefix, letter for letter.
+    const src: string = path_canonicalize(asked);
+    const dest: string = path_canonicalize(askedDest);
+    const source: VFSProvider | null = this.owner_find(src);
+    const destination: VFSProvider | null = this.owner_find(dest);
+    if (source === null) return vfs_fail('EXDEV', `cp: ${src} is a folder of mounts, and holds nothing of its own to copy`);
+    if (destination === null) return vfs_fail('EXDEV', `cp: ${dest} is a folder of mounts, and nothing is copied into it`);
+    const across: boolean = source !== destination;
+    if (across && !(source.copiesOut === true && destination === this.defaultProvider)) {
+      return vfs_fail('EXDEV', `cp: ${src} and ${dest} are on different mounts, and no copy between them is offered`);
+    }
+    const from: VfsOutcome<string> = await this.pathFor_provider(source, src, 'source path', 'cp');
     if (!from.ok) return from;
-    const to: VfsOutcome<string> = await this.pathFor_provider(provider, dest, 'destination path', 'cp');
+    const to: VfsOutcome<string> = await this.pathFor_provider(destination, dest, 'destination path', 'cp');
     if (!to.ok) return to;
-    return provider.cp(from.value, to.value, options);
+    const fromPath: string = path_canonicalize(from.value);
+    const toPath: string = path_canonicalize(to.value);
+    if (this.owner_find(fromPath) !== source) return vfs_fail('EXDEV', `cp: ${src} resolves to ${fromPath}, which another mount owns`);
+    if (this.owner_find(toPath) !== destination) return vfs_fail('EXDEV', `cp: ${dest} resolves to ${toPath}, which another mount owns`);
+    return source.cp(fromPath, toPath, options);
   }
 
   /**

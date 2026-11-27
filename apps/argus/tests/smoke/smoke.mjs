@@ -2921,6 +2921,65 @@ try {
     JSON.stringify({ tokenLength: attach.token, leaks: attach.leaks, reveals: attach.reveals }));
   }
 
+  if (await stage('attach-retry')) {
+  // The surface attaches before it wires anything, so a token the daemon refuses leaves nothing wired: the
+  // next attempt is made on the same page (no reload), the good token is never put in the address, and one
+  // press of a toggle then toggles once.
+  const here = await evalIn(`return { href: location.href, token: new URLSearchParams(location.search).get('token') ?? '' };`);
+  if (here.token === '') {
+    console.log('  attach-retry: skipped, this page was not reached by a token in its address');
+  } else {
+    const ready = `for (let i = 0; i < 120 && !/READY/.test(document.getElementById('drawer-status')?.textContent ?? ''); i++) await sleep(500);`;
+    // 1. The page is opened with a token the daemon refuses.
+    await evalIn(`const to = new URL(location.href); to.searchParams.set('token', 'refused-by-the-smoke'); location.assign(to.href); return 1;`).catch(() => 1);
+    await new Promise((r) => setTimeout(r, 1500));
+    const refused = await evalIn(`
+      const form = document.getElementById('attach-form');
+      for (let i = 0; i < 60 && (form?.classList.contains('attach-hidden') ?? true); i++) await sleep(250);
+      return { shown: form !== null && !form.classList.contains('attach-hidden'), why: document.getElementById('attach-error')?.textContent ?? '' };`);
+    check('a refused token brings the form back and says why', refused.shown === true && refused.why.length > 0, JSON.stringify(refused));
+    // 2. The good token is typed, and submitted twice at once (the button and Enter). The page is marked
+    //    first: a page loaded afresh would not carry the mark.
+    await evalIn(`
+      window.__smokeSamePage = 'the page of the refusal';
+      const input = document.getElementById('attach-token');
+      input.value = ${JSON.stringify(here.token)};
+      document.getElementById('attach-submit').click();
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      return 1;`).catch(() => 1);
+    await new Promise((r) => setTimeout(r, 2000));
+    // 3. The same page: attached, READY said once, nothing handed over a reload, the good token nowhere in the address.
+    const fresh = await evalIn(`
+      ${ready}
+      const drawer = document.getElementById('drawer');
+      const toggle = document.getElementById('drawer-toggle');
+      const before = drawer.classList.contains('drawer-closed');
+      toggle.click(); await sleep(500);
+      const once = drawer.classList.contains('drawer-closed');
+      toggle.click(); await sleep(500);
+      const twice = drawer.classList.contains('drawer-closed');
+      let kept = null;
+      try { kept = sessionStorage.getItem('argus.attach.retry'); } catch { kept = 'storage refused'; }
+      return {
+        samePage: window.__smokeSamePage === 'the page of the refusal',
+        readies: [...document.querySelectorAll('.term-line, .console-line, #drawer-status')].filter((el) => /READY/.test(el.textContent ?? '')).length,
+        ready: /READY/.test(document.getElementById('drawer-status')?.textContent ?? ''),
+        formHidden: document.getElementById('attach-form')?.classList.contains('attach-hidden') ?? false,
+        kept,
+        inAddress: location.href.includes(${JSON.stringify(here.token)}),
+        before, once, twice,
+      };`);
+    check('the second attempt attaches on the same page: nothing was wired by the refusal, so nothing is reloaded', fresh.samePage === true && fresh.ready === true && fresh.formHidden === true, JSON.stringify({ samePage: fresh.samePage, ready: fresh.ready, formHidden: fresh.formHidden, readies: fresh.readies }));
+    check('nothing is left kept for a reload, and the token is not in the address', fresh.kept === null && fresh.inAddress === false, JSON.stringify({ kept: fresh.kept === null ? null : 'left behind', inAddress: fresh.inAddress }));
+    check('one press of the console lid toggles it once, and a second puts it back',
+      fresh.once === !fresh.before && fresh.twice === fresh.before, JSON.stringify({ before: fresh.before, once: fresh.once, twice: fresh.twice }));
+    // The page is put back as the suite found it: its own address, token and all.
+    await evalIn(`location.assign(${JSON.stringify(here.href)}); return 1;`).catch(() => 1);
+    await new Promise((r) => setTimeout(r, 1500));
+    await evalIn(`${ready} return 1;`);
+  }
+  }
+
   if (await stage('pane-ask')) {
   // A question the surface asks stands on the pane that asked it. The
   // console is closed here on purpose: that is the state the question used
@@ -4252,6 +4311,273 @@ try {
   check('a file the session cannot read is handed over as nothing, and the console says why',
     dl.stalePressed && handed.length === 1 && dl.lines.some((l) => /smoke-download\.csv: the session could not read that file — nothing was saved$/.test(l)),
     JSON.stringify({ lines: dl.lines, handed }));
+  }
+
+  if (await stage('large-transfer')) {
+  // A large file up and down again through the page: the bytes are the same bytes, and the page answers a
+  // press while each is in flight. The file is made here (so many mebibytes of a pattern). It goes into a
+  // folder of this run's own: made by a mkdir that fails on a name that is taken, entered and shown by the
+  // files pane before anything is sent up, and the only thing removed afterwards, whatever happened in
+  // between (as file-kinds does). The size is SMOKE_TRANSFER_MIB (24 unless set): large beside what the
+  // other stages move, small beside the upload limit, since it is written to a real CUBE.
+  const transferMib = Math.max(1, Number(process.env.SMOKE_TRANSFER_MIB ?? '24') || 24);
+  const moved = await evalIn(`
+    const MIB = 1024 * 1024;
+    const size = ${transferMib} * MIB;
+    const hex = (buffer) => [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    document.getElementById('gutter-files').click(); await sleep(800);
+    const fp = () => [...document.querySelectorAll('.pane-files')].find(p => p.offsetParent !== null);
+    const term = console_input();
+    const say = async (line, ms) => { term.value = line;
+      term.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await sleep(ms); await console_settled(); };
+    const named = (n) => [...fp().querySelectorAll('.files-row')].find(r => r.querySelector('.files-name')?.textContent.trim() === n);
+    const click = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const settle = async (want, tries = 60, step = 500) => { for (let i = 0; i < tries; i++) { await sleep(step); if (want()) return true; } return false; };
+    const folder = 'smoke-transfer-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    await say('cd ~', 2500);
+    const homeAt = () => window.__argusPromptContext?.cwd ?? '';
+    await settle(() => /^[/]home[/][^/]+$/.test(homeAt()), 20);
+    const place = homeAt() + '/' + folder;
+    if (!/^[/]home[/][^/]+[/]smoke-transfer-[a-z0-9]+-[a-z0-9]+$/.test(place)) return { error: 'no home to make the folder in: ' + homeAt() };
+    // The folder is this run's only when this run made it: the receipt is mkdir's own line for this exact path.
+    const mkdirMark = console_mark();
+    await say('mkdir ' + place, 2500);
+    const receipt = 'Created directory: ' + place;
+    const made = await settle(() => console_since(mkdirMark, '\\n').split('\\n').some((l) => l.trim() === receipt), 20);
+    if (!made) return { error: 'mkdir ' + place + ' gave no receipt: nothing was sent up, nothing is removed' };
+    // What this stage puts on the page's own objects is taken off again at its end: the stages after it
+    // find the page as the stages before it left it.
+    const anchorClick = HTMLAnchorElement.prototype.click;
+    const handoffsBefore = window.__argusHandoffs;
+    const realFetch = window.fetch;
+    const realSend = XMLHttpRequest.prototype.send;
+    const realOpen = XMLHttpRequest.prototype.open;
+    // The two byte requests for this run's own file, each followed from its beginning to its end: the POST
+    // of its bytes, and the GET that downloads it. Nothing else on the byte route counts (a progress poll,
+    // another file): a press is "mid-flight" only while that very request is.
+    const flights = { up: null, down: null };
+    const kind_of = (method, url) => {
+      const asked = new URL(String(url), window.location.href);
+      if (!/[/]vfs$/.test(asked.pathname) || asked.searchParams.get('path') !== place + '/large.bin') return null;
+      const verb = String(method).toUpperCase();
+      if (verb === 'POST') return 'up';
+      return verb === 'GET' && asked.searchParams.get('download') === '1' ? 'down' : null;
+    };
+    try {
+    const handoffs = [];
+    HTMLAnchorElement.prototype.click = function () {
+      if (this.download) { handoffs.push({ name: this.download, href: this.href }); return; }
+      return anchorClick.call(this);
+    };
+    window.fetch = function (input, init) {
+      const kind = kind_of(init?.method ?? (input instanceof Request ? input.method : 'GET'), input instanceof Request ? input.url : input);
+      const flight = realFetch.call(this, input, init);
+      if (kind === null) return flight;
+      const mine = { done: false };
+      if (flights[kind] === null) flights[kind] = mine;
+      const end = () => { mine.done = true; };
+      // A download is in flight until its body has been read, not merely until its headers have come.
+      return flight.then((response) => {
+        if (kind === 'up' || response.body === null) { end(); return response; }
+        const reader = response.body.getReader();
+        const body = new ReadableStream({
+          async pull(controller) { const part = await reader.read(); if (part.done) { end(); controller.close(); } else controller.enqueue(part.value); },
+          cancel() { end(); return reader.cancel(); },
+        });
+        return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+      }, (error) => { end(); throw error; });
+    };
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) { this.__smokeKind = kind_of(method, url); return realOpen.call(this, method, url, ...rest); };
+    XMLHttpRequest.prototype.send = function (...args) {
+      const kind = this.__smokeKind;
+      if (kind !== null && kind !== undefined) { const mine = { done: false }; if (flights[kind] === null) flights[kind] = mine; this.addEventListener('loadend', () => { mine.done = true; }, { once: true }); }
+      return realSend.apply(this, args);
+    };
+    // A press made while a transfer is observed in flight, answered while it still is: the console lid goes
+    // there and back. A transfer that had ended before the press, or ends before the answer, does not count.
+    const lid_pressDuring = async (which) => {
+      const began = await settle(() => flights[which] !== null, 200, 25);
+      const flight = flights[which];
+      if (!began || flight === null || flight.done) return { began: false, answered: false, stillFlying: false, ms: -1 };
+      const drawer = document.getElementById('drawer'); const toggle = document.getElementById('drawer-toggle');
+      const before = drawer.classList.contains('drawer-closed');
+      const at = performance.now();
+      toggle.click(); await sleep(60);
+      const flipped = drawer.classList.contains('drawer-closed') !== before;
+      toggle.click(); await sleep(60);
+      const back = drawer.classList.contains('drawer-closed') === before;
+      // The same request that was in flight at the press is in flight still, and the page did not stall.
+      return { began: true, answered: flipped && back, stillFlying: !flight.done, ms: Math.round(performance.now() - at) };
+    };
+
+    await say('cd ' + place, 2500);
+    const there = await settle(() => homeAt() === place, 60);
+    if (!there) return { error: 'the session did not move to ' + place + ' (it is at ' + homeAt() + '): nothing was sent up' };
+    const paneAt = () => fp()?.querySelector('.files-crumb-here')?.dataset.path ?? null;
+    const shown = await settle(() => paneAt() === place, 60);
+    if (!shown) return { error: 'the files pane shows ' + paneAt() + ', not ' + place + ': nothing was sent up' };
+    const bytes = new Uint8Array(size);
+    for (let at = 0; at < size; at += 4096) bytes[at] = (at / 4096) % 251;
+    bytes[size - 1] = 7;
+    const sent = hex(await crypto.subtle.digest('SHA-256', bytes));
+    const chooser = fp().querySelector('.files-upload-input');
+    if (paneAt() !== place) return { error: 'the files pane moved to ' + paneAt() + ' before the file was chosen: nothing was sent up' };
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes], 'large.bin', { type: 'application/octet-stream' }));
+    chooser.files = dt.files;
+    chooser.dispatchEvent(new Event('change', { bubbles: true }));
+    const upPress = await lid_pressDuring('up');
+    const uploaded = await settle(() => named('large.bin'), 360);
+    if (!uploaded) return { error: 'large.bin did not appear in ' + place, upPress };
+    click(named('large.bin')); await sleep(700);
+    const verb = [...fp().querySelectorAll('.files-row-zone .listing-action')].find(b => b.textContent.trim() === 'DOWNLOAD') ?? null;
+    if (verb !== null) verb.click();
+    const downPress = await lid_pressDuring('down');
+    const handedOver = await settle(() => handoffs.length > 0, 360);
+    const handoff = handoffs[0] ?? null;
+    let got = null; let gotSize = -1;
+    if (handoff !== null) {
+      const back = await (await realFetch.call(window, handoff.href)).arrayBuffer();
+      gotSize = back.byteLength;
+      got = hex(await crypto.subtle.digest('SHA-256', back));
+    }
+    return { size, sent, got, gotSize, pressed: verb !== null, handedOver, name: handoff?.name ?? null, upPress, downPress };
+    } finally {
+      HTMLAnchorElement.prototype.click = anchorClick;
+      window.__argusHandoffs = handoffsBefore;
+      window.fetch = realFetch;
+      XMLHttpRequest.prototype.send = realSend;
+      XMLHttpRequest.prototype.open = realOpen;
+      await say('cd ~', 2500);
+      await say('rm -r ' + place, 6000);
+    }`);
+  if (moved.error !== undefined) {
+    check(`a ${transferMib} MiB file goes up through the page and comes down the same bytes`, false, JSON.stringify(moved));
+  } else {
+    check(`a ${transferMib} MiB file goes up through the page and comes down the same bytes`,
+      moved.pressed && moved.handedOver && moved.name === 'large.bin' && moved.gotSize === moved.size && moved.got === moved.sent,
+      JSON.stringify({ ...moved, sent: moved.sent?.slice(0, 12), got: moved.got?.slice(0, 12) }));
+    check('a press made while the upload is seen in flight is answered within a second, while it still is',
+      moved.upPress.began && moved.upPress.answered && moved.upPress.stillFlying && moved.upPress.ms < 1000, JSON.stringify(moved.upPress));
+    check('a press made while the download is seen in flight is answered within a second, while it still is',
+      moved.downPress.began && moved.downPress.answered && moved.downPress.stillFlying && moved.downPress.ms < 1000, JSON.stringify(moved.downPress));
+  }
+  }
+
+  if (await stage('file-kinds')) {
+  // The byte route serves a file as nothing a browser would run: every file
+  // says nosniff, a page or a script is plain bytes to save, and an SVG or a
+  // PDF is an attachment. What a surface does with a file must survive that:
+  // a PNG and an SVG are drawn in the pane (an `img` draws an attachment), and
+  // DOWNLOAD hands a PDF over under its own name, whole. Proven at the
+  // hand-off, as file-download is.
+  await evalIn(`
+    window.__argusHandoffs = [];
+    if (!window.__argusHandoffWrapped) {
+      window.__argusHandoffWrapped = true;
+      const press = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () {
+        if (this.download) {
+          const entry = { name: this.download, href: this.href, text: null };
+          window.__argusHandoffs.push(entry);
+          if (this.href.startsWith('blob:')) fetch(this.href).then((r) => r.text()).then((t) => { entry.text = t; }).catch(() => { entry.text = '(unreadable)'; });
+          return;
+        }
+        return press.call(this);
+      };
+    }
+    return true;`);
+  const PDF_TEXT = '%PDF-1.4 a stand-in, every byte of it invented';
+  const kinds = await evalIn(`
+    document.getElementById('gutter-files').click(); await sleep(800);
+    const fp = () => [...document.querySelectorAll('.pane-files')].find(p => p.offsetParent !== null);
+    const term = console_input();
+    const say = async (line, ms) => { term.value = line;
+      term.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await sleep(ms); await console_settled(); };
+    const named = (n) => [...fp().querySelectorAll('.files-row')].find(r => r.querySelector('.files-name')?.textContent.trim() === n);
+    const click = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const settle = async (want, tries = 60) => { for (let i = 0; i < tries; i++) { await sleep(500); if (want()) return true; } return false; };
+    const close_press = () => [...fp().querySelectorAll('.files-content-header button')].find((b) => b.textContent.trim() === 'CLOSE')?.click();
+    const downloadVerb = () => [...fp().querySelectorAll('.files-row-zone .listing-action')].find(b => b.textContent.trim() === 'DOWNLOAD') ?? null;
+    // A folder of this run's own, under a name no other run or person has: the
+    // session may be one somebody is using. Nothing is sent up until the
+    // session stands in exactly that folder, and only that folder is removed
+    // afterwards, whatever happened in between.
+    const folder = 'smoke-kinds-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    await say('cd ~', 2500);
+    const homeAt = () => window.__argusPromptContext?.cwd ?? '';
+    await settle(() => /^[/]home[/][^/]+$/.test(homeAt()), 20);
+    const place = homeAt() + '/' + folder;
+    if (!/^[/]home[/][^/]+[/]smoke-kinds-[a-z0-9]+-[a-z0-9]+$/.test(place)) return { error: 'no home to make the folder in: ' + homeAt() };
+    // The folder is this run's only when this run made it: mkdir without -p
+    // fails on a name that is taken, and then nothing is removed afterwards.
+    // The receipt is mkdir's own line for this exact path, read from what the
+    // console said after this line was sent: a status shared by every line the
+    // session runs could be another line's.
+    const mkdirMark = console_mark();
+    await say('mkdir ' + place, 2500);
+    const receipt = 'Created directory: ' + place;
+    const made = await settle(() => console_since(mkdirMark, '\\n').split('\\n').some((l) => l.trim() === receipt), 20);
+    if (!made) return { error: 'mkdir ' + place + ' gave no receipt: nothing was sent up, nothing is removed' };
+    try {
+    await say('cd ' + place, 2500);
+    const there = await settle(() => homeAt() === place, 60);
+    if (!there) return { error: 'the session did not move to ' + place + ' (it is at ' + homeAt() + '): nothing was sent up' };
+    // A pane sends files to the folder it shows, which is its own and may lag
+    // the session's: the chooser is touched only when the pane shows this folder.
+    const paneAt = () => fp()?.querySelector('.files-crumb-here')?.dataset.path ?? null;
+    const shown = await settle(() => paneAt() === place, 60);
+    if (!shown) return { error: 'the files pane shows ' + paneAt() + ', not ' + place + ': nothing was sent up' };
+    const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEklEQVR4nGP4z8DwH4QZYAwAR8oH+Rq28akAAAAASUVORK5CYII='), (c) => c.charCodeAt(0));
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="7" height="5"><rect width="7" height="5" fill="red"/></svg>';
+    const chooser = fp().querySelector('.files-upload-input');
+    if (paneAt() !== place) return { error: 'the files pane moved to ' + paneAt() + ' before the files were chosen: nothing was sent up' };
+    const dt = new DataTransfer();
+    dt.items.add(new File([png], 'dot.png', { type: 'image/png' }));
+    dt.items.add(new File([svg], 'dot.svg', { type: 'image/svg+xml' }));
+    dt.items.add(new File([${JSON.stringify(PDF_TEXT)}], 'paper.pdf', { type: 'application/pdf' }));
+    chooser.files = dt.files;
+    chooser.dispatchEvent(new Event('change', { bubbles: true }));
+    const uploaded = await settle(() => named('dot.png') && named('dot.svg') && named('paper.pdf'), 140);
+    // One image opened in the pane: its drawn size, and what the route said of its bytes.
+    const drawn = async (name) => {
+      const row = named(name); if (!row) return { error: 'no row' };
+      click(row.querySelector('.listing-control') ?? row);
+      let image = null;
+      await settle(() => { image = fp().querySelector('.files-image'); return image !== null && image.complete && image.naturalWidth > 0; }, 40);
+      if (image === null) return { error: 'no image view' };
+      const said = await fetch(image.src).then((r) => ({ sniff: r.headers.get('x-content-type-options'), type: r.headers.get('content-type'), saved: (r.headers.get('content-disposition') ?? '').startsWith('attachment'), policy: r.headers.get('content-security-policy') })).catch(() => null);
+      const out = { width: image.naturalWidth, height: image.naturalHeight, said };
+      close_press(); await sleep(600);
+      await settle(() => named(name), 20);
+      return out;
+    };
+    const pngDrawn = await drawn('dot.png');
+    const svgDrawn = await drawn('dot.svg');
+    let pressed = false;
+    if (named('paper.pdf')) {
+      click(named('paper.pdf')); await sleep(700);
+      const verb = downloadVerb();
+      if (verb !== null) { verb.click(); pressed = true; }
+      await settle(() => /download: paper\\.pdf/.test(console_text()), 60);
+    }
+    for (let i = 0; i < 20 && (window.__argusHandoffs ?? []).some((h) => h.text === null); i++) await sleep(150);
+    const handed = (window.__argusHandoffs ?? []).map((h) => ({ name: h.name, blob: h.href.startsWith('blob:'), text: h.text }));
+    close_press(); await sleep(300);
+    return { uploaded, pngDrawn, svgDrawn, pressed, handed };
+    } finally {
+      await say('cd ~', 2500);
+      await say('rm -r ' + place, 3000);
+    }`);
+  check('a PNG and an SVG from the store are drawn in the files pane',
+    kinds.error === undefined && kinds.uploaded && kinds.pngDrawn.width === 2 && kinds.pngDrawn.height === 3 && kinds.svgDrawn.width === 7 && kinds.svgDrawn.height === 5,
+    JSON.stringify(kinds));
+  check('their bytes say nosniff and a sandbox, and the SVG is an attachment that an img still draws',
+    kinds.error === undefined && kinds.pngDrawn.said?.sniff === 'nosniff' && kinds.svgDrawn.said?.sniff === 'nosniff' && /^sandbox/.test(kinds.svgDrawn.said?.policy ?? '') && kinds.svgDrawn.said?.type === 'image/svg+xml' && kinds.svgDrawn.said?.saved === true && kinds.pngDrawn.said?.saved === false,
+    JSON.stringify(kinds.error ?? { png: kinds.pngDrawn, svg: kinds.svgDrawn }));
+  check('DOWNLOAD hands a PDF over under its own name, whole',
+    kinds.error === undefined && kinds.pressed && kinds.handed.length === 1 && kinds.handed[0].name === 'paper.pdf' && kinds.handed[0].blob && kinds.handed[0].text === PDF_TEXT,
+    JSON.stringify(kinds.error ?? { pressed: kinds.pressed, handed: kinds.handed }));
   }
 
   if (await stage('folder-download')) {

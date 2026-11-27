@@ -12,7 +12,7 @@
  */
 
 import { chrisConnection } from "../connect/chrisConnection.js";
-import { itemData_get, items_get, listData_get, resource_call, type Client } from "../chrisapi/adapter.js";
+import { DATA_CARRIER_SHAPE, ShapeError, itemData_get, items_get, listData_get, resource_call, type Client, type DataCarrier, shape_nullable, shape_object, shape_build, type Shape } from "../chrisapi/adapter.js";
 import { pipelineRecord_keep, pipelineRecord_recall, pipelineResource_keep } from "./pipelineMemo.js";
 import { listPages_drain, type ListPage } from "../chrisapi/contract.js";
 import { ChRISResourceGroup } from "../resources/chrisResourceGroup.js";
@@ -41,6 +41,40 @@ interface IdRecord {
   id: number;
 }
 
+/** A record whose id is used as a number. */
+const ID_SHAPE: Shape<IdRecord> = shape_build<IdRecord>('a record')(['id', 'number']);
+
+/** A list item that carries a record with an id. */
+interface IdItem {
+  /** The record. */
+  data: IdRecord;
+}
+
+/** A list item whose data's id is used as a number. */
+const ID_ITEM_SHAPE: Shape<IdItem> = shape_build<IdItem>('a list item')(['data', ID_SHAPE]);
+
+/** A list resource read for its items: they are fetched by calling it; whether there is a next page is read when it says. */
+const ITEM_LIST_SLICE_SHAPE: Shape<ItemListSlice> = shape_build<ItemListSlice>('a list')(['getItems', 'function'], ['hasNextPage', 'boolean?']);
+
+/** A pipeline source file in a list: its file name is split as text, and its pipeline's name read as text when there. */
+const SOURCE_FILE_ITEM_SHAPE: Shape<PipelineSourceFileItem> = shape_build<PipelineSourceFileItem>('a pipeline source file')(
+  ['data', shape_build<PipelineSourceFileItem['data']>('a pipeline source file')(['fname', 'string'], ['pipeline_name', 'string?'])],
+);
+
+/** A page of pipelines: its items are fetched by calling it, and its rows read from its data. */
+interface PipelinePage {
+  /** Fetches the page's items. */
+  getItems: () => unknown;
+  /** The page's rows; read through a shape of their own. */
+  data?: unknown;
+}
+
+/** A page of pipelines as searched by name. */
+const PIPELINE_PAGE_SHAPE: Shape<PipelinePage> = shape_build<PipelinePage>('a page of pipelines')(['getItems', 'function']);
+
+/** A workflow just made: a resource whose data and instances are read through checks of their own. */
+const WORKFLOW_SHAPE: Shape<DataCarrier> = shape_object<DataCarrier>('a workflow');
+
 /** How many pipelines a name search reads: exact names seldom collide. */
 const PIPELINE_SEARCH_LIMIT: number = 100;
 
@@ -60,14 +94,27 @@ export class ChRISPipelineGroup extends ChRISResourceGroup {
 export interface PipelineRecord {
   id: number;
   name: string;
-  description?: string;
-  authors?: string;
-  category?: string;
-  locked?: boolean;
+  description?: string | null;
+  authors?: string | null;
+  category?: string | null;
+  locked?: boolean | null;
   /** Filesystem-safe slug derived from the pipeline source filename (e.g. "Varus_valgus_full_4crg2N7"). */
-  slug?: string;
+  slug?: string | null;
   [key: string]: unknown;
 }
+
+/** A pipeline as CUBE answers: its id is used as a number (a key, an argument) and its name as text. */
+const PIPELINE_RECORD_SHAPE: Shape<PipelineRecord> = shape_build<PipelineRecord>('a pipeline')(['id', 'number'], ['name', 'string']);
+
+/**
+ * A pipeline as a row of a listing table. Such a row holds the fields that
+ * were asked for, as the table made them (its id is text cut from an
+ * address unless the id field was asked for), so nothing in it is held to
+ * a kind here; those who read it check what they read.
+ */
+const PIPELINE_TABLE_ROW_SHAPE: Shape<PipelineRecord> = shape_build<PipelineRecord>('a pipeline row')(
+  ['id', 'number'], ['name', 'string'], ['description', 'string?|null'], ['authors', 'string?|null'], ['category', 'string?|null'], ['locked', 'boolean?|null'], ['slug', 'string?|null'],
+);
 
 /**
  * Per-node override for a workflow execution.
@@ -117,7 +164,7 @@ export async function pipelines_list(
     const params: PipelineSearchParams = search ? { name: search } : {};
     const result = await group.asset.resources_getAll(params);
     if (!result || !result.tableData) return Ok([]);
-    return Ok(listData_get<PipelineRecord>({ data: result.tableData }));
+    return Ok(listData_get({ data: result.tableData }, PIPELINE_TABLE_ROW_SHAPE));
   } catch (error: unknown) {
     const msg: string = error instanceof Error ? error.message : String(error);
     errorStack.stack_push('error', `pipelines_list: ${msg}`);
@@ -144,26 +191,52 @@ export async function pipeline_resolve(
     errorStack.stack_push('error', 'Not connected to ChRIS');
     return Err();
   }
+  // What was typed may itself name an id (a number, or a slug ending `_idN`). That id is the answer's, or
+  // there is no answer: a pipeline remembered under the same words for another reason (its name happens
+  // to be those words) does not stand in for it, and neither does one a search by name turns up.
+  const wantedID: number | null = specifierID_read(nameOrId);
   const kept: PipelineRecord | null = pipelineRecord_recall(client, nameOrId);
-  if (kept !== null) return Ok(kept);
+  if (kept !== null && (wantedID === null || kept.id === wantedID)) return Ok(kept);
   const resolved: Result<PipelineRecord> = await pipelineResolve_fetch(client, nameOrId);
+  if (resolved.ok && wantedID !== null && resolved.value.id !== wantedID) {
+    errorStack.stack_push('error', `No pipeline matching '${nameOrId}'`);
+    return Err();
+  }
   if (resolved.ok) pipelineRecord_keep(client, nameOrId, resolved.value);
   return resolved;
 }
 
+/** A pipeline's item as a listing served it, with the id it is kept under. */
+interface KeptItem {
+  /** The pipeline's id. */
+  id: number;
+  /** The chrisapi item. */
+  item: DataCarrier;
+}
+
 /**
- * Keeps the chrisapi items a pipeline listing served, by id, so the
- * pipings can be read off them without listing the pipeline again.
+ * Reads the chrisapi items a pipeline listing served, each with its id,
+ * so that they can be kept and the pipings read off them without listing
+ * the pipeline again. Nothing is kept here: the whole page is read, and
+ * may be refused, before any of it goes into the memo.
  *
- * @param client - The connection's client.
  * @param page - The list response.
+ * @returns The items, each with its pipeline's id.
+ * @throws {ShapeError} When the page's items are not a list of resources, or one carries no data or data that is not a pipeline's.
  */
-function pipelineItems_keep(client: Client, page: unknown): void {
-  const items: Array<{ data?: unknown }> = items_get<{ data?: unknown }>(page as { getItems(): unknown });
-  for (const item of items) {
-    const data: IdRecord | null = itemData_get<IdRecord>(item);
-    if (data && typeof data.id === 'number') pipelineResource_keep(client, data.id, item);
+function pipelineItems_read(page: PipelinePage): KeptItem[] {
+  const items: DataCarrier[] = items_get(page, DATA_CARRIER_SHAPE);
+  const kept: KeptItem[] = [];
+  for (let at: number = 0; at < items.length; at++) {
+    const item: DataCarrier = items[at];
+    // Held to what a pipeline is, as a later read of the kept item will hold it: an item that is not one,
+    // or that carries nothing, fails the page here at its place, and is never kept or passed over.
+    const carried: unknown = item.data;
+    if (carried === undefined || carried === null) throw new ShapeError('a list of a pipeline', `items[${String(at)}].data`, carried === null ? 'null' : 'missing', 'an object');
+    const data: PipelineRecord = PIPELINE_RECORD_SHAPE.value_check(carried, `items[${String(at)}].data`, 'a list of a pipeline');
+    kept.push({ id: data.id, item });
   }
+  return kept;
 }
 
 /**
@@ -173,6 +246,69 @@ function pipelineItems_keep(client: Client, page: unknown): void {
  * @param nameOrId - Pipeline name or numeric ID.
  * @returns Result containing the matched PipelineRecord.
  */
+/**
+ * The id that what was typed names by itself, if it names one: all digits
+ * are an id, and a `/bin` slug ends in the id it was minted from.
+ *
+ * @param specifier - What was typed.
+ * @returns The id, or null when the words name none.
+ */
+function specifierID_read(specifier: string): number | null {
+  if (/^\d+$/.test(specifier)) return parseInt(specifier, 10);
+  const slug: RegExpMatchArray | null = specifier.match(/_id(\d+)$/);
+  return slug === null ? null : parseInt(slug[1], 10);
+}
+
+/**
+ * Reads one pipeline by its id, and keeps its item for the pipings to be
+ * read off. What is kept and answered is the pipeline that was asked for:
+ * an answer with no data is no pipeline (nothing is kept), and an answer
+ * that is another pipeline's is refused.
+ *
+ * @param client - The connection's client.
+ * @param pipelineID - The id asked for.
+ * @returns The pipeline's record, or null when CUBE answers none.
+ * @throws {ShapeError} When the answer is not a pipeline, or is not the one asked for.
+ */
+async function pipelineByID_read(client: Client, pipelineID: number): Promise<PipelineRecord | null> {
+  const pipeline: DataCarrier | null = await resource_call(client, shape_nullable(DATA_CARRIER_SHAPE), 'getPipeline', pipelineID);
+  if (pipeline === null) return null;
+  const data: PipelineRecord | null = itemData_get(pipeline, PIPELINE_RECORD_SHAPE);
+  if (data === null) return null;
+  if (data.id !== pipelineID) throw new ShapeError('a pipeline', 'data.id', "another pipeline's", `pipeline ${String(pipelineID)}'s`);
+  pipelineResource_keep(client, data.id, pipeline);
+  return data;
+}
+
+/**
+ * Reads the pipeline a slug's id names, as one way among several of
+ * finding it. An answer that is not a pipeline, or is another's, is said
+ * and is a failure: it is not a miss to be searched around. Anything else
+ * (CUBE has no such id, CUBE cannot be reached) is a miss, and leaves the
+ * other ways to be tried.
+ *
+ * @param client - The connection's client.
+ * @param pipelineID - The id the slug names.
+ * @returns The record; null on a miss; a failure, with the reason on the error stack, on a malformed answer.
+ */
+async function pipelineBySlugID_read(client: Client, pipelineID: number): Promise<Result<PipelineRecord | null>> {
+  try {
+    return Ok(await pipelineByID_read(client, pipelineID));
+  } catch (error: unknown) {
+    if (!(error instanceof ShapeError)) return Ok(null);
+    errorStack.stack_push('error', `pipeline_resolve: ${error.message}`);
+    return Err();
+  }
+}
+
+/**
+ * Finds one pipeline by what a person typed: its id, a `/bin` slug that
+ * names its id, its exact name, or a source file's name.
+ *
+ * @param client - The connection's client.
+ * @param nameOrId - What was typed.
+ * @returns The pipeline's record, or a failure with the reason on the error stack.
+ */
 async function pipelineResolve_fetch(
   client: Client,
   nameOrId: string
@@ -181,13 +317,11 @@ async function pipelineResolve_fetch(
   if (isNumericID) {
     const numericId: number = parseInt(nameOrId, 10);
     try {
-      const pipeline = await client.getPipeline(numericId);
-      const data: PipelineRecord | null = itemData_get<PipelineRecord>(pipeline);
+      const data: PipelineRecord | null = await pipelineByID_read(client, numericId);
       if (!data) {
         errorStack.stack_push('error', `Pipeline with ID ${numericId} not found`);
         return Err();
       }
-      pipelineResource_keep(client, data.id, pipeline as object);
       return Ok(data);
     } catch (error: unknown) {
       const msg: string = error instanceof Error ? error.message : String(error);
@@ -204,28 +338,30 @@ async function pipelineResolve_fetch(
   // means it.
   const slugID: RegExpMatchArray | null = nameOrId.match(/_id(\d+)$/);
   if (slugID) {
-    try {
-      const pipeline = await client.getPipeline(parseInt(slugID[1], 10));
-      const data: PipelineRecord | null = itemData_get<PipelineRecord>(pipeline);
-      if (data) {
-        pipelineResource_keep(client, data.id, pipeline as object);
-        return Ok(data);
-      }
-    } catch (_e: unknown) {}
+    const bySlug: Result<PipelineRecord | null> = await pipelineBySlugID_read(client, parseInt(slugID[1], 10));
+    if (!bySlug.ok) return Err();
+    if (bySlug.value) return Ok(bySlug.value);
   }
 
   // The search is read as a page, not through pipelines_list, so the items
   // it served can be kept: a pipeline's pipings hang off its item.
-  let page: unknown;
+  // The whole answer is read, and held to what is read of it, before any of it is kept: a page whose items
+  // or rows are not what they should be is an error on the stack, and leaves the memo as it was.
+  let found: PipelineRecord[];
+  let served: KeptItem[];
   try {
-    page = await resource_call<unknown>(client, 'getPipelines', { name: nameOrId, limit: PIPELINE_SEARCH_LIMIT });
+    const page: PipelinePage = await resource_call(client, PIPELINE_PAGE_SHAPE, 'getPipelines', { name: nameOrId, limit: PIPELINE_SEARCH_LIMIT });
+    found = listData_get(page, PIPELINE_RECORD_SHAPE);
+    served = pipelineItems_read(page);
   } catch (error: unknown) {
     const msg: string = error instanceof Error ? error.message : String(error);
     errorStack.stack_push('error', `pipelines_list: ${msg}`);
     return Err();
   }
-  pipelineItems_keep(client, page);
-  const found: PipelineRecord[] = listData_get<PipelineRecord>(page as { data?: unknown });
+  for (const one of served) pipelineResource_keep(client, one.id, one.item);
+  // A slug's id is the pipeline it means: one that a search by name turns up under another id is not it.
+  const slugWanted: number | null = specifierID_read(nameOrId);
+  if (slugWanted !== null) found = found.filter((p: PipelineRecord): boolean => p.id === slugWanted);
   const exact: PipelineRecord | undefined = found.find(
     (p: PipelineRecord) => p.name === nameOrId
   );
@@ -237,22 +373,17 @@ async function pipelineResolve_fetch(
     const idSuffixMatch: RegExpMatchArray | null = nameOrId.match(/_id(\d+)$/);
     if (idSuffixMatch) {
       const directId: number = parseInt(idSuffixMatch[1], 10);
-      try {
-        const pipeline = await fallbackClient.getPipeline(directId);
-        const directData: PipelineRecord | null = itemData_get<PipelineRecord>(pipeline);
-        if (directData) {
-          pipelineResource_keep(client, directData.id, pipeline as object);
-          return Ok(directData);
-        }
-      } catch (_e: unknown) {}
+      const direct: Result<PipelineRecord | null> = await pipelineBySlugID_read(fallbackClient, directId);
+      if (!direct.ok) return Err();
+      if (direct.value) return Ok(direct.value);
     }
 
     // Slug fallback: treat nameOrId as a source file fname fragment
     try {
-      const sfList: ItemListSlice = await resource_call<ItemListSlice>(
-        fallbackClient, 'getPipelineSourceFiles', { fname: nameOrId, limit: 1 }
+      const sfList: ItemListSlice = await resource_call(
+        fallbackClient, ITEM_LIST_SLICE_SHAPE, 'getPipelineSourceFiles', { fname: nameOrId, limit: 1 }
       );
-      const sfItems: PipelineSourceFileItem[] = items_get<PipelineSourceFileItem>(sfList).filter(
+      const sfItems: PipelineSourceFileItem[] = items_get(sfList, SOURCE_FILE_ITEM_SHAPE).filter(
         (item: PipelineSourceFileItem) => {
           const base: string = item.data.fname.split('/').pop() ?? '';
           return base.replace(/\.(ya?ml)$/i, '') === nameOrId;
@@ -260,14 +391,21 @@ async function pipelineResolve_fetch(
       );
       if (sfItems.length > 0 && sfItems[0].data.pipeline_name) {
         const byName: Result<PipelineRecord[]> = await pipelines_list(sfItems[0].data.pipeline_name);
-        if (byName.ok) {
-          const exactByName: PipelineRecord | undefined = byName.value.find(
-            (p: PipelineRecord) => p.name === sfItems[0].data.pipeline_name
-          );
-          if (exactByName) return Ok(exactByName);
-        }
+        // A listing that failed has said why; that is the answer, not "no such pipeline".
+        if (!byName.ok) return Err();
+        const exactByName: PipelineRecord | undefined = byName.value.find(
+          (p: PipelineRecord) => p.name === sfItems[0].data.pipeline_name
+        );
+        if (exactByName) return Ok(exactByName);
       }
-    } catch (_e: unknown) {}
+    } catch (error: unknown) {
+      // A source-file answer that is not what is read is said, with its place: it is not a miss. Anything
+      // else (CUBE would not answer) leaves this way of finding the pipeline untried, as before.
+      if (error instanceof ShapeError) {
+        errorStack.stack_push('error', `pipeline_resolve: ${error.message}`);
+        return Err();
+      }
+    }
     
     errorStack.stack_push('error', `No pipeline matching '${nameOrId}'`);
     return Err();
@@ -311,16 +449,16 @@ export async function pipeline_createWorkflow(
 
       const pipings: Array<{ data: IdRecord }> = await listPages_drain(
         async (offset: number, limit: number): Promise<ListPage<{ data: IdRecord }>> => {
-          const response: ItemListSlice = await resource_call<ItemListSlice>(
-            pipeline, 'getPluginPipings', { limit, offset }
+          const response: ItemListSlice = await resource_call(
+            pipeline, ITEM_LIST_SLICE_SHAPE, 'getPluginPipings', { limit, offset }
           );
-          return { data: items_get<{ data: IdRecord }>(response), totalCount: null, hasMore: response.hasNextPage };
+          return { data: items_get(response, ID_ITEM_SHAPE), totalCount: null, hasMore: response.hasNextPage };
         },
       );
       nodes_info = pipings.map((p: { data: IdRecord }) => ({ piping_id: p.data.id }));
     }
 
-    const workflow: object | null = await resource_call<object | null>(client, 'createWorkflow', pipelineId, {
+    const workflow: object | null = await resource_call(client, shape_nullable(WORKFLOW_SHAPE), 'createWorkflow', pipelineId, {
       previous_plugin_inst_id: options.previousPluginInstId,
       nodes_info: JSON.stringify(nodes_info),
     });
@@ -330,7 +468,7 @@ export async function pipeline_createWorkflow(
       return Err();
     }
 
-    const workflowRecord: IdRecord | null = itemData_get<IdRecord>(workflow);
+    const workflowRecord: IdRecord | null = itemData_get(workflow, ID_SHAPE);
     if (!workflowRecord) {
       errorStack.stack_push('error', 'createWorkflow response carried no data');
       return Err();
@@ -339,10 +477,10 @@ export async function pipeline_createWorkflow(
 
     const instances: Array<{ data: IdRecord }> = await listPages_drain(
       async (offset: number, limit: number): Promise<ListPage<{ data: IdRecord }>> => {
-        const response: ItemListSlice = await resource_call<ItemListSlice>(
-          workflow, 'getPluginInstances', { limit, offset }
+        const response: ItemListSlice = await resource_call(
+          workflow, ITEM_LIST_SLICE_SHAPE, 'getPluginInstances', { limit, offset }
         );
-        return { data: items_get<{ data: IdRecord }>(response), totalCount: null, hasMore: response.hasNextPage };
+        return { data: items_get(response, ID_ITEM_SHAPE), totalCount: null, hasMore: response.hasNextPage };
       },
     );
     const pluginInstanceIds: number[] = instances.map(

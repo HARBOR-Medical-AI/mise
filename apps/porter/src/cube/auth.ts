@@ -11,12 +11,24 @@
 import { loginFailure_classify, loginFailure_lines, type LoginFailure } from '@fnndsc/cumin/login-failure';
 
 /** What CUBE said to a login. */
-export interface TokenMint {
-  /** The token, when CUBE issued one. */
-  token: string | null;
-  /** Why not, when it did not: CUBE's status, or the network's word. */
-  reason?: string;
-}
+export type TokenMint =
+  | {
+    /** The token CUBE issued. */
+    token: string;
+  }
+  | {
+    token: null;
+    /**
+     * What kind of no this is. `rejected`: CUBE heard the name and the
+     * password and refused them. `unavailable`: no verdict on the password
+     * was given at all (CUBE unreachable, a certificate it could not be
+     * trusted by, a failure of its own, an answer with no token in it).
+     * Only the first says anything about the password.
+     */
+    why: 'rejected' | 'unavailable';
+    /** The words for the person: CUBE's status, or the network's word. */
+    reason: string;
+  };
 
 /** The shape of `fetch` this module needs, so a test can stand one in. */
 export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: string }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
@@ -47,16 +59,19 @@ export async function cubeToken_mint(
     // fetch nests the network's word under `cause`: an untrusted certificate
     // or an unreachable host says so, as chell's login does (#965).
     const failure: LoginFailure = loginFailure_classify(error);
-    if (failure.kind === 'tls' || failure.kind === 'network') return { token: null, reason: loginFailure_lines(failure, cubeUrl).join(' ') };
-    return { token: null, reason: `CUBE unreachable: ${error instanceof Error ? error.message : String(error)}` };
+    if (failure.kind === 'tls' || failure.kind === 'network') return { token: null, why: 'unavailable', reason: loginFailure_lines(failure, cubeUrl).join(' ') };
+    return { token: null, why: 'unavailable', reason: `CUBE unreachable: ${error instanceof Error ? error.message : String(error)}` };
   }
   if (!response.ok) {
-    return { token: null, reason: response.status === 400 || response.status === 401 ? 'CUBE refused the login' : `CUBE answered ${response.status}` };
+    // CUBE says 400 to a name and password it does not know, and 401 or 403 to one it will not let in: those
+    // are verdicts on the credentials. Anything else is CUBE's own trouble, and says nothing of the password.
+    const rejected: boolean = response.status === 400 || response.status === 401 || response.status === 403;
+    return { token: null, why: rejected ? 'rejected' : 'unavailable', reason: response.status === 400 || response.status === 401 ? 'CUBE refused the login' : `CUBE answered ${response.status}` };
   }
   const body: unknown = await response.json();
   const token: unknown = typeof body === 'object' && body !== null ? (body as { token?: unknown }).token : undefined;
   if (typeof token !== 'string' || token.length === 0) {
-    return { token: null, reason: 'CUBE answered without a token' };
+    return { token: null, why: 'unavailable', reason: 'CUBE answered without a token' };
   }
   return { token };
 }

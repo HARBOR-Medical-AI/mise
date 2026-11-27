@@ -15,7 +15,7 @@
  * @module
  */
 import { vfsUrl_build } from './routes.js';
-import type { ClosingCause } from '@fnndsc/menu';
+import type { ClosingCause, PromptMessage } from '@fnndsc/menu';
 import type { SurfaceSeen } from '../app/restart.js';
 import { type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry,
   CONTRACT_VERSION,
@@ -51,7 +51,56 @@ export interface SurfaceAsk {
   suggest?: string;
   path?: PromptPath;
   commit?: string;
+  /** The id this surface gave the line that raised the question, when the daemon says. */
+  executeId?: string;
+  /** What the question is for, as a name the command and a surface share, when the command names one. */
+  purpose?: string;
+  /** What it is about, by name (`vm`, `account`). */
+  subject?: Record<string, string>;
 }
+
+/**
+ * How a line is run through the session.
+ *
+ * @example
+ * ```ts
+ * await client.line_execute('vm build store', { operator: true, line_sent: (id) => { mine = id; } });
+ * ```
+ */
+export interface ExecuteOptions {
+  /** Swallows the live output: a pane draws the answer. */
+  silent?: boolean;
+  /** False keeps the envelopes from the observers. */
+  observe?: boolean;
+  /** Marks a silent line as the operator's own act, so it is not instrument traffic and may ask a question. */
+  operator?: boolean;
+  /** Aborted while the line runs, asks the daemon to cancel this one line. */
+  signal?: AbortSignal;
+  /** Told the id this line is given, before it is sent: its events and questions are told from another line's by it. */
+  line_sent?: (id: string) => void;
+}
+
+/**
+ * Reads a question off the wire as the surface is asked it.
+ *
+ * @param message - The prompt message.
+ * @returns The question, with whose line raised it and what it is for when the daemon says.
+ */
+function surfaceAsk_read(message: PromptMessage): SurfaceAsk {
+  return {
+    message: message.message,
+    kind: promptKind_derive(message),
+    ...(message.path?.suggest === undefined ? {} : { suggest: message.path.suggest }),
+    ...(message.path === undefined ? {} : { path: message.path }),
+    ...(message.commit === undefined ? {} : { commit: message.commit }),
+    ...(message.executeId === undefined ? {} : { executeId: message.executeId }),
+    ...(message.purpose === undefined ? {} : { purpose: message.purpose }),
+    ...(message.subject === undefined ? {} : { subject: message.subject }),
+  };
+}
+
+/** Why a held client cannot be handed over. */
+const HELD_CLOSED: string = 'the daemon closed the connection before the surface was ready';
 
 /** The surface tag the daemon puts on session-bus envelopes it originates itself. */
 const DAEMON_SURFACE: string = 'daemon';
@@ -128,6 +177,8 @@ export function attachBackend_get(attach: AttachInfo): string {
 export interface ExecuteOutcome {
   envelopes: WireEnvelope[];
   liveChannels: Set<'data' | 'err'>;
+  /** The line's exit status, as the daemon says it; absent from a daemon that predates it. */
+  exitCode?: number;
 }
 
 /**
@@ -234,6 +285,22 @@ export interface CompleteOutcome {
   prefix: string;
 }
 
+/**
+ * A session attached: the client that speaks to it, and what the daemon said
+ * of it when it acknowledged the attach.
+ *
+ * @example
+ * ```ts
+ * const { client, attach } = await ArgusClient.session_attachHeld(url, token);
+ * ```
+ */
+export interface AttachedSession {
+  /** The client. */
+  client: ArgusClient;
+  /** The attach facts. */
+  attach: AttachInfo;
+}
+
 /** A pending completion request awaiting its correlated reply. */
 interface PendingComplete {
   resolve: (outcome: CompleteOutcome) => void;
@@ -251,7 +318,7 @@ interface PendingComplete {
  */
 export class ArgusClient {
   private readonly socket: WebSocket;
-  private readonly handlers: ClientHandlers;
+  private handlers: ClientHandlers;
   /** The attach token, reused to authorise byte-route fetches. */
   private readonly token: string;
   private readonly pending: Map<string, PendingExecute> = new Map();
@@ -264,12 +331,145 @@ export class ArgusClient {
   /** Whether what this surface runs is mirrored into a terminal console (mirror_set). */
   private mirroring: boolean = false;
 
-  private constructor(socket: WebSocket, handlers: ClientHandlers, token: string) {
+  private constructor(socket: WebSocket, handlers: ClientHandlers, token: string, held: boolean = false) {
     this.socket = socket;
     this.handlers = handlers;
     this.token = token;
-    this.socket.onmessage = (event: MessageEvent): void => this.message_handle(String(event.data));
-    this.socket.onclose = (): void => this.handlers.close_handle?.();
+    this.held = held ? [] : null;
+    this.socket.onmessage = (event: MessageEvent): void => {
+      // Held: what the session says before the page's handlers exist waits for them, in order.
+      if (this.held !== null) { this.held.push(String(event.data)); return; }
+      this.message_handle(String(event.data));
+    };
+    this.socket.onclose = (): void => {
+      if (this.held !== null) {
+        this.heldClosed = true;
+        for (const told of this.closeWaiters.splice(0)) told();
+        return;
+      }
+      this.handlers.close_handle?.();
+    };
+  }
+
+  /** Told when the socket closes while the client is held. */
+  private readonly closeWaiters: Array<() => void> = [];
+
+  /** What the session sent while the client was held, in the order it came; null once handlers are installed. */
+  private held: string[] | null;
+
+  /** True when the socket closed while the client was held. */
+  private heldClosed: boolean = false;
+
+  /**
+   * Opens a WebSocket to a daemon and performs the attach handshake, with no
+   * handlers yet: whatever the session sends after it acknowledges the attach
+   * is held, with the socket it came on, until `handlers_install`. A page can
+   * so attach first and wire itself only once it is attached, and a refused
+   * attach has wired nothing.
+   *
+   * @param url - The daemon's WebSocket URL.
+   * @param token - The daemon's attach token.
+   * @returns The attached client, held, and the attach facts.
+   * @throws {Error} As `session_attach`.
+   *
+   * @example
+   * ```
+   * const held = await ArgusClient.session_attachHeld(url, token);
+   * held.client.handlers_install(handlers); // ... set up ...
+   * held.client.held_release();
+   * ```
+   */
+  public static session_attachHeld(url: string, token: string): Promise<AttachedSession> {
+    return ArgusClient.attach_open(url, token, {}, true);
+  }
+
+  /**
+   * Gives a held client its handlers. It goes on holding what the session
+   * sends: nothing reaches a handler until `held_release`, so the page can
+   * finish setting up (its client bound, the attach's facts applied) first.
+   *
+   * @param handlers - The page's handlers.
+   * @throws {Error} When the socket closed while the client was held.
+   *
+   * @example
+   * ```
+   * held.client.handlers_install({ output_receive, close_handle });
+   * ```
+   */
+  public handlers_install(handlers: ClientHandlers): void {
+    if (this.held !== null && this.heldClosed) throw new Error(HELD_CLOSED);
+    this.handlers = handlers;
+  }
+
+  /**
+   * Hands the installed handlers, in order, what the session sent while the
+   * client was held, and stops holding. A handler that throws stops the
+   * hand-over with its error: the client stays held, and is the caller's to
+   * abandon.
+   *
+   * @throws {Error} When the socket closed while the client was held, or a handler threw.
+   *
+   * @example
+   * ```
+   * held.client.held_release();
+   * ```
+   */
+  public held_release(): void {
+    const waiting: string[] | null = this.held;
+    if (waiting === null) return;
+    if (this.heldClosed) throw new Error(HELD_CLOSED);
+    while (waiting.length > 0) this.message_handle(waiting.shift() as string);
+    this.held = null;
+  }
+
+  /**
+   * Settles when the socket closes while the client is held, so a page that
+   * is still setting up is told at once.
+   *
+   * @returns A promise that rejects then, with why; it never resolves.
+   *
+   * @example
+   * ```
+   * await Promise.race([setup(), held.client.held_closed()]);
+   * ```
+   */
+  public held_closed(): Promise<never> {
+    return new Promise((_resolve: (value: never) => void, reject: (error: Error) => void): void => {
+      if (this.held !== null && this.heldClosed) { reject(new Error(HELD_CLOSED)); return; }
+      this.closeWaiters.push((): void => { reject(new Error(HELD_CLOSED)); });
+    });
+  }
+
+  /**
+   * Whether the socket has closed (or the client was abandoned) while held.
+   *
+   * @returns True when nothing can be handed over any more.
+   *
+   * @example
+   * ```
+   * if (held.client.held_isClosed()) return;
+   * ```
+   */
+  public held_isClosed(): boolean {
+    return this.held !== null && this.heldClosed;
+  }
+
+  /**
+   * Gives up the client, at any point of a hand-over: its handlers are
+   * taken away, nothing it held or receives after reaches anyone, and its
+   * socket is closed.
+   *
+   * @example
+   * ```
+   * held.client.held_abandon();
+   * ```
+   */
+  public held_abandon(): void {
+    this.handlers = {};
+    this.held = [];
+    this.heldClosed = true;
+    this.socket.onmessage = null;
+    this.socket.close();
   }
 
   /**
@@ -286,10 +486,33 @@ export class ArgusClient {
     url: string,
     token: string,
     handlers: ClientHandlers,
-  ): Promise<{ client: ArgusClient; attach: AttachInfo }> {
+  ): Promise<AttachedSession> {
+    return ArgusClient.attach_open(url, token, handlers, false);
+  }
+
+  /**
+   * Opens a socket and performs the attach handshake.
+   *
+   * @param url - The daemon's WebSocket URL.
+   * @param token - The attach token.
+   * @param handlers - The handlers, or none yet when held.
+   * @param held - Whether the client holds what arrives until it is given handlers.
+   * @returns The attached client and the attach facts.
+   */
+  private static attach_open(url: string, token: string, handlers: ClientHandlers, held: boolean): Promise<AttachedSession> {
     return new Promise((resolve, reject) => {
       const socket: WebSocket = new WebSocket(url);
       socket.onerror = (): void => reject(new Error(`cannot reach the daemon at ${url}`));
+      // A socket that closes before the attach is answered settles the attach: nothing else would, and
+      // whoever waits on it (the page's one start in flight) would wait for ever. Once attached, the
+      // client takes the close for its own.
+      socket.onclose = (event: CloseEvent): void => {
+        // What the close says is said: its reason, or failing that its code.
+        // 1005 is the browser's own "no status was given", which is no reason at all.
+        const said: string = event.reason !== '' ? event.reason : `code ${String(event.code)}`;
+        const why: string = event.reason === '' && (event.code === 0 || event.code === 1005) ? 'and gave no reason' : `(${said})`;
+        reject(new Error(`the daemon at ${url} closed the connection before it answered the attach ${why}`));
+      };
       socket.onopen = (): void => {
         socket.send(
           JSON.stringify({
@@ -331,7 +554,7 @@ export class ArgusClient {
           socket.close();
           return;
         }
-        const client: ArgusClient = new ArgusClient(socket, handlers, token);
+        const client: ArgusClient = new ArgusClient(socket, handlers, token, held);
         resolve({
           client,
           attach: {
@@ -361,15 +584,18 @@ export class ArgusClient {
    *   envelopes from the observers; `signal`, aborted while the line runs,
    *   asks the daemon to cancel this one line (the session stops it, or
    *   abandons it when it does not end), and the promise settles with what
-   *   the daemon then answers.
+   *   the daemon then answers; `line_sent` is told the id this line is given,
+   *   before it is sent, so its events and questions can be told from
+   *   another line's.
    * @returns The line's envelopes and which channels already streamed live.
    * @throws {Error} When the daemon reports an execution error.
    */
   public line_execute(
     line: string,
-    options?: { silent?: boolean; observe?: boolean; operator?: boolean; signal?: AbortSignal },
+    options?: ExecuteOptions,
   ): Promise<ExecuteOutcome> {
     const id: string = `argus-${this.nextId++}`;
+    options?.line_sent?.(id);
     options?.signal?.addEventListener('abort', (): void => this.line_cancel(id), { once: true });
     if (options?.silent === true) {
       // A silent command feeds instruments (the files panel, a viewer), not
@@ -608,7 +834,7 @@ export class ArgusClient {
         const request: PendingExecute | undefined = this.pending.get(message.id);
         if (request) {
           this.pending.delete(message.id);
-          request.resolve({ envelopes: message.envelopes, liveChannels: request.liveChannels });
+          request.resolve({ envelopes: message.envelopes, liveChannels: request.liveChannels, ...(message.exitCode === undefined ? {} : { exitCode: message.exitCode }) });
         }
         // A pane-claimed request (observe: false) resolves to its issuer
         // alone; everything else feeds the shared instruments.
@@ -699,13 +925,7 @@ export class ArgusClient {
           break;
         }
         const promptId: string = message.promptId;
-        void ask({
-          message: message.message,
-          kind: promptKind_derive(message),
-          ...(message.path?.suggest === undefined ? {} : { suggest: message.path.suggest }),
-          ...(message.path === undefined ? {} : { path: message.path }),
-          ...(message.commit === undefined ? {} : { commit: message.commit }),
-        }).then((answer: string | null): void => {
+        void ask(surfaceAsk_read(message)).then((answer: string | null): void => {
           if (answer === null) {
             // Abandoning is an answer: the command is told, and says what
             // it did not do.

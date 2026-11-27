@@ -2,6 +2,15 @@ node_modules/
 **/dist/
 **/build/
 *.log
+
+# What tools leave behind: never tracked (scripts/tracked-debris.mjs holds the tree to it).
+coverage/
+coverage-partial/
+cwd.txt
+*.backup
+# The workspace has one lockfile, at the root.
+/packages/*/package-lock.json
+/apps/*/package-lock.json
 .DS_Store
 .chell_history
 packages/chili/download/

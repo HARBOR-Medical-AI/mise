@@ -208,7 +208,8 @@ export function transfer_watch(name: string, downloadUrl: string, id: string, fe
     const controller: AbortController = new AbortController();
     const deadline: ReturnType<typeof setTimeout> = setTimeout((): void => controller.abort(), TRANSFER_ASK_MS);
     try {
-      const answer: Response = await fetcher(transferUrl_build(downloadUrl, verb, id), { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+      // A stop changes something, and is asked by POST; progress changes nothing, and is a GET.
+      const answer: Response = await fetcher(transferUrl_build(downloadUrl, verb, id), { ...(verb === 'cancel' ? { method: 'POST' } : {}), credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
       if (!answer.ok) return 'unknown';
       return (await answer.json()) as TransferReport;
     } catch {

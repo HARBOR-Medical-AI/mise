@@ -9,7 +9,7 @@
  *
  * @module
  */
-import { DAG_MODEL_KINDS, feedDagModelSchema, type FeedDagModel } from '@fnndsc/menu';
+import { DAG_MODEL_KINDS, feedDagModelSchema, type FeedDagModel, path_quote } from '@fnndsc/menu';
 import type { ArgusClient, ExecuteOutcome } from '../../calypso/client.js';
 import { DagPanel } from '../../features/dag/panel.js';
 import { UniversePanel } from '../../features/universe/panel.js';
@@ -115,7 +115,7 @@ function universe_build(ctx: ChrisPaneContext, id: string): PaneInstance {
           return null;
         },
         node_enter: (vfsPath: string): void => {
-          ctx.terminal().line_run(`cd "${vfsPath}"`);
+          ctx.terminal().line_run(`cd ${path_quote(vfsPath)}`);
         },
         // ENTER NODE flies in: the camera into the sphere, a rooted browser
         // of the node's data inside it, Esc back out — the DAG pane's dive.
@@ -213,7 +213,7 @@ function dag_build(ctx: ChrisPaneContext, id: string, primary: boolean): PaneIns
           else ctx.client().unwatch_send(subject);
         },
         node_enter: (vfsPath: string): void => {
-          ctx.terminal().line_run(`cd "${vfsPath}"`);
+          ctx.terminal().line_run(`cd ${path_quote(vfsPath)}`);
         },
         node_dive: (vfsPath: string): void => {
           // The immersive root is the node itself — status, params, log,

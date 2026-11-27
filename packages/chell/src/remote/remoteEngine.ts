@@ -16,7 +16,7 @@ import { serverMessage_parse, CONTRACT_VERSION, RequestBroker, type ServerMessag
 import type { CommandEnvelope } from '@fnndsc/cumin';
 import type { BrasaEngine, CompletionResult } from '@fnndsc/brasa';
 import { SERVER_MESSAGE_TYPES, type ClosingCause, type FileDeliverRequest, type FileDeliverResult } from '@fnndsc/menu';
-import { envelope_deliver, sink_get, sink_set, surface_set, type OutputSink, type Surface } from '@fnndsc/brasa';
+import { deliveryIntent_matches, deliveryIntents_read, envelope_deliver, sink_get, sink_set, surface_set, type DeliveryIntent, type OutputSink, type Surface } from '@fnndsc/brasa';
 import { promptFromContext_render } from '../core/prompt/session.js';
 import { output_above } from '../core/lineDiscipline.js';
 import { terminalId_parse } from '../core/terminalId.js';
@@ -90,6 +90,8 @@ export class RemoteEngine implements BrasaEngine {
   private readonly onShell: ((command: string) => Promise<number>) | undefined;
   private readonly onEdit: ((content: string, extension: string | undefined) => Promise<{ content: string; changed: boolean }>) | undefined;
   private readonly onDeliver: ((request: FileDeliverRequest) => Promise<FileDeliverResult>) | undefined;
+  /** What each line in flight asked to have delivered here, by its request id. */
+  private readonly deliveryIntents: Map<string, DeliveryIntent[]> = new Map<string, DeliveryIntent[]>();
   private readonly onClosing: ((cause: ClosingCause) => void) | undefined;
   private readonly onStale: ((stale: boolean) => void) | undefined;
   /** Hands this terminal to a program on the daemon's pty, when this chell is in one. */
@@ -209,6 +211,9 @@ export class RemoteEngine implements BrasaEngine {
     const id: string = String(this.nextId++);
     this.activeExecuteId = id;
     this.requestSinks.set(id, sink_get());
+    // What this line asks to have written here, read from the line itself
+    // before the daemon sees it: a delivery is honoured only against this.
+    this.deliveryIntents.set(id, deliveryIntents_read(line, this.backendId));
     try {
       const envelopes: CommandEnvelope[] = await this.request<CommandEnvelope[]>('execute', { line }, id);
       // A daemon that names no status leaves the envelopes to say it.
@@ -228,6 +233,7 @@ export class RemoteEngine implements BrasaEngine {
     } finally {
       if (this.activeExecuteId === id) this.activeExecuteId = undefined;
       this.requestSinks.delete(id);
+      this.deliveryIntents.delete(id);
       this.resultExits.delete(id);
     }
   }
@@ -329,6 +335,10 @@ export class RemoteEngine implements BrasaEngine {
     switch (message.type) {
       case 'result':
         if (message.exitCode !== undefined) this.resultExits.set(message.id, message.exitCode);
+        // The line is over the moment its result is read: what it asked to have
+        // delivered is forgotten here, before anything that waits on it runs, so
+        // a delivery read straight after the result finds nothing to match.
+        this.deliveryIntents.delete(message.id);
         this.requests.settle(this.ws, message.id, message.envelopes);
         break;
       case 'complete':
@@ -375,7 +385,7 @@ export class RemoteEngine implements BrasaEngine {
         void this.edit_run(message.editId, message.content, message.extension);
         break;
       case 'deliver':
-        void this.deliver_run(message.deliverId, {
+        void this.deliver_run(message.deliverId, message.id, {
           path: message.path,
           filename: message.filename,
           ...(message.destination !== undefined ? { destination: message.destination } : {}),
@@ -406,6 +416,8 @@ export class RemoteEngine implements BrasaEngine {
         break;
       case 'error':
         if (message.id !== undefined) {
+          // As at a result: an ended line asks for nothing more.
+          this.deliveryIntents.delete(message.id);
           this.requests.fail(this.ws, message.id, message.reason);
         }
         break;
@@ -508,18 +520,56 @@ export class RemoteEngine implements BrasaEngine {
   }
 
   /**
+   * Refuses a delivery this client did not ask for.
+   *
+   * The daemon names where on this machine a file is to be written. That is
+   * honoured only against one line: the line the daemon says is asking, by
+   * the id this client gave it, while that line is still in flight here;
+   * and only when the place named is the destination that line's own
+   * delivering command gave (`deliveryIntents_read`). Another line running
+   * beside it lends it nothing. A source path, a word of another command, a
+   * delivery after its line has ended, a destination written as a
+   * reference, or one the daemon made up are all refused, by name.
+   *
+   * A daemon that does not say which line is asking is refused: without the
+   * line, a delivery that is late cannot be told from one that was asked for.
+   * The refusal says the daemon is the older of the two.
+   *
+   * @param executeId - This client's id for the asking line, as the daemon gave it.
+   * @param request - The delivery the daemon asked for.
+   * @throws {Error} When that line is not in flight, or did not ask for a delivery to that place.
+   */
+  private delivery_require(executeId: string | undefined, request: FileDeliverRequest): void {
+    const where: string = request.destination !== undefined && request.destination.length > 0 ? JSON.stringify(request.destination) : 'the working directory';
+    const asked: string = `the session asked to write ${JSON.stringify(request.filename)} to ${where}`;
+    if (executeId === undefined) {
+      throw new Error(`refused: ${asked} and did not say which line asked for it, so it cannot be told from a delivery that is late or was never asked for; nothing was written. The session's daemon is older than this chell: upgrade the daemon`);
+    }
+    const intents: DeliveryIntent[] | undefined = this.deliveryIntents.get(executeId);
+    if (intents === undefined) throw new Error(`refused: ${asked} for a line that is not running here; nothing was written`);
+    if (intents.length === 0) throw new Error(`refused: ${asked}, and the line sent from here asks for no file; nothing was written`);
+    if (deliveryIntent_matches(intents, request.destination)) return;
+    const unbound: DeliveryIntent | undefined = intents.find((intent: DeliveryIntent): boolean => intent.unbound !== undefined);
+    if (unbound !== undefined) throw new Error(`refused: ${asked}, and the line sent from here cannot say where: ${unbound.unbound}; nothing was written`);
+    const named: string = intents.map((intent: DeliveryIntent): string => (intent.destination === null ? 'the working directory' : JSON.stringify(intent.destination))).join(', ');
+    throw new Error(`refused: ${asked}, and the line sent from here named ${named}; nothing was written`);
+  }
+
+  /**
    * Places a file on this client's machine at the daemon's request.
    *
    * @param deliverId - The delivery correlation id.
+   * @param executeId - This client's id for the line the daemon says is asking; absent from an older daemon, whose delivery is refused.
    * @param request - What to deliver and where the operator asked for it.
    */
-  private async deliver_run(deliverId: string, request: FileDeliverRequest): Promise<void> {
+  private async deliver_run(deliverId: string, executeId: string | undefined, request: FileDeliverRequest): Promise<void> {
     try {
       if (!this.onDeliver) {
         // Reporting success for a file nobody received would be worse than
         // failing: the operator would go looking for it.
         throw new Error('this surface cannot receive a file');
       }
+      this.delivery_require(executeId, request);
       const result: FileDeliverResult = await this.onDeliver(request);
       this.ws.send(JSON.stringify({
         type: 'deliverResult', deliverId, location: result.location, bytes: result.bytes,

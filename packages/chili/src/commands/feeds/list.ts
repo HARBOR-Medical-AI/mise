@@ -7,7 +7,7 @@
  * @module
  */
 import { feeds_list as salsaFeeds_list, feeds_listAll as salsaFeeds_listAll } from "@fnndsc/salsa";
-import { FilteredResourceData, listData_get } from "@fnndsc/cumin";
+import { FilteredResourceData, listData_get, shape_object } from "@fnndsc/cumin";
 import { CLIoptions, options_convertToParams } from "../../utils/cli.js";
 import { Feed } from "../../models/feed.js";
 import { list_applySort } from "../../utils/sort.js";
@@ -35,7 +35,7 @@ export async function feeds_fetchList(options: CLIoptions): Promise<FeedListResu
     : await salsaFeeds_list(params);
 
   if (result && result.tableData) {
-    let feeds: Feed[] = listData_get<Feed>({ data: result.tableData });
+    let feeds: Feed[] = listData_get({ data: result.tableData }, shape_object<Feed>('a feed row'));
 
     // Apply sorting if specified
     if (options.sort) {

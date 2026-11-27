@@ -18,7 +18,7 @@ const scratch = mkdtempSync(join(tmpdir(), 'core-boot-'));
 process.env.CORE_BOOT_LOADS = join(scratch, 'chris-loads.txt');
 register(new URL('./coreBoot.hook.mjs', import.meta.url));
 
-const { engine_create, nullBackend_make } = await import('../dist/core.js');
+const { engine_create, nullBackend_make, surface_set, HeadlessSurface } = await import('../dist/core.js');
 // A backend's long-running steps, as an infrastructure backend would bring them.
 const apply = { id: 'apply', label: 'Apply', state: 'running', progress: { current: 3, total: 10, unit: 'nodes' } };
 const steps = {
@@ -29,7 +29,19 @@ const engine = await engine_create(nullBackend_make({
   seed: { '/home/user/hello.txt': 'hello\nworld\n', '/home/user/docs/a.txt': 'alpha' },
   tasks: [steps],
 }));
-engine.sink_install({ data_write: () => undefined, err_write: () => undefined, progress_write: () => undefined });
+// What a line says on its error channel outside its envelope (a refused redirection does), kept per line.
+const errSaid = [];
+engine.sink_install({ data_write: () => undefined, err_write: (text) => { errSaid.push(String(text)); }, progress_write: () => undefined });
+
+/** A surface that says whose the engine's disk is: its operator's, or nobody's. */
+function surface_make(operators) {
+  const surface = new HeadlessSurface();
+  Object.assign(surface.capabilities, { engineFilesystem: operators });
+  return surface;
+}
+// Whoever runs this script sits at the disk it runs on, as at a local shell:
+// redirection and a manifest beside the engine are theirs to use.
+surface_set(surface_make(true));
 
 const redirected = join(scratch, 'out.txt');
 // A manifest on the engine's disk: play and expect are the core's, so a
@@ -72,16 +84,42 @@ const CHECKS = [
 
 const strip = (text) => text.replace(/\x1b\[[0-9;]*m/g, '');
 let failed = 0;
-for (const check of CHECKS) {
-  const envelopes = await engine.line_execute(check.line);
-  const ok = envelopes.length > 0 && envelopes.every((envelope) => envelope.status === 'ok');
-  const said = strip(envelopes.map((envelope) => `${envelope.rendered}${envelope.renderedErr ?? ''}`).join(''));
-  const wrong = [];
-  if (ok !== check.ok) wrong.push(`answered ${ok ? 'ok' : 'error'}`);
-  for (const text of check.has ?? []) if (!said.includes(text)) wrong.push(`lacks ${JSON.stringify(text)}`);
-  for (const text of check.hasNot ?? []) if (new RegExp(`\\b${text}\\b`).test(said)) wrong.push(`holds ${JSON.stringify(text)}`);
-  console.log(`${wrong.length === 0 ? 'ok  ' : 'FAIL'}  ${check.line}${wrong.length ? ` — ${wrong.join('; ')}` : ''}`);
-  if (wrong.length) failed++;
+/** Runs lines and says how each answered against what it should. */
+async function checks_run(checks) {
+  for (const check of checks) {
+    errSaid.length = 0;
+    const envelopes = await engine.line_execute(check.line);
+    const ok = envelopes.length > 0 && envelopes.every((envelope) => envelope.status === 'ok');
+    const said = strip(envelopes.map((envelope) => `${envelope.rendered}${envelope.renderedErr ?? ''}`).join('') + errSaid.join(''));
+    const wrong = [];
+    if (ok !== check.ok) wrong.push(`answered ${ok ? 'ok' : 'error'}`);
+    for (const text of check.has ?? []) if (!said.includes(text)) wrong.push(`lacks ${JSON.stringify(text)}`);
+    for (const text of check.hasNot ?? []) if (new RegExp(`\\b${text}\\b`).test(said)) wrong.push(`holds ${JSON.stringify(text)}`);
+    console.log(`${wrong.length === 0 ? 'ok  ' : 'FAIL'}  ${check.line}${wrong.length ? ` — ${wrong.join('; ')}` : ''}`);
+    if (wrong.length) failed++;
+  }
+}
+await checks_run(CHECKS);
+
+// The same engine attended from elsewhere: its disk is nobody's (host control
+// without the files tier). What reads or writes that disk is refused by name,
+// and a refused line did nothing.
+const refusedWrite = join(scratch, 'refused.txt');
+const NOBODYS = "the session's host disk is nobody's; start the session with --host-control=files";
+const OFF_CHECKS = [
+  { line: `cat hello.txt > ${refusedWrite}`, ok: false, has: ['redirect (>', NOBODYS] },
+  { line: `cat hello.txt >> ${refusedWrite}`, ok: false, has: ['redirect (>>', NOBODYS] },
+  { line: `play ${manifest}`, ok: false, has: ['is not in the session\'s filesystem', 'beside the engine it was not looked for', NOBODYS] },
+  { line: `touch --withContentsFromFile ${manifest} from-host.txt`, ok: false, has: [NOBODYS] },
+  { line: 'cat hello.txt | tac', ok: true, has: ['world\nhello'] },
+  { line: 'ls', ok: true, has: ['hello.txt'], hasNot: ['from-host.txt'] },
+];
+surface_set(surface_make(false));
+await checks_run(OFF_CHECKS);
+surface_set(surface_make(true));
+if (existsSync(refusedWrite)) {
+  console.log('FAIL  a refused redirection wrote this host\'s file');
+  failed++;
 }
 
 // A task any surface can watch: live while it runs, settled when it is over.
@@ -105,5 +143,5 @@ if (loads !== '') {
   console.log(`FAIL  ChRIS packages were asked for:\n${loads}`);
   failed++;
 }
-console.log(failed === 0 ? `core boot: ${CHECKS.length} lines, no ChRIS package loaded` : `core boot: ${failed} failed`);
+console.log(failed === 0 ? `core boot: ${CHECKS.length + OFF_CHECKS.length} lines, no ChRIS package loaded` : `core boot: ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

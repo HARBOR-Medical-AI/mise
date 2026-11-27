@@ -1,0 +1,23 @@
+{
+  "casts": {
+    "apps/argus": 27,
+    "apps/porter": 3,
+    "packages/cumin": 2
+  },
+  "coverage": {
+    "apps/argus": {
+      "lines": 61.3,
+      "statements": 59.2,
+      "branches": 51.5,
+      "functions": 56,
+      "allowance": {
+        "below": 0.3,
+        "above": 0.7
+      }
+    }
+  },
+  "chili": {
+    "files": 36,
+    "sites": 85
+  }
+}

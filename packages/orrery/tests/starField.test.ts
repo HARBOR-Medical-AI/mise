@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, beforeAll } from '@jest/globals';
 import * as THREE from 'three';
+import { held_watch, held_left, type HeldWatch } from './support/heldWatch.js';
 import { StarField } from '../src/draw/starField.js';
 import type { StarEntry } from '../src/draw/stars.js';
 
@@ -57,6 +58,22 @@ describe('StarField', () => {
     const sprite = parent.children[0] as THREE.Sprite;
     expect(sprite.scale.x).toBe(6);
     expect(sprite.material.opacity).toBeCloseTo(0.2 / 3, 9);
+  });
+
+  it('lets go of what it drew at a redraw: both layers of stars, the threads and each nebula\'s material; the one nebula glow is kept', () => {
+    const parent = new THREE.Group();
+    const field = new StarField(parent);
+    field.draw([star('a', false), star('b', true)], 1, 800, 50);
+    field.threads_draw([0, 0, 0, 1, 1, 1], [1, 1, 1, 1, 1, 1]);
+    field.nebula_add('shape:x', new THREE.Vector3(5, 0, 0), 3, new THREE.Color(1, 0.5, 0), false);
+    const nebula = parent.children.find((one) => one instanceof THREE.Sprite) as THREE.Sprite;
+    const glow: THREE.Texture | null = nebula.material.map;
+    const watch: HeldWatch = held_watch(parent);
+    expect(watch.held.size).toBeGreaterThanOrEqual(8);
+    field.clear();
+    expect(parent.children.length).toBe(0);
+    // Left: the glow every nebula is drawn with, and the shape every sprite is drawn with.
+    expect(new Set(held_left(watch))).toEqual(new Set([glow, nebula.geometry]));
   });
 
   it('forgets everything on a redraw', () => {

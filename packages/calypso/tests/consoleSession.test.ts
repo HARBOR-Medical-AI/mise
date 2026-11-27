@@ -93,9 +93,13 @@ describe('surface_spawn', () => {
     const running = surface_spawn(TARGET, { exec: '/usr/bin/node', prefixArgs: ['/app/chell.js'] }, spawn);
     expect(spawn).toHaveBeenCalledWith(
       '/usr/bin/node',
-      ['/app/chell.js', '--remote', TARGET.identity, '--attach', TARGET.url, '--token', TARGET.token],
-      { stdio: 'inherit', env: expect.objectContaining({ CHELL_CONSOLE: '1' }) },
+      ['/app/chell.js', '--remote', TARGET.identity, '--attach', TARGET.url],
+      { stdio: 'inherit', env: expect.objectContaining({ CHELL_CONSOLE: '1', CHELL_ATTACH_TOKEN: TARGET.token }) },
     );
+    // The token is in the surface's environment and nowhere in its arguments, which every user of the host can list.
+    const args: string[] = (spawn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(args.join(' ')).not.toContain(TARGET.token);
+    expect(args).not.toContain('--token');
     child.emit('exit', 0);
     expect(await running.exited).toBe(0);
   });

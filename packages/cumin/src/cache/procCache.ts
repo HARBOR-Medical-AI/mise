@@ -16,6 +16,7 @@
  *
  * @module
  */
+import { identityChange_listen, identityPartition_make } from '../connect/identityEpoch';
 import { listingsForFeeds_note, listingsForFeeds_drop, listingsForRoster_note, listingInvalidation_reset } from './listingInvalidation';
 
 /**
@@ -461,7 +462,12 @@ export class ProcCache {
 
   static instance_get(): ProcCache {
     if (!ProcCache._instance) {
-      ProcCache._instance = new ProcCache();
+      const own: ProcCache = new ProcCache();
+      // The tree is one identity's feeds and jobs. Work begun under another identity, or done as another
+      // user, is handed a tree of its own (see identityPartition_make); and at a change of identity the
+      // session's is forgotten whole, what the operator had not yet looked at included.
+      ProcCache._instance = identityPartition_make(own, (): ProcCache => new ProcCache());
+      identityChange_listen((): void => { own.identity_forget(); });
     }
     return ProcCache._instance;
   }
@@ -1423,6 +1429,26 @@ export class ProcCache {
     this._built = false;
     this.lifecycle = { state: 'empty' };
     this.change_emit({ scope: 'all' });
+  }
+
+  /**
+   * Forgets everything of the identity the tree was built for: the index,
+   * as `cache_clear` does, and with it what is the operator's own memory
+   * and not the index's (the feeds not yet looked at, the roster's
+   * folders), which belong to that operator and to nobody who connects
+   * after them.
+   *
+   * @example
+   * identityChange_listen((): void => { cache.identity_forget(); });
+   */
+  identity_forget(): void {
+    this.cache_clear();
+    this.unseen.clear();
+    this.rosterFolders = {};
+    // A sync of the one before's roster still out is not the next one's sync, and a feed that failed to
+    // load for the one before has not failed for the next.
+    this.rosterSync = null;
+    this.feedLoadFailedAt.clear();
   }
 }
 

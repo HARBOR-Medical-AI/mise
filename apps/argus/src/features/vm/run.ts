@@ -1,7 +1,7 @@
 /**
  * @file A machine's build, as one run the VM controller draws: its steps in
  * the order `vm build` takes them, each waiting, under way or done, read from
- * what the line prints, and its outcome once the line ends. `vm build` plans
+ * the step events the line sends, and its outcome once the line ends. `vm build` plans
  * its data, then its machine (two tasks it follows), asks with the cost,
  * applies what changed, and grows a filesystem a bigger disk left ungrown;
  * the screen says where in that it is, so a run never looks idle.
@@ -9,7 +9,7 @@
  * Key components:
  * - BuildRun: one build in flight or just ended.
  * - buildRun_start: a run, at the line sent.
- * - buildRun_take: a printed line moves the run.
+ * - buildRun_step: a step the engine says begun or ended moves the run.
  * - buildRun_ask, buildRun_answer: the question, and its answer.
  * - buildRun_end: the line's end, its outcome.
  * - buildQuestion_plain: the build's console question in the screen's words.
@@ -17,19 +17,21 @@
  * Typical usage:
  * ```ts
  * let run: BuildRun = buildRun_start('store', 'disk 100 → 150 GB', Date.now());
- * run = buildRun_take(run, 'following /proc/steps/vm-store-plan-data; Ctrl-C …');
+ * run = buildRun_step(run, { vm: 'store', step: 'plan-data', state: 'begun' });
  * ```
  *
- * Dependencies: none; the task names are `vm build`'s (/proc/steps/vm-<name>-plan-data, …).
+ * Dependencies: the step event `vm build` sends (`@fnndsc/menu`).
  *
  * @module
  */
+
+import type { VmStepEvent } from '@fnndsc/menu';
 
 /** A step of a build, in the order `vm build` takes them. */
 export type BuildPhaseKey = 'prepare' | 'plan-data' | 'plan-machine' | 'ask' | 'apply-data' | 'apply-machine' | 'grow' | 'host';
 
 /** Where one step stands. */
-export type BuildPhaseState = 'waiting' | 'going' | 'done' | 'skipped';
+export type BuildPhaseState = 'waiting' | 'going' | 'done' | 'skipped' | 'failed';
 
 /** The steps a build is drawn as, with the words each is drawn with. */
 export const BUILD_PHASES: ReadonlyArray<{ readonly key: BuildPhaseKey; readonly label: string }> = [
@@ -94,19 +96,6 @@ export function buildRun_start(vm: string, change: string, since: number): Build
 }
 
 /**
- * The step a task is, from its path under /proc/steps.
- *
- * @param vm - The machine.
- * @param line - A printed line.
- * @returns The step a line names (`following /proc/steps/vm-store-plan-data`), or null.
- */
-function phase_named(vm: string, line: string): BuildPhaseKey | null {
-  const escaped: string = vm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const found: RegExpMatchArray | null = line.match(new RegExp(`/proc/steps/vm-${escaped}-(plan-data|plan-machine|apply-data|apply-machine|grow|host)\\b`));
-  return found === null ? null : (found[1] as BuildPhaseKey);
-}
-
-/**
  * Moves a step to going; every step before it that went is done, one never
  * started is skipped (a build with nothing to apply to its data skips it).
  *
@@ -118,31 +107,36 @@ function phase_go(run: BuildRun, key: BuildPhaseKey): BuildRun {
   const at: number = BUILD_PHASES.findIndex((phase): boolean => phase.key === key);
   const phases: Record<BuildPhaseKey, BuildPhaseState> = { ...run.phases };
   BUILD_PHASES.forEach((phase, index: number): void => {
-    if (index < at) phases[phase.key] = phases[phase.key] === 'waiting' ? 'skipped' : 'done';
+    if (index >= at) return;
+    // A step before it that was under way is done, one never started was not needed; a step already said
+    // done, not needed or failed stays as it was said.
+    if (phases[phase.key] === 'going') phases[phase.key] = 'done';
+    else if (phases[phase.key] === 'waiting') phases[phase.key] = 'skipped';
   });
   phases[key] = 'going';
   return { ...run, phases };
 }
 
 /**
- * A printed line moves the run: a task followed is its step under way, a
- * plan's counts are what is said.
+ * A step begun or ended moves the run, as the engine says it in a
+ * `stratus.vm.step` event: begun is that step under way; done is that step
+ * done, with what it had to say (a plan's counts); failed is that step
+ * failed, and stays so. A step of another machine, or one that arrives after
+ * the run ended, moves nothing.
  *
  * @param run - The run.
- * @param line - The line, as printed (ANSI already stripped).
+ * @param step - The step event.
  * @returns The run moved on, or the same run.
  * @example
  * ```ts
- * buildRun_take(buildRun_start('store', '', 0), 'following /proc/steps/vm-store-plan-machine; …').phases['plan-data']; // 'skipped'
+ * buildRun_step(buildRun_start('store', '', 0), { vm: 'store', step: 'plan-machine', state: 'begun' }).phases['plan-data']; // 'skipped'
  * ```
  */
-export function buildRun_take(run: BuildRun, line: string): BuildRun {
-  if (run.outcome !== null) return run;
-  const key: BuildPhaseKey | null = phase_named(run.vm, line);
-  if (key !== null) return phase_go(run, key);
-  const counts: RegExpMatchArray | null = line.match(/\b(data|machine) plan: (.+)$/);
-  if (counts !== null) return { ...run, said: `${counts[1]} plan: ${counts[2]}` };
-  return run;
+export function buildRun_step(run: BuildRun, step: VmStepEvent): BuildRun {
+  if (run.outcome !== null || step.vm !== run.vm) return run;
+  if (step.state === 'begun') return phase_go(run, step.step);
+  if (step.state === 'failed') return { ...run, phases: { ...run.phases, [step.step]: 'failed' } };
+  return { ...run, phases: { ...run.phases, [step.step]: 'done' }, said: step.said ?? run.said };
 }
 
 /**
@@ -181,11 +175,15 @@ export function buildRun_answer(run: BuildRun, yes: boolean): BuildRun {
  */
 export function buildRun_end(run: BuildRun, ended: { tone: BuildOutcome['tone']; why: string }, at: string): BuildRun {
   const phases: Record<BuildPhaseKey, BuildPhaseState> = { ...run.phases };
-  for (const phase of BUILD_PHASES) if (phases[phase.key] === 'going') phases[phase.key] = ended.tone === 'done' ? 'done' : 'skipped';
+  // A step still under way at the end: done with a build that ended done; failed with one that failed
+  // (the step it failed in); not done with a NO.
+  for (const phase of BUILD_PHASES) if (phases[phase.key] === 'going') phases[phase.key] = ended.tone === 'done' ? 'done' : ended.tone === 'failed' && phase.key !== 'ask' ? 'failed' : 'skipped';
   // A build that ended done needed none of the steps it never reached: they read not needed, never waiting.
   if (ended.tone === 'done') for (const phase of BUILD_PHASES) if (phases[phase.key] === 'waiting') phases[phase.key] = 'skipped';
+  // A NO after something was applied changed something: what was applied stands, and is said.
+  const applied: string[] = (['apply-data', 'apply-machine'] as const).filter((key): boolean => phases[key] === 'done').map((key): string => (key === 'apply-data' ? 'ITS DATA' : 'ITS MACHINE'));
   const words: string = ended.tone === 'done' ? (run.change === '' ? 'BUILT' : `BUILT · ${run.change.toUpperCase()}`)
-    : ended.tone === 'declined' ? 'STOPPED BEFORE THE APPLY · NOTHING CHANGED'
+    : ended.tone === 'declined' ? (applied.length === 0 ? 'STOPPED BEFORE THE APPLY · NOTHING CHANGED' : `STOPPED AT A NO · ${applied.join(' AND ')} STANDS, AS APPLIED BEFORE IT`)
       : `FAILED${ended.why === '' ? '' : ` · ${ended.why}`}`;
   return { ...run, phases, outcome: { tone: ended.tone, words, at } };
 }

@@ -3,12 +3,14 @@
  * followed, its mount addressed. The proxy itself needs a daemon and is
  * proved live.
  */
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { berthKey_compute } from '@fnndsc/calypso/berth';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { AddressInfo } from 'node:net';
 import { createServer, get as httpGet, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { SessionRegistry } from '../../src/registry.js';
-import { porterApp_build, upstreamPath_build, mountUrl_split, berthHttp_derive, type PorterApp } from '../../src/app.js';
+import { upstreamPath_build, mountUrl_split, berthHttp_derive, type PorterApp } from '../../src/app.js';
+import { doorApp_build as porterApp_build, DOOR_ORIGIN } from './fromDoor.js';
 import type { Berth, BerthAccess, BootListener, BootReport, SessionHost } from '../../src/host/sessionHost.js';
 import type { PorterConfig } from '../../src/config.js';
 import { mkdtemp, writeFile } from 'node:fs/promises';
@@ -65,7 +67,9 @@ class FakeHost implements SessionHost {
   public evicted: string[] = [];
   async evict(identity: string): Promise<boolean> { this.evicted.push(identity); return true; }
   public restarted: Array<{ identity: string; user: string }> = [];
-  restart_begin(identity: string, user: string): void { this.restarted.push({ identity, user }); }
+  /** What a restart's stop phase is, when a test holds one open; a host that cannot say otherwise. */
+  public restartStop: Promise<void> | undefined = undefined;
+  restart_begin(identity: string, user: string): Promise<void> | undefined { this.restarted.push({ identity, user }); return this.restartStop; }
 }
 
 /** A host that keeps tokens outside its sessions, as the berth launcher does. */
@@ -90,7 +94,7 @@ beforeEach(async () => {
     host,
     log: (line: string): void => { said.push(line); },
     mint: async (_cube: string, username: string, password: string) =>
-      password === 'right' ? { token: `TOKEN-${username}` } : { token: null, reason: 'CUBE refused the login' },
+      password === 'right' ? { token: `TOKEN-${username}` } : { token: null, why: 'rejected' as const, reason: 'CUBE refused the login' },
   });
 });
 
@@ -130,10 +134,15 @@ describe('POST /login', () => {
     expect(raw).not.toContain('Secure');
   });
 
-  it('marks the cookie Secure when a front says the page came over TLS', async () => {
-    const response = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', 'x-forwarded-proto': 'https' }, payload: { username: 'chris', password: 'right' } });
+  it('marks the cookie Secure when a front its operator named says the page came over TLS, and not on a stranger\'s say-so', async () => {
+    const fronted: PorterApp = await porterApp_build({ installed: {}, config: { ...config, trustedProxies: ['127.0.0.1'] }, host, mint: async () => ({ token: 'T' }) });
+    const response = await fronted.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', 'x-forwarded-proto': 'https' }, payload: { username: 'chris', password: 'right' } });
     const raw: string = String(Array.isArray(response.headers['set-cookie']) ? response.headers['set-cookie'][0] : response.headers['set-cookie']);
     expect(raw).toContain('Secure');
+    await fronted.app.close();
+    // No proxy named: the header is anybody's to write, and is not believed.
+    const unfronted = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', 'x-forwarded-proto': 'https' }, payload: { username: 'chris', password: 'right' } });
+    expect(String(unfronted.headers['set-cookie'])).not.toContain('Secure');
   });
 
   it('takes a form from the door and sends the browser to the greet while the session boots', async () => {
@@ -200,6 +209,67 @@ describe('GET /boot/:key', () => {
     expect(boot.body).toContain('event: line\ndata: {"channel":"out","text":"[ OK ] Connect"}');
     expect(boot.body).toContain('event: ready');
     expect(built.registry.get(key)?.berth.token).toBe('ATTACH');
+  });
+
+  it('a login that was looking for the berth when its session was ended looks again, and attaches to none that was being stopped', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const old: Berth = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    host.found = old;
+    const first = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (first.json() as { key: string }).key;
+    // The next look for the berth is held, and will answer with the old one.
+    let answer: (berth: Berth | null) => void = (): void => undefined;
+    let looks: number = 0;
+    host.find = async (): Promise<Berth | null> => {
+      looks += 1;
+      if (looks === 1) return new Promise<Berth | null>((resolve: (berth: Berth | null) => void): void => { answer = resolve; });
+      return host.found;
+    };
+    const login = built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    expect(looks).toBe(1);
+    // Meanwhile the session is ended (as the sweep, a restart or a logout ends one) and a fresh berth stands.
+    built.registry.generation_raise(key);
+    host.found = { identity, url: 'ws://127.0.0.1:5555', token: 'FRESH' };
+    answer(old);
+    expect(((await login).json() as { state: string }).state).toBe('attached');
+    expect(looks).toBe(2);
+    expect(built.registry.get(key)?.berth.token).toBe('FRESH');
+  });
+
+  it('a login that arrives while a session\'s stop is under way waits for it to end before it looks', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    host.found = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    const first = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (first.json() as { key: string }).key;
+    const entry = built.registry.get(key);
+    expect(entry).not.toBeNull();
+    // The sweep's claim: taken on an entry idle for no time at all.
+    const claim = built.registry.eviction_begin(entry!, -1);
+    expect(claim).not.toBeNull();
+    let looks: number = 0;
+    host.find = async (): Promise<Berth | null> => { looks += 1; return host.found; };
+    const login = built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    expect(looks).toBe(0);
+    // The stop ends, with the berth gone.
+    host.found = null;
+    built.registry.eviction_end(claim!, true);
+    expect(((await login).json() as { state: string }).state).toBe('starting');
+    expect(looks).toBe(1);
+    expect(host.spawned.length).toBe(1);
+  });
+
+  it('while a restart is booting, a login follows its record and is not given the berth being replaced', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    host.found = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    host.report = { lines: [{ channel: 'out', text: 'Restarting the calypso daemon, as asked' }], state: 'booting' };
+    const login = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const body = login.json() as { key: string; state: string };
+    expect(body.state).toBe('starting');
+    expect(built.registry.get(body.key)).toBeNull();
+    expect(host.spawned).toEqual([]);
+    expect(host.restarted).toEqual([]);
   });
 
   it('follows a boot still under way: lines as they come, then the end', async () => {
@@ -318,6 +388,161 @@ describe('the door', () => {
     await door.app.close();
   });
 
+  it('a logout whose berth could not be stopped still logs the person out, and says the berth was not stopped', async () => {
+    const berths = new FakeBerthHost();
+    berths.evict = async (): Promise<boolean> => { throw new Error('the berth was not stopped: docker could not stop the container'); };
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, log: (line: string): void => { said.push(line); }, mint: async () => ({ token: 'T' }) });
+    berths.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://10.213.77.2:4444', token: 'ATTACH' };
+    const login = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const out = await door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    expect(out.json()).toEqual({ ok: true, berth: 'not stopped', reason: 'the berth was not stopped: docker could not stop the container' });
+    expect(String(out.headers['set-cookie'])).toContain('porter_session=;');
+    expect(said).toContain('chris logged out; their berth could not be stopped: the berth was not stopped: docker could not stop the container');
+    await door.app.close();
+  });
+
+  it('a login that arrives while a logout is stopping the berth waits for the stop, and is not attached to the berth going', async () => {
+    const berths = new FakeBerthHost();
+    let stopped: (ended: boolean) => void = (): void => undefined;
+    berths.evict = async (): Promise<boolean> => new Promise<boolean>((resolve: (ended: boolean) => void): void => { stopped = resolve; });
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, mint: async () => ({ token: 'T' }) });
+    berths.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://10.213.77.2:4444', token: 'GOING' };
+    const first = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (first.json() as { key: string }).key;
+    const out = door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(first) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    let looks: number = 0;
+    berths.find = async (): Promise<Berth | null> => { looks += 1; return berths.found; };
+    const login = door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    // The berth still answers, and the login has not looked for it.
+    expect(looks).toBe(0);
+    berths.found = null;
+    stopped(true);
+    expect((await out).json()).toEqual({ ok: true });
+    expect(((await login).json() as { state: string }).state).toBe('starting');
+    expect(door.registry.get(key)?.berth.token).not.toBe('GOING');
+    await door.app.close();
+  });
+
+  it('a restart asked for while an ending of the session is under way waits for it, and begins no second stop beside it', async () => {
+    host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://127.0.0.1:4444', token: 'ATTACH' };
+    const login = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (login.json() as { key: string }).key;
+    // The sweep holds the session, stopping it.
+    const claim = built.registry.eviction_begin(built.registry.get(key)!, -1);
+    expect(claim).not.toBeNull();
+    const restart = built.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    expect(host.restarted).toEqual([]);
+    // The stop ends and the session is forgotten: there is nothing left for the restart to stop.
+    built.registry.eviction_end(claim!, true);
+    expect((await restart).statusCode).toBe(401);
+    expect(host.restarted).toEqual([]);
+  });
+
+  it('a logout that arrives while a restart is stopping the old berth comes after that stop: one stop at a time', async () => {
+    const berths = new FakeBerthHost();
+    let restartStopped: () => void = (): void => undefined;
+    berths.restartStop = new Promise<void>((resolve: () => void): void => { restartStopped = resolve; });
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, mint: async () => ({ token: 'T' }) });
+    berths.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://10.213.77.2:4444', token: 'ATTACH' };
+    const login = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const restart = await door.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    expect(restart.json()).toMatchObject({ state: 'restarting' });
+    const out = door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    // The restart's stop is still under way: the logout has not begun one of its own.
+    expect(berths.evicted).toEqual([]);
+    restartStopped();
+    expect((await out).json()).toEqual({ ok: true });
+    expect(berths.evicted).toEqual(['chris@https://cube.example.org/api/v1/']);
+    expect(berths.restarted).toHaveLength(1);
+    await door.app.close();
+  });
+
+  it('a restart that arrives while a logout is stopping the berth waits, and then has no session to restart', async () => {
+    const berths = new FakeBerthHost();
+    let stopped: (ended: boolean) => void = (): void => undefined;
+    berths.evict = async (identity: string): Promise<boolean> => { berths.evicted.push(identity); return new Promise<boolean>((resolve: (ended: boolean) => void): void => { stopped = resolve; }); };
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, mint: async () => ({ token: 'T' }) });
+    berths.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://10.213.77.2:4444', token: 'ATTACH' };
+    const login = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (login.json() as { key: string }).key;
+    const out = door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    const restart = door.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    expect(berths.restarted).toEqual([]);
+    stopped(true);
+    await out;
+    // The session the logout ended is retired: the restart acts on nothing, and starts no replacement.
+    expect((await restart).statusCode).toBe(401);
+    expect(berths.restarted).toEqual([]);
+    expect(berths.evicted).toHaveLength(1);
+    expect(door.registry.get(key)).toBeNull();
+    await door.app.close();
+  });
+
+  it('a login that arrives after a logout already waiting behind a restart does not join the restart: it waits for the logout and looks afresh', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const berths = new FakeBerthHost();
+    let restartStopped: () => void = (): void => undefined;
+    berths.restartStop = new Promise<void>((resolve: () => void): void => { restartStopped = resolve; });
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, mint: async () => ({ token: 'T' }) });
+    berths.found = { identity, url: 'ws://10.213.77.2:4444', token: 'ATTACH' };
+    const first = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    // RESTART, its stop held; the host's record says a boot is under way.
+    await door.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(first) } });
+    berths.report = { lines: [{ channel: 'out', text: 'Restarting the calypso daemon, as asked' }], state: 'booting' };
+    // A logout is asked for, and waits its turn behind the restart.
+    const out = door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(first) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    // Then a login. The boot it could join is of a berth the logout is about to stop.
+    let answered: string | null = null;
+    const login = door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } })
+      .then((reply): void => { answered = (reply.json() as { state: string }).state; });
+    await new Promise((resolve) => { setTimeout(resolve, 60); });
+    expect(answered).toBeNull();
+    expect(berths.evicted).toEqual([]);
+    // The restart's stop ends; the logout stops the berth; the login looks afresh and starts a session of its own.
+    berths.report = null;
+    berths.found = null;
+    restartStopped();
+    expect((await out).json()).toEqual({ ok: true });
+    await login;
+    expect(berths.evicted).toEqual([identity]);
+    expect(answered).toBe('starting');
+    expect(berths.spawned).toHaveLength(1);
+    await door.app.close();
+  });
+
+  it('a login during a restart\'s stop follows the restart at once, without looking for the berth, and the greeter is told when that stop fails', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    let restartStopped: () => void = (): void => undefined;
+    host.restartStop = new Promise<void>((resolve: () => void): void => { restartStopped = resolve; });
+    host.found = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    const first = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (first.json() as { key: string }).key;
+    // RESTART: the host opens the boot's record at once and begins stopping the old daemon.
+    const pressed = await built.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(first) } });
+    expect(pressed.json()).toMatchObject({ state: 'restarting' });
+    host.report = { lines: [{ channel: 'out', text: 'Restarting the calypso daemon, as asked' }], state: 'booting' };
+    let looks: number = 0;
+    host.find = async (): Promise<Berth | null> => { looks += 1; return host.found; };
+    // A login while the stop is still held: answered at once, with no look for the berth.
+    const login = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    expect((login.json() as { state: string }).state).toBe('starting');
+    expect(looks).toBe(0);
+    // The stop fails: the old daemon still answers, and the boot's record says why.
+    host.report = { lines: [{ channel: 'out', text: 'Restarting the calypso daemon, as asked' }], state: 'failed', reason: 'the old calypso daemon did not stop, even when killed' };
+    restartStopped();
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    const boot = await built.app.inject({ method: 'GET', url: `/boot/${key}`, headers: { cookie: cookie_of(login) } });
+    expect(boot.body).toContain('event: failed');
+    expect(boot.body).toContain('the old calypso daemon did not stop, even when killed');
+  });
+
   it('logs a browser out by clearing its cookie, and leaves the session alone', async () => {
     const out = await built.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json' } });
     expect(out.json()).toEqual({ ok: true });
@@ -359,6 +584,56 @@ describe('a login never lands on a kernel older than the door\'s', () => {
     expect(older.restarted).toEqual([{ identity: 'chris@https://cube.example.org/api/v1/', user: 'chris' }]);
     expect(older.spawned.length).toBe(0);
     expect(said.some((line: string): boolean => /restarting chris's session for the new release \(brasa 0.31.5 → 0.33.0/.test(line))).toBe(true);
+    await door.app.close();
+  });
+
+  it('a login held while it asks an older berth for its joblets, across an ending that leaves a current berth up, attaches to that one and restarts nothing', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const older: FakeHost = new FakeHost();
+    older.found = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD', versions: { brasa: '0.31.5', calypso: '0.19.2', chell: '5.10.1' } };
+    const door: PorterApp = await porterApp_build({ config, host: older, mint: async () => ({ token: 'x' }), installed: { brasa: '0.33.0', calypso: '0.19.5', chell: '5.10.4' } });
+    // The berth's answer about its joblets is held.
+    let answer: (response: Response) => void = (): void => undefined;
+    const fetched = jest.spyOn(globalThis, 'fetch').mockImplementation((): Promise<Response> => new Promise<Response>((resolve: (response: Response) => void): void => { answer = resolve; }));
+    try {
+      const login = door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+      await new Promise((resolve) => { setTimeout(resolve, 40); });
+      expect(fetched).toHaveBeenCalledTimes(1);
+      // An ending of the session comes and goes, and a berth on current code is up in its place.
+      door.registry.generation_raise(berthKey_compute(identity));
+      older.found = { identity, url: 'ws://127.0.0.1:5555', token: 'FRESH', versions: { brasa: '0.33.0', calypso: '0.19.5', chell: '5.10.4' } };
+      // The old berth's answer comes back saying it runs nothing: once, that meant "restart it".
+      answer(new Response(JSON.stringify({ joblets: [] }), { status: 200 }));
+      expect(((await login).json() as { state: string }).state).toBe('attached');
+      expect(older.restarted).toEqual([]);
+      expect(older.spawned).toEqual([]);
+      expect(door.registry.get(berthKey_compute(identity))?.berth.token).toBe('FRESH');
+    } finally {
+      fetched.mockRestore();
+      await door.app.close();
+    }
+  });
+
+  it('a login held while its new token is taken to the berth, across an ending, does not attach to the berth that was ended', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const berths = new FakeBerthHost();
+    berths.found = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    let taken: () => void = (): void => undefined;
+    let renews: number = 0;
+    berths.token_renew = async (): Promise<void> => {
+      renews += 1;
+      if (renews === 1) await new Promise<void>((resolve: () => void): void => { taken = resolve; });
+    };
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, mint: async () => ({ token: 'T' }) });
+    const login = door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    await new Promise((resolve) => { setTimeout(resolve, 40); });
+    expect(renews).toBe(1);
+    door.registry.generation_raise(berthKey_compute(identity));
+    berths.found = { identity, url: 'ws://127.0.0.1:5555', token: 'FRESH' };
+    taken();
+    expect(((await login).json() as { state: string }).state).toBe('attached');
+    expect(door.registry.get(berthKey_compute(identity))?.berth.token).toBe('FRESH');
+    expect(berths.restarted).toEqual([]);
     await door.app.close();
   });
 
@@ -428,12 +703,14 @@ describe('address helpers', () => {
 describe('the wire through the mount', () => {
   let daemon: WebSocketServer;
   let seenUrl: string | null = null;
+  let seenHeaders: Record<string, unknown> = {};
 
   beforeEach(async () => {
     seenUrl = null;
     daemon = new WebSocketServer({ host: '127.0.0.1', port: 0 });
-    daemon.on('connection', (socket: WebSocket, request: { url?: string }): void => {
+    daemon.on('connection', (socket: WebSocket, request: { url?: string; headers?: Record<string, unknown> }): void => {
       seenUrl = request.url ?? null;
+      seenHeaders = request.headers ?? {};
       socket.on('message', (data: RawData): void => { socket.send(`echo:${data.toString()}`); });
     });
     await new Promise<void>((resolve) => daemon.once('listening', () => resolve()));
@@ -450,17 +727,41 @@ describe('the wire through the mount', () => {
     const key: string = (session.json() as { key: string }).key;
     await built.app.listen({ host: '127.0.0.1', port: 0 });
     const porterPort: number = (built.app.server.address() as AddressInfo).port;
-    const client: WebSocket = new WebSocket(`ws://127.0.0.1:${porterPort}/s/${key}/?door`, { headers: { cookie: cookie_of(session) } });
+    const client: WebSocket = new WebSocket(`ws://127.0.0.1:${porterPort}/s/${key}/?door`, { headers: { cookie: cookie_of(session), origin: DOOR_ORIGIN } });
     await new Promise<void>((resolve, reject) => { client.once('open', () => resolve()); client.once('error', reject); });
     const echoed: Promise<string> = new Promise((resolve) => client.once('message', (data: RawData) => resolve(data.toString())));
     client.send('hello');
     expect(await echoed).toBe('echo:hello');
     expect(seenUrl).toBe('/?door=&token=ATTACH');
+    // Where the browser came from was the door's to check; the session is not told.
+    expect('origin' in seenHeaders).toBe(false);
+    expect(typeof seenHeaders['cookie']).toBe('string');
     // A wire open counts as a surface on the session; closed, it does not.
     expect(built.registry.get(key)?.wires).toBe(1);
     client.close();
     await new Promise((r) => setTimeout(r, 100));
     expect(built.registry.get(key)?.wires).toBe(0);
+  });
+
+  it('refuses a wire opened on the cookie from another page, or from nowhere said, before the daemon hears of it', async () => {
+    const port: number = (daemon.address() as AddressInfo).port;
+    host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: `ws://127.0.0.1:${port}`, token: 'ATTACH' };
+    const session = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (session.json() as { key: string }).key;
+    await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const porterPort: number = (built.app.server.address() as AddressInfo).port;
+    for (const headers of [{ cookie: cookie_of(session), origin: 'https://elsewhere.example' }, { cookie: cookie_of(session) }, { cookie: cookie_of(session), origin: `${DOOR_ORIGIN}.elsewhere.example` }]) {
+      const client: WebSocket = new WebSocket(`ws://127.0.0.1:${porterPort}/s/${key}/?door`, { headers });
+      const outcome: string = await new Promise((resolve) => {
+        client.once('open', () => resolve('open'));
+        client.once('unexpected-response', (_request: unknown, response: { statusCode?: number }) => resolve(`refused ${response.statusCode}`));
+        client.once('error', (error: Error) => resolve(`error ${error.message}`));
+      });
+      expect(outcome).toBe('refused 403');
+      client.terminate();
+    }
+    expect(seenUrl).toBeNull();
+    expect(built.registry.get(key)?.wires ?? 0).toBe(0);
   });
 
   it('drops an upgrade without the cookie, even for a known key', async () => {
@@ -631,6 +932,24 @@ describe('the relay to the session', () => {
     expect(said.some((one: string) => one.includes('did not answer'))).toBe(false);
   });
 
+  it('a file\'s headers from the session reach the browser as sent: its type, nosniff, its policy, its attachment', async () => {
+    const sent: Record<string, string> = {
+      'content-type': 'application/octet-stream',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "sandbox; default-src 'none'",
+      'content-disposition': `attachment; filename="page.html"; filename*=UTF-8''page.html`,
+    };
+    handle = (_request, response) => {
+      response.writeHead(200, { ...sent, 'content-length': 4 });
+      response.end('<p>x');
+    };
+    const { cookie, key } = await attach();
+    const answer = await built.app.inject({ method: 'GET', url: `/s/${key}/vfs?path=%2Fhome%2Fchris%2Fpage.html`, headers: { cookie } });
+    expect(answer.statusCode).toBe(200);
+    expect(answer.body).toBe('<p>x');
+    for (const [name, value] of Object.entries(sent)) expect(answer.headers[name]).toBe(value);
+  });
+
   it('a browser that leaves part way is not a break', async () => {
     handle = (_request, response) => {
       response.writeHead(200, { 'content-length': 1_000_000 });
@@ -693,6 +1012,30 @@ describe('door tokens (chell auth)', () => {
     expect(cookie_of(byToken)).toMatch(/^porter_session=/);
     expect(said.some((line) => line.includes('chris came through by door token "cron@titan"'))).toBe(true);
     expect(built.tokens.list()[0]?.lastUsed).not.toBeNull();
+  });
+
+  it('a password login held while a door-token login begins a restart on the saved login looks again, and does not note the berth it had found', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const minted = built.tokens.mint(identity, 'chris', 'laptop');
+    const old: Berth = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    let answer: (berth: Berth | null) => void = (): void => undefined;
+    let looks: number = 0;
+    host.find = async (): Promise<Berth | null> => {
+      looks += 1;
+      // The password login's look is held and will answer with the old berth; the token login finds none.
+      if (looks === 1) return new Promise<Berth | null>((resolve: (berth: Berth | null) => void): void => { answer = resolve; });
+      if (looks === 2) return null;
+      return { identity, url: 'ws://127.0.0.1:5555', token: 'FRESH' };
+    };
+    const password = built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    const byToken = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${minted.token}` } });
+    expect(byToken.json()).toMatchObject({ state: 'starting' });
+    expect(host.restarted).toHaveLength(1);
+    answer(old);
+    const key: string = ((await password).json() as { key: string }).key;
+    expect(looks).toBe(3);
+    expect(built.registry.get(key)?.berth.token).toBe('FRESH');
   });
 
   it('a token login with no session up boots one on the saved login (no CUBE token travels), and a password is never asked', async () => {

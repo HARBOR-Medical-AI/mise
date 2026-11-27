@@ -157,6 +157,12 @@ export const pacsQueryModelSchema = z.object({
    */
   provenance: pacsProvenanceSchema.optional(),
   /**
+   * Where the answer's table was written, when the query was asked to
+   * write one (`--csv-to`): the file's path in the store. Absent when
+   * nothing was written. A surface reads this, never the words printed.
+   */
+  written: z.string().optional(),
+  /**
    * Every patient the query asked about, hits and misses alike.
    *
    * Optional, like `provenance`: an envelope from a daemon that predates

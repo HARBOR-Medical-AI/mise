@@ -54,6 +54,18 @@ export class HoverTip<N extends SpaceNode> {
     container.appendChild(this.tip);
   }
 
+  /**
+   * Takes the tip out of the page and stops its timer: the scene is done.
+   *
+   * @example
+   * hover.tip_dispose();
+   */
+  public tip_dispose(): void {
+    if (this.tapTimer !== null) window.clearTimeout(this.tapTimer);
+    this.tapTimer = null;
+    this.tip.remove();
+  }
+
   /** Hides the tip (a gesture began). */
   public hide(): void {
     this.tip.hidden = true;

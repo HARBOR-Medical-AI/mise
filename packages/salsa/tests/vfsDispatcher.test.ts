@@ -26,6 +26,7 @@ jest.mock('../src/vfs/providers/native', () => ({
 jest.mock('../src/vfs/providers/pacs', () => ({
   PacsVfsProvider: class {
     prefix: string = '/net/pacs';
+    copiesOut: boolean = true;
     list(...args: unknown[]): Promise<unknown> { return providerFns.pacsList(...args); }
     cp(...args: unknown[]): Promise<unknown> { return providerFns.pacsCp(...args); }
     read(...args: unknown[]): Promise<unknown> { return providerFns.pacsRead(...args); }

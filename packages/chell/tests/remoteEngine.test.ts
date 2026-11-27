@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { EventEmitter } from 'events';
 import chalk from 'chalk';
 import { jest } from '@jest/globals';
@@ -82,7 +83,23 @@ jest.unstable_mockModule('@fnndsc/calypso', () => ({
 // boundary remoteEngine and this test share (installed sink, delivery).
 let activeSink: OutputSink;
 let installedSurface: unknown = null;
+// What a line asks to have delivered. The engine's reader cannot be loaded
+// here (it brings the engine with it), so the intents come from the table
+// brasa's own test holds that reader to (delivery-intent.test.ts): a line
+// not in the table fails the test that used it. The match is brasa's own.
+const DELIVERY_LINES: ReadonlyArray<{ line: string; intents: Array<{ verb: string; destination: string | null }> }> =
+  (JSON.parse(readFileSync(new URL('../../brasa/tests/fixtures/deliveryLines.json', import.meta.url), 'utf8')) as { lines: Array<{ line: string; intents: Array<{ verb: string; destination: string | null }> }> }).lines;
+const { deliveryIntent_matches } = await import('../../brasa/dist/builtins/fs/deliveryMatch.js');
 jest.unstable_mockModule('@fnndsc/brasa', () => ({
+  deliveryIntents_read: (line: string, backend: string | undefined): Array<{ verb: string; destination: string | null }> => {
+    // The table is the ChRIS reader's. Any other backend has no delivering command (held in brasa's test too).
+    if (backend !== 'chris') return [];
+    const row = DELIVERY_LINES.find((one) => one.line === line);
+    // Lines that are not about delivery at all (the rest of this file) ask for nothing.
+    if (row === undefined && /download/.test(line)) throw new Error(`not in the shared table: ${line}`);
+    return row?.intents ?? [];
+  },
+  deliveryIntent_matches,
   sink_set: (sink: OutputSink): OutputSink => { const prev: OutputSink = activeSink; activeSink = sink; return prev; },
   sink_get: (): OutputSink => activeSink,
   surface_set: (surface: unknown): unknown => { installedSurface = surface; return surface; },
@@ -524,6 +541,7 @@ describe('RemoteEngine live output', () => {
         ws.emit('message', Buffer.from(JSON.stringify({
           type: 'deliver',
           deliverId: 'deliver1',
+          id,
           path: '/home/me/scan.dcm',
           filename: 'scan.dcm',
           destination: '/tmp',
@@ -536,6 +554,7 @@ describe('RemoteEngine live output', () => {
       });
     };
 
+    attachResponse = { ...attachResponse, backend: 'chris' };
     remote = await RemoteEngine.connect({
       url: 'ws://127.0.0.1:1',
       token: 'token',
@@ -544,7 +563,7 @@ describe('RemoteEngine live output', () => {
       onDeliver: async (request) => ({ location: `/tmp/${request.filename}`, bytes: 2048 }),
       onClose: () => { closed = true; },
     });
-    await remote.line_execute('callbacks');
+    await remote.line_execute('download /home/me/scan.dcm /tmp');
     remote.close();
 
     expect(FakeWebSocket.instances[0].sent).toEqual(expect.arrayContaining([
@@ -553,6 +572,242 @@ describe('RemoteEngine live output', () => {
       expect.objectContaining({ type: 'deliverResult', deliverId: 'deliver1', location: '/tmp/scan.dcm', bytes: 2048 }),
     ]));
     expect(closed).toBe(true);
+  });
+
+  describe('a delivery is bound to the download that asked for it', () => {
+    // A ChRIS session, which is the one that has `download`.
+    beforeEach(() => { attachResponse = { ...attachResponse, backend: 'chris' }; });
+
+    it('the same line asks for a file in a ChRIS session and for none in a stratus one, which has no download', async () => {
+      const line: string = 'ls /x | download /a ./later';
+      expect((await delivery_during(line, './later')).delivered).toEqual(['./later']);
+      attachResponse = { ...attachResponse, backend: 'stratus' };
+      const stratus = await delivery_during(line, './later');
+      expect(stratus.delivered).toEqual([]);
+      expect(refusal_of(stratus.sent)).toContain('asks for no file');
+      const plain = await delivery_during('download /home/me/scan.dcm ./scans', './scans');
+      expect(plain.delivered).toEqual([]);
+      delete attachResponse['backend'];
+      expect((await delivery_during('download /home/me/scan.dcm ./scans', './scans')).delivered).toEqual([]);
+    });
+
+    /** The refusal the client sent for a delivery, if it sent one. */
+    function refusal_of(sent: Array<Record<string, unknown>>, deliverId: string = 'd1'): string | undefined {
+      const error: Record<string, unknown> | undefined = sent.find((one: Record<string, unknown>): boolean => one['type'] === 'deliverError' && one['deliverId'] === deliverId);
+      return error === undefined ? undefined : String(error['reason']);
+    }
+
+    /** Sends the client one delivery request, as the daemon would. */
+    function deliver_emit(ws: FakeWebSocket, deliverId: string, executeId: string | undefined, destination: string | undefined): void {
+      ws.emit('message', Buffer.from(JSON.stringify({
+        type: 'deliver', deliverId, path: '/home/me/scan.dcm', filename: 'scan.dcm',
+        ...(executeId !== undefined ? { id: executeId } : {}),
+        ...(destination !== undefined ? { destination } : {}),
+      })));
+    }
+
+    /** Ends a line the client sent, as the daemon would. */
+    function result_emit(ws: FakeWebSocket, id: string): void {
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] })));
+    }
+
+    /** Runs one line during which the daemon asks for one delivery for that line; answers what the client sent back. */
+    async function delivery_during(line: string, destination: string | undefined, how: { afterResult?: boolean; unnamed?: boolean } = {}): Promise<{ sent: Array<Record<string, unknown>>; delivered: string[] }> {
+      const delivered: string[] = [];
+      let lineId: string = '';
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        lineId = String(sent.id);
+        process.nextTick(() => {
+          if (how.afterResult !== true) deliver_emit(ws, 'd1', how.unnamed === true ? undefined : lineId, destination);
+          result_emit(ws, lineId);
+        });
+      };
+      remote = await RemoteEngine.connect({
+        url: 'ws://127.0.0.1:1',
+        token: 'token',
+        onDeliver: async (request) => { delivered.push(request.destination ?? '(none)'); return { location: `/written/${request.filename}`, bytes: 1 }; },
+      });
+      await remote.line_execute(line);
+      if (how.afterResult === true) deliver_emit((FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket), 'd1', lineId, destination);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      remote.close();
+      return { sent: (FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket).sent as Array<Record<string, unknown>>, delivered };
+    }
+
+    it('the destination the line named, quoted, is written to', async () => {
+      const { sent, delivered } = await delivery_during('download -f /home/me/scan.dcm "./my scans"', './my scans');
+      expect(delivered).toEqual(['./my scans']);
+      expect(sent).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'deliverResult', deliverId: 'd1' })]));
+    });
+
+    it('a daemon that does not say which line is refused, even with one line running, and told to upgrade', async () => {
+      const { sent, delivered } = await delivery_during('download /home/me/scan.dcm ./scans', './scans', { unnamed: true });
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toBe('refused: the session asked to write "scan.dcm" to "./scans" and did not say which line asked for it, so it cannot be told from a delivery that is late or was never asked for; nothing was written. The session\'s daemon is older than this chell: upgrade the daemon');
+    });
+
+    it('a quoted verb later in a pipeline is the host\'s program, and asks for no file', async () => {
+      const { sent, delivered } = await delivery_during('ls /x | "download" /a ./later', './later');
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toContain('asks for no file');
+    });
+
+    it.each([
+      ['its result', (ws: FakeWebSocket, id: string): void => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] }))); }],
+      ['its error', (ws: FakeWebSocket, id: string): void => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'error', id, reason: 'the line failed' }))); }],
+    ])('a delivery read straight after %s, with nothing run in between, is refused', async (_ending: string, end: (ws: FakeWebSocket, id: string) => void) => {
+      const delivered: string[] = [];
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        const id: string = String(sent.id);
+        process.nextTick(() => {
+          // The ending and the delivery arrive back to back, in one turn: nothing awaits between them.
+          end(ws, id);
+          deliver_emit(ws, 'd1', id, './scans');
+        });
+      };
+      remote = await RemoteEngine.connect({
+        url: 'ws://127.0.0.1:1',
+        token: 'token',
+        onDeliver: async (request) => { delivered.push(request.destination ?? '(none)'); return { location: '/written', bytes: 1 }; },
+      });
+      await remote.line_execute('download /home/me/scan.dcm ./scans').catch((): undefined => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      remote.close();
+      expect(delivered).toEqual([]);
+      expect(refusal_of((FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket).sent as Array<Record<string, unknown>>)).toContain('for a line that is not running here');
+    });
+
+    it('another destination is refused by name, and nothing is written', async () => {
+      const { sent, delivered } = await delivery_during('download /home/me/scan.dcm ./scans', '/home/me/.ssh');
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toBe('refused: the session asked to write "scan.dcm" to "/home/me/.ssh", and the line sent from here named "./scans"; nothing was written');
+    });
+
+    it('a source of the line is not a destination', async () => {
+      const { sent, delivered } = await delivery_during('download /home/me/scan.dcm ./scans', '/home/me/scan.dcm');
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toContain('to "/home/me/scan.dcm", and the line sent from here named "./scans"');
+    });
+
+    it('an option value, a word of another command, and a redirect\'s file are not destinations', async () => {
+      const option = await delivery_during('download -j 4 /home/me/scan.dcm ./scans', '4');
+      expect(option.delivered).toEqual([]);
+      const other = await delivery_during('cd /etc; download /home/me/scan.dcm ./scans', '/etc');
+      expect(other.delivered).toEqual([]);
+      expect(refusal_of(other.sent)).toContain('named "./scans"');
+      const log = await delivery_during('download /a ./out > log.txt', 'log.txt');
+      expect(log.delivered).toEqual([]);
+      expect(refusal_of(log.sent)).toContain('named "./out"');
+    });
+
+    it('a redirected download, and one later in a pipeline, are written where each said', async () => {
+      expect((await delivery_during('download /a ./out > log.txt', './out')).delivered).toEqual(['./out']);
+      expect((await delivery_during('ls /x | download /a ./later', './later')).delivered).toEqual(['./later']);
+    });
+
+    it('a delivery that names no destination is refused when the line named one', async () => {
+      const { sent, delivered } = await delivery_during('download /home/me/scan.dcm ./scans', undefined);
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toContain('to the working directory, and the line sent from here named "./scans"');
+    });
+
+    it('a line that asks for no file gets none', async () => {
+      const { sent, delivered } = await delivery_during('ls /home/me', '/tmp');
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toBe('refused: the session asked to write "scan.dcm" to "/tmp", and the line sent from here asks for no file; nothing was written');
+    });
+
+    it.each([
+      ['a line sent to the background', 'download /a ./out &'],
+      ['a host-shell line', '!download /a /b'],
+      ['a capture', 'X=$(download /a ./out)'],
+      ['a command named by a variable', '$VERB /a ./out'],
+    ])('%s cannot be bound, so its delivery is refused', async (_what: string, line: string) => {
+      const { sent, delivered } = await delivery_during(line, './out');
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toContain('asks for no file');
+    });
+
+    it('a delivery after its line has ended is refused', async () => {
+      const { sent, delivered } = await delivery_during('download /home/me/scan.dcm ./scans', './scans', { afterResult: true });
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toBe('refused: the session asked to write "scan.dcm" to "./scans" for a line that is not running here; nothing was written');
+    });
+
+    it('a destination written as a variable is refused, even when the session sends its spelling back', async () => {
+      const expanded = await delivery_during('download /home/me/scan.dcm $OUT', '/data/out');
+      expect(expanded.delivered).toEqual([]);
+      expect(refusal_of(expanded.sent)).toContain('cannot say where: its destination "$OUT" is written with a reference');
+      const echoed = await delivery_during('download /home/me/scan.dcm $OUT', '$OUT');
+      expect(echoed.delivered).toEqual([]);
+      expect(refusal_of(echoed.sent)).toContain('written with a reference');
+      // Quoted, the same letters are text: a place like any other.
+      expect((await delivery_during("download /a '$OUT'", '$OUT')).delivered).toEqual(['$OUT']);
+    });
+
+    describe('with two lines running at once', () => {
+      /** Two lines in flight, their ids, and what was delivered; neither ends until told. */
+      async function overlap_make(first: string, second: string): Promise<{ ws: FakeWebSocket; ids: string[]; delivered: string[]; ended: Array<Promise<unknown>> }> {
+        const delivered: string[] = [];
+        const ids: string[] = [];
+        scenario = (_ws: FakeWebSocket, sent: Record<string, unknown>): void => { ids.push(String(sent.id)); };
+        remote = await RemoteEngine.connect({
+          url: 'ws://127.0.0.1:1',
+          token: 'token',
+          onDeliver: async (request) => { delivered.push(request.destination ?? '(none)'); return { location: `/written/${request.filename}`, bytes: 1 }; },
+        });
+        const ended: Array<Promise<unknown>> = [remote.line_execute(first), remote.line_execute(second)];
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(ids).toHaveLength(2);
+        return { ws: (FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket), ids, delivered, ended };
+      }
+
+      /** Lets what was asked be answered. */
+      const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10));
+
+      it('one line\'s destination lends nothing to the other', async () => {
+        const { ws, ids, delivered, ended } = await overlap_make('download /home/me/scan.dcm ./scans', 'ls /home/me');
+        // The daemon says the listing is asking, and names the download's destination.
+        deliver_emit(ws, 'd1', ids[1], './scans');
+        await settle();
+        expect(delivered).toEqual([]);
+        expect(refusal_of(ws.sent as Array<Record<string, unknown>>, 'd1')).toContain('asks for no file');
+        // The download itself, by its own id, is honoured.
+        deliver_emit(ws, 'd2', ids[0], './scans');
+        await settle();
+        expect(delivered).toEqual(['./scans']);
+        result_emit(ws, ids[0] as string); result_emit(ws, ids[1] as string);
+        await Promise.all(ended);
+        remote.close();
+      });
+
+      it('a late delivery for a line that ended is refused while another line still runs', async () => {
+        const { ws, ids, delivered, ended } = await overlap_make('download /home/me/scan.dcm ./scans', 'download /home/me/scan.dcm /tmp');
+        result_emit(ws, ids[0] as string);
+        await ended[0];
+        // The first line is over. Its id is no longer a claim, and the second line's destination is not its.
+        deliver_emit(ws, 'd1', ids[0], './scans');
+        deliver_emit(ws, 'd2', ids[0], '/tmp');
+        await settle();
+        expect(delivered).toEqual([]);
+        expect(refusal_of(ws.sent as Array<Record<string, unknown>>, 'd1')).toContain('for a line that is not running here');
+        expect(refusal_of(ws.sent as Array<Record<string, unknown>>, 'd2')).toContain('for a line that is not running here');
+        result_emit(ws, ids[1] as string);
+        await ended[1];
+        remote.close();
+      });
+
+      it('a daemon that does not say which line is refused with two running, too', async () => {
+        const { ws, ids, delivered, ended } = await overlap_make('download /home/me/scan.dcm ./scans', 'download /home/me/scan.dcm /tmp');
+        deliver_emit(ws, 'd1', undefined, './scans');
+        await settle();
+        expect(delivered).toEqual([]);
+        expect(refusal_of(ws.sent as Array<Record<string, unknown>>, 'd1')).toContain('did not say which line asked for it');
+        result_emit(ws, ids[0] as string); result_emit(ws, ids[1] as string);
+        await Promise.all(ended);
+        remote.close();
+      });
+    });
   });
 
   it('refuses a delivery when the surface cannot receive files', async () => {

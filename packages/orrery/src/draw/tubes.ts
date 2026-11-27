@@ -5,6 +5,8 @@
  */
 
 import * as THREE from 'three';
+
+import { shared_mark } from './release.js';
 import { PULSE_TRIP_MS } from './timing.js';
 
 /**
@@ -172,7 +174,7 @@ let tubeGeometry: THREE.CylinderGeometry | null = null;
 
 /** A unit tube, one high along y, centred: its foot at -0.5, its head at +0.5. */
 export function tubeGeometry_get(): THREE.CylinderGeometry {
-  if (tubeGeometry === null) tubeGeometry = new THREE.CylinderGeometry(1, 1, 1, 10, 1, true);
+  if (tubeGeometry === null) tubeGeometry = shared_mark(new THREE.CylinderGeometry(1, 1, 1, 10, 1, true));
   return tubeGeometry;
 }
 

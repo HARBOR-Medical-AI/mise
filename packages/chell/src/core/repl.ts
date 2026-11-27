@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import chalk from 'chalk';
 import { session } from '@fnndsc/brasa';
 import { settings } from '../config/settings.js';
+import { history_appendPrivate, history_readPrivate, historyFile_resolve, historyLine_redact, recall_accept } from './history.js';
 import { sessionPrompt_render } from './prompt/session.js';
 import { surface_set } from '@fnndsc/brasa';
 import { cliSurface_create, type BytesFetch } from './cliSurface.js';
@@ -60,6 +61,8 @@ export class REPL {
   private busy: boolean = false;
   /** When the raw watcher last stopped a command on Ctrl-C. */
   private rawInterruptAt: number = 0;
+  /** True once the history could not be shown private: it is then neither read nor written for the session. */
+  private historyUnkept: boolean = false;
   /** Draws progress for the command in flight; cleared when it ends. */
   private readonly progressRenderer: TerminalProgressRenderer = new TerminalProgressRenderer();
   private lastCommandDurationMs: number = 0;
@@ -106,6 +109,16 @@ export class REPL {
           .catch(() => callback(null, [[], line]));
       },
     });
+    // The reader is live from here, before the shell has finished starting. Lines are accepted from this
+    // moment: start-up counts as a command in flight, so a line typed during it waits its turn and is run
+    // when the first prompt stands, and its place in recall is clean the moment it is read.
+    this.busy = true;
+    this.rl.on('line', (line: string): void => {
+      // readline has already kept the line as typed: its recall takes the kept form now, as the line is
+      // accepted, whether it runs at once, waits behind a running command, or is thrown away unrun.
+      recall_accept(Reflect.get(this.rl, 'history'), line);
+      void this.line_receive(line);
+    });
   }
 
   /**
@@ -131,10 +144,6 @@ export class REPL {
       } catch {
         // The interface has closed.
       }
-    });
-
-    this.rl.on('line', (line: string): void => {
-      void this.line_receive(line);
     });
 
     // While a command runs, Ctrl-C is read from the raw bytes, ahead of
@@ -174,6 +183,15 @@ export class REPL {
       console.log(chalk.cyan('Exiting ChELL. Goodbye!'));
       process.exit(0);
     });
+
+    // Start-up is over: what was typed while it ran is run now, in the order it was typed.
+    this.busy = false;
+    const early: string | undefined = typeahead_take();
+    if (early !== undefined) void this.line_receive(early);
+    // Nothing waited: the shell is at rest at its first prompt, and says so. The prompt was painted while
+    // start-up still counted as a command in flight, which holds the mark back; a surface that waits for it
+    // (a browser's terminal) would otherwise wait for ever.
+    else terminalState_mark('idle');
   }
 
   /**
@@ -283,34 +301,48 @@ export class REPL {
   }
 
   /**
-   * Loads command history from file.
+   * Loads the history into the reader's recall, each line as the history
+   * keeps it. A history that cannot be shown private is not read, and the
+   * operator is told once why it is not kept.
    */
   private async history_load(): Promise<void> {
-    const file: string = settings.config.historyFile;
-    if (fs.existsSync(file)) {
-      try {
-        const content: string = await fs.promises.readFile(file, 'utf-8');
-        const lines: string[] = content.split('\n').filter((l: string) => l.trim()).reverse();
-        const limit: number = settings.config.historySize;
-        // `history` is a runtime readline property its typings do not declare.
-        Reflect.set(this.rl, 'history', lines.slice(0, limit));
-      } catch (e: unknown) {
-        // Silently fail if history cannot be loaded
-      }
+    try {
+      const lines: string[] = await history_readPrivate(historyFile_resolve(settings.config.historyFile));
+      // `history` is a runtime readline property its typings do not declare. Lines typed while the history
+      // was being read are already in it, newest first, and stay ahead of what was loaded.
+      const typed: unknown = Reflect.get(this.rl, 'history');
+      Reflect.set(this.rl, 'history', [...(Array.isArray(typed) ? typed as string[] : []), ...lines.reverse()].slice(0, settings.config.historySize));
+    } catch (error: unknown) {
+      this.historyUnkept_say(error);
     }
   }
 
   /**
-   * Appends a command to the history file.
-   * @param line - The command line to append.
+   * Appends a line to the history file, as the history keeps it. A line
+   * that must not be kept is not written; a history that cannot be shown
+   * private is not written to.
+   *
+   * @param line - The line as typed.
    */
   private async history_append(line: string): Promise<void> {
-    if (!line.trim()) return;
-    const file: string = settings.config.historyFile;
+    if (!line.trim() || this.historyUnkept) return;
+    const kept: string | null = historyLine_redact(line);
+    if (kept === null) return;
     try {
-      await fs.promises.appendFile(file, line + '\n');
-    } catch (e: unknown) {
-      // Silently fail if history cannot be saved
+      await history_appendPrivate(historyFile_resolve(settings.config.historyFile), kept);
+    } catch (error: unknown) {
+      this.historyUnkept_say(error);
     }
+  }
+
+  /**
+   * Says, once, that the history is not being kept and why, and stops trying.
+   *
+   * @param error - What stood in the way.
+   */
+  private historyUnkept_say(error: unknown): void {
+    if (this.historyUnkept) return;
+    this.historyUnkept = true;
+    process.stderr.write(`${chalk.yellow(`chell: this session's history is not kept: ${error instanceof Error ? error.message : String(error)}`)}\n`);
   }
 }

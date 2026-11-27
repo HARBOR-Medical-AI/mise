@@ -9,7 +9,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { doorFile_write, doorDefault_write } from '../src/remote/doorFile.js';
-import { door_normalise, doorWire_build, door_login, doorBoot_follow, bootEvents_read, door_enter, doorCredential_missing, doorUnreached_reason, door_loginByToken, door_loginForToken, doorDevice_begin, doorDevice_wait, doorTokens_list, doorToken_revoke, doorRefusal_words, type DoorFetch } from '../src/remote/door.js';
+import { door_normalise, doorOrigin_derive, doorWire_build, door_login, doorBoot_follow, bootEvents_read, door_enter, doorCredential_missing, doorUnreached_reason, door_loginByToken, door_loginForToken, doorDevice_begin, doorDevice_wait, doorTokens_list, doorToken_revoke, doorRefusal_words, type DoorFetch } from '../src/remote/door.js';
 
 /** A door that answers every request the same way, and remembers what it was asked. */
 function answer(status: number, body: unknown, setCookie?: string, text?: string): DoorFetch & { calls: Array<[string, RequestInit | undefined]> } {
@@ -58,6 +58,14 @@ describe('a door typed by hand', () => {
   });
 });
 
+describe('the origin a door is spoken to as', () => {
+  it('is the door\'s scheme, host and port, however the door was typed', () => {
+    expect(doorOrigin_derive('https://titan/')).toBe('https://titan');
+    expect(doorOrigin_derive('titan:4180')).toBe('http://titan:4180');
+    expect(doorOrigin_derive('https://porter.example.org:443/some/path/')).toBe('https://porter.example.org');
+  });
+});
+
 describe('door_login', () => {
   it('posts the password once and keeps the cookie', async () => {
     const fetchLike = answer(200, { key: '0123456789abcdef', mount: '/s/0123456789abcdef/', state: 'starting' }, 'porter_session=abc.sig; Path=/; HttpOnly');
@@ -67,6 +75,8 @@ describe('door_login', () => {
     expect(url).toBe('http://127.0.0.1:4180/login');
     expect(JSON.parse(String(init.body))).toEqual({ username: 'chris', password: 'pw' });
     expect((init.headers as Record<string, string>).accept).toBe('application/json');
+    // A password says where it comes from, as a browser at this door would.
+    expect((init.headers as Record<string, string>).origin).toBe('http://127.0.0.1:4180');
   });
 
   it('carries the door\'s refusal', async () => {
@@ -126,7 +136,7 @@ describe('door_enter', () => {
   it('attaches at once to a session already up, with the cookie as the credential', async () => {
     const fetchLike = answer(200, { key: '0123456789abcdef', mount: '/s/0123456789abcdef/', state: 'attached' }, 'porter_session=c.s; Path=/');
     const reach = await door_enter('https://titan/', 'chris', 'pw', fetchLike);
-    expect(reach).toEqual({ identity: 'chris through the door at https://titan/', url: 'wss://titan/s/0123456789abcdef/', headers: { cookie: 'porter_session=c.s' } });
+    expect(reach).toEqual({ identity: 'chris through the door at https://titan/', url: 'wss://titan/s/0123456789abcdef/', headers: { cookie: 'porter_session=c.s', origin: 'https://titan' } });
   });
 
   it('says in one line when the door cannot be reached, never a stack trace', async () => {
@@ -209,7 +219,7 @@ describe('door_enter with a door token', () => {
     const spy = jest.spyOn(console, 'error').mockImplementation((line?: unknown): void => { errors.push(String(line)); });
     const fetchLike = answer(200, { key: '0123456789abcdef', mount: '/s/0123456789abcdef/', state: 'attached', user: 'chris', tokenName: 'laptop', expires: '2026-11-05T00:00:00.000Z' }, 'porter_session=c.s; Path=/');
     const reach = await door_enter('https://titan/', undefined, undefined, fetchLike, { CHELL_DOOR_TOKEN: 'pdt_env', XDG_CONFIG_HOME: '/nonexistent-doors' });
-    expect(reach).toEqual({ identity: 'chris through the door at https://titan/', url: 'wss://titan/s/0123456789abcdef/', headers: { cookie: 'porter_session=c.s' } });
+    expect(reach).toEqual({ identity: 'chris through the door at https://titan/', url: 'wss://titan/s/0123456789abcdef/', headers: { cookie: 'porter_session=c.s', origin: 'https://titan' } });
     const [, init] = fetchLike.calls[0] as [string, RequestInit];
     expect((init.headers as Record<string, string>).authorization).toBe('Bearer pdt_env');
 

@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, beforeAll } from '@jest/globals';
 import * as THREE from 'three';
+import { held_watch, held_left, type HeldWatch } from './support/heldWatch.js';
 import { LabelField, CAPTION_SCREEN_HEIGHT } from '../src/draw/labelField.js';
 
 beforeAll(() => {
@@ -27,6 +28,24 @@ describe('LabelField', () => {
     expect((big.material as THREE.SpriteMaterial).sizeAttenuation).toBe(false);
     expect((small.material as THREE.SpriteMaterial).opacity).toBe(0.25);
     expect((big.material as THREE.SpriteMaterial).opacity).toBe(0.9);
+  });
+
+  it('lets go of a caption\'s texture and material at a redraw, and of the caption it replaces when one is drawn again', () => {
+    const parent = new THREE.Group();
+    const labels = new LabelField(parent);
+    labels.caption_add('a', 'A', new THREE.Vector3(), 1, new THREE.Color(), false);
+    const first: HeldWatch = held_watch(parent);
+    // Drawn again for the same node: the one before is taken out of the scene and let go.
+    labels.caption_add('a', 'A again', new THREE.Vector3(), 1, new THREE.Color(), false);
+    expect(parent.children.length).toBe(1);
+    // What is left is the one shape every sprite is drawn with, which is three.js's own.
+    const spriteShape: THREE.BufferGeometry = (parent.children[0] as THREE.Sprite).geometry;
+    expect(held_left(first)).toEqual([spriteShape]);
+    const second: HeldWatch = held_watch(parent);
+    expect(second.held.size).toBe(3);
+    labels.clear();
+    expect(parent.children.length).toBe(0);
+    expect(held_left(second)).toEqual([spriteShape]);
   });
 
   it('forgets every caption on a redraw', () => {

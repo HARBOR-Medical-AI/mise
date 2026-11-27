@@ -90,10 +90,18 @@ export function launcher_call(reach: LauncherReach, method: string, path: string
       ...(hostPort !== null ? { host: hostPort[1], port: Number(hostPort[2]) } : { socketPath: reach.listen }),
       method, path, headers,
     }, (res: IncomingMessage): void => {
+      // An answer that breaks off (the launcher gone, the connection dropped) settles the call: a response
+      // can fail or close without ever ending, and nothing else would say so. One that is cut short is not
+      // an answer, whatever of it arrived. (A call already answered is settled, and these change nothing.)
+      const cut = new Error('the berth launcher\'s answer broke off before it was whole');
+      res.on('error', (): void => { reject(cut); });
+      res.on('aborted', (): void => { reject(cut); });
+      res.on('close', (): void => { if (!res.complete) reject(cut); });
       if ((res.headers['content-type'] ?? '').startsWith('application/x-ndjson')) { answerStream_read(res, resolve, reject, onLine); return; }
       const chunks: Buffer[] = [];
       res.on('data', (chunk: Buffer): void => { chunks.push(chunk); });
       res.on('end', (): void => {
+        if (!res.complete) { reject(cut); return; }
         let parsed: unknown = {};
         try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf-8')); } catch { parsed = {}; }
         resolve({ status: res.statusCode ?? 0, body: typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {} });
@@ -264,19 +272,46 @@ export class LauncherHost implements SessionHost {
   }
 
   /** @inheritdoc */
-  public async evict(identity: string): Promise<boolean> {
+  public async evict(identity: string, cause: 'restart' | 'end' = 'end'): Promise<boolean> {
     const who = identity_split(identity);
     if (who === null) return false;
-    const answer = await launcher_call(this.reach, 'POST', '/berths/stop', { user: who.user, cubeUrl: who.cubeUrl }, LAUNCHER_START_MS);
-    return answer.body['stopped'] === true;
+    const answer = await launcher_call(this.reach, 'POST', '/berths/stop', { user: who.user, cubeUrl: who.cubeUrl, ...(cause === 'restart' ? { restart: true } : {}) }, LAUNCHER_START_MS);
+    // A stop the launcher (or Docker behind it) refused or failed is a failure, not "nothing was running":
+    // the berth may still be there, and whoever asked must not go on as if it were gone.
+    if (answer.status !== 200) {
+      throw new Error(typeof answer.body['error'] === 'string' ? `the berth was not stopped: ${answer.body['error']}` : `the berth was not stopped: the launcher answered ${String(answer.status)}`);
+    }
+    // An answer that does not say is not "nothing was running".
+    if (typeof answer.body['stopped'] !== 'boolean') throw new Error('the berth was not stopped: the launcher did not say whether it stopped one');
+    return answer.body['stopped'];
   }
 
   /** @inheritdoc */
-  public restart_begin(identity: string, user: string, cubeUrl: string, why: RestartWhy = { kind: 'asked' }): void {
+  public restart_begin(identity: string, user: string, cubeUrl: string, why: RestartWhy = { kind: 'asked' }): Promise<void> {
+    let stop_settle: () => void = (): void => undefined;
+    const stopped: Promise<void> = new Promise<void>((resolve: () => void): void => { stop_settle = resolve; });
+    // The boot's record stands before the old berth is touched: a greeter that asks from here on follows
+    // this boot, and a login is not handed the berth that is being stopped.
+    const record: BootRecord = this.record_open(identity);
+    this.line_add(record, restartLine_render(why));
     void (async (): Promise<void> => {
-      if (why.kind !== 'saved-login') await this.evict(identity).catch((): boolean => false);
-      await this.boot_run(identity, user, cubeUrl, null, restartLine_render(why));
-    })().catch((): void => undefined);
+      if (why.kind !== 'saved-login') {
+        try {
+          await this.evict(identity, 'restart');
+        } catch (error: unknown) {
+          // The old berth could not be stopped: no second one is started beside it.
+          const reason: string = error instanceof Error ? error.message : String(error);
+          this.line_add(record, `[FAIL]    Berth        ${reason}`);
+          this.boot_end(record, 'failed', reason);
+          return;
+        }
+      }
+      await this.boot_run(identity, user, cubeUrl, null, null, record);
+    })().catch((): void => undefined).finally((): void => { stop_settle(); });
+    // On this host the whole restart is the session's one ending under way, the start included: the
+    // launcher holds the login for the start it is making, so a logout that came between the stop and the
+    // start would find no berth, report it gone, and leave the one about to be made. It comes after.
+    return stopped;
   }
 
   /**
@@ -287,10 +322,11 @@ export class LauncherHost implements SessionHost {
    * @param cubeUrl - The CUBE.
    * @param token - The token, or null for the one the launcher holds.
    * @param first - A first line, for a restart.
+   * @param opened - The boot's record, when the caller has already opened it.
    * @returns The berth.
    */
-  private async boot_run(identity: string, user: string, cubeUrl: string, token: string | null, first: string | null): Promise<Berth> {
-    const record: BootRecord = this.record_open(identity);
+  private async boot_run(identity: string, user: string, cubeUrl: string, token: string | null, first: string | null, opened: BootRecord | null = null): Promise<Berth> {
+    const record: BootRecord = opened ?? this.record_open(identity);
     if (first !== null) this.line_add(record, first);
     try {
       if (identity !== identity_normalise(user, cubeUrl)) throw new Error('the identity is not the user\'s at this CUBE');

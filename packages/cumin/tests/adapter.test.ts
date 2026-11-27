@@ -60,12 +60,14 @@ import {
   items_get,
   collectionItems_get,
   resource_call,
+  resource_invoke,
   pacsRetrieve_deleteByUrl,
   rootLinks_share,
   token_verify,
   FEED_LIST_TIMEOUT_MS,
   TOKEN_CHECK_TIMEOUT_MS,
 } from '../src/chrisapi/adapter';
+import { shape_nullable, shape_build, ShapeError, type Shape } from '../src/chrisapi/shape';
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -138,62 +140,125 @@ describe('resource_isList', () => {
 
 interface Row { id: number; name: string }
 
+/** A row whose id is read as a number and whose name as text. */
+const ROW: Shape<Row> = shape_build<Row>('a row')(['id', 'number'], ['name', 'string']);
+
 describe('payload extractors', () => {
-  it('listData_get returns the data array typed', () => {
-    const rows: Row[] = listData_get<Row>({ data: [{ id: 1, name: 'a' }] });
+  it('listData_get returns the rows, each held to the shape', () => {
+    const rows: Row[] = listData_get({ data: [{ id: 1, name: 'a' }] }, ROW);
     expect(rows).toEqual([{ id: 1, name: 'a' }]);
   });
 
-  it('listData_get returns [] for missing or non-array data', () => {
-    expect(listData_get<Row>({ data: undefined })).toEqual([]);
-    expect(listData_get<Row>({ data: { id: 1 } })).toEqual([]);
-    expect(listData_get<Row>(null)).toEqual([]);
+  it('listData_get returns [] when there is no data at all, or no list', () => {
+    expect(listData_get({ data: undefined }, ROW)).toEqual([]);
+    expect(listData_get({ data: null }, ROW)).toEqual([]);
+    expect(listData_get({}, ROW)).toEqual([]);
+    expect(listData_get(null, ROW)).toEqual([]);
+    expect(listData_get(undefined, ROW)).toEqual([]);
   });
 
-  it('itemData_get returns the data object typed', () => {
-    expect(itemData_get<Row>({ data: { id: 2, name: 'b' } })).toEqual({ id: 2, name: 'b' });
+  it('listData_get refuses data that is there and is not a list: a malformed collection is not an empty one', () => {
+    expect(() => listData_get({ data: { id: 1 } }, ROW)).toThrow(ShapeError);
+    expect(() => listData_get({ data: { id: 1 } }, ROW)).toThrow('CUBE answered a list of a row whose data is an object, where an array is read');
+    expect(() => listData_get({ data: 'rows' }, ROW)).toThrow('whose data is a string');
+  });
+
+  it('listData_get fails as a whole on a row that is not what is read, naming the row, and drops none', () => {
+    expect(() => listData_get({ data: [{ id: 1, name: 'a' }, { id: '2', name: 'b' }, { id: 3, name: 'c' }] }, ROW))
+      .toThrow('CUBE answered a list of a row whose data[1].id is a string, where a number is read');
+    expect(() => listData_get({ data: [{ name: 'a' }] }, ROW)).toThrow('whose data[0].id is missing');
+    expect(() => listData_get({ data: [null] }, ROW)).toThrow('whose data[0] is null');
+  });
+
+  it('itemData_get returns the data, held to the shape', () => {
+    expect(itemData_get({ data: { id: 2, name: 'b' } }, ROW)).toEqual({ id: 2, name: 'b' });
   });
 
   it('itemData_get returns null for missing data or item', () => {
-    expect(itemData_get<Row>({})).toBeNull();
-    expect(itemData_get<Row>(null)).toBeNull();
+    expect(itemData_get({}, ROW)).toBeNull();
+    expect(itemData_get({ data: null }, ROW)).toBeNull();
+    expect(itemData_get(null, ROW)).toBeNull();
   });
 
-  it('items_get returns getItems() results typed', () => {
+  it('itemData_get refuses data that is there and is not what is read', () => {
+    expect(() => itemData_get({ data: { id: 2 } }, ROW)).toThrow('CUBE answered a row whose data.name is missing, where a string is read');
+    expect(() => itemData_get({ data: 7 }, ROW)).toThrow('CUBE answered a row whose data is a number, where an object (a row) is read');
+  });
+
+  it('items_get returns what getItems() answers, each held to the shape', () => {
     const list = { getItems: (): Row[] => [{ id: 3, name: 'c' }] };
-    expect(items_get<Row>(list)).toEqual([{ id: 3, name: 'c' }]);
+    expect(items_get(list, ROW)).toEqual([{ id: 3, name: 'c' }]);
   });
 
-  it('items_get returns [] when getItems yields null or the list is absent', () => {
-    expect(items_get<Row>({ getItems: (): null => null })).toEqual([]);
-    expect(items_get<Row>(null)).toEqual([]);
+  it('items_get calls getItems on the list itself', () => {
+    const list = { rows: [{ id: 3, name: 'c' }], getItems(this: { rows: Row[] }): Row[] { return this.rows; } };
+    expect(items_get(list, ROW)).toEqual([{ id: 3, name: 'c' }]);
   });
 
-  it('collectionItems_get returns embedded collection items typed', () => {
+  it('items_get returns [] when getItems yields nothing or the list is absent', () => {
+    expect(items_get({ getItems: (): null => null }, ROW)).toEqual([]);
+    expect(items_get(null, ROW)).toEqual([]);
+    expect(items_get(undefined, ROW)).toEqual([]);
+  });
+
+  it('items_get refuses a list with no getItems to call, items that are not a list, and an item that is not what is read', () => {
+    expect(() => items_get({}, ROW)).toThrow('CUBE answered a list of a row whose getItems is missing, where a function is read');
+    expect(() => items_get({ getItems: 'no' }, ROW)).toThrow('whose getItems is a string, where a function is read');
+    expect(() => items_get({ getItems: (): unknown => ({}) }, ROW)).toThrow('whose items is an object, where an array is read');
+    expect(() => items_get({ getItems: (): unknown[] => [{ id: 1, name: 2 }] }, ROW)).toThrow('whose items[0].name is a number, where a string is read');
+  });
+
+  it('collectionItems_get returns embedded collection items, each held to the shape', () => {
     const resource = { collection: { items: [{ id: 4, name: 'd' }] } };
-    expect(collectionItems_get<Row>(resource)).toEqual([{ id: 4, name: 'd' }]);
+    expect(collectionItems_get(resource, ROW)).toEqual([{ id: 4, name: 'd' }]);
   });
 
-  it('collectionItems_get returns [] when the collection is missing', () => {
-    expect(collectionItems_get<Row>({})).toEqual([]);
-    expect(collectionItems_get<Row>({ collection: {} })).toEqual([]);
-    expect(collectionItems_get<Row>(null)).toEqual([]);
+  it('collectionItems_get returns [] when the collection or its items are missing', () => {
+    expect(collectionItems_get({}, ROW)).toEqual([]);
+    expect(collectionItems_get({ collection: {} }, ROW)).toEqual([]);
+    expect(collectionItems_get(null, ROW)).toEqual([]);
+  });
+
+  it('collectionItems_get refuses items that are there and are not a list of the shape', () => {
+    expect(() => collectionItems_get({ collection: { items: {} } }, ROW)).toThrow('whose collection.items is an object, where an array is read');
+    expect(() => collectionItems_get({ collection: { items: [{ id: 4 }] } }, ROW)).toThrow('whose collection.items[0].name is missing');
+  });
+
+
+  it('collectionItems_get refuses a collection that is there and is not a document', () => {
+    expect(() => collectionItems_get({ collection: 'gone' }, ROW)).toThrow('whose collection is a string, where an object is read');
+    expect(() => collectionItems_get({ collection: [] }, ROW)).toThrow('whose collection is an array, where an object is read');
+    expect(() => collectionItems_get({ collection: 7 }, ROW)).toThrow('whose collection is a number, where an object is read');
   });
 });
 
-describe('resource_call', () => {
-  it('dispatches an untyped method with arguments and this-binding', async () => {
-    const obj = {
-      base: 10,
-      shift: async function (this: { base: number }, n: number): Promise<number> {
-        return this.base + n;
-      },
-    };
-    expect(await resource_call<number>(obj, 'shift', 5)).toBe(15);
+describe('resource_invoke and resource_call', () => {
+  const obj = {
+    base: 10,
+    shift: async function (this: { base: number }, n: number): Promise<number> {
+      return this.base + n;
+    },
+    row: async (): Promise<unknown> => ({ id: 5, name: 'e' }),
+    broken: async (): Promise<unknown> => ({ id: 'five' }),
+    nothing: async (): Promise<unknown> => null,
+  };
+
+  it('resource_invoke dispatches an untyped method with arguments and this-binding, and answers unknown', async () => {
+    const answered: unknown = await resource_invoke(obj, 'shift', 5);
+    expect(answered).toBe(15);
   });
 
-  it('throws a descriptive error for a missing method', async () => {
-    await expect(resource_call<void>({}, 'nope')).rejects.toThrow("no method 'nope'");
+  it('resource_call holds the answer to a shape', async () => {
+    const row: Row = await resource_call(obj, ROW, 'row');
+    expect(row).toEqual({ id: 5, name: 'e' });
+    await expect(resource_call(obj, ROW, 'broken')).rejects.toThrow('CUBE answered a row whose id is a string, where a number is read');
+    await expect(resource_call(obj, ROW, 'nothing')).rejects.toThrow('CUBE answered with null where a row (an object) is read');
+    expect(await resource_call(obj, shape_nullable(ROW), 'nothing')).toBeNull();
+  });
+
+  it('both throw a descriptive error for a missing method', async () => {
+    await expect(resource_invoke({}, 'nope')).rejects.toThrow("no method 'nope'");
+    await expect(resource_call({}, ROW, 'nope')).rejects.toThrow("no method 'nope'");
   });
 });
 

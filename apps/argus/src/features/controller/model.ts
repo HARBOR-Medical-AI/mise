@@ -11,7 +11,7 @@
  *
  * @module
  */
-import type { ClusterSizeModel, ClusterSpecModel, ClusterSummary } from '@fnndsc/menu';
+import type { ClusterSizeModel, ClusterSpecModel, ClusterSummary, PromptKind } from '@fnndsc/menu';
 
 /** The views the gutter offers, in its order. */
 export type ControllerView = 'overview' | 'size' | 'build' | 'cluster' | 'chris' | 'teardown';
@@ -466,11 +466,11 @@ export const LINES = {
 /**
  * How the engine's question is answered on the strip: by pills, or by a typed word.
  *
- * @param message - The question.
- * @returns `yes-no` for a `[y/N]` question, `typed` for anything else.
+ * @param kind - What kind of value answers the question, as the engine says.
+ * @returns `yes-no` for a question that wants a yes or a no, `typed` for anything else.
  */
-export function askForm_derive(message: string): 'yes-no' | 'typed' {
-  return /\[y\/N\]\s*$/i.test(message.trim()) ? 'yes-no' : 'typed';
+export function askForm_derive(kind: PromptKind): 'yes-no' | 'typed' {
+  return kind === 'confirm' ? 'yes-no' : 'typed';
 }
 
 /**

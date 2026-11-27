@@ -268,6 +268,9 @@ export class PacsVfsProvider implements VFSProvider {
   /** Prefix matches /net/pacs and subdirectories. */
   prefix = "/net/pacs";
 
+  /** A copy out of PACS into a feed's folder is a pull: the one copy across mounts that is offered. */
+  readonly copiesOut: boolean = true;
+
   /**
    * Cache for decoded PACS query results to avoid redundant API hits.
    *

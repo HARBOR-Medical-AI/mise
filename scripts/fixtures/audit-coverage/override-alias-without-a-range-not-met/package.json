@@ -1,0 +1,10 @@
+{
+  "name": "fixture",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "overrides": {
+    "b": "npm:empty"
+  }
+}

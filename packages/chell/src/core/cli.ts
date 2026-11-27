@@ -105,6 +105,23 @@ export interface CliActionOptions {
   info?: boolean;
 }
 
+/** The environment variable a daemon hands its attach token in (calypso's `ATTACH_TOKEN_ENV`). */
+export const ATTACH_TOKEN_ENV: string = 'CHELL_ATTACH_TOKEN';
+
+/**
+ * Takes the attach token a daemon handed over in the environment, and
+ * removes it from there: read once, then gone, so a program this shell
+ * starts (a `!` line, an editor, a pipe segment) does not inherit it.
+ *
+ * @param env - The environment.
+ * @returns The token, or undefined when none was handed over.
+ */
+export function attachTokenEnv_take(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const handed: string | undefined = env[ATTACH_TOKEN_ENV];
+  delete env[ATTACH_TOKEN_ENV];
+  return handed !== undefined && handed !== '' ? handed : undefined;
+}
+
 /**
  * Builds a {@link ChellCLIConfig} from the parsed target/options, determining
  * the run mode (script/execute/connect/interactive) and applying startup
@@ -113,6 +130,8 @@ export interface CliActionOptions {
  * @param target - The positional target argument (user@url, url, or script path).
  * @param options - The parsed CLI options.
  * @param fileExists - Predicate testing whether a path exists (for script auto-detect).
+ * @param defaultDoor - Reads the default door, when one is set.
+ * @param handed - The attach token a daemon handed over in the environment, already taken out of it (`cli_parse` does that, once, on every path); used only by a shell that is attaching, and only when none was typed.
  * @returns The resolved configuration.
  */
 export function cliConfig_parse(
@@ -120,6 +139,7 @@ export function cliConfig_parse(
   options: CliActionOptions,
   fileExists: (path: string) => boolean,
   defaultDoor: () => string | null = doorDefault_read,
+  handed?: string,
 ): ChellCLIConfig {
   let user: string | undefined = options.user;
   let url: string | undefined = target;
@@ -156,8 +176,13 @@ export function cliConfig_parse(
     if (options.attach !== undefined) {
       config.attach = options.attach;
     }
+    // The attach token comes on the command line when a person types it, and in the environment when a
+    // daemon starts this shell: a daemon never puts it on a command line, which every user of the host can
+    // list.
     if (options.token !== undefined) {
       config.attachToken = options.token;
+    } else if (handed !== undefined) {
+      config.attachToken = handed;
     }
     // A door takes a name and a password rather than an address and a token;
     // `-u` and `-p` reach it without a `<user>@<url>` target, which names a
@@ -354,11 +379,11 @@ ${chalk.bold.cyan('INTERACTIVE COMMANDS')}
   ${chalk.bold.green('pwd')}         Print the current virtual working directory
   ${chalk.bold.green('cat')}         Display file contents
   ${chalk.bold.green('exit')}        Exit the interactive shell
-  ${chalk.bold.yellow('<other>')}     Any unrecognized command is passed directly to the chili CLI
+  ${chalk.bold.yellow('<other>')}     Any other word is looked for among the session's commands and in /bin
 
 ${chalk.bold.cyan('SHELL FEATURES')}
   ${chalk.bold('Pipes')}              Chain command stdout: ${chalk.dim('cat file.txt | wc -l')}
-  ${chalk.bold('Output Redirection')} Write/append to virtual files: ${chalk.dim('ls -lh > output.txt')}
+  ${chalk.bold('Output Redirection')} Write/append to a file on the session's host disk: ${chalk.dim('ls -lh > output.txt')} ${chalk.dim('(under a daemon: --host-control=files)')}
   ${chalk.bold('Semicolons')}         Run sequentially: ${chalk.dim('cd /tmp; ls; pwd')}
   ${chalk.bold('Shell Escape')}       Run host OS commands inside the REPL with ${chalk.bold.green('!')} prefix
 
@@ -384,9 +409,14 @@ ${chalk.bold.cyan('EXAMPLES')}
  * @param argv - The command line arguments (typically process.argv).
  * @param version - The version report shown by `--version`.
  * @param info - The detailed stack table shown by `--info`.
+ * @param env - The environment, from which a daemon's attach token is taken, and removed, before anything else.
  * @returns A Promise resolving to a ChellCLIConfig containing the parsed parameters.
  */
-export function cli_parse(argv: string[], version: string, info: string = ''): Promise<ChellCLIConfig> {
+export function cli_parse(argv: string[], version: string, info: string = '', env: NodeJS.ProcessEnv = process.env): Promise<ChellCLIConfig> {
+  // First of all, on every path out of here (`auth`, `--info`, help, a version, a line that does not
+  // parse, as much as a shell that attaches): a daemon's attach token is taken out of the environment, so
+  // nothing this process goes on to start inherits it. Only a shell that is attaching is given it.
+  const handed: string | undefined = attachTokenEnv_take(env);
   // `chell auth …` is a subcommand with words of its own, read before the
   // program's own parser would take `auth` for a target.
   // A wrapper may put `--remote --door <url>` in front of every call (titan's
@@ -415,7 +445,7 @@ export function cli_parse(argv: string[], version: string, info: string = ''): P
         const normalised: CliActionOptions = doorRaw === false
           ? { ...options, door: undefined, noDoor: true }
           : doorRaw === true ? { ...options, door: undefined } : options;
-        config = options.info ? { mode: 'info', output: info } : cliConfig_parse(target, normalised, existsSync);
+        config = options.info ? { mode: 'info', output: info } : cliConfig_parse(target, normalised, existsSync, doorDefault_read, handed);
       });
 
     // Capture help/version output instead of writing to stdout

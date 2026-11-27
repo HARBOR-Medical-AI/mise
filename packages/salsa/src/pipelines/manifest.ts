@@ -199,8 +199,8 @@ async function pluginMetadata_get(
           }),
         ),
         computeResources: computeRows
-          .map((compute): string | undefined => compute.name)
-          .filter((name: string | undefined): name is string => typeof name === 'string'),
+          .map((compute): string | null | undefined => compute.name)
+          .filter((name: string | null | undefined): name is string => typeof name === 'string'),
       };
     })();
     timedCache_set(cache.pluginMetadata, key, metadataPromise);

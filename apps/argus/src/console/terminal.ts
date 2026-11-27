@@ -15,7 +15,7 @@
  */
 import { ansi_renderHtml, html_escape } from './ansi.js';
 import { type ProcPromptState, type PromptContext, type WireEnvelope } from '@fnndsc/menu';
-import { promptBar_render, type SegmentColor } from './promptBar.js';
+import { promptBar_fill, type SegmentColor } from './promptBar.js';
 import type { ExecuteOutcome, OutputChannel } from '../calypso/client.js';
 
 /** A completion answer from the wire: candidates and the prefix they complete. */
@@ -262,7 +262,7 @@ export class ArgusTerminal {
     // commands, and the percentage should climb without an Enter press. A
     // busy console leaves the bar to prompt_draw, which owns the unlock.
     if (!this.busy) {
-      this.promptBar.innerHTML = this.promptSegments_render();
+      this.promptBar_paint();
     }
   }
 
@@ -285,7 +285,7 @@ export class ArgusTerminal {
    */
   public prompt_draw(): void {
     this.stream_close();
-    this.promptBar.innerHTML = this.promptSegments_render();
+    this.promptBar_paint();
     const exitOk: boolean = (this.promptContext?.lastExitCode ?? 0) === 0;
     this.inputGlyph.style.color = exitOk ? '#00D787' : '#FF005F';
     this.busy_set(false);
@@ -951,13 +951,11 @@ export class ArgusTerminal {
   }
 
   /**
-   * Renders the Powerlevel10k segment bar from the stored context
+   * Draws the Powerlevel10k segment bar from the stored context
    * (`promptBar.ts`), with this terminal's glyphs and palette.
-   *
-   * @returns The prompt bar's inner HTML.
    */
-  private promptSegments_render(): string {
-    return promptBar_render(this.promptContext, { glyphs: GLYPHS, palette: SEGMENT_PALETTE, procStates: PROC_STATE_SEGMENTS });
+  private promptBar_paint(): void {
+    promptBar_fill(this.promptBar, this.promptContext, { glyphs: GLYPHS, palette: SEGMENT_PALETTE, procStates: PROC_STATE_SEGMENTS });
   }
 }
 

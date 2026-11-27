@@ -7,7 +7,8 @@ import { describe, it, expect, beforeEach } from '@jest/globals';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { porterApp_build, type PorterApp } from '../../src/app.js';
+import { type PorterApp } from '../../src/app.js';
+import { doorApp_build as porterApp_build } from './fromDoor.js';
 import type { Berth, BootListener, BootReport, SessionHost } from '../../src/host/sessionHost.js';
 import type { PorterConfig } from '../../src/config.js';
 import { CredentialStore } from '../../src/creds.js';
@@ -26,7 +27,7 @@ class SwitchHost implements SessionHost {
   spawn_begin(identity: string): void { void this.spawn(identity); }
   boot_follow(_identity: string, _listener: BootListener): { report: BootReport; release: () => void } | null { return null; }
   async evict(): Promise<boolean> { return true; }
-  restart_begin(): void { /* not asked */ }
+  restart_begin(): undefined { return undefined; }
   stratus_begin(identity: string, configPath: string, spend: boolean, replace: boolean, door?: { cubeUrl: string; user: string }): void { this.begun.push({ identity, configPath, spend, replace, ...(door === undefined ? {} : { door }) }); }
   stratus_armed(identity: string): boolean | null { return this.armed.get(identity) ?? null; }
   public refusal: string | null = null;

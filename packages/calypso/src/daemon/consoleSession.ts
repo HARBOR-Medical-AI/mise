@@ -36,6 +36,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import chalk from 'chalk';
 import { consoleCage_start, consoleCage_stop } from './console.js';
+import { ATTACH_TOKEN_ENV } from './token.js';
 
 /** What the console needs to know about the daemon it attaches to. */
 export interface DaemonConsoleTarget {
@@ -122,10 +123,12 @@ export function surface_spawn(
   // The identity rides along so the surface greets with it, not with the
   // address twice; the environment mark tells it whose terminal it is on,
   // so it skips the greeting the daemon's banner already gave.
+  // The token goes to the surface in its environment, never on its command line: an argument list is shown
+  // to every user of this host by `ps`, an environment only to the process's own user.
   const child: SpawnedChild = spawn(
     launch.exec,
-    [...launch.prefixArgs, '--remote', target.identity, '--attach', target.url, '--token', target.token],
-    { stdio: 'inherit', env: { ...process.env, CHELL_CONSOLE: '1' } },
+    [...launch.prefixArgs, '--remote', target.identity, '--attach', target.url],
+    { stdio: 'inherit', env: { ...process.env, CHELL_CONSOLE: '1', [ATTACH_TOKEN_ENV]: target.token } },
   );
   const exited: Promise<number> = new Promise<number>((resolve: (code: number) => void): void => {
     child.once('exit', (code: number | null): void => { resolve(code ?? 0); });

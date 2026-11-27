@@ -97,7 +97,18 @@ describe('a ChRIS profile and what it renders', () => {
     // Only the launcher is given Docker's socket among the porter pair.
     expect(JSON.stringify(porter)).not.toContain('docker.sock');
     expect(compose_render(minimal, berthed).startsWith('# ChRIS, profile minimal, with porter and berths:')).toBe(true);
-    expect(porterEnv_render(berthed, keyed)).toBe('PORTER_CUBE_URL=https://cube.example.org/api/v1/\nPORTER_STATE_DIR=/var/lib/porter/sessions\nPORTER_HOST=0.0.0.0\nPORTER_PORT=4180\nPORTER_SECRET=porter-s\nPORTER_BERTHS=launcher\nPORTER_LAUNCHER=/srv/berth/run/launcher.sock\nPORTER_LAUNCHER_SECRET_FILE=/srv/berth/launcher.secret\n');
+    // The link between Caddy and porter is a network of its own, with only those two on it and an address
+    // each: porter believes forwarded headers from Caddy's address there and from no other container.
+    const whole = yaml.load(compose_render(minimal, berthed)) as { networks?: Record<string, unknown>; services: Record<string, { networks?: Record<string, unknown> }> };
+    expect(whole.networks).toEqual({ door: { internal: true, ipam: { config: [{ subnet: '10.213.76.0/29' }] } } });
+    expect(Object.entries(whole.services).filter(([, service]): boolean => service.networks !== undefined && 'door' in service.networks).map(([name]): string => name).sort()).toEqual(['caddy', 'porter']);
+    expect(whole.services['caddy']?.networks?.['door']).toEqual({ ipv4_address: '10.213.76.2' });
+    expect(whole.services['porter']?.networks).toEqual({ default: {}, door: { ipv4_address: '10.213.76.3' } });
+    expect(porterEnv_render(berthed, keyed)).toContain('PORTER_TRUSTED_PROXIES=10.213.76.2\n');
+    expect(caddyfile_render(berthed)).toContain('reverse_proxy 10.213.76.3:4180');
+    // With no porter there is no such link.
+    expect((yaml.load(compose_render(minimal)) as { networks?: unknown }).networks).toBeUndefined();
+    expect(porterEnv_render(berthed, keyed)).toBe('PORTER_CUBE_URL=https://cube.example.org/api/v1/\nPORTER_STATE_DIR=/var/lib/porter/sessions\nPORTER_HOST=0.0.0.0\nPORTER_PORT=4180\nPORTER_PUBLIC_ORIGIN=https://porter.example.org\nPORTER_TRUSTED_PROXIES=10.213.76.2\nPORTER_SECRET=porter-s\nPORTER_BERTHS=launcher\nPORTER_LAUNCHER=/srv/berth/run/launcher.sock\nPORTER_LAUNCHER_SECRET_FILE=/srv/berth/launcher.secret\n');
     expect(() => porterEnv_render(berthed, { ...SECRETS, porterSecret: 'porter-s' })).toThrow('berths need the launcher\'s secret');
     expect(launcherEnv_render(minimal, berthed)).toBe(`BERTH_LAUNCHER_LISTEN=/srv/berth/run/launcher.sock\nBERTH_LAUNCHER_SECRET_FILE=/srv/berth/launcher.secret\nBERTH_POLICY_FILE=/srv/berth/policy.json\nBERTH_PROFILE=minimal\nBERTH_PORTER_CONTAINER=${PORTER_CONTAINER}\nBERTH_CUBE_HOST=cube.example.org\n`);
     expect(PORTER_CONTAINER).toBe('chris-porter-1');
@@ -127,7 +138,7 @@ describe('a ChRIS profile and what it renders', () => {
   });
 
   it('reaches a VM through the bastion as its proxy, with the VM\'s own key', () => {
-    expect(sshArgs_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5').slice(-2)).toEqual(['ProxyCommand=ssh -i /k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -p 22 s@h', 'ubuntu@10.0.0.5']);
+    expect(sshArgs_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5').slice(-2)).toEqual(['ProxyCommand=ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -o Port=22 s@h', 'ubuntu@10.0.0.5']);
   });
 });
 
@@ -340,6 +351,12 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     const file: string = join(root, 'josh-password');
     writeFileSync(file, 'from-a-file-1\n', { mode: 0o600 });
     surface.asked = [];
+    // The file is on the session's own disk: nobody's, until the operator who started it says it is theirs.
+    const refused = await chris_run(context, ['user', 'add', 'joshua', '--email', 'josh@example.org', '--password-file', file, '--on', 'store']);
+    expect(plain(refused.renderedErr ?? '')).toContain(`--password-file ${file}: the session's host disk is nobody's; start the session with --host-control=files`);
+    expect(surface.asked).toEqual([]);
+    expect(vm.made).toHaveLength(1);
+    (surface.capabilities as { engineFilesystem: boolean }).engineFilesystem = true;
     surface.answers = ['y'];
     await chris_run(context, ['user', 'add', 'joshua', '--email', 'josh@example.org', '--password-file', file, '--on', 'store']);
     expect(surface.asked).toHaveLength(1);
@@ -347,6 +364,15 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(vm.made[1]).toEqual({ username: 'joshua', email: 'josh@example.org', password: 'from-a-file-1' });
     writeFileSync(file, 'short\n');
     expect((await chris_run(context, ['user', 'add', 'joshua2', '--email', 'josh2@example.org', '--password-file', file])).renderedErr).toContain('shorter than eight characters');
+  });
+
+  it('refuses an admin password file on a disk that is nobody\'s, and deploys nothing', async () => {
+    const file: string = join(root, 'admin-password');
+    writeFileSync(file, 'an-admin-password\n', { mode: 0o600 });
+    surface.answers = ['y'];
+    const refused = await chris_run(context, ['deploy', 'store', '--profile', 'minimal', '--admin-password-file', file]);
+    expect(plain(refused.renderedErr ?? '')).toContain(`--admin-password-file ${file}: the session's host disk is nobody's; start the session with --host-control=files`);
+    expect(vm.files.size).toBe(0);
   });
 
   it('refuses without an email, a bad name, a VM with no ChRIS, and more than one ChRIS without --on', async () => {
@@ -392,10 +418,10 @@ describe('chris deploy, over the fake cloud and a fake VM', () => {
     expect(compose.services['porter']?.['image']).toBe('stratus/porter:latest');
     expect(String((compose.services['porter']?.['build'] as { dockerfile_inline: string }).dockerfile_inline)).toContain('npm install -g @fnndsc/porter@latest');
     expect(compose.services['porter']?.['volumes']).toEqual(['porter:/var/lib/porter']);
-    expect(compose.services['caddy']?.['networks']).toEqual({ default: { aliases: ['cube.example.org'] } });
+    expect(compose.services['caddy']?.['networks']).toEqual({ default: { aliases: ['cube.example.org'] }, door: { ipv4_address: '10.213.76.2' } });
     expect(Object.keys(compose.volumes)).toContain('porter');
-    expect(vm.files.get('/srv/data/chris/Caddyfile')).toBe('cube.example.org {\n\treverse_proxy chris:8000\n}\n\nporter.example.org {\n\treverse_proxy porter:4180\n}\n');
-    expect(vm.files.get('/srv/data/chris/porter.env')).toBe(`PORTER_CUBE_URL=https://cube.example.org/api/v1/\nPORTER_STATE_DIR=/var/lib/porter/sessions\nPORTER_HOST=0.0.0.0\nPORTER_PORT=4180\nPORTER_SECRET=${secrets?.porterSecret}\n`);
+    expect(vm.files.get('/srv/data/chris/Caddyfile')).toBe('cube.example.org {\n\treverse_proxy chris:8000\n}\n\nporter.example.org {\n\treverse_proxy 10.213.76.3:4180\n}\n');
+    expect(vm.files.get('/srv/data/chris/porter.env')).toBe(`PORTER_CUBE_URL=https://cube.example.org/api/v1/\nPORTER_STATE_DIR=/var/lib/porter/sessions\nPORTER_HOST=0.0.0.0\nPORTER_PORT=4180\nPORTER_PUBLIC_ORIGIN=https://porter.example.org\nPORTER_TRUSTED_PROXIES=10.213.76.2\nPORTER_SECRET=${secrets?.porterSecret}\n`);
     expect(vm.lines.some((line: string): boolean => line.includes(secrets?.porterSecret ?? '?'))).toBe(false);
     expect(vms.record_read('store')?.chris).toMatchObject({ porter: 'porter.example.org', dns: 'seen' });
     expect(plain((await chris_run(context, ['status'])).rendered)).toContain('porter https://porter.example.org/');

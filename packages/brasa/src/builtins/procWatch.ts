@@ -16,6 +16,7 @@
  * @module
  */
 import type { ProcCache, ProcCacheChange, ProcFeed } from '@fnndsc/cumin';
+import { identityChange_listen, identityCache_usable, identityEpoch_get, identityScope_hold } from '@fnndsc/cumin/identity-epoch';
 import type { WatchState, CommandEnvelope } from '@fnndsc/menu';
 import { ambient_publish } from '../core/ambient.js';
 
@@ -74,9 +75,14 @@ interface Watch {
   first: boolean;
   /** The last build answered `feed.indexing`: the topology is on its way. */
   pending: boolean;
+  /** The identity epoch the watch was asked for under: it is that identity's, whoever's work wakes it. */
+  began: number;
 }
 
 const watches: Map<number, Watch> = new Map();
+
+// Each watch's own place: every tick of it runs there, whoever's work armed or kicked it.
+const places: WeakMap<Watch, <T>(work: () => T) => T> = new WeakMap<Watch, <T>(work: () => T) => T>();
 
 // A pending watch is kicked by the cache itself: the walk that lands a
 // feed's topology emits the feed's change event, and the watch answers it
@@ -144,6 +150,8 @@ async function model_publish(dag: DagBuilder, watch: Watch): Promise<boolean> {
     return false;
   }
   watch.pending = false;
+  // Someone else connected while the graph was being built: it is the one before's, and is not sent.
+  if (identityEpoch_get() !== watch.began) return false;
   ambient_publish({ kind: 'envelope', envelope });
   return true;
 }
@@ -177,7 +185,14 @@ async function watch_tick(watch: Watch): Promise<void> {
       listener_remove();
     }
     watch.first = false;
-    if (!watches.has(watch.feedID)) return;
+    // A watch is one identity's: begun as whoever was connected when it was asked for. Once someone else
+    // has connected it says nothing more, arms nothing more, and gives up its place (which the next
+    // identity's watch of a feed of the same number may already have taken).
+    if (identityEpoch_get() !== watch.began) {
+      watch_stop(watch);
+      return;
+    }
+    if (watches.get(watch.feedID) !== watch) return;
 
     if (watch.pending) {
       // Indexing: not stale, not settled (an empty topology looks settled
@@ -202,12 +217,24 @@ async function watch_tick(watch: Watch): Promise<void> {
   }
 }
 
+/**
+ * Runs one tick of a watch in the watch's own place.
+ *
+ * @param watch - The watch.
+ * @returns When the tick is done.
+ */
+function place_run(watch: Watch): Promise<void> {
+  const held_run: (<T>(work: () => T) => T) | undefined = places.get(watch);
+  return held_run === undefined ? watch_tick(watch) : held_run((): Promise<void> => watch_tick(watch));
+}
+
 /** Schedules the next tick. */
 function watch_arm(watch: Watch, delayMs: number): void {
   if (watch.timer) clearTimeout(watch.timer);
   watch.timer = setTimeout((): void => {
     watch.timer = null;
-    void watch_tick(watch);
+    // In the watch's own place, not that of whoever armed it (a change in the cache made by other work).
+    void place_run(watch);
   }, delayMs);
   watch.timer.unref();
 }
@@ -216,8 +243,16 @@ function watch_arm(watch: Watch, delayMs: number): void {
 function watch_stop(watch: Watch): void {
   if (watch.timer) clearTimeout(watch.timer);
   watch.timer = null;
-  watches.delete(watch.feedID);
+  // Its own place only: a watch that has been replaced does not remove its replacement.
+  if (watches.get(watch.feedID) === watch) watches.delete(watch.feedID);
 }
+
+// At a change of identity every watch is retired: what it watched was the one before's feed, whatever its
+// number. A surface that still wants a feed watched asks again, and is given a watch begun as who is
+// connected now.
+identityChange_listen((): void => {
+  for (const watch of Array.from(watches.values())) watch_stop(watch);
+});
 
 /**
  * Opens (or joins) a watch on a feed for one owner. A new watch samples
@@ -229,7 +264,12 @@ function watch_stop(watch: Watch): void {
  * @param owner - Who holds the watch.
  * @returns The watch's current state.
  */
-export function procWatch_add(feedID: number, owner: string): WatchState {
+export function procWatch_add(feedID: number, owner: string): WatchState | null {
+  // A watch outlives the command that asked for it and says what it sees to every surface: it is the
+  // session's own. It is not made, or joined, for work done as another user, nor for work begun as someone
+  // who is no longer connected (a launch answered after a change of identity: the feed of that number now
+  // is another's).
+  if (!identityCache_usable()) return null;
   const existing: Watch | undefined = watches.get(feedID);
   if (existing) {
     existing.owners.add(owner);
@@ -244,10 +284,14 @@ export function procWatch_add(feedID: number, owner: string): WatchState {
     ticking: false,
     first: true,
     pending: false,
+    began: identityEpoch_get(),
   };
   watches.set(feedID, watch);
+  places.set(watch, identityScope_hold());
   void kickListener_ensure();
-  void watch_tick(watch);
+  // Begun in a place of its own, under whoever is connected now: its ticks are there for as long as the
+  // watch lives.
+  void place_run(watch);
   return watch.state;
 }
 

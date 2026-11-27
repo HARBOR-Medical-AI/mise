@@ -13,7 +13,10 @@
  *
  * A module of the host, shaped as the TD controller's.
  */
+import { path_write } from '@fnndsc/menu';
+import { askAbout_read, AskKeeper, flight_owns, runEnd_read, type HeldAsk, type LineInFlight } from './lineRun.js';
 import type { ExecuteOutcome, SurfaceAsk } from '../calypso/client.js';
+import type { RunEnd } from '../features/script/model.js';
 import { ScriptScreen, type ScriptDraft } from '../features/script/screen.js';
 import { synthVoice } from '../lcars/synth.js';
 import type { HostContext } from './hostContext.js';
@@ -25,6 +28,8 @@ export interface ScriptScreenModule {
   open: (path: string) => Promise<string>;
   /** Whether the screen is up. */
   active_is: () => boolean;
+  /** Whether the line of this id is one this screen sent and still waits on. */
+  line_owns: (id: string) => boolean;
   /** Whether a line of the screen's own is running (its output and questions are the screen's). */
   running_is: () => boolean;
   /** A question the session put to this surface, while one of the screen's lines runs. */
@@ -65,7 +70,8 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
     if (screen.following_is()) context.client.stop_send();
     // A question standing on the strip is carried, not answered: it stands again when the screen opens (a-change-is-a-loop, clause 6).
     const standing = screen.ask_detach();
-    if (standing !== null) heldKeep({ request: { message: standing.message, kind: standing.kind }, resolve: standing.resolve });
+    // Kept as it arrived (its line's id, what it is for and about): whose it is, is judged again when the screen opens.
+    if (standing !== null) asks.standing_keep({ message: standing.message, kind: standing.kind }, standing.resolve);
     // Edits not saved are kept, never dropped silently: they stand again when the script opens (a-change-is-a-loop, clause 6d).
     draft = screen.draft_detach();
     if (draft !== null) context.terminal.line_note(`scripts: ${draft.path}: ${draft.edits === 1 ? 'an edit' : `${draft.edits} edits`} not saved, kept: they stand again when it opens, until SAVE`);
@@ -89,24 +95,18 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
 
   /** Until when a question is the left screen's: it was left with a line in flight, whose question waits for it to open again (a bound, so a forgotten screen never holds the console's questions). */
   let leftWithLine: number = 0;
-  /** A question the screen's line asked while the screen was away, held for the screen when it opens again. */
-  let held: { request: SurfaceAsk; resolve: (value: string | null) => void } | null = null;
-  /** The bound on a held question: unanswered by then, it is abandoned, so a forgotten screen never holds the session. */
-  let heldTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The screen's questions, kept as they arrived: the one standing, and the one held while the screen is away (abandoned past a bound, so a forgotten screen never holds the session). */
+  const asks: AskKeeper = new AskKeeper(LEFT_LINE_MS);
   /** Edits not saved when the screen was left, offered to it when it opens again. */
   let draft: ScriptDraft | null = null;
-  const heldKeep = (one: { request: SurfaceAsk; resolve: (value: string | null) => void }): void => {
-    held?.resolve(null);
-    held = one;
-    if (heldTimer !== null) clearTimeout(heldTimer);
-    heldTimer = setTimeout((): void => { if (held === one) { held = null; one.resolve(null); } }, LEFT_LINE_MS);
-  };
+  /** The line the screen sent and is waiting on, with the id the client gave it; null when none runs. */
+  let flight: LineInFlight | null = null;
 
   const open = async (path: string): Promise<string> => {
     if (window.innerWidth < CONTROLLER_MIN_WIDTH) {
       const said: string = `scripts: the screen needs a display at least ${CONTROLLER_MIN_WIDTH} px wide; this one is ${window.innerWidth}, so the line runs as text`;
       try {
-        const answer: ExecuteOutcome = await context.client.line_execute(path === '' ? 'scripts' : `play ${path} --status`, { silent: true, observe: false });
+        const answer: ExecuteOutcome = await context.client.line_execute(path === '' ? 'scripts' : `play ${path_write(path)} --status`, { silent: true, observe: false });
         return [said, ...answer.envelopes.map((envelope) => `${envelope.rendered ?? ''}${envelope.renderedErr ?? ''}`.trimEnd())].join('\n');
       } catch (error: unknown) {
         return `${said}\n${error instanceof Error ? error.message : String(error)}`;
@@ -118,15 +118,17 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
     }
     titleBefore = document.title;
     const opened: ScriptScreen = new ScriptScreen({
-      run: async (line: string): Promise<boolean> => {
+      run: async (line: string): Promise<RunEnd> => {
         lineRunning = true;
+        let mine: LineInFlight | null = null;
         try {
           // The operator's own line, never instrument traffic: the session may ask its questions.
-          const outcome: ExecuteOutcome = await context.client.line_execute(line, { operator: true });
+          const outcome: ExecuteOutcome = await context.client.line_execute(line, { operator: true, line_sent: (id: string): void => { mine = { id, line }; flight = mine; } });
           // An answer the session refused stops what was to follow it (BUILD after its DECLARE).
-          return !outcome.envelopes.some((envelope): boolean => envelope.status === 'error');
+          return runEnd_read(outcome);
         } finally {
           lineRunning = false;
+          if (flight === mine) flight = null;
         }
       },
       ask: (line: string): Promise<ExecuteOutcome> => context.client.line_execute(line, { silent: true, observe: false }),
@@ -139,14 +141,17 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
     if (draft !== null) { opened.draft_offer(draft); draft = null; }
     screen = opened;
     document.body.append(opened.root);
+    // Made, then shown: the screen is whole before anything of it is drawn.
+    opened.screen_show();
     document.body.dataset['takeover'] = 'script';
     synthVoice.preload();
     synthVoice.cue_play('open');
     void opened.open(path).then((): void => {
       // A question the screen's line asked while the screen was away stands on the strip again, over its seat (a-change-is-a-loop, clauses 4 and 6).
-      const waiting = held;
+      const waiting: HeldAsk | null = screen === opened ? asks.held_take() : null;
       leftWithLine = 0;
-      if (waiting !== null && screen === opened) { held = null; void opened.ask_take(waiting.request.message, waiting.request.kind).then(waiting.resolve); }
+      // Read against the line in flight now: a question whose line has ended, or runs again under a new id, is not the screen's own.
+      if (waiting !== null) void opened.ask_take(waiting.request.message, waiting.request.kind, askAbout_read(waiting.request, flight)).finally((): void => { asks.standing_clear(waiting.request); }).then(waiting.answer_take);
     });
     return `scripts: the script screen takes the display${path === '' ? ', on the library' : ` on ${path}`} (Esc or LEAVE gives it back)`;
   };
@@ -154,11 +159,16 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
   return {
     open,
     active_is: (): boolean => screen !== null,
+    // A line this screen sent and still waits on is its own, whether the screen is showing or was left.
+    line_owns: (id: string): boolean => flight_owns(flight, id),
     // The screen's line runs on after the screen is left: its question is the screen's still, held until it opens again.
     running_is: (): boolean => lineRunning || Date.now() < leftWithLine,
     ask: (request: SurfaceAsk): Promise<string | null> => {
-      if (screen !== null) return screen.ask_take(request.message, request.kind);
-      return new Promise((resolve: (value: string | null) => void): void => { heldKeep({ request, resolve }); });
+      if (screen !== null) {
+        asks.standing_note(request);
+        return screen.ask_take(request.message, request.kind, askAbout_read(request, flight)).finally((): void => { asks.standing_clear(request); });
+      }
+      return new Promise((resolve: (value: string | null) => void): void => { asks.held_keep({ request, answer_take: (value: string | null): void => { resolve(value); } }); });
     },
     output_take: (chunk: string): void => { screen?.output_take(chunk); },
     task_ended: (): void => { screen?.taskEnded_take(); },

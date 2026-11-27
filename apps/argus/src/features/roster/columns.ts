@@ -181,6 +181,8 @@ export interface GripHooks {
   size: (key: string, px: number) => void;
   /** A grip was pressed twice: the column goes back to its declaration. */
   reset: (key: string) => void;
+  /** Aborted when the listing is let go: a drag in hand ends there, and the grips hear nothing more. */
+  signal?: AbortSignal;
 }
 
 /** The class a cap's grip wears. */
@@ -201,7 +203,8 @@ export function grips_wire(caps: HTMLElement, hooks: GripHooks): void {
     grip.dataset['wired'] = '1';
     const cap: HTMLElement | null = grip.closest<HTMLElement>('.roster-cap');
     if (cap === null) continue;
-    grip.addEventListener('click', (event: MouseEvent): void => { event.stopPropagation(); });
+    const heard: AddEventListenerOptions = hooks.signal === undefined ? {} : { signal: hooks.signal };
+    grip.addEventListener('click', (event: MouseEvent): void => { event.stopPropagation(); }, heard);
     /** The cap right of this one that stands for a sizeable trait, or null. */
     const neighbour_find = (): { cap: HTMLElement; key: string } | null => {
       let next: Element | null = cap.nextElementSibling;
@@ -218,7 +221,7 @@ export function grips_wire(caps: HTMLElement, hooks: GripHooks): void {
       // the expanse that gives back a minimum the hand moved while it was pinned.
       if (key !== null) hooks.reset(key);
       if (right !== null) hooks.reset(right.key);
-    });
+    }, heard);
     grip.addEventListener('pointerdown', (down: PointerEvent): void => {
       const key: string | null = hooks.key_read(cap);
       if (key === null || down.button !== 0) return;
@@ -255,11 +258,15 @@ export function grips_wire(caps: HTMLElement, hooks: GripHooks): void {
         window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', up);
         window.removeEventListener('pointercancel', up);
+        hooks.signal?.removeEventListener('abort', up);
       };
       window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', up);
       window.addEventListener('pointercancel', up);
-    });
+      // The listing let go in the middle of a drag: the drag ends there, as if the pointer had come up. Its
+      // listeners are on the window and would otherwise stay until a pointer-up that may never come.
+      hooks.signal?.addEventListener('abort', up, { once: true });
+    }, heard);
   }
 }
 

@@ -85,6 +85,10 @@ export interface LineOptions {
   id?: string;
   /** Hears the line's exit status when it ends. */
   ended?: (code: number) => void;
+  /** Set by the engine once the backend has marked this call as a piece of its work. */
+  marked?: boolean;
+  /** The line goes on by itself beside the work that began it (a joblet): it is a piece of work of its own. */
+  apart?: boolean;
 }
 
 /**
@@ -361,6 +365,13 @@ async function batch_execute(
  * @returns The envelopes of the executed commands, in execution order.
  */
 export async function line_execute(line: string, options: LineOptions = {}): Promise<CommandEnvelope[]> {
+  // The backend marks the line as a piece of its work, when it has a use for that (see `Backend.work_run`).
+  // A line run inside a line (a batch's command, a manifest's line) is marked too, inside the outer mark:
+  // a backend's mark is written to be made within itself.
+  const work_mark: Backend['work_run'] = backendInstalled_get()?.work_run;
+  if (work_mark !== undefined && options.marked !== true) {
+    return await work_mark((): Promise<CommandEnvelope[]> => line_execute(line, { ...options, marked: true }), options.apart === true);
+  }
   // A host that names the line's surface scopes it there: what it lists is
   // that surface's answer (#1273).
   if (options.origin !== undefined) {
@@ -495,6 +506,23 @@ export function line_abort(id?: string): boolean {
  * @returns The matching candidates and the prefix they complete.
  */
 export async function line_complete(linePrefix: string): Promise<CompletionResult> {
+  // A completion is a piece of the backend's work as a line is (see `Backend.work_run`): what it fetches
+  // to complete with (the plugin list, a folder's listing) is kept by the same rule.
+  const work_mark: Backend['work_run'] = backendInstalled_get()?.work_run;
+  if (work_mark === undefined) return await lineComplete_run(linePrefix);
+  return await work_mark((): Promise<CompletionResult> => lineComplete_run(linePrefix));
+}
+
+/**
+ * The completion itself: see {@link line_complete}.
+ *
+ * @param linePrefix - The line up to the cursor.
+ * @returns The candidates and the prefix they replace.
+ *
+ * @example
+ * const result: CompletionResult = await lineComplete_run('ls /ho');
+ */
+async function lineComplete_run(linePrefix: string): Promise<CompletionResult> {
   const { input_complete } = await import('../lib/completer/index.js');
   return new Promise((resolve: (result: CompletionResult) => void) => {
     input_complete(linePrefix, (err: Error | null, result: [string[], string]) => {

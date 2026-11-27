@@ -58,7 +58,7 @@ export {
   type ParseResult,
 } from '@fnndsc/menu';
 export { type HostedEngine, type CompletionResult } from './daemon/engine.js';
-export { token_generate, token_writeFile, token_matches } from './daemon/token.js';
+export { token_generate, token_writeFile, token_matches, ATTACH_TOKEN_ENV } from './daemon/token.js';
 export { CalypsoDaemon, type DaemonOptions, type EditOutcome } from './daemon/server.js';
 export {
   HOST_CONTROL_OFF,

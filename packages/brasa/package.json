@@ -36,7 +36,9 @@
   "scripts": {
     "build": "rm -fr dist && tsc && node ../../scripts/buildinfo.mjs && node ../../scripts/notes-build.mjs",
     "test": "NODE_OPTIONS='--experimental-vm-modules --disable-warning=ExperimentalWarning' jest --forceExit --passWithNoTests --coverage",
-    "test:core-boot": "node scripts/coreBoot.mjs"
+    "test:core-boot": "node scripts/coreBoot.mjs",
+    "test:chili-words": "node scripts/chiliHostWords.mjs",
+    "test:layout-worker": "node scripts/layoutWorkerBuilt.mjs"
   },
   "keywords": [
     "chris",

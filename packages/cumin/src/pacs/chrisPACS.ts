@@ -6,6 +6,7 @@
  * @module
  */
 
+import { identityCache_usable, identityChange_listen } from '../connect/identityEpoch.js';
 import { errorStack } from "../error/errorStack.js";
 import { Result, Ok, Err } from "../utils/result.js";
 import { retry_untilValue } from "../utils/retry.js";
@@ -18,6 +19,8 @@ import {
   client_authGet,
   pacsRetrieve_deleteByUrl,
   type Client,
+  shape_build,
+  type Shape,
 } from "../chrisapi/adapter.js";
 import { chrisConnection } from "../connect/chrisConnection.js";
 import { tag_extractRaw, studies_extractFromDecoded, series_extractFromStudy } from "./dicomPayload.js";
@@ -58,7 +61,7 @@ export class ChRISPACSGroup extends ChRISResourceGroup {
  * PACSQuery data structure from ChRIS API.
  */
 interface PACSQueryData {
-  result?: string;
+  result?: string | null;
   [key: string]: unknown;
 }
 
@@ -93,12 +96,53 @@ interface PACSRetrieveItem {
  */
 export interface PACSQueryRecord {
   id: number;
-  title?: string;
-  status?: string;
-  pacs_id?: number;
+  title?: string | null;
+  status?: string | null;
+  pacs_id?: number | null;
   result?: unknown;
   [key: string]: unknown;
 }
+
+/** A PACS server in a list: its id is the number a query is made with. */
+const PACS_SERVER_SHAPE: Shape<PACSServer> = shape_build<PACSServer>('a PACS server')(['id', 'number']);
+
+/** A PACS query just made: its id is the number everything after refers to it by. */
+const PACS_QUERY_MADE_SHAPE: Shape<PACSQueryRecord> = shape_build<PACSQueryRecord>('a PACS query')(
+  ['id', 'number'], ['title', 'string?|null'], ['status', 'string?|null'], ['pacs_id', 'number?|null'],
+);
+
+/** A PACS query read back: each of its fields is read through a check of its own. */
+const PACS_QUERY_READ_SHAPE: Shape<PACSQueryRecord> = shape_build<PACSQueryRecord>('a PACS query')(
+  ['title', 'string?|null'], ['status', 'string?|null'], ['pacs_id', 'number?|null'],
+);
+
+/** A PACS query's data where its result is decoded: the result is looked at before it is used. */
+const PACS_QUERY_DATA_SHAPE: Shape<PACSQueryData> = shape_build<PACSQueryData>('a PACS query')(
+  ['result', 'string?|null'],
+);
+
+/** A PACS retrieve's data: its id is a number. (Its other fields cannot be checked against a live PACS under this project's rules, and are left as they were.) */
+const PACS_RETRIEVE_DATA_SHAPE: Shape<PACSRetrieveItemData> = shape_build<PACSRetrieveItemData>('a PACS retrieve')(['id', 'number']);
+
+/** A PACS retrieve in a list: its data is read field by field. */
+const PACS_RETRIEVE_ITEM_SHAPE: Shape<PACSRetrieveItem> = shape_build<PACSRetrieveItem>('a PACS retrieve')(['data', PACS_RETRIEVE_DATA_SHAPE]);
+
+/** What a PACS series record says of where it is and what it is: each field is read through a default or a check of its own. */
+interface PACSSeriesData {
+  /** Where the series' files are, as CUBE's path. */
+  ['folder_path']?: string | null;
+  /** The series' modality. */
+  ['Modality']?: string | null;
+  /** The series' description. */
+  ['SeriesDescription']?: string | null;
+  /** The series' instance UID. */
+  ['SeriesInstanceUID']?: string | null;
+}
+
+/** A PACS series record. */
+const PACS_SERIES_SHAPE: Shape<PACSSeriesData> = shape_build<PACSSeriesData>('a PACS series')(
+  ['folder_path', 'string?|null'], ['Modality', 'string?|null'], ['SeriesDescription', 'string?|null'], ['SeriesInstanceUID', 'string?|null'],
+);
 
 /**
  * Options for listing PACS queries.
@@ -150,7 +194,7 @@ export async function pacsServer_resolve(
       identifier: pacsserver,
       limit: 5,
     });
-    const matches: PACSServer[] = listData_get<PACSServer>(list);
+    const matches: PACSServer[] = listData_get(list, PACS_SERVER_SHAPE);
     if (matches.length === 1) {
       const match: PACSServer = matches[0];
       return Ok({ id: match.id, identifier: match.identifier });
@@ -308,13 +352,19 @@ export async function pacsQueries_create(
       return Err();
     }
     const query: Awaited<ReturnType<typeof client.createPACSQuery>> = await client.createPACSQuery(id, data);
-    const queryData: PACSQueryRecord | null = itemData_get<PACSQueryRecord>(query);
+    // CUBE's receipt for the query it made. With none there is no id to refer to the query by: said, as a
+    // failure, and the create is not sent again (CUBE may well have made it).
+    const queryData: PACSQueryRecord | null = itemData_get(query, PACS_QUERY_MADE_SHAPE);
+    if (queryData === null) {
+      errorStack.stack_push("error", "CUBE took the PACS query and did not say which query it made of it.");
+      return Err();
+    }
     const record: PACSQueryRecord = {
-      id: queryData?.id as number,
-      title: queryData?.title as string,
-      status: queryData?.status as string,
-      pacs_id: queryData?.pacs_id as number,
-      result: queryData?.result,
+      id: queryData.id,
+      title: queryData.title,
+      status: queryData.status,
+      pacs_id: queryData.pacs_id,
+      result: queryData.result,
     };
     return Ok(record);
   } catch (error: unknown) {
@@ -358,8 +408,8 @@ export async function pacsQuery_resultDecode(
       return Err();
     }
 
-    const queryData: PACSQueryData | null = itemData_get<PACSQueryData>(query);
-    const raw: string | undefined = queryData?.result;
+    const queryData: PACSQueryData | null = itemData_get(query, PACS_QUERY_DATA_SHAPE);
+    const raw: string | null | undefined = queryData?.result;
     if (!raw || typeof raw !== "string") {
       errorStack.stack_push("error", `PACS query ${queryId} has no result payload.`);
       return Err();
@@ -428,7 +478,7 @@ export async function pacsQuery_get(queryId: number): Promise<Result<PACSQueryRe
       errorStack.stack_push("error", `PACS query ${queryId} not found.`);
       return Err();
     }
-    const qData: PACSQueryRecord | null = itemData_get<PACSQueryRecord>(query);
+    const qData: PACSQueryRecord | null = itemData_get(query, PACS_QUERY_READ_SHAPE);
     return Ok({
       id: queryId,
       title: qData?.title as string | undefined,
@@ -481,7 +531,7 @@ export async function pacsRetrieve_create(
     }
 
     const retrieve: Awaited<ReturnType<typeof client.createPACSRetrieve>> = await client.createPACSRetrieve(queryId);
-    const retrieveData: PACSRetrieveItemData | null = itemData_get<PACSRetrieveItemData>(retrieve);
+    const retrieveData: PACSRetrieveItemData | null = itemData_get(retrieve, PACS_RETRIEVE_DATA_SHAPE);
     const record: PACSRetrieveRecord = {
       id: retrieveData?.id as number,
       pacs_query_id: queryId,
@@ -521,7 +571,7 @@ export async function pacsRetrieves_list(
     }
 
     const retrieveList: Awaited<ReturnType<NonNullable<typeof query>["getRetrieves"]>> = await query.getRetrieves(options);
-    const items: PACSRetrieveItem[] = items_get<PACSRetrieveItem>(retrieveList);
+    const items: PACSRetrieveItem[] = items_get(retrieveList, PACS_RETRIEVE_ITEM_SHAPE);
 
     const records: PACSRetrieveRecord[] = items.map((item: PACSRetrieveItem): PACSRetrieveRecord => ({
       id: item.data.id,
@@ -664,14 +714,18 @@ export async function pacsSeriesFacts_fetch(path: string): Promise<PACSSeriesFac
   const patientID: string = at.patient.split('-')[0] ?? '';
   if (patientID.length === 0) return null;
   const key: string = `${at.pacs}/${at.patient}`;
-  let asked: Promise<Map<string, PACSSeriesFacts>> | undefined = seriesByPatient.get(key);
+  // What is kept is what the session's identity was shown: work done as another user, or begun before the
+  // identity changed, asks CUBE and keeps nothing.
+  const kept: boolean = identityCache_usable();
+  let asked: Promise<Map<string, PACSSeriesFacts>> | undefined = kept ? seriesByPatient.get(key) : undefined;
   if (asked === undefined) {
-    asked = patientSeries_fetch(at.pacs, patientID).catch((): Map<string, PACSSeriesFacts> => {
+    const fresh: Promise<Map<string, PACSSeriesFacts>> = patientSeries_fetch(at.pacs, patientID).catch((): Map<string, PACSSeriesFacts> => {
       // A failed ask is forgotten, so the next feed of this patient asks again.
-      seriesByPatient.delete(key);
+      if (seriesByPatient.get(key) === fresh) seriesByPatient.delete(key);
       return new Map();
     });
-    seriesByPatient.set(key, asked);
+    asked = fresh;
+    if (kept) seriesByPatient.set(key, fresh);
   }
   return (await asked).get(at.folder) ?? null;
 }
@@ -687,8 +741,8 @@ async function patientSeries_fetch(pacs: string, patientID: string): Promise<Map
     const items: ReturnType<typeof page.getItems> = page.getItems();
     if (!items || items.length === 0) break;
     for (const item of items) {
-      const data: { folder_path?: string; Modality?: string; SeriesDescription?: string } | null =
-        itemData_get<{ folder_path?: string; Modality?: string; SeriesDescription?: string }>(item);
+      const data: PACSSeriesData | null =
+        itemData_get(item, PACS_SERIES_SHAPE);
       const folder: string | undefined = data?.folder_path?.replace(/^\/+/, '');
       if (!folder) continue;
       const facts: PACSSeriesFacts = {};
@@ -707,6 +761,7 @@ async function patientSeries_fetch(pacs: string, patientID: string): Promise<Map
 export function pacsSeriesFacts_clear(): void {
   seriesByPatient.clear();
 }
+identityChange_listen(pacsSeriesFacts_clear);
 
 /**
  * Resolves a series' CUBE storage state: its registered file count and the
@@ -756,9 +811,9 @@ export async function seriesStorage_resolve(
       return Ok(empty);
     }
 
-    const seriesData: { folder_path?: string } | null =
-      itemData_get<{ folder_path?: string }>(seriesItems[0]);
-    const rawFolder: string | undefined = seriesData?.folder_path;
+    const seriesData: PACSSeriesData | null =
+      itemData_get(seriesItems[0], PACS_SERIES_SHAPE);
+    const rawFolder: string | null | undefined = seriesData?.folder_path;
     if (!rawFolder) {
       return Ok(empty);
     }
@@ -904,10 +959,10 @@ export async function seriesStorage_resolveMany(
         const items: ReturnType<typeof page.getItems> = page.getItems();
         if (!items || items.length === 0) return;
         for (const item of items) {
-          const data: { folder_path?: string; SeriesInstanceUID?: string } | null =
-            itemData_get<{ folder_path?: string; SeriesInstanceUID?: string }>(item);
-          const uid: string | undefined = data?.SeriesInstanceUID;
-          const rawFolder: string | undefined = data?.folder_path;
+          const data: PACSSeriesData | null =
+            itemData_get(item, PACS_SERIES_SHAPE);
+          const uid: string | null | undefined = data?.SeriesInstanceUID;
+          const rawFolder: string | null | undefined = data?.folder_path;
           if (!uid || !rawFolder) continue;
           found.set(uid, {
             fileCount: 0,

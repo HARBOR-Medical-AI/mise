@@ -11,10 +11,11 @@
  * @module
  */
 import { chrisConnection, chrisConnection_init, NodeStorageProvider, chrisContext, Context } from '@fnndsc/cumin';
+import { identityScope_fork, identityScope_turn } from '@fnndsc/cumin/identity-epoch';
+import { runtimeOutput_set } from '@fnndsc/cumin/runtime-output';
 import type { Backend, SessionIdentity } from '../core/backend.js';
 import { Session } from '../session/index.js';
 import { homePath_derive } from '../builtins/utils.js';
-import { runtimeOutput_set } from '@fnndsc/cumin/runtime-output';
 import { sink_get } from '../core/sink.js';
 import { procIndex_snapshot, sessionPromptContext_build } from './promptContext.js';
 import { chrisAnswerKinds, chrisReferences, chrisVerbTakes } from './references.js';
@@ -61,6 +62,9 @@ const CHRIS_DISCONNECTED: SessionIdentity = { user: 'disconnected', where: 'no-c
 /** The ChRIS backend: a session over a CUBE. */
 export const chrisBackend: Backend = {
   id: 'chris',
+  // A line is one piece of work begun under whoever is connected when it starts: what it fetches is kept
+  // only while that is still who is connected.
+  work_run: <T>(work: () => Promise<T>, apart?: boolean): Promise<T> => (apart === true ? identityScope_fork(work) : identityScope_turn(work)),
   session: {
     async init(): Promise<void> {
       chrisMounts_register();
@@ -68,16 +72,8 @@ export const chrisBackend: Backend = {
       // Initialize the connection singleton which also initializes config
       connection = await chrisConnection_init(nodeStorageProvider);
 
-      try {
-        // Also initialize chili's duplicate copy of the connection singleton to align monorepo package boundaries
-        const { chrisConnection_init: chiliConnection_init } = await import('@fnndsc/chili/utils');
-        await chiliConnection_init(nodeStorageProvider);
-      } catch (e: unknown) {
-        // Deliberate absorption, adjudicated 2026-08: chili's connection init
-        // is an optional secondary wiring (cumin's own init is the required
-        // one); when it is absent or fails, chili paths fall back to cumin's
-        // connection at call time.
-      }
+      // One connection, initialised once, here: chili's commands take cumin's own (`@fnndsc/chili` holds no
+      // second way to it).
     },
     async identity_get(): Promise<SessionIdentity> {
       const where: string | null = await chrisContext.ChRISURL_get();

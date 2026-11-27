@@ -590,7 +590,7 @@ export const progressOperationSchema = z.enum(PROGRESS_OPERATIONS).catch('task')
  * Optional, so an unknown class degrades to absent: the event still renders
  * from its operation and phase, one axis poorer.
  */
-export const progressKindSchema = z.enum(PROGRESS_KINDS).catch(undefined as never);
+export const progressKindSchema = z.enum(PROGRESS_KINDS).optional().catch(undefined);
 
 /**
  * Lifecycle phase of a progress operation.
@@ -610,7 +610,7 @@ export const progressPhaseSchema = z.enum(PROGRESS_PHASES).catch('working');
  * Optional, so an unknown unit degrades to absent and the counter renders
  * unqualified — 3/10 rather than nothing at all.
  */
-export const progressUnitSchema = z.enum(PROGRESS_UNITS).catch(undefined as never);
+export const progressUnitSchema = z.enum(PROGRESS_UNITS).optional().catch(undefined);
 
 /**
  * State of the operation or item being reported.
@@ -727,6 +727,22 @@ export const promptMessageSchema = z.object({
    * none leaves the surface to say `USE THIS`.
    */
   commit: z.string().optional(),
+  /**
+   * The command that raised this question: the id its surface gave its
+   * `execute`. A surface that started several lines tells by this whose
+   * question it is. Absent from a daemon that predates it.
+   */
+  executeId: z.string().optional(),
+  /**
+   * What the question is for, as a name the command and a surface share
+   * (`stratus.vm.build`). A surface that acts on a question without the
+   * operator (feeding a password already typed) matches this, never the
+   * wording. Absent when the command names none: such a question is the
+   * operator's to answer.
+   */
+  purpose: z.string().optional(),
+  /** What the question is about, by name (`vm`, `account`), for the same matching. */
+  subject: z.record(z.string(), z.string()).optional(),
 });
 
 export type PromptKind = z.infer<typeof promptKindSchema>;
@@ -904,6 +920,13 @@ export const editMessageSchema = z.object({
 export const deliverMessageSchema = z.object({
   type: z.literal('deliver'),
   deliverId: z.string(),
+  /**
+   * The surface's own id for the line whose command asked for this delivery.
+   * A surface on another machine honours a delivery only against what that
+   * line said, so it must be told which line; a delivery that does not say
+   * is refused by such a surface.
+   */
+  id: z.string().optional(),
   path: z.string(),
   filename: z.string(),
   destination: z.string().optional(),
@@ -912,7 +935,7 @@ export const deliverMessageSchema = z.object({
 });
 
 /** What to deliver, before the daemon adds the correlation id. */
-export type FileDeliverRequest = Omit<z.infer<typeof deliverMessageSchema>, 'type' | 'deliverId'>;
+export type FileDeliverRequest = Omit<z.infer<typeof deliverMessageSchema>, 'type' | 'deliverId' | 'id'>;
 
 /** Where a delivered file landed, as the surface reports it. */
 export type FileDeliverResult = Omit<

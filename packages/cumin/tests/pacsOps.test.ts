@@ -156,6 +156,21 @@ describe('pacsQueries_create', () => {
     expect(createPACSQuery).toHaveBeenCalledWith(3, { title: 'T', query: '{"PatientID":"X"}' });
   });
 
+  it('fails, once, when CUBE gives no receipt for the query it made, or one with no numeric id', async () => {
+    for (const answer of [{}, { data: null }, { data: { title: 'T' } }, { data: { id: '11' } }, { data: { id: 11, title: 7 } }]) {
+      const createPACSQuery = jest.fn(async () => answer);
+      mockClientGet.mockResolvedValue({ createPACSQuery });
+      expect((await pacsQueries_create('3', { title: 'T', query: '{}' })).ok).toBe(false);
+      expect(createPACSQuery).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('hands on the receipt\'s optional fields as they came, null and absent included', async () => {
+    mockClientGet.mockResolvedValue({ createPACSQuery: jest.fn(async () => ({ data: { id: 12, title: null } })) });
+    const result = await pacsQueries_create('3', { title: 'T', query: '{}' });
+    expect(result.ok && result.value).toEqual({ id: 12, title: null, status: undefined, pacs_id: undefined, result: undefined });
+  });
+
   it('errors when the server cannot be resolved', async () => {
     mockClientGet.mockResolvedValue({ getPACSList: jest.fn(async () => ({ data: [] })) });
     expect((await pacsQueries_create('ghost', { title: 'T', query: '{}' })).ok).toBe(false);

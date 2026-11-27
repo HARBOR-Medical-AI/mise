@@ -1,42 +1,95 @@
 /**
- * @file A machine's build as one run: its steps move as `vm build` follows
- * its tasks, the question stands between planning and applying, and the
+ * @file A machine's build as one run: its steps move as `vm build` says
+ * each begun and done, the question stands between planning and applying, and the
  * outcome is said once the line ends.
  */
 import { describe, it, expect } from '@jest/globals';
-import { buildQuestion_plain, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_take, type BuildRun } from '../../src/features/vm/run.js';
+import { buildQuestion_plain, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_step, type BuildRun } from '../../src/features/vm/run.js';
 
 describe('a build run', () => {
-  it('moves through its steps as the tasks are followed, skipping what a build does not need', () => {
+  it('moves through its steps as the engine says each begun and done, skipping what a build does not need', () => {
     let run: BuildRun = buildRun_start('store', 'disk 100 → 150 GB', 0);
     // Under way from the press: PREPARE writes and keeps the declaration and readies the stacks.
     expect(run.phases.prepare).toBe('going');
-    run = buildRun_take(run, 'following /proc/steps/vm-store-plan-data; Ctrl-C stops following, not the task (wait vm-store-plan-data follows it again)');
+    run = buildRun_step(run, { vm: 'store', step: 'plan-data', state: 'begun' });
     expect([run.phases.prepare, run.phases['plan-data']]).toEqual(['done', 'going']);
-    run = buildRun_take(run, '21:42:20 data plan: 0 to create, 0 to change, 0 to destroy');
+    run = buildRun_step(run, { vm: 'store', step: 'plan-data', state: 'done', said: 'data plan: 0 to create, 0 to change, 0 to destroy' });
+    expect(run.phases['plan-data']).toBe('done');
     expect(run.said).toBe('data plan: 0 to create, 0 to change, 0 to destroy');
-    run = buildRun_take(run, 'following /proc/steps/vm-store-plan-machine; …');
+    run = buildRun_step(run, { vm: 'store', step: 'plan-machine', state: 'begun' });
     expect([run.phases['plan-data'], run.phases['plan-machine']]).toEqual(['done', 'going']);
     run = buildRun_ask(run);
     expect(run.phases.ask).toBe('going');
     run = buildRun_answer(run, true);
-    run = buildRun_take(run, 'following /proc/steps/vm-store-apply-machine; …');
+    run = buildRun_step(run, { vm: 'store', step: 'apply-machine', state: 'begun' });
     // Nothing applied to the data: its step is not needed.
     expect([run.phases.ask, run.phases['apply-data'], run.phases['apply-machine']]).toEqual(['done', 'skipped', 'going']);
     run = buildRun_end(run, { tone: 'done', why: '' }, '2026-11-06T21:50:00.000Z');
     expect(run.phases['apply-machine']).toBe('done');
     expect(run.outcome?.words).toBe('BUILT · DISK 100 → 150 GB');
-    // A line after the end moves nothing.
-    expect(buildRun_take(run, 'following /proc/steps/vm-store-grow')).toBe(run);
+    // A step that arrives after the end moves nothing.
+    expect(buildRun_step(run, { vm: 'store', step: 'grow', state: 'begun' })).toBe(run);
   });
 
-  it('a NO ends it with nothing changed; a refusal says why; another machine\'s task is not this run', () => {
+  it('a NO before anything was applied ends it with nothing changed; a refusal says why; another machine\'s step is not this run', () => {
     let run: BuildRun = buildRun_start('store', '', 0);
-    expect(buildRun_take(run, 'following /proc/steps/vm-web-plan-data')).toBe(run);
+    expect(buildRun_step(run, { vm: 'web', step: 'plan-data', state: 'begun' })).toBe(run);
     run = buildRun_answer(buildRun_ask(run), false);
     expect(run.phases.ask).toBe('skipped');
     expect(buildRun_end(run, { tone: 'declined', why: '' }, '2026-11-06T21:50:00.000Z').outcome?.words).toBe('STOPPED BEFORE THE APPLY · NOTHING CHANGED');
     expect(buildRun_end(buildRun_start('store', '', 0), { tone: 'failed', why: 'the plan reads a new machine' }, '2026-11-06T21:50:00.000Z').outcome?.words).toBe('FAILED · the plan reads a new machine');
+  });
+
+  it('keeps each step as the engine said it: a step not needed stays not needed when later steps begin', () => {
+    let run: BuildRun = buildRun_start('store', '', 0);
+    run = buildRun_step(run, { vm: 'store', step: 'plan-data', state: 'begun' });
+    run = buildRun_step(run, { vm: 'store', step: 'plan-data', state: 'done' });
+    run = buildRun_step(run, { vm: 'store', step: 'plan-machine', state: 'begun' });
+    run = buildRun_step(run, { vm: 'store', step: 'plan-machine', state: 'done' });
+    run = buildRun_answer(buildRun_ask(run), true);
+    // Nothing to apply to the data: the machine's apply begins, and the data's is not needed.
+    run = buildRun_step(run, { vm: 'store', step: 'apply-machine', state: 'begun' });
+    expect(run.phases['apply-data']).toBe('skipped');
+    run = buildRun_step(run, { vm: 'store', step: 'apply-machine', state: 'done' });
+    // Two more steps begin: what was not needed is still not needed, and never reads done.
+    run = buildRun_step(run, { vm: 'store', step: 'grow', state: 'begun' });
+    run = buildRun_step(run, { vm: 'store', step: 'grow', state: 'done' });
+    run = buildRun_step(run, { vm: 'store', step: 'host', state: 'begun' });
+    expect([run.phases['apply-data'], run.phases['apply-machine'], run.phases.grow, run.phases.host]).toEqual(['skipped', 'done', 'done', 'going']);
+    run = buildRun_end(run, { tone: 'done', why: '' }, '2026-11-06T21:50:00.000Z');
+    expect([run.phases['apply-data'], run.phases.host]).toEqual(['skipped', 'done']);
+  });
+
+  it('a step the engine says failed reads failed, and stays failed through the line\'s end; a step under way when the line fails is the one that failed', () => {
+    let run: BuildRun = buildRun_start('store', '', 0);
+    run = buildRun_step(run, { vm: 'store', step: 'plan-data', state: 'begun' });
+    run = buildRun_step(run, { vm: 'store', step: 'plan-data', state: 'done' });
+    run = buildRun_answer(buildRun_ask(run), true);
+    run = buildRun_step(run, { vm: 'store', step: 'apply-data', state: 'begun' });
+    run = buildRun_step(run, { vm: 'store', step: 'apply-data', state: 'failed' });
+    expect(run.phases['apply-data']).toBe('failed');
+    const ended: BuildRun = buildRun_end(run, { tone: 'failed', why: 'the volume could not be made' }, '2026-11-06T21:50:00.000Z');
+    expect([ended.phases['plan-data'], ended.phases['apply-data'], ended.phases['apply-machine']]).toEqual(['done', 'failed', 'waiting']);
+    expect(ended.outcome?.words).toBe('FAILED · the volume could not be made');
+    // No step event said so (an older engine): the step under way at the failure is the one that failed.
+    const under: BuildRun = buildRun_end(buildRun_step(buildRun_start('store', '', 0), { vm: 'store', step: 'plan-data', state: 'begun' }), { tone: 'failed', why: '' }, '2026-11-06T21:50:00.000Z');
+    expect(under.phases['plan-data']).toBe('failed');
+  });
+
+  it('a NO after the data was applied says what stands: it is not "nothing changed"', () => {
+    let run: BuildRun = buildRun_start('store', '', 0);
+    run = buildRun_step(run, { vm: 'store', step: 'plan-data', state: 'begun' });
+    run = buildRun_step(run, { vm: 'store', step: 'plan-data', state: 'done' });
+    run = buildRun_answer(buildRun_ask(run), true);
+    run = buildRun_step(run, { vm: 'store', step: 'apply-data', state: 'begun' });
+    run = buildRun_step(run, { vm: 'store', step: 'apply-data', state: 'done' });
+    run = buildRun_step(run, { vm: 'store', step: 'plan-machine', state: 'begun' });
+    run = buildRun_step(run, { vm: 'store', step: 'plan-machine', state: 'done' });
+    // The machine's own question, answered no.
+    run = buildRun_answer(buildRun_ask(run), false);
+    const ended: BuildRun = buildRun_end(run, { tone: 'declined', why: '' }, '2026-11-06T21:50:00.000Z');
+    expect(ended.outcome?.words).toBe('STOPPED AT A NO · ITS DATA STANDS, AS APPLIED BEFORE IT');
+    expect([ended.phases['apply-data'], ended.phases['apply-machine']]).toEqual(['done', 'waiting']);
   });
 
   it('asks the build\'s question in the screen\'s words, its buttons saying what each answer does', () => {

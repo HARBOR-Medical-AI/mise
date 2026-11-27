@@ -34,6 +34,8 @@ jest.mock('../src/files/pipeline_content', () => mockPipeline);
 jest.mock('../src/files/regular_content', () => mockRegular);
 jest.mock('../src/files/pacs_content', () => mockPacs);
 jest.mock('../src/vfs/dispatcher', () => ({ vfsDispatcher: mockDispatcher }));
+const mockWrite = jest.fn();
+jest.mock('../src/files/replace', () => ({ file_write: mockWrite }));
 
 import { Ok, Err, errorStack } from '@fnndsc/cumin';
 import {
@@ -250,44 +252,27 @@ describe('files_create / touch', () => {
   });
 
   // CUBE's upload does not replace, so a touch carrying content over a file
-  // that already exists kept the OLD content and still reported success: a
-  // session file written twice never changed after its first write.
-  it('files_touch REWRITES a file that is already there', async () => {
-    mockObjCreate.mockResolvedValue(group({
-      resources_getAll: jest.fn().mockResolvedValue({ tableData: [{ id: 7, fname: '/a/held.json' }] }),
-    }));
-    mockIO.file_deleteById.mockResolvedValue(Ok(true));
-    mockIO.file_upload.mockResolvedValue(true);
+  // that already exists kept the OLD content and still reported success. A
+  // write of content is handed whole to files/replace, which decides on
+  // proof whether it is a first write or a rewrite and has its own tests;
+  // here, only that it is handed over and nothing is done beside it.
+  it('files_touch hands content to the proved write, and looks nothing up itself', async () => {
+    mockWrite.mockResolvedValue(true);
 
     expect(await files_touch('/a/held.json', 'new')).toBe(true);
-    expect(mockIO.file_deleteById).toHaveBeenCalledWith(7);
-    expect(mockIO.file_deleteById.mock.invocationCallOrder[0])
-      .toBeLessThan(mockIO.file_upload.mock.invocationCallOrder[0]);
-  });
-
-  it('writes content to a path holding nothing without reporting a miss', async () => {
-    mockObjCreate.mockResolvedValue(group({
-      resources_getAll: jest.fn().mockResolvedValue({ tableData: [] }),
-    }));
-    mockIO.file_upload.mockResolvedValue(true);
-
-    expect(await files_touch('/a/fresh.json', 'new')).toBe(true);
+    expect(mockWrite).toHaveBeenCalledWith('/a/held.json', expect.any(Blob));
+    expect(await (mockWrite.mock.calls[0][1] as Blob).text()).toBe('new');
+    expect(mockObjCreate).not.toHaveBeenCalled();
     expect(mockIO.file_deleteById).not.toHaveBeenCalled();
-    // Nothing being there is the ordinary case, not a fault to report.
-    expect(errorStack.stack_search('not found').length).toBe(0);
+    expect(mockIO.file_upload).not.toHaveBeenCalled();
   });
 
-  it('refuses rather than writing over a file it could not remove', async () => {
-    mockObjCreate.mockResolvedValue(group({
-      resources_getAll: jest.fn().mockResolvedValue({ tableData: [{ id: 7, fname: '/a/held.json' }] }),
-    }));
-    mockIO.file_deleteById.mockResolvedValue(Err());
-    mockIO.file_upload.mockResolvedValue(true);
-
+  it('files_touch answers false when the write could not be made', async () => {
+    mockWrite.mockResolvedValue(false);
     expect(await files_touch('/a/held.json', 'new')).toBe(false);
     expect(mockIO.file_upload).not.toHaveBeenCalled();
-    expect(errorStack.stack_search('could not be removed').length).toBeGreaterThan(0);
   });
+
 });
 
 describe('files_mkdir / uploadPath / share', () => {
@@ -303,8 +288,15 @@ describe('files_mkdir / uploadPath / share', () => {
     mockIO.uploadLocalPath.mockResolvedValue(true);
     expect(await files_uploadPath('/local', '/remote')).toBe(true);
   });
-  it('share returns true', async () => {
-    expect(await files_share(1, { is_public: true })).toBe(true);
+  it('share says it cannot, shares nothing and writes nothing to the output', async () => {
+    const written: string[] = [];
+    const out = jest.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown): boolean => { written.push(String(chunk)); return true; });
+    const answer: boolean = await files_share(1, { is_public: true });
+    out.mockRestore();
+    expect(answer).toBe(false);
+    expect(errorStack.stack_search('nothing was shared').length).toBe(1);
+    expect(written).toEqual([]);
+    expect(mockObjCreate).not.toHaveBeenCalled();
   });
 });
 

@@ -79,6 +79,16 @@ jobs:
         working-directory: packages/chell
         run: |
           export XDG_CONFIG_HOME="$(mktemp -d)"
-          node dist/index.js "$CUBE_USER@$CUBE_URL" -p "$CUBE_PASSWORD" -c version
+          # The password is never on a command line, which every process on the runner can list: it goes
+          # into a private file, the file's name to curl, and the token CUBE answers with to chell on its
+          # standard input. chell saves the session, and the scripts below run under it.
+          umask 077
+          login="$(mktemp)"
+          # Gone however this step ends: a write, a request, a parse or a login that fails leaves no password behind.
+          trap 'rm -f "$login"' EXIT
+          node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ username: process.env.CUBE_USER, password: process.env.CUBE_PASSWORD }))' "$login"
+          curl -sf -H 'content-type: application/json' -d @"$login" "${CUBE_URL}auth-token/" \
+            | node -e 'let s = ""; process.stdin.on("data", (c) => { s += c; }).on("end", () => { console.log(JSON.parse(s).token); });' \
+            | node dist/index.js "$CUBE_USER@$CUBE_URL" --auth-token-stdin -c version
           node dist/index.js -e -f exemplars/chell/10_fs_roundtrip.chell
           node dist/index.js -e -f exemplars/chell/30_feed_tour.chell

@@ -6,12 +6,8 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import type { VmLimitsModel } from '@fnndsc/menu';
-import {
-  buildWould_derive, ports_word,
-  askForm_derive, costLine_derive, counts_words, duration_words, line_parse, line_render, lineOption_get, lineOption_set, lines_build, memoryRange_derive,
-  rate_words, rates_sum, runningStep_find, scriptName_derive, scriptSource_derive, stepBuildLine_get, stepKind_derive, stepKind_isTask, stepLabel_derive, steps_build, states_count, userLine_build,
-  vmLevers_read, vmSliders_build, words_split, workingCopy_derive, script_render, type ScriptStep,
-} from '../../src/features/script/model.js';
+import { buildWould_derive, ports_word, askForm_derive, costLine_derive, counts_words, duration_words, line_parse, line_render, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum, runningStep_find, scriptName_derive, scriptSource_derive, stepBuildLine_get, stepKind_derive, stepKind_isTask, stepLabel_derive, steps_build, states_count, userLine_build, vmLevers_read, vmSliders_build, words_split, workingCopy_derive, script_render, type ScriptStep } from '../../src/features/script/model.js';
+import { args_tokenize } from '../../../../packages/brasa/src/lib/parser.js';
 
 const STORE: string = [
   '# the store',
@@ -129,9 +125,11 @@ describe('the script screen model', () => {
   });
 
   it('reads the form of a question and says a duration', () => {
-    expect(askForm_derive('store: build it, $0.052 an hour? [y/N] ')).toBe('yes-no');
-    expect(askForm_derive('teardown --all removes the data too; type the name to go on: ')).toBe('name');
-    expect(askForm_derive('admin password for chris (empty: generate one): ')).toBe('text');
+    // A yes-or-no is one by its kind, whatever it says; words that look like one, with another kind, are not.
+    expect(askForm_derive('store: build it at this price', 'confirm')).toBe('yes-no');
+    expect(askForm_derive('store: build it, $0.052 an hour? [y/N] ', 'text')).toBe('text');
+    expect(askForm_derive('teardown --all removes the data too; type the name to go on: ', 'text')).toBe('name');
+    expect(askForm_derive('admin password for chris (empty: generate one): ', 'text')).toBe('text');
     expect(duration_words(4000)).toBe('4 s');
     expect(duration_words(200_000)).toBe('3 m 20 s');
     expect(duration_words(3_720_000)).toBe('1 h 02 m');
@@ -166,5 +164,104 @@ describe('what BUILD would do against what runs', () => {
     expect(buildWould_derive(vmLevers_read(line('')), { vcpu: null, memory: null, disk: null, data: null })[0]?.change).toBe('the machine and its data made: 2 vCPU · 8 GiB · disk 50 GB · data 50 GB');
     // A part the tenancy was not read for is not compared.
     expect(buildWould_derive(vmLevers_read(line('--os ubuntu-24.04')), { ...RUNS, os: null })).toEqual([]);
+  });
+});
+
+describe('an option set on a line leaves the line\'s other words as their author spelled them', () => {
+  const line: string = "chris user add 'O'\\''Brien' --note '$name' --email ob@example.org";
+
+  it('reads an apostrophe written closed, escaped and opened again as one apostrophe', () => {
+    expect(words_split(line)).toEqual(['chris', 'user', 'add', "O'Brien", '--note', '$name', '--email', 'ob@example.org']);
+    expect(lineOption_get(line, '--note')).toBe('$name');
+  });
+
+  it('two fields changed one after the other: the name keeps its apostrophe and the quoted literal stays quoted', () => {
+    const first: string = lineOption_set(line, '--email', 'o.brien@example.org');
+    expect(first).toBe("chris user add 'O'\\''Brien' --note '$name' --email o.brien@example.org");
+    const second: string = lineOption_set(first, '--groups', 'pacs users');
+    expect(second).toBe("chris user add 'O'\\''Brien' --note '$name' --email o.brien@example.org --groups 'pacs users'");
+    expect(words_split(second)).toEqual(['chris', 'user', 'add', "O'Brien", '--note', '$name', '--email', 'o.brien@example.org', '--groups', 'pacs users']);
+    // The literal's own option changed: only then is it written anew.
+    expect(lineOption_set(second, '--note', "it's")).toBe("chris user add 'O'\\''Brien' --note 'it'\\''s' --email o.brien@example.org --groups 'pacs users'");
+    // And taken away, with its value.
+    expect(lineOption_set(second, '--note', '')).toBe("chris user add 'O'\\''Brien' --email o.brien@example.org --groups 'pacs users'");
+  });
+
+  it('an option with no value gains one in place, and a value that is itself written like an option is its value', () => {
+    expect(lineOption_set('vm new store --public --cidr 10.0.0.0/16', '--public', 'yes')).toBe('vm new store --public yes --cidr 10.0.0.0/16');
+    expect(lineOption_set("vm new store --note '--not-an-option' --n 1", '--note', 'x')).toBe('vm new store --note x --n 1');
+  });
+});
+
+describe('an option is read, set and cleared by one rule', () => {
+  it('a line that names an option twice is left naming it once when set, and not at all when cleared', () => {
+    const twice: string = 'vm new store --memory 8 --vcpu 2 --memory 16';
+    expect(lineOption_set(twice, '--memory', '32')).toBe('vm new store --memory 32 --vcpu 2');
+    expect(lineOption_get(lineOption_set(twice, '--memory', '32'), '--memory')).toBe('32');
+    expect(lineOption_set(twice, '--memory', '')).toBe('vm new store --vcpu 2');
+    expect(line_parse(lineOption_set(twice, '--memory', '')).options).toEqual([['--vcpu', '2']]);
+  });
+
+  it('a quoted word that looks like an option is a value: the getter reads it, the setter replaces it, and it never names an option', () => {
+    const line: string = "vm new store --note '--example' --n 1";
+    expect(lineOption_get(line, '--note')).toBe('--example');
+    expect(lineOption_get(line, '--example')).toBeNull();
+    expect(line_parse(line).options).toEqual([['--note', '--example'], ['--n', '1']]);
+    expect(lineOption_set(line, '--note', 'x')).toBe('vm new store --note x --n 1');
+    expect(lineOption_set(line, '--example', 'y')).toBe("vm new store --note '--example' --n 1 --example y");
+    // A quoted word standing where a subject does is the subject, though it begins with dashes.
+    expect(line_parse("vm new '--odd-name' --n 1").subject).toBe('--odd-name');
+  });
+
+  it('a value set from a field that reads like an option is the value: set, read back and cleared as one option', () => {
+    for (const value of ['--example', '--key=value', '--n']) {
+      const set: string = lineOption_set('vm new store --n 1', '--note', value);
+      expect(lineOption_get(set, '--note')).toBe(value);
+      expect(line_parse(set).options).toEqual([['--n', '1'], ['--note', value]]);
+      // Cleared, nothing of it is left behind.
+      expect(lineOption_set(set, '--note', '')).toBe('vm new store --n 1');
+      // Set again over itself, still one of it.
+      expect(lineOption_set(set, '--note', 'plain')).toBe('vm new store --n 1 --note plain');
+    }
+    expect(lineOption_set('vm new store', '--note', '--example')).toBe("vm new store --note '--example'");
+  });
+
+  it('the --key=value spelling is the same option: read, replaced in place, and cleared', () => {
+    const line: string = "vm new store --memory=8 --note='two words' --vcpu 2";
+    expect(lineOption_get(line, '--memory')).toBe('8');
+    expect(lineOption_get(line, '--note')).toBe('two words');
+    expect(lineOption_set(line, '--memory', '16')).toBe("vm new store --memory 16 --note='two words' --vcpu 2");
+    expect(lineOption_set(line, '--note', '')).toBe('vm new store --memory=8 --vcpu 2');
+    expect(lineOption_set('vm new store --memory=8 --memory 16', '--memory', '')).toBe('vm new store');
+  });
+});
+
+describe('a line made from another keeps what it does not change', () => {
+  it('the price request is the declaration with its verb changed, every other word as spelled', () => {
+    const declared: string = "vm new 'O'\\''Brien' --note '$name' --memory=8 --disk 50";
+    expect(costLine_derive(declared)).toBe("vm cost 'O'\\''Brien' --note '$name' --memory=8 --disk 50");
+    // Read by the kernel, the two carry the same operands: the literal stays a literal.
+    expect([...args_tokenize(costLine_derive(declared))].slice(2)).toEqual([...args_tokenize(declared)].slice(2));
+    // A line that is not a declaration has no price request; one whose verb is quoted is still a declaration.
+    expect(costLine_derive('vm build store')).toBeNull();
+    expect(costLine_derive("vm 'new' store --disk 50")).toBe('vm cost store --disk 50');
+    expect(costLine_derive("'vm' \"new\" 'O'\\''Brien' --note '$name'")).toBe("vm cost 'O'\\''Brien' --note '$name'");
+  });
+
+  it('only one declaration and nothing more is priced: a second command, a pipe, a redirect, a task or an open quote is not', () => {
+    for (const line of ['vm new store --disk 50; rm -r /x', 'vm new store --disk 50 && vm build store', 'vm new store | tee out', 'vm new store > /tmp/out', 'vm new store >> log', 'vm new store &', "vm new store --note 'never closed"]) {
+      expect(costLine_derive(line)).toBeNull();
+    }
+    // The same characters inside a quoted or escaped operand are that operand's, and the declaration is priced with them.
+    expect(costLine_derive("vm new store --note 'a;b | c > d & e' --disk 50")).toBe("vm cost store --note 'a;b | c > d & e' --disk 50");
+    expect(costLine_derive('vm new store --note "a;b" --tag x\\;y')).toBe('vm cost store --note "a;b" --tag x\\;y');
+  });
+
+  it('a user line built from a form carries each field as the value it is, to the kernel', () => {
+    const line: string = userLine_build("o'brien", 'ops$team@example.org', '/keys/pass word $1', 'store');
+    expect([...args_tokenize(line)]).toEqual(['chris', 'user', 'add', "o'brien", '--email', 'ops$team@example.org', '--password-file', '/keys/pass word $1', '--on', 'store']);
+    // A file named under the home stays under the home; a plain form reads as it always did.
+    expect(userLine_build('jennings', 'j@example.org', '~/p', 'store')).toBe('chris user add jennings --email j@example.org --password-file ~/p --on store');
+    expect([...args_tokenize(userLine_build('jennings', 'j@example.org', '~/my keys/p', ''))]).toEqual(['chris', 'user', 'add', 'jennings', '--email', 'j@example.org', '--password-file', '~/my keys/p']);
   });
 });

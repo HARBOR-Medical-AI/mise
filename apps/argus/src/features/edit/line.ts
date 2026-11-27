@@ -9,18 +9,7 @@
  * @module
  */
 
-/**
- * Quotes a word for the kernel's line: single quotes keep every character,
- * newlines, backslashes, `$` and `@` included, as POSIX quotes (#1258). A
- * single quote cannot stand inside them, so it closes the quote, stands
- * escaped, and opens it again: `it's` is written `'it'\''s'`.
- *
- * @param word - Any text.
- * @returns The word, quoted for the line.
- */
-export function word_quote(word: string): string {
-  return `'${word.replace(/'/g, "'\\''")}'`;
-}
+import { arg_quote, path_quote } from '@fnndsc/menu';
 
 /**
  * The line that writes a pane's text to its file.
@@ -32,7 +21,7 @@ export function word_quote(word: string): string {
 export function saveLine_compose(path: string, text: string): string {
   // The `=` form: a text beginning with `-` (a YAML list, a Markdown bullet)
   // is the flag's value, never read as another flag.
-  return `touch --withContents=${word_quote(text)} ${word_quote(path)}`;
+  return `touch --withContents=${arg_quote(text)} ${path_quote(path)}`;
 }
 
 /**
@@ -42,7 +31,7 @@ export function saveLine_compose(path: string, text: string): string {
  * @returns The `edit` line.
  */
 export function editLine_compose(path: string): string {
-  return `edit ${word_quote(path)}`;
+  return `edit ${path_quote(path)}`;
 }
 
 /**

@@ -2,6 +2,11 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      base:
+        description: The commit or ref the ratchets' ceilings are compared with (default, the commit before this one on main; elsewhere, the merge base with main)
+        required: false
+        default: ''
   pull_request:
   push:
     branches: [main]
@@ -21,26 +26,26 @@ jobs:
         with:
           node-version: 24
       - run: npm install -g npm@11.19.0
+      # The workspace has one lockfile, at the root, and this audit reads it. That is an audit of what each
+      # published workspace ships only if the lockfile describes it: `lint:audit-coverage`, in the check job
+      # (it needs the installed tree), fails the change otherwise.
       - run: npm audit --omit=dev --audit-level=high
-      # Auditing from inside a workspace member is a silent no-op: npm
-      # resolves the prefix up to the workspace root and audits the root
-      # lockfile again. Copying each nested lockfile out of the workspace
-      # tree is what actually audits it.
-      - name: Audit nested lockfiles
-        run: |
-          for pkg in cumin salsa; do
-            dir=$(mktemp -d)
-            cp "packages/$pkg/package.json" "packages/$pkg/package-lock.json" "$dir"
-            (cd "$dir" && npm audit --omit=dev --audit-level=high)
-          done
 
   check:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         node: [22, 24]
+    # What a ratchet's ceilings are compared with (scripts/lib/ratchetBase.mjs): a pull request's base is in
+    # GITHUB_BASE_REF; a push's is the commit the branch was at before it; a manual run may name one.
+    env:
+      RATCHET_BEFORE: ${{ github.event.before }}
+      RATCHET_BASE: ${{ inputs.base }}
     steps:
+      # The whole history: a ratchet reads its baseline at the change's base, which must be here to be read.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -71,6 +76,16 @@ jobs:
             if [ -n "$bad" ]; then exit "$code"; fi
           fi
       - run: npm test
+      # The summary the argus coverage floor was judged from, kept whether the
+      # tests passed or not: the measure differs a little from machine to
+      # machine, and a fall is only found by reading it file by file.
+      - name: Keep the argus coverage summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: argus-coverage-node${{ matrix.node }}
+          path: apps/argus/coverage/coverage-summary.json
+          if-no-files-found: ignore
       # Mock-free wire round trip: a real chell RemoteEngine attached to a
       # real in-process CalypsoDaemon (attach, execute, completion, pipes,
       # shell escapes, prompts, local edits). Needs no CUBE or credentials,
@@ -93,8 +108,9 @@ jobs:
           fail_ci_if_error: false
       - run: npm run lint:tests
       - run: npm run lint:seam
-      # Cast ratchet: the repo's `as unknown as` count may only decrease.
+      # Cast ratchet: each workspace's `as unknown as` count may only decrease, and its ceiling with it.
       - run: npm run lint:casts
+      - run: npm run test:ratchets
       # Principle checks (docs/principles.adoc). Two are hard checks; two are
       # ratchets that cannot repair what exists but stop it growing.
       - run: npm run lint:kernel
@@ -103,6 +119,22 @@ jobs:
       - run: npm run lint:core-deps
       # The core boots over the null backend with no ChRIS package loaded.
       - run: npm run test:core-boot --workspace @fnndsc/brasa
+      - run: npm run test:chili-words --workspace @fnndsc/brasa
+      # A worker's file is where its `new Worker` names it (checked on source),
+      # and the session's layout worker starts from the built package and
+      # lays a graph out (checked on the build).
+      - run: npm run lint:workers
+      - run: npm run lint:argv
+      - run: npm run lint:debris
+      # The root lockfile describes what every published workspace ships (its edges resolve, in range, none
+      # development-only), which is what makes the audit job's green an audit of them.
+      - run: npm run lint:audit-coverage
+      - run: npm run test:audit-coverage
+      - run: npm run test:debris
+      - run: npm run test:argv
+      - run: npm run test:layout-worker --workspace @fnndsc/brasa
+      # The nightly's accounting: a red stage or step is a non-zero exit.
+      - run: npm run test:nightly
       # stratus: oci-* only inside its OCI driver, no ChRIS package; it boots
       # over the fake cloud and walks the tenancy tree (docs/stratus.adoc).
       - run: npm run lint:stratus-deps
@@ -120,7 +152,18 @@ jobs:
       - run: npm run lint:listings
       # A function's method is a verb, never a preposition (#1227).
       - run: npm run lint:rpn
+      # A value a surface writes into a shell line goes through a quoting function, never quotes written by hand.
+      - run: npm run lint:lines
+      # chili is being retired: brasa's imports of it may only fall, and no other workspace may import it.
+      - run: npm run lint:chili
+      # Every published package's main, types, bin and exports lead to files it would publish (run after the build).
+      - run: npm run lint:pack
       - run: npm run lint:changesets
       - run: npm run lint:aegis
       - run: npm run lint:orrery
-      - run: npm run lint --if-present
+      # The style guide's rules over every workspace's sources, each rule in each workspace held to a ceiling
+      # that only falls (scripts/eslint-ratchet.mjs). No --if-present: a missing script fails the job.
+      - run: npm run test:lint
+      # The findings do not depend on the node that runs ESLint: counted once, on one leg of the matrix.
+      - if: matrix.node == 24
+        run: npm run lint

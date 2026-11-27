@@ -13,10 +13,8 @@
  *
  * A module of the host, shaped as the trek bridge's.
  */
-import {
-  clusterSizeModelSchema, clustersModelSchema, clusterSummarySchema, STRATUS_CLUSTER_SIZE_MODEL_KIND, STRATUS_CLUSTER_STATE_EVENT, STRATUS_CLUSTERS_MODEL_KIND,
-  type ClusterSizeModel, type ClusterSummary,
-} from '@fnndsc/menu';
+import { clusterSizeModelSchema, clustersModelSchema, clusterSummarySchema, STRATUS_CLUSTER_SIZE_MODEL_KIND, STRATUS_CLUSTER_STATE_EVENT, STRATUS_CLUSTERS_MODEL_KIND,
+  type ClusterSizeModel, type ClusterSummary, word_write } from '@fnndsc/menu';
 import type { ExecuteOutcome, SurfaceAsk } from '../calypso/client.js';
 import { TdController } from '../features/controller/screen.js';
 import { synthVoice } from '../lcars/synth.js';
@@ -100,7 +98,7 @@ export function tdController_wire(context: Pick<HostContext, 'client' | 'manage_
 
   const size_read = async (family?: string): Promise<ClusterSizeModel | null> => {
     try {
-      const answer: ExecuteOutcome = await context.client.line_execute(family === undefined ? 'cluster size' : `cluster size --family ${family}`, { silent: true, observe: false });
+      const answer: ExecuteOutcome = await context.client.line_execute(family === undefined ? 'cluster size' : `cluster size --family ${word_write(family)}`, { silent: true, observe: false });
       return model_extract(answer, STRATUS_CLUSTER_SIZE_MODEL_KIND, (data: unknown) => clusterSizeModelSchema.safeParse(data));
     } catch {
       return null;
@@ -132,7 +130,7 @@ export function tdController_wire(context: Pick<HostContext, 'client' | 'manage_
       // The controller does not take a narrow screen; the line runs as text, as in chell.
       const said: string = `cluster: the controller needs a screen at least ${CONTROLLER_MIN_WIDTH} px wide; this one is ${window.innerWidth}, so the line runs as text`;
       try {
-        const answer: ExecuteOutcome = await context.client.line_execute(name === '' ? 'cluster status' : `cluster ${name}`, { silent: true, observe: false });
+        const answer: ExecuteOutcome = await context.client.line_execute(name === '' ? 'cluster status' : `cluster ${word_write(name)}`, { silent: true, observe: false });
         return [said, ...answer.envelopes.map((envelope) => `${envelope.rendered ?? ''}${envelope.renderedErr ?? ''}`.trimEnd())].join('\n');
       } catch (error: unknown) {
         return `${said}\n${error instanceof Error ? error.message : String(error)}`;

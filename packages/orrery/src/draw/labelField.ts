@@ -12,6 +12,8 @@
  */
 import * as THREE from 'three';
 
+import { Made, drawn_release } from './release.js';
+
 /**
  * A caption's height on screen, as a share of the view's height: the same
  * at any distance, so a hub is read from afar and not shouted at up close.
@@ -51,6 +53,9 @@ export class LabelField {
   private captions: Map<string, Caption> = new Map();
   /** Whether captions are shown at all: the operator may want the picture bare. */
   private shown: boolean = true;
+
+  /** What this field drew, let go together at a redraw. */
+  private readonly made: Made = new Made();
 
   /**
    * @param parent - Where the captions are drawn.
@@ -107,8 +112,14 @@ export class LabelField {
     sprite.renderOrder = 4;
     // Drawn while captions are off, it stays hidden until they are on.
     sprite.visible = this.shown;
-    this.parent.add(sprite);
-    this.captions.get(id)?.texture.dispose();
+    this.made.thing_add(this.parent, sprite);
+    // A caption drawn again for the same node replaces the one before, which is taken out and let go.
+    const before: THREE.Sprite | undefined = this.captions.get(id)?.sprite;
+    if (before !== undefined) {
+      before.removeFromParent();
+      this.made.thing_forget(before);
+      drawn_release(before);
+    }
     this.captions.set(id, { sprite, texture, rank });
   }
 
@@ -157,9 +168,14 @@ export class LabelField {
     return this.shown;
   }
 
-  /** Forgets every caption: the scene is being redrawn (its parent already cleared). */
+  /**
+   * Lets go of every caption it drew, its texture and its material, and forgets them: the scene is being redrawn.
+   *
+   * @example
+   * field.clear();
+   */
   public clear(): void {
-    for (const caption of this.captions.values()) caption.texture.dispose();
+    this.made.all_release();
     this.captions = new Map();
   }
 }

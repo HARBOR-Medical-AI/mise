@@ -15,11 +15,9 @@ describe('binText_highlight', () => {
     expect(html).toContain('<span class="man-head">USAGE</span>');
     expect(html).toContain('<span class="man-key">name:</span>');
     expect(html).toContain('<span class="man-flag">--prefix</span>');
-    // The string pattern looks for &quot;, which html_escape never writes:
-    // a quoted string passes through unmarked (found by this test; kept as
-    // is, since a cleanup changes no behaviour).
-    expect(html).toContain('"abc"');
-    expect(html).not.toContain('man-str');
+    // html_escape writes a quote as &quot;, which is what the string
+    // pattern looks for: a quoted string is marked.
+    expect(html).toContain('<span class="man-str">&quot;abc&quot;</span>');
     expect(binText_highlight('\x1b[31mred\x1b[0m')).not.toContain('man-');
   });
 });

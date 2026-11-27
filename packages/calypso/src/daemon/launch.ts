@@ -18,7 +18,7 @@ import { CalypsoDaemon, type PromptLastCommand } from './server.js';
 import { bundledWebRoot_find, webRoot_resolve, webRootBuild_read, webRootVersion_read, type WebRootBuild } from './static.js';
 import { hostFqdn_get } from './host.js';
 import { codeWatch_start, type CodeWatch } from './codeIdentity.js';
-import { token_generate } from './token.js';
+import { token_generate, tokenWords_say, type TokenWords } from './token.js';
 import type { BrasaEngine } from '@fnndsc/brasa/core';
 import type { ProgressEvent, PromptContext } from '@fnndsc/menu';
 import type { OutputSink, Surface, SurfaceCapabilities, SurfacePeer, PromptRequest, LocalEditRequest, LocalEditResult } from '@fnndsc/menu/surface';
@@ -124,6 +124,8 @@ export function daemonSurface_create(daemon: CalypsoDaemon, policy: HostControlP
         ...(request.wants === undefined ? {} : { wants: request.wants }),
         ...(request.path === undefined ? {} : { path: request.path }),
         ...(request.commit === undefined ? {} : { commit: request.commit }),
+        ...(request.purpose === undefined ? {} : { purpose: request.purpose }),
+        ...(request.subject === undefined ? {} : { subject: request.subject }),
       }),
     // Under host control the host wins: the segment or the shell runs here,
     // output on the session bus like any command's. Otherwise both relay to
@@ -386,17 +388,19 @@ export async function daemon_launch(
   }
   if (resumed > 0) console.log(chalk.yellow(`[!] ${resumed} task${resumed === 1 ? '' : 's'} picked up again after the restart (ls /proc)`));
   console.log(chalk.gray(`    identity:  ${identity}`));
-  console.log(chalk.gray(`    token:     ${token}`));
+  // The token is printed where somebody reads it off a terminal, and nowhere else: sent to a log, these lines name where it is kept.
+  const words: TokenWords = tokenWords_say(token, process.stdout.isTTY === true, berth_path(identity));
+  console.log(chalk.gray(`    token:     ${words.token}`));
   console.log(chalk.gray(`    berth:     ${berth_path(identity)}`));
   console.log(chalk.gray(`    attach a surface with:  chell --remote${attachHint}`));
   if (bindHost !== '127.0.0.1') {
     // Berth discovery is a file in this host's runtime directory, so it cannot
     // reach another machine. An explicit address is how a surface elsewhere
     // attaches, and it is worth printing ready to paste.
-    console.log(chalk.gray(`    from another machine:   chell --remote --attach ${url} --token ${token}`));
+    console.log(chalk.gray(`    from another machine:   chell --remote --attach ${url} ${words.flag}`));
   }
   if (webRoot !== null) {
-    console.log(chalk.green(`[+] ARGUS web surface at http://${displayHost}:${port}/?token=${token}`));
+    console.log(chalk.green(`[+] ARGUS web surface at http://${displayHost}:${port}/${words.query}${words.aside}`));
     console.log(chalk.gray(`    serving:   ${webRoot}`));
   }
   if (notePath !== null) {

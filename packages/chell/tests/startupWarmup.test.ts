@@ -127,6 +127,8 @@ const mockQueryIndexRestore = jest.fn<(identity: string) => Promise<{ restored: 
   async () => ({ restored: false, count: 0, reason: 'no query index' }),
 );
 const mockQueryIndexSave = jest.fn<(identity: string) => Promise<void>>(async () => undefined);
+const mockQueryIndexFinish = jest.fn<(identity: string | null) => Promise<void>>(async () => undefined);
+const mockQueryIndexHold = jest.fn<(identity: string) => void>();
 
 jest.unstable_mockModule('@fnndsc/cumin', () => ({
   chrisContext: { ChRISURL_get: jest.fn(async () => 'https://cube.example.org/api/v1/') },
@@ -151,6 +153,8 @@ jest.unstable_mockModule('@fnndsc/cumin', () => ({
   listCheckpoint_watch: jest.fn(() => (): void => undefined),
   queryIndexCheckpoint_restore: mockQueryIndexRestore,
   queryIndexCheckpoint_save: mockQueryIndexSave,
+  queryIndexCheckpoint_finish: mockQueryIndexFinish,
+  queryIndexCheckpoint_hold: mockQueryIndexHold,
   queryIndexCheckpoint_watch: jest.fn(() => (): void => undefined),
   queryIndex_sweep: jest.fn(async () => ({ ok: true, value: { indexed: 0, total: 1905, pages: 1, bounded: false } })),
   listCache_get: jest.fn(() => ({
@@ -861,10 +865,30 @@ describe('the replay index in a run with no warm-up', () => {
     expect(mockQueryIndexRestore).toHaveBeenCalledWith('chris@https://cube.example.org/api/v1/');
   });
 
-  it('writes what this run learned, since the debounced writer never fires', async () => {
+  it('writes what this run learned, since the debounced writer never fires: for whoever is connected at the end', async () => {
+    mockQueryIndexRestore.mockResolvedValueOnce({ restored: true, count: 3 });
     await queryCheckpoint_prime('chris');
+    // From the restore on, the index in memory is the whole of that identity's checkpoint, and is written as it stands.
+    expect(mockQueryIndexHold).toHaveBeenCalledWith('chris@https://cube.example.org/api/v1/');
+    expect(mockQueryIndexRestore.mock.invocationCallOrder[0]).toBeLessThan(mockQueryIndexHold.mock.invocationCallOrder[0] as number);
     await queryCheckpoint_flush();
-    expect(mockQueryIndexSave).toHaveBeenCalledWith('chris@https://cube.example.org/api/v1/');
+    expect(mockQueryIndexFinish).toHaveBeenCalledWith('chris@https://cube.example.org/api/v1/');
+  });
+
+  it('at the end of a run in which someone else connected, writes for who is connected then, with no second prime', async () => {
+    await queryCheckpoint_prime('chris');
+    // Someone else connects in the same run; nothing primes the index again.
+    identityUser = 'other';
+    await queryCheckpoint_flush();
+    // (That the first one's was written as it left, and that the two files hold each its own, is cumin's to test with real files.)
+    expect(mockQueryIndexFinish).toHaveBeenCalledTimes(1);
+    expect(mockQueryIndexFinish).toHaveBeenCalledWith('other@https://cube.example.org/api/v1/');
+  });
+
+  it('does not claim the index when the checkpoint could not be read: what the run learns is then added to the file', async () => {
+    mockQueryIndexRestore.mockRejectedValueOnce(new Error('disk'));
+    await queryCheckpoint_prime('chris');
+    expect(mockQueryIndexHold).not.toHaveBeenCalled();
   });
 
   it('does nothing without an identity to key the index by', async () => {
@@ -888,7 +912,7 @@ describe('the replay index in a run with no warm-up', () => {
   it('stays silent when the checkpoint cannot be read or written', async () => {
     mockQueryIndexRestore.mockRejectedValueOnce(new Error('disk full'));
     await expect(queryCheckpoint_prime('chris')).resolves.toBeUndefined();
-    mockQueryIndexSave.mockRejectedValueOnce(new Error('disk full'));
+    mockQueryIndexFinish.mockRejectedValueOnce(new Error('disk full'));
     await expect(queryCheckpoint_flush()).resolves.toBeUndefined();
   });
 });

@@ -352,6 +352,7 @@ export {
   type CapacityRow,
   type CapacityModel,
 } from './substrate.js';
+export { STRATUS_VM_STEP_EVENT, VM_BUILD_STEPS, vmStepEventSchema, STRATUS_PROMPT_PURPOSES, type VmStepEvent } from './script.js';
 export {
   MANIFEST_STATUS_MODEL_KIND,
   LINE_DECLINED_MODEL_KIND,
@@ -410,3 +411,4 @@ export {
   type VmStatusModel,
 } from './script.js';
 export { SERIES_FOLDER_PATTERN, PACS_TREE_ROOT, seriesFolder_is } from './seriesFolder.js';
+export { arg_quote, word_write, path_quote, path_write, home_path, line_split, line_tokens, script_lines, script_commands } from './line.js';

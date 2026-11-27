@@ -181,6 +181,24 @@ export async function remoteEntry_read(target: string): Promise<RemoteEntry | nu
 }
 
 /**
+ * Refuses a listed name that is not one name.
+ *
+ * A listing's names become folders and files on the berth's disk. Each is
+ * one part of a path: a name that is empty, `.` or `..`, or that holds a
+ * separator or a NUL, would place what follows it somewhere else. It is
+ * refused where it is listed, before anything under it is walked.
+ *
+ * @param folder - The folder whose listing held the name.
+ * @param name - The name as listed.
+ * @throws {Error} Naming the folder and the name.
+ */
+function listedName_check(folder: string, name: string): void {
+  if (name === '' || name === '.' || name === '..' || /[\\/\0]/.test(name)) {
+    throw new Error(`${folder} lists ${JSON.stringify(name)}, which is not a name a file can have here`);
+  }
+}
+
+/**
  * Every file under a folder, walked depth first, links followed to the
  * folders they name; a folder already walked is not walked again.
  *
@@ -188,13 +206,14 @@ export async function remoteEntry_read(target: string): Promise<RemoteEntry | nu
  * @param prefix - The relative name of the folder under the anchor ('' at its top).
  * @param seen - Folders already walked.
  * @returns The files.
- * @throws {Error} When a folder under it cannot be listed.
+ * @throws {Error} When a folder under it cannot be listed, or lists a name that is not one name.
  */
 async function folderFiles_walk(folder: string, prefix: string, seen: Set<string>): Promise<RemoteFile[]> {
   if (seen.has(folder)) return [];
   seen.add(folder);
   const files: RemoteFile[] = [];
   for (const item of await folder_list(folder)) {
+    listedName_check(folder, item.name);
     const name: string = prefix === '' ? item.name : `${prefix}/${item.name}`;
     const here: string = posix.join(folder, item.name);
     if (item.type === 'file') {

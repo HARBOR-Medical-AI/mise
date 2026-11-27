@@ -7,8 +7,8 @@
  *
  * @module
  */
+import { DICOM_MODEL_KINDS, dicomSeriesModelSchema, dicomTagsModelSchema, type DicomSeriesModel, type DicomTagsModel, path_quote } from '@fnndsc/menu';
 import { element_require, template_stamp, pane_find } from '../../frame/dom.js';
-import { DICOM_MODEL_KINDS, dicomSeriesModelSchema, dicomTagsModelSchema, type DicomSeriesModel, type DicomTagsModel } from '@fnndsc/menu';
 import type { ArgusClient, ExecuteOutcome } from '../../calypso/client.js';
 import { paneInstance_dispose, type PaneInstance, type PaneKind, type PanelRoster } from '../../app/panes.js';
 import type { SubjectBus } from '../../app/subjects.js';
@@ -97,7 +97,7 @@ function tagsInstance_build(ctx: ChrisDicomContext, id: string): PaneInstance {
 /** Asks the kernel for a file's tags, silently, and paints them on a tags pane. */
 async function tags_ask(ctx: ChrisDicomContext, path: string): Promise<DicomTagsModel | null> {
   try {
-    const outcome: ExecuteOutcome = await ctx.client().line_execute(`dcm tags "${path}"`, { silent: true, observe: false });
+    const outcome: ExecuteOutcome = await ctx.client().line_execute(`dcm tags ${path_quote(path)}`, { silent: true, observe: false });
     for (const envelope of outcome.envelopes) {
       if (envelope.model?.kind !== DICOM_MODEL_KINDS.tags) continue;
       const parsed = dicomTagsModelSchema.safeParse(envelope.model.data);
@@ -153,7 +153,7 @@ function tagsPane_open(ctx: ChrisDicomContext, imageId: string): string {
  */
 async function series_ask(ctx: ChrisDicomContext, path: string, signal?: AbortSignal): Promise<DicomSeriesModel | null> {
   try {
-    const outcome: ExecuteOutcome = await ctx.client().line_execute(`dcm series "${path}"`, { silent: true, observe: false, ...(signal !== undefined ? { signal } : {}) });
+    const outcome: ExecuteOutcome = await ctx.client().line_execute(`dcm series ${path_quote(path)}`, { silent: true, observe: false, ...(signal !== undefined ? { signal } : {}) });
     for (const envelope of outcome.envelopes) {
       if (envelope.model?.kind !== DICOM_MODEL_KINDS.series) continue;
       const parsed = dicomSeriesModelSchema.safeParse(envelope.model.data);
@@ -168,7 +168,7 @@ async function series_ask(ctx: ChrisDicomContext, path: string, signal?: AbortSi
 /** The folders under a path, from a silent listing. */
 async function subfolders_ask(ctx: ChrisDicomContext, path: string, signal?: AbortSignal): Promise<string[]> {
   try {
-    const outcome: ExecuteOutcome = await ctx.client().line_execute(`ls "${path}"`, { silent: true, observe: false, ...(signal !== undefined ? { signal } : {}) });
+    const outcome: ExecuteOutcome = await ctx.client().line_execute(`ls ${path_quote(path)}`, { silent: true, observe: false, ...(signal !== undefined ? { signal } : {}) });
     for (const envelope of outcome.envelopes) {
       if (envelope.model?.kind !== 'fs.listing') continue;
       // One listing per path asked for, its entries under `items` — as the

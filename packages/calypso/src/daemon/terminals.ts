@@ -24,6 +24,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import type { DaemonConsoleTarget, SurfaceLaunch } from './consoleSession.js';
+import { ATTACH_TOKEN_ENV } from './token.js';
 
 /** A running pseudo-terminal, as much of node-pty's IPty as is used. */
 export interface PtyProcess {
@@ -263,7 +264,8 @@ export class Terminals {
     const id: string = randomBytes(12).toString('hex');
     const pty: PtyProcess = this.options.spawn(
       launch.exec,
-      [...launch.prefixArgs, '--remote', target.identity, '--attach', target.url, '--token', target.token],
+      // The token goes in the environment, never on the command line, which `ps` shows to every user of this host.
+      [...launch.prefixArgs, '--remote', target.identity, '--attach', target.url],
       {
         name: 'xterm-256color',
         cols,
@@ -272,7 +274,7 @@ export class Terminals {
         // A terminal draws colour, whatever the daemon's own environment said;
         // CHELL_TERMINAL names the terminal, so the chell can say on attach
         // whose console it is.
-        env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', FORCE_COLOR: '3', CHELL_TERMINAL: id },
+        env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', FORCE_COLOR: '3', CHELL_TERMINAL: id, [ATTACH_TOKEN_ENV]: target.token },
       },
     );
     const terminal: Terminal = { id, pty, buffer: [], bufferSize: 0, viewer: null, idle: null, exited: false };

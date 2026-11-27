@@ -1,16 +1,19 @@
 /**
- * @file The console's prompt bar: the Powerlevel10k segment bar as HTML.
+ * @file The console's prompt bar: the Powerlevel10k segment bar as elements.
  *
- * Pure: the terminal hands it the daemon's prompt context and its own glyphs
- * and palette (kept in `terminal.ts`, where `lint:prompt` compares them by
- * value against chell's), and it returns the bar's inner HTML. A backend that
- * sends segments (stratus) is drawn from them, in its order; a daemon that
- * sends none (ChRIS) is drawn from the named fields, as it always was.
+ * The terminal hands it the bar's element, the daemon's prompt context and
+ * its own glyphs and palette (kept in `terminal.ts`, where `lint:prompt`
+ * compares them by value against chell's), and it fills the bar. A backend
+ * that sends segments (stratus) is drawn from them, in its order; a daemon
+ * that sends none (ChRIS) is drawn from the named fields, as it always was.
+ *
+ * A segment's text and title come from the session: a path, a name, an
+ * identity. They are set as properties of an element and never written
+ * into markup, so no value can end its attribute and begin another.
  *
  * @module
  */
 import { procPromptState_get, type ProcPromptState, type PromptContext, type PromptSegment, type PromptSegmentTone } from '@fnndsc/menu';
-import { html_escape } from './ansi.js';
 
 /** Foreground/background hex pair for one powerline segment. */
 export interface SegmentColor {
@@ -44,20 +47,24 @@ const DURATION_THRESHOLD_MS: number = 3_000;
 const IDENTITY_MAX: number = 28;
 
 /**
- * Renders the bar's inner HTML from the stored context.
+ * Fills the bar from the stored context, replacing what it held.
  *
+ * @param bar - The prompt bar's element.
  * @param context - The daemon's prompt context, or null before the first push.
  * @param parts - The terminal's glyphs, palette and proc-state presentations.
- * @returns The prompt bar's inner HTML.
  */
-export function promptBar_render(context: PromptContext | null, parts: PromptBarParts): string {
+export function promptBar_fill(bar: HTMLElement, context: PromptContext | null, parts: PromptBarParts): void {
   if (context === null) {
-    return '<span class="dim">argus</span>';
+    const waiting: HTMLSpanElement = bar.ownerDocument.createElement('span');
+    waiting.className = 'dim';
+    waiting.textContent = 'argus';
+    bar.replaceChildren(waiting);
+    return;
   }
   const wire: ReadonlyArray<PromptSegment> = context.segments ?? [];
   const segments: BarSegment[] = wire.length > 0 ? wireSegments_build(wire, parts) : chrisSegments_build(context, parts);
   segments.push(...trailing_build(context, parts));
-  return bar_assemble(segments, parts);
+  bar.replaceChildren(...bar_assemble(bar.ownerDocument, segments, parts));
 }
 
 /**
@@ -146,20 +153,34 @@ function trailing_build(context: PromptContext, parts: PromptBarParts): BarSegme
   return segments;
 }
 
-/** Joins the segments with powerline separators, the last fading out. */
-function bar_assemble(segments: ReadonlyArray<BarSegment>, parts: PromptBarParts): string {
-  let bar: string = '';
+/**
+ * The segments as elements, joined with powerline separators, the last
+ * fading out.
+ *
+ * @param page - The document the bar lives in.
+ * @param segments - What to draw, in order.
+ * @param parts - The terminal's glyphs.
+ * @returns A span per segment and one per separator, in order.
+ */
+function bar_assemble(page: Document, segments: ReadonlyArray<BarSegment>, parts: PromptBarParts): HTMLSpanElement[] {
+  const spans: HTMLSpanElement[] = [];
   for (let index: number = 0; index < segments.length; index++) {
     const segment: BarSegment | undefined = segments[index];
     if (segment === undefined) continue;
-    const title: string = segment.title !== undefined ? ` title="${html_escape(segment.title)}"` : '';
-    bar += `<span style="color:${segment.color.fg};background-color:${segment.color.bg}"${title}> ${html_escape(segment.text)} </span>`;
+    const drawn: HTMLSpanElement = page.createElement('span');
+    drawn.style.color = segment.color.fg;
+    drawn.style.backgroundColor = segment.color.bg;
+    drawn.textContent = ` ${segment.text} `;
+    if (segment.title !== undefined) drawn.title = segment.title;
+    spans.push(drawn);
+    const separator: HTMLSpanElement = page.createElement('span');
+    separator.style.color = segment.color.bg;
     const next: BarSegment | undefined = segments[index + 1];
-    bar += next !== undefined
-      ? `<span style="color:${segment.color.bg};background-color:${next.color.bg}">${parts.glyphs.powerline}</span>`
-      : `<span style="color:${segment.color.bg}">${parts.glyphs.powerline}</span>`;
+    if (next !== undefined) separator.style.backgroundColor = next.color.bg;
+    separator.textContent = parts.glyphs.powerline;
+    spans.push(separator);
   }
-  return bar;
+  return spans;
 }
 
 /**

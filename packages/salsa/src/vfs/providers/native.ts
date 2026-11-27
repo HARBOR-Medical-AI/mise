@@ -25,6 +25,7 @@ import {
   files_move,
   type ListingOutcome,
 } from "../../files/index.js";
+import { folderEmptiness_prove, pathHolders_prove, type PathProof } from "../../files/proof.js";
 import path from "path";
 
 /** How long `rm -r` waits for CUBE to finish removing a folder it accepted the removal of. */
@@ -307,6 +308,21 @@ export class NativeVfsProvider implements VFSProvider {
     return this.failure_classify(target, (type) => (type === 'dir' ? 'EISDIR' : 'EIO'));
   }
 
+  /**
+   * Proves that nothing in CUBE holds a path: its parent was listed whole
+   * and no folder, file or link there has the name (`pathHolders_prove`).
+   * A listing that was refused, failed or came back short proves nothing.
+   *
+   * @param target - An absolute CUBE path.
+   * @returns True only on that proof.
+   */
+  async absence_prove(target: string): Promise<boolean> {
+    const mark: number = errorStack.checkpoint_mark();
+    const proof: Result<PathProof> = await pathHolders_prove(target);
+    errorStack.checkpoint_drain(mark);
+    return proof.ok && proof.value.kind === 'absent';
+  }
+
   /** @inheritdoc */
   async readBinary(target: string): Promise<VfsOutcome<Buffer>> {
     const bytes: Result<Buffer> = await fileContent_getBinary(target);
@@ -352,15 +368,37 @@ export class NativeVfsProvider implements VFSProvider {
     return vfsOutcome_convertFromBoolean(await files_mkdir(target, { cleared: true }), 'EIO');
   }
 
-  /** @inheritdoc */
+  /**
+   * Removes a folder that is proved to be a folder, alone at its path, and
+   * empty.
+   *
+   * CUBE's delete of a folder takes everything in it, so an answer that only
+   * looks like "empty" is not enough. `list` keeps the rows it has when part
+   * of a listing fails, which is right for showing a folder and wrong here:
+   * the proofs come from `files/proof`, where a listing refused, one that
+   * could not be made, or one cut short is a failure and nothing is deleted.
+   *
+   * One gap stays open: CUBE has no request that deletes a folder only if it
+   * is empty, so a child that arrives between the proof and the delete goes
+   * with the folder (docs/CUBE-gaps.adoc).
+   *
+   * @param target - The folder's path.
+   * @returns Done, or why not: `ENOENT`, `ENOTDIR`, `ENOTEMPTY`, `EPERM`
+   *   when a folder and a file share the path, `EIO` when a proof failed.
+   */
   async rmdir(target: string): Promise<VfsOutcome> {
-    const there: VfsOutcome<{ type: 'dir' | 'file' | 'link'; id: number }> = await this.removable_find(target);
-    if (!there.ok) return there;
-    if (there.value.type !== 'dir') return vfs_fail('ENOTDIR');
-    const held: Result<VFSItem[]> = await this.list(target);
-    if (!held.ok) return vfs_failFromStack('EIO');
-    if (held.value.length > 0) return vfs_fail('ENOTEMPTY');
-    if (!await files_delete(there.value.id, 'dirs', path.posix.dirname(target))) return vfs_failFromStack('EIO');
+    const holding: Result<PathProof> = await pathHolders_prove(target);
+    if (!holding.ok) return vfs_failFromStack('EIO');
+    if (holding.value.kind === 'absent') return vfs_fail('ENOENT');
+    if (holding.value.holders.length > 1) {
+      return vfs_fail('EPERM', `a folder and a file share ${target}, and removing either would damage the other in CUBE`);
+    }
+    const [holder] = holding.value.holders;
+    if (holder === undefined || holder.kind !== 'dir') return vfs_fail('ENOTDIR');
+    const empty: Result<boolean> = await folderEmptiness_prove(target);
+    if (!empty.ok) return vfs_failFromStack('EIO');
+    if (!empty.value) return vfs_fail('ENOTEMPTY');
+    if (!await files_delete(holder.id, 'dirs', path.posix.dirname(target))) return vfs_failFromStack('EIO');
     return await this.folderGone_await(target);
   }
 

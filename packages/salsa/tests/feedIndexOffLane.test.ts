@@ -13,7 +13,7 @@ jest.mock('@fnndsc/cumin', () => ({
 }));
 jest.mock('../src/jobs/index', () => ({}));
 
-import { procCache_get } from '@fnndsc/cumin';
+import { procCache_get, identityEpoch_raise, identityScope_run } from '@fnndsc/cumin';
 import { feedInstances_ensureStarted, feedInstances_ensureLoaded, procFeed_refreshStart, procRoster_sync, procRoster_syncStart, procVisitState_reset, ROSTER_DELTA_MIN_MS } from '../src/vfs/providers/proc';
 
 const cache = procCache_get();
@@ -198,5 +198,32 @@ describe('feedInstances_ensureStarted', () => {
     await waiting;
     expect(done).toBe(true);
     expect(cache.topologyLoaded_has(23)).toBe(true);
+  });
+});
+
+describe('a walk through a change of identity', () => {
+  it('begun for one identity, it is not joined by the next, and when it lands it leaves the next one\'s tree alone', async () => {
+    // The first identity's walk of feed 21 is under way, its first page still out.
+    const first = gatedClient(rows_make(21, 3));
+    mockClientGet.mockResolvedValue(first.client);
+    const firstWalk: Promise<unknown> = identityScope_run((): Promise<unknown> => feedInstances_ensureLoaded(21));
+    await flush();
+    expect(first.pending()).toBe(1);
+    // Someone else connects. Their feed 21 is another feed altogether: other jobs, other numbers.
+    identityEpoch_raise();
+    const theirs = Array.from({ length: 2 }, (_: unknown, i: number) => ({ id: 2000 + i, feed_id: 21, plugin_name: 'pl-theirs', status: 'finishedSuccessfully' }));
+    const getPluginInstances = jest.fn(async () => ({ data: theirs, totalCount: theirs.length }));
+    mockClientGet.mockResolvedValue({ getPluginInstances });
+    await identityScope_run((): Promise<unknown> => feedInstances_ensureLoaded(21));
+    // Asked of CUBE for themselves, not handed the first one's walk.
+    expect(getPluginInstances).toHaveBeenCalled();
+    expect(procCache_get().feedInstanceIDs_all(21).sort()).toEqual([2000, 2001]);
+    // The first one's walk lands now.
+    while (first.pending() > 0) { first.release(); await flush(); }
+    await firstWalk.catch((): undefined => undefined);
+    await flush();
+    expect(procCache_get().feedInstanceIDs_all(21).sort()).toEqual([2000, 2001]);
+    expect(procCache_get().instance_get(1000)).toBeUndefined();
+    expect(procCache_get().topologyLoaded_has(21)).toBe(true);
   });
 });

@@ -153,8 +153,9 @@ describe('the TD controller model', () => {
     expect(controllerLine_parse('cluster status', ['quay'])).toBeNull();
     expect(controllerLine_parse('cluster plan quay', ['quay'])).toBeNull();
     expect(controllerLine_parse('ls', ['quay'])).toBeNull();
-    expect(askForm_derive('infra-apply creates 17 resources. Continue? [y/N]')).toBe('yes-no');
-    expect(askForm_derive("Type the cluster's name to go on:")).toBe('typed');
+    expect(askForm_derive('confirm')).toBe('yes-no');
+    expect(askForm_derive('text')).toBe('typed');
+    expect(askForm_derive('secret')).toBe('typed');
     expect(duration_text(42_000)).toBe('42s');
     expect(duration_text(12 * 60_000)).toBe('12m');
     expect(duration_text(190 * 60_000)).toBe('3h 10m');

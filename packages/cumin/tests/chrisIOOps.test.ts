@@ -11,6 +11,8 @@ jest.mock('../src/connect/chrisConnection', () => ({
 
 import { chrisConnection } from '../src/connect/chrisConnection';
 import { ChrisIO } from '../src/io/chrisIO';
+import { folderLookup_memoize } from '../src/filebrowser/folderMemo';
+import { listCache_get } from '../src/cache/listCache';
 import { errorStack } from '../src/error/errorStack';
 
 const mockClientGet: jest.Mock = chrisConnection.client_get as unknown as jest.Mock;
@@ -57,9 +59,9 @@ describe('file_moveById field drift', () => {
     expect(put).toHaveBeenCalledWith({ upload_path: '/new/name.txt' });
   });
 
-  it('falls back to path for older CUBEs', async () => {
+  it('falls back to path for older CUBEs, which refuse the newer field outright', async () => {
     const put = jest.fn()
-      .mockRejectedValueOnce(new Error('At least one of the fields'))
+      .mockRejectedValueOnce(Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['This field is required.'] } } }))
       .mockResolvedValueOnce({});
     mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
     expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(true);
@@ -67,10 +69,150 @@ describe('file_moveById field drift', () => {
     expect(put).toHaveBeenNthCalledWith(2, { path: '/new/name.txt' });
   });
 
-  it('fails when both field spellings are rejected', async () => {
-    const put = jest.fn(async () => { throw new Error('403'); });
+  it('asks for no second move when the first one\'s reply was lost: the move may have happened', async () => {
+    const put = jest.fn(async () => { throw new Error('socket hang up'); });
     mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
     expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for no second move after a refusal that is not about the field', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Forbidden'), { response: { status: 403 } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for no second move after a 400 that is not about the field', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { detail: 'Invalid file name.' } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for no second move when CUBE knows the field and refuses its value', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { upload_path: ['Invalid file name.'] } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('tries the older field when CUBE says no field it reads was sent', async () => {
+    const put = jest.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Bad Request'), { response: { status: 400, data: { non_field_errors: ["At least one of the fields 'public' or 'path' must be provided."] } } }))
+      .mockResolvedValueOnce({});
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(true);
+    expect(put).toHaveBeenNthCalledWith(2, { path: '/new/name.txt' });
+  });
+
+  it('asks for no second move when the older field is named for a reason other than being missing', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['Destination already exists.'] } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for no second move when CUBE says fields are missing and the older rename field is not among them', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { non_field_errors: ["At least one of the fields 'public' or 'upload_path' must be provided."] } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for no second move when a held destination is named in words that happen to hold "required"', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ["Folder with path 'home/ada/required' already exists."] } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/home/ada/required')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the caller again before the older field, and stops when the place is no longer shown free', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['This field is required.'] } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    const recheck = jest.fn(async (): Promise<boolean> => false);
+    expect((await io().file_moveById(5, '/new/name.txt', recheck)).ok).toBe(false);
+    expect(recheck).toHaveBeenCalledTimes(1);
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it('tries the older field once the caller has shown the place free again', async () => {
+    const put = jest.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['This field is required.'] } } }))
+      .mockResolvedValueOnce({});
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt', async (): Promise<boolean> => true)).ok).toBe(true);
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails when both field spellings are rejected', async () => {
+    const put = jest.fn(async () => { throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: { path: ['This field is required.'] } } }); });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ put })) });
+    expect((await io().file_moveById(5, '/new/name.txt')).ok).toBe(false);
+    expect(put).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('whose client a transfer uses', () => {
+  it('asks the connection each time: after someone else connects, or outside a sudo, it is not the first one\'s', async () => {
+    const one: ChrisIO = io();
+    const elevated: object = { of: 'the admin, under sudo' };
+    const ordinary: object = { of: 'the user' };
+    const another: object = { of: 'whoever connected next' };
+    mockClientGet.mockResolvedValueOnce(elevated).mockResolvedValueOnce(ordinary).mockResolvedValueOnce(another);
+    // The first transfer of the session happens to be under sudo.
+    expect(await one.client_get()).toBe(elevated);
+    // The next is not: it does not go on as the admin.
+    expect(await one.client_get()).toBe(ordinary);
+    expect(await one.client_get()).toBe(another);
+    expect(mockClientGet).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('why a file could not be read', () => {
+  it('is said of each download for itself when two are under way at once', async () => {
+    const refusal = (status: number): Error => Object.assign(new Error(String(status)), { response: { status } });
+    let firstPacs: (reason: Error) => void = (): void => undefined;
+    const client = {
+      url: '',
+      // File 1 is refused (403) at once; file 2 is not there (404).
+      getUserFile: jest.fn(async (id: number) => { throw refusal(id === 1 ? 403 : 404); }),
+      // File 1's second look is still out while file 2 is looked for from start to end.
+      getPACSFile: jest.fn((id: number): Promise<never> => id === 1
+        ? new Promise((_resolve: (value: never) => void, reject: (reason: Error) => void): void => { firstPacs = reject; })
+        : Promise.reject(refusal(404))),
+    };
+    mockClientGet.mockResolvedValue(client);
+    const one: ChrisIO = io();
+    const first: Promise<Buffer | null> = one.file_download(1);
+    await Promise.resolve(); await Promise.resolve();
+    expect(await one.file_download(2)).toBeNull();
+    firstPacs(new Error('no status'));
+    expect(await first).toBeNull();
+    const said: string[] = pushSpy.mock.calls.map((call: unknown[]): string => String(call[1]));
+    expect(said.find((line: string): boolean => line.includes('File ID 2'))).toContain('(404)');
+    // File 1's reason is its own refusal, not what file 2 was told meanwhile.
+    expect(said.find((line: string): boolean => line.includes('File ID 1'))).toContain('refused access (403)');
+  });
+});
+
+describe('what CUBE is asked when a lookup comes back with nothing', () => {
+  it('is asked as the user the lookup was made as: with that client\'s own address and token', async () => {
+    const asked: Array<{ url: string; token: string }> = [];
+    fetchSpy?.mockRestore();
+    fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const token: string = String((init?.headers as Record<string, string> | undefined)?.['Authorization'] ?? '');
+      asked.push({ url: String(input), token });
+      // CUBE refuses the admin and has never heard of the file for the user: two answers, told apart by who asks.
+      return { status: token === 'Token ADMIN' ? 403 : 404 } as Response;
+    });
+    // A lookup made with one client (a sudo's, say) while the connection's current client is another's.
+    const lookupClient = { url: 'https://cube.admin/api/v1/', auth: { token: 'ADMIN' }, getUserFile: jest.fn(async () => null), getPACSFile: jest.fn(async () => null) };
+    mockClientGet.mockResolvedValue(lookupClient);
+    expect(await io().file_download(41)).toBeNull();
+    const said: string = pushSpy.mock.calls.map((call: unknown[]): string => String(call[1])).find((line: string): boolean => line.includes('File ID 41')) ?? '';
+    expect(said).toContain('refused access (403)');
+    expect(asked.filter((one) => one.url.includes('/userfiles/41/'))).toEqual([{ url: 'https://cube.admin/api/v1/userfiles/41/', token: 'Token ADMIN' }]);
   });
 });
 
@@ -86,6 +228,20 @@ describe('folder_deleteByPath', () => {
     expect(del).toHaveBeenCalled();
     // Leading slash stripped for the filebrowser lookup.
     expect(byPath).toHaveBeenCalledWith('home/alice/scratch');
+  });
+
+  it('sees that CUBE has deleted the folder when its lookup is the session\'s remembered one', async () => {
+    listCache_get().cache_invalidate();
+    const del = jest.fn(async () => undefined);
+    // CUBE: there before the delete, gone after it.
+    const byPath = jest.fn(async (): Promise<unknown> => (del.mock.calls.length === 0 ? { delete: del } : null));
+    // The client as the connection hands it out: its folder lookups remembered.
+    mockClientGet.mockResolvedValue(folderLookup_memoize({ getFileBrowserFolderByPath: byPath } as never));
+    const result = await io().folder_deleteByPath('/home/alice/remembered', { timeoutMs: 1000 });
+    expect(result.ok).toBe(true);
+    // Asked again after the delete, not answered with the folder remembered from before it.
+    expect(byPath).toHaveBeenCalledTimes(2);
+    expect(pushSpy).not.toHaveBeenCalledWith('error', expect.stringContaining('still resolves'));
   });
 
   it('treats an absent folder as already deleted', async () => {
@@ -281,6 +437,17 @@ describe('file_upload', () => {
     expect(pushSpy).toHaveBeenCalledWith('warning', expect.stringContaining('already exists'));
   });
 
+  it('treats a held file whose name is not text as a probe that cannot answer: occupied', async () => {
+    cube_fake({ fname: () => 'home/chris/up/a_XYZ.txt' });
+    const getUserFile = jest.fn();
+    mockClientGet.mockResolvedValue(uploadClient({
+      getUserFile,
+      getUserFiles: jest.fn(async () => ({ getItems: () => [{ data: { fname: 7 } }] })),
+    }));
+    expect(await io().file_upload(new Blob(['x']), 'home/chris/up/', 'a.txt')).toBe(true);
+    expect(getUserFile).not.toHaveBeenCalled();
+  });
+
   it('treats a probe that cannot answer as occupied', async () => {
     cube_fake({ fname: () => 'home/chris/up/a_XYZ.txt' });
     const getUserFile = jest.fn();
@@ -346,6 +513,67 @@ describe('file_upload', () => {
 
     mockClientGet.mockResolvedValue(null);
     expect(await io().file_upload(new Blob(['x']), 'up', 'a.txt')).toBe(false);
+  });
+});
+
+describe('file_uploadReceipted: the upload answers which file it made', () => {
+  beforeEach(() => { posted = []; });
+  afterEach(() => { fetchSpy?.mockRestore(); fetchSpy = undefined; });
+
+  it('answers the stored id and the path, with a leading slash', async () => {
+    cube_fake();
+    mockClientGet.mockResolvedValue(uploadClient());
+    expect(await io().file_uploadReceipted(new Blob(['xyz']), '/home/chris/up', 'a.txt'))
+      .toEqual({ ok: true, value: { id: 41, path: '/home/chris/up/a.txt' } });
+  });
+
+  it('answers the path CUBE chose when it is not the one asked for, and renames nothing', async () => {
+    cube_fake({ fname: () => 'home/chris/up/a_XYZ.txt' });
+    const getUserFile = jest.fn();
+    mockClientGet.mockResolvedValue(uploadClient({ getUserFile }));
+    expect(await io().file_uploadReceipted(new Blob(['x']), 'home/chris/up', 'a.txt'))
+      .toEqual({ ok: true, value: { id: 41, path: '/home/chris/up/a_XYZ.txt' } });
+    expect(getUserFile).not.toHaveBeenCalled();
+  });
+
+  it('fails when CUBE refuses the upload', async () => {
+    cube_fake({ status: 500 });
+    mockClientGet.mockResolvedValue(uploadClient());
+    expect((await io().file_uploadReceipted(new Blob(['x']), 'up', 'a.txt')).ok).toBe(false);
+  });
+
+  it('fails when not connected', async () => {
+    mockClientGet.mockResolvedValue(null);
+    expect((await io().file_uploadReceipted(new Blob(['x']), 'up', 'a.txt')).ok).toBe(false);
+  });
+});
+
+describe('file_locate: where a file is, by its id', () => {
+  it('answers the path the file is at, with a leading slash', async () => {
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => ({ data: { fname: 'home/chris/up/a.txt' } })) });
+    expect(await io().file_locate(41)).toEqual({ ok: true, value: '/home/chris/up/a.txt' });
+  });
+
+  it('answers null when CUBE says the file is not there', async () => {
+    const gone: Error & { response?: { status: number } } = Object.assign(new Error('Not Found'), { response: { status: 404 } });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => { throw gone; }) });
+    expect(await io().file_locate(41)).toEqual({ ok: true, value: null });
+  });
+
+  it('answers neither when CUBE refuses to say: a refusal is not an absence', async () => {
+    const refused: Error & { response?: { status: number } } = Object.assign(new Error('Forbidden'), { response: { status: 403 } });
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => { throw refused; }) });
+    expect((await io().file_locate(41)).ok).toBe(false);
+  });
+
+  it('answers neither when the client gives nothing and CUBE cannot be asked plainly', async () => {
+    mockClientGet.mockResolvedValue({ getUserFile: jest.fn(async () => null) });
+    expect((await io().file_locate(41)).ok).toBe(false);
+  });
+
+  it('fails when not connected', async () => {
+    mockClientGet.mockResolvedValue(null);
+    expect((await io().file_locate(41)).ok).toBe(false);
   });
 });
 

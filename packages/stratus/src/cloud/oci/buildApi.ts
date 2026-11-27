@@ -17,6 +17,7 @@ import * as limits from 'oci-limits';
 import * as objectstorage from 'oci-objectstorage';
 import { ociTags_flatten } from './driver.js';
 import { notFound } from './errors.js';
+import { pages_drain } from './pages.js';
 
 /** A pre-authenticated link to an object. */
 export interface OciLink {
@@ -113,7 +114,7 @@ export function ociBuildApi_make(options: OciBuildApiOptions): OciBuildApi {
   // The root and every active compartment beneath it: where a shared thing
   // (the zone, the tag namespace) may live.
   const compartments_all = async (): Promise<string[]> => {
-    const beneath = (await ident.listCompartments({ compartmentId: tenancyId, compartmentIdInSubtree: true, lifecycleState: identity.models.Compartment.LifecycleState.Active })).items;
+    const beneath: identity.models.Compartment[] = await pages_drain((page: string | undefined) => ident.listCompartments({ compartmentId: tenancyId, compartmentIdInSubtree: true, lifecycleState: identity.models.Compartment.LifecycleState.Active, page }));
     return [tenancyId, ...beneath.map((compartment): string => compartment.id).filter((id): id is string => typeof id === 'string')];
   };
   const namespace_get = async (): Promise<string> => {
@@ -130,7 +131,7 @@ export function ociBuildApi_make(options: OciBuildApiOptions): OciBuildApi {
     },
     async zoneCompartment_find(zone) {
       for (const compartmentId of await compartments_all()) {
-        const zones = (await dnsClient.listZones({ compartmentId, name: zone })).items;
+        const zones: dns.models.ZoneSummary[] = await pages_drain((page: string | undefined) => dnsClient.listZones({ compartmentId, name: zone, page }));
         if (zones.length > 0) return compartmentId;
       }
       return null;
@@ -138,26 +139,26 @@ export function ociBuildApi_make(options: OciBuildApiOptions): OciBuildApi {
     async zoneNames_list() {
       const names: Set<string> = new Set();
       for (const compartmentId of await compartments_all()) {
-        for (const zone of (await dnsClient.listZones({ compartmentId })).items) if (typeof zone.name === 'string') names.add(zone.name);
+        for (const zone of await pages_drain((page: string | undefined) => dnsClient.listZones({ compartmentId, page }))) if (typeof zone.name === 'string') names.add(zone.name);
       }
       return [...names].sort();
     },
     async tagNamespaceCompartment_find(namespaceName) {
       for (const compartmentId of await compartments_all()) {
-        const spaces = (await ident.listTagNamespaces({ compartmentId })).items;
+        const spaces: identity.models.TagNamespaceSummary[] = await pages_drain((page: string | undefined) => ident.listTagNamespaces({ compartmentId, page }));
         if (spaces.some((space): boolean => space.name === namespaceName)) return compartmentId;
       }
       return null;
     },
     async compartmentChild_ensure(parentId, name, description, tags) {
-      const children = (await ident.listCompartments({ compartmentId: parentId, lifecycleState: identity.models.Compartment.LifecycleState.Active })).items;
+      const children: identity.models.Compartment[] = await pages_drain((page: string | undefined) => ident.listCompartments({ compartmentId: parentId, lifecycleState: identity.models.Compartment.LifecycleState.Active, page }));
       const found = children.find((child): boolean => child.name === name);
       if (found?.id !== undefined) return { id: found.id, made: false };
       const made = (await ident.createCompartment({ createCompartmentDetails: { compartmentId: parentId, name, description, freeformTags: tags } })).compartment;
       return { id: made.id ?? '', made: true };
     },
     async tag_exists(compartmentId, namespaceName, tag) {
-      const spaces = (await ident.listTagNamespaces({ compartmentId, lifecycleState: identity.models.TagNamespace.LifecycleState.Active })).items;
+      const spaces: identity.models.TagNamespaceSummary[] = await pages_drain((page: string | undefined) => ident.listTagNamespaces({ compartmentId, lifecycleState: identity.models.TagNamespace.LifecycleState.Active, page }));
       const space = spaces.find((entry): boolean => entry.name === namespaceName);
       if (space === undefined || space.id === undefined) return false;
       try {
@@ -306,7 +307,12 @@ export function ociBuildApi_make(options: OciBuildApiOptions): OciBuildApi {
         for (const object of page.objects ?? []) if (typeof object.name === 'string') await store.deleteObject({ namespaceName, bucketName: bucket, objectName: object.name });
         start = page.nextStartWith || undefined;
       } while (start !== undefined);
-      for (const link of (await store.listPreauthenticatedRequests({ namespaceName, bucketName: bucket })).items ?? []) {
+      // A bucket with no links may answer with no list at all; here that is "none".
+      const links: objectstorage.models.PreauthenticatedRequestSummary[] = await pages_drain(async (page: string | undefined) => {
+        const answer = await store.listPreauthenticatedRequests({ namespaceName, bucketName: bucket, page });
+        return { items: answer.items ?? [], opcNextPage: answer.opcNextPage };
+      });
+      for (const link of links) {
         if (typeof link.id === 'string') await store.deletePreauthenticatedRequest({ namespaceName, bucketName: bucket, parId: link.id });
       }
       await store.deleteBucket({ namespaceName, bucketName: bucket });

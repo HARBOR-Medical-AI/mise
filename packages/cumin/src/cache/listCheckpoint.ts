@@ -16,6 +16,7 @@ import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { listCache_get, type ListCacheEntrySnapshot, type ListCacheSnapshot } from './listCache';
+import { identityCache_usable, identityChange_listen, identityEpoch_get } from '../connect/identityEpoch';
 
 const LIST_CHECKPOINT_SCHEMA: number = 1;
 
@@ -98,7 +99,11 @@ export async function listCheckpoint_restore(
   root: string = listCheckpointRoot_get(),
 ): Promise<ListCheckpointRestoreResult> {
   try {
+    const began: number = identityEpoch_get();
     const raw: string = await fs.readFile(listCheckpointPath_get(identity, root), 'utf8');
+    // The identity changed while the checkpoint was being read: it is the one before's, and is not put into
+    // the cache of whoever is connected now.
+    if (began !== identityEpoch_get() || !identityCache_usable()) return { restored: false, count: 0, reason: 'the identity changed' };
     const parsed: unknown = JSON.parse(raw);
     if (!file_check(parsed, identity)) {
       return { restored: false, count: 0, reason: 'incompatible listing checkpoint' };
@@ -127,6 +132,8 @@ export async function listCheckpoint_save(
   identity: string,
   root: string = listCheckpointRoot_get(),
 ): Promise<void> {
+  // Written only by the session's own identity's work.
+  if (!identityCache_usable()) return;
   const path: string = listCheckpointPath_get(identity, root);
   const temporaryPath: string = `${path}.${process.pid}-${randomUUID()}.tmp`;
   const file: ListCheckpointFile = {
@@ -159,21 +166,32 @@ export function listCheckpoint_watch(
   delayMs: number = 2000,
   floorMs: number = LIST_CHECKPOINT_FLOOR_MS,
 ): () => void {
+  // Installed only by the session's own identity's work: a warm-up that outlived a change of identity (its
+  // restore came back after someone else connected) watches nothing, and writes nothing under its name.
+  if (!identityCache_usable()) return (): void => undefined;
   let timer: NodeJS.Timeout | null = null;
   let lastWrite: number = 0;
+  // The identity this watcher writes for is the one connected when it was started. Once another has
+  // connected, what the cache holds is the other's: nothing more is written under this name.
+  const began: number = identityEpoch_get();
   const listener_remove: () => void = listCache_get().changeListener_add((): void => {
-    if (timer) return;
+    if (timer || identityEpoch_get() !== began) return;
     const wait: number = Math.max(delayMs, lastWrite + floorMs - Date.now());
     timer = setTimeout((): void => {
       timer = null;
       lastWrite = Date.now();
+      if (identityEpoch_get() !== began) return;
       void listCheckpoint_save(identity, root).catch((): void => { /* next mutation retries */ });
     }, wait);
     timer.unref();
   });
-  return (): void => {
+  const watch_stop = (): void => {
     listener_remove();
     if (timer) clearTimeout(timer);
     timer = null;
+    retire_remove();
   };
+  // Retired at a change of identity: the cache it watched is no longer the one it writes for.
+  const retire_remove: () => void = identityChange_listen(watch_stop);
+  return watch_stop;
 }

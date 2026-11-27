@@ -29,6 +29,7 @@ import { NetStore } from '../src/net/state.js';
 import { STEPS_SOURCE } from '../src/cluster/steps.js';
 import { net_run, type NetCommandContext } from '../src/commands/net.js';
 import { sshLine_build, vm_run, type VmCommandContext } from '../src/commands/vm.js';
+import { STRATUS_VM_STEP_EVENT } from '@fnndsc/menu';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 const STORE_LINE: string[] = ['--net', 'scratch', '--open', '443,80', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--data-backup', 'daily', '--os', 'ubuntu-26.04'];
@@ -297,6 +298,39 @@ describe('vm, over the fake cloud', () => {
     expect((await vm_run(context, ['build', 'store'])).renderedErr).toContain('the network elsewhere is not declared');
   });
 
+  it('goes on when what is declared cannot be kept in the tenancy first, and says so with the cloud\'s reason and nothing of what was to be kept', async () => {
+    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+    const handed: string[] = [];
+    if (context.builder !== null) context.builder.keep_write = async (kept: { content: string }): Promise<void> => { handed.push(kept.content); throw Object.assign(new Error('Bad Gateway'), { statusCode: 502 }); };
+    surface.answers = ['n'];
+    const built = await vm_run(context, ['build', 'store']);
+    const said: string = plain(built.rendered);
+    expect(said).toContain('vm build store: what is declared was not kept in the tenancy first (HTTP 502); the machine\'s apply keeps it again\n');
+    // The build went on to its plan and its question.
+    expect(surface.asked.at(-1)).toContain('vm build store: data 3 to create');
+    expect(said).toContain('stopped before the apply');
+    expect(handed.length).toBeGreaterThan(0);
+    for (const content of handed) expect(said).not.toContain(content);
+  });
+
+  it('says nothing of what an error quotes when the keep fails: not the cloud\'s echo, and not the parser\'s fragment of a kept record', async () => {
+    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+    // An error whose message echoes what it was sent.
+    if (context.builder !== null) context.builder.keep_write = async (kept: { content: string }): Promise<void> => { throw new Error(`could not store SENTINEL-ECHOED ${kept.content.slice(0, 40)}`); };
+    surface.answers = ['n'];
+    const echoed = await vm_run(context, ['build', 'store']);
+    expect(plain(echoed.rendered)).toContain('was not kept in the tenancy first (no status)');
+    expect(`${echoed.rendered ?? ''}${echoed.renderedErr ?? ''}`).not.toContain('SENTINEL-ECHOED');
+    expect(surface.asked.at(-1)).toContain('vm build store: data 3 to create');
+    // A kept record that is not JSON: the parser's own error would quote a piece of it.
+    world.kept.set('mise-vm-store', 'SENTINEL-KEPT-SECRET{not json');
+    surface.answers = ['n'];
+    const malformed = await vm_run(context, ['build', 'store']);
+    expect(plain(malformed.rendered)).toContain('was not kept in the tenancy first (mise-vm-store: the tenancy\'s secret is not a readable record)');
+    expect(`${malformed.rendered ?? ''}${malformed.renderedErr ?? ''}`).not.toContain('SENTINEL-KEPT');
+    expect(surface.asked.at(-1)).toContain('vm build store: data 3 to create');
+  });
+
   it('builds its data, then its machine, each asked with the cost before it is applied; points the address; again, nothing to do', async () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
     surface.answers = ['y', 'y'];
@@ -319,6 +353,31 @@ describe('vm, over the fake cloud', () => {
     surface.asked = [];
     expect(plain((await vm_run(context, ['build', 'store'])).rendered)).toBe('store: built, and the plan reads nothing to do\n');
     expect(surface.asked).toEqual([]);
+  });
+
+  it('a build says each of its steps as an event, begun then ended, and names what each question is for', async () => {
+    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+    const events: Array<{ kind: string; data: unknown }> = [];
+    const sink: BufferSink = new BufferSink();
+    sink.event_write = (kind: string, data: unknown): void => { events.push({ kind, data }); };
+    sink_set(sink);
+    const asked: PromptRequest[] = [];
+    surface.prompt = async (request: PromptRequest): Promise<string> => { asked.push(request); return 'y'; };
+    await vm_run(context, ['build', 'store']);
+    const steps = events.filter((event): boolean => event.kind === STRATUS_VM_STEP_EVENT).map((event) => event.data as { vm: string; step: string; state: string; said?: string });
+    // Each step of the run, in the order taken: begun, then done, and a plan's counts as its own word at its end.
+    expect(steps.map((step): string => `${step.step} ${step.state}`)).toEqual([
+      'plan-data begun', 'plan-data done', 'apply-data begun', 'apply-data done', 'plan-machine begun', 'plan-machine done', 'apply-machine begun', 'apply-machine done',
+    ]);
+    expect(steps.every((step): boolean => step.vm === 'store')).toBe(true);
+    expect(steps[1]?.said).toBe('data plan: 3 to create, 0 to change, 0 to destroy');
+    expect(steps[5]?.said).toBe('machine plan: 3 to create, 0 to change, 0 to destroy');
+    expect(steps[0]?.said).toBeUndefined();
+    // Both questions are the build's, about this machine, and want a yes or a no.
+    expect(asked.map((request) => ({ wants: request.wants, purpose: request.purpose, subject: request.subject }))).toEqual([
+      { wants: 'confirm', purpose: 'stratus.vm.build', subject: { vm: 'store' } },
+      { wants: 'confirm', purpose: 'stratus.vm.build', subject: { vm: 'store' } },
+    ]);
   });
 
   it('opens public SSH on a VM that stands: asked with the warning, the machine set up over the bastion, closed again keeping the user', async () => {
@@ -410,9 +469,9 @@ describe('vm, over the fake cloud', () => {
     expect((await vm_run(context, ['shell', 'store'])).renderedErr).toContain('needs the shell tier');
     (surface.capabilities as { shellCommands: boolean }).shellCommands = true;
     const shell = await vm_run(context, ['shell', 'store']);
-    expect(plain(shell.rendered)).toContain('-W %h:%p -p 22 ocid1.bastionsession.oc1..fake-1@host.bastion.us-ashburn-1.fake.example" ubuntu@10.40.0.10');
+    expect(plain(shell.rendered)).toContain("-W %h:%p -o Port=22 ocid1.bastionsession.oc1..fake-1@host.bastion.us-ashburn-1.fake.example' ubuntu@10.40.0.10");
     expect(world.sessions).toEqual([{ bastionId: 'ocid1.bastion.oc1..fake-scratch', privateIp: '10.40.0.10' }]);
-    expect(sshLine_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5')).toBe('ssh -i /k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -o ProxyCommand="ssh -i /k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -p 22 s@h" ubuntu@10.0.0.5');
+    expect(sshLine_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5')).toBe("ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -o 'ProxyCommand=ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -o Port=22 s@h' ubuntu@10.0.0.5");
   });
 
   it('tears down only when unprotected: the machine, keeping the data; --all takes the data on the name typed back', async () => {

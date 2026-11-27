@@ -9,8 +9,8 @@ import chalk from "chalk";
 import { glob } from "glob";
 
 import { chrisIO, TRANSFER_JOBS_DEFAULT, transferPool_run, type TransferPoolResult, type TransferSettled } from "@fnndsc/cumin";
-import { files_uploadPath } from "@fnndsc/salsa";
-import { errorStack, type StackMessage } from "@fnndsc/fond";
+import { files_uploadPath, pathHolders_prove, type PathHolderRecord, type PathProof } from "@fnndsc/salsa";
+import { errorStack, type Result, type StackMessage } from "@fnndsc/fond";
 import { chiliLog } from "../../screen/output.js";
 import { prompt_confirmOrThrow } from "../../utils/input_format.js";
 import { path_resolveChrisFs } from "../../utils/cli.js";
@@ -202,12 +202,7 @@ async function localFiles_scan(localPaths: readonly string[], remotePath: string
   for (const localPath of localPaths) {
     const stats: fs.Stats = await fs.promises.stat(localPath);
     if (stats.isDirectory()) {
-      // Preserve each directory basename in the remote path (Unix cp semantics).
-      const basename: string = path.basename(localPath);
-      const targetDir: string = remotePath.endsWith('/')
-        ? remotePath + basename
-        : remotePath + '/' + basename;
-      await walkDir(localPath, targetDir);
+      await walkDir(localPath, directoryTarget_derive(localPath, remotePath));
     } else {
       const filename: string = path.basename(localPath);
       const targetPath: string = remotePath.endsWith('/')
@@ -250,11 +245,97 @@ async function uploadFile_send(file: UploadFileInfo): Promise<number> {
 }
 
 /**
+ * Where one folder on this machine lands in ChRIS.
+ *
+ * One answer, used by the scan, by the check before sending and by the
+ * summary, so the place that is asked about is the place that is written.
+ * A folder keeps its own name under the destination, as `cp -r` does. The
+ * folder written as `.` (or `some/where/.`) has no name of its own to keep:
+ * its contents go into the destination itself, as `cp -r . dest` puts them.
+ * One written as `..` is known by the name it has on disk.
+ *
+ * @param localPath - The folder as the operator wrote it.
+ * @param remotePath - The resolved ChRIS destination.
+ * @returns The ChRIS path the folder's contents go under, with no `.` or
+ *   `..` segment in it.
+ */
+function directoryTarget_derive(localPath: string, remotePath: string): string {
+  const written: string = path.basename(localPath);
+  if (written === '.') return remotePath.length > 1 && remotePath.endsWith('/') ? remotePath.slice(0, -1) : remotePath;
+  const name: string = written === '..' ? path.basename(path.resolve(localPath)) : written;
+  return remotePath.endsWith('/') ? remotePath + name : `${remotePath}/${name}`;
+}
+
+/**
+ * Where each folder among the sources lands in ChRIS.
+ *
+ * A file goes into the destination and has no target folder of its own.
+ *
+ * @param localPaths - The sources on this machine, files and folders.
+ * @param remotePath - The resolved ChRIS destination.
+ * @returns The ChRIS path of each folder source, in the order given. Empty
+ *   when no source is a folder.
+ */
+async function directoryTargets_derive(localPaths: readonly string[], remotePath: string): Promise<string[]> {
+  const targets: string[] = [];
+  for (const localPath of localPaths) {
+    if (!(await fs.promises.stat(localPath)).isDirectory()) continue;
+    targets.push(directoryTarget_derive(localPath, remotePath));
+  }
+  return targets;
+}
+
+/**
+ * Settles, for every folder about to be uploaded, that its place in ChRIS
+ * is free or that the operator agrees to merge into what is there.
+ *
+ * Nothing here is caught. The question was once asked inside a `try` whose
+ * `catch` meant "the listing failed, carry on", so a "no", and a prompt that
+ * could not be shown, were both swallowed and the upload went ahead. A place
+ * that cannot be checked is not a free place either: only proved absence,
+ * or a yes, lets a folder through.
+ *
+ * @param targets - The ChRIS path each folder source lands at.
+ * @param options - The upload's options, for the injected confirmation.
+ * @returns Nothing: it returns when every target is settled.
+ * @throws {Error} When a target could not be checked, when a file or a link
+ *   holds a target's path, when the operator declines, or when the question
+ *   cannot be asked. Nothing has been sent in any of these cases.
+ */
+async function directoryTargets_confirm(targets: readonly string[], options: UploadOptions): Promise<void> {
+  for (const target of targets) {
+    const since: number = errorStack.checkpoint_mark();
+    const proof: Result<PathProof> = await pathHolders_prove(target);
+    if (!proof.ok) {
+      const reasons: string = errorStack.checkpoint_drain(since)
+        .map((note: StackMessage): string => note.message.replace(/^\[[^\]]*\]\s*\|\s*/, '').trim())
+        .filter((line: string): boolean => line.length > 0)
+        .join('; ');
+      throw new Error(`Cannot tell whether '${target}' is already in ChRIS${reasons.length > 0 ? ` (${reasons})` : ''}. Nothing was uploaded.`);
+    }
+    if (proof.value.kind === 'absent') continue;
+    const other: PathHolderRecord | undefined = proof.value.holders.find((holder: PathHolderRecord): boolean => holder.kind !== 'dir');
+    if (other !== undefined) {
+      throw new Error(`A ${other.kind} already holds '${target}' in ChRIS, and a folder cannot be uploaded onto it. Nothing was uploaded.`);
+    }
+    const message: string = `Target '${target}' already exists in ChRIS. Merge/overwrite? (y/N)`;
+    if (options.confirm) {
+      await options.confirm(message);
+    } else {
+      await prompt_confirmOrThrow(message);
+    }
+  }
+}
+
+/**
  * Uploads files and optionally emits structured progress events.
  * @param localPath - Local path (file or directory) or a host-local glob.
  * @param remotePath - Remote ChRIS path.
  * @param options - Upload options, including an optional progress callback.
  * @returns Promise<UploadSummary> with upload statistics.
+ * @throws {Error} Before anything is sent, when a folder's place in ChRIS
+ *   could not be checked, is held by a file or a link, or the operator
+ *   declined to merge into it (`directoryTargets_confirm`).
  */
 export async function files_uploadWithProgress(
   localPath: string,
@@ -280,37 +361,14 @@ export async function files_uploadWithProgress(
   if (localPaths.length === 1) {
     const stats: fs.Stats = await fs.promises.stat(localPaths[0]);
     if (stats.isDirectory()) {
-      const basename: string = path.basename(localPaths[0]);
-      actualTarget = resolvedRemote.endsWith('/')
-        ? resolvedRemote + basename
-        : resolvedRemote + '/' + basename;
+      actualTarget = directoryTarget_derive(localPaths[0], resolvedRemote);
     }
   }
 
-  // A file goes *into* an existing destination directory. Only a directory
-  // upload creates a nested target that can require merge confirmation.
+  // Asked and settled before the first file is sent: a "no" at the second
+  // of two folders must not leave the first already uploaded.
   if (!options.force) {
-    try {
-      const client = await chrisIO.client_get();
-      if (client) {
-        const folderList = await client.getFileBrowserFolders({ path: actualTarget });
-        const items: Object[] | null = await folderList.getItems();
-        const uploadingDirectory: boolean = localPaths.length === 1
-          && (await fs.promises.stat(localPaths[0])).isDirectory();
-        if (uploadingDirectory && items && items.length > 0) {
-          const message: string = `Target '${actualTarget}' already exists in ChRIS. Merge/overwrite? (y/N)`;
-          if (options.confirm) {
-            await options.confirm(message);
-          } else {
-            await prompt_confirmOrThrow(message);
-          }
-        }
-      }
-    } catch {
-      // If listing fails (path absent or error), continue.
-    }
-  } else {
-    // Force mode: if target exists and is a directory, no prompt. If it's a file and we're uploading a single file, proceed.
+    await directoryTargets_confirm(await directoryTargets_derive(localPaths, resolvedRemote), options);
   }
 
   // Upload files

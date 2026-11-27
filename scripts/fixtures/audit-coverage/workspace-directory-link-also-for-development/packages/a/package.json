@@ -1,0 +1,14 @@
+{
+  "name": "@x/a",
+  "version": "1.0.0",
+  "dependencies": {
+    "b": "^1.0.0",
+    "@x/s": "file:../s"
+  },
+  "optionalDependencies": {
+    "d": "^1.0.0"
+  },
+  "devDependencies": {
+    "@x/s": "file:../s"
+  }
+}

@@ -96,6 +96,8 @@ describe('chell auth login', () => {
     expect(code).toBe(0);
     expect(asked).toEqual([`Username at ${DOOR}: `, `Password for chris at ${DOOR}: `]);
     expect(JSON.parse(String(door.calls[0]?.init?.body))).toEqual({ username: 'chris', password: 'pw', tokenName: 'chris@pangea' });
+    // A password says where it comes from, as a browser at this door would.
+    expect((door.calls[0]?.init?.headers as Record<string, string>).origin).toBe(new URL(DOOR).origin);
     expect(doorFile_read(DOOR, { XDG_CONFIG_HOME: home })).toMatchObject({ user: 'chris', name: 'chris@pangea', token: 'pdt_minted' });
     expect(doorDefault_read({ XDG_CONFIG_HOME: home })).toBe('https://other/');
   });

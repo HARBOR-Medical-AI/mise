@@ -75,7 +75,9 @@ describe('Terminals', () => {
     expect(opened.terminalId).toMatch(/^[0-9a-f]{24}$/);
     const pty = ptys[0] as FakePty;
     expect(pty.file).toBe('/usr/bin/node');
-    expect(pty.args).toEqual(['/opt/chell/index.js', '--remote', 'rudolph@cube', '--attach', 'ws://127.0.0.1:4242', '--token', 'tok']);
+    // The token is in the terminal's environment and nowhere in its arguments, which every user of the host can list.
+    expect(pty.args).toEqual(['/opt/chell/index.js', '--remote', 'rudolph@cube', '--attach', 'ws://127.0.0.1:4242']);
+    expect(pty.options.env['CHELL_ATTACH_TOKEN']).toBe('tok');
     expect([pty.options.cols, pty.options.rows]).toEqual([120, 40]);
     expect(pty.options.env['TERM']).toBe('xterm-256color');
     expect(pty.options.env['CHELL_TERMINAL']).toBe(opened.terminalId);

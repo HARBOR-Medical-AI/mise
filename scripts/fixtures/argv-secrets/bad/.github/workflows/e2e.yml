@@ -1,0 +1,8 @@
+jobs:
+  x:
+    steps:
+      - run: |
+          node dist/index.js "$CUBE_USER@$CUBE_URL" -p "$CUBE_PASSWORD" -c version
+          calypso \
+            --token "$ATTACH" \
+            --daemon

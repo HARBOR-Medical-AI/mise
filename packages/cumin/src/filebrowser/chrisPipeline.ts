@@ -13,6 +13,8 @@ import {
   type Client,
   type PipelineSourceFile,
   type PipelineSourceFileList,
+  shape_build,
+  type Shape,
 } from "../chrisapi/adapter.js";
 import { chrisConnection } from "../connect/chrisConnection.js";
 import { errorStack } from "../error/errorStack.js";
@@ -22,6 +24,14 @@ import { Result, Ok, Err } from "../utils/result.js";
 interface PipelineSourceFileData {
   fname: string;
 }
+
+/** A pipeline source file resource: its blob is fetched by calling it. */
+const SOURCE_FILE_SHAPE: Shape<PipelineSourceFile> = shape_build<PipelineSourceFile>('a pipeline source file')(['getFileBlob', 'function']);
+
+/** Its data: the name is only compared, so nothing in it is read without a check. */
+const SOURCE_FILE_DATA_SHAPE: Shape<PipelineSourceFileData> = shape_build<PipelineSourceFileData>('a pipeline source file')(
+  ['fname', 'string'],
+);
 
 /**
  * Downloads a pipeline source file by path and returns the raw binary content.
@@ -69,11 +79,11 @@ export async function pipelineFile_getByPath(filePath: string): Promise<Result<B
       return Err();
     }
 
-    const allItems: PipelineSourceFile[] = items_get<PipelineSourceFile>(pipelineSourceFileListResult);
+    const allItems: PipelineSourceFile[] = items_get(pipelineSourceFileListResult, SOURCE_FILE_SHAPE);
 
     // Filter by full fname path (API returns full path like "PIPELINES/user/file.yml")
     const matchingPipelineFiles: PipelineSourceFile[] = allItems.filter((item: PipelineSourceFile) => {
-        const itemData: PipelineSourceFileData | null = itemData_get<PipelineSourceFileData>(item);
+        const itemData: PipelineSourceFileData | null = itemData_get(item, SOURCE_FILE_DATA_SHAPE);
         return itemData?.fname === expectedFname;
     });
 
