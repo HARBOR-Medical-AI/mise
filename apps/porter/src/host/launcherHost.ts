@@ -90,10 +90,18 @@ export function launcher_call(reach: LauncherReach, method: string, path: string
       ...(hostPort !== null ? { host: hostPort[1], port: Number(hostPort[2]) } : { socketPath: reach.listen }),
       method, path, headers,
     }, (res: IncomingMessage): void => {
+      // An answer that breaks off (the launcher gone, the connection dropped) settles the call: a response
+      // can fail or close without ever ending, and nothing else would say so. One that is cut short is not
+      // an answer, whatever of it arrived. (A call already answered is settled, and these change nothing.)
+      const cut = new Error('the berth launcher\'s answer broke off before it was whole');
+      res.on('error', (): void => { reject(cut); });
+      res.on('aborted', (): void => { reject(cut); });
+      res.on('close', (): void => { if (!res.complete) reject(cut); });
       if ((res.headers['content-type'] ?? '').startsWith('application/x-ndjson')) { answerStream_read(res, resolve, reject, onLine); return; }
       const chunks: Buffer[] = [];
       res.on('data', (chunk: Buffer): void => { chunks.push(chunk); });
       res.on('end', (): void => {
+        if (!res.complete) { reject(cut); return; }
         let parsed: unknown = {};
         try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf-8')); } catch { parsed = {}; }
         resolve({ status: res.statusCode ?? 0, body: typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {} });

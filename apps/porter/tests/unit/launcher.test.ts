@@ -969,6 +969,52 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report).toMatchObject({ state: 'failed', reason: 'ana: no token to start a berth on; log in again' });
   });
 
+  it('a launcher whose answer breaks off after a progress line fails the boot, and a logout waiting behind that restart then finishes', async () => {
+    // A launcher that stops a berth as asked, and whose start says one line and then drops the connection.
+    const asked: string[] = [];
+    const dropping: Server = createServer((req, res): void => {
+      asked.push(req.url ?? '');
+      req.resume();
+      req.on('end', (): void => {
+        if ((req.url ?? '').startsWith('/berths/stop')) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ stopped: true })); return; }
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        res.write(`${JSON.stringify({ line: '[PENDING] Image        pulling', channel: 'out' })}\n`);
+        setTimeout((): void => { res.destroy(); }, 20);
+      });
+    });
+    await new Promise<void>((resolve) => { dropping.listen(join(dir, 'dropping.sock'), resolve); });
+    const host: LauncherHost = new LauncherHost({ listen: join(dir, 'dropping.sock'), secret: SECRET }, async (): Promise<number> => 7);
+    const registry: SessionRegistry = new SessionRegistry();
+    const key: string = berthKey_compute(ANA);
+    const restarting: Promise<void> = registry.ending_run(key, (): Promise<void> => host.restart_begin(ANA, 'ana', CUBE, { kind: 'asked' }), 'restart');
+    // A logout is asked for while the restart is under way.
+    let loggedOut: boolean | null = null;
+    const out: Promise<void> = registry.ending_run(key, (): Promise<boolean> => host.evict(ANA, 'end')).then((ended: boolean): void => { loggedOut = ended; });
+    await restarting;
+    await out;
+    // The restart did not hang on the answer that never finished: its boot says it failed, and why.
+    expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report).toMatchObject({ state: 'failed', reason: 'the berth launcher\'s answer broke off before it was whole' });
+    // And the logout, which waited behind it, ran its stop.
+    expect(loggedOut).toBe(true);
+    expect(asked.map((path: string): string => path.split('?')[0] ?? '')).toEqual(['/berths/stop', '/berths/start', '/berths/stop']);
+    await new Promise<void>((resolve) => { dropping.close(() => resolve()); });
+  });
+
+  it('a stop whose answer breaks off part way is a failed stop, not "none was running"', async () => {
+    const partial: Server = createServer((req, res): void => {
+      req.resume();
+      req.on('end', (): void => {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': 64 });
+        res.write('{"stopp');
+        setTimeout((): void => { res.destroy(); }, 20);
+      });
+    });
+    await new Promise<void>((resolve) => { partial.listen(join(dir, 'partial.sock'), resolve); });
+    const host: LauncherHost = new LauncherHost({ listen: join(dir, 'partial.sock'), secret: SECRET }, async (): Promise<number> => 7);
+    await expect(host.evict(ANA)).rejects.toThrow('the berth launcher\'s answer broke off before it was whole');
+    await new Promise<void>((resolve) => { partial.close(() => resolve()); });
+  });
+
   it('a launcher answer that does not say whether a berth was stopped is not taken for "none was running"', async () => {
     const odd: Server = createServer((_req, res): void => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}'); });
     await new Promise<void>((resolve) => { odd.listen(join(dir, 'odd.sock'), resolve); });
