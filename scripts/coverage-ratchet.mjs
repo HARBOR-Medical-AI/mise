@@ -27,7 +27,9 @@
  *
  * Run after a workspace's whole test suite by `scripts/jest-with-floor.mjs`.
  * `--root <dir>` and `--baseline <file>` name another tree and baseline
- * file, as the check's own test does. `--raise` rewrites the floors to what
+ * file, as the check's own test does. The floors are compared with the
+ * base whenever the baseline read is the tree's own
+ * `scripts/ratchet-baseline.json`, however the tree was named. `--raise` rewrites the floors to what
  * was measured, where that is higher: it writes nothing when anything could
  * not be read, when a measure is below its floor, or when a floor it would
  * write is below the base's.
@@ -205,9 +207,11 @@ function baseFloors_read(root) {
 function main() {
   let asked;
   try { asked = args_read(process.argv.slice(2)); } catch (error) { console.error(`coverage-ratchet: ${error.message}`); process.exit(2); }
-  const ownTree = asked.root === null;
   const root = resolve(asked.root ?? fileURLToPath(new URL('..', import.meta.url)));
   const baselinePath = resolve(asked.baseline ?? join(root, BASELINE_FILE));
+  // The floors are held to the base wherever the file read is the tree's own committed baseline, however
+  // the tree was named (by default, or by --root). A baseline file from somewhere else has no base.
+  const committed = baselinePath === resolve(root, BASELINE_FILE);
   let floors;
   let baselineText;
   try {
@@ -258,9 +262,9 @@ function main() {
       }
     }
   }
-  // Against the base: only where the tree read is the repository itself.
+  // Against the base: the floors as they would stand (after a raise, for --raise) may not be below it.
   const lowered = [];
-  if (ownTree || process.env.COVERAGE_RATCHET_BASE === '1') {
+  if (committed) {
     try {
       const atBase = baseFloors_read(root);
       if (atBase !== null) lowered.push(...floors_compare(next.coverage, atBase));

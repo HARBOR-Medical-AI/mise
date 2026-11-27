@@ -200,7 +200,7 @@ for (const lint of lints) {
 // The coverage ratchet, over trees made here: a summary as jest writes it, and floors beside it.
 {
   const { args_read, coverage_judge, floor_derive, floors_compare, floors_read, summary_read, uncovered_list } = await import('./coverage-ratchet.mjs');
-  const { suite_isWhole } = await import('./jest-with-floor.mjs');
+  const { jestArgs_build, suite_isWhole, PARTIAL_DIR } = await import('./jest-with-floor.mjs');
   /** A tree with one workspace's coverage summary and a baseline file; runs the ratchet over it. */
   const coverage_run = (summary, floors, extra = []) => {
     const tree = folder_make('coverage');
@@ -252,8 +252,12 @@ for (const lint of lints) {
   let threw = '';
   try { args_read(['tests/unit/one.test.ts']); } catch (error) { threw = error.message; }
   expect_that('a test\'s path is not read as the tree', threw.includes('unknown argument'), threw);
-  expect_that('the whole suite is the whole suite with options that narrow nothing', suite_isWhole([]) && suite_isWhole(['--coverage']) && suite_isWhole(['--runInBand', '--coverage']));
-  expect_that('a selector, a name filter or an unknown option narrows the run', !suite_isWhole(['tests/unit/one.test.ts']) && !suite_isWhole(['-t', 'one case']) && !suite_isWhole(['--testPathPattern=image']) && !suite_isWhole(['--onlyChanged']));
+  expect_that('the whole suite is the whole suite with options that only say how to run', suite_isWhole([]) && suite_isWhole(['--coverage']) && suite_isWhole(['--runInBand', '--coverage'])
+    && suite_isWhole(['--maxWorkers=2']) && suite_isWhole(['--maxWorkers', '2']) && suite_isWhole(['--testTimeout=10000', '-w', '4', '--ci']) && suite_isWhole(['--some-flag-of-a-later-jest']));
+  expect_that('a path, a pattern or a selecting option selects among the tests', !suite_isWhole(['tests/unit/one.test.ts']) && !suite_isWhole(['-t', 'one case']) && !suite_isWhole(['--testPathPattern=image'])
+    && !suite_isWhole(['--onlyChanged']) && !suite_isWhole(['--maxWorkers=2', 'image']) && !suite_isWhole(['--shard=1/3']) && !suite_isWhole(['--collectCoverageFrom=src/app/*.ts']));
+  expect_that('a whole run writes the suite\'s report; a run that selects writes its own, elsewhere', JSON.stringify(jestArgs_build(['--maxWorkers=2'])) === '["--coverage","--maxWorkers=2"]'
+    && JSON.stringify(jestArgs_build(['--coverage', 'tests/unit/one.test.ts'])) === `["--coverage","tests/unit/one.test.ts","--coverageDirectory=${PARTIAL_DIR}"]`);
   threw = '';
   try { floors_read('{"casts":{}}', 'a file'); } catch (error) { threw = error.message; }
   expect_that('a baseline without the section has no floors, which is not the same as none to hold', threw.includes('no "coverage" section'), threw);
@@ -276,6 +280,59 @@ for (const lint of lints) {
   expect_that('a floor lowered against the base fails', lowered.length === 1 && lowered[0].includes('functions floor was lowered from 55.6 to 50'), lowered.join('; '));
   const dropped = floors_compare({}, base);
   expect_that('a workspace whose floors were removed fails', dropped.length === 1 && dropped[0].includes('were removed'), dropped.join('; '));
+
+  // The floors against a base in git, in a repository made here, with the tree named by --root: the
+  // comparison is decided by which baseline file is read, not by how the tree was named.
+  {
+    const made = folder_make('coverage-base');
+    const git = (...args) => execFileSync('git', args, { cwd: made, encoding: 'utf8' }).trim();
+    git('init', '-q');
+    git('config', 'user.email', 'ratchets@test');
+    git('config', 'user.name', 'ratchets test');
+    const high = { lines: 60, statements: 60, branches: 60, functions: 60 };
+    file_put(join(made, 'scripts/ratchet-baseline.json'), JSON.stringify({ coverage: { 'apps/argus': high } }));
+    git('add', '.');
+    git('commit', '-q', '-m', 'floors');
+    const baseSha = git('rev-parse', 'HEAD');
+    // The working file's floors are lowered beside a measure that fell.
+    const low = { lines: 50, statements: 50, branches: 50, functions: 50 };
+    const lowText = JSON.stringify({ coverage: { 'apps/argus': low } });
+    file_put(join(made, 'scripts/ratchet-baseline.json'), lowText);
+    file_put(join(made, 'apps/argus/coverage/coverage-summary.json'), JSON.stringify(summary_make({ lines: 55.5, statements: 55.5, branches: 55.5, functions: 55.5 })));
+    const cli = (extra) => {
+      const ran = spawnSync('node', [join(here, 'coverage-ratchet.mjs'), '--root', made, ...extra], { encoding: 'utf8', env: { PATH: process.env.PATH, RATCHET_BASE: baseSha } });
+      return { status: ran.status, said: `${ran.stdout}${ran.stderr}`, text: readFileSync(join(made, 'scripts/ratchet-baseline.json'), 'utf8') };
+    };
+    const checked = cli([]);
+    expect_that('with --root naming a checkout, floors lowered against its base fail the check', checked.status !== 0 && checked.said.includes('lines floor was lowered from 60 to 50'), checked.said);
+    const raisedThere = cli(['--raise']);
+    expect_that('and --raise fails too when what it would write is still below the base, leaving the file as it was', raisedThere.status !== 0 && raisedThere.text === lowText && raisedThere.said.includes('lowered from 60 to 55.5'), raisedThere.said);
+    file_put(join(made, 'apps/argus/coverage/coverage-summary.json'), JSON.stringify(summary_make({ lines: 61.2, statements: 60, branches: 60, functions: 60 })));
+    const recovered = cli(['--raise']);
+    expect_that('a measure back at or above the base is raised to', recovered.status === 0 && JSON.parse(recovered.text).coverage['apps/argus'].lines === 61.2 && JSON.parse(recovered.text).coverage['apps/argus'].branches === 60, recovered.said);
+  }
+
+  // Argus's own jest config, over a tree made here: a source file no test imports is found and counted.
+  // (Take `src` out of its roots and this goes red: the file is then never seen.)
+  {
+    const made = folder_make('coverage-argus-config');
+    symlinkSync(join(repo, 'node_modules'), join(made, 'node_modules'), 'dir');
+    file_put(join(made, 'package.json'), JSON.stringify({ name: 'coverage-argus-config-tree', private: true, type: 'module' }));
+    file_put(join(made, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: 'ES2022', module: 'ESNext', moduleResolution: 'Bundler', strict: true, esModuleInterop: true, isolatedModules: true } }));
+    file_put(join(made, 'src/kept.ts'), 'export function twice(n: number): number {\n  return n * 2;\n}\n');
+    file_put(join(made, 'src/orphan.ts'), 'export function thrice(n: number): number {\n  const three: number = 3;\n  return n * three;\n}\n');
+    file_put(join(made, 'tests/unit/kept.test.ts'), "import { twice } from '../../src/kept.js';\n\ntest('twice', () => { expect(twice(2)).toBe(4); });\n");
+    const ran = spawnSync(join(repo, 'node_modules/.bin/jest'), ['--config', join(repo, 'apps/argus/jest.config.cjs'), '--rootDir', made, '--coverage', '--coverageDirectory', join(made, 'coverage'), '--silent'],
+      { cwd: made, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '--experimental-vm-modules --disable-warning=ExperimentalWarning' } });
+    let listed = [];
+    let bare = [];
+    try {
+      const text = readFileSync(join(made, 'coverage/coverage-summary.json'), 'utf8');
+      listed = Object.keys(JSON.parse(text)).filter((file) => file !== 'total').map((file) => file.slice(made.length + 1)).sort();
+      bare = uncovered_list(text, made);
+    } catch { /* said below */ }
+    expect_that('under argus\'s own jest config a source no test imports is in the report, with no line covered', ran.status === 0 && JSON.stringify(listed) === '["src/kept.ts","src/orphan.ts"]' && JSON.stringify(bare) === '["src/orphan.ts"]', `${JSON.stringify(listed)} ${ran.stdout}${ran.stderr}`.slice(0, 600));
+  }
 
   // With jest itself: a file that loses its only test stays in the measure, at nothing, and is named.
   const tree = folder_make('coverage-jest');
