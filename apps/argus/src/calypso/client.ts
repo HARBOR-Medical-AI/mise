@@ -293,7 +293,13 @@ export class ArgusClient {
       // A socket that closes before the attach is answered settles the attach: nothing else would, and
       // whoever waits on it (the page's one start in flight) would wait for ever. Once attached, the
       // client takes the close for its own.
-      socket.onclose = (): void => { reject(new Error(`the daemon at ${url} closed the connection before it answered the attach`)); };
+      socket.onclose = (event: CloseEvent): void => {
+        // What the close says is said: its reason, or failing that its code.
+        // 1005 is the browser's own "no status was given", which is no reason at all.
+        const said: string = event.reason !== '' ? event.reason : `code ${String(event.code)}`;
+        const why: string = event.reason === '' && (event.code === 0 || event.code === 1005) ? 'and gave no reason' : `(${said})`;
+        reject(new Error(`the daemon at ${url} closed the connection before it answered the attach ${why}`));
+      };
       socket.onopen = (): void => {
         socket.send(
           JSON.stringify({

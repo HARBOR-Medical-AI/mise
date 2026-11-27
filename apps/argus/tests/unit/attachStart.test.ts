@@ -7,7 +7,7 @@
  * closes before it is answered.
  */
 import { describe, it, expect, afterEach } from '@jest/globals';
-import { attachStart_make, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
+import { addressClean_derive, attachStart_make, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
 import { ArgusClient } from '../../src/calypso/client.js';
 
 /** A surface whose attach the test settles, and which counts how often it was wired. */
@@ -60,15 +60,51 @@ describe('the page\'s start', () => {
     expect(bench.restarted).toEqual(['good']);
   });
 
-  it('carries the token over the reload in the tab\'s own storage, for one load only', () => {
-    expect(retryToken_take(window.sessionStorage)).toBeNull();
-    expect(retryToken_keep(window.sessionStorage, 'good')).toBe(true);
-    expect(retryToken_take(window.sessionStorage)).toBe('good');
-    expect(retryToken_take(window.sessionStorage)).toBeNull();
-    // A tab whose storage cannot be used keeps nothing, and says so: the fresh page shows the form.
-    const refusing = { setItem: (): void => { throw new Error('denied'); }, getItem: (): string | null => { throw new Error('denied'); }, removeItem: (): void => undefined } as unknown as Storage;
-    expect(retryToken_keep(refusing, 'good')).toBe(false);
-    expect(retryToken_take(refusing)).toBeNull();
+  it('of two attempts made together after a failure, the first is the one: one restart, with its token', async () => {
+    const bench = bench_make();
+    bench.start('wrong');
+    await bench.settle(false);
+    // Enter and the button, before the reload has taken the page away.
+    bench.start('good');
+    bench.start('other');
+    bench.start('good');
+    expect(bench.restarted).toEqual(['good']);
+    expect(bench.wired).toEqual(['wrong']);
+  });
+
+  const tab = (): Storage => window.sessionStorage;
+
+  it('carries the token over the reload in the tab\'s own storage, for one load only and for its own page only', () => {
+    expect(retryToken_take(tab, '/s/abc/')).toBeNull();
+    expect(retryToken_keep(tab, 'good', '/s/abc/')).toBe(true);
+    expect(retryToken_take(tab, '/s/abc/')).toBe('good');
+    expect(retryToken_take(tab, '/s/abc/')).toBeNull();
+    // Another mount on the same origin in this tab does not take it, and it does not wait for a later load.
+    expect(retryToken_keep(tab, 'good', '/s/abc/')).toBe(true);
+    expect(retryToken_take(tab, '/s/other/')).toBeNull();
+    expect(retryToken_take(tab, '/s/abc/')).toBeNull();
+    // Something else under that name is not a handoff.
+    window.sessionStorage.setItem('argus.attach.retry', 'not json');
+    expect(retryToken_take(tab, '/s/abc/')).toBeNull();
+    expect(window.sessionStorage.getItem('argus.attach.retry')).toBeNull();
+  });
+
+  it('a tab whose storage is refused keeps nothing and takes nothing, and says so: reaching it, reading it or writing it', () => {
+    // Reaching the storage is itself refused (a browser set to block site data throws from the getter).
+    const unreachable = (): Storage => { throw new Error('The operation is insecure.'); };
+    expect(retryToken_take(unreachable, '/s/abc/')).toBeNull();
+    expect(retryToken_keep(unreachable, 'good', '/s/abc/')).toBe(false);
+    // It can be reached and read, and a write is refused.
+    const readOnly = (): Storage => ({ setItem: (): void => { throw new Error('QuotaExceededError'); }, getItem: (): string | null => null, removeItem: (): void => undefined }) as unknown as Storage;
+    expect(retryToken_take(readOnly, '/s/abc/')).toBeNull();
+    expect(retryToken_keep(readOnly, 'good', '/s/abc/')).toBe(false);
+  });
+
+  it('where the token cannot be kept, the fresh page goes to an address with no token in it: a refused token is not tried again', () => {
+    expect(addressClean_derive('/s/abc/', '?token=REFUSED')).toBe('/s/abc/');
+    expect(addressClean_derive('/s/abc/', '?token=REFUSED&door=1&theme=lcars')).toBe('/s/abc/?door=1&theme=lcars');
+    expect(addressClean_derive('/', '')).toBe('/');
+    expect(addressClean_derive('/s/abc/', '?door')).toBe('/s/abc/?door=');
   });
 
   it('a fresh page that was handed a token attaches once with it, as the first attempt of that page', async () => {
@@ -76,10 +112,9 @@ describe('the page\'s start', () => {
     const first = bench_make();
     first.start('wrong');
     await first.settle(false);
-    first.restarted.length = 0;
-    retryToken_keep(window.sessionStorage, 'good');
+    retryToken_keep(tab, 'good', '/s/abc/');
     const second = bench_make();
-    const kept: string | null = retryToken_take(window.sessionStorage);
+    const kept: string | null = retryToken_take(tab, '/s/abc/');
     expect(kept).toBe('good');
     second.start(kept as string);
     await second.settle(true);
@@ -94,11 +129,11 @@ class FakeSocket {
   public onopen: (() => void) | null = null;
   public onmessage: ((event: { data: string }) => void) | null = null;
   public onerror: (() => void) | null = null;
-  public onclose: (() => void) | null = null;
+  public onclose: ((event: { reason: string; code: number }) => void) | null = null;
   public sent: string[] = [];
   constructor(public readonly url: string) { FakeSocket.made.push(this); }
   public send(text: string): void { this.sent.push(text); }
-  public close(): void { this.onclose?.(); }
+  public close(): void { this.onclose?.({ reason: '', code: 1005 }); }
 }
 
 describe('an attach', () => {
@@ -111,9 +146,19 @@ describe('an attach', () => {
     const socket: FakeSocket = FakeSocket.made[0] as FakeSocket;
     socket.onopen?.();
     expect(socket.sent).toHaveLength(1);
-    // The daemon goes away with the attach unanswered.
-    socket.onclose?.();
-    await expect(attaching).rejects.toThrow('closed the connection before it answered the attach');
+    // The daemon goes away with the attach unanswered, and says why.
+    socket.onclose?.({ reason: 'the session is restarting', code: 1012 });
+    await expect(attaching).rejects.toThrow('the daemon at ws://127.0.0.1:9000 closed the connection before it answered the attach (the session is restarting)');
+  });
+
+  it('says the close\'s code where it gave no reason, and that it gave none where it gave neither', async () => {
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const coded = ArgusClient.session_attach('ws://127.0.0.1:9000', 'T', {} as never);
+    FakeSocket.made[0]?.onclose?.({ reason: '', code: 1006 });
+    await expect(coded).rejects.toThrow('before it answered the attach (code 1006)');
+    const silent = ArgusClient.session_attach('ws://127.0.0.1:9000', 'T', {} as never);
+    FakeSocket.made[1]?.onclose?.({ reason: '', code: 1005 });
+    await expect(silent).rejects.toThrow('before it answered the attach and gave no reason');
   });
 
   it('once answered, a close is the client\'s to hear, not a rejection of the attach', async () => {
@@ -125,7 +170,7 @@ describe('an attach', () => {
     socket.onmessage?.({ data: JSON.stringify({ type: 'attached', session: 's', protocolVersion: 1 }) });
     const { client } = await attaching;
     expect(client).toBeDefined();
-    socket.onclose?.();
+    socket.onclose?.({ reason: '', code: 1000 });
     expect(closed).toBe(1);
   });
 });

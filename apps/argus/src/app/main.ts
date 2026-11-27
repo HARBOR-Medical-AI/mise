@@ -21,7 +21,7 @@ import { more_wire } from '../features/roster/more.js';
 import { type ClosingCause, type SessionNotes, feedListModelSchema, FEED_LIST_MODEL_KIND, feedDagModelSchema, dicomSeriesModelSchema, dicomTagsModelSchema, imageViewModelSchema, DICOM_MODEL_KINDS, IMAGE_MODEL_KINDS, type DicomSeriesModel, type DicomTagsModel, DAG_MODEL_KINDS, type PromptContext, type WireEnvelope, type WatchState, type FeedDagModel, type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry } from '@fnndsc/menu';
 import { type SceneNode } from '../scene/chrisSpace.js';
 import { element_require, template_stamp, pane_find } from '../frame/dom.js';
-import { attachStart_make, retryToken_keep, retryToken_take } from './attachStart.js';
+import { addressClean_derive, attachStart_make, retryToken_keep, retryToken_take } from './attachStart.js';
 import { DormantRegistry, DORMANT_CAP, localKeyStore, type GroupSnapshot, type DesktopAction, type DesktopShape } from './dormant.js';
 import { linkLanding_parse, type LinkLanding } from './link.js';
 import { shareSheet_open, viewLink_parse, viewScript_compose } from './shareView.js';
@@ -2807,8 +2807,10 @@ function page_boot(): void {
       attachError.textContent = reason;
     },
     page_restart: (token: string): void => {
-      retryToken_keep(window.sessionStorage, token);
-      window.location.reload();
+      // The token rides the reload in this tab's storage. Where that is refused, the fresh page is sent to
+      // its form, at an address with no token in it: a token the daemon refused is not tried again.
+      if (retryToken_keep((): Storage => window.sessionStorage, token, window.location.pathname)) window.location.reload();
+      else window.location.replace(addressClean_derive(window.location.pathname, window.location.search));
     },
   });
 
@@ -2824,7 +2826,7 @@ function page_boot(): void {
     }
   });
 
-  const retryToken: string | null = retryToken_take(window.sessionStorage);
+  const retryToken: string | null = retryToken_take((): Storage => window.sessionStorage, window.location.pathname);
   if (retryToken !== null) {
     // A page before this one failed to attach and was given another token: this fresh page attaches with it.
     attachForm.classList.add('attach-hidden');
