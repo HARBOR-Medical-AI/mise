@@ -21,7 +21,7 @@ import { more_wire } from '../features/roster/more.js';
 import { type ClosingCause, type SessionNotes, feedListModelSchema, FEED_LIST_MODEL_KIND, feedDagModelSchema, dicomSeriesModelSchema, dicomTagsModelSchema, imageViewModelSchema, DICOM_MODEL_KINDS, IMAGE_MODEL_KINDS, type DicomSeriesModel, type DicomTagsModel, DAG_MODEL_KINDS, type PromptContext, type WireEnvelope, type WatchState, type FeedDagModel, type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry } from '@fnndsc/menu';
 import { type SceneNode } from '../scene/chrisSpace.js';
 import { element_require, template_stamp, pane_find } from '../frame/dom.js';
-import { addressManual_derive, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type BootChoice } from './attachStart.js';
+import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type BootChoice } from './attachStart.js';
 import { DormantRegistry, DORMANT_CAP, localKeyStore, type GroupSnapshot, type DesktopAction, type DesktopShape } from './dormant.js';
 import { linkLanding_parse, type LinkLanding } from './link.js';
 import { shareSheet_open, viewLink_parse, viewScript_compose } from './shareView.js';
@@ -2780,8 +2780,21 @@ async function surface_start(token: string): Promise<void> {
 }
 
 /**
- * Page entry: use the URL token when present, otherwise show the attach
- * form and start on submit.
+ * Loads a fresh page at an address of this page's own. Where the address is
+ * the one the page is already at (give or take its fragment), going there
+ * would load nothing new, and the page that failed to attach would stay: so
+ * the page is reloaded instead.
+ *
+ * @param address - The path, query and fragment to be at.
+ */
+function page_goFresh(address: string): void {
+  if (addressSame_check(address, window.location.pathname, window.location.search)) window.location.reload();
+  else window.location.replace(address);
+}
+
+/**
+ * Page entry: attach as the page's address and its door say, or show the
+ * attach form and start on submit.
  */
 function page_boot(): void {
   cascade = cascade_build();
@@ -2810,7 +2823,7 @@ function page_boot(): void {
       // The token rides the reload in this tab's storage. Where that is refused, the fresh page is sent to
       // its form, at an address with no token in it: a token the daemon refused is not tried again.
       if (retryToken_keep((): Storage => window.sessionStorage, token, place)) window.location.reload();
-      else window.location.replace(addressManual_derive(window.location.pathname, window.location.search, window.location.hash));
+      else page_goFresh(addressManual_derive(window.location.pathname, window.location.search, window.location.hash));
     },
   });
 

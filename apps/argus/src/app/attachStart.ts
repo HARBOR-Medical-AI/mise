@@ -182,6 +182,27 @@ export function addressManual_derive(path: string, search: string, hash: string)
   return `${path}?${params.toString()}${hash}`;
 }
 
+/**
+ * Says whether an address names the document the page already is: the same
+ * path and the same query. Going to such an address, whatever its fragment,
+ * loads no new document.
+ *
+ * @param address - The address to go to: path, query and fragment.
+ * @param path - The page's path.
+ * @param search - The page's query string.
+ * @returns True when the address is this document's.
+ *
+ * @example
+ * if (addressSame_check(address, window.location.pathname, window.location.search)) window.location.reload();
+ */
+export function addressSame_check(address: string, path: string, search: string): boolean {
+  const bare: string = address.split('#')[0] ?? '';
+  const mark: number = bare.indexOf('?');
+  const toPath: string = mark === -1 ? bare : bare.slice(0, mark);
+  const toQuery: string = mark === -1 ? '' : bare.slice(mark + 1);
+  return toPath === path && new URLSearchParams(toQuery).toString() === new URLSearchParams(search).toString();
+}
+
 /** A page that attaches as it loads. */
 interface BootAttach {
   /** What it does. */

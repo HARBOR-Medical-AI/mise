@@ -7,7 +7,7 @@
  * closes before it is answered.
  */
 import { describe, it, expect, afterEach } from '@jest/globals';
-import { addressManual_derive, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
+import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
 import { ArgusClient } from '../../src/calypso/client.js';
 
 /** A surface whose attach the test settles, and which counts how often it was wired. */
@@ -157,6 +157,34 @@ describe('the page\'s start', () => {
     expect(second.wired).toEqual(['typed']);
     expect(second.hidden).toHaveLength(1);
     expect(second.restarted).toEqual([]);
+  });
+
+  it('a second refusal on the form\'s own page reloads it: going to the address it is already at would load nothing new', async () => {
+    // The page is already the fallback's: behind a door, marked for its form, with a link's fragment.
+    const path: string = '/s/abc/';
+    const search: string = '?door=1&attach=manual';
+    const hash: string = '#view=dag';
+    const unreachable = (): Storage => { throw new Error('The operation is insecure.'); };
+    const bench = bench_make();
+    expect(bootChoice_derive(null, search, true)).toEqual({ kind: 'form' });
+    // A token typed by hand is refused.
+    bench.start('wrong');
+    await bench.settle(false);
+    // Another is typed. It cannot be kept, and the address the fallback would go to is the page's own.
+    expect(retryToken_keep(unreachable, 'good', retryPlace_name(path, 'ws://127.0.0.1:9000'))).toBe(false);
+    const address: string = addressManual_derive(path, search, hash);
+    expect(address).toBe('/s/abc/?door=1&attach=manual#view=dag');
+    expect(addressSame_check(address, path, search)).toBe(true);
+    // So the page is reloaded, and the document that follows is a new one: it shows its form and takes input.
+    const next = bench_make();
+    expect(bootChoice_derive(retryToken_take(unreachable, retryPlace_name(path, 'ws://127.0.0.1:9000')), search, true)).toEqual({ kind: 'form' });
+    next.start('good');
+    await next.settle(true);
+    expect(next.wired).toEqual(['good']);
+    // An address that differs in its query is another document, and is gone to.
+    expect(addressSame_check('/s/abc/?door=1&attach=manual#x', path, '?door=1')).toBe(false);
+    expect(addressSame_check('/s/other/?door=1&attach=manual', path, search)).toBe(false);
+    expect(addressSame_check('/s/abc/', path, '')).toBe(true);
   });
 
   it('a fresh page that was handed a token attaches once with it, as the first attempt of that page', async () => {
