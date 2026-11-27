@@ -871,6 +871,23 @@ describe('a change of who is connected is one step', () => {
     expect(store.files).toEqual({ '/cfg/first.token': 'FIRST', '/cfg/second.token': 'SECOND' });
   });
 
+  it('after a move of context that failed, a move to a third identity signs in from the third\'s own saved token', async () => {
+    const store: FakeStore = { files: { '/cfg/first.token': 'FIRST', '/cfg/second.token': 'SECOND', '/cfg/third.token': 'THIRD' } };
+    const config = pathsConfig_make();
+    const conn: ChRISConnection = new ChRISConnection(config, storage_make(store));
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    mockContextSet.mockResolvedValue(true);
+    expect(await conn.client_get()).toEqual({ of: 'FIRST' });
+    mockParse.mockResolvedValue({ user: 'second', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    (config.context_set as unknown as jest.Mock).mockRejectedValueOnce(new Error('the disk is full'));
+    await expect(conn.context_set('second@https://cube/api/v1/')).rejects.toThrow('the disk is full');
+    mockParse.mockResolvedValue({ user: 'third', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    expect(await conn.context_set('third@https://cube/api/v1/')).toBe(true);
+    expect(await conn.client_get()).toEqual({ of: 'THIRD' });
+    expect(await conn.authToken_get(true)).toBe('THIRD');
+    expect(store.files).toEqual({ '/cfg/first.token': 'FIRST', '/cfg/second.token': 'SECOND', '/cfg/third.token': 'THIRD' });
+  });
+
   it('a logout from a login held for the session stays logged out when its context is named again, though an older token of theirs is on disk', async () => {
     const store: FakeStore = { files: { '/cfg/first.token': 'FIRST', '/cfg/second.token': 'OLDER' } };
     const shared = globalConfig as unknown as { tokenFilepath: string; context_set: jest.Mock };

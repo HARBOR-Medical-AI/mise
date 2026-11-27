@@ -340,6 +340,7 @@ export class ChRISConnection {
         // the new one's token has been read nobody is connected at all. (Nothing is awaited before this.)
         // The change is made known once, below, when it is known who is connected after it.
         const known: boolean = this.saved;
+        const retried: boolean = this.moveFailed;
         if (changed) this.identity_publish(user, url, null, null, false);
         try {
           if (parsedContext.user) {
@@ -357,7 +358,8 @@ export class ChRISConnection {
           // Only a login held for this session keeps its token in memory in place of whatever the file holds.
           // A logout from such a login is not such a move: naming its context again reads nothing back.
           const signedOut: boolean = this.authToken === null;
-          this.saved = known || this.moveFailed;
+          // A move to another identity, once written, confirms that identity's file whatever came before.
+          this.saved = changed || known || retried;
           this.moveFailed = false;
           await this.client_rebuild();
           // Nobody was connected under this name and its saved token has now been read: that is a change
