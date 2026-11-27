@@ -15,10 +15,15 @@
  * change of what coverage is collected from or where and how it is
  * reported, an option not known here) makes it a run of its own.
  *
- * A whole run writes the suite's report (`coverage/`), and the floors are
- * judged from that report only if this run wrote it. A run of its own
- * writes elsewhere (`coverage-partial/`, or where it says), is not judged,
- * and may not write over the suite's report.
+ * A whole run writes its report to a folder of its own, made empty for it.
+ * If jest leaves a summary there, it is published as the suite's report
+ * (`coverage/`) and the floors are judged from it; if jest leaves none, the
+ * run fails, whatever report stood before. A run of its own writes
+ * elsewhere (`coverage-partial/`, or where it says, as jest will read it),
+ * is not judged, and may not write to the suite's folder.
+ *
+ * What this adds to jest's arguments goes before them, so that an
+ * end-of-options mark (`--`) among them leaves it an option.
  *
  * Run from the workspace's folder, by its `test` script.
  *
@@ -26,8 +31,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { statSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** Jest's options, by the names jest gives them once read, that say how to run and nothing about what. */
@@ -42,45 +48,62 @@ export const SUITE_DIR = 'coverage';
 export const PARTIAL_DIR = 'coverage-partial';
 
 /**
+ * Where jest will write a report it is told to put in a folder: the folder
+ * as jest reads it, `<rootDir>` and all, from the workspace.
+ *
+ * @param {string} given - The folder as written.
+ * @param {string} rootDir - Jest's root for this run.
+ * @returns {string} The folder, absolute.
+ */
+export function coverageDir_resolve(given, rootDir) {
+  return resolve(rootDir, given.replace(/<rootDir>/g, rootDir));
+}
+
+/**
  * What to do with a run, from jest's own reading of its arguments.
  *
  * @param {Record<string, unknown>} read - The arguments as `buildArgv` read them.
  * @param {string[]} args - The arguments as they were written.
  * @param {string} workspaceDir - The workspace's folder.
- * @returns {{ whole: boolean, why: string, jestArgs: string[], refused: string | null }} Whether the run is the whole suite, why not when it is not, what jest is run with, and a refusal when the run would write over the suite's report.
+ * @param {string} runDir - A folder of this run's own, for a whole run's report.
+ * @returns {{ whole: boolean, why: string, jestArgs: string[], refused: string | null }} Whether the run is the whole suite, why not when it is not, what jest is run with, and a refusal when the run would write to the suite's folder.
  */
-export function run_plan(read, args, workspaceDir) {
+export function run_plan(read, args, workspaceDir, runDir) {
   const named = Array.isArray(read._) ? read._.map(String) : [];
   const given = Object.keys(read).filter((key) => key !== '_' && key !== '$0');
   const other = given.filter((key) => !HOW.has(key) || ((key === 'coverage' || key === 'collectCoverage') && read[key] === false));
+  // What is added goes first: after a `--` it would be read as a test's name.
   if (named.length === 0 && other.length === 0) {
     return {
       whole: true, why: '', refused: null,
-      jestArgs: [...args, '--coverage', `--coverageDirectory=${resolve(workspaceDir, SUITE_DIR)}`, '--coverageReporters=json-summary', '--coverageReporters=text-summary'],
+      jestArgs: ['--coverage', `--coverageDirectory=${runDir}`, '--coverageReporters=json-summary', '--coverageReporters=text-summary', ...args.filter((arg) => arg !== '--coverage')],
     };
   }
   const why = named.length > 0 ? `it names tests (${named.join(' ')})` : `it gives ${other.map((key) => `--${key}`).join(', ')}`;
+  const suiteDir = resolve(workspaceDir, SUITE_DIR);
+  const rootDir = typeof read.rootDir === 'string' ? resolve(workspaceDir, read.rootDir) : workspaceDir;
   const own = typeof read.coverageDirectory === 'string' ? read.coverageDirectory : null;
-  if (own !== null && resolve(workspaceDir, own) === resolve(workspaceDir, SUITE_DIR)) {
-    return { whole: false, why, jestArgs: [], refused: `a run that is not the whole suite may not write the suite's report (${SUITE_DIR}/): ${why}. Give it another --coverageDirectory, or none.` };
+  if (own !== null && coverageDir_resolve(own, rootDir) === suiteDir) {
+    return { whole: false, why, jestArgs: [], refused: `a run that is not the whole suite may not write to the suite's folder (${SUITE_DIR}/): ${why}. Give it another --coverageDirectory, or none.` };
   }
   const without = args.filter((arg) => arg !== '--coverage');
-  return { whole: false, why, refused: null, jestArgs: own !== null ? ['--coverage', ...without] : ['--coverage', ...without, `--coverageDirectory=${PARTIAL_DIR}`] };
+  return { whole: false, why, refused: null, jestArgs: own !== null ? ['--coverage', ...without] : ['--coverage', `--coverageDirectory=${resolve(workspaceDir, PARTIAL_DIR)}`, ...without] };
 }
 
 /**
- * Says whether a report was written by the run that has just ended.
+ * Publishes a whole run's report as the suite's: the summary the run left
+ * in its own folder is copied to the suite's folder.
  *
- * @param {string} path - The report.
- * @param {number} began - When the run began, in milliseconds.
- * @returns {boolean} True when the file is there and was written since.
+ * @param {string} runDir - The run's own folder.
+ * @param {string} suiteDir - The suite's folder.
+ * @returns {boolean} False when the run left no summary: nothing is published, and whatever stood in the suite's folder is not this run's.
  */
-export function summary_isFresh(path, began) {
-  try {
-    return statSync(path).mtimeMs >= began;
-  } catch {
-    return false;
-  }
+export function report_publish(runDir, suiteDir) {
+  const from = join(runDir, 'coverage-summary.json');
+  if (!existsSync(from)) return false;
+  mkdirSync(suiteDir, { recursive: true });
+  copyFileSync(from, join(suiteDir, 'coverage-summary.json'));
+  return true;
 }
 
 /** Runs jest, then the ratchet when the suite was whole; the exit status is the first that failed. */
@@ -99,28 +122,51 @@ async function main() {
     console.error(String(error?.message ?? error));
     process.exit(1);
   }
-  const plan = run_plan(read, args, workspaceDir);
+  // A folder of this run's own, new and empty: what is found in it afterwards, this run wrote.
+  const runDir = mkdtempSync(join(tmpdir(), 'jest-with-floor-'));
+  let status = 1;
+  try {
+    status = run_judge(read, args, root, workspaceDir, workspace, runDir);
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+  process.exit(status);
+}
+
+/**
+ * Runs jest as planned and judges a whole run from the report it wrote.
+ *
+ * @param {Record<string, unknown>} read - The arguments as jest reads them.
+ * @param {string[]} args - The arguments as written.
+ * @param {string} root - The repository.
+ * @param {string} workspaceDir - The workspace's folder.
+ * @param {string} workspace - The workspace, from the repository's root.
+ * @param {string} runDir - This run's own folder.
+ * @returns {number} The exit status.
+ */
+function run_judge(read, args, root, workspaceDir, workspace, runDir) {
+  const plan = run_plan(read, args, workspaceDir, runDir);
   if (plan.refused !== null) {
     console.error(`jest-with-floor: ${plan.refused}`);
-    process.exit(2);
+    return 2;
   }
   const options = '--experimental-vm-modules --disable-warning=ExperimentalWarning';
   const env = { ...process.env, NODE_OPTIONS: [process.env.NODE_OPTIONS, options].filter(Boolean).join(' ') };
-  // A whole second of slack: some filesystems keep times to the second.
-  const began = Date.now() - 1000;
-  const jest = spawnSync('npx', ['jest', ...plan.jestArgs], { stdio: 'inherit', env });
-  if (jest.status !== 0) process.exit(jest.status ?? 1);
+  // The jest that is run: the workspace's own, or (for this script's own test) one named to stand in for it.
+  const command = process.env.JEST_WITH_FLOOR_JEST ?? 'npx';
+  const first = process.env.JEST_WITH_FLOOR_JEST === undefined ? ['jest'] : [];
+  const jest = spawnSync(command, [...first, ...plan.jestArgs], { stdio: 'inherit', env });
+  if (jest.status !== 0) return jest.status ?? 1;
   if (!plan.whole) {
     console.log(`coverage-ratchet: not checked: this was a run of its own (${plan.why}), and the floors are for the whole suite over its own sources. The suite's report (${SUITE_DIR}/) is left as it was.`);
-    return;
+    return 0;
   }
-  const summary = resolve(workspaceDir, SUITE_DIR, 'coverage-summary.json');
-  if (!summary_isFresh(summary, began)) {
-    console.error(`coverage-ratchet: this run wrote no report at ${SUITE_DIR}/coverage-summary.json, and an older one is not judged in its place.`);
-    process.exit(1);
+  if (!report_publish(runDir, resolve(workspaceDir, SUITE_DIR))) {
+    console.error(`coverage-ratchet: jest ended well and wrote no coverage summary. Nothing is judged, and the report that stood in ${SUITE_DIR}/ is not this run's.`);
+    return 1;
   }
   const ratchet = spawnSync('node', [resolve(root, 'scripts/coverage-ratchet.mjs'), '--require', workspace], { stdio: 'inherit' });
-  process.exit(ratchet.status ?? 1);
+  return ratchet.status ?? 1;
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

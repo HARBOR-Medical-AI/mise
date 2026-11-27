@@ -24,7 +24,7 @@
  * @module
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -200,7 +200,7 @@ for (const lint of lints) {
 // The coverage ratchet, over trees made here: a summary as jest writes it, and floors beside it.
 {
   const { args_read, coverage_judge, floor_derive, floors_compare, floors_read, summary_read, uncovered_list } = await import('./coverage-ratchet.mjs');
-  const { run_plan, summary_isFresh, PARTIAL_DIR, SUITE_DIR } = await import('./jest-with-floor.mjs');
+  const { coverageDir_resolve, report_publish, run_plan, PARTIAL_DIR, SUITE_DIR } = await import('./jest-with-floor.mjs');
   const { buildArgv } = await import('jest-cli');
   /** A tree with one workspace's coverage summary and a baseline file; runs the ratchet over it. */
   const coverage_run = (summary, floors, extra = []) => {
@@ -254,20 +254,27 @@ for (const lint of lints) {
   try { args_read(['tests/unit/one.test.ts']); } catch (error) { threw = error.message; }
   expect_that('a test\'s path is not read as the tree', threw.includes('unknown argument'), threw);
   // Whole or a run of its own, from jest's own reading of the arguments: every spelling jest takes is taken the same way.
-  const plan_of = async (args) => run_plan(await buildArgv(args), args, '/w/apps/argus');
+  const plan_of = async (args) => run_plan(await buildArgv(args), args, '/w/apps/argus', '/tmp/run-own');
   for (const args of [[], ['--coverage'], ['--runInBand', '--coverage'], ['--maxWorkers=2'], ['--maxWorkers', '2'], ['--max-workers=2'], ['-w', '4', '--ci', '--testTimeout=10000'], ['--test-timeout', '10000'], ['--passWithNoTests']]) {
     const plan = await plan_of(args);
-    expect_that(`the whole suite is run and judged with ${JSON.stringify(args)}`, plan.whole && plan.refused === null && plan.jestArgs.includes(`--coverageDirectory=/w/apps/argus/${SUITE_DIR}`) && plan.jestArgs.includes('--coverageReporters=json-summary'), JSON.stringify(plan));
+    expect_that(`the whole suite is run and judged with ${JSON.stringify(args)}`, plan.whole && plan.refused === null && plan.jestArgs[1] === '--coverageDirectory=/tmp/run-own' && plan.jestArgs.includes('--coverageReporters=json-summary') && !plan.jestArgs.some((arg) => arg.includes(`/${SUITE_DIR}`)), JSON.stringify(plan));
   }
   for (const args of [['tests/unit/one.test.ts'], ['-t', 'one case'], ['--testNamePattern=one'], ['--test-name-pattern=one'], ['--testPathPatterns=image'], ['--test-path-patterns', 'image'], ['--onlyChanged'], ['-o'], ['--maxWorkers=2', 'image'], ['--shard=1/3'],
     ['--collectCoverageFrom=src/app/*.ts'], ['--coveragePathIgnorePatterns=src/features/image'], ['--coverageReporters=text'], ['--coverageDirectory=elsewhere'], ['--coverage=false'], ['--no-coverage'], ['--rootDir=/tmp']]) {
     const plan = await plan_of(args);
-    const elsewhere = plan.jestArgs.includes(`--coverageDirectory=${PARTIAL_DIR}`) || args.some((arg) => arg.startsWith('--coverageDirectory'));
+    const elsewhere = plan.jestArgs[1] === `--coverageDirectory=/w/apps/argus/${PARTIAL_DIR}` || args.some((arg) => arg.startsWith('--coverageDirectory'));
     expect_that(`a run of its own is not judged and does not write the suite's report with ${JSON.stringify(args)}`, !plan.whole && plan.refused === null && elsewhere && !plan.jestArgs.some((arg) => arg.endsWith(`/${SUITE_DIR}`)), JSON.stringify(plan));
   }
-  for (const args of [['-t', 'one', '--coverageDirectory=coverage'], ['--coverageReporters=text', '--coverageDirectory', './coverage'], ['--coverage-directory=coverage', 'image']]) {
+  for (const args of [['-t', 'one', '--coverageDirectory=coverage'], ['--coverageReporters=text', '--coverageDirectory', './coverage'], ['--coverage-directory=coverage', 'image'], ['-t', 'one', '--coverageDirectory=<rootDir>/coverage'], ['-t', 'one', '--coverageDirectory=/w/apps/argus/coverage']]) {
     const plan = await plan_of(args);
-    expect_that(`a run of its own that would write the suite's report is refused with ${JSON.stringify(args)}`, !plan.whole && plan.refused !== null && plan.refused.includes('may not write the suite\'s report'), JSON.stringify(plan));
+    expect_that(`a run of its own that would write to the suite's folder is refused with ${JSON.stringify(args)}`, !plan.whole && plan.refused !== null && plan.refused.includes('may not write to the suite\'s folder'), JSON.stringify(plan));
+  }
+  expect_that('a folder is read as jest reads it', coverageDir_resolve('<rootDir>/coverage', '/w/apps/argus') === '/w/apps/argus/coverage' && coverageDir_resolve('coverage', '/w/apps/argus') === '/w/apps/argus/coverage' && coverageDir_resolve('/elsewhere', '/w/apps/argus') === '/elsewhere');
+  {
+    // After an end-of-options mark everything is a test's name: what the runner adds is before it, and stays an option.
+    const marked = await plan_of(['--', 'tests/unit/imageStop.test.ts']);
+    const reread = await buildArgv(marked.jestArgs);
+    expect_that('with `--` among the arguments, the runner\'s own folder is still read by jest as the folder', !marked.whole && reread.coverageDirectory === `/w/apps/argus/${PARTIAL_DIR}` && JSON.stringify(reread._) === '["tests/unit/imageStop.test.ts"]', JSON.stringify(reread));
   }
   for (const args of [['--testPathPattern=image'], ['--some-flag-jest-does-not-know']]) {
     let refusedByJest = '';
@@ -275,9 +282,13 @@ for (const lint of lints) {
     expect_that(`arguments jest itself refuses are refused by jest, not read here: ${JSON.stringify(args)}`, refusedByJest !== '', refusedByJest.slice(0, 120));
   }
   {
-    const spot = folder_make('coverage-fresh');
-    file_put(join(spot, 'coverage-summary.json'), '{}');
-    expect_that('a report written before the run began is not this run\'s, and one that is not there is nobody\'s', !summary_isFresh(join(spot, 'coverage-summary.json'), Date.now() + 60_000) && summary_isFresh(join(spot, 'coverage-summary.json'), Date.now() - 60_000) && !summary_isFresh(join(spot, 'absent.json'), 0));
+    // A whole run's report is what the run left in its own folder: none there, none published, whatever stood before.
+    const own = folder_make('coverage-run-own');
+    const suite = folder_make('coverage-suite');
+    file_put(join(suite, 'coverage-summary.json'), '{"an older report":true}');
+    expect_that('a run that left no summary publishes nothing, and the report that stood is untouched', report_publish(own, suite) === false && readFileSync(join(suite, 'coverage-summary.json'), 'utf8') === '{"an older report":true}');
+    file_put(join(own, 'coverage-summary.json'), '{"this run":true}');
+    expect_that('a run that left one publishes it as the suite\'s', report_publish(own, suite) === true && readFileSync(join(suite, 'coverage-summary.json'), 'utf8') === '{"this run":true}');
   }
   threw = '';
   try { floors_read('{"casts":{}}', 'a file'); } catch (error) { threw = error.message; }
@@ -342,8 +353,20 @@ for (const lint of lints) {
     expect_that('a run that writes no JSON report is not passed on an older one', textOnly.status === 0 && textOnly.said.includes('not checked') && !textOnly.said.includes('at or above') && readFileSync(summaryPath, 'utf8') === full, textOnly.said.slice(-500));
     const moved = runner('--coverageDirectory=elsewhere');
     expect_that('nor is a run that writes its report somewhere else', moved.status === 0 && moved.said.includes('not checked') && !moved.said.includes('at or above') && readFileSync(summaryPath, 'utf8') === full, moved.said.slice(-500));
+    // The end-of-options form, and the folder spelt as jest's own placeholder: the suite's report is untouched by both.
+    const marked = runner('--', 'tests/kept.test.js');
+    expect_that('a run that names a test after `--` is not judged and leaves the suite\'s report byte-for-byte', marked.status === 0 && marked.said.includes('not checked') && readFileSync(summaryPath, 'utf8') === full, marked.said.slice(-500));
+    const placed = runner('-t', 'twice', '--coverageDirectory=<rootDir>/coverage');
+    expect_that('a filtered run pointed at the suite\'s folder by <rootDir> is refused', placed.status === 2 && readFileSync(summaryPath, 'utf8') === full, placed.said.slice(-400));
+    // A jest that ends well and writes no summary: the run fails, though a passing report was written just before.
+    file_put(join(made, 'silent-jest.sh'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(made, 'silent-jest.sh'), 0o755);
+    file_put(summaryPath, full);
+    const silentRan = spawnSync('node', [join(made, 'scripts/jest-with-floor.mjs')], { cwd: join(made, 'apps/argus'), encoding: 'utf8', env: { ...process.env, RATCHET_BASE: sha, JEST_WITH_FLOOR_JEST: join(made, 'silent-jest.sh') } });
+    const silentSaid = `${silentRan.stdout}${silentRan.stderr}`;
+    expect_that('a jest that ends well and writes no summary fails the run, though a passing report was written a moment before', silentRan.status === 1 && silentSaid.includes('wrote no coverage summary') && !silentSaid.includes('at or above') && readFileSync(summaryPath, 'utf8') === full, silentSaid.slice(-400));
     const over = runner('-t', 'twice', '--coverageDirectory=coverage');
-    expect_that('a filtered run pointed at the suite\'s report is refused before jest runs', over.status === 2 && over.said.includes('may not write the suite\'s report') && readFileSync(summaryPath, 'utf8') === full, over.said.slice(-400));
+    expect_that('a filtered run pointed at the suite\'s report is refused before jest runs', over.status === 2 && over.said.includes('may not write to the suite\'s folder') && readFileSync(summaryPath, 'utf8') === full, over.said.slice(-400));
     // With a test taken away the whole run falls below its floors, and fails.
     file_put(join(made, 'apps/argus/tests/other.test.js'), "test('nothing of the other', () => { expect(1).toBe(1); });\n");
     const fallen = runner();
