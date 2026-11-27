@@ -183,6 +183,8 @@ describe('ProcessHost', () => {
     await starting;
     expect(await host.evict(IDENTITY)).toBe(true);
     expect(child.killed).toBe('SIGTERM');
+    // The daemon is gone and its berth no longer answers: there is nothing more to end.
+    alive = false;
     expect(await host.evict(IDENTITY)).toBe(false);
   });
 });
@@ -348,16 +350,50 @@ describe('a porter restarted', () => {
     expect(killed).toEqual([]);
   });
 
-  it.each([['there was no such process', null], ['its process could not be read', undefined]])('what is read of a pid later is never taken for proof: adopted when %s, it is asked to stop and never killed', async (_name: string, atAdoption: string | null | undefined) => {
+  it('a pid that could not be read when it was adopted is asked to stop on its berth\'s word and never killed, whatever is read of it later', async () => {
     const killed: string[] = [];
-    const world = { started: atAdoption, onSignal: (): void => undefined };
+    const world = { started: undefined as string | null | undefined, onSignal: (): void => undefined };
     const host: ProcessHost = adopted_make(world, killed);
     berth_plant(host, 31337);
     await host.sessions_adopt();
-    // Afterwards a process is readable under that pid.
     world.started = '5000';
     await expect(host.evict(IDENTITY)).rejects.toThrow('it was asked to stop and did not, and was not killed');
     expect(killed).toEqual(['SIGTERM']);
+  });
+
+  it('a pid that was no process when it was adopted is never signalled: what holds the number later is another', async () => {
+    const killed: string[] = [];
+    const world = { started: null as string | null | undefined, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    world.started = '5000';
+    for (let attempt: number = 0; attempt < 2; attempt++) {
+      await expect(host.evict(IDENTITY)).rejects.toThrow('pid 31337 was not a process when the session was adopted');
+    }
+    expect(killed).toEqual([]);
+  });
+
+  it.each([['no pid', undefined], ['pid 0', 0], ['a negative pid', -31337], ['pid 1', 1]])('a berth that answers and names %s is a daemon not stopped: nothing is signalled, and the stop fails', async (_name: string, pid: number | undefined) => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null | undefined, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, pid);
+    await host.sessions_adopt();
+    await expect(host.evict(IDENTITY)).rejects.toThrow('the session\'s berth answers but names no process that can be stopped; nothing was signalled');
+    expect(killed).toEqual([]);
+  });
+
+  it('an unproved pid is not signalled once the berth names another', async () => {
+    const killed: string[] = [];
+    const world = { started: undefined as string | null | undefined, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    // The berth file is written again, by a daemon with another pid.
+    berth_plant(host, 40404);
+    await expect(host.evict(IDENTITY)).rejects.toThrow('the session\'s berth no longer names pid 31337; nothing was signalled');
+    expect(killed).toEqual([]);
   });
 
   it('a restart whose old daemon will not stop ends its boot failed and starts nothing beside it', async () => {

@@ -279,7 +279,9 @@ export class LauncherHost implements SessionHost {
   }
 
   /** @inheritdoc */
-  public restart_begin(identity: string, user: string, cubeUrl: string, why: RestartWhy = { kind: 'asked' }): void {
+  public restart_begin(identity: string, user: string, cubeUrl: string, why: RestartWhy = { kind: 'asked' }): Promise<void> {
+    let stop_settle: () => void = (): void => undefined;
+    const stopped: Promise<void> = new Promise<void>((resolve: () => void): void => { stop_settle = resolve; });
     // The boot's record stands before the old berth is touched: a greeter that asks from here on follows
     // this boot, and a login is not handed the berth that is being stopped.
     const record: BootRecord = this.record_open(identity);
@@ -294,10 +296,14 @@ export class LauncherHost implements SessionHost {
           this.line_add(record, `[FAIL]    Berth        ${reason}`);
           this.boot_end(record, 'failed', reason);
           return;
+        } finally {
+          stop_settle();
         }
       }
+      stop_settle();
       await this.boot_run(identity, user, cubeUrl, null, null, record);
     })().catch((): void => undefined);
+    return stopped;
   }
 
   /**

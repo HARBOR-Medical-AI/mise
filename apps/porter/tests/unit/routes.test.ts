@@ -67,7 +67,9 @@ class FakeHost implements SessionHost {
   public evicted: string[] = [];
   async evict(identity: string): Promise<boolean> { this.evicted.push(identity); return true; }
   public restarted: Array<{ identity: string; user: string }> = [];
-  restart_begin(identity: string, user: string): void { this.restarted.push({ identity, user }); }
+  /** What a restart's stop phase is, when a test holds one open; a host that cannot say otherwise. */
+  public restartStop: Promise<void> | undefined = undefined;
+  restart_begin(identity: string, user: string): Promise<void> | undefined { this.restarted.push({ identity, user }); return this.restartStop; }
 }
 
 /** A host that keeps tokens outside its sessions, as the berth launcher does. */
@@ -437,6 +439,49 @@ describe('the door', () => {
     built.registry.eviction_end(claim!, true);
     expect((await restart).statusCode).toBe(401);
     expect(host.restarted).toEqual([]);
+  });
+
+  it('a logout that arrives while a restart is stopping the old berth comes after that stop: one stop at a time', async () => {
+    const berths = new FakeBerthHost();
+    let restartStopped: () => void = (): void => undefined;
+    berths.restartStop = new Promise<void>((resolve: () => void): void => { restartStopped = resolve; });
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, mint: async () => ({ token: 'T' }) });
+    berths.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://10.213.77.2:4444', token: 'ATTACH' };
+    const login = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const restart = await door.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    expect(restart.json()).toMatchObject({ state: 'restarting' });
+    const out = door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    // The restart's stop is still under way: the logout has not begun one of its own.
+    expect(berths.evicted).toEqual([]);
+    restartStopped();
+    expect((await out).json()).toEqual({ ok: true });
+    expect(berths.evicted).toEqual(['chris@https://cube.example.org/api/v1/']);
+    expect(berths.restarted).toHaveLength(1);
+    await door.app.close();
+  });
+
+  it('a restart that arrives while a logout is stopping the berth waits, and then has no session to restart', async () => {
+    const berths = new FakeBerthHost();
+    let stopped: (ended: boolean) => void = (): void => undefined;
+    berths.evict = async (identity: string): Promise<boolean> => { berths.evicted.push(identity); return new Promise<boolean>((resolve: (ended: boolean) => void): void => { stopped = resolve; }); };
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, mint: async () => ({ token: 'T' }) });
+    berths.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://10.213.77.2:4444', token: 'ATTACH' };
+    const login = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (login.json() as { key: string }).key;
+    const out = door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    const restart = door.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    expect(berths.restarted).toEqual([]);
+    stopped(true);
+    await out;
+    // The session the logout ended is retired: the restart acts on nothing, and starts no replacement.
+    expect((await restart).statusCode).toBe(401);
+    expect(berths.restarted).toEqual([]);
+    expect(berths.evicted).toHaveLength(1);
+    expect(door.registry.get(key)).toBeNull();
+    await door.app.close();
   });
 
   it('logs a browser out by clearing its cookie, and leaves the session alone', async () => {
@@ -908,6 +953,30 @@ describe('door tokens (chell auth)', () => {
     expect(cookie_of(byToken)).toMatch(/^porter_session=/);
     expect(said.some((line) => line.includes('chris came through by door token "cron@titan"'))).toBe(true);
     expect(built.tokens.list()[0]?.lastUsed).not.toBeNull();
+  });
+
+  it('a password login held while a door-token login begins a restart on the saved login looks again, and does not note the berth it had found', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const minted = built.tokens.mint(identity, 'chris', 'laptop');
+    const old: Berth = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    let answer: (berth: Berth | null) => void = (): void => undefined;
+    let looks: number = 0;
+    host.find = async (): Promise<Berth | null> => {
+      looks += 1;
+      // The password login's look is held and will answer with the old berth; the token login finds none.
+      if (looks === 1) return new Promise<Berth | null>((resolve: (berth: Berth | null) => void): void => { answer = resolve; });
+      if (looks === 2) return null;
+      return { identity, url: 'ws://127.0.0.1:5555', token: 'FRESH' };
+    };
+    const password = built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    const byToken = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${minted.token}` } });
+    expect(byToken.json()).toMatchObject({ state: 'starting' });
+    expect(host.restarted).toHaveLength(1);
+    answer(old);
+    const key: string = ((await password).json() as { key: string }).key;
+    expect(looks).toBe(3);
+    expect(built.registry.get(key)?.berth.token).toBe('FRESH');
   });
 
   it('a token login with no session up boots one on the saved login (no CUBE token travels), and a password is never asked', async () => {

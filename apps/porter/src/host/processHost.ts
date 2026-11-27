@@ -480,8 +480,10 @@ export class ProcessHost implements SessionHost {
   }
 
   /** @inheritdoc */
-  public restart_begin(identity: string, user: string, cubeUrl: string, why: RestartWhy = { kind: 'asked' }): void {
+  public restart_begin(identity: string, user: string, cubeUrl: string, why: RestartWhy = { kind: 'asked' }): Promise<void> {
     const old: SessionRecord | undefined = this.sessions.get(identity);
+    let stop_settle: () => void = (): void => undefined;
+    const stopped: Promise<void> = new Promise<void>((resolve: () => void): void => { stop_settle = resolve; });
     const record: SessionRecord = {
       identity,
       child: null,
@@ -509,12 +511,15 @@ export class ProcessHost implements SessionHost {
       } catch (error: unknown) {
         ProcessHost.evidence_keep(record, old);
         return this.boot_end(record, 'failed', error instanceof Error ? error.message : String(error));
+      } finally {
+        stop_settle();
       }
       if (why.kind !== 'saved-login') say('Starting a fresh calypso daemon on the saved login');
       return this.boot_run(record, { kind: 'chris', user, cubeUrl, token: null });
     })().finally((): void => { record.starting = null; });
     // The failure is already on the boot record for whoever follows it.
     void record.starting.catch((): void => undefined);
+    return stopped;
   }
 
   /**
@@ -637,34 +642,61 @@ export class ProcessHost implements SessionHost {
       return record.child;
     }
     const berth: Berth | null = this.berth_read(identity);
-    const pid: number | null = record?.adoptedPid ?? berth?.pid ?? null;
-    if (pid === null) return null;
-    const adopted: boolean = record?.adoptedPid === pid;
-    const proof: string | null | undefined = adopted ? record?.adoptedStart : undefined;
-    const answers: boolean = berth !== null && (await this.alive(berth.url));
-    if (typeof proof === 'string') return this.proved_signal(identity, pid, proof, answers, cause);
-    return this.unproved_signal(identity, pid, adopted, answers, cause);
+    return this.pid_signal(identity, record, berth, berth !== null && (await this.alive(berth.url)), cause);
   }
 
   /**
-   * Asks a pid that was never proved to stop (nothing could be read of it
-   * when it was adopted, or this porter never adopted it): its berth's
-   * answer is the only proof there is. It is asked on that, and is never
-   * killed.
+   * Asks the daemon a berth or an adoption names by pid to stop, where it
+   * may be asked at all.
+   *
+   * @param identity - The session.
+   * @param record - What the host knew of the session.
+   * @param berth - The session's berth file as it reads now, or null.
+   * @param answers - Whether that berth answers now.
+   * @param cause - Why it ends, left for the daemon to say.
+   * @returns The pid signalled, or null when nothing says a daemon is there.
+   * @throws {Error} When a daemon may be there and nothing may be signalled.
+   */
+  private pid_signal(identity: string, record: SessionRecord | undefined, berth: Berth | null, answers: boolean, cause: 'restart' | 'end'): SignalledPid | null {
+    const pid: number | null = record?.adoptedPid ?? berth?.pid ?? null;
+    // No pid, or one that names no single process (0 and negatives signal groups; 1 is the host's own):
+    // there is nothing that may be signalled. A berth that answers all the same is a daemon not stopped.
+    if (pid === null || !Number.isInteger(pid) || pid <= 1) {
+      if (answers) throw new Error('the session\'s berth answers but names no process that can be stopped; nothing was signalled');
+      return null;
+    }
+    const proof: string | null | undefined = record?.adoptedPid === pid ? record.adoptedStart : undefined;
+    if (typeof proof === 'string') return this.proved_signal(identity, pid, proof, answers, cause);
+    return this.unproved_signal(identity, pid, record, berth?.pid ?? null, answers, cause);
+  }
+
+  /**
+   * Asks a pid that was never proved to stop, where that may be done at
+   * all. Its berth's answer is the only proof there is, and it holds only
+   * while the berth still names that pid; such a pid is never killed.
    *
    * @param identity - The session.
    * @param pid - The pid.
-   * @param adopted - Whether this porter adopted it.
-   * @param answers - Whether its berth answers now.
+   * @param record - What the host knew of the session.
+   * @param named - The pid the berth names now, or null.
+   * @param answers - Whether the berth answers now.
    * @param cause - Why it ends, left for the daemon to say.
-   * @returns The pid signalled, or null when there is nothing to say a daemon is there.
-   * @throws {Error} When an adopted pid's berth is silent: nothing says whether its process lives.
+   * @returns The pid signalled, or null when nothing says a daemon is there.
+   * @throws {Error} When a daemon may be there and nothing may be signalled: the stop is not confirmed.
    */
-  private unproved_signal(identity: string, pid: number, adopted: boolean, answers: boolean, cause: 'restart' | 'end'): SignalledPid | null {
+  private unproved_signal(identity: string, pid: number, record: SessionRecord | undefined, named: number | null, answers: boolean, cause: 'restart' | 'end'): SignalledPid | null {
+    const adopted: boolean = record?.adoptedPid === pid;
+    // Known not to be a process when the session was adopted: whatever holds that number now is another.
+    if (adopted && record?.adoptedStart === null) {
+      if (answers) throw new Error(`pid ${String(pid)} was not a process when the session was adopted, so what holds that number now is not its calypso daemon; nothing was signalled, and the berth still answers`);
+      return null;
+    }
     if (!answers) {
+      // A pid this porter adopted, now silent, with nothing to say whether its process lives.
       if (adopted) throw new Error(STOP_SILENT);
       return null;
     }
+    if (named !== pid) throw new Error(`the session's berth no longer names pid ${String(pid)}; nothing was signalled, and the berth still answers`);
     this.closing_leave(identity, cause);
     this.kill(pid, 'SIGTERM');
     return { pid, started: null };

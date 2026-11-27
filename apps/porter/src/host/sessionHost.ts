@@ -222,8 +222,9 @@ export interface SessionHost {
    * @param user - The CUBE username.
    * @param cubeUrl - The CUBE API base.
    * @param why - Why, for the boot's first line; the operator's RESTART by default.
+   * @returns Where the host can say it, a promise that settles (and never rejects) once the old daemon's stop is over, whether it stopped or not: until then the stop is the session's one ending under way.
    */
-  restart_begin(identity: string, user: string, cubeUrl: string, why?: RestartWhy): void;
+  restart_begin(identity: string, user: string, cubeUrl: string, why?: RestartWhy): Promise<void> | undefined;
   /**
    * A new login's token for a session already up, where the host keeps the
    * token outside the session (a berth's token file); a host that hands the

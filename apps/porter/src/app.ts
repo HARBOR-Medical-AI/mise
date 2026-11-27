@@ -70,7 +70,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex, Readable } from 'node:stream';
 import { identity_normalise } from '@fnndsc/calypso/berth';
 import type { PorterConfig } from './config.js';
-import { identity_isStratus, owner_extract, stratusIdentity_derive, user_extract, type SessionHost, type Berth, type BootLine } from './host/sessionHost.js';
+import { identity_isStratus, owner_extract, stratusIdentity_derive, user_extract, type SessionHost, type Berth, type BootLine, type RestartWhy } from './host/sessionHost.js';
 import { CredentialStore } from './creds.js';
 import { SessionRegistry, type SessionEntry } from './registry.js';
 import { cubeAdmin_check, cubeToken_mint, type AdminVerdict, type TokenMint } from './cube/auth.js';
@@ -313,6 +313,24 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   const deviceHits: HitLimit = new HitLimit(DEVICE_CODES_PER_MINUTE, 60_000, options.now, options.countCap);
   const adminCheck = options.adminCheck ?? ((cubeUrl: string, authorization: string): Promise<AdminVerdict> => cubeAdmin_check(cubeUrl, authorization));
   const registry: SessionRegistry = new SessionRegistry();
+  /**
+   * Begins a restart of a session, with its stop as the key's one ending under way: a login waits for it
+   * and looks afresh, a logout or the sweep comes after it and does not stop the daemon beside it.
+   *
+   * @param key - The session key.
+   * @param identity - The session.
+   * @param user - Its CUBE user.
+   * @param why - Why, for the boot's first line.
+   */
+  const restart_run = (key: string, identity: string, user: string, why: RestartWhy): void => {
+    const stopping: Promise<void> | undefined = host.restart_begin(identity, user, config.cubeUrl, why);
+    if (stopping === undefined) {
+      // A host that cannot say when its stop is over: what a login learnt before now is still stale.
+      registry.generation_raise(key);
+      return;
+    }
+    void registry.ending_run(key, (): Promise<void> => stopping);
+  };
   const creds: CredentialStore = new CredentialStore(config.stateDir);
   const tokens: TokenStore = options.tokens ?? new TokenStore(config.tokensFile, config.tokenDays);
   tokens.load();
@@ -681,8 +699,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
           // port that is about to close.
           options.log?.(`restarting ${username}'s session for the new release (${behind.join(', ')})`);
           registry.pending_note(identity, username);
-          registry.generation_raise(key);
-          host.restart_begin(identity, username, config.cubeUrl, { kind: 'stale', behind });
+          restart_run(key, identity, username, { kind: 'stale', behind });
           return starting_answer();
         }
       }
@@ -706,8 +723,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
         // session that never saved one refuses, and says so on the boot.
         // On a host that runs sessions as processes this stops a daemon that is there: what a login
         // learnt of the berth before now is of a berth about to stop.
-        registry.generation_raise(key);
-        host.restart_begin(identity, username, config.cubeUrl, { kind: 'saved-login' });
+        restart_run(key, identity, username, { kind: 'saved-login' });
         options.log?.(`starting a session for ${username} on its saved login`);
       } else {
         host.spawn_begin(identity, username, config.cubeUrl, cubeToken);
@@ -777,9 +793,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       options.log?.(`restarting ${entry.user}'s stratus session, asked from their browser`);
       return wantsJson ? { key, greet: `/greet/${key}`, state: 'restarting' } : reply.redirect(`/greet/${key}`, 303);
     }
-    // The berth is about to be stopped: a login that learnt of it before now looks again.
-    registry.generation_raise(entry.key);
-    host.restart_begin(entry.identity, entry.user, config.cubeUrl, { kind: 'asked' });
+    restart_run(entry.key, entry.identity, entry.user, { kind: 'asked' });
     options.log?.(`restarting ${entry.user}'s session, asked from their browser`);
     return wantsJson ? { key, greet: `/greet/${key}`, state: 'restarting' } : reply.redirect(`/greet/${key}`, 303);
   });
@@ -845,23 +859,37 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     return { key: to, mount: `/s/${to}/`, greet: `/greet/${to}`, state: 'starting' };
   });
 
+  /**
+   * Stops the berth of a session that is logging out, as the key's one ending under way: a login that
+   * arrives meanwhile waits for it, the sweep claims nothing, and a restart comes before or after it.
+   *
+   * @param key - The session key.
+   * @param identity - The session.
+   * @returns Null when the stop went through (or there was nothing to stop); otherwise why the berth was not stopped.
+   */
+  const logout_stop = async (key: string, identity: string): Promise<string | null> => {
+    try {
+      const was: SessionEntry | null = registry.get(key);
+      const ended: boolean = await registry.ending_run(key, (): Promise<boolean> => host.evict(identity, 'end'));
+      // The entry that was ended is retired, and only that one: a restart or a login waiting on this
+      // stop then finds no session to act on, and a session noted since is another's to keep.
+      if (was !== null && registry.get(key) === was) registry.forget(key);
+      options.log?.(`${user_extract(identity)} logged out${ended ? '; their berth stopped, its volumes kept' : ''}`);
+      return null;
+    } catch (error: unknown) {
+      // A berth that could not be stopped is said as that, not passed over as if there had been none.
+      const reason: string = error instanceof Error ? error.message : String(error);
+      options.log?.(`${user_extract(identity)} logged out; their berth could not be stopped: ${reason}`);
+      return reason;
+    }
+  };
+
   app.post('/logout', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
     // On a door that starts berths a logout stops the person's berth; its volumes, and so their home, stay.
+    // The person is logged out of the door either way.
     const leaving: string | null = options.logoutEnds === true ? requestKey_read(request) : null;
     const identity: string | null = leaving === null ? null : registry.identity_find(leaving);
-    let unstopped: string | null = null;
-    if (identity !== null) {
-      // The person is logged out of the door either way. The stop is the one ending under way for the key
-      // until it is over: a login that arrives meanwhile waits for it, and the sweep claims nothing. A berth
-      // that could not be stopped is said as that, not passed over as if there had been none.
-      try {
-        const ended: boolean = await registry.ending_run(leaving ?? '', (): Promise<boolean> => host.evict(identity, 'end'));
-        options.log?.(`${user_extract(identity)} logged out${ended ? '; their berth stopped, its volumes kept' : ''}`);
-      } catch (error: unknown) {
-        unstopped = error instanceof Error ? error.message : String(error);
-        options.log?.(`${user_extract(identity)} logged out; their berth could not be stopped: ${unstopped}`);
-      }
-    }
+    const unstopped: string | null = leaving !== null && identity !== null ? await logout_stop(leaving, identity) : null;
     void reply.clearCookie(DOOR_COOKIE, { path: '/' });
     if (!request_wantsJson(request)) return reply.redirect('/login', 303);
     return unstopped === null ? { ok: true } : { ok: true, berth: 'not stopped', reason: unstopped };
