@@ -290,6 +290,10 @@ export class ArgusClient {
     return new Promise((resolve, reject) => {
       const socket: WebSocket = new WebSocket(url);
       socket.onerror = (): void => reject(new Error(`cannot reach the daemon at ${url}`));
+      // A socket that closes before the attach is answered settles the attach: nothing else would, and
+      // whoever waits on it (the page's one start in flight) would wait for ever. Once attached, the
+      // client takes the close for its own.
+      socket.onclose = (): void => { reject(new Error(`the daemon at ${url} closed the connection before it answered the attach`)); };
       socket.onopen = (): void => {
         socket.send(
           JSON.stringify({

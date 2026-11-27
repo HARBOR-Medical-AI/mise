@@ -18,9 +18,10 @@
  * @module
  */
 import { more_wire } from '../features/roster/more.js';
-import { type SessionNotes, feedListModelSchema, FEED_LIST_MODEL_KIND, feedDagModelSchema, dicomSeriesModelSchema, dicomTagsModelSchema, imageViewModelSchema, DICOM_MODEL_KINDS, IMAGE_MODEL_KINDS, type DicomSeriesModel, type DicomTagsModel, DAG_MODEL_KINDS, type PromptContext, type WireEnvelope, type WatchState, type FeedDagModel, type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry } from '@fnndsc/menu';
+import { type ClosingCause, type SessionNotes, feedListModelSchema, FEED_LIST_MODEL_KIND, feedDagModelSchema, dicomSeriesModelSchema, dicomTagsModelSchema, imageViewModelSchema, DICOM_MODEL_KINDS, IMAGE_MODEL_KINDS, type DicomSeriesModel, type DicomTagsModel, DAG_MODEL_KINDS, type PromptContext, type WireEnvelope, type WatchState, type FeedDagModel, type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry } from '@fnndsc/menu';
 import { type SceneNode } from '../scene/chrisSpace.js';
 import { element_require, template_stamp, pane_find } from '../frame/dom.js';
+import { attachStart_make, retryToken_keep, retryToken_take } from './attachStart.js';
 import { DormantRegistry, DORMANT_CAP, localKeyStore, type GroupSnapshot, type DesktopAction, type DesktopShape } from './dormant.js';
 import { linkLanding_parse, type LinkLanding } from './link.js';
 import { shareSheet_open, viewLink_parse, viewScript_compose } from './shareView.js';
@@ -120,7 +121,6 @@ import { stalePage_watch } from './stalePage.js';
 import { buildMatch_wire, type BuildWatch } from './buildMatch.js';
 import { doorPill_wire } from './door.js';
 import { restart_wire, type RestartControl, type SurfaceSeen } from './restart.js';
-import type { ClosingCause } from '@fnndsc/menu';
 import { greeting_ask } from './greeting.js';
 // TheLCARS.com's stylesheet is NOT imported. ARGUS's frame is its own, written
 // from `tests/smoke/canon/lcars.json` — the computed style of this surface's own
@@ -2797,39 +2797,47 @@ function page_boot(): void {
   const attachForm: HTMLElement = element_require('attach-form');
   const attachError: HTMLElement = element_require('attach-error');
 
-  const start: (token: string) => void = (token: string): void => {
-    surface_start(token).then(
-      (): void => {
-        attachForm.classList.add('attach-hidden');
-      },
-      (error: unknown): void => {
-        attachForm.classList.remove('attach-hidden');
-        attachError.textContent = error instanceof Error ? error.message : String(error);
-      },
-    );
-  };
+  // One attach at a time; and after one that failed, the next is made by a page loaded afresh, since the
+  // surface wires itself before it attaches and must not be wired twice (see attachStart.ts).
+  const attach_start: (token: string) => void = attachStart_make({
+    surface_start,
+    form_hide: (): void => { attachForm.classList.add('attach-hidden'); },
+    form_show: (reason: string): void => {
+      attachForm.classList.remove('attach-hidden');
+      attachError.textContent = reason;
+    },
+    page_restart: (token: string): void => {
+      retryToken_keep(window.sessionStorage, token);
+      window.location.reload();
+    },
+  });
 
   const tokenInput: HTMLInputElement = element_require('attach-token') as HTMLInputElement;
   element_require('attach-submit').addEventListener('click', (): void => {
     if (tokenInput.value.trim().length > 0) {
-      start(tokenInput.value.trim());
+      attach_start(tokenInput.value.trim());
     }
   });
   tokenInput.addEventListener('keydown', (event: KeyboardEvent): void => {
     if (event.key === 'Enter' && tokenInput.value.trim().length > 0) {
-      start(tokenInput.value.trim());
+      attach_start(tokenInput.value.trim());
     }
   });
 
-  if (urlToken !== null && urlToken.length > 0) {
+  const retryToken: string | null = retryToken_take(window.sessionStorage);
+  if (retryToken !== null) {
+    // A page before this one failed to attach and was given another token: this fresh page attaches with it.
+    attachForm.classList.add('attach-hidden');
+    attach_start(retryToken);
+  } else if (urlToken !== null && urlToken.length > 0) {
     // The token rode the URL; go straight to the session without the form.
     attachForm.classList.add('attach-hidden');
-    start(urlToken);
+    attach_start(urlToken);
   } else if (throughDoor) {
     // A door holds the token and puts it on the attach itself; the page
     // would only be asking for something it is never shown.
     attachForm.classList.add('attach-hidden');
-    start('');
+    attach_start('');
   }
 }
 
