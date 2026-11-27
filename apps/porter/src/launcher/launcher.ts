@@ -617,8 +617,12 @@ export class BerthLauncher {
     // The held login goes once the berth is gone, and only at an end: a stop that failed keeps it, and so
     // does a stop that a start follows.
     if (!restart) this.held.delete(identity);
-    await this.porter_leave(names.network);
-    await this.options.docker.call('DELETE', `/networks/${names.network}`);
+    // The wire: porter taken off it and the wire removed. Not there is as good as done; a refusal is said,
+    // with the berth itself already stopped, so the stop can be asked again and finish the cleanup.
+    const left: DockerAnswer | null = await this.porter_leave(names.network);
+    if (left !== null && ![200, 204, 404].includes(left.status)) throw new BerthRefusal(502, `${user}'s berth is stopped, but porter could not be taken off its wire ${names.network} (the engine answered ${String(left.status)})`);
+    const unwired: DockerAnswer = await this.options.docker.call('DELETE', `/networks/${names.network}`);
+    if (![200, 204, 404].includes(unwired.status)) throw new BerthRefusal(502, `${user}'s berth is stopped, but its wire ${names.network} could not be removed (the engine answered ${String(unwired.status)})`);
     return was || legacy;
   }
 
@@ -860,10 +864,11 @@ export class BerthLauncher {
    * Porter leaves a berth's wire, when porter is a container.
    *
    * @param network - The wire.
+   * @returns The engine's answer, or null when porter is not a container and joins no wire.
    */
-  private async porter_leave(network: string): Promise<void> {
-    if (this.options.porterContainer === null) return;
-    await this.options.docker.call('POST', `/networks/${network}/disconnect`, { Container: this.options.porterContainer, Force: true });
+  private async porter_leave(network: string): Promise<DockerAnswer | null> {
+    if (this.options.porterContainer === null) return null;
+    return this.options.docker.call('POST', `/networks/${network}/disconnect`, { Container: this.options.porterContainer, Force: true });
   }
 
   /**

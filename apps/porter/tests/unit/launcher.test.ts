@@ -31,6 +31,8 @@ class FakeDocker implements DockerApi {
   volumes: Map<string, Record<string, string>> = new Map();
   containers: Map<string, { spec: Record<string, unknown>; running: boolean; ip: string; token: string | null }> = new Map();
   execs: Array<{ container: string; cmd: string[]; user: string; stdin: string | null }> = [];
+  /** What the engine answers a network removal with; 204 unless a test has it refuse. */
+  unwireStatus: number = 204;
   /** What the engine answers a container stop with; 204 unless a test has it refuse. */
   stopStatus: number = 204;
   /** A berth whose session never writes its berth file. */
@@ -115,7 +117,11 @@ class FakeDocker implements DockerApi {
       const net = this.networks.get(name);
       return net === undefined ? { status: 404, body: {} } : { status: 200, body: { Name: name, Containers: Object.fromEntries([...net.members].map((member) => [member, { Name: member }])), IPAM: { Config: [{ Subnet: '172.18.0.0/16', ...(this.gateway !== null ? { Gateway: this.gateway } : {}) }] } } };
     }
-    if (method === 'DELETE' && parts[1] === 'networks') { const had = this.networks.delete(name); return { status: had ? 204 : 404, body: null }; }
+    if (method === 'DELETE' && parts[1] === 'networks') {
+      if (this.unwireStatus !== 204) return { status: this.unwireStatus, body: { message: 'network has active endpoints' } };
+      const had = this.networks.delete(name);
+      return { status: had ? 204 : 404, body: null };
+    }
     if (route === '/volumes/create') { const spec = body as { Name: string; Labels: Record<string, string> }; this.volumes.set(spec.Name, spec.Labels); return { status: 201, body: {} }; }
     if (method === 'DELETE' && parts[1] === 'volumes') { const had = this.volumes.delete(name); return { status: had ? 204 : 404, body: null }; }
     if (method === 'GET' && route === '/volumes') {
@@ -866,6 +872,21 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     expect(host.boot_follow(ANA, { line: () => undefined, done: () => undefined })?.report).toMatchObject({ state: 'failed', reason: expect.stringContaining('the engine did not stop') });
     expect(docker.made.length).toBe(made);
     expect(docker.containers.has(container)).toBe(true);
+  });
+
+  it('a stop whose container went but whose wire the engine would not remove is said as that, and asking again finishes it', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const names = berthNames_derive('mbw', ANA, 'ana');
+    docker.unwireStatus = 403;
+    await expect(host.evict(ANA)).rejects.toThrow(`ana's berth is stopped, but its wire ${names.network} could not be removed (the engine answered 403)`);
+    expect(docker.containers.has(names.container)).toBe(false);
+    expect(docker.networks.has(names.network)).toBe(true);
+    docker.unwireStatus = 204;
+    // Asked again: there is no container now, and the wire goes.
+    expect(await host.evict(ANA)).toBe(false);
+    expect(docker.networks.has(names.network)).toBe(false);
   });
 
   it('a restart stops the berth and starts it again on the login the launcher holds; an end forgets that login', async () => {

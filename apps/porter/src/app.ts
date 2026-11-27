@@ -704,6 +704,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
         // A door token carries no CUBE token: the session boots on the login
         // it saved when a human last came through, as a restart does; a
         // session that never saved one refuses, and says so on the boot.
+        // On a host that runs sessions as processes this stops a daemon that is there: what a login
+        // learnt of the berth before now is of a berth about to stop.
+        registry.generation_raise(key);
         host.restart_begin(identity, username, config.cubeUrl, { kind: 'saved-login' });
         options.log?.(`starting a session for ${username} on its saved login`);
       } else {
@@ -751,6 +754,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   app.post('/restart', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
     const wantsJson: boolean = request_wantsJson(request);
     const key: string | null = requestKey_read(request);
+    // An ending of this session that is under way (the sweep's, a logout's) is waited for, and the session
+    // is read after it: a restart does not begin a second stop beside the first.
+    if (key !== null) await registry.eviction_wait(key);
     const entry: SessionEntry | null = key !== null ? registry.get(key) : null;
     if (key !== null && entry === null && registry.identity_find(key) !== null) {
       // Already restarting (or booting): a second press joins that boot.

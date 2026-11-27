@@ -423,6 +423,22 @@ describe('the door', () => {
     await door.app.close();
   });
 
+  it('a restart asked for while an ending of the session is under way waits for it, and begins no second stop beside it', async () => {
+    host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://127.0.0.1:4444', token: 'ATTACH' };
+    const login = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (login.json() as { key: string }).key;
+    // The sweep holds the session, stopping it.
+    const claim = built.registry.eviction_begin(built.registry.get(key)!, -1);
+    expect(claim).not.toBeNull();
+    const restart = built.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(login) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    expect(host.restarted).toEqual([]);
+    // The stop ends and the session is forgotten: there is nothing left for the restart to stop.
+    built.registry.eviction_end(claim!, true);
+    expect((await restart).statusCode).toBe(401);
+    expect(host.restarted).toEqual([]);
+  });
+
   it('logs a browser out by clearing its cookie, and leaves the session alone', async () => {
     const out = await built.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json' } });
     expect(out.json()).toEqual({ ok: true });

@@ -140,8 +140,8 @@ interface SessionRecord {
   child: SpawnedSession | null;
   /** The daemon's pid when adopted from its berth rather than started here. */
   adoptedPid: number | null;
-  /** When the adopted process started, read at adoption: the pid is the daemon's only while this still holds. */
-  adoptedStart?: string | null;
+  /** When the adopted process started, as read at adoption and never since: a start is the proof the pid is held to; null (no such process then) and undefined (it could not be read) are no proof, and nothing read later takes their place. */
+  adoptedStart?: string | null | undefined;
   lines: BootLine[];
   /** The next row number. */
   serial: number;
@@ -291,7 +291,7 @@ export class ProcessHost implements SessionHost {
             identity,
             child: null,
             adoptedPid: berth.pid ?? null,
-            adoptedStart: berth.pid !== undefined ? this.startReader(berth.pid) ?? null : null,
+            adoptedStart: berth.pid !== undefined ? this.startReader(berth.pid) : undefined,
             lines: [],
             serial: 0,
             open: new Map(),
@@ -554,7 +554,7 @@ export class ProcessHost implements SessionHost {
     if (old === undefined) return;
     record.child = old.child;
     record.adoptedPid = old.adoptedPid;
-    if (old.adoptedStart !== undefined) record.adoptedStart = old.adoptedStart;
+    record.adoptedStart = old.adoptedStart;
   }
 
   /**
@@ -588,27 +588,6 @@ export class ProcessHost implements SessionHost {
     if (killed === 'gone') return true;
     if (killed === 'silent') throw new Error(STOP_SILENT);
     throw new Error('the old calypso daemon did not stop, even when killed');
-  }
-
-  /**
-   * Proves an adopted pid is still the process it was when adopted, before
-   * anything is sent to it.
-   *
-   * @param pid - The pid.
-   * @param record - What the host knew of the session.
-   * @returns When the process started; null where that cannot be told and nothing was known of it (the berth's answer is then the only proof, and it is asked to stop but never killed).
-   * @throws {Error} When the pid has become another process, is gone, or was known and can no longer be read.
-   */
-  private adopted_prove(pid: number, record: SessionRecord | undefined): string | null {
-    const started: string | null | undefined = this.startReader(pid);
-    const adopted: string | null = record?.adoptedPid === pid ? record.adoptedStart ?? null : null;
-    if (adopted !== null && started === undefined) {
-      throw new Error(`pid ${String(pid)} could not be proved to be the session's calypso daemon (its process can no longer be read from /proc); it was not signalled`);
-    }
-    if ((adopted !== null && started !== adopted) || started === null) {
-      throw new Error(`pid ${String(pid)} is no longer the session's calypso daemon; it was not signalled`);
-    }
-    return started ?? null;
   }
 
   /**
@@ -659,13 +638,64 @@ export class ProcessHost implements SessionHost {
     }
     const berth: Berth | null = this.berth_read(identity);
     const pid: number | null = record?.adoptedPid ?? berth?.pid ?? null;
-    if (berth !== null && pid !== null && (await this.alive(berth.url))) {
-      const started: string | null = this.adopted_prove(pid, record);
-      this.closing_leave(identity, cause);
-      this.kill(pid, 'SIGTERM');
-      return { pid, started };
+    if (pid === null) return null;
+    const adopted: boolean = record?.adoptedPid === pid;
+    const proof: string | null | undefined = adopted ? record?.adoptedStart : undefined;
+    const answers: boolean = berth !== null && (await this.alive(berth.url));
+    if (typeof proof === 'string') return this.proved_signal(identity, pid, proof, answers, cause);
+    return this.unproved_signal(identity, pid, adopted, answers, cause);
+  }
+
+  /**
+   * Asks a pid that was never proved to stop (nothing could be read of it
+   * when it was adopted, or this porter never adopted it): its berth's
+   * answer is the only proof there is. It is asked on that, and is never
+   * killed.
+   *
+   * @param identity - The session.
+   * @param pid - The pid.
+   * @param adopted - Whether this porter adopted it.
+   * @param answers - Whether its berth answers now.
+   * @param cause - Why it ends, left for the daemon to say.
+   * @returns The pid signalled, or null when there is nothing to say a daemon is there.
+   * @throws {Error} When an adopted pid's berth is silent: nothing says whether its process lives.
+   */
+  private unproved_signal(identity: string, pid: number, adopted: boolean, answers: boolean, cause: 'restart' | 'end'): SignalledPid | null {
+    if (!answers) {
+      if (adopted) throw new Error(STOP_SILENT);
+      return null;
     }
-    return null;
+    this.closing_leave(identity, cause);
+    this.kill(pid, 'SIGTERM');
+    return { pid, started: null };
+  }
+
+  /**
+   * Asks a pid that was proved at adoption to stop, on that proof and not
+   * on whether its berth still answers: a daemon whose berth has gone
+   * silent, or whose berth file is gone, may still be running.
+   *
+   * @param identity - The session.
+   * @param pid - The pid.
+   * @param proof - When its process started, as read at adoption.
+   * @param answers - Whether its berth answers now.
+   * @param cause - Why it ends, left for the daemon to say.
+   * @returns The pid signalled, or null when its process is known to be gone.
+   * @throws {Error} When the process cannot be read any more, or the pid is another process while the berth still answers.
+   */
+  private proved_signal(identity: string, pid: number, proof: string, answers: boolean, cause: 'restart' | 'end'): SignalledPid | null {
+    const now: string | null | undefined = this.startReader(pid);
+    if (now === undefined) {
+      throw new Error(`pid ${String(pid)} could not be proved to be the session's calypso daemon (its process can no longer be read from /proc); it was not signalled`);
+    }
+    if (now !== proof) {
+      // That process is gone. If something still answers at the berth it is not what was adopted.
+      if (answers) throw new Error(`pid ${String(pid)} is no longer the session's calypso daemon; it was not signalled`);
+      return null;
+    }
+    this.closing_leave(identity, cause);
+    this.kill(pid, 'SIGTERM');
+    return { pid, started: proof };
   }
 
   /** Leaves the reason beside the berth; a daemon that finds none says it was stopped. */
