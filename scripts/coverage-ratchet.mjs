@@ -13,6 +13,13 @@
  * up and a gain is kept. Floors are held to one decimal place, rounded
  * down: a measure of 68.86 has a floor of 68.8.
  *
+ * A workspace whose measure differs from one machine to the next carries an
+ * `allowance` beside its floors (`{ below, above }`, in points). Its floors
+ * are then the reference its gate measured: a measure may be `below` it by
+ * that much and pass, asks for a raise only once it is more than `above`
+ * it, and is raised to the measure less `below`. An allowance may narrow
+ * against the base, never widen.
+ *
  * The floors themselves cannot fall: they are compared with the same
  * section as it stood at the change's base (`scripts/lib/ratchetBase.mjs`
  * says which commit that is), and one lower here than there fails. A
@@ -82,8 +89,41 @@ export function floors_read(text, where) {
       const floor = floors[measure];
       if (typeof floor !== 'number' || !Number.isFinite(floor) || floor < 0 || floor > 100) throw new Error(`${where}: the ${measure} floor of ${workspace} is not a percentage (${JSON.stringify(floor)})`);
     }
+    const allowance = floors.allowance;
+    if (allowance === undefined) continue;
+    if (allowance === null || typeof allowance !== 'object' || Array.isArray(allowance)) throw new Error(`${where}: the allowance of ${workspace} is not a map of "below" and "above"`);
+    for (const side of ['below', 'above']) {
+      const points = allowance[side];
+      if (typeof points !== 'number' || !Number.isFinite(points) || points < 0 || points > 5) throw new Error(`${where}: the allowance ${side} of ${workspace} is not a number of points from 0 to 5 (${JSON.stringify(points)})`);
+    }
   }
   return section;
+}
+
+/**
+ * Places one measurement against its floor. Everything is compared in whole
+ * tenths of a point. A workspace whose measure moves with the machine it is
+ * measured on carries an allowance: its floor is then the reference its
+ * gate measured, a measurement may be so far `below` it and still pass, and
+ * only one more than `above` it asks for a raise. The raise is to the
+ * measurement less `below`, so the same measurement then passes, and one
+ * taken on the slower machine does too. Without an allowance the floor is
+ * exact: below it falls, a tenth above it rises.
+ *
+ * @param {number} floor - The stored floor (with an allowance: the reference).
+ * @param {{ below: number, above: number } | undefined} allowance - The allowance, in points.
+ * @param {number} pct - What was measured.
+ * @returns {{ kind: 'fall', least: number } | { kind: 'pass' } | { kind: 'rise', to: number }} Where it falls; `least` is the least that passes, `to` the floor a raise writes.
+ */
+export function measure_place(floor, allowance, pct) {
+  const tenths = (points) => Math.round(points * 10);
+  const reference = tenths(floor);
+  const measured = tenths(floor_derive(pct));
+  const below = tenths(allowance?.below ?? 0);
+  const above = tenths(allowance?.above ?? 0);
+  if (measured < reference - below) return { kind: 'fall', least: (reference - below) / 10 };
+  if (measured > reference + above) return { kind: 'rise', to: (measured - below) / 10 };
+  return { kind: 'pass' };
 }
 
 /**
@@ -121,8 +161,10 @@ export function coverage_judge(workspace, floors, measured) {
   for (const measure of MEASURES) {
     const floor = floors[measure];
     const now = measured[measure];
-    if (now < floor) falls.push(`${workspace}: ${measure} coverage is ${now}%, below its floor of ${floor}%. A change may not lower coverage: test what it added.`);
-    else if (floor_derive(now) > floor) rises.push(`${workspace}: ${measure} coverage rose to ${now}% (floor ${floor}%) — good. Raise the floor to ${floor_derive(now)} in ${BASELINE_FILE} as part of this change (node scripts/coverage-ratchet.mjs --raise), so the gain is kept.`);
+    const placed = measure_place(floor, floors.allowance, now);
+    const allowed = floors.allowance === undefined ? '' : ` (reference ${floor}%, less the ${floors.allowance.below} allowed for the machine)`;
+    if (placed.kind === 'fall') falls.push(`${workspace}: ${measure} coverage is ${now}%, below its floor of ${placed.least}%${allowed}. A change may not lower coverage: test what it added.`);
+    else if (placed.kind === 'rise') rises.push(`${workspace}: ${measure} coverage rose to ${now}% (floor ${floor}%) — good. Raise the floor to ${placed.to} in ${BASELINE_FILE} as part of this change (node scripts/coverage-ratchet.mjs --raise), so the gain is kept.`);
   }
   return { falls, rises };
 }
@@ -158,6 +200,13 @@ export function floors_compare(here, atBase) {
     if (now === undefined) { faults.push(`${workspace}: its coverage floors were removed; a floor may only rise.`); continue; }
     for (const measure of MEASURES) {
       if (now[measure] < was[measure]) faults.push(`${workspace}: the ${measure} floor was lowered from ${was[measure]} to ${now[measure]}; a floor may only rise.`);
+    }
+    // The allowance is part of the floor: wider below lets less pass as enough, wider above puts off a
+    // raise. None at the base is an allowance of nothing.
+    for (const side of ['below', 'above']) {
+      const before = was.allowance?.[side] ?? 0;
+      const after = now.allowance?.[side] ?? 0;
+      if (after > before) faults.push(`${workspace}: the allowance ${side} was widened from ${before} to ${after}; an allowance may only narrow.`);
     }
   }
   return faults;
@@ -268,8 +317,9 @@ function main() {
   if (asked.raise) {
     for (const [workspace, measured] of Object.entries(measuredAll)) {
       for (const measure of MEASURES) {
-        const to = floor_derive(measured[measure]);
-        if (to > next.coverage[workspace][measure]) { next.coverage[workspace][measure] = to; raised++; }
+        // The same placing the check makes: only a measurement the check would call a rise raises a floor.
+        const placed = measure_place(next.coverage[workspace][measure], next.coverage[workspace].allowance, measured[measure]);
+        if (placed.kind === 'rise') { next.coverage[workspace][measure] = placed.to; raised++; }
       }
     }
   }

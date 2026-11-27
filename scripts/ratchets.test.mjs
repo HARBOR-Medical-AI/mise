@@ -199,7 +199,7 @@ for (const lint of lints) {
 
 // The coverage ratchet, over trees made here: a summary as jest writes it, and floors beside it.
 {
-  const { args_read, coverage_judge, floor_derive, floors_compare, floors_read, summary_read, uncovered_list } = await import('./coverage-ratchet.mjs');
+  const { args_read, coverage_judge, floor_derive, floors_compare, floors_read, measure_place, summary_read, uncovered_list } = await import('./coverage-ratchet.mjs');
   const { coverageDir_effective, path_physical, report_publish, run_plan, PARTIAL_DIR, SUITE_DIR } = await import('./jest-with-floor.mjs');
   const { buildArgv } = await import('jest-cli');
   /** A tree with one workspace's coverage summary and a baseline file; runs the ratchet over it. */
@@ -315,6 +315,44 @@ for (const lint of lints) {
   expect_that('a summary without its totals is refused', threw.includes('has no lines total'), threw);
   const judged = coverage_judge('apps/argus', floors, at);
   expect_that('at its floors nothing is at fault', judged.falls.length === 0 && judged.rises.length === 0);
+  // A workspace whose measure moves with the machine: the floor is the reference its gate measured, with
+  // an allowance either side. The figures are argus's own: what CI measured and what a developer's machine did.
+  const allowance = { below: 0.3, above: 0.7 };
+  const reference = { lines: 60.8, statements: 58.7, branches: 50.4, functions: 55.5, allowance };
+  const ciSaw = { lines: 60.81, statements: 58.71, branches: 50.48, functions: 55.57 };
+  const deskSaw = [at, { lines: 60.92, statements: 58.84, branches: 50.78, functions: 55.69 }];
+  const quiet = [ciSaw, ...deskSaw].map((saw) => coverage_run(summary_make(saw), reference));
+  expect_that('what the gate measured and what a desk measured both pass against the gate\'s reference, and neither asks for a raise', quiet.every((run) => run.status === 0 && run.said.includes('at or above their floors')), quiet.map((run) => run.said).join(' | '));
+  const kinds = (pcts) => pcts.map((pct) => measure_place(50.4, allowance, pct).kind).join(',');
+  expect_that('below the reference: the allowance passes to its last tenth, and one tenth more falls', kinds([50.1, 50.19, 50.09, 50.0]) === 'pass,pass,fall,fall' && measure_place(50.4, allowance, 50.09).least === 50.1, kinds([50.1, 50.19, 50.09, 50.0]));
+  expect_that('above the reference: the allowance passes to its last tenth, and one tenth more is a rise to the measure less the allowance below', kinds([51.1, 51.19, 51.2]) === 'pass,pass,rise' && measure_place(50.4, allowance, 51.2).to === 50.9, JSON.stringify(measure_place(50.4, allowance, 51.2)));
+  expect_that('without an allowance a floor is exact: under it falls, a tenth over it rises to the measure', measure_place(50.7, undefined, 50.69).kind === 'fall' && measure_place(50.7, undefined, 50.79).kind === 'pass' && measure_place(50.7, undefined, 50.8).to === 50.8);
+  const under = coverage_run(summary_make({ ...ciSaw, branches: 50.09 }), reference);
+  expect_that('a fall past the allowance fails, and says the least that passes', under.status !== 0 && under.said.includes('branches coverage is 50.09%, below its floor of 50.1% (reference 50.4%, less the 0.3 allowed for the machine)'), under.said);
+  const gained = { ...ciSaw, branches: 53.27 };
+  const asksRaise = coverage_run(summary_make(gained), reference);
+  expect_that('a rise past the allowance fails until raised, and says what to', asksRaise.status !== 0 && asksRaise.said.includes('branches coverage rose to 53.27%') && asksRaise.said.includes('Raise the floor to 52.9'), asksRaise.said);
+  const lifted = coverage_run(summary_make(gained), reference, ['--raise']);
+  const liftedFloors = lifted.baseline.coverage['apps/argus'];
+  expect_that('--raise writes that rise and nothing else: the other references and the allowance are as they were', lifted.status === 0 && JSON.stringify(liftedFloors) === JSON.stringify({ ...reference, branches: 52.9 }), JSON.stringify(liftedFloors));
+  const recheck = coverage_run(summary_make(gained), liftedFloors);
+  const slower = coverage_run(summary_make({ ...gained, branches: 53.03 }), liftedFloors);
+  expect_that('after the raise the same measure passes with nothing more to raise, and so does one taken a quarter point lower', recheck.status === 0 && slower.status === 0, `${recheck.said} | ${slower.said}`);
+  const noRaise = coverage_run(summary_make(deskSaw[1]), reference, ['--raise']);
+  expect_that('--raise within the allowance raises nothing', noRaise.status === 0 && JSON.stringify(noRaise.baseline.coverage['apps/argus']) === JSON.stringify(reference), JSON.stringify(noRaise.baseline));
+  threw = '';
+  try { floors_read(JSON.stringify({ coverage: { 'apps/argus': { ...floors, allowance: { below: 0.3 } } } }), 'a baseline'); } catch (error) { threw = error.message; }
+  // The allowance is part of the floor: with the reference unchanged, widening it below lowers what passes,
+  // and widening it above puts off a raise. Against the base neither may widen; a new workspace sets its own.
+  const widerBelow = floors_compare({ 'apps/argus': { ...reference, allowance: { below: 0.8, above: 0.7 } } }, { 'apps/argus': reference });
+  const widerAbove = floors_compare({ 'apps/argus': { ...reference, allowance: { below: 0.3, above: 1.5 } } }, { 'apps/argus': reference });
+  const fromNone = floors_compare({ 'apps/argus': reference }, { 'apps/argus': floors });
+  const narrower = floors_compare({ 'apps/argus': { ...reference, allowance: { below: 0.1, above: 0.7 } }, 'apps/new': reference }, { 'apps/argus': reference });
+  expect_that('an allowance widened below against the base fails, the reference unchanged', widerBelow.length === 1 && widerBelow[0].includes('allowance below was widened from 0.3 to 0.8'), widerBelow.join('; '));
+  expect_that('an allowance widened above against the base fails, the reference unchanged', widerAbove.length === 1 && widerAbove[0].includes('allowance above was widened from 0.7 to 1.5'), widerAbove.join('; '));
+  expect_that('a workspace the base held with no allowance may not gain one: none is an allowance of nothing', fromNone.filter((line) => line.includes('allowance')).length === 2, fromNone.join('; '));
+  expect_that('an allowance narrowed passes, and a workspace new to the base sets its own', narrower.length === 0, narrower.join('; '));
+  expect_that('an allowance must say both sides', threw.includes('allowance above of apps/argus is not a number of points'), threw);
   // The files no test reaches are named when coverage falls.
   const withFiles = summary_make({ ...at, lines: 55 }, {
     '/tree/apps/argus/src/tested.ts': { lines: { total: 10, covered: 10, pct: 100 } },
