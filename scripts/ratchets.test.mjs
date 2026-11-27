@@ -197,5 +197,49 @@ for (const lint of lints) {
   }
 }
 
-console.log(failed === 0 ? `ratchets: the cast ratchet, the base it is compared with, and the reach of the test and seam lints all hold (made in ${run})` : `ratchets test: ${failed} failed (made in ${run})`);
+// The coverage ratchet, over trees made here: a summary as jest writes it, and floors beside it.
+{
+  const { coverage_judge, floor_derive, floors_compare, floors_read, summary_read } = await import('./coverage-ratchet.mjs');
+  /** A tree with one workspace's coverage summary and a baseline file; runs the ratchet over it. */
+  const coverage_run = (measured, floors, raise = false) => {
+    const tree = folder_make('coverage');
+    if (measured !== null) file_put(join(tree, 'apps/argus/coverage/coverage-summary.json'), JSON.stringify({ total: Object.fromEntries(Object.entries(measured).map(([measure, pct]) => [measure, { total: 1000, covered: Math.round(pct * 10), pct }])) }));
+    file_put(join(tree, 'baseline.json'), JSON.stringify({ casts: {}, coverage: { 'apps/argus': floors } }));
+    const ran = spawnSync('node', [join(here, 'coverage-ratchet.mjs'), tree, join(tree, 'baseline.json'), ...(raise ? ['--raise'] : [])], { encoding: 'utf8' });
+    return { status: ran.status, said: `${ran.stdout}${ran.stderr}`, baseline: JSON.parse(readFileSync(join(tree, 'baseline.json'), 'utf8')) };
+  };
+  const at = { lines: 68.99, statements: 66.4, branches: 56.52, functions: 63.79 };
+  const floors = { lines: 68.9, statements: 66.4, branches: 56.5, functions: 63.7 };
+  expect_that('a floor is a measure to one decimal, rounded down', floor_derive(68.99) === 68.9 && floor_derive(66.4) === 66.4 && floor_derive(100) === 100 && floor_derive(0.09) === 0);
+  const held = coverage_run(at, floors);
+  expect_that('coverage at its floors passes', held.status === 0 && held.said.includes('at or above their floors'), held.said);
+  const fell = coverage_run({ ...at, branches: 56.49 }, floors);
+  expect_that('a fall below a floor fails, and names the measure', fell.status !== 0 && fell.said.includes('branches coverage is 56.49%, below its floor of 56.5%'), fell.said);
+  const rose = coverage_run({ ...at, lines: 70.25 }, floors);
+  expect_that('a rise fails until the floor is raised, and says what to raise it to', rose.status !== 0 && rose.said.includes('lines coverage rose to 70.25%') && rose.said.includes('Raise the floor to 70.2'), rose.said);
+  const raised = coverage_run({ ...at, lines: 70.25 }, floors, true);
+  expect_that('--raise raises the floor that rose and no other', raised.status === 0 && raised.baseline.coverage['apps/argus'].lines === 70.2 && raised.baseline.coverage['apps/argus'].branches === 56.5 && JSON.stringify(raised.baseline.casts) === '{}', JSON.stringify(raised.baseline));
+  const refused = coverage_run({ ...at, branches: 50 }, floors, true);
+  expect_that('--raise lowers nothing: a tree below a floor is refused and the floors stand', refused.status !== 0 && refused.baseline.coverage['apps/argus'].branches === 56.5, refused.said);
+  const absent = coverage_run(null, floors);
+  expect_that('a workspace with no summary is not a pass', absent.status !== 0 && absent.said.includes('no coverage summary'), absent.said);
+  const bad = coverage_run(at, { ...floors, lines: 'high' });
+  expect_that('a floor that is not a percentage is refused', bad.status !== 0 && bad.said.includes('lines floor of apps/argus is not a percentage'), bad.said);
+  let threw = '';
+  try { floors_read('{"casts":{}}', 'a file'); } catch (error) { threw = error.message; }
+  expect_that('a baseline without the section has no floors, which is not the same as none to hold', threw.includes('no "coverage" section'), threw);
+  threw = '';
+  try { summary_read('{"total":{"lines":{"pct":"Unknown"}}}', 'a summary'); } catch (error) { threw = error.message; }
+  expect_that('a summary without its totals is refused', threw.includes('has no lines total'), threw);
+  expect_that('at its floors nothing is at fault', coverage_judge('apps/argus', floors, at).length === 0);
+  // The floors against the base: they may rise, and may not fall or be dropped.
+  const base = { 'apps/argus': floors };
+  expect_that('floors equal to or above the base hold', floors_compare({ 'apps/argus': { ...floors, lines: 70 }, 'apps/porter': floors }, base).length === 0);
+  const lowered = floors_compare({ 'apps/argus': { ...floors, functions: 60 } }, base);
+  expect_that('a floor lowered against the base fails', lowered.length === 1 && lowered[0].includes('functions floor was lowered from 63.7 to 60'), lowered.join('; '));
+  const dropped = floors_compare({}, base);
+  expect_that('a workspace whose floors were removed fails', dropped.length === 1 && dropped[0].includes('were removed'), dropped.join('; '));
+}
+
+console.log(failed === 0 ? `ratchets: the cast ratchet, the coverage ratchet, the base it is compared with, and the reach of the test and seam lints all hold (made in ${run})` : `ratchets test: ${failed} failed (made in ${run})`);
 process.exit(failed === 0 ? 0 : 1);
