@@ -14,6 +14,8 @@ import { describe, it, expect } from '@jest/globals';
 import { ScriptScreen, type QuietAnswer, type ScriptHooks } from '../../src/features/script/screen.js';
 import { lineOption_get, type RunEnd } from '../../src/features/script/model.js';
 import { args_tokenize } from '../../../../packages/brasa/src/lib/parser.js';
+import { askAbout_read, AskKeeper, type LineInFlight } from '../../src/app/lineRun.js';
+import type { SurfaceAsk } from '../../src/calypso/client.js';
 
 const STORE_TEXT: string = [
   'net new chrisproject-services --cidr 10.20.0.0/16',
@@ -676,29 +678,44 @@ describe('the script screen', () => {
     for (const one of [again, elsewhere]) { one.dispose(); one.root.remove(); }
   });
 
-  it('a question standing when the screen is left is carried with what was known of it, and stands again as the same question', async () => {
-    const { screen } = screen_make();
-    await screen.open('/scripts/chrisproject/store.mise');
-    await settle();
-    const about = { mine: true, line: 'vm build store', purpose: 'stratus.vm.build', subject: { vm: 'store' } };
-    void screen.ask_take('reworded entirely', 'confirm', about);
-    await settle();
-    // Left with it on the strip: what the host keeps is the question whole.
-    const carried = screen.ask_detach();
-    expect(carried).toMatchObject({ message: 'reworded entirely', kind: 'confirm', about });
-    screen.dispose();
-    screen.root.remove();
-    // Opened again: the host gives the screen what it kept, and the question is the build's own, over its own line.
-    const { screen: again } = screen_make();
-    await again.open('/scripts/chrisproject/store.mise');
-    await settle();
-    void again.ask_take(carried?.message ?? '', carried?.kind ?? 'text', carried?.about);
-    await settle();
-    const kept = again as unknown as { ask: { about: unknown } | null; askLine: string | null };
-    expect(kept.ask?.about).toEqual(about);
-    expect(kept.askLine).toBe('vm build store');
-    again.dispose();
-    again.root.remove();
+  it('a question standing when the screen is left is kept as it arrived and judged again when the screen opens: its own line still in flight owns it; the same line sent again under a new id does not', async () => {
+    /** Leaves a screen with a build's question standing and opens another, as the host does, with the line then in flight. */
+    const leave_return = async (flightOnReturn: LineInFlight | null): Promise<{ about: unknown; askLine: string | null }> => {
+      const keeper: AskKeeper = new AskKeeper(60_000);
+      const flight: LineInFlight = { id: 'argus-7', line: 'vm build store' };
+      const request: SurfaceAsk = { message: 'reworded entirely', kind: 'confirm', executeId: 'argus-7', purpose: 'stratus.vm.build', subject: { vm: 'store' } };
+      const { screen } = screen_make();
+      await screen.open('/scripts/chrisproject/store.mise');
+      await settle();
+      // The host's ask: noted as it arrived, shown with whose it is now.
+      keeper.standing_note(request);
+      void screen.ask_take(request.message, request.kind, askAbout_read(request, flight));
+      await settle();
+      // The host's close: the standing question is kept, the screen goes.
+      const standing = screen.ask_detach();
+      keeper.standing_keep({ message: standing?.message ?? '', kind: standing?.kind ?? 'text' }, standing?.resolve ?? ((): void => undefined));
+      screen.dispose();
+      screen.root.remove();
+      // The host's open: the kept question, read against the line in flight now.
+      const { screen: again } = screen_make();
+      await again.open('/scripts/chrisproject/store.mise');
+      await settle();
+      const waiting = keeper.held_take();
+      expect(waiting?.request).toBe(request);
+      void again.ask_take(waiting?.request.message ?? '', waiting?.request.kind ?? 'text', askAbout_read(waiting?.request ?? request, flightOnReturn));
+      await settle();
+      const kept = again as unknown as { ask: { about: unknown } | null; askLine: string | null };
+      const seen = { about: kept.ask?.about, askLine: kept.askLine };
+      again.dispose();
+      again.root.remove();
+      return seen;
+    };
+    // The same line, still in flight: the question is its own, over its line.
+    expect(await leave_return({ id: 'argus-7', line: 'vm build store' })).toEqual({ about: { mine: true, line: 'vm build store', purpose: 'stratus.vm.build', subject: { vm: 'store' } }, askLine: 'vm build store' });
+    // The line ended while the screen was away and was sent again: the same words, a new id. The kept question is that one's no more.
+    expect(await leave_return({ id: 'argus-12', line: 'vm build store' })).toEqual({ about: { mine: false, line: null, purpose: 'stratus.vm.build', subject: { vm: 'store' } }, askLine: null });
+    // Nothing in flight on return: nobody's.
+    expect(await leave_return(null)).toMatchObject({ about: { mine: false, line: null }, askLine: null });
   });
 
   it('a hidden word carried away stands again on the errand bar of the screen opened after, and its SEND answers the first ask', async () => {

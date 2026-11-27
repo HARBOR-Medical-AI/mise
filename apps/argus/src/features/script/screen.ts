@@ -551,15 +551,16 @@ export class ScriptScreen {
    * keep while the screen is away: leaving never answers it (a-change-is-a-loop,
    * clause 6: returning finds the question where it was).
    *
-   * @returns The question, what is known of it, and how it is answered; or null when none stands.
+   * @returns The question and how it is answered, or null when none stands.
    */
-  public ask_detach(): { message: string; kind: PromptKind; about: AskAbout; resolve: (value: string | null) => void } | null {
+  public ask_detach(): { message: string; kind: PromptKind; resolve: (value: string | null) => void } | null {
     const open: OpenAsk | null = this.ask;
     if (open === null) return null;
     this.ask = null;
     this.askLine = null;
-    // With what is known of it beyond its words: whose line raised it, what for, about what. It stands again as the question it was.
-    return { message: open.message, kind: open.kind, about: open.about, resolve: open.settle };
+    // Its words and its kind only: whose it is belongs to its host, which kept the question as it arrived and
+    // judges it again, against the line in flight then, when the screen opens.
+    return { message: open.message, kind: open.kind, resolve: open.settle };
   }
 
   /**

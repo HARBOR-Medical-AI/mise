@@ -11,6 +11,7 @@
  * - askAbout_read: a question as an AskAbout, against the line in flight.
  * - flight_owns: whether an event is of the line in flight.
  * - askOwner_find: the screen whose line raised a question.
+ * - AskKeeper: a screen's questions kept as they arrived, through its leaving and returning.
  *
  * Typical usage:
  * ```ts
@@ -140,4 +141,134 @@ export function flight_owns(flight: LineInFlight | null, id: string): boolean {
 export function askAbout_read(request: SurfaceAsk, flight: LineInFlight | null): AskAbout {
   const mine: boolean = request.executeId !== undefined && flight_owns(flight, request.executeId);
   return { mine, line: mine && flight !== null ? flight.line : null, purpose: request.purpose ?? null, subject: request.subject ?? {} };
+}
+
+/**
+ * A question kept for a screen that is away: as the session put it, and how it is answered.
+ *
+ * @example
+ * ```ts
+ * keeper.held_keep({ request, resolve });
+ * ```
+ */
+export interface HeldAsk {
+  /** The question as it arrived, with the id of the line that raised it and what it is for and about. */
+  readonly request: SurfaceAsk;
+  /** Answers it; null abandons it. */
+  readonly resolve: (value: string | null) => void;
+}
+
+/**
+ * Keeps a screen's questions as they arrived: the one standing on it, and
+ * the one held while it is away. What is kept is always the question itself
+ * (its words, its kind, the id of the line that raised it, what it is for
+ * and about), never a judgement of whose it was: when the screen opens
+ * again the question is read against the line in flight then
+ * (`askAbout_read`), so one whose line ended while the screen was away, or
+ * whose line was sent again under a new id, is nobody's own any more.
+ *
+ * @example
+ * ```ts
+ * keeper.standing_note(request);                       // shown on the screen
+ * keeper.standing_keep(fallback, standing.resolve);    // the screen is left
+ * const waiting = keeper.held_take();                  // it opens again
+ * if (waiting !== null) screen.ask_take(waiting.request.message, waiting.request.kind, askAbout_read(waiting.request, flight));
+ * ```
+ */
+export class AskKeeper {
+  /** The question now standing on the screen, as it arrived. */
+  private standing: SurfaceAsk | null = null;
+  /** The question held while the screen is away. */
+  private held: HeldAsk | null = null;
+  /** The bound on a held question. */
+  private timer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * @param boundMs - How long a question is held before it is abandoned, so a forgotten screen never holds the session.
+   */
+  public constructor(private readonly boundMs: number) {}
+
+  /**
+   * Notes the question a screen has just been given to show.
+   *
+   * @param request - The question, as it arrived.
+   *
+   * @example
+   * ```ts
+   * keeper.standing_note(request);
+   * ```
+   */
+  public standing_note(request: SurfaceAsk): void {
+    this.standing = request;
+  }
+
+  /**
+   * Forgets a question once it is answered, if it is still the one standing.
+   *
+   * @param request - The question that was answered.
+   *
+   * @example
+   * ```ts
+   * void screen.ask_take(…).finally(() => keeper.standing_clear(request));
+   * ```
+   */
+  public standing_clear(request: SurfaceAsk): void {
+    if (this.standing === request) this.standing = null;
+  }
+
+  /**
+   * Holds the question that stands on a screen being left: the question as
+   * it arrived when that is known, else what the screen shows of it.
+   *
+   * @param shown - The question as the screen shows it, for a screen given one this keeper never saw.
+   * @param resolve - How it is answered.
+   *
+   * @example
+   * ```ts
+   * keeper.standing_keep({ message: standing.message, kind: standing.kind }, standing.resolve);
+   * ```
+   */
+  public standing_keep(shown: SurfaceAsk, resolve: (value: string | null) => void): void {
+    const request: SurfaceAsk = this.standing ?? shown;
+    this.standing = null;
+    this.held_keep({ request, resolve });
+  }
+
+  /**
+   * Holds a question for the screen when it opens again; one already held is
+   * abandoned, and this one is too if nobody comes for it within the bound.
+   *
+   * @param one - The question and how it is answered.
+   *
+   * @example
+   * ```ts
+   * keeper.held_keep({ request, resolve });
+   * ```
+   */
+  public held_keep(one: HeldAsk): void {
+    this.held?.resolve(null);
+    this.held = one;
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = setTimeout((): void => { if (this.held === one) { this.held = null; one.resolve(null); } }, this.boundMs);
+  }
+
+  /**
+   * Hands the held question to the screen that has opened, which shows it
+   * and so has it standing again.
+   *
+   * @returns The question, or null when none is held.
+   *
+   * @example
+   * ```ts
+   * const waiting: HeldAsk | null = keeper.held_take();
+   * ```
+   */
+  public held_take(): HeldAsk | null {
+    const one: HeldAsk | null = this.held;
+    this.held = null;
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+    if (one !== null) this.standing = one.request;
+    return one;
+  }
 }

@@ -2,7 +2,7 @@
   "apps/argus": {
     "@typescript-eslint/await-thenable": 1,
     "@typescript-eslint/explicit-function-return-type": 4,
-    "@typescript-eslint/naming-convention": 1474,
+    "@typescript-eslint/naming-convention": 1471,
     "@typescript-eslint/no-base-to-string": 6,
     "@typescript-eslint/no-confusing-void-expression": 360,
     "@typescript-eslint/no-deprecated": 1,
@@ -34,7 +34,7 @@
     "jsdoc/escape-inline-tags": 3,
     "jsdoc/multiline-blocks": 1,
     "jsdoc/require-example": 1206,
-    "jsdoc/require-jsdoc": 1871,
+    "jsdoc/require-jsdoc": 1870,
     "jsdoc/require-param": 516,
     "jsdoc/require-returns": 353,
     "jsdoc/require-throws": 8,

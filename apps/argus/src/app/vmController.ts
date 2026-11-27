@@ -5,9 +5,9 @@
  * (docs/stratus.adoc, D17 revised). Shaped as the script screen's host.
  */
 import { STRATUS_VM_STATE_EVENT, STRATUS_VM_STEP_EVENT, vmStatusRowSchema, vmStepEventSchema, word_write } from '@fnndsc/menu';
-import { askAbout_read, flight_owns, runEnd_read, type LineInFlight } from './lineRun.js';
+import { askAbout_read, AskKeeper, flight_owns, runEnd_read, type HeldAsk, type LineInFlight } from './lineRun.js';
 import type { ExecuteOutcome, SurfaceAsk } from '../calypso/client.js';
-import type { AskAbout, RunEnd } from '../features/script/model.js';
+import type { RunEnd } from '../features/script/model.js';
 import { VmScreen } from '../features/vm/screen.js';
 import type { ScriptDraft } from '../features/script/screen.js';
 import { synthVoice } from '../lcars/synth.js';
@@ -47,16 +47,6 @@ export interface VmControllerModule {
 // controllers it routes among.
 export { askOwner_find } from './lineRun.js';
 
-/** A question kept while its screen is away: as it arrived, with what its screen knew of it when it was carried off, and how it is answered. */
-interface HeldAsk {
-  /** The question as the session put it. */
-  request: SurfaceAsk;
-  /** What the screen knew of it when it was left with it standing; absent for one that arrived while the screen was away. */
-  about?: AskAbout;
-  /** Answers it. */
-  resolve: (value: string | null) => void;
-}
-
 /** How long a screen left with a line in flight keeps that line's question for itself. */
 const LEFT_LINE_MS: number = 30 * 60 * 1000;
 
@@ -79,8 +69,8 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     if (screen.following_is()) context.client.stop_send();
     // A question standing on the strip is carried, not answered: it stands again when the screen opens (a-change-is-a-loop, clause 6).
     const standing = screen.ask_detach();
-    // Kept whole: the question's words and kind, and what was known of it (its line, what it is for, about what).
-    if (standing !== null) heldKeep({ request: { message: standing.message, kind: standing.kind }, about: standing.about, resolve: standing.resolve });
+    // Kept as it arrived (its line's id, what it is for and about): whose it is, is judged again when the screen opens.
+    if (standing !== null) asks.standing_keep({ message: standing.message, kind: standing.kind }, standing.resolve);
     // Edits not saved are kept, never dropped silently: they stand again when the machine's script opens (a-change-is-a-loop, clause 6d).
     draft = screen.draft_detach();
     if (draft !== null) context.terminal.line_note(`vm: ${draft.path}: ${draft.edits === 1 ? 'an edit' : `${draft.edits} edits`} not saved, kept: they stand again when it opens, until SAVE`);
@@ -149,9 +139,10 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     void opened.vm_open(name).then((): void => {
       names_seen([...opened.vms_get()]);
       // A question the screen's line asked while the screen was away stands on the strip again (a-change-is-a-loop, clauses 4 and 6).
-      const waiting = held;
+      const waiting: HeldAsk | null = screen === opened ? asks.held_take() : null;
       leftWithLine = 0;
-      if (waiting !== null && screen === opened) { held = null; void opened.ask_take(waiting.request.message, waiting.request.kind, waiting.about ?? askAbout_read(waiting.request, flight)).then(waiting.resolve); }
+      // Read against the line in flight now: a question whose line has ended, or runs again under a new id, is not the screen's own.
+      if (waiting !== null) void opened.ask_take(waiting.request.message, waiting.request.kind, askAbout_read(waiting.request, flight)).finally((): void => { asks.standing_clear(waiting.request); }).then(waiting.resolve);
     });
     return `vm: the VM controller takes the display${name === '' ? ' on a new machine' : ` on ${name}`} (Esc or LEAVE gives it back)`;
   };
@@ -160,18 +151,10 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
   let flight: LineInFlight | null = null;
   /** Until when a question is the left screen's: it was left with a line in flight, whose question waits for it to open again (a bound, so a forgotten screen never holds the console's questions). */
   let leftWithLine: number = 0;
-  /** A question the screen's line asked while the screen was away, held for the screen when it opens again. */
-  let held: HeldAsk | null = null;
-  /** The bound on a held question: unanswered by then, it is abandoned, so a forgotten screen never holds the session. */
-  let heldTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The screen's questions, kept as they arrived: the one standing, and the one held while the screen is away (abandoned past a bound, so a forgotten screen never holds the session). */
+  const asks: AskKeeper = new AskKeeper(LEFT_LINE_MS);
   /** Edits not saved when the screen was left, offered to it when it opens again. */
   let draft: ScriptDraft | null = null;
-  const heldKeep = (one: HeldAsk): void => {
-    held?.resolve(null);
-    held = one;
-    if (heldTimer !== null) clearTimeout(heldTimer);
-    heldTimer = setTimeout((): void => { if (held === one) { held = null; one.resolve(null); } }, LEFT_LINE_MS);
-  };
 
   return {
     open,
@@ -181,8 +164,11 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
     // The screen's line runs on after the screen is left: its question is the screen's still, held until it opens again.
     running_is: (): boolean => lineRunning || Date.now() < leftWithLine,
     ask: (request: SurfaceAsk): Promise<string | null> => {
-      if (screen !== null) return screen.ask_take(request.message, request.kind, askAbout_read(request, flight));
-      return new Promise((resolve: (value: string | null) => void): void => { heldKeep({ request, resolve }); });
+      if (screen !== null) {
+        asks.standing_note(request);
+        return screen.ask_take(request.message, request.kind, askAbout_read(request, flight)).finally((): void => { asks.standing_clear(request); });
+      }
+      return new Promise((resolve: (value: string | null) => void): void => { asks.held_keep({ request, resolve }); });
     },
     output_take: (chunk: string): void => { screen?.output_take(chunk); },
     task_ended: (): void => { screen?.taskEnded_take(); },

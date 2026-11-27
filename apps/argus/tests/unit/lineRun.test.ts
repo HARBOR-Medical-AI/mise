@@ -2,10 +2,10 @@
  * @file What a screen's host reads off the session: how a line ended, and
  * whose a question is, from typed state alone.
  */
-import { describe, it, expect } from '@jest/globals';
+import { describe, it, expect, jest } from '@jest/globals';
 import type { ExecuteOutcome } from '../../src/calypso/client.js';
 import type { VmStepEvent } from '@fnndsc/menu';
-import { askAbout_read, askOwner_find, flight_owns, runEnd_read, type LineInFlight, type LineOwner } from '../../src/app/lineRun.js';
+import { askAbout_read, AskKeeper, askOwner_find, flight_owns, runEnd_read, type LineInFlight, type LineOwner } from '../../src/app/lineRun.js';
 import { buildRun_start, buildRun_step, type BuildRun } from '../../src/features/vm/run.js';
 
 /** An outcome of the given envelopes. */
@@ -128,12 +128,53 @@ describe('a question goes to the screen whose line raised it', () => {
     expect(askOwner_find(undefined, [vm])).toBeNull();
   });
 
-  it('its facts are read against the owner\'s line whenever it is shown: held while the screen is away, they are the same on return', () => {
-    const flight: LineInFlight = { id: 'argus-9', line: 'chris passwd jennings --on store' };
-    const request = { message: 'reworded', kind: 'secret' as const, executeId: 'argus-9', purpose: 'stratus.chris.password.new', subject: { vm: 'store', account: 'jennings' } };
-    const before = askAbout_read(request, flight);
-    // ...the screen is left, the question held as it arrived, and the screen opened again:
-    expect(askAbout_read(request, flight)).toEqual(before);
-    expect(before).toEqual({ mine: true, line: flight.line, purpose: 'stratus.chris.password.new', subject: { vm: 'store', account: 'jennings' } });
+});
+
+describe('a question kept while its screen is away', () => {
+  const request = { message: 'the new password', kind: 'secret' as const, executeId: 'argus-9', purpose: 'stratus.chris.password.new', subject: { vm: 'store', account: 'jennings' } };
+
+  it('is kept as it arrived, id and all, whatever the screen showed of it; and is whose it is by the line in flight on return', () => {
+    const keeper: AskKeeper = new AskKeeper(60_000);
+    keeper.standing_note(request);
+    // The screen is left: it can say only the words and the kind it showed.
+    keeper.standing_keep({ message: request.message, kind: request.kind }, (): void => undefined);
+    const waiting = keeper.held_take();
+    expect(waiting?.request).toBe(request);
+    // Its own line still in flight: the row's own question, and it may be answered from the row.
+    expect(askAbout_read(waiting?.request ?? request, { id: 'argus-9', line: 'chris passwd jennings --on store' }).mine).toBe(true);
+    // Left and opened a second time: still the same question, still judged afresh.
+    keeper.standing_keep({ message: request.message, kind: request.kind }, (): void => undefined);
+    const second = keeper.held_take();
+    expect(second?.request).toBe(request);
+    // By then its line had ended and the same line was sent again, under a new id: a stale question, nobody's own,
+    // though its purpose, its subject and its line's words are the very same.
+    const stale = askAbout_read(second?.request ?? request, { id: 'argus-15', line: 'chris passwd jennings --on store' });
+    expect(stale).toEqual({ mine: false, line: null, purpose: 'stratus.chris.password.new', subject: { vm: 'store', account: 'jennings' } });
+  });
+
+  it('a question answered is forgotten; one the keeper never saw is kept as the screen showed it', () => {
+    const keeper: AskKeeper = new AskKeeper(60_000);
+    keeper.standing_note(request);
+    keeper.standing_clear(request);
+    keeper.standing_keep({ message: 'an older host\'s question', kind: 'text' }, (): void => undefined);
+    expect(keeper.held_take()?.request).toEqual({ message: 'an older host\'s question', kind: 'text' });
+    expect(keeper.held_take()).toBeNull();
+  });
+
+  it('one held is abandoned when another takes its place, and when nobody comes for it within its bound', () => {
+    jest.useFakeTimers();
+    try {
+      const keeper: AskKeeper = new AskKeeper(1000);
+      const answers: Array<string | null> = [];
+      keeper.held_keep({ request, resolve: (value: string | null): void => { answers.push(value); } });
+      keeper.held_keep({ request: { ...request, executeId: 'argus-10' }, resolve: (value: string | null): void => { answers.push(value === null ? 'second abandoned' : value); } });
+      expect(answers).toEqual([null]);
+      jest.advanceTimersByTime(1000);
+      expect(answers).toEqual([null, 'second abandoned']);
+      expect(keeper.held_take()).toBeNull();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
