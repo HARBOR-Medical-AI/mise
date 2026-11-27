@@ -135,6 +135,8 @@ export const LOGIN_FAILURES_PER_NAME: number = 5;
 export const DEVICE_CODES_PER_MINUTE: number = 10;
 /** How long CUBE's verdict on one set of credentials is kept, in ms. */
 const BERTHS_VERDICT_MS: number = 30_000;
+/** How often a login looks again for its session when the session keeps being ended under it, before it is told to try again. */
+const LOGIN_ROUNDS: number = 5;
 
 const loginSchema = z.object({
   username: z.string().min(1),
@@ -621,68 +623,86 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       if (byToken !== null) return { ...body, user: byToken.user, tokenName: byToken.name, expires: byToken.expires };
       return body;
     };
-    const found: Berth | null = await host.find(identity);
     const key: string = registry.key_derive(identity);
     void reply.setCookie(DOOR_COOKIE, key, doorCookie_options(config.cookieHours, cookie_isSecure(request)));
     if (byToken !== null) options.log?.(`${username} came through by door token "${byToken.name}"`);
-    // A boot already under way is joined, never restarted: two scripts
-    // arriving together, or a browser and a script, would otherwise take
-    // turns killing each other's boot and nobody would ever get in.
-    if (found === null) {
+    const starting_answer = (): unknown => (wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'starting' }) : reply.redirect(`/greet/${key}`, 303));
+    // What this login learns of the session's berth is good only while the session is not ended under it.
+    // Each round reads the key's generation, which every ending raises and none lowers, before it looks,
+    // and compares it again after every wait and before every act: if an ending has begun, or has come and
+    // gone, the round is thrown away and the login looks again. So it never attaches to, renews a token
+    // on, or restarts a berth that the sweep, a restart or a logout was stopping.
+    for (let round: number = 0; round < LOGIN_ROUNDS; round++) {
+      await registry.eviction_wait(key);
+      const began: number = registry.generation_get(key);
+      const generation_moved = (): boolean => registry.generation_get(key) !== began;
+      const found: Berth | null = await host.find(identity);
+      if (generation_moved()) continue;
+      // A boot already under way is joined, never restarted: two scripts
+      // arriving together, or a browser and a script, would otherwise take
+      // turns killing each other's boot and nobody would ever get in. It is
+      // joined whether or not the berth it replaces still answers: while a
+      // restart is booting, its record is followed, not the old berth.
       const booting = host.boot_follow(identity, { line: (): void => undefined, done: (): void => undefined });
       if (booting !== null) {
         booting.release();
         if (booting.report.state === 'booting') {
           registry.pending_note(identity, username);
           options.log?.(`${username} joins the boot already under way`);
-          return wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'starting' }) : reply.redirect(`/greet/${key}`, 303);
+          return starting_answer();
         }
       }
-    }
-    // A login never lands on a kernel older than the door's: a session whose
-    // daemon runs code this porter no longer ships is ended here and boots
-    // afresh on the way in, its saved state kept.
-    if (found !== null) {
-      const behind: string[] = berth_behind(found, installed);
-      // A restart ends the session's joblets: one that runs them is kept on
-      // its older code, and the RESTART pill, which lists them, asks (#1273).
-      const joblets: BerthJoblet[] = behind.length > 0 ? await berthJoblets_read(found) : [];
-      if (joblets.length > 0) {
-        options.log?.(`kept ${username}'s session on its older release (${behind.join(', ')}): ${joblets.length} joblet${joblets.length === 1 ? '' : 's'} running`);
-      } else if (behind.length > 0) {
-        // The restart the RESTART pill takes: the old daemon is left the
-        // cause and waited out before the new one boots, so the mount never reaches a
-        // port that is about to close.
-        options.log?.(`restarting ${username}'s session for the new release (${behind.join(', ')})`);
-        registry.pending_note(identity, username);
-        host.restart_begin(identity, username, config.cubeUrl, { kind: 'stale', behind });
-        return wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'starting' }) : reply.redirect(`/greet/${key}`, 303);
+      // A login never lands on a kernel older than the door's: a session whose
+      // daemon runs code this porter no longer ships is ended here and boots
+      // afresh on the way in, its saved state kept.
+      if (found !== null) {
+        const behind: string[] = berth_behind(found, installed);
+        // A restart ends the session's joblets: one that runs them is kept on
+        // its older code, and the RESTART pill, which lists them, asks (#1273).
+        const joblets: BerthJoblet[] = behind.length > 0 ? await berthJoblets_read(found) : [];
+        if (generation_moved()) continue;
+        if (joblets.length > 0) {
+          options.log?.(`kept ${username}'s session on its older release (${behind.join(', ')}): ${String(joblets.length)} joblet${joblets.length === 1 ? '' : 's'} running`);
+        } else if (behind.length > 0) {
+          // The restart the RESTART pill takes: the old daemon is left the
+          // cause and waited out before the new one boots, so the mount never reaches a
+          // port that is about to close.
+          options.log?.(`restarting ${username}'s session for the new release (${behind.join(', ')})`);
+          registry.pending_note(identity, username);
+          registry.generation_raise(key);
+          host.restart_begin(identity, username, config.cubeUrl, { kind: 'stale', behind });
+          return starting_answer();
+        }
       }
+      // A new login's token reaches a berth already up: the launcher rewrites its token file.
+      if (found !== null && cubeToken !== null && host.token_renew !== undefined) {
+        await host.token_renew(identity, username, config.cubeUrl, cubeToken).catch((error: unknown): void => { options.log?.(`${username}'s new token did not reach the berth: ${error instanceof Error ? error.message : String(error)}`); });
+        if (generation_moved()) continue;
+      }
+      if (found !== null) {
+        registry.note(identity, username, found);
+        options.log?.(`attached ${username} to the session up at ${found.url}`);
+        return wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'attached' }) : reply.redirect(`/s/${key}/?door`, 303);
+      }
+      // The boot is watched, not waited for: the door answers now, and the
+      // greet follows the rows until the berth answers. The berth reaches the
+      // registry when the boot ends, so the mount refuses until then.
+      registry.pending_note(identity, username);
+      if (cubeToken === null) {
+        // A door token carries no CUBE token: the session boots on the login
+        // it saved when a human last came through, as a restart does; a
+        // session that never saved one refuses, and says so on the boot.
+        host.restart_begin(identity, username, config.cubeUrl, { kind: 'saved-login' });
+        options.log?.(`starting a session for ${username} on its saved login`);
+      } else {
+        host.spawn_begin(identity, username, config.cubeUrl, cubeToken);
+        options.log?.(`starting a session for ${username}`);
+      }
+      return starting_answer();
     }
-    // A new login's token reaches a berth already up: the launcher rewrites its token file.
-    if (found !== null && cubeToken !== null && host.token_renew !== undefined) {
-      await host.token_renew(identity, username, config.cubeUrl, cubeToken).catch((error: unknown): void => { options.log?.(`${username}'s new token did not reach the berth: ${error instanceof Error ? error.message : String(error)}`); });
-    }
-    if (found !== null) {
-      registry.note(identity, username, found);
-      options.log?.(`attached ${username} to the session up at ${found.url}`);
-      return wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'attached' }) : reply.redirect(`/s/${key}/?door`, 303);
-    }
-    // The boot is watched, not waited for: the door answers now, and the
-    // greet follows the rows until the berth answers. The berth reaches the
-    // registry when the boot ends, so the mount refuses until then.
-    registry.pending_note(identity, username);
-    if (cubeToken === null) {
-      // A door token carries no CUBE token: the session boots on the login
-      // it saved when a human last came through, as a restart does; a
-      // session that never saved one refuses, and says so on the boot.
-      host.restart_begin(identity, username, config.cubeUrl, { kind: 'saved-login' });
-      options.log?.(`starting a session for ${username} on its saved login`);
-    } else {
-      host.spawn_begin(identity, username, config.cubeUrl, cubeToken);
-      options.log?.(`starting a session for ${username}`);
-    }
-    return wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'starting' }) : reply.redirect(`/greet/${key}`, 303);
+    // The session was ended under this login as often as it looked: something is ending it over and over.
+    options.log?.(`${username}'s session kept being ended while they logged in; they were asked to try again`);
+    return reply.code(503).send({ error: 'the session was being ended while you logged in; try again' });
   });
 
   app.get('/greet/:key', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
@@ -739,6 +759,8 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       options.log?.(`restarting ${entry.user}'s stratus session, asked from their browser`);
       return wantsJson ? { key, greet: `/greet/${key}`, state: 'restarting' } : reply.redirect(`/greet/${key}`, 303);
     }
+    // The berth is about to be stopped: a login that learnt of it before now looks again.
+    registry.generation_raise(entry.key);
     host.restart_begin(entry.identity, entry.user, config.cubeUrl, { kind: 'asked' });
     options.log?.(`restarting ${entry.user}'s session, asked from their browser`);
     return wantsJson ? { key, greet: `/greet/${key}`, state: 'restarting' } : reply.redirect(`/greet/${key}`, 303);
@@ -810,6 +832,8 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     const leaving: string | null = options.logoutEnds === true ? requestKey_read(request) : null;
     const identity: string | null = leaving === null ? null : registry.identity_find(leaving);
     if (identity !== null) {
+      // The berth is about to be stopped: a login that learnt of it before now looks again.
+      if (leaving !== null) registry.generation_raise(leaving);
       const ended: boolean = await host.evict(identity, 'end').catch((): boolean => false);
       options.log?.(`${user_extract(identity)} logged out${ended ? '; their berth stopped, its volumes kept' : ''}`);
     }
@@ -973,7 +997,10 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // The idle sweep, once a minute for as long as the porter listens.
     const idleMs: number = config.idleHours * 3_600_000;
     const sweep: NodeJS.Timeout = setInterval((): void => {
-      void idleSweep_run(registry, host, idleMs, options.log ?? ((): void => undefined));
+      // A sweep that fails is said, and the next tick sweeps again: it is never left as a rejection nobody hears.
+      void idleSweep_run(registry, host, idleMs, options.log ?? ((): void => undefined)).catch((error: unknown): void => {
+        options.log?.(`the idle sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
     }, options.sweepMs ?? 60_000);
     sweep.unref();
     app.addHook('onClose', async (): Promise<void> => { clearInterval(sweep); });

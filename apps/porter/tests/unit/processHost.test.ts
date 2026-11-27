@@ -190,13 +190,92 @@ describe('ProcessHost', () => {
 describe('a porter restarted', () => {
   it('adopts the sessions its state directory holds, and ends an adopted one by its berth\'s pid', async () => {
     const killed: Array<{ pid: number; signal: string }> = [];
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => alive, kill: (pid: number, signal: NodeJS.Signals): void => { killed.push({ pid, signal }); } });
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => alive, kill: (pid: number, signal: NodeJS.Signals): void => { killed.push({ pid, signal }); alive = false; } });
     berth_plant(host, 31337);
     const sightings = await host.sessions_adopt();
     expect(sightings).toEqual([{ identity: IDENTITY, berth: { identity: IDENTITY, url: 'ws://127.0.0.1:4444', token: 'ATTACH', pid: 31337 }, alive: true }]);
     expect(host.boot_follow(IDENTITY, { line: (): void => undefined, done: (): void => undefined })?.report.state).toBe('ready');
     expect(await host.evict(IDENTITY)).toBe(true);
     expect(killed).toEqual([{ pid: 31337, signal: 'SIGTERM' }]);
+  });
+
+  /** A host over an adopted pid whose process the test stands in: signals noted, start time as the test says. */
+  function adopted_make(world: { started: string | null; onSignal: (signal: NodeJS.Signals) => void }, killed: string[]): ProcessHost {
+    return new ProcessHost({
+      stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => alive, pollMs: 5, stopWaitMs: 40, killWaitMs: 40,
+      kill: (_pid: number, signal: NodeJS.Signals): void => { killed.push(signal); world.onSignal(signal); },
+      processStart_read: (): string | null => world.started,
+    });
+  }
+
+  it('does not signal an adopted pid that has become another process', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    // The daemon went and its pid was given to something else, started later.
+    world.started = '2000';
+    await expect(host.evict(IDENTITY)).rejects.toThrow('pid 31337 is no longer the session\'s calypso daemon; it was not signalled');
+    expect(killed).toEqual([]);
+  });
+
+  it('kills an adopted daemon that outlives the wait, and answers once it is gone', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null, onSignal: (signal: NodeJS.Signals): void => { if (signal === 'SIGKILL') world.started = null; } };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    expect(await host.evict(IDENTITY)).toBe(true);
+    expect(killed).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('does not kill when the pid stopped being the daemon during the wait', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null, onSignal: (): void => { world.started = '2000'; } };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    expect(await host.evict(IDENTITY)).toBe(true);
+    expect(killed).toEqual(['SIGTERM']);
+  });
+
+  it('says so when a daemon is still there after being killed: the stop is not reported done', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    await expect(host.evict(IDENTITY)).rejects.toThrow('the old calypso daemon did not stop, even when killed');
+    expect(killed).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('a restart whose old daemon will not stop ends its boot failed and starts nothing beside it', async () => {
+    const killed: string[] = [];
+    const world = { started: '1000' as string | null, onSignal: (): void => undefined };
+    const host: ProcessHost = adopted_make(world, killed);
+    berth_plant(host, 31337);
+    await host.sessions_adopt();
+    host.restart_begin(IDENTITY, 'chris', 'https://cube.example.org/api/v1/');
+    expect(host.boot_follow(IDENTITY, { line: (): void => undefined, done: (): void => undefined })?.report.state).toBe('booting');
+    await new Promise((r) => setTimeout(r, 200));
+    const report = host.boot_follow(IDENTITY, { line: (): void => undefined, done: (): void => undefined })?.report;
+    expect(report).toMatchObject({ state: 'failed', reason: 'the old calypso daemon did not stop, even when killed' });
+    expect(spawnCalls).toEqual([]);
+  });
+
+  it('kills a child it started that ignores the request to stop', async () => {
+    class Stubborn extends FakeChild {
+      public signals: string[] = [];
+      kill(signal?: NodeJS.Signals): boolean { this.signals.push(signal ?? 'SIGTERM'); if (signal === 'SIGKILL') this.exit(137); return true; }
+    }
+    const stubborn: Stubborn = new Stubborn();
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn: (): SpawnedSession => stubborn, alive: async (): Promise<boolean> => alive, bootTimeoutMs: 2_000, pollMs: 5, stopWaitMs: 40, killWaitMs: 40 });
+    const starting: Promise<unknown> = host.spawn(IDENTITY, 'chris', 'https://cube.example.org/api/v1/', 'MINTED');
+    berth_plant(host);
+    await starting;
+    expect(await host.evict(IDENTITY)).toBe(true);
+    expect(stubborn.signals).toEqual(['SIGTERM', 'SIGKILL']);
   });
 
   it('lists a berth whose daemon is gone as such, and never signals its pid', async () => {

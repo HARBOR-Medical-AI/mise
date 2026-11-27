@@ -196,6 +196,8 @@ describe('porter\'s host: the CUBE id and the launcher\'s answers', () => {
   let launcherDir: string;
   let launcher: Server;
   const asked: Array<{ method: string; path: string; body: string }> = [];
+  /** What the launcher answers a stop with: 200, or a failure of its own. */
+  let stopStatus: number = 200;
   beforeAll(async () => {
     cube = createServer((req: IncomingMessage, res: ServerResponse): void => {
       const auth: string = req.headers.authorization ?? '';
@@ -209,6 +211,11 @@ describe('porter\'s host: the CUBE id and the launcher\'s answers', () => {
     launcher = createServer((req: IncomingMessage, res: ServerResponse): void => {
       void body_read(req).then((body: string): void => {
         asked.push({ method: req.method ?? '', path: req.url ?? '', body });
+        if ((req.url ?? '').startsWith('/berths/stop') && stopStatus !== 200) {
+          res.writeHead(stopStatus, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'docker could not stop the container' }));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         if ((req.url ?? '').startsWith('/berths/stop')) { res.end(JSON.stringify({ stopped: true })); return; }
         if ((req.url ?? '').startsWith('/berths/status')) { res.end(JSON.stringify({ berths: [] })); return; }
@@ -227,6 +234,27 @@ describe('porter\'s host: the CUBE id and the launcher\'s answers', () => {
     expect(await cubeUserId_read(cubeUrl, 'good')).toBe(42);
     await expect(cubeUserId_read(cubeUrl, 'bad')).rejects.toThrow('CUBE answered 401');
     await expect(cubeUserId_read(cubeUrl, 'odd')).rejects.toThrow('did not say who');
+  });
+
+  it('a stop the launcher failed is an error, not "nothing was running"; a restart then fails its boot and starts no second berth', async () => {
+    const host: LauncherHost = new LauncherHost({ listen: join(launcherDir, 'l.sock'), secret: 's'.repeat(40) }, async (): Promise<number> => 42);
+    const identity: string = identity_normalise('ana', cubeUrl);
+    stopStatus = 500;
+    try {
+      await expect(host.evict(identity)).rejects.toThrow('the berth was not stopped: docker could not stop the container');
+      asked.length = 0;
+      host.restart_begin(identity, 'ana', cubeUrl, { kind: 'asked' });
+      // The boot's record stands from the first: whoever asks now follows this boot.
+      const first = host.boot_follow(identity, { line: () => undefined, done: () => undefined });
+      expect(first?.report.state).toBe('booting');
+      expect(first?.report.lines[0]?.text).toBe('Restarting the calypso daemon, as asked');
+      await new Promise((resolve) => { setTimeout(resolve, 200); });
+      const report = host.boot_follow(identity, { line: () => undefined, done: () => undefined })?.report;
+      expect(report).toMatchObject({ state: 'failed', reason: 'the berth was not stopped: docker could not stop the container' });
+      expect(asked.map((one) => one.path)).toEqual(['/berths/stop']);
+    } finally {
+      stopStatus = 200;
+    }
   });
 
   it('renews a token on a berth already up, restarts on the token the launcher holds after an evict, begins a spawn without waiting, and knows no stratus arming', async () => {

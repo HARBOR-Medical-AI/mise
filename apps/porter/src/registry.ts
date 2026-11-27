@@ -32,10 +32,38 @@ interface PendingEntry {
   user: string;
 }
 
+/**
+ * A session the sweep has claimed in order to end it: the entry it found
+ * idle, held so that nothing else takes the session for live while it is
+ * being stopped.
+ *
+ * @example
+ * const claim: EvictionClaim | null = registry.eviction_begin(entry, idleMs);
+ * if (claim !== null) registry.eviction_end(claim, await host.evict(entry.identity));
+ */
+export interface EvictionClaim {
+  /** The entry that was found idle, and is being ended. */
+  readonly entry: SessionEntry;
+  /** Settles when the claim is ended: what a login for the key waits on. */
+  readonly done: Promise<void>;
+}
+
 /** The sessions the door knows, by key. */
 export class SessionRegistry {
   private readonly byKey: Map<string, SessionEntry> = new Map();
   private readonly pending: Map<string, PendingEntry> = new Map();
+  /**
+   * How many times each key's session has been ended, or begun to be. It is
+   * raised when an ending begins and never lowered, so an ending that has
+   * come and gone is as visible as one under way: whoever read the number
+   * before a wait and finds it moved after knows that what they learnt of
+   * the session's berth before the wait is of a berth since stopped.
+   */
+  private readonly generations: Map<string, number> = new Map();
+  /** The endings under way, by key: each resolves when its session has stopped, or could not be. */
+  private readonly evictions: Map<string, Promise<void>> = new Map();
+  /** What settles each ending under way, by its promise. */
+  private readonly settlers: WeakMap<Promise<void>, () => void> = new WeakMap<Promise<void>, () => void>();
   private readonly clock: () => number;
 
   constructor(clock: () => number = (): number => Date.now()) {
@@ -131,6 +159,92 @@ export class SessionRegistry {
   public forget(key: string): void {
     this.byKey.delete(key);
     this.pending.delete(key);
+  }
+
+  /**
+   * How many times a key's session has been ended, or begun to be.
+   *
+   * @param key - The session key.
+   * @returns The count; it only rises.
+   *
+   * @example
+   * const began: number = registry.generation_get(key);
+   */
+  public generation_get(key: string): number {
+    return this.generations.get(key) ?? 0;
+  }
+
+  /**
+   * Says that a key's session is being ended (a restart, a logout, the
+   * sweep): what anyone learnt of its berth before now is of a berth about
+   * to stop.
+   *
+   * @param key - The session key.
+   *
+   * @example
+   * registry.generation_raise(key);
+   */
+  public generation_raise(key: string): void {
+    this.generations.set(key, this.generation_get(key) + 1);
+  }
+
+  /**
+   * Claims an idle session in order to end it. The claim is made on what is
+   * true at this moment, not on what was true when the idle sessions were
+   * listed: the key must still hold that very entry, with no wire open on
+   * it, nothing through the door for the idle span, nothing waiting to boot
+   * under it, and no ending of it already under way. From the claim until
+   * its end, a login for the key waits ({@link eviction_wait}).
+   *
+   * @param entry - The entry found idle.
+   * @param idleMs - The idle span.
+   * @returns The claim, or null when the session is no longer idle, or no longer that one.
+   *
+   * @example
+   * const claim: EvictionClaim | null = registry.eviction_begin(entry, idleMs);
+   */
+  public eviction_begin(entry: SessionEntry, idleMs: number): EvictionClaim | null {
+    const key: string = entry.key;
+    if (this.byKey.get(key) !== entry || this.pending.has(key) || this.evictions.has(key)) return null;
+    if (entry.wires !== 0 || this.clock() - entry.activeAt <= idleMs) return null;
+    this.generation_raise(key);
+    let wait_settle: () => void = (): void => undefined;
+    const done: Promise<void> = new Promise((resolve: () => void): void => { wait_settle = resolve; });
+    this.evictions.set(key, done);
+    this.settlers.set(done, wait_settle);
+    return { entry, done };
+  }
+
+  /**
+   * Ends a claim.
+   *
+   * @param claim - The claim.
+   * @param ended - Whether the session was ended. When it was, the entry is
+   *   forgotten, if the key still holds that very entry and nothing is
+   *   waiting to boot under it; when it was not, nothing is forgotten.
+   *
+   * @example
+   * registry.eviction_end(claim, true);
+   */
+  public eviction_end(claim: EvictionClaim, ended: boolean): void {
+    const key: string = claim.entry.key;
+    // Only that generation is forgotten: a session noted under the key since is another, and stays.
+    if (ended && this.byKey.get(key) === claim.entry && !this.pending.has(key)) this.byKey.delete(key);
+    if (this.evictions.get(key) === claim.done) this.evictions.delete(key);
+    this.settlers.get(claim.done)?.();
+  }
+
+  /**
+   * Waits for an ending of a key's session that is under way.
+   *
+   * @param key - The session key.
+   *
+   * @example
+   * await registry.eviction_wait(key);
+   */
+  public async eviction_wait(key: string): Promise<void> {
+    const under: Promise<void> | undefined = this.evictions.get(key);
+    if (under !== undefined) await under;
   }
 
   /** Every entry, for a status listing. */

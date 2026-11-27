@@ -208,6 +208,67 @@ describe('GET /boot/:key', () => {
     expect(built.registry.get(key)?.berth.token).toBe('ATTACH');
   });
 
+  it('a login that was looking for the berth when its session was ended looks again, and attaches to none that was being stopped', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const old: Berth = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    host.found = old;
+    const first = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (first.json() as { key: string }).key;
+    // The next look for the berth is held, and will answer with the old one.
+    let answer: (berth: Berth | null) => void = (): void => undefined;
+    let looks: number = 0;
+    host.find = async (): Promise<Berth | null> => {
+      looks += 1;
+      if (looks === 1) return new Promise<Berth | null>((resolve: (berth: Berth | null) => void): void => { answer = resolve; });
+      return host.found;
+    };
+    const login = built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    expect(looks).toBe(1);
+    // Meanwhile the session is ended (as the sweep, a restart or a logout ends one) and a fresh berth stands.
+    built.registry.generation_raise(key);
+    host.found = { identity, url: 'ws://127.0.0.1:5555', token: 'FRESH' };
+    answer(old);
+    expect(((await login).json() as { state: string }).state).toBe('attached');
+    expect(looks).toBe(2);
+    expect(built.registry.get(key)?.berth.token).toBe('FRESH');
+  });
+
+  it('a login that arrives while a session\'s stop is under way waits for it to end before it looks', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    host.found = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    const first = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (first.json() as { key: string }).key;
+    const entry = built.registry.get(key);
+    expect(entry).not.toBeNull();
+    // The sweep's claim: taken on an entry idle for no time at all.
+    const claim = built.registry.eviction_begin(entry!, -1);
+    expect(claim).not.toBeNull();
+    let looks: number = 0;
+    host.find = async (): Promise<Berth | null> => { looks += 1; return host.found; };
+    const login = built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    expect(looks).toBe(0);
+    // The stop ends, with the berth gone.
+    host.found = null;
+    built.registry.eviction_end(claim!, true);
+    expect(((await login).json() as { state: string }).state).toBe('starting');
+    expect(looks).toBe(1);
+    expect(host.spawned.length).toBe(1);
+  });
+
+  it('while a restart is booting, a login follows its record and is not given the berth being replaced', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    host.found = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
+    host.report = { lines: [{ channel: 'out', text: 'Restarting the calypso daemon, as asked' }], state: 'booting' };
+    const login = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const body = login.json() as { key: string; state: string };
+    expect(body.state).toBe('starting');
+    expect(built.registry.get(body.key)).toBeNull();
+    expect(host.spawned).toEqual([]);
+    expect(host.restarted).toEqual([]);
+  });
+
   it('follows a boot still under way: lines as they come, then the end', async () => {
     host.report = { lines: [{ channel: 'out', text: 'first' }], state: 'booting' };
     const session = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });

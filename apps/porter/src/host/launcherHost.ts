@@ -268,14 +268,33 @@ export class LauncherHost implements SessionHost {
     const who = identity_split(identity);
     if (who === null) return false;
     const answer = await launcher_call(this.reach, 'POST', '/berths/stop', { user: who.user, cubeUrl: who.cubeUrl }, LAUNCHER_START_MS);
+    // A stop the launcher (or Docker behind it) refused or failed is a failure, not "nothing was running":
+    // the berth may still be there, and whoever asked must not go on as if it were gone.
+    if (answer.status !== 200) {
+      throw new Error(typeof answer.body['error'] === 'string' ? `the berth was not stopped: ${answer.body['error']}` : `the berth was not stopped: the launcher answered ${String(answer.status)}`);
+    }
     return answer.body['stopped'] === true;
   }
 
   /** @inheritdoc */
   public restart_begin(identity: string, user: string, cubeUrl: string, why: RestartWhy = { kind: 'asked' }): void {
+    // The boot's record stands before the old berth is touched: a greeter that asks from here on follows
+    // this boot, and a login is not handed the berth that is being stopped.
+    const record: BootRecord = this.record_open(identity);
+    this.line_add(record, restartLine_render(why));
     void (async (): Promise<void> => {
-      if (why.kind !== 'saved-login') await this.evict(identity).catch((): boolean => false);
-      await this.boot_run(identity, user, cubeUrl, null, restartLine_render(why));
+      if (why.kind !== 'saved-login') {
+        try {
+          await this.evict(identity);
+        } catch (error: unknown) {
+          // The old berth could not be stopped: no second one is started beside it.
+          const reason: string = error instanceof Error ? error.message : String(error);
+          this.line_add(record, `[FAIL]    Berth        ${reason}`);
+          this.boot_end(record, 'failed', reason);
+          return;
+        }
+      }
+      await this.boot_run(identity, user, cubeUrl, null, null, record);
     })().catch((): void => undefined);
   }
 
@@ -287,10 +306,11 @@ export class LauncherHost implements SessionHost {
    * @param cubeUrl - The CUBE.
    * @param token - The token, or null for the one the launcher holds.
    * @param first - A first line, for a restart.
+   * @param opened - The boot's record, when the caller has already opened it.
    * @returns The berth.
    */
-  private async boot_run(identity: string, user: string, cubeUrl: string, token: string | null, first: string | null): Promise<Berth> {
-    const record: BootRecord = this.record_open(identity);
+  private async boot_run(identity: string, user: string, cubeUrl: string, token: string | null, first: string | null, opened: BootRecord | null = null): Promise<Berth> {
+    const record: BootRecord = opened ?? this.record_open(identity);
     if (first !== null) this.line_add(record, first);
     try {
       if (identity !== identity_normalise(user, cubeUrl)) throw new Error('the identity is not the user\'s at this CUBE');
