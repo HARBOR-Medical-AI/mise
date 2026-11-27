@@ -602,6 +602,28 @@ describe('one open owns the field, whichever viewer it is', () => {
     stage.panel.dispose();
   });
 
+  it('a viewer\'s code that fails to arrive says so for the open that is current, and says nothing for one the field was given away from', async () => {
+    const stage: Stage = stage_make();
+    const inner = stage.panel as unknown as { chunk_import: (load: () => Promise<unknown>, shown: number) => Promise<unknown>; showSerial: number };
+    const stalePage = (): Promise<never> => Promise.reject(new TypeError('Failed to fetch dynamically imported module: /assets/viewer-OLD.js'));
+    // The open that is current: its failure is said.
+    void stage.panel.series_show(series_make(10));
+    await settle();
+    (FakeEngine.last as FakeEngine).open_end();
+    await settle();
+    const words: string = stage.state.textContent ?? '';
+    const noted: number = stage.notes.length;
+    // An import begun for an earlier open, failing now: nothing is said over the viewer that is showing.
+    expect(await inner.chunk_import(stalePage, inner.showSerial - 1)).toBeNull();
+    expect(stage.state.textContent).toBe(words);
+    expect(stage.notes.length).toBe(noted);
+    // The same failure for the open that is current is said, on the frame and in a note.
+    expect(await inner.chunk_import(stalePage, inner.showSerial)).toBeNull();
+    expect(stage.state.textContent).not.toBe(words);
+    expect(stage.notes.length).toBe(noted + 1);
+    stage.panel.dispose();
+  });
+
   it.each([['opens', true], ['is refused', false]])('an engine replaced while it opens paints nothing when it then %s: the field, its words and its notes are the later one\'s', async (_name: string, opens: boolean) => {
     const stage: Stage = stage_make();
     void stage.panel.series_show(series_make(10));

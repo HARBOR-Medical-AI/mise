@@ -331,7 +331,7 @@ export class ImagePanel {
       const at: number = this.siblings.findIndex((choice: SeriesChoice): boolean => choice.path === model.path) + 1;
       this.handlers.note(`image: series ${at} of ${this.siblings.length} in this study; image series <n> switches`);
     }
-    const cornerstone: typeof import('./cornerstoneEngine.js') | null = await this.chunk_import((): Promise<typeof import('./cornerstoneEngine.js')> => import('./cornerstoneEngine.js'));
+    const cornerstone: typeof import('./cornerstoneEngine.js') | null = await this.chunk_import((): Promise<typeof import('./cornerstoneEngine.js')> => import('./cornerstoneEngine.js'), shown);
     if (cornerstone === null) return;
     // The frame closed, or another series was asked for, while the viewer's code was fetched: no engine is
     // made for a field that is not this series's any more.
@@ -403,7 +403,7 @@ export class ImagePanel {
     this.loadPill.hidden = true;
     this.retryPill.hidden = true;
     this.presets_paint('NIFTI');
-    const niivue: typeof import('./niivueEngine.js') | null = await this.chunk_import((): Promise<typeof import('./niivueEngine.js')> => import('./niivueEngine.js'));
+    const niivue: typeof import('./niivueEngine.js') | null = await this.chunk_import((): Promise<typeof import('./niivueEngine.js')> => import('./niivueEngine.js'), shown);
     if (niivue === null) return;
     if (this.show_stale(shown)) return;
     const { NiivueEngine } = niivue;
@@ -418,15 +418,19 @@ export class ImagePanel {
    * field now reads the cure.
    *
    * @param load - The dynamic import.
+   * @param shown - The count of the open the import is for: a failure is said only while that open is the field's.
    * @returns The module, or null when it is of an older build than the server's.
    */
-  private async chunk_import<T>(load: () => Promise<T>): Promise<T | null> {
+  private async chunk_import<T>(load: () => Promise<T>, shown: number): Promise<T | null> {
     try {
       const loaded: T | undefined = await load();
       if (loaded !== undefined) return loaded;
     } catch (error: unknown) {
       if (!stalePage_is(error)) throw error;
     }
+    // A viewer's code that fails to arrive for an open the field has since been given away from says
+    // nothing: the words on the frame are the later open's.
+    if (this.show_stale(shown)) return null;
     barState_set(this.stateSpan, 'stale', STALE_PAGE_READOUT);
     this.handlers.note(`image: ${STALE_PAGE_READOUT.toLowerCase()} — the viewer's code is of an older build than the server has`);
     return null;
