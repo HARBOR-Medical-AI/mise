@@ -871,6 +871,34 @@ describe('a change of who is connected is one step', () => {
     expect(store.files).toEqual({ '/cfg/first.token': 'FIRST', '/cfg/second.token': 'SECOND' });
   });
 
+  it('a logout from a login held for the session stays logged out when its context is named again, though an older token of theirs is on disk', async () => {
+    const store: FakeStore = { files: { '/cfg/first.token': 'FIRST', '/cfg/second.token': 'OLDER' } };
+    const shared = globalConfig as unknown as { tokenFilepath: string; context_set: jest.Mock };
+    shared.tokenFilepath = '/cfg/first.token';
+    let failing: boolean = true;
+    shared.context_set.mockImplementation(async (user: string): Promise<void> => {
+      if (failing) throw new Error('the disk is full');
+      shared.tokenFilepath = `/cfg/${user}.token`;
+    });
+    restore = (): void => { shared.tokenFilepath = '/cfg/token'; shared.context_set.mockImplementation(async (): Promise<void> => undefined); };
+    const conn: ChRISConnection = new ChRISConnection(shared as unknown as ConnectionConfig, storage_make(store));
+    conn.loginProbe = async (): Promise<string | null> => null;
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    mockContextSet.mockResolvedValue(true);
+    mockAuthToken.mockResolvedValue('FRESH');
+    const said = jest.spyOn(console, 'error').mockImplementation((): void => undefined);
+    expect(await conn.connection_connect({ user: 'second', password: 'pw', debug: true, url: 'https://cube/api/v1/' })).toBe('FRESH');
+    said.mockRestore();
+    await conn.connection_logout();
+    // Storage recovers, and the second's context is named again.
+    failing = false;
+    mockParse.mockResolvedValue({ user: 'second', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    expect(await conn.context_set('second@https://cube/api/v1/')).toBe(true);
+    expect(await conn.client_get()).toBeNull();
+    expect(await conn.authToken_get(true)).toBeNull();
+    expect(store.files).toEqual({ '/cfg/first.token': 'FIRST', '/cfg/second.token': 'OLDER' });
+  });
+
   it('a token whose removal failed at logout is not read back when its context is named again; a login over it is', async () => {
     const store: FakeStore = { files: { '/cfg/first.token': 'FIRST' } };
     const storage = storage_make(store);

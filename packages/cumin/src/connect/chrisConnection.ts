@@ -120,6 +120,8 @@ export class ChRISConnection {
   private asked: number = 0;
   /** Whether the saved token file is known to be the named identity's: false after a transition that failed part way, until someone signs in. */
   private saved: boolean = true;
+  /** A move of context failed part way and has not been asked again: asked again and written, its file is the named identity's. */
+  private moveFailed: boolean = false;
   /** Token files whose removal at a logout failed: not read back until a login writes over them. */
   private readonly refused: Set<string> = new Set<string>();
   /** The awaited part of a change of identity that is under way, or null. */
@@ -353,8 +355,10 @@ export class ChRISConnection {
           // The context is written: the token file it names is this identity's, and is read. (A move that
           // failed and is asked again comes here with the name already moved: its file is confirmed now.)
           // Only a login held for this session keeps its token in memory in place of whatever the file holds.
+          // A logout from such a login is not such a move: naming its context again reads nothing back.
           const signedOut: boolean = this.authToken === null;
-          this.saved = known || signedOut;
+          this.saved = known || this.moveFailed;
+          this.moveFailed = false;
           await this.client_rebuild();
           // Nobody was connected under this name and its saved token has now been read: that is a change
           // of who is connected, and is said.
@@ -368,6 +372,7 @@ export class ChRISConnection {
             this.client = null;
             this.authToken = null;
             this.saved = false;
+            this.moveFailed = true;
           }
           throw error;
         } finally {
@@ -637,6 +642,7 @@ export class ChRISConnection {
     // Whose the saved token file is has to be established again for whoever is published, except by a
     // logout, which removes the file it knows.
     if (!keepFile) this.saved = false;
+    this.moveFailed = false;
     this.user = user;
     this.chrisURL = url;
     this.authToken = token;
