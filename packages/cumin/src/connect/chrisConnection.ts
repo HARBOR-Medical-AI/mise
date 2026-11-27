@@ -48,6 +48,19 @@ export interface TokenConnectOptions {
   token: string;
 }
 
+/**
+ * Says whether a context string names a user or a CUBE, as
+ * `chrisContextURL_parse` will find: known at once, with nothing awaited.
+ *
+ * @param context - The context string.
+ * @returns True when it names who or where.
+ */
+function contextIdentity_names(context: string): boolean {
+  const parts: string[] = context.split("@");
+  if (parts.length > 1 && parts[0] !== "") return true;
+  return /https?:\/\/[^?]+/.test(parts.length > 1 ? parts[1] ?? "" : context);
+}
+
 /** What became of a login's answer when its turn came. */
 interface LoginAnswer {
   /** A later login, logout or move of context had been asked for: the answer was not acted on. */
@@ -107,6 +120,8 @@ export class ChRISConnection {
   private asked: number = 0;
   /** Whether the saved token file is known to be the named identity's: false after a transition that failed part way, until someone signs in. */
   private saved: boolean = true;
+  /** Token files whose removal at a logout failed: not read back until a login writes over them. */
+  private readonly refused: Set<string> = new Set<string>();
   /** The awaited part of a change of identity that is under way, or null. */
   private transition: Promise<void> | null = null;
   private _config?: ConnectionConfig; // Renamed backing field
@@ -191,13 +206,10 @@ export class ChRISConnection {
           return;
         }
         this.identity_publish(user, url, token);
-        this.saved = true;
-        await this._config!.context_set(user, url);
-        this.tokenFile = this._config!.tokenFilepath;
-        const saved: boolean = await this.token_saveToFile(this.tokenFile, token);
         // Said only when it is so: a token that could not be saved privately is held for this session and not on disk.
+        const saved: boolean = await this.login_persist(user, url, token);
         console.log(saved ? "Auth token saved successfully" : "Auth token held for this session; it was not saved");
-        console.log("ChRIS URL saved successfully");
+        if (this.saved) console.log("ChRIS URL saved successfully");
       });
       if (answer.superseded) {
         console.log(`The login of ${user} was answered after a later login or logout was asked for; it was not acted on`);
@@ -281,10 +293,7 @@ export class ChRISConnection {
         return;
       }
       this.identity_publish(user, url, token, folderLookup_memoize(client));
-      this.saved = true;
-      await this._config!.context_set(user, url);
-      this.tokenFile = this._config!.tokenFilepath;
-      await this.token_saveToFile(this.tokenFile, token);
+      await this.login_persist(user, url, token);
     });
     if (answer.superseded) return { connected: false, reason: `the login of ${user} was answered after a later login or logout was asked for; it was not acted on` };
     return { connected: true };
@@ -297,9 +306,9 @@ export class ChRISConnection {
    */
   async context_set(context: string): Promise<boolean> {
     context = contextString_check(context);
-    // What had been asked when this was: a login or logout asked while the context is being read comes
-    // after it, and a move of identity it names is then not made.
-    const entered: number = this.asked;
+    // A context that names a user or a CUBE takes its place in the order now, as it is asked for and
+    // before anything is awaited: of two asked together the later is the one made, whichever is read first.
+    const mine: number | null = contextIdentity_names(context) ? this.asked_take() : null;
     const parsedContext: SingleContext = await chrisContextURL_parse(context);
 
     if (errorStack.messagesOfType_has('error')) {
@@ -312,9 +321,13 @@ export class ChRISConnection {
 
     let status: boolean = true;
 
-    if ((parsedContext.user || parsedContext.URL) && entered === this.asked) {
-      this.asked_take();
+    if (parsedContext.user || parsedContext.URL) {
+      const answer: LoginAnswer = { superseded: false };
       await this.transition_run(async (): Promise<void> => {
+        if (mine !== this.asked) {
+          answer.superseded = true;
+          return;
+        }
         // Who the context names is compared with who is connected when this change's turn comes, not when
         // it was asked for: a login that finished in between is what it is compared with.
         const user: string | null = parsedContext.user || this.user;
@@ -324,6 +337,7 @@ export class ChRISConnection {
         // Another user or another CUBE: from this moment nobody is connected as the one before, and until
         // the new one's token has been read nobody is connected at all. (Nothing is awaited before this.)
         // The change is made known once, below, when it is known who is connected after it.
+        const known: boolean = this.saved;
         if (changed) this.identity_publish(user, url, null, null, false);
         try {
           if (parsedContext.user) {
@@ -336,7 +350,9 @@ export class ChRISConnection {
           }
           // The client for who the context now names, from their own saved token; and, now that it is known
           // whether they have one, who is connected is said by name.
-          this.saved = true;
+          // The context is written: the token file it names is this identity's. (The same identity named
+          // again changes nothing about whether its file was known.)
+          this.saved = changed ? true : known;
           await this.client_rebuild();
         } catch (error: unknown) {
           // The fields have moved and the write of it failed part way: nobody's client or token is kept
@@ -355,6 +371,9 @@ export class ChRISConnection {
           if (changed) identityEpoch_raise(this.authToken !== null ? identityName_spell(this.user ?? '', this.chrisURL ?? '') : null);
         }
       });
+      // A later login, logout or move was asked for: none of this one is made, its folder, feed and
+      // plugin included, and its caller is told so.
+      if (answer.superseded) return false;
     }
 
     if (parsedContext.folder) {
@@ -442,7 +461,8 @@ export class ChRISConnection {
    */
   private async client_rebuild(): Promise<Client | null> {
     const began: number = this.credentials;
-    this.tokenFile = this._config!.tokenFilepath;
+    // The token file follows the configuration only while it is known to be the named identity's.
+    if (this.saved) this.tokenFile = this._config!.tokenFilepath;
     if (!this.chrisURL) {
       const loaded: string | null = this._config ? await this._config.chrisURL_load() : null;
       if (began !== this.credentials) return this.client;
@@ -537,17 +557,51 @@ export class ChRISConnection {
     await this.transition_run(async (): Promise<void> => {
       // In its turn: a login still writing its token finishes first, and this then ends it. The file
       // removed is the one that is current when this turn comes.
-      this.identity_publish(this.user, this.chrisURL, null);
+      this.identity_publish(this.user, this.chrisURL, null, null, true, true);
+      // The file removed is the one known to be theirs. After a login held for the session only, or a
+      // move of context that failed part way, the file named may be the one before's: it is left alone.
+      if (!this.saved) {
+        console.log("Logged out successfully");
+        return;
+      }
+      const file: string = this.tokenFile;
       try {
-        await this.storageProvider!.remove(this.tokenFile);
+        await this.storageProvider!.remove(file);
         console.log("Logged out successfully");
       } catch (error: unknown) {
-        // The token could not be removed: it is still on disk, and is not read back. Logged out stays
-        // logged out until someone signs in.
-        this.saved = false;
+        // The token could not be removed: it is still on disk, and that file is not read back, whoever
+        // names its context again, until a login writes a token over it.
+        this.refused.add(file);
         console.error("Error during logout:", error);
       }
     });
+  }
+
+  /**
+   * Writes a login's context and saves its token, in that order: the token
+   * file is the login's own only once its context has been written.
+   *
+   * @param user - Who logged in.
+   * @param url - Their CUBE.
+   * @param token - Their token.
+   * @returns Whether the token is on disk; false when it is held for this session only.
+   */
+  private async login_persist(user: string, url: string, token: string): Promise<boolean> {
+    try {
+      await this._config!.context_set(user, url);
+    } catch (error: unknown) {
+      // The context could not be written: the login stands for this session, with no file known to be
+      // its own. Nothing is read from, written to or removed at the path the one before had.
+      const reason: string = error instanceof Error ? error.message : String(error);
+      console.error(`The login is held for this session; its context could not be saved: ${reason}`);
+      return false;
+    }
+    this.tokenFile = this._config!.tokenFilepath;
+    this.saved = true;
+    const written: boolean = await this.token_saveToFile(this.tokenFile, token);
+    // A token written over one whose removal had failed is the new login's: the file is read again.
+    if (written) this.refused.delete(this.tokenFile);
+    return written;
   }
 
   /**
@@ -572,8 +626,12 @@ export class ChRISConnection {
    * @param token - Their token, or null when nobody is connected.
    * @param client - A client already made for that token, when there is one.
    * @param announce - False when the caller makes the change known itself, once it knows who is connected after it.
+   * @param keepFile - True when the saved token file is still whose it was (a logout, which then removes it).
    */
-  private identity_publish(user: string | null, url: string | null, token: string | null, client: Client | null = null, announce: boolean = true): void {
+  private identity_publish(user: string | null, url: string | null, token: string | null, client: Client | null = null, announce: boolean = true, keepFile: boolean = false): void {
+    // Whose the saved token file is has to be established again for whoever is published, except by a
+    // logout, which removes the file it knows.
+    if (!keepFile) this.saved = false;
     this.user = user;
     this.chrisURL = url;
     this.authToken = token;
@@ -638,7 +696,7 @@ export class ChRISConnection {
     const began: number = this.credentials;
     // After a move of context or a logout that failed part way, the file named may hold a token that is
     // not the named identity's, or one that was to have been removed: it is not read.
-    if (!this.saved) return;
+    if (!this.saved || this.refused.has(this.tokenFile)) return;
     let read: string | null = null;
     try {
       // A token saved before files were made private is made so when it is next read.

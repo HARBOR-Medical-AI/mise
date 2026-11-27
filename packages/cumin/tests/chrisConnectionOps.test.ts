@@ -44,6 +44,8 @@ import { IStorageProvider } from '../src/io/io';
 // Anything kept "in the default place" on a change of identity goes to a folder of this file's own.
 process.env['XDG_CACHE_HOME'] = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'connection-cache-')) as string;
 
+import { connectionConfig as globalConfig } from '../src/config/config';
+
 const mockAuthToken: jest.Mock = authToken_get as unknown as jest.Mock;
 const mockClientCreate: jest.Mock = client_create as unknown as jest.Mock;
 const mockTokenVerify: jest.Mock = token_verify as unknown as jest.Mock;
@@ -762,6 +764,120 @@ describe('a change of who is connected is one step', () => {
     expect(await conn.authToken_get(true)).toBeNull();
     expect(await conn.client_get()).toBeNull();
     expect(await conn.client_refresh()).toBeNull();
+  });
+
+  let restore: () => void = (): void => undefined;
+  afterEach((): void => { restore(); restore = (): void => undefined; });
+
+  /** A configuration that keeps each user's token in a file of their own; a write of the context can be made to fail. */
+  function pathsConfig_make(failFor: string | null = null): ConnectionConfig & { tokenFilepath: string } {
+    const config = { tokenFilepath: '/cfg/first.token', chrisURL_load: jest.fn(async () => 'https://cube/api/v1/'), context_set: jest.fn() } as unknown as ConnectionConfig & { tokenFilepath: string };
+    (config.context_set as unknown as jest.Mock).mockImplementation(async (user: string): Promise<void> => {
+      if (user === failFor) throw new Error('the disk is full');
+      config.tokenFilepath = `/cfg/${user}.token`;
+    });
+    return config;
+  }
+
+  it.each([['the earlier is read first', 'earlier'], ['the later is read first', 'later']])('of two moves of context asked together the later is made and the earlier\'s caller is told no, when %s', async (_name: string, readFirst: string) => {
+    const conn: ChRISConnection = connection_make({ files: {} });
+    mockContextSet.mockResolvedValue(true);
+    const reads: Record<string, ReturnType<typeof gate_make<object>>> = { earlier: gate_make<object>(), later: gate_make<object>() };
+    mockParse.mockImplementationOnce((): Promise<object> => reads['earlier']!.wait).mockImplementationOnce((): Promise<object> => reads['later']!.wait);
+    const earlier: Promise<boolean> = conn.context_set('earlier@https://cube/api/v1/?folder=/home/earlier');
+    const later: Promise<boolean> = conn.context_set('later@https://cube/api/v1/');
+    const parsed: Record<string, object> = {
+      earlier: { user: 'earlier', URL: 'https://cube/api/v1/', folder: '/home/earlier', feed: null, plugin: null },
+      later: { user: 'later', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null },
+    };
+    const second: string = readFirst === 'earlier' ? 'later' : 'earlier';
+    reads[readFirst]!.open(parsed[readFirst]!);
+    await new Promise((resolve) => { setImmediate(resolve); });
+    reads[second]!.open(parsed[second]!);
+    expect(await earlier).toBe(false);
+    expect(await later).toBe(true);
+    expect(await conn.user_get()).toBe('later');
+    // Nothing of the earlier was written: not its user, and not its folder.
+    expect(mockContextSet.mock.calls.map((call: unknown[]): unknown => call[1])).not.toContain('earlier');
+    expect(mockContextSet.mock.calls.map((call: unknown[]): unknown => call[1])).not.toContain('/home/earlier');
+  });
+
+  it.each([['a password login', 'password'], ['a token login', 'token']])('%s whose context cannot be written is held for the session; the one before\'s token is not read, written or removed', async (_name: string, kind: string) => {
+    const store: FakeStore = { files: { '/cfg/first.token': 'FIRST' } };
+    // A login reads the process's own configuration again: that one is made to keep a file per user, and
+    // to fail the second's write.
+    const shared = globalConfig as unknown as { tokenFilepath: string; context_set: jest.Mock };
+    shared.tokenFilepath = '/cfg/first.token';
+    shared.context_set.mockImplementation(async (user: string): Promise<void> => {
+      if (user === 'second') throw new Error('the disk is full');
+      shared.tokenFilepath = `/cfg/${user}.token`;
+    });
+    restore = (): void => { shared.tokenFilepath = '/cfg/token'; shared.context_set.mockImplementation(async (): Promise<void> => undefined); };
+    const conn: ChRISConnection = new ChRISConnection(pathsConfig_make('second'), storage_make(store));
+    conn.loginProbe = async (): Promise<string | null> => null;
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    expect(await conn.client_get()).toEqual({ of: 'FIRST' });
+    const said = jest.spyOn(console, 'error').mockImplementation((): void => undefined);
+    if (kind === 'password') {
+      mockAuthToken.mockResolvedValue('SECOND');
+      expect(await conn.connection_connect({ user: 'second', password: 'pw', debug: true, url: 'https://cube/api/v1/' })).toBe('SECOND');
+    } else {
+      mockTokenVerify.mockResolvedValue(undefined);
+      expect((await conn.connection_connectWithToken({ user: 'second', url: 'https://cube/api/v1/', token: 'SECOND' })).connected).toBe(true);
+    }
+    said.mockRestore();
+    // Signed in as the second, for this session; a refresh does not bring the first's token back.
+    expect(await conn.authToken_get(true)).toBe('SECOND');
+    expect(await conn.client_refresh()).toEqual({ of: 'SECOND' });
+    expect(store.files).toEqual({ '/cfg/first.token': 'FIRST' });
+    // Logging out ends the session's login and removes nothing of the first's.
+    await conn.connection_logout();
+    expect(await conn.authToken_get(true)).toBeNull();
+    expect(await conn.client_refresh()).toBeNull();
+    expect(store.files).toEqual({ '/cfg/first.token': 'FIRST' });
+  });
+
+  it('a logout after a move of context that failed removes nothing: the file still named is the one before\'s', async () => {
+    const store: FakeStore = { files: { '/cfg/first.token': 'FIRST' } };
+    const conn: ChRISConnection = new ChRISConnection(pathsConfig_make('second'), storage_make(store));
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    mockContextSet.mockResolvedValue(true);
+    expect(await conn.client_get()).toEqual({ of: 'FIRST' });
+    mockParse.mockResolvedValue({ user: 'second', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    await expect(conn.context_set('second@https://cube/api/v1/')).rejects.toThrow('the disk is full');
+    await conn.connection_logout();
+    expect(store.files).toEqual({ '/cfg/first.token': 'FIRST' });
+    expect(await conn.authToken_get(true)).toBeNull();
+  });
+
+  it('a token whose removal failed at logout is not read back when its context is named again; a login over it is', async () => {
+    const store: FakeStore = { files: { '/cfg/first.token': 'FIRST' } };
+    const storage = storage_make(store);
+    (storage.remove as unknown as jest.Mock).mockRejectedValueOnce(new Error('EACCES'));
+    const conn: ChRISConnection = new ChRISConnection(pathsConfig_make(), storage);
+    conn.loginProbe = async (): Promise<string | null> => null;
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    mockContextSet.mockResolvedValue(true);
+    mockParse.mockResolvedValue({ user: 'first', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    await conn.context_set('first@https://cube/api/v1/');
+    expect(await conn.client_get()).toEqual({ of: 'FIRST' });
+    const said = jest.spyOn(console, 'error').mockImplementation((): void => undefined);
+    await conn.connection_logout();
+    said.mockRestore();
+    expect(store.files['/cfg/first.token']).toBe('FIRST');
+    // The same context named again, and another and back: the surviving token is not read.
+    await conn.context_set('first@https://cube/api/v1/');
+    expect(await conn.authToken_get(true)).toBeNull();
+    expect(await conn.client_refresh()).toBeNull();
+    mockParse.mockResolvedValue({ user: 'second', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    await conn.context_set('second@https://cube/api/v1/');
+    mockParse.mockResolvedValue({ user: 'first', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    await conn.context_set('first@https://cube/api/v1/');
+    expect(await conn.authToken_get(true)).toBeNull();
+    // Signing in writes a token over it: that one is read.
+    mockAuthToken.mockResolvedValue('AGAIN');
+    await conn.connection_connect({ user: 'first', password: 'pw', debug: true, url: 'https://cube/api/v1/' });
+    expect(await conn.authToken_get(true)).toBe('AGAIN');
   });
 
   it('an address still being read when someone else connects is not put in place of theirs', async () => {
