@@ -911,6 +911,31 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     expect(docker.containers.has(container)).toBe(false);
   });
 
+  it('a stop that arrives while the launcher is still making the berth, for a caller that has gone away, comes after the start: no berth is left, and no login to restart on', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    // A start whose image step is held. Whoever asked for it gives up waiting; the launcher goes on.
+    let pulled: () => void = (): void => undefined;
+    docker.pullGate = new Promise<void>((resolve: () => void): void => { pulled = resolve; });
+    const starting: Promise<unknown> = launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    void starting.catch((): void => undefined);
+    for (let waited: number = 0; waited < 100 && docker.pulls.length === 0; waited++) await new Promise((resolve) => { setTimeout(resolve, 10); });
+    expect(docker.containers.has(container)).toBe(false);
+    // The final stop (a logout) arrives now, with no container yet to find.
+    let stopped: boolean | null = null;
+    const stopping: Promise<void> = launcher.stop('ana', CUBE).then((was: boolean): void => { stopped = was; });
+    await new Promise((resolve) => { setTimeout(resolve, 50); });
+    expect(stopped).toBeNull();
+    docker.pullGate = null;
+    pulled();
+    await starting;
+    await stopping;
+    // The stop removed the berth the start made, and the login held for it.
+    expect(stopped).toBe(true);
+    expect(docker.containers.has(container)).toBe(false);
+    await expect(launcher.start({ user: 'ana', uid: 0, gid: 0, cubeUrl: CUBE, token: null })).rejects.toThrow('no token to start a berth on');
+  });
+
   it('a stop whose container went but whose wire the engine would not remove is said as that, and asking again finishes it', async () => {
     const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
     const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);

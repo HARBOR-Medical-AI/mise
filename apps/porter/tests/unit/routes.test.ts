@@ -484,6 +484,39 @@ describe('the door', () => {
     await door.app.close();
   });
 
+  it('a login that arrives after a logout already waiting behind a restart does not join the restart: it waits for the logout and looks afresh', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const berths = new FakeBerthHost();
+    let restartStopped: () => void = (): void => undefined;
+    berths.restartStop = new Promise<void>((resolve: () => void): void => { restartStopped = resolve; });
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, mint: async () => ({ token: 'T' }) });
+    berths.found = { identity, url: 'ws://10.213.77.2:4444', token: 'ATTACH' };
+    const first = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    // RESTART, its stop held; the host's record says a boot is under way.
+    await door.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(first) } });
+    berths.report = { lines: [{ channel: 'out', text: 'Restarting the calypso daemon, as asked' }], state: 'booting' };
+    // A logout is asked for, and waits its turn behind the restart.
+    const out = door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(first) } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    // Then a login. The boot it could join is of a berth the logout is about to stop.
+    let answered: string | null = null;
+    const login = door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } })
+      .then((reply): void => { answered = (reply.json() as { state: string }).state; });
+    await new Promise((resolve) => { setTimeout(resolve, 60); });
+    expect(answered).toBeNull();
+    expect(berths.evicted).toEqual([]);
+    // The restart's stop ends; the logout stops the berth; the login looks afresh and starts a session of its own.
+    berths.report = null;
+    berths.found = null;
+    restartStopped();
+    expect((await out).json()).toEqual({ ok: true });
+    await login;
+    expect(berths.evicted).toEqual([identity]);
+    expect(answered).toBe('starting');
+    expect(berths.spawned).toHaveLength(1);
+    await door.app.close();
+  });
+
   it('a login during a restart\'s stop follows the restart at once, without looking for the berth, and the greeter is told when that stop fails', async () => {
     const identity: string = 'chris@https://cube.example.org/api/v1/';
     let restartStopped: () => void = (): void => undefined;

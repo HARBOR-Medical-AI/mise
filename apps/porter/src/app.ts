@@ -329,7 +329,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       registry.generation_raise(key);
       return;
     }
-    void registry.ending_run(key, (): Promise<void> => stopping);
+    void registry.ending_run(key, (): Promise<void> => stopping, 'restart');
   };
   const creds: CredentialStore = new CredentialStore(config.stateDir);
   const tokens: TokenStore = options.tokens ?? new TokenStore(config.tokensFile, config.tokenDays);
@@ -662,7 +662,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       // A boot already under way is joined at once, before any wait and before the berth is looked for: its
       // record is what there is to know. A restart's stop is such a boot's first step, so a login does not
       // wait it out and then miss that it failed: it follows the record, where the failure is said.
-      if (boot_isUnderWay()) {
+      // Not when an end of the session has been asked for and waits its turn behind that restart: the boot
+      // is of a berth that is to be stopped, and the login waits for the end and looks afresh.
+      if (boot_isUnderWay() && !registry.end_pending(key)) {
         registry.pending_note(identity, username);
         options.log?.(`${username} joins the boot already under way`);
         return starting_answer();

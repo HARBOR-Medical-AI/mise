@@ -62,6 +62,8 @@ export class SessionRegistry {
   private readonly generations: Map<string, number> = new Map();
   /** The endings under way, by key: each resolves when its session has stopped, or could not be. */
   private readonly evictions: Map<string, Promise<void>> = new Map();
+  /** How many ends of each key's session have been asked for and are not over. */
+  private readonly ends: Map<string, number> = new Map<string, number>();
   /** What settles each ending under way, by its promise. */
   private readonly settlers: WeakMap<Promise<void>, () => void> = new WeakMap<Promise<void>, () => void>();
   private readonly clock: () => number;
@@ -242,12 +244,16 @@ export class SessionRegistry {
    *
    * @param key - The session key.
    * @param work - The stop.
+   * @param kind - An end of the session (the default), or the stop that begins a restart of it.
    * @returns What the stop returns.
    *
    * @example
    * const ended: boolean = await registry.ending_run(key, (): Promise<boolean> => host.evict(identity));
    */
-  public async ending_run<T>(key: string, work: () => Promise<T>): Promise<T> {
+  public async ending_run<T>(key: string, work: () => Promise<T>, kind: 'end' | 'restart' = 'end'): Promise<T> {
+    // An end asked for (a logout, an administrator's end) is counted from the moment it is asked until it
+    // is over, the time it waits behind a restart included: a login meanwhile does not join that restart.
+    if (kind === 'end') this.ends.set(key, (this.ends.get(key) ?? 0) + 1);
     // One at a time for a key: each waits for the one before, in the order asked.
     const before: Promise<void> | undefined = this.evictions.get(key);
     let wait_settle: () => void = (): void => undefined;
@@ -258,9 +264,28 @@ export class SessionRegistry {
       if (before !== undefined) await before;
       return await work();
     } finally {
+      if (kind === 'end') {
+        const left: number = (this.ends.get(key) ?? 1) - 1;
+        if (left > 0) this.ends.set(key, left);
+        else this.ends.delete(key);
+      }
       if (this.evictions.get(key) === done) this.evictions.delete(key);
       wait_settle();
     }
+  }
+
+  /**
+   * Says whether an end of a key's session has been asked for and is not
+   * over: under way, or waiting its turn behind a restart.
+   *
+   * @param key - The session key.
+   * @returns True while one is.
+   *
+   * @example
+   * if (!registry.end_pending(key)) joinTheBoot();
+   */
+  public end_pending(key: string): boolean {
+    return (this.ends.get(key) ?? 0) > 0;
   }
 
   /**

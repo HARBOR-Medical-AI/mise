@@ -612,6 +612,11 @@ export class BerthLauncher {
   public async stop(user: string, cubeUrl: string, restart: boolean = false): Promise<boolean> {
     const identity: string = identity_normalise(user, cubeUrl);
     const names: BerthNames = berthNames_derive(this.options.prefix, identity, user);
+    // A start of this berth that is under way is waited for, whoever asked for it and whether or not they
+    // are still listening (porter gives up on a slow start; the start goes on here). A stop that looked
+    // before the container was made would find nothing, say so, and leave the berth the start then makes.
+    const starting: Promise<BerthState> | undefined = this.starting.get(identity);
+    if (starting !== undefined) await starting.then((): void => undefined, (): void => undefined);
     const legacy: boolean = await this.container_remove(names.containerLegacy);
     const was: boolean = await this.container_remove(names.container);
     // The held login goes once the berth is gone, and only at an end: a stop that failed keeps it, and so
