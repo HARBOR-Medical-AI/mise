@@ -351,7 +351,8 @@ describe('what agy broke, held', () => {
 
 describe('the identity marker at adoption and at setup', () => {
   it('adopts by a marker only from a file of this account\'s own that names the folder\'s own identity', async () => {
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (): Promise<boolean> => true });
+    const probed: string[] = [];
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (url: string): Promise<boolean> => { probed.push(url); return true; } });
     const GOOD: string = 'stratus:oci@good@https://cube.example.org/api/v1/';
     const LINKED: string = 'stratus:oci@linked@https://cube.example.org/api/v1/';
     const MISPLACED: string = 'stratus:oci@misplaced@https://cube.example.org/api/v1/';
@@ -360,7 +361,7 @@ describe('the identity marker at adoption and at setup', () => {
     const plant = (identity: string, berthIdentity: string): string => {
       const dir: string = join(stateDir, berthKey_compute(identity));
       mkdirSync(join(dir, 'run', 'calypso'), { recursive: true });
-      writeFileSync(join(dir, 'run', 'calypso', 'berth-x.json'), JSON.stringify({ identity: berthIdentity, url: 'ws://127.0.0.1:1', token: 'T' }));
+      writeFileSync(join(dir, 'run', 'calypso', 'berth-x.json'), JSON.stringify({ identity: berthIdentity, url: `ws://127.0.0.1:1/${berthKey_compute(identity)}`, token: 'T' }));
       return dir;
     };
     identityFile_write(join(plant(GOOD, 'me@cloud'), 'identity'), GOOD);
@@ -370,8 +371,12 @@ describe('the identity marker at adoption and at setup', () => {
     // A real file of porter's, but naming another session's identity (copied from its folder): not believed.
     identityFile_write(join(plant(MISPLACED, 'third@cloud'), 'identity'), VICTIM);
     plant(PLAIN, PLAIN);
+    // A berth naming nobody, in the folder its empty identity's key names: not adopted.
+    plant('', '');
     const seen: string[] = (await host.sessions_adopt()).map((sighting) => sighting.identity).sort();
     expect(seen).toEqual([PLAIN, GOOD].sort());
+    // Only the sightings believed are probed: no connection is made for the others.
+    expect(probed.sort()).toEqual([PLAIN, GOOD].map((identity: string): string => `ws://127.0.0.1:1/${berthKey_compute(identity)}`).sort());
     expect(identityFile_read(join(stateDir, 'nothing'))).toBeUndefined();
     expect(identityFile_read(join(stateDir, berthKey_compute(LINKED), 'identity'))).toBeNull();
   });
@@ -499,6 +504,40 @@ describe('the identity marker at adoption and at setup', () => {
     };
     expect(() => sessionDir_settle(join(root, 'home'), root, fs)).toThrow();
     expect(statSync(join(outside, 'home')).mode & 0o777).toBe(0o755);
+  });
+
+  it('refuses setup before making anything when the host gives no path to the open root', async () => {
+    process.env = { PATH: '/usr/bin' };
+    const made: string[] = [];
+    const fs: SettleFs = {
+      dir_make: (path, options) => { made.push(path); return nodeFs.mkdirSync(path, options); },
+      dir_open: (path, flags) => nodeFs.openSync(path, flags),
+      open_stat: (fd) => nodeFs.fstatSync(fd),
+      open_chmod: (fd, mode) => { nodeFs.fchmodSync(fd, mode); },
+      name_stat: (path) => {
+        if (path.startsWith('/proc/self/fd/')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        return nodeFs.lstatSync(path);
+      },
+      path_real: (path) => nodeFs.realpathSync(path),
+      open_close: (fd) => { nodeFs.closeSync(fd); },
+    };
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn, alive: async (): Promise<boolean> => false, bootTimeoutMs: 60, pollMs: 10, settleFs: fs });
+    const root: string = join(host.dirs_build(STRATUS).config, '..');
+    host.stratus_begin(STRATUS, '/creds/oci/config', false, false);
+    let report: { state: string; reason?: string } | undefined;
+    for (let i = 0; i < 50; i++) {
+      const followed = host.boot_follow(STRATUS, { line: () => undefined, done: () => undefined });
+      report = followed?.report;
+      followed?.release();
+      if (report !== undefined && report.state !== 'booting') break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(report).toMatchObject({ state: 'failed' });
+    expect(report?.reason).toContain('/proc/self/fd');
+    // The root alone was made: no child folder, no marker.
+    expect(made).toEqual([root]);
+    expect(nodeFs.readdirSync(root)).toEqual([]);
+    expect(spawnCalls).toEqual([]);
   });
 });
 

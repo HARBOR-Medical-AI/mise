@@ -394,29 +394,33 @@ function mode_tighten(handle: number, found: Stats, dir: string, fs: SettleFs): 
 }
 
 /**
- * The path through which a folder held open is reached as that folder: on
- * Linux `/proc/self/fd/<fd>`, which resolves to the opened folder itself;
- * where there is no such path, the folder's name.
+ * The path through which a folder held open is reached as that folder:
+ * `/proc/self/fd/<fd>`, which on Linux resolves to the opened folder itself
+ * whatever has since been put at its name. Where there is no such path, or
+ * it does not answer as the folder held, there is nothing safe to make the
+ * session's folders through, and setup refuses before making any.
  *
  * @param fd - The open folder.
- * @param name - Its name.
  * @param fs - The filesystem calls.
  * @returns The path to make things in it through.
+ * @throws {Error} When the host gives no path to the open folder itself.
  *
  * @example
  * ```ts
- * anchor_find(rootFd, '/var/lib/porter/ab12', SETTLE_FS); // '/proc/self/fd/23'
+ * anchor_find(rootFd, SETTLE_FS); // '/proc/self/fd/23'
  * ```
  */
-function anchor_find(fd: number, name: string, fs: SettleFs): string {
+function anchor_find(fd: number, fs: SettleFs): string {
   const through: string = `/proc/self/fd/${String(fd)}`;
+  let seen: Stats;
   try {
-    const seen: Stats = fs.name_stat(`${through}/.`);
-    const held: Stats = fs.open_stat(fd);
-    return seen.dev === held.dev && seen.ino === held.ino ? through : name;
+    seen = fs.name_stat(`${through}/.`);
   } catch {
-    return name;
+    throw new Error('this host gives no path to an open folder (/proc/self/fd), so a session beside porter cannot be set up safely; run sessions in berths (PORTER_BERTHS=launcher)');
   }
+  const held: Stats = fs.open_stat(fd);
+  if (seen.dev !== held.dev || seen.ino !== held.ino) throw new Error('/proc/self/fd does not lead to the folder held open, so a session beside porter cannot be set up safely');
+  return through;
 }
 
 /**
@@ -570,6 +574,8 @@ export class ProcessHost implements SessionHost {
     const marked: string | null | undefined = identityFile_read(join(this.stateDir, folder, 'identity'));
     if (marked === null) return null;
     const identity: string = marked ?? berth.identity;
+    // An empty identity is nobody's (agy, attack 0d): its key would still name a folder.
+    if (identity.trim().length === 0) return null;
     return berthKey_compute(identity) === folder ? identity : null;
   }
 
@@ -585,10 +591,10 @@ export class ProcessHost implements SessionHost {
         if (!name.startsWith('berth-') || !name.endsWith('.json')) continue;
         const berth: Berth | null = this.berthFile_read(join(berthDir, name));
         if (berth === null) continue;
-        const alive: boolean = await this.alive(berth.url);
-        // A stratus session's own identity is kept beside its berth.
+        // Whose it is, before anything is asked of it: a sighting not believed is not probed either.
         const identity: string | null = this.sightingIdentity_read(entry.name, berth);
         if (identity === null) continue;
+        const alive: boolean = await this.alive(berth.url);
         sightings.push({ identity, berth, alive });
         if (alive && !this.sessions.has(identity)) {
           this.sessions.set(identity, {
@@ -695,13 +701,12 @@ export class ProcessHost implements SessionHost {
     const rootId: FolderId = sessionDir_settle(root, this.stateDir, fs);
     // The root stays open while everything in it is made, and everything is made through it: on Linux a
     // name under /proc/self/fd/<root> resolves inside the folder that was opened, whatever has since been
-    // put at the root's name (Node has no mkdirat or openat). Without /proc, through the name, with each
-    // folder's parent checked against the root before anything is changed.
+    // put at the root's name (Node has no mkdirat or openat). A host without it refuses before making any.
     const rootFd: number = fs.dir_open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try {
       const opened: Stats = fs.open_stat(rootFd);
       if (opened.dev !== rootId.dev || opened.ino !== rootId.ino) throw new Error(`the session folder ${root} changed while it was checked`);
-      const anchor: string = anchor_find(rootFd, root, fs);
+      const anchor: string = anchor_find(rootFd, fs);
       for (const name of ['config', 'run', 'cache', 'tmp', 'home', 'state', 'data']) sessionDir_settle(join(anchor, name), anchor, fs, rootId);
       // The daemon's berth names its cloud identity; this names the session's,
       // so a porter restarted adopts it under the key its cookie holds.
