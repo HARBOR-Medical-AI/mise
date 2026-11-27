@@ -11,7 +11,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, syml
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hostControl_parseArgv } from '@fnndsc/calypso';
-import { ProcessHost, sessionDir_settle, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
+import * as nodeFs from 'node:fs';
+import { ProcessHost, sessionDir_settle, type SettleFs, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
 import { address_isPlain, sessionEnv_build, sessionEnv_withheld } from '../../src/host/sessionEnv.js';
 
 const IDENTITY: string = 'chris@https://cube.example.org/api/v1/';
@@ -238,5 +239,43 @@ describe('sessionDir_settle', () => {
     } finally {
       rmSync(elsewhere, { recursive: true, force: true });
     }
+  });
+});
+
+describe('a folder swapped while it is checked', () => {
+  /** Node's calls, recorded, with the name's last lookup answering for another folder. */
+  function swapping(): { fs: SettleFs; opened: number[]; changed: number[]; closed: number[] } {
+    const opened: number[] = [];
+    const changed: number[] = [];
+    const closed: number[] = [];
+    const fs: SettleFs = {
+      dir_make: (path, options) => nodeFs.mkdirSync(path, options),
+      dir_open: (path, flags) => { const fd: number = nodeFs.openSync(path, flags); opened.push(fd); return fd; },
+      open_stat: (fd) => nodeFs.fstatSync(fd),
+      open_chmod: (fd, mode) => { changed.push(fd); nodeFs.fchmodSync(fd, mode); },
+      name_stat: (path) => Object.assign(Object.create(Object.getPrototypeOf(nodeFs.lstatSync(path)) as object) as nodeFs.Stats, nodeFs.lstatSync(path), { ino: nodeFs.lstatSync(path).ino + 1 }),
+      path_real: (path) => nodeFs.realpathSync(path),
+      open_close: (fd) => { closed.push(fd); nodeFs.closeSync(fd); },
+    };
+    return { fs, opened, changed, closed };
+  }
+
+  it('refuses, having changed only the folder it opened, and closes it', () => {
+    const dir: string = join(stateDir, 'k');
+    mkdirSync(dir, { mode: 0o755 });
+    chmodSync(dir, 0o755);
+    const seen = swapping();
+    expect(() => sessionDir_settle(dir, stateDir, seen.fs)).toThrow('changed while it was checked');
+    expect(seen.changed).toEqual(seen.opened);
+    expect(seen.closed).toEqual(seen.opened);
+  });
+
+  it('refuses the start of a session, and starts nothing', async () => {
+    process.env = { PATH: '/usr/bin' };
+    const seen = swapping();
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => false, bootTimeoutMs: 60, pollMs: 10, settleFs: seen.fs });
+    await expect(host.spawn(IDENTITY, 'chris', 'https://cube.example.org/api/v1/', 'MINTED')).rejects.toThrow('changed while it was checked');
+    expect(spawnCalls).toEqual([]);
+    expect(seen.closed).toEqual(seen.opened);
   });
 });

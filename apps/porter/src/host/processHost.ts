@@ -115,6 +115,8 @@ export interface ProcessHostOptions {
   kill?: (pid: number, signal: NodeJS.Signals) => void;
   /** How long a daemon asked to stop is waited for before it is killed, in ms. */
   stopWaitMs?: number;
+  /** The filesystem calls that settle a session's folders (a test's double; node's own otherwise). */
+  settleFs?: SettleFs;
   /** How long a killed daemon is waited for before the stop is called failed, in ms. */
   killWaitMs?: number;
   /** When a process started (which process a pid is); `/proc` by default. Null: there is no such process. Undefined: it cannot be told. */
@@ -194,6 +196,52 @@ interface SettledFolders {
   own: Record<string, string>;
 }
 
+/** How a session's folder is made. */
+interface FolderMaking {
+  /** Its parents too. */
+  recursive: true;
+  /** The mode it is made with. */
+  mode: number;
+}
+
+/**
+ * The filesystem calls settling a folder makes: node's own, or a double that
+ * shows which object each one reached.
+ *
+ * @example
+ * ```ts
+ * const recorded: SettleFs = { ...nodeCalls, open_chmod: (fd, mode) => { changed.push(fd); fchmodSync(fd, mode); } };
+ * sessionDir_settle(dir, root, recorded);
+ * ```
+ */
+export interface SettleFs {
+  /** Makes the folder. */
+  dir_make: (path: string, options: FolderMaking) => unknown;
+  /** Opens it. */
+  dir_open: (path: string, flags: number) => number;
+  /** Reads what is open. */
+  open_stat: (fd: number) => Stats;
+  /** Changes what is open. */
+  open_chmod: (fd: number, mode: number) => void;
+  /** Reads what a name names, without following it. */
+  name_stat: (path: string) => Stats;
+  /** Where a name leads. */
+  path_real: (path: string) => string;
+  /** Closes what was opened. */
+  open_close: (fd: number) => void;
+}
+
+/** Node's own filesystem calls. */
+const SETTLE_FS: SettleFs = {
+  dir_make: (path: string, options: FolderMaking): unknown => mkdirSync(path, options),
+  dir_open: (path: string, flags: number): number => openSync(path, flags),
+  open_stat: (fd: number): Stats => fstatSync(fd),
+  open_chmod: (fd: number, mode: number): void => { fchmodSync(fd, mode); },
+  name_stat: (path: string): Stats => lstatSync(path),
+  path_real: (path: string): string => realpathSync(path),
+  open_close: (fd: number): void => { closeSync(fd); },
+};
+
 /**
  * Makes a session's folder, or settles one already there: it must be a real
  * folder (not a link), this account's, inside `within`, and it is left 0700
@@ -204,6 +252,7 @@ interface SettledFolders {
  *
  * @param dir - The folder.
  * @param within - The folder it must lie inside.
+ * @param fs - The filesystem calls, node's own unless a test gives a double.
  * @throws {Error} When the path is a link, not a folder, another account's, outside `within`, or no longer the folder checked.
  *
  * @example
@@ -211,28 +260,28 @@ interface SettledFolders {
  * sessionDir_settle('/var/lib/porter/ab12/home', '/var/lib/porter/ab12');
  * ```
  */
-export function sessionDir_settle(dir: string, within: string): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+export function sessionDir_settle(dir: string, within: string, fs: SettleFs = SETTLE_FS): void {
+  fs.dir_make(dir, { recursive: true, mode: 0o700 });
   let handle: number;
   try {
-    handle = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    handle = fs.dir_open(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   } catch {
     throw new Error(`the session folder ${dir} is not a folder of its own`);
   }
   try {
-    let found: Stats = fstatSync(handle);
+    let found: Stats = fs.open_stat(handle);
     if (!found.isDirectory()) throw new Error(`the session folder ${dir} is not a folder of its own`);
     if (typeof process.getuid === 'function' && found.uid !== process.getuid()) throw new Error(`the session folder ${dir} belongs to another account`);
-    if (!realpathSync(dir).startsWith(`${realpathSync(within)}${sep}`)) throw new Error(`the session folder ${dir} lies outside ${within}`);
+    if (!fs.path_real(dir).startsWith(`${fs.path_real(within)}${sep}`)) throw new Error(`the session folder ${dir} lies outside ${within}`);
     if ((found.mode & 0o777) !== 0o700) {
-      fchmodSync(handle, 0o700);
-      found = fstatSync(handle);
+      fs.open_chmod(handle, 0o700);
+      found = fs.open_stat(handle);
     }
     if ((found.mode & 0o777) !== 0o700) throw new Error(`the session folder ${dir} could not be made private`);
-    const named: Stats = lstatSync(dir);
+    const named: Stats = fs.name_stat(dir);
     if (named.isSymbolicLink() || named.dev !== found.dev || named.ino !== found.ino) throw new Error(`the session folder ${dir} changed while it was checked`);
   } finally {
-    closeSync(handle);
+    fs.open_close(handle);
   }
 }
 
@@ -249,6 +298,7 @@ export class ProcessHost implements SessionHost {
   private readonly pollMs: number;
   private readonly kill: (pid: number, signal: NodeJS.Signals) => void;
   private readonly stopWaitMs: number;
+  private readonly settleFs: SettleFs | undefined;
   private readonly killWaitMs: number;
   private readonly startReader: (pid: number) => string | null | undefined;
   private readonly sessions: Map<string, SessionRecord> = new Map();
@@ -263,6 +313,7 @@ export class ProcessHost implements SessionHost {
     this.pollMs = options.pollMs ?? 250;
     this.kill = options.kill ?? ((pid: number, signal: NodeJS.Signals): void => { process.kill(pid, signal); });
     this.stopWaitMs = options.stopWaitMs ?? STOP_WAIT_MS;
+    this.settleFs = options.settleFs;
     this.killWaitMs = options.killWaitMs ?? KILL_WAIT_MS;
     this.startReader = options.processStart_read ?? processStart_read;
   }
@@ -439,9 +490,9 @@ export class ProcessHost implements SessionHost {
     const dirs: SessionDirs = this.dirs_build(identity);
     const root: string = join(this.stateDir, berthKey_compute(identity));
     const own: Record<string, string> = { HOME: join(root, 'home'), XDG_STATE_HOME: join(root, 'state'), XDG_DATA_HOME: join(root, 'data') };
-    sessionDir_settle(root, this.stateDir);
+    sessionDir_settle(root, this.stateDir, this.settleFs);
     const folders: string[] = [dirs.config, dirs.runtime, dirs.cache, dirs.tmp, join(root, 'home'), join(root, 'state'), join(root, 'data')];
-    for (const dir of folders) sessionDir_settle(dir, root);
+    for (const dir of folders) sessionDir_settle(dir, root, this.settleFs);
     return { dirs, root, own };
   }
 
