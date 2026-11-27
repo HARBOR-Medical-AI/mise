@@ -318,7 +318,7 @@ describe('the control a person sees on the field', () => {
     expect(stage.field.querySelector('.image-working-label')?.textContent).toBe('STOPPED');
     fieldControl_find(stage, REOPEN_LABEL).click();
     await settle();
-    expect(asked.map((ask): string => ask.line)).toEqual(['dcm series "/home/someone/uploads/series-a"', 'dcm series "/home/someone/uploads/series-a"']);
+    expect(asked.map((ask): string => ask.line)).toEqual(["dcm series '/home/someone/uploads/series-a'", "dcm series '/home/someone/uploads/series-a'"]);
     expect(stage.panel.wait_get()).toBe('opening');
     expect(fieldControls_read(stage)).toEqual([STOP_LABEL]);
     asked[1]?.answer({ envelopes: [{ status: 'ok', rendered: '', model: { kind: 'dicom.series', data: series_make(4) } }], liveChannels: new Set() } as unknown as ExecuteOutcome);
@@ -689,7 +689,7 @@ describe('STOP while OPENING', () => {
     } as unknown as ChrisDicomContext;
     const opening: Promise<string> = chrisDicom_make(ctx).image_open('image-1', '/home/someone/uploads/series-a');
     await settle();
-    expect(asked.map((ask): string => ask.line)).toEqual(['dcm series "/home/someone/uploads/series-a"']);
+    expect(asked.map((ask): string => ask.line)).toEqual(["dcm series '/home/someone/uploads/series-a'"]);
     expect(stage.panel.wait_get()).toBe('opening');
     expect(asked[0]?.signal?.aborted).toBe(false);
     stage.stop.click();

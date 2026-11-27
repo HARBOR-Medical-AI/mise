@@ -37,7 +37,9 @@
  * @module
  */
 import type { JobContext, JobRun } from '@fnndsc/brasa/core';
+import { word_write } from '@fnndsc/menu';
 import type { BuildCall } from '../cloud/builder.js';
+import { shWord_quote } from '../vm/quoting.js';
 import { vmRemote_open, type RemoteAnswer, type VmRemote } from '../vm/remote.js';
 import type { DeployDeps } from './deploy.js';
 import { CHRIS_DIR } from './compose.js';
@@ -109,17 +111,6 @@ const ADD_GROUPS: ReadonlyArray<string> = ['add', 'newer'];
 const NAMES_SHOWN: number = 5;
 
 /**
- * A word as POSIX `sh` quotes it: inside single quotes, each quote closed,
- * escaped and opened again.
- *
- * @param word - The word.
- * @returns It, quoted.
- */
-export function shQuote(word: string): string {
-  return `'${word.replace(/'/g, `'\\''`)}'`;
-}
-
-/**
  * The node program, run in porter's container, that finds the chell porter
  * starts sessions with and says its version; it exits
  * {@link EXIT_CHELL_OLD} when that chell is older than the least that has
@@ -165,7 +156,8 @@ function tokenProgram_render(): string {
  * @returns The line.
  */
 function planLine_render(ask: PluginSyncAsk): string {
-  const sync: string = ['plugin', 'sync', ...(ask.source !== undefined ? [ask.source] : []), ...(ask.ref !== undefined ? ['--ref', ask.ref] : []), '--plan'].join(' ');
+  // The source and the ref are values in a mise-shell line; the rest of it is that line's grammar.
+  const sync: string = ['plugin', 'sync', ...(ask.source !== undefined ? [word_write(ask.source)] : []), ...(ask.ref !== undefined ? ['--ref', word_write(ask.ref)] : []), '--plan'].join(' ');
   const fields: string[] = ['indexed', 'label', 'source', 'commit', 'computes', 'entries.group', 'entries.name'];
   return [`P=$(${sync})`, ...fields.map((field: string): string => `echo ${PLUGIN_MARK} ${field} \${P.${field}}`)].join('; ');
 }
@@ -177,7 +169,7 @@ function planLine_render(ask: PluginSyncAsk): string {
  * @returns The line.
  */
 function applyLine_render(plan: PluginPlanRead): string {
-  return ['plugin', 'sync', plan.source, ...(plan.commit !== null ? ['--ref', plan.commit] : []), '--yes'].join(' ');
+  return ['plugin', 'sync', word_write(plan.source), ...(plan.commit !== null ? ['--ref', word_write(plan.commit)] : []), '--yes'].join(' ');
 }
 
 /**
@@ -197,14 +189,14 @@ function script_render(kind: 'plan' | 'apply', line: string, target: string, car
   return [
     `# ${PLUGIN_MARK} ${kind} ${Buffer.from(JSON.stringify(carried), 'utf-8').toString('base64')}`,
     `cd ${CHRIS_DIR} || exit 1`,
-    `found=$(docker compose exec -T porter node -e ${shQuote(chellLocateProgram_render())}); located=$?`,
+    `found=$(docker compose exec -T porter node -e ${shWord_quote(chellLocateProgram_render())}); located=$?`,
     `[ -n "$found" ] || { echo "${PLUGIN_MARK} no-porter"; exit ${EXIT_NO_PORTER}; }`,
     'set -- $found',
     `echo "${PLUGIN_MARK} chell $1"`,
     `[ "$located" -eq 0 ] || exit ${EXIT_CHELL_OLD}`,
     'CHELL=$2',
-    `TOKEN=$(docker compose exec -T chris python -c ${shQuote(tokenProgram_render())}) && [ -n "$TOKEN" ] || { echo "${PLUGIN_MARK} no-token"; exit ${EXIT_NO_TOKEN}; }`,
-    `printf '%s\\n' "$TOKEN" | docker compose exec -T porter sh -c ${shQuote(inner)} sh "$CHELL" ${shQuote(line)} ${shQuote(target)}`,
+    `TOKEN=$(docker compose exec -T chris python -c ${shWord_quote(tokenProgram_render())}) && [ -n "$TOKEN" ] || { echo "${PLUGIN_MARK} no-token"; exit ${EXIT_NO_TOKEN}; }`,
+    `printf '%s\\n' "$TOKEN" | docker compose exec -T porter sh -c ${shWord_quote(inner)} sh "$CHELL" ${shWord_quote(line)} ${shWord_quote(target)}`,
     '',
   ].join('\n');
 }

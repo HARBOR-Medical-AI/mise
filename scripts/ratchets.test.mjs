@@ -575,5 +575,112 @@ for (const lint of lints) {
   expect_that('with the test back the floors hold', again.status === 0 && back.status === 0, back.said);
 }
 
-console.log(failed === 0 ? `ratchets: the cast ratchet, the coverage ratchet, the base it is compared with, and the reach of the test and seam lints all hold (made in ${run})` : `ratchets test: ${failed} failed (made in ${run})`);
+// --- the line-builder lint: a value in a line is written by a quoting function ---
+{
+  const { lines_check, part_judge, template_read } = await import('./line-builders.mjs');
+  const tree = join(run, 'lines');
+  const source = join(tree, 'apps/argus/src/app/site.ts');
+  const checked = (text, grammar = {}) => { file_put(source, text); return lines_check(tree, grammar); };
+  const clean = checked("context.terminal.line_run(`cd ${path_quote(place)}`);\nclient.line_execute(`setfattr -n tag -v ${arg_quote(tag)} feed_${id}`, { silent: true });\nvoid verb_send(`gather add ${paths.map(arg_quote).join(' ')}`);\nhooks.verbLine_run(id, `kill %${n}`);\n");
+  expect_that('a line whose values are written by the quoting functions passes: a call, a list mapped through one, and parts of a word', clean.length === 0, clean.join(' | '));
+  const double = checked('context.terminal.line_run(`cd "${place}"`);\n');
+  const single = checked("context.terminal.line_run(`touch --withContents '${text}' x`);\n");
+  expect_that('a value between quotes written by hand fails, double or single', double.length === 1 && double[0].includes('site.ts:1') && double[0].includes('between quotes written by hand') && single.length === 1 && single[0].includes('${text}'), [...double, ...single].join(' | '));
+  const bare = checked('lead();\nhooks.verbLine_run(id, `rm ${path}`);\nvoid client.line_execute(`proc jump --where ${asked}`, { silent: true });\nthis.hooks.ask(`play --text=${text}`);\n');
+  expect_that('a bare value that is a whole word of a line fails, after a space or an equals sign, and names its line', bare.length === 3 && bare[0].includes('site.ts:2') && bare[0].includes('${path}') && bare[1].includes('${asked}') && bare[2].includes('${text}'), bare.join(' | '));
+  const named = checked('this.hooks.ask(`vm cost ${name}`);\n', { 'apps/argus/src/app/site.ts': ['name'] });
+  expect_that('a whole word named as grammar that is meant passes', named.length === 0, named.join(' | '));
+  const stale = checked('this.hooks.ask(`vm cost ${word_write(name)}`);\n', { 'apps/argus/src/app/site.ts': ['name'] });
+  expect_that('a name in the grammar list that no line holds any more fails: the list cannot outlive what it lists', stale.length === 1 && stale[0].includes('names ${name}') && stale[0].includes('remove it'), stale.join(' | '));
+  const branched = checked("await this.hooks.ask(family === '' ? 'capacity' : `capacity ${family}`);\nclient.line_execute(wide ? `vm status ${word_write(name)}` : `vm \"${name}\"`, { silent: true, note: `said ${anything}` });\n");
+  expect_that('a line chosen by a condition is checked in both branches, and an options object after it is not a line', branched.length === 2 && branched[0].includes('site.ts:1') && branched[0].includes('${family}') && branched[1].includes('site.ts:2') && branched[1].includes('between quotes written by hand'), branched.join(' | '));
+  const nested = template_read('`a ${f(`b ${c}`)} d ${e}`', 0);
+  expect_that('a template inside an interpolation is read through, and each interpolation knows what stands on either side', nested !== null && nested.parts.length === 2 && nested.parts[0].expr === 'f(`b ${c}`)' && nested.parts[0].before === 'a ' && nested.parts[0].after === ' d ' && nested.parts[1].expr === 'e' && nested.parts[1].after === '', JSON.stringify(nested));
+  expect_that('an interpolation is judged by what stands around it', part_judge({ expr: 'x', before: 'feed_', after: '' }) === 'part' && part_judge({ expr: 'x', before: 'rm ', after: '' }) === 'whole' && part_judge({ expr: 'x', before: 'cd "', after: '"' }) === 'quoted' && part_judge({ expr: 'path_write(x)', before: 'ls ', after: '' }) === 'written');
+  const real = spawnSync('node', [join(here, 'line-builders.mjs')], { encoding: 'utf8' });
+  expect_that('the repository as it stands passes the line-builder lint', real.status === 0, `${real.stdout}${real.stderr}`.slice(-400));
+}
+
+// --- the chili ratchet, and the packed entry points ---
+{
+  const { chili_count, chili_judge, chiliRefs_read } = await import('./chili-ratchet.mjs');
+  const { entries_check, exportTargets_list, pinned_check, PINNED } = await import('./pack-entries.mjs');
+  const tree = join(run, 'chili');
+  file_put(join(tree, 'packages/brasa/src/a.ts'), "import { x } from '@fnndsc/chili/utils/cli.js';\nimport type { Y } from '@fnndsc/chili/models/feed.js';\nconst z = await import('@fnndsc/chili/run.js');\n");
+  file_put(join(tree, 'packages/brasa/src/b.ts'), "export { q } from '@fnndsc/chili';\n// a comment naming @fnndsc/chili is not an import\n");
+  file_put(join(tree, 'packages/brasa/scripts/words.mjs'), "import { run } from '@fnndsc/chili/run.js';\n");
+  file_put(join(tree, 'packages/chili/src/own.ts'), "import { self } from '@fnndsc/chili/x.js';\n");
+  file_put(join(tree, 'packages/calypso/src/clean.ts'), "const names = ['@fnndsc/chili'];\n// import { old } from '@fnndsc/chili/old.js';\n/* const gone = require('@fnndsc/chili/gone.js');\n   import('@fnndsc/chili/run.js'); */\n");
+  file_put(join(tree, 'packages/brasa/src/c.ts'), "const lazy = require('@fnndsc/chili/screen/screen.js');\n  // import { was } from '@fnndsc/chili/was.js';\n");
+  const counted = chili_count(tree);
+  expect_that('brasa\'s imports of chili are counted, typed, dynamic and re-exported alike, in its sources and its scripts; chili\'s own and a mere mention are not', counted.files === 4 && counted.sites === 6 && counted.outside.length === 0, JSON.stringify(counted));
+  expect_that('a commented import, a trailing comment that shows one, a string that holds one and a doc example are no references', chiliRefs_read("// import a from '@fnndsc/chili';\n/* require('@fnndsc/chili') */\nconst n = 1; // import x from '@fnndsc/chili/x.js'\nconst shown = \"import { y } from '@fnndsc/chili/y.js'\";\nconst tpl = `require('@fnndsc/chili')`;\n/** @example import z from '@fnndsc/chili/z.js' */\nexport const one = 1;\n").length === 0);
+  expect_that('an import, a type import, a re-export, a dynamic import and a require are each one', chiliRefs_read("import a from '@fnndsc/chili';\nimport type { B } from '@fnndsc/chili/b.js';\nexport { c } from '@fnndsc/chili/c.js';\nconst d = await import('@fnndsc/chili/d.js');\nconst e = require('@fnndsc/chili/e.js');\nimport f from '@fnndsc/chilix';\n").length === 5);
+  file_put(join(tree, 'packages/brasa/scripts/old.cjs'), "const lazy = require('@fnndsc/chili/run.js'); // and not: require('@fnndsc/chili/never.js')\n");
+  const withCjs = chili_count(tree);
+  // A tree of its own (this test deletes nothing): a hand-written declaration file that type-imports chili.
+  const declared = join(run, 'chili-declared');
+  file_put(join(declared, 'packages/menu/src/shim.d.ts'), "import type { Listing } from '@fnndsc/chili/models/listing.js';\ndeclare module 'x' { export const l: Listing; }\n");
+  file_put(join(declared, 'packages/menu/dist/built.d.ts'), "import type { Listing } from '@fnndsc/chili/models/listing.js';\n");
+  const typed = chili_count(declared);
+  expect_that('a hand-written declaration file under another workspace\'s src that type-imports chili fails by file; a built one in dist is not read', typed.outside.length === 1 && typed.outside[0] === 'packages/menu/src/shim.d.ts', JSON.stringify(typed.outside));
+  expect_that('a .cjs script with a literal require counts as one', withCjs.files === counted.files + 1 && withCjs.sites === counted.sites + 1, JSON.stringify(withCjs));
+  expect_that('at the baseline the ratchet passes', chili_judge(withCjs, { files: 5, sites: 7 }).faults.length === 0);
+  const more = chili_judge({ ...withCjs, sites: 8 }, { files: 5, sites: 7 }).faults;
+  expect_that('one more import in brasa fails', more.length === 1 && more[0].includes('8 imports of @fnndsc/chili, its baseline is 7'), more.join(' | '));
+  const fewer = chili_judge({ files: 2, sites: 4, outside: [] }, { files: 5, sites: 7 }).faults;
+  expect_that('fewer fails until the baseline is lowered, and says how', fewer.length === 1 && fewer[0].includes('fell to 2 file(s), 4 import(s)') && fewer[0].includes('--lower'), fewer.join(' | '));
+  file_put(join(tree, 'packages/calypso/src/reach.ts'), "import { table_render } from '@fnndsc/chili/screen/screen.js';\n");
+  file_put(join(tree, 'packages/chell/scripts/bundle.mjs'), "import { run } from '@fnndsc/chili/run.js';\n");
+  const reached = chili_judge(chili_count(tree), { files: 5, sites: 7 }).faults;
+  expect_that('an import of chili from another workspace fails outright, naming the file: in its sources, and in its scripts', reached.length === 2 && reached.some((line) => line.includes('packages/calypso/src/reach.ts imports @fnndsc/chili')) && reached.some((line) => line.includes('packages/chell/scripts/bundle.mjs imports @fnndsc/chili')), reached.join(' | '));
+  // Against the base, in the fixture repository: a baseline raised beside the import it admits fails.
+  /** Runs the chili ratchet over the fixture repository with so many imports in brasa, a baseline, and a base. */
+  const chili_run = (imports, baseline, base, args = []) => {
+    file_put(join(clone, 'packages/brasa/src/uses.ts'), "import { a } from '@fnndsc/chili/a.js';\n".repeat(imports));
+    file_put(join(clone, BASELINE), JSON.stringify({ casts: { 'packages/cumin': 2 }, chili: baseline }));
+    // The repository's own script, pointed at the fixture (it reads sources with the compiler, which the fixture does not hold).
+    const ran = spawnSync(process.execPath, [join(here, 'chili-ratchet.mjs'), '--root', clone, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, ...base } });
+    return { status: ran.status, said: `${ran.stdout}${ran.stderr}`, kept: JSON.parse(readFileSync(join(clone, BASELINE), 'utf8')).chili };
+  };
+  const first = chili_run(2, { files: 1, sites: 2 }, { RATCHET_BASE: withBaseline });
+  expect_that('a base from before the chili ratchet has nothing to compare with: the first baseline stands', first.status === 0, first.said);
+  // A later commit, here on the working branch, is the base from then on: its baseline has a chili section.
+  file_put(join(clone, BASELINE), JSON.stringify({ casts: { 'packages/cumin': 2 }, chili: { files: 1, sites: 2 } }));
+  const chiliBase = commit('a baseline with a chili section');
+  const level2 = chili_run(2, { files: 1, sites: 2 }, { RATCHET_BASE: chiliBase });
+  expect_that('at the base\'s chili baseline the ratchet passes', level2.status === 0, level2.said);
+  const admitted = chili_run(3, { files: 1, sites: 3 }, { RATCHET_BASE: chiliBase });
+  expect_that('an import added with the baseline raised to admit it fails against the base', admitted.status === 1 && admitted.said.includes('chili: sites is 3 here and was 2 at the base'), admitted.said);
+  const lowered = chili_run(1, { files: 1, sites: 2 }, { RATCHET_BASE: chiliBase }, ['--lower']);
+  expect_that('--lower writes the lower count and passes against the base', lowered.status === 0 && lowered.kept.sites === 1 && lowered.kept.files === 1, lowered.said);
+  const sneaked = chili_run(3, { files: 1, sites: 3 }, { RATCHET_BASE: chiliBase }, ['--lower']);
+  expect_that('--lower over a baseline raised against the base writes nothing and fails', sneaked.status === 1 && sneaked.kept.sites === 3 && sneaked.said.includes('nothing lowered'), sneaked.said);
+  const realChili = spawnSync('node', [join(here, 'chili-ratchet.mjs')], { encoding: 'utf8' });
+  expect_that('the repository as it stands passes the chili ratchet', realChili.status === 0, `${realChili.stdout}${realChili.stderr}`.slice(-300));
+  // The packed entry points.
+  const manifest = { name: '@x/tool', main: 'dist/index.js', types: 'dist/index.d.ts', bin: { tool: 'dist/cli.js' }, exports: { '.': { import: './dist/index.js', types: './dist/index.d.ts' }, './utils': './dist/utils.js', './*': './dist/*', './package.json': './package.json' } };
+  const whole = ['package.json', 'dist/index.js', 'dist/index.d.ts', 'dist/cli.js', 'dist/utils.js'];
+  expect_that('an exports map is read through to every target', exportTargets_list(manifest.exports).join(',') === './dist/index.js,./dist/index.d.ts,./dist/utils.js,./dist/*,./package.json');
+  expect_that('a package that holds every entry point passes, a global install in its README included', entries_check(manifest, whole, 'npm install -g @x/tool').length === 0, entries_check(manifest, whole, '').join(' | '));
+  const lost = entries_check(manifest, whole.filter((path) => path !== 'dist/cli.js' && path !== 'dist/utils.js'), '');
+  expect_that('a bin or an exports target that is not in the package fails, each by name', lost.length === 2 && lost[0].includes('bin tool names dist/cli.js') && lost[1].includes('exports names dist/utils.js'), lost.join(' | '));
+  const empty = entries_check({ name: '@x/tool', exports: { './*': './dist/*' } }, ['package.json'], '');
+  expect_that('a pattern that points into a folder the package does not hold fails', empty.length === 1 && empty[0].includes('points into dist/'), empty.join(' | '));
+  // What chili is pinned to: its documented command, its root and utilities, and not the retired modules.
+  const chili = { name: '@fnndsc/chili', main: 'dist/index.js', bin: { chili: 'dist/index.js' }, exports: { '.': './dist/index.js', './utils': './dist/utils.js', './*': './dist/*' } };
+  const chiliFiles = ['package.json', 'dist/index.js', 'dist/utils.js', 'dist/run.js'];
+  const pin = PINNED['packages/chili'];
+  expect_that('chili as it is published holds its pins', pinned_check(chili, chiliFiles, pin).length === 0, pinned_check(chili, chiliFiles, pin).join(' | '));
+  const renamed = pinned_check({ ...chili, bin: { chilli: 'dist/index.js' } }, chiliFiles, pin);
+  expect_that('its command renamed to another name that still resolves fails: the documented name is kept', renamed.length === 1 && renamed[0].includes('its command chili is gone from bin'), renamed.join(' | '));
+  const dropped = pinned_check({ ...chili, exports: { '.': './dist/index.js', './*': './dist/*' } }, chiliFiles, pin);
+  expect_that('its explicit ./utils export dropped fails, though the pattern would still reach the file', dropped.length === 1 && dropped[0].includes('its export ./utils is gone'), dropped.join(' | '));
+  const stale = pinned_check(chili, [...chiliFiles, 'dist/lfs/lfs.js', 'dist/commands/pipeline/run.js'], pin);
+  expect_that('a retired module in what would be published fails, each by name', stale.length === 2 && stale[0].includes('dist/lfs/lfs.js') && stale[1].includes('dist/commands/pipeline/run.js'), stale.join(' | '));
+  const binless = entries_check({ name: '@x/lib', main: 'dist/index.js' }, ['dist/index.js'], 'Install it: `npm install -g @x/lib`');
+  expect_that('a README that says to install globally a package with no bin fails', binless.length === 1 && binless[0].includes('no bin to run'), binless.join(' | '));
+}
+
+console.log(failed === 0 ? `ratchets: the cast ratchet, the coverage ratchet, the base it is compared with, the line-builder lint, the chili ratchet, the packed entry points, and the reach of the test and seam lints all hold (made in ${run})` : `ratchets test: ${failed} failed (made in ${run})`);
 process.exit(failed === 0 ? 0 : 1);

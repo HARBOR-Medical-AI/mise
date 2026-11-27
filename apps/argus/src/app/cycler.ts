@@ -9,13 +9,7 @@
  *
  * @module
  */
-import {
-  pipelineDiagramModelSchema,
-  DAG_MODEL_KINDS,
-  type PipelineDiagramModel,
-  type PipelineDiagramNode,
-  type WireEnvelope,
-} from '@fnndsc/menu';
+import { pipelineDiagramModelSchema, DAG_MODEL_KINDS, type PipelineDiagramModel, type PipelineDiagramNode, type WireEnvelope, arg_quote } from '@fnndsc/menu';
 import { ChrisSpace, type SceneNode } from '../scene/chrisSpace.js';
 import type { ArgusClient, ExecuteOutcome } from '../calypso/client.js';
 import type { FsListing } from '../features/files/panel.js';
@@ -129,7 +123,7 @@ export class PipelineCycler {
       this.model_stage(remembered);
       return;
     }
-    this.command_run(`pipeline diagram ${name}`);
+    this.command_run(`pipeline diagram ${arg_quote(name)}`);
   }
 }
 

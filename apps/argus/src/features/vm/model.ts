@@ -8,7 +8,7 @@
  *
  * @module
  */
-import { BERTH_LIMITS_DEFAULT, berthCapacity_derive, profileFloor_get, type BerthLimits, type ChrisProfileFloor, type HostSize, type ChrisBerthModel, type ChrisProfileOffer, type VmStatusRow } from '@fnndsc/menu';
+import { BERTH_LIMITS_DEFAULT, berthCapacity_derive, profileFloor_get, type BerthLimits, type ChrisProfileFloor, type HostSize, type ChrisBerthModel, type ChrisProfileOffer, type VmStatusRow, word_write } from '@fnndsc/menu';
 import { line_parse, type LineParts, type ScriptLine, type StepKind } from '../script/model.js';
 
 /** The seat a VM's line sits on: the controller's words for the script's verbs. */
@@ -454,7 +454,7 @@ export function accountChanges_derive(held: ReadonlyArray<HeldAccount>, edits: R
     adds.push({
       account: draft.name, declares: true, why,
       words: `add user ${draft.name || '(no name yet)'} · groups ${[ALL_USERS_GROUP, ...groups.split(',').filter((one: string): boolean => one !== '')].join(', ')}`,
-      line: `chris user add ${draft.name || '<name>'} --email ${draft.email || '<email>'}${groups !== '' ? ` --groups ${groups}` : ''} --on ${on}`,
+      line: `chris user add ${draft.name === '' ? '<name>' : word_write(draft.name)} --email ${draft.email === '' ? '<email>' : word_write(draft.email)}${groups !== '' ? ` --groups ${word_write(groups)}` : ''} --on ${on}`,
     });
   }
   for (const account of held) {
@@ -465,14 +465,14 @@ export function accountChanges_derive(held: ReadonlyArray<HeldAccount>, edits: R
     let why: string | null = null;
     if (edit.email !== undefined && edit.email !== account.email) {
       said.push(`email ${account.email || '(none)'} → ${edit.email}`);
-      options.push(`--email ${edit.email}`);
+      options.push(`--email ${word_write(edit.email)}`);
       why = !ACCOUNT_EMAIL.test(edit.email) ? `${edit.email} is not an email address` : emailOwner(edit.email, account.username) !== undefined ? `${edit.email} is ${emailOwner(edit.email, account.username) ?? ''}'s already` : null;
     }
     if (edit.groups !== undefined) {
       const moved: string = groupsMove_words(account.groups, [...new Set([ALL_USERS_GROUP, ...edit.groups])]);
       if (moved !== '') {
         said.push(`groups ${moved}`);
-        options.push(`--groups ${groupsWord_derive(edit.groups) || ALL_USERS_GROUP}`);
+        options.push(`--groups ${word_write(groupsWord_derive(edit.groups) || ALL_USERS_GROUP)}`);
       }
     }
     if (said.length > 0) mods.push({ account: account.username, declares: false, why, words: `${said.map((one: string, at: number): string => (at === 0 ? `${one.split(' ')[0] ?? ''} for ${account.username}: ${one.split(' ').slice(1).join(' ')}` : one)).join(' · ')}`, line: `chris user mod ${account.username} ${options.join(' ')} --on ${on}` });

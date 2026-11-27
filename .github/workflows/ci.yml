@@ -152,6 +152,12 @@ jobs:
       - run: npm run lint:listings
       # A function's method is a verb, never a preposition (#1227).
       - run: npm run lint:rpn
+      # A value a surface writes into a shell line goes through a quoting function, never quotes written by hand.
+      - run: npm run lint:lines
+      # chili is being retired: brasa's imports of it may only fall, and no other workspace may import it.
+      - run: npm run lint:chili
+      # Every published package's main, types, bin and exports lead to files it would publish (run after the build).
+      - run: npm run lint:pack
       - run: npm run lint:changesets
       - run: npm run lint:aegis
       - run: npm run lint:orrery

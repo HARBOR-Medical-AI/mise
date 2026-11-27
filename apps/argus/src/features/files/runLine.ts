@@ -5,13 +5,15 @@
  * model beside it: a VALUE typed into a node's dive is written INTO the line
  * as the flag the console would take, a value read back is read FROM the
  * line, and a hand edit stands because it is the line. The grammar is the
- * kernel's: `cd "<input>"; <exe> [--flag value …] [-- feed_title="…"]`, a
+ * kernel's: `cd '<input>'; <exe> [--flag value …] [-- feed_title='…']`, a
  * bare `--flag` for a boolean, and for a pipeline `--<node>.<param> value`
  * where the node is its title when the title is shell-safe and unique, else
  * `@<pipingId>`.
  *
  * @module
  */
+
+import { arg_quote, line_split, path_quote, word_write } from '@fnndsc/menu';
 
 /** A flag's value as the line carries it: text, bare (true), or absent. */
 export type RunFlagValue = string | true | null;
@@ -21,10 +23,42 @@ interface RunLineParts {
   head: string;
   args: string;
   tail: string;
+  /** The last command's first word. */
+  executable: string;
 }
 
 /** The kernel's context delimiter, as it stands on a line. */
 const CONTEXT_DELIMITER: RegExp = /\s--(?:\s|$)/;
+
+/**
+ * A line with everything inside quotes, and every escaped character, blanked
+ * to a letter: the same length, so a place found in it is the place in the
+ * line, and nothing a quoted value holds is taken for the line's grammar.
+ *
+ * @param line - The line.
+ * @returns The line, its quoted and escaped characters replaced.
+ */
+function quoted_blank(line: string): string {
+  let out: string = '';
+  let quote: string | null = null;
+  for (let at = 0; at < line.length; at++) {
+    const char: string = line[at] as string;
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      else if (quote === '"' && char === '\\' && at + 1 < line.length) { out += 'q'; at++; }
+      out += 'q';
+    } else if (char === '\'' || char === '"') {
+      quote = char;
+      out += 'q';
+    } else if (char === '\\' && at + 1 < line.length) {
+      out += 'qq';
+      at++;
+    } else {
+      out += char;
+    }
+  }
+  return out;
+}
 
 /**
  * Splits a line into what precedes the arguments, the arguments, and the
@@ -34,15 +68,17 @@ const CONTEXT_DELIMITER: RegExp = /\s--(?:\s|$)/;
  * @returns The parts; `tail` keeps its leading ` -- `.
  */
 function runLine_split(line: string): RunLineParts {
-  const delimiter: RegExpExecArray | null = CONTEXT_DELIMITER.exec(line);
+  // The line's grammar (` -- `, `;`) is looked for where it is grammar: outside quotes.
+  const bare: string = quoted_blank(line);
+  const delimiter: RegExpExecArray | null = CONTEXT_DELIMITER.exec(bare);
   const before: string = delimiter === null ? line : line.slice(0, delimiter.index);
   const tail: string = delimiter === null ? '' : line.slice(delimiter.index);
-  const lastCommand: number = before.lastIndexOf(';');
+  const lastCommand: number = bare.slice(0, before.length).lastIndexOf(';');
   const commandStart: number = lastCommand === -1 ? 0 : lastCommand + 1;
   const command: string = before.slice(commandStart);
   const exe: RegExpExecArray | null = /^\s*\S+/.exec(command);
   const headEnd: number = commandStart + (exe === null ? command.length : exe[0].length);
-  return { head: before.slice(0, headEnd), args: before.slice(headEnd), tail };
+  return { head: before.slice(0, headEnd), args: before.slice(headEnd), tail, executable: (exe?.[0] ?? '').trim() };
 }
 
 /**
@@ -54,35 +90,18 @@ function runLine_split(line: string): RunLineParts {
  * @returns The line.
  */
 export function runLine_compose(input: string, executable: string): string {
-  return `cd "${input}"; ${executable}`;
+  return `cd ${path_quote(input)}; ${executable}`;
 }
 
 /**
- * Quotes a value the way the console needs it: bare when it is one plain
- * word, double-quoted otherwise.
- *
- * @param value - The value as typed.
- * @returns The token.
- */
-function value_quote(value: string): string {
-  return /^[A-Za-z0-9_./:@+=,-]+$/.test(value) ? value : `"${value.replace(/(["\\])/g, '\\$1')}"`;
-}
-
-/**
- * Tokenises an argument string, honouring double quotes.
+ * Tokenises an argument string as the shell words it holds: a word runs to
+ * the next whitespace outside quotes, and keeps its quotes.
  *
  * @param args - The argument clause.
  * @returns The tokens, quotes kept.
  */
 function args_tokenise(args: string): string[] {
-  const tokens: string[] = [];
-  const pattern: RegExp = /"(?:[^"\\]|\\.)*"|\S+/g;
-  let match: RegExpExecArray | null = pattern.exec(args);
-  while (match !== null) {
-    tokens.push(match[0]);
-    match = pattern.exec(args);
-  }
-  return tokens;
+  return args.match(/(?:'[^']*'|"(?:[^"\\]|\\.)*"|\\.|[^\s'"\\])+/g) ?? [];
 }
 
 /**
@@ -92,10 +111,7 @@ function args_tokenise(args: string): string[] {
  * @returns The value.
  */
 function token_unquote(token: string): string {
-  if (token.length >= 2 && token.startsWith('"') && token.endsWith('"')) {
-    return token.slice(1, -1).replace(/\\(["\\])/g, '$1');
-  }
-  return token;
+  return line_split(token)?.[0] ?? token;
 }
 
 /**
@@ -143,7 +159,7 @@ export function runLine_flagSet(line: string, flag: string, value: RunFlagValue)
   const tokens: string[] = args_tokenise(parts.args);
   const kept: string[] = [];
   let placed: boolean = false;
-  const written: string[] = value === null || value === '' ? [] : value === true ? [flag] : [flag, value_quote(value)];
+  const written: string[] = value === null || value === '' ? [] : value === true ? [flag] : [flag, word_write(value)];
   for (let index: number = 0; index < tokens.length; index++) {
     const token: string = tokens[index] ?? '';
     if (token === flag || token.startsWith(`${flag}=`)) {
@@ -179,7 +195,7 @@ export function runLine_hasTitle(line: string): boolean {
  * @returns The line with its context clause.
  */
 export function runLine_titleAppend(line: string, title: string): string {
-  return `${line} -- feed_title="${title.replace(/(["\\])/g, '\\$1')}"`;
+  return `${line} -- feed_title=${arg_quote(title)}`;
 }
 
 /**
@@ -189,7 +205,7 @@ export function runLine_titleAppend(line: string, title: string): string {
  * @returns The executable, or '' when the line has none.
  */
 export function runLine_executable(line: string): string {
-  return runLine_split(line).head.replace(/^.*;\s*/, '').trim();
+  return runLine_split(line).executable;
 }
 
 /**

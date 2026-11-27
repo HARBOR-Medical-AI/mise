@@ -29,6 +29,7 @@ import { NetStore } from '../src/net/state.js';
 import { STEPS_SOURCE } from '../src/cluster/steps.js';
 import { net_run, type NetCommandContext } from '../src/commands/net.js';
 import { sshLine_build, vm_run, type VmCommandContext } from '../src/commands/vm.js';
+import { STRATUS_VM_STEP_EVENT } from '@fnndsc/menu';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 const STORE_LINE: string[] = ['--net', 'scratch', '--open', '443,80', '--vcpu', '2', '--memory', '8', '--disk', '50', '--data', '50', '--data-backup', 'daily', '--os', 'ubuntu-26.04'];
@@ -354,6 +355,31 @@ describe('vm, over the fake cloud', () => {
     expect(surface.asked).toEqual([]);
   });
 
+  it('a build says each of its steps as an event, begun then ended, and names what each question is for', async () => {
+    await vm_run(context, ['new', 'store', ...STORE_LINE]);
+    const events: Array<{ kind: string; data: unknown }> = [];
+    const sink: BufferSink = new BufferSink();
+    sink.event_write = (kind: string, data: unknown): void => { events.push({ kind, data }); };
+    sink_set(sink);
+    const asked: PromptRequest[] = [];
+    surface.prompt = async (request: PromptRequest): Promise<string> => { asked.push(request); return 'y'; };
+    await vm_run(context, ['build', 'store']);
+    const steps = events.filter((event): boolean => event.kind === STRATUS_VM_STEP_EVENT).map((event) => event.data as { vm: string; step: string; state: string; said?: string });
+    // Each step of the run, in the order taken: begun, then done, and a plan's counts as its own word at its end.
+    expect(steps.map((step): string => `${step.step} ${step.state}`)).toEqual([
+      'plan-data begun', 'plan-data done', 'apply-data begun', 'apply-data done', 'plan-machine begun', 'plan-machine done', 'apply-machine begun', 'apply-machine done',
+    ]);
+    expect(steps.every((step): boolean => step.vm === 'store')).toBe(true);
+    expect(steps[1]?.said).toBe('data plan: 3 to create, 0 to change, 0 to destroy');
+    expect(steps[5]?.said).toBe('machine plan: 3 to create, 0 to change, 0 to destroy');
+    expect(steps[0]?.said).toBeUndefined();
+    // Both questions are the build's, about this machine, and want a yes or a no.
+    expect(asked.map((request) => ({ wants: request.wants, purpose: request.purpose, subject: request.subject }))).toEqual([
+      { wants: 'confirm', purpose: 'stratus.vm.build', subject: { vm: 'store' } },
+      { wants: 'confirm', purpose: 'stratus.vm.build', subject: { vm: 'store' } },
+    ]);
+  });
+
   it('opens public SSH on a VM that stands: asked with the warning, the machine set up over the bastion, closed again keeping the user', async () => {
     const lines: Array<{ line: string; input: string }> = [];
     const key: string = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyOnlyForTests operator@pangea';
@@ -443,9 +469,9 @@ describe('vm, over the fake cloud', () => {
     expect((await vm_run(context, ['shell', 'store'])).renderedErr).toContain('needs the shell tier');
     (surface.capabilities as { shellCommands: boolean }).shellCommands = true;
     const shell = await vm_run(context, ['shell', 'store']);
-    expect(plain(shell.rendered)).toContain('-W %h:%p -p 22 ocid1.bastionsession.oc1..fake-1@host.bastion.us-ashburn-1.fake.example" ubuntu@10.40.0.10');
+    expect(plain(shell.rendered)).toContain("-W %h:%p -o Port=22 ocid1.bastionsession.oc1..fake-1@host.bastion.us-ashburn-1.fake.example' ubuntu@10.40.0.10");
     expect(world.sessions).toEqual([{ bastionId: 'ocid1.bastion.oc1..fake-scratch', privateIp: '10.40.0.10' }]);
-    expect(sshLine_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5')).toBe('ssh -i /k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -o ProxyCommand="ssh -i /k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -p 22 s@h" ubuntu@10.0.0.5');
+    expect(sshLine_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5')).toBe("ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -o 'ProxyCommand=ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -o Port=22 s@h' ubuntu@10.0.0.5");
   });
 
   it('tears down only when unprotected: the machine, keeping the data; --all takes the data on the name typed back', async () => {

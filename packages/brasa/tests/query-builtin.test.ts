@@ -674,6 +674,20 @@ describe('a flag given no value asks', () => {
     expect(mockFilesCreate).toHaveBeenCalledWith(expect.any(String), '/home/chris/audits/mine.csv');
   });
 
+  it('says where the table went in the answer\'s model, and names no file when none was written', async () => {
+    mockCreate.mockResolvedValue(ok({ id: 402, owner_username: 'chris' }));
+    mockQueryGet.mockResolvedValue(ok({ status: 'succeeded' }));
+    mockDecode.mockResolvedValue(ok({ json: [studyPayload[0]] }));
+
+    const wrote = await builtin_query(['PatientID:1234', '--csv-to', '/home/chris/audits/my table.csv']);
+    expect(wrote.model?.kind).toBe('pacs.query');
+    expect((wrote.model?.data as { written?: string }).written).toBe('/home/chris/audits/my table.csv');
+
+    const shown = await builtin_query(['PatientID:1234']);
+    expect(shown.model?.kind).toBe('pacs.query');
+    expect('written' in (shown.model?.data as object)).toBe(false);
+  });
+
   // The anchor is a fact — the session's own cwd — never a directory
   // invented for the occasion, since inventing one means creating it.
   it('anchors the ask where the session already is', async () => {

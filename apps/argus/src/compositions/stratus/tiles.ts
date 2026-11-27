@@ -15,11 +15,7 @@
  *
  * @module
  */
-import {
-  capacityModelSchema, clustersModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, STRATUS_CAPACITY_MODEL_KIND, STRATUS_CLUSTERS_MODEL_KIND,
-  type CapacityModel, type CapacityRow, type ClusterSummary, type ClustersModel, type ManifestStatusModel,
-  STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema, type VmCostModel, type VmCostRate, type VmCostRow, type VmStatusModel, type VmStatusRow,
-} from '@fnndsc/menu';
+import { capacityModelSchema, clustersModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, STRATUS_CAPACITY_MODEL_KIND, STRATUS_CLUSTERS_MODEL_KIND, type CapacityModel, type CapacityRow, type ClusterSummary, type ClustersModel, type ManifestStatusModel, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema, type VmCostModel, type VmCostRate, type VmCostRow, type VmStatusModel, type VmStatusRow, path_write } from '@fnndsc/menu';
 import { counts_words, lines_build, runningStep_find, scriptName_derive, states_count, steps_build, rates_sum } from '../../features/script/model.js';
 import type { ExecuteOutcome } from '../../calypso/client.js';
 import { TILE_ABOUT } from '../../features/launcher/about.js';
@@ -199,14 +195,14 @@ async function scripts_read(ask: (line: string) => Promise<ExecuteOutcome>): Pro
   try { folders = items(await ask('ls /scripts')).map((item): string => item.name); } catch { return seen; }
   for (const folder of folders) {
     let scripts: string[] = [];
-    try { scripts = items(await ask(`ls /scripts/${folder}`)).filter((item): boolean => item.type === 'script' || item.name.endsWith('.mise')).map((item): string => item.name); } catch { continue; }
+    try { scripts = items(await ask(`ls ${path_write(`/scripts/${folder}`)}`)).filter((item): boolean => item.type === 'script' || item.name.endsWith('.mise')).map((item): string => item.name); } catch { continue; }
     for (const name of scripts) {
       const path: string = `/scripts/${folder}/${name}`;
       let standing: string = 'NOT READ';
       let running: string | null = null;
       let texts: string[] = [];
       try {
-        const status: ManifestStatusModel | null = model_extract(await ask(`play ${path} --status`), MANIFEST_STATUS_MODEL_KIND, (data) => manifestStatusModelSchema.safeParse(data));
+        const status: ManifestStatusModel | null = model_extract(await ask(`play ${path_write(path)} --status`), MANIFEST_STATUS_MODEL_KIND, (data) => manifestStatusModelSchema.safeParse(data));
         if (status !== null) {
           texts = status.lines.map((line): string => line.text);
           const lines = lines_build(texts.join('\n'), status.lines);

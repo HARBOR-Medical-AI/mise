@@ -18,8 +18,8 @@
  * @module
  */
 import type { PacsSeries } from '@fnndsc/menu';
+import { path_quote, arg_quote, home_path } from '@fnndsc/menu';
 import { Cohort } from './cohort.js';
-import { word_quote } from '../edit/line.js';
 import { seriesBadge_build, seriesTraits_build } from '../pacs/panel.js';
 import { Listing, listingChild_declare, type ListingStateParts } from '../roster/listing.js';
 import type { ListingAction, ListingTrait } from '../roster/row.js';
@@ -316,7 +316,7 @@ export class GatherPanel {
   private cohort_pull(): void {
     const taking: ReadonlyArray<GatherSeries> = this.away();
     if (taking.length === 0) return;
-    const paths: string = taking.map((entry: GatherSeries): string => `"${entry.vfsPath}"`).join(' ');
+    const paths: string = taking.map((entry: GatherSeries): string => path_quote(entry.vfsPath)).join(' ');
     // A retrieve runs as a joblet: its badges follow it, the console is free (#1273).
     this.handlers.command_show(`pull ${paths} &`);
   }
@@ -354,7 +354,7 @@ export class GatherPanel {
    */
   public async name_set(name: string | null): Promise<void> {
     if (name === null || name === this.cohort.name_get()) return;
-    await this.handlers.verb_send(`gather name ${word_quote(name)}`);
+    await this.handlers.verb_send(`gather name ${arg_quote(name)}`);
   }
 
   /**
@@ -363,7 +363,7 @@ export class GatherPanel {
    * @param entry - The member.
    */
   private member_remove(entry: GatherSeries): void {
-    void this.handlers.verb_send(`gather remove ${word_quote(entry.vfsPath)}`);
+    void this.handlers.verb_send(`gather remove ${arg_quote(entry.vfsPath)}`);
   }
 
   /** Paints the cohort as one block, its series open beneath it. */
@@ -555,7 +555,7 @@ export class GatherPanel {
     });
     const runs: Record<string, (row: SeriesRow) => void> = {
       remove: (row: SeriesRow): void => this.member_remove(row.entry),
-      pull: (row: SeriesRow): void => this.handlers.command_show(`pull "${row.entry.vfsPath}" &`),
+      pull: (row: SeriesRow): void => this.handlers.command_show(`pull ${path_quote(row.entry.vfsPath)} &`),
       image: (row: SeriesRow): void => {
         const place: string | undefined = row.entry.folderPath ?? placeOf_member(row.entry);
         if (place !== undefined) this.handlers.image_open(place);
@@ -630,7 +630,7 @@ export class GatherPanel {
     const answered: string | null = await this.handlers.name_ask(`gather-${new Date().toISOString().slice(0, 10)}`);
     const wanted: string = (answered ?? '').trim();
     if (wanted === '') return null;
-    await this.handlers.verb_send(`gather name ${word_quote(wanted)}`);
+    await this.handlers.verb_send(`gather name ${arg_quote(wanted)}`);
     return wanted;
   }
 
@@ -651,7 +651,7 @@ export class GatherPanel {
       })),
     });
     this.handlers.command_run('mkdir -p ~/gather');
-    this.handlers.command_show(`touch --withContents '${manifest}' ~/gather/${name}.json`);
+    this.handlers.command_show(`touch --withContents ${arg_quote(manifest)} ${home_path(`gather/${name}.json`)}`);
     this.unsaved = false;
     return true;
   }
@@ -671,7 +671,7 @@ export class GatherPanel {
       ].map(csvField_quote).join(',')),
     ];
     this.handlers.command_run('mkdir -p ~/gather');
-    this.handlers.command_show(`touch --withContents '${rows.join('\n')}' ~/gather/${name}.csv`);
+    this.handlers.command_show(`touch --withContents ${arg_quote(rows.join('\n'))} ${home_path(`gather/${name}.csv`)}`);
   }
 
   /**

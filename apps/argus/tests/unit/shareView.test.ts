@@ -11,7 +11,7 @@ import { shareSheet_open, viewScript_compose, VIEW_BASELINE } from '../../src/ap
 describe('viewScript_compose', () => {
   it('starts from the baseline, then the steps, without the desktop\'s comments or blanks', () => {
     expect(viewScript_compose('view runs\n\n# a note\ndag %1 census on\ndag %1 select pl-x_7')).toBe(
-      ['# ARGUS view: run these lines in the ARGUS console to see what I see', VIEW_BASELINE, 'view runs', 'dag %1 census on', 'dag %1 select pl-x_7'].join('\n'),
+      ['# ARGUS view: run these lines in the ARGUS console to see what I see', '# lines: quoted', VIEW_BASELINE, 'view runs', 'dag %1 census on', 'dag %1 select pl-x_7'].join('\n'),
     );
   });
 });

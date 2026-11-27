@@ -22,19 +22,19 @@
  *
  * @module
  */
-import * as path from 'path';
 import chalk from 'chalk';
-import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, taskState_isOver, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATE_EVENT, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow } from '@fnndsc/menu';
+import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, taskState_isOver, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATE_EVENT, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow, STRATUS_PROMPT_PURPOSES, STRATUS_VM_STEP_EVENT, type VmStepEvent } from '@fnndsc/menu';
 import { command_declare, declaredCommand_run, repl_confirm, repl_question, runner_get, sink_dataLine, sink_get, surface_get, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_words, type BuildCall, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import { keepFailure_describe } from '../cloud/keepFault.js';
 import type { VmRemote } from '../vm/remote.js';
+import { sshArgs_build } from '../vm/remote.js';
 import type { CloudDriver } from '../cloud/driver.js';
 import type { NetStore } from '../net/state.js';
 import { vmPorts_open as vmPorts_openOf, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSsh_words, sshKeyFile_resolve, type VmSpec } from '../vm/spec.js';
 import { VM_HOST_JOB, vmHost_current, vmHost_owed, vmHostRun_make } from '../vm/host.js';
 import type { CloudInstance, CloudShape, CloudVolume } from '../cloud/driver.js';
-import { CHRIS_PORTER_TAG, CHRIS_URL_TAG, VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
+import { CHRIS_PORTER_TAG, CHRIS_URL_TAG, VM_NAME, type VmRecord, type VmStore } from '../vm/state.js';
 import { vmsFound_read, vmTakeover_run, type FoundVm } from '../vm/found.js';
 import { VM_KEYLESS, vmChris_adopt, vmDeclared_adopt, vmKey_held, vmKeyless_is, vmKept_read, vmKept_write, vmLock_adopt, type VmKept } from '../vm/keep.js';
 import { lock_read, lock_where, lockKept_is } from '../kept/lock.js';
@@ -45,6 +45,7 @@ import { STEPS_SOURCE } from '../cluster/steps.js';
 import { VM_GROW_JOB, vmGrowRun_make, vmPlan_judge, type VmPlanJudged } from '../vm/resize.js';
 import { HOURS_PER_MONTH } from '../cluster/spend.js';
 import { TIER_REFUSAL } from '../tier.js';
+import { shWord_write } from '../vm/quoting.js';
 
 /** What `vm` reads from the session. */
 export interface VmCommandContext {
@@ -805,6 +806,31 @@ function counts_total(counts: PlanCounts): number {
 }
 
 /**
+ * Runs one step of a VM's build as a task and follows it, saying so as an
+ * event at its start and at its end: a surface drawing the build reads what
+ * happened, never the lines the task prints.
+ *
+ * @param vm - The VM.
+ * @param step - Which step.
+ * @param id - The task's id in the build steps' source.
+ * @param label - What the task is called.
+ * @param run - Its work.
+ * @param said - What the step has to say once done, read after it ends; absent for none.
+ * @returns The task's record at the end, or why it did not start or end.
+ */
+async function step_runFollowed(vm: string, step: VmStepEvent['step'], id: string, label: string, run: Parameters<typeof job_runFollowed>[2], said?: () => string | undefined): ReturnType<typeof job_runFollowed> {
+  const step_tell = (state: VmStepEvent['state'], words?: string): void => {
+    const event: VmStepEvent = { vm, step, state, ...(words === undefined ? {} : { said: words }) };
+    sink_get().event_write?.(STRATUS_VM_STEP_EVENT, event);
+  };
+  step_tell('begun');
+  const ran = await job_runFollowed(id, label, run);
+  if ('error' in ran) step_tell('failed');
+  else step_tell('done', said?.());
+  return ran;
+}
+
+/**
  * Plans a part as a task.
  *
  * @param name - The VM.
@@ -814,7 +840,9 @@ function counts_total(counts: PlanCounts): number {
  * @returns The counts, or why not.
  */
 async function part_plan(name: string, part: VmPart, deps: VmDeps, context: VmCommandContext): Promise<{ counts: PlanCounts } | { error: string }> {
-  const ran = await job_runFollowed(VM_JOBS.plan(name, part), `plan ${name} ${part}`, vmPlanRun_make(name, part, deps));
+  // The plan's counts are the step's own word at its end, read from what it kept.
+  const counts_word = (): string | undefined => { const made = planKept_read(context, name, part); return made === null ? undefined : `${part} plan: ${planCounts_words(made.counts)}`; };
+  const ran = await step_runFollowed(name, `plan-${part}`, VM_JOBS.plan(name, part), `plan ${name} ${part}`, vmPlanRun_make(name, part, deps), counts_word);
   if ('error' in ran) return ran;
   const kept = planKept_read(context, name, part);
   if (kept === null) return { error: `${name}: the ${part} plan left nothing to read` };
@@ -835,14 +863,14 @@ async function part_plan(name: string, part: VmPart, deps: VmDeps, context: VmCo
  */
 async function grow_run(context: VmCommandContext, deps: VmDeps, name: string, grow: { boot: boolean; data: boolean } | undefined, said: string, spec?: VmSpec): Promise<CommandEnvelope> {
   if (grow !== undefined) {
-    const ran = await job_runFollowed(VM_GROW_JOB(name), `grow ${name}`, vmGrowRun_make(name, grow, deps, context.remote_open));
+    const ran = await step_runFollowed(name, 'grow', VM_GROW_JOB(name), `grow ${name}`, vmGrowRun_make(name, grow, deps, context.remote_open));
     if ('error' in ran) return envelope_error(said, undefined, `vm build: ${name}: the disks grew, their filesystems did not: ${ran.error} (vm build ${name} grows them again)\n`);
     context.store.record_update(name, (current: VmRecord): void => { delete current.growOwed; });
   }
   // The machine itself last: its firewall and public SSH, set over the bastion once the stacks stand.
   const record: VmRecord | null = context.store.record_read(name);
   if (spec !== undefined && record !== null && record.built !== undefined && vmHost_owed(record, spec).length > 0) {
-    const ran = await job_runFollowed(VM_HOST_JOB(name), `set up ${name}`, vmHostRun_make(name, spec, deps, context.remote_open));
+    const ran = await step_runFollowed(name, 'host', VM_HOST_JOB(name), `set up ${name}`, vmHostRun_make(name, spec, deps, context.remote_open));
     if ('error' in ran) return envelope_error(said, undefined, `vm build: ${name}: built, but the machine was not set up: ${ran.error} (vm build ${name} sets it up again)\n`);
   }
   // The receipt is what runs, read again from the tenancy after the act, never the read from before it.
@@ -940,7 +968,7 @@ async function vmBuild_plan(context: VmCommandContext, named: string | undefined
     // The tenancy matches the spec declared: the build is done for it, so its line stops reading changed.
     if (context.store.record_read(name)?.built !== undefined) built_mark(context, name, spec);
     if (hostOwed.length > 0) {
-      const yes: boolean = await repl_confirm(`vm build ${name}: ${hostOwed.join('; ')}.${sshOpens} Nothing bills. A NO changes nothing on the machine. Continue? [y/N]`);
+      const yes: boolean = await repl_confirm(`vm build ${name}: ${hostOwed.join('; ')}.${sshOpens} Nothing bills. A NO changes nothing on the machine. Continue? [y/N]`, { purpose: STRATUS_PROMPT_PURPOSES.vmBuild, subject: { vm: name } });
       if (!yes) return envelope_ok(`${chalk.gray(`stopped before setting the machine up; nothing changed on it (vm build ${name} asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: 'build' } });
     }
     if (owed !== undefined || hostOwed.length > 0) return await grow_run(context, deps, name, owed, owed !== undefined ? `${name}: the plan reads nothing to do; growing the filesystems a build left ungrown\n` : '', spec);
@@ -972,14 +1000,14 @@ async function vmBuild_plan(context: VmCommandContext, named: string | undefined
   const record: VmRecord | null = context.store.record_read(name);
   const declaredSince: boolean = record?.declared !== undefined && (record.built === undefined || record.declared > record.built);
   const offered: VmCost | null = await cost_read(context, spec);
-  const yes: boolean = await repl_confirm(`vm build ${name}: ${what}${warning}${growing}${sshOpens} ${await costChange_words(context, record, spec, offered)} A NO builds nothing${declaredSince ? '; the declaration stays written' : ''}.${already} Continue? [y/N]`);
+  const yes: boolean = await repl_confirm(`vm build ${name}: ${what}${warning}${growing}${sshOpens} ${await costChange_words(context, record, spec, offered)} A NO builds nothing${declaredSince ? '; the declaration stays written' : ''}.${already} Continue? [y/N]`, { purpose: STRATUS_PROMPT_PURPOSES.vmBuild, subject: { vm: name } });
   if (!yes) {
     const left: string[] = [...(declaredSince ? ['the declaration stands as written'] : []), ...(made.length > 0 ? [`made to plan it, free: ${made.join(', ')}`] : [])];
     return envelope_ok(`${chalk.gray(left.length === 0 ? `stopped before the apply; nothing changed (vm build ${name} plans and asks again)` : `stopped before the apply; nothing was built (${left.join('; ')}; vm build ${name} plans and asks again)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: 'build' } });
   }
   if (grow.boot || grow.data) context.store.record_update(name, (current: VmRecord): void => { current.growOwed = { boot: grow.boot || current.growOwed?.boot === true, data: grow.data || current.growOwed?.data === true }; });
   if (counts_total(data.counts) > 0) {
-    const applied = await job_runFollowed(VM_JOBS.apply(name, 'data'), `apply ${name} data`, vmApplyRun_make(name, 'data', deps));
+    const applied = await step_runFollowed(name, 'apply-data', VM_JOBS.apply(name, 'data'), `apply ${name} data`, vmApplyRun_make(name, 'data', deps));
     if ('error' in applied) return envelope_error('', undefined, `vm build: ${applied.error}\n`);
   } else {
     context.store.file_remove(name, planFile_derive('data'));
@@ -996,12 +1024,12 @@ async function vmBuild_plan(context: VmCommandContext, named: string | undefined
     if (counts_total(planned.counts) > 0) {
       const priced: VmCost | null = await cost_read(context, spec);
       const dataStays: string = priced === null ? 'its data stays and bills its own' : `its data stays, billing ${cost_words(priced.dataHour, priced.currency)}, until vm teardown ${name} --all`;
-      const again: boolean = await repl_confirm(`vm build ${name}: its data stands; now the machine: ${planCounts_words(planned.counts)} (${spec.vcpu} vCPU, ${spec.memory} GiB, disk ${spec.disk} GB). It bills ${cost_line(priced)} with its data. A NO makes no machine: ${dataStays}. Continue? [y/N]`);
+      const again: boolean = await repl_confirm(`vm build ${name}: its data stands; now the machine: ${planCounts_words(planned.counts)} (${spec.vcpu} vCPU, ${spec.memory} GiB, disk ${spec.disk} GB). It bills ${cost_line(priced)} with its data. A NO makes no machine: ${dataStays}. Continue? [y/N]`, { purpose: STRATUS_PROMPT_PURPOSES.vmBuild, subject: { vm: name } });
       if (!again) return envelope_ok(`${chalk.gray(`stopped before the machine; its data stands and bills its own (vm build ${name} plans the machine and asks again; vm teardown ${name} --all removes the data)`)}\n`, { kind: LINE_DECLINED_MODEL_KIND, data: { line: 'build' } });
     }
   }
   if (machineCounts !== undefined && counts_total(machineCounts) > 0) {
-    const applied = await job_runFollowed(VM_JOBS.apply(name, 'machine'), `apply ${name} machine`, vmApplyRun_make(name, 'machine', deps));
+    const applied = await step_runFollowed(name, 'apply-machine', VM_JOBS.apply(name, 'machine'), `apply ${name} machine`, vmApplyRun_make(name, 'machine', deps));
     if ('error' in applied) return envelope_error('', undefined, `vm build: ${applied.error}\n`);
   } else {
     context.store.file_remove(name, planFile_derive('machine'));
@@ -1023,9 +1051,8 @@ async function vmBuild_plan(context: VmCommandContext, named: string | undefined
  * @returns The line.
  */
 export function sshLine_build(session: { sessionId: string; host: string }, keyPath: string, privateIp: string): string {
-  const known: string = path.join(path.dirname(keyPath), 'known_hosts');
-  const common: string = `-i ${keyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${known}`;
-  return `ssh ${common} -o ProxyCommand="ssh ${common} -W %h:%p -p 22 ${session.sessionId}@${session.host}" ${VM_USER}@${privateIp}`;
+  // The same arguments the engine itself reaches the VM with, each written as a word of the operator's shell.
+  return ['ssh', ...sshArgs_build(session, keyPath, privateIp)].map(shWord_write).join(' ');
 }
 
 /**

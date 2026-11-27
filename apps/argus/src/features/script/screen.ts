@@ -18,18 +18,16 @@
  *
  * @module
  */
-import {
-  CHRIS_PROFILE_OFFERS, chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, chrisStatusModelSchema, vmCostModelSchema, vmLimitsModelSchema, vmStatusModelSchema,
-  type ChrisPlanModel, type ChrisStatusRow, type NetStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel, type VmStatusRow,
-} from '@fnndsc/menu';
+import { CHRIS_PROFILE_OFFERS, chrisPlanModelSchema, manifestStatusModelSchema, MANIFEST_STATUS_MODEL_KIND, netStatusModelSchema, STRATUS_CHRIS_PLAN_MODEL_KIND, STRATUS_NET_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, chrisStatusModelSchema, vmCostModelSchema, vmLimitsModelSchema, vmStatusModelSchema, type ChrisPlanModel, type ChrisStatusRow, type NetStatusRow, type LineStandingModel, type LineState, type PromptKind, type VmCostRate, type VmCostRow, type VmLimitsModel, type VmStatusRow, arg_quote, path_write } from '@fnndsc/menu';
+import { ScreenTimers } from './timers.js';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
 import { saveLine_compose } from '../edit/line.js';
 import { lockWhere_text, modePill_make, READ_ASKS, READ_HELD, readHold_derive, type ReadHold } from '../takeover/tier.js';
 import { takeoverFrame_build, type TakeoverFrame, type TakeoverView } from '../takeover/frame.js';
 import {
-  askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
+  ASK_UNNAMED, askForm_derive, costLine_derive, counts_words, duration_words, line_parse, lineOption_get, lineOption_set, lines_build, memoryRange_derive, rate_words, rates_sum,
   buildWould_derive, ports_word, runningStep_find, words_split, script_render, scriptName_derive, scriptSource_derive, spec_words, states_count, stepBuildLine_get, stepKind_derive, stepKind_isTask, steps_build, userLine_build, vmLevers_read, vmSliders_build,
-  word_quote, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts, type VmRuns,
+  workingCopy_derive, type AskAbout, type BuildWould, type RunEnd, type ScriptLine, type ScriptStep, type SliderSpec, type StateCounts, type VmRuns,
 } from './model.js';
 
 /** An answer the session gave a quiet line: what the screen reads of it. */
@@ -51,8 +49,8 @@ export interface QuietAnswer {
 
 /** What the screen needs from its host. */
 export interface ScriptHooks {
-  /** Runs an operator's line (it may ask); its output arrives through `output_take`; resolves when it ends, true when no answer was an error. */
-  run: (line: string) => Promise<boolean>;
+  /** Runs an operator's line (it may ask); its output arrives through `output_take`; resolves when it ends, with how it ended (or, from an older host, true when no answer was an error). */
+  run: (line: string) => Promise<boolean | RunEnd>;
   /** Asks a line quietly, for a model; rejects when the session refused. */
   ask: (line: string) => Promise<QuietAnswer>;
   /** Stops following the running line. */
@@ -71,6 +69,8 @@ export interface ScriptHooks {
 export interface OpenAsk {
   message: string;
   kind: PromptKind;
+  /** Whose line raised it, and what it is for and about. */
+  about: AskAbout;
   answer: (value: string | null) => void;
   /** Answers the session alone, the screen untouched: for a question carried away when the screen is left. */
   settle: (value: string | null) => void;
@@ -240,7 +240,6 @@ export class ScriptScreen {
   protected stepCost: VmCostRow | null = null;
   /** Why the last `vm cost` for the step did not answer, or null. */
   protected stepCostRefused: string | null = null;
-  protected costTimer: ReturnType<typeof setTimeout> | null = null;
   /** The last `vm cost` sent for the step: an answer to an older one is dropped, so a slow price never overwrites a newer. */
   protected costAsked: number = 0;
   /** When the session read the price list, as `vm cost` last said; null before the first price. */
@@ -255,8 +254,6 @@ export class ScriptScreen {
   protected readonly chrisPlans: Map<string, ChrisPlanModel | null> = new Map();
   /** The line running, and since when. */
   protected busy: { line: string; step: string | null; since: number } | null = null;
-  /** The standing read again a moment after a task-starting line was sent, so the seat wears the run while the line still holds the lane. */
-  protected refreshTimer: ReturnType<typeof setTimeout> | null = null;
   protected ask: OpenAsk | null = null;
   protected partial: string = '';
   /** What each step's lines printed, for its body. */
@@ -341,11 +338,12 @@ export class ScriptScreen {
   /** The last SAVE, where and when: its receipt stands on the seat until the next edit. */
   protected saved: { path: string; at: string; view: string } | null = null;
   protected readonly parts: { header: HTMLElement; body: HTMLElement; strip: HTMLElement; log: HTMLElement; input: HTMLInputElement; promptLabel: HTMLElement };
-  protected ticker: ReturnType<typeof setInterval> | null = null;
+  /** The screen's clocks, its own and those of a screen that extends it: stopped together when it is left. */
+  protected readonly timers: ScreenTimers = new ScreenTimers();
+  /** True once the screen has been shown: its first draw made and its header's clock started. */
+  private shown: boolean = false;
   /** Whether the screen was left: a read that answers after that still redraws it, and must not retitle the tab the page has again. */
   protected left: boolean = false;
-  /** The wait before the standing is read again for a line answered yes; null when none is pending. */
-  private answeredTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Builds the screen.
@@ -402,7 +400,25 @@ export class ScriptScreen {
     foot.append(logColumn);
     this.frame.log.append(foot);
     this.parts = { header, body, strip, log, input, promptLabel };
-    this.ticker = setInterval((): void => { if (this.busy !== null) this.header_draw(); }, 5_000);
+  }
+
+  /**
+   * Shows the screen: its first draw, and its header's clock. Made and
+   * shown are two steps, so a screen that extends this one is whole (its
+   * own fields set) before anything of it is drawn. Opening a script or a
+   * machine shows it too; showing it twice changes nothing.
+   *
+   * @example
+   * ```ts
+   * const screen: ScriptScreen = new ScriptScreen(hooks);
+   * document.body.append(screen.root);
+   * screen.screen_show();
+   * ```
+   */
+  public screen_show(): void {
+    if (this.shown || this.left) return;
+    this.shown = true;
+    this.timers.interval_set('header', 5_000, (): void => { if (this.busy !== null) this.header_draw(); });
     this.draw();
   }
 
@@ -417,16 +433,29 @@ export class ScriptScreen {
   /** Stops the screen's clock; the host calls it on leaving. */
   public dispose(): void {
     this.left = true;
-    if (this.ticker !== null) clearInterval(this.ticker);
-    this.ticker = null;
-    if (this.costTimer !== null) clearTimeout(this.costTimer);
-    this.costTimer = null;
-    if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
-    this.refreshTimer = null;
-    if (this.answeredTimer !== null) clearTimeout(this.answeredTimer);
-    this.answeredTimer = null;
+    this.timers.timers_stop();
     this.ask?.answer(null);
     this.ask = null;
+  }
+
+  /**
+   * Sends a line and says whether it ran to its end: sent, not refused, and
+   * not stopped at a question answered no. What follows a line only when it
+   * was done (a receipt, the next line) asks this, never `line_send` alone.
+   *
+   * @param line - The line.
+   * @param step - The seat it is sent from, or null.
+   * @param keepLog - Whether the seat's log is kept from the line before.
+   * @returns True when the line was done.
+   *
+   * @example
+   * ```ts
+   * if (await this.line_sendDone('vm build store', step)) this.builtHere = step;
+   * ```
+   */
+  protected async line_sendDone(line: string, step: string | null, keepLog: boolean = false): Promise<boolean> {
+    const ran: boolean = await this.line_send(line, step, keepLog);
+    return ran && !(this.refusal?.declined === true && this.refusal.line === line);
   }
 
   // ---------------------------------------------------------------- opening
@@ -438,6 +467,7 @@ export class ScriptScreen {
    * @param path - The script, or `''` for the library.
    */
   public async open(path: string): Promise<void> {
+    this.screen_show();
     if (path === '') {
       // The library, asked for: a seat chosen, as by the rail's button. Nothing being read is stopped by it.
       this.chosen += 1;
@@ -528,6 +558,8 @@ export class ScriptScreen {
     if (open === null) return null;
     this.ask = null;
     this.askLine = null;
+    // Its words and its kind only: whose it is belongs to its host, which kept the question as it arrived and
+    // judges it again, against the line in flight then, when the screen opens.
     return { message: open.message, kind: open.kind, resolve: open.settle };
   }
 
@@ -588,16 +620,21 @@ export class ScriptScreen {
    * @param message - The question.
    * @param kind - What answers it.
    * @returns The answer, or null when abandoned.
+   * @param about - Whose line raised it, and what it is for and about; nothing known when the host does not say.
    */
-  public ask_take(message: string, kind: PromptKind): Promise<string | null> {
+  public ask_take(message: string, kind: PromptKind, about: AskAbout = ASK_UNNAMED): Promise<string | null> {
     this.ask?.answer(null);
     this.hooks.voice.cue('hail');
     return new Promise((resolve: (value: string | null) => void): void => {
-      this.askLine = this.lines.find((line: ScriptLine): boolean => message.startsWith(`${line.text}:`) || message.startsWith(`${line.text} `))?.text ?? null;
+      // The line the question is of: the one its host says raised it. A host that says nothing at all of the
+      // question (an older one) leaves the screen's own line in flight; a question its host placed with
+      // another line is not this screen's line's. Never read off the question's words.
+      const raised: string | null = about === ASK_UNNAMED ? this.busy?.line ?? null : about.line;
+      this.askLine = raised === null ? null : this.lines.find((line: ScriptLine): boolean => line.text === raised)?.text ?? null;
       // The question stands over its own offer: the seat of the line it asks for is shown (a-change-is-a-loop, clause 4).
       const seat: ScriptStep | undefined = this.askLine === null ? undefined : this.steps.find((step: ScriptStep): boolean => step.lines.some((line: ScriptLine): boolean => line.text === this.askLine));
       if (seat !== undefined) this.view = seat.key;
-      this.ask = { message, kind, settle: resolve, answer: (value: string | null): void => {
+      this.ask = { message, kind, about, settle: resolve, answer: (value: string | null): void => {
         const answeredLine: string | null = this.askLine;
         this.ask = null;
         this.askLine = null;
@@ -652,7 +689,7 @@ export class ScriptScreen {
     const path: string = this.path;
     let text: string = '';
     try {
-      text = text_extract(await this.hooks.ask(`cat ${path}`));
+      text = text_extract(await this.hooks.ask(`cat ${path_write(path)}`));
     } catch (error: unknown) {
       if (session === this.editSession) this.log_add(`cat ${path}: ${error instanceof Error ? error.message : String(error)}`, 'note');
     }
@@ -732,7 +769,7 @@ export class ScriptScreen {
   protected async status_read(path: string, text: string | null = null): Promise<{ lines: LineStandingModel[] } | null> {
     try {
       // A script not written yet is read from the screen's own lines (`--text`), so its seats wear their states before the first act.
-      const answer: QuietAnswer = await this.hooks.ask(`play ${path} --status${text === null ? '' : ` --text=${word_quote(text)}`}`);
+      const answer: QuietAnswer = await this.hooks.ask(`play ${path_write(path)} --status${text === null ? '' : ` --text=${arg_quote(text)}`}`);
       return model_extract(answer, MANIFEST_STATUS_MODEL_KIND, (data: unknown) => manifestStatusModelSchema.safeParse(data));
     } catch (error: unknown) {
       this.log_add(`play ${path} --status: ${error instanceof Error ? error.message : String(error)}`, 'note');
@@ -853,16 +890,14 @@ export class ScriptScreen {
   protected answeredGoing_poll(): void {
     // A screen that has been left reads nothing more and waits for nothing.
     if (this.left) return;
-    if (this.answeredTimer !== null) clearTimeout(this.answeredTimer);
-    this.answeredTimer = setTimeout((): void => {
-      this.answeredTimer = null;
+    this.timers.timeout_set('answered', ANSWERED_POLL_MS, (): void => {
       if (this.left || this.answeredGoing === null || this.path === '') return;
       void this.standings_refresh().then((): void => {
         if (this.left) return;
         this.draw();
         if (this.answeredGoing !== null) this.answeredGoing_poll();
       });
-    }, ANSWERED_POLL_MS);
+    });
   }
 
   /**
@@ -884,11 +919,9 @@ export class ScriptScreen {
    * @param line - The line sent.
    */
   protected refresh_schedule(line: string): void {
-    if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
-    this.refreshTimer = setTimeout((): void => {
-      this.refreshTimer = null;
+    this.timers.timeout_set('refresh', 3_000, (): void => {
       if (this.busy?.line === line) void this.standings_refresh();
-    }, 3_000);
+    });
   }
 
   protected async library_read(): Promise<void> {
@@ -903,7 +936,7 @@ export class ScriptScreen {
       }
       for (const folder of folders) {
         let listed: Listed[] = [];
-        try { listed = listings_extract(await this.hooks.ask(`ls /scripts/${folder}`)); } catch { continue; }
+        try { listed = listings_extract(await this.hooks.ask(`ls ${path_write(`/scripts/${folder}`)}`)); } catch { continue; }
         for (const item of listed[0]?.items ?? []) {
           if (item.type !== 'script' && !item.name.endsWith('.mise')) continue;
           scripts.push({ path: `/scripts/${folder}/${item.name}`, source: folder, name: scriptName_derive(item.name), counts: null });
@@ -980,12 +1013,13 @@ export class ScriptScreen {
     // A screen that has been left asks no price and waits for none: a command that ends after the close
     // arms nothing here.
     if (this.left) return;
-    if (this.costTimer !== null) clearTimeout(this.costTimer);
-    this.costTimer = setTimeout((): void => {
-      this.costTimer = null;
+    // A line that is not a declaration has no price to ask for: nothing is sent for it.
+    const priceLine: string | null = costLine_derive(line);
+    if (priceLine === null) return;
+    this.timers.timeout_set('cost', 100, (): void => {
       this.costAsked += 1;
       const asked: number = this.costAsked;
-      void this.hooks.ask(costLine_derive(line)).then((answer: QuietAnswer): void => {
+      void this.hooks.ask(priceLine).then((answer: QuietAnswer): void => {
         // A price for an earlier ask, or one that comes back to a screen that has been left, draws nothing.
         if (this.price_stale(asked)) return;
         const model = model_extract(answer, STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
@@ -1000,7 +1034,7 @@ export class ScriptScreen {
         this.stepCostRefused = error instanceof Error ? error.message : String(error);
         this.cost_redraw();
       });
-    }, 100);
+    });
   }
 
   // ---------------------------------------------------------------- sending
@@ -1033,8 +1067,18 @@ export class ScriptScreen {
     // The line's own kind, not its seat's: a seat that declares and builds starts a task only with its build.
     if (step !== null && stepKind_isTask(stepKind_derive(line)) && !line.startsWith('wait ')) this.refresh_schedule(line);
     let failed: boolean = false;
+    /** What the session said was wrong, in its own answer; '' when it said nothing there. */
+    let endWhy: string = '';
+    /** True when the host said how the line ended: the reason is then the session's own, or none. */
+    let typedEnd: boolean = false;
     try {
-      failed = !(await this.hooks.run(line));
+      const ended: boolean | RunEnd = await this.hooks.run(line);
+      const end: RunEnd = typeof ended === 'boolean' ? { ok: ended, declined: false, why: [] } : ended;
+      failed = !end.ok;
+      // A NO is the session's own word for how the line ended, never read off what was typed or printed.
+      if (end.declined) this.busyDeclined = true;
+      endWhy = end.why.join(' ').trim();
+      typedEnd = typeof ended !== 'boolean';
     } catch (error: unknown) {
       failed = true;
       const said: string = error instanceof Error ? error.message : String(error);
@@ -1046,7 +1090,7 @@ export class ScriptScreen {
       this.busy = null;
       // A refusal is said where its control stands, with why, and stays there until that seat sends again (a-change-is-a-loop, clauses 5 and 6).
       if (line === 'scripts pull') this.pulled = { at: new Date().toISOString(), said: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-6) };
-      if (failed || this.busyDeclined) this.refusal = { view: step ?? this.view, line, at: new Date().toISOString(), declined: this.busyDeclined, why: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ') || 'the session refused it' };
+      if (failed || this.busyDeclined) this.refusal = { view: step ?? this.view, line, at: new Date().toISOString(), declined: this.busyDeclined, why: endWhy || (typedEnd ? '' : this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ')) || 'the session refused it' };
       this.hooks.voice.cue(failed ? 'redalert' : 'ack');
       await this.standings_refresh();
       // A declaration sent moves what the price compares with: VM NEW's price is asked again of what now stands.
@@ -1075,7 +1119,7 @@ export class ScriptScreen {
       if (!raised) return;
     }
     if (!(await this.line_send(declared, step))) return;
-    if (await this.line_send(built, step, true)) this.builtHere = step;
+    if (await this.line_sendDone(built, step, true)) this.builtHere = step;
     this.draw();
   }
 
@@ -2046,7 +2090,7 @@ export class ScriptScreen {
         return;
       }
       box.append(el('p', 'tdc-prose tdc-quiet', this.pricesRead === null ? 'reading Oracle\'s price list, once for this session; every price after it is worked out from it…' : 'pricing the line as it stands…'));
-      if (this.costTimer === null) this.stepCost_ask(step.lines[0]?.text ?? '');
+      if (!this.timers.timer_runs('cost')) this.stepCost_ask(step.lines[0]?.text ?? '');
       return;
     }
     const rows: HTMLElement = el('div', 'tdc-cost-rows');
@@ -2144,7 +2188,9 @@ export class ScriptScreen {
     this.runsCost = { key, row: null };
     let line: string = step.lines[0]?.text ?? '';
     for (const [word, value] of [['--vcpu', runs.vcpu], ['--memory', runs.memory], ['--disk', runs.disk], ['--data', runs.data]] as const) if (value !== null) line = lineOption_set(line, word, String(value));
-    void this.hooks.ask(costLine_derive(line)).then((answer: QuietAnswer): void => {
+    const priceLine: string | null = costLine_derive(line);
+    if (priceLine === null) return;
+    void this.hooks.ask(priceLine).then((answer: QuietAnswer): void => {
       if (this.runsCost?.key !== key) return;
       const model = model_extract(answer, STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
       // Only the parts that stand bill: a machine torn down is priced at nothing, its kept data at its own.
@@ -2558,7 +2604,7 @@ export class ScriptScreen {
     strip.hidden = this.ask === null || this.ask.kind === 'secret';
     if (this.ask === null || this.ask.kind === 'secret') return;
     const ask: OpenAsk = this.ask;
-    const form = askForm_derive(ask.message);
+    const form = askForm_derive(ask.message, ask.kind);
     const destroying: boolean = /teardown|destroy|remove/i.test(ask.message) || form === 'name';
     const billing: boolean = /an hour|a month|\$|bill/i.test(ask.message);
     strip.dataset['tone'] = destroying ? 'destroy' : billing ? 'bill' : 'plain';
@@ -2615,7 +2661,6 @@ export class ScriptScreen {
     if (kind === 'out' && this.busy !== null) this.busyOut.push(text);
     // A task followed with no line in this lane (its question answered here): what it prints lands under its seat.
     if (kind === 'out' && this.busy === null && this.followStep !== null) this.stepLogs.set(this.followStep, [...(this.stepLogs.get(this.followStep) ?? []), text].slice(-200));
-    if (kind === 'answer' && this.busy !== null && (text === 'n' || text === '(declined)')) this.busyDeclined = true;
     if (kind === 'out' && this.busy !== null && this.busy.step !== null) {
       const lines: string[] = this.stepLogs.get(this.busy.step) ?? [];
       lines.push(text);

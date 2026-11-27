@@ -229,7 +229,6 @@ describe('chili\'s words that touch the host\'s disk', () => {
       'commands/fs/upload.ts': 'chefs',
       'commands/fs/create.ts': 'inode',
       'commands/fs/touch.ts': 'chefs touch takes no file; the kernel\'s own touch calls it and gates --withContentsFromFile itself',
-      'lfs/lfs.ts': 'not registered: no command reaches it',
       'man/renderer.ts': 'man',
       'commands/man/doc.ts': 'man',
       'commands/man/topics.ts': 'man topics lists chili\'s own doc folder',
@@ -246,8 +245,6 @@ describe('chili\'s words that touch the host\'s disk', () => {
     walk(root);
     expect(opening.sort()).toEqual(Object.keys(ACCOUNTED).sort());
     expect(Object.keys(CHILI_HOST_WORDS).sort()).toEqual(['chefs', 'man', 'path']);
-    // lfs stays unreachable: were it registered, its words would need a rule.
-    expect(readFileSync(join(root, 'run.ts'), 'utf8')).not.toMatch(/lfsCommand_setup/);
     // `create`, with its --from-file, is registered once: on a single file, under `inode`. The group words have none.
     const handler: string = readFileSync(join(root, 'filesystem', 'fileGroupHandler.ts'), 'utf8');
     const group: string = handler.slice(handler.indexOf('fileGroupCommand_setup(program'), handler.indexOf('fileMemberCommand_setup(program'));

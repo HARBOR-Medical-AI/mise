@@ -379,7 +379,7 @@ ${chalk.bold.cyan('INTERACTIVE COMMANDS')}
   ${chalk.bold.green('pwd')}         Print the current virtual working directory
   ${chalk.bold.green('cat')}         Display file contents
   ${chalk.bold.green('exit')}        Exit the interactive shell
-  ${chalk.bold.yellow('<other>')}     Any unrecognized command is passed directly to the chili CLI
+  ${chalk.bold.yellow('<other>')}     Any other word is looked for among the session's commands and in /bin
 
 ${chalk.bold.cyan('SHELL FEATURES')}
   ${chalk.bold('Pipes')}              Chain command stdout: ${chalk.dim('cat file.txt | wc -l')}

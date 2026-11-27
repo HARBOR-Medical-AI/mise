@@ -15,11 +15,11 @@
  * A module of the host: the host hands in its open verbs, its asks and its
  * stage as hooks; the module keeps the reflection and the band's panel.
  */
+import { arg_quote } from '@fnndsc/menu';
 import type { PaneAskRequest } from '../features/ask/paneAsk.js';
 import { question_stand } from './asks.js';
 import { Cohort } from '../features/gather/cohort.js';
 import { GatherPanel, type GatherFeed, type GatherPanelHandlers, type GatherSeries } from '../features/gather/panel.js';
-import { word_quote } from '../features/edit/line.js';
 import type { WireEnvelope } from '@fnndsc/menu';
 import type { ExecuteOutcome } from '../calypso/client.js';
 import type { CatalogueBinding, ReplayPlace } from './desktop.js';
@@ -196,7 +196,7 @@ export function cohort_wire(context: Pick<HostContext, 'layout' | 'panels' | 'su
     if (!first || pressed.length === 0) return;
     queueMicrotask((): void => {
       const paths: string[] = pressed.splice(0);
-      if (paths.length > 0) void verb_send(`gather add ${paths.map(word_quote).join(' ')}`);
+      if (paths.length > 0) void verb_send(`gather add ${paths.map(arg_quote).join(' ')}`);
     });
   };
 

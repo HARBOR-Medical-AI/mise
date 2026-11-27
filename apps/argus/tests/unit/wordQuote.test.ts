@@ -7,7 +7,8 @@
  * quoted word through the kernel's own word parser, so the two cannot drift.
  */
 import { describe, it, expect } from '@jest/globals';
-import { word_quote, saveLine_compose } from '../../src/features/edit/line.js';
+import { arg_quote } from '@fnndsc/menu';
+import { saveLine_compose } from '../../src/features/edit/line.js';
 import { args_tokenize } from '../../../../packages/brasa/src/lib/parser.js';
 
 const WORDS: ReadonlyArray<string> = [
@@ -23,9 +24,9 @@ const WORDS: ReadonlyArray<string> = [
   '',
 ];
 
-describe('word_quote', () => {
+describe('arg_quote', () => {
   it.each(WORDS)('quotes %j so the kernel reads it back unchanged', (word: string) => {
-    expect(args_tokenize(`touch ${word_quote(word)}`)).toEqual(['touch', word]);
+    expect(args_tokenize(`touch ${arg_quote(word)}`)).toEqual(['touch', word]);
   });
 
   it('writes a save line whose text and path read back whole', () => {

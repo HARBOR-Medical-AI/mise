@@ -33,7 +33,8 @@ jest.unstable_mockModule('../../src/features/edit/field.js', () => ({
 }));
 
 const { editor_wire } = await import('../../src/app/editor.js');
-const { saveLine_compose, word_quote, editLine_compose, editAsk_render } = await import('../../src/features/edit/line.js');
+const { saveLine_compose, editLine_compose, editAsk_render } = await import('../../src/features/edit/line.js');
+const { arg_quote } = await import('@fnndsc/menu');
 const { editExtension_extract: extension_parse } = await import('@fnndsc/menu');
 const { PanelRoster, paneFactory_register, paneInstance_create, paneInstance_dispose, paneInstances_list } = await import('../../src/app/panes.js');
 import type { EditorModule } from '../../src/app/editor.js';
@@ -115,10 +116,10 @@ beforeEach((): void => {
 
 describe('the lines an editor runs', () => {
   it('quotes a text so the kernel reads every character back: newlines, $, @, quotes, backslashes, ; | >', () => {
-    expect(word_quote('plain')).toBe("'plain'");
-    expect(word_quote("it's")).toBe("'it'\\''s'");
-    expect(word_quote('a\\b')).toBe("'a\\b'");
-    expect(word_quote('l1; a | b > c\nl2 $HOME @1')).toBe("'l1; a | b > c\nl2 $HOME @1'");
+    expect(arg_quote('plain')).toBe("'plain'");
+    expect(arg_quote("it's")).toBe("'it'\\''s'");
+    expect(arg_quote('a\\b')).toBe("'a\\b'");
+    expect(arg_quote('l1; a | b > c\nl2 $HOME @1')).toBe("'l1; a | b > c\nl2 $HOME @1'");
     expect(saveLine_compose('/home/u/my notes.txt', 'x')).toBe("touch --withContents='x' '/home/u/my notes.txt'");
     expect(editLine_compose('/proc/jobs/feed_12/note')).toBe("edit '/proc/jobs/feed_12/note'");
   });

@@ -92,6 +92,10 @@ export interface PromptRequest {
   wants?: PromptKind;
   path?: PromptPath;
   commit?: string;
+  /** What the question is for, as a name a surface may know (`stratus.vm.build`). */
+  purpose?: string;
+  /** What it is about, by name (`vm`, `account`). */
+  subject?: Record<string, string>;
 }
 
 /**

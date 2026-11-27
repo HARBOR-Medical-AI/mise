@@ -235,6 +235,22 @@ describe('the PACS pane, following a pull', () => {
     await settle();
   });
 
+  it('says where an export went from the answer\'s model, whatever the words printed; and words alone say nothing', () => {
+    const wrote: HTMLElement = document.getElementById('pacs-wrote') as HTMLElement;
+    let opened: string | null = null;
+    (panel as unknown as { handlers: { dir_open: (folder: string) => void } }).handlers.dir_open = (folder: string): void => { opened = folder; };
+    // Words that look like a receipt, from any line, with no model behind them: nothing is shown.
+    panel.envelope_observe({ status: 'ok', rendered: '\u001b[32m✓ wrote /home/someone/elsewhere.csv\u001b[39m\n' } as never);
+    panel.envelope_observe({ status: 'ok', rendered: '✓ wrote /tmp/x', model: { kind: 'fs.cat', data: {} } } as never);
+    expect(wrote.hidden).toBe(true);
+    // The answer's own model names the file, and the printed words are something else entirely.
+    panel.envelope_observe({ status: 'ok', rendered: 'the table is in the usual place\n', model: { kind: 'pacs.query', data: { ...model_make(), written: '/home/someone/my audits/pacs 1.csv' } } } as never);
+    expect(wrote.hidden).toBe(false);
+    expect(wrote.textContent).toBe('WROTE /home/someone/my audits/pacs 1.csv');
+    wrote.click();
+    expect(opened).toBe('/home/someone/my audits');
+  });
+
   it('reads a silent series as NOT RECEIVED with its reason, says it once in the console, and stops the bar', async () => {
     const reason: string = 'the PACS sent nothing for 60 s and CUBE has none of it';
     panel.progress_observe(progress_make('9.9.1', { status: 'running', current: 0, total: 1 }));

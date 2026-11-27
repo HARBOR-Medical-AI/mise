@@ -6,6 +6,7 @@
  * pinned to the commit the plan read, a replay with nothing to add that asks
  * nothing, and the refusals (no porter, a chell too old, a token refused).
  */
+import { spawnSync } from 'node:child_process';
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,8 +26,9 @@ import { chris_run, type ChrisCommandContext } from '../src/commands/chris.js';
 import { lineStatusProviders_make } from '../src/commands/lineStatus.js';
 import { FAKE_INDEX_COMMIT, FakeChrisVm } from '../src/cloud/fake/chris.js';
 import {
-  chrisPluginApplyRun_make, PLUGIN_SYNC_LINE, pluginApplyScript_render, pluginPlanScript_render, pluginSyncPlan_parse, pluginSyncReceipt_parse, shQuote, type PluginPlanRead,
+  chrisPluginApplyRun_make, PLUGIN_SYNC_LINE, pluginApplyScript_render, pluginPlanScript_render, pluginSyncPlan_parse, pluginSyncReceipt_parse, type PluginPlanRead,
 } from '../src/chris/plugins.js';
+import { shWord_quote } from '../src/vm/quoting.js';
 import type { DeployDeps } from '../src/chris/deploy.js';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
@@ -138,6 +140,20 @@ describe('chris plugin sync, by the chell porter runs beside CUBE', () => {
 describe('the plugin sync script and what it prints', () => {
   const PLAN: PluginPlanRead = { chell: '5.20.0', label: 'chris-plugins @ 8c9a1f6', source: 'FNNDSC/chris-plugins@main', commit: FAKE_INDEX_COMMIT, indexed: 2, computes: ['NERC'], entries: [{ group: 'add', name: 'pl-a' }, { group: 'skip', name: 'pl-b' }] };
 
+  it('a source or a ref that holds shell grammar reaches chell as that one value: quoted in chell\'s line, and the line whole in the VM\'s sh', () => {
+    const source: string = 'owner/re po;touch /tmp/x';
+    const ref: string = "v1 $(id) 'q'";
+    const script: string = pluginPlanScript_render({ source, ref }, 'https://cube.example.org/api/v1/');
+    // The chell line as chell will read it: the two values each one word, the rest its own grammar.
+    const line: string = `P=$(plugin sync 'owner/re po;touch /tmp/x' --ref 'v1 $(id) '\\''q'\\''' --plan)`;
+    // And that line as the VM's sh is given it: inside single quotes, so nothing in it is the VM's to expand.
+    expect(script).toContain(shWord_quote(line).slice(0, -1));
+    const sh = spawnSync('sh', ['-c', `printf '%s' ${shWord_quote(line)}`], { encoding: 'utf8' });
+    expect(sh.stdout).toBe(line);
+    const applied: string = pluginApplyScript_render({ ...PLAN, source, commit: ref }, 'https://cube.example.org/api/v1/');
+    expect(applied).toContain(shWord_quote(`plugin sync 'owner/re po;touch /tmp/x' --ref 'v1 $(id) '\\''q'\\''' --yes`));
+  });
+
   it('reads the password on the VM and hands chell a token on stdin, never a password on a line', () => {
     const script: string = pluginPlanScript_render({ source: 'FNNDSC/chris-plugins', ref: 'v1' }, 'https://cube.example.org/api/v1/');
     expect(script).toContain('os.environ["CHRIS_SUPERUSER_PASSWORD"]');
@@ -148,7 +164,7 @@ describe('the plugin sync script and what it prints', () => {
     expect(script).not.toMatch(/admin-password|admin-pass/);
     expect(pluginApplyScript_render(PLAN, 'https://cube.example.org/api/v1/')).toContain(`'plugin sync FNNDSC/chris-plugins@main --ref ${FAKE_INDEX_COMMIT} --yes'`);
     expect(PLUGIN_SYNC_LINE).toBe('cd /srv/data/chris && sh -s');
-    expect(shQuote("it's")).toBe("'it'\\''s'");
+    expect(shWord_quote("it's")).toBe("'it'\\''s'");
   });
 
   it('reads a plan among whatever else chell printed, an empty field read as empty', () => {

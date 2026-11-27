@@ -206,7 +206,7 @@ describe('the TD controller screen', () => {
     const { controller } = controller_make();
     controller.clusters_take([cluster_make('quay', { protected: false, refused: {} })]);
     controller.cluster_choose('quay');
-    const billing: Promise<string | null> = controller.ask_take('infra-apply creates 17 resources. Billing starts at $0.50 an hour. Continue? [y/N]', 'text');
+    const billing: Promise<string | null> = controller.ask_take('infra-apply creates 17 resources. Billing starts at $0.50 an hour. Continue? [y/N]', 'confirm');
     expect(controller.root.querySelector('.tdc-strip')?.getAttribute('data-tone')).toBe('bill');
     button_named(controller.root, 'YES · BILL')?.click();
     expect(await billing).toBe('y');

@@ -138,7 +138,7 @@ describe('a ChRIS profile and what it renders', () => {
   });
 
   it('reaches a VM through the bastion as its proxy, with the VM\'s own key', () => {
-    expect(sshArgs_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5').slice(-2)).toEqual(['ProxyCommand=ssh -i /k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -p 22 s@h', 'ubuntu@10.0.0.5']);
+    expect(sshArgs_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5').slice(-2)).toEqual(['ProxyCommand=ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -o Port=22 s@h', 'ubuntu@10.0.0.5']);
   });
 });
 

@@ -13,11 +13,13 @@
  * RUN; a machine the host keeps with no script gets one synthesized and
  * written at its first act.
  */
-import { describe, it, expect, jest } from '@jest/globals';
+import { afterEach, describe, it, expect, jest } from '@jest/globals';
 import type { QuietAnswer, ScriptHooks } from '../../src/features/script/screen.js';
 import { VmScreen } from '../../src/features/vm/screen.js';
 import { leverFloor_derive, serviceDraft_why, vmServices_change, vmServices_read } from '../../src/features/vm/model.js';
 import { chrisQuestion_plain } from '../../src/features/vm/run.js';
+import type { AskAbout } from '../../src/features/script/model.js';
+import type { ScreenTimers } from '../../src/features/script/timers.js';
 
 const STORE_TEXT: string = [
   'net new chrisproject-services --cidr 10.20.0.0/16',
@@ -83,6 +85,14 @@ let costGate: Promise<void> | null = null;
 let storeGate: Promise<void> | null = null;
 /** While set, the next roster asked for is not answered until it resolves. */
 let rosterGate: Promise<void> | null = null;
+/**
+ * How the fake engine names and words its password questions; a test changes
+ * these to ask a question that is not the row's, or to word it otherwise.
+ */
+const PASSWD_QUESTIONS: { restart: string; fresh: string; wording: string | null; about: ((line: string, account: string, vm: string) => AskAbout) | null } = {
+  restart: 'stratus.chris.password.restart', fresh: 'stratus.chris.password.new', wording: null, about: null,
+};
+
 /** While set, no listing (a look for a machine's script) is answered until it resolves. */
 let lookupGate: Promise<void> | null = null;
 
@@ -99,9 +109,11 @@ function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; a
       const passwd: RegExpMatchArray | null = line.match(/^chris passwd (\S+) --on (\S+)$/);
       if (passwd !== null && screen !== null) {
         const name: string = passwd[1] as string;
-        if (name === 'chris') fed.push(await screen.ask_take(`chris passwd: chris on ${passwd[2]}: CUBE at https://cube.chrisproject.org/api/v1/ starts again to take the new password, and is down for a minute or so. Continue? [y/N]`, 'confirm'));
-        fed.push(await screen.ask_take(`${name}'s new password (empty: generate one):`, 'secret'));
-        fed.push(await screen.ask_take(`${name}'s new password, again:`, 'secret'));
+        // Each question is the line's own (the host knows it by the id it gave the line), and is named by the engine for what it is.
+        const about = (purpose: string): AskAbout => ({ mine: true, line, purpose, subject: { vm: passwd[2] as string, account: name } });
+        if (name === 'chris') fed.push(await screen.ask_take(`chris passwd: chris on ${passwd[2]}: CUBE at https://cube.chrisproject.org/api/v1/ starts again to take the new password, and is down for a minute or so. Continue? [y/N]`, 'confirm', about(PASSWD_QUESTIONS.restart)));
+        fed.push(await screen.ask_take(PASSWD_QUESTIONS.wording ?? `${name}'s new password (empty: generate one):`, 'secret', PASSWD_QUESTIONS.about?.(line, name, passwd[2] as string) ?? about(PASSWD_QUESTIONS.fresh)));
+        fed.push(await screen.ask_take(`${name}'s new password, again:`, 'secret', PASSWD_QUESTIONS.about?.(line, name, passwd[2] as string) ?? about(PASSWD_QUESTIONS.fresh)));
       }
       const save: RegExpMatchArray | null = line.match(/^touch --withContents='([\s\S]*)' '([^']+)'$/);
       if (save !== null) WRITTEN.set(save[2] as string, (save[1] as string).replace(/'\\''/g, "'"));
@@ -129,6 +141,7 @@ function screen_make(mine: string[] = []): { screen: VmScreen; sent: string[]; a
   };
   screen = new VmScreen(hooks);
   document.body.append(screen.root);
+  screen.screen_show();
   return { screen, sent, asked, fed };
 }
 
@@ -234,7 +247,7 @@ describe('the VM controller', () => {
     const { screen } = screen_make();
     await screen.vm_open('store');
     await settle();
-    const answered: Promise<string | null> = screen.ask_take('vm build store: boot disk 100 → 150 GB. Grown online, no reboot. $39.95 → $42.08 a month. A NO builds nothing. Continue? [y/N]', 'confirm');
+    const answered: Promise<string | null> = screen.ask_take('vm build store: boot disk 100 → 150 GB. Grown online, no reboot. $39.95 → $42.08 a month. A NO builds nothing. Continue? [y/N]', 'confirm', { mine: true, line: 'vm build store', purpose: 'stratus.vm.build', subject: { vm: 'store' } });
     await settle();
     // On the screen the question is the act's, plain; its buttons say what each answer does.
     const strip: HTMLElement = screen.root.querySelector('.tdc-strip') as HTMLElement;
@@ -854,6 +867,57 @@ describe('the VM controller', () => {
     }
   });
 
+  describe('the row answers the engine only for its own question', () => {
+    /** Types a password for jennings twice, presses SET, and gives back what the row fed the engine and the screen. */
+    async function password_set(): Promise<{ fed: Array<string | null>; screen: VmScreen; sent: string[] }> {
+      const { screen, sent, fed } = screen_make();
+      await screen.vm_open('store');
+      await settle(12);
+      screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-5"]')?.click();
+      await settle(12);
+      const row: HTMLElement = [...screen.root.querySelectorAll<HTMLElement>('.vm-account-listing .listing-row')].find((one) => one.querySelector('.vm-cell-name')?.textContent === 'jennings') as HTMLElement;
+      row.click();
+      await settle();
+      for (const id of ['password', 'retype']) {
+        const input = screen.root.querySelector<HTMLInputElement>(`#vm-account-${id}`) as HTMLInputElement;
+        input.value = 'a-secret-for-jennings';
+        input.dispatchEvent(new Event('input'));
+      }
+      screen.root.querySelector<HTMLButtonElement>('.vm-password-set')?.click();
+      await settle(20);
+      return { fed, screen, sent };
+    }
+    afterEach((): void => { PASSWD_QUESTIONS.wording = null; PASSWD_QUESTIONS.about = null; });
+
+    it('worded any way at all, the question named for this line, machine and account is answered from the row', async () => {
+      PASSWD_QUESTIONS.wording = 'Enter the credential to be stored';
+      const { fed, screen, sent } = await password_set();
+      expect(sent).toEqual(['chris passwd jennings --on store']);
+      expect(fed).toEqual(['a-secret-for-jennings', 'a-secret-for-jennings']);
+      screen.dispose();
+      screen.root.remove();
+    });
+
+    it.each([
+      ['the same account on another machine', (line: string, account: string): AskAbout => ({ mine: true, line, purpose: 'stratus.chris.password.new', subject: { vm: 'web', account } })],
+      ['another account on this machine', (line: string, _account: string, vm: string): AskAbout => ({ mine: true, line, purpose: 'stratus.chris.password.new', subject: { vm, account: 'chris' } })],
+      ['another line on this surface', (_line: string, account: string, vm: string): AskAbout => ({ mine: false, line: null, purpose: 'stratus.chris.password.new', subject: { vm, account } })],
+      ['a question the engine did not name, in the old words', (line: string): AskAbout => ({ mine: true, line, purpose: null, subject: {} })],
+      ['a question named for something else', (line: string, account: string, vm: string): AskAbout => ({ mine: true, line, purpose: 'stratus.vm.build', subject: { vm, account } })],
+    ] as const)('a hidden question that is %s is not answered from the row: it stands for the operator, and the password goes nowhere', async (_what: string, about: (line: string, account: string, vm: string) => AskAbout) => {
+      PASSWD_QUESTIONS.about = about;
+      const { fed, screen } = await password_set();
+      expect(fed).toEqual([]);
+      // The question is the operator's: it stands on the errand bar, its field empty.
+      const field: HTMLInputElement | null = screen.root.querySelector<HTMLInputElement>('.ss-errand-input');
+      expect(field).not.toBeNull();
+      expect(field?.value).toBe('');
+      expect(screen.root.textContent).not.toContain('a-secret-for-jennings');
+      screen.dispose();
+      screen.root.remove();
+    });
+  });
+
   it('a password is set in its row: typed twice and matched as typed, SET in the row, the engine answered from it, never in the log, a line or the page after', async () => {
     const { screen, sent, fed } = screen_make();
     await screen.vm_open('store');
@@ -1009,7 +1073,7 @@ describe('the VM controller', () => {
       expect(costsHeld).toBeGreaterThan(costsBefore);
       const drawn: string = screen.root.innerHTML;
       screen.dispose();
-      const inner = screen as unknown as { leverTimer: unknown };
+      const inner = screen as unknown as { timers: ScreenTimers };
       // The held price comes back to a screen that has left.
       costGate = null;
       priced();
@@ -1017,7 +1081,7 @@ describe('the VM controller', () => {
       await new Promise((resolve) => { setTimeout(resolve, 220); });
       expect(asked.filter((line: string): boolean => line.startsWith('vm cost')).length).toBe(costsHeld);
       expect(screen.root.innerHTML).toBe(drawn);
-      expect(inner.leverTimer).toBeNull();
+      expect(inner.timers.timer_runs('lever')).toBe(false);
       screen.root.remove();
     } finally {
       costGate = null;
@@ -1031,7 +1095,7 @@ describe('the VM controller', () => {
       const { screen, asked } = screen_make();
       await screen.vm_open('lone');
       await settle(12);
-      const inner = screen as unknown as { stepCost_ask: (line: string) => void; costTimer: unknown };
+      const inner = screen as unknown as { stepCost_ask: (line: string) => void; timers: ScreenTimers };
       const costs = (): number => asked.filter((line: string): boolean => line.startsWith('vm cost')).length;
       costGate = new Promise<void>((resolve: () => void): void => { priced = resolve; });
       const before: number = costs();
@@ -1048,7 +1112,7 @@ describe('the VM controller', () => {
       expect([...screen.root.querySelectorAll('*')].every((node: Element, at: number): boolean => node === nodes[at])).toBe(true);
       // A command that ends after the close asks for no new price, and arms no wait for one.
       inner.stepCost_ask('vm new unnamed --disk 180');
-      expect(inner.costTimer).toBeNull();
+      expect(inner.timers.timer_runs('cost')).toBe(false);
       await new Promise((resolve) => { setTimeout(resolve, 160); });
       expect(costs()).toBe(before + 1);
       screen.root.remove();
@@ -1058,13 +1122,49 @@ describe('the VM controller', () => {
     }
   });
 
+  it('made, the screen has drawn nothing and runs no clock; shown, it is drawn with its machines; shown again, nothing changes', async () => {
+    jest.useFakeTimers();
+    let made: VmScreen;
+    try {
+      const before: number = jest.getTimerCount();
+      const hooks: ScriptHooks = {
+        run: async (): Promise<boolean> => true,
+        ask: async (): Promise<QuietAnswer> => ({ envelopes: [] }),
+        stop: (): void => undefined, leave: (): void => undefined, manage_is: (): boolean | null => true, elevate_ask: null,
+        voice: { pill: (): void => undefined, cue: (): void => undefined },
+      };
+      made = new VmScreen(hooks);
+      // Whole, and nothing of it drawn: no machines listing, no seat body, no clock.
+      expect(made.root.querySelector('.vm-machines-listing')).toBeNull();
+      expect(made.root.querySelector('.tdc-body')?.childElementCount).toBe(0);
+      expect(jest.getTimerCount()).toBe(before);
+      made.screen_show();
+      expect(made.root.querySelector('.tdc-body')?.childElementCount).toBeGreaterThan(0);
+      expect(jest.getTimerCount()).toBe(before + 1);
+      const drawn: Element[] = [...made.root.querySelectorAll('.tdc-body *')];
+      made.screen_show();
+      expect([...made.root.querySelectorAll('.tdc-body *')].every((node: Element, at: number): boolean => node === drawn[at])).toBe(true);
+      expect(jest.getTimerCount()).toBe(before + 1);
+      made.dispose();
+      expect(jest.getTimerCount()).toBe(before);
+      // Left before it was ever shown, a screen shows nothing after.
+      const never: VmScreen = new VmScreen(hooks);
+      never.dispose();
+      never.screen_show();
+      expect(never.root.querySelector('.tdc-body')?.childElementCount).toBe(0);
+      expect(jest.getTimerCount()).toBe(before);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('a screen left while a line is running, a lever is waiting and a standing is being watched has no clock left, and starts none after', async () => {
     const { screen } = screen_make();
     await screen.vm_open('lone');
     await settle(12);
-    /** The screen's own clocks, reached as the screen reaches them. */
+    /** What starts the screen's clocks, reached as the screen reaches them; and the one holder they are all in. */
     const inner = screen as unknown as {
-      runTick: unknown; leverTimer: unknown; answeredTimer: unknown; answeredGoing: unknown;
+      timers: ScreenTimers; answeredGoing: unknown;
       runTick_set: (on: boolean) => void; answeredGoing_poll: () => void;
     };
     jest.useFakeTimers();
@@ -1073,19 +1173,19 @@ describe('the VM controller', () => {
       // A line that has been sent and has not come back: the run's clock ticks every second.
       inner.runTick_set(true);
       // A lever moved: its price is asked for after a wait.
-      inner.leverTimer = setTimeout((): void => undefined, 400);
+      inner.timers.timeout_set('lever', 400, (): void => undefined);
       // A line answered yes: its standing is read again until it is seen running.
       inner.answeredGoing = 0;
       inner.answeredGoing_poll();
       expect(jest.getTimerCount()).toBe(before + 3);
+      // One call leaves the screen: the VM screen's clocks and the script screen's are the same holder's.
       screen.dispose();
       expect(jest.getTimerCount()).toBe(before);
-      expect(inner.runTick).toBeNull();
-      expect(inner.leverTimer).toBeNull();
-      expect(inner.answeredTimer).toBeNull();
+      expect(['header', 'run', 'lever', 'answered', 'cost', 'refresh'].filter((name: string): boolean => inner.timers.timer_runs(name))).toEqual([]);
       // The line comes back, or something asks again: nothing is started on a screen that has left.
       inner.runTick_set(true);
       inner.answeredGoing_poll();
+      inner.timers.timeout_set('lever', 400, (): void => undefined);
       expect(jest.getTimerCount()).toBe(before);
     } finally {
       jest.useRealTimers();

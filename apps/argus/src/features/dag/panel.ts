@@ -15,23 +15,7 @@
  *
  * @module
  */
-import {
-  feedDagModelSchema,
-  feedIndexingModelSchema,
-  type FeedIndexingModel,
-  feedListModelSchema,
-  DAG_MODEL_KINDS,
-  FEED_LIST_MODEL_KIND,
-  PROC_JUMP_MODEL_KIND,
-  procJumpModelSchema,
-  type ProcJumpModel,
-  type FeedDagModel,
-  type FeedDagNode,
-  type FeedListEntry,
-  type PromptContext,
-  type WireEnvelope,
-  type WatchState,
-} from '@fnndsc/menu';
+import { feedDagModelSchema, feedIndexingModelSchema, type FeedIndexingModel, feedListModelSchema, DAG_MODEL_KINDS, FEED_LIST_MODEL_KIND, PROC_JUMP_MODEL_KIND, procJumpModelSchema, type ProcJumpModel, type FeedDagModel, type FeedDagNode, type FeedListEntry, type PromptContext, type WireEnvelope, type WatchState, arg_quote } from '@fnndsc/menu';
 import { barState_clear, barState_set } from '../roster/bar.js';
 import { ChrisSpace, type LayoutStrategy, type PhysicsTerms, type SceneNode } from '../../scene/chrisSpace.js';
 import { Listing, type ListingStateParts } from '../roster/listing.js';
@@ -1214,7 +1198,7 @@ export class DagPanel {
     })) ?? '').trim();
     if (asked === '' || /\s/.test(asked)) return;
     this.jumpPending = true;
-    this.handlers.command_run(`proc jump --where ${asked}`);
+    this.handlers.command_run(`proc jump --where ${arg_quote(asked)}`);
   }
 
   /**

@@ -7,17 +7,19 @@
  * closes before it is answered.
  */
 import { describe, it, expect, afterEach } from '@jest/globals';
-import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
-import { ArgusClient } from '../../src/calypso/client.js';
+import { addressManual_derive, addressSame_check, AttachWiredError, attachStart_make, attachSubmit_allowed, failReason_keep, failReason_take, surfaceStart_run, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
+import { ArgusClient, type AttachedSession } from '../../src/calypso/client.js';
+import type { SurfaceWired } from '../../src/app/attachStart.js';
 
 /** A surface whose attach the test settles, and which counts how often it was wired. */
-function bench_make(): { start: (token: string) => void; wired: string[]; shown: string[]; hidden: number[]; restarted: string[]; settle: (ok: boolean, why?: string) => Promise<void> } {
+function bench_make(): { start: (token: string) => void; wired: string[]; shown: string[]; hidden: number[]; cleaned: string[]; settle: (ok: boolean, why?: string, wired?: boolean) => Promise<void> } {
   const wired: string[] = [];
   const shown: string[] = [];
   const hidden: number[] = [];
-  const restarted: string[] = [];
+  const cleaned: string[] = [];
   let resolve: () => void = (): void => undefined;
   let reject: (error: Error) => void = (): void => undefined;
+  // How the next failure fails: refused before anything was wired, or after the wiring had begun.
   const ports: AttachStartPorts = {
     surface_start: (token: string): Promise<void> => {
       // What the surface does before it attaches: every listener and timer of the page.
@@ -26,14 +28,14 @@ function bench_make(): { start: (token: string) => void; wired: string[]; shown:
     },
     form_hide: (): void => { hidden.push(1); },
     form_show: (reason: string): void => { shown.push(reason); },
-    page_restart: (token: string): void => { restarted.push(token); },
+    page_clean: (reason: string): void => { cleaned.push(reason); },
   };
-  const settle = async (ok: boolean, why: string = 'the token was refused'): Promise<void> => {
-    if (ok) resolve(); else reject(new Error(why));
+  const settle = async (ok: boolean, why: string = 'the token was refused', wired: boolean = false): Promise<void> => {
+    if (ok) resolve(); else reject(wired ? new AttachWiredError(new Error(why)) : new Error(why));
     await Promise.resolve();
     await Promise.resolve();
   };
-  return { start: attachStart_make(ports), wired, shown, hidden, restarted, settle };
+  return { start: attachStart_make(ports), wired, shown, hidden, cleaned, settle };
 }
 
 describe('the page\'s start', () => {
@@ -48,28 +50,55 @@ describe('the page\'s start', () => {
     expect(bench.shown).toEqual([]);
   });
 
-  it('after an attach that failed, wires nothing again: the form says why, and the next attempt restarts the page with its token', async () => {
+  it('after an attach that was refused, the next attempt is made in place: nothing was wired, and no page is restarted', async () => {
     const bench = bench_make();
     bench.start('wrong');
     await bench.settle(false);
     expect(bench.shown).toEqual(['the token was refused']);
     expect(bench.hidden).toEqual([]);
-    // The second attempt, with a good token: the page that was wired is not wired again.
+    // The second attempt, with a good token: started here, on this page.
     bench.start('good');
-    expect(bench.wired).toEqual(['wrong']);
-    expect(bench.restarted).toEqual(['good']);
+    expect(bench.wired).toEqual(['wrong', 'good']);
+    expect(bench.cleaned).toEqual([]);
+    await bench.settle(true);
+    expect(bench.hidden).toHaveLength(1);
+    // And while it is in flight, a second press begins nothing.
   });
 
-  it('of two attempts made together after a failure, the first is the one: one restart, with its token', async () => {
+  it('after a start that failed once wiring had begun, the page is left at once for a clean one with the reason: the form is not shown here', async () => {
+    const bench = bench_make();
+    bench.start('good');
+    await bench.settle(false, 'the daemon closed the connection before the surface was ready', true);
+    expect(bench.cleaned).toEqual(['the daemon closed the connection before the surface was ready']);
+    expect(bench.shown).toEqual([]);
+    // Nothing starts on the page that is being left: presses before it goes are nothing.
+    bench.start('good');
+    bench.start('other');
+    expect(bench.wired).toEqual(['good']);
+    expect(bench.cleaned).toHaveLength(1);
+  });
+
+  it('the reason goes with the move, for that one load and that page only', () => {
+    const tab = (): Storage => window.sessionStorage;
+    window.sessionStorage.clear();
+    expect(failReason_keep(tab, 'wiring threw', '/s/abc/')).toBe(true);
+    expect(failReason_take(tab, '/s/other/')).toBeNull();
+    expect(failReason_keep(tab, 'wiring threw', '/s/abc/')).toBe(true);
+    expect(failReason_take(tab, '/s/abc/')).toBe('wiring threw');
+    expect(failReason_take(tab, '/s/abc/')).toBeNull();
+    const refused = (): Storage => { throw new Error('The operation is insecure.'); };
+    expect(failReason_keep(refused, 'x', '/s/abc/')).toBe(false);
+    expect(failReason_take(refused, '/s/abc/')).toBeNull();
+  });
+
+  it('of two attempts made together after a refusal, the first is the one: one attach in flight', async () => {
     const bench = bench_make();
     bench.start('wrong');
     await bench.settle(false);
-    // Enter and the button, before the reload has taken the page away.
     bench.start('good');
     bench.start('other');
-    bench.start('good');
-    expect(bench.restarted).toEqual(['good']);
-    expect(bench.wired).toEqual(['wrong']);
+    expect(bench.wired).toEqual(['wrong', 'good']);
+    expect(bench.cleaned).toEqual([]);
   });
 
   const tab = (): Storage => window.sessionStorage;
@@ -156,7 +185,7 @@ describe('the page\'s start', () => {
     await second.settle(true);
     expect(second.wired).toEqual(['typed']);
     expect(second.hidden).toHaveLength(1);
-    expect(second.restarted).toEqual([]);
+    expect(second.cleaned).toEqual([]);
   });
 
   it('a second refusal on the form\'s own page reloads it: going to the address it is already at would load nothing new', async () => {
@@ -252,5 +281,261 @@ describe('an attach', () => {
     expect(client).toBeDefined();
     socket.onclose?.({ reason: '', code: 1000 });
     expect(closed).toBe(1);
+  });
+});
+
+describe('a held attach', () => {
+  const RealSocket = globalThis.WebSocket;
+  afterEach((): void => { globalThis.WebSocket = RealSocket; FakeSocket.made.length = 0; });
+
+  /** Attaches held over a fake socket; gives back the client and the socket. */
+  async function held_make(): Promise<{ client: ArgusClient; socket: FakeSocket }> {
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const attaching = ArgusClient.session_attachHeld('ws://127.0.0.1:9000', 'T');
+    const socket: FakeSocket = FakeSocket.made[0] as FakeSocket;
+    socket.onopen?.();
+    socket.onmessage?.({ data: JSON.stringify({ type: 'attached', session: 's', protocolVersion: 1 }) });
+    const { client } = await attaching;
+    return { client, socket };
+  }
+  const output = (chunk: string): { data: string } => ({ data: JSON.stringify({ type: 'output', id: 'x', channel: 'data', chunk }) });
+
+  it('holds what the session says until the handlers are installed, and then hands it over, in order, once', async () => {
+    const { client, socket } = await held_make();
+    socket.onmessage?.(output('one'));
+    socket.onmessage?.(output('two'));
+    const got: string[] = [];
+    client.handlers_install({ output_receive: (_channel: string, chunk: string): void => { got.push(chunk); } } as never);
+    // Installed, still held: the page finishes setting up before anything reaches a handler.
+    expect(got).toEqual([]);
+    socket.onmessage?.(output('three'));
+    expect(got).toEqual([]);
+    client.held_release();
+    expect(got).toEqual(['one', 'two', 'three']);
+    socket.onmessage?.(output('four'));
+    expect(got).toEqual(['one', 'two', 'three', 'four']);
+    // Released again: nothing is handed over twice.
+    client.held_release();
+    expect(got).toEqual(['one', 'two', 'three', 'four']);
+  });
+
+  it('a close while held is the attach gone: installing throws, nothing it held is delivered, and the close is no handler\'s', async () => {
+    const { client, socket } = await held_make();
+    socket.onmessage?.(output('stale'));
+    socket.onclose?.({ reason: '', code: 1006 });
+    const got: string[] = [];
+    let closed: number = 0;
+    expect(() => { client.handlers_install({ output_receive: (_c: string, chunk: string): void => { got.push(chunk); }, close_handle: (): void => { closed += 1; } } as never); }).toThrow('the daemon closed the connection before the surface was ready');
+    expect(() => { client.held_release(); }).toThrow('the daemon closed the connection before the surface was ready');
+    await expect(client.held_closed()).rejects.toThrow('before the surface was ready');
+    expect(got).toEqual([]);
+    expect(closed).toBe(0);
+  });
+
+  it('abandoned, its socket is closed and nothing it held or receives after reaches anyone', async () => {
+    const { client, socket } = await held_make();
+    let closedSockets: number = 0;
+    const close = socket.close.bind(socket);
+    socket.close = (): void => { closedSockets += 1; close(); };
+    socket.onmessage?.(output('held'));
+    client.held_abandon();
+    expect(closedSockets).toBe(1);
+    socket.onmessage?.(output('late'));
+    const got: string[] = [];
+    expect(() => { client.handlers_install({ output_receive: (_c: string, chunk: string): void => { got.push(chunk); } } as never); }).toThrow();
+    expect(got).toEqual([]);
+  });
+
+  it('abandoned after its handlers were installed and released, its handlers are taken away and its socket closed', async () => {
+    const { client, socket } = await held_make();
+    const got: string[] = [];
+    let closed: number = 0;
+    client.handlers_install({ output_receive: (_c: string, chunk: string): void => { got.push(chunk); }, close_handle: (): void => { closed += 1; } } as never);
+    client.held_release();
+    socket.onmessage?.(output('live'));
+    expect(got).toEqual(['live']);
+    client.held_abandon();
+    // The socket was closed, and no handler heard it, or anything after.
+    expect(socket.onmessage).toBeNull();
+    expect(closed).toBe(0);
+    expect(got).toEqual(['live']);
+  });
+
+  it('a held attach that is refused, or never answered, rejects as an attach does: nothing to install', async () => {
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const refused = ArgusClient.session_attachHeld('ws://127.0.0.1:9000', 'WRONG');
+    const socket: FakeSocket = FakeSocket.made[0] as FakeSocket;
+    socket.onopen?.();
+    socket.onmessage?.({ data: JSON.stringify({ type: 'error', reason: 'the token was refused' }) });
+    await expect(refused).rejects.toThrow('the token was refused');
+  });
+});
+
+describe('the start, in order', () => {
+  const RealSocket = globalThis.WebSocket;
+  afterEach((): void => { globalThis.WebSocket = RealSocket; FakeSocket.made.length = 0; });
+
+  /** Attaches held over a fake socket the test drives: the ack is given when `ack` is called. */
+  function attach_controlled(stale: boolean): { attach_held: (token: string) => Promise<AttachedSession>; socket: () => FakeSocket; ack: () => void } {
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    return {
+      attach_held: (token: string): Promise<AttachedSession> => ArgusClient.session_attachHeld('ws://127.0.0.1:9000', token),
+      socket: (): FakeSocket => FakeSocket.made[FakeSocket.made.length - 1] as FakeSocket,
+      ack: (): void => {
+        const socket = FakeSocket.made[FakeSocket.made.length - 1] as FakeSocket;
+        socket.onopen?.();
+        socket.onmessage?.({ data: JSON.stringify({ type: 'attached', session: 's', protocolVersion: 1, stale }) });
+      },
+    };
+  }
+
+  it('a word of the session held behind its attach wins over the attach\'s own: the facts are applied first, the held word after, then READY', async () => {
+    const control = attach_controlled(true);
+    const said: string[] = [];
+    let stale: boolean | null = null;
+    const running = surfaceStart_run('T', {
+      attach_held: control.attach_held,
+      backend_ask: async (): Promise<string> => {
+        // The session spoke after its ack, while the page was still learning its backend.
+        control.socket().onmessage?.({ data: JSON.stringify({ type: 'stale', stale: false }) });
+        await Promise.resolve();
+        return 'chris';
+      },
+      surface_wire: (_token: string, held: AttachedSession): SurfaceWired => {
+        held.client.handlers_install({ stale_receive: (now: boolean): void => { stale = now; said.push(`stale ${String(now)}`); } } as never);
+        // The attach's facts, applied by the wiring.
+        stale = held.attach.stale === true;
+        said.push(`attach says stale ${String(stale)}`);
+        return { ready_show: (): void => { said.push('READY'); } };
+      },
+    });
+    control.ack();
+    await running;
+    expect(said).toEqual(['attach says stale true', 'stale false', 'READY']);
+    expect(stale).toBe(false);
+  });
+
+  it('a close while the backend is being asked settles the start at once; the answer that comes after wires nothing and says no READY', async () => {
+    const control = attach_controlled(false);
+    const said: string[] = [];
+    let answer: (backend: string) => void = (): void => undefined;
+    const running = surfaceStart_run('T', {
+      attach_held: control.attach_held,
+      backend_ask: (): Promise<string> => new Promise<string>((resolve: (backend: string) => void): void => { answer = resolve; }),
+      surface_wire: (_token: string, held: AttachedSession): SurfaceWired => {
+        // The first of the wiring's effects: none may happen after the close.
+        said.push('wired');
+        held.client.handlers_install({ output_receive: (_c: string, chunk: string): void => { said.push(chunk); } } as never);
+        return { ready_show: (): void => { said.push('READY'); } };
+      },
+    });
+    control.ack();
+    await Promise.resolve();
+    control.socket().onmessage?.({ data: JSON.stringify({ type: 'output', id: 'x', channel: 'data', chunk: 'from the first socket' }) });
+    control.socket().onclose?.({ reason: '', code: 1006 });
+    await expect(running).rejects.toBeInstanceOf(AttachWiredError);
+    // The backend answers late.
+    answer('chris');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(said).toEqual([]);
+    expect(control.socket().onmessage).toBeNull();
+  });
+
+  it('a handler that throws during the hand-over, after the handlers were installed: no READY, the client is let go, and the start fails as wired', async () => {
+    const control = attach_controlled(false);
+    const said: string[] = [];
+    let closed: number = 0;
+    const running = surfaceStart_run('T', {
+      attach_held: control.attach_held,
+      backend_ask: async (): Promise<string> => 'chris',
+      surface_wire: (_token: string, held: AttachedSession): SurfaceWired => {
+        held.client.handlers_install({ output_receive: (): void => { throw new Error('a handler broke'); }, close_handle: (): void => { closed += 1; } } as never);
+        control.socket().onmessage?.({ data: JSON.stringify({ type: 'output', id: 'x', channel: 'data', chunk: 'boom' }) });
+        return { ready_show: (): void => { said.push('READY'); } };
+      },
+    });
+    control.ack();
+    await expect(running).rejects.toThrow('a handler broke');
+    expect(said).toEqual([]);
+    expect(control.socket().onmessage).toBeNull();
+    expect(closed).toBe(0);
+  });
+
+  it('a refused attach wires nothing; the good attempt that follows says READY once, and its handlers hear each frame once', async () => {
+    const control = attach_controlled(false);
+    let wired: number = 0;
+    const said: string[] = [];
+    const ports = {
+      attach_held: control.attach_held,
+      backend_ask: async (): Promise<string> => 'chris',
+      surface_wire: (_token: string, held: AttachedSession): SurfaceWired => {
+        wired += 1;
+        held.client.handlers_install({ output_receive: (_c: string, chunk: string): void => { said.push(chunk); } } as never);
+        return { ready_show: (): void => { said.push('READY'); } };
+      },
+    };
+    const refused = surfaceStart_run('WRONG', ports);
+    control.socket().onopen?.();
+    control.socket().onmessage?.({ data: JSON.stringify({ type: 'error', reason: 'the token was refused' }) });
+    await expect(refused).rejects.toThrow('the token was refused');
+    await expect(refused).rejects.not.toBeInstanceOf(AttachWiredError);
+    expect(wired).toBe(0);
+    const good = surfaceStart_run('GOOD', ports);
+    control.ack();
+    await good;
+    control.socket().onmessage?.({ data: JSON.stringify({ type: 'output', id: 'x', channel: 'data', chunk: 'press' }) });
+    expect(wired).toBe(1);
+    expect(said).toEqual(['READY', 'press']);
+  });
+});
+
+describe('behind a door', () => {
+  const RealSocket = globalThis.WebSocket;
+  afterEach((): void => { globalThis.WebSocket = RealSocket; FakeSocket.made.length = 0; });
+
+  it('an empty form may be submitted (the door holds the token); elsewhere a token must be given', () => {
+    expect(attachSubmit_allowed('', true)).toBe(true);
+    expect(attachSubmit_allowed('', false)).toBe(false);
+    expect(attachSubmit_allowed('T', false)).toBe(true);
+  });
+
+  it('a door attach that fails after its ack goes to a clean form; a deliberate empty retry there attaches through the door and says READY once', async () => {
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    const said: string[] = [];
+    const cleaned: string[] = [];
+    const tokens: string[] = [];
+    const surface_start = (token: string): Promise<void> => surfaceStart_run(token, {
+      attach_held: (asked: string): Promise<AttachedSession> => { tokens.push(asked); return ArgusClient.session_attachHeld('ws://127.0.0.1:9000', asked); },
+      backend_ask: async (): Promise<string> => 'chris',
+      surface_wire: (_token: string, held: AttachedSession): SurfaceWired => {
+        held.client.handlers_install({} as never);
+        return { ready_show: (): void => { said.push('READY'); } };
+      },
+    });
+    const socket = (): FakeSocket => FakeSocket.made[FakeSocket.made.length - 1] as FakeSocket;
+    const ack = (): void => { socket().onopen?.(); socket().onmessage?.({ data: JSON.stringify({ type: 'attached', session: 's', protocolVersion: 1 }) }); };
+    // The first page: through the door, with no token of its own. Its socket closes after the ack, before the
+    // page is ready (the backend not yet known).
+    const first = attachStart_make({ surface_start, form_hide: (): void => undefined, form_show: (): void => undefined, page_clean: (reason: string): void => { cleaned.push(reason); } });
+    first('');
+    await Promise.resolve();
+    socket().onopen?.();
+    socket().onmessage?.({ data: JSON.stringify({ type: 'attached', session: 's', protocolVersion: 1 }) });
+    socket().onclose?.({ reason: '', code: 1006 });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(cleaned).toEqual(['the daemon closed the connection before the surface was ready']);
+    expect(said).toEqual([]);
+    // The clean page, behind the same door: its form, and the operator presses it with nothing typed.
+    expect(attachSubmit_allowed('', true)).toBe(true);
+    let hidden: number = 0;
+    const second = attachStart_make({ surface_start, form_hide: (): void => { hidden += 1; }, form_show: (): void => undefined, page_clean: (reason: string): void => { cleaned.push(reason); } });
+    second('');
+    await Promise.resolve();
+    ack();
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(tokens).toEqual(['', '']);
+    expect(said).toEqual(['READY']);
+    expect(hidden).toBe(1);
   });
 });

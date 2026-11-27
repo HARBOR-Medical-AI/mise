@@ -16,6 +16,7 @@
  * @module
  */
 import type { LineStandingModel, LineState, VmCostRate, VmLimitsModel, VmSpecModel } from '@fnndsc/menu';
+import { arg_quote, line_split, line_tokens, type PromptKind, path_write, word_write, home_path } from '@fnndsc/menu';
 
 /** A line of the script, with what `play --status` said of it. */
 export interface ScriptLine {
@@ -83,38 +84,32 @@ const STATE_RANK: ReadonlyArray<LineState> = ['changed', 'not yet', 'ready', 'do
  * @returns Its words, quotes removed.
  */
 export function words_split(text: string): string[] {
-  const words: string[] = [];
-  let word: string = '';
-  let quote: string | null = null;
-  let open: boolean = false;
-  for (const char of text) {
-    if (quote !== null) {
-      if (char === quote) quote = null; else word += char;
-      continue;
-    }
-    if (char === '\'' || char === '"') { quote = char; open = true; continue; }
-    if (/\s/.test(char)) {
-      if (word !== '' || open) words.push(word);
-      word = '';
-      open = false;
-      continue;
-    }
-    word += char;
-  }
-  if (word !== '' || open) words.push(word);
-  return words;
+  // Read as the shell reads the line (a quote closed, escaped and opened again is one apostrophe); a line
+  // with a quote left open is read word by word at each space, so it still shows.
+  return line_split(text) ?? text.trim().split(/\s+/).filter((word: string): boolean => word !== '');
 }
 
+/** What a script's word cannot hold and stand bare: whitespace, a quote, a backslash, or what ends or joins a command. */
+const SCRIPT_WORD_QUOTED: RegExp = new RegExp('[\\s\\u0027\\u0022\\\\;|&<>()\\u0060]');
+
 /**
- * Quotes a word for a line when it needs it.
+ * Writes one word of a script line back as the operator had it. A script's
+ * words are the operator's own grammar (a variable, an index, the home), so
+ * they stay as they are; only a word that cannot have been typed bare is
+ * quoted: one that is empty, or holds whitespace, a quote, a backslash, or
+ * a character that would end or join a command.
  *
- * @param word - The word.
- * @returns It, quoted when it holds a space or a quote.
+ * @param word - The word, as it was read from the line.
+ * @returns It, quoted when it could not stand bare.
+ *
+ * @example
+ * ```typescript
+ * scriptWord_write('$name');     // $name
+ * scriptWord_write('two words'); // 'two words'
+ * ```
  */
-export function word_quote(word: string): string {
-  if (word === '') return '\'\'';
-  if (!/[\s'"]/.test(word)) return word;
-  return `'${word.replace(/'/g, '\'\\\'\'')}'`;
+export function scriptWord_write(word: string): string {
+  return word === '' || SCRIPT_WORD_QUOTED.test(word) ? arg_quote(word) : word;
 }
 
 /**
@@ -132,6 +127,54 @@ export function stepKind_derive(text: string): StepKind {
   return 'other';
 }
 
+/** One word of a script line: as written, as read, and whether it was written with no quoting at all. */
+interface LineToken {
+  /** The word as it stands in the line. */
+  raw: string;
+  /** The value it carries, quotes removed. */
+  value: string;
+  /** True when it was written bare: only a bare word can be an option's name. */
+  bare: boolean;
+}
+
+/** An option as a word of a line names it: `--memory`, or `--memory=8` with its value in the same word. */
+interface OptionToken {
+  /** The option (`--memory`). */
+  word: string;
+  /** Its value when the word carries it after `=`; null when the value is the next word, or there is none. */
+  inline: string | null;
+}
+
+/**
+ * Reads a script line into its words, each as written and as read. A line
+ * with a quote left open is read word by word at each space.
+ *
+ * @param text - The line.
+ * @returns Its words.
+ */
+function lineTokens_read(text: string): LineToken[] {
+  const raws: string[] = line_tokens(text) ?? text.trim().split(/\s+/).filter((word: string): boolean => word !== '');
+  return raws.map((raw: string): LineToken => {
+    const value: string = line_split(raw)?.[0] ?? raw;
+    return { raw, value, bare: raw === value };
+  });
+}
+
+/**
+ * Reads a word as an option's name. Only a word written bare names an
+ * option (`--memory`), or one whose name is bare before an `=`
+ * (`--note='two words'`); a quoted word that merely looks like one
+ * (`'--example'`) is a value.
+ *
+ * @param token - The word.
+ * @returns The option, or null when the word is a value.
+ */
+function optionToken_read(token: LineToken): OptionToken | null {
+  if (token.bare && OPTION_WORD.test(token.raw)) return { word: token.raw, inline: null };
+  const named: RegExpExecArray | null = /^(--[a-z][a-z0-9-]*)=/.exec(token.raw);
+  return named === null ? null : { word: named[1] as string, inline: token.value.slice((named[1] as string).length + 1) };
+}
+
 /**
  * Takes a line apart.
  *
@@ -139,20 +182,22 @@ export function stepKind_derive(text: string): StepKind {
  * @returns Its verb words, subject and options.
  */
 export function line_parse(text: string): LineParts {
-  const words: string[] = words_split(text);
+  const tokens: LineToken[] = lineTokens_read(text);
+  const words: string[] = tokens.map((token: LineToken): string => token.value);
   const kind: StepKind = stepKind_derive(text);
   const verbLength: number = kind === 'other' ? Math.min(1, words.length) : (STEP_VERBS.find(([, each]): boolean => each === kind)?.[0].split(' ').length ?? 1);
   const verb: string[] = words.slice(0, verbLength);
   let subject: string | null = null;
   const options: Array<[string, string]> = [];
-  for (let index: number = verbLength; index < words.length; index++) {
-    const word: string = words[index] as string;
-    if (OPTION_WORD.test(word)) {
-      const next: string | undefined = words[index + 1];
-      if (next !== undefined && !OPTION_WORD.test(next)) { options.push([word, next]); index++; } else options.push([word, '']);
-    } else if (subject === null) {
-      subject = word;
+  for (let index: number = verbLength; index < tokens.length; index++) {
+    const option: OptionToken | null = optionToken_read(tokens[index] as LineToken);
+    if (option === null) {
+      if (subject === null) subject = (tokens[index] as LineToken).value;
+      continue;
     }
+    if (option.inline !== null) { options.push([option.word, option.inline]); continue; }
+    const next: LineToken | undefined = tokens[index + 1];
+    if (next !== undefined && optionToken_read(next) === null) { options.push([option.word, next.value]); index++; } else options.push([option.word, '']);
   }
   return { verb, subject, options };
 }
@@ -165,12 +210,26 @@ export function line_parse(text: string): LineParts {
  */
 export function line_render(parts: LineParts): string {
   const words: string[] = [...parts.verb];
-  if (parts.subject !== null) words.push(word_quote(parts.subject));
+  if (parts.subject !== null) words.push(scriptWord_write(parts.subject));
   for (const [word, value] of parts.options) {
     words.push(word);
-    if (value !== '') words.push(word_quote(value));
+    if (value !== '') words.push(scriptWord_write(value));
   }
   return words.join(' ');
+}
+
+/**
+ * Writes a value an option is being set to. A value that would itself read
+ * as an option's name (`--example`, `--key=value`) is quoted, so it is read
+ * back as the value it is and never as a second option; any other is
+ * written as a script's word is.
+ *
+ * @param value - The value.
+ * @returns It, as the word after the option.
+ */
+function optionValue_write(value: string): string {
+  const word: string = scriptWord_write(value);
+  return optionToken_read({ raw: word, value, bare: word === value }) === null ? word : arg_quote(value);
 }
 
 /**
@@ -183,13 +242,25 @@ export function line_render(parts: LineParts): string {
  * @returns The line.
  */
 export function lineOption_set(text: string, word: string, value: string): string {
-  const parts: LineParts = line_parse(text);
-  const options: Array<[string, string]> = parts.options.filter(([each]): boolean => each !== word);
-  if (value !== '') {
-    const at: number = parts.options.findIndex(([each]): boolean => each === word);
-    if (at === -1) options.push([word, value]); else options.splice(at, 0, [word, value]);
+  // The line's words as its author spelled them: only the option being set is written anew, so a quoted
+  // literal elsewhere on the line stays quoted, and stays the literal it was. Every standing of the option
+  // goes (a line that names it twice is left naming it once, or not at all), read by the same rule the
+  // getter reads it by.
+  const tokens: LineToken[] = lineTokens_read(text);
+  const written: string[] = value === '' ? [] : [word, optionValue_write(value)];
+  const kept: string[] = [];
+  let placed: boolean = false;
+  for (let index: number = 0; index < tokens.length; index++) {
+    const token: LineToken = tokens[index] as LineToken;
+    const option: OptionToken | null = index === 0 ? null : optionToken_read(token);
+    if (option === null || option.word !== word) { kept.push(token.raw); continue; }
+    // Its value goes with it: the next word, unless that names an option or the value rode in the same word.
+    const next: LineToken | undefined = tokens[index + 1];
+    if (option.inline === null && next !== undefined && optionToken_read(next) === null) index++;
+    if (!placed) { kept.push(...written); placed = true; }
   }
-  return line_render({ ...parts, options });
+  if (!placed) kept.push(...written);
+  return kept.join(' ');
 }
 
 /**
@@ -549,16 +620,30 @@ export function memoryRange_derive(limits: VmLimitsModel, vcpu: number): { min: 
   return { min: Math.max(limits.memory.min, Math.ceil(vcpu * limits.memory.perVcpu.min)), max: Math.min(limits.memory.max, Math.floor(vcpu * limits.memory.perVcpu.max)) };
 }
 
+/** What joins a line to another command or sends its output elsewhere, when it stands outside quotes. */
+const LINE_JOINS: RegExp = /[;|&<>]/;
+
+/** A quoted run or an escaped character of a word: what a join is not looked for inside. */
+const QUOTED_RUN: RegExp = new RegExp('\\u0027[^\\u0027]*\\u0027|\\u0022(?:[^\\u0022\\\\]|\\\\[\\s\\S])*\\u0022|\\\\[\\s\\S]', 'g');
+
 /**
  * The `vm cost` line that prices a `vm new` line as it stands: the same
  * words, `cost` for `new`.
  *
  * @param text - The `vm new` line.
- * @returns The `vm cost` line.
+ * @returns The `vm cost` line; null when the line is not one `vm new` and nothing more, and there is no price to ask for.
  */
-export function costLine_derive(text: string): string {
-  const parts: LineParts = line_parse(text);
-  return line_render({ ...parts, verb: ['vm', 'cost'] });
+export function costLine_derive(text: string): string | null {
+  // A price is asked for one declaration and nothing else: a line that holds a second command, a pipe, a
+  // redirect or a task's `&` outside quotes, or a quote left open, is not priced at all, since whatever came
+  // after the declaration would run with the price request merely because the step was opened.
+  const raws: string[] | null = line_tokens(text);
+  if (raws === null || raws.some((raw: string): boolean => LINE_JOINS.test(raw.replace(QUOTED_RUN, '')))) return null;
+  // Only the verb changes: every other word goes into the price request exactly as the declaration spells
+  // it. The verb is told as a step's kind is told, by its words as read (`vm 'new' store` is a `vm new`).
+  const tokens: LineToken[] = lineTokens_read(text);
+  if (tokens[0]?.value !== 'vm' || tokens[1]?.value !== 'new') return null;
+  return ['vm', 'cost', ...tokens.slice(2).map((token: LineToken): string => token.raw)].join(' ');
 }
 
 /**
@@ -619,20 +704,87 @@ export function spec_words(spec: VmSpecModel): string {
  * @returns The line.
  */
 export function userLine_build(name: string, email: string, passwordFile: string, on: string): string {
-  const options: Array<[string, string]> = [['--email', email]];
-  if (passwordFile !== '') options.push(['--password-file', passwordFile]);
-  if (on !== '') options.push(['--on', on]);
-  return line_render({ verb: ['chris', 'user', 'add'], subject: name, options });
+  // What a form holds is a value, never grammar: an address such as `ops$team@example.org` is written so the
+  // shell reads it as itself.
+  const words: string[] = ['chris', 'user', 'add', word_write(name), '--email', word_write(email)];
+  // A file named under the home is under the home: the tilde stays the shell's, the rest is the value.
+  if (passwordFile !== '') words.push('--password-file', passwordFile === '~' || passwordFile.startsWith('~/') ? home_path(passwordFile.slice(2)) : path_write(passwordFile));
+  if (on !== '') words.push('--on', word_write(on));
+  return words.join(' ');
 }
 
 /**
- * The form an engine's question takes, from its words.
+ * What a question is beyond its words: whose line raised it, and what the
+ * command says it is for and about. A screen acts on these (which seat the
+ * question stands over, whether a row may answer it); the words are shown.
+ *
+ * @example
+ * ```typescript
+ * const about: AskAbout = { mine: true, line: 'vm build store', purpose: 'stratus.vm.build', subject: { vm: 'store' } };
+ * ```
+ */
+export interface AskAbout {
+  /** True when the line that raised it is the one this screen sent and is waiting on. */
+  readonly mine: boolean;
+  /** That line, when it is this screen's. */
+  readonly line: string | null;
+  /** What the question is for, as the command names it; null when it names nothing. */
+  readonly purpose: string | null;
+  /** What it is about, by name (`vm`, `account`). */
+  readonly subject: Readonly<Record<string, string>>;
+}
+
+/** A question nothing is known of but its words: nobody's line, for nothing named. */
+export const ASK_UNNAMED: AskAbout = { mine: false, line: null, purpose: null, subject: {} };
+
+/**
+ * How a line a screen ran came to its end, as the session answered it: by
+ * the status and the models of what it returned, never by what it printed.
+ *
+ * @example
+ * ```typescript
+ * const end: RunEnd = { ok: true, declined: true, why: [] };
+ * ```
+ */
+export interface RunEnd {
+  /** True when no answer was an error. */
+  readonly ok: boolean;
+  /** True when the line stopped at a question answered no (`line.declined`). */
+  readonly declined: boolean;
+  /** What the session said was wrong, a line each; empty when nothing was. */
+  readonly why: ReadonlyArray<string>;
+}
+
+/**
+ * Whether an answer given to a yes-or-no is a yes, as the engine reads it
+ * (`y` or `yes`, any case): what a screen shows of an answer agrees with
+ * what the engine does with it.
+ *
+ * @param value - The answer; null when the question was abandoned.
+ * @returns True for a yes.
+ *
+ * @example
+ * ```typescript
+ * answer_isYes('Y'); // true
+ * answer_isYes('yellow'); // false
+ * ```
+ */
+export function answer_isYes(value: string | null): boolean {
+  const said: string = (value ?? '').trim().toLowerCase();
+  return said === 'y' || said === 'yes';
+}
+
+/**
+ * The form an engine's question takes. A yes-or-no is one by its kind; a
+ * name typed back is still told by the question's words (no command names
+ * that yet), and changes only the field offered, never what is sent.
  *
  * @param message - The question.
- * @returns Yes or no, a name typed back, a hidden word, or text.
+ * @param kind - What kind of value answers it.
+ * @returns Yes or no, a name typed back, or text.
  */
-export function askForm_derive(message: string): 'yes-no' | 'name' | 'text' {
-  if (/\[y\/N\]|\[Y\/n\]|\(y\/n\)|continue\?/i.test(message)) return 'yes-no';
+export function askForm_derive(message: string, kind: PromptKind): 'yes-no' | 'name' | 'text' {
+  if (kind === 'confirm') return 'yes-no';
   if (/type (the|its) name|name typed back|type .* to go on/i.test(message)) return 'name';
   return 'text';
 }

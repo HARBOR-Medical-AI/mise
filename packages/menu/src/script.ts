@@ -173,6 +173,43 @@ export const STRATUS_VM_STATUS_MODEL_KIND = 'stratus.vm.status' as const;
 /** The event a VM's teardown sends as each step begins and ends: its row, as `vm status` reads it. */
 export const STRATUS_VM_STATE_EVENT = 'stratus.vm.state' as const;
 
+/** The event a VM's build sends as each of its steps begins and ends, so a surface draws the run from what happened, never from what was printed. */
+export const STRATUS_VM_STEP_EVENT = 'stratus.vm.step' as const;
+
+/** The steps of a VM's build that run as tasks, in the order it takes them. */
+export const VM_BUILD_STEPS = ['plan-data', 'plan-machine', 'apply-data', 'apply-machine', 'grow', 'host'] as const;
+
+/** One step of a VM's build, begun or ended. */
+export const vmStepEventSchema = z.object({
+  /** The VM being built. */
+  vm: z.string(),
+  /** The step. */
+  step: z.enum(VM_BUILD_STEPS),
+  /** Begun; or ended, done or failed. */
+  state: z.enum(['begun', 'done', 'failed']),
+  /** What the step has to say once it is done (a plan's counts), in the engine's words, for showing. */
+  said: z.string().optional(),
+});
+
+/** One step of a VM's build, begun or ended. */
+export type VmStepEvent = z.infer<typeof vmStepEventSchema>;
+
+/**
+ * What a stratus question is for. A surface that answers a question for the
+ * operator (a password already typed into its own row, a restart it already
+ * asked about) knows which question it is by this, never by its wording.
+ */
+export const STRATUS_PROMPT_PURPOSES = {
+  /** `vm build`: go on to the apply, with its cost. Subject: `vm`. */
+  vmBuild: 'stratus.vm.build',
+  /** `chris deploy`: deploy as planned. Subject: `vm`. */
+  chrisDeploy: 'stratus.chris.deploy',
+  /** `chris passwd`: an account's new password, and the same again. Subject: `vm`, `account`. */
+  chrisPasswordNew: 'stratus.chris.password.new',
+  /** `chris passwd` for the admin: CUBE restarts to take it. Subject: `vm`, `account`. */
+  chrisPasswordRestart: 'stratus.chris.password.restart',
+} as const;
+
 /** The states a VM stands in, as `vm status` words them: a kept VM's, or `found` for one the tenancy runs that this session keeps no record of. */
 export const VM_STATES = ['declared', 'data only', 'data kept', 'built', 'gone', 'found'] as const;
 

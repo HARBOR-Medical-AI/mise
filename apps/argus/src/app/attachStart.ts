@@ -1,15 +1,21 @@
 /**
- * @file The page's start: one attach at a time, and a second attempt
- * after a failed one from a clean page.
+ * @file The page's start: one attach at a time, and a second attempt in
+ * place after a refusal, or from a clean page after a failure once wiring
+ * had begun.
  *
- * The surface wires its listeners and timers before it attaches, so an
- * attach that is refused leaves the page wired; wiring it again for the
- * next attempt doubled every listener, and a toggle then fired twice and
- * seemed to do nothing. Here an attempt in flight is the only one, and an
- * attempt after a failure is made by a page loaded afresh.
+ * The surface attaches before it wires anything (main.ts, surface_start):
+ * an attach that is refused has wired nothing, and the next attempt is made
+ * on the same page. Wiring a page twice doubled every listener, and a toggle
+ * then fired twice and seemed to do nothing; so a start that failed after
+ * the attach was acknowledged (the wiring threw, or the session went away
+ * before the surface was ready: `AttachWiredError`) leaves the page at once
+ * for a clean one, with the form and the reason (`failReason_keep`).
  *
  * Key components:
  * - {@link attachStart_make}: makes the page's `start`.
+ * - {@link AttachWiredError}: a start that failed once wiring had begun.
+ * - {@link surfaceStart_run}: the start in order: attach held, wire, release, READY.
+ * - {@link failReason_keep} and {@link failReason_take}: carry why a start failed to the clean page.
  * - {@link retryToken_keep} and {@link retryToken_take}: carry the token over the reload.
  *
  * Typical usage:
@@ -21,29 +27,54 @@
  * @module
  */
 
+import type { AttachedSession } from '../calypso/client.js';
+
 /**
  * What the start is made of.
  *
  * @example
- * const ports: AttachStartPorts = { surface_start, form_hide, form_show, page_restart };
+ * const ports: AttachStartPorts = { surface_start, form_hide, form_show, page_clean };
  */
 export interface AttachStartPorts {
-  /** Wires the surface and attaches it; rejects when the attach is refused or the daemon cannot be reached. */
+  /** Attaches the surface, then wires it; rejects when the attach is refused or the daemon cannot be reached (nothing wired), or with an `AttachWiredError` when wiring had begun. */
   surface_start: (token: string) => Promise<void>;
   /** Hides the attach form: the surface is up. */
   form_hide: () => void;
   /** Shows the attach form with why the attach failed. */
   form_show: (reason: string) => void;
-  /** Loads the page afresh and has it attach with this token. */
-  page_restart: (token: string) => void;
+  /** Leaves this page, which holds what was wired, for a clean one showing its form and why. */
+  page_clean: (reason: string) => void;
+}
+
+/**
+ * A start that failed once the surface had begun wiring itself (the attach
+ * was acknowledged, then the wiring threw or the session went away before
+ * the surface was ready). The page holds what was wired, so the next
+ * attempt is made by a page loaded afresh.
+ *
+ * @example
+ * ```ts
+ * throw new AttachWiredError(cause);
+ * ```
+ */
+export class AttachWiredError extends Error {
+  /**
+   * @param cause - What went wrong.
+   */
+  public constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'AttachWiredError';
+  }
 }
 
 /**
  * Makes the page's start.
  *
- * While an attach is in flight, another is not begun. After an attach has
- * failed, the page it left wired is not wired again: the next attempt
- * restarts the page.
+ * While an attach is in flight, another is not begun. The surface attaches
+ * before it wires anything, so an attach that was refused leaves nothing
+ * wired, and the next attempt is made in place. One that failed after
+ * wiring had begun leaves the page wired: it is left at once for a clean
+ * page that shows the form and why.
  *
  * @param ports - The surface's start and the form.
  * @returns The start: call it with the token to attach with.
@@ -54,16 +85,8 @@ export interface AttachStartPorts {
  */
 export function attachStart_make(ports: AttachStartPorts): (token: string) => void {
   let starting: boolean = false;
-  let failed: boolean = false;
   return (token: string): void => {
     if (starting) return;
-    if (failed) {
-      // Claimed before the page is asked to restart: the reload is not instant, and Enter and the button
-      // pressed together before it commits must not each keep a token and ask for a reload. The first wins.
-      starting = true;
-      ports.page_restart(token);
-      return;
-    }
     starting = true;
     ports.surface_start(token).then(
       (): void => {
@@ -71,12 +94,152 @@ export function attachStart_make(ports: AttachStartPorts): (token: string) => vo
         ports.form_hide();
       },
       (error: unknown): void => {
+        const reason: string = error instanceof Error ? error.message : String(error);
+        // Wired, then failed: this page holds listeners and timers that are not to run on. It is left at
+        // once for a clean one with the form and the reason; nothing else starts here meanwhile.
+        if (error instanceof AttachWiredError) { ports.page_clean(reason); return; }
+        // Refused before anything was wired: the form, here, takes the next attempt.
         starting = false;
-        failed = true;
-        ports.form_show(error instanceof Error ? error.message : String(error));
+        ports.form_show(reason);
       },
     );
   };
+}
+
+/**
+ * What a page's wiring gives back: how to say it is ready, once what was held has been handed over.
+ *
+ * @example
+ * ```ts
+ * return { ready_show: () => { mode_show('READY'); } };
+ * ```
+ */
+export interface SurfaceWired {
+  /** Says the surface is ready. */
+  ready_show: () => void;
+}
+
+/**
+ * What the start sequence is made of.
+ *
+ * @example
+ * ```ts
+ * const ports: SurfaceStartPorts = { attach_held, backend_ask, surface_wire };
+ * ```
+ */
+export interface SurfaceStartPorts {
+  /** Attaches, held: nothing reaches a handler until it is released. */
+  attach_held: (token: string) => Promise<AttachedSession>;
+  /** Which backend the session runs over, when the attach did not say: asked of the daemon. */
+  backend_ask: (token: string) => Promise<string>;
+  /** Wires the page to the attached session, all at once: installs its handlers, binds its client, applies the attach's facts. */
+  surface_wire: (token: string, held: AttachedSession, backend: string) => SurfaceWired;
+}
+
+/**
+ * The page's start, in order: attach (held); learn the backend when the
+ * attach did not say it (raced against a close); wire the page, all at once, which installs
+ * the handlers and applies what the attach said, while the session's own
+ * messages wait; then hand those over, in order, so a later word of the
+ * session wins over the attach's; then say READY. A close while the page
+ * is still setting up settles the start at once. Anything that fails after
+ * the attach was acknowledged abandons the client (handlers taken away,
+ * socket closed) and fails with an `AttachWiredError`; nothing says READY.
+ *
+ * @param token - The attach token.
+ * @param ports - The attach and the wiring.
+ * @returns Resolves when the surface is ready.
+ * @throws {Error} When the attach is refused or cannot be made (nothing wired); an `AttachWiredError` after it.
+ *
+ * @example
+ * ```ts
+ * await surfaceStart_run(token, { attach_held, backend_ask, surface_wire });
+ * ```
+ */
+export async function surfaceStart_run(token: string, ports: SurfaceStartPorts): Promise<void> {
+  const held: AttachedSession = await ports.attach_held(token);
+  try {
+    // The one thing the start waits on before it wires (which backend, when the attach did not say), raced
+    // against the socket's close: a close settles the start, and an answer after it wires nothing.
+    const backend: string = held.attach.backend ?? await Promise.race([ports.backend_ask(token), held.client.held_closed()]);
+    if (held.client.held_isClosed()) throw new Error('the daemon closed the connection before the surface was ready');
+    // From here the wiring runs to its end with nothing to wait for: no close can come in between.
+    const wired: SurfaceWired = ports.surface_wire(token, held, backend);
+    held.client.held_release();
+    wired.ready_show();
+  } catch (error: unknown) {
+    held.client.held_abandon();
+    throw new AttachWiredError(error);
+  }
+}
+
+/**
+ * Whether the attach form may be submitted. Behind a door the door holds
+ * the token, and the page attaches with none: an empty form is a retry
+ * through the door. Elsewhere a token must be given.
+ *
+ * @param token - What the form holds, trimmed.
+ * @param throughDoor - Whether the page stands behind a door.
+ * @returns True when it may be submitted.
+ *
+ * @example
+ * ```ts
+ * attachSubmit_allowed('', true); // true: through the door
+ * ```
+ */
+export function attachSubmit_allowed(token: string, throughDoor: boolean): boolean {
+  return token.length > 0 || throughDoor;
+}
+
+/** Where the reason a start failed is kept over the move to a clean page, for that one load. */
+const REASON_KEY: string = 'argus.attach.reason';
+
+/**
+ * Keeps why a start failed, for the clean page this one is about to leave for.
+ *
+ * @param storage - The tab's storage, asked for when used (a tab may refuse it).
+ * @param reason - Why.
+ * @param place - The page and daemon it is for (`retryPlace_name`).
+ * @returns True when it was kept.
+ *
+ * @example
+ * ```ts
+ * failReason_keep(() => window.sessionStorage, 'the daemon closed the connection', place);
+ * ```
+ */
+export function failReason_keep(storage: () => Storage, reason: string, place: string): boolean {
+  try {
+    storage().setItem(REASON_KEY, JSON.stringify({ reason, page: place }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Takes why the start before this page failed, once, when it was for this page.
+ *
+ * @param storage - The tab's storage, asked for when used.
+ * @param place - This page and its daemon.
+ * @returns The reason, or null.
+ *
+ * @example
+ * ```ts
+ * const reason: string | null = failReason_take(() => window.sessionStorage, place);
+ * ```
+ */
+export function failReason_take(storage: () => Storage, place: string): string | null {
+  try {
+    const kept: string | null = storage().getItem(REASON_KEY);
+    storage().removeItem(REASON_KEY);
+    if (kept === null) return null;
+    const read: unknown = JSON.parse(kept);
+    if (read === null || typeof read !== 'object') return null;
+    const { reason, page } = read as Partial<Record<'reason' | 'page', unknown>>;
+    return typeof reason === 'string' && page === place ? reason : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Where the token for the attempt after a reload is kept, for that one load. */

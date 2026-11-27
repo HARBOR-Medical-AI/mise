@@ -19,16 +19,16 @@
  * Built on the script screen's bodies, which are the same forms over the
  * same lines; this file holds what differs.
  */
-import type { ChrisBerthModel, ChrisPlanModel, ChrisStatusRow, PromptKind, VmCostRate, VmCostRow, VmLimitsModel, VmStatusRow } from '@fnndsc/menu';
+import type { ChrisBerthModel, ChrisPlanModel, ChrisStatusRow, PromptKind, VmCostRate, VmCostRow, VmLimitsModel, VmStatusRow, VmStepEvent } from '@fnndsc/menu';
+import { CHRIS_PROFILE_OFFERS, chrisStatusModelSchema, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema, path_write, STRATUS_PROMPT_PURPOSES } from '@fnndsc/menu';
 import { HOURS_PER_MONTH, money_text } from '../controller/model.js';
-import { CHRIS_PROFILE_OFFERS, chrisStatusModelSchema, STRATUS_CHRIS_STATUS_MODEL_KIND, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_STATUS_MODEL_KIND, vmCostModelSchema, vmStatusModelSchema } from '@fnndsc/menu';
 import { lockWhere_text, modePill_make, READ_HELD, type ReadHold } from '../takeover/tier.js';
 import type { TakeoverView } from '../takeover/frame.js';
 import { saveLine_compose } from '../edit/line.js';
-import { buildWould_derive, costLine_derive, line_parse, line_render, lineOption_get, lineOption_set, lines_build, ports_word, rate_words, runningStep_find, script_render, stepBuildLine_get, steps_build, vmLevers_read, vmSliders_build, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type VmRuns } from '../script/model.js';
+import { answer_isYes, ASK_UNNAMED, buildWould_derive, costLine_derive, line_parse, line_render, lineOption_get, lineOption_set, lines_build, ports_word, rate_words, runningStep_find, script_render, stepBuildLine_get, steps_build, vmLevers_read, vmSliders_build, workingCopy_derive, type BuildWould, type ScriptLine, type ScriptStep, type SliderSpec, type VmRuns, type AskAbout } from '../script/model.js';
 import { ScriptScreen, type OpenAsk, type QuietAnswer, type ScriptHooks } from '../script/screen.js';
 import { FACTS_KEY, MACHINES_KEY, NEW_KEY, SERVICES_KEY, TEARDOWN_KEY, VM_SEAT_LABELS, vmServiceKind_derive, vmServices_change, vmServices_read, serviceDraft_why, leverFloor_derive, profileRows_derive, berthsHold_words, settingRows_derive, type SettingRuns, settingValue_why, type SettingRow, accountChanges_derive, access_words, groupsMove_words, ALL_USERS_GROUP, CHRIS_ADMIN_NAME, passwordPair_why, type AccountChange, type AccountDraft, type AccountEdit, type AccountRow, type HeldAccount, type ProfileRow, vmCondition_derive, vmKeyless_is, vmLines_filter, vmName_valid, vmNewLine_compose, vmScript_append, vmScript_complete, vmScript_synthesize } from './model.js';
-import { BUILD_PHASES, buildQuestion_plain, chrisQuestion_plain, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_take, type BuildQuestion, type BuildRun } from './run.js';
+import { BUILD_PHASES, buildQuestion_plain, chrisQuestion_plain, buildRun_answer, buildRun_ask, buildRun_end, buildRun_start, buildRun_step, type BuildQuestion, type BuildRun } from './run.js';
 import { Listing } from '../roster/listing.js';
 import type { ListingTrait } from '../roster/row.js';
 
@@ -73,19 +73,18 @@ interface Listed {
 
 /** The VM controller. */
 export class VmScreen extends ScriptScreen {
-  // The script screen's constructor draws before a field initializer here would run, so these are set after super().
   /** The VMs the host keeps, as `vm status` reads them. */
-  private vms!: VmStatusRow[];
+  private vms: VmStatusRow[] = [];
   /** The VM shown; `''` for one not yet named. */
-  private vm!: string;
+  private vm: string = '';
   /** The new machine's name and network, before it is declared. */
-  private newForm!: { name: string; net: string };
+  private newForm: { name: string; net: string } = { name: '', net: '' };
   /** The new machine's line as the levers leave it, before anything is sent: its sizes kept across redraws and name edits. */
-  private newDraft!: ScriptLine;
+  private newDraft: ScriptLine = { number: 1, text: vmNewLine_compose(UNNAMED, NET_DEFAULT), state: null, detail: '', running: null };
   /** Whether the script shown is not on the host yet (synthesized from the record, or composed here). */
-  private unsaved!: boolean;
+  private unsaved: boolean = false;
   /** What runs of the machine's ChRIS, as `chris status` read it from the ChRIS; null when none is deployed or it was not read. */
-  private chrisRow!: ChrisStatusRow | null;
+  private chrisRow: ChrisStatusRow | null = null;
   /** What the machine shown bills, for TEARDOWN's guard: asked once per machine. */
   private teardownCost: { vm: string; rate: VmCostRate | null } | null = null;
   /** The machines as an ARGUS listing; its mount stays across redraws, so its caps, widths and order do. */
@@ -123,7 +122,6 @@ export class VmScreen extends ScriptScreen {
   private followDeclined: boolean = false;
   /** Each lever's share of the change, a month, priced against what runs: keyed by the line priced. */
   private leverCosts: { key: string; deltas: Map<string, number | null> } | null = null;
-  private leverTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(hooks: ScriptHooks) {
     super(hooks, {
@@ -136,14 +134,7 @@ export class VmScreen extends ScriptScreen {
       labels: { views: 'The machine', log: 'VM log' },
       seatLabel: 'The machines',
     });
-    this.vms = [];
-    this.vm = '';
-    this.newForm = { name: '', net: '' };
-    this.newDraft = { number: 1, text: vmNewLine_compose(UNNAMED, NET_DEFAULT), state: null, detail: '', running: null };
-    this.unsaved = false;
-    this.chrisRow = null;
     this.logFold_install();
-    this.draw();
   }
 
   /** The label of the seat shown, so the view follows it when its key changes (a template seat gaining its line). */
@@ -179,9 +170,8 @@ export class VmScreen extends ScriptScreen {
     if (open) this.parts.log.scrollTop = this.parts.log.scrollHeight;
   }
 
-  /** The script screen's constructor draws before this screen's fields exist: that first draw waits for them. */
+  /** Draws the screen: the seat shown, kept where the operator was in it. */
   protected override draw(): void {
-    if (this.vms === undefined) return;
     // A redraw of the seat shown keeps where the operator is in it: a row pressed stays in view through its act.
     // The seat's own panes scroll and are made again at each draw: each one's scroll is carried to its new self, by its classes.
     const same: boolean = this.drawnView === this.view;
@@ -224,6 +214,7 @@ export class VmScreen extends ScriptScreen {
    * @param name - The VM, or `''` to start one.
    */
   public async vm_open(name: string): Promise<void> {
+    this.screen_show();
     // Held as being read until the machine's script is the screen's, by this open until a later one takes
     // the hold: see `reading`.
     const hold: object = {};
@@ -409,7 +400,7 @@ export class VmScreen extends ScriptScreen {
    */
   private async vmScript_find(name: string): Promise<string | null> {
     const listed = async (path: string): Promise<Listed[]> => {
-      try { return this.listings_take(await this.hooks.ask(`ls ${path}`)); } catch { return []; }
+      try { return this.listings_take(await this.hooks.ask(`ls ${path_write(path)}`)); } catch { return []; }
     };
     const top: Listed[] = await listed('/scripts');
     const folders: string[] = (top[0]?.items ?? []).map((item): string => item.name);
@@ -580,7 +571,7 @@ export class VmScreen extends ScriptScreen {
     this.steps = this.steps_derive(this.lines);
     this.view = 'line-1';
     this.draw();
-    if (await this.line_send(build, 'line-1', true)) this.builtHere = 'line-1';
+    if (await this.line_sendDone(build, 'line-1', true)) this.builtHere = 'line-1';
     this.draw();
   }
 
@@ -1731,15 +1722,18 @@ export class VmScreen extends ScriptScreen {
    * the admin's restart question, which the row already asked. Anything
    * else is the operator's to answer.
    *
-   * @param message - The engine's question.
+   * @param about - Whose line raised the question, and what it is for and about.
    * @param kind - Its kind.
    * @returns The answer, or null when the row has none.
    */
-  private passwordFeed_answer(message: string, kind: PromptKind): string | null {
+  private passwordFeed_answer(about: AskAbout, kind: PromptKind): string | null {
     const feed = this.passwordFeed;
-    if (feed === null || this.busy?.line !== feed.line) return null;
-    if (kind === 'secret' && message.startsWith(`${feed.account}'s new password`)) return feed.secret;
-    if (kind !== 'secret' && feed.account === CHRIS_ADMIN_NAME && message.startsWith(`chris passwd: ${CHRIS_ADMIN_NAME} on ${this.vm}:`)) return 'y';
+    // Only the question of the row's own line, in flight now, about this machine and this account, for the
+    // purpose the row asked it for, and of the kind expected: anything else is the operator's to answer.
+    if (feed === null || this.busy?.line !== feed.line || !about.mine || about.line !== feed.line) return null;
+    if (about.subject['vm'] !== this.vm || about.subject['account'] !== feed.account) return null;
+    if (kind === 'secret' && about.purpose === STRATUS_PROMPT_PURPOSES.chrisPasswordNew) return feed.secret;
+    if (kind === 'confirm' && feed.account === CHRIS_ADMIN_NAME && about.purpose === STRATUS_PROMPT_PURPOSES.chrisPasswordRestart) return 'y';
     return null;
   }
 
@@ -2292,7 +2286,7 @@ export class VmScreen extends ScriptScreen {
 
   /** The price of the line shown, asked once per text; each lever's share asked after it. */
   private sizeCost_need(line: ScriptLine): void {
-    if (this.stepCost === null && this.costTimer === null) this.stepCost_ask(line.text);
+    if (this.stepCost === null && !this.timers.timer_runs('cost')) this.stepCost_ask(line.text);
     this.leverCosts_ask(line);
   }
 
@@ -2314,17 +2308,18 @@ export class VmScreen extends ScriptScreen {
     const moved: Array<[string, string]> = ([['--vcpu', levers.vcpu, runs.vcpu], ['--memory', levers.memory, runs.memory], ['--disk', levers.disk, runs.disk], ['--data', levers.data, runs.data], ['--data-backup', levers.dataBackup, runs.backup ?? null]] as const)
       .filter(([, want, now]): boolean => want !== null && now !== null && String(want) !== String(now)).map(([word, want]): [string, string] => [word, String(want)]);
     this.leverCosts = { key, deltas: new Map(moved.map(([word]): [string, number | null] => [word, null])) };
-    if (this.leverTimer !== null) clearTimeout(this.leverTimer);
+    this.timers.timer_stop('lever');
     if (moved.length === 0) { this.change_redraw(); return; }
-    this.leverTimer = setTimeout((): void => {
-      this.leverTimer = null;
+    this.timers.timeout_set('lever', 150, (): void => {
       const priced = async (text: string): Promise<number | null> => {
-        const model = this.model_take(await this.hooks.ask(costLine_derive(text)), STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
+        const priceLine: string | null = costLine_derive(text);
+        if (priceLine === null) return null;
+        const model = this.model_take(await this.hooks.ask(priceLine), STRATUS_VM_COST_MODEL_KIND, (data: unknown) => vmCostModelSchema.safeParse(data));
         const cost: VmCostRate | null | undefined = model?.vms[0]?.cost;
         return cost == null ? null : (cost.machineHour + cost.dataHour) * HOURS_PER_MONTH;
       };
       void this.leverShares_price(key, asRuns, moved, priced).catch((): void => undefined);
-    }, 150);
+    });
   }
 
   /**
@@ -2437,11 +2432,11 @@ export class VmScreen extends ScriptScreen {
     const strip: HTMLElement = el('div', 'vm-run-strip');
     for (const phase of BUILD_PHASES) {
       const state = run.phases[phase.key];
-      const tone: string = state === 'going' ? (phase.key === 'ask' ? 'tdc-step-asking' : 'tdc-step-going') : state === 'done' ? 'tdc-step-done' : state === 'skipped' ? 'tdc-step-skipped' : 'vm-step-waiting';
+      const tone: string = state === 'going' ? (phase.key === 'ask' ? 'tdc-step-asking' : 'tdc-step-going') : state === 'done' ? 'tdc-step-done' : state === 'failed' ? 'tdc-step-failed' : state === 'skipped' ? 'tdc-step-skipped' : 'vm-step-waiting';
       const block: HTMLElement = el('div', `tdc-strip-step vm-run-step ${tone}`);
       // Once a run stopped short, a step it never reached is not done; a question it stopped at was answered no.
       const short: boolean = run.outcome !== null && run.outcome.tone !== 'done';
-      const word: string = state === 'going' ? (phase.key === 'ask' ? 'ASKING' : phase.key === 'prepare' ? this.preparing_word().toUpperCase() : 'UNDER WAY') : state === 'done' ? (phase.key === 'ask' ? 'ANSWERED YES' : 'DONE')
+      const word: string = state === 'going' ? (phase.key === 'ask' ? 'ASKING' : phase.key === 'prepare' ? this.preparing_word().toUpperCase() : 'UNDER WAY') : state === 'done' ? (phase.key === 'ask' ? 'ANSWERED YES' : 'DONE') : state === 'failed' ? 'FAILED'
         : short && phase.key === 'ask' && state === 'skipped' && run.phases['plan-machine'] !== 'waiting' ? 'ANSWERED NO' : short ? 'NOT DONE' : state === 'skipped' ? 'NOT NEEDED' : 'WAITING';
       block.append(el('span', 'tdc-strip-name', phase.label), el('span', 'tdc-strip-word', word));
       strip.append(block);
@@ -2466,8 +2461,10 @@ export class VmScreen extends ScriptScreen {
    */
   protected override strip_draw(): void {
     super.strip_draw();
-    const build: BuildQuestion | null = this.ask === null ? null : buildQuestion_plain(this.ask.message);
-    const deploy: BuildQuestion | null = this.ask === null || build !== null ? null : chrisQuestion_plain(this.ask.message);
+    // Which question it is, is what the command named it; its sentence is then set out in the screen's words
+    // (a wording the screen does not know is shown as it came).
+    const build: BuildQuestion | null = this.ask?.about.purpose === STRATUS_PROMPT_PURPOSES.vmBuild ? buildQuestion_plain(this.ask.message) : null;
+    const deploy: BuildQuestion | null = this.ask?.about.purpose === STRATUS_PROMPT_PURPOSES.chrisDeploy ? chrisQuestion_plain(this.ask.message) : null;
     const plain: BuildQuestion | null = build ?? deploy;
     if (plain === null) return;
     const strip: HTMLElement = this.parts.strip;
@@ -2487,19 +2484,15 @@ export class VmScreen extends ScriptScreen {
     this.header_draw();
   }
 
-  private runTick: ReturnType<typeof setInterval> | null = null;
-
   /**
-   * Stops every clock the screen runs, its own and the script screen's: the
-   * run's one-second tick (which would otherwise redraw a screen nobody
-   * sees until its line came back, and for ever if it did not) and the
-   * lever's wait.
+   * Leaves the screen: its listings let go, and every clock it runs stops
+   * with the script screen's (one holder): the run's one-second tick, which
+   * would otherwise redraw a screen nobody sees until its line came back,
+   * and for ever if it did not, and the lever's wait.
    */
   public override dispose(): void {
-    this.runTick_set(false);
-    if (this.leverTimer !== null) clearTimeout(this.leverTimer);
-    this.leverTimer = null;
-    // The listings the screen made let go of what they took.
+    // The listings the screen made let go of what they took; the clocks, this screen's and the script
+    // screen's, are one holder's and stop with it (super.dispose).
     this.machineListing?.hold_release();
     this.profileListing?.hold_release();
     this.settingListing?.hold_release();
@@ -2511,8 +2504,8 @@ export class VmScreen extends ScriptScreen {
   private runTick_set(on: boolean): void {
     // A screen that has been left starts no clock: the line it sent may never come back.
     if (on && this.left) return;
-    if (on && this.runTick === null) this.runTick = setInterval((): void => { if (this.run?.outcome === null) this.run_redraw(); else this.runTick_set(false); }, 1000);
-    if (!on && this.runTick !== null) { clearInterval(this.runTick); this.runTick = null; }
+    if (on) this.timers.interval_set('run', 1000, (): void => { if (this.run?.outcome === null) this.run_redraw(); else this.runTick_set(false); });
+    else this.timers.timer_stop('run');
   }
 
   /**
@@ -2537,7 +2530,8 @@ export class VmScreen extends ScriptScreen {
     this.run = buildRun_start(this.vm, [valid, this.servicesChange_get().join(', ')].filter((words: string): boolean => words !== '').join(', '), Date.now());
     this.runTick_set(true);
     this.draw();
-    if (await this.line_send(declared, step) && await this.line_send(built, step, true)) this.builtHere = step;
+    // Built here only when the build line ran to its end: a NO at its question built nothing.
+    if (await this.line_send(declared, step) && await this.line_sendDone(built, step, true)) this.builtHere = step;
     if (this.run !== null && this.run.outcome === null) {
       // Ended before its build line ran (the declaration refused): said where the run stands.
       this.run = buildRun_end(this.run, { tone: 'failed', why: this.refusal?.why ?? 'the declaration was refused' }, new Date().toISOString());
@@ -2560,50 +2554,78 @@ export class VmScreen extends ScriptScreen {
     if (kind === 'ask') { this.askedHead = text.split(':')[0] ?? ''; return; }
     if (kind === 'answer' && this.askedHead !== '' && (text === 'y' || text === 'n')) {
       super.log_add(`${this.askedHead}: answered ${text === 'y' ? 'YES' : 'NO'}`, kind);
-      // The base reads a NO from the bare answer: kept, so the line still ends declined.
-      if (text === 'n' && this.busy !== null) this.busyDeclined = true;
       this.askedHead = '';
       return;
     }
     super.log_add(text, kind);
-    if (this.run === null || this.run.outcome !== null) return;
-    if (kind === 'out') {
-      const moved: BuildRun = buildRun_take(this.run, text);
-      if (moved !== this.run) { this.run = moved; this.run_redraw(); }
-    }
   }
 
-  /** The build's own question: the run says it asks; its answer moves it on. */
-  public override ask_take(message: string, kind: PromptKind): Promise<string | null> {
+  /**
+   * A step of a build begun or ended, as the engine says it: the run moves on, in place.
+   *
+   * @param step - The step event of the line this screen sent.
+   *
+   * @example
+   * ```ts
+   * screen.step_take({ vm: 'store', step: 'plan-data', state: 'begun' });
+   * ```
+   */
+  public step_take(step: VmStepEvent): void {
+    if (this.run === null || this.run.outcome !== null) return;
+    const moved: BuildRun = buildRun_step(this.run, step);
+    if (moved !== this.run) { this.run = moved; this.run_redraw(); }
+  }
+
+  /**
+   * The engine's question: a row's own is answered from the row, a run's own moves the run, and it stands on the strip.
+   *
+   * @param message - The question, for showing.
+   * @param kind - What kind of value answers it.
+   * @param about - Whose line raised it, and what it is for and about.
+   * @returns The answer; null when it is abandoned.
+   */
+  public override ask_take(message: string, kind: PromptKind, about: AskAbout = ASK_UNNAMED): Promise<string | null> {
     // A password set in its row answers the engine's own questions from the row: nothing reaches the strip or the log.
-    const fed: string | null = this.passwordFeed_answer(message, kind);
+    const fed: string | null = this.passwordFeed_answer(about, kind);
     if (fed !== null) return Promise.resolve(fed);
     const before: string = this.view;
-    const asked: Promise<string | null> = super.ask_take(message, kind);
+    const asked: Promise<string | null> = super.ask_take(message, kind, about);
     // SERVICES and SPEC are one line: a question asked for it stands where it was offered, never moved to SPEC.
     if (before === SERVICES_KEY && this.view !== SERVICES_KEY) { this.view = SERVICES_KEY; this.frame.view_mark(SERVICES_KEY); this.draw(); }
-    if (this.chrisRun !== null && this.chrisRun.outcome === null && message.startsWith(`chris deploy ${this.chrisRun.vm}:`)) {
+    this.runAsk_follow(about, asked);
+    // A question opens the log: what led to it is there.
+    if (!this.logOpen) this.logOpen_set(true);
+    return asked;
+  }
+
+  /**
+   * A question that is a run's own moves that run: a build's, or a deploy's,
+   * asks; its answer moves it on. Which question it is, is what its line and
+   * the command say, never its words.
+   *
+   * @param about - Whose line raised the question, and what it is for and about.
+   * @param asked - The answer, when it comes.
+   */
+  private runAsk_follow(about: AskAbout, asked: Promise<string | null>): void {
+    if (this.chrisRun !== null && this.chrisRun.outcome === null && about.mine && about.purpose === STRATUS_PROMPT_PURPOSES.chrisDeploy && about.subject['vm'] === this.chrisRun.vm) {
       this.chrisRun = { ...this.chrisRun, ask: 'going' };
       this.draw();
       void asked.then((value: string | null): void => {
         if (this.chrisRun === null || this.chrisRun.outcome !== null) return;
-        const yes: boolean = value !== null && value.toLowerCase().startsWith('y');
+        const yes: boolean = answer_isYes(value);
         this.chrisRun = { ...this.chrisRun, ask: yes ? 'yes' : 'no', deploy: yes ? 'going' : this.chrisRun.deploy };
         this.draw();
       });
     }
-    // A question opens the log: what led to it is there.
-    if (!this.logOpen) this.logOpen_set(true);
-    if (this.run !== null && this.run.outcome === null && message.startsWith(`vm build ${this.run.vm}`)) {
+    if (this.run !== null && this.run.outcome === null && about.mine && about.purpose === STRATUS_PROMPT_PURPOSES.vmBuild && about.subject['vm'] === this.run.vm) {
       this.run = buildRun_ask(this.run);
       this.run_redraw();
       void asked.then((value: string | null): void => {
         if (this.run === null) return;
-        this.run = buildRun_answer(this.run, value !== null && value !== '' && value.toLowerCase().startsWith('y'));
+        this.run = buildRun_answer(this.run, answer_isYes(value));
         this.run_redraw();
       });
     }
-    return asked;
   }
 
   /** The line a standing question asks for (`vm build store`), for the answer's log line. */

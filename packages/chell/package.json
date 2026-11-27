@@ -40,7 +40,6 @@
   "dependencies": {
     "@fnndsc/brasa": "^0.57.0",
     "@fnndsc/calypso": "^0.29.15",
-    "@fnndsc/chili": "^3.9.5",
     "@fnndsc/cumin": "^3.30.6",
     "@fnndsc/salsa": "^4.5.5",
     "chalk": "^4.1.2",

@@ -17,11 +17,11 @@
  *
  * @module
  */
+import { type ClosingCause, type SessionNotes, feedListModelSchema, FEED_LIST_MODEL_KIND, feedDagModelSchema, dicomSeriesModelSchema, dicomTagsModelSchema, imageViewModelSchema, DICOM_MODEL_KINDS, IMAGE_MODEL_KINDS, type DicomSeriesModel, type DicomTagsModel, DAG_MODEL_KINDS, type PromptContext, type WireEnvelope, type WatchState, type FeedDagModel, type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry, path_quote } from '@fnndsc/menu';
 import { more_wire } from '../features/roster/more.js';
-import { type ClosingCause, type SessionNotes, feedListModelSchema, FEED_LIST_MODEL_KIND, feedDagModelSchema, dicomSeriesModelSchema, dicomTagsModelSchema, imageViewModelSchema, DICOM_MODEL_KINDS, IMAGE_MODEL_KINDS, type DicomSeriesModel, type DicomTagsModel, DAG_MODEL_KINDS, type PromptContext, type WireEnvelope, type WatchState, type FeedDagModel, type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry } from '@fnndsc/menu';
 import { type SceneNode } from '../scene/chrisSpace.js';
 import { element_require, template_stamp, pane_find } from '../frame/dom.js';
-import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type BootChoice } from './attachStart.js';
+import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_take, type BootChoice, failReason_keep, failReason_take, surfaceStart_run, type SurfaceWired, attachSubmit_allowed } from './attachStart.js';
 import { DormantRegistry, DORMANT_CAP, localKeyStore, type GroupSnapshot, type DesktopAction, type DesktopShape } from './dormant.js';
 import { linkLanding_parse, type LinkLanding } from './link.js';
 import { shareSheet_open, viewLink_parse, viewScript_compose } from './shareView.js';
@@ -29,16 +29,14 @@ import { PanesPanel } from '../features/panes/panel.js';
 import { logo_linesRender } from '@fnndsc/menu/logo';
 import { tdMark_linesRender } from '@fnndsc/menu/logo/td';
 import { backend_ask, wireUrl_resolve, vfsUrl_build as routeVfsUrl_build, downloadUrl_build as routeDownloadUrl_build, door_isPresent, doorUrl_build } from '../calypso/routes.js';
-import {
-  ArgusClient,
+import { ArgusClient,
   type AttachInfo,
   type ExecuteOutcome,
   type OutputChannel,
   type ProgressMessage,
   type SurfaceAsk,
   type SurfaceEdit,
-  attachBackend_get,
-} from '../calypso/client.js';
+  attachBackend_get, type AttachedSession } from '../calypso/client.js';
 import { ArgusTerminal } from '../console/terminal.js';
 import { consolePalette_publish } from '../console/ansi.js';
 import { ArgusProgress } from '../console/progress.js';
@@ -107,7 +105,7 @@ import { gamesPane_wire, type GamesPaneModule } from './gamesPane.js';
 import { trekBridge_wire, type TrekBridgeModule } from './trekBridge.js';
 import { tdController_wire, type TdControllerModule } from './tdController.js';
 import { scriptScreen_wire, type ScriptScreenModule } from './scriptScreen.js';
-import { vmController_wire, type VmControllerModule } from './vmController.js';
+import { vmController_wire, type VmControllerModule, askOwner_find } from './vmController.js';
 import { synthVoice } from '../lcars/synth.js';
 import { notesPane_wire, type NotesPaneModule } from './notesPane.js';
 import { capacityPane_wire, type CapacityPaneModule } from './capacityPane.js';
@@ -967,24 +965,38 @@ function panelSounds_wire(): void {
   }
 }
 
-/**
- * Attaches to the daemon and wires every instrument to the session.
- *
- * @param token - The attach token.
- * @returns Resolves when the surface is attached and interactive.
- * @throws {Error} When the attach is refused.
- */
 /** The data cascade, built at page boot and fed by the session's wiring. */
 let cascade: Cascade | null = null;
 
+/**
+ * Attaches to the daemon, then wires every instrument to the session, in
+ * the order `surfaceStart_run` keeps: attached (held), wired, what the
+ * session said meanwhile handed over, then READY. A refused attach has
+ * wired nothing.
+ *
+ * @param token - The attach token.
+ * @returns Resolves when the surface is attached and interactive.
+ * @throws {Error} When the attach is refused or the daemon cannot be reached; an `AttachWiredError` when the wiring had begun and failed.
+ */
 async function surface_start(token: string): Promise<void> {
+  await surfaceStart_run(token, { attach_held: (asked: string): Promise<AttachedSession> => ArgusClient.session_attachHeld(wsUrl_resolve(), asked), backend_ask: (asked: string): Promise<string> => backend_ask(asked), surface_wire: (asked: string, held: AttachedSession, backend: string): SurfaceWired => surface_wire(asked, held, backend) });
+}
+
+/**
+ * Wires every instrument to a session already attached.
+ *
+ * @param token - The attach token.
+ * @param held - The attached client, held until its handlers are installed here, and the attach facts.
+ * @param backend - Which backend the session runs over.
+ * @returns How to say the surface is ready, once what was held has been handed over.
+ */
+function surface_wire(token: string, held: AttachedSession, backend: string): SurfaceWired {
   // Which console the page shows (consoleMode.ts): wired once attached, read
   // by the questions that have no pane to stand on.
   let consoleMode: ConsoleModeControl | null = null;
   // Which backend the session runs over decides the composition: ChRIS's
   // panes, words, tiles and instruments, or the frame alone. Asked before
   // anything is built; a daemon older than the question is ChRIS.
-  const backend: string = await backend_ask(token);
   const chris: boolean = backend === 'chris';
   // One declaration on the body: what a composition owns in the page's own
   // markup (its gutter domains, its header band and instrument) stands only
@@ -1766,7 +1778,7 @@ async function surface_start(token: string): Promise<void> {
   const launcherTiles_build = dashboardTiles_build({
     ask: (line: string): Promise<ExecuteOutcome> => client.line_execute(line, { silent: true, observe: false }),
     home_open: (): void => { dagShown = false; home_apply(); layout.focus_set('files'); },
-    home_cd: (path: string): void => { dagShown = false; home_apply(); terminal.line_run(`cd "${path}"`); },
+    home_cd: (path: string): void => { dagShown = false; home_apply(); terminal.line_run(`cd ${path_quote(path)}`); },
     desktops: (): GroupSnapshot[] => dormant.list(),
     desktop_restore: (id: string): void => { void group_restore(id); },
     panes_open: (): void => { domain_enter('panes'); panesPanel.render(); layout.focus_set('panes'); },
@@ -2456,9 +2468,10 @@ async function surface_start(token: string): Promise<void> {
       void client.line_execute('ls', { silent: true });
     }
   };
-  const attached: { client: ArgusClient; attach: AttachInfo } = await ArgusClient.session_attach(
-    wsUrl_resolve(),
-    token,
+  const attached: AttachedSession = held;
+  // The handlers, all of them in place. What the session said since it acknowledged the attach is still held:
+  // it is handed over once this wiring is done (surfaceStart_run), the client bound and the attach's facts applied.
+  held.client.handlers_install(
     {
       output_receive: (channel: OutputChannel, chunk: string): void => {
         terminal.output_write(channel, chunk);
@@ -2467,10 +2480,11 @@ async function surface_start(token: string): Promise<void> {
         if (channel !== 'status' && scriptScreen.running_is()) scriptScreen.output_take(chunk);
         if (channel !== 'status' && vmController.running_is()) vmController.output_take(chunk);
       },
-      event_receive: (_id: string, kind: string, data: unknown): void => {
+      event_receive: (id: string, kind: string, data: unknown): void => {
         if (trekBridge.active_is()) trekBridge.event_take(kind, data);
         tdController.event_take(kind, data);
-        vmController.event_take(kind, data);
+        // The line's id goes with its event: a step belongs to the run that sent it.
+        vmController.event_take(id, kind, data);
       },
       terminalOpened_receive: (terminalId: string, replay: string, refused: string | undefined): void => consoleScreen?.opened(terminalId, replay, refused),
       terminalData_receive: (terminalId: string, data: string): void => consoleScreen?.data(terminalId, data),
@@ -2491,13 +2505,19 @@ async function surface_start(token: string): Promise<void> {
        * what matters.
        */
       ask_receive: async (request: SurfaceAsk): Promise<string | null> => {
+        // Whose line raised it comes first: a question is its line's, whichever screen is showing or busy, and
+        // while its screen is left (held there until it opens again).
+        const owner = askOwner_find(request.executeId, [scriptScreen, vmController]);
+        if (owner !== null) return owner.ask(request);
         // The bridge owns the screen and the running command: its game's questions are answered there.
         if (trekBridge.active_is()) return trekBridge.ask(request);
         // The controller's own lines ask on its strip: a build's question before billing, teardown's name typed back.
         if (tdController.running_is()) return tdController.ask(request);
         // The script screen's own lines ask on its strip too: a build's question with the cost, a user's hidden password.
-        if (scriptScreen.running_is()) return scriptScreen.ask(request);
-        if (vmController.running_is()) return vmController.ask(request);
+        // (Only where the daemon did not say which line asked: with an id, a screen that is merely busy with
+        // another line is not the question's.)
+        if (request.executeId === undefined && scriptScreen.running_is()) return scriptScreen.ask(request);
+        if (request.executeId === undefined && vmController.running_is()) return vmController.ask(request);
         // A stratus screen that is open is where its session's questions stand, even when the line that asks was sent
         // before it opened (left mid-build and opened again): never the console behind it.
         if (scriptScreen.active_is()) return scriptScreen.ask(request);
@@ -2693,7 +2713,6 @@ async function surface_start(token: string): Promise<void> {
     cohortModule.annunciate();
     void cohortModule.restore();
   }
-  mode_show('READY');
   // The splash is the composition's: ChRIS's brain, stratus's TD mark, or
   // the frame's own line; the tab's mark follows it.
   const stratus: boolean = backend === 'stratus';
@@ -2777,6 +2796,9 @@ async function surface_start(token: string): Promise<void> {
       dir_open(landing.path);
     }
   }
+  // READY is said only once every part of the start has run, and what the session said meanwhile has been
+  // handed over (surfaceStart_run).
+  return { ready_show: (): void => { mode_show('READY'); } };
 }
 
 /**
@@ -2810,8 +2832,8 @@ function page_boot(): void {
 
   // Where this page attaches: its path and its daemon's socket. A token handed over a reload is for here only.
   const place: string = retryPlace_name(window.location.pathname, wsUrl_resolve());
-  // One attach at a time; and after one that failed, the next is made by a page loaded afresh, since the
-  // surface wires itself before it attaches and must not be wired twice (see attachStart.ts).
+  // One attach at a time. The surface attaches before it wires anything, so after a refusal the next attempt
+  // is made here; after a failure once wiring had begun, by a page loaded afresh (see attachStart.ts).
   const attach_start: (token: string) => void = attachStart_make({
     surface_start,
     form_hide: (): void => { attachForm.classList.add('attach-hidden'); },
@@ -2819,22 +2841,23 @@ function page_boot(): void {
       attachForm.classList.remove('attach-hidden');
       attachError.textContent = reason;
     },
-    page_restart: (token: string): void => {
-      // The token rides the reload in this tab's storage. Where that is refused, the fresh page is sent to
-      // its form, at an address with no token in it: a token the daemon refused is not tried again.
-      if (retryToken_keep((): Storage => window.sessionStorage, token, place)) window.location.reload();
-      else page_goFresh(addressManual_derive(window.location.pathname, window.location.search, window.location.hash));
+    page_clean: (reason: string): void => {
+      // This page holds what was wired: it is left for a clean one at its form's own address, the reason
+      // carried for that one load (where the tab refuses, the clean page shows its form without it).
+      failReason_keep((): Storage => window.sessionStorage, reason, place);
+      page_goFresh(addressManual_derive(window.location.pathname, window.location.search, window.location.hash));
     },
   });
 
   const tokenInput: HTMLInputElement = element_require('attach-token') as HTMLInputElement;
+  // Behind a door an empty form is a retry through the door, which holds the token.
   element_require('attach-submit').addEventListener('click', (): void => {
-    if (tokenInput.value.trim().length > 0) {
+    if (attachSubmit_allowed(tokenInput.value.trim(), throughDoor)) {
       attach_start(tokenInput.value.trim());
     }
   });
   tokenInput.addEventListener('keydown', (event: KeyboardEvent): void => {
-    if (event.key === 'Enter' && tokenInput.value.trim().length > 0) {
+    if (event.key === 'Enter' && attachSubmit_allowed(tokenInput.value.trim(), throughDoor)) {
       attach_start(tokenInput.value.trim());
     }
   });
@@ -2842,6 +2865,9 @@ function page_boot(): void {
   // What this page does of its own accord: attach with the token a page before it handed over, with the
   // token in its address, or with nothing behind a door (the door holds the token and puts it on the attach
   // itself); or show its form, as a page marked for its form always does.
+  // Why the start before this page failed, when it left for this clean one.
+  const failed: string | null = failReason_take((): Storage => window.sessionStorage, place);
+  if (failed !== null) attachError.textContent = failed;
   const choice: BootChoice = bootChoice_derive(retryToken_take((): Storage => window.sessionStorage, place), window.location.search, throughDoor);
   if (choice.kind === 'attach') {
     attachForm.classList.add('attach-hidden');

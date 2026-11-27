@@ -781,6 +781,42 @@ describe('CalypsoDaemon prompt line push', () => {
 });
 
 describe('CalypsoDaemon prompt over the wire', () => {
+  it('a question carries the id of the line that asks it, and what it is for and about, as the command named them', async () => {
+    let daemonRef: CalypsoDaemon | undefined;
+    const engine: HostedEngine = {
+      line_execute: async (line: string): Promise<CommandEnvelope[]> => {
+        const answer: string = await (daemonRef as CalypsoDaemon).prompt_current(line === 'named'
+          ? { message: 'reworded entirely', hidden: false, wants: 'confirm', purpose: 'stratus.vm.build', subject: { vm: 'store' } }
+          : { message: 'a plain question', hidden: false });
+        return [{ status: 'ok', rendered: answer }];
+      },
+      line_complete: async (prefix: string) => ({ candidates: [], prefix }),
+    };
+    const daemon = new CalypsoDaemon({ engine, token: TOKEN });
+    daemonRef = daemon;
+    const port = await daemon.start();
+    try {
+      const ws = await client_attach(port);
+      const first = message_next(ws);
+      send(ws, { type: 'execute', id: 'line-7', line: 'named' });
+      const named = await first;
+      expect(named).toMatchObject({ type: 'prompt', executeId: 'line-7', purpose: 'stratus.vm.build', subject: { vm: 'store' }, wants: 'confirm' });
+      const ended = message_next(ws);
+      send(ws, { type: 'promptAnswer', promptId: named.promptId as string, answer: 'y' });
+      await ended;
+      // A question the command did not name carries its line's id and nothing else: it is the operator's to answer.
+      const second = message_next(ws);
+      send(ws, { type: 'execute', id: 'line-8', line: 'plain' });
+      const plain = await second;
+      expect(plain).toMatchObject({ type: 'prompt', executeId: 'line-8' });
+      expect('purpose' in plain).toBe(false);
+      expect('subject' in plain).toBe(false);
+      ws.terminate();
+    } finally {
+      await daemon.stop();
+    }
+  });
+
   it('routes a prompt raised during a command to the executing surface', async () => {
     let daemonRef: CalypsoDaemon | undefined;
     const engine: HostedEngine = {
