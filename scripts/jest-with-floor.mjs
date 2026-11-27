@@ -16,11 +16,13 @@
  * reported, an option not known here) makes it a run of its own.
  *
  * A whole run writes its report to a folder of its own, made empty for it.
- * If jest leaves a summary there, it is published as the suite's report
- * (`coverage/`) and the floors are judged from it; if jest leaves none, the
- * run fails, whatever report stood before. A run of its own writes
- * elsewhere (`coverage-partial/`, or where it says, as jest will read it),
- * is not judged, and may not write to the suite's folder.
+ * If jest leaves a summary there, the floors are judged from that very
+ * file, and it is then published, whole, as the suite's report
+ * (`coverage/`); if jest leaves none, the run fails, whatever report stood
+ * before. A run of its own writes elsewhere (`coverage-partial/`, or where
+ * it says), is not judged, and may not write to the suite's folder: one
+ * that names that folder plainly is refused before it runs, and whatever a
+ * run did, the suite's report is as it was afterwards.
  *
  * What this adds to jest's arguments goes before them, so that an
  * end-of-options mark (`--`) among them leaves it an option.
@@ -31,7 +33,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -102,8 +104,46 @@ export function report_publish(runDir, suiteDir) {
   const from = join(runDir, 'coverage-summary.json');
   if (!existsSync(from)) return false;
   mkdirSync(suiteDir, { recursive: true });
-  copyFileSync(from, join(suiteDir, 'coverage-summary.json'));
+  // Whole or not at all: copied beside its place and moved into it, so a reader never finds half a report.
+  const beside = join(suiteDir, `coverage-summary.json.${process.pid}.new`);
+  copyFileSync(from, beside);
+  renameSync(beside, join(suiteDir, 'coverage-summary.json'));
   return true;
+}
+
+/**
+ * The suite's report as it stands, to be put back if a run that is not the
+ * whole suite turns out to have written over it.
+ *
+ * @param {string} suiteDir - The suite's folder.
+ * @returns {Buffer | null} Its summary's bytes, or null when there is none.
+ */
+export function suiteReport_keep(suiteDir) {
+  try {
+    return readFileSync(join(suiteDir, 'coverage-summary.json'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Holds the suite's report to what was kept: whatever a run did to it, by
+ * whatever path, it is as it was afterwards.
+ *
+ * @param {string} suiteDir - The suite's folder.
+ * @param {Buffer | null} kept - What {@link suiteReport_keep} returned before the run.
+ * @returns {boolean} True when the run had left it alone; false when it had not, and it was put back.
+ */
+export function suiteReport_restore(suiteDir, kept) {
+  const path = join(suiteDir, 'coverage-summary.json');
+  const now = suiteReport_keep(suiteDir);
+  if (kept === null ? now === null : now !== null && now.equals(kept)) return true;
+  if (kept === null) rmSync(path, { force: true });
+  else {
+    mkdirSync(suiteDir, { recursive: true });
+    writeFileSync(path, kept);
+  }
+  return false;
 }
 
 /** Runs jest, then the ratchet when the suite was whole; the exit status is the first that failed. */
@@ -155,17 +195,29 @@ function run_judge(read, args, root, workspaceDir, workspace, runDir) {
   // The jest that is run: the workspace's own, or (for this script's own test) one named to stand in for it.
   const command = process.env.JEST_WITH_FLOOR_JEST ?? 'npx';
   const first = process.env.JEST_WITH_FLOOR_JEST === undefined ? ['jest'] : [];
+  const suiteDir = resolve(workspaceDir, SUITE_DIR);
+  // A run of its own must leave the suite's report as it found it. Where jest will write is jest's to
+  // work out (its config, its root, the folder as given); this is held to by what is there afterwards.
+  const kept = plan.whole ? null : suiteReport_keep(suiteDir);
   const jest = spawnSync(command, [...first, ...plan.jestArgs], { stdio: 'inherit', env });
+  if (!plan.whole && !suiteReport_restore(suiteDir, kept)) {
+    console.error(`jest-with-floor: this run was not the whole suite (${plan.why}) and wrote over the suite's report in ${SUITE_DIR}/. The report has been put back as it was. Give the run another --coverageDirectory, or none.`);
+    return 2;
+  }
   if (jest.status !== 0) return jest.status ?? 1;
   if (!plan.whole) {
     console.log(`coverage-ratchet: not checked: this was a run of its own (${plan.why}), and the floors are for the whole suite over its own sources. The suite's report (${SUITE_DIR}/) is left as it was.`);
     return 0;
   }
-  if (!report_publish(runDir, resolve(workspaceDir, SUITE_DIR))) {
+  const own = join(runDir, 'coverage-summary.json');
+  if (!existsSync(own)) {
     console.error(`coverage-ratchet: jest ended well and wrote no coverage summary. Nothing is judged, and the report that stood in ${SUITE_DIR}/ is not this run's.`);
     return 1;
   }
-  const ratchet = spawnSync('node', [resolve(root, 'scripts/coverage-ratchet.mjs'), '--require', workspace], { stdio: 'inherit' });
+  // Judged from the summary this run wrote, in its own folder: another run finishing meanwhile changes
+  // nothing of this one's verdict. Then published as the suite's, whole, for whoever reads it next.
+  const ratchet = spawnSync('node', [resolve(root, 'scripts/coverage-ratchet.mjs'), '--require', workspace, '--summary', `${workspace}=${own}`], { stdio: 'inherit' });
+  report_publish(runDir, suiteDir);
   return ratchet.status ?? 1;
 }
 

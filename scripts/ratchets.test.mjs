@@ -200,7 +200,7 @@ for (const lint of lints) {
 // The coverage ratchet, over trees made here: a summary as jest writes it, and floors beside it.
 {
   const { args_read, coverage_judge, floor_derive, floors_compare, floors_read, summary_read, uncovered_list } = await import('./coverage-ratchet.mjs');
-  const { coverageDir_resolve, report_publish, run_plan, PARTIAL_DIR, SUITE_DIR } = await import('./jest-with-floor.mjs');
+  const { coverageDir_resolve, report_publish, run_plan, suiteReport_keep, suiteReport_restore, PARTIAL_DIR, SUITE_DIR } = await import('./jest-with-floor.mjs');
   const { buildArgv } = await import('jest-cli');
   /** A tree with one workspace's coverage summary and a baseline file; runs the ratchet over it. */
   const coverage_run = (summary, floors, extra = []) => {
@@ -275,6 +275,41 @@ for (const lint of lints) {
     const marked = await plan_of(['--', 'tests/unit/imageStop.test.ts']);
     const reread = await buildArgv(marked.jestArgs);
     expect_that('with `--` among the arguments, the runner\'s own folder is still read by jest as the folder', !marked.whole && reread.coverageDirectory === `/w/apps/argus/${PARTIAL_DIR}` && JSON.stringify(reread._) === '["tests/unit/imageStop.test.ts"]', JSON.stringify(reread));
+  }
+  {
+    // Two whole runs at once, one above the floors and one below: each is judged from the summary it wrote, whatever the shared file says.
+    const tree = folder_make('coverage-two-runs');
+    const good = join(tree, 'run-a/coverage-summary.json');
+    const poor = join(tree, 'run-b/coverage-summary.json');
+    file_put(good, JSON.stringify(summary_make(at)));
+    file_put(poor, JSON.stringify(summary_make({ ...at, lines: 10 })));
+    file_put(join(tree, 'baseline.json'), JSON.stringify({ coverage: { 'apps/argus': floors } }));
+    const judge = (own, shared) => {
+      // What stands in the shared folder is the other run's.
+      file_put(join(tree, 'apps/argus/coverage/coverage-summary.json'), readFileSync(shared, 'utf8'));
+      const ran = spawnSync('node', [join(here, 'coverage-ratchet.mjs'), '--root', tree, '--baseline', join(tree, 'baseline.json'), '--require', 'apps/argus', '--summary', `apps/argus=${own}`], { encoding: 'utf8' });
+      return { status: ran.status, said: `${ran.stdout}${ran.stderr}` };
+    };
+    const passing = judge(good, poor);
+    const falling = judge(poor, good);
+    expect_that('a run above its floors passes though a failing report stands in the shared folder', passing.status === 0, passing.said);
+    expect_that('a run below its floors fails though a passing report stands in the shared folder', falling.status !== 0 && falling.said.includes('lines coverage is 10%'), falling.said);
+    let threw = '';
+    try { args_read(['--summary', 'apps/argus']); } catch (error) { threw = error.message; }
+    expect_that('--summary wants a workspace and a file', threw.includes('--summary wants <workspace>=<file>'), threw);
+  }
+  {
+    // The suite's report, kept before a run of its own and held to afterwards, whatever the run did to it.
+    const suite = folder_make('coverage-kept');
+    file_put(join(suite, 'coverage-summary.json'), '{"the suite":true}');
+    const kept = suiteReport_keep(suite);
+    expect_that('a run that left the suite\'s report alone is found to have', suiteReport_restore(suite, kept) === true);
+    file_put(join(suite, 'coverage-summary.json'), '{"a partial run":true}');
+    expect_that('a run that wrote over it is found out, and the report is put back', suiteReport_restore(suite, kept) === false && readFileSync(join(suite, 'coverage-summary.json'), 'utf8') === '{"the suite":true}');
+    const bare = folder_make('coverage-kept-none');
+    const none = suiteReport_keep(bare);
+    file_put(join(bare, 'coverage-summary.json'), '{"a partial run":true}');
+    expect_that('where there was none, none is left', none === null && suiteReport_restore(bare, none) === false && suiteReport_keep(bare) === null);
   }
   for (const args of [['--testPathPattern=image'], ['--some-flag-jest-does-not-know']]) {
     let refusedByJest = '';
@@ -365,6 +400,13 @@ for (const lint of lints) {
     const silentRan = spawnSync('node', [join(made, 'scripts/jest-with-floor.mjs')], { cwd: join(made, 'apps/argus'), encoding: 'utf8', env: { ...process.env, RATCHET_BASE: sha, JEST_WITH_FLOOR_JEST: join(made, 'silent-jest.sh') } });
     const silentSaid = `${silentRan.stdout}${silentRan.stderr}`;
     expect_that('a jest that ends well and writes no summary fails the run, though a passing report was written a moment before', silentRan.status === 1 && silentSaid.includes('wrote no coverage summary') && !silentSaid.includes('at or above') && readFileSync(summaryPath, 'utf8') === full, silentSaid.slice(-400));
+    // A config whose root is the tests folder, and a folder given relative to it: by the workspace it reads as
+    // somewhere else, and jest writes it to the suite's folder. The report is put back, and the run fails.
+    file_put(join(made, 'apps/argus/tests/jest.rooted.cjs'), `module.exports = { rootDir: __dirname, testEnvironment: 'node', roots: ['<rootDir>', '<rootDir>/../src'], collectCoverageFrom: ['../src/**/*.js'], coverageProvider: 'babel', coverageReporters: ['json-summary'], transform: {} };\n`);
+    file_put(summaryPath, full);
+    const rooted = runner('--config', 'tests/jest.rooted.cjs', '-t', 'twice', '--coverageDirectory=../coverage');
+    expect_that('a partial run that lands on the suite\'s folder through its config\'s root leaves the full summary byte-for-byte', readFileSync(summaryPath, 'utf8') === full && !rooted.said.includes('at or above'), rooted.said.slice(-500));
+    expect_that('and is said to have written over it, and fails', rooted.status === 2 && rooted.said.includes('wrote over the suite\'s report'), rooted.said.slice(-500));
     const over = runner('-t', 'twice', '--coverageDirectory=coverage');
     expect_that('a filtered run pointed at the suite\'s report is refused before jest runs', over.status === 2 && over.said.includes('may not write to the suite\'s folder') && readFileSync(summaryPath, 'utf8') === full, over.said.slice(-400));
     // With a test taken away the whole run falls below its floors, and fails.

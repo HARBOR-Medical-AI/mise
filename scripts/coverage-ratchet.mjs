@@ -25,7 +25,9 @@
  * On a fall, the files of the workspace in which no line is covered are
  * named: a file that has lost its only test is among them.
  *
- * Run after a workspace's whole test suite by `scripts/jest-with-floor.mjs`.
+ * Run after a workspace's whole test suite by `scripts/jest-with-floor.mjs`,
+ * which names the summary that run wrote (`--summary <workspace>=<file>`):
+ * the workspace is then judged from that file and no other.
  * `--root <dir>` and `--baseline <file>` name another tree and baseline
  * file, as the check's own test does. The floors are compared with the
  * base whenever the baseline read is the tree's own
@@ -165,22 +167,28 @@ export function floors_compare(here, atBase) {
  * Reads the command line.
  *
  * @param {string[]} argv - The arguments after the script's name.
- * @returns {{ root: string | null, baseline: string | null, raise: boolean, required: string[] }} What was asked.
+ * @returns {{ root: string | null, baseline: string | null, raise: boolean, required: string[], summaries: Record<string, string> }} What was asked.
  * @throws {Error} When an argument is not one of the check's own.
  */
 export function args_read(argv) {
-  const asked = { root: null, baseline: null, raise: false, required: [] };
+  const asked = { root: null, baseline: null, raise: false, required: [], summaries: {} };
   for (let at = 0; at < argv.length; at++) {
     const arg = argv[at];
     if (arg === '--raise') asked.raise = true;
-    else if (arg === '--root' || arg === '--baseline' || arg === '--require') {
+    else if (arg === '--root' || arg === '--baseline' || arg === '--require' || arg === '--summary') {
       const value = argv[++at];
       if (value === undefined) throw new Error(`${arg} wants a value`);
       if (arg === '--root') asked.root = value;
       else if (arg === '--baseline') asked.baseline = value;
-      else asked.required.push(value);
+      else if (arg === '--require') asked.required.push(value);
+      else {
+        // `<workspace>=<file>`: this workspace is judged from this summary, and no other.
+        const cut = value.indexOf('=');
+        if (cut <= 0 || cut === value.length - 1) throw new Error(`--summary wants <workspace>=<file>, and was given ${JSON.stringify(value)}`);
+        asked.summaries[value.slice(0, cut)] = value.slice(cut + 1);
+      }
     } else {
-      throw new Error(`unknown argument ${JSON.stringify(arg)}: the check takes --root, --baseline, --require and --raise`);
+      throw new Error(`unknown argument ${JSON.stringify(arg)}: the check takes --root, --baseline, --require, --summary and --raise`);
     }
   }
   return asked;
@@ -230,9 +238,12 @@ function main() {
     if (floors[workspace] === undefined) errors.push(`${workspace}: it has no coverage floors in ${BASELINE_FILE}, and its tests are held to them. Give it floors (measure, then --raise from floors of 0).`);
   }
   for (const [workspace, own] of Object.entries(floors)) {
-    const summaryPath = join(root, workspace, 'coverage', 'coverage-summary.json');
+    // The summary a run names for the workspace is the one judged: a run is held to what it wrote itself,
+    // not to whatever stands in the workspace's shared folder by the time this reads it.
+    const named = asked.summaries[workspace];
+    const summaryPath = named !== undefined ? resolve(named) : join(root, workspace, 'coverage', 'coverage-summary.json');
     if (!existsSync(summaryPath)) {
-      errors.push(`${workspace}: no coverage summary at ${workspace}/coverage/coverage-summary.json. Run its tests with coverage first (npm test in ${workspace}).`);
+      errors.push(named !== undefined ? `${workspace}: no coverage summary at ${named}.` : `${workspace}: no coverage summary at ${workspace}/coverage/coverage-summary.json. Run its tests with coverage first (npm test in ${workspace}).`);
       continue;
     }
     let text;
