@@ -452,6 +452,34 @@ describe('who is connected', () => {
     expect(mockClientCreate).toHaveBeenLastCalledWith('https://cube/api/v1/', 'SECOND');
   });
 
+  it('a request is served by the client of whoever is connected when it is made: the first, then the second, then the first again, never the other\'s', async () => {
+    /** A client double that says who it is for, and records what was asked of it. */
+    interface Double { asked: string[]; file_get: (path: string) => string }
+    const double_make = (who: string): Double => {
+      const asked: string[] = [];
+      return { asked, file_get: (path: string): string => { asked.push(path); return `${path} as ${who} sees it`; } };
+    };
+    const first: Double = double_make('the first');
+    const second: Double = double_make('the second');
+    const firstAgain: Double = double_make('the first, again');
+    mockClientCreate.mockReturnValueOnce(first).mockReturnValueOnce(second).mockReturnValueOnce(firstAgain);
+    const conn: ChRISConnection = connection_make({ files: { '/cfg/token': 'FIRST' } });
+    const ask = async (path: string): Promise<string> => ((await conn.client_get()) as unknown as Double).file_get(path);
+
+    expect(await ask('/home/first/a')).toBe('/home/first/a as the first sees it');
+    mockAuthToken.mockResolvedValue('SECOND');
+    await conn.connection_connect({ user: 'second', password: 'pw', debug: false, url: 'https://cube/api/v1/' });
+    expect(await ask('/home/second/b')).toBe('/home/second/b as the second sees it');
+    mockAuthToken.mockResolvedValue('FIRST-AGAIN');
+    await conn.connection_connect({ user: 'first', password: 'pw', debug: false, url: 'https://cube/api/v1/' });
+    // Asked for the second's file as the first: the first's own client answers, and the second's hears nothing of it.
+    expect(await ask('/home/second/b')).toBe('/home/second/b as the first, again sees it');
+    expect(first.asked).toEqual(['/home/first/a']);
+    expect(second.asked).toEqual(['/home/second/b']);
+    expect(firstAgain.asked).toEqual(['/home/second/b']);
+    expect(mockClientCreate.mock.calls.map((call: unknown[]): unknown => call[1])).toEqual(['FIRST', 'SECOND', 'FIRST-AGAIN']);
+  });
+
   it('a token login is a change of identity, with a client of its own', async () => {
     const conn: ChRISConnection = connection_make({ files: { '/cfg/token': 'FIRST' } });
     const first: object = { of: 'the first' };

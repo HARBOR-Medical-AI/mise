@@ -21,8 +21,11 @@
  * A session read that failed for some other reason looks, from the session
  * alone, like a refusal. So the refusal is CUBE's own (a 403 or 404 for
  * that folder's id with the first's token, anything else an error), asked
- * before and after, and the session is held only to not producing what the
- * second was given. Where a CUBE gives the first the second's folder,
+ * before and after. The session must say of that folder's files "no such
+ * folder" (anything shown, or an asking that broke, fails), and must hand
+ * over no content of the file; that it gives none is reported as
+ * inconclusive by itself, and which client served a request is held by the
+ * two-client case in cumin's connection tests. Where a CUBE gives the first the second's folder,
  * those checks are printed as skipped, not passed.
  *
  * What this run does not show: `/bin` and the process tree read the same
@@ -143,12 +146,17 @@ async function folder_askById(url: string, token: string, folder: MadeFolder): P
  * @param url - The CUBE.
  * @param token - The token of the user that made it.
  * @param folder - The folder.
- * @returns Whether it is gone.
+ * @returns Whether CUBE confirms it gone (404 for its id, asked by its owner).
  */
 async function folder_unmake(url: string, token: string, folder: MadeFolder): Promise<boolean> {
   const response: Response = await fetch(`${url}filebrowser/${String(folder.id)}/`, { method: 'DELETE', headers: { Authorization: `Token ${token}` } });
   if (response.status !== 202 && response.status !== 204) return false;
-  const gone = await poll_until<boolean>(async () => ((await folder_askById(url, token, folder).catch((): 'given' => 'given')) === 'denied' ? true : null), 30_000, 2_000);
+  // Gone is the owner's 404 for that id. A 403 says only that the owner may no longer have it, which is not
+  // "removed": that, and any other answer, leaves the removal unconfirmed.
+  const gone = await poll_until<boolean>(async () => {
+    const asked: Response = await fetch(`${url}filebrowser/${String(folder.id)}/`, { headers: { Authorization: `Token ${token}`, Accept: 'application/json' } });
+    return asked.status === 404 ? true : null;
+  }, 30_000, 2_000);
   return gone.ok;
 }
 
@@ -221,10 +229,24 @@ async function scenario_run(env: CubeEnv, cleanup: CleanupPlan): Promise<void> {
     // failed would not be told from a refusal by the session alone, which is why CUBE is asked directly
     // before and after, and a read that must succeed follows.
     check(`CUBE denies ${first} the folder ${second} made (asked by its id)`, (await folder_askById(env.url, firstToken, theirs)) === 'denied');
-    const shown: FolderRead = await folder_read(`/${theirs.path}`, secondFile);
-    check(`the session does not show ${first} that folder's file`, !shown.holds && shown.kind !== 'listing');
-    const handed: Result<string> = await fileContent_get(theirsPath).catch((): Result<string> => ({ ok: false }) as Result<string>);
-    check(`nor hand over its content: the transfer is made with ${first}'s client again`, !(handed.ok && handed.value === secondContent));
+    // The files of that folder, asked through the session, alone: nothing asked afterwards can undo what
+    // this shows. Shown anything at all (the file, another, or an empty folder it could enter) is red; so
+    // is an asking that broke, which shows nothing either way. Green is the session's own "no such folder".
+    const shown = await files_listWhole('files', `/${theirs.path}`).catch((error: unknown): { kind: 'broke'; error: unknown } => ({ kind: 'broke', error }));
+    check(`the session, asked for that folder's files as ${first}, says there is no such folder (it said: ${shown.kind})`, shown.kind === 'missing');
+    // The file itself. Any content handed over is red, whatever the bytes; so is an asking that threw. A
+    // plain failure is what a refusal looks like here, and also what a broken request looks like: the
+    // session does not say which, so it is reported as it is and passes nothing. That the request was made
+    // with the first's client is held by the two-client case in cumin's connection tests.
+    let handed: 'content' | 'none' | 'threw' = 'threw';
+    try {
+      handed = (await fileContent_get(theirsPath)).ok ? 'content' : 'none';
+    } catch {
+      handed = 'threw';
+    }
+    // Only a failure is counted here: giving nothing is not counted as a pass.
+    if (handed !== 'none') check(`the session hands ${first} no content of ${second}'s file, and the asking does not throw (it: ${handed})`, false);
+    else console.log(`  - inconclusive, not counted: asked for ${second}'s file as ${first}, the session gave no content and no reason, which a refusal and a failed request share`);
     check(`CUBE still denies it, and still gives it to ${second}`, (await folder_askById(env.url, firstToken, theirs)) === 'denied' && (await folder_askById(env.url, secondToken, theirs)) === 'given');
   }
   const again: Result<string> = await step(`${first} reads its own file afresh`, fileContent_get(minePath));
