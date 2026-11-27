@@ -17,8 +17,8 @@
  * @module
  */
 import { spawn as childSpawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, type Stats } from 'node:fs';
+import { join, sep } from 'node:path';
 import { berthKey_compute, berth_pathIn, berthUrl_isAlive, closing_write } from '@fnndsc/calypso/berth';
 import { sessionEnv_build } from './sessionEnv.js';
 import { restartLine_render, type Berth, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
@@ -182,6 +182,39 @@ function stream_lines(stream: NodeJS.ReadableStream | null, onLine: (line: strin
     if (buffered.length > 0) onLine(buffered);
     buffered = '';
   });
+}
+
+/** A session's folders, settled: its directories, its root, and its own names for home, state and data. */
+interface SettledFolders {
+  /** The four directories porter names for it. */
+  dirs: SessionDirs;
+  /** The folder all of them are in. */
+  root: string;
+  /** HOME, XDG_STATE_HOME and XDG_DATA_HOME, the session's own. */
+  own: Record<string, string>;
+}
+
+/**
+ * Makes a session's folder, or settles one already there: it must be a real
+ * folder (not a link), this account's, inside `within`, and it is left 0700
+ * whatever mode it had.
+ *
+ * @param dir - The folder.
+ * @param within - The folder it must lie inside.
+ * @throws {Error} When the path is a link, not a folder, another account's, or outside `within`.
+ *
+ * @example
+ * ```ts
+ * sessionDir_settle('/var/lib/porter/ab12/home', '/var/lib/porter/ab12');
+ * ```
+ */
+export function sessionDir_settle(dir: string, within: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const found: Stats = lstatSync(dir);
+  if (found.isSymbolicLink() || !found.isDirectory()) throw new Error(`the session folder ${dir} is not a folder of its own`);
+  if (typeof process.getuid === 'function' && found.uid !== process.getuid()) throw new Error(`the session folder ${dir} belongs to another account`);
+  if (!realpathSync(dir).startsWith(`${realpathSync(within)}${sep}`)) throw new Error(`the session folder ${dir} lies outside ${within}`);
+  if ((found.mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
 }
 
 /** Sessions as child processes on this host. */
@@ -373,6 +406,27 @@ export class ProcessHost implements SessionHost {
   }
 
   /**
+   * The folders a session is given, each its own: made 0700, or, found
+   * already there, a real folder of this account's inside porter's state
+   * and left 0700. Every session keeps its home, state and data (a stratus
+   * session's clusters, chell's history) beside its other directories, never
+   * porter's own, which every session it starts would share.
+   *
+   * @param identity - The session's identity.
+   * @returns The folders, and the session's own names for them.
+   * @throws {Error} When a folder is a link, not a folder, another account's, or outside porter's state.
+   */
+  private folders_settle(identity: string): SettledFolders {
+    const dirs: SessionDirs = this.dirs_build(identity);
+    const root: string = join(this.stateDir, berthKey_compute(identity));
+    const own: Record<string, string> = { HOME: join(root, 'home'), XDG_STATE_HOME: join(root, 'state'), XDG_DATA_HOME: join(root, 'data') };
+    sessionDir_settle(root, this.stateDir);
+    const folders: string[] = [dirs.config, dirs.runtime, dirs.cache, dirs.tmp, join(root, 'home'), join(root, 'state'), join(root, 'data')];
+    for (const dir of folders) sessionDir_settle(dir, root);
+    return { dirs, root, own };
+  }
+
+  /**
    * Starts the child and waits for its berth to answer.
    *
    * @param token - The CUBE token the door minted, handed on stdin; null
@@ -380,18 +434,13 @@ export class ProcessHost implements SessionHost {
    *   rather than come up offline.
    */
   private async boot_run(record: SessionRecord, launch: SessionLaunch): Promise<Berth> {
-    const dirs: SessionDirs = this.dirs_build(record.identity);
-    for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    // Every session keeps its home, state and data (a stratus session's
-    // clusters, chell's history) beside its other directories: never
-    // porter's own, which every session it starts would share.
-    const root: string = join(this.stateDir, berthKey_compute(record.identity));
-    const own: Record<string, string> = {
-      HOME: join(root, 'home'),
-      XDG_STATE_HOME: join(root, 'state'),
-      XDG_DATA_HOME: join(root, 'data'),
-    };
-    for (const dir of Object.values(own)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    let settled: SettledFolders;
+    try {
+      settled = this.folders_settle(record.identity);
+    } catch (error: unknown) {
+      return this.boot_end(record, 'failed', error instanceof Error ? error.message : String(error));
+    }
+    const { dirs, root, own } = settled;
     if (launch.kind === 'stratus') {
       // The daemon's berth names its cloud identity; this names the session's,
       // so a porter restarted adopts it under the key its cookie holds.

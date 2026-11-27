@@ -7,11 +7,11 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hostControl_build } from '@fnndsc/calypso';
-import { ProcessHost, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
+import { hostControl_parseArgv } from '@fnndsc/calypso';
+import { ProcessHost, sessionDir_settle, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
 import { address_isPlain, sessionEnv_build, sessionEnv_withheld } from '../../src/host/sessionEnv.js';
 
 const IDENTITY: string = 'chris@https://cube.example.org/api/v1/';
@@ -93,10 +93,9 @@ function own_expected(host: ProcessHost, identity: string): NodeJS.ProcessEnv {
   };
 }
 
-/** The tiers the session ends up with, as calypso reads its flag and environment. */
+/** The tiers the session ends up with, as calypso itself reads the argv and environment it was started with. */
 function tiers_effective(call: { args: string[]; env: NodeJS.ProcessEnv }): string[] {
-  const flag: string | undefined = call.args.find((arg: string): boolean => arg.startsWith('--host-control'))?.split('=')[1];
-  const built = hostControl_build({ flag, env: call.env['CALYPSO_HOST_CONTROL'], exposed: false });
+  const built = hostControl_parseArgv(call.args, call.env);
   if ('error' in built) throw new Error(built.error);
   return [...built.policy.tiers].sort();
 }
@@ -158,14 +157,21 @@ describe('a session porter starts', () => {
     expect(tiers_effective(armed)).toEqual(['tasks']);
   });
 
-  it('gives no host control whatever porter\'s own CALYPSO_HOST_CONTROL says', async () => {
+  it('gives no host control whatever porter\'s own CALYPSO_HOST_CONTROL says, and tasks only to an armed stratus session', async () => {
+    let n: number = 0;
     for (const [i, value] of [undefined, '', '  ', 'all', 'shell,files,pipes'].entries()) {
       process.env = { PATH: '/usr/bin', ...(value !== undefined ? { CALYPSO_HOST_CONTROL: value } : {}) };
       const host: ProcessHost = host_make();
       void host.spawn(`u${i}@https://cube.example.org/api/v1/`, `u${i}`, 'https://cube.example.org/api/v1/', 'MINTED').catch(() => undefined);
-      const call = await spawned(i + 1);
-      expect(call.env['CALYPSO_HOST_CONTROL']).toBeUndefined();
-      expect(tiers_effective(call)).toEqual([]);
+      host.stratus_begin(`stratus:oci@r${i}@https://cube.example.org/api/v1/`, '/creds/oci/config', false, false);
+      host.stratus_begin(`stratus:oci@a${i}@https://cube.example.org/api/v1/`, '/creds/oci/config', true, false);
+      const [chris, read, armed] = [await spawned(n + 1), await spawned(n + 2), await spawned(n + 3)];
+      n += 3;
+      for (const call of [chris, read, armed]) expect(call.env['CALYPSO_HOST_CONTROL']).toBeUndefined();
+      expect(chris.args.filter((arg: string): boolean => arg.startsWith('--host-control'))).toEqual([]);
+      expect(read.args.filter((arg: string): boolean => arg.startsWith('--host-control'))).toEqual([]);
+      expect(armed.args.filter((arg: string): boolean => arg.startsWith('--host-control'))).toEqual(['--host-control=tasks']);
+      expect([tiers_effective(chris), tiers_effective(read), tiers_effective(armed)]).toEqual([[], [], ['tasks']]);
     }
   });
 
@@ -187,5 +193,47 @@ describe('the spawner', () => {
     const source: string = readFileSync(new URL('../../src/host/processHost.ts', import.meta.url), 'utf8');
     expect(source).not.toMatch(/\.\.\.\s*process\.env/);
     expect(source).toMatch(/sessionEnv_build\(process\.env,/);
+  });
+});
+
+describe('sessionDir_settle', () => {
+  it('makes a folder 0700, and makes one already there 0700 again', () => {
+    const fresh: string = join(stateDir, 'k', 'home');
+    sessionDir_settle(fresh, stateDir);
+    expect(statSync(fresh).mode & 0o777).toBe(0o700);
+    const open: string = join(stateDir, 'k', 'state');
+    mkdirSync(open, { mode: 0o755 });
+    chmodSync(open, 0o755);
+    sessionDir_settle(open, join(stateDir, 'k'));
+    expect(statSync(open).mode & 0o777).toBe(0o700);
+  });
+
+  it('refuses a link, a file, or a folder outside where it must be', () => {
+    const elsewhere: string = mkdtempSync(join(tmpdir(), 'porter-elsewhere-'));
+    try {
+      mkdirSync(join(stateDir, 'k'));
+      symlinkSync(elsewhere, join(stateDir, 'k', 'home'));
+      expect(() => sessionDir_settle(join(stateDir, 'k', 'home'), join(stateDir, 'k'))).toThrow('not a folder of its own');
+      writeFileSync(join(stateDir, 'k', 'cache'), 'x');
+      expect(() => sessionDir_settle(join(stateDir, 'k', 'cache'), join(stateDir, 'k'))).toThrow();
+      expect(() => sessionDir_settle(elsewhere, join(stateDir, 'k'))).toThrow('lies outside');
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses the start of a session whose folder is a link, and starts nothing', async () => {
+    process.env = { PATH: '/usr/bin' };
+    const host: ProcessHost = host_make();
+    const elsewhere: string = mkdtempSync(join(tmpdir(), 'porter-elsewhere-'));
+    try {
+      const root: string = join(host.dirs_build(IDENTITY).config, '..');
+      mkdirSync(root, { recursive: true });
+      symlinkSync(elsewhere, join(root, 'home'));
+      await expect(host.spawn(IDENTITY, 'chris', 'https://cube.example.org/api/v1/', 'MINTED')).rejects.toThrow('not a folder of its own');
+      expect(spawnCalls).toEqual([]);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
   });
 });

@@ -48,7 +48,6 @@
     "@typescript-eslint/no-unnecessary-condition": 4,
     "@typescript-eslint/no-unnecessary-type-assertion": 2,
     "@typescript-eslint/no-unnecessary-type-conversion": 4,
-    "@typescript-eslint/no-unsafe-argument": 1,
     "@typescript-eslint/require-await": 5,
     "@typescript-eslint/restrict-plus-operands": 1,
     "@typescript-eslint/restrict-template-expressions": 49,
