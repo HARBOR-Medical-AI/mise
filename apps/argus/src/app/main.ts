@@ -21,7 +21,7 @@ import { more_wire } from '../features/roster/more.js';
 import { type ClosingCause, type SessionNotes, feedListModelSchema, FEED_LIST_MODEL_KIND, feedDagModelSchema, dicomSeriesModelSchema, dicomTagsModelSchema, imageViewModelSchema, DICOM_MODEL_KINDS, IMAGE_MODEL_KINDS, type DicomSeriesModel, type DicomTagsModel, DAG_MODEL_KINDS, type PromptContext, type WireEnvelope, type WatchState, type FeedDagModel, type LaneTelemetry, type CubeTelemetry, type JobsStateTelemetry } from '@fnndsc/menu';
 import { type SceneNode } from '../scene/chrisSpace.js';
 import { element_require, template_stamp, pane_find } from '../frame/dom.js';
-import { addressClean_derive, attachStart_make, retryToken_keep, retryToken_take } from './attachStart.js';
+import { addressManual_derive, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type BootChoice } from './attachStart.js';
 import { DormantRegistry, DORMANT_CAP, localKeyStore, type GroupSnapshot, type DesktopAction, type DesktopShape } from './dormant.js';
 import { linkLanding_parse, type LinkLanding } from './link.js';
 import { shareSheet_open, viewLink_parse, viewScript_compose } from './shareView.js';
@@ -2791,12 +2791,12 @@ function page_boot(): void {
   audioPill_wire();
   themePill = themePill_wire();
   doorPill_wire();
-  const params: URLSearchParams = new URLSearchParams(window.location.search);
-  const urlToken: string | null = params.get('token');
   const throughDoor: boolean = door_isPresent(window.location.search);
   const attachForm: HTMLElement = element_require('attach-form');
   const attachError: HTMLElement = element_require('attach-error');
 
+  // Where this page attaches: its path and its daemon's socket. A token handed over a reload is for here only.
+  const place: string = retryPlace_name(window.location.pathname, wsUrl_resolve());
   // One attach at a time; and after one that failed, the next is made by a page loaded afresh, since the
   // surface wires itself before it attaches and must not be wired twice (see attachStart.ts).
   const attach_start: (token: string) => void = attachStart_make({
@@ -2809,8 +2809,8 @@ function page_boot(): void {
     page_restart: (token: string): void => {
       // The token rides the reload in this tab's storage. Where that is refused, the fresh page is sent to
       // its form, at an address with no token in it: a token the daemon refused is not tried again.
-      if (retryToken_keep((): Storage => window.sessionStorage, token, window.location.pathname)) window.location.reload();
-      else window.location.replace(addressClean_derive(window.location.pathname, window.location.search));
+      if (retryToken_keep((): Storage => window.sessionStorage, token, place)) window.location.reload();
+      else window.location.replace(addressManual_derive(window.location.pathname, window.location.search, window.location.hash));
     },
   });
 
@@ -2826,20 +2826,13 @@ function page_boot(): void {
     }
   });
 
-  const retryToken: string | null = retryToken_take((): Storage => window.sessionStorage, window.location.pathname);
-  if (retryToken !== null) {
-    // A page before this one failed to attach and was given another token: this fresh page attaches with it.
+  // What this page does of its own accord: attach with the token a page before it handed over, with the
+  // token in its address, or with nothing behind a door (the door holds the token and puts it on the attach
+  // itself); or show its form, as a page marked for its form always does.
+  const choice: BootChoice = bootChoice_derive(retryToken_take((): Storage => window.sessionStorage, place), window.location.search, throughDoor);
+  if (choice.kind === 'attach') {
     attachForm.classList.add('attach-hidden');
-    attach_start(retryToken);
-  } else if (urlToken !== null && urlToken.length > 0) {
-    // The token rode the URL; go straight to the session without the form.
-    attachForm.classList.add('attach-hidden');
-    attach_start(urlToken);
-  } else if (throughDoor) {
-    // A door holds the token and puts it on the attach itself; the page
-    // would only be asking for something it is never shown.
-    attachForm.classList.add('attach-hidden');
-    attach_start('');
+    attach_start(choice.token);
   }
 }
 

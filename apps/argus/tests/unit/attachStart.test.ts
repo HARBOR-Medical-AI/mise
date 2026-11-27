@@ -7,7 +7,7 @@
  * closes before it is answered.
  */
 import { describe, it, expect, afterEach } from '@jest/globals';
-import { addressClean_derive, attachStart_make, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
+import { addressManual_derive, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type AttachStartPorts } from '../../src/app/attachStart.js';
 import { ArgusClient } from '../../src/calypso/client.js';
 
 /** A surface whose attach the test settles, and which counts how often it was wired. */
@@ -100,11 +100,63 @@ describe('the page\'s start', () => {
     expect(retryToken_keep(readOnly, 'good', '/s/abc/')).toBe(false);
   });
 
-  it('where the token cannot be kept, the fresh page goes to an address with no token in it: a refused token is not tried again', () => {
-    expect(addressClean_derive('/s/abc/', '?token=REFUSED')).toBe('/s/abc/');
-    expect(addressClean_derive('/s/abc/', '?token=REFUSED&door=1&theme=lcars')).toBe('/s/abc/?door=1&theme=lcars');
-    expect(addressClean_derive('/', '')).toBe('/');
-    expect(addressClean_derive('/s/abc/', '?door')).toBe('/s/abc/?door=');
+  it('a handoff is for one page and one daemon: the same page pointed at another socket does not take it, and it is gone', () => {
+    const here: string = retryPlace_name('/s/abc/', 'ws://127.0.0.1:9000');
+    const elsewhere: string = retryPlace_name('/s/abc/', 'ws://127.0.0.1:9001');
+    expect(here).not.toBe(elsewhere);
+    expect(retryToken_keep(tab, 'good', here)).toBe(true);
+    expect(retryToken_take(tab, elsewhere)).toBeNull();
+    expect(retryToken_take(tab, here)).toBeNull();
+    expect(retryToken_keep(tab, 'good', here)).toBe(true);
+    expect(retryToken_take(tab, here)).toBe('good');
+  });
+
+  it('where the token cannot be kept, the fresh page goes to its form: no token in the address, the rest of it and its fragment kept', () => {
+    expect(addressManual_derive('/s/abc/', '?token=REFUSED', '')).toBe('/s/abc/?attach=manual');
+    expect(addressManual_derive('/s/abc/', '?token=REFUSED&door=1&theme=lcars', '#view=dag&feed=7')).toBe('/s/abc/?door=1&theme=lcars&attach=manual#view=dag&feed=7');
+    expect(addressManual_derive('/', '', '')).toBe('/?attach=manual');
+    // Asked twice, it is marked once.
+    expect(addressManual_derive('/s/abc/', '?attach=manual&door=1', '')).toBe('/s/abc/?attach=manual&door=1');
+  });
+
+  it('a page chooses once what it does on loading: the handed-over token, its form when marked for it, the address\'s token, the door, or its form', () => {
+    expect(bootChoice_derive('handed', '?token=other&door=1', true)).toEqual({ kind: 'attach', token: 'handed' });
+    expect(bootChoice_derive(null, '?token=T', false)).toEqual({ kind: 'attach', token: 'T' });
+    expect(bootChoice_derive(null, '?door=1', true)).toEqual({ kind: 'attach', token: '' });
+    expect(bootChoice_derive(null, '', false)).toEqual({ kind: 'form' });
+    expect(bootChoice_derive(null, '?token=', false)).toEqual({ kind: 'form' });
+    // Marked for its form: neither a token in the address nor a door is tried.
+    expect(bootChoice_derive(null, '?door=1&attach=manual', true)).toEqual({ kind: 'form' });
+    expect(bootChoice_derive(null, '?token=REFUSED&attach=manual', false)).toEqual({ kind: 'form' });
+  });
+
+  it('a refused door, a tab with no storage, and a token typed by hand: the door is not tried again, and the typed token attaches', async () => {
+    const unreachable = (): Storage => { throw new Error('The operation is insecure.'); };
+    const place: string = retryPlace_name('/s/abc/', 'ws://127.0.0.1:9000');
+    // The first page: behind a door, which the daemon refuses.
+    const first = bench_make();
+    const firstChoice = bootChoice_derive(retryToken_take(unreachable, place), '?door=1', true);
+    expect(firstChoice).toEqual({ kind: 'attach', token: '' });
+    first.start('');
+    await first.settle(false, 'the door\'s token was refused');
+    expect(first.shown).toEqual(['the door\'s token was refused']);
+    // A token is typed. It cannot be kept, so the page is sent to its form at an address that says so.
+    let went: string | null = null;
+    const kept: boolean = retryToken_keep(unreachable, 'typed', place);
+    expect(kept).toBe(false);
+    went = addressManual_derive('/s/abc/', '?door=1', '#view=dag');
+    expect(went).toBe('/s/abc/?door=1&attach=manual#view=dag');
+    // The fresh page: it shows its form and does not try the door again.
+    const second = bench_make();
+    const search: string = went.slice(went.indexOf('?'), went.indexOf('#'));
+    expect(bootChoice_derive(retryToken_take(unreachable, place), search, true)).toEqual({ kind: 'form' });
+    expect(second.wired).toEqual([]);
+    // The token typed there is that page's first attempt, and attaches.
+    second.start('typed');
+    await second.settle(true);
+    expect(second.wired).toEqual(['typed']);
+    expect(second.hidden).toHaveLength(1);
+    expect(second.restarted).toEqual([]);
   });
 
   it('a fresh page that was handed a token attaches once with it, as the first attempt of that page', async () => {

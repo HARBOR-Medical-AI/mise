@@ -86,8 +86,24 @@ const RETRY_KEY: string = 'argus.attach.retry';
 interface RetryHandoff {
   /** The token to attach with. */
   token: string;
-  /** The path of the page that kept it: another mount on the same origin in this tab does not take it. */
+  /** The page that kept it and the daemon it attaches to: its path and its socket's address. Another mount on the same origin in this tab, or the same page pointed at another daemon, does not take it. */
   page: string;
+}
+
+/**
+ * Names the place a handoff is for: the page's path and the address of the
+ * daemon's socket it attaches to. One page can be pointed at another daemon
+ * (`?ws=`), and a token for one daemon is not handed to the other.
+ *
+ * @param path - The page's path.
+ * @param socket - The socket address the page attaches to, as resolved.
+ * @returns The place, as one string.
+ *
+ * @example
+ * const place: string = retryPlace_name(window.location.pathname, wsUrl_resolve());
+ */
+export function retryPlace_name(path: string, socket: string): string {
+  return `${path}\n${socket}`;
 }
 
 /**
@@ -97,7 +113,7 @@ interface RetryHandoff {
  *
  * @param storageReach - Reaches the tab's session storage; reaching it can itself be refused, so it is asked for here.
  * @param token - The token.
- * @param page - The path of the page it is for.
+ * @param page - The place it is for (see {@link retryPlace_name}).
  * @returns Whether it was kept; where it could not be, the caller sends the fresh page to its form.
  *
  * @example
@@ -119,7 +135,7 @@ export function retryToken_keep(storageReach: () => Storage, token: string, page
  * all, and one left behind by another page does not wait for a later load.
  *
  * @param storageReach - Reaches the tab's session storage.
- * @param page - The path of this page.
+ * @param page - This page's place (see {@link retryPlace_name}).
  * @returns The token, or null when none was kept for this page (or the storage cannot be reached).
  *
  * @example
@@ -140,21 +156,72 @@ export function retryToken_take(storageReach: () => Storage, page: string): stri
   }
 }
 
+/** The mark in a page's address that says: show the form, and attach with nothing until a token is typed. */
+export const MANUAL_PARAM: string = 'attach';
+
 /**
- * The address of this page with no token in it: where a retry goes when
- * the token for it could not be kept, so that the fresh page shows its form
- * and does not try again a token the daemon has already refused.
+ * The address a retry goes to when the token for it could not be kept: this
+ * page, with no token in it and marked for its form. The fresh page then
+ * attaches with nothing of its own accord (not a token the daemon has
+ * already refused, and not a door that has), and the token typed there is
+ * that page's first attempt. Everything else of the address is kept, the
+ * fragment a link carries included.
  *
  * @param path - The page's path.
  * @param search - The page's query string.
- * @returns The path and what is left of the query.
+ * @param hash - The page's fragment, with its `#`, or empty.
+ * @returns The address to go to.
  *
  * @example
- * window.location.replace(addressClean_derive(window.location.pathname, window.location.search));
+ * window.location.replace(addressManual_derive(window.location.pathname, window.location.search, window.location.hash));
  */
-export function addressClean_derive(path: string, search: string): string {
+export function addressManual_derive(path: string, search: string, hash: string): string {
   const params: URLSearchParams = new URLSearchParams(search);
   params.delete('token');
-  const rest: string = params.toString();
-  return rest === '' ? path : `${path}?${rest}`;
+  params.set(MANUAL_PARAM, 'manual');
+  return `${path}?${params.toString()}${hash}`;
+}
+
+/** A page that attaches as it loads. */
+interface BootAttach {
+  /** What it does. */
+  kind: 'attach';
+  /** The token it attaches with; empty behind a door, which holds the token itself. */
+  token: string;
+}
+
+/** A page that shows its form as it loads. */
+interface BootForm {
+  /** What it does. */
+  kind: 'form';
+}
+
+/** What a page does when it loads: attach with a token, or show its form. */
+export type BootChoice = BootAttach | BootForm;
+
+/**
+ * What a page that has just loaded does about attaching.
+ *
+ * A token handed over by the page before it comes first. A page marked for
+ * its form shows the form, whatever else its address says. Otherwise a
+ * token in the address attaches with it, a page behind a door attaches
+ * with nothing (the door holds the token), and any other page shows the
+ * form.
+ *
+ * @param retryToken - The token the page before kept for this one, or null.
+ * @param search - The page's query string.
+ * @param throughDoor - Whether the page is behind a door.
+ * @returns The choice.
+ *
+ * @example
+ * const choice: BootChoice = bootChoice_derive(retryToken_take(storage, place), window.location.search, throughDoor);
+ */
+export function bootChoice_derive(retryToken: string | null, search: string, throughDoor: boolean): BootChoice {
+  if (retryToken !== null) return { kind: 'attach', token: retryToken };
+  const params: URLSearchParams = new URLSearchParams(search);
+  if (params.get(MANUAL_PARAM) === 'manual') return { kind: 'form' };
+  const urlToken: string | null = params.get('token');
+  if (urlToken !== null && urlToken.length > 0) return { kind: 'attach', token: urlToken };
+  if (throughDoor) return { kind: 'attach', token: '' };
+  return { kind: 'form' };
 }
