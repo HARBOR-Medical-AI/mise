@@ -4311,31 +4311,16 @@ try {
 
   if (await stage('large-transfer')) {
   // A large file up and down again through the page: the bytes are the same bytes, and the page answers a
-  // press while each is in flight. The file is made here (so many mebibytes of a pattern), goes into a
-  // folder of this run's own under the session's home, and the folder is removed at the end. The size is
-  // SMOKE_TRANSFER_MIB (24 unless set): large beside what the other stages move, small beside the upload
-  // limit, since it is written to a real CUBE.
+  // press while each is in flight. The file is made here (so many mebibytes of a pattern). It goes into a
+  // folder of this run's own: made by a mkdir that fails on a name that is taken, entered and shown by the
+  // files pane before anything is sent up, and the only thing removed afterwards, whatever happened in
+  // between (as file-kinds does). The size is SMOKE_TRANSFER_MIB (24 unless set): large beside what the
+  // other stages move, small beside the upload limit, since it is written to a real CUBE.
   const transferMib = Math.max(1, Number(process.env.SMOKE_TRANSFER_MIB ?? '24') || 24);
-  const transferDir = `smoke-transfer-${Date.now()}`;
-  await evalIn(`
-    window.__argusHandoffs = [];
-    if (!window.__argusHandoffWrapped) {
-      window.__argusHandoffWrapped = true;
-      const press = HTMLAnchorElement.prototype.click;
-      HTMLAnchorElement.prototype.click = function () {
-        if (this.download) { window.__argusHandoffs.push({ name: this.download, href: this.href, text: '(not read as text)' }); return; }
-        return press.call(this);
-      };
-    }
-    return true;`);
   const moved = await evalIn(`
     const MIB = 1024 * 1024;
     const size = ${transferMib} * MIB;
     const hex = (buffer) => [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    const bytes = new Uint8Array(size);
-    for (let at = 0; at < size; at += 4096) bytes[at] = (at / 4096) % 251;
-    bytes[size - 1] = 7;
-    const sent = hex(await crypto.subtle.digest('SHA-256', bytes));
     document.getElementById('gutter-files').click(); await sleep(800);
     const fp = () => [...document.querySelectorAll('.pane-files')].find(p => p.offsetParent !== null);
     const term = console_input();
@@ -4343,52 +4328,125 @@ try {
       term.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await sleep(ms); await console_settled(); };
     const named = (n) => [...fp().querySelectorAll('.files-row')].find(r => r.querySelector('.files-name')?.textContent.trim() === n);
     const click = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    const settle = async (want, tries = 360) => { for (let i = 0; i < tries; i++) { await sleep(500); if (want()) return true; } return false; };
-    // A press while a transfer is in flight: the console lid, there and back, each within a second.
-    const lid_answers = async () => {
+    const settle = async (want, tries = 60, step = 500) => { for (let i = 0; i < tries; i++) { await sleep(step); if (want()) return true; } return false; };
+    const folder = 'smoke-transfer-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    await say('cd ~', 2500);
+    const homeAt = () => window.__argusPromptContext?.cwd ?? '';
+    await settle(() => /^[/]home[/][^/]+$/.test(homeAt()), 20);
+    const place = homeAt() + '/' + folder;
+    if (!/^[/]home[/][^/]+[/]smoke-transfer-[a-z0-9]+-[a-z0-9]+$/.test(place)) return { error: 'no home to make the folder in: ' + homeAt() };
+    // The folder is this run's only when this run made it: the receipt is mkdir's own line for this exact path.
+    const mkdirMark = console_mark();
+    await say('mkdir ' + place, 2500);
+    const receipt = 'Created directory: ' + place;
+    const made = await settle(() => console_since(mkdirMark, '\\n').split('\\n').some((l) => l.trim() === receipt), 20);
+    if (!made) return { error: 'mkdir ' + place + ' gave no receipt: nothing was sent up, nothing is removed' };
+    // What this stage puts on the page's own objects is taken off again at its end: the stages after it
+    // find the page as the stages before it left it.
+    const anchorClick = HTMLAnchorElement.prototype.click;
+    const handoffsBefore = window.__argusHandoffs;
+    const realFetch = window.fetch;
+    const realSend = XMLHttpRequest.prototype.send;
+    const realOpen = XMLHttpRequest.prototype.open;
+    // The byte requests in flight, counted as they begin and end: a press is "mid-flight" only while one is.
+    const flying = { up: 0, down: 0 };
+    const kind_of = (method, url) => (!/(^|[/])vfs[?]/.test(String(url)) ? null : String(method).toUpperCase() === 'POST' ? 'up' : 'down');
+    try {
+    const handoffs = [];
+    HTMLAnchorElement.prototype.click = function () {
+      if (this.download) { handoffs.push({ name: this.download, href: this.href }); return; }
+      return anchorClick.call(this);
+    };
+    window.fetch = function (input, init) {
+      const kind = kind_of(init?.method ?? (input instanceof Request ? input.method : 'GET'), input instanceof Request ? input.url : input);
+      const flight = realFetch.call(this, input, init);
+      if (kind === null) return flight;
+      flying[kind] += 1;
+      let ended = false;
+      const end = () => { if (!ended) { ended = true; flying[kind] -= 1; } };
+      // A download is in flight until its body has been read, not merely until its headers have come.
+      return flight.then((response) => {
+        if (kind === 'up' || response.body === null) { end(); return response; }
+        const reader = response.body.getReader();
+        const body = new ReadableStream({
+          async pull(controller) { const part = await reader.read(); if (part.done) { end(); controller.close(); } else controller.enqueue(part.value); },
+          cancel() { end(); return reader.cancel(); },
+        });
+        return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+      }, (error) => { end(); throw error; });
+    };
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) { this.__smokeKind = kind_of(method, url); return realOpen.call(this, method, url, ...rest); };
+    XMLHttpRequest.prototype.send = function (...args) {
+      const kind = this.__smokeKind;
+      if (kind !== null && kind !== undefined) { flying[kind] += 1; this.addEventListener('loadend', () => { flying[kind] -= 1; }, { once: true }); }
+      return realSend.apply(this, args);
+    };
+    // A press made while a transfer is observed in flight, answered while it still is: the console lid goes
+    // there and back. A transfer that had ended before the press, or ends before the answer, does not count.
+    const lid_pressDuring = async (which) => {
+      const began = await settle(() => flying[which] > 0, 200, 25);
+      if (!began) return { began: false, answered: false, stillFlying: false };
       const drawer = document.getElementById('drawer'); const toggle = document.getElementById('drawer-toggle');
       const before = drawer.classList.contains('drawer-closed');
-      const began = performance.now();
       toggle.click(); await sleep(60);
       const flipped = drawer.classList.contains('drawer-closed') !== before;
       toggle.click(); await sleep(60);
-      return flipped && drawer.classList.contains('drawer-closed') === before && performance.now() - began < 1000;
+      const back = drawer.classList.contains('drawer-closed') === before;
+      return { began: true, answered: flipped && back, stillFlying: flying[which] > 0 };
     };
-    await say('mkdir -p ~/${transferDir}', 2500);
-    await say('cd ~/${transferDir}', 2500);
-    await settle(() => (window.__argusPromptContext?.cwd ?? '').endsWith('/${transferDir}'), 40);
+
+    await say('cd ' + place, 2500);
+    const there = await settle(() => homeAt() === place, 60);
+    if (!there) return { error: 'the session did not move to ' + place + ' (it is at ' + homeAt() + '): nothing was sent up' };
+    const paneAt = () => fp()?.querySelector('.files-crumb-here')?.dataset.path ?? null;
+    const shown = await settle(() => paneAt() === place, 60);
+    if (!shown) return { error: 'the files pane shows ' + paneAt() + ', not ' + place + ': nothing was sent up' };
+    const bytes = new Uint8Array(size);
+    for (let at = 0; at < size; at += 4096) bytes[at] = (at / 4096) % 251;
+    bytes[size - 1] = 7;
+    const sent = hex(await crypto.subtle.digest('SHA-256', bytes));
     const chooser = fp().querySelector('.files-upload-input');
+    if (paneAt() !== place) return { error: 'the files pane moved to ' + paneAt() + ' before the file was chosen: nothing was sent up' };
     const dt = new DataTransfer();
     dt.items.add(new File([bytes], 'large.bin', { type: 'application/octet-stream' }));
     chooser.files = dt.files;
     chooser.dispatchEvent(new Event('change', { bubbles: true }));
-    await sleep(150);
-    const upInFlight = named('large.bin') === undefined;
-    const upAnswered = await lid_answers();
-    const uploaded = await settle(() => named('large.bin'));
+    const upPress = await lid_pressDuring('up');
+    const uploaded = await settle(() => named('large.bin'), 360);
+    if (!uploaded) return { error: 'large.bin did not appear in ' + place, upPress };
     click(named('large.bin')); await sleep(700);
     const verb = [...fp().querySelectorAll('.files-row-zone .listing-action')].find(b => b.textContent.trim() === 'DOWNLOAD') ?? null;
     if (verb !== null) verb.click();
-    await sleep(150);
-    const downInFlight = (window.__argusHandoffs ?? []).length === 0;
-    const downAnswered = await lid_answers();
-    const handedOver = await settle(() => (window.__argusHandoffs ?? []).length > 0);
-    const handoff = (window.__argusHandoffs ?? [])[0] ?? null;
+    const downPress = await lid_pressDuring('down');
+    const handedOver = await settle(() => handoffs.length > 0, 360);
+    const handoff = handoffs[0] ?? null;
     let got = null; let gotSize = -1;
     if (handoff !== null) {
-      const back = await (await fetch(handoff.href)).arrayBuffer();
+      const back = await (await realFetch.call(window, handoff.href)).arrayBuffer();
       gotSize = back.byteLength;
       got = hex(await crypto.subtle.digest('SHA-256', back));
     }
-    await say('cd ~', 2500);
-    await say('rm -r ~/${transferDir}', 6000);
-    return { size, sent, got, gotSize, uploaded: Boolean(uploaded), pressed: verb !== null, handedOver, name: handoff?.name ?? null, upInFlight, upAnswered, downInFlight, downAnswered };`);
-  check(`a ${transferMib} MiB file goes up through the page and comes down the same bytes`,
-    moved.uploaded && moved.pressed && moved.handedOver && moved.name === 'large.bin' && moved.gotSize === moved.size && moved.got === moved.sent,
-    JSON.stringify({ ...moved, sent: moved.sent?.slice(0, 12), got: moved.got?.slice(0, 12) }));
-  check('the page answers a press while the upload is in flight, and while the download is',
-    moved.upAnswered && moved.downAnswered, JSON.stringify({ upInFlight: moved.upInFlight, upAnswered: moved.upAnswered, downInFlight: moved.downInFlight, downAnswered: moved.downAnswered }));
-  if (!moved.upInFlight || !moved.downInFlight) console.log(`  note: ${!moved.upInFlight ? 'the upload' : ''}${!moved.upInFlight && !moved.downInFlight ? ' and ' : ''}${!moved.downInFlight ? 'the download' : ''} had already ended when the press was made; raise SMOKE_TRANSFER_MIB to press mid-flight`);
+    return { size, sent, got, gotSize, pressed: verb !== null, handedOver, name: handoff?.name ?? null, upPress, downPress };
+    } finally {
+      HTMLAnchorElement.prototype.click = anchorClick;
+      window.__argusHandoffs = handoffsBefore;
+      window.fetch = realFetch;
+      XMLHttpRequest.prototype.send = realSend;
+      XMLHttpRequest.prototype.open = realOpen;
+      await say('cd ~', 2500);
+      await say('rm -r ' + place, 6000);
+    }`);
+  if (moved.error !== undefined) {
+    check(`a ${transferMib} MiB file goes up through the page and comes down the same bytes`, false, JSON.stringify(moved));
+  } else {
+    check(`a ${transferMib} MiB file goes up through the page and comes down the same bytes`,
+      moved.pressed && moved.handedOver && moved.name === 'large.bin' && moved.gotSize === moved.size && moved.got === moved.sent,
+      JSON.stringify({ ...moved, sent: moved.sent?.slice(0, 12), got: moved.got?.slice(0, 12) }));
+    check('a press made while the upload is seen in flight is answered while it still is',
+      moved.upPress.began && moved.upPress.answered && moved.upPress.stillFlying, JSON.stringify(moved.upPress));
+    check('a press made while the download is seen in flight is answered while it still is',
+      moved.downPress.began && moved.downPress.answered && moved.downPress.stillFlying, JSON.stringify(moved.downPress));
+  }
   }
 
   if (await stage('file-kinds')) {

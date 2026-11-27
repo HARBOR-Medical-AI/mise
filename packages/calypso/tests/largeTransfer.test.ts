@@ -121,8 +121,13 @@ function upload_post(port: number, name: string, length: number, how: { send?: n
         if (!request.write(Buffer.alloc(size, 7))) { request.once('drain', more); return; }
       }
       // Cut once what the test waits for has been seen (the bytes reserved), or at once.
-      if (how.cut === true) void (how.cutWhen?.() ?? Promise.resolve()).then((): void => { request.destroy(); });
-      else request.end();
+      if (how.cut !== true) { request.end(); return; }
+      // The connection is dropped either way: when what was waited for was seen, and when it never was. In
+      // the second case the upload is not left half open, and the test is told why at once.
+      (how.cutWhen?.() ?? Promise.resolve()).then(
+        (): void => { request.destroy(); },
+        (error: unknown): void => { request.destroy(); reject(error instanceof Error ? error : new Error(String(error))); },
+      );
     };
     if (send === 0 && how.cut !== true) request.end(); else more();
   });
