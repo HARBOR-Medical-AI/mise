@@ -36,7 +36,7 @@ jest.mock('../src/io/chrisIO', () => ({
 import { authToken_get, client_create, token_verify } from '../src/chrisapi/adapter';
 import { chrisContextURL_parse, chrisContext } from '../src/context/chrisContext';
 import { ChRISConnection, chrisConnection_init } from '../src/connect/chrisConnection';
-import { identityCache_usable, identityEpoch_get } from '../src/connect/identityEpoch';
+import { identityCache_usable, identityChange_listen, identityEpoch_get } from '../src/connect/identityEpoch';
 import { errorStack } from '../src/error/errorStack';
 import { ConnectionConfig } from '../src/config/config';
 import { IStorageProvider } from '../src/io/io';
@@ -848,6 +848,27 @@ describe('a change of who is connected is one step', () => {
     await conn.connection_logout();
     expect(store.files).toEqual({ '/cfg/first.token': 'FIRST' });
     expect(await conn.authToken_get(true)).toBeNull();
+  });
+
+  it('a move of context that failed once and is asked again signs in from the new identity\'s own saved token', async () => {
+    const store: FakeStore = { files: { '/cfg/first.token': 'FIRST', '/cfg/second.token': 'SECOND' } };
+    const config = pathsConfig_make();
+    const conn: ChRISConnection = new ChRISConnection(config, storage_make(store));
+    mockClientCreate.mockImplementation((_url: string, token: string): object => ({ of: token }));
+    mockContextSet.mockResolvedValue(true);
+    expect(await conn.client_get()).toEqual({ of: 'FIRST' });
+    mockParse.mockResolvedValue({ user: 'second', URL: 'https://cube/api/v1/', folder: null, feed: null, plugin: null });
+    (config.context_set as unknown as jest.Mock).mockRejectedValueOnce(new Error('the disk is full'));
+    await expect(conn.context_set('second@https://cube/api/v1/')).rejects.toThrow('the disk is full');
+    expect(await conn.client_get()).toBeNull();
+    const names: Array<string | null> = [];
+    const unlisten: () => void = identityChange_listen((now: string | null): void => { names.push(now); });
+    expect(await conn.context_set('second@https://cube/api/v1/')).toBe(true);
+    unlisten();
+    expect(await conn.client_get()).toEqual({ of: 'SECOND' });
+    expect(await conn.authToken_get(true)).toBe('SECOND');
+    expect(names).toEqual(['second@https://cube/api/v1/']);
+    expect(store.files).toEqual({ '/cfg/first.token': 'FIRST', '/cfg/second.token': 'SECOND' });
   });
 
   it('a token whose removal failed at logout is not read back when its context is named again; a login over it is', async () => {

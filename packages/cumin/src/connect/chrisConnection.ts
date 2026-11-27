@@ -350,10 +350,15 @@ export class ChRISConnection {
           }
           // The client for who the context now names, from their own saved token; and, now that it is known
           // whether they have one, who is connected is said by name.
-          // The context is written: the token file it names is this identity's. (The same identity named
-          // again changes nothing about whether its file was known.)
-          this.saved = changed ? true : known;
+          // The context is written: the token file it names is this identity's, and is read. (A move that
+          // failed and is asked again comes here with the name already moved: its file is confirmed now.)
+          // Only a login held for this session keeps its token in memory in place of whatever the file holds.
+          const signedOut: boolean = this.authToken === null;
+          this.saved = known || signedOut;
           await this.client_rebuild();
+          // Nobody was connected under this name and its saved token has now been read: that is a change
+          // of who is connected, and is said.
+          if (!changed && signedOut && this.authToken !== null) identityEpoch_raise(identityName_spell(this.user ?? '', this.chrisURL ?? ''));
         } catch (error: unknown) {
           // The fields have moved and the write of it failed part way: nobody's client or token is kept
           // from before, so what is held is one coherent thing (the named context, not signed in).
