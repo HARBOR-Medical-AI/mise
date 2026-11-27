@@ -66,6 +66,7 @@ const PORTER_PREFIX: string = 'PORTER_';
  * ```ts
  * address_isPlain('http://proxy.example.org:3128'); // true
  * address_isPlain('http://me:pw@proxy.example.org'); // false
+ * address_isPlain('http://proxy.example.org:80');   // true
  * address_isPlain('https://door.example.org/t/abc'); // false
  * ```
  */
@@ -77,7 +78,9 @@ export function address_isPlain(value: string): boolean {
     return false;
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-  return value === url.origin || value === `${url.origin}/`;
+  // An explicit default port is plain too (`:80` for http, `:443` for https), though the origin leaves it out.
+  const forms: string[] = [url.origin, `${url.protocol}//${url.hostname}:${url.protocol === 'http:' ? '80' : '443'}`];
+  return forms.some((form: string): boolean => value === form || value === `${form}/`);
 }
 
 /**

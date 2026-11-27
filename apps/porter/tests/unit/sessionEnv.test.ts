@@ -7,12 +7,12 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hostControl_parseArgv } from '@fnndsc/calypso';
 import * as nodeFs from 'node:fs';
-import { identityFile_write, ProcessHost, sessionDir_settle, type SettleFs, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
+import { identityFile_read, identityFile_write, ProcessHost, sessionDir_settle, type SettleFs, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
 import { address_isPlain, sessionEnv_build, sessionEnv_withheld } from '../../src/host/sessionEnv.js';
 
 const IDENTITY: string = 'chris@https://cube.example.org/api/v1/';
@@ -285,6 +285,10 @@ describe('what agy broke, held', () => {
   it('passes on only an address that is exactly its own origin', () => {
     expect(address_isPlain('http://proxy.example.org:3128')).toBe(true);
     expect(address_isPlain('http://proxy.example.org:3128/')).toBe(true);
+    // An explicit default port is plain (Codex seq 381): a proxy written so is still passed on.
+    expect(address_isPlain('http://proxy.example.org:80')).toBe(true);
+    expect(address_isPlain('https://proxy.example.org:443/')).toBe(true);
+    expect(address_isPlain('http://proxy.example.org:443')).toBe(true);
     for (const bad of [
       'http:\\\\proxy.example.org:3128', 'http://user\\@evil.example.org:3128',
       '  http://proxy.example.org:3128\r\n', 'http://proxy\n.example.org:3128', 'http://proxy.example.org:3128 ',
@@ -325,14 +329,87 @@ describe('what agy broke, held', () => {
     }
   });
 
-  it('writes the identity file never through a link', () => {
-    const outside: string = join(stateDir, 'outside.txt');
-    writeFileSync(outside, 'kept\n');
-    symlinkSync(outside, join(stateDir, 'identity'));
-    expect(() => identityFile_write(join(stateDir, 'identity'), 'stratus:oci@x')).toThrow('not a file of its own');
-    expect(readFileSync(outside, 'utf8')).toBe('kept\n');
+  it('writes the identity file never into a file at its name: a link, or a second name of another file', () => {
+    for (const plant of [symlinkSync, linkSync]) {
+      const outside: string = join(stateDir, `outside-${plant.name}.txt`);
+      const marker: string = join(stateDir, `identity-${plant.name}`);
+      writeFileSync(outside, 'kept\n', { mode: 0o644 });
+      plant(outside, marker);
+      identityFile_write(marker, 'stratus:oci@x');
+      expect(readFileSync(outside, 'utf8')).toBe('kept\n');
+      expect(statSync(outside).mode & 0o777).toBe(0o644);
+      expect(readFileSync(marker, 'utf8')).toBe('stratus:oci@x\n');
+    }
     identityFile_write(join(stateDir, 'own'), 'stratus:oci@x');
     expect(readFileSync(join(stateDir, 'own'), 'utf8')).toBe('stratus:oci@x\n');
     expect(statSync(join(stateDir, 'own')).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe('the identity marker at adoption and at setup', () => {
+  it('reads a marker only from a file of this account\'s own, and skips a sighting whose marker is not one', async () => {
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (): Promise<boolean> => true });
+    const plant = (dir: string, identity: string): void => {
+      mkdirSync(join(stateDir, dir, 'run', 'calypso'), { recursive: true });
+      writeFileSync(join(stateDir, dir, 'run', 'calypso', 'berth-x.json'), JSON.stringify({ identity, url: 'ws://127.0.0.1:1', token: 'T' }));
+    };
+    plant('good', 'me@cloud');
+    identityFile_write(join(stateDir, 'good', 'identity'), 'stratus:oci@good@https://cube.example.org/api/v1/');
+    plant('bad', 'other@cloud');
+    writeFileSync(join(stateDir, 'elsewhere'), 'stratus:oci@victim@https://cube.example.org/api/v1/\n');
+    symlinkSync(join(stateDir, 'elsewhere'), join(stateDir, 'bad', 'identity'));
+    plant('plain', 'chris@https://cube.example.org/api/v1/');
+    const seen: string[] = (await host.sessions_adopt()).map((sighting) => sighting.identity).sort();
+    expect(seen).toEqual(['chris@https://cube.example.org/api/v1/', 'stratus:oci@good@https://cube.example.org/api/v1/']);
+    expect(identityFile_read(join(stateDir, 'nothing'))).toBeUndefined();
+    expect(identityFile_read(join(stateDir, 'bad', 'identity'))).toBeNull();
+  });
+
+  it('fails a stratus start whose marker cannot be written, once and for good, spawning nothing', async () => {
+    process.env = { PATH: '/usr/bin' };
+    const host: ProcessHost = host_make();
+    const root: string = join(host.dirs_build(STRATUS).config, '..');
+    mkdirSync(join(root, 'identity'), { recursive: true });
+    host.stratus_begin(STRATUS, '/creds/oci/config', false, false);
+    let report: { state: string; reason?: string } | undefined;
+    for (let i = 0; i < 50; i++) {
+      const followed = host.boot_follow(STRATUS, { line: () => undefined, done: () => undefined });
+      report = followed?.report;
+      followed?.release();
+      if (report !== undefined && report.state !== 'booting') break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(report?.state).toBe('failed');
+    expect(spawnCalls).toEqual([]);
+  });
+
+  it('changes nothing under a root put in place of the one verified, part way through setup', async () => {
+    process.env = { PATH: '/usr/bin' };
+    const changed: string[] = [];
+    let swapped: boolean = false;
+    const fs: SettleFs = {
+      dir_make: (path, options) => nodeFs.mkdirSync(path, options),
+      dir_open: (path, flags) => nodeFs.openSync(path, flags),
+      open_stat: (fd) => nodeFs.fstatSync(fd),
+      open_chmod: (fd, mode) => { changed.push(nodeFs.realpathSync(`/proc/self/fd/${fd}`)); nodeFs.fchmodSync(fd, mode); },
+      // After the root is verified, its parent lookup from a child answers for another folder: the root was replaced.
+      name_stat: (path) => {
+        const real: nodeFs.Stats = nodeFs.lstatSync(path);
+        if (!path.endsWith('..')) return real;
+        swapped = true;
+        return Object.assign(Object.create(Object.getPrototypeOf(real) as object) as nodeFs.Stats, real, { ino: real.ino + 1 });
+      },
+      path_real: (path) => nodeFs.realpathSync(path),
+      open_close: (fd) => nodeFs.closeSync(fd),
+    };
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => false, bootTimeoutMs: 60, pollMs: 10, settleFs: fs });
+    const root: string = join(host.dirs_build(IDENTITY).config, '..');
+    mkdirSync(join(root, 'config'), { recursive: true, mode: 0o755 });
+    chmodSync(join(root, 'config'), 0o755);
+    await expect(host.spawn(IDENTITY, 'chris', 'https://cube.example.org/api/v1/', 'MINTED')).rejects.toThrow('no longer under the folder that was checked');
+    expect(swapped).toBe(true);
+    expect(changed.filter((path: string): boolean => path !== nodeFs.realpathSync(root))).toEqual([]);
+    expect(statSync(join(root, 'config')).mode & 0o777).toBe(0o755);
+    expect(spawnCalls).toEqual([]);
   });
 });
