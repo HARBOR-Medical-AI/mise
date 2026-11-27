@@ -72,16 +72,8 @@ export const chrisBackend: Backend = {
       // Initialize the connection singleton which also initializes config
       connection = await chrisConnection_init(nodeStorageProvider);
 
-      try {
-        // Also initialize chili's duplicate copy of the connection singleton to align monorepo package boundaries
-        const { chrisConnection_init: chiliConnection_init } = await import('@fnndsc/chili/utils');
-        await chiliConnection_init(nodeStorageProvider);
-      } catch (e: unknown) {
-        // Deliberate absorption, adjudicated 2026-08: chili's connection init
-        // is an optional secondary wiring (cumin's own init is the required
-        // one); when it is absent or fails, chili paths fall back to cumin's
-        // connection at call time.
-      }
+      // One connection, initialised once, here: chili's commands take cumin's own (`@fnndsc/chili` holds no
+      // second way to it).
     },
     async identity_get(): Promise<SessionIdentity> {
       const where: string | null = await chrisContext.ChRISURL_get();

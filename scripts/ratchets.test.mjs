@@ -601,5 +601,40 @@ for (const lint of lints) {
   expect_that('the repository as it stands passes the line-builder lint', real.status === 0, `${real.stdout}${real.stderr}`.slice(-400));
 }
 
-console.log(failed === 0 ? `ratchets: the cast ratchet, the coverage ratchet, the base it is compared with, the line-builder lint, and the reach of the test and seam lints all hold (made in ${run})` : `ratchets test: ${failed} failed (made in ${run})`);
+// --- the chili ratchet, and the packed entry points ---
+{
+  const { chili_count, chili_judge } = await import('./chili-ratchet.mjs');
+  const { entries_check, exportTargets_list } = await import('./pack-entries.mjs');
+  const tree = join(run, 'chili');
+  file_put(join(tree, 'packages/brasa/src/a.ts'), "import { x } from '@fnndsc/chili/utils/cli.js';\nimport type { Y } from '@fnndsc/chili/models/feed.js';\nconst z = await import('@fnndsc/chili/run.js');\n");
+  file_put(join(tree, 'packages/brasa/src/b.ts'), "export { q } from '@fnndsc/chili';\n// a comment naming @fnndsc/chili is not an import\n");
+  file_put(join(tree, 'packages/brasa/scripts/words.mjs'), "import { run } from '@fnndsc/chili/run.js';\n");
+  file_put(join(tree, 'packages/chili/src/own.ts'), "import { self } from '@fnndsc/chili/x.js';\n");
+  file_put(join(tree, 'packages/calypso/src/clean.ts'), "const names = ['@fnndsc/chili'];\n");
+  const counted = chili_count(tree);
+  expect_that('brasa\'s imports of chili are counted, typed, dynamic and re-exported alike, in its sources and its scripts; chili\'s own and a mere mention are not', counted.files === 3 && counted.sites === 5 && counted.outside.length === 0, JSON.stringify(counted));
+  expect_that('at the baseline the ratchet passes', chili_judge(counted, { files: 3, sites: 5 }).faults.length === 0);
+  const more = chili_judge({ ...counted, sites: 6 }, { files: 3, sites: 5 }).faults;
+  expect_that('one more import in brasa fails', more.length === 1 && more[0].includes('6 imports of @fnndsc/chili, its baseline is 5'), more.join(' | '));
+  const fewer = chili_judge({ files: 2, sites: 4, outside: [] }, { files: 3, sites: 5 }).faults;
+  expect_that('fewer fails until the baseline is lowered, and says how', fewer.length === 1 && fewer[0].includes('fell to 2 file(s), 4 import(s)') && fewer[0].includes('--lower'), fewer.join(' | '));
+  file_put(join(tree, 'packages/calypso/src/reach.ts'), "import { table_render } from '@fnndsc/chili/screen/screen.js';\n");
+  const reached = chili_judge(chili_count(tree), { files: 3, sites: 5 }).faults;
+  expect_that('an import of chili from another workspace fails outright, naming the file', reached.length === 1 && reached[0].includes('packages/calypso/src/reach.ts imports @fnndsc/chili'), reached.join(' | '));
+  const realChili = spawnSync('node', [join(here, 'chili-ratchet.mjs')], { encoding: 'utf8' });
+  expect_that('the repository as it stands passes the chili ratchet', realChili.status === 0, `${realChili.stdout}${realChili.stderr}`.slice(-300));
+  // The packed entry points.
+  const manifest = { name: '@x/tool', main: 'dist/index.js', types: 'dist/index.d.ts', bin: { tool: 'dist/cli.js' }, exports: { '.': { import: './dist/index.js', types: './dist/index.d.ts' }, './utils': './dist/utils.js', './*': './dist/*', './package.json': './package.json' } };
+  const whole = ['package.json', 'dist/index.js', 'dist/index.d.ts', 'dist/cli.js', 'dist/utils.js'];
+  expect_that('an exports map is read through to every target', exportTargets_list(manifest.exports).join(',') === './dist/index.js,./dist/index.d.ts,./dist/utils.js,./dist/*,./package.json');
+  expect_that('a package that holds every entry point passes, a global install in its README included', entries_check(manifest, whole, 'npm install -g @x/tool').length === 0, entries_check(manifest, whole, '').join(' | '));
+  const lost = entries_check(manifest, whole.filter((path) => path !== 'dist/cli.js' && path !== 'dist/utils.js'), '');
+  expect_that('a bin or an exports target that is not in the package fails, each by name', lost.length === 2 && lost[0].includes('bin tool names dist/cli.js') && lost[1].includes('exports names dist/utils.js'), lost.join(' | '));
+  const empty = entries_check({ name: '@x/tool', exports: { './*': './dist/*' } }, ['package.json'], '');
+  expect_that('a pattern that points into a folder the package does not hold fails', empty.length === 1 && empty[0].includes('points into dist/'), empty.join(' | '));
+  const binless = entries_check({ name: '@x/lib', main: 'dist/index.js' }, ['dist/index.js'], 'Install it: `npm install -g @x/lib`');
+  expect_that('a README that says to install globally a package with no bin fails', binless.length === 1 && binless[0].includes('no bin to run'), binless.join(' | '));
+}
+
+console.log(failed === 0 ? `ratchets: the cast ratchet, the coverage ratchet, the base it is compared with, the line-builder lint, the chili ratchet, the packed entry points, and the reach of the test and seam lints all hold (made in ${run})` : `ratchets test: ${failed} failed (made in ${run})`);
 process.exit(failed === 0 ? 0 : 1);

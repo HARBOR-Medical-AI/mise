@@ -15,5 +15,9 @@
         "above": 0.7
       }
     }
+  },
+  "chili": {
+    "files": 36,
+    "sites": 85
   }
 }
