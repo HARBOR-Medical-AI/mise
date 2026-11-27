@@ -736,7 +736,7 @@ describe('the script screen', () => {
     const newerSaid: Array<string | null> = [];
     const older: SurfaceAsk = { message: 'the older question', kind: 'confirm', executeId: 'argus-7' };
     const newer: SurfaceAsk = { message: 'the newer question', kind: 'confirm', executeId: 'argus-9' };
-    keeper.held_keep({ request: older, resolve: (value: string | null): void => { olderSaid.push(value); } });
+    keeper.held_keep({ request: older, answer_take: (value: string | null): void => { olderSaid.push(value); } });
     // The host publishes the screen and starts its open; before the open finishes, the newer question arrives.
     const { screen } = screen_make();
     const opening: Promise<void> = screen.open('/scripts/chrisproject/store.mise');

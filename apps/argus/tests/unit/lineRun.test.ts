@@ -168,7 +168,7 @@ describe('a question kept while its screen is away', () => {
       const older: Array<string | null> = [];
       const newer: Array<string | null> = [];
       // A is held for the screen; the screen is published and is still opening.
-      keeper.held_keep({ request, resolve: (value: string | null): void => { older.push(value); } });
+      keeper.held_keep({ request, answer_take: (value: string | null): void => { older.push(value); } });
       // B arrives meanwhile and is shown on the screen at once.
       const later = { ...request, executeId: 'argus-10', message: 'the newer question' };
       keeper.standing_note(later);
@@ -192,8 +192,8 @@ describe('a question kept while its screen is away', () => {
     try {
       const keeper: AskKeeper = new AskKeeper(1000);
       const answers: Array<string | null> = [];
-      keeper.held_keep({ request, resolve: (value: string | null): void => { answers.push(value); } });
-      keeper.held_keep({ request: { ...request, executeId: 'argus-10' }, resolve: (value: string | null): void => { answers.push(value === null ? 'second abandoned' : value); } });
+      keeper.held_keep({ request, answer_take: (value: string | null): void => { answers.push(value); } });
+      keeper.held_keep({ request: { ...request, executeId: 'argus-10' }, answer_take: (value: string | null): void => { answers.push(value === null ? 'second abandoned' : value); } });
       expect(answers).toEqual([null]);
       jest.advanceTimersByTime(1000);
       expect(answers).toEqual([null, 'second abandoned']);

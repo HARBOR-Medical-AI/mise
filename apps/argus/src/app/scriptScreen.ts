@@ -151,7 +151,7 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
       const waiting: HeldAsk | null = screen === opened ? asks.held_take() : null;
       leftWithLine = 0;
       // Read against the line in flight now: a question whose line has ended, or runs again under a new id, is not the screen's own.
-      if (waiting !== null) void opened.ask_take(waiting.request.message, waiting.request.kind, askAbout_read(waiting.request, flight)).finally((): void => { asks.standing_clear(waiting.request); }).then(waiting.resolve);
+      if (waiting !== null) void opened.ask_take(waiting.request.message, waiting.request.kind, askAbout_read(waiting.request, flight)).finally((): void => { asks.standing_clear(waiting.request); }).then(waiting.answer_take);
     });
     return `scripts: the script screen takes the display${path === '' ? ', on the library' : ` on ${path}`} (Esc or LEAVE gives it back)`;
   };
@@ -168,7 +168,7 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
         asks.standing_note(request);
         return screen.ask_take(request.message, request.kind, askAbout_read(request, flight)).finally((): void => { asks.standing_clear(request); });
       }
-      return new Promise((resolve: (value: string | null) => void): void => { asks.held_keep({ request, resolve }); });
+      return new Promise((resolve: (value: string | null) => void): void => { asks.held_keep({ request, answer_take: (value: string | null): void => { resolve(value); } }); });
     },
     output_take: (chunk: string): void => { screen?.output_take(chunk); },
     task_ended: (): void => { screen?.taskEnded_take(); },

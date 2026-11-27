@@ -148,14 +148,14 @@ export function askAbout_read(request: SurfaceAsk, flight: LineInFlight | null):
  *
  * @example
  * ```ts
- * keeper.held_keep({ request, resolve });
+ * keeper.held_keep({ request, answer_take: (value: string | null): void => { resolve(value); } });
  * ```
  */
 export interface HeldAsk {
   /** The question as it arrived, with the id of the line that raised it and what it is for and about. */
   readonly request: SurfaceAsk;
   /** Answers it; null abandons it. */
-  readonly resolve: (value: string | null) => void;
+  readonly answer_take: (value: string | null) => void;
 }
 
 /**
@@ -212,7 +212,7 @@ export class AskKeeper {
     this.held = null;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
-    one?.resolve(null);
+    one?.answer_take(null);
   }
 
   /**
@@ -244,7 +244,7 @@ export class AskKeeper {
   public standing_keep(shown: SurfaceAsk, resolve: (value: string | null) => void): void {
     const request: SurfaceAsk = this.standing ?? shown;
     this.standing = null;
-    this.held_keep({ request, resolve });
+    this.held_keep({ request, answer_take: (value: string | null): void => { resolve(value); } });
   }
 
   /**
@@ -255,13 +255,13 @@ export class AskKeeper {
    *
    * @example
    * ```ts
-   * keeper.held_keep({ request, resolve });
+   * keeper.held_keep({ request, answer_take: (value: string | null): void => { resolve(value); } });
    * ```
    */
   public held_keep(one: HeldAsk): void {
     this.held_retire();
     this.held = one;
-    this.timer = setTimeout((): void => { if (this.held === one) { this.held = null; one.resolve(null); } }, this.boundMs);
+    this.timer = setTimeout((): void => { if (this.held === one) { this.held = null; one.answer_take(null); } }, this.boundMs);
   }
 
   /**

@@ -21,7 +21,7 @@ import { type ClosingCause, type SessionNotes, feedListModelSchema, FEED_LIST_MO
 import { more_wire } from '../features/roster/more.js';
 import { type SceneNode } from '../scene/chrisSpace.js';
 import { element_require, template_stamp, pane_find } from '../frame/dom.js';
-import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_keep, retryToken_take, type BootChoice, AttachWiredError } from './attachStart.js';
+import { addressManual_derive, addressSame_check, attachStart_make, bootChoice_derive, retryPlace_name, retryToken_take, type BootChoice, failReason_keep, failReason_take, surfaceStart_run, type SurfaceWired } from './attachStart.js';
 import { DormantRegistry, DORMANT_CAP, localKeyStore, type GroupSnapshot, type DesktopAction, type DesktopShape } from './dormant.js';
 import { linkLanding_parse, type LinkLanding } from './link.js';
 import { shareSheet_open, viewLink_parse, viewScript_compose } from './shareView.js';
@@ -969,25 +969,17 @@ function panelSounds_wire(): void {
 let cascade: Cascade | null = null;
 
 /**
- * Attaches to the daemon, then wires every instrument to the session. The
- * socket is opened and acknowledged before anything is wired; what the
- * session says meanwhile is held with that socket and handed over once the
- * handlers exist. A refused attach has wired nothing.
+ * Attaches to the daemon, then wires every instrument to the session, in
+ * the order `surfaceStart_run` keeps: attached (held), wired, what the
+ * session said meanwhile handed over, then READY. A refused attach has
+ * wired nothing.
  *
  * @param token - The attach token.
  * @returns Resolves when the surface is attached and interactive.
  * @throws {Error} When the attach is refused or the daemon cannot be reached; an `AttachWiredError` when the wiring had begun and failed.
  */
 async function surface_start(token: string): Promise<void> {
-  const held: AttachedSession = await ArgusClient.session_attachHeld(wsUrl_resolve(), token);
-  try {
-    await surface_wire(token, held);
-  } catch (error: unknown) {
-    // Nothing is announced and nothing the socket held is delivered: it is closed, and the page, which holds
-    // what was wired, is the next attempt's to replace.
-    held.client.held_abandon();
-    throw new AttachWiredError(error);
-  }
+  await surfaceStart_run(token, { attach_held: (asked: string): Promise<AttachedSession> => ArgusClient.session_attachHeld(wsUrl_resolve(), asked), surface_wire: (asked: string, held: AttachedSession): Promise<SurfaceWired> => surface_wire(asked, held) });
 }
 
 /**
@@ -995,16 +987,17 @@ async function surface_start(token: string): Promise<void> {
  *
  * @param token - The attach token.
  * @param held - The attached client, held until its handlers are installed here, and the attach facts.
- * @returns Resolves when the surface is interactive.
+ * @returns How to say the surface is ready, once what was held has been handed over.
  */
-async function surface_wire(token: string, held: AttachedSession): Promise<void> {
+async function surface_wire(token: string, held: AttachedSession): Promise<SurfaceWired> {
   // Which console the page shows (consoleMode.ts): wired once attached, read
   // by the questions that have no pane to stand on.
   let consoleMode: ConsoleModeControl | null = null;
   // Which backend the session runs over decides the composition: ChRIS's
   // panes, words, tiles and instruments, or the frame alone. Asked before
   // anything is built; a daemon older than the question is ChRIS.
-  const backend: string = await backend_ask(token);
+  // The attach's own word for the backend; a daemon older than it is asked.
+  const backend: string = held.attach.backend ?? await backend_ask(token);
   const chris: boolean = backend === 'chris';
   // One declaration on the body: what a composition owns in the page's own
   // markup (its gutter domains, its header band and instrument) stands only
@@ -2477,7 +2470,8 @@ async function surface_wire(token: string, held: AttachedSession): Promise<void>
     }
   };
   const attached: AttachedSession = held;
-  // The handlers, all of them in place, and only then what the session said since it acknowledged the attach.
+  // The handlers, all of them in place. What the session said since it acknowledged the attach is still held:
+  // it is handed over once this wiring is done (surfaceStart_run), the client bound and the attach's facts applied.
   held.client.handlers_install(
     {
       output_receive: (channel: OutputChannel, chunk: string): void => {
@@ -2720,7 +2714,6 @@ async function surface_wire(token: string, held: AttachedSession): Promise<void>
     cohortModule.annunciate();
     void cohortModule.restore();
   }
-  mode_show('READY');
   // The splash is the composition's: ChRIS's brain, stratus's TD mark, or
   // the frame's own line; the tab's mark follows it.
   const stratus: boolean = backend === 'stratus';
@@ -2804,6 +2797,9 @@ async function surface_wire(token: string, held: AttachedSession): Promise<void>
       dir_open(landing.path);
     }
   }
+  // READY is said only once every part of the start has run, and what the session said meanwhile has been
+  // handed over (surfaceStart_run).
+  return { ready_show: (): void => { mode_show('READY'); } };
 }
 
 /**
@@ -2846,11 +2842,11 @@ function page_boot(): void {
       attachForm.classList.remove('attach-hidden');
       attachError.textContent = reason;
     },
-    page_restart: (token: string): void => {
-      // The token rides the reload in this tab's storage. Where that is refused, the fresh page is sent to
-      // its form, at an address with no token in it: a token the daemon refused is not tried again.
-      if (retryToken_keep((): Storage => window.sessionStorage, token, place)) window.location.reload();
-      else page_goFresh(addressManual_derive(window.location.pathname, window.location.search, window.location.hash));
+    page_clean: (reason: string): void => {
+      // This page holds what was wired: it is left for a clean one at its form's own address, the reason
+      // carried for that one load (where the tab refuses, the clean page shows its form without it).
+      failReason_keep((): Storage => window.sessionStorage, reason, place);
+      page_goFresh(addressManual_derive(window.location.pathname, window.location.search, window.location.hash));
     },
   });
 
@@ -2869,6 +2865,9 @@ function page_boot(): void {
   // What this page does of its own accord: attach with the token a page before it handed over, with the
   // token in its address, or with nothing behind a door (the door holds the token and puts it on the attach
   // itself); or show its form, as a page marked for its form always does.
+  // Why the start before this page failed, when it left for this clean one.
+  const failed: string | null = failReason_take((): Storage => window.sessionStorage, place);
+  if (failed !== null) attachError.textContent = failed;
   const choice: BootChoice = bootChoice_derive(retryToken_take((): Storage => window.sessionStorage, place), window.location.search, throughDoor);
   if (choice.kind === 'attach') {
     attachForm.classList.add('attach-hidden');

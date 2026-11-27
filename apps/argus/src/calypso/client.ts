@@ -99,6 +99,9 @@ function surfaceAsk_read(message: PromptMessage): SurfaceAsk {
   };
 }
 
+/** Why a held client cannot be handed over. */
+const HELD_CLOSED: string = 'the daemon closed the connection before the surface was ready';
+
 /** The surface tag the daemon puts on session-bus envelopes it originates itself. */
 const DAEMON_SURFACE: string = 'daemon';
 
@@ -339,10 +342,17 @@ export class ArgusClient {
       this.message_handle(String(event.data));
     };
     this.socket.onclose = (): void => {
-      if (this.held !== null) { this.heldClosed = true; return; }
+      if (this.held !== null) {
+        this.heldClosed = true;
+        for (const told of this.closeWaiters.splice(0)) told();
+        return;
+      }
       this.handlers.close_handle?.();
     };
   }
+
+  /** Told when the socket closes while the client is held. */
+  private readonly closeWaiters: Array<() => void> = [];
 
   /** What the session sent while the client was held, in the order it came; null once handlers are installed. */
   private held: string[] | null;
@@ -365,8 +375,8 @@ export class ArgusClient {
    * @example
    * ```
    * const held = await ArgusClient.session_attachHeld(url, token);
-   * // ... wire the page ...
-   * held.client.handlers_install(handlers);
+   * held.client.handlers_install(handlers); // ... set up ...
+   * held.client.held_release();
    * ```
    */
   public static session_attachHeld(url: string, token: string): Promise<AttachedSession> {
@@ -374,12 +384,12 @@ export class ArgusClient {
   }
 
   /**
-   * Gives a held client its handlers, then hands them, in order, what the
-   * session sent meanwhile. Nothing is delivered before every handler is in
-   * place.
+   * Gives a held client its handlers. It goes on holding what the session
+   * sends: nothing reaches a handler until `held_release`, so the page can
+   * finish setting up (its client bound, the attach's facts applied) first.
    *
    * @param handlers - The page's handlers.
-   * @throws {Error} When the socket closed while the client was held: the session is gone, and nothing it sent is delivered.
+   * @throws {Error} When the socket closed while the client was held.
    *
    * @example
    * ```
@@ -387,17 +397,53 @@ export class ArgusClient {
    * ```
    */
   public handlers_install(handlers: ClientHandlers): void {
-    const waiting: string[] | null = this.held;
-    if (waiting === null) { this.handlers = handlers; return; }
-    if (this.heldClosed) throw new Error('the daemon closed the connection before the surface was ready');
+    if (this.held !== null && this.heldClosed) throw new Error(HELD_CLOSED);
     this.handlers = handlers;
-    this.held = null;
-    for (const payload of waiting) this.message_handle(payload);
   }
 
   /**
-   * Gives up a held client: its socket is closed and nothing it held, or
-   * receives after, is delivered to anyone.
+   * Hands the installed handlers, in order, what the session sent while the
+   * client was held, and stops holding. A handler that throws stops the
+   * hand-over with its error: the client stays held, and is the caller's to
+   * abandon.
+   *
+   * @throws {Error} When the socket closed while the client was held, or a handler threw.
+   *
+   * @example
+   * ```
+   * held.client.held_release();
+   * ```
+   */
+  public held_release(): void {
+    const waiting: string[] | null = this.held;
+    if (waiting === null) return;
+    if (this.heldClosed) throw new Error(HELD_CLOSED);
+    while (waiting.length > 0) this.message_handle(waiting.shift() as string);
+    this.held = null;
+  }
+
+  /**
+   * Settles when the socket closes while the client is held, so a page that
+   * is still setting up is told at once.
+   *
+   * @returns A promise that rejects then, with why; it never resolves.
+   *
+   * @example
+   * ```
+   * await Promise.race([setup(), held.client.held_closed()]);
+   * ```
+   */
+  public held_closed(): Promise<never> {
+    return new Promise((_resolve: (value: never) => void, reject: (error: Error) => void): void => {
+      if (this.held !== null && this.heldClosed) { reject(new Error(HELD_CLOSED)); return; }
+      this.closeWaiters.push((): void => { reject(new Error(HELD_CLOSED)); });
+    });
+  }
+
+  /**
+   * Gives up the client, at any point of a hand-over: its handlers are
+   * taken away, nothing it held or receives after reaches anyone, and its
+   * socket is closed.
    *
    * @example
    * ```
@@ -405,9 +451,10 @@ export class ArgusClient {
    * ```
    */
   public held_abandon(): void {
-    if (this.held === null) return;
+    this.handlers = {};
     this.held = [];
     this.heldClosed = true;
+    this.socket.onmessage = null;
     this.socket.close();
   }
 
