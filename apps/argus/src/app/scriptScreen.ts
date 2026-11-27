@@ -14,7 +14,7 @@
  * A module of the host, shaped as the TD controller's.
  */
 import { path_write } from '@fnndsc/menu';
-import { askAbout_read, runEnd_read, type LineInFlight } from './lineRun.js';
+import { askAbout_read, flight_owns, runEnd_read, type LineInFlight } from './lineRun.js';
 import type { ExecuteOutcome, SurfaceAsk } from '../calypso/client.js';
 import type { RunEnd } from '../features/script/model.js';
 import { ScriptScreen, type ScriptDraft } from '../features/script/screen.js';
@@ -28,6 +28,8 @@ export interface ScriptScreenModule {
   open: (path: string) => Promise<string>;
   /** Whether the screen is up. */
   active_is: () => boolean;
+  /** Whether the line of this id is one this screen sent and still waits on. */
+  line_owns: (id: string) => boolean;
   /** Whether a line of the screen's own is running (its output and questions are the screen's). */
   running_is: () => boolean;
   /** A question the session put to this surface, while one of the screen's lines runs. */
@@ -161,6 +163,8 @@ export function scriptScreen_wire(context: Pick<HostContext, 'client' | 'manage_
   return {
     open,
     active_is: (): boolean => screen !== null,
+    // A line this screen sent and still waits on is its own, whether the screen is showing or was left.
+    line_owns: (id: string): boolean => flight_owns(flight, id),
     // The screen's line runs on after the screen is left: its question is the screen's still, held until it opens again.
     running_is: (): boolean => lineRunning || Date.now() < leftWithLine,
     ask: (request: SurfaceAsk): Promise<string | null> => {

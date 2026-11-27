@@ -5,7 +5,7 @@
 import { describe, it, expect } from '@jest/globals';
 import type { ExecuteOutcome } from '../../src/calypso/client.js';
 import type { VmStepEvent } from '@fnndsc/menu';
-import { askAbout_read, flight_owns, runEnd_read, type LineInFlight } from '../../src/app/lineRun.js';
+import { askAbout_read, askOwner_find, flight_owns, runEnd_read, type LineInFlight, type LineOwner } from '../../src/app/lineRun.js';
 import { buildRun_start, buildRun_step, type BuildRun } from '../../src/features/vm/run.js';
 
 /** An outcome of the given envelopes. */
@@ -26,6 +26,26 @@ describe('how a line ended', () => {
   it('is refused by an error answer, and says why in the session\'s own words, colour removed', () => {
     const end = runEnd_read(outcome_make([{ status: 'ok', rendered: 'planned\n' }, { status: 'error', rendered: '', renderedErr: '\u001b[31mvm build: store: the plan reads a new machine\u001b[39m\n' }]));
     expect(end).toEqual({ ok: false, declined: false, why: ['vm build: store: the plan reads a new machine'] });
+  });
+});
+
+describe('how a line ended, by its exit status and its errors', () => {
+  it('a line that ended badly with no error answer is not done: the daemon\'s exit status says so', () => {
+    const end = runEnd_read({ envelopes: [{ status: 'ok', rendered: 'looked fine\n' }], liveChannels: new Set(), exitCode: 2 });
+    expect(end.ok).toBe(false);
+    expect(end.why).toEqual(['the line ended with status 2, and the session gave no reason']);
+    // Status zero, or none said (an older daemon): the answers decide.
+    expect(runEnd_read({ envelopes: [{ status: 'ok', rendered: '' }], liveChannels: new Set(), exitCode: 0 }).ok).toBe(true);
+    expect(runEnd_read({ envelopes: [{ status: 'ok', rendered: '' }], liveChannels: new Set() }).ok).toBe(true);
+    expect(runEnd_read({ envelopes: [{ status: 'error', rendered: '' }], liveChannels: new Set() })).toEqual({ ok: false, declined: false, why: ['the session refused it, and gave no reason'] });
+  });
+
+  it('the reason is the errors an answer carries, before what it said on its error channel, and never what it printed', () => {
+    const end = runEnd_read(outcome_make([
+      { status: 'ok', rendered: 'downloading 3 of 9\nalmost there\n' },
+      { status: 'error', rendered: 'a table, printed\n', renderedErr: 'vm build: something long and coloured\n', errors: [{ type: 'error', message: 'the plan reads a new machine' }] },
+    ]));
+    expect(end.why).toEqual(['the plan reads a new machine']);
   });
 });
 
@@ -68,5 +88,52 @@ describe('two builds asked from one surface', () => {
   it('a step that arrives after its line ended moves nothing: no line is in flight then', () => {
     const run: BuildRun = buildRun_start('store', '', 0);
     expect(routed(run, null, 'argus-7', { vm: 'store', step: 'plan-data', state: 'begun' })).toBe(run);
+  });
+});
+
+describe('a question goes to the screen whose line raised it', () => {
+  /** A screen that runs lines: the ids of those it still waits on, and whether it is showing. */
+  function owner_make(name: string): LineOwner & { name: string; waiting: Set<string>; showing: boolean } {
+    const waiting: Set<string> = new Set();
+    return { name, waiting, showing: true, line_owns: (id: string): boolean => waiting.has(id) };
+  }
+
+  it('the VM controller\'s question is the VM controller\'s while the script screen has a line of its own outstanding', () => {
+    const script = owner_make('script');
+    const vm = owner_make('vm');
+    script.waiting.add('argus-7');
+    vm.waiting.add('argus-9');
+    expect(askOwner_find('argus-9', [script, vm])?.name).toBe('vm');
+    expect(askOwner_find('argus-7', [script, vm])?.name).toBe('script');
+  });
+
+  it('it stays so while that screen is left and when it is opened again; once the line has ended it is nobody\'s here', () => {
+    const script = owner_make('script');
+    const vm = owner_make('vm');
+    vm.waiting.add('argus-9');
+    // Left: another screen shows, and is busy with a line of its own.
+    vm.showing = false;
+    script.waiting.add('argus-12');
+    expect(askOwner_find('argus-9', [script, vm])?.name).toBe('vm');
+    vm.showing = true;
+    expect(askOwner_find('argus-9', [script, vm])?.name).toBe('vm');
+    vm.waiting.delete('argus-9');
+    expect(askOwner_find('argus-9', [script, vm])).toBeNull();
+  });
+
+  it('a line no screen sent, or a question whose line the daemon did not name, has no owner among them', () => {
+    const vm = owner_make('vm');
+    vm.waiting.add('argus-9');
+    expect(askOwner_find('argus-3', [vm])).toBeNull();
+    expect(askOwner_find(undefined, [vm])).toBeNull();
+  });
+
+  it('its facts are read against the owner\'s line whenever it is shown: held while the screen is away, they are the same on return', () => {
+    const flight: LineInFlight = { id: 'argus-9', line: 'chris passwd jennings --on store' };
+    const request = { message: 'reworded', kind: 'secret' as const, executeId: 'argus-9', purpose: 'stratus.chris.password.new', subject: { vm: 'store', account: 'jennings' } };
+    const before = askAbout_read(request, flight);
+    // ...the screen is left, the question held as it arrived, and the screen opened again:
+    expect(askAbout_read(request, flight)).toEqual(before);
+    expect(before).toEqual({ mine: true, line: flight.line, purpose: 'stratus.chris.password.new', subject: { vm: 'store', account: 'jennings' } });
   });
 });

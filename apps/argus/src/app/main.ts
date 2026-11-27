@@ -107,7 +107,7 @@ import { gamesPane_wire, type GamesPaneModule } from './gamesPane.js';
 import { trekBridge_wire, type TrekBridgeModule } from './trekBridge.js';
 import { tdController_wire, type TdControllerModule } from './tdController.js';
 import { scriptScreen_wire, type ScriptScreenModule } from './scriptScreen.js';
-import { vmController_wire, type VmControllerModule } from './vmController.js';
+import { vmController_wire, type VmControllerModule, askOwner_find } from './vmController.js';
 import { synthVoice } from '../lcars/synth.js';
 import { notesPane_wire, type NotesPaneModule } from './notesPane.js';
 import { capacityPane_wire, type CapacityPaneModule } from './capacityPane.js';
@@ -2492,13 +2492,19 @@ async function surface_start(token: string): Promise<void> {
        * what matters.
        */
       ask_receive: async (request: SurfaceAsk): Promise<string | null> => {
+        // Whose line raised it comes first: a question is its line's, whichever screen is showing or busy, and
+        // while its screen is left (held there until it opens again).
+        const owner = askOwner_find(request.executeId, [scriptScreen, vmController]);
+        if (owner !== null) return owner.ask(request);
         // The bridge owns the screen and the running command: its game's questions are answered there.
         if (trekBridge.active_is()) return trekBridge.ask(request);
         // The controller's own lines ask on its strip: a build's question before billing, teardown's name typed back.
         if (tdController.running_is()) return tdController.ask(request);
         // The script screen's own lines ask on its strip too: a build's question with the cost, a user's hidden password.
-        if (scriptScreen.running_is()) return scriptScreen.ask(request);
-        if (vmController.running_is()) return vmController.ask(request);
+        // (Only where the daemon did not say which line asked: with an id, a screen that is merely busy with
+        // another line is not the question's.)
+        if (request.executeId === undefined && scriptScreen.running_is()) return scriptScreen.ask(request);
+        if (request.executeId === undefined && vmController.running_is()) return vmController.ask(request);
         // A stratus screen that is open is where its session's questions stand, even when the line that asks was sent
         // before it opened (left mid-build and opened again): never the console behind it.
         if (scriptScreen.active_is()) return scriptScreen.ask(request);

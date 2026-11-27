@@ -20,6 +20,8 @@ export interface VmControllerModule {
   open: (name: string) => Promise<string>;
   /** Whether the controller is up. */
   active_is: () => boolean;
+  /** Whether the line of this id is one this screen sent and still waits on. */
+  line_owns: (id: string) => boolean;
   /** Whether a line of the controller's own runs (its output and questions are the controller's). */
   running_is: () => boolean;
   /** A question the session put to this surface, while one of the controller's lines runs. */
@@ -41,6 +43,10 @@ export interface VmControllerModule {
  * @param names_seen - Told the VMs each open finds, so the language can claim `vm <name>`.
  * @returns The controller's verbs.
  */
+// The page routes a question to the screen whose line raised it; it takes the rule from here, beside the
+// controllers it routes among.
+export { askOwner_find } from './lineRun.js';
+
 /** How long a screen left with a line in flight keeps that line's question for itself. */
 const LEFT_LINE_MS: number = 30 * 60 * 1000;
 
@@ -157,6 +163,8 @@ export function vmController_wire(context: Pick<HostContext, 'client' | 'manage_
   return {
     open,
     active_is: (): boolean => screen !== null,
+    // A line this screen sent and still waits on is its own, whether the screen is showing or was left.
+    line_owns: (id: string): boolean => flight_owns(flight, id),
     // The screen's line runs on after the screen is left: its question is the screen's still, held until it opens again.
     running_is: (): boolean => lineRunning || Date.now() < leftWithLine,
     ask: (request: SurfaceAsk): Promise<string | null> => {

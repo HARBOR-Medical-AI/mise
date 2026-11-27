@@ -174,6 +174,8 @@ export function attachBackend_get(attach: AttachInfo): string {
 export interface ExecuteOutcome {
   envelopes: WireEnvelope[];
   liveChannels: Set<'data' | 'err'>;
+  /** The line's exit status, as the daemon says it; absent from a daemon that predates it. */
+  exitCode?: number;
 }
 
 /**
@@ -667,7 +669,7 @@ export class ArgusClient {
         const request: PendingExecute | undefined = this.pending.get(message.id);
         if (request) {
           this.pending.delete(message.id);
-          request.resolve({ envelopes: message.envelopes, liveChannels: request.liveChannels });
+          request.resolve({ envelopes: message.envelopes, liveChannels: request.liveChannels, ...(message.exitCode === undefined ? {} : { exitCode: message.exitCode }) });
         }
         // A pane-claimed request (observe: false) resolves to its issuer
         // alone; everything else feeds the shared instruments.

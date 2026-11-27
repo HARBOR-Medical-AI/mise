@@ -11,7 +11,7 @@
     "@typescript-eslint/no-misused-spread": 1,
     "@typescript-eslint/no-non-null-assertion": 3,
     "@typescript-eslint/no-redundant-type-constituents": 1,
-    "@typescript-eslint/no-unnecessary-condition": 81,
+    "@typescript-eslint/no-unnecessary-condition": 80,
     "@typescript-eslint/no-unnecessary-template-expression": 1,
     "@typescript-eslint/no-unnecessary-type-assertion": 13,
     "@typescript-eslint/no-unnecessary-type-conversion": 3,

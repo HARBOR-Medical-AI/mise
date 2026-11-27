@@ -31,7 +31,7 @@ import type { VmStepEvent } from '@fnndsc/menu';
 export type BuildPhaseKey = 'prepare' | 'plan-data' | 'plan-machine' | 'ask' | 'apply-data' | 'apply-machine' | 'grow' | 'host';
 
 /** Where one step stands. */
-export type BuildPhaseState = 'waiting' | 'going' | 'done' | 'skipped';
+export type BuildPhaseState = 'waiting' | 'going' | 'done' | 'skipped' | 'failed';
 
 /** The steps a build is drawn as, with the words each is drawn with. */
 export const BUILD_PHASES: ReadonlyArray<{ readonly key: BuildPhaseKey; readonly label: string }> = [
@@ -107,7 +107,11 @@ function phase_go(run: BuildRun, key: BuildPhaseKey): BuildRun {
   const at: number = BUILD_PHASES.findIndex((phase): boolean => phase.key === key);
   const phases: Record<BuildPhaseKey, BuildPhaseState> = { ...run.phases };
   BUILD_PHASES.forEach((phase, index: number): void => {
-    if (index < at) phases[phase.key] = phases[phase.key] === 'waiting' ? 'skipped' : 'done';
+    if (index >= at) return;
+    // A step before it that was under way is done, one never started was not needed; a step already said
+    // done, not needed or failed stays as it was said.
+    if (phases[phase.key] === 'going') phases[phase.key] = 'done';
+    else if (phases[phase.key] === 'waiting') phases[phase.key] = 'skipped';
   });
   phases[key] = 'going';
   return { ...run, phases };
@@ -116,8 +120,8 @@ function phase_go(run: BuildRun, key: BuildPhaseKey): BuildRun {
 /**
  * A step begun or ended moves the run, as the engine says it in a
  * `stratus.vm.step` event: begun is that step under way; done is that step
- * done, with what it had to say (a plan's counts); failed leaves it for the
- * line's end to say. A step of another machine, or one that arrives after
+ * done, with what it had to say (a plan's counts); failed is that step
+ * failed, and stays so. A step of another machine, or one that arrives after
  * the run ended, moves nothing.
  *
  * @param run - The run.
@@ -131,7 +135,7 @@ function phase_go(run: BuildRun, key: BuildPhaseKey): BuildRun {
 export function buildRun_step(run: BuildRun, step: VmStepEvent): BuildRun {
   if (run.outcome !== null || step.vm !== run.vm) return run;
   if (step.state === 'begun') return phase_go(run, step.step);
-  if (step.state === 'failed') return run;
+  if (step.state === 'failed') return { ...run, phases: { ...run.phases, [step.step]: 'failed' } };
   return { ...run, phases: { ...run.phases, [step.step]: 'done' }, said: step.said ?? run.said };
 }
 
@@ -171,11 +175,15 @@ export function buildRun_answer(run: BuildRun, yes: boolean): BuildRun {
  */
 export function buildRun_end(run: BuildRun, ended: { tone: BuildOutcome['tone']; why: string }, at: string): BuildRun {
   const phases: Record<BuildPhaseKey, BuildPhaseState> = { ...run.phases };
-  for (const phase of BUILD_PHASES) if (phases[phase.key] === 'going') phases[phase.key] = ended.tone === 'done' ? 'done' : 'skipped';
+  // A step still under way at the end: done with a build that ended done; failed with one that failed
+  // (the step it failed in); not done with a NO.
+  for (const phase of BUILD_PHASES) if (phases[phase.key] === 'going') phases[phase.key] = ended.tone === 'done' ? 'done' : ended.tone === 'failed' && phase.key !== 'ask' ? 'failed' : 'skipped';
   // A build that ended done needed none of the steps it never reached: they read not needed, never waiting.
   if (ended.tone === 'done') for (const phase of BUILD_PHASES) if (phases[phase.key] === 'waiting') phases[phase.key] = 'skipped';
+  // A NO after something was applied changed something: what was applied stands, and is said.
+  const applied: string[] = (['apply-data', 'apply-machine'] as const).filter((key): boolean => phases[key] === 'done').map((key): string => (key === 'apply-data' ? 'ITS DATA' : 'ITS MACHINE'));
   const words: string = ended.tone === 'done' ? (run.change === '' ? 'BUILT' : `BUILT · ${run.change.toUpperCase()}`)
-    : ended.tone === 'declined' ? 'STOPPED BEFORE THE APPLY · NOTHING CHANGED'
+    : ended.tone === 'declined' ? (applied.length === 0 ? 'STOPPED BEFORE THE APPLY · NOTHING CHANGED' : `STOPPED AT A NO · ${applied.join(' AND ')} STANDS, AS APPLIED BEFORE IT`)
       : `FAILED${ended.why === '' ? '' : ` · ${ended.why}`}`;
   return { ...run, phases, outcome: { tone: ended.tone, words, at } };
 }

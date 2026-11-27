@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from '@jest/globals';
 import { ScriptScreen, type QuietAnswer, type ScriptHooks } from '../../src/features/script/screen.js';
-import { lineOption_get } from '../../src/features/script/model.js';
+import { lineOption_get, type RunEnd } from '../../src/features/script/model.js';
 import { args_tokenize } from '../../../../packages/brasa/src/lib/parser.js';
 
 const STORE_TEXT: string = [
@@ -302,6 +302,70 @@ describe('the script screen', () => {
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-2"]')?.click();
     await settle();
     expect(screen.root.querySelector('.ss-note-refusal .tdc-note-title')?.textContent).toMatch(/^REFUSED · /);
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('a build answered NO is not built here, though its line ran without error: what follows a line done does not follow a NO', async () => {
+    const { screen, sent, hooks } = screen_make();
+    // The session's own word for how each line ended: the build stopped at its question.
+    hooks.run = async (line: string): Promise<RunEnd> => { sent.push(line); return { ok: true, declined: line === 'vm build store', why: [] }; };
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-2"]')?.click();
+    await settle();
+    button_named(screen.root, 'BUILD')?.click();
+    await settle();
+    expect(sent.filter((line: string): boolean => line.startsWith('vm '))).toEqual([expect.stringContaining('vm new store'), 'vm build store']);
+    const kept = screen as unknown as { builtHere: string | null; refusal: { declined: boolean; line: string } | null };
+    expect(kept.builtHere).toBeNull();
+    expect(kept.refusal).toMatchObject({ declined: true, line: 'vm build store' });
+    // And a build that ran to its end is.
+    hooks.run = async (line: string): Promise<RunEnd> => { sent.push(line); return { ok: true, declined: false, why: [] }; };
+    button_named(screen.root, 'BUILD')?.click();
+    await settle();
+    expect(kept.builtHere).toBe('line-2');
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('a refusal\'s reason is the session\'s own, never what the line happened to print on the way; with none given it says so', async () => {
+    const { screen, sent, hooks } = screen_make();
+    let why: string[] = ['the network is gone'];
+    hooks.run = async (line: string): Promise<RunEnd> => { sent.push(line); screen.output_take('downloading 3 of 9\nalmost there\n'); return { ok: false, declined: false, why }; };
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-1"]')?.click();
+    await settle();
+    const kept = screen as unknown as { refusal: { why: string } | null; line_send: (line: string, step: string | null) => Promise<boolean> };
+    await kept.line_send('net new chrisproject-services --cidr 10.20.0.0/16', 'line-1');
+    expect(kept.refusal?.why).toBe('the network is gone');
+    why = [];
+    await kept.line_send('net new chrisproject-services --cidr 10.20.0.0/16', 'line-1');
+    expect(kept.refusal?.why).toBe('the session refused it');
+    screen.dispose();
+    screen.root.remove();
+  });
+
+  it('a question its host placed with another line is not taken for the line this screen has in flight', async () => {
+    const { screen, release } = screen_make(['done', 'done', 'ready', 'not yet', 'not yet'], true);
+    await screen.open('/scripts/chrisproject/store.mise');
+    await settle();
+    screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-3"]')?.click();
+    await settle();
+    const kept = screen as unknown as { askLine: string | null; busy: { line: string } | null; line_send: (line: string, step: string | null) => Promise<boolean> };
+    void kept.line_send('vm build store', 'line-3');
+    await settle();
+    expect(kept.busy?.line).toBe('vm build store');
+    // Another line's question (a console line's, say), though it speaks of the same build: not this line's.
+    void screen.ask_take('vm build store: Continue? [y/N]', 'confirm', { mine: false, line: null, purpose: 'stratus.vm.build', subject: { vm: 'store' } });
+    await settle();
+    expect(kept.askLine).toBeNull();
+    // The screen's own, as its host says: its line.
+    void screen.ask_take('reworded entirely', 'confirm', { mine: true, line: 'vm build store', purpose: 'stratus.vm.build', subject: { vm: 'store' } });
+    await settle();
+    expect(kept.askLine).toBe('vm build store');
+    release();
     screen.dispose();
     screen.root.remove();
   });

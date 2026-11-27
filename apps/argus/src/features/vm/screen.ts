@@ -580,7 +580,7 @@ export class VmScreen extends ScriptScreen {
     this.steps = this.steps_derive(this.lines);
     this.view = 'line-1';
     this.draw();
-    if (await this.line_send(build, 'line-1', true)) this.builtHere = 'line-1';
+    if (await this.line_sendDone(build, 'line-1', true)) this.builtHere = 'line-1';
     this.draw();
   }
 
@@ -2440,11 +2440,11 @@ export class VmScreen extends ScriptScreen {
     const strip: HTMLElement = el('div', 'vm-run-strip');
     for (const phase of BUILD_PHASES) {
       const state = run.phases[phase.key];
-      const tone: string = state === 'going' ? (phase.key === 'ask' ? 'tdc-step-asking' : 'tdc-step-going') : state === 'done' ? 'tdc-step-done' : state === 'skipped' ? 'tdc-step-skipped' : 'vm-step-waiting';
+      const tone: string = state === 'going' ? (phase.key === 'ask' ? 'tdc-step-asking' : 'tdc-step-going') : state === 'done' ? 'tdc-step-done' : state === 'failed' ? 'tdc-step-failed' : state === 'skipped' ? 'tdc-step-skipped' : 'vm-step-waiting';
       const block: HTMLElement = el('div', `tdc-strip-step vm-run-step ${tone}`);
       // Once a run stopped short, a step it never reached is not done; a question it stopped at was answered no.
       const short: boolean = run.outcome !== null && run.outcome.tone !== 'done';
-      const word: string = state === 'going' ? (phase.key === 'ask' ? 'ASKING' : phase.key === 'prepare' ? this.preparing_word().toUpperCase() : 'UNDER WAY') : state === 'done' ? (phase.key === 'ask' ? 'ANSWERED YES' : 'DONE')
+      const word: string = state === 'going' ? (phase.key === 'ask' ? 'ASKING' : phase.key === 'prepare' ? this.preparing_word().toUpperCase() : 'UNDER WAY') : state === 'done' ? (phase.key === 'ask' ? 'ANSWERED YES' : 'DONE') : state === 'failed' ? 'FAILED'
         : short && phase.key === 'ask' && state === 'skipped' && run.phases['plan-machine'] !== 'waiting' ? 'ANSWERED NO' : short ? 'NOT DONE' : state === 'skipped' ? 'NOT NEEDED' : 'WAITING';
       block.append(el('span', 'tdc-strip-name', phase.label), el('span', 'tdc-strip-word', word));
       strip.append(block);
@@ -2542,7 +2542,8 @@ export class VmScreen extends ScriptScreen {
     this.run = buildRun_start(this.vm, [valid, this.servicesChange_get().join(', ')].filter((words: string): boolean => words !== '').join(', '), Date.now());
     this.runTick_set(true);
     this.draw();
-    if (await this.line_send(declared, step) && await this.line_send(built, step, true)) this.builtHere = step;
+    // Built here only when the build line ran to its end: a NO at its question built nothing.
+    if (await this.line_send(declared, step) && await this.line_sendDone(built, step, true)) this.builtHere = step;
     if (this.run !== null && this.run.outcome === null) {
       // Ended before its build line ran (the declaration refused): said where the run stands.
       this.run = buildRun_end(this.run, { tone: 'failed', why: this.refusal?.why ?? 'the declaration was refused' }, new Date().toISOString());

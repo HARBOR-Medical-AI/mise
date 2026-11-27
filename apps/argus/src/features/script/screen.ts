@@ -428,6 +428,26 @@ export class ScriptScreen {
     this.ask = null;
   }
 
+  /**
+   * Sends a line and says whether it ran to its end: sent, not refused, and
+   * not stopped at a question answered no. What follows a line only when it
+   * was done (a receipt, the next line) asks this, never `line_send` alone.
+   *
+   * @param line - The line.
+   * @param step - The seat it is sent from, or null.
+   * @param keepLog - Whether the seat's log is kept from the line before.
+   * @returns True when the line was done.
+   *
+   * @example
+   * ```ts
+   * if (await this.line_sendDone('vm build store', step)) this.builtHere = step;
+   * ```
+   */
+  protected async line_sendDone(line: string, step: string | null, keepLog: boolean = false): Promise<boolean> {
+    const ran: boolean = await this.line_send(line, step, keepLog);
+    return ran && !(this.refusal?.declined === true && this.refusal.line === line);
+  }
+
   // ---------------------------------------------------------------- opening
 
   /**
@@ -593,8 +613,10 @@ export class ScriptScreen {
     this.ask?.answer(null);
     this.hooks.voice.cue('hail');
     return new Promise((resolve: (value: string | null) => void): void => {
-      // The line the question is of: the one its asker says raised it, or the one this screen has in flight. Never read off the question's words.
-      const raised: string | null = about.line ?? this.busy?.line ?? null;
+      // The line the question is of: the one its host says raised it. A host that says nothing at all of the
+      // question (an older one) leaves the screen's own line in flight; a question its host placed with
+      // another line is not this screen's line's. Never read off the question's words.
+      const raised: string | null = about === ASK_UNNAMED ? this.busy?.line ?? null : about.line;
       this.askLine = raised === null ? null : this.lines.find((line: ScriptLine): boolean => line.text === raised)?.text ?? null;
       // The question stands over its own offer: the seat of the line it asks for is shown (a-change-is-a-loop, clause 4).
       const seat: ScriptStep | undefined = this.askLine === null ? undefined : this.steps.find((step: ScriptStep): boolean => step.lines.some((line: ScriptLine): boolean => line.text === this.askLine));
@@ -1037,6 +1059,8 @@ export class ScriptScreen {
     let failed: boolean = false;
     /** What the session said was wrong, in its own answer; '' when it said nothing there. */
     let endWhy: string = '';
+    /** True when the host said how the line ended: the reason is then the session's own, or none. */
+    let typedEnd: boolean = false;
     try {
       const ended: boolean | RunEnd = await this.hooks.run(line);
       const end: RunEnd = typeof ended === 'boolean' ? { ok: ended, declined: false, why: [] } : ended;
@@ -1044,6 +1068,7 @@ export class ScriptScreen {
       // A NO is the session's own word for how the line ended, never read off what was typed or printed.
       if (end.declined) this.busyDeclined = true;
       endWhy = end.why.join(' ').trim();
+      typedEnd = typeof ended !== 'boolean';
     } catch (error: unknown) {
       failed = true;
       const said: string = error instanceof Error ? error.message : String(error);
@@ -1055,7 +1080,7 @@ export class ScriptScreen {
       this.busy = null;
       // A refusal is said where its control stands, with why, and stays there until that seat sends again (a-change-is-a-loop, clauses 5 and 6).
       if (line === 'scripts pull') this.pulled = { at: new Date().toISOString(), said: this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-6) };
-      if (failed || this.busyDeclined) this.refusal = { view: step ?? this.view, line, at: new Date().toISOString(), declined: this.busyDeclined, why: endWhy || this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ') || 'the session refused it' };
+      if (failed || this.busyDeclined) this.refusal = { view: step ?? this.view, line, at: new Date().toISOString(), declined: this.busyDeclined, why: endWhy || (typedEnd ? '' : this.busyOut.filter((one: string): boolean => one.trim() !== '').slice(-2).join(' ')) || 'the session refused it' };
       this.hooks.voice.cue(failed ? 'redalert' : 'ack');
       await this.standings_refresh();
       // A declaration sent moves what the price compares with: VM NEW's price is asked again of what now stands.
@@ -1084,7 +1109,7 @@ export class ScriptScreen {
       if (!raised) return;
     }
     if (!(await this.line_send(declared, step))) return;
-    if (await this.line_send(built, step, true)) this.builtHere = step;
+    if (await this.line_sendDone(built, step, true)) this.builtHere = step;
     this.draw();
   }
 
