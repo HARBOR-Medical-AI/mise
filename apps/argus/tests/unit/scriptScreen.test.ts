@@ -262,6 +262,18 @@ describe('the script screen', () => {
     kept.stepCost_ask('vm build store');
     await new Promise((resolve) => { setTimeout(resolve, 160); });
     expect(asked.slice(after)).toEqual([]);
+    // Nor does a declaration with a second command or a redirect after it: nothing rides along with a price.
+    for (const compound of ['vm new store --disk 50; rm -r /x', 'vm new store --disk 50 > /tmp/out']) {
+      const at: number = asked.length;
+      kept.stepCost_ask(compound);
+      await new Promise((resolve) => { setTimeout(resolve, 160); });
+      expect(asked.slice(at)).toEqual([]);
+    }
+    // The same punctuation inside a quoted operand is the operand's: one request, the operand as spelled.
+    const quoted: number = asked.length;
+    kept.stepCost_ask("vm new store --note 'a;b > c' --disk 50");
+    await new Promise((resolve) => { setTimeout(resolve, 160); });
+    expect(asked.slice(quoted)).toEqual(["vm cost store --note 'a;b > c' --disk 50"]);
     // From the field: a host typed as `--example` is the host's value on the line, read back and cleared whole.
     void hooks;
     screen.root.querySelector<HTMLButtonElement>('.takeover-gutter button[data-view="line-4"]')?.click();

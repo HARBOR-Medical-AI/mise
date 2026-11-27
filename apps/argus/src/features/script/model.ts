@@ -620,14 +620,25 @@ export function memoryRange_derive(limits: VmLimitsModel, vcpu: number): { min: 
   return { min: Math.max(limits.memory.min, Math.ceil(vcpu * limits.memory.perVcpu.min)), max: Math.min(limits.memory.max, Math.floor(vcpu * limits.memory.perVcpu.max)) };
 }
 
+/** What joins a line to another command or sends its output elsewhere, when it stands outside quotes. */
+const LINE_JOINS: RegExp = /[;|&<>]/;
+
+/** A quoted run or an escaped character of a word: what a join is not looked for inside. */
+const QUOTED_RUN: RegExp = new RegExp('\\u0027[^\\u0027]*\\u0027|\\u0022(?:[^\\u0022\\\\]|\\\\[\\s\\S])*\\u0022|\\\\[\\s\\S]', 'g');
+
 /**
  * The `vm cost` line that prices a `vm new` line as it stands: the same
  * words, `cost` for `new`.
  *
  * @param text - The `vm new` line.
- * @returns The `vm cost` line; null when the line is not a `vm new`, and there is no price to ask for.
+ * @returns The `vm cost` line; null when the line is not one `vm new` and nothing more, and there is no price to ask for.
  */
 export function costLine_derive(text: string): string | null {
+  // A price is asked for one declaration and nothing else: a line that holds a second command, a pipe, a
+  // redirect or a task's `&` outside quotes, or a quote left open, is not priced at all, since whatever came
+  // after the declaration would run with the price request merely because the step was opened.
+  const raws: string[] | null = line_tokens(text);
+  if (raws === null || raws.some((raw: string): boolean => LINE_JOINS.test(raw.replace(QUOTED_RUN, '')))) return null;
   // Only the verb changes: every other word goes into the price request exactly as the declaration spells
   // it. The verb is told as a step's kind is told, by its words as read (`vm 'new' store` is a `vm new`).
   const tokens: LineToken[] = lineTokens_read(text);

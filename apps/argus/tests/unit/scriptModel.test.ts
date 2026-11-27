@@ -248,6 +248,15 @@ describe('a line made from another keeps what it does not change', () => {
     expect(costLine_derive("'vm' \"new\" 'O'\\''Brien' --note '$name'")).toBe("vm cost 'O'\\''Brien' --note '$name'");
   });
 
+  it('only one declaration and nothing more is priced: a second command, a pipe, a redirect, a task or an open quote is not', () => {
+    for (const line of ['vm new store --disk 50; rm -r /x', 'vm new store --disk 50 && vm build store', 'vm new store | tee out', 'vm new store > /tmp/out', 'vm new store >> log', 'vm new store &', "vm new store --note 'never closed"]) {
+      expect(costLine_derive(line)).toBeNull();
+    }
+    // The same characters inside a quoted or escaped operand are that operand's, and the declaration is priced with them.
+    expect(costLine_derive("vm new store --note 'a;b | c > d & e' --disk 50")).toBe("vm cost store --note 'a;b | c > d & e' --disk 50");
+    expect(costLine_derive('vm new store --note "a;b" --tag x\\;y')).toBe('vm cost store --note "a;b" --tag x\\;y');
+  });
+
   it('a user line built from a form carries each field as the value it is, to the kernel', () => {
     const line: string = userLine_build("o'brien", 'ops$team@example.org', '/keys/pass word $1', 'store');
     expect([...args_tokenize(line)]).toEqual(['chris', 'user', 'add', "o'brien", '--email', 'ops$team@example.org', '--password-file', '/keys/pass word $1', '--on', 'store']);
