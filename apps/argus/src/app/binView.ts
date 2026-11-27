@@ -362,7 +362,7 @@ export function binView_wire(context: Pick<HostContext, 'client'>, hooks: BinVie
     // slow one, and making the stage wait on the text buys nothing.
     const [summary, diagram]: [ExecuteOutcome, ExecuteOutcome] = await Promise.all([
       context.client.line_execute(`cat ${path_quote(path)}`, { silent: true, observe: false }),
-      context.client.line_execute(`pipeline diagram ${specifier}`, { silent: true, observe: false }),
+      context.client.line_execute(`pipeline diagram ${arg_quote(specifier)}`, { silent: true, observe: false }),
     ]);
     const text: string = summary.envelopes.map((envelope): string => envelope.rendered).join('\n');
     for (const envelope of diagram.envelopes) {

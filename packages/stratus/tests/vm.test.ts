@@ -443,9 +443,9 @@ describe('vm, over the fake cloud', () => {
     expect((await vm_run(context, ['shell', 'store'])).renderedErr).toContain('needs the shell tier');
     (surface.capabilities as { shellCommands: boolean }).shellCommands = true;
     const shell = await vm_run(context, ['shell', 'store']);
-    expect(plain(shell.rendered)).toContain('-W %h:%p -p 22 ocid1.bastionsession.oc1..fake-1@host.bastion.us-ashburn-1.fake.example" ubuntu@10.40.0.10');
+    expect(plain(shell.rendered)).toContain("-W %h:%p -o Port=22 ocid1.bastionsession.oc1..fake-1@host.bastion.us-ashburn-1.fake.example' ubuntu@10.40.0.10");
     expect(world.sessions).toEqual([{ bastionId: 'ocid1.bastion.oc1..fake-scratch', privateIp: '10.40.0.10' }]);
-    expect(sshLine_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5')).toBe('ssh -i /k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -o ProxyCommand="ssh -i /k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -p 22 s@h" ubuntu@10.0.0.5');
+    expect(sshLine_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5')).toBe("ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -o 'ProxyCommand=ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -o Port=22 s@h' ubuntu@10.0.0.5");
   });
 
   it('tears down only when unprotected: the machine, keeping the data; --all takes the data on the name typed back', async () => {

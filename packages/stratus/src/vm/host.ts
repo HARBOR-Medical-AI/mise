@@ -33,6 +33,7 @@
 import type { JobContext, JobRun } from '@fnndsc/brasa/core';
 import type { BuildCall } from '../cloud/builder.js';
 import type { VmDeps } from './build.js';
+import { shWord_quote } from './quoting.js';
 import type { VmRemote } from './remote.js';
 import { vmRemote_open } from './remote.js';
 import { vmPorts_open, type VmSpec, type VmSsh } from './spec.js';
@@ -108,16 +109,6 @@ export function vmHost_owed(record: VmRecord, spec: VmSpec): string[] {
 }
 
 /**
- * Single-quotes a word for the machine's shell.
- *
- * @param word - The word.
- * @returns It, quoted.
- */
-function shQuote(word: string): string {
-  return `'${word.replace(/'/g, `'\\''`)}'`;
-}
-
-/**
  * The shell lines that set the machine up as the spec asks: its firewall,
  * then public SSH.
  *
@@ -138,7 +129,7 @@ export function vmHostScript_render(want: VmHostState, now: VmHostState): string
     lines.push(
       `id -u ${ssh.user} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ${ssh.user}`,
       `sudo install -d -m 700 -o ${ssh.user} -g ${ssh.user} ${home}/.ssh`,
-      `printf '%s\\n' ${shQuote(ssh.key)} | sudo tee ${home}/.ssh/authorized_keys >/dev/null`,
+      `printf '%s\\n' ${shWord_quote(ssh.key)} | sudo tee ${home}/.ssh/authorized_keys >/dev/null`,
       `sudo chown ${ssh.user}:${ssh.user} ${home}/.ssh/authorized_keys && sudo chmod 600 ${home}/.ssh/authorized_keys`,
       `printf '%s ALL=(ALL) NOPASSWD:ALL\\n' ${ssh.user} | sudo tee /etc/sudoers.d/90-stratus-${ssh.user} >/dev/null && sudo chmod 440 /etc/sudoers.d/90-stratus-${ssh.user}`,
     );
@@ -147,7 +138,7 @@ export function vmHostScript_render(want: VmHostState, now: VmHostState): string
   const listen: string[] = ['Port 22', ...(ssh !== null && ssh.on && ssh.port !== 22 ? [`Port ${ssh.port}`] : [])];
   if (ssh !== null || now.ssh !== null) {
     lines.push(
-      `printf '%s\\n' ${listen.map(shQuote).join(' ')} 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' | sudo tee ${SSHD_DROP_IN} >/dev/null`,
+      `printf '%s\\n' ${listen.map(shWord_quote).join(' ')} 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' | sudo tee ${SSHD_DROP_IN} >/dev/null`,
       'sudo sshd -t',
       // Ubuntu starts sshd from a socket whose ports are generated from sshd's config: both are reloaded.
       'sudo systemctl daemon-reload && { sudo systemctl restart ssh.socket 2>/dev/null || true; } && sudo systemctl restart ssh',

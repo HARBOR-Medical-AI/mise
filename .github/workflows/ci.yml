@@ -152,6 +152,8 @@ jobs:
       - run: npm run lint:listings
       # A function's method is a verb, never a preposition (#1227).
       - run: npm run lint:rpn
+      # A value a surface writes into a shell line goes through a quoting function, never quotes written by hand.
+      - run: npm run lint:lines
       - run: npm run lint:changesets
       - run: npm run lint:aegis
       - run: npm run lint:orrery

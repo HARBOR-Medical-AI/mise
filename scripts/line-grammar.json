@@ -1,0 +1,44 @@
+{
+  "apps/argus/src/app/browser.ts": [
+    "quoted",
+    "directory ? '-ri' : '-i'",
+    "feeds.map((feed: number): string => `feed_${feed}`).join(' ')"
+  ],
+  "apps/argus/src/app/greeting.ts": [
+    "surface"
+  ],
+  "apps/argus/src/app/main.ts": [
+    "RECENT_LOOKBACK",
+    "fields"
+  ],
+  "apps/argus/src/console/argusLang.ts": [
+    "encoded",
+    "name.startsWith('~/') ? home_path(name.slice(2)) : path_write(name)"
+  ],
+  "apps/argus/src/features/dag/panel.ts": [
+    "this.shownFeedId",
+    "feedID"
+  ],
+  "apps/argus/src/features/gather/panel.ts": [
+    "paths"
+  ],
+  "apps/argus/src/features/notes/panel.ts": [
+    "since",
+    "ask.all ? ' --all' : ''"
+  ],
+  "apps/argus/src/features/pacs/panel.ts": [
+    "base"
+  ],
+  "apps/argus/src/features/script/screen.ts": [
+    "text"
+  ],
+  "apps/argus/src/features/universe/panel.ts": [
+    "this.sessionLayoutName_derive(this.arrangement)",
+    "this.sessionLayoutName_derive(arrangement)",
+    "name"
+  ],
+  "apps/argus/src/features/vm/screen.ts": [
+    "this.vm",
+    "name"
+  ]
+}

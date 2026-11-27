@@ -16,15 +16,11 @@
  * @module
  */
 import { CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
+import { word_quote } from './textFilters.js';
 import { stdin_take } from '../games/stdin.js';
 import { listingIn_take } from '../../core/listing.js';
 import { surface_get } from '../../core/surface.js';
 import type { ExpressionDeclaration } from '../../core/commandDeclaration.js';
-
-/** A word as a POSIX shell reads it back. */
-function word_quote(word: string): string {
-  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
-}
 
 /**
  * `command <name> [args...]`: the declaration.

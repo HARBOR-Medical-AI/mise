@@ -22,19 +22,19 @@
  *
  * @module
  */
-import * as path from 'path';
 import chalk from 'chalk';
 import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, taskState_isOver, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATE_EVENT, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow } from '@fnndsc/menu';
 import { command_declare, declaredCommand_run, repl_confirm, repl_question, runner_get, sink_dataLine, sink_get, surface_get, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_words, type BuildCall, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import { keepFailure_describe } from '../cloud/keepFault.js';
 import type { VmRemote } from '../vm/remote.js';
+import { sshArgs_build } from '../vm/remote.js';
 import type { CloudDriver } from '../cloud/driver.js';
 import type { NetStore } from '../net/state.js';
 import { vmPorts_open as vmPorts_openOf, vmLimits_derive, vmLimits_lines, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSsh_words, sshKeyFile_resolve, type VmSpec } from '../vm/spec.js';
 import { VM_HOST_JOB, vmHost_current, vmHost_owed, vmHostRun_make } from '../vm/host.js';
 import type { CloudInstance, CloudShape, CloudVolume } from '../cloud/driver.js';
-import { CHRIS_PORTER_TAG, CHRIS_URL_TAG, VM_NAME, VM_USER, type VmRecord, type VmStore } from '../vm/state.js';
+import { CHRIS_PORTER_TAG, CHRIS_URL_TAG, VM_NAME, type VmRecord, type VmStore } from '../vm/state.js';
 import { vmsFound_read, vmTakeover_run, type FoundVm } from '../vm/found.js';
 import { VM_KEYLESS, vmChris_adopt, vmDeclared_adopt, vmKey_held, vmKeyless_is, vmKept_read, vmKept_write, vmLock_adopt, type VmKept } from '../vm/keep.js';
 import { lock_read, lock_where, lockKept_is } from '../kept/lock.js';
@@ -45,6 +45,7 @@ import { STEPS_SOURCE } from '../cluster/steps.js';
 import { VM_GROW_JOB, vmGrowRun_make, vmPlan_judge, type VmPlanJudged } from '../vm/resize.js';
 import { HOURS_PER_MONTH } from '../cluster/spend.js';
 import { TIER_REFUSAL } from '../tier.js';
+import { shWord_write } from '../vm/quoting.js';
 
 /** What `vm` reads from the session. */
 export interface VmCommandContext {
@@ -1023,9 +1024,8 @@ async function vmBuild_plan(context: VmCommandContext, named: string | undefined
  * @returns The line.
  */
 export function sshLine_build(session: { sessionId: string; host: string }, keyPath: string, privateIp: string): string {
-  const known: string = path.join(path.dirname(keyPath), 'known_hosts');
-  const common: string = `-i ${keyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${known}`;
-  return `ssh ${common} -o ProxyCommand="ssh ${common} -W %h:%p -p 22 ${session.sessionId}@${session.host}" ${VM_USER}@${privateIp}`;
+  // The same arguments the engine itself reaches the VM with, each written as a word of the operator's shell.
+  return ['ssh', ...sshArgs_build(session, keyPath, privateIp)].map(shWord_write).join(' ');
 }
 
 /**

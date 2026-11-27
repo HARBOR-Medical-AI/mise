@@ -36,6 +36,7 @@
     "lint:wire": "node scripts/wire-escapes.mjs",
     "lint:listings": "node scripts/listing-bounds.mjs",
     "lint:rpn": "node scripts/rpn-prepositions.mjs",
+    "lint:lines": "node scripts/line-builders.mjs",
     "lint:changesets": "node scripts/changeset-names.mjs && node scripts/changeset-headlines.mjs",
     "docs:site": "typedoc && asciidoctor -D site docs/site/*.adoc",
     "changeset": "changeset",

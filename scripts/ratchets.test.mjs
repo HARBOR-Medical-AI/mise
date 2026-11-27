@@ -575,5 +575,29 @@ for (const lint of lints) {
   expect_that('with the test back the floors hold', again.status === 0 && back.status === 0, back.said);
 }
 
-console.log(failed === 0 ? `ratchets: the cast ratchet, the coverage ratchet, the base it is compared with, and the reach of the test and seam lints all hold (made in ${run})` : `ratchets test: ${failed} failed (made in ${run})`);
+// --- the line-builder lint: a value in a line is written by a quoting function ---
+{
+  const { lines_check, part_judge, template_read } = await import('./line-builders.mjs');
+  const tree = join(run, 'lines');
+  const source = join(tree, 'apps/argus/src/app/site.ts');
+  const checked = (text, grammar = {}) => { file_put(source, text); return lines_check(tree, grammar); };
+  const clean = checked("context.terminal.line_run(`cd ${path_quote(place)}`);\nclient.line_execute(`setfattr -n tag -v ${arg_quote(tag)} feed_${id}`, { silent: true });\nvoid verb_send(`gather add ${paths.map(arg_quote).join(' ')}`);\nhooks.verbLine_run(id, `kill %${n}`);\n");
+  expect_that('a line whose values are written by the quoting functions passes: a call, a list mapped through one, and parts of a word', clean.length === 0, clean.join(' | '));
+  const double = checked('context.terminal.line_run(`cd "${place}"`);\n');
+  const single = checked("context.terminal.line_run(`touch --withContents '${text}' x`);\n");
+  expect_that('a value between quotes written by hand fails, double or single', double.length === 1 && double[0].includes('site.ts:1') && double[0].includes('between quotes written by hand') && single.length === 1 && single[0].includes('${text}'), [...double, ...single].join(' | '));
+  const bare = checked('lead();\nhooks.verbLine_run(id, `rm ${path}`);\nvoid client.line_execute(`proc jump --where ${asked}`, { silent: true });\nthis.hooks.ask(`play --text=${text}`);\n');
+  expect_that('a bare value that is a whole word of a line fails, after a space or an equals sign, and names its line', bare.length === 3 && bare[0].includes('site.ts:2') && bare[0].includes('${path}') && bare[1].includes('${asked}') && bare[2].includes('${text}'), bare.join(' | '));
+  const named = checked('this.hooks.ask(`vm cost ${name}`);\n', { 'apps/argus/src/app/site.ts': ['name'] });
+  expect_that('a whole word named as grammar that is meant passes', named.length === 0, named.join(' | '));
+  const stale = checked('this.hooks.ask(`vm cost ${word_write(name)}`);\n', { 'apps/argus/src/app/site.ts': ['name'] });
+  expect_that('a name in the grammar list that no line holds any more fails: the list cannot outlive what it lists', stale.length === 1 && stale[0].includes('names ${name}') && stale[0].includes('remove it'), stale.join(' | '));
+  const nested = template_read('`a ${f(`b ${c}`)} d ${e}`', 0);
+  expect_that('a template inside an interpolation is read through, and each interpolation knows what stands on either side', nested !== null && nested.parts.length === 2 && nested.parts[0].expr === 'f(`b ${c}`)' && nested.parts[0].before === 'a ' && nested.parts[0].after === ' d ' && nested.parts[1].expr === 'e' && nested.parts[1].after === '', JSON.stringify(nested));
+  expect_that('an interpolation is judged by what stands around it', part_judge({ expr: 'x', before: 'feed_', after: '' }) === 'part' && part_judge({ expr: 'x', before: 'rm ', after: '' }) === 'whole' && part_judge({ expr: 'x', before: 'cd "', after: '"' }) === 'quoted' && part_judge({ expr: 'path_write(x)', before: 'ls ', after: '' }) === 'written');
+  const real = spawnSync('node', [join(here, 'line-builders.mjs')], { encoding: 'utf8' });
+  expect_that('the repository as it stands passes the line-builder lint', real.status === 0, `${real.stdout}${real.stderr}`.slice(-400));
+}
+
+console.log(failed === 0 ? `ratchets: the cast ratchet, the coverage ratchet, the base it is compared with, the line-builder lint, and the reach of the test and seam lints all hold (made in ${run})` : `ratchets test: ${failed} failed (made in ${run})`);
 process.exit(failed === 0 ? 0 : 1);
