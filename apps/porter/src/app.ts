@@ -530,10 +530,12 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     } catch (error: unknown) {
       codes.handoff_end(code, false);
       options.log?.(`a device login's token could not be settled: ${error instanceof Error ? error.message : String(error)}`);
-      return reply.code(503).send({ state: 'pending', error: 'the door could not settle your login yet; it is asked again' });
+      // Pending, as every chell already reads it: it polls again, and the code waits for that poll.
+      return { state: 'pending' };
     }
     codes.handoff_end(code, true);
     if (outcome?.state === 'superseded') return reply.code(410).send({ state: 'superseded', error: 'a newer login for this host replaced this one; run chell auth login again' });
+    if (outcome?.state === 'expired') return reply.code(410).send({ state: 'expired', error: 'the token this login made expired before chell collected it; run chell auth login again' });
     return { state: 'authorised', ...step.grant };
   });
 
@@ -1044,6 +1046,32 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
 
   // The session's wire: the upgrade is relayed byte for byte to the daemon,
   // with the token on the upgrade URL, which the daemon reads.
+  // Renewals waiting to be dropped: those whose code lapsed untaken, and those a drop failed for, kept for the next tick.
+  let dropsHeld: MintedToken[] = [];
+  let dropping: boolean = false;
+  /**
+   * Drops lapsed renewals one at a time (a store of tokens is no place for a burst); a drop that fails is kept for
+   * the next tick and said, so a token nobody received never stands forgotten.
+   */
+  const lapsed_drop = async (): Promise<void> => {
+    if (dropping) return;
+    dropping = true;
+    try {
+      const batch: MintedToken[] = [...dropsHeld, ...codes.lapsed_take()];
+      dropsHeld = [];
+      for (const made of batch) {
+        try {
+          await tokens.renewal_settle(made, false);
+        } catch (error: unknown) {
+          dropsHeld.push(made);
+          options.log?.(`a lapsed device login's token could not be dropped yet: ${error instanceof Error ? error.message : String(error)}; it is tried again`);
+        }
+      }
+    } finally {
+      dropping = false;
+    }
+  };
+
   app.addHook('onReady', async (): Promise<void> => {
     app.server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
       const split = mountUrl_split(request.url ?? '/');
@@ -1098,9 +1126,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     const idleMs: number = config.idleHours * 3_600_000;
     const sweep: NodeJS.Timeout = setInterval((): void => {
       // Renewals approved and never taken by a poll before their code lapsed: dropped, so nobody's token stands unreceived.
-      for (const made of codes.lapsed_take()) {
-        void tokens.renewal_settle(made, false).catch((error: unknown): void => { options.log?.(`a lapsed device login's token could not be dropped: ${error instanceof Error ? error.message : String(error)}`); });
-      }
+      void lapsed_drop();
       // A sweep that fails is said, and the next tick sweeps again: it is never left as a rejection nobody hears.
       void idleSweep_run(registry, host, idleMs, options.log ?? ((): void => undefined)).catch((error: unknown): void => {
         options.log?.(`the idle sweep failed: ${error instanceof Error ? error.message : String(error)}`);

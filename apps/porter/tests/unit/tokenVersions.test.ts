@@ -630,3 +630,21 @@ describe('what Codex found in the fourth form (seq 404)', () => {
 
 });
 
+describe('what Codex found in the seventh form (seq 410)', () => {
+  it('counts as a mark only an empty file of the store\'s own; prunes only marks, and leaves anything else', async () => {
+    const store: TokenStore = await writer();
+    for (let i = 0; i < 12; i++) await store.mint(`u${String(i)}@c/`, `u${String(i)}`, 'n');
+    const top: number = versions().at(-1) ?? 0;
+    // A higher-numbered folder, and a higher-numbered file with something in it: neither is a mark.
+    mkdirSync(join(`${path}.marks`, String(top + 50)));
+    writeFileSync(join(`${path}.marks`, String(top + 60)), 'not empty');
+    // An old name holding something: not a mark, so never pruned.
+    writeFileSync(join(`${path}.marks`, '2'), 'kept');
+    expect(await store.list()).toHaveLength(12);
+    await store.mint('kim@c/', 'kim', 'laptop');
+    expect(readFileSync(join(`${path}.marks`, '2'), 'utf8')).toBe('kept');
+    expect(existsSync(join(`${path}.marks`, String(top + 50)))).toBe(true);
+    expect(existsSync(join(`${path}.marks`, String(top + 60)))).toBe(true);
+  });
+});
+

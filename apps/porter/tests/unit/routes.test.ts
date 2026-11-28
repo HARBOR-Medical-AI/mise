@@ -1093,13 +1093,56 @@ describe('door tokens (chell auth)', () => {
     const code: string = await approve();
     failOnce = true;
     const failed = await door.app.inject({ method: 'GET', url: `/auth/device/${code}` });
-    expect(failed.statusCode).toBe(503);
+    // Pending, exactly as chell reads a code still waiting (packages/chell door.test pins that it polls again on it).
+    expect(failed.statusCode).toBe(200);
+    expect(failed.json()).toEqual({ state: 'pending' });
     expect((await store.check(standing.token)).ok).toBe(true);
     const taken = await door.app.inject({ method: 'GET', url: `/auth/device/${code}` });
     expect(taken.json()).toMatchObject({ state: 'authorised', name: 'chris@titan' });
     const granted: string = (taken.json() as { token: string }).token;
     expect((await store.check(granted)).ok).toBe(true);
     expect(await store.check(standing.token)).toEqual({ ok: false, why: 'unknown' });
+    await door.app.close();
+  });
+
+  it('a renewal that expired before chell collected it is refused, and the standing token from before stays', async () => {
+    // The standing token was minted under a longer life; the door now mints tokens that live a tenth of a second.
+    const longer: TokenStore = new TokenStore(join(tokensDir, 'short.json'), 30);
+    await longer.load();
+    const standing = await longer.mint('chris@https://cube.example.org/api/v1/', 'chris', 'chris@titan');
+    const store: TokenStore = new TokenStore(join(tokensDir, 'short.json'), 0.1 / 86400);
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'short.json'), tokenDays: 0.1 / 86400 }, host, tokens: store, mint: async (_c: string, username: string) => ({ token: `TOKEN-${username}` }) });
+    const { code } = (await door.app.inject({ method: 'POST', url: '/auth/device', payload: { host: 'titan' } })).json() as { code: string };
+    await door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json', origin: DOOR_ORIGIN }, payload: { username: 'chris', password: 'right', code } });
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    const polled = await door.app.inject({ method: 'GET', url: `/auth/device/${code}` });
+    expect(polled.statusCode).toBe(410);
+    expect(polled.json()).toMatchObject({ state: 'expired' });
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    expect((await store.check(standing.token)).ok).toBe(true);
+    await door.app.close();
+  });
+
+  it('a lapsed renewal whose drop fails is dropped at a later tick, and the standing token stays', async () => {
+    let failing: number = 1;
+    const store: TokenStore = new TokenStore(join(tokensDir, 'drops.json'), 30, (): Date => new Date(), {
+      read_after: async (): Promise<void> => { if (failing > 0) { failing -= 1; throw new Error('the store is busy'); } },
+    });
+    let clock: number = Date.now();
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'drops.json') }, host, tokens: store, now: (): number => clock, sweepMs: 20, mint: async (_c: string, username: string) => ({ token: `TOKEN-${username}` }) });
+    await door.app.ready();
+    failing = 0;
+    const standing = await store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'chris@titan');
+    const { code } = (await door.app.inject({ method: 'POST', url: '/auth/device', payload: { host: 'titan' } })).json() as { code: string };
+    await door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json', origin: DOOR_ORIGIN }, payload: { username: 'chris', password: 'right', code } });
+    expect(await store.list()).toHaveLength(2);
+    // The first drop fails; the code lapses; a later tick drops it.
+    failing = 1;
+    clock += 11 * 60 * 1000;
+    for (let i = 0; i < 100 && (await store.list()).length > 1; i++) await new Promise((resolve) => { setTimeout(resolve, 10); });
+    // The first drop threw (the hook spent its one failure), and a later tick dropped it.
+    expect(failing).toBe(0);
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
     await door.app.close();
   });
 

@@ -125,7 +125,7 @@ export interface MintedToken {
  */
 export interface RenewalOutcome {
   /** What became of it. */
-  state: 'current' | 'superseded' | 'dropped';
+  state: 'current' | 'superseded' | 'expired' | 'dropped';
   /** How many tokens went. */
   retired: number;
 }
@@ -428,7 +428,7 @@ export class TokenStore {
    *
    * @param made - The renewal.
    * @param handed - Whether its token was handed to the one who asked.
-   * @returns `current` when it stands (and how many older went), `superseded` when its token was gone, or for a renewal not handed over how many went.
+   * @returns `current` when it stands (and how many older went), `superseded` when its token was gone, `expired` when it died before it was handed over (it goes, and nothing else), or `dropped` for a renewal not handed over.
    *
    * @example
    * ```ts
@@ -442,6 +442,8 @@ export class TokenStore {
         return at === -1 ? { result: { state: 'dropped', retired: 0 } } : { result: { state: 'dropped', retired: 1 }, next: tokens.filter((_held: DoorToken, i: number): boolean => i !== at) };
       }
       if (at === -1) return { result: { state: 'superseded', retired: 0 } };
+      // Expired before it was collected (a token life shorter than the wait): it goes, and nothing older is retired for it.
+      if (Date.parse(made.record.expires) <= this.now().getTime()) return { result: { state: 'expired', retired: 1 }, next: tokens.filter((_held: DoorToken, i: number): boolean => i !== at) };
       // The store keeps tokens in the order they were minted: those of the name before this one are older.
       const older = (held: DoorToken, i: number): boolean => i < at && held.identity === made.record.identity && held.name === made.record.name;
       const next: DoorToken[] = tokens.filter((held: DoorToken, i: number): boolean => !older(held, i));
@@ -606,10 +608,12 @@ export class TokenStore {
       throw error;
     }
     try {
-      const found: number[] = (await readdir(marks.at))
-        .map((name: string): number => (/^[1-9][0-9]{0,11}$/.test(name) ? Number(name) : 0))
-        .filter((n: number): boolean => n > 0 && n <= VERSION_LAST);
-      return found.length === 0 ? 0 : Math.max(...found);
+      let highest: number = 0;
+      for (const name of await readdir(marks.at)) {
+        const n: number = /^[1-9][0-9]{0,11}$/.test(name) ? Number(name) : 0;
+        if (n > highest && n <= VERSION_LAST && (await mark_isOwn(join(marks.at, name)))) highest = n;
+      }
+      return highest;
     } finally {
       await handle_close(marks.handle);
     }
@@ -628,13 +632,19 @@ export class TokenStore {
     await mkdir(`${this.path}.marks`, { mode: 0o700 }).catch((error: unknown): void => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; });
     const marks: HeldFolder = await folder_hold(`${this.path}.marks`);
     try {
-      await writeFile(join(marks.at, String(n)), '', { mode: 0o600, flag: 'wx' }).catch((error: unknown): void => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; });
-      // Pruning is upkeep, entry by entry: only the store's own empty mark files go, and nothing found there stops the mark.
+      const mark: string = join(marks.at, String(n));
+      try {
+        await writeFile(mark, '', { mode: 0o600, flag: 'wx' });
+      } catch (error: unknown) {
+        // A mark already there counts only if it is one: something else at its name is not taken for it.
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if (!(await mark_isOwn(mark))) throw new Error(`the door's token store mark ${mark} is not a mark of its own`);
+      }
+      // Pruning is upkeep, entry by entry: only the store's own marks go, and nothing else found there is touched or stops the mark.
       for (const name of await readdir(marks.at)) {
         if (!/^[1-9][0-9]{0,11}$/.test(name) || Number(name) >= n - VERSIONS_KEPT) continue;
         const path: string = join(marks.at, name);
-        const found: Stats | null = await lstat(path).catch((): null => null);
-        if (found !== null && found.isFile()) await rm(path, { force: true }).catch((): void => undefined);
+        if (await mark_isOwn(path)) await rm(path, { force: true }).catch((): void => undefined);
       }
     } finally {
       await handle_close(marks.handle);
@@ -952,6 +962,22 @@ export class TokenStore {
       await handle_close(temps.handle);
     }
   }
+}
+
+/**
+ * Whether a name is one of the store's marks: an empty regular file of this account's.
+ *
+ * @param path - The name, reached through the held folder of marks.
+ * @returns True for a mark.
+ *
+ * @example
+ * ```ts
+ * await mark_isOwn(join(marks.at, '12'));
+ * ```
+ */
+async function mark_isOwn(path: string): Promise<boolean> {
+  const found: Stats | null = await lstat(path).catch((): null => null);
+  return found !== null && found.isFile() && found.size === 0 && (typeof process.getuid !== 'function' || found.uid === process.getuid());
 }
 
 /**

@@ -199,6 +199,12 @@ describe('door tokens (chell auth)', () => {
     const waited = await doorDevice_wait('https://titan/', 'K7PD-3MXQ', { fetchLike: polling, intervalMs: 1, sleep: async (): Promise<void> => undefined });
     expect(waited).toEqual({ state: 'authorised', grant: { token: 'pdt_x', user: 'chris', name: 'chris@pangea', expires: 'later' } });
     expect(polls).toBe(3);
+    // A door that could not settle the login yet answers pending, as porter does: chell asks again, not refuses.
+    const settling: Array<[number, unknown]> = [[200, { state: 'pending' }], [200, { state: 'authorised', token: 'pdt_y', user: 'chris', name: 'chris@pangea', expires: 'later' }]];
+    let asked: number = 0;
+    const retried = await doorDevice_wait('https://titan/', 'K7PD-3MXQ', { fetchLike: async (): Promise<Response> => { const [status, body] = settling[asked++] as [number, unknown]; return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }); }, intervalMs: 1, sleep: async (): Promise<void> => undefined });
+    expect(retried).toMatchObject({ state: 'authorised' });
+    expect(asked).toBe(2);
     expect(await doorDevice_wait('https://titan/', 'GONE-GONE', { fetchLike: answer(404, { state: 'unknown' }), intervalMs: 1, sleep: async (): Promise<void> => undefined })).toEqual({ state: 'expired' });
   });
 
