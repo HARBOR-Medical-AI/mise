@@ -308,6 +308,21 @@ export function builtinCommand_has(name: string): boolean {
   return name in envelopeHandlers || name in plainHandlers;
 }
 
+/**
+ * Every word the engine runs itself (`builtinCommand_has` is true for each): what a session tells a surface on
+ * another machine at attach, so the surface routes a pipeline as this engine will.
+ *
+ * @returns The names.
+ *
+ * @example
+ * ```ts
+ * builtinCommand_names().includes('wc'); // true
+ * ```
+ */
+export function builtinCommand_names(): string[] {
+  return [...new Set([...Object.keys(envelopeHandlers), ...Object.keys(plainHandlers)])].sort();
+}
+
 /** @returns The names answered by an envelope handler, in listing order. */
 export function envelopeCommand_names(): string[] {
   return names_ordered(envelopeHandlers, listingOrder.envelope);

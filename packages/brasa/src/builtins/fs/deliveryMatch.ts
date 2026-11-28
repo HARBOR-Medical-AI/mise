@@ -11,35 +11,35 @@
 import { minimatch } from 'minimatch';
 
 /**
- * One source a delivering line named, as far as the surface can bind a delivered file to it: by the source's base
- * name, by its last segment's pattern (a wildcard the engine expands), or any folder (`.`, `/`, `~`).
+ * One source a delivering line named, as far as the surface can bind a delivered file to it: the operand as typed,
+ * a pattern the engine expands, or none (a place only the session knows).
  *
  * @example
  * ```ts
- * const named: SourceIntent = { name: 'scan.dcm' };
+ * const named: SourceIntent = { operand: '/home/me/scans' };
  * ```
  */
-export type SourceIntent = NamedSource | PatternSource | AnyFolderSource;
+export type SourceIntent = OperandSource | PatternSource | UnresolvedSource;
 
 /**
- * A source named by its base name.
+ * A source named by its operand as typed, quoting removed.
  *
  * @example
  * ```ts
- * const named: NamedSource = { name: 'scan.dcm' };
+ * const named: OperandSource = { operand: 'scans' };
  * ```
  */
-export interface NamedSource {
-  /** The base name. */
-  readonly name: string;
+export interface OperandSource {
+  /** The operand. */
+  readonly operand: string;
 }
 
 /**
- * A source the engine expands from a pattern: its last segment's pattern.
+ * A source the engine expands from a pattern: the operand's pattern as typed.
  *
  * @example
  * ```ts
- * const matched: PatternSource = { pattern: '*.dcm' };
+ * const matched: PatternSource = { pattern: '/home/me/*.dcm' };
  * ```
  */
 export interface PatternSource {
@@ -48,16 +48,16 @@ export interface PatternSource {
 }
 
 /**
- * A source that is any folder (`.`, `..`, `/`, `~`).
+ * A source whose place only the session knows (`.`, `~`, a path climbing with `..`): it binds nothing.
  *
  * @example
  * ```ts
- * const here: AnyFolderSource = { anyFolder: true };
+ * const unknown: UnresolvedSource = { unresolved: 'its source "." names a place only the session knows' };
  * ```
  */
-export interface AnyFolderSource {
-  /** Any folder. */
-  readonly anyFolder: true;
+export interface UnresolvedSource {
+  /** Why. */
+  readonly unresolved: string;
 }
 
 /** One delivery a line asks for. */
@@ -77,11 +77,12 @@ export interface DeliveryIntent {
 }
 
 /**
- * A delivered file, as the engine names it: where it is in the store, and the name it is to be written by.
+ * A delivered file, as the engine names it: where it is in the store, the name it is to be written by, and the
+ * source it came from as the engine resolved it.
  *
  * @example
  * ```ts
- * const file: DeliveredFile = { path: '/home/me/scans/a/1.dcm', filename: 'a/1.dcm' };
+ * const file: DeliveredFile = { path: '/home/me/scans/a/1.dcm', filename: 'a/1.dcm', source: '/home/me/scans' };
  * ```
  */
 export interface DeliveredFile {
@@ -89,6 +90,8 @@ export interface DeliveredFile {
   readonly path: string;
   /** The name to write it by under the destination: its base name, or its path inside a downloaded folder. */
   readonly filename: string;
+  /** The source it came from, as the engine resolved it; absent from an engine that does not say. */
+  readonly source: string | undefined;
 }
 
 /**
@@ -104,10 +107,43 @@ export function deliveryIntent_matches(intents: ReadonlyArray<DeliveryIntent>, d
 }
 
 /**
- * Whether a delivered file is one a source the line named would send: the source itself (its base name, both as
- * the file's own and as the name written), or a file inside it when it is a folder (the store path ends with the
- * folder's name and the written name, which is the file's path inside it). The written name is relative and never
- * climbs.
+ * Whether a typed operand names a resolved root: an absolute operand is the root itself; a relative one is the
+ * root's tail, whole segments (the session resolved it against its own folder).
+ *
+ * @param operand - The operand as typed (no `..`).
+ * @param root - The root the engine resolved.
+ * @returns True when it names it.
+ */
+function operand_names(operand: string, root: string): boolean {
+  const typed: string = operand.replace(/\/+$/, '').replace(/^\.\//, '');
+  const resolved: string = root.replace(/\/+$/, '');
+  if (typed.startsWith('/')) return resolved === typed || (typed === '' && resolved === '');
+  return resolved.endsWith(`/${typed}`);
+}
+
+/**
+ * Whether a resolved root is one a pattern names: its last segment matches the pattern's last segment and the rest
+ * is the pattern's folder, by the operand rule.
+ *
+ * @param pattern - The pattern as typed.
+ * @param root - The root the engine resolved.
+ * @returns True when it names it.
+ */
+function pattern_names(pattern: string, root: string): boolean {
+  const cut: number = pattern.lastIndexOf('/');
+  const resolved: string = root.replace(/\/+$/, '');
+  const name: string = resolved.slice(resolved.lastIndexOf('/') + 1);
+  if (!minimatch(name, cut < 0 ? pattern : pattern.slice(cut + 1))) return false;
+  if (cut < 0) return true;
+  const folder: string = pattern.slice(0, cut);
+  const parent: string = resolved.slice(0, resolved.lastIndexOf('/'));
+  return folder === '' ? parent === '' : operand_names(folder, parent);
+}
+
+/**
+ * Whether a delivered file is one a source the line named sends: the root the engine resolved is one the line's
+ * operand (or pattern) names, and the file is that root (written by its base name) or a file under it (written by
+ * its path inside). The written name is relative and never climbs. A file with no root named is no source's.
  *
  * @param sources - What the line named.
  * @param file - The file the engine says it delivers.
@@ -115,19 +151,20 @@ export function deliveryIntent_matches(intents: ReadonlyArray<DeliveryIntent>, d
  *
  * @example
  * ```ts
- * deliverySource_matches([{ name: 'scans' }], { path: '/home/me/scans/a/1.dcm', filename: 'a/1.dcm' }); // true
+ * deliverySource_matches([{ operand: 'scans' }], { path: '/home/me/scans/a/1.dcm', filename: 'a/1.dcm', source: '/home/me/scans' }); // true
  * ```
  */
 export function deliverySource_matches(sources: ReadonlyArray<SourceIntent>, file: DeliveredFile): boolean {
   const parts: string[] = file.filename.split('/');
   if (file.filename.length === 0 || file.filename.startsWith('/') || parts.some((part: string): boolean => part === '..' || part === '' || part === '.')) return false;
-  const base: string = file.path.split('/').filter((part: string): boolean => part.length > 0).pop() ?? '';
-  const inside: boolean = file.path.endsWith(`/${file.filename}`);
-  const folder: string = inside ? (file.path.slice(0, -(file.filename.length + 1)).split('/').filter((part: string): boolean => part.length > 0).pop() ?? '') : '';
+  if (file.source === undefined) return false;
+  const root: string = file.source.replace(/\/+$/, '');
+  const base: string = root.slice(root.lastIndexOf('/') + 1);
+  const shaped: boolean = (file.path === root && file.filename === base) || file.path === `${root}/${file.filename}`;
+  if (!shaped) return false;
   return sources.some((source: SourceIntent): boolean => {
-    if ('anyFolder' in source) return inside || file.path === file.filename;
-    if ('name' in source) return (file.filename === source.name && base === source.name) || (inside && folder === source.name);
-    return (file.filename === base && minimatch(base, source.pattern)) || (inside && folder.length > 0 && minimatch(folder, source.pattern));
+    if ('operand' in source) return operand_names(source.operand, root);
+    if ('pattern' in source) return pattern_names(source.pattern, root);
+    return false;
   });
 }
-

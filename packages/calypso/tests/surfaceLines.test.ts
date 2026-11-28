@@ -200,6 +200,7 @@ describe('lines in a surface\'s own language', () => {
         line_execute: async (line: string): Promise<CommandEnvelope[]> => {
           if (line === 'shellme') await hosted.shell_current('ls').catch((e: Error) => asked.push(`shell: ${e.message}`));
           if (line === 'pipeme') await hosted.pipe_current('tr a b', Buffer.from('x')).catch((e: Error) => asked.push(`pipe: ${e.message}`));
+          if (line === 'deliverme') await hosted.deliver_current({ path: '/home/me/a.txt', filename: 'a.txt', source: '/home/me/a.txt' }).catch((e: Error) => asked.push(`deliver: ${e.message}`));
           return [{ status: 'ok', rendered: '' }];
         },
         line_complete: async (prefix: string) => ({ candidates: [], prefix }),
@@ -209,7 +210,7 @@ describe('lines in a surface\'s own language', () => {
     const hostedPort = await hosted.start();
     try {
       // A browser that says it can run programs: still not the surface that sent the terminal's line.
-      const browser = await client_attach(hostedPort, { claims: [], shellCommands: true, pipeSegments: true });
+      const browser = await client_attach(hostedPort, { claims: [], shellCommands: true, pipeSegments: true, fileDelivery: true });
       hosted.terminals_set(new Terminals({ spawn, launch: { exec: 'chell', prefixArgs: [] }, target: { identity: 'i', url: 'ws://x', token: 't' } }));
       browser.ws.send(JSON.stringify({ type: 'terminalOpen', cols: 80, rows: 24 }));
       const terminalId = (await browser.next((m) => m.type === 'terminalOpened')).terminalId as string;
@@ -224,6 +225,16 @@ describe('lines in a surface\'s own language', () => {
         'pipe: a pipeline segment for this line would run on another surface than the one that sent it; nothing ran',
       ]);
       for (const surface of [browser, chell]) expect(surface.got.some((m) => m.type === 'shell' || m.type === 'pipe')).toBe(false);
+      // A delivery for the terminal's line goes to its browser by the browser's own route: no line of the chell's.
+      browser.ws.on('message', (d) => {
+        const m = JSON.parse(d.toString()) as Record<string, unknown>;
+        if (m.type === 'deliver') browser.ws.send(JSON.stringify({ type: 'deliverResult', deliverId: m.deliverId, location: 'saved', bytes: 1 }));
+      });
+      chell.ws.send(JSON.stringify({ type: 'execute', id: '3', line: 'deliverme' }));
+      await chell.next((m) => m.type === 'result' && m.id === '3');
+      const deliver = browser.got.find((m) => m.type === 'deliver');
+      expect(deliver).toBeDefined();
+      expect(deliver?.id).toBeUndefined();
     } finally {
       await hosted.stop();
     }

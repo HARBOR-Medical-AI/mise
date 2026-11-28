@@ -9,7 +9,7 @@
           "destination": "/tmp",
           "sources": [
             {
-              "name": "scan.dcm"
+              "operand": "/home/me/scan.dcm"
             }
           ]
         }
@@ -23,7 +23,7 @@
           "destination": "./my scans",
           "sources": [
             {
-              "name": "scan.dcm"
+              "operand": "/home/me/scan.dcm"
             }
           ]
         }
@@ -37,7 +37,7 @@
           "destination": "./scans",
           "sources": [
             {
-              "name": "scan.dcm"
+              "operand": "/home/me/scan.dcm"
             }
           ]
         }
@@ -51,7 +51,7 @@
           "destination": "./scans",
           "sources": [
             {
-              "name": "scan.dcm"
+              "operand": "/home/me/scan.dcm"
             }
           ]
         }
@@ -65,10 +65,10 @@
           "destination": "./out dir",
           "sources": [
             {
-              "name": "b"
+              "operand": "/a/b"
             },
             {
-              "name": "d"
+              "operand": "/c/d"
             }
           ]
         }
@@ -82,7 +82,7 @@
           "destination": "./scans",
           "sources": [
             {
-              "name": "scan.dcm"
+              "operand": "/home/me/scan.dcm"
             }
           ]
         }
@@ -90,35 +90,7 @@
     },
     {
       "line": "download /a ./one && download /b ./two || download /c ./three",
-      "intents": [
-        {
-          "verb": "download",
-          "destination": "./one",
-          "sources": [
-            {
-              "name": "a"
-            }
-          ]
-        },
-        {
-          "verb": "download",
-          "destination": "./two",
-          "sources": [
-            {
-              "name": "b"
-            }
-          ]
-        },
-        {
-          "verb": "download",
-          "destination": "./three",
-          "sources": [
-            {
-              "name": "c"
-            }
-          ]
-        }
-      ]
+      "intents": []
     },
     {
       "line": "download /a ./out | wc -l",
@@ -128,7 +100,7 @@
           "destination": "./out",
           "sources": [
             {
-              "name": "a"
+              "operand": "/a"
             }
           ]
         }
@@ -142,7 +114,7 @@
           "destination": "-odd",
           "sources": [
             {
-              "name": "a"
+              "operand": "/a"
             }
           ]
         }
@@ -204,7 +176,7 @@
           "destination": "$OUT",
           "sources": [
             {
-              "name": "a"
+              "operand": "/a"
             }
           ]
         }
@@ -218,7 +190,7 @@
           "destination": "./out",
           "sources": [
             {
-              "name": "a"
+              "operand": "/a"
             }
           ]
         }
@@ -232,7 +204,7 @@
           "destination": "./out",
           "sources": [
             {
-              "name": "a"
+              "operand": "/a"
             }
           ]
         }
@@ -246,7 +218,7 @@
           "destination": "./later",
           "sources": [
             {
-              "name": "a"
+              "operand": "/a"
             }
           ]
         }
@@ -260,7 +232,7 @@
           "destination": "./first",
           "sources": [
             {
-              "name": "a"
+              "operand": "/a"
             }
           ]
         },
@@ -269,7 +241,7 @@
           "destination": "./second",
           "sources": [
             {
-              "name": "b"
+              "operand": "/b"
             }
           ]
         }
@@ -283,13 +255,13 @@
           "destination": "log",
           "sources": [
             {
-              "name": "a"
+              "operand": "/a"
             },
             {
-              "name": "out"
+              "operand": "./out"
             },
             {
-              "name": ">"
+              "operand": ">"
             }
           ]
         }
@@ -303,7 +275,7 @@
           "destination": "./out",
           "sources": [
             {
-              "name": "a"
+              "operand": "/a"
             }
           ]
         }
@@ -353,7 +325,7 @@
           "destination": "./first",
           "sources": [
             {
-              "name": "a"
+              "operand": "/a"
             }
           ]
         }
@@ -367,7 +339,7 @@
           "destination": "./out",
           "sources": [
             {
-              "pattern": "*.dcm"
+              "pattern": "/home/me/*.dcm"
             }
           ]
         }
@@ -378,12 +350,8 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./out",
-          "sources": [
-            {
-              "anyFolder": true
-            }
-          ]
+          "destination": null,
+          "unbound": "its source \".\" names a place only the session knows: type the folder's path"
         }
       ]
     },
@@ -405,7 +373,21 @@
           "destination": "./out",
           "sources": [
             {
-              "name": "scans"
+              "operand": "/home/me/scans"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "line": "download /home/me/scan.dcm ./out",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./out",
+          "sources": [
+            {
+              "operand": "/home/me/scan.dcm"
             }
           ]
         }

@@ -23,7 +23,7 @@ import type { BrasaEngine } from '@fnndsc/brasa/core';
 import type { ProgressEvent, PromptContext } from '@fnndsc/menu';
 import type { OutputSink, Surface, SurfaceCapabilities, SurfacePeer, PromptRequest, LocalEditRequest, LocalEditResult } from '@fnndsc/menu/surface';
 import type { FileDeliverRequest, FileDeliverResult } from '@fnndsc/menu';
-import { backend_get, type Backend, type SessionIdentity } from '@fnndsc/brasa/core';
+import { backend_get, builtinCommand_names, type Backend, type SessionIdentity } from '@fnndsc/brasa/core';
 import { stackBanner_rows, stackBannerRow_paint, versions_get, versions_selectForBackend, buildHash_get } from '@fnndsc/brasa/core';
 import { identity_normalise, berth_write, berth_path, probeKey_generate, closing_take, type Berth } from './berth.js';
 import type { ClosingCause } from '@fnndsc/menu';
@@ -126,7 +126,7 @@ export function daemonSurface_create(daemon: CalypsoDaemon, policy: HostControlP
       return hostShell_run(command, (channel: 'data' | 'err', chunk: string): void => { daemon.output_current(channel, chunk); }, signal);
     },
     localEdit: (request: LocalEditRequest): Promise<LocalEditResult> =>
-      daemon.edit_current(request.content, request.extension, request.path),
+      daemon.edit_current(request.content, request.extension, request.path, request.named),
     fileDeliver: (request: FileDeliverRequest): Promise<FileDeliverResult> =>
       daemon.deliver_current(request),
     // A command following a task waits out of the lane, so the session runs other lines meanwhile.
@@ -272,6 +272,8 @@ export async function daemon_launch(
     // The stack the session is made of: ChRIS's packages only for a ChRIS session.
     stack: { ...versions_selectForBackend(versions_get(), backend.id), build: buildHash_get(), ...(surfaceBuild !== null ? { surface: surfaceBuild } : {}) },
     hostControl: hostControl_tiers(hostControl),
+    // The words the engine runs itself, so an attached chell grants a pipeline's host segments as the engine routes them.
+    engineCommands_list: (): readonly string[] => builtinCommand_names(),
     // The door this session can be raised at with the person's password, when its host named one (D14).
     ...(elevation !== null ? { elevation } : {}),
     codeCheck: (): void => { void codeWatch?.check().catch((): void => undefined); },

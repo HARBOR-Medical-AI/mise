@@ -92,7 +92,9 @@ const DELIVERY_LINES: ReadonlyArray<{ line: string; intents: Array<{ verb: strin
 const { deliveryIntent_matches, deliverySource_matches } = await import('../../brasa/dist/builtins/fs/deliveryMatch.js');
 // What a line asks to have run here: the same, from the table brasa's host-grants test holds its reader to. A line
 // that looks like one (a `!`, a pipe, an `edit` or `command` head) but is not in the table fails the test that used it.
-interface HostLine { line: string; shells: string[]; pipes: string[]; edits: string[] }
+interface HostLine { line: string; shells: string[]; pipes: Array<{ command: string; required: boolean }>; edits: string[] }
+// Each read: the line, and the session's words it was read by (null when the session said none).
+const hostReads: Array<{ line: string; engineRuns: ((word: string) => boolean) | null }> = [];
 const HOST_LINES: ReadonlyArray<HostLine> = (JSON.parse(readFileSync(new URL('../../brasa/tests/fixtures/hostLines.json', import.meta.url), 'utf8')) as { lines: HostLine[] }).lines;
 jest.unstable_mockModule('@fnndsc/brasa', () => ({
   deliveryIntents_read: (line: string, backend: string | undefined): Array<{ verb: string; destination: string | null }> => {
@@ -105,7 +107,8 @@ jest.unstable_mockModule('@fnndsc/brasa', () => ({
   },
   deliveryIntent_matches,
   deliverySource_matches,
-  lineHostOperations_read: async (line: string): Promise<{ shells: string[]; pipes: string[]; edits: string[] }> => {
+  lineHostOperations_read: async (line: string, engineRuns: ((word: string) => boolean) | null): Promise<{ shells: string[]; pipes: Array<{ command: string; required: boolean }>; edits: string[] }> => {
+    hostReads.push({ line, engineRuns });
     const row: HostLine | undefined = HOST_LINES.find((one: HostLine): boolean => one.line === line);
     if (row === undefined && /^\s*(!|edit |command )|\|/.test(line)) throw new Error(`not in the shared table: ${line}`);
     return { shells: row?.shells ?? [], pipes: row?.pipes ?? [], edits: row?.edits ?? [] };
@@ -346,7 +349,7 @@ describe('RemoteEngine live output', () => {
       if (sent.type !== 'execute') return;
       const id = String(sent.id);
       process.nextTick(() => {
-        ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p1' })));
+        ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p1', lineId: id, command: 'tty; read x' })));
         ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyData', ptyId: 'p1', data: '/dev/pts/7\r\n' })));
         input.emit('data', Buffer.from('hello\r'));
         ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyExit', ptyId: 'p1', code: 0 })));
@@ -364,7 +367,7 @@ describe('RemoteEngine live output', () => {
     expect(remote.exitCode_take()).toBe(0);
   });
 
-  it('a chell on pipes declares no terminal and ignores a host pty', async () => {
+  it('a chell on pipes declares no terminal, and refuses a host pty its line did not ask for, back to the daemon', async () => {
     const input = Object.assign(new EventEmitter(), { isTTY: false, setRawMode(): void { throw new Error('not a terminal'); }, resume(): void { /* flowing */ } });
     const output = Object.assign(new EventEmitter(), { isTTY: false, write(): boolean { throw new Error('not drawn'); } });
     remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', terminal: { input, output, term: 'dumb' } });
@@ -373,7 +376,8 @@ describe('RemoteEngine live output', () => {
     ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p1' })));
     ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyData', ptyId: 'p1', data: 'x' })));
     ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyExit', ptyId: 'p1', code: 0 })));
-    expect(ws.sent).toHaveLength(1);
+    // The daemon is told no, so it stops the program and its line settles; nothing is drawn, no key is sent.
+    expect(ws.sent.slice(1)).toEqual([expect.objectContaining({ type: 'hostPtyRefuse', ptyId: 'p1' })]);
   });
 
   it('reports promptError, pipeError, and editError when it has no handlers', async () => {
@@ -541,7 +545,7 @@ describe('RemoteEngine live output', () => {
         if (sent.line === 'cat x | tr a b') {
           ws.emit('message', Buffer.from(JSON.stringify({ type: 'pipe', pipeId: 'pipe1', command: 'tr a b', input: Buffer.from('abc').toString('base64'), lineId: id })));
         } else if (sent.line === 'edit notes.txt') {
-          ws.emit('message', Buffer.from(JSON.stringify({ type: 'edit', editId: 'edit1', content: 'before', extension: '.txt', path: '/home/chris/notes.txt', lineId: id })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'edit', editId: 'edit1', content: 'before', extension: '.txt', path: '/home/chris/notes.txt', named: 'notes.txt', lineId: id })));
         } else {
           ws.emit('message', Buffer.from(JSON.stringify({
             type: 'deliver',
@@ -550,6 +554,7 @@ describe('RemoteEngine live output', () => {
             path: '/home/me/scan.dcm',
             filename: 'scan.dcm',
             destination: '/tmp',
+            source: '/home/me/scan.dcm',
           })));
         }
         // After the request's reply, so the line is still in flight when it lands.
@@ -605,7 +610,7 @@ describe('RemoteEngine live output', () => {
     /** Sends the client one delivery request, as the daemon would. */
     function deliver_emit(ws: FakeWebSocket, deliverId: string, executeId: string | undefined, destination: string | undefined, path: string = '/home/me/scan.dcm'): void {
       ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'deliver', deliverId, path, filename: path.split('/').pop(),
+        type: 'deliver', deliverId, path, filename: path.split('/').pop(), source: path,
         ...(executeId !== undefined ? { id: executeId } : {}),
         ...(destination !== undefined ? { destination } : {}),
       })));
@@ -647,6 +652,30 @@ describe('RemoteEngine live output', () => {
       expect(sent).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'deliverResult', deliverId: 'd1' })]));
     });
 
+    it('a file of the same name under another root, and a second file for the same place, are refused', async () => {
+      const delivered: string[] = [];
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        const id = String(sent.id);
+        process.nextTick(() => {
+          const one = (deliverId: string, path: string): void => {
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'deliver', deliverId, id, path, filename: 'scan.dcm', destination: './out', source: path })));
+          };
+          one('g1', '/home/eve/scan.dcm');
+          one('g2', '/home/me/scan.dcm');
+          one('g3', '/home/me//scan.dcm');
+          setTimeout(() => { result_emit(ws, id); }, 10);
+        });
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onDeliver: async (request) => { delivered.push(request.path); return { location: 'x', bytes: 1 }; } });
+      await remote.line_execute('download /home/me/scan.dcm ./out');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const sent = (FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket).sent as Array<Record<string, unknown>>;
+      expect(delivered).toEqual(['/home/me/scan.dcm']);
+      expect(refusal_of(sent, 'g1')).toContain('which no source the line sent from here names');
+      expect(refusal_of(sent, 'g3')).toBeDefined();
+      remote.close();
+    });
+
     it('a file no source of the line names is refused, though the destination is right', async () => {
       const { sent, delivered } = await delivery_during('download /home/me/scan.dcm ./scans', './scans', { path: '/home/me/.ssh/id_ed25519' });
       expect(delivered).toEqual([]);
@@ -659,7 +688,7 @@ describe('RemoteEngine live output', () => {
         const id = String(sent.id);
         process.nextTick(() => {
           const one = (deliverId: string, path: string, filename: string): void => {
-            ws.emit('message', Buffer.from(JSON.stringify({ type: 'deliver', deliverId, id, path, filename, destination: './out' })));
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'deliver', deliverId, id, path, filename, destination: './out', source: '/home/me/scans' })));
           };
           one('f1', '/home/me/scans/a/1.dcm', 'a/1.dcm');
           one('f2', '/home/me/scans/b.dcm', 'b.dcm');
@@ -938,21 +967,22 @@ describe('RemoteEngine live output', () => {
             { type: 'pipe', pipeId: 'p1', command: 'tr a b', input: '', lineId: id },
           ]
         : [
-            { type: 'edit', editId: 'e-other', content: 'x', path: '/home/chris/secrets.txt', lineId: id },
-            { type: 'edit', editId: 'e-own', content: 'x', path: '/home/chris/notes.txt', lineId: id },
-            { type: 'edit', editId: 'e-again', content: 'x', path: '/home/chris/notes.txt', lineId: id },
+            { type: 'edit', editId: 'e-other', content: 'x', path: '/home/chris/secrets.txt', named: 'secrets.txt', lineId: id },
+            { type: 'edit', editId: 'e-own', content: 'x', path: '/home/chris/notes.txt', named: 'notes.txt', lineId: id },
+            { type: 'edit', editId: 'e-again', content: 'x', path: '/home/chris/notes.txt', named: 'notes.txt', lineId: id },
           ]);
       remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onPipe: pipe, onEdit: edit });
       await remote.line_execute('cat x | tr a b | tr c d');
       await remote.line_execute('edit notes.txt');
       await new Promise((r) => setTimeout(r, 20));
-      // The second segment taken first passes the first by: it cannot be asked for after.
-      expect(pipe.mock.calls.map((call) => call[0])).toEqual(['tr c d']);
-      expect(reasons('pipeError')).toEqual([expect.stringContaining('"tr a b", which the line sent from here did not ask for')]);
+      // In the engine's order: a request that skips a segment the engine always hands over is refused, and the
+      // segment that is next still runs.
+      expect(pipe.mock.calls.map((call) => call[0])).toEqual(['tr a b']);
+      expect(reasons('pipeError')).toEqual([expect.stringContaining('"tr c d", which the line sent from here did not ask for')]);
       expect(edit).toHaveBeenCalledTimes(1);
       const editRefusals: string[] = reasons('editError');
       expect(editRefusals).toHaveLength(2);
-      expect(editRefusals[0]).toContain('"/home/chris/secrets.txt"');
+      expect(editRefusals[0]).toContain('an editor on "secrets.txt", which the line sent from here did not ask for');
     });
 
     it('a cancelled line, and a closed connection, ask for nothing more', async () => {
@@ -1014,6 +1044,90 @@ describe('RemoteEngine live output', () => {
       a.close();
       b.close();
     });
+  });
+
+  describe('everything a line may do here ends with it, at once', () => {
+    it('a request in the same burst as the line\'s result, or after its cancel, runs and writes nothing', async () => {
+      const shell = jest.fn(async (_command: string): Promise<number> => 0);
+      const delivered: string[] = [];
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: 'burst', command: 'ls -la', lineId: id })));
+        });
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell });
+      await remote.line_execute('!ls -la');
+      await new Promise((r) => setTimeout(r, 5));
+      expect(shell).not.toHaveBeenCalled();
+      remote.close();
+      // Cancelled: its delivery is refused though the daemon still sends one.
+      attachResponse = { ...attachResponse, backend: 'chris' };
+      let lineId = '';
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type === 'execute') { lineId = String(sent.id); return; }
+        if (sent.type === 'cancel') {
+          process.nextTick(() => {
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'deliver', deliverId: 'late', id: lineId, path: '/home/me/scan.dcm', filename: 'scan.dcm', destination: './out', source: '/home/me/scan.dcm' })));
+            setTimeout(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id: lineId, envelopes: [{ status: 'ok', rendered: '' }] }))); }, 5);
+          });
+        }
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onDeliver: async (request) => { delivered.push(request.filename); return { location: 'x', bytes: 1 }; } });
+      const running: Promise<unknown> = remote.line_execute('download /home/me/scan.dcm ./out');
+      await new Promise((r) => setTimeout(r, 5));
+      remote.line_cancel();
+      await running;
+      await new Promise((r) => setTimeout(r, 5));
+      expect(delivered).toEqual([]);
+    });
+
+    it('a line read after the connection closed is not sent', async () => {
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token' });
+      remote.close();
+      await expect(remote.line_execute('!ls -la')).rejects.toThrow('the session closed before the line was sent');
+      expect(FakeWebSocket.instances[0].sent.some((one) => one.type === 'execute')).toBe(false);
+    });
+
+    it('a terminal handed to a line\'s program is this chell\'s again when the line ends, even with no exit from the daemon', async () => {
+      const input = Object.assign(new EventEmitter(), { isTTY: true, isRaw: false, setRawMode(mode: boolean): void { input.isRaw = mode; }, resume(): void { /* flowing */ } });
+      const output = Object.assign(new EventEmitter(), { isTTY: true, columns: 80, rows: 24, write(): boolean { return true; } });
+      let rawDuring: boolean | undefined;
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p9', lineId: id, command: 'ls -la' })));
+          rawDuring = input.isRaw;
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] })));
+        });
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', terminal: { input, output, term: 'xterm' } });
+      await remote.line_execute('!ls -la');
+      expect(rawDuring).toBe(true);
+      expect(input.isRaw).toBe(false);
+    });
+  });
+
+  it('reads a line\'s pipelines by the words the session said it runs, and by none when it said none', async () => {
+    hostReads.length = 0;
+    scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+      if (sent.type !== 'execute') return;
+      process.nextTick(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id: String(sent.id), envelopes: [{ status: 'ok', rendered: '' }] }))); });
+    };
+    attachResponse = { ...attachResponse, engineCommands: ['cat', 'grep'] };
+    remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token' });
+    await remote.line_execute('cat x | tr a b');
+    const said = hostReads[0]?.engineRuns;
+    expect(said?.('grep')).toBe(true);
+    expect(said?.('tr')).toBe(false);
+    remote.close();
+    attachResponse = { ...attachResponse, engineCommands: undefined };
+    remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token' });
+    await remote.line_execute('cat x | tr a b');
+    expect(hostReads[1]?.engineRuns).toBeNull();
   });
 
   it('returns a pipe error when the local segment fails', async () => {

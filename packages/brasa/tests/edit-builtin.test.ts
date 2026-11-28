@@ -108,7 +108,7 @@ describe('builtin_edit', () => {
     mockCat.mockResolvedValue(ok('original'));
     mockLocalEdit.mockResolvedValue({ content: 'original', changed: false, opened: true });
     const env = await builtin_edit(['notes.txt']);
-    expect(mockLocalEdit).toHaveBeenCalledWith({ content: 'original', extension: '.txt', path: '/home/chris/notes.txt' });
+    expect(mockLocalEdit).toHaveBeenCalledWith({ content: 'original', extension: '.txt', path: '/home/chris/notes.txt', named: 'notes.txt' });
     expect(env.rendered).toContain('(opened in the editor)');
     expect(mockReplace).not.toHaveBeenCalled();
   });
@@ -205,7 +205,7 @@ describe('builtin_edit on a projected file', () => {
     mockLocalEdit.mockResolvedValueOnce({ content: 'edited', changed: true });
     const env = await builtin_edit(['/proc/jobs/feed_12/note']);
     expect(mockVfsRead).toHaveBeenCalledWith('/proc/jobs/feed_12/note');
-    expect(mockLocalEdit).toHaveBeenCalledWith({ content: 'the note', extension: '.txt', path: '/proc/jobs/feed_12/note' });
+    expect(mockLocalEdit).toHaveBeenCalledWith({ content: 'the note', extension: '.txt', path: '/proc/jobs/feed_12/note', named: '/proc/jobs/feed_12/note' });
     expect(mockVfsWrite).toHaveBeenCalledWith('/proc/jobs/feed_12/note', 'edited');
     expect(env.status).toBe('ok');
     expect(mockCat).not.toHaveBeenCalled();

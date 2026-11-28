@@ -1,5 +1,5 @@
 {
-  "about": "What each line asks the machine it was typed on to run (lineHostOperations_read), read with the core commands registered. brasa's host-grants test holds the reader to it; chell's remote-engine test reads it as the reader's stand-in.",
+  "about": "What each line asks the machine it was typed on to run (lineHostOperations_read), read with the core commands as the session's own words. brasa's host-grants test holds the reader to it; chell's remote-engine test reads it as the reader's stand-in.",
   "lines": [
     {
       "line": "!printf local",
@@ -27,7 +27,10 @@
       "line": "cat x | tr a b",
       "shells": [],
       "pipes": [
-        "tr a b"
+        {
+          "command": "tr a b",
+          "required": true
+        }
       ],
       "edits": []
     },
@@ -35,7 +38,10 @@
       "line": "cat x |tr a b",
       "shells": [],
       "pipes": [
-        "tr a b"
+        {
+          "command": "tr a b",
+          "required": true
+        }
       ],
       "edits": []
     },
@@ -49,7 +55,10 @@
       "line": "cat x | grep -i foo",
       "shells": [],
       "pipes": [
-        "grep -i foo"
+        {
+          "command": "grep -i foo",
+          "required": false
+        }
       ],
       "edits": []
     },
@@ -57,7 +66,10 @@
       "line": "cat x | grep -c -e a -e b",
       "shells": [],
       "pipes": [
-        "grep -c -e a -e b"
+        {
+          "command": "grep -c -e a -e b",
+          "required": false
+        }
       ],
       "edits": []
     },
@@ -86,7 +98,7 @@
       "shells": [],
       "pipes": [],
       "edits": [
-        "config.yaml"
+        "/home/chris/uploads/config.yaml"
       ]
     },
     {
@@ -105,7 +117,10 @@
       "line": "command ls -la",
       "shells": [],
       "pipes": [
-        "command ls -la"
+        {
+          "command": "command ls -la",
+          "required": false
+        }
       ],
       "edits": []
     },
@@ -113,7 +128,10 @@
       "line": "command printf '%s\\n' a",
       "shells": [],
       "pipes": [
-        "command printf '%s\\n' a"
+        {
+          "command": "command printf '%s\\n' a",
+          "required": false
+        }
       ],
       "edits": []
     },
@@ -121,7 +139,10 @@
       "line": "cat x | command tr a b",
       "shells": [],
       "pipes": [
-        "command tr a b"
+        {
+          "command": "command tr a b",
+          "required": false
+        }
       ],
       "edits": []
     },
@@ -129,7 +150,10 @@
       "line": "ls | tr a b | wc -l | sort",
       "shells": [],
       "pipes": [
-        "tr a b"
+        {
+          "command": "tr a b",
+          "required": true
+        }
       ],
       "edits": []
     },
@@ -167,7 +191,10 @@
       "line": "cat x | tr a b > out",
       "shells": [],
       "pipes": [
-        "tr a b > out"
+        {
+          "command": "tr a b > out",
+          "required": true
+        }
       ],
       "edits": []
     },
@@ -199,7 +226,10 @@
       "line": "cat x | tr 'a b' c",
       "shells": [],
       "pipes": [
-        "tr 'a b' c"
+        {
+          "command": "tr 'a b' c",
+          "required": true
+        }
       ],
       "edits": []
     },
@@ -212,9 +242,7 @@
     {
       "line": "cat x | tr $A b",
       "shells": [],
-      "pipes": [
-        "tr $A b"
-      ],
+      "pipes": [],
       "edits": []
     },
     {
@@ -227,8 +255,14 @@
       "line": "cat x | tr a b | tr c d",
       "shells": [],
       "pipes": [
-        "tr a b",
-        "tr c d"
+        {
+          "command": "tr a b",
+          "required": true
+        },
+        {
+          "command": "tr c d",
+          "required": true
+        }
       ],
       "edits": []
     },
@@ -244,7 +278,10 @@
       "line": "ls /x | \"download\" /a ./later",
       "shells": [],
       "pipes": [
-        "\"download\" /a ./later"
+        {
+          "command": "\"download\" /a ./later",
+          "required": true
+        }
       ],
       "edits": []
     },
@@ -252,7 +289,10 @@
       "line": "ls /x | download /a ./later",
       "shells": [],
       "pipes": [
-        "download /a ./later"
+        {
+          "command": "download /a ./later",
+          "required": true
+        }
       ],
       "edits": []
     },
@@ -260,7 +300,10 @@
       "line": "pipeline --signalflow | signalflow",
       "shells": [],
       "pipes": [
-        "signalflow"
+        {
+          "command": "signalflow",
+          "required": true
+        }
       ],
       "edits": []
     },
@@ -270,6 +313,57 @@
         "tty; read x"
       ],
       "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "grep foo | tr a b",
+      "shells": [],
+      "pipes": [
+        {
+          "command": "tr a b",
+          "required": true
+        }
+      ],
+      "edits": []
+    },
+    {
+      "line": "cat x | grep --help",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "cat x | tr '$A' b",
+      "shells": [],
+      "pipes": [
+        {
+          "command": "tr '$A' b",
+          "required": true
+        }
+      ],
+      "edits": []
+    },
+    {
+      "line": "cat x |  | tr a b",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "cat x | command --help",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "echo hi | command tr a b | wc -l",
+      "shells": [],
+      "pipes": [
+        {
+          "command": "command tr a b",
+          "required": false
+        }
+      ],
       "edits": []
     }
   ]

@@ -133,7 +133,7 @@ async function edit_run(named: string): Promise<CommandEnvelope> {
   // Hand the content to the surface's editor.
   let edit: LocalEditResult;
   try {
-    edit = await surface_get().localEdit({ content: catResult.value, extension: ext || '.txt', path: target });
+    edit = await surface_get().localEdit({ content: catResult.value, extension: ext || '.txt', path: target, named });
   } catch (err: unknown) {
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red(`edit: ${err instanceof Error ? err.message : String(err)}`)}\n`);
@@ -227,7 +227,7 @@ async function projectedFile_edit(
   }
   let edit: LocalEditResult;
   try {
-    edit = await surface_get().localEdit({ content: read.value, extension: ext || '.txt', path: target });
+    edit = await surface_get().localEdit({ content: read.value, extension: ext || '.txt', path: target, named });
   } catch (err: unknown) {
     exitCode_set(1);
     return envelope_error('', undefined, `${chalk.red(`edit: ${err instanceof Error ? err.message : String(err)}`)}\n`);

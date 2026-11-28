@@ -22,9 +22,7 @@
  * @module
  */
 
-import { posix } from 'node:path';
-
-import type { LineHostOperations } from '@fnndsc/brasa';
+import type { LineHostOperations, PipeGrant } from '@fnndsc/brasa';
 
 /** A request to run a host command. */
 interface ShellAsk {
@@ -46,8 +44,8 @@ interface PipeAsk {
 interface EditAsk {
   /** An edit. */
   kind: 'edit';
-  /** The file the daemon names, if any. */
-  path: string | undefined;
+  /** The file as the line typed it, as the daemon says; absent from an older daemon. */
+  named: string | undefined;
 }
 
 /** What a daemon's request asks this machine to run. */
@@ -57,11 +55,11 @@ export type HostAsk = ShellAsk | PipeAsk | EditAsk;
 interface LineGrants {
   /** Host commands not yet run. */
   shells: string[];
-  /** Pipeline lines, in the engine's order. */
-  pipes: readonly string[];
+  /** Pipeline lines, in the engine's order, each required or optional. */
+  pipes: readonly PipeGrant[];
   /** How far the pipeline lines have been taken: a line before this one is spent or passed over. */
   pipeAt: number;
-  /** Files to edit, by base name, not yet opened. */
+  /** Files to edit, as the line typed them, not yet opened. */
   edits: string[];
 }
 
@@ -74,7 +72,7 @@ interface LineGrants {
 function ask_say(ask: HostAsk): string {
   if (ask.kind === 'shell') return `the host command ${JSON.stringify(ask.command)}`;
   if (ask.kind === 'pipe') return `the pipeline segment ${JSON.stringify(ask.command)}`;
-  return `an editor on ${ask.path === undefined ? 'an unnamed file' : JSON.stringify(ask.path)}`;
+  return `an editor on ${ask.named === undefined ? 'an unnamed file' : JSON.stringify(ask.named)}`;
 }
 
 /**
@@ -168,16 +166,31 @@ function grant_spend(grants: LineGrants, ask: HostAsk): boolean {
     grants.shells.splice(at, 1);
     return true;
   }
-  if (ask.kind === 'pipe') {
-    // In the engine's order: a segment it passed over (a builtin that did not delegate) cannot be asked for later.
-    const at: number = grants.pipes.indexOf(ask.command, grants.pipeAt);
-    if (at < 0) return false;
-    grants.pipeAt = at + 1;
-    return true;
-  }
-  if (ask.path === undefined) return false;
-  const at: number = grants.edits.indexOf(posix.basename(ask.path));
+  if (ask.kind === 'pipe') return pipe_spend(grants, ask.command);
+  if (ask.named === undefined) return false;
+  const at: number = grants.edits.indexOf(ask.named);
   if (at < 0) return false;
   grants.edits.splice(at, 1);
   return true;
+}
+
+/**
+ * Spends the next pipeline grant a request matches, in the engine's order: an optional one (a delegation that may
+ * not be asked) can be passed over, a required one (a segment the engine always hands over) cannot, so a request
+ * that skips one is refused.
+ *
+ * @param grants - The line's grants.
+ * @param command - The line asked for.
+ * @returns True when one was spent.
+ */
+function pipe_spend(grants: LineGrants, command: string): boolean {
+  for (let at = grants.pipeAt; at < grants.pipes.length; at++) {
+    const grant: PipeGrant = grants.pipes[at];
+    if (grant.command === command) {
+      grants.pipeAt = at + 1;
+      return true;
+    }
+    if (grant.required) return false;
+  }
+  return false;
 }

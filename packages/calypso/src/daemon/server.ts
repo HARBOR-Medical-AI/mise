@@ -260,6 +260,8 @@ export interface DaemonOptions {
   uploadHeld?: number;
   /** The host-control tiers this daemon declares (empty or absent when off). */
   hostControl?: string[];
+  /** The words this daemon's engine runs itself, told to a surface at attach; read each time one attaches. */
+  engineCommands_list?: () => readonly string[];
   /** The door a surface can be raised at with the person's password (`elevate`); absent, a session stays as it was started. */
   elevation?: ElevationDoor;
   /**
@@ -338,6 +340,8 @@ export class CalypsoDaemon {
   /** Where the daemon's own operational lines go. */
   private readonly log: (line: string) => void;
   private readonly hostControl: string[];
+  /** The words this daemon's engine runs itself, told at attach. */
+  private readonly engineCommands: (() => readonly string[]) | undefined;
   private readonly elevation: ElevationDoor | undefined;
   /** The one session all surfaces share; returned in each attach ack. */
   private readonly sessionId: string = randomBytes(8).toString('hex');
@@ -435,6 +439,7 @@ export class CalypsoDaemon {
     this.webRoot = options.webRoot;
     this.uploads = new UploadHold(options.uploadHeld ?? uploadCeiling_read(process.env));
     this.hostControl = options.hostControl ?? [];
+    this.engineCommands = options.engineCommands_list;
     this.elevation = options.elevation;
     this.codeCheck = options.codeCheck;
     this.log = options.log ?? ((line: string): void => { console.error(line); });
@@ -1073,6 +1078,14 @@ export class CalypsoDaemon {
       } else if (value.type === 'hostPtyInput') {
         const held = this.hostPtys.get(value.ptyId);
         if (held !== undefined && held.surface === attached) held.run.write(value.data);
+      } else if (value.type === 'hostPtyRefuse') {
+        // The surface would not hand its terminal over: its line did not ask for this program. It is stopped, and
+        // the line settles on its exit.
+        const held = this.hostPtys.get(value.ptyId);
+        if (held !== undefined && held.surface === attached) {
+          this.log(`[!] host pty refused by its surface: ${value.reason}`);
+          held.run.stop();
+        }
       } else if (value.type === 'hostPtyResize') {
         // The size a later `!` starts at, and the running one's, when it is this surface's.
         if (attached.capabilities.tty !== undefined) attached.capabilities.tty = { ...attached.capabilities.tty, cols: value.cols, rows: value.rows };
@@ -1385,6 +1398,8 @@ export class CalypsoDaemon {
       // Declared state, present from the first frame: a surface's lamp and a
       // remote shell's banner read it, never infer it.
       hostControl: this.hostControl,
+      // Which words run in the engine, so a surface routes a pipeline as the engine will.
+      ...(this.engineCommands !== undefined ? { engineCommands: [...this.engineCommands()] } : {}),
       // Whether this session can be raised to MANAGE with the person's password.
       elevation: this.elevation !== undefined,
       // Whether this process still runs the code on its disk; a surface
@@ -1920,8 +1935,9 @@ export class CalypsoDaemon {
     if (origin === null || origin.capabilities.tty === undefined || this.ptySpawn === null) return null;
     if (origin.socket.readyState !== WebSocket.OPEN) return null;
     const ptyId: string = randomBytes(8).toString('hex');
-    // The surface takes its terminal over to the program before any byte arrives.
-    this.send(origin.socket, { type: 'hostPtyStart', ptyId });
+    // The surface takes its terminal over to the program before any byte arrives, for its own line's `!` only.
+    const lineId: string | null = this.currentId;
+    this.send(origin.socket, { type: 'hostPtyStart', ptyId, command, ...(lineId === null ? {} : { lineId }) });
     let run: HostPtyRun;
     try {
       run = hostPty_start(this.ptySpawn, command, {
@@ -1953,11 +1969,13 @@ export class CalypsoDaemon {
    * @param extension - An optional filename extension for syntax mode.
    * @param path - The file being edited, for an editor that stays open and
    *   saves back to it (a browser's editor pane).
+   * @param named - The file as the line typed it, so a surface on another
+   *   machine holds the edit to its own line's operand.
    * @returns The edited content and whether it changed, or that an editor
    *   which stays open took it.
    * @throws {Error} When no command is executing or the surface disconnects.
    */
-  public edit_current(content: string, extension: string | undefined, path?: string): Promise<EditOutcome> {
+  public edit_current(content: string, extension: string | undefined, path?: string, named?: string): Promise<EditOutcome> {
     const origin: Surface | null = this.surfaceActing();
     if (!origin) {
       return Promise.reject(new Error('no active command to edit for'));
@@ -1967,7 +1985,7 @@ export class CalypsoDaemon {
     const lineId: string | null = origin === this.currentOrigin ? this.currentId : null;
     // Someone is editing: the session is free meanwhile.
     return this.person_await((): Promise<EditOutcome> => this.edits.open(origin.socket, (editId: string): void => {
-      this.send(origin.socket, { type: 'edit', editId, content, extension, ...(path === undefined ? {} : { path }), ...(lineId === null ? {} : { lineId }) });
+      this.send(origin.socket, { type: 'edit', editId, content, extension, ...(path === undefined ? {} : { path }), ...(named === undefined ? {} : { named }), ...(lineId === null ? {} : { lineId }) });
     }));
   }
 
@@ -2029,8 +2047,9 @@ export class CalypsoDaemon {
     if (!origin.capabilities.fileDelivery) {
       return Promise.reject(new Error('this surface cannot receive a file'));
     }
-    // The surface's own id for the line that is asking: it binds the delivery to that line.
-    const line: string | null = this.currentId;
+    // The surface's own id for the line that is asking: it binds the delivery to that line. Only the surface that
+    // sent the line is told it; a browser holding a terminal's line delivers by its own route, with no line of its own.
+    const line: string | null = origin === this.currentOrigin ? this.currentId : null;
     return this.deliveries.open(origin.socket, (deliverId: string): void => {
       this.send(origin.socket, {
         type: 'deliver',
@@ -2041,6 +2060,7 @@ export class CalypsoDaemon {
         ...(request.destination !== undefined ? { destination: request.destination } : {}),
         ...(request.size !== undefined ? { size: request.size } : {}),
         ...(request.contentType !== undefined ? { contentType: request.contentType } : {}),
+        ...(request.source !== undefined ? { source: request.source } : {}),
       });
     });
   }

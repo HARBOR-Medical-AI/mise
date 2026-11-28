@@ -99,7 +99,7 @@
     "jsdoc/no-multi-asterisks": 1,
     "jsdoc/require-example": 738,
     "jsdoc/require-file-overview": 1,
-    "jsdoc/require-jsdoc": 1152,
+    "jsdoc/require-jsdoc": 1149,
     "jsdoc/require-param": 220,
     "jsdoc/require-returns": 116,
     "jsdoc/require-returns-check": 1,

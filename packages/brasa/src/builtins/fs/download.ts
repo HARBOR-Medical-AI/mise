@@ -72,6 +72,18 @@ async function downloadConfirmation_request(message: string): Promise<void> {
   }
 }
 
+/** One file a download hands the surface: where it is, the name it is written by, its size, its source as resolved. */
+interface DeliveryTarget {
+  /** Its path in the store. */
+  path: string;
+  /** The name it is written by under the destination. */
+  filename: string;
+  /** Its size, when known. */
+  size?: number;
+  /** The source it came from, as resolved; absent for an archive made for a browser. */
+  source?: string;
+}
+
 /**
  * Hands each requested file to the surface, for a session whose engine runs
  * somewhere its operator is not.
@@ -107,10 +119,11 @@ async function surfaceDownload_run(
   // DICOM instances would be several hundred saves; for that surface alone the
   // directory is archived into one CUBE file first. See issue #233 for why an
   // archive is a workaround rather than a feature.
-  const targets: { path: string; filename: string; size?: number }[] = [];
+  // Each with the source it came from, as resolved: a surface on another machine holds it to what its line typed.
+  const targets: DeliveryTarget[] = [];
   for (const source of sources) {
     if (!(await files_path_isDirectory(source))) {
-      targets.push({ path: source, filename: source.split('/').filter(Boolean).pop() ?? 'download' });
+      targets.push({ path: source, filename: source.split('/').filter(Boolean).pop() ?? 'download', source });
       continue;
     }
 
@@ -126,6 +139,7 @@ async function surfaceDownload_run(
             ? item.path.slice(source.length).replace(/^\/+/, '')
             : (item.path.split('/').filter(Boolean).pop() ?? 'download'),
           ...(typeof item.size === 'number' ? { size: item.size } : {}),
+          source,
         });
       }
       continue;
@@ -155,6 +169,7 @@ async function surfaceDownload_run(
         filename,
         destination,
         ...(target.size !== undefined ? { size: target.size } : {}),
+        ...(target.source !== undefined ? { source: target.source } : {}),
       });
       delivered.push(`${chalk.gray(`  ${filename} → ${result.location}`)} ${chalk.gray(`(${bytes_format(result.bytes)})`)}`);
     } catch (error: unknown) {

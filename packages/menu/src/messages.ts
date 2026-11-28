@@ -305,6 +305,16 @@ export const hostPtyInputMessageSchema = z.object({
 });
 
 /**
+ * This surface does not hand its terminal to the program the daemon started on a pseudo-terminal for it
+ * (`hostPtyStart`): the line it sent did not ask for that program. The daemon stops the program.
+ */
+export const hostPtyRefuseMessageSchema = z.object({
+  type: z.literal('hostPtyRefuse'),
+  ptyId: z.string(),
+  reason: z.string(),
+});
+
+/**
  * This surface's terminal has a new size, in cells: the size a later `!`
  * starts at, and, with `ptyId`, the new size of the program running now.
  */
@@ -474,6 +484,7 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
   terminalCloseMessageSchema,
   hostPtyInputMessageSchema,
   hostPtyResizeMessageSchema,
+  hostPtyRefuseMessageSchema,
   surfaceLineResultMessageSchema,
   surfaceLineErrorMessageSchema,
   noteMessageSchema,
@@ -517,6 +528,11 @@ export const attachedMessageSchema = z.object({
     .optional(),
   /** The host-control tiers the daemon declared (`shell`, `files`, `pipes`); empty or absent when off. */
   hostControl: z.array(z.string()).optional(),
+  /**
+   * The words this session's engine runs itself (its builtins): a surface on another machine routes a pipeline by
+   * them, as the engine will. Absent from older daemons, whose pipelines a surface then cannot route.
+   */
+  engineCommands: z.array(z.string()).optional(),
   /** Whether the daemon's own code on disk has moved on since it started; absent from older daemons. */
   stale: z.boolean().optional(),
   /** Whether this session can be raised to MANAGE with the person's password (`elevate`); absent from daemons without a door. */
@@ -918,6 +934,8 @@ export const editMessageSchema = z.object({
   extension: z.string().optional(),
   /** The file being edited, so an editor that stays open knows where its saves go. */
   path: z.string().optional(),
+  /** The file as the line typed it, quoting removed: a surface on another machine holds the edit to it. */
+  named: z.string().optional(),
   /**
    * The surface's own id for the line whose command asks for this, set when the request goes to the surface that
    * sent that line. A surface on another machine runs it only against what that line asked for; absent (an older
@@ -948,6 +966,12 @@ export const deliverMessageSchema = z.object({
   path: z.string(),
   filename: z.string(),
   destination: z.string().optional(),
+  /**
+   * The source the asking command named, as the engine resolved it in its store: the file itself, or the folder
+   * whose file this is (`path` is then under it and `filename` is its path inside). A surface on another machine
+   * holds it to the source its line typed.
+   */
+  source: z.string().optional(),
   size: z.number().nonnegative().optional(),
   contentType: z.string().optional(),
 });
@@ -1048,6 +1072,10 @@ export const terminalExitMessageSchema = z.object({
 export const hostPtyStartMessageSchema = z.object({
   type: z.literal('hostPtyStart'),
   ptyId: z.string(),
+  /** The surface's own id for the line whose `!` this is; a surface hands its terminal over only for its own line. */
+  lineId: z.string().optional(),
+  /** The command the program runs, without the `!`: the surface holds it to what its line asked. */
+  command: z.string().optional(),
 });
 
 /** Output the program on the daemon's pseudo-terminal wrote, raw (escape sequences and all). */

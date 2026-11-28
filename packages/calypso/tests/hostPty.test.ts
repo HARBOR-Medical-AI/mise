@@ -254,6 +254,8 @@ describe('the daemon runs a terminal surface\'s ! on a pty of its own', () => {
     shell.ws.send(JSON.stringify({ type: 'execute', id: '1', line: 'nvim notes.txt' }));
     const started = await shell.next('hostPtyStart');
     const ptyId = started['ptyId'] as string;
+    // It names the line that asked and the program, so the surface hands its terminal over only for its own `!`.
+    expect([started['lineId'], started['command']]).toEqual(['1', 'nvim notes.txt']);
     const pty = ptys[0] as FakePty;
     expect([pty.options.name, pty.options.cols, pty.options.rows]).toEqual(['xterm-kitty', 132, 43]);
 
@@ -315,6 +317,27 @@ describe('the daemon runs a terminal surface\'s ! on a pty of its own', () => {
     await again.next('hostPtyStart');
     await daemon.stop();
     expect((ptys[1] as FakePty).signals[0]).toBe('SIGHUP');
+  });
+
+  it('a surface that refuses the program is not typed for: the program is stopped and the line settles', async () => {
+    const { spawn, ptys } = fakeSpawn_create();
+    daemon = new CalypsoDaemon({ engine, token: TOKEN });
+    daemon.ptySpawn_set(spawn);
+    const port = await daemon.start();
+    const shell = await client_attach(port, { shellCommands: true, tty: { term: 'xterm', cols: 80, rows: 24 } });
+    const other = await client_attach(port, { shellCommands: true, tty: { term: 'xterm', cols: 80, rows: 24 } });
+    sockets.push(shell.ws, other.ws);
+    shell.ws.send(JSON.stringify({ type: 'execute', id: '1', line: 'nvim' }));
+    const started = await shell.next('hostPtyStart');
+    // Another surface's refusal of it changes nothing; its own stops it.
+    other.ws.send(JSON.stringify({ type: 'hostPtyRefuse', ptyId: started['ptyId'], reason: 'not mine' }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect((ptys[0] as FakePty).signals).toEqual([]);
+    shell.ws.send(JSON.stringify({ type: 'hostPtyRefuse', ptyId: started['ptyId'], reason: 'refused: the line sent from here did not ask for it' }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect((ptys[0] as FakePty).signals[0]).toBe('SIGHUP');
+    (ptys[0] as FakePty).end(0, 1);
+    await shell.next('result');
   });
 
   it('a pty that will not start ends the program on the surface and fails the line', async () => {

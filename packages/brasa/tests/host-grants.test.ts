@@ -15,7 +15,7 @@ const { lineHostOperations_read } = await import('../src/builtins/sys/hostGrants
 interface TableLine {
   readonly line: string;
   readonly shells: readonly string[];
-  readonly pipes: readonly string[];
+  readonly pipes: ReadonlyArray<{ command: string; required: boolean }>;
   readonly edits: readonly string[];
 }
 
@@ -27,8 +27,23 @@ describe('lineHostOperations_read', () => {
   });
 
   it('grants a later segment exactly as the engine hands it to the surface, and nothing for a builtin that does not delegate', async () => {
-    expect((await lineHostOperations_read('cat x | tr a b')).pipes).toEqual(['tr a b']);
+    expect((await lineHostOperations_read('cat x | tr a b')).pipes).toEqual([{ command: 'tr a b', required: true }]);
     expect((await lineHostOperations_read('cat x | wc -l')).pipes).toEqual([]);
+  });
+
+  it('routes by the session\'s own words: a word it runs grants nothing, and a session that said none grants no pipeline', async () => {
+    const sessionRuns = (word: string): boolean => word === 'cat' || word === 'tr';
+    expect((await lineHostOperations_read('cat x | tr a b | sort', sessionRuns)).pipes).toEqual([{ command: 'sort', required: true }]);
+    expect(await lineHostOperations_read('cat x | tr a b', null)).toEqual({ shells: [], pipes: [], edits: [] });
+    // A `!` line and an edit do not depend on the session's words.
+    expect((await lineHostOperations_read('!ls', null)).shells).toEqual(['ls']);
+  });
+
+  it('grants a head grep nothing (its input is the line\'s own), a builtin at its help nothing, and a segment holding a reference nothing', async () => {
+    expect((await lineHostOperations_read('grep foo | tr a b')).pipes).toEqual([{ command: 'tr a b', required: true }]);
+    expect((await lineHostOperations_read('cat x | grep --help')).pipes).toEqual([]);
+    expect(await lineHostOperations_read('cat x | tr $A b')).toEqual({ shells: [], pipes: [], edits: [] });
+    expect((await lineHostOperations_read("cat x | tr '$A' b")).pipes).toEqual([{ command: "tr '$A' b", required: true }]);
   });
 
   it('grants nothing for what it cannot establish from the line: background, lists, captures, redirects, references, patterns, open quotes', async () => {

@@ -116,6 +116,8 @@ export interface LocalEditRequest {
   extension?: string;
   /** The file being edited; an editor that stays open saves back to it. */
   path?: string;
+  /** The file as the line typed it, quoting removed. */
+  named?: string;
 }
 
 /**

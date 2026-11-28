@@ -116,21 +116,33 @@ describe('every command that asks a surface to write a file is one the reader kn
 });
 
 describe('deliverySource_matches', () => {
-  it('a file named by the line is delivered by its own name; a file inside a named folder keeps its path inside it', () => {
-    expect(deliverySource_matches([{ name: 'scan.dcm' }], { path: '/home/me/scan.dcm', filename: 'scan.dcm' })).toBe(true);
-    expect(deliverySource_matches([{ name: 'scan.dcm' }], { path: '/home/me/other.dcm', filename: 'other.dcm' })).toBe(false);
-    expect(deliverySource_matches([{ name: 'scan.dcm' }], { path: '/home/me/scan.dcm', filename: 'renamed.dcm' })).toBe(false);
-    expect(deliverySource_matches([{ name: 'scans' }], { path: '/home/me/scans/a/1.dcm', filename: 'a/1.dcm' })).toBe(true);
-    expect(deliverySource_matches([{ name: 'scans' }], { path: '/home/me/other/a/1.dcm', filename: 'a/1.dcm' })).toBe(false);
+  const file = (path: string, filename: string, source: string | undefined) => ({ path, filename, source });
+
+  it('a file is the source the line typed: an absolute operand is its root exactly, a relative one its root\'s tail', () => {
+    expect(deliverySource_matches([{ operand: '/home/me/scan.dcm' }], file('/home/me/scan.dcm', 'scan.dcm', '/home/me/scan.dcm'))).toBe(true);
+    expect(deliverySource_matches([{ operand: 'scan.dcm' }], file('/home/me/scan.dcm', 'scan.dcm', '/home/me/scan.dcm'))).toBe(true);
+    // The same base name under another root is not the file the line named.
+    expect(deliverySource_matches([{ operand: '/home/me/scan.dcm' }], file('/home/eve/scan.dcm', 'scan.dcm', '/home/eve/scan.dcm'))).toBe(false);
+    expect(deliverySource_matches([{ operand: 'me/scan.dcm' }], file('/home/eve/scan.dcm', 'scan.dcm', '/home/eve/scan.dcm'))).toBe(false);
+    expect(deliverySource_matches([{ operand: 'can.dcm' }], file('/home/me/scan.dcm', 'scan.dcm', '/home/me/scan.dcm'))).toBe(false);
+    // Written by another name, or with no root said: refused.
+    expect(deliverySource_matches([{ operand: '/home/me/scan.dcm' }], file('/home/me/scan.dcm', 'renamed.dcm', '/home/me/scan.dcm'))).toBe(false);
+    expect(deliverySource_matches([{ operand: '/home/me/scan.dcm' }], file('/home/me/scan.dcm', 'scan.dcm', undefined))).toBe(false);
   });
 
-  it('a pattern binds by the name it matches; any folder binds a file by its path inside; a written name never climbs or is absolute', () => {
-    expect(deliverySource_matches([{ pattern: '*.dcm' }], { path: '/home/me/x.dcm', filename: 'x.dcm' })).toBe(true);
-    expect(deliverySource_matches([{ pattern: '*.dcm' }], { path: '/home/me/x.txt', filename: 'x.txt' })).toBe(false);
-    expect(deliverySource_matches([{ anyFolder: true }], { path: '/home/me/a/b.txt', filename: 'a/b.txt' })).toBe(true);
+  it('a folder\'s file is under the root and written by its path inside it', () => {
+    expect(deliverySource_matches([{ operand: 'scans' }], file('/home/me/scans/a/1.dcm', 'a/1.dcm', '/home/me/scans'))).toBe(true);
+    expect(deliverySource_matches([{ operand: 'scans' }], file('/home/me/scans/a/1.dcm', '1.dcm', '/home/me/scans'))).toBe(false);
+    expect(deliverySource_matches([{ operand: 'scans' }], file('/home/me/other/a/1.dcm', 'a/1.dcm', '/home/me/scans'))).toBe(false);
+    expect(deliverySource_matches([{ operand: '/home/me/scans' }], file('/home/eve/scans/a/1.dcm', 'a/1.dcm', '/home/eve/scans'))).toBe(false);
+  });
+
+  it('a pattern binds a root whose name matches it in the folder it names; a written name never climbs or is absolute', () => {
+    expect(deliverySource_matches([{ pattern: '/home/me/*.dcm' }], file('/home/me/x.dcm', 'x.dcm', '/home/me/x.dcm'))).toBe(true);
+    expect(deliverySource_matches([{ pattern: '/home/me/*.dcm' }], file('/home/eve/x.dcm', 'x.dcm', '/home/eve/x.dcm'))).toBe(false);
+    expect(deliverySource_matches([{ pattern: '*.dcm' }], file('/home/me/x.txt', 'x.txt', '/home/me/x.txt'))).toBe(false);
     for (const filename of ['../x', '/etc/passwd', 'a/../../x', '', 'a//b', './x']) {
-      expect([filename, deliverySource_matches([{ anyFolder: true }, { name: 'x' }], { path: `/home/me/${filename}`, filename })]).toEqual([filename, false]);
+      expect([filename, deliverySource_matches([{ operand: '/home/me' }], file(`/home/me/${filename}`, filename, '/home/me'))]).toEqual([filename, false]);
     }
   });
 });
-

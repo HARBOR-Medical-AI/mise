@@ -78,6 +78,8 @@ function commandIntents_read(command: string, delivering_: ReadonlyArray<Deliver
     return [{ verb, destination: null, unbound: `its source ${JSON.stringify(referenced.value)} is written with a reference, whose value is not known here: type the path itself` }];
   }
   const sources: SourceIntent[] = sourceWords.map(sourceIntent_read);
+  const unresolved: SourceIntent | undefined = sources.find((one: SourceIntent): boolean => 'unresolved' in one);
+  if (unresolved !== undefined && 'unresolved' in unresolved) return [{ verb, destination: null, unbound: unresolved.unresolved }];
   const word: ShellWord | undefined = placed.get(delivering.operand)?.[0];
   if (word === undefined) return [{ verb, destination: null, sources }];
   // A reference in the destination is expanded by the engine, across the
@@ -100,17 +102,20 @@ function word_isReferenced(word: ShellWord): boolean {
 }
 
 /**
- * How a delivered file is bound to one source word: by its base name; by its last segment's pattern when the
- * engine expands it; any folder for `.`, `..`, `/` or `~`, whose files keep their path inside it.
+ * How a delivered file is bound to one source word: by the operand as typed (quoting removed), which the root the
+ * engine resolved must be; by the operand's pattern when the engine expands it. A source whose place only the
+ * session knows (`.`, `..`, `~`, or a path climbing with `..`) binds nothing.
  *
  * @param word - A source word.
- * @returns The binding.
+ * @returns The binding, or why there is none.
  */
 function sourceIntent_read(word: ShellWord): SourceIntent {
   const spelled: string = word.pathnameExpansion ? word.globPattern : word.value;
-  const last: string = spelled.split('/').filter((part: string): boolean => part.length > 0).pop() ?? '';
-  if (last === '' || last === '.' || last === '..' || last === '~') return { anyFolder: true };
-  return word.pathnameExpansion ? { pattern: last } : { name: last };
+  const parts: string[] = spelled.split('/');
+  if (spelled === '' || spelled === '.' || parts.includes('..') || parts[0] === '~') {
+    return { unresolved: `its source ${JSON.stringify(word.value)} names a place only the session knows: type the folder's path` };
+  }
+  return word.pathnameExpansion ? { pattern: spelled } : { operand: spelled };
 }
 
 /**
@@ -173,6 +178,8 @@ function lineIntents_read(line: string, delivering: ReadonlyArray<DeliveringComm
   if (quoteOpen_find(trimmed) !== null) return [];
   if (jobletLine_parse(trimmed) !== null) return [];
   const listed: ListCommand[] = commandList_parse(trimmed);
+  // A command in a conditional arm (after `&&` or `||`) may or may not run: it is bound to nothing.
+  if (listed.some((one: ListCommand): boolean => one.when !== 'always')) return [];
   if (listed.length > 1) return listed.flatMap((one: ListCommand): DeliveryIntent[] => lineIntents_read(one.command, delivering));
   if (assignment_parse(trimmed) !== null) return [];
   const segments: string[] = pipes_parse(trimmed);

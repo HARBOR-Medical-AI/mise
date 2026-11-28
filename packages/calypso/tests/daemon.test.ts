@@ -1120,6 +1120,29 @@ describe('CalypsoDaemon edit into a pane that stays open', () => {
   });
 });
 
+describe('CalypsoDaemon tells a surface at attach the words its engine runs', () => {
+  it('lists them when the host gave them, so a pipeline is routed as the engine will; says nothing when it gave none', async () => {
+    const engine: HostedEngine = { line_execute: async (): Promise<CommandEnvelope[]> => [], line_complete: async (prefix: string) => ({ candidates: [], prefix }) };
+    const daemon = new CalypsoDaemon({ engine, token: TOKEN, engineCommands_list: (): readonly string[] => ['cat', 'grep', 'wc'] });
+    const bare = new CalypsoDaemon({ engine, token: TOKEN });
+    const port = await daemon.start();
+    const barePort = await bare.start();
+    try {
+      for (const [where, expected] of [[port, ['cat', 'grep', 'wc']], [barePort, undefined]] as const) {
+        const ws = await client_open(where);
+        const acked = message_next(ws);
+        send(ws, { type: 'attach', protocolVersion: CONTRACT_VERSION, token: TOKEN, capabilities: { hiddenInput: true, shellCommands: false } });
+        const got = await acked;
+        expect([got.type, got.engineCommands]).toEqual(['attached', expected]);
+        ws.terminate();
+      }
+    } finally {
+      await daemon.stop();
+      await bare.stop();
+    }
+  });
+});
+
 describe('CalypsoDaemon file delivery over the wire', () => {
   it('routes a delivery to the executing surface and reports where it landed', async () => {
     let daemonRef: CalypsoDaemon | undefined;
@@ -1127,7 +1150,7 @@ describe('CalypsoDaemon file delivery over the wire', () => {
       line_execute: async (line: string): Promise<CommandEnvelope[]> => {
         if (line === '__deliver__') {
           const delivered = await (daemonRef as CalypsoDaemon).deliver_current({
-            path: '/home/me/scan.dcm', filename: 'scan.dcm', destination: '/tmp', size: 2048,
+            path: '/home/me/scan.dcm', filename: 'scan.dcm', destination: '/tmp', size: 2048, source: '/home/me/scan.dcm',
           });
           return [{ status: 'ok', rendered: `${delivered.bytes} bytes to ${delivered.location}` }];
         }
@@ -1148,6 +1171,8 @@ describe('CalypsoDaemon file delivery over the wire', () => {
       // It says which of the surface's lines is asking, by the surface's own id for it.
       expect(deliver.id).toBe('1');
       expect(deliver.path).toBe('/home/me/scan.dcm');
+      // And the source it came from, as the engine resolved it, for the surface to hold to its line's operand.
+      expect(deliver.source).toBe('/home/me/scan.dcm');
       expect(deliver.filename).toBe('scan.dcm');
       expect(deliver.destination).toBe('/tmp');
       expect(deliver.size).toBe(2048);

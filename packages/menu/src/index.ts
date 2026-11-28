@@ -112,6 +112,7 @@ export {
   terminalDataMessageSchema,
   terminalExitMessageSchema,
   hostPtyInputMessageSchema,
+  hostPtyRefuseMessageSchema,
   hostPtyResizeMessageSchema,
   hostPtyStartMessageSchema,
   hostPtyDataMessageSchema,
