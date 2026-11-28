@@ -137,8 +137,12 @@ export function consentQuestion_render(asked: ConsentRequest, line: string | und
         'anything else = no',
       ]
     : ['y = yes, this once', 'anything else = no'];
-  return `\nThe session asks this machine to ${asked.action}\n  ${during}.\n  ${offers.join('\n  ')}\nAllow? `;
+  // Drawn plain whatever the session's output left the terminal in (concealed, recoloured, another character set).
+  return `${TERMINAL_PLAIN}\nThe session asks this machine to ${asked.action}\n  ${during}.\n  ${offers.join('\n  ')}\nAllow? `;
 }
+
+/** Puts the terminal's text back to plain: attributes off (SGR 0), the ASCII character set designated and shifted in. */
+const TERMINAL_PLAIN: string = '\u001b[0m\u001b(B\u000f';
 
 /**
  * What an answer means: only `y`, `l`, `r` and `allow all` (trimmed, lower case) mean anything, and `l` and

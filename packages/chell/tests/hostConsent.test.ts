@@ -31,6 +31,10 @@ describe('what a question shows', () => {
     expect(consentQuestion_render(asked({ action: `run the host command "${long}" on this machine` }), 'play a')).toContain(long);
   });
 
+  it('is drawn plain, whatever the session\'s output left the terminal in (attributes off, ASCII character set)', () => {
+    expect(consentQuestion_render(asked(), 'play a').startsWith('\u001b[0m\u001b(B\u000f\n')).toBe(true);
+  });
+
   it('offers every answer for a request of a pending line, and only yes-once for a request that names no line', () => {
     const full: string = consentQuestion_render(asked(), 'play build.sh');
     expect(full).toContain('while running "play build.sh"');

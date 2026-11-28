@@ -101,62 +101,106 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
     // never answered that way: it is typed when it is asked for. Nor is the
     // person's word for what a session may run here: only a line typed after
     // the question is shown answers it, and what was typed ahead is dropped.
-    if (request.purpose === CONSENT_PURPOSE) {
-      // Lines typed ahead are dropped, and so is a line half typed at the prompt: readline would otherwise hand it
-      // to this question as the start of its answer.
-      typeahead_clear();
-      // (A terminal readline edits its line; one on a pipe holds none to clear, and consent is never asked there.)
-      if (rl.terminal) {
-        rl.write(null, { ctrl: true, name: 'e' });
-        rl.write(null, { ctrl: true, name: 'u' });
-      }
-    } else {
-      const ahead: string | undefined = typeahead_take();
-      if (ahead !== undefined) {
-        process.stdout.write(`${shown.message}${ahead}\n`);
-        return Promise.resolve(promptAnswer_take(ahead, shown.fallback));
-      }
+    if (request.purpose === CONSENT_PURPOSE) return consentQuestion_ask(rl, request, shown);
+    const ahead: string | undefined = typeahead_take();
+    if (ahead !== undefined) {
+      process.stdout.write(`${shown.message}${ahead}\n`);
+      return Promise.resolve(promptAnswer_take(ahead, shown.fallback));
     }
-    question_openSet(true);
-    terminalState_mark('asking');
-    return new Promise((resolve: (answer: string) => void, reject: (error: Error) => void) => {
-      // Ctrl-C at a question abandons it, as Esc does in the transcript: the
-      // command that asked is told, and ends, rather than waiting on a line
-      // nobody will type.
-      const abandon: AbortController = new AbortController();
-      const onInterrupt = (): void => {
-        request.signal?.removeEventListener('abort', question_withdraw);
-        question_openSet(false);
-        terminalState_mark('busy');
-        process.stdout.write('\n');
-        abandon.abort();
-        reject(new Error('the operator abandoned the question'));
-      };
-      rl.once('SIGINT', onInterrupt);
-      // Withdrawn by whoever asked (its line ended): the question goes, and so does its answer.
-      const question_withdraw = (): void => {
-        rl.off('SIGINT', onInterrupt);
-        question_openSet(false);
-        terminalState_mark('busy');
-        process.stdout.write('\n');
-        abandon.abort();
-        reject(new Error('the question was withdrawn'));
-      };
-      if (request.signal?.aborted === true) {
-        question_withdraw();
-        return;
-      }
-      request.signal?.addEventListener('abort', question_withdraw, { once: true });
-      rl.question(shown.message, { signal: abandon.signal }, (answer: string) => {
-        request.signal?.removeEventListener('abort', question_withdraw);
-        rl.off('SIGINT', onInterrupt);
-        question_openSet(false);
-        terminalState_mark('busy');
-        resolve(promptAnswer_take(answer, shown.fallback));
-      });
-    });
+    return visibleQuestion_put(rl, request, shown);
   }
+  return secretQuestion_put(rl, request);
+}
 
+/** A question as it is shown, and the answer an empty line gives. */
+interface ShownQuestion {
+  /** What is shown. */
+  message: string;
+  /** The answer an empty line gives. */
+  fallback: string;
+}
+
+/**
+ * Puts the person's question about what a session may run here: only once the terminal is quiet (what arrives
+ * before then, a stalled moment's keys included, was typed ahead), then with every line typed ahead and the line
+ * half typed at the prompt dropped, so only what is typed after the question is shown answers it.
+ *
+ * @param rl - The REPL's readline interface.
+ * @param request - The question.
+ * @param shown - Its text.
+ * @returns The answer.
+ * @throws {Error} When withdrawn, or when the terminal is still being typed into at the deadline.
+ */
+async function consentQuestion_ask(rl: readline.Interface, request: PromptRequest, shown: ShownQuestion): Promise<string> {
+  const input: unknown = Reflect.get(rl, 'input');
+  if (input instanceof ReadStream || (typeof input === 'object' && input !== null && 'on' in input)) await inputQuiet_wait(input as NodeJS.ReadableStream, request.signal);
+  typeahead_clear();
+  // (A terminal readline edits its line; one on a pipe holds none to clear, and consent is never asked there.)
+  if (rl.terminal) {
+    rl.write(null, { ctrl: true, name: 'e' });
+    rl.write(null, { ctrl: true, name: 'u' });
+  }
+  return visibleQuestion_put(rl, request, shown);
+}
+
+/**
+ * Puts a visible question on the REPL's interface.
+ *
+ * @param rl - The REPL's readline interface.
+ * @param request - The question.
+ * @param shown - Its text.
+ * @returns The answer.
+ */
+function visibleQuestion_put(rl: readline.Interface, request: PromptRequest, shown: ShownQuestion): Promise<string> {
+  question_openSet(true);
+  terminalState_mark('asking');
+  return new Promise((resolve: (answer: string) => void, reject: (error: Error) => void) => {
+    // Ctrl-C at a question abandons it, as Esc does in the transcript: the
+    // command that asked is told, and ends, rather than waiting on a line
+    // nobody will type.
+    const abandon: AbortController = new AbortController();
+    const onInterrupt = (): void => {
+      request.signal?.removeEventListener('abort', question_withdraw);
+      question_openSet(false);
+      terminalState_mark('busy');
+      process.stdout.write('\n');
+      abandon.abort();
+      reject(new Error('the operator abandoned the question'));
+    };
+    rl.once('SIGINT', onInterrupt);
+    // Withdrawn by whoever asked (its line ended): the question goes, and so does its answer.
+    const question_withdraw = (): void => {
+      rl.off('SIGINT', onInterrupt);
+      question_openSet(false);
+      terminalState_mark('busy');
+      process.stdout.write('\n');
+      abandon.abort();
+      reject(new Error('the question was withdrawn'));
+    };
+    if (request.signal?.aborted === true) {
+      question_withdraw();
+      return;
+    }
+    request.signal?.addEventListener('abort', question_withdraw, { once: true });
+    rl.question(shown.message, { signal: abandon.signal }, (answer: string) => {
+      request.signal?.removeEventListener('abort', question_withdraw);
+      rl.off('SIGINT', onInterrupt);
+      question_openSet(false);
+      terminalState_mark('busy');
+      resolve(promptAnswer_take(answer, shown.fallback));
+    });
+  });
+}
+
+/**
+ * Puts a hidden question (a secret) on the REPL's interface: never answered from what was typed ahead, echo off,
+ * and nothing of it left in readline's editing state.
+ *
+ * @param rl - The REPL's readline interface.
+ * @param request - The question.
+ * @returns The answer.
+ */
+function secretQuestion_put(rl: readline.Interface, request: PromptRequest): Promise<string> {
   // `_writeToOutput` is readline's internal echo hook, absent from its
   // typings; replacing it is the supported folk technique for hidden input.
   const originalWrite: unknown = Reflect.get(rl, '_writeToOutput');
@@ -273,21 +317,40 @@ const SETTLE_MAX_MS: number = 1000;
 async function terminalInput_settle(input: NodeJS.ReadableStream, signal?: AbortSignal): Promise<void> {
   if (!(input instanceof ReadStream)) return;
   const wasRaw: boolean = input.isRaw;
-  const started: number = Date.now();
-  let last: number = started;
   // Every chunk is dropped; its arrival only puts the question off.
-  const chunk_drop = (): void => { last = Date.now(); };
+  const chunk_drop = (): void => undefined;
   try {
     input.setRawMode(true);
     input.on('data', chunk_drop);
     input.resume();
-    while (Date.now() - last < SETTLE_QUIET_MS && Date.now() - started < SETTLE_MAX_MS && signal?.aborted !== true) {
-      await new Promise<void>((done: () => void): void => { setTimeout(done, 10); });
-    }
+    await inputQuiet_wait(input, signal);
   } finally {
     input.off('data', chunk_drop);
     input.pause();
     input.setRawMode(wasRaw);
+  }
+}
+
+/**
+ * Waits until nothing has arrived on an input for a moment: what arrives meanwhile is whoever reads the input's
+ * (dropped, or readline's typed-ahead lines, which the caller drops after).
+ *
+ * @param input - The input.
+ * @param signal - Withdraws the question.
+ * @returns When it is quiet.
+ * @throws {Error} When withdrawn, or when it is still being typed into at the deadline.
+ */
+async function inputQuiet_wait(input: NodeJS.ReadableStream, signal?: AbortSignal): Promise<void> {
+  const started: number = Date.now();
+  let last: number = started;
+  const chunk_hear = (): void => { last = Date.now(); };
+  input.on('data', chunk_hear);
+  try {
+    while (Date.now() - last < SETTLE_QUIET_MS && Date.now() - started < SETTLE_MAX_MS && signal?.aborted !== true) {
+      await new Promise<void>((done: () => void): void => { setTimeout(done, 10); });
+    }
+  } finally {
+    input.off('data', chunk_hear);
   }
   withdrawal_check(signal);
   if (Date.now() - last < SETTLE_QUIET_MS) throw new Error('refused: the terminal was still being typed into when the question was to be put; nothing was asked');

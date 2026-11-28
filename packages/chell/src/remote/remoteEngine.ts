@@ -476,9 +476,12 @@ export class RemoteEngine implements BrasaEngine {
       const unknownType: string | undefined =
         rawType !== undefined && !SERVER_MESSAGE_TYPES.has(rawType) ? rawType : undefined;
       if (unknownType !== undefined) {
-        if (!this.unknownTypesSeen.has(unknownType)) {
+        // Each noted once, up to a bound: past it, further types are ignored without a note (and not remembered).
+        if (!this.unknownTypesSeen.has(unknownType) && this.unknownTypesSeen.size < UNKNOWN_TYPES_MAX) {
           this.unknownTypesSeen.add(unknownType);
-          this.notice_show(chalk.dim(`[i] The daemon sends '${unknownType}' messages this chell predates; ignoring them.`));
+          this.notice_show(chalk.dim(this.unknownTypesSeen.size < UNKNOWN_TYPES_MAX
+            ? `[i] The daemon sends '${unknownType}' messages this chell predates; ignoring them.`
+            : '[i] The daemon sends more kinds of message this chell predates; ignoring them, and noting no more.'));
         }
         return;
       }
@@ -497,7 +500,8 @@ export class RemoteEngine implements BrasaEngine {
     }
     switch (message.type) {
       case 'result':
-        if (message.exitCode !== undefined) this.resultExits.set(message.id, message.exitCode);
+        // Remembered only for a line in flight here.
+        if (message.exitCode !== undefined && this.requestSinks.has(message.id)) this.resultExits.set(message.id, message.exitCode);
         // The line is over the moment its result is read: everything it asked to
         // have done here is forgotten, before anything that waits on it runs, so
         // a request read straight after the result finds nothing to match.
@@ -533,7 +537,8 @@ export class RemoteEngine implements BrasaEngine {
         sink_get().event_write?.(message.kind, message.data);
         break;
       case 'output':
-        if (message.channel === 'data' || message.channel === 'err') {
+        // Which channels streamed is remembered only for a line in flight here.
+        if ((message.channel === 'data' || message.channel === 'err') && this.requestSinks.has(message.id)) {
           const channels: Set<'data' | 'err'> = this.liveEnvelopeChannels.get(message.id) ?? new Set<'data' | 'err'>();
           channels.add(message.channel);
           this.liveEnvelopeChannels.set(message.id, channels);
@@ -712,6 +717,9 @@ function safeJson_parse(text: string): unknown {
     return undefined;
   }
 }
+
+/** The most kinds of unknown message noted on one connection. */
+const UNKNOWN_TYPES_MAX: number = 32;
 
 /** How a line ends when its connection closed before its answer could be shown. */
 const CLOSED_BEFORE_SHOWN: string = 'the session disconnected before the line\'s answer was shown';

@@ -264,6 +264,8 @@ describe('persistent prompting (REPL interface)', () => {
     input.write('y');
     await new Promise((r) => setTimeout(r, 10));
     const asking: Promise<string> = cliSurface_create(rl).prompt({ message: 'Allow? ', purpose: 'chell.consent' });
+    // Typed once the question is shown (it is put when the terminal has been quiet a moment).
+    await new Promise((r) => setTimeout(r, 120));
     input.write('n\n');
     expect(await asking).toBe('n');
     rl.close();
