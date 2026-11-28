@@ -111,7 +111,9 @@ describe('POST /switch', () => {
     expect(host.begun.at(-1)).toMatchObject({ identity: STRATUS, spend: false, replace: true, door: { user: 'rudolph' } });
     // On the release it ships, the session is joined.
     host.up.set(STRATUS, { identity: 'u@t', url: 'ws://127.0.0.1:5555', token: 'S', versions: { stratus: '0.10.1', calypso: '0.29.0' } });
-    const joined = await newer.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie } });
+    // A switch moves the browser's grant: the cookie it hands back is the one that lets the browser in now.
+    const moved: string = (String(switched.headers['set-cookie']).split(';')[0]) ?? '';
+    const joined = await newer.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie: moved } });
     expect(joined.json()).toMatchObject({ state: 'attached' });
     await newer.app.close();
   });
@@ -142,7 +144,11 @@ describe('POST /switch', () => {
     host.armed.set(STRATUS, false);
     const joined = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie } });
     expect(joined.json()).toMatchObject({ state: 'attached' });
-    const armed = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci', spend: true }, headers: { cookie } });
+    // The cookie the first switch moved is spent: it lets nobody in, and the one handed back does.
+    const spent = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci', spend: true }, headers: { cookie } });
+    expect(spent.statusCode).toBe(401);
+    const joinedCookie: string = (String(joined.headers['set-cookie']).split(';')[0]) ?? '';
+    const armed = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci', spend: true }, headers: { cookie: joinedCookie } });
     expect(armed.json()).toMatchObject({ state: 'starting' });
     expect(host.begun.at(-1)).toMatchObject({ spend: true, replace: true });
     // From the stratus session's own cookie, back to the ChRIS one.

@@ -64,7 +64,7 @@ async function door_stand(extra: Partial<PorterConfig> = {}, mintMs: number = 0,
   const dir: string = await mkdtemp(join(tmpdir(), 'porter-origin-'));
   const door: PorterApp = await porterApp_build({
     installed: {},
-    config: { ...config, tokensFile: join(dir, 'tokens.json'), ...extra },
+    config: { ...config, stateDir: dir, tokensFile: join(dir, 'tokens.json'), ...extra },
     host,
     now: (): number => clock.at,
     ...(countCap === undefined ? {} : { countCap }),

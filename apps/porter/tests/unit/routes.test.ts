@@ -14,7 +14,9 @@ import { doorApp_build as porterApp_build, DOOR_ORIGIN } from './fromDoor.js';
 import type { Berth, BerthAccess, BootListener, BootReport, SessionHost } from '../../src/host/sessionHost.js';
 import type { PorterConfig } from '../../src/config.js';
 import { mkdtemp, writeFile } from 'node:fs/promises';
+import { chmodSync } from 'node:fs';
 import { TokenStore } from '../../src/tokens.js';
+import { GrantStore } from '../../src/grants.js';
 import { cubeAdmin_check, type AdminAnswer, type AdminVerdict } from '../../src/cube/auth.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -743,6 +745,84 @@ describe('the wire through the mount', () => {
     expect(built.registry.get(key)?.wires).toBe(0);
   });
 
+  it('closes an open wire with 4401 at its browser\'s logout, and leaves another browser\'s wire and cookie as they were', async () => {
+    const port: number = (daemon.address() as AddressInfo).port;
+    host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: `ws://127.0.0.1:${port}`, token: 'ATTACH' };
+    const login = async () => built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const first = await login();
+    const second = await login();
+    const key: string = (first.json() as { key: string }).key;
+    await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const porterPort: number = (built.app.server.address() as AddressInfo).port;
+    const open = async (cookie: string): Promise<WebSocket> => {
+      const client: WebSocket = new WebSocket(`ws://127.0.0.1:${porterPort}/s/${key}/?door`, { headers: { cookie, origin: DOOR_ORIGIN } });
+      await new Promise<void>((resolve, reject) => { client.once('open', () => resolve()); client.once('error', reject); });
+      return client;
+    };
+    const a: WebSocket = await open(cookie_of(first));
+    const b: WebSocket = await open(cookie_of(second));
+    const closedA: Promise<number> = new Promise((resolve) => a.once('close', (code: number) => resolve(code)));
+    let closedB: boolean = false;
+    b.once('close', () => { closedB = true; });
+    await built.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(first) } });
+    expect(await closedA).toBe(4401);
+    // The other browser's wire still carries frames, and its cookie still lets it in.
+    const echoed: Promise<string> = new Promise((resolve) => b.once('message', (data: RawData) => resolve(data.toString())));
+    b.send('still');
+    expect(await echoed).toBe('echo:still');
+    expect(closedB).toBe(false);
+    const mount = await built.app.inject({ method: 'GET', url: `/boot/${key}`, headers: { cookie: cookie_of(first) } });
+    expect(mount.statusCode).toBe(401);
+    b.close();
+  });
+
+  it('ends an open boot stream at its browser\'s logout, its follow let go', async () => {
+    host.found = null;
+    host.report = { lines: [{ channel: 'out', text: '[PENDING] Connect' }], state: 'booting' };
+    const session = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (session.json() as { key: string }).key;
+    await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const porterPort: number = (built.app.server.address() as AddressInfo).port;
+    const ended: Promise<string> = new Promise((resolve, reject) => {
+      httpGet({ host: '127.0.0.1', port: porterPort, path: `/boot/${key}`, headers: { cookie: cookie_of(session) } }, (response: IncomingMessage) => {
+        let body: string = '';
+        response.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+        response.on('end', () => resolve(body));
+      }).on('error', reject);
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(host.listener).not.toBeNull();
+    await built.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(session) } });
+    expect(await ended).toContain('[PENDING] Connect');
+    expect(host.listener).toBeNull();
+  });
+
+  it('closes an open wire at its grant\'s hour, with no traffic and no sweep between', async () => {
+    await built.app.close();
+    const port: number = (daemon.address() as AddressInfo).port;
+    host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: `ws://127.0.0.1:${port}`, token: 'ATTACH' };
+    built = await porterApp_build({ installed: {}, config: { ...config, cookieHours: 0.3 / 3600, tokensFile: join(tokensDir, 'tokens.json') }, host, mint: async () => ({ token: 'T' }) });
+    const session = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (session.json() as { key: string }).key;
+    await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const porterPort: number = (built.app.server.address() as AddressInfo).port;
+    const client: WebSocket = new WebSocket(`ws://127.0.0.1:${porterPort}/s/${key}/?door`, { headers: { cookie: cookie_of(session), origin: DOOR_ORIGIN } });
+    await new Promise<void>((resolve, reject) => { client.once('open', () => resolve()); client.once('error', reject); });
+    const code: number = await new Promise((resolve) => client.once('close', (closed: number) => resolve(closed)));
+    expect(code).toBe(4401);
+  });
+
+  it('lets in no cookie of the form from before grants, however well it is signed', async () => {
+    const port: number = (daemon.address() as AddressInfo).port;
+    host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: `ws://127.0.0.1:${port}`, token: 'ATTACH' };
+    const session = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (session.json() as { key: string }).key;
+    const { sign } = await import('@fastify/cookie');
+    const bare: string = `porter_session=${encodeURIComponent(sign(key, config.secret))}`;
+    expect((await built.app.inject({ method: 'GET', url: `/boot/${key}`, headers: { cookie: bare } })).statusCode).toBe(401);
+    expect((await built.app.inject({ method: 'GET', url: `/s/${key}/`, headers: { cookie: bare } })).statusCode).toBe(302);
+  });
+
   it('refuses a wire opened on the cookie from another page, or from nowhere said, before the daemon hears of it', async () => {
     const port: number = (daemon.address() as AddressInfo).port;
     host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: `ws://127.0.0.1:${port}`, token: 'ATTACH' };
@@ -1173,6 +1253,22 @@ describe('door tokens (chell auth)', () => {
     expect(fail).toBe(0);
     expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
     await door.app.close();
+  });
+
+  it('sets no cookie and answers 503 when the door cannot keep the login\'s grant', async () => {
+    // A folder the door can read but not write: the grant cannot be kept.
+    const blocked: string = await mkdtemp(join(tmpdir(), 'porter-grants-blocked-'));
+    chmodSync(blocked, 0o500);
+    host.found = up;
+    try {
+      const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host, grants: new GrantStore(join(blocked, 'door-grants.json'), 8), mint: async () => ({ token: 'T' }) });
+      const refused = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+      expect(refused.statusCode).toBe(503);
+      expect(refused.headers['set-cookie']).toBeUndefined();
+      await door.app.close();
+    } finally {
+      chmodSync(blocked, 0o700);
+    }
   });
 
   it('answers /healthz while a token login is held inside the store: store I/O does not hold the door', async () => {
