@@ -30,8 +30,11 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 import { identityName_spell } from '@fnndsc/cumin/identity-epoch';
-import { ownFile_read, ownFile_take, ownFile_write, ownFolder_settle, type OwnHeld, type OwnRead, type OwnRefusal } from '@fnndsc/fond';
+import { ownFile_read, ownFile_take, ownFile_write, ownFolder_settle, type OwnFolder, type OwnHeld, type OwnRead, type OwnRefusal } from '@fnndsc/fond';
 import { CLOSING_CAUSES, type ClosingCause } from '@fnndsc/menu';
+
+// A host that keeps berth folders under a root of its own asks this before it starts (porter's state root).
+export { pathTrust_refusal } from '@fnndsc/fond';
 
 /** The prefix of every berth filename, so a directory scan finds only berths. */
 const BERTH_FILE_PREFIX: string = 'berth-';
@@ -172,11 +175,11 @@ export function berth_pathIn(runtimeDir: string, identity: string): string {
  * @throws {Error} When the berth folder is not this account's own, or a record that is not stands at the name.
  */
 export function berth_write(berth: Berth): void {
-  const dir: string = berthDir_path();
-  const held: OwnHeld | OwnRefusal = ownFolder_settle(dir, true);
+  const held: OwnFolder | OwnRefusal = ownFolder_settle(berthDir_path(), true);
   if (!held.ok) throw new Error(`the berth folder is not this account's own: ${held.reason}`);
-  // By rename over the name: a valid standing record is replaced whole, anything else at the name refused untouched.
-  const written: OwnHeld | OwnRefusal = ownFile_write(dir, basename(berth_path(berth.identity)), JSON.stringify(berth));
+  // In the folder as held (its resolved path), by rename over the name: a valid standing record is replaced whole,
+  // anything else at the name refused untouched.
+  const written: OwnHeld | OwnRefusal = ownFile_write(held.path, basename(berth_path(berth.identity)), JSON.stringify(berth));
   if (!written.ok) throw new Error(`the berth record could not be written: ${written.reason}`);
 }
 
@@ -204,6 +207,7 @@ function berth_validate(parsed: unknown): Berth | null {
     typeof (parsed as Berth).identity === 'string' &&
     typeof (parsed as Berth).url === 'string' &&
     typeof (parsed as Berth).token === 'string' &&
+    berthUrl_target((parsed as Berth).url) !== null &&
     keyedFacts_areWhole(parsed as Berth)
   ) {
     return parsed as Berth;
@@ -296,22 +300,36 @@ function berthFile_read(path: string, identity: string): Berth | null {
  * ```
  */
 export function berthRecord_read(path: string): Berth | null {
-  const folder: OwnHeld | OwnRefusal = ownFolder_settle(dirname(path), false);
+  const folder: OwnFolder | OwnRefusal = ownFolder_settle(dirname(path), false);
   if (!folder.ok) {
-    if (!folder.reason.endsWith('not there')) refusal_say(folder);
+    if (folder.missing !== true) refusal_say(folder);
     return null;
   }
+  return berthRecordIn_read(folder.path, basename(path));
+}
+
+/**
+ * Reads one berth record in a folder already held (`ownFolder_settle`), by the held folder's resolved path.
+ *
+ * @param folder - The held folder's `path`.
+ * @param name - The record's name.
+ * @returns The berth, or null (a refusal other than absence said once).
+ */
+function berthRecordIn_read(folder: string, name: string): Berth | null {
+  const path: string = join(folder, name);
   const read: OwnRead = ownFile_read(path, BERTH_MAX_BYTES);
   if (!read.ok) {
-    if (!read.reason.endsWith('not there')) refusal_say(read);
+    if (read.missing !== true) refusal_say(read);
     return null;
   }
+  let berth: Berth | null;
   try {
-    return berth_validate(JSON.parse(read.text));
+    berth = berth_validate(JSON.parse(read.text));
   } catch {
-    refusal_say({ ok: false, reason: `${path}: not a berth record` });
-    return null;
+    berth = null;
   }
+  if (berth === null) refusal_say({ ok: false, reason: `${path}: not a berth record` });
+  return berth;
 }
 
 /**
@@ -345,7 +363,7 @@ export function berthAllLocated_read(): LocatedBerth[] {
   const found: LocatedBerth[] = [];
   // This runtime's berths, then each porter session's, one per identity.
   for (const dir of [berthDir_path(), ...porterSessionDirs_get()]) {
-    for (const located of berthDir_read(dir)) {
+    for (const located of berthFolder_read(dir)) {
       if (!found.some((one: LocatedBerth): boolean => one.berth.identity === located.berth.identity)) found.push(located);
     }
   }
@@ -372,29 +390,36 @@ function porterSessionDirs_get(): string[] {
 }
 
 /**
- * Reads every well-formed berth in one directory.
+ * Reads every well-formed berth in one folder, held to this account first (`ownFolder_settle`); a refused
+ * folder, a folder that cannot be listed, and a refused record are each said once and passed over.
  *
- * @param dir - The directory.
- * @returns Its berths, each with its file.
+ * @param dir - The folder.
+ * @returns Its berths, each with its file (by the folder's resolved path).
+ *
+ * @example
+ * ```ts
+ * const found: LocatedBerth[] = berthFolder_read(join(runtime, 'calypso'));
+ * ```
  */
-function berthDir_read(dir: string): LocatedBerth[] {
-  const folder: OwnHeld | OwnRefusal = ownFolder_settle(dir, false);
+export function berthFolder_read(dir: string): LocatedBerth[] {
+  const folder: OwnFolder | OwnRefusal = ownFolder_settle(dir, false);
   if (!folder.ok) {
-    if (!folder.reason.endsWith('not there')) refusal_say(folder);
+    if (folder.missing !== true) refusal_say(folder);
     return [];
   }
   const berths: LocatedBerth[] = [];
   let names: string[];
   try {
-    names = readdirSync(dir);
-  } catch {
+    names = readdirSync(folder.path);
+  } catch (error: unknown) {
+    refusal_say({ ok: false, reason: `${folder.path}: could not be listed (${error instanceof Error ? error.message : String(error)})` });
     return [];
   }
   for (const name of names) {
     if (!name.startsWith(BERTH_FILE_PREFIX) || !name.endsWith('.json')) continue;
     // Skipped, but said (once): a refused or unreadable record vanishing silently is indistinguishable from a stopped daemon.
-    const berth: Berth | null = berthRecord_read(join(dir, name));
-    if (berth !== null) berths.push({ berth, path: join(dir, name) });
+    const berth: Berth | null = berthRecordIn_read(folder.path, name);
+    if (berth !== null) berths.push({ berth, path: join(folder.path, name) });
   }
   return berths;
 }
@@ -453,7 +478,14 @@ export function nonce_isValid(nonce: unknown): nonce is string {
   return typeof nonce === 'string' && HEX_32.test(nonce);
 }
 
-/** The facts of one running daemon a proof is made over. */
+/**
+ * The facts of one running daemon a proof is made over.
+ *
+ * @example
+ * ```ts
+ * const facts: InstanceFacts = { probeKey, identity, pid: process.pid, booted };
+ * ```
+ */
 export interface InstanceFacts {
   /** The launch's probe key, hex. */
   probeKey: string;
@@ -495,23 +527,64 @@ function instanceFacts_read(berth: Berth): InstanceFacts | null {
   return { probeKey: berth.probeKey, identity: berth.identity, pid: berth.pid, booted: berth.booted };
 }
 
-/** A berth address's host and port. */
-interface BerthTarget {
-  /** The host. */
+/**
+ * A berth address: what a connection is made to, and the origin a probe is asked at.
+ *
+ * @example
+ * ```ts
+ * const target: BerthTarget | null = berthUrl_target(berth.url);
+ * ```
+ */
+export interface BerthTarget {
+  /** The host as `net.connect` takes it (an IPv6 address without brackets). */
   host: string;
-  /** The port. */
+  /** The port, a scheme's default filled in. */
   port: number;
+  /** `ws:` or `wss:`. */
+  secure: boolean;
+  /** The `http(s)://host[:port]` origin the instance route is asked at; nothing else of the URL goes. */
+  origin: string;
 }
 
 /** How a plain connection to an address went. */
 export type ConnectOutcome = 'accepted' | 'refused' | 'inconclusive';
 
 /**
- * Connects to a berth's address and says how it went, no handshake. Only a refusal means nothing is there; a
- * timeout, a name that does not resolve or any other failure is inconclusive.
+ * A berth URL's address: a `ws:` or `wss:` URL with a host and no credentials, its scheme's default port filled
+ * in. Anything else names no daemon a berth could record.
+ *
+ * @param url - The URL.
+ * @returns The address, or null.
+ *
+ * @example
+ * ```ts
+ * berthUrl_target('ws://[::1]:4000'); // { host: '::1', port: 4000, secure: false, origin: 'http://[::1]:4000' }
+ * ```
+ */
+export function berthUrl_target(url: string): BerthTarget | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') return null;
+  if (parsed.username !== '' || parsed.password !== '' || parsed.hostname === '') return null;
+  const secure: boolean = parsed.protocol === 'wss:';
+  const port: number = parsed.port === '' ? (secure ? 443 : 80) : Number(parsed.port);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+  const bracketed: boolean = parsed.hostname.startsWith('[') && parsed.hostname.endsWith(']');
+  const host: string = bracketed ? parsed.hostname.slice(1, -1) : parsed.hostname;
+  return { host, port, secure, origin: `${secure ? 'https' : 'http'}://${parsed.host}` };
+}
+
+/**
+ * Connects to a berth's address and says how it went, no handshake, within one deadline. Only a refusal means
+ * nothing is there; a timeout, a name that does not resolve, an address that names no daemon, or any other failure
+ * is inconclusive.
  *
  * @param url - A `ws://host:port` berth URL.
- * @param timeoutMs - How long to wait.
+ * @param timeoutMs - The deadline for the whole attempt.
  * @returns How it went.
  *
  * @example
@@ -523,43 +596,31 @@ export function berthUrl_connect(url: string, timeoutMs: number = 500): Promise<
   return new Promise((resolve: (outcome: ConnectOutcome) => void): void => {
     const target: BerthTarget | null = berthUrl_target(url);
     if (target === null) {
-      // No address a daemon could hold: nothing is there.
-      resolve('refused');
+      resolve('inconclusive');
       return;
     }
-    const socket: Socket = net_connect(target);
-    const outcome_settle = (outcome: ConnectOutcome): void => {
+    const socket: Socket = net_connect({ host: target.host, port: target.port });
+    const deadline: NodeJS.Timeout = setTimeout((): void => { outcome_settle('inconclusive'); }, timeoutMs);
+    /**
+     * Settles once: the deadline cleared, the socket closed.
+     *
+     * @param outcome - How it went.
+     */
+    function outcome_settle(outcome: ConnectOutcome): void {
+      clearTimeout(deadline);
       socket.destroy();
       resolve(outcome);
-    };
-    socket.setTimeout(timeoutMs);
+    }
     socket.once('connect', (): void => { outcome_settle('accepted'); });
-    socket.once('timeout', (): void => { outcome_settle('inconclusive'); });
     socket.once('error', (error: NodeJS.ErrnoException): void => { outcome_settle(error.code === 'ECONNREFUSED' ? 'refused' : 'inconclusive'); });
   });
-}
-
-/**
- * A berth URL's host and port.
- *
- * @param url - The URL.
- * @returns Them, or null when it names none.
- */
-function berthUrl_target(url: string): BerthTarget | null {
-  try {
-    const parsed: URL = new URL(url);
-    const port: number = Number(parsed.port);
-    return port > 0 ? { host: parsed.hostname, port } : null;
-  } catch {
-    return null;
-  }
 }
 
 /** An instance request answered: its HTTP status and body. */
 interface InstanceReply {
   /** The status. */
   status: number;
-  /** The body, at most about 1 KiB. */
+  /** The body, at most `INSTANCE_BODY_MAX` bytes. */
   body: string;
 }
 
@@ -578,44 +639,52 @@ interface InstanceProofBody {
 /** What one instance request gave. */
 type InstanceAnswer = InstanceReply | InstanceSilence;
 
+/** The most an instance answer may hold; a proof answer is under 100 bytes. */
+const INSTANCE_BODY_MAX: number = 1024;
+
 /**
- * Asks an address for its instance proof: `GET /instance?nonce=<nonce>` over http (https for `wss:`), bounded in
- * time and size. Only the nonce is sent.
+ * Asks an address for its instance proof: `GET <origin>/instance?nonce=<nonce>`, built from the address's origin
+ * and the nonce alone, with no pooled socket, within one deadline for the whole exchange, the body bounded (more
+ * is no answer).
  *
- * @param url - The berth URL.
+ * @param target - The address.
  * @param nonce - The nonce.
  * @returns The answer, or how the connection failed.
  */
-function instance_ask(url: string, nonce: string): Promise<InstanceAnswer> {
+function instance_ask(target: BerthTarget, nonce: string): Promise<InstanceAnswer> {
   return new Promise((resolve: (answer: InstanceAnswer) => void): void => {
-    let http: URL;
-    try {
-      http = new URL(url);
-      http.protocol = http.protocol === 'wss:' ? 'https:' : 'http:';
-      http.pathname = '/instance';
-      http.search = `?nonce=${nonce}`;
-    } catch {
-      resolve({ failed: 'refused' });
-      return;
+    const request_get: typeof httpGet = target.secure ? httpsGet : httpGet;
+    let request: ClientRequest | null = null;
+    const deadline: NodeJS.Timeout = setTimeout((): void => { answer_settle({ failed: 'inconclusive' }); }, PROBE_TIMEOUT_MS);
+    /**
+     * Settles once: the deadline cleared, the request ended.
+     *
+     * @param answer - What was had.
+     */
+    function answer_settle(answer: InstanceAnswer): void {
+      clearTimeout(deadline);
+      request?.destroy();
+      resolve(answer);
     }
-    const request_get: typeof httpGet = http.protocol === 'https:' ? httpsGet : httpGet;
-    // No pooled socket: one request, closed when answered, nothing held open after.
-    const request: ClientRequest = request_get(http, { timeout: PROBE_TIMEOUT_MS, agent: false }, (response: IncomingMessage): void => {
-      let body: string = '';
-      response.setEncoding('utf8');
-      response.on('data', (chunk: string): void => {
-        body += chunk;
-        if (body.length > 1024) response.destroy();
+    request = request_get(`${target.origin}/instance?nonce=${nonce}`, { agent: false }, (response: IncomingMessage): void => {
+      const chunks: Buffer[] = [];
+      let size: number = 0;
+      response.on('data', (chunk: Buffer): void => {
+        size += chunk.length;
+        if (size > INSTANCE_BODY_MAX) {
+          answer_settle({ failed: 'inconclusive' });
+          return;
+        }
+        chunks.push(chunk);
       });
-      response.on('end', (): void => { resolve({ status: response.statusCode ?? 0, body }); });
-      // Cut short (too long, or the peer went): no answer. A settled promise ignores this after an end.
-      response.on('close', (): void => { resolve({ failed: 'inconclusive' }); });
+      response.on('end', (): void => {
+        if (size > INSTANCE_BODY_MAX) return;
+        answer_settle({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') });
+      });
+      // Cut short: no answer. A settled promise ignores this after an end.
+      response.on('close', (): void => { answer_settle({ failed: 'inconclusive' }); });
     });
-    request.on('timeout', (): void => {
-      request.destroy();
-      resolve({ failed: 'inconclusive' });
-    });
-    request.on('error', (error: NodeJS.ErrnoException): void => { resolve({ failed: error.code === 'ECONNREFUSED' ? 'refused' : 'inconclusive' }); });
+    request.on('error', (error: NodeJS.ErrnoException): void => { answer_settle({ failed: error.code === 'ECONNREFUSED' ? 'refused' : 'inconclusive' }); });
   });
 }
 
@@ -636,8 +705,10 @@ function instance_ask(url: string, nonce: string): Promise<InstanceAnswer> {
 export async function berthInstance_probe(berth: Berth): Promise<BerthLiveness> {
   const facts: InstanceFacts | null = instanceFacts_read(berth);
   if (facts === null) return (await berthUrl_connect(berth.url)) === 'refused' ? 'dead' : 'unverified';
+  const target: BerthTarget | null = berthUrl_target(berth.url);
+  if (target === null) return 'dead';
   const nonce: string = randomBytes(32).toString('hex');
-  const answer: InstanceAnswer = await instance_ask(berth.url, nonce);
+  const answer: InstanceAnswer = await instance_ask(target, nonce);
   if ('failed' in answer || answer.status !== 200) return 'dead';
   let proof: unknown;
   try {
@@ -733,11 +804,16 @@ export class LocalBerthResolver implements BerthResolver {
    * first record of each identity, as written, counted live.
    *
    * @returns The probed berths.
+   *
+   * @example
+   * ```ts
+   * const rows: ProbedBerth[] = await new LocalBerthResolver(berthInstance_probe).probed_list();
+   * ```
    */
   public async probed_list(): Promise<ProbedBerth[]> {
     const chosen: Map<string, ProbedBerth> = new Map();
     for (const dir of [berthDir_path(), ...porterSessionDirs_get()]) {
-      for (const located of berthDir_read(dir)) {
+      for (const located of berthFolder_read(dir)) {
         const held: ProbedBerth | undefined = chosen.get(located.berth.identity);
         if (held?.liveness === 'live') continue;
         const liveness: BerthLiveness = this.liveness_probe ? await this.liveness_probe(located.berth) : 'live';
@@ -775,9 +851,9 @@ export function closing_pathIn(runtimeDir: string, identity: string): string {
  */
 export function closing_write(runtimeDir: string, identity: string, cause: ClosingCause): void {
   const path: string = closing_pathIn(runtimeDir, identity);
-  const held: OwnHeld | OwnRefusal = ownFolder_settle(dirname(path), true);
+  const held: OwnFolder | OwnRefusal = ownFolder_settle(dirname(path), true);
   if (!held.ok) throw new Error(`the berth folder is not this account's own: ${held.reason}`);
-  const written: OwnHeld | OwnRefusal = ownFile_write(dirname(path), basename(path), `${JSON.stringify({ cause, at: Date.now() })}\n`);
+  const written: OwnHeld | OwnRefusal = ownFile_write(held.path, basename(path), `${JSON.stringify({ cause, at: Date.now() })}\n`);
   if (!written.ok) throw new Error(`the closing note could not be written: ${written.reason}`);
 }
 
@@ -793,8 +869,9 @@ const CLOSING_FRESH_MS: number = 60_000;
  */
 export function closing_take(identity: string, runtimeDir?: string): ClosingCause | null {
   const path: string = runtimeDir !== undefined ? closing_pathIn(runtimeDir, identity) : join(berthDir_path(), basename(closing_pathIn('', identity)));
-  if (!ownFolder_settle(dirname(path), false).ok) return null;
-  const taken: OwnRead = ownFile_take(dirname(path), basename(path), 4096);
+  const held: OwnFolder | OwnRefusal = ownFolder_settle(dirname(path), false);
+  if (!held.ok) return null;
+  const taken: OwnRead = ownFile_take(held.path, basename(path), 4096);
   if (!taken.ok) return null;
   try {
     const left: { cause?: unknown; at?: unknown } = JSON.parse(taken.text) as { cause?: unknown; at?: unknown };

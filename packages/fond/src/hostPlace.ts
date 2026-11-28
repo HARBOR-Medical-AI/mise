@@ -14,7 +14,7 @@
  * @module
  */
 import { randomBytes } from 'node:crypto';
-import { chmodSync, closeSync, constants as fsConstants, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync, type Stats } from 'node:fs';
+import { chmodSync, closeSync, constants as fsConstants, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readlinkSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync, type Stats } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -237,6 +237,8 @@ export interface OwnRefusal {
   ok: false;
   /** The path and why. */
   reason: string;
+  /** Set when the place is simply not there (ENOENT): absence, not a fault. */
+  missing?: true;
 }
 
 /**
@@ -253,12 +255,53 @@ export interface OwnHeld {
 }
 
 /**
+ * An owner-only folder held: its path as resolved through the trusted walk, the one every later use names.
+ *
+ * @example
+ * ```ts
+ * const held: OwnFolder = { ok: true, path: '/run/user/1000/calypso' };
+ * ```
+ */
+export interface OwnFolder {
+  /** Held. */
+  ok: true;
+  /** The folder, every link on the way resolved. */
+  path: string;
+}
+
+/**
  * This account's uid.
  *
  * @returns The uid, or null where the platform has none (then no ownership is asked).
  */
 function uid_get(): number | null {
   return typeof process.getuid === 'function' ? process.getuid() : null;
+}
+
+/**
+ * An error's code, read off the object (an error made in another realm is no `instanceof Error` here).
+ *
+ * @param error - What was thrown.
+ * @returns Its code, or 'unknown'.
+ */
+function errorCode_read(error: unknown): string {
+  const code: unknown = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+  return typeof code === 'string' ? code : 'unknown';
+}
+
+/**
+ * A refusal for a failed filesystem call: absence when the error is ENOENT, else the code.
+ *
+ * @param place - The path.
+ * @param error - What was thrown.
+ * @param doing - What failed, for the words.
+ * @returns The refusal.
+ */
+function fsRefusal_make(place: string, error: unknown, doing: string): OwnRefusal {
+  const code: string = errorCode_read(error);
+  if (code === 'ENOENT') return { ok: false, reason: `${place}: not there`, missing: true };
+  if (code === 'ELOOP') return { ok: false, reason: `${place}: a link` };
+  return { ok: false, reason: `${place}: ${doing} failed (${code})` };
 }
 
 /**
@@ -276,72 +319,160 @@ function ancestor_isTrusted(stats: Stats, uid: number): boolean {
   return !opened || (stats.uid === 0 && (stats.mode & 0o1000) !== 0);
 }
 
-/**
- * The first folder from `/` to a parent that another account could replace what is under it in.
- *
- * @param parent - The parent, resolved.
- * @param uid - This account's uid.
- * @returns Why the path is not trusted, or null when every step is.
- */
-function ancestors_untrusted(parent: string, uid: number): string | null {
-  const parts: string[] = parent.split(path.sep).filter((part: string): boolean => part.length > 0);
-  for (let at = 0; at <= parts.length; at++) {
-    const step: string = path.sep + parts.slice(0, at).join(path.sep);
-    let stats: Stats;
-    try {
-      stats = lstatSync(step);
-    } catch {
-      return `${step} cannot be read`;
-    }
-    if (!ancestor_isTrusted(stats, uid)) return `${step} is open to other accounts`;
-  }
-  return null;
+/** The most links a trusted walk follows. */
+const LINK_HOPS_MAX: number = 40;
+
+/** Where a trusted walk is: the folder reached, and the names still to go. */
+interface WalkPlace {
+  /** The folder reached, trusted. */
+  at: string;
+  /** The names still to go. */
+  rest: string[];
+  /** Links followed so far. */
+  hops: number;
 }
 
 /**
- * Holds a folder only this account can use, through a trusted path: every folder from `/` to its parent is root's
- * or this account's and not open to others (unless root's and sticky); the folder itself is a real directory, not a
- * link, this account's, with no group or other bits. Once that holds, no other account can swap the folder or write
- * in it, so a path under it is as good as a handle.
+ * Takes one name of a trusted walk: a trusted folder is entered; a link is followed (its folder is trusted, so no
+ * other account can change it), its target's names put first; anything else ends the walk.
+ *
+ * @param place - Where the walk is.
+ * @param name - The next name.
+ * @param uid - This account's uid.
+ * @returns Where the walk goes on from, or why it stops.
+ */
+function walkStep_take(place: WalkPlace, name: string, uid: number): WalkPlace | OwnRefusal {
+  if (name === '.' || name.length === 0) return place;
+  if (name === '..') return { ...place, at: path.dirname(place.at) };
+  const next: string = path.join(place.at, name);
+  let stats: Stats;
+  try {
+    stats = lstatSync(next);
+  } catch (error: unknown) {
+    return fsRefusal_make(next, error, 'lstat');
+  }
+  if (stats.isSymbolicLink()) {
+    if (place.hops >= LINK_HOPS_MAX) return { ok: false, reason: `${next}: too many links` };
+    const link: string = readlinkSync(next);
+    const at: string = path.isAbsolute(link) ? path.parse(link).root : place.at;
+    return { at, rest: [...link.split(path.sep), ...place.rest], hops: place.hops + 1 };
+  }
+  if (!ancestor_isTrusted(stats, uid)) return { ok: false, reason: `${next}: ${stats.isDirectory() ? 'open to other accounts' : 'not a folder'}` };
+  return { ...place, at: next };
+}
+
+/**
+ * Resolves a folder's path through trusted folders only: from `/` (itself trusted), each name as spelled, every
+ * folder root's or this account's and not open to others (unless root's and sticky), every link found in such a
+ * folder followed the same way. No folder another account could change is passed through, by any spelling.
+ *
+ * @param folder - The folder.
+ * @param uid - This account's uid.
+ * @returns The resolved path, or why not (`missing` when a name on the way is not there).
+ *
+ * @example
+ * ```ts
+ * const walked: OwnFolder | OwnRefusal = trustedPath_resolve('/home/me/.local/state/porter', uid);
+ * ```
+ */
+export function trustedPath_resolve(folder: string, uid: number | null = uid_get()): OwnFolder | OwnRefusal {
+  const absolute: string = path.resolve(folder);
+  if (uid === null) {
+    try {
+      return { ok: true, path: realpathSync(absolute) };
+    } catch (error: unknown) {
+      return fsRefusal_make(absolute, error, 'realpath');
+    }
+  }
+  const root: string = path.parse(absolute).root;
+  let rootStats: Stats;
+  try {
+    rootStats = lstatSync(root);
+  } catch (error: unknown) {
+    return fsRefusal_make(root, error, 'lstat');
+  }
+  if (!ancestor_isTrusted(rootStats, uid)) return { ok: false, reason: `${root}: open to other accounts` };
+  let place: WalkPlace = { at: root, rest: absolute.slice(root.length).split(path.sep), hops: 0 };
+  while (place.rest.length > 0) {
+    const [name, ...rest]: string[] = place.rest;
+    const stepped: WalkPlace | OwnRefusal = walkStep_take({ ...place, rest }, name, uid);
+    if ('ok' in stepped) return stepped;
+    place = stepped;
+  }
+  return { ok: true, path: place.at };
+}
+
+/**
+ * The first folder on a path that another account could change what is under it in, for a host that keeps
+ * owner-only state there and must say so before it starts. A path whose tail is not there yet, below trusted
+ * folders, is fine: a first start makes it.
+ *
+ * @param folder - The path.
+ * @param uid - This account's uid (a test's seam).
+ * @returns Why the path is not trusted, or null.
+ *
+ * @example
+ * ```ts
+ * const why: string | null = pathTrust_refusal(stateDir);
+ * if (why !== null) refuse(why);
+ * ```
+ */
+export function pathTrust_refusal(folder: string, uid: number | null = uid_get()): string | null {
+  const walked: OwnFolder | OwnRefusal = trustedPath_resolve(folder, uid);
+  if (walked.ok || walked.missing === true) return null;
+  return walked.reason;
+}
+
+/**
+ * Holds a folder only this account can use: its parent resolved through trusted folders only
+ * (`trustedPath_resolve`); the folder itself a real directory, not a link, this account's, with no group or other
+ * bits. Once that holds, no other account can swap the folder or write in it, so its resolved path is as good as a
+ * handle: every later use names `path`, never the spelling it was asked by.
  *
  * @param folder - The folder.
  * @param create - Make it (0700) when it is missing; a reader passes false and a missing folder is refused.
  * @param uid - This account's uid (a test's seam).
- * @returns Held, or why not.
+ * @returns Held with its path, or why not (`missing` when it, or its parent, is simply not there).
  *
  * @example
  * ```ts
- * const held: OwnHeld | OwnRefusal = ownFolder_settle(berthDir, true);
+ * const held: OwnFolder | OwnRefusal = ownFolder_settle(berthDir, true);
  * ```
  */
-export function ownFolder_settle(folder: string, create: boolean, uid: number | null = uid_get()): OwnHeld | OwnRefusal {
+export function ownFolder_settle(folder: string, create: boolean, uid: number | null = uid_get()): OwnFolder | OwnRefusal {
   const absolute: string = path.resolve(folder);
-  let parent: string;
-  try {
-    parent = realpathSync(path.dirname(absolute));
-  } catch {
-    return { ok: false, reason: `${absolute}: its parent is not there` };
-  }
-  const untrusted: string | null = uid === null ? null : ancestors_untrusted(parent, uid);
-  if (untrusted !== null) return { ok: false, reason: `${absolute}: ${untrusted}` };
-  const target: string = path.join(parent, path.basename(absolute));
+  const parent: OwnFolder | OwnRefusal = trustedPath_resolve(path.dirname(absolute), uid);
+  if (!parent.ok) return { ...parent, reason: `${absolute}: ${parent.reason}` };
+  const target: string = path.join(parent.path, path.basename(absolute));
   let stats: Stats;
   try {
     stats = lstatSync(target);
-  } catch {
-    if (!create) return { ok: false, reason: `${target}: not there` };
+  } catch (error: unknown) {
+    if (!create || errorCode_read(error) !== 'ENOENT') return fsRefusal_make(target, error, 'lstat');
     try {
       mkdirSync(target, { mode: 0o700 });
       stats = lstatSync(target);
-    } catch (error: unknown) {
-      return { ok: false, reason: `${target}: could not be made (${error instanceof Error ? error.message : String(error)})` };
+    } catch (made: unknown) {
+      return { ok: false, reason: `${target}: could not be made (${errorCode_read(made)})` };
     }
   }
+  return ownFolder_judge(target, stats, uid);
+}
+
+/**
+ * Whether a folder's lstat is one only this account can use.
+ *
+ * @param target - The folder.
+ * @param stats - Its lstat.
+ * @param uid - This account's uid.
+ * @returns Held with its path, or why not.
+ */
+function ownFolder_judge(target: string, stats: Stats, uid: number | null): OwnFolder | OwnRefusal {
   if (stats.isSymbolicLink()) return { ok: false, reason: `${target}: a link` };
   if (!stats.isDirectory()) return { ok: false, reason: `${target}: not a folder` };
   if (uid !== null && stats.uid !== uid) return { ok: false, reason: `${target}: another account's` };
   if ((stats.mode & 0o077) !== 0) return { ok: false, reason: `${target}: wider than 0700` };
-  return { ok: true };
+  return { ok: true, path: target };
 }
 
 /**
@@ -363,17 +494,33 @@ export interface OwnText {
 export type OwnRead = OwnText | OwnRefusal;
 
 /**
- * Reads an owner-only file: opened without following a link, a regular file of this account's with no group or
- * other bits, at most `maxBytes` (more is refused).
+ * Whether a file's stat is one of this account's own: a regular file of this uid with no group or other bits.
  *
  * @param file - The file.
+ * @param stats - Its stat or lstat.
+ * @param uid - This account's uid.
+ * @returns Null when it is, else why not.
+ */
+function ownFile_judge(file: string, stats: Stats, uid: number | null): OwnRefusal | null {
+  if (stats.isSymbolicLink()) return { ok: false, reason: `${file}: a link, left as it is` };
+  if (!stats.isFile()) return { ok: false, reason: `${file}: not a regular file, left as it is` };
+  if (uid !== null && stats.uid !== uid) return { ok: false, reason: `${file}: another account's, left as it is` };
+  if ((stats.mode & 0o077) !== 0) return { ok: false, reason: `${file}: wider than 0600, left as it is` };
+  return null;
+}
+
+/**
+ * Reads an owner-only file in a held folder: opened without following a link, a regular file of this account's
+ * with no group or other bits, at most `maxBytes` (more is refused).
+ *
+ * @param file - The file, named under a held folder's `path`.
  * @param maxBytes - The most it may hold.
  * @param uid - This account's uid (a test's seam).
- * @returns Its text, or why not (`not there` when it is missing).
+ * @returns Its text, or why not (`missing` when it is not there).
  *
  * @example
  * ```ts
- * const read: OwnRead = ownFile_read(recordPath, 64 * 1024);
+ * const read: OwnRead = ownFile_read(join(held.path, 'berth-0123.json'), 64 * 1024);
  * ```
  */
 export function ownFile_read(file: string, maxBytes: number, uid: number | null = uid_get()): OwnRead {
@@ -381,15 +528,11 @@ export function ownFile_read(file: string, maxBytes: number, uid: number | null 
   try {
     handle = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
   } catch (error: unknown) {
-    // Read off the object, not by its class: an error made in another realm is no `instanceof Error` here.
-    const code: unknown = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
-    return { ok: false, reason: `${file}: ${code === 'ENOENT' ? 'not there' : code === 'ELOOP' ? 'a link' : 'cannot be read'}` };
+    return fsRefusal_make(file, error, 'open');
   }
   try {
-    const stats: Stats = fstatSync(handle);
-    if (!stats.isFile()) return { ok: false, reason: `${file}: not a regular file` };
-    if (uid !== null && stats.uid !== uid) return { ok: false, reason: `${file}: another account's` };
-    if ((stats.mode & 0o077) !== 0) return { ok: false, reason: `${file}: wider than 0600` };
+    const refused: OwnRefusal | null = ownFile_judge(file, fstatSync(handle), uid);
+    if (refused !== null) return refused;
     const buffer: Buffer = Buffer.alloc(maxBytes + 1);
     let filled: number = 0;
     for (;;) {
@@ -399,52 +542,68 @@ export function ownFile_read(file: string, maxBytes: number, uid: number | null 
       if (filled > maxBytes) return { ok: false, reason: `${file}: larger than ${String(maxBytes)} bytes` };
     }
     return { ok: true, text: buffer.subarray(0, filled).toString('utf8') };
+  } catch (error: unknown) {
+    return fsRefusal_make(file, error, 'read');
   } finally {
     closeSync(handle);
   }
 }
 
 /**
- * Writes an owner-only file in a held folder, atomically: a fresh temporary file (`O_EXCL|O_NOFOLLOW`, 0600),
- * synced, renamed over the name. A standing entry that is not this account's regular 0600 file (a link, another
- * account's, wider) is refused and left as it is, its target untouched.
+ * Writes every byte of a buffer on an open descriptor, however many calls it takes.
  *
- * @param folder - The held folder (`ownFolder_settle`).
+ * @param handle - The descriptor.
+ * @param bytes - What to write.
+ * @param write - The write call (a test's seam).
+ * @throws {Error} When a write makes no progress.
+ *
+ * @example
+ * ```ts
+ * bytes_writeAll(handle, Buffer.from(text, 'utf8'));
+ * ```
+ */
+export function bytes_writeAll(handle: number, bytes: Uint8Array, write: (handle: number, bytes: Uint8Array, offset: number, length: number) => number = writeSync): void {
+  let done: number = 0;
+  while (done < bytes.length) {
+    const wrote: number = write(handle, bytes, done, bytes.length - done);
+    if (wrote <= 0) throw new Error(`a write made no progress at byte ${String(done)} of ${String(bytes.length)}`);
+    done += wrote;
+  }
+}
+
+/**
+ * Writes an owner-only file in a held folder, atomically: a fresh temporary file (`O_EXCL|O_NOFOLLOW`, 0600), every
+ * byte written, synced, renamed over the name. A standing entry that is not this account's regular 0600 file (a
+ * link, another account's, wider) is refused and left as it is, its target untouched; a failed write leaves the
+ * standing record as it was.
+ *
+ * @param folder - The held folder's `path`.
  * @param name - The file's name in it (a plain name).
  * @param text - What it holds.
  * @param uid - This account's uid (a test's seam).
+ * @param write - The write call (a test's seam).
  * @returns Held, or why not.
  *
  * @example
  * ```ts
- * ownFile_write(berthDir, 'berth-0123456789abcdef.json', JSON.stringify(record));
+ * ownFile_write(held.path, 'berth-0123456789abcdef.json', JSON.stringify(record));
  * ```
  */
-export function ownFile_write(folder: string, name: string, text: string, uid: number | null = uid_get()): OwnHeld | OwnRefusal {
+export function ownFile_write(folder: string, name: string, text: string, uid: number | null = uid_get(), write?: (handle: number, bytes: Uint8Array, offset: number, length: number) => number): OwnHeld | OwnRefusal {
   if (!PRIVATE_NAME.test(name)) return { ok: false, reason: `${JSON.stringify(name)}: not a plain name` };
   const target: string = path.join(folder, name);
-  let standing: Stats | null = null;
-  try {
-    standing = lstatSync(target);
-  } catch {
-    standing = null;
-  }
-  if (standing !== null) {
-    if (standing.isSymbolicLink()) return { ok: false, reason: `${target}: a link, left as it is` };
-    if (!standing.isFile()) return { ok: false, reason: `${target}: not a regular file, left as it is` };
-    if (uid !== null && standing.uid !== uid) return { ok: false, reason: `${target}: another account's, left as it is` };
-    if ((standing.mode & 0o077) !== 0) return { ok: false, reason: `${target}: wider than 0600, left as it is` };
-  }
+  const standing: OwnRefusal | null = standing_judge(target, uid);
+  if (standing !== null) return standing;
   const temporary: string = path.join(folder, `.${name}.${randomBytes(6).toString('hex')}.tmp`);
   let handle: number;
   try {
     handle = openSync(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
   } catch (error: unknown) {
-    return { ok: false, reason: `${target}: could not be written (${error instanceof Error ? error.message : String(error)})` };
+    return { ok: false, reason: `${target}: could not be written (${errorCode_read(error)})` };
   }
   try {
     try {
-      writeSync(handle, text);
+      bytes_writeAll(handle, Buffer.from(text, 'utf8'), write);
       fsyncSync(handle);
     } finally {
       closeSync(handle);
@@ -454,15 +613,31 @@ export function ownFile_write(folder: string, name: string, text: string, uid: n
     return { ok: true };
   } catch (error: unknown) {
     rmSync(temporary, { force: true });
-    return { ok: false, reason: `${target}: could not be written (${error instanceof Error ? error.message : String(error)})` };
+    return { ok: false, reason: `${target}: could not be written (${error instanceof Error ? error.message : errorCode_read(error)})` };
   }
 }
 
 /**
- * Takes an owner-only file: renamed aside (atomic), then read and the aside name removed. What stands at the name
- * once taken is never put back; a note taken by two readers is had by one.
+ * Whether what stands at a name may be replaced or taken: nothing, or this account's regular 0600 file.
  *
- * @param folder - The held folder.
+ * @param target - The name's path.
+ * @param uid - This account's uid.
+ * @returns Null when it may, else why not (`missing` is not returned: absence is fine).
+ */
+function standing_judge(target: string, uid: number | null): OwnRefusal | null {
+  try {
+    return ownFile_judge(target, lstatSync(target), uid);
+  } catch (error: unknown) {
+    return errorCode_read(error) === 'ENOENT' ? null : fsRefusal_make(target, error, 'lstat');
+  }
+}
+
+/**
+ * Takes an owner-only file: judged where it stands (a link, another account's or a wider file is refused and left
+ * as it is), then renamed aside (atomic), read and the aside name removed. What is taken is never put back; a note
+ * taken by two readers is had by one.
+ *
+ * @param folder - The held folder's `path`.
  * @param name - The file's name.
  * @param maxBytes - The most it may hold.
  * @param uid - This account's uid (a test's seam).
@@ -470,16 +645,25 @@ export function ownFile_write(folder: string, name: string, text: string, uid: n
  *
  * @example
  * ```ts
- * const note: OwnRead = ownFile_take(runtimeDir, 'closing-0123.json', 4096);
+ * const note: OwnRead = ownFile_take(held.path, 'closing-0123.json', 4096);
  * ```
  */
 export function ownFile_take(folder: string, name: string, maxBytes: number, uid: number | null = uid_get()): OwnRead {
   if (!PRIVATE_NAME.test(name)) return { ok: false, reason: `${JSON.stringify(name)}: not a plain name` };
+  const file: string = path.join(folder, name);
+  let standing: Stats;
+  try {
+    standing = lstatSync(file);
+  } catch (error: unknown) {
+    return fsRefusal_make(file, error, 'lstat');
+  }
+  const refused: OwnRefusal | null = ownFile_judge(file, standing, uid);
+  if (refused !== null) return refused;
   const aside: string = path.join(folder, `.${name}.${randomBytes(6).toString('hex')}.taken`);
   try {
-    renameSync(path.join(folder, name), aside);
-  } catch {
-    return { ok: false, reason: `${path.join(folder, name)}: not there` };
+    renameSync(file, aside);
+  } catch (error: unknown) {
+    return fsRefusal_make(file, error, 'rename');
   }
   try {
     return ownFile_read(aside, maxBytes, uid);
@@ -487,4 +671,3 @@ export function ownFile_take(folder: string, name: string, maxBytes: number, uid
     rmSync(aside, { force: true });
   }
 }
-

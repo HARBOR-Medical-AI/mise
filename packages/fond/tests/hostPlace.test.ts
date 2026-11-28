@@ -2,7 +2,7 @@
  * @file A name from elsewhere is placed inside its folder or refused: by
  * what the name says, and by where the links already on the disk lead.
  */
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { wireName_place, type HostPlace } from '../src/hostPlace';
@@ -158,8 +158,8 @@ describe('owner-only places', () => {
     const { ownFolder_settle } = await import('../src/hostPlace.js');
     const root: string = base();
     const folder: string = path.join(root, 'calypso');
-    expect(ownFolder_settle(folder, false)).toMatchObject({ ok: false, reason: expect.stringContaining('not there') });
-    expect(ownFolder_settle(folder, true)).toEqual({ ok: true });
+    expect(ownFolder_settle(folder, false)).toMatchObject({ ok: false, reason: expect.stringContaining('not there'), missing: true });
+    expect(ownFolder_settle(folder, true)).toEqual({ ok: true, path: path.join(realpathSync(root), 'calypso') });
     expect(ownFolder_settle(folder, false, uid + 1)).toMatchObject({ ok: false });
     chmodSync(folder, 0o755);
     expect(ownFolder_settle(folder, false)).toMatchObject({ ok: false, reason: expect.stringContaining('wider than 0700') });
@@ -172,10 +172,30 @@ describe('owner-only places', () => {
     mkdirSync(open, { mode: 0o777 });
     chmodSync(open, 0o777);
     expect(ownFolder_settle(path.join(open, 'calypso'), true)).toMatchObject({ ok: false, reason: expect.stringContaining('open to other accounts') });
+    // A link inside an open folder, to a trusted folder of this account's: the open folder is on the way, so refused.
+    const trusted: string = path.join(root, 'trusted');
+    mkdirSync(trusted, { mode: 0o700 });
+    symlinkSync(trusted, path.join(open, 'link'));
+    expect(ownFolder_settle(path.join(open, 'link', 'calypso'), true)).toMatchObject({ ok: false, reason: expect.stringContaining('open to other accounts') });
+    // A link inside a trusted folder is followed, and the place it reaches named.
+    symlinkSync(trusted, path.join(root, 'alias'));
+    expect(ownFolder_settle(path.join(root, 'alias', 'calypso'), true)).toEqual({ ok: true, path: path.join(realpathSync(trusted), 'calypso') });
+  });
+
+  it('says where a host\'s state root is not on a trusted path; a missing tail below trusted folders is a first start', async () => {
+    const { pathTrust_refusal } = await import('../src/hostPlace.js');
+    const root: string = base();
+    expect(pathTrust_refusal(path.join(root, 'not', 'yet'))).toBeNull();
+    const shared: string = path.join(root, 'shared');
+    mkdirSync(shared, { mode: 0o775 });
+    chmodSync(shared, 0o775);
+    mkdirSync(path.join(shared, 'porter'), { mode: 0o700 });
+    expect(pathTrust_refusal(path.join(shared, 'porter'))).toBe(`${path.join(realpathSync(root), 'shared')}: open to other accounts`);
+    expect(pathTrust_refusal(path.join(shared, 'porter', 'missing'))).toContain('open to other accounts');
   });
 
   it('reads only a regular 0600 file of this account\'s, bounded; writes by rename; refuses a standing link or wider file and leaves it as it is', async () => {
-    const { ownFolder_settle, ownFile_read, ownFile_write, ownFile_take } = await import('../src/hostPlace.js');
+    const { ownFolder_settle, ownFile_read, ownFile_write, ownFile_take, bytes_writeAll } = await import('../src/hostPlace.js');
     const { readFileSync, lstatSync, readdirSync } = await import('node:fs');
     const folder: string = path.join(base(), 'calypso');
     ownFolder_settle(folder, true);
@@ -204,7 +224,23 @@ describe('owner-only places', () => {
     // A note taken is had once.
     ownFile_write(folder, 'closing-1.json', '{"cause":"stop"}');
     expect(ownFile_take(folder, 'closing-1.json', 64)).toEqual({ ok: true, text: '{"cause":"stop"}' });
-    expect(ownFile_take(folder, 'closing-1.json', 64)).toMatchObject({ ok: false, reason: expect.stringContaining('not there') });
+    expect(ownFile_take(folder, 'closing-1.json', 64)).toMatchObject({ ok: false, reason: expect.stringContaining('not there'), missing: true });
+    // A note that is a link, or wider: refused where it stands, and left as it is.
+    symlinkSync(target, path.join(folder, 'closing-2.json'));
+    expect(ownFile_take(folder, 'closing-2.json', 64)).toMatchObject({ ok: false, reason: expect.stringContaining('a link') });
+    expect(lstatSync(path.join(folder, 'closing-2.json')).isSymbolicLink()).toBe(true);
+    writeFileSync(path.join(folder, 'closing-3.json'), '{}', { mode: 0o644 });
+    chmodSync(path.join(folder, 'closing-3.json'), 0o644);
+    expect(ownFile_take(folder, 'closing-3.json', 64)).toMatchObject({ ok: false, reason: expect.stringContaining('wider than 0600') });
+    expect(readFileSync(path.join(folder, 'closing-3.json'), 'utf8')).toBe('{}');
+    // A write that takes several calls writes every byte; one that makes no progress fails and keeps the record.
+    const short = (handle: number, bytes: Uint8Array, offset: number, length: number): number => writeSync(handle, bytes, offset, Math.min(3, length));
+    expect(ownFile_write(folder, 'berth-1.json', '{"a":"complete"}', undefined, short)).toEqual({ ok: true });
+    expect(readFileSync(path.join(folder, 'berth-1.json'), 'utf8')).toBe('{"a":"complete"}');
+    expect(ownFile_write(folder, 'berth-1.json', '{"a":"lost"}', undefined, () => 0)).toMatchObject({ ok: false, reason: expect.stringContaining('no progress') });
+    expect(readFileSync(path.join(folder, 'berth-1.json'), 'utf8')).toBe('{"a":"complete"}');
+    expect(readdirSync(folder).filter((name: string): boolean => name.endsWith('.tmp'))).toEqual([]);
+    expect(() => bytes_writeAll(0, new Uint8Array(4), () => -1)).toThrow('no progress');
   });
 });
 

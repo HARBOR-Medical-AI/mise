@@ -23,6 +23,7 @@ import {
   berth_pathIn,
   berthAll_read,
   berthUrl_connect,
+  berthUrl_target,
   LocalBerthResolver,
   type Berth,
 } from '../src/daemon/berth.js';
@@ -183,6 +184,21 @@ describe('berth file IO', () => {
     rmSync(elsewhere, { recursive: true, force: true });
   });
 
+  it('a runtime folder reached by a link inside a folder open to other accounts is not trusted, though the link lands in a folder of this account\'s', () => {
+    const identity: string = 'u@http://h/api/v1/';
+    berth_write(berth_of(identity));
+    const open: string = mkdtempSync(join(tmpdir(), 'berth-open-'));
+    chmodSync(open, 0o777);
+    symlinkSync(runtimeDir, join(open, 'link'));
+    process.env.XDG_RUNTIME_DIR = join(open, 'link');
+    expect(berth_read(identity)).toBeNull();
+    expect(berthAll_read()).toEqual([]);
+    expect(() => berth_write(berth_of(identity))).toThrow('open to other accounts');
+    process.env.XDG_RUNTIME_DIR = runtimeDir;
+    expect(berth_read(identity)).not.toBeNull();
+    rmSync(open, { recursive: true, force: true });
+  });
+
   it('a reader never makes the berth folder; a writer makes it 0700', () => {
     rmSync(berthDir_path(), { recursive: true, force: true });
     expect(berth_read('u@http://h/api/v1/')).toBeNull();
@@ -222,14 +238,30 @@ describe('berthUrl_connect', () => {
     }
   });
 
-  it('is refused only for a refused connection, or a url that names no address', async () => {
+  it('is refused only for a refused connection; a url that names no daemon is inconclusive and nothing is sent', async () => {
     const server: Server = createServer();
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port: number = (server.address() as AddressInfo).port;
     await new Promise<void>((resolve) => server.close(() => resolve()));
     expect(await berthUrl_connect(`ws://127.0.0.1:${port}`, 200)).toBe('refused');
-    expect(await berthUrl_connect('not a url')).toBe('refused');
-    expect(await berthUrl_connect('ws://127.0.0.1')).toBe('refused');
+    for (const bad of ['not a url', 'http://127.0.0.1:1', 'ws://u:p@127.0.0.1:1', 'ws://127.0.0.1:0']) expect([bad, await berthUrl_connect(bad)]).toEqual([bad, 'inconclusive']);
+  });
+
+  it('reads a berth address: a scheme\'s default port filled in, an IPv6 host unbracketed, the origin alone kept', () => {
+    expect(berthUrl_target('ws://127.0.0.1')).toEqual({ host: '127.0.0.1', port: 80, secure: false, origin: 'http://127.0.0.1' });
+    expect(berthUrl_target('wss://cube.example.org/path?q=1')).toEqual({ host: 'cube.example.org', port: 443, secure: true, origin: 'https://cube.example.org' });
+    expect(berthUrl_target('ws://[::1]:4000')).toEqual({ host: '::1', port: 4000, secure: false, origin: 'http://[::1]:4000' });
+    for (const bad of ['ws://alice:secret@127.0.0.1:1', 'ws://alice@127.0.0.1:1', 'http://127.0.0.1:1', 'file:///x', 'nonsense']) expect([bad, berthUrl_target(bad)]).toEqual([bad, null]);
+  });
+
+  it('a record whose address is not a ws/wss address without credentials is no record', () => {
+    const identity: string = 'u@http://h/api/v1/';
+    record_put(berth_path(identity), JSON.stringify({ ...berth_of(identity), url: 'ws://alice:secret@127.0.0.1:1' }));
+    expect(berth_read(identity)).toBeNull();
+    record_put(berth_path(identity), JSON.stringify({ ...berth_of(identity), url: 'http://127.0.0.1:1' }));
+    expect(berth_read(identity)).toBeNull();
+    record_put(berth_path(identity), JSON.stringify({ ...berth_of(identity), url: 'ws://127.0.0.1' }));
+    expect(berth_read(identity)?.url).toBe('ws://127.0.0.1');
   });
 
   it('is inconclusive for a timeout or a name that does not resolve: neither means nothing is there', async () => {

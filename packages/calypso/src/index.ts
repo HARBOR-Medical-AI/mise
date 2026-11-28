@@ -122,6 +122,7 @@ export {
   berth_read,
   berthAll_read,
   berthRecord_read,
+  berthFolder_read,
   berthInstance_probe,
   berthUrl_connect,
   probeKey_generate,

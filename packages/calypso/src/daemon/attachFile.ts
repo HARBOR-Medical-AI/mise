@@ -21,7 +21,7 @@
 
 import { basename, dirname, join } from 'node:path';
 
-import { ownFile_write, ownFolder_settle, type OwnHeld, type OwnRefusal } from '@fnndsc/fond';
+import { ownFile_write, ownFolder_settle, type OwnFolder, type OwnHeld, type OwnRefusal } from '@fnndsc/fond';
 
 import { berthDir_path } from './berth.js';
 
@@ -48,8 +48,8 @@ export function attachFile_write(lines: string[]): string | null {
   const path: string = attachFile_path();
   // A note is a convenience. Failing to write one must never stop a daemon from starting, and the addresses were
   // printed regardless.
-  const held: OwnHeld | OwnRefusal = ownFolder_settle(dirname(path), true);
+  const held: OwnFolder | OwnRefusal = ownFolder_settle(dirname(path), true);
   if (!held.ok) return null;
-  const written: OwnHeld | OwnRefusal = ownFile_write(dirname(path), basename(path), `${lines.join('\n')}\n`);
-  return written.ok ? path : null;
+  const written: OwnHeld | OwnRefusal = ownFile_write(held.path, basename(path), `${lines.join('\n')}\n`);
+  return written.ok ? join(held.path, basename(path)) : null;
 }

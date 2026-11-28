@@ -86,6 +86,39 @@ describe('the instance probe', () => {
     }
   });
 
+  it('an answer larger than a proof, even in one chunk, is dead; so is one that trickles past the deadline', async () => {
+    const facts: InstanceFacts = facts_of();
+    const big: number = await server_start((request: IncomingMessage, response: ServerResponse): void => {
+      const nonce: string = (request.url ?? '').slice('/instance?nonce='.length);
+      response.writeHead(200);
+      response.end(JSON.stringify({ proof: instanceProof_compute(facts, nonce), pad: 'x'.repeat(2048) }));
+    });
+    expect(await berthInstance_probe(record_of(facts, big))).toBe('dead');
+    const timers: NodeJS.Timeout[] = [];
+    const slow: number = await server_start((request: IncomingMessage, response: ServerResponse): void => {
+      const nonce: string = (request.url ?? '').slice('/instance?nonce='.length);
+      const body: string = JSON.stringify({ proof: instanceProof_compute(facts, nonce) });
+      response.writeHead(200);
+      let at: number = 0;
+      const drip = (): void => { if (at >= body.length) { response.end(); return; } response.write(body[at++] as string); timers.push(setTimeout(drip, 100)); };
+      drip();
+    });
+    const started: number = Date.now();
+    expect(await berthInstance_probe(record_of(facts, slow))).toBe('dead');
+    expect(Date.now() - started).toBeLessThan(3000);
+    timers.forEach((timer) => clearTimeout(timer));
+  }, 15000);
+
+  it('a keyed record whose address carries credentials, or is not ws/wss, is dead and nothing is sent', async () => {
+    const facts: InstanceFacts = facts_of();
+    const seen: Array<{ url: string; headers: string }> = [];
+    const port: number = await daemon_start(facts, seen);
+    for (const url of [`ws://alice:secret-pass@127.0.0.1:${port}`, `http://127.0.0.1:${port}`]) {
+      expect(await berthInstance_probe({ ...record_of(facts, port), url })).toBe('dead');
+    }
+    expect(seen).toEqual([]);
+  });
+
   it('a keyed record whose address refuses, or never answers, is dead', async () => {
     const facts: InstanceFacts = facts_of();
     const port: number = await daemon_start(facts);

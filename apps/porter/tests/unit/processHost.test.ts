@@ -5,12 +5,12 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { berth_pathIn } from '@fnndsc/calypso/berth';
+import { berth_pathIn, berthKey_compute } from '@fnndsc/calypso/berth';
 import type { BerthLiveness } from '@fnndsc/calypso/berth';
-import { ProcessHost, BOOT_LINES_KEPT, bootRow_parse, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
+import { ProcessHost, BOOT_LINES_KEPT, identityFile_write, bootRow_parse, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
 import { restartLine_render, type BootLine } from '../../src/host/sessionHost.js';
 
 const IDENTITY: string = 'chris@https://cube.example.org/api/v1/';
@@ -446,6 +446,49 @@ describe('a porter restarted', () => {
     expect(spawnCalls).toEqual([]);
     expect(await host.evict(IDENTITY)).toBe(false);
     expect(killed).toEqual([]);
+  });
+
+  it('a session folder holding a dead record and a live one: every record is probed, and the live one is found and adopted', async () => {
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (berth): Promise<BerthLiveness> => (berth.url.endsWith(':5555') ? 'live' : 'dead'), bootTimeoutMs: 200, pollMs: 20 });
+    berth_plant(host);
+    const runtime: string = host.dirs_build(IDENTITY).runtime;
+    // A second record of the same session, as a later daemon of a stratus session (its cloud identity, tied by the marker) would leave.
+    identityFile_write(join(stateDir, berthKey_compute(IDENTITY), 'identity'), IDENTITY);
+    writeFileSync(join(runtime, 'calypso', 'berth-0000000000000000.json'), JSON.stringify({ identity: 'me@cloud', url: 'ws://127.0.0.1:5555', token: 'LIVE' }), { mode: 0o600 });
+    expect((await host.find(IDENTITY))?.url).toBe('ws://127.0.0.1:5555');
+    const sightings = await host.sessions_adopt();
+    expect(sightings).toEqual([expect.objectContaining({ identity: IDENTITY, alive: true, berth: expect.objectContaining({ url: 'ws://127.0.0.1:5555' }) })]);
+  });
+
+  it('a record of another session in a session\'s folder is not that session\'s: without the marker it is passed over', async () => {
+    const host: ProcessHost = host_make();
+    const runtime: string = host.dirs_build(IDENTITY).runtime;
+    mkdirSync(join(runtime, 'calypso'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(runtime, 'calypso', 'berth-0000000000000000.json'), JSON.stringify({ identity: 'bob@https://cube.example.org/api/v1/', url: 'ws://127.0.0.1:5555', token: 'BOB' }), { mode: 0o600 });
+    expect(await host.find(IDENTITY)).toBeNull();
+    expect(await host.sessions_adopt()).toEqual([]);
+  });
+
+  it('one session folder that cannot be read is passed over; the others are adopted', async () => {
+    const host: ProcessHost = host_make();
+    berth_plant(host);
+    const broken: string = join(stateDir, 'ffffffffffffffff', 'run');
+    mkdirSync(broken, { recursive: true, mode: 0o700 });
+    writeFileSync(join(broken, 'calypso'), 'not a folder', { mode: 0o600 });
+    expect((await host.sessions_adopt()).map((one) => one.identity)).toEqual([IDENTITY]);
+  });
+
+  it('a state root under a folder open to other accounts is refused, naming the folder and both remedies; one not made yet below trusted folders is a first start', async () => {
+    const { stateRoot_refusal } = await import('../../src/host/processHost.js');
+    expect(stateRoot_refusal(join(stateDir, 'not', 'yet'))).toBeNull();
+    const shared: string = join(stateDir, 'shared');
+    mkdirSync(shared, { mode: 0o775 });
+    chmodSync(shared, 0o775);
+    const said: string | null = stateRoot_refusal(join(shared, 'porter'));
+    expect(said).toContain(`${join(realpathSync(stateDir), 'shared')}: open to other accounts`);
+    expect(said).toContain(`chmod go-w ${join(realpathSync(stateDir), 'shared')}`);
+    expect(said).toContain('PORTER_STATE_DIR');
+    expect(said).toContain('they are not moved');
   });
 
   it('a berth record another account could have written is not read: a wider record, or one in a wider folder', async () => {

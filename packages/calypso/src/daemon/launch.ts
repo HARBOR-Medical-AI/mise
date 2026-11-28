@@ -329,6 +329,8 @@ export async function daemon_launch(
   // the next clear. The same addresses go to a file so they can be read back
   // without fighting either.
   const noteLines: string[] = [
+    // The note outlives the daemon: it says so, and where to ask what is running now.
+    `# Written by the daemon at ${booted}; left when it ends. What is running now: calypso --berths`,
     `identity:  ${identity}`,
     `wire:      ${url}`,
     `token:     ${token}`,

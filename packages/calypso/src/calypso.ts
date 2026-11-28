@@ -123,9 +123,16 @@ async function berths_print(): Promise<void> {
     return;
   }
   for (const { berth, path, liveness } of berths) {
+    // An earlier release's daemon cannot prove it is the one its record names: no address or token is offered for
+    // it, only what it is and how to stop it.
+    if (liveness === 'unverified') {
+      console.log(chalk.bold.cyan(berth.identity) + chalk.yellow('  unverified (earlier release)'));
+      console.log(chalk.gray('  Stop the old daemon from its original terminal (Ctrl-C at the idle daemon prompt) or through its service manager, then start it again.'));
+      continue;
+    }
     // Each berth's token is printed to a terminal and, anywhere else, named by the record it was actually read from.
     const [identity, argus, attach] = berthLines_say(berth.identity, berth.url, berth.token, process.stdout.isTTY === true, path);
-    console.log(chalk.bold.cyan(identity) + (liveness === 'unverified' ? chalk.yellow('  unverified (earlier release)') : ''));
+    console.log(chalk.bold.cyan(identity));
     console.log(chalk.green(argus));
     console.log(chalk.gray(attach));
   }

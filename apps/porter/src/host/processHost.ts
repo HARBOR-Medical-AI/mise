@@ -18,9 +18,9 @@
  */
 import { spawn as childSpawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, writeSync, type Stats } from 'node:fs';
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, writeSync, type Dirent, type Stats } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import { berthInstance_probe, berthKey_compute, berthRecord_read, berth_pathIn, closing_write, type BerthLiveness } from '@fnndsc/calypso/berth';
+import { berthFolder_read, berthInstance_probe, berthKey_compute, closing_write, pathTrust_refusal, type BerthLiveness, type LocatedBerth } from '@fnndsc/calypso/berth';
 import { sessionEnv_build } from './sessionEnv.js';
 import { restartLine_render, type Berth, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
 import { bootLine_note } from './bootLines.js';
@@ -471,6 +471,61 @@ export function sessionDir_settle(dir: string, within: string, fs: SettleFs = SE
   }
 }
 
+/**
+ * Why porter may not keep sessions under a state root: the first folder on its path another account could change
+ * what is under, and the remedies. With such a folder on the way, another account could put links in place of a
+ * session's folder and send one person's browser to another person's daemon. A root not made yet, below trusted
+ * folders, is a first start.
+ *
+ * @param stateDir - The state root.
+ * @param uid - This account's uid (a test's seam).
+ * @returns What to say, or null when the root is on a trusted path.
+ *
+ * @example
+ * ```ts
+ * const refusal: string | null = stateRoot_refusal(config.stateDir);
+ * if (refusal !== null) { console.error(refusal); process.exit(1); }
+ * ```
+ */
+export function stateRoot_refusal(stateDir: string, uid?: number | null): string | null {
+  const why: string | null = uid === undefined ? pathTrust_refusal(stateDir) : pathTrust_refusal(stateDir, uid);
+  if (why === null) return null;
+  const folder: string = why.slice(0, why.lastIndexOf(': '));
+  return [
+    `[!] porter's state folder ${stateDir} is not on a trusted path: ${why}.`,
+    '    Another account could put links in place of a session\'s folder there and send one person\'s browser to another person\'s daemon, so porter keeps no sessions under it.',
+    `    Either take group and other write off that folder (chmod go-w ${folder}), if nothing there needs it,`,
+    '    or set PORTER_STATE_DIR to a folder on a trusted path. Sessions already kept under the old folder stay there; they are not moved.',
+  ].join('\n');
+}
+
+/** A record and what its probe said. */
+interface JudgedBerth {
+  /** The record. */
+  berth: Berth;
+  /** What the probe said. */
+  liveness: BerthLiveness;
+}
+
+/**
+ * Probes every record of one session and chooses: the first live, else the first unverified, else the first dead.
+ *
+ * @param berths - The session's records.
+ * @param probe - The liveness probe.
+ * @returns The choice, or null when there are none.
+ */
+async function berths_judge(berths: Berth[], probe: LivenessProbe): Promise<JudgedBerth | null> {
+  let unverified: JudgedBerth | null = null;
+  let dead: JudgedBerth | null = null;
+  for (const berth of berths) {
+    const liveness: BerthLiveness = await probe(berth);
+    if (liveness === 'live') return { berth, liveness };
+    if (liveness === 'unverified') unverified ??= { berth, liveness };
+    else dead ??= { berth, liveness };
+  }
+  return unverified ?? dead;
+}
+
 /** Sessions as child processes on this host. */
 export class ProcessHost implements SessionHost {
   private readonly stateDir: string;
@@ -521,28 +576,31 @@ export class ProcessHost implements SessionHost {
   }
 
   /**
-   * Reads a berth record, held to this account (its folder owner-only through a trusted path, the record a regular
-   * 0600 file of this account's, bounded), if well formed: calypso's own reader.
+   * An identity's records in its session folder: every well-formed record of the folder (held to this account
+   * through a trusted path, calypso's own reader) that is this session's by its folder's marker or its own
+   * identity (`sightingIdentity_read`). A chell daemon names itself by the identity porter knows it by; a stratus
+   * daemon by its cloud identity, which only the marker ties to the session.
+   *
+   * @param identity - The session.
+   * @returns Its records, in folder order.
    */
-  private berthFile_read(path: string): Berth | null {
-    return berthRecord_read(path);
+  private berths_read(identity: string): Berth[] {
+    const key: string = berthKey_compute(identity);
+    return berthFolder_read(join(this.dirs_build(identity).runtime, 'calypso'))
+      .map((located: LocatedBerth): Berth => located.berth)
+      .filter((berth: Berth): boolean => this.sightingIdentity_read(key, berth) === identity);
   }
 
   /**
-   * Reads an identity's berth from its own runtime directory, if written. A
-   * chell daemon writes it under the identity porter knows it by; a stratus
-   * daemon names itself by its cloud identity (`<user>@<tenancy>`), which
-   * porter learns only from the key, so the one berth in a session's own
-   * runtime directory is that session's.
+   * An identity's record as probed: its first live record, else its first unverified one (an earlier release's
+   * daemon that may still run), else its first dead one. Every record of the session is probed before one is
+   * chosen, so a record left by an earlier daemon never hides the one that answers.
+   *
+   * @param identity - The session.
+   * @returns The record and what its probe said, or null when the session has none.
    */
-  private berth_read(identity: string): Berth | null {
-    const runtime: string = this.dirs_build(identity).runtime;
-    const exact: Berth | null = this.berthFile_read(berth_pathIn(runtime, identity));
-    if (exact !== null) return exact;
-    const calypso: string = join(runtime, 'calypso');
-    if (!existsSync(calypso)) return null;
-    const berths: string[] = readdirSync(calypso).filter((name: string): boolean => name.startsWith('berth-') && name.endsWith('.json'));
-    return berths.length === 1 ? this.berthFile_read(join(calypso, berths[0] as string)) : null;
+  private async berthJudged_read(identity: string): Promise<JudgedBerth | null> {
+    return berths_judge(this.berths_read(identity), this.alive);
   }
 
   /**
@@ -568,34 +626,41 @@ export class ProcessHost implements SessionHost {
   /** @inheritdoc */
   public async sessions_adopt(): Promise<SessionSighting[]> {
     const sightings: SessionSighting[] = [];
-    if (!existsSync(this.stateDir)) return sightings;
-    for (const entry of readdirSync(this.stateDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const berthDir: string = join(this.stateDir, entry.name, 'run', 'calypso');
-      if (!existsSync(berthDir)) continue;
-      for (const name of readdirSync(berthDir)) {
-        if (!name.startsWith('berth-') || !name.endsWith('.json')) continue;
-        const berth: Berth | null = this.berthFile_read(join(berthDir, name));
-        if (berth === null) continue;
+    let folders: string[];
+    try {
+      folders = readdirSync(this.stateDir, { withFileTypes: true }).filter((entry: Dirent): boolean => entry.isDirectory()).map((entry: Dirent): string => entry.name);
+    } catch {
+      // No state yet (a first start), or none this account can list: nothing to adopt.
+      return sightings;
+    }
+    for (const folder of folders) {
+      // One session at a time: a folder that is refused or cannot be read is said by the reader and passed over,
+      // never the end of the others.
+      const byIdentity: Map<string, Berth[]> = new Map();
+      for (const located of berthFolder_read(join(this.stateDir, folder, 'run', 'calypso'))) {
         // Whose it is, before anything is asked of it: a sighting not believed is not probed either.
-        const identity: string | null = this.sightingIdentity_read(entry.name, berth);
-        if (identity === null) continue;
-        sightings.push(await this.sighting_take(identity, berth));
+        const identity: string | null = this.sightingIdentity_read(folder, located.berth);
+        if (identity !== null) byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), located.berth]);
+      }
+      for (const [identity, berths] of byIdentity) {
+        const judged: JudgedBerth | null = await berths_judge(berths, this.alive);
+        if (judged !== null) sightings.push(this.sighting_take(identity, judged));
       }
     }
     return sightings;
   }
 
+
   /**
-   * Probes one sighted berth and adopts its session when it proves itself live. An earlier release's daemon cannot
-   * prove it is the one its record names: it is said, never adopted, and never started beside.
+   * Adopts a sighted session when its record proved itself live. An earlier release's daemon cannot prove it is the
+   * one its record names: it is said, never adopted, and never started beside.
    *
    * @param identity - The session.
-   * @param berth - Its record.
+   * @param judged - Its record and what the probe said.
    * @returns The sighting.
    */
-  private async sighting_take(identity: string, berth: Berth): Promise<SessionSighting> {
-    const liveness: BerthLiveness = await this.alive(berth);
+  private sighting_take(identity: string, judged: JudgedBerth): SessionSighting {
+    const { berth, liveness } = judged;
     const alive: boolean = liveness === 'live';
     if (liveness === 'unverified') this.unverified_say(identity, berth);
     if (alive && !this.sessions.has(identity)) {
@@ -622,9 +687,8 @@ export class ProcessHost implements SessionHost {
    * @returns What was said, or null when nothing stands in the way.
    */
   private async unverified_read(identity: string): Promise<string | null> {
-    const standing: Berth | null = this.berth_read(identity);
-    if (standing === null || (await this.alive(standing)) !== 'unverified') return null;
-    return this.unverified_say(identity, standing);
+    const judged: JudgedBerth | null = await this.berthJudged_read(identity);
+    return judged?.liveness === 'unverified' ? this.unverified_say(identity, judged.berth) : null;
   }
 
   /**
@@ -642,9 +706,8 @@ export class ProcessHost implements SessionHost {
 
   /** @inheritdoc */
   public async find(identity: string): Promise<Berth | null> {
-    const berth: Berth | null = this.berth_read(identity);
-    if (berth === null) return null;
-    return (await this.alive(berth)) === 'live' ? berth : null;
+    const judged: JudgedBerth | null = await this.berthJudged_read(identity);
+    return judged?.liveness === 'live' ? judged.berth : null;
   }
 
   /** @inheritdoc */
@@ -820,10 +883,10 @@ export class ProcessHost implements SessionHost {
       if (exited !== null) {
         return this.boot_end(record, 'failed', `the session exited during boot (code ${exited})`);
       }
-      const berth: Berth | null = this.berth_read(record.identity);
-      if (berth !== null && (await this.alive(berth)) === 'live') {
+      const judged: JudgedBerth | null = await this.berthJudged_read(record.identity);
+      if (judged?.liveness === 'live') {
         this.boot_end(record, 'ready');
-        return berth;
+        return judged.berth;
       }
       await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, this.pollMs); });
     }
@@ -991,8 +1054,7 @@ export class ProcessHost implements SessionHost {
     if (now !== 'unknown') return now === 'gone' ? 'gone' : 'there';
     // Nothing says whether the process is there. Its berth still answering says it is; its berth silent
     // says only that: a process can stop answering and live on.
-    const berth: Berth | null = this.berth_read(identity);
-    return berth !== null && (await this.alive(berth)) === 'live' ? 'there' : 'silent';
+    return (await this.berthJudged_read(identity))?.liveness === 'live' ? 'there' : 'silent';
   }
 
   /**
@@ -1024,8 +1086,8 @@ export class ProcessHost implements SessionHost {
       record.child.kill('SIGTERM');
       return record.child;
     }
-    const berth: Berth | null = this.berth_read(identity);
-    return this.pid_signal(identity, record, berth, berth !== null && (await this.alive(berth)) === 'live', cause);
+    const judged: JudgedBerth | null = await this.berthJudged_read(identity);
+    return this.pid_signal(identity, record, judged?.berth ?? null, judged?.liveness === 'live', cause);
   }
 
   /**
