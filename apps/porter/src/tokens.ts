@@ -111,8 +111,6 @@ export interface MintedToken {
   token: string;
   /** The record the store keeps. */
   record: DoorToken;
-  /** The token of the same name and identity it replaced, if any: what an undone mint puts back. */
-  replaced: DoorToken | null;
 }
 
 /** What the store answers for a presented token. */
@@ -242,6 +240,8 @@ export interface StoreHooks {
   read_during?: () => void | Promise<void>;
   /** After a reader listed the versions, before it reads the mark. */
   listed_after?: () => void | Promise<void>;
+  /** Told when upkeep after a publication failed (the version stands): the door logs it. */
+  upkeep_failed?: (what: string, error: unknown) => void;
 }
 
 /**
@@ -369,15 +369,17 @@ export class TokenStore {
   /**
    * Mints a token for an identity. A token of the same name for the same
    * identity is replaced, so `login` again on the same host never leaves
-   * a forgotten key behind.
+   * a forgotten key behind; a renewal (`keep`) leaves it standing until
+   * the new one is delivered.
    *
    * @param identity - The canonical identity.
    * @param user - The CUBE username.
    * @param name - The operator-readable name.
-   * @returns The plaintext, shown once, the record kept, and the token it replaced.
+   * @param keep - Leave tokens of that name standing (a renewal, settled by `renewal_settle` once delivered).
+   * @returns The plaintext, shown once, and the record kept.
    * @throws {Error} When the record would not read back (an empty name, a control character), before anything is published.
    */
-  public async mint(identity: string, user: string, name: string): Promise<MintedToken> {
+  public async mint(identity: string, user: string, name: string, keep: boolean = false): Promise<MintedToken> {
     const token: string = token_make();
     const created: Date = this.now();
     const record: DoorToken = {
@@ -391,36 +393,39 @@ export class TokenStore {
     };
     // The rule a reader holds a record to, held before it is published: a mint never succeeds for a token the next read drops.
     if (tokenRecord_read(record) === null) throw new Error(`a door token needs a name of one short line, and a user and an identity of one line each; "${name.slice(0, 40)}" is not one`);
-    const replaced: DoorToken | null = await this.change_apply<DoorToken | null>((tokens: DoorToken[]) => ({
-      result: tokens.find((held: DoorToken): boolean => held.identity === identity && held.name === name) ?? null,
-      next: [...tokens.filter((held: DoorToken): boolean => !(held.identity === identity && held.name === name)), record],
+    await this.change_apply((tokens: DoorToken[]) => ({
+      result: undefined,
+      next: keep ? [...tokens, record] : [...tokens.filter((held: DoorToken): boolean => !(held.identity === identity && held.name === name)), record],
     }));
-    return { token, record, replaced };
+    return { token, record };
   }
 
   /**
-   * Undoes a mint that was never delivered: the new token goes, and the one
-   * it replaced comes back, unless the new one is already gone (revoked
-   * meanwhile, which then stands) or another token of that name has taken
-   * its place since.
+   * Settles a renewal minted with `keep`: once its token is delivered, the
+   * other tokens of that name and identity go, and it is the one that
+   * stands; a renewal never delivered goes alone, and they stay. Nothing
+   * is put back, so a revocation meanwhile always stands.
    *
-   * @param made - The mint to undo.
-   * @returns True when the token it replaced was put back.
+   * @param made - The renewal.
+   * @param delivered - Whether its token reached the one who asked.
+   * @returns How many tokens went.
    *
    * @example
    * ```ts
-   * await store.mint_undo(made);
+   * await store.renewal_settle(made, codes.authorise(code, claim, grant));
    * ```
    */
-  public async mint_undo(made: MintedToken): Promise<boolean> {
-    return this.change_apply<boolean>((tokens: DoorToken[]) => {
-      if (!tokens.some((held: DoorToken): boolean => held.hash === made.record.hash)) return { result: false };
-      const without: DoorToken[] = tokens.filter((held: DoorToken): boolean => held.hash !== made.record.hash);
-      const taken: boolean = without.some((held: DoorToken): boolean => held.identity === made.record.identity && held.name === made.record.name);
-      if (made.replaced === null || taken) return { result: false, next: without };
-      return { result: true, next: [...without, made.replaced] };
+  public async renewal_settle(made: MintedToken, delivered: boolean): Promise<number> {
+    return this.change_apply<number>((tokens: DoorToken[]) => {
+      const token_goes = (held: DoorToken): boolean => (delivered
+        ? held.identity === made.record.identity && held.name === made.record.name && held.hash !== made.record.hash
+        : held.hash === made.record.hash);
+      const next: DoorToken[] = tokens.filter((held: DoorToken): boolean => !token_goes(held));
+      return next.length === tokens.length ? { result: 0 } : { result: tokens.length - next.length, next };
     });
   }
+
+
 
   /**
    * Checks a presented plaintext against the current store, in constant
@@ -546,8 +551,9 @@ export class TokenStore {
           // Committed: whatever the upkeep after it does, the caller is given what the change did.
           await this.hooks.publish_after?.();
           await this.maintenance_run(root, current.n + 1, temp);
-          // Upkeep: the next open raises it if this did not; it is a bound from below, never ahead of what is published.
-          await this.mark_raise(current.n + 1).catch((): void => undefined);
+          // The version stands either way; a mark not made is said, loudly, and made at the next open. Until then the loss
+          // of the newest folder of versions alone would go unseen: two faults in porter's own folder, said as the first happens.
+          await this.mark_raise(current.n + 1).catch((error: unknown): void => { this.hooks.upkeep_failed?.(`the mark for version ${String(current.n + 1)}`, error); });
           return out.result;
         }
       }
@@ -556,43 +562,54 @@ export class TokenStore {
   }
 
   /**
-   * The mark beside the store's file: the highest version known published.
+   * The marks beside the store's file: the highest version known published.
+   * Marks are names in their own folder (`<path>.marks/<n>`), each made
+   * exclusively by the writer that published that version and never
+   * rewritten, so no writer, however late, can lower the highest.
    *
    * @returns Its number; 0 when the store was never versioned.
-   * @throws {Error} When the mark is there but not a file of the store's own, or not a number.
+   * @throws {Error} When the folder of marks is there but is not a folder of the store's own, or cannot be read.
    */
   private async mark_read(): Promise<number> {
-    const bytes: Buffer | null = await ownFile_read(`${this.path}.versioned`, 64);
-    if (bytes === null) return 0;
-    const text: string = bytes.toString('utf8').trim();
-    if (!/^[1-9][0-9]{0,11}$/.test(text)) throw new Error(`the door's token store mark at ${this.path}.versioned does not name a version`);
-    return Number(text);
+    let marks: HeldFolder;
+    try {
+      marks = await folder_hold(`${this.path}.marks`);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+      throw error;
+    }
+    try {
+      const found: number[] = (await readdir(marks.at))
+        .map((name: string): number => (/^[1-9][0-9]{0,11}$/.test(name) ? Number(name) : 0))
+        .filter((n: number): boolean => n > 0 && n <= VERSION_LAST);
+      return found.length === 0 ? 0 : Math.max(...found);
+    } finally {
+      await handle_close(marks.handle);
+    }
   }
 
   /**
-   * Raises the mark to a version just published, through a fresh file
-   * renamed over it; one written behind by a slower writer only leaves a
-   * lower bound, which a reader can never fall below without refusing.
+   * Marks a version as published: an empty file named by its number, made
+   * exclusively in the folder of marks (one already there is the same
+   * mark). Marks well below it are removed; that frees only names below the
+   * highest, which can never lower it.
    *
    * @param n - The version published.
-   * @throws {Error} When the mark cannot be read or written.
+   * @throws {Error} When the mark cannot be made.
    */
   private async mark_raise(n: number): Promise<void> {
-    if ((await this.mark_read()) >= n) return;
-    const fresh: string = `${this.path}.versioned.${String(process.pid)}.${randomBytes(6).toString('hex')}`;
-    const file: FileHandle = await open(fresh, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    await mkdir(`${this.path}.marks`, { mode: 0o700 }).catch((error: unknown): void => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; });
+    const marks: HeldFolder = await folder_hold(`${this.path}.marks`);
     try {
-      await file.writeFile(`${String(n)}\n`, 'utf8');
+      await writeFile(join(marks.at, String(n)), '', { mode: 0o600, flag: 'wx' }).catch((error: unknown): void => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; });
+      for (const name of await readdir(marks.at)) {
+        if (/^[1-9][0-9]{0,11}$/.test(name) && Number(name) < n - VERSIONS_KEPT) await rm(join(marks.at, name), { force: true });
+      }
     } finally {
-      await handle_close(file);
-    }
-    try {
-      await rename(fresh, `${this.path}.versioned`);
-    } catch (error: unknown) {
-      await rm(fresh, { force: true });
-      throw error;
+      await handle_close(marks.handle);
     }
   }
+
 
 
   /**

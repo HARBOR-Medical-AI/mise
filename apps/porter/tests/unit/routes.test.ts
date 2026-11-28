@@ -1060,7 +1060,7 @@ describe('door tokens (chell auth)', () => {
     const answer = await first;
     expect(answer.statusCode).toBe(410);
     expect((answer.json() as { error: string }).error).toContain('ran out');
-    // The undelivered token is gone and the standing one is back: exactly one token, and it is the old one.
+    // The undelivered token is gone and the standing one never left: exactly one token, and it is the old one.
     expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
     expect((await store.check(standing.token)).ok).toBe(true);
     const polled = await door.app.inject({ method: 'GET', url: `/auth/device/${code}` });

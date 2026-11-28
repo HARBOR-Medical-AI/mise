@@ -332,7 +332,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     void registry.ending_run(key, (): Promise<void> => stopping, 'restart');
   };
   const creds: CredentialStore = new CredentialStore(config.stateDir);
-  const tokens: TokenStore = options.tokens ?? new TokenStore(config.tokensFile, config.tokenDays);
+  const tokens: TokenStore = options.tokens ?? new TokenStore(config.tokensFile, config.tokenDays, undefined, {
+    upkeep_failed: (what: string, error: unknown): void => { options.log?.(`the door's token store could not write ${what}: ${error instanceof Error ? error.message : String(error)}; it is written at the next start`); },
+  });
   await tokens.load();
   if (tokens.legacyNote !== null) options.log?.(tokens.legacyNote);
   if (tokens.skipped.length > 0) options.log?.(`the door's token store holds ${String(tokens.skipped.length)} record(s) of the wrong shape, left out: ${tokens.skipped.join(', ')}`);
@@ -623,18 +625,17 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       const name: string = `${username}@${forHost}`;
       let made: MintedToken;
       try {
-        made = await tokens.mint(identity, username, name);
+        // A renewal: the token this person already holds for that host stands until the new one is delivered.
+        made = await tokens.mint(identity, username, name, true);
       } catch (error: unknown) {
         codes.claim_release(wanted.code, claimed.claim);
         throw error;
       }
       const grant: DeviceGrant = { token: made.token, user: username, name, expires: made.record.expires };
-      // A code that died while the token was minted is not authorised: the mint is undone (the token it replaced,
-      // if any, comes back, unless revoked meanwhile), and the login says so.
-      if (!codes.authorise(wanted.code, claimed.claim, grant)) {
-        await tokens.mint_undo(made);
-        return refuse(410, `the code ${wanted.code} ran out while the door minted its token; run chell auth login again`);
-      }
+      const delivered: boolean = codes.authorise(wanted.code, claimed.claim, grant);
+      // Delivered, the older tokens of that name go; not (the code died while the token was minted), the new one goes alone.
+      await tokens.renewal_settle(made, delivered);
+      if (!delivered) return refuse(410, `the code ${wanted.code} ran out while the door minted its token; run chell auth login again`);
       options.log?.(`minted a door token "${name}" for ${username} by device code (dies ${made.record.expires.slice(0, 10)})`);
       // A token boots a session on the login the session saved. A human who
       // never came through before has none, so this login, which holds a

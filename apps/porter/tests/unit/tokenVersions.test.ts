@@ -467,7 +467,7 @@ describe('what Codex and agy found in the third form (seq 402, attack B1a-3)', (
     writeFileSync(path, JSON.stringify({ schemaVersion: 1, tokens: [{ name: 'laptop', identity: 'kim@c/', user: 'kim', hash: 'a'.repeat(64), created: '2026-11-01T00:00:00.000Z', expires: '2099-01-01T00:00:00.000Z', lastUsed: null }] }));
     const store: TokenStore = await writer();
     await store.revoke('kim');
-    expect(existsSync(`${path}.versioned`)).toBe(true);
+    expect(existsSync(`${path}.marks`)).toBe(true);
     rmSync(`${path}.d`, { recursive: true, force: true });
     await expect(new TokenStore(path, 30).load()).rejects.toThrow('lost versions');
   });
@@ -528,15 +528,17 @@ describe('what Codex found in the fourth form (seq 404)', () => {
     expect((await late.list()).map((t) => t.name)).toEqual(['laptop']);
   });
 
-  it('a mark that cannot be read refuses the store; one written behind only bounds it from below', async () => {
+  it('no writer lowers the marks, however late; a folder of marks that is not the store\'s refuses', async () => {
     const store: TokenStore = await writer();
     await store.mint('kim@c/', 'kim', 'laptop');
     await store.mint('ann@c/', 'ann', 'cron');
-    writeFileSync(`${path}.versioned`, '1\n');
+    // A writer that published version 1 long ago marks it now: the highest mark is still the current version.
+    writeFileSync(join(`${path}.marks`, '1'), '');
+    expect(readdirSync(`${path}.marks`).map(Number).sort((a, b) => a - b).at(-1)).toBe(versions().at(-1));
     expect((await store.list()).map((t) => t.name).sort()).toEqual(['cron', 'laptop']);
-    rmSync(`${path}.versioned`);
-    mkdirSync(`${path}.versioned`);
-    await expect(new TokenStore(path, 30).load()).rejects.toThrow('not a file of its own');
+    rmSync(`${path}.marks`, { recursive: true });
+    writeFileSync(`${path}.marks`, 'x');
+    await expect(new TokenStore(path, 30).load()).rejects.toThrow('not a folder of its own');
   });
 
   it('keeps a one-file store identity longer than any fixed cap, within the store bound', async () => {
@@ -547,19 +549,53 @@ describe('what Codex found in the fourth form (seq 404)', () => {
     expect((await store.list())[0]?.identity).toBe(identity);
   });
 
-  it('an undone mint takes its token out and puts back the one it replaced, unless that name was taken since', async () => {
+  it('a renewal leaves the standing token until it is delivered; delivered, the older go; undelivered, it goes alone', async () => {
     const store: TokenStore = await writer();
     const standing = await store.mint('kim@c/', 'kim', 'kim@titan');
-    const renewal = await store.mint('kim@c/', 'kim', 'kim@titan');
-    expect(renewal.replaced?.hash).toBe(standing.record.hash);
-    expect(await store.mint_undo(renewal)).toBe(true);
+    // Two renewals by two codes at once; both run out, in either order: the standing token still lets in.
+    for (const order of [[0, 1], [1, 0]]) {
+      const renewals = [await store.mint('kim@c/', 'kim', 'kim@titan', true), await store.mint('kim@c/', 'kim', 'kim@titan', true)];
+      for (const i of order) await store.renewal_settle(renewals[i] as never, false);
+      expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    }
+    // A renewal interrupted (minted, never settled: the door stopped): the standing token still lets in.
+    const interrupted = await store.mint('kim@c/', 'kim', 'kim@titan', true);
     expect((await store.check(standing.token)).ok).toBe(true);
-    expect(await store.check(renewal.token)).toEqual({ ok: false, why: 'unknown' });
-    // A renewal revoked before its undo: the revocation stands, nothing comes back.
-    const again = await store.mint('kim@c/', 'kim', 'kim@titan');
-    await store.revoke_presented(again.token);
-    expect(await store.mint_undo(again)).toBe(false);
+    // One delivered: it stands alone, the others of that name gone.
+    const delivered = await store.mint('kim@c/', 'kim', 'kim@titan', true);
+    expect(await store.renewal_settle(delivered, true)).toBe(2);
+    expect((await store.list()).map((t) => t.hash)).toEqual([delivered.record.hash]);
+    expect(await store.check(interrupted.token)).toEqual({ ok: false, why: 'unknown' });
+    // A revocation during a renewal stands, delivered or not.
+    const another = await store.mint('kim@c/', 'kim', 'kim@titan', true);
+    await store.revoke_presented(delivered.token);
+    await store.renewal_settle(another, false);
     expect(await store.list()).toEqual([]);
   });
+
+  it('a mark not made after a publication is said, and made at the next open', async () => {
+    const said: string[] = [];
+    // Right after the publication, a file stands where the folder of marks should be.
+    const store: TokenStore = new TokenStore(path, 30, (): Date => new Date(), {
+      publish_after: async (): Promise<void> => { renameSync(`${path}.marks`, `${path}.marks.aside`); writeFileSync(`${path}.marks`, 'x'); },
+      upkeep_failed: (what: string): void => { said.push(what); },
+    });
+    await store.load();
+    await (await writer()).mint('seed@c/', 'seed', 'x');
+    let made: boolean = false;
+    try {
+      await store.mint('kim@c/', 'kim', 'laptop');
+      made = true;
+    } finally {
+      rmSync(`${path}.marks`, { force: true });
+      renameSync(`${path}.marks.aside`, `${path}.marks`);
+    }
+    // The mint stands, and the failure was said.
+    expect(made).toBe(true);
+    expect(said.some((line) => line.startsWith('the mark for version'))).toBe(true);
+    await writer();
+    expect(readdirSync(`${path}.marks`).map(Number).sort((a, b) => a - b).at(-1)).toBe(versions().at(-1));
+  });
+
 });
 
