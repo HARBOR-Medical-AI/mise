@@ -161,6 +161,8 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
   // typings; replacing it is the supported folk technique for hidden input.
   const originalWrite: unknown = Reflect.get(rl, '_writeToOutput');
   Reflect.set(rl, '_writeToOutput', (_str: string): void => { /* suppress echo */ });
+  // What the person cut before the secret is theirs again after it; nothing cut from the secret survives it.
+  const editing_restore: () => void = editState_keep(rl);
 
   terminalState_mark('asking');
   return new Promise((resolve: (answer: string) => void, reject: (error: Error) => void) => {
@@ -171,6 +173,7 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
       entry_discard(rl);
       abandon.abort();
       entry_discard(rl);
+      editing_restore();
       Reflect.set(rl, '_writeToOutput', originalWrite);
       terminalState_mark('busy');
       process.stdout.write('\n');
@@ -183,6 +186,7 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
     request.signal?.addEventListener('abort', secret_withdraw, { once: true });
     rl.question('', { signal: abandon.signal }, (answer: string) => {
       request.signal?.removeEventListener('abort', secret_withdraw);
+      editing_restore();
       Reflect.set(rl, '_writeToOutput', originalWrite);
       // readline keeps every line it reads for recall, a hidden one included:
       // a secret is taken out again, so the up arrow never brings it back.
@@ -326,6 +330,29 @@ async function withdrawable_read(rl: readline.Interface, signal: AbortSignal | u
     signal?.removeEventListener('abort', question_withdraw);
   }
 }
+
+/**
+ * Keeps readline's kill ring (what was cut, for yanking back) as it is now, and returns the call that puts it back
+ * and empties the undo and redo history: a hidden entry leaves no editing state behind.
+ *
+ * @param rl - The interface.
+ * @returns The restore.
+ */
+function editState_keep(rl: readline.Interface): () => void {
+  const kept: Map<symbol, unknown> = new Map();
+  for (const key of Object.getOwnPropertySymbols(rl)) {
+    if (!KILL_STATE.has(key.description ?? '')) continue;
+    const value: unknown = Reflect.get(rl, key);
+    kept.set(key, Array.isArray(value) ? [...(value as unknown[])] : value);
+  }
+  return (): void => {
+    for (const [key, value] of kept) Reflect.set(rl, key, Array.isArray(value) ? [...(value as unknown[])] : value);
+    entry_discard(rl);
+  };
+}
+
+/** readline's own names for its kill ring and yank state. */
+const KILL_STATE: ReadonlySet<string> = new Set(['_killRing', '_killRingCursor', '_yanking']);
 
 /**
  * Empties readline's entry and its undo and redo history, so a withdrawn secret can be neither shown nor recovered.

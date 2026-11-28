@@ -1276,6 +1276,84 @@ describe('RemoteEngine live output', () => {
       expect(ws.sent.find((one) => one.type === 'hostPtyRefuse' && one.ptyId === 'p2')?.reason).toContain('ended before it was handed the terminal');
     });
 
+    /** A terminal double that records what is drawn on it and how often raw mode is entered. */
+    const terminal_make = () => {
+      const written: string[] = [];
+      const state: { raws: number } = { raws: 0 };
+      const input = Object.assign(new EventEmitter(), { isTTY: true, isRaw: false, setRawMode(mode: boolean): void { if (mode) state.raws += 1; input.isRaw = mode; }, resume(): void { /* flowing */ } });
+      const output = Object.assign(new EventEmitter(), { isTTY: true, columns: 120, rows: 40, write(chunk: string): boolean { written.push(chunk); return true; } });
+      return { terminal: { input, output, term: 'xterm' }, written, state };
+    };
+
+    it('a hand-over the session sends malformed claims nothing: a valid one with the same id is handed over', async () => {
+      const { terminal, written, state } = terminal_make();
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          // Rejected by the parser (this file's stand-in rejects what is marked malformed).
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p9', lineId: id, command: 'tty; read x', __malformed: true })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p9', lineId: id, command: 'tty; read x' })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyData', ptyId: 'p9', data: 'drawn' })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyExit', ptyId: 'p9', code: 0 })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] })));
+        });
+      };
+      const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: async (): Promise<number> => 0, terminal });
+      await remote.line_execute('!tty; read x');
+      errors.mockRestore();
+      expect(state.raws).toBe(1);
+      expect(written).toEqual(['drawn']);
+      expect((FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket).sent.filter((one) => one.type === 'hostPtyRefuse')).toEqual([]);
+    });
+
+    it('a hand-over refused at the hold\'s bound stays answered: sent again, it is refused again', async () => {
+      const { terminal } = terminal_make();
+      let answer_give: ((typed: string) => void) | null = null;
+      const onConsent = (_question: string): Promise<string> => new Promise<string>((resolve) => { answer_give = resolve; });
+      shells_play((line: string) => (line === 'play build.sh' ? ['make'] : []));
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: async (): Promise<number> => 0, consentAsk: onConsent, terminal });
+      const ws = FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket;
+      const running: Promise<unknown> = remote.line_execute('play build.sh');
+      await new Promise((r) => setTimeout(r, 10));
+      // The hold filled to just short of its bound, so the hand-over is the one past it.
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyData', ptyId: 'none', data: 'x'.repeat(1024 * 1024 - 60) })));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p8', lineId: '1', command: 'vi' })));
+      (answer_give as unknown as (typed: string) => void)('n');
+      await running;
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p8', lineId: '1', command: 'vi' })));
+      const refusals = ws.sent.filter((one) => one.type === 'hostPtyRefuse' && one.ptyId === 'p8').map((one) => String(one.reason));
+      expect(refusals).toEqual([expect.stringContaining('answering another question'), expect.stringContaining('again')]);
+    });
+
+    it('what a program writes while its hand-over waits for the person is shown, in order, once it is handed over', async () => {
+      const { terminal, written, state } = terminal_make();
+      let answer_give: ((typed: string) => void) | null = null;
+      const onConsent = (_question: string): Promise<string> => new Promise<string>((resolve) => { answer_give = resolve; });
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p1', lineId: id, command: 'nvim notes' })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyData', ptyId: 'p1', data: 'SCREEN ' })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyData', ptyId: 'p1', data: 'PROMPT' })));
+          setTimeout(() => {
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyExit', ptyId: 'p1', code: 0 })));
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] })));
+          }, 40);
+        });
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: async (): Promise<number> => 0, consentAsk: onConsent, terminal });
+      const running: Promise<unknown> = remote.line_execute('play notes.sh');
+      await new Promise((r) => setTimeout(r, 15));
+      expect(written).toEqual([]);
+      (answer_give as unknown as (typed: string) => void)('y');
+      await running;
+      expect(state.raws).toBe(1);
+      expect(written).toEqual(['SCREEN ', 'PROMPT']);
+    });
+
     it('a failed line is shown only once an open question closes', async () => {
       let answer_give: ((typed: string) => void) | null = null;
       const onConsent = (_question: string): Promise<string> => new Promise<string>((resolve) => { answer_give = resolve; });

@@ -66,7 +66,7 @@ export class HeldOutput {
    *
    * @param payload - The message.
    * @param raw - It, parsed.
-   * @returns True when it was held, answered or dropped, so it is not handled now.
+   * @returns True when it was held, answered or dropped, so it is not handled now; false after the hold has closed.
    *
    * @example
    * ```ts
@@ -74,8 +74,10 @@ export class HeldOutput {
    * ```
    */
   public message_take(payload: Buffer, raw: unknown): boolean {
-    if (held_passes(raw) || !this.options.question_isOpen()) return false;
-    if (this.bytes + payload.length > HELD_BYTES_MAX) {
+    // Once the connection has closed nothing is held for later: what still arrives settles at once (a line's end
+    // its waiting call, a request its refusal), and nothing held before is shown.
+    if (this.closed || held_passes(raw) || !this.options.question_isOpen()) return false;
+    if (!this.room_has(payload.length)) {
       // Past the bound: what needs an answer or ends something is answered now, never replayed late.
       if (!this.options.overflow_answer(raw)) this.dropped = true;
       return true;
@@ -102,12 +104,24 @@ export class HeldOutput {
       console.error(text);
       return;
     }
-    if (this.bytes + text.length > HELD_BYTES_MAX) {
+    const bytes: number = Buffer.byteLength(text);
+    if (!this.room_has(bytes)) {
       this.dropped = true;
       return;
     }
     this.items.push(text);
-    this.bytes += text.length;
+    this.bytes += bytes;
+  }
+
+  /**
+   * Whether the hold has room for one more item of this size: within the bytes, and within the count (so empty items
+   * cost something too).
+   *
+   * @param bytes - The item's size, encoded.
+   * @returns True when it fits.
+   */
+  private room_has(bytes: number): boolean {
+    return this.items.length < HELD_ITEMS_MAX && this.bytes + bytes <= HELD_BYTES_MAX;
   }
 
   /**
@@ -122,9 +136,13 @@ export class HeldOutput {
     const items: Array<Buffer | string> = this.items.splice(0);
     this.bytes = 0;
     for (const item of items) {
-      if (typeof item === 'string') console.error(item);
+      // A flushed message may close the connection: nothing after it is shown. One may open a question: what
+      // follows it is held again, in order (a message by message_take, a note by notice_show).
+      if (this.closed) return;
+      if (typeof item === 'string') this.notice_show(item);
       else this.options.message_handle(item);
     }
+    if (this.closed) return;
     if (this.dropped) {
       this.dropped = false;
       console.error(chalk.yellow('[!] some of the session\'s output while the question was open was more than this chell holds, and was not shown'));
@@ -147,8 +165,11 @@ export class HeldOutput {
   }
 }
 
-/** The most bytes held while a question is open. */
+/** The most bytes held while a question is open, encoded. */
 const HELD_BYTES_MAX: number = 1024 * 1024;
+
+/** The most items held while a question is open, whatever their size. */
+const HELD_ITEMS_MAX: number = 4096;
 
 /** Messages that are never held while a question is open: a line's end, requests (which queue their own), a program's end. */
 const HELD_PASSES: ReadonlySet<string> = new Set(['result', 'error', 'complete', 'shell', 'pipe', 'edit', 'deliver', 'hostPtyExit']);

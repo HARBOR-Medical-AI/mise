@@ -228,6 +228,32 @@ describe('persistent prompting (REPL interface)', () => {
     rl.close();
   });
 
+  it('what is cut from a secret before it is withdrawn cannot be yanked back; what was cut before it can', async () => {
+    const realReadline = jest.requireActual('readline') as typeof import('readline');
+    const { PassThrough } = await import('node:stream');
+    const input = new PassThrough();
+    const output = new PassThrough();
+    output.resume();
+    const rl = realReadline.createInterface({ input, output, terminal: true });
+    const stdout = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    // Something of the person's own, cut at an earlier question.
+    const earlier: Promise<string> = new Promise((resolve) => { rl.question('First: ', resolve); });
+    input.write('mine\u0015\r');
+    expect(await earlier).toBe('');
+    const gone = new AbortController();
+    const asking: Promise<string> = cliSurface_create(rl).prompt({ message: 'Password: ', hidden: true, signal: gone.signal });
+    // Typed, then cut (Ctrl-W and Ctrl-U), then withdrawn.
+    input.write('hunter2 x\u0017\u0015');
+    await new Promise((r) => setTimeout(r, 20));
+    gone.abort();
+    await expect(asking).rejects.toThrow('withdrawn');
+    stdout.mockRestore();
+    const after: Promise<string> = new Promise((resolve) => { rl.question('Next: ', resolve); });
+    input.write('\u0019\r');
+    expect(await after).toBe('mine');
+    rl.close();
+  });
+
   it('a line half typed at the prompt is not the start of a consent answer, on a real terminal readline', async () => {
     const realReadline = await import('node:readline');
     const { PassThrough } = await import('node:stream');

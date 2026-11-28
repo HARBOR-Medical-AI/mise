@@ -98,6 +98,8 @@ export class HostDesk {
   private readonly ptyPending: Set<string> = new Set();
   /** Of those, the ones that ended before they were handed it: never handed it. */
   private readonly ptyEnded: Set<string> = new Set();
+  /** What each of those wrote before it was handed the terminal, bounded, shown once it is (dropped if it is not). */
+  private readonly ptyEarly: Map<string, EarlyOutput> = new Map();
   /** The hand-back of the terminal for each program it is handed to. */
   private readonly ptyRelease: Map<string, () => void> = new Map();
 
@@ -144,6 +146,7 @@ export class HostDesk {
       // No hand-over waits any more: one still in flight finds nothing pending and is refused.
       this.ptyPending.clear();
       this.ptyEnded.clear();
+      this.ptyEarly.clear();
     }
     for (const one of lines) {
       this.intents.delete(one);
@@ -294,14 +297,17 @@ export class HostDesk {
    */
   public async hostPty_start(ptyId: string, lineId: string | undefined, command: string | undefined): Promise<void> {
     try {
-      this.id_take('pty', ptyId);
+      // Claimed on receipt by the engine (once per id); a hand-over asked of the desk directly is claimed here.
+      if (!this.ptyPending.has(ptyId) && !this.ptyEnded.has(ptyId)) {
+        const unclaimed: string | null = this.pty_claim(ptyId);
+        if (unclaimed !== null) throw new Error(unclaimed);
+      }
       if (this.ptyEnded.delete(ptyId)) throw new Error('refused: the program ended before it was handed the terminal; nothing was handed over');
       if (this.options.hostPty === null) throw new Error('refused: this chell has no terminal to hand over; nothing was handed over');
       if (command === undefined) throw new Error('refused: the session asked to hand this terminal to a program it did not name; nothing was handed over');
       // Granted, the terminal is handed over at once (the program's first output follows straight after);
       // only a request no grant covers waits for the person.
       const refusal: string | null = this.grants.grant_take(lineId, { kind: 'shell', command });
-      this.ptyPending.add(ptyId);
       const line: string | undefined = refusal === null
         ? lineId
         : await this.consent_require(lineId, refusal, this.line_effective(lineId) !== undefined, 'pty', `hand this terminal to the program ${text_quote(command)}, which runs on the session's machine and receives every key typed here until it ends`);
@@ -319,9 +325,11 @@ export class HostDesk {
       this.ptyRelease.set(ptyId, terminal_release);
       this.ptyByLine.set(line, ptyId);
       this.options.hostPty.start(ptyId);
+      this.early_show(ptyId, this.options.hostPty);
     } catch (error: unknown) {
       const reason: string = reason_read(error);
       this.ptyPending.delete(ptyId);
+      this.ptyEarly.delete(ptyId);
       this.options.notice_show(chalk.red(`[!] ${reason}`));
       this.options.message_send({ type: 'hostPtyRefuse', ptyId, reason });
     } finally {
@@ -349,22 +357,69 @@ export class HostDesk {
   }
 
   /**
-   * A program the session asks to hand the terminal to has been received (perhaps held behind a question): its end,
-   * if it comes first, cancels the hand-over.
+   * Claims a hand-over the session asks for, once, on receipt (before it may be held behind a question): its end, if
+   * it comes first, cancels it, and what it writes meanwhile is kept for it.
    *
    * @param ptyId - The program's id.
+   * @returns Null when claimed; the refusal when the id was answered before (or the connection has had its fill).
    *
    * @example
    * ```ts
-   * desk.pty_announce('p1');
+   * const refusal: string | null = desk.pty_claim('p1');
    * ```
    */
-  public pty_announce(ptyId: string): void {
+  public pty_claim(ptyId: string): string | null {
+    try {
+      this.id_take('pty', ptyId);
+    } catch (error: unknown) {
+      return reason_read(error);
+    }
     this.ptyPending.add(ptyId);
+    this.ptyEarly.set(ptyId, { chunks: [], bytes: 0, cut: false });
+    return null;
   }
 
   /**
-   * A received hand-over that will not be processed (refused at the hold's bound): forgotten.
+   * Keeps what a program writes before it is handed the terminal, within a bound.
+   *
+   * @param ptyId - The program's id.
+   * @param data - What it wrote.
+   * @returns True when it was kept (or dropped past the bound) for that hand-over; false when it is not waiting.
+   *
+   * @example
+   * ```ts
+   * if (!desk.pty_early('p1', data)) relay.data('p1', data);
+   * ```
+   */
+  public pty_early(ptyId: string, data: string): boolean {
+    const early: EarlyOutput | undefined = this.ptyEarly.get(ptyId);
+    if (early === undefined) return false;
+    const bytes: number = Buffer.byteLength(data);
+    if (early.bytes + bytes > EARLY_BYTES_MAX) {
+      early.cut = true;
+      return true;
+    }
+    early.chunks.push(data);
+    early.bytes += bytes;
+    return true;
+  }
+
+  /**
+   * Shows what a program wrote before it was handed the terminal, in order, now that it has been.
+   *
+   * @param ptyId - The program's id.
+   * @param relay - The relay it was handed to.
+   */
+  private early_show(ptyId: string, relay: HostPtyRelay): void {
+    const early: EarlyOutput | undefined = this.ptyEarly.get(ptyId);
+    this.ptyEarly.delete(ptyId);
+    if (early === undefined) return;
+    for (const chunk of early.chunks) relay.data(ptyId, chunk);
+    if (early.cut) this.options.notice_show(chalk.yellow('[!] the program wrote more before it was handed the terminal than this chell holds; the rest of that was not shown'));
+  }
+
+  /**
+   * A claimed hand-over that will not be processed (refused at the hold's bound): forgotten, and still answered.
    *
    * @param ptyId - The program's id.
    *
@@ -376,6 +431,7 @@ export class HostDesk {
   public pty_forget(ptyId: string): void {
     this.ptyPending.delete(ptyId);
     this.ptyEnded.delete(ptyId);
+    this.ptyEarly.delete(ptyId);
   }
 
   /**
@@ -389,8 +445,9 @@ export class HostDesk {
    * ```
    */
   public pty_end(ptyId: string): void {
-    // Received and not yet handed over: it never will be.
+    // Received and not yet handed over: it never will be, and what it wrote is not shown.
     if (this.ptyPending.delete(ptyId)) this.ptyEnded.add(ptyId);
+    this.ptyEarly.delete(ptyId);
     this.ptyRelease.get(ptyId)?.();
     this.ptyRelease.delete(ptyId);
   }
@@ -528,6 +585,19 @@ export class HostDesk {
  */
 function text_quote(text: string): string {
   return consentText_quote(text);
+}
+
+/** The most a program may write before it is handed the terminal and still have it shown. */
+const EARLY_BYTES_MAX: number = 256 * 1024;
+
+/** What a program wrote before it was handed the terminal. */
+interface EarlyOutput {
+  /** The chunks, in order. */
+  chunks: string[];
+  /** Their size, encoded. */
+  bytes: number;
+  /** Whether some was dropped past the bound. */
+  cut: boolean;
 }
 
 /** The most request ids one connection is answered for. */

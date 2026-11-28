@@ -170,7 +170,7 @@ export class RemoteEngine implements BrasaEngine {
     // What the session said while a question was open is shown once it is answered, in order.
     this.hold = new HeldOutput({
       question_isOpen: (): boolean => this.consent.question_isOpen(),
-      message_handle: (payload: Buffer): void => { this.message_handle(payload); },
+      message_handle: (payload: Buffer): void => { this.message_handle(payload, true); },
       overflow_answer: (raw: unknown): boolean => this.overflow_answer(raw),
     });
     this.consent.idle_set((): void => { this.hold.items_flush(); });
@@ -368,6 +368,24 @@ export class RemoteEngine implements BrasaEngine {
   }
 
   /**
+   * Claims a hand-over the session asks for, on receipt: a valid request only, each id once; a refused claim is
+   * answered now.
+   *
+   * @param raw - The parsed message.
+   * @returns False when it was refused (and is not handled further).
+   */
+  private ptyStart_claim(raw: unknown): boolean {
+    if (typeof raw !== 'object' || raw === null || Reflect.get(raw, 'type') !== 'hostPtyStart') return true;
+    const parsed = serverMessage_parse(raw);
+    if (!parsed.ok || parsed.value?.type !== 'hostPtyStart') return true;
+    const ptyId: string = parsed.value.ptyId;
+    const refusal: string | null = this.desk.pty_claim(ptyId);
+    if (refusal === null) return true;
+    this.ws.send(JSON.stringify({ type: 'hostPtyRefuse', ptyId, reason: refusal }));
+    return false;
+  }
+
+  /**
    * Whether the connection has closed (read afresh: it closes while a question waits).
    *
    * @returns True once it has.
@@ -475,12 +493,13 @@ export class RemoteEngine implements BrasaEngine {
    * errors are surfaced.
    *
    * @param payload - The raw message bytes.
+   * @param fromHold - True when it was held behind a question and is handled now (it was received earlier).
    */
-  private message_handle(payload: Buffer): void {
+  private message_handle(payload: Buffer, fromHold: boolean = false): void {
     const raw: unknown = safeJson_parse(payload.toString());
-    // A hand-over received is registered before it may be held, so the program's end, which is never held, cancels it.
-    const announced: unknown = typeof raw === 'object' && raw !== null && Reflect.get(raw, 'type') === 'hostPtyStart' ? Reflect.get(raw, 'ptyId') : undefined;
-    if (typeof announced === 'string') this.desk.pty_announce(announced);
+    // A hand-over is claimed once, when it is received (before it may be held), so the program's end, which is never
+    // held, cancels it; a claim refused is answered at once.
+    if (!fromHold && !this.ptyStart_claim(raw)) return;
     // While a question is put to the person, the terminal is the question's: what the session says waits, except
     // a line's end (which answers its questions) and its requests (which wait their own turn).
     if (this.hold.message_take(payload, raw)) return;
@@ -579,7 +598,8 @@ export class RemoteEngine implements BrasaEngine {
         void this.desk.hostPty_start(message.ptyId, message.lineId, message.command);
         break;
       case 'hostPtyData':
-        this.hostPty?.data(message.ptyId, message.data);
+        // A program not yet handed the terminal has what it writes kept for when it is.
+        if (!this.desk.pty_early(message.ptyId, message.data)) this.hostPty?.data(message.ptyId, message.data);
         break;
       case 'hostPtyExit':
         this.hostPty?.exit(message.ptyId);
