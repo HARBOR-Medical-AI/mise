@@ -41,6 +41,12 @@ class FakeDocker implements DockerApi {
   listStatus: number = 200;
   /** An identity every berth file claims instead of its own; null: each names its own. */
   fileIdentity: string | null = null;
+  /** What every berth file holds instead, verbatim; null: a well-formed file. */
+  fileText: string | null = null;
+  /** A state the engine lists a container in other than running or exited (paused, restarting), by name. */
+  states: Map<string, string> = new Map();
+  /** What the engine answers a volume listing with; 200 unless a test has it fail. */
+  volumeStatus: number = 200;
   /** Each container's log, a line each; absent: nothing written. */
   logs: Map<string, string[]> = new Map();
   /** Who follows each container's log, and how each follow ends. */
@@ -132,6 +138,7 @@ class FakeDocker implements DockerApi {
     if (route === '/volumes/create') { const spec = body as { Name: string; Labels: Record<string, string> }; this.volumes.set(spec.Name, spec.Labels); return { status: 201, body: {} }; }
     if (method === 'DELETE' && parts[1] === 'volumes') { const had = this.volumes.delete(name); return { status: had ? 204 : 404, body: null }; }
     if (method === 'GET' && route === '/volumes') {
+      if (this.volumeStatus !== 200) return { status: this.volumeStatus, body: { message: 'the engine is busy' } };
       const filter = JSON.parse(decodeURIComponent(new URLSearchParams(query).get('filters') ?? '{}')) as { label?: string[] };
       const wanted: string[] = filter.label ?? [];
       return { status: 200, body: { Volumes: [...this.volumes.entries()].filter(([, labels]) => wanted.every((one) => { const [key = '', value = ''] = one.split('='); return labels[key] === value; })).map(([one, labels]) => ({ Name: one, Labels: labels })), Warnings: null } };
@@ -145,7 +152,7 @@ class FakeDocker implements DockerApi {
     if (route === '/containers/json') {
       if (this.listStatus !== 200) return { status: this.listStatus, body: { message: 'the engine is busy' } };
       const filter = JSON.parse(decodeURIComponent(new URLSearchParams(query).get('filters') ?? '{}')) as { name?: string[] };
-      return { status: 200, body: [...this.containers.entries()].filter(([one]) => filter.name === undefined || one.startsWith(filter.name[0] ?? '')).map(([one, each]) => ({ Names: [`/${one}`], Labels: each.spec['Labels'], State: each.running ? 'running' : 'exited' })) };
+      return { status: 200, body: [...this.containers.entries()].filter(([one]) => filter.name === undefined || one.startsWith(filter.name[0] ?? '')).map(([one, each]) => ({ Names: [`/${one}`], Labels: each.spec['Labels'], State: this.states.get(one) ?? (each.running ? 'running' : 'exited') })) };
     }
     if (route === '/containers/create') {
       const made: string = new URLSearchParams(query).get('name') ?? '';
@@ -187,6 +194,7 @@ class FakeDocker implements DockerApi {
     if (line.includes('berth-') && !this.silent && found.token !== null) {
       const identity: string = (found.spec['Labels'] as Record<string, string>)[`${BERTH_LABEL}.identity`] ?? '';
       if (!line.includes(berthKey_compute(identity))) return { code: 1, stdout: '', stderr: 'no such file' };
+      if (this.fileText !== null) return { code: 0, stdout: this.fileText, stderr: '' };
       return { code: 0, stdout: JSON.stringify({ identity: this.fileIdentity ?? identity, url: 'ws://berth-host.example:41234', token: `attach-${container}` }), stderr: '' };
     }
     return { code: 1, stdout: '', stderr: 'no such file' };
@@ -890,12 +898,59 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     await expect(host.berthUp_read(ANA)).rejects.toThrow('the berth file names another identity');
     expect(await host.find(ANA)).toBeNull();
     docker.fileIdentity = null;
+    // A half-written file, its token in it: the launcher says why in its own words, and none of the file's.
+    docker.fileText = 'MARKER-attach-secret {"token":1}';
+    let said: string = '';
+    await host.berthUp_read(ANA).catch((error: unknown): void => { said = error instanceof Error ? error.message : String(error); });
+    expect(said).toBe('the launcher could not say which berth is up: the berth file is not one');
+    const wire = await launcher_call(reach, 'GET', `/berths/status?user=ana&cubeUrl=${encodeURIComponent(CUBE)}`);
+    expect(JSON.stringify(wire.body)).not.toContain('MARKER');
+    docker.fileText = null;
     // A running berth container that says whose it is not: it could be hers, and it takes room.
     docker.containers.set('mbw-stray', { spec: { Labels: { [BERTH_LABEL]: 'mbw' } }, running: true, ip: '10.213.77.99', token: null });
     await expect(host.berthUp_read(ANA)).rejects.toThrow('a running berth container carries no identity');
     expect((await launcher_make(docker).status(null)).filter((one) => one.state === 'running').map((one) => one.identity).sort()).toEqual(['', ANA]);
     docker.containers.delete('mbw-stray');
     expect((await host.berthUp_read(ANA))?.token).toBe(`attach-${container}`);
+  });
+
+  it('a berth\'s status counts only this spoke\'s berths: its helper and another spoke\'s container add nothing; a blank label is a missing one; paused or restarting is up and unread', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    const launcher: BerthLauncher = launcher_make(docker);
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    const runningOf = async (): Promise<string[]> => (await launcher.status(null)).filter((one) => one.state === 'running').map((one) => one.identity).sort();
+    // The volumes helper running beside her berth (labelled as one, and an older one by its name alone), and another spoke's container.
+    docker.containers.set(`${container}-own`, { spec: { Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.helper`]: 'own' } }, running: true, ip: '', token: null });
+    docker.containers.set('mbw-older-own', { spec: { Labels: { [BERTH_LABEL]: 'mbw' } }, running: true, ip: '', token: null });
+    docker.containers.set('other-spoke-berth', { spec: { Labels: { [BERTH_LABEL]: 'other', [`${BERTH_LABEL}.identity`]: identity_normalise('bob', CUBE), [`${BERTH_LABEL}.user`]: 'bob' } }, running: true, ip: '', token: null });
+    expect(await runningOf()).toEqual([ANA]);
+    expect((await host.berthUp_read(ANA))?.token).toBe(`attach-${container}`);
+    // A berth container with a blank identity label is as one without: up, and anyone's.
+    for (const identity of ['', '   ', undefined]) {
+      const labels: Record<string, string> = { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.user`]: 'cy' };
+      if (identity !== undefined) labels[`${BERTH_LABEL}.identity`] = identity;
+      docker.containers.set('mbw-cy-blank', { spec: { Labels: labels }, running: true, ip: '', token: null });
+      await expect(host.berthUp_read(ANA)).rejects.toThrow('a running berth container carries no identity');
+      expect(await runningOf()).toEqual(['', ANA]);
+    }
+    docker.containers.delete('mbw-cy-blank');
+    // Paused, or restarting: up, holding its room, and where it answers not known.
+    for (const state of ['paused', 'restarting']) {
+      docker.states.set(container, state);
+      await expect(host.berthUp_read(ANA)).rejects.toThrow(`the berth is ${state}`);
+      expect(await runningOf()).toEqual([ANA]);
+      expect((await launcher.access_read(CUBE)).map((row) => `${row.user}:${row.state}`)).toEqual(['ana:running']);
+    }
+    docker.states.clear();
+    // The operator's reading refuses an engine that does not list, containers or homes, rather than say nobody is there.
+    docker.listStatus = 500;
+    await expect(launcher.access_read(CUBE)).rejects.toThrow('the engine did not list the berths');
+    docker.listStatus = 200;
+    docker.volumeStatus = 500;
+    await expect(launcher.access_read(CUBE)).rejects.toThrow('the engine did not list the homes');
+    docker.volumeStatus = 200;
   });
 
   it('an engine that refuses the stop is a failed stop all the way up: the berth stays, the sweep keeps its session, a restart starts nothing', async () => {

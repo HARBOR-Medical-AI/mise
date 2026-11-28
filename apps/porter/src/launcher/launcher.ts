@@ -92,6 +92,51 @@ export interface BerthState {
   readonly unread?: string;
 }
 
+/** The engine states a container holds its room in, and might answer from. */
+const UP_STATES: readonly string[] = ['running', 'paused', 'restarting', 'removing'];
+
+/**
+ * A berth label's text, blank or absent alike.
+ *
+ * @param row - A row of the engine's container listing.
+ * @param name - The label after the berth prefix (`identity`, `user`).
+ * @returns The label's text, or '' when it is absent, blank or not text.
+ */
+function labelText_read(row: unknown, name: string): string {
+  const value: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.${name}`);
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Whether a listed container is the launcher's own helper (the one that gives a person their volumes), not a berth:
+ * by its label, or by the name only a helper takes (a berth's name never ends in `-own`).
+ *
+ * @param row - A row of the engine's container listing.
+ * @returns True for a helper.
+ */
+function row_isHelper(row: unknown): boolean {
+  return field_get(row, 'Labels', `${BERTH_LABEL}.helper`) === 'own' || containerName_read(row).endsWith('-own');
+}
+
+/** Why a running berth's file could not be read: the only words status passes on (a file's own text never is). */
+export const BERTH_UNREAD: Readonly<Record<'missing' | 'invalid' | 'another' | 'unread', string>> = {
+  missing: 'no berth file yet',
+  invalid: 'the berth file is not one',
+  another: 'the berth file names another identity',
+  unread: 'the berth file could not be read',
+};
+
+/**
+ * Why a berth file could not be read, in the launcher's own words: one of BERTH_UNREAD, whatever the error says.
+ *
+ * @param error - What reading it threw.
+ * @returns The reason status gives.
+ */
+function berthUnread_say(error: unknown): string {
+  const said: string = error instanceof Error ? error.message : '';
+  return Object.values(BERTH_UNREAD).includes(said) ? said : BERTH_UNREAD.unread;
+}
+
 /** Where a running berth's calypso answers, and its attach token. */
 interface BerthAddress {
   /** The address. */
@@ -685,12 +730,17 @@ export class BerthLauncher {
     const want: string | null = who === null ? null : identity_normalise(who.user, who.cubeUrl);
     const states: BerthState[] = [];
     for (const row of rows) {
-      const identity: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.identity`);
-      const user: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.user`);
+      // This spoke's berths only, and not its own helpers (the one that gives a person their volumes).
+      if (field_get(row, 'Labels', BERTH_LABEL) !== this.options.prefix || row_isHelper(row)) continue;
+      const identity: string = labelText_read(row, 'identity');
+      const user: string = labelText_read(row, 'user');
       const cohort: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.cohort`);
-      // A berth container without whose it is could be anyone's: when running it is up, and said so, for every asker.
-      if (typeof identity !== 'string' || typeof user !== 'string') {
-        if (field_get(row, 'State') === 'running') states.push({ identity: '', user: '', state: 'running', url: null, token: null, container: containerName_read(row), cohort: NO_COHORT, unread: 'a running berth container carries no identity' });
+      const engineState: unknown = field_get(row, 'State');
+      // Up is any state the container holds its room in, and might answer from: running, paused, restarting, removing.
+      const up: boolean = typeof engineState === 'string' && UP_STATES.includes(engineState);
+      // A berth container without whose it is (a label absent or blank) could be anyone's: when up, said so to every asker.
+      if (identity === '' || user === '') {
+        if (up) states.push({ identity: '', user: '', state: 'running', url: null, token: null, container: containerName_read(row), cohort: NO_COHORT, unread: 'a running berth container carries no identity' });
         continue;
       }
       if (want !== null && identity !== want) continue;
@@ -698,8 +748,8 @@ export class BerthLauncher {
       // The container is read under the name the engine lists it by: one under its legacy name is still that person's berth.
       const shown: string = containerName_read(row);
       const names: BerthNames = shown === '' ? derived : { ...derived, container: shown };
-      const up: boolean = field_get(row, 'State') === 'running';
-      const read: BerthRead = up ? await this.berth_read(names, identity).then((berth): BerthRead => ({ berth, unread: null }), (error: unknown): BerthRead => ({ berth: null, unread: error instanceof Error ? error.message : String(error) })) : { berth: null, unread: null };
+      // Only a running one is asked where it answers; paused or restarting, it is up and where it answers is not known.
+      const read: BerthRead = !up ? { berth: null, unread: null } : engineState !== 'running' ? { berth: null, unread: `the berth is ${String(engineState)}` } : await this.berth_read(names, identity).then((berth): BerthRead => ({ berth, unread: null }), (error: unknown): BerthRead => ({ berth: null, unread: berthUnread_say(error) }));
       states.push({ identity, user, state: up ? 'running' : 'stopped', url: read.berth?.url ?? null, token: read.berth?.token ?? null, container: names.container, cohort: typeof cohort === 'string' ? cohort : NO_COHORT, ...(read.unread === null ? {} : { unread: read.unread }) });
     }
     return states;
@@ -720,19 +770,26 @@ export class BerthLauncher {
   public async access_read(cubeUrl: string): Promise<BerthAccess[]> {
     const docker: DockerApi = this.options.docker;
     const listed: DockerAnswer = await docker.call('GET', `/containers/json?all=true&filters=${labelFilter_build(this.options.prefix)}`);
+    if (listed.status !== 200 || !Array.isArray(listed.body)) throw new BerthRefusal(502, `the engine did not list the berths (it answered ${String(listed.status)})`);
     const up: Map<string, { name: string; cohort: string }> = new Map();
-    for (const row of Array.isArray(listed.body) ? listed.body : []) {
-      const identity: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.identity`);
-      const user: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.user`);
+    for (const row of listed.body) {
+      const identity: string = labelText_read(row, 'identity');
+      const user: string = labelText_read(row, 'user');
       const cohort: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.cohort`);
-      const name: string = containerName_read(row);
-      if (typeof user !== 'string' || identity !== identity_normalise(user, cubeUrl) || name === '' || name.endsWith('-own') || field_get(row, 'State') !== 'running') continue;
+      const engineState: unknown = field_get(row, 'State');
+      if (field_get(row, 'Labels', BERTH_LABEL) !== this.options.prefix || row_isHelper(row) || user === '' || identity !== identity_normalise(user, cubeUrl)) continue;
+      if (typeof engineState !== 'string' || !UP_STATES.includes(engineState)) continue;
+      // A row the engine lists without a name is still the person's: read under the name the launcher gives it.
+      const shown: string = containerName_read(row);
+      const name: string = shown === '' ? berthNames_derive(this.options.prefix, identity, user).container : shown;
       // Two running containers of one identity: the first by name is the one reported, whatever order the engine lists them in.
       const held = up.get(user);
       if (held === undefined || name < held.name) up.set(user, { name, cohort: typeof cohort === 'string' ? cohort : NO_COHORT });
     }
     const homes: DockerAnswer = await docker.call('GET', `/volumes?filters=${encodeURIComponent(JSON.stringify({ label: [`${BERTH_LABEL}=${this.options.prefix}`, `${BERTH_LABEL}.volume=home`] }))}`);
     const volumes: unknown = field_get(homes.body, 'Volumes');
+    // The engine lists none as null (or an empty list); anything else is not a listing.
+    if (homes.status !== 200 || (volumes !== null && !Array.isArray(volumes))) throw new BerthRefusal(502, `the engine did not list the homes (it answered ${String(homes.status)})`);
     const kept: Set<string> = new Set();
     for (const row of Array.isArray(volumes) ? volumes : []) {
       const user: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.user`);
@@ -949,7 +1006,7 @@ export class BerthLauncher {
       Image: this.options.image,
       User: '0:0',
       Entrypoint: ['sh', '-c', volumesOwnScript_build(ask.uid, ask.gid, legacy !== null)],
-      Labels: { [BERTH_LABEL]: this.options.prefix },
+      Labels: { [BERTH_LABEL]: this.options.prefix, [`${BERTH_LABEL}.helper`]: 'own' },
       HostConfig: { Binds: [`${names.home}:/v/home`, `${names.work}:/v/work`, ...(legacy !== null ? [`${legacy}:/v/old:ro`] : [])], NetworkMode: 'none', CapDrop: ['ALL'], CapAdd: ['CHOWN', 'DAC_OVERRIDE'], SecurityOpt: ['no-new-privileges'], ReadonlyRootfs: true },
     });
     if (made.status !== 201) throw new BerthRefusal(502, `${ask.user}'s volumes were not given to them: ${JSON.stringify(made.body)}`);
@@ -983,14 +1040,20 @@ export class BerthLauncher {
     const inspected: DockerAnswer = await docker.call('GET', `/containers/${names.container}/json`);
     const user: unknown = field_get(inspected.body, 'Config', 'User');
     const read = await docker.exec(names.container, ['sh', '-c', `cat ${BERTH_TOKEN_DIR}/calypso/berth-${berthKey_compute(identity)}.json`], typeof user === 'string' ? user : '65534:65534', null);
-    if (read.code !== 0) throw new Error('no berth file yet');
-    const berth: unknown = JSON.parse(read.stdout);
+    if (read.code !== 0) throw new Error(BERTH_UNREAD.missing);
+    // The file holds the attach token: a parse error, which may quote it, is never passed on.
+    let berth: unknown;
+    try {
+      berth = JSON.parse(read.stdout);
+    } catch {
+      throw new Error(BERTH_UNREAD.invalid);
+    }
     // The file is the berth's own word: one that names another identity is not this person's address.
-    if (field_get(berth, 'identity') !== identity) throw new Error('the berth file names another identity');
+    if (field_get(berth, 'identity') !== identity) throw new Error(BERTH_UNREAD.another);
     const url: unknown = field_get(berth, 'url');
     const token: unknown = field_get(berth, 'token');
     const address: unknown = field_get(inspected.body, 'NetworkSettings', 'Networks', names.network, 'IPAddress');
-    if (typeof url !== 'string' || typeof token !== 'string' || typeof address !== 'string' || address === '') throw new Error('the berth file is not one');
+    if (typeof url !== 'string' || typeof token !== 'string' || typeof address !== 'string' || address === '') throw new Error(BERTH_UNREAD.invalid);
     const at: URL = new URL(url);
     return { url: `${at.protocol}//${address}:${at.port}`, token };
   }
