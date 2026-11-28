@@ -626,10 +626,23 @@ describe('the launcher over an engine', () => {
     const rudolph: string = identity_normalise('rudolph', CUBE);
     legacy_put(docker, 'rudolph', rudolph);
     docker.networks.set('mbw-net-ghost', { options: {}, members: new Set(['porter', `${berthNames_derive('mbw', ANA, 'ana').container}-own`]) });
-    expect(await launcher.orphans_clear()).toEqual(['mbw-net-ghost']);
+    // A berth whose name ends like a helper's but whose labels name a person: it, and its wire, stay; a true helper goes.
+    const bob: string = identity_normalise('bob', CUBE);
+    docker.containers.set('mbw-bob-x-own', { spec: { Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: bob, [`${BERTH_LABEL}.user`]: 'bob' }, HostConfig: { NetworkMode: 'mbw-net-bobown' } }, running: true, ip: '10.213.77.50', token: null });
+    docker.networks.set('mbw-net-bobown', { options: {}, members: new Set(['porter', 'mbw-bob-x-own']) });
+    docker.containers.set('mbw-y-own', { spec: { Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.helper`]: 'own' } }, running: false, ip: '', token: null });
+    expect((await launcher.orphans_clear()).sort()).toEqual(['mbw-net-ghost', 'mbw-y-own']);
     expect(docker.networks.has('mbw-net-ana')).toBe(true);
     expect(docker.networks.has('mbw-net-rudolph')).toBe(true);
     expect(docker.containers.has(berthNames_derive('mbw', rudolph, 'rudolph').containerLegacy)).toBe(true);
+    expect(docker.containers.has('mbw-bob-x-own')).toBe(true);
+    expect(docker.networks.get('mbw-net-bobown')?.members.has('porter')).toBe(true);
+    // A start whose helper's name is held by a container that names a person refuses, and removes nothing.
+    const cy: string = identity_normalise('cy', CUBE);
+    const helperName: string = `${berthNames_derive('mbw', cy, 'cy').container}-own`;
+    docker.containers.set(helperName, { spec: { Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: bob, [`${BERTH_LABEL}.user`]: 'bob' }, HostConfig: { NetworkMode: 'mbw-net-bobown' } }, running: true, ip: '10.213.77.51', token: null });
+    await expect(launcher.start({ user: 'cy', uid: 9, gid: 9, cubeUrl: CUBE, token: 'cy-token' })).rejects.toThrow(`the helper's name ${helperName} is held by a berth`);
+    expect(docker.containers.has(helperName)).toBe(true);
   });
 
   it('refuses root, a name CUBE would not take, and a start with no token it holds', async () => {

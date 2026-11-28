@@ -103,8 +103,39 @@ const UP_STATES: readonly string[] = ['running', 'paused', 'restarting', 'removi
  * @returns The label's text, or '' when it is absent, blank or not text.
  */
 function labelText_read(row: unknown, name: string): string {
-  const value: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.${name}`);
+  return labelValue_read(field_get(row, 'Labels'), name);
+}
+
+/**
+ * A berth label's text from a container's labels, blank or absent alike.
+ *
+ * @param labels - The labels (a listing row's, or an inspect's Config).
+ * @param name - The label after the berth prefix.
+ * @returns The text, or ''.
+ */
+function labelValue_read(labels: unknown, name: string): string {
+  const value: unknown = field_get(labels, `${BERTH_LABEL}.${name}`);
   return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Whether a container's labels name a person (an identity or a user): then it is a berth, never a helper.
+ *
+ * @param labels - The labels.
+ * @returns True when either is there and not blank.
+ */
+function labels_namePerson(labels: unknown): boolean {
+  return labelValue_read(labels, 'identity') !== '' || labelValue_read(labels, 'user') !== '';
+}
+
+/**
+ * Whether a listed container names a person.
+ *
+ * @param row - A row of the engine's container listing.
+ * @returns True when its labels name an identity or a user.
+ */
+function row_namesPerson(row: unknown): boolean {
+  return labels_namePerson(field_get(row, 'Labels'));
 }
 
 /**
@@ -117,7 +148,7 @@ function labelText_read(row: unknown, name: string): string {
  */
 function row_isHelper(row: unknown): boolean {
   // A helper carries no person: a row that says whose it is is a berth, whatever else it says.
-  if (labelText_read(row, 'identity') !== '' || labelText_read(row, 'user') !== '') return false;
+  if (row_namesPerson(row)) return false;
   return field_get(row, 'Labels', `${BERTH_LABEL}.helper`) === 'own' || containerName_read(row).endsWith('-own');
 }
 
@@ -612,10 +643,13 @@ export class BerthLauncher {
     const docker: DockerApi = this.options.docker;
     const removed: string[] = [];
     await this.cubeNetwork_ensure();
-    const helpers: DockerAnswer = await docker.call('GET', `/containers/json?all=true&filters=${labelFilter_build(this.options.prefix, { name: [`${this.options.prefix}-`] })}`);
-    for (const row of Array.isArray(helpers.body) ? helpers.body : []) {
+    const listed: DockerAnswer = await docker.call('GET', `/containers/json?all=true&filters=${labelFilter_build(this.options.prefix)}`);
+    const rows: unknown[] = Array.isArray(listed.body) ? listed.body : [];
+    // A container that names a person is a berth, whatever its name: kept, with its wire; only true helpers go.
+    const people: Set<string> = new Set(rows.filter(row_namesPerson).map(containerName_read).filter((name: string): boolean => name !== ''));
+    for (const row of rows) {
       const name: string = containerName_read(row);
-      if (!name.endsWith('-own')) continue;
+      if (name === '' || !row_isHelper(row)) continue;
       await docker.call('DELETE', `/containers/${name}?force=true`);
       removed.push(name);
     }
@@ -628,7 +662,7 @@ export class BerthLauncher {
       // Only a berth keeps its wire, under its name or its legacy one; porter or a helper on the wire does not.
       const berthOn: boolean = typeof members === 'object' && members !== null && Object.values(members as Record<string, unknown>).some((member: unknown): boolean => {
         const memberName: unknown = field_get(member, 'Name');
-        return typeof memberName === 'string' && berthName_matches(this.options.prefix, memberName);
+        return typeof memberName === 'string' && (berthName_matches(this.options.prefix, memberName) || people.has(memberName));
       });
       if (berthOn) continue;
       await this.porter_leave(name);
@@ -1004,6 +1038,9 @@ export class BerthLauncher {
   private async volumes_own(names: BerthNames, ask: BerthAsk, legacy: string | null): Promise<void> {
     const docker: DockerApi = this.options.docker;
     const owner: string = `${names.container}-own`;
+    // The helper's name taken by a container that names a person is that person's berth: never removed to make room.
+    const occupant: DockerAnswer = await docker.call('GET', `/containers/${owner}/json`);
+    if (occupant.status === 200 && labels_namePerson(field_get(occupant.body, 'Config', 'Labels'))) throw new BerthRefusal(409, `${ask.user}'s volumes were not given to them: the helper's name ${owner} is held by a berth`);
     await docker.call('DELETE', `/containers/${owner}?force=true`);
     const made: DockerAnswer = await docker.call('POST', `/containers/create?name=${owner}`, {
       Image: this.options.image,
