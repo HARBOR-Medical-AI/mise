@@ -192,7 +192,8 @@ describe('persistent prompting (REPL interface)', () => {
     typeahead_clear();
     typeahead_push('y');
     const rl = {
-      question: jest.fn((_p: string, _o: unknown, cb: (a: string) => void) => cb('n')),
+      // Answered a moment after it is asked, as a person does (an answer in the same turn is not yet one).
+      question: jest.fn((_p: string, _o: unknown, cb: (a: string) => void) => { setTimeout(() => { cb('n'); }, 5); }),
       once: jest.fn(), off: jest.fn(),
     } as unknown as import('readline').Interface;
     const { CONSENT_PURPOSE } = await import('../src/core/cliSurface.js');
@@ -251,6 +252,44 @@ describe('persistent prompting (REPL interface)', () => {
     const after: Promise<string> = new Promise((resolve) => { rl.question('Next: ', resolve); });
     input.write('\u0019\r');
     expect(await after).toBe('mine');
+    rl.close();
+  });
+
+  it('REPL: keys that queue while the consent question is being written do not answer it; an answer after it is ready does', async () => {
+    const realReadline = jest.requireActual('readline') as typeof import('readline');
+    const { PassThrough } = await import('node:stream');
+    const input = new PassThrough();
+    // An output whose write is held while keys arrive: they come in during the question's own write.
+    const output = new PassThrough();
+    output.resume();
+    const write = output.write.bind(output);
+    let typed: boolean = false;
+    output.write = ((chunk: unknown, ...rest: unknown[]): boolean => {
+      if (!typed && String(chunk).includes('Allow? ')) {
+        typed = true;
+        input.write('y\r');
+      }
+      return (write as (...args: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof output.write;
+    const rl = realReadline.createInterface({ input, output, terminal: true });
+    const asking: Promise<string> = cliSurface_create(rl).prompt({ message: 'Allow? ', purpose: 'chell.consent' });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(typed).toBe(true);
+    input.write('n\r');
+    expect(await asking).toBe('n');
+    rl.close();
+  });
+
+  it('a question that is not consent still takes an answer typed as it is written (no change for ordinary prompts)', async () => {
+    const realReadline = jest.requireActual('readline') as typeof import('readline');
+    const { PassThrough } = await import('node:stream');
+    const input = new PassThrough();
+    const output = new PassThrough();
+    output.resume();
+    const rl = realReadline.createInterface({ input, output, terminal: true });
+    const asking: Promise<string> = cliSurface_create(rl).prompt({ message: 'Name: ' });
+    input.write('alice\r');
+    expect(await asking).toBe('alice');
     rl.close();
   });
 

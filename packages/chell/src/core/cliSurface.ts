@@ -182,13 +182,52 @@ function visibleQuestion_put(rl: readline.Interface, request: PromptRequest, sho
       return;
     }
     request.signal?.addEventListener('abort', question_withdraw, { once: true });
-    rl.question(shown.message, { signal: abandon.signal }, (answer: string) => {
+    const answer_take = (answer: string): void => {
       request.signal?.removeEventListener('abort', question_withdraw);
       rl.off('SIGINT', onInterrupt);
       question_openSet(false);
       terminalState_mark('busy');
       resolve(promptAnswer_take(answer, shown.fallback));
+    };
+    // The person's word for what a session may run here is taken only once the question is on the screen.
+    if (request.purpose === CONSENT_PURPOSE) questionArmed_put(rl, shown.message, abandon.signal, answer_take);
+    else rl.question(shown.message, { signal: abandon.signal }, answer_take);
+  });
+}
+
+/**
+ * Puts a question whose answer counts only once it has been written and the input that arrived meanwhile has been
+ * read: readline takes its answer from the moment it is asked, before it writes the question, so keys that queued
+ * while the question was being written (a write the terminal held) would otherwise answer it. A line submitted
+ * before then is no answer (the question is put again); a line half typed before then is cleared.
+ *
+ * @param rl - The interface.
+ * @param message - The question.
+ * @param signal - readline's withdrawal of the question, if any.
+ * @param taker - Takes the answer.
+ */
+function questionArmed_put(rl: readline.Interface, message: string, signal: AbortSignal | undefined, taker: (answer: string) => void): void {
+  const input: unknown = Reflect.get(rl, 'input');
+  const stream: NodeJS.ReadableStream | null = typeof input === 'object' && input !== null && 'on' in input ? input as NodeJS.ReadableStream : null;
+  let armed: boolean = false;
+  let early: boolean = false;
+  const chunk_hear = (): void => { early = true; };
+  stream?.on('data', chunk_hear);
+  const question_ask = (): void => {
+    rl.question(message, signal !== undefined ? { signal } : {}, (answer: string): void => {
+      if (armed) taker(answer);
+      else question_ask();
     });
+  };
+  question_ask();
+  // Input that queued during the write is read in the loop's poll, before this.
+  setImmediate((): void => {
+    armed = true;
+    stream?.off('data', chunk_hear);
+    if (early && rl.terminal) {
+      rl.write(null, { ctrl: true, name: 'e' });
+      rl.write(null, { ctrl: true, name: 'u' });
+    }
   });
 }
 
@@ -269,9 +308,10 @@ function input_ended(input: NodeJS.ReadableStream): boolean {
  * @param rl - The interface, made for this one question.
  * @param message - The line to print.
  * @param done - What to do with the line typed, before it is resolved.
+ * @param armed - Whether the answer counts only once the question is on the screen (consent).
  * @returns The line typed.
  */
-function oneShotLine_read(rl: readline.Interface, message: string, done: () => void): Promise<string> {
+function oneShotLine_read(rl: readline.Interface, message: string, done: () => void, armed: boolean = false): Promise<string> {
   return new Promise((resolve: (answer: string) => void, reject: (error: Error) => void) => {
     let answered: boolean = false;
     rl.once('close', (): void => {
@@ -280,12 +320,14 @@ function oneShotLine_read(rl: readline.Interface, message: string, done: () => v
       process.stdout.write('\n');
       reject(new Error(INPUT_ENDED_REASON));
     });
-    rl.question(message, (answer: string): void => {
+    const answer_take = (answer: string): void => {
       answered = true;
       done();
       rl.close();
       resolve(answer);
-    });
+    };
+    if (armed) questionArmed_put(rl, message, undefined, answer_take);
+    else rl.question(message, answer_take);
   });
 }
 
@@ -468,7 +510,8 @@ export async function oneShotPrompt_ask(request: PromptRequest, input: NodeJS.Re
       await terminalInput_settle(input, request.signal);
     }
     const rl: readline.Interface = readline.createInterface({ input, output: process.stdout });
-    const answer: string = await withdrawable_read(rl, request.signal, (): Promise<string> => oneShotLine_read(rl, shown.message, (): void => undefined));
+    const armed: boolean = request.purpose === CONSENT_PURPOSE;
+    const answer: string = await withdrawable_read(rl, request.signal, (): Promise<string> => oneShotLine_read(rl, shown.message, (): void => undefined, armed));
     return promptAnswer_take(answer, shown.fallback);
   }
 
