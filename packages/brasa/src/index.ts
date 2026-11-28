@@ -51,7 +51,7 @@ export * from './lib/pipe.js';
 export * from './lib/semicolonParser.js';
 export * from './builtins/fs/deliveryIntent.js';
 export { commandOperands_place } from './core/commandParse.js';
-export { wireName_place, type HostPlace } from '@fnndsc/fond';
+export { privateTemp_write, suffix_safe, wireName_place, type HostPlace, type PrivateTemp } from '@fnndsc/fond';
 export * from './lib/completer/index.js';
 export { jobsState_derive, type JobsState } from './chris/jobsState.js';
 export { universeLayouts_warm, universeLayout_underWay, universeLayoutInput_build, SESSION_GALAXY_NODES_MIN } from './chris/universeLayout.js';

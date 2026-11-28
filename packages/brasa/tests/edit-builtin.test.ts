@@ -140,6 +140,55 @@ describe('builtin_edit', () => {
     expect(env.renderedErr).toContain('Save failed');
     expect(env.renderedErr).toContain('preserved at');
     expect(process.exitCode).toBe(1);
+    // The preserved copy is the edit itself, 0600, in a folder of its own that only this account can open.
+    const kept: string = /preserved at: (.+)$/m.exec((env.renderedErr ?? '').replace(/\x1b\[[0-9;]*m/g, ''))?.[1] ?? '';
+    const { readFileSync, statSync } = await import('node:fs');
+    const { dirname } = await import('node:path');
+    expect(readFileSync(kept, 'utf8')).toBe('EDITED CONTENT');
+    expect(statSync(kept).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(kept)).mode & 0o777).toBe(0o700);
+  });
+
+  it('keeps and reports its private copy when the save throws, as when it is refused', async () => {
+    mockCat.mockResolvedValue(ok('original'));
+    mockLocalEdit.mockResolvedValue({ content: 'EDITED CONTENT', changed: true });
+    mockReplace.mockRejectedValue(new Error('the store is away'));
+    const env = await builtin_edit(['notes.txt']);
+    const kept: string = /preserved at: (.+)$/m.exec((env.renderedErr ?? '').replace(/\x1b\[[0-9;]*m/g, ''))?.[1] ?? '';
+    const { readFileSync } = await import('node:fs');
+    expect(env.renderedErr).toContain('the store is away');
+    expect(readFileSync(kept, 'utf8')).toBe('EDITED CONTENT');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('a replacement that deleted the original and then failed to upload drops both listings and keeps the edit', async () => {
+    mockCat.mockResolvedValue(ok('original'));
+    mockLocalEdit.mockResolvedValue({ content: 'EDITED CONTENT', changed: true });
+    mockReplace.mockResolvedValue({ success: false, error: 'the upload failed after the original was removed' });
+    mockInvalidate.mockClear();
+    const env = await builtin_edit(['notes.txt']);
+    expect(mockInvalidate).toHaveBeenCalledTimes(2);
+    const kept: string = /preserved at: (.+)$/m.exec((env.renderedErr ?? '').replace(/\x1b\[[0-9;]*m/g, ''))?.[1] ?? '';
+    const { readFileSync } = await import('node:fs');
+    expect(readFileSync(kept, 'utf8')).toBe('EDITED CONTENT');
+    // A listing that cannot be refreshed does not hide where the edit is kept.
+    mockInvalidate.mockImplementationOnce(() => { throw new Error('cache away'); });
+    const again = await builtin_edit(['notes.txt']);
+    expect(again.renderedErr).toContain('preserved at');
+  });
+
+  it('removes its private copy once a save goes through, and keeps none at a predictable name', async () => {
+    mockCat.mockResolvedValue(ok('original'));
+    mockLocalEdit.mockResolvedValue({ content: 'EDITED CONTENT', changed: true });
+    let seen: string = '';
+    mockReplace.mockImplementation(async (_target: unknown, local: unknown) => { seen = String(local); return { success: true }; });
+    await builtin_edit(['notes.txt']);
+    const { existsSync } = await import('node:fs');
+    const { dirname, basename } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    expect(dirname(dirname(seen))).toBe(tmpdir());
+    expect(basename(dirname(seen))).toMatch(/^chell-edit-.{6}$/);
+    expect(existsSync(dirname(seen))).toBe(false);
   });
 });
 

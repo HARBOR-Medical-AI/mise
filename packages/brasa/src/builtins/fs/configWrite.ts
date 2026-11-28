@@ -26,12 +26,11 @@
  *
  * @module
  */
-import { writeFileSync, unlinkSync, existsSync } from 'fs';
-import { tmpdir } from 'os';
-import { join, posix } from 'path';
+import { posix } from 'path';
 import chalk from 'chalk';
 import { files_uploadPath } from '@fnndsc/salsa';
 import { file_replaceContent, type EditResult } from '@fnndsc/chili/commands/fs/edit.js';
+import { privateTemp_write, type PrivateTemp } from '@fnndsc/fond';
 import { path_resolve, storePath_resolve } from '../utils.js';
 import { command_declare, type CommandArguments, type CommandGrammar, type SubcommandArguments } from '../../core/commandDeclaration.js';
 import { declaredCommand_run } from '../../core/commandParse.js';
@@ -104,9 +103,10 @@ async function configWrite_run(args: SubcommandArguments<typeof CONFIG_GRAMMAR, 
 
   const shown: string = await path_resolve(rawPath);
   const remotePath: string = await storePath_resolve(rawPath);
-  const tmpPath: string = join(tmpdir(), `chell-config-${Date.now()}.tmp`);
+  // A folder of its own (0700), the file created anew and 0600.
+  const temp: PrivateTemp = privateTemp_write('chell-config-', 'config.tmp', content);
+  const tmpPath: string = temp.path;
   try {
-    writeFileSync(tmpPath, content);
     // A fresh document uploads; an existing one is replaced in place (the
     // edit idiom: CFS files are immutable, so replace = delete + upload).
     let uploaded: boolean = await files_uploadPath(tmpPath, remotePath);
@@ -123,6 +123,6 @@ async function configWrite_run(args: SubcommandArguments<typeof CONFIG_GRAMMAR, 
     listingCache_get().cache_invalidate?.(posix.dirname(shown));
     return envelope_ok(`${chalk.green('[+]')} wrote ${shown} (${content.length} bytes)\n`);
   } finally {
-    if (existsSync(tmpPath)) unlinkSync(tmpPath);
+    temp.folder_remove();
   }
 }

@@ -17,13 +17,11 @@ import * as readline from 'readline';
 import chalk from 'chalk';
 import { Writable } from 'stream';
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from 'child_process';
-import { writeFileSync, readFileSync, unlinkSync, existsSync, statSync } from 'fs';
+import { readFileSync, existsSync, statSync } from 'fs';
 import * as fs from 'fs/promises';
-import { tmpdir } from 'os';
 import * as path from 'path';
-import { join } from 'path';
 import type { Surface, SurfaceCapabilities, PromptRequest, LocalEditRequest, LocalEditResult } from '@fnndsc/brasa';
-import { segment_pipeThrough, file_read, wireName_place, type HostPlace } from '@fnndsc/brasa';
+import { segment_pipeThrough, file_read, wireName_place, type HostPlace, privateTemp_write, suffix_safe, type PrivateTemp } from '@fnndsc/brasa';
 import { promptKind_derive, type FileDeliverRequest, type FileDeliverResult, type PromptKind } from '@fnndsc/menu';
 import { interrupt_pending, question_openSet, terminalState_mark, typeahead_take } from './lineDiscipline.js';
 
@@ -233,10 +231,11 @@ export async function oneShotPrompt_ask(request: PromptRequest, input: NodeJS.Re
  * @throws {Error} When the editor fails to launch.
  */
 function localEdit_run(request: LocalEditRequest): Promise<LocalEditResult> {
-  const ext: string = request.extension && request.extension.length > 0 ? request.extension : '.txt';
-  const tmpPath: string = join(tmpdir(), `chell-edit-${Date.now()}${ext}`);
+  // The copy the editor opens is in a folder of its own only this account can open (0700), created anew and 0600;
+  // a suffix the daemon asks for is kept only when it is a plain one, so the name cannot leave that folder.
+  const temp: PrivateTemp = privateTemp_write('chell-edit-', `edit${suffix_safe(request.extension, '.txt')}`, request.content);
+  const tmpPath: string = temp.path;
   try {
-    writeFileSync(tmpPath, request.content, 'utf8');
     const editor: string = process.env.EDITOR || process.env.VISUAL || 'vi';
     const spawn: SpawnSyncReturns<Buffer> = spawnSync(editor, [tmpPath], { stdio: 'inherit' });
     if (spawn.error) {
@@ -245,9 +244,7 @@ function localEdit_run(request: LocalEditRequest): Promise<LocalEditResult> {
     const edited: string = readFileSync(tmpPath, 'utf8');
     return Promise.resolve({ content: edited, changed: edited !== request.content });
   } finally {
-    if (existsSync(tmpPath)) {
-      try { unlinkSync(tmpPath); } catch { /* ignore */ }
-    }
+    temp.folder_remove();
   }
 }
 

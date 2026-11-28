@@ -48,11 +48,13 @@ jest.unstable_mockModule('child_process', () => ({
 // stub stands in for a real session.
 const fileReadMock = jest.fn(async (): Promise<Buffer> => Buffer.from('delivered bytes'));
 // The placing of a delivered name is fond's own function, as brasa hands it on.
-const { wireName_place } = await import('@fnndsc/fond');
+const { wireName_place, privateTemp_write, suffix_safe } = await import('@fnndsc/fond');
 jest.unstable_mockModule('@fnndsc/brasa', () => ({
   segment_pipeThrough: jest.fn(async (): Promise<Buffer> => Buffer.from('')),
   file_read: fileReadMock,
   wireName_place,
+  privateTemp_write,
+  suffix_safe,
 }));
 
 const { cliSurface_create, promptLine_render, promptAnswer_take, oneShotPrompt_ask, INPUT_ENDED_REASON } =
@@ -269,6 +271,21 @@ describe('local editing', () => {
     // The launch failure surfaces synchronously from the surface call.
     expect(() => surface.localEdit({ content: 'x', extension: '.txt' }))
       .toThrow('failed to launch');
+  });
+
+  it('opens a private copy (0600 in a folder of its own, 0700), keeps a daemon\'s unsafe suffix out of its name, and removes it', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    let opened: { file: string; mode: number; folder: number } | null = null;
+    spawnSyncMock.mockImplementationOnce((_editor: string, args: string[]) => {
+      opened = { file: args[0] ?? '', mode: fs.statSync(args[0] ?? '').mode & 0o777, folder: fs.statSync(path.dirname(args[0] ?? '')).mode & 0o777 };
+      return { error: undefined };
+    });
+    const surface = cliSurface_create();
+    await surface.localEdit({ content: 'x', extension: '/../../evil' });
+    expect(opened).toMatchObject({ mode: 0o600, folder: 0o700 });
+    expect(path.basename(opened?.file ?? '')).toBe('edit.txt');
+    expect(fs.existsSync(path.dirname(opened?.file ?? ''))).toBe(false);
   });
 
   it('defaults the temp extension to .txt', async () => {

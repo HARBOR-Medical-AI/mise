@@ -22,6 +22,9 @@ jest.unstable_mockModule('readline', () => ({
   createInterface: (options: Record<string, unknown>) => realReadline.createInterface({ ...options, input, output: new PassThrough(), terminal: true }),
 }));
 jest.unstable_mockModule('@fnndsc/brasa', () => ({
+  // The private copy a local edit opens (cliSurface imports them; nothing here edits).
+  privateTemp_write: jest.fn(),
+  suffix_safe: jest.fn(),
   session: {},
   surface_set: jest.fn(),
   sink_set: jest.fn(),

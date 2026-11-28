@@ -13,7 +13,8 @@
  *
  * @module
  */
-import { lstatSync, realpathSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 /** Where a name belongs under a folder, or why it has no place there. */
@@ -145,3 +146,80 @@ export function wireName_place(folder: string, name: string): HostPlace {
   }
   return { ok: true, place };
 }
+
+/** A name a private temporary file may take: a plain name, never a path, `..` or NUL. */
+const PRIVATE_NAME: RegExp = /^(?!\.\.?$)[A-Za-z0-9._+-]{1,64}$/;
+
+/** A folder prefix: a plain name, under the temporary folder. */
+const PRIVATE_PREFIX: RegExp = /^[A-Za-z0-9_+-][A-Za-z0-9._+-]{0,31}$/;
+
+/** A file suffix a caller may ask for (`.mise`, `.json`): a dot and a few plain characters. */
+export const SAFE_SUFFIX: RegExp = /^\.[A-Za-z0-9_+-]{1,16}$/;
+
+/**
+ * A temporary file only this account can open: in a fresh folder of its own (`mkdtemp`, 0700), created anew
+ * (`wx`, so nothing standing at the name is followed or reused), 0600.
+ *
+ * @example
+ * ```ts
+ * const temp: PrivateTemp = privateTemp_write('chell-edit-', 'edit.txt', 'text');
+ * try { use(temp.path); } finally { temp.folder_remove(); }
+ * ```
+ */
+export interface PrivateTemp {
+  /** The private folder. */
+  folder: string;
+  /** The file in it. */
+  path: string;
+  /** Removes the folder and the file. */
+  folder_remove: () => void;
+}
+
+/**
+ * Writes a private temporary file.
+ *
+ * @param prefix - The folder's prefix under the system's temporary folder (`chell-edit-`).
+ * @param name - The file's name inside it: a plain name (no separator, `..` or NUL), else refused.
+ * @param data - What it holds: text or bytes.
+ * @returns The file, its folder, and how to remove them.
+ * @throws {Error} When the name or the prefix is not a plain name, the data neither text nor bytes, or the file cannot be written (the folder is then removed).
+ *
+ * @example
+ * ```ts
+ * const temp: PrivateTemp = privateTemp_write('chell-config-', 'config.tmp', bytes);
+ * ```
+ */
+export function privateTemp_write(prefix: string, name: string, data: unknown): PrivateTemp {
+  // Each checked as the string it must be before anything is made: a test coerces, a name that is not a string is not one.
+  if (typeof name !== 'string' || !PRIVATE_NAME.test(name)) throw new Error(`a private temporary file's name is a plain name: ${JSON.stringify(name)}`);
+  if (typeof data !== 'string' && !(data instanceof Uint8Array)) throw new Error('a private temporary file holds text or bytes');
+  if (typeof prefix !== 'string' || !PRIVATE_PREFIX.test(prefix)) throw new Error(`a private temporary folder's prefix is a plain name: ${JSON.stringify(prefix)}`);
+  const folder: string = mkdtempSync(path.join(tmpdir(), prefix));
+  const file: string = path.join(folder, name);
+  try {
+    chmodSync(folder, 0o700);
+    writeFileSync(file, data, { flag: 'wx', mode: 0o600 });
+  } catch (error: unknown) {
+    // A folder half made (a full disk mid-write, say) is not left behind.
+    rmSync(folder, { recursive: true, force: true });
+    throw error;
+  }
+  return { folder, path: file, folder_remove: (): void => { rmSync(folder, { recursive: true, force: true }); } };
+}
+
+/**
+ * A suffix as asked, when it is a safe one; else the default.
+ *
+ * @param asked - The suffix asked for (a remote surface's, an operand's).
+ * @param fallback - What is used otherwise.
+ * @returns The suffix.
+ *
+ * @example
+ * ```ts
+ * suffix_safe('../x', '.txt'); // '.txt'
+ * ```
+ */
+export function suffix_safe(asked: string | undefined, fallback: string): string {
+  return asked !== undefined && SAFE_SUFFIX.test(asked) ? asked : fallback;
+}
+

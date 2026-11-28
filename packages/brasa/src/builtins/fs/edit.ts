@@ -25,10 +25,8 @@
  *
  * @module
  */
-import { vfsOutcome_convertToResult } from '@fnndsc/fond';
-import { writeFileSync, unlinkSync, existsSync } from 'fs';
-import { tmpdir } from 'os';
-import { join, extname, posix } from 'path';
+import { privateTemp_write, suffix_safe, vfsOutcome_convertToResult, type PrivateTemp } from '@fnndsc/fond';
+import { extname, posix } from 'path';
 import chalk from 'chalk';
 import { path_resolve, storePath_resolve, error_stripDebugPrefix } from '../utils.js';
 import { surface_get, capability_require, CapabilityError, type LocalEditResult } from '../../core/surface.js';
@@ -152,30 +150,55 @@ async function edit_run(named: string): Promise<CommandEnvelope> {
 
   // Upload the edited content: write it to a temp file the replace command
   // reads, and preserve that file (reporting its path) if the save fails.
-  const tmpPath: string = join(tmpdir(), `chell-edit-${Date.now()}${ext || '.txt'}`);
-  let keepTmp: boolean = false;
+  // In a folder of its own only this account can open (0700), created anew and 0600: nothing at a predictable
+  // name is followed, and nobody else reads the edit.
+  const temp: PrivateTemp = privateTemp_write('chell-edit-', `edit${suffix_safe(ext, '.txt')}`, edit.content);
+  const tmpPath: string = temp.path;
+  // The copy is kept until the save is confirmed: a rejected save, or one that throws, says where it is.
+  let result: EditResult;
   try {
-    writeFileSync(tmpPath, edit.content, 'utf8');
-    const result: EditResult = await file_replaceContent(target, tmpPath);
-    // The folder's listing is stale by both its names: where the store
-    // keeps it, and the path the file was reached by.
+    result = await file_replaceContent(target, tmpPath);
+  } catch (error: unknown) {
+    result = { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  // A replacement was attempted (it deletes the original before it uploads), so the folder's listing is stale by
+  // both its names, saved or not: where the store keeps it, and the path the file was reached by. A listing that
+  // cannot be refreshed never hides where a failed save's edit is kept.
+  await listings_invalidate(target, named);
+  if (!result.success) return editSave_fail(result.error, tmpPath);
+  temp.folder_remove();
+  return envelope_ok(`${chalk.green(`Saved: ${named}`)}\n`);
+}
+
+/**
+ * Drops the cached listings of a file's folder, by the store's path and by the path it was reached by.
+ *
+ * @param target - The store's path.
+ * @param named - The path as typed.
+ */
+async function listings_invalidate(target: string, named: string): Promise<void> {
+  try {
     listCache_get().cache_invalidate(posix.dirname(target));
     listCache_get().cache_invalidate(posix.dirname(await path_resolve(named)));
-    if (result.success) {
-      return envelope_ok(`${chalk.green(`Saved: ${named}`)}\n`);
-    }
-    const apiErr: StackMessage | undefined = errorStack.stack_pop();
-    let renderedErr: string = `${chalk.red(`edit: Save failed — ${result.error}`)}\n`;
-    if (apiErr) renderedErr += `${chalk.red(`  API error: ${error_stripDebugPrefix(apiErr.message)}`)}\n`;
-    renderedErr += `${chalk.yellow(`Your edits are preserved at: ${tmpPath}`)}\n`;
-    keepTmp = true;
-    exitCode_set(1);
-    return envelope_error('', undefined, renderedErr);
-  } finally {
-    if (!keepTmp && existsSync(tmpPath)) {
-      try { unlinkSync(tmpPath); } catch { /* ignore */ }
-    }
+  } catch {
+    // A stale listing is read again on its own time; the edit's outcome is what is said.
   }
+}
+
+/**
+ * Says a save that did not go through, and where the edit is kept.
+ *
+ * @param reason - Why the save failed.
+ * @param kept - The private copy that holds the edit.
+ * @returns The failure.
+ */
+function editSave_fail(reason: string | undefined, kept: string): CommandEnvelope {
+  const apiErr: StackMessage | undefined = errorStack.stack_pop();
+  let renderedErr: string = `${chalk.red(`edit: Save failed — ${String(reason)}`)}\n`;
+  if (apiErr) renderedErr += `${chalk.red(`  API error: ${error_stripDebugPrefix(apiErr.message)}`)}\n`;
+  renderedErr += `${chalk.yellow(`Your edits are preserved at: ${kept}`)}\n`;
+  exitCode_set(1);
+  return envelope_error('', undefined, renderedErr);
 }
 
 /**

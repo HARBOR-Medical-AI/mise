@@ -22,12 +22,6 @@
     "packages/brasa/src/builtins/berth/berthState.ts": {
       "fs": "OWN-STATE: Reads/atomically writes the berth state file inside the berth's own anchors folder (BERTH_STATE_FILE)."
     },
-    "packages/brasa/src/builtins/fs/configWrite.ts": {
-      "fs": "OWN-STATE: Writes the config document the session supplied (base64 content, 256KB cap) to an engine-named os.tmpdir() scratch file (chell-config-<ts>.tmp), uploads it to CUBE and unlinks it; the session supplies the CUBE path, never the host path."
-    },
-    "packages/brasa/src/builtins/fs/edit.ts": {
-      "fs": "OWN-STATE: Writes the edited text to an engine-named os.tmpdir() scratch file (chell-edit-<ts><ext>), hands it to chili file_replaceContent, unlinks it (kept and named on failure); the session supplies only a CUBE path."
-    },
     "packages/brasa/src/builtins/fs/touch.ts": {
       "fs": "GATED: --withContentsFromFile reads a host path only after hostDisk_refusal('touch --withContentsFromFile ...') (surface.ts:194, checks capabilities.engineFilesystem)."
     },
@@ -140,7 +134,7 @@
       "fs": "OWN-STATE: NodeStorageProvider is chrisConnection's persistence layer; callers pass engine-named config, token and cache files (chrisConnection.ts:581,689-717), never a session path. chrisIO.uploadLocalPath (chrisIO.ts:892-924) reads via this provider a local path from files_uploadPath; callers are chili upload (gated) and configWrite (own tmp file)."
     },
     "packages/fond/src/hostPlace.ts": {
-      "fs": "OWN-STATE: lstat/realpath probes only (no read of contents or write) beneath a folder the caller names (berth anchors, stratus script library root, chell's own download folder); used to contain names."
+      "fs": "OWN-STATE: lstat/realpath probes only (no read of contents or write) beneath a folder the caller names (berth anchors, stratus script library root, chell's own download folder); used to contain names. Also privateTemp_write: a private temporary file (mkdtemp folder 0700, file created anew 0600) for edit and config write, under the system temp folder, its name a plain name."
     },
     "packages/salsa/src/pipelines/packages.ts": {
       "fs": "OWN-STATE: Pipeline-package cache under $XDG_CACHE_HOME/chell/pipelines keyed by hashed CUBE url."
