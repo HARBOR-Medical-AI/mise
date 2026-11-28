@@ -39,6 +39,8 @@ class FakeDocker implements DockerApi {
   silent: boolean = false;
   /** What the engine answers a container listing with; 200 unless a test has it fail. */
   listStatus: number = 200;
+  /** An identity every berth file claims instead of its own; null: each names its own. */
+  fileIdentity: string | null = null;
   /** Each container's log, a line each; absent: nothing written. */
   logs: Map<string, string[]> = new Map();
   /** Who follows each container's log, and how each follow ends. */
@@ -185,7 +187,7 @@ class FakeDocker implements DockerApi {
     if (line.includes('berth-') && !this.silent && found.token !== null) {
       const identity: string = (found.spec['Labels'] as Record<string, string>)[`${BERTH_LABEL}.identity`] ?? '';
       if (!line.includes(berthKey_compute(identity))) return { code: 1, stdout: '', stderr: 'no such file' };
-      return { code: 0, stdout: JSON.stringify({ identity, url: 'ws://berth-host.example:41234', token: `attach-${container}` }), stderr: '' };
+      return { code: 0, stdout: JSON.stringify({ identity: this.fileIdentity ?? identity, url: 'ws://berth-host.example:41234', token: `attach-${container}` }), stderr: '' };
     }
     return { code: 1, stdout: '', stderr: 'no such file' };
   }
@@ -871,6 +873,29 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     // A start counts the berths up for the spoke's room: an engine that does not list refuses it rather than counting none.
     await expect(host.spawn(identity_normalise('ben', CUBE), 'ben', CUBE, 'ben-token')).rejects.toThrow('the engine did not list the berths');
     docker.listStatus = 200;
+  });
+
+  it('which berth is up, for a decision, from rows in any order: a stopped row before the running one, a file naming another identity, a running container without whose it is', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    const labels = { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: ANA, [`${BERTH_LABEL}.user`]: 'ana', [`${BERTH_LABEL}.cohort`]: 'none' };
+    // A stopped container of hers is listed before the running one.
+    docker.containers.set('mbw-aaa-old-ana', { spec: { User: '7:7', Labels: labels }, running: false, ip: '', token: null });
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    expect((await host.berthUp_read(ANA))?.token).toBe(`attach-${container}`);
+    expect((await host.find(ANA))?.token).toBe(`attach-${container}`);
+    // Her berth's file names somebody else: not her address.
+    docker.fileIdentity = identity_normalise('bob', CUBE);
+    await expect(host.berthUp_read(ANA)).rejects.toThrow('the berth file names another identity');
+    expect(await host.find(ANA)).toBeNull();
+    docker.fileIdentity = null;
+    // A running berth container that says whose it is not: it could be hers, and it takes room.
+    docker.containers.set('mbw-stray', { spec: { Labels: { [BERTH_LABEL]: 'mbw' } }, running: true, ip: '10.213.77.99', token: null });
+    await expect(host.berthUp_read(ANA)).rejects.toThrow('a running berth container carries no identity');
+    expect((await launcher_make(docker).status(null)).filter((one) => one.state === 'running').map((one) => one.identity).sort()).toEqual(['', ANA]);
+    docker.containers.delete('mbw-stray');
+    expect((await host.berthUp_read(ANA))?.token).toBe(`attach-${container}`);
   });
 
   it('an engine that refuses the stop is a failed stop all the way up: the berth stays, the sweep keeps its session, a restart starts nothing', async () => {

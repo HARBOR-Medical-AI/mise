@@ -688,7 +688,12 @@ export class BerthLauncher {
       const identity: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.identity`);
       const user: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.user`);
       const cohort: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.cohort`);
-      if (typeof identity !== 'string' || typeof user !== 'string' || (want !== null && identity !== want)) continue;
+      // A berth container without whose it is could be anyone's: when running it is up, and said so, for every asker.
+      if (typeof identity !== 'string' || typeof user !== 'string') {
+        if (field_get(row, 'State') === 'running') states.push({ identity: '', user: '', state: 'running', url: null, token: null, container: containerName_read(row), cohort: NO_COHORT, unread: 'a running berth container carries no identity' });
+        continue;
+      }
+      if (want !== null && identity !== want) continue;
       const derived: BerthNames = berthNames_derive(this.options.prefix, identity, user);
       // The container is read under the name the engine lists it by: one under its legacy name is still that person's berth.
       const shown: string = containerName_read(row);
@@ -980,6 +985,8 @@ export class BerthLauncher {
     const read = await docker.exec(names.container, ['sh', '-c', `cat ${BERTH_TOKEN_DIR}/calypso/berth-${berthKey_compute(identity)}.json`], typeof user === 'string' ? user : '65534:65534', null);
     if (read.code !== 0) throw new Error('no berth file yet');
     const berth: unknown = JSON.parse(read.stdout);
+    // The file is the berth's own word: one that names another identity is not this person's address.
+    if (field_get(berth, 'identity') !== identity) throw new Error('the berth file names another identity');
     const url: unknown = field_get(berth, 'url');
     const token: unknown = field_get(berth, 'token');
     const address: unknown = field_get(inspected.body, 'NetworkSettings', 'Networks', names.network, 'IPAddress');
