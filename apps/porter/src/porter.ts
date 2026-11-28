@@ -14,7 +14,7 @@ import { CredentialStore } from './creds.js';
 import { sessionEnv_withheld } from './host/sessionEnv.js';
 import { doorOrigins_resolve, type DoorOrigins } from './origin.js';
 import { porterConfig_resolve, porterStateDir_resolve, porterTokensFile_resolve, chellEntry_locate, stratusEntry_locate, PORTER_DEFAULT_TOKEN_DAYS, type PorterConfig } from './config.js';
-import { TokenStore, type DoorToken, type MintedToken } from './tokens.js';
+import { TokenStore, type DoorToken, type MintedToken, type StoreHooks } from './tokens.js';
 import { identity_normalise } from '@fnndsc/calypso/berth';
 import { ProcessHost } from './host/processHost.js';
 import { LauncherHost } from './host/launcherHost.js';
@@ -95,6 +95,13 @@ async function session_end(stateDir: string, who: string): Promise<void> {
   if (ended) console.log('    state kept; the next login boots a fresh session on this porter\'s kernel');
 }
 
+/** The token CLI's word, on stderr, when upkeep after a committed change failed: the change stands. */
+const CLI_HOOKS: StoreHooks = {
+  upkeep_failed: (what: string, error: unknown): void => {
+    console.error(`[!] the change is made, but the token store could not write ${what}: ${error instanceof Error ? error.message : String(error)}; it is written at the next start`);
+  },
+};
+
 /**
  * Lists the door tokens the store holds: who, which name, when minted,
  * when it dies, when it last let someone in. There is no plaintext to
@@ -103,7 +110,7 @@ async function session_end(stateDir: string, who: string): Promise<void> {
  * @param file - The token store.
  */
 async function tokens_print(file: string): Promise<void> {
-  const store: TokenStore = new TokenStore(file, PORTER_DEFAULT_TOKEN_DAYS);
+  const store: TokenStore = new TokenStore(file, PORTER_DEFAULT_TOKEN_DAYS, undefined, CLI_HOOKS);
   await store.load();
   const tokens: DoorToken[] = await store.list();
   console.log(`tokens: ${file}`);
@@ -129,7 +136,7 @@ async function tokens_print(file: string): Promise<void> {
  * @param name - The token's name, or undefined for all of the user's.
  */
 async function token_revoke(file: string, user: string, name: string | undefined): Promise<void> {
-  const store: TokenStore = new TokenStore(file, PORTER_DEFAULT_TOKEN_DAYS);
+  const store: TokenStore = new TokenStore(file, PORTER_DEFAULT_TOKEN_DAYS, undefined, CLI_HOOKS);
   await store.load();
   const gone: number = await store.revoke(user, name);
   if (gone === 0) {
@@ -160,7 +167,7 @@ async function token_mint(env: NodeJS.ProcessEnv, user: string, name: string): P
     console.error(`[!] PORTER_TOKEN_DAYS is not a span of days: ${daysText}`);
     process.exit(1);
   }
-  const store: TokenStore = new TokenStore(porterTokensFile_resolve(env), days);
+  const store: TokenStore = new TokenStore(porterTokensFile_resolve(env), days, undefined, CLI_HOOKS);
   await store.load();
   const made: MintedToken = await store.mint(identity_normalise(user, cubeUrl.endsWith('/') ? cubeUrl : `${cubeUrl}/`), user, name);
   console.log(`minted a door token "${name}" for ${user}; it dies ${made.record.expires.slice(0, 10)} and is shown once:`);

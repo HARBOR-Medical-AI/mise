@@ -94,16 +94,17 @@ describe('TokenStore', () => {
 });
 
 describe('DeviceCodes', () => {
-  it('issues a readable code, is pending until authorised, hands the grant once, then forgets it', async () => {
+  it('issues a readable code, is pending until authorised, hands the grant over once, then forgets it', async () => {
     let now: number = 1_000_000;
     const codes = new DeviceCodes((): number => now);
+    const renewal = { token: 'pdt_x', record: { name: 'chris@titan', identity: 'chris@c/', user: 'chris', hash: 'a'.repeat(64), created: '2026-11-01T00:00:00.000Z', expires: '2099-01-01T00:00:00.000Z', lastUsed: null } };
     const issued = codes.issue('titan');
     expect(issued.code).toMatch(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
     expect(codes.host_find(issued.code)).toBe('titan');
     expect(codes.host_find(issued.code.toLowerCase().replace('-', ''))).toBe('titan');
-    expect(codes.take(issued.code)).toEqual({ state: 'pending' });
+    expect(codes.handoff_begin(issued.code)).toEqual({ state: 'pending' });
     // Only a login that claimed the code may authorise it; a second claim is refused while the first holds it.
-    expect(codes.authorise(issued.code, 'no-claim', { token: 'pdt_z', user: 'chris', name: 'chris@titan', expires: 'later' })).toBe(false);
+    expect(codes.authorise(issued.code, 'no-claim', { token: 'pdt_z', user: 'chris', name: 'chris@titan', expires: 'later' }, renewal)).toBe(false);
     const claimed = codes.code_claim(issued.code);
     expect(claimed?.host).toBe('titan');
     expect(codes.code_claim(issued.code)).toBeNull();
@@ -111,18 +112,29 @@ describe('DeviceCodes', () => {
     // Another login's claim neither completes nor lets go of this one.
     codes.claim_release(issued.code, 'another');
     expect(codes.code_claim(issued.code)).toBeNull();
-    expect(codes.authorise(issued.code, 'another', { token: 'pdt_w', user: 'kim', name: 'kim@titan', expires: 'later' })).toBe(false);
-    expect(codes.authorise(issued.code, claimed?.claim ?? '', { token: 'pdt_x', user: 'chris', name: 'chris@titan', expires: 'later' })).toBe(true);
+    expect(codes.authorise(issued.code, 'another', { token: 'pdt_w', user: 'kim', name: 'kim@titan', expires: 'later' }, renewal)).toBe(false);
+    expect(codes.authorise(issued.code, claimed?.claim ?? '', { token: 'pdt_x', user: 'chris', name: 'chris@titan', expires: 'later' }, renewal)).toBe(true);
     expect(codes.host_find(issued.code)).toBeNull(); // a code authorised is no longer waiting on the page
-    expect(codes.authorise(issued.code, claimed?.claim ?? '', { token: 'pdt_y', user: 'kim', name: 'kim@titan', expires: 'later' })).toBe(false);
-    expect(codes.take(issued.code)).toEqual({ state: 'authorised', grant: { token: 'pdt_x', user: 'chris', name: 'chris@titan', expires: 'later' } });
-    expect(codes.take(issued.code)).toEqual({ state: 'unknown' });
+    expect(codes.authorise(issued.code, claimed?.claim ?? '', { token: 'pdt_y', user: 'kim', name: 'kim@titan', expires: 'later' }, renewal)).toBe(false);
+    // A poll takes it up; a second poll meanwhile is told it is pending; a hand-over that failed leaves it for the next poll.
+    expect(codes.handoff_begin(issued.code)).toEqual({ state: 'authorised', grant: { token: 'pdt_x', user: 'chris', name: 'chris@titan', expires: 'later' }, renewal });
+    expect(codes.handoff_begin(issued.code)).toEqual({ state: 'pending' });
+    codes.handoff_end(issued.code, false);
+    expect(codes.handoff_begin(issued.code)).toMatchObject({ state: 'authorised' });
+    codes.handoff_end(issued.code, true);
+    expect(codes.handoff_begin(issued.code)).toEqual({ state: 'unknown' });
 
+    // A code authorised and never taken lapses: its renewal is given to the door to drop, once.
     const late = codes.issue('pangea');
+    const lateClaim = codes.code_claim(late.code);
+    codes.authorise(late.code, lateClaim?.claim ?? '', { token: 'pdt_l', user: 'chris', name: 'chris@pangea', expires: 'later' }, renewal);
     now += DEVICE_CODE_LIFE_MS + 1;
-    expect(codes.take(late.code)).toEqual({ state: 'unknown' });
+    expect(codes.handoff_begin(late.code)).toEqual({ state: 'unknown' });
     expect(codes.host_find(late.code)).toBeNull();
+    expect(codes.lapsed_take()).toEqual([renewal]);
+    expect(codes.lapsed_take()).toEqual([]);
   });
+
 
   it('makes codes without the letters that read as digits, and normalises what a human types', async () => {
     for (let i = 0; i < 50; i++) expect(deviceCode_make()).not.toMatch(/[01OIL]/);

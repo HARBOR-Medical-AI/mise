@@ -549,29 +549,60 @@ describe('what Codex found in the fourth form (seq 404)', () => {
     expect((await store.list())[0]?.identity).toBe(identity);
   });
 
-  it('a renewal leaves the standing token until it is delivered; delivered, the older go; undelivered, it goes alone', async () => {
+  it('a renewal leaves the standing token until it is handed over; handed over and current, the older go; not, it goes alone', async () => {
     const store: TokenStore = await writer();
     const standing = await store.mint('kim@c/', 'kim', 'kim@titan');
-    // Two renewals by two codes at once; both run out, in either order: the standing token still lets in.
+    // Two renewals by two codes at once; neither handed over, in either order: the standing token still lets in.
     for (const order of [[0, 1], [1, 0]]) {
       const renewals = [await store.mint('kim@c/', 'kim', 'kim@titan', true), await store.mint('kim@c/', 'kim', 'kim@titan', true)];
-      for (const i of order) await store.renewal_settle(renewals[i] as never, false);
+      for (const i of order) expect((await store.renewal_settle(renewals[i] as never, false)).state).toBe('dropped');
       expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
     }
     // A renewal interrupted (minted, never settled: the door stopped): the standing token still lets in.
     const interrupted = await store.mint('kim@c/', 'kim', 'kim@titan', true);
     expect((await store.check(standing.token)).ok).toBe(true);
-    // One delivered: it stands alone, the others of that name gone.
-    const delivered = await store.mint('kim@c/', 'kim', 'kim@titan', true);
-    expect(await store.renewal_settle(delivered, true)).toBe(2);
-    expect((await store.list()).map((t) => t.hash)).toEqual([delivered.record.hash]);
+    const handed = await store.mint('kim@c/', 'kim', 'kim@titan', true);
+    expect(await store.renewal_settle(handed, true)).toEqual({ state: 'current', retired: 2 });
+    expect((await store.list()).map((t) => t.hash)).toEqual([handed.record.hash]);
     expect(await store.check(interrupted.token)).toEqual({ ok: false, why: 'unknown' });
-    // A revocation during a renewal stands, delivered or not.
+    // A revocation during a renewal stands.
     const another = await store.mint('kim@c/', 'kim', 'kim@titan', true);
-    await store.revoke_presented(delivered.token);
+    await store.revoke_presented(handed.token);
     await store.renewal_settle(another, false);
     expect(await store.list()).toEqual([]);
   });
+
+  it('two renewals both handed over, settled in either order, leave the newer standing; a newer operator mint wins over a renewal', async () => {
+    for (const order of [[0, 1], [1, 0]]) {
+      const store: TokenStore = await writer();
+      const standing = await store.mint('kim@c/', 'kim', 'kim@titan');
+      const renewals = [await store.mint('kim@c/', 'kim', 'kim@titan', true), await store.mint('kim@c/', 'kim', 'kim@titan', true)];
+      const outcomes = [];
+      for (const i of order) outcomes[i] = await store.renewal_settle(renewals[i] as never, true);
+      expect((await store.list()).map((t) => t.hash)).toEqual([renewals[1]?.record.hash]);
+      expect(await store.check(standing.token)).toEqual({ ok: false, why: 'unknown' });
+      // The older renewal is superseded when it settles after the newer; current when before it (and then the newer retires it).
+      expect(outcomes[0]?.state).toBe(order[0] === 0 ? 'current' : 'superseded');
+      expect(outcomes[1]?.state).toBe('current');
+      rmSync(`${path}.d`, { recursive: true, force: true });
+      rmSync(`${path}.marks`, { recursive: true, force: true });
+    }
+    const store: TokenStore = await writer();
+    const renewal = await store.mint('kim@c/', 'kim', 'kim@titan', true);
+    const operator = await store.mint('kim@c/', 'kim', 'kim@titan');
+    expect((await store.renewal_settle(renewal, true)).state).toBe('superseded');
+    expect((await store.list()).map((t) => t.hash)).toEqual([operator.record.hash]);
+  });
+
+  it('a folder planted among the marks does not stop a healthy store opening (agy, attack B1a-6)', async () => {
+    const store: TokenStore = await writer();
+    for (let i = 0; i < 10; i++) await store.mint(`u${String(i)}@c/`, `u${String(i)}`, 'n');
+    mkdirSync(join(`${path}.marks`, '1'), { recursive: true });
+    const again: TokenStore = await writer();
+    await again.mint('kim@c/', 'kim', 'laptop');
+    expect((await again.list())).toHaveLength(11);
+  });
+
 
   it('a mark not made after a publication is said, and made at the next open', async () => {
     const said: string[] = [];

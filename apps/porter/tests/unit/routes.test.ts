@@ -1068,6 +1068,41 @@ describe('door tokens (chell auth)', () => {
     await door.app.close();
   });
 
+  it('a renewal takes effect only when chell\'s poll takes it: approved and never polled, the standing token stays; a settlement that fails is asked again', async () => {
+    let failOnce: boolean = false;
+    const store: TokenStore = new TokenStore(join(tokensDir, 'handoff.json'), 30, (): Date => new Date(), {
+      read_after: async (): Promise<void> => { if (failOnce) { failOnce = false; throw new Error('the store is busy'); } },
+    });
+    let clock: number = Date.now();
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'handoff.json') }, host, tokens: store, now: (): number => clock, sweepMs: 20, mint: async (_c: string, username: string) => ({ token: `TOKEN-${username}` }) });
+    await door.app.ready();
+    const standing = await store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'chris@titan');
+    const approve = async (): Promise<string> => {
+      const { code } = (await door.app.inject({ method: 'POST', url: '/auth/device', payload: { host: 'titan' } })).json() as { code: string };
+      const approved = await door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json', origin: DOOR_ORIGIN }, payload: { username: 'chris', password: 'right', code } });
+      expect(approved.statusCode).toBe(200);
+      return code;
+    };
+    // Approved, never polled, the code lapses: the standing token still lets in, and the sweep drops the renewal.
+    await approve();
+    expect((await store.check(standing.token)).ok).toBe(true);
+    clock += 11 * 60 * 1000;
+    for (let i = 0; i < 50 && (await store.list()).length > 1; i++) await new Promise((resolve) => { setTimeout(resolve, 10); });
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    // Approved, then a poll whose settlement fails: 503 and still pending; the next poll hands it over and the standing token goes.
+    const code: string = await approve();
+    failOnce = true;
+    const failed = await door.app.inject({ method: 'GET', url: `/auth/device/${code}` });
+    expect(failed.statusCode).toBe(503);
+    expect((await store.check(standing.token)).ok).toBe(true);
+    const taken = await door.app.inject({ method: 'GET', url: `/auth/device/${code}` });
+    expect(taken.json()).toMatchObject({ state: 'authorised', name: 'chris@titan' });
+    const granted: string = (taken.json() as { token: string }).token;
+    expect((await store.check(granted)).ok).toBe(true);
+    expect(await store.check(standing.token)).toEqual({ ok: false, why: 'unknown' });
+    await door.app.close();
+  });
+
   it('answers /healthz while a token login is held inside the store: store I/O does not hold the door', async () => {
     let release: () => void = (): void => undefined;
     let holding: boolean = false;

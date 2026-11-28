@@ -113,6 +113,23 @@ export interface MintedToken {
   record: DoorToken;
 }
 
+/**
+ * How a renewal settled: it stands (`current`), its token was gone when it
+ * was handed over (`superseded`), or it was not handed over and went
+ * (`dropped`); and how many tokens went.
+ *
+ * @example
+ * ```ts
+ * const outcome: RenewalOutcome = { state: 'current', retired: 1 };
+ * ```
+ */
+export interface RenewalOutcome {
+  /** What became of it. */
+  state: 'current' | 'superseded' | 'dropped';
+  /** How many tokens went. */
+  retired: number;
+}
+
 /** What the store answers for a presented token. */
 export type TokenCheck = TokenAdmitted | TokenRefused | TokenUnknown;
 
@@ -401,31 +418,36 @@ export class TokenStore {
   }
 
   /**
-   * Settles a renewal minted with `keep`: once its token is delivered, the
-   * other tokens of that name and identity go, and it is the one that
-   * stands; a renewal never delivered goes alone, and they stay. Nothing
-   * is put back, so a revocation meanwhile always stands.
+   * Settles a renewal minted with `keep`. Handed over: if its token is
+   * still in the store, the tokens of that name and identity minted before
+   * it go and it stands (one minted after it, a newer renewal or the
+   * operator's mint, is left: the newer wins); if its token is gone (a newer
+   * mint replaced it, or it was revoked), it is superseded and nothing goes.
+   * Not handed over: it goes alone. Nothing is ever put back, so a
+   * revocation always stands. One transaction of the store.
    *
    * @param made - The renewal.
-   * @param delivered - Whether its token reached the one who asked.
-   * @returns How many tokens went.
+   * @param handed - Whether its token was handed to the one who asked.
+   * @returns `current` when it stands (and how many older went), `superseded` when its token was gone, or for a renewal not handed over how many went.
    *
    * @example
    * ```ts
-   * await store.renewal_settle(made, codes.authorise(code, claim, grant));
+   * const outcome = await store.renewal_settle(made, true); // { state: 'current', retired: 1 }
    * ```
    */
-  public async renewal_settle(made: MintedToken, delivered: boolean): Promise<number> {
-    return this.change_apply<number>((tokens: DoorToken[]) => {
-      const token_goes = (held: DoorToken): boolean => (delivered
-        ? held.identity === made.record.identity && held.name === made.record.name && held.hash !== made.record.hash
-        : held.hash === made.record.hash);
-      const next: DoorToken[] = tokens.filter((held: DoorToken): boolean => !token_goes(held));
-      return next.length === tokens.length ? { result: 0 } : { result: tokens.length - next.length, next };
+  public async renewal_settle(made: MintedToken, handed: boolean): Promise<RenewalOutcome> {
+    return this.change_apply<RenewalOutcome>((tokens: DoorToken[]) => {
+      const at: number = tokens.findIndex((held: DoorToken): boolean => held.hash === made.record.hash);
+      if (!handed) {
+        return at === -1 ? { result: { state: 'dropped', retired: 0 } } : { result: { state: 'dropped', retired: 1 }, next: tokens.filter((_held: DoorToken, i: number): boolean => i !== at) };
+      }
+      if (at === -1) return { result: { state: 'superseded', retired: 0 } };
+      // The store keeps tokens in the order they were minted: those of the name before this one are older.
+      const older = (held: DoorToken, i: number): boolean => i < at && held.identity === made.record.identity && held.name === made.record.name;
+      const next: DoorToken[] = tokens.filter((held: DoorToken, i: number): boolean => !older(held, i));
+      return next.length === tokens.length ? { result: { state: 'current', retired: 0 } } : { result: { state: 'current', retired: tokens.length - next.length }, next };
     });
   }
-
-
 
   /**
    * Checks a presented plaintext against the current store, in constant
@@ -433,6 +455,11 @@ export class TokenStore {
    *
    * @param plain - The token as presented.
    * @returns The record when it lets someone in.
+   *
+   * @example
+   * ```ts
+   * (await store.check(bearer)).ok;
+   * ```
    */
   public async check(plain: string): Promise<TokenCheck> {
     return token_find((await this.current_get()).tokens, plain, this.now());
@@ -602,8 +629,12 @@ export class TokenStore {
     const marks: HeldFolder = await folder_hold(`${this.path}.marks`);
     try {
       await writeFile(join(marks.at, String(n)), '', { mode: 0o600, flag: 'wx' }).catch((error: unknown): void => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; });
+      // Pruning is upkeep, entry by entry: only the store's own empty mark files go, and nothing found there stops the mark.
       for (const name of await readdir(marks.at)) {
-        if (/^[1-9][0-9]{0,11}$/.test(name) && Number(name) < n - VERSIONS_KEPT) await rm(join(marks.at, name), { force: true });
+        if (!/^[1-9][0-9]{0,11}$/.test(name) || Number(name) >= n - VERSIONS_KEPT) continue;
+        const path: string = join(marks.at, name);
+        const found: Stats | null = await lstat(path).catch((): null => null);
+        if (found !== null && found.isFile()) await rm(path, { force: true }).catch((): void => undefined);
       }
     } finally {
       await handle_close(marks.handle);
@@ -1097,6 +1128,59 @@ export interface DeviceClaim {
   claim: string;
 }
 
+/**
+ * A poll that waits: nobody has logged in with the code yet, or another poll is handing it over.
+ *
+ * @example
+ * ```ts
+ * const waiting: HandoffPending = { state: 'pending' };
+ * ```
+ */
+export interface HandoffPending {
+  /** It waits. */
+  state: 'pending';
+}
+
+/**
+ * A poll for a code that died or was taken.
+ *
+ * @example
+ * ```ts
+ * const gone: HandoffUnknown = { state: 'unknown' };
+ * ```
+ */
+export interface HandoffUnknown {
+  /** The code is not out. */
+  state: 'unknown';
+}
+
+/**
+ * A poll that may hand the grant over, once the renewal is settled.
+ *
+ * @example
+ * ```ts
+ * if (step.state === 'authorised') await tokens.renewal_settle(step.renewal, true);
+ * ```
+ */
+export interface HandoffReady {
+  /** Authorised. */
+  state: 'authorised';
+  /** What chell gets. */
+  grant: DeviceGrant;
+  /** The renewal to settle before the grant is handed over. */
+  renewal: MintedToken | null;
+}
+
+/**
+ * What a poll may do with a code.
+ *
+ * @example
+ * ```ts
+ * const step: HandoffStep = codes.handoff_begin(code);
+ * ```
+ */
+export type HandoffStep = HandoffPending | HandoffUnknown | HandoffReady;
+
 /** One code waiting, being authorised, authorised, or spent. */
 interface DeviceCode {
   /** The host chell runs on, for the page ("authorise chell on titan") and the token's name. */
@@ -1107,6 +1191,10 @@ interface DeviceCode {
   grant: DeviceGrant | null;
   /** The claim of the one login that holds it while it mints a token for it, or null: no second login may take it meanwhile. */
   claim: string | null;
+  /** The renewal minted for it, settled when chell's poll takes it, or dropped when the code lapses untaken. */
+  renewal: MintedToken | null;
+  /** Whether a poll is handing it over now: a second poll is told it is pending meanwhile. */
+  handing: boolean;
 }
 
 /** The letters a code is made of: no 0/O, 1/I/L, so it survives being read aloud. */
@@ -1135,6 +1223,8 @@ export function deviceCode_normalise(typed: string): string {
  */
 export class DeviceCodes {
   private readonly codes: Map<string, DeviceCode> = new Map();
+  /** Renewals of codes that lapsed untaken, for the door to drop. */
+  private lapsed: MintedToken[] = [];
 
   public constructor(private readonly now: () => number = (): number => Date.now()) {}
 
@@ -1149,7 +1239,7 @@ export class DeviceCodes {
     let code: string = deviceCode_make();
     while (this.codes.has(code)) code = deviceCode_make();
     const issued: number = this.now();
-    this.codes.set(code, { host, issued, grant: null, claim: null });
+    this.codes.set(code, { host, issued, grant: null, claim: null, renewal: null, handing: false });
     return { code, expires: new Date(issued + DEVICE_CODE_LIFE_MS).toISOString() };
   }
 
@@ -1207,37 +1297,87 @@ export class DeviceCodes {
    * @param code - As typed.
    * @param claim - The claim of the login that holds the code: only it completes it.
    * @param grant - What chell gets.
+   * @param renewal - The renewal minted for it, settled when the grant is handed over.
    * @returns Whether the code was waiting, claimed by that login, and still alive.
    */
-  public authorise(code: string, claim: string, grant: DeviceGrant): boolean {
+  public authorise(code: string, claim: string, grant: DeviceGrant, renewal: MintedToken): boolean {
     this.sweep();
     const held: DeviceCode | undefined = this.codes.get(deviceCode_normalise(code));
     // Only the login that claimed it, by its own claim, and only while it is still alive.
     if (held === undefined || held.grant !== null || held.claim !== claim) return false;
     held.grant = grant;
+    held.renewal = renewal;
     return true;
   }
 
   /**
-   * Chell's poll: the grant once, pending while the human has not yet
-   * logged in, unknown after the code died or was taken.
+   * Chell's poll, first half: the grant to hand over, held for this poll
+   * alone until it says whether the hand-over happened; pending while the
+   * human has not yet logged in, or while another poll is handing it over;
+   * unknown after the code died or was taken.
    *
    * @param code - As chell was given it.
+   * @returns What the poll may do.
+   *
+   * @example
+   * ```ts
+   * const step = codes.handoff_begin(code);
+   * ```
    */
-  public take(code: string): { state: 'pending' } | { state: 'unknown' } | { state: 'authorised'; grant: DeviceGrant } {
+  public handoff_begin(code: string): HandoffStep {
     this.sweep();
     const held: DeviceCode | undefined = this.codes.get(code);
     if (held === undefined) return { state: 'unknown' };
-    if (held.grant === null) return { state: 'pending' };
-    this.codes.delete(code);
-    return { state: 'authorised', grant: held.grant };
+    if (held.grant === null || held.handing) return { state: 'pending' };
+    held.handing = true;
+    return { state: 'authorised', grant: held.grant, renewal: held.renewal };
   }
 
-  /** Forgets codes past their life. */
+  /**
+   * Chell's poll, second half: handed over, the code is spent; not (the
+   * store could not settle it), it waits for the next poll.
+   *
+   * @param code - As chell was given it.
+   * @param handed - Whether the grant was handed over.
+   *
+   * @example
+   * ```ts
+   * codes.handoff_end(code, true);
+   * ```
+   */
+  public handoff_end(code: string, handed: boolean): void {
+    const held: DeviceCode | undefined = this.codes.get(code);
+    if (held === undefined) return;
+    if (handed) this.codes.delete(code);
+    else held.handing = false;
+  }
+
+  /**
+   * The renewals of codes that lapsed with their grant never taken, each
+   * once: the door drops them, so a token nobody received does not stand.
+   *
+   * @returns The renewals.
+   *
+   * @example
+   * ```ts
+   * for (const made of codes.lapsed_take()) await tokens.renewal_settle(made, false);
+   * ```
+   */
+  public lapsed_take(): MintedToken[] {
+    this.sweep();
+    const lapsed: MintedToken[] = this.lapsed;
+    this.lapsed = [];
+    return lapsed;
+  }
+
+
+  /** Forgets codes past their life, keeping the renewal of one authorised and never taken to be dropped. */
   private sweep(): void {
     const cutoff: number = this.now() - DEVICE_CODE_LIFE_MS;
     for (const [code, held] of this.codes) {
-      if (held.issued < cutoff) this.codes.delete(code);
+      if (held.issued >= cutoff || held.handing) continue;
+      if (held.renewal !== null) this.lapsed.push(held.renewal);
+      this.codes.delete(code);
     }
   }
 }

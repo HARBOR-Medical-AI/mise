@@ -78,7 +78,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DOOR_COOKIE, doorCookie_options } from './door.js';
 import { loginPage_render, greetPage_render, authorisedPage_render } from './greeter.js';
-import { DeviceCodes, TokenStore, token_looksLike, type DeviceClaim, type DeviceGrant, type DoorToken, type MintedToken, type TokenCheck } from './tokens.js';
+import { DeviceCodes, TokenStore, token_looksLike, type DeviceClaim, type DeviceGrant, type RenewalOutcome, type DoorToken, type MintedToken, type TokenCheck } from './tokens.js';
 import { idleSweep_run } from './sweep.js';
 import { AttemptLimit, HitLimit, VerdictCache, type Admission, type Attempt } from './limit.js';
 import { doorOrigins_resolve, method_isSafe, origin_isDoors, originRefusal_say, type DoorOrigins } from './origin.js';
@@ -519,10 +519,22 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
 
   app.get('/auth/device/:code', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
     const code: string = (request.params as { code: string }).code;
-    const taken = codes.take(code);
-    if (taken.state === 'unknown') return reply.code(404).send({ state: 'unknown' });
-    if (taken.state === 'pending') return { state: 'pending' };
-    return { state: 'authorised', ...taken.grant };
+    const step = codes.handoff_begin(code);
+    if (step.state === 'unknown') return reply.code(404).send({ state: 'unknown' });
+    if (step.state === 'pending') return { state: 'pending' };
+    // The hand-over is where the renewal takes effect: settled in the store first, the grant handed only after,
+    // and the code kept for the next poll when the store could not say.
+    let outcome: RenewalOutcome | null = null;
+    try {
+      outcome = step.renewal === null ? null : await tokens.renewal_settle(step.renewal, true);
+    } catch (error: unknown) {
+      codes.handoff_end(code, false);
+      options.log?.(`a device login's token could not be settled: ${error instanceof Error ? error.message : String(error)}`);
+      return reply.code(503).send({ state: 'pending', error: 'the door could not settle your login yet; it is asked again' });
+    }
+    codes.handoff_end(code, true);
+    if (outcome?.state === 'superseded') return reply.code(410).send({ state: 'superseded', error: 'a newer login for this host replaced this one; run chell auth login again' });
+    return { state: 'authorised', ...step.grant };
   });
 
   app.post('/login', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
@@ -632,10 +644,12 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
         throw error;
       }
       const grant: DeviceGrant = { token: made.token, user: username, name, expires: made.record.expires };
-      const delivered: boolean = codes.authorise(wanted.code, claimed.claim, grant);
-      // Delivered, the older tokens of that name go; not (the code died while the token was minted), the new one goes alone.
-      await tokens.renewal_settle(made, delivered);
-      if (!delivered) return refuse(410, `the code ${wanted.code} ran out while the door minted its token; run chell auth login again`);
+      // Approved: the grant waits for chell's poll, and the token already held stands until that poll takes it.
+      // The code died while the token was minted: the new one goes alone.
+      if (!codes.authorise(wanted.code, claimed.claim, grant, made)) {
+        await tokens.renewal_settle(made, false);
+        return refuse(410, `the code ${wanted.code} ran out while the door minted its token; run chell auth login again`);
+      }
       options.log?.(`minted a door token "${name}" for ${username} by device code (dies ${made.record.expires.slice(0, 10)})`);
       // A token boots a session on the login the session saved. A human who
       // never came through before has none, so this login, which holds a
@@ -1083,6 +1097,10 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // The idle sweep, once a minute for as long as the porter listens.
     const idleMs: number = config.idleHours * 3_600_000;
     const sweep: NodeJS.Timeout = setInterval((): void => {
+      // Renewals approved and never taken by a poll before their code lapsed: dropped, so nobody's token stands unreceived.
+      for (const made of codes.lapsed_take()) {
+        void tokens.renewal_settle(made, false).catch((error: unknown): void => { options.log?.(`a lapsed device login's token could not be dropped: ${error instanceof Error ? error.message : String(error)}`); });
+      }
       // A sweep that fails is said, and the next tick sweeps again: it is never left as a rejection nobody hears.
       void idleSweep_run(registry, host, idleMs, options.log ?? ((): void => undefined)).catch((error: unknown): void => {
         options.log?.(`the idle sweep failed: ${error instanceof Error ? error.message : String(error)}`);
