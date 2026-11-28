@@ -134,8 +134,8 @@ export const CHILI_HOST_WORDS: Readonly<Record<string, Readonly<Record<string, H
     upload: { touches: 'always' },
     download: { touches: 'always' },
     // A plain scan lists CUBE. It maps onto the host with --hostpath, and writes the host with --mermaid (a page) and --save.
-    // --mermaid renders with `npx mmdc` and --save opens what it wrote: programs on the host as well.
-    scan: { touches: ['--hostpath', '--mermaid', '--save'], valued: ['--hostpath', '--filter', '--endsWith', '--save'], spawns: ['--mermaid', '--save'] },
+    // --mermaid renders with `npx mmdc` and opens the page: programs on the host as well; --save alone writes a file.
+    scan: { touches: ['--hostpath', '--mermaid', '--save'], valued: ['--hostpath', '--filter', '--endsWith', '--save'], spawns: ['--mermaid'] },
     help: { touches: 'never' },
   },
   chefs: {

@@ -209,14 +209,15 @@ describe('chili\'s words that touch the host\'s disk', () => {
   it('a line that also starts a program on the host (a renderer, a browser) needs the process grant too: with the disk alone it is refused and chili is not run', async () => {
     const restore = hostDisk_set(true, false);
     try {
-      for (const [command, args, what] of [['path', ['scan', '--tree', '--mermaid'], 'path scan --mermaid'], ['path', ['scan', '--save', '/tmp/x.html'], 'path scan --save'], ['man', ['doc', 'chell', '--browser'], 'man doc --browser']] as const) {
+      for (const [command, args, what] of [['path', ['scan', '--tree', '--mermaid'], 'path scan --mermaid'], ['path', ['scan', '--mermaid', '--save', '/tmp/x.html'], 'path scan --mermaid'], ['man', ['doc', 'chell', '--browser'], 'man doc --browser']] as const) {
         expect(chiliHostWord_refusal(command, [...args])).toBe(`${what}: this session may not start programs on its host; start the session with --host-control=shell`);
         mockRunCapture.mockClear();
         expect((await chiliCommand_run(command, [...args])).status).not.toBe('ok');
         expect(mockRunCapture).not.toHaveBeenCalled();
       }
-      // A line that reads the disk and starts nothing still runs on the disk grant alone.
+      // A line that reads or writes the disk and starts nothing still runs on the disk grant alone: --save writes a file.
       expect(chiliHostWord_refusal('path', ['upload', 'a', 'b'])).toBeNull();
+      expect(chiliHostWord_refusal('path', ['scan', '--save', '/tmp/x.html'])).toBeNull();
     } finally {
       restore();
     }

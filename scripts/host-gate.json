@@ -232,17 +232,17 @@
     },
     {
       "file": "packages/calypso/src/daemon/hostControl.ts",
-      "text": "engineFilesystem: engineHost_grants(policy).engineFilesystem,",
+      "text": "engineFilesystem: engineHost_grants(policy).engineFilesystem",
       "why": "the daemon's surface takes the disk grant from the policy, never the attached surface"
     },
     {
       "file": "packages/calypso/src/daemon/hostControl.ts",
-      "text": "engineProcesses: engineHost_grants(policy).engineProcesses,",
+      "text": "engineProcesses: engineHost_grants(policy).engineProcesses",
       "why": "the daemon's surface takes the program grant from the policy, never the attached surface"
     },
     {
-      "file": "packages/calypso/src/daemon/launch.ts",
-      "text": "policy.tiers.has('pipes') ? hostPipe_run(command, input, signal) : daemon.pipe_current(command, input)",
+      "file": "packages/calypso/src/daemon/hostControl.ts",
+      "text": "engineHost_grants(policy).pipesHere ? host(command, input, signal) : relay(command, input)",
       "why": "a host pipeline runs here only with the pipes tier"
     },
     {
@@ -277,7 +277,7 @@
     },
     {
       "file": "packages/brasa/src/core/runner.ts",
-      "text": "if (kind.ungated !== true && !this.allowed()) throw new JobRefusal(",
+      "text": "kind.ungated !== true && !this.allowed()",
       "why": "a job (stratus's ssh, tofu, helm) starts only with the tasks tier"
     },
     {
@@ -309,16 +309,21 @@
       "file": "packages/calypso/src/daemon/launch.ts",
       "text": "return daemonCapabilities_compose(daemon.capabilities_current(), policy);",
       "why": "the daemon's surface is composed from the policy, the attached surface supplying only its own traits"
+    },
+    {
+      "file": "packages/calypso/src/daemon/launch.ts",
+      "text": "pipeSegment_run(policy, command, input, (segment: string, bytes: Buffer): Promise<Buffer> => daemon.pipe_current(segment, bytes), signal)",
+      "why": "the daemon routes a segment by the policy, the pipes tier alone running it here"
     }
   ],
   "confined": [
     {
       "name": "hostPipe_run",
       "callers": [
-        "packages/calypso/src/daemon/hostControl.ts",
-        "packages/calypso/src/daemon/launch.ts"
+        "packages/calypso/src/daemon/hostControl.ts"
       ],
-      "why": "it runs a caller's pipeline segment on this host; launch.ts calls it only under the pipes tier (pinned)"
+      "why": "it runs a caller's pipeline segment on this host; launch.ts calls it only under the pipes tier (pinned)",
+      "file": "packages/calypso/src/daemon/hostControl.ts"
     },
     {
       "name": "hostShell_run",
@@ -326,7 +331,8 @@
         "packages/calypso/src/daemon/hostControl.ts",
         "packages/calypso/src/daemon/launch.ts"
       ],
-      "why": "it runs a caller's ! command on this host; launch.ts calls it only under the shell tier (pinned)"
+      "why": "it runs a caller's ! command on this host; launch.ts calls it only under the shell tier (pinned)",
+      "file": "packages/calypso/src/daemon/hostControl.ts"
     },
     {
       "name": "berthRecord_write",
@@ -334,7 +340,8 @@
         "packages/brasa/src/builtins/berth/berthRecord.ts",
         "packages/brasa/src/builtins/berth/berthClose.ts"
       ],
-      "why": "it writes a record into the folder its caller names; berth close names only the berth's own outgoing folder"
+      "why": "it writes a record into the folder its caller names; berth close names only the berth's own outgoing folder",
+      "file": "packages/brasa/src/builtins/berth/berthRecord.ts"
     }
   ]
 }

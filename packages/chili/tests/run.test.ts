@@ -18,7 +18,7 @@
  */
 
 import { execFileSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
@@ -85,12 +85,17 @@ if (!built) {
   });
 });
 
-(existsSync(path.resolve(__dirname, '../dist/index.js')) ? describe : describe.skip)('chili --version [built dist]', () => {
-  it('prints the installed version alone and exits 0, as the bin does', () => {
+/** The command the package's manifest names, built. */
+const CHILI_BIN: string = path.resolve(__dirname, '..', (JSON.parse(readFileSync(path.resolve(__dirname, '../package.json'), 'utf8')) as { bin: { chili: string } }).bin.chili);
+
+(existsSync(CHILI_BIN) ? describe : describe.skip)('chili --version [built dist]', () => {
+  it('prints the installed version alone and exits 0, run as the executable the manifest names', () => {
     const manifest = JSON.parse(readFileSync(path.resolve(__dirname, '../package.json'), 'utf8')) as { version: string };
     const dir: string = mkdtempSync(path.join(os.tmpdir(), 'chili-version-'));
+    // The bin itself, by its shebang and its executable mode, as a global install runs it.
+    expect(statSync(CHILI_BIN).mode & 0o111).not.toBe(0);
     for (const flag of ['--version', '-V']) {
-      const out: string = execFileSync('node', [path.resolve(__dirname, '../dist/index.js'), flag], {
+      const out: string = execFileSync(CHILI_BIN, [flag], {
         encoding: 'utf-8',
         timeout: 60000,
         stdio: ['ignore', 'pipe', 'pipe'],

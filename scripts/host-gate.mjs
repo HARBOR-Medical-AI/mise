@@ -58,8 +58,8 @@ const EFFECT_MODULES = new Map([
   ['module', 'loader'], ['node:module', 'loader'],
 ]);
 
-/** The properties of `process` that reach a module, or native code, by a name: loaders too. */
-const PROCESS_LOADERS = new Set(['getBuiltinModule', 'binding', '_linkedBinding', 'dlopen']);
+/** The names that reach a module, or native code, by a name: `process`'s loaders and `require` itself. */
+const LOADER_NAMES = new Set(['getBuiltinModule', 'binding', '_linkedBinding', 'dlopen', 'require', 'createRequire']);
 
 /** The effects, in the order they are told: the disk, programs, and a loader (a module reached by a built name). */
 export const EFFECTS = ['fs', 'child_process', 'loader'];
@@ -180,15 +180,29 @@ export function moduleLinks_read(file) {
   const imports = [];
   const reexports = [];
   const bound = new Map();
-  const local = new Map();
   const literal = (node) => (node !== undefined && ts.isStringLiteralLike(node) ? node.text : null);
   let loader = false;
-  // A value exported under a name that is an imported binding, or a property of one (`fs.readFileSync`).
-  const bindingOf = (expression) => {
-    let at = expression;
-    while (at !== undefined && (ts.isPropertyAccessExpression(at) || ts.isParenthesizedExpression(at) || ts.isAsExpression(at))) at = at.expression;
-    return at !== undefined && ts.isIdentifier(at) ? at.text : null;
+  // The names an exported value is made of: every identifier in its expression, outside the functions in it (a
+  // function a listed file exports is that file's to gate; its reason covers its callers).
+  const refs = (expression) => {
+    const names = new Set();
+    const walk = (node) => {
+      if (ts.isFunctionLike(node) || ts.isClassLike(node)) return;
+      if (ts.isIdentifier(node)) names.add(node.text);
+      ts.forEachChild(node, walk);
+    };
+    if (expression !== undefined) walk(expression);
+    return names;
   };
+  // The names a binding pattern declares (`const { a, b: c } = x`).
+  const declared = (name) => {
+    if (ts.isIdentifier(name)) return [name.text];
+    return name.elements.flatMap((element) => (ts.isOmittedExpression(element) ? [] : declared(element.name)));
+  };
+  // Top-level values, by name, to the names they are made of.
+  const values = new Map();
+  // Exported names, to the local names they are made of.
+  const exportedRefs = new Map();
   const visit = (node) => {
     if (ts.isImportDeclaration(node)) {
       const spec = literal(node.moduleSpecifier);
@@ -221,17 +235,29 @@ export function moduleLinks_read(file) {
         else reexports.push({ spec, names: new Map(clause.elements.map((element) => [element.name.text, (element.propertyName ?? element.name).text])) });
         imports.push({ spec, names: '*' });
       } else if (node.exportClause !== undefined && ts.isNamedExports(node.exportClause)) {
-        for (const element of node.exportClause.elements) local.set(element.name.text, (element.propertyName ?? element.name).text);
+        for (const element of node.exportClause.elements) exportedRefs.set(element.name.text, new Set([(element.propertyName ?? element.name).text]));
       }
     } else if (ts.isExportAssignment(node)) {
-      const name = bindingOf(node.expression);
-      if (name !== null) local.set('default', name);
-    } else if (ts.isVariableStatement(node) && node.modifiers?.some((one) => one.kind === ts.SyntaxKind.ExportKeyword)) {
+      exportedRefs.set('default', refs(node.expression));
+    } else if (ts.isVariableStatement(node) && node.parent === source) {
+      const exported = node.modifiers?.some((one) => one.kind === ts.SyntaxKind.ExportKeyword) === true;
       for (const declaration of node.declarationList.declarations) {
-        const name = declaration.initializer === undefined ? null : bindingOf(declaration.initializer);
-        if (name !== null && ts.isIdentifier(declaration.name)) local.set(declaration.name.text, name);
+        const made = refs(declaration.initializer);
+        for (const name of declared(declaration.name)) {
+          values.set(name, made);
+          if (exported) exportedRefs.set(name, new Set([name]));
+        }
       }
-    } else if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'process' && PROCESS_LOADERS.has(node.name.text)) {
+    } else if ((ts.isPropertyAccessExpression(node) && LOADER_NAMES.has(node.name.text))
+      || (ts.isElementAccessExpression(node) && (LOADER_NAMES.has(literal(node.argumentExpression) ?? '') || (literal(node.argumentExpression) === null && ts.isIdentifier(node.expression) && ['process', 'globalThis', 'global', 'module'].includes(node.expression.text))))
+      || (ts.isBindingElement(node) && LOADER_NAMES.has((node.propertyName !== undefined && ts.isIdentifier(node.propertyName) ? node.propertyName : ts.isIdentifier(node.name) ? node.name : undefined)?.text ?? ''))) {
+      // A loader reached as a property (`globalThis.process.getBuiltinModule`, `module.require`), by a name
+      // (`process['getBuiltinModule']`, `process[name]`), or taken out by destructuring (`const { getBuiltinModule } = process`).
+      loader = true;
+    } else if (ts.isIdentifier(node) && node.text === 'require' && !(ts.isCallExpression(node.parent) && node.parent.expression === node && literal(node.parent.arguments[0]) !== null)
+      // `require.main === module` asks whether this file runs as a program; it loads nothing.
+      && !(ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node && node.parent.name.text === 'main')) {
+      // `require` held, passed or called on a built name.
       loader = true;
     } else if (ts.isCallExpression(node)) {
       const callee = node.expression;
@@ -245,8 +271,21 @@ export function moduleLinks_read(file) {
     ts.forEachChild(node, visit);
   };
   visit(source);
+  // An exported value carries the imported bindings it is made of, through any chain of top-level values.
+  const bindings_of = (names, seen = new Set()) => {
+    const keys = new Set();
+    for (const name of names) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const from = bound.get(name);
+      if (from !== undefined) keys.add(from);
+      const made = values.get(name);
+      if (made !== undefined) for (const key of bindings_of(made, seen)) keys.add(key);
+    }
+    return keys;
+  };
   const exportedBindings = new Map();
-  for (const [exported, name] of local) { const from = bound.get(name); if (from !== undefined) exportedBindings.set(exported, from); }
+  for (const [exported, names] of exportedRefs) { const keys = bindings_of(names); if (keys.size > 0) exportedBindings.set(exported, keys); }
   return { imports, reexports, local: exportedBindings, loader };
 }
 
@@ -292,10 +331,14 @@ export function effects_find(root, workspaces = ENGINE_WORKSPACES) {
       if (names === '*') for (const [name, given] of theirs) effects_add(out, name, given);
       else for (const [exported, original] of names) effects_add(out, exported, original === '*' ? all_of(theirs) : name_of(theirs, original));
     }
-    for (const [exported, from] of local) {
-      const [spec, original] = from.split('#');
-      const theirs = target_carries(spec);
-      effects_add(out, exported, original === '*' ? all_of(theirs) : name_of(theirs, original));
+    for (const [exported, keys] of local) {
+      for (const from of keys) {
+        const at = from.lastIndexOf('#');
+        const spec = from.slice(0, at);
+        const original = from.slice(at + 1);
+        const theirs = target_carries(spec);
+        effects_add(out, exported, original === '*' ? all_of(theirs) : name_of(theirs, original));
+      }
     }
     carried.set(file, out);
     return out;
@@ -341,14 +384,42 @@ export function code_read(file, text) {
   return [...text].map((ch, i) => (blank[i] && ch !== '\n' ? ' ' : ch)).join('');
 }
 
+/** The kinds of node a pin is never matched against: text, not code. */
+const TEXT_KINDS = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
+
 /**
- * The source files of every workspace whose code names an identifier.
+ * The texts of a source's code nodes, each whitespace-normalised: every statement, expression and the like, so a
+ * pin matches a node of the code itself (a call with its literal arguments, a condition, a whole statement), never
+ * a comment or a string that only shows it.
+ *
+ * @param {string} file - The file's name (for the parser).
+ * @param {string} text - Its text.
+ * @returns {Set<string>} The nodes' texts.
+ */
+export function codeNodes_read(file, text) {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const found = new Set();
+  const visit = (node) => {
+    if (!TEXT_KINDS.has(node.kind) && !ts.isJSDoc(node)) found.add(node.getText(source).replace(/\s+/g, ' ').trim());
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+/**
+ * The source files of every workspace whose code reaches a helper: by its name (an identifier, or a string that
+ * names it, as `hc['hostShell_run']` does), or through its module taken whole (a namespace import, a dynamic import,
+ * an `export *` of it), from which any of its exports may be reached by a built name.
  *
  * @param {string} root - The repository.
- * @param {string} name - The identifier.
+ * @param {string} name - The helper.
+ * @param {string} [definedIn] - The file that defines it, from the root.
  * @returns {Map<string, string>} Their texts, by path from the root.
  */
-export function identifierUses_find(root, name) {
+export function identifierUses_find(root, name, definedIn) {
+  const packages = workspaces_read(root);
+  const whole = (file, spec) => definedIn !== undefined && (() => { const target = specifier_resolve(spec, file, packages); return target !== null && relative(root, target) === definedIn; })();
   const found = new Map();
   for (const group of ['packages', 'apps']) {
     const base = join(root, group);
@@ -357,10 +428,15 @@ export function identifierUses_find(root, name) {
       if (!entry.isDirectory()) continue;
       for (const file of sources_list(join(base, entry.name, 'src'))) {
         const text = readFileSync(file, 'utf8');
-        if (!text.includes(name)) continue;
         const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
         let named = false;
-        const visit = (node) => { if (!named && ts.isIdentifier(node) && node.text === name) named = true; if (!named) ts.forEachChild(node, visit); };
+        const visit = (node) => {
+          if ((ts.isIdentifier(node) || ts.isStringLiteralLike(node)) && node.text === name) named = true;
+          else if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier) && node.importClause?.namedBindings !== undefined && ts.isNamespaceImport(node.importClause.namedBindings) && whole(file, node.moduleSpecifier.text)) named = true;
+          else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined && ts.isStringLiteralLike(node.moduleSpecifier) && (node.exportClause === undefined || ts.isNamespaceExport(node.exportClause)) && whole(file, node.moduleSpecifier.text)) named = true;
+          else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments[0] !== undefined && ts.isStringLiteralLike(node.arguments[0]) && whole(file, node.arguments[0].text)) named = true;
+          if (!named) ts.forEachChild(node, visit);
+        };
         visit(source);
         if (named) found.set(relative(root, file), text);
       }
@@ -387,7 +463,7 @@ export function gate_parse(text, where) {
     }
   }
   for (const pin of list.pins) if (typeof pin?.file !== 'string' || typeof pin?.text !== 'string' || typeof pin?.why !== 'string') throw new Error(`${where}: a pin needs a file, a text and a why`);
-  for (const helper of list.confined ?? []) if (typeof helper?.name !== 'string' || !Array.isArray(helper?.callers) || typeof helper?.why !== 'string') throw new Error(`${where}: a confined helper needs a name, its callers and a why`);
+  for (const helper of list.confined ?? []) if (typeof helper?.name !== 'string' || typeof helper?.file !== 'string' || !Array.isArray(helper?.callers) || typeof helper?.why !== 'string') throw new Error(`${where}: a confined helper needs a name, the file that defines it, its callers and a why`);
   return list;
 }
 
@@ -398,7 +474,7 @@ export function gate_parse(text, where) {
  * @param {ReturnType<typeof gate_parse>} list - The list.
  * @param {ReturnType<typeof gate_parse> | null} atBase - The list at the base; null when the base had none.
  * @param {(file: string) => string | null} file_read - Reads a file from the repository's root (null when it is not there).
- * @param {(name: string) => Map<string, string>} [uses_find] - The files whose code names an identifier, by path.
+ * @param {(name: string, definedIn?: string) => Map<string, string>} [uses_find] - The files whose code reaches a helper, by path.
  * @returns {string[]} The faults; none means it holds.
  */
 export function gate_judge(found, list, atBase, file_read, uses_find = () => new Map()) {
@@ -411,11 +487,11 @@ export function gate_judge(found, list, atBase, file_read, uses_find = () => new
   }
   for (const pin of list.pins) {
     const text = file_read(pin.file);
-    // In the code, not in a comment that shows it.
-    if (text === null || !code_read(pin.file, text).replace(/\s+/g, ' ').includes(pin.text.replace(/\s+/g, ' '))) faults.push(`${pin.file} no longer holds its gate \`${pin.text}\` (${pin.why})`);
+    // A statement or expression of the code, not a comment or a string that shows it.
+    if (text === null || !codeNodes_read(pin.file, text).has(pin.text.replace(/\s+/g, ' ').trim())) faults.push(`${pin.file} no longer holds its gate \`${pin.text}\` (${pin.why})`);
   }
   for (const helper of list.confined ?? []) {
-    for (const file of uses_find(helper.name).keys()) if (!helper.callers.includes(file)) faults.push(`${file} uses ${helper.name}, which only ${helper.callers.join(', ')} may (${helper.why}): call it through them, or list the caller with its gate`);
+    for (const file of uses_find(helper.name, helper.file).keys()) if (!helper.callers.includes(file)) faults.push(`${file} uses ${helper.name}, which only ${helper.callers.join(', ')} may (${helper.why}): call it through them, or list the caller with its gate`);
   }
   if (atBase !== null) {
     for (const [file, effects] of Object.entries(list.files)) {
@@ -452,7 +528,7 @@ function main() {
     process.exit(2);
   }
   const found = effects_find(root);
-  const faults = gate_judge(found, list, atBase, (file) => (existsSync(join(root, file)) ? readFileSync(join(root, file), 'utf8') : null), (name) => identifierUses_find(root, name));
+  const faults = gate_judge(found, list, atBase, (file) => (existsSync(join(root, file)) ? readFileSync(join(root, file), 'utf8') : null), (name, definedIn) => identifierUses_find(root, name, definedIn));
   if (faults.length > 0) {
     console.error(`host-gate: ${faults.length} fault(s):`);
     for (const fault of faults) console.error(`  ${fault}`);

@@ -471,6 +471,13 @@ describe('vm, over the fake cloud', () => {
     (surface.capabilities as { shellCommands: boolean }).shellCommands = true;
     expect((await vm_run(context, ['shell', 'store'])).renderedErr).toBe('vm shell: this session may not start programs on its host; start the session with --host-control=shell\n');
     expect(world.sessions).toEqual([]);
+    // A host that keeps nothing of it: refused before the tenancy is asked, a record made or a key restored.
+    let lookups: number = 0;
+    const cold: VmStore = new VmStore(join(root, 'vms-cold'));
+    const coldNets: NetStore = new NetStore(join(root, 'nets-cold'));
+    const counted = { ...context.driver, instances_find: async (...args: Parameters<CloudDriver['instances_find']>) => { lookups += 1; return context.driver.instances_find(...args); }, clusters_find: async (...args: Parameters<CloudDriver['clusters_find']>) => { lookups += 1; return context.driver.clusters_find(...args); } } as CloudDriver;
+    expect((await vm_run({ ...context, store: cold, nets: coldNets, driver: counted }, ['shell', 'store'])).renderedErr).toBe('vm shell: this session may not start programs on its host; start the session with --host-control=shell\n');
+    expect([lookups, cold.record_read('store'), existsSync(join(root, 'vms-cold'))]).toEqual([0, null, false]);
     (surface.capabilities as { engineProcesses?: boolean }).engineProcesses = true;
     const shell = await vm_run(context, ['shell', 'store']);
     expect(plain(shell.rendered)).toContain("-W %h:%p -o Port=22 ocid1.bastionsession.oc1..fake-1@host.bastion.us-ashburn-1.fake.example' ubuntu@10.40.0.10");

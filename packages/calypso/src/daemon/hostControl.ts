@@ -153,6 +153,33 @@ export function daemonCapabilities_compose(attached: AttachedCapabilities | null
   };
 }
 
+/**
+ * Where a pipeline segment runs: on this host under the `pipes` tier, else relayed to the surface that typed it.
+ *
+ * @param policy - The host-control policy.
+ * @param command - The segment.
+ * @param input - What flows into it.
+ * @param relay - Runs it on the acting surface.
+ * @param signal - Cancels it.
+ * @param host - Runs it on this host (`hostPipe_run`; a test's double).
+ * @returns Its output.
+ *
+ * @example
+ * ```ts
+ * await pipeSegment_run(policy, 'wc -l', input, (command, bytes) => daemon.pipe_current(command, bytes));
+ * ```
+ */
+export function pipeSegment_run(
+  policy: HostControlPolicy,
+  command: string,
+  input: Buffer,
+  relay: (command: string, input: Buffer) => Promise<Buffer>,
+  signal?: AbortSignal,
+  host: (command: string, input: Buffer, signal?: AbortSignal) => Promise<Buffer> = hostPipe_run,
+): Promise<Buffer> {
+  return engineHost_grants(policy).pipesHere ? host(command, input, signal) : relay(command, input);
+}
+
 /** The tiers the policy can grant, in the order they are told. */
 export const HOST_CONTROL_TIERS: readonly HostControlTier[] = ['shell', 'files', 'pipes', 'tasks'];
 export type HostControlTier = 'shell' | 'files' | 'pipes' | 'tasks';

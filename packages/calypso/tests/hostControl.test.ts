@@ -6,6 +6,7 @@ import { describe, it, expect } from '@jest/globals';
 import {
   HOST_CONTROL_OFF,
   daemonCapabilities_compose,
+  pipeSegment_run,
   engineHost_grants,
   hostControl_build,
   hostControl_parseArgv,
@@ -165,6 +166,23 @@ describe('daemonCapabilities_compose', () => {
     expect(daemonCapabilities_compose({ pipeSegments: false }, HOST_CONTROL_OFF).pipeSegments).toBe(false);
     expect(daemonCapabilities_compose({ pipeSegments: false }, policy('pipes')).pipeSegments).toBe(true);
     expect(daemonCapabilities_compose(null, HOST_CONTROL_OFF)).toMatchObject({ engineFilesystem: false, engineProcesses: false, pipeSegments: false, color: false });
+  });
+});
+
+describe('pipeSegment_run', () => {
+  it('relays a segment to the acting surface without the pipes tier, once and never on this host; runs it here with pipes', async () => {
+    const relayed: string[] = [];
+    const hosted: string[] = [];
+    const relay = async (command: string): Promise<Buffer> => { relayed.push(command); return Buffer.from('surface'); };
+    const host = async (command: string): Promise<Buffer> => { hosted.push(command); return Buffer.from('host'); };
+    for (const tiers of [[], ['shell'], ['files'], ['tasks']] as Array<Array<'shell' | 'files' | 'tasks'>>) {
+      relayed.length = 0; hosted.length = 0;
+      expect(String(await pipeSegment_run({ tiers: new Set(tiers), exposed: false }, 'wc -l', Buffer.from('a'), relay, undefined, host))).toBe('surface');
+      expect([relayed, hosted]).toEqual([['wc -l'], []]);
+    }
+    relayed.length = 0; hosted.length = 0;
+    expect(String(await pipeSegment_run({ tiers: new Set(['pipes'] as const), exposed: false }, 'wc -l', Buffer.from('a'), relay, undefined, host))).toBe('host');
+    expect([relayed, hosted]).toEqual([[], ['wc -l']]);
   });
 });
 

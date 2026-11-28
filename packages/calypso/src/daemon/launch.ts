@@ -30,7 +30,7 @@ import type { ClosingCause } from '@fnndsc/menu';
 import { attachFile_write, attachFile_remove } from './attachFile.js';
 import { CHELL_ON_PATH, chellLaunch_find, type SurfaceLaunch } from './consoleSession.js';
 import { Terminals, ptySpawn_load, type PtySpawn } from './terminals.js';
-import { HOST_CONTROL_OFF, daemonCapabilities_compose, hostControl_describe, hostControl_guard, hostControl_tiers, hostPipe_run, hostShell_run, hostShellTerminal_refusal, type HostControlPolicy } from './hostControl.js';
+import { HOST_CONTROL_OFF, daemonCapabilities_compose, pipeSegment_run, hostControl_describe, hostControl_guard, hostControl_tiers, hostShell_run, hostShellTerminal_refusal, type HostControlPolicy } from './hostControl.js';
 
 /** What a launched daemon hands back to its host (the console face's feed). */
 export interface DaemonLaunchInfo {
@@ -109,7 +109,7 @@ export function daemonSurface_create(daemon: CalypsoDaemon, policy: HostControlP
     // output on the session bus like any command's. Otherwise both relay to
     // the surface that typed them.
     pipeSegment: (command: string, input: Buffer, signal?: AbortSignal): Promise<Buffer> =>
-      policy.tiers.has('pipes') ? hostPipe_run(command, input, signal) : daemon.pipe_current(command, input),
+      pipeSegment_run(policy, command, input, (segment: string, bytes: Buffer): Promise<Buffer> => daemon.pipe_current(segment, bytes), signal),
     // A terminal's chell is on this host: under host control it runs `!` in
     // its own pty, so a full-screen program gets a terminal (#1096). A
     // surface that is a terminal elsewhere (a remote chell in ssh) gets a pty

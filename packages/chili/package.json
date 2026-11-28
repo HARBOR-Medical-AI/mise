@@ -24,8 +24,8 @@
     "chili": "dist/bin.js"
   },
   "scripts": {
-    "build": "rm -fr dist && tsc && chmod +x ./dist/index.js",
-    "start": "node dist/index.js",
+    "build": "rm -fr dist && tsc && chmod +x ./dist/bin.js",
+    "start": "node dist/bin.js",
     "test": "jest --coverage",
     "test:coverage": "jest --coverage --coverageProvider=v8",
     "clean": "rm -rf dist types fnndsc-chili*tgz",

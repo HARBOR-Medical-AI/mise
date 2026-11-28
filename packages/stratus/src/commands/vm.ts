@@ -1063,13 +1063,14 @@ export function sshLine_build(session: { sessionId: string; host: string }, keyP
  * @returns The envelope.
  */
 async function vmShell_run(context: VmCommandContext, named: string | undefined): Promise<CommandEnvelope> {
+  // A key is made (ssh-keygen) and a session opened from this host: programs here are the shell tier's, granted by the
+  // operator, never by what an attached surface can relay. Asked first: a record taken over from the tenancy, or its
+  // key restored from the vault, is work a refused line must not do.
+  const refused: string | null = hostProcess_refusal('vm shell');
+  if (refused !== null) return envelope_error('', undefined, `${refused}\n`);
   const need = await vm_needOrTake(context, named, 'shell');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   if (vmKeyless_is(context.store, need.record)) return envelope_error(need.said, undefined, `vm shell: ${need.name}: ${VM_KEYLESS}\n`);
-  // A key is made (ssh-keygen) and a session opened from this host: programs here are the shell tier's, granted by the
-  // operator, never by what an attached surface can relay.
-  const refused: string | null = hostProcess_refusal('vm shell');
-  if (refused !== null) return envelope_error('', undefined, `${refused}\n`);
   const { name, record, spec } = need;
   const privateIp: string | undefined = record.machineOutputs?.['private_ip'];
   if (record.built === undefined || privateIp === undefined) return envelope_error('', undefined, `vm shell: ${name}: not built (vm build ${name})\n`);
