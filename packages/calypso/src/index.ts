@@ -107,7 +107,6 @@ export {
   type SpawnedChild,
   type SurfaceLaunch,
 } from './daemon/consoleSession.js';
-export { discovery_read, discovery_write, discovery_path, type Discovery } from './daemon/discovery.js';
 export {
   identity_normalise,
   identity_deriveForSession,
@@ -122,10 +121,17 @@ export {
   berth_write,
   berth_read,
   berthAll_read,
-  berth_remove,
-  berthUrl_isAlive,
+  berthRecord_read,
+  berthFolder_read,
+  berthInstance_probe,
+  berthUrl_connect,
+  probeKey_generate,
+  instanceProof_compute,
   LocalBerthResolver,
   type Berth,
   type BerthResolver,
+  type BerthLiveness,
   type BerthLivenessProbe,
+  type ProbedBerth,
+  type InstanceFacts,
 } from './daemon/berth.js';

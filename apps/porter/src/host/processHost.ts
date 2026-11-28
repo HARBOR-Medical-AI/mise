@@ -18,9 +18,9 @@
  */
 import { spawn as childSpawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, writeSync, type Stats } from 'node:fs';
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, writeSync, type Dirent, type Stats } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import { berthKey_compute, berth_pathIn, berthUrl_isAlive, closing_write } from '@fnndsc/calypso/berth';
+import { berthFolder_read, berthInstance_probe, berthKey_compute, closing_write, trustedRoot_settle, type BerthLiveness, type LocatedBerth, type OwnFolder, type OwnRefusal } from '@fnndsc/calypso/berth';
 import { sessionEnv_build } from './sessionEnv.js';
 import { restartLine_render, type Berth, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
 import { bootLine_note } from './bootLines.js';
@@ -94,7 +94,7 @@ export interface SpawnedSession {
 export type SessionSpawn = (command: string, args: string[], options: { env: NodeJS.ProcessEnv; stdio: ['pipe', 'pipe', 'pipe'] }) => SpawnedSession;
 
 /** Whether a berth's daemon answers on the wire. */
-export type LivenessProbe = (url: string) => Promise<boolean>;
+export type LivenessProbe = (berth: Berth) => Promise<BerthLiveness>;
 
 /** What the process host is built from. */
 export interface ProcessHostOptions {
@@ -106,7 +106,7 @@ export interface ProcessHostOptions {
   stratusEntry?: string | null;
   /** The spawner; `child_process.spawn` by default. */
   spawn?: SessionSpawn;
-  /** The liveness probe; a TCP connect to the berth by default. */
+  /** The liveness probe; the berth's instance proof by default (`berthInstance_probe`). */
   alive?: LivenessProbe;
   /** How long a boot may take before it is called failed, in ms. */
   bootTimeoutMs?: number;
@@ -471,6 +471,129 @@ export function sessionDir_settle(dir: string, within: string, fs: SettleFs = SE
   }
 }
 
+/**
+ * A state root held: the path every later use names.
+ *
+ * @example
+ * ```ts
+ * const held: StateRootHeld = { ok: true, path: '/home/me/.local/state/porter' };
+ * ```
+ */
+export interface StateRootHeld {
+  /** Held. */
+  ok: true;
+  /** The root, every link on the way resolved. */
+  path: string;
+}
+
+/**
+ * A state root refused: what to say to the operator.
+ *
+ * @example
+ * ```ts
+ * if (!root.ok) console.error(root.said);
+ * ```
+ */
+export interface StateRootRefused {
+  /** Refused. */
+  ok: false;
+  /** The refusal, the folder in the way and the remedies. */
+  said: string;
+}
+
+/**
+ * A state root held, or why not in words for the operator.
+ *
+ * @example
+ * ```ts
+ * const root: StateRoot = stateRoot_settle(config.stateDir);
+ * ```
+ */
+export type StateRoot = StateRootHeld | StateRootRefused;
+
+/**
+ * Holds porter's state root (`trustedRoot_settle`): the path every later use names, or why porter may not keep
+ * sessions under it, with the first folder on the way another account could change and the remedies. With such a
+ * folder on the way, another account could put links in place of a session's folder and send one person's browser
+ * to another person's daemon. A root not made yet, below trusted folders, is a first start.
+ *
+ * @param stateDir - The state root as configured.
+ * @param uid - This account's uid (a test's seam).
+ * @returns The resolved root, or what to say.
+ *
+ * @example
+ * ```ts
+ * const root: StateRoot = stateRoot_settle(config.stateDir);
+ * if (!root.ok) { console.error(root.said); process.exit(1); }
+ * ```
+ */
+export function stateRoot_settle(stateDir: string, uid?: number | null): StateRoot {
+  const held: OwnFolder | OwnRefusal = uid === undefined ? trustedRoot_settle(stateDir) : trustedRoot_settle(stateDir, uid);
+  if (held.ok) return held;
+  const folder: string = held.reason.slice(0, held.reason.lastIndexOf(': '));
+  const remedy: string[] = folderMode_isFault(held.reason, folder, uid === undefined ? process.getuid?.() ?? null : uid)
+    ? [
+        `    Either take group and other write off that folder (chmod go-w ${folder}), if nothing there needs it,`,
+        '    or set PORTER_STATE_DIR to a folder on a trusted path. Sessions already kept under the old folder stay there; they are not moved.',
+      ]
+    : ['    Set PORTER_STATE_DIR to a folder of porter\'s own on a trusted path. Sessions already kept under the old folder stay there; they are not moved.'];
+  return {
+    ok: false,
+    said: [
+      `[!] porter's state folder ${stateDir} is not on a trusted path: ${held.reason}.`,
+      '    Another account could put links in place of a session\'s folder there and send one person\'s browser to another person\'s daemon, so porter keeps no sessions under it.',
+      ...remedy,
+    ].join('\n'),
+  };
+}
+
+/**
+ * Whether a refusal's fault is a folder's write bits that its owner may take off: the folder is open to other
+ * accounts, is this account's own, and is not sticky (a shared sticky folder such as `/tmp` is meant to be open;
+ * the remedy there is a folder of porter's own, never a mode change).
+ *
+ * @param reason - The refusal.
+ * @param folder - The folder it names.
+ * @param uid - This account's uid.
+ * @returns True when `chmod go-w` is the remedy.
+ */
+function folderMode_isFault(reason: string, folder: string, uid: number | null): boolean {
+  if (!reason.endsWith(': open to other accounts')) return false;
+  try {
+    const stats: Stats = lstatSync(folder);
+    return stats.isDirectory() && (uid === null || stats.uid === uid) && (stats.mode & 0o1000) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** A record and what its probe said. */
+interface JudgedBerth {
+  /** The record. */
+  berth: Berth;
+  /** What the probe said. */
+  liveness: BerthLiveness;
+}
+
+/**
+ * Probes every record of one session and chooses: the first live, else the first unverified, else the first dead.
+ *
+ * @param berths - The session's records.
+ * @param probe - The liveness probe.
+ * @returns The choice, or null when there are none.
+ */
+async function berths_judge(berths: Berth[], probe: LivenessProbe): Promise<JudgedBerth | null> {
+  let unverified: JudgedBerth | null = null;
+  let dead: JudgedBerth | null = null;
+  for (const berth of berths) {
+    const liveness: BerthLiveness = await probe(berth);
+    if (liveness === 'live') return { berth, liveness };
+    if (liveness === 'unverified') unverified ??= { berth, liveness };
+    else dead ??= { berth, liveness };
+  }
+  return unverified ?? dead;
+}
+
 /** Sessions as child processes on this host. */
 export class ProcessHost implements SessionHost {
   private readonly stateDir: string;
@@ -494,7 +617,7 @@ export class ProcessHost implements SessionHost {
     this.chellEntry = options.chellEntry;
     this.stratusEntry = options.stratusEntry ?? null;
     this.spawner = options.spawn ?? spawn_real;
-    this.alive = options.alive ?? ((url: string): Promise<boolean> => berthUrl_isAlive(url));
+    this.alive = options.alive ?? berthInstance_probe;
     this.bootTimeoutMs = options.bootTimeoutMs ?? 120_000;
     this.pollMs = options.pollMs ?? 250;
     this.kill = options.kill ?? ((pid: number, signal: NodeJS.Signals): void => { process.kill(pid, signal); });
@@ -520,43 +643,32 @@ export class ProcessHost implements SessionHost {
     };
   }
 
-  /** Reads a berth file, if well formed. */
-  private berthFile_read(path: string): Berth | null {
-    if (!existsSync(path)) return null;
-    try {
-      const parsed: Partial<Berth> = JSON.parse(readFileSync(path, 'utf-8')) as Partial<Berth>;
-      if (typeof parsed.url === 'string' && typeof parsed.token === 'string' && typeof parsed.identity === 'string') {
-        return {
-          identity: parsed.identity,
-          url: parsed.url,
-          token: parsed.token,
-          ...(typeof parsed.pid === 'number' ? { pid: parsed.pid } : {}),
-          // What the daemon runs and when it booted: the door compares these with its own tree.
-          ...(typeof parsed.versions === 'object' && parsed.versions !== null ? { versions: parsed.versions } : {}),
-          ...(typeof parsed.booted === 'string' ? { booted: parsed.booted } : {}),
-        };
-      }
-    } catch {
-      // A half-written berth reads as none; the next poll reads it whole.
-    }
-    return null;
+  /**
+   * An identity's records in its session folder: every well-formed record of the folder (held to this account
+   * through a trusted path, calypso's own reader) that is this session's by its folder's marker or its own
+   * identity (`sightingIdentity_read`). A chell daemon names itself by the identity porter knows it by; a stratus
+   * daemon by its cloud identity, which only the marker ties to the session.
+   *
+   * @param identity - The session.
+   * @returns Its records, in folder order.
+   */
+  private berths_read(identity: string): Berth[] {
+    const key: string = berthKey_compute(identity);
+    return berthFolder_read(join(this.dirs_build(identity).runtime, 'calypso'))
+      .map((located: LocatedBerth): Berth => located.berth)
+      .filter((berth: Berth): boolean => this.sightingIdentity_read(key, berth) === identity);
   }
 
   /**
-   * Reads an identity's berth from its own runtime directory, if written. A
-   * chell daemon writes it under the identity porter knows it by; a stratus
-   * daemon names itself by its cloud identity (`<user>@<tenancy>`), which
-   * porter learns only from the key, so the one berth in a session's own
-   * runtime directory is that session's.
+   * An identity's record as probed: its first live record, else its first unverified one (an earlier release's
+   * daemon that may still run), else its first dead one. Every record of the session is probed before one is
+   * chosen, so a record left by an earlier daemon never hides the one that answers.
+   *
+   * @param identity - The session.
+   * @returns The record and what its probe said, or null when the session has none.
    */
-  private berth_read(identity: string): Berth | null {
-    const runtime: string = this.dirs_build(identity).runtime;
-    const exact: Berth | null = this.berthFile_read(berth_pathIn(runtime, identity));
-    if (exact !== null) return exact;
-    const calypso: string = join(runtime, 'calypso');
-    if (!existsSync(calypso)) return null;
-    const berths: string[] = readdirSync(calypso).filter((name: string): boolean => name.startsWith('berth-') && name.endsWith('.json'));
-    return berths.length === 1 ? this.berthFile_read(join(calypso, berths[0] as string)) : null;
+  private async berthJudged_read(identity: string): Promise<JudgedBerth | null> {
+    return berths_judge(this.berths_read(identity), this.alive);
   }
 
   /**
@@ -582,44 +694,89 @@ export class ProcessHost implements SessionHost {
   /** @inheritdoc */
   public async sessions_adopt(): Promise<SessionSighting[]> {
     const sightings: SessionSighting[] = [];
-    if (!existsSync(this.stateDir)) return sightings;
-    for (const entry of readdirSync(this.stateDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const berthDir: string = join(this.stateDir, entry.name, 'run', 'calypso');
-      if (!existsSync(berthDir)) continue;
-      for (const name of readdirSync(berthDir)) {
-        if (!name.startsWith('berth-') || !name.endsWith('.json')) continue;
-        const berth: Berth | null = this.berthFile_read(join(berthDir, name));
-        if (berth === null) continue;
+    let folders: string[];
+    try {
+      folders = readdirSync(this.stateDir, { withFileTypes: true }).filter((entry: Dirent): boolean => entry.isDirectory()).map((entry: Dirent): string => entry.name);
+    } catch (error: unknown) {
+      // No state yet is a first start; a root that is there and cannot be listed is not an empty one.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return sightings;
+      throw new Error(`porter's state folder ${this.stateDir} could not be listed (${String((error as NodeJS.ErrnoException).code ?? error)})`);
+    }
+    for (const folder of folders) {
+      // One session at a time: a folder that is refused or cannot be read is said by the reader and passed over,
+      // never the end of the others.
+      const byIdentity: Map<string, Berth[]> = new Map();
+      for (const located of berthFolder_read(join(this.stateDir, folder, 'run', 'calypso'))) {
         // Whose it is, before anything is asked of it: a sighting not believed is not probed either.
-        const identity: string | null = this.sightingIdentity_read(entry.name, berth);
-        if (identity === null) continue;
-        const alive: boolean = await this.alive(berth.url);
-        sightings.push({ identity, berth, alive });
-        if (alive && !this.sessions.has(identity)) {
-          this.sessions.set(identity, {
-            identity,
-            child: null,
-            adoptedPid: berth.pid ?? null,
-            adoptedStart: berth.pid !== undefined ? this.startReader(berth.pid) : undefined,
-            lines: [],
-            serial: 0,
-            open: new Map(),
-            state: 'ready',
-            listeners: new Set(),
-            starting: null,
-          });
-        }
+        const identity: string | null = this.sightingIdentity_read(folder, located.berth);
+        if (identity !== null) byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), located.berth]);
+      }
+      for (const [identity, berths] of byIdentity) {
+        const judged: JudgedBerth | null = await berths_judge(berths, this.alive);
+        if (judged !== null) sightings.push(this.sighting_take(identity, judged));
       }
     }
     return sightings;
   }
 
+
+  /**
+   * Adopts a sighted session when its record proved itself live. An earlier release's daemon cannot prove it is the
+   * one its record names: it is said, never adopted, and never started beside.
+   *
+   * @param identity - The session.
+   * @param judged - Its record and what the probe said.
+   * @returns The sighting.
+   */
+  private sighting_take(identity: string, judged: JudgedBerth): SessionSighting {
+    const { berth, liveness } = judged;
+    const alive: boolean = liveness === 'live';
+    if (liveness === 'unverified') this.unverified_say(identity, berth);
+    if (alive && !this.sessions.has(identity)) {
+      this.sessions.set(identity, {
+        identity,
+        child: null,
+        adoptedPid: berth.pid ?? null,
+        adoptedStart: berth.pid !== undefined ? this.startReader(berth.pid) : undefined,
+        lines: [],
+        serial: 0,
+        open: new Map(),
+        state: 'ready',
+        listeners: new Set(),
+        starting: null,
+      });
+    }
+    return { identity, berth, alive, ...(liveness === 'unverified' ? { unverified: true } : {}) };
+  }
+
+  /**
+   * Whether an identity's record is an earlier release's daemon that may still run, said when it is.
+   *
+   * @param identity - The session.
+   * @returns What was said, or null when nothing stands in the way.
+   */
+  private async unverified_read(identity: string): Promise<string | null> {
+    const judged: JudgedBerth | null = await this.berthJudged_read(identity);
+    return judged?.liveness === 'unverified' ? this.unverified_say(identity, judged.berth) : null;
+  }
+
+  /**
+   * Says, in porter's log, that a session's record is an earlier release's daemon that may still run.
+   *
+   * @param identity - The session.
+   * @param berth - Its record.
+   * @returns What was said.
+   */
+  private unverified_say(identity: string, berth: Berth): string {
+    const said: string = `a daemon of an earlier release may still be running for ${identity} at ${berth.url}: it is neither adopted nor started beside. Stop the old daemon from its original terminal (Ctrl-C at the idle daemon prompt) or through its service manager, then retry.`;
+    console.error(`[porter] ${said}`);
+    return said;
+  }
+
   /** @inheritdoc */
   public async find(identity: string): Promise<Berth | null> {
-    const berth: Berth | null = this.berth_read(identity);
-    if (berth === null) return null;
-    return (await this.alive(berth.url)) ? berth : null;
+    const judged: JudgedBerth | null = await this.berthJudged_read(identity);
+    return judged?.liveness === 'live' ? judged.berth : null;
   }
 
   /** @inheritdoc */
@@ -723,6 +880,21 @@ export class ProcessHost implements SessionHost {
 
 
   /**
+   * Settles a session's folders for a boot, or ends the boot as failed with why.
+   *
+   * @param record - The session.
+   * @param launch - What it runs.
+   * @returns The folders and the session's own environment.
+   */
+  private folders_take(record: SessionRecord, launch: SessionLaunch): SettledFolders {
+    try {
+      return this.folders_settle(record.identity, launch.kind === 'stratus');
+    } catch (error: unknown) {
+      return this.boot_end(record, 'failed', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
    * Starts the child and waits for its berth to answer.
    *
    * @param token - The CUBE token the door minted, handed on stdin; null
@@ -730,13 +902,10 @@ export class ProcessHost implements SessionHost {
    *   rather than come up offline.
    */
   private async boot_run(record: SessionRecord, launch: SessionLaunch): Promise<Berth> {
-    let settled: SettledFolders;
-    try {
-      settled = this.folders_settle(record.identity, launch.kind === 'stratus');
-    } catch (error: unknown) {
-      return this.boot_end(record, 'failed', error instanceof Error ? error.message : String(error));
-    }
-    const { dirs, own } = settled;
+    // Never beside a daemon of an earlier release that may still be running: it cannot prove it is gone.
+    const unverified: string | null = await this.unverified_read(record.identity);
+    if (unverified !== null) return this.boot_end(record, 'failed', unverified);
+    const { dirs, own }: SettledFolders = this.folders_take(record, launch);
     if (launch.kind === 'stratus') {
       // The door the session can be raised at: a READ session asks the person's password once and is MANAGE after (D14).
       if (launch.door !== undefined) {
@@ -783,10 +952,10 @@ export class ProcessHost implements SessionHost {
       if (exited !== null) {
         return this.boot_end(record, 'failed', `the session exited during boot (code ${exited})`);
       }
-      const berth: Berth | null = this.berth_read(record.identity);
-      if (berth !== null && (await this.alive(berth.url))) {
+      const judged: JudgedBerth | null = await this.berthJudged_read(record.identity);
+      if (judged?.liveness === 'live') {
         this.boot_end(record, 'ready');
-        return berth;
+        return judged.berth;
       }
       await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, this.pollMs); });
     }
@@ -954,8 +1123,7 @@ export class ProcessHost implements SessionHost {
     if (now !== 'unknown') return now === 'gone' ? 'gone' : 'there';
     // Nothing says whether the process is there. Its berth still answering says it is; its berth silent
     // says only that: a process can stop answering and live on.
-    const berth: Berth | null = this.berth_read(identity);
-    return berth !== null && (await this.alive(berth.url)) ? 'there' : 'silent';
+    return (await this.berthJudged_read(identity))?.liveness === 'live' ? 'there' : 'silent';
   }
 
   /**
@@ -987,8 +1155,8 @@ export class ProcessHost implements SessionHost {
       record.child.kill('SIGTERM');
       return record.child;
     }
-    const berth: Berth | null = this.berth_read(identity);
-    return this.pid_signal(identity, record, berth, berth !== null && (await this.alive(berth.url)), cause);
+    const judged: JudgedBerth | null = await this.berthJudged_read(identity);
+    return this.pid_signal(identity, record, judged?.berth ?? null, judged?.liveness === 'live', cause);
   }
 
   /**

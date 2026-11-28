@@ -2,7 +2,7 @@
  * @file A name from elsewhere is placed inside its folder or refused: by
  * what the name says, and by where the links already on the disk lead.
  */
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { wireName_place, type HostPlace } from '../src/hostPlace';
@@ -147,6 +147,150 @@ describe('privateTemp_write', () => {
     expect([...readFileSync(bytes.path)]).toEqual([1, 2, 3]);
     bytes.folder_remove();
     expect([suffix_safe('.mise', '.txt'), suffix_safe('/../x', '.txt'), suffix_safe('.a/b', '.txt'), suffix_safe(undefined, '.txt')]).toEqual(['.mise', '.txt', '.txt', '.txt']);
+  });
+});
+
+describe('owner-only places', () => {
+  const uid: number = process.getuid?.() ?? 0;
+  const base = (): string => mkdtempSync(path.join(tmpdir(), 'fond-own-'));
+
+  it('holds a folder of this account\'s, 0700, through a trusted path; refuses another\'s, a wider one, a link, and a missing one to a reader', async () => {
+    const { ownFolder_settle } = await import('../src/hostPlace.js');
+    const root: string = base();
+    const folder: string = path.join(root, 'calypso');
+    expect(ownFolder_settle(folder, false)).toMatchObject({ ok: false, reason: expect.stringContaining('not there'), missing: true });
+    expect(ownFolder_settle(folder, true)).toEqual({ ok: true, path: path.join(realpathSync(root), 'calypso') });
+    expect(ownFolder_settle(folder, false, uid + 1)).toMatchObject({ ok: false });
+    chmodSync(folder, 0o755);
+    expect(ownFolder_settle(folder, false)).toMatchObject({ ok: false, reason: expect.stringContaining('wider than 0700') });
+    chmodSync(folder, 0o700);
+    const link: string = path.join(root, 'linked');
+    symlinkSync(folder, link);
+    expect(ownFolder_settle(link, false)).toMatchObject({ ok: false, reason: expect.stringContaining('a link') });
+    // A parent open to others (not root's and sticky) is no trusted path.
+    const open: string = path.join(root, 'open');
+    mkdirSync(open, { mode: 0o777 });
+    chmodSync(open, 0o777);
+    expect(ownFolder_settle(path.join(open, 'calypso'), true)).toMatchObject({ ok: false, reason: expect.stringContaining('open to other accounts') });
+    // A link inside an open folder, to a trusted folder of this account's: the open folder is on the way, so refused.
+    const trusted: string = path.join(root, 'trusted');
+    mkdirSync(trusted, { mode: 0o700 });
+    symlinkSync(trusted, path.join(open, 'link'));
+    expect(ownFolder_settle(path.join(open, 'link', 'calypso'), true)).toMatchObject({ ok: false, reason: expect.stringContaining('open to other accounts') });
+    // A link inside a trusted folder is followed, and the place it reaches named.
+    symlinkSync(trusted, path.join(root, 'alias'));
+    expect(ownFolder_settle(path.join(root, 'alias', 'calypso'), true)).toEqual({ ok: true, path: path.join(realpathSync(trusted), 'calypso') });
+  });
+
+  it('holds a host\'s state root: resolved, refused under an open folder, refused when itself open (sticky or not), a missing tail a first start', async () => {
+    const { trustedRoot_settle } = await import('../src/hostPlace.js');
+    const root: string = base();
+    const real: string = realpathSync(root);
+    expect(trustedRoot_settle(path.join(root, 'not', 'yet'))).toEqual({ ok: true, path: path.join(real, 'not', 'yet') });
+    const shared: string = path.join(root, 'shared');
+    mkdirSync(shared, { mode: 0o775 });
+    chmodSync(shared, 0o775);
+    mkdirSync(path.join(shared, 'porter'), { mode: 0o700 });
+    expect(trustedRoot_settle(path.join(shared, 'porter'))).toEqual({ ok: false, reason: `${path.join(real, 'shared')}: open to other accounts` });
+    expect(trustedRoot_settle(path.join(shared, 'porter', 'missing'))).toMatchObject({ ok: false, reason: expect.stringContaining('open to other accounts') });
+    // The root itself open: refused, even root's and sticky (the shared temporary folder).
+    expect(trustedRoot_settle(shared)).toMatchObject({ ok: false, reason: expect.stringContaining('open to other accounts') });
+    expect(trustedRoot_settle('/tmp')).toMatchObject({ ok: false, reason: '/tmp: open to other accounts' });
+    // `..` as spelled is refused, never folded away.
+    expect(trustedRoot_settle(`${root}/a/../b`)).toMatchObject({ ok: false, reason: expect.stringContaining("names '..'") });
+    // A link through a trusted folder is resolved: the root used is the root checked.
+    mkdirSync(path.join(root, 'real-root'), { mode: 0o700 });
+    symlinkSync(path.join(root, 'real-root'), path.join(root, 'alias-root'));
+    expect(trustedRoot_settle(path.join(root, 'alias-root'))).toEqual({ ok: true, path: path.join(real, 'real-root') });
+  });
+
+  it('follows a link in a shared sticky folder only when it is root\'s or this account\'s', async () => {
+    const { trustedPath_resolve } = await import('../src/hostPlace.js');
+    const { lstatSync: stat_l, unlinkSync: link_remove } = await import('node:fs');
+    const uid: number = process.getuid?.() ?? 0;
+    // A link this account puts straight in /tmp (root's, sticky), to /usr (root's): every folder on the way is
+    // trusted for any account, so only the link's owner decides. As this account it is followed; seen as another
+    // account, the link is that one's to replace and is refused for exactly that.
+    const tmp = stat_l('/tmp');
+    if (!(tmp.uid === 0 && (tmp.mode & 0o1000) !== 0)) return;
+    const link: string = `/tmp/fond-link-${String(process.pid)}-${String(Date.now())}`;
+    symlinkSync('/usr', link);
+    try {
+      expect(trustedPath_resolve(link, uid)).toEqual({ ok: true, path: realpathSync('/usr') });
+      // As root the link is root's, which every account trusts: there is no foreign owner to show.
+      if (uid !== 0) expect(trustedPath_resolve(link, uid + 1)).toEqual({ ok: false, reason: `${link}: a link of another account's` });
+    } finally {
+      link_remove(link);
+    }
+  });
+
+  it('a link to a folder that is not there is resolved to where it points, never taken for its own name', async () => {
+    const { trustedRoot_settle } = await import('../src/hostPlace.js');
+    const root: string = base();
+    const real: string = realpathSync(root);
+    // A dangling root, and a dangling link on the way to one: the root is the folder the links name.
+    symlinkSync(path.join(root, 'elsewhere'), path.join(root, 'alias'));
+    expect(trustedRoot_settle(path.join(root, 'alias'))).toEqual({ ok: true, path: path.join(real, 'elsewhere') });
+    symlinkSync(path.join(root, 'gone'), path.join(root, 'mid'));
+    expect(trustedRoot_settle(path.join(root, 'mid', 'porter'))).toEqual({ ok: true, path: path.join(real, 'gone', 'porter') });
+    // A dangling link into a folder open to other accounts: refused, as that folder would be.
+    const open: string = path.join(root, 'open');
+    mkdirSync(open, { mode: 0o777 });
+    chmodSync(open, 0o777);
+    symlinkSync(path.join(open, 'nothing'), path.join(root, 'into-open'));
+    expect(trustedRoot_settle(path.join(root, 'into-open'))).toMatchObject({ ok: false, reason: expect.stringContaining('open to other accounts') });
+    // A link whose text climbs past a missing name: refused.
+    symlinkSync('missing/../../x', path.join(root, 'climb'));
+    expect(trustedRoot_settle(path.join(root, 'climb'))).toMatchObject({ ok: false, reason: expect.stringContaining("names '..'") });
+  });
+
+  it('reads only a regular 0600 file of this account\'s, bounded; writes by rename; refuses a standing link or wider file and leaves it as it is', async () => {
+    const { ownFolder_settle, ownFile_read, ownFile_write, ownFile_take, bytes_writeAll } = await import('../src/hostPlace.js');
+    const { readFileSync, lstatSync, readdirSync } = await import('node:fs');
+    const folder: string = path.join(base(), 'calypso');
+    ownFolder_settle(folder, true);
+    expect(ownFile_write(folder, 'berth-1.json', '{"a":1}')).toEqual({ ok: true });
+    expect(lstatSync(path.join(folder, 'berth-1.json')).mode & 0o777).toBe(0o600);
+    expect(ownFile_read(path.join(folder, 'berth-1.json'), 64)).toEqual({ ok: true, text: '{"a":1}' });
+    expect(ownFile_read(path.join(folder, 'berth-1.json'), 3)).toMatchObject({ ok: false, reason: expect.stringContaining('larger than 3 bytes') });
+    expect(ownFile_read(path.join(folder, 'berth-1.json'), 64, uid + 1)).toMatchObject({ ok: false, reason: expect.stringContaining("another account's") });
+    // A valid standing record is replaced; no temporary is left beside it.
+    expect(ownFile_write(folder, 'berth-1.json', '{"a":2}')).toEqual({ ok: true });
+    expect(readFileSync(path.join(folder, 'berth-1.json'), 'utf8')).toBe('{"a":2}');
+    expect(readdirSync(folder)).toEqual(['berth-1.json']);
+    // A link planted at a record's name: refused, the link and its target untouched; a reader refuses it too.
+    const target: string = path.join(base(), 'target.txt');
+    writeFileSync(target, 'theirs');
+    symlinkSync(target, path.join(folder, 'berth-2.json'));
+    expect(ownFile_write(folder, 'berth-2.json', '{"stolen":true}')).toMatchObject({ ok: false, reason: expect.stringContaining('a link, left as it is') });
+    expect(readFileSync(target, 'utf8')).toBe('theirs');
+    expect(lstatSync(path.join(folder, 'berth-2.json')).isSymbolicLink()).toBe(true);
+    expect(ownFile_read(path.join(folder, 'berth-2.json'), 64)).toMatchObject({ ok: false, reason: expect.stringContaining('a link') });
+    // A wider standing record: refused, left; a reader refuses it.
+    writeFileSync(path.join(folder, 'berth-3.json'), '{}', { mode: 0o644 });
+    chmodSync(path.join(folder, 'berth-3.json'), 0o644);
+    expect(ownFile_write(folder, 'berth-3.json', '{}')).toMatchObject({ ok: false, reason: expect.stringContaining('wider than 0600') });
+    expect(ownFile_read(path.join(folder, 'berth-3.json'), 64)).toMatchObject({ ok: false, reason: expect.stringContaining('wider than 0600') });
+    // A note taken is had once.
+    ownFile_write(folder, 'closing-1.json', '{"cause":"stop"}');
+    expect(ownFile_take(folder, 'closing-1.json', 64)).toEqual({ ok: true, text: '{"cause":"stop"}' });
+    expect(ownFile_take(folder, 'closing-1.json', 64)).toMatchObject({ ok: false, reason: expect.stringContaining('not there'), missing: true });
+    // A note that is a link, or wider: refused where it stands, and left as it is.
+    symlinkSync(target, path.join(folder, 'closing-2.json'));
+    expect(ownFile_take(folder, 'closing-2.json', 64)).toMatchObject({ ok: false, reason: expect.stringContaining('a link') });
+    expect(lstatSync(path.join(folder, 'closing-2.json')).isSymbolicLink()).toBe(true);
+    writeFileSync(path.join(folder, 'closing-3.json'), '{}', { mode: 0o644 });
+    chmodSync(path.join(folder, 'closing-3.json'), 0o644);
+    expect(ownFile_take(folder, 'closing-3.json', 64)).toMatchObject({ ok: false, reason: expect.stringContaining('wider than 0600') });
+    expect(readFileSync(path.join(folder, 'closing-3.json'), 'utf8')).toBe('{}');
+    // A write that takes several calls writes every byte; one that makes no progress fails and keeps the record.
+    const short = (handle: number, bytes: Uint8Array, offset: number, length: number): number => writeSync(handle, bytes, offset, Math.min(3, length));
+    expect(ownFile_write(folder, 'berth-1.json', '{"a":"complete"}', undefined, short)).toEqual({ ok: true });
+    expect(readFileSync(path.join(folder, 'berth-1.json'), 'utf8')).toBe('{"a":"complete"}');
+    expect(ownFile_write(folder, 'berth-1.json', '{"a":"lost"}', undefined, () => 0)).toMatchObject({ ok: false, reason: expect.stringContaining('no progress') });
+    expect(readFileSync(path.join(folder, 'berth-1.json'), 'utf8')).toBe('{"a":"complete"}');
+    expect(readdirSync(folder).filter((name: string): boolean => name.endsWith('.tmp'))).toEqual([]);
+    expect(() => bytes_writeAll(0, new Uint8Array(4), () => -1)).toThrow('no progress');
   });
 });
 

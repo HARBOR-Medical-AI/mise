@@ -5,11 +5,12 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { berth_pathIn } from '@fnndsc/calypso/berth';
-import { ProcessHost, BOOT_LINES_KEPT, bootRow_parse, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
+import { berth_pathIn, berthKey_compute } from '@fnndsc/calypso/berth';
+import type { BerthLiveness } from '@fnndsc/calypso/berth';
+import { ProcessHost, BOOT_LINES_KEPT, identityFile_write, bootRow_parse, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
 import { restartLine_render, type BootLine } from '../../src/host/sessionHost.js';
 
 const IDENTITY: string = 'chris@https://cube.example.org/api/v1/';
@@ -42,14 +43,14 @@ const spawn: SessionSpawn = (command, args, options): SpawnedSession => {
 };
 
 function host_make(): ProcessHost {
-  return new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => alive, bootTimeoutMs: 2_000, pollMs: 20 });
+  return new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<BerthLiveness> => (alive ? 'live' : 'dead'), bootTimeoutMs: 2_000, pollMs: 20 });
 }
 
 function berth_plant(host: ProcessHost, pid?: number): void {
   const runtime: string = host.dirs_build(IDENTITY).runtime;
   const path: string = berth_pathIn(runtime, IDENTITY);
-  mkdirSync(join(runtime, 'calypso'), { recursive: true });
-  writeFileSync(path, JSON.stringify({ identity: IDENTITY, url: 'ws://127.0.0.1:4444', token: 'ATTACH', ...(pid !== undefined ? { pid } : {}) }));
+  mkdirSync(join(runtime, 'calypso'), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify({ identity: IDENTITY, url: 'ws://127.0.0.1:4444', token: 'ATTACH', ...(pid !== undefined ? { pid } : {}) }), { mode: 0o600 });
 }
 
 beforeEach(() => {
@@ -152,7 +153,7 @@ describe('ProcessHost', () => {
   });
 
   it('gives up on a boot that never answers, and kills the child', async () => {
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => true, bootTimeoutMs: 100, pollMs: 20 });
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<BerthLiveness> => 'live', bootTimeoutMs: 100, pollMs: 20 });
     await expect(host.spawn(IDENTITY, 'chris', 'https://cube.example.org/api/v1/', 'MINTED')).rejects.toThrow('did not answer');
     expect(child.killed).toBe('SIGTERM');
   });
@@ -193,7 +194,7 @@ describe('a porter restarted', () => {
   it('adopts the sessions its state directory holds, and ends an adopted one by its berth\'s pid', async () => {
     const killed: Array<{ pid: number; signal: string }> = [];
     let gone: boolean = false;
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => alive, kill: (pid: number, signal: NodeJS.Signals): void => { killed.push({ pid, signal }); gone = true; }, processStart_read: (): string | null => (gone ? null : '1000') });
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<BerthLiveness> => (alive ? 'live' : 'dead'), kill: (pid: number, signal: NodeJS.Signals): void => { killed.push({ pid, signal }); gone = true; }, processStart_read: (): string | null => (gone ? null : '1000') });
     berth_plant(host, 31337);
     const sightings = await host.sessions_adopt();
     expect(sightings).toEqual([{ identity: IDENTITY, berth: { identity: IDENTITY, url: 'ws://127.0.0.1:4444', token: 'ATTACH', pid: 31337 }, alive: true }]);
@@ -205,7 +206,7 @@ describe('a porter restarted', () => {
   /** A host over an adopted pid whose process the test stands in: signals noted, start time as the test says. */
   function adopted_make(world: { started: string | null | undefined; onSignal: (signal: NodeJS.Signals) => void }, killed: string[]): ProcessHost {
     return new ProcessHost({
-      stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => alive, pollMs: 5, stopWaitMs: 40, killWaitMs: 40,
+      stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<BerthLiveness> => (alive ? 'live' : 'dead'), pollMs: 5, stopWaitMs: 40, killWaitMs: 40,
       kill: (_pid: number, signal: NodeJS.Signals): void => { killed.push(signal); world.onSignal(signal); },
       processStart_read: (): string | null | undefined => world.started,
     });
@@ -416,7 +417,7 @@ describe('a porter restarted', () => {
       kill(signal?: NodeJS.Signals): boolean { this.signals.push(signal ?? 'SIGTERM'); if (signal === 'SIGKILL') this.exit(137); return true; }
     }
     const stubborn: Stubborn = new Stubborn();
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn: (): SpawnedSession => stubborn, alive: async (): Promise<boolean> => alive, bootTimeoutMs: 2_000, pollMs: 5, stopWaitMs: 40, killWaitMs: 40 });
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn: (): SpawnedSession => stubborn, alive: async (): Promise<BerthLiveness> => (alive ? 'live' : 'dead'), bootTimeoutMs: 2_000, pollMs: 5, stopWaitMs: 40, killWaitMs: 40 });
     const starting: Promise<unknown> = host.spawn(IDENTITY, 'chris', 'https://cube.example.org/api/v1/', 'MINTED');
     berth_plant(host);
     await starting;
@@ -427,11 +428,113 @@ describe('a porter restarted', () => {
   it('lists a berth whose daemon is gone as such, and never signals its pid', async () => {
     const killed: number[] = [];
     alive = false;
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => alive, kill: (pid: number): void => { killed.push(pid); } });
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<BerthLiveness> => (alive ? 'live' : 'dead'), kill: (pid: number): void => { killed.push(pid); } });
     berth_plant(host, 31337);
     expect((await host.sessions_adopt())[0]?.alive).toBe(false);
     expect(await host.evict(IDENTITY)).toBe(false);
     expect(killed).toEqual([]);
+  });
+
+  it('an earlier release\'s daemon that may still run is listed unverified, never adopted, never signalled, and no session is started beside it', async () => {
+    const killed: number[] = [];
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<BerthLiveness> => 'unverified', kill: (pid: number): void => { killed.push(pid); }, bootTimeoutMs: 200, pollMs: 20 });
+    berth_plant(host, 31337);
+    const sightings = await host.sessions_adopt();
+    expect(sightings).toEqual([expect.objectContaining({ identity: IDENTITY, alive: false, unverified: true })]);
+    expect(await host.find(IDENTITY)).toBeNull();
+    await expect(host.spawn(IDENTITY, 'chris', 'https://cube.example.org/api/v1/', 'MINTED')).rejects.toThrow('a daemon of an earlier release may still be running');
+    expect(spawnCalls).toEqual([]);
+    expect(await host.evict(IDENTITY)).toBe(false);
+    expect(killed).toEqual([]);
+  });
+
+  it('a session folder holding a dead record and a live one: every record is probed, and the live one is found and adopted', async () => {
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (berth): Promise<BerthLiveness> => (berth.url.endsWith(':5555') ? 'live' : 'dead'), bootTimeoutMs: 200, pollMs: 20 });
+    berth_plant(host);
+    const runtime: string = host.dirs_build(IDENTITY).runtime;
+    // A second record of the same session, as a later daemon of a stratus session (its cloud identity, tied by the marker) would leave.
+    identityFile_write(join(stateDir, berthKey_compute(IDENTITY), 'identity'), IDENTITY);
+    writeFileSync(join(runtime, 'calypso', 'berth-0000000000000000.json'), JSON.stringify({ identity: 'me@cloud', url: 'ws://127.0.0.1:5555', token: 'LIVE' }), { mode: 0o600 });
+    expect((await host.find(IDENTITY))?.url).toBe('ws://127.0.0.1:5555');
+    const sightings = await host.sessions_adopt();
+    expect(sightings).toEqual([expect.objectContaining({ identity: IDENTITY, alive: true, berth: expect.objectContaining({ url: 'ws://127.0.0.1:5555' }) })]);
+  });
+
+  it('a record of another session in a session\'s folder is not that session\'s: without the marker it is passed over', async () => {
+    const host: ProcessHost = host_make();
+    const runtime: string = host.dirs_build(IDENTITY).runtime;
+    mkdirSync(join(runtime, 'calypso'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(runtime, 'calypso', 'berth-0000000000000000.json'), JSON.stringify({ identity: 'bob@https://cube.example.org/api/v1/', url: 'ws://127.0.0.1:5555', token: 'BOB' }), { mode: 0o600 });
+    expect(await host.find(IDENTITY)).toBeNull();
+    expect(await host.sessions_adopt()).toEqual([]);
+  });
+
+  it('one session folder that cannot be read is passed over; the others are adopted', async () => {
+    const host: ProcessHost = host_make();
+    berth_plant(host);
+    const broken: string = join(stateDir, 'ffffffffffffffff', 'run');
+    mkdirSync(broken, { recursive: true, mode: 0o700 });
+    writeFileSync(join(broken, 'calypso'), 'not a folder', { mode: 0o600 });
+    expect((await host.sessions_adopt()).map((one) => one.identity)).toEqual([IDENTITY]);
+  });
+
+  it('a state root under a folder open to other accounts is refused, naming the folder and both remedies; one not made yet below trusted folders is a first start; a link is resolved to the root the host is given', async () => {
+    const { stateRoot_settle } = await import('../../src/host/processHost.js');
+    const real: string = realpathSync(stateDir);
+    expect(stateRoot_settle(join(stateDir, 'not', 'yet'))).toEqual({ ok: true, path: join(real, 'not', 'yet') });
+    const shared: string = join(stateDir, 'shared');
+    mkdirSync(shared, { mode: 0o775 });
+    chmodSync(shared, 0o775);
+    const held = stateRoot_settle(join(shared, 'porter'));
+    expect(held.ok).toBe(false);
+    const said: string = held.ok ? '' : held.said;
+    expect(said).toContain(`${join(real, 'shared')}: open to other accounts`);
+    expect(said).toContain(`chmod go-w ${join(real, 'shared')}`);
+    expect(said).toContain('PORTER_STATE_DIR');
+    expect(said).toContain('they are not moved');
+    // A shared sticky root: a folder of porter's own is the remedy, never a mode change on /tmp.
+    const sticky = stateRoot_settle('/tmp');
+    expect(sticky.ok).toBe(false);
+    const stickySaid: string = sticky.ok ? '' : sticky.said;
+    expect(stickySaid).not.toContain('chmod');
+    expect(stickySaid).toContain("Set PORTER_STATE_DIR to a folder of porter's own on a trusted path");
+    // A state home spelled with `..` keeps it, and the check refuses it.
+    const { porterStateDir_resolve } = await import('../../src/config.js');
+    const spelled: string = porterStateDir_resolve({ XDG_STATE_HOME: `${stateDir}/x/..` });
+    expect(spelled).toBe(`${stateDir}/x/../porter`);
+    const climbed = stateRoot_settle(spelled);
+    expect(climbed.ok ? '' : climbed.said).toContain("names '..'");
+    expect(climbed.ok ? '' : climbed.said).not.toContain('chmod');
+    mkdirSync(join(stateDir, 'kept'), { mode: 0o700 });
+    symlinkSync(join(stateDir, 'kept'), join(stateDir, 'alias'));
+    expect(stateRoot_settle(join(stateDir, 'alias'))).toEqual({ ok: true, path: join(real, 'kept') });
+  });
+
+  it('a state root not there yet adopts nothing; one that is there and cannot be listed is said, not taken for empty', async () => {
+    expect(await new ProcessHost({ stateDir: join(stateDir, 'none'), chellEntry: '/opt/chell/dist/index.js' }).sessions_adopt()).toEqual([]);
+    const locked: string = join(stateDir, 'locked');
+    mkdirSync(locked, { mode: 0o700 });
+    chmodSync(locked, 0o000);
+    try {
+      await expect(new ProcessHost({ stateDir: locked, chellEntry: '/opt/chell/dist/index.js' }).sessions_adopt()).rejects.toThrow(`porter's state folder ${locked} could not be listed (EACCES)`);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+  });
+
+
+  it('a berth record another account could have written is not read: a wider record, or one in a wider folder', async () => {
+    const host: ProcessHost = host_make();
+    berth_plant(host);
+    const runtime: string = host.dirs_build(IDENTITY).runtime;
+    chmodSync(berth_pathIn(runtime, IDENTITY), 0o644);
+    expect(await host.find(IDENTITY)).toBeNull();
+    expect(await host.sessions_adopt()).toEqual([]);
+    chmodSync(berth_pathIn(runtime, IDENTITY), 0o600);
+    chmodSync(join(runtime, 'calypso'), 0o755);
+    expect(await host.find(IDENTITY)).toBeNull();
+    chmodSync(join(runtime, 'calypso'), 0o700);
+    expect(await host.find(IDENTITY)).not.toBeNull();
   });
 
   it('keeps only the last boot lines for a late follower', async () => {
@@ -466,7 +569,7 @@ describe('ProcessHost restart', () => {
     const children: FakeChild[] = [new FakeChild(), new FakeChild()];
     const calls: string[][] = [];
     const host: ProcessHost = new ProcessHost({
-      stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (): Promise<boolean> => alive, bootTimeoutMs: 2_000, pollMs: 20,
+      stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (): Promise<BerthLiveness> => (alive ? 'live' : 'dead'), bootTimeoutMs: 2_000, pollMs: 20,
       spawn: (_command, args): SpawnedSession => { calls.push(args); return children[calls.length - 1] as FakeChild; },
     });
     const first: Promise<unknown> = host.spawn(IDENTITY, 'chris', CUBE, 'MINTED');
@@ -501,7 +604,7 @@ describe('ProcessHost restart', () => {
     const children: FakeChild[] = [new FakeChild(), new FakeChild()];
     let n: number = 0;
     const host: ProcessHost = new ProcessHost({
-      stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (): Promise<boolean> => alive, bootTimeoutMs: 2_000, pollMs: 20,
+      stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (): Promise<BerthLiveness> => (alive ? 'live' : 'dead'), bootTimeoutMs: 2_000, pollMs: 20,
       spawn: (): SpawnedSession => children[n++] as FakeChild,
     });
     const first: Promise<unknown> = host.spawn(IDENTITY, 'chris', CUBE, 'MINTED');
@@ -533,12 +636,12 @@ describe('a stratus session', () => {
   const STRATUS: string = `stratus:oci@${IDENTITY}`;
 
   it('starts stratus on the person\'s config, read-only unless asked, in a home and state of its own', async () => {
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn, alive: async (): Promise<boolean> => alive, bootTimeoutMs: 2_000, pollMs: 20 });
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn, alive: async (): Promise<BerthLiveness> => (alive ? 'live' : 'dead'), bootTimeoutMs: 2_000, pollMs: 20 });
     host.stratus_begin(STRATUS, '/creds/oci/config', false, false, { cubeUrl: 'https://cube.example.org/api/v1/', user: 'rudolph' });
     // The daemon names its berth by its cloud identity; the one in the session's directory is the session's.
     const runtime: string = host.dirs_build(STRATUS).runtime;
-    mkdirSync(join(runtime, 'calypso'), { recursive: true });
-    writeFileSync(berth_pathIn(runtime, 'me@fnndsc-bch'), JSON.stringify({ identity: 'me@fnndsc-bch', url: 'ws://127.0.0.1:5555', token: 'T' }));
+    mkdirSync(join(runtime, 'calypso'), { recursive: true, mode: 0o700 });
+    writeFileSync(berth_pathIn(runtime, 'me@fnndsc-bch'), JSON.stringify({ identity: 'me@fnndsc-bch', url: 'ws://127.0.0.1:5555', token: 'T' }), { mode: 0o600 });
     for (let i = 0; i < 20 && (await host.find(STRATUS)) === null; i++) await new Promise((r) => setTimeout(r, 20));
     expect(await host.find(STRATUS)).toMatchObject({ url: 'ws://127.0.0.1:5555' });
     expect(spawnCalls[0]?.args).toEqual(['/opt/stratus/dist/stratus.js', '--config', '/creds/oci/config']);
@@ -549,7 +652,7 @@ describe('a stratus session', () => {
     expect(spawnCalls[0]?.env['CALYPSO_ELEVATION_USER']).toBe('rudolph');
     expect(host.stratus_armed(STRATUS)).toBe(false);
     // A porter restarted adopts it under the session's identity, not the cloud's.
-    const again: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (): Promise<boolean> => true });
+    const again: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (): Promise<BerthLiveness> => 'live' });
     expect((await again.sessions_adopt()).map((sighting) => sighting.identity)).toContain(STRATUS);
   });
 

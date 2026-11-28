@@ -117,6 +117,8 @@ export interface SessionSighting {
   identity: string;
   berth: Berth;
   alive: boolean;
+  /** An earlier release's daemon whose address did not refuse: it may still run, and cannot prove it does. */
+  unverified?: true;
 }
 
 /** Where sessions run. */

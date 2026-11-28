@@ -159,11 +159,16 @@ export function stratusEntry_locate(): string | null {
  * secret it will not use.
  *
  * @param env - The environment; `process.env` in production.
+ * @param home - The account's home as spelled; `HOME`, else the account's.
  * @returns The state directory.
  */
-export function porterStateDir_resolve(env: PorterEnv): string {
-  const stateBase: string = env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state');
-  return env.PORTER_STATE_DIR ?? join(stateBase, 'porter');
+export function porterStateDir_resolve(env: PorterEnv, home: string = process.env['HOME'] || homedir()): string {
+  // Joined as spelled, not normalised: a `..` in XDG_STATE_HOME is refused by the state root's check
+  // (`stateRoot_settle`), never folded away first.
+  // An empty XDG_STATE_HOME is unset (the XDG rule, and calypso's): the home's state folder.
+  // The home as spelled too (HOME, else the account's), for the same reason.
+  const stateBase: string = env.XDG_STATE_HOME !== undefined && env.XDG_STATE_HOME !== '' ? env.XDG_STATE_HOME : `${home.replace(/\/+$/, '')}/.local/state`;
+  return env.PORTER_STATE_DIR ?? `${stateBase.replace(/\/+$/, '')}/porter`;
 }
 
 /** The ranges a proxy may be named by, besides an address or a CIDR range. */

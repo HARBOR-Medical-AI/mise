@@ -60,11 +60,8 @@
     "packages/calypso/src/calypso.ts": {
       "fs": "LOCAL-ONLY: realpathSync of process.argv[1] and this module to detect being run as the entry script; the operator's own launch."
     },
-    "packages/calypso/src/daemon/attachFile.ts": {
-      "fs": "OWN-STATE: Writes/removes the attach note at tmpdir()/calypso-<user>.attach, a name the daemon derives itself."
-    },
     "packages/calypso/src/daemon/berth.ts": {
-      "fs": "OWN-STATE: Berth records under $XDG_RUNTIME_DIR(or tmpdir)/calypso and read-only listing of porter's state roots ($PORTER_STATE_DIR, $XDG_STATE_HOME/porter, /var/lib/porter/sessions); identities come from the daemon, not a path a line supplies."
+      "fs": "OWN-STATE: Lists berth folders ($XDG_RUNTIME_DIR/calypso, else tmpdir()/calypso-<uid>, and porter's state roots: $PORTER_STATE_DIR, $XDG_STATE_HOME/porter, /var/lib/porter/sessions); every record and closing note is read and written through fond's owner-only helpers (folder 0700 of this uid through a trusted path, record a regular 0600 file, written by rename). Identities come from the daemon, not a path a line supplies."
     },
     "packages/calypso/src/daemon/codeIdentity.ts": {
       "fs": "OWN-STATE: Reads package.json and dist/*.js of the daemon's own packages to fingerprint its code.",
@@ -74,9 +71,6 @@
       "child_process": "LOCAL-ONLY: surface_spawn starts `chell --remote ... --attach` on the daemon's own terminal when the person who launched calypso presses Enter in its console loop; argv is the daemon's identity/url, token via env, no session line involved.",
       "fs": "OWN-STATE: existsSync of the chell dist/index.js resolved beside this calypso install (chellLaunch_find).",
       "loader": "OWN-STATE: createRequire resolves `@fnndsc/chell/package.json` to find chell's entry for the console the operator starts."
-    },
-    "packages/calypso/src/daemon/discovery.ts": {
-      "fs": "OWN-STATE: Writes/reads tmpdir()/chell-calypso-<user>.json, a name the daemon derives itself."
     },
     "packages/calypso/src/daemon/hostControl.ts": {
       "child_process": "GATED: hostShell_run and hostPipe_run are reached only through launch.ts surface hooks: shellCommand runs hostShell_run only when policy.tiers.has('shell') (launch.ts:141-147) and pipeSegment runs hostPipe_run only when policy.tiers.has('pipes') (launch.ts:134); capabilities pipeSegments/engineFilesystem/tasks set at launch.ts:106,112,116.",
@@ -134,7 +128,7 @@
       "fs": "OWN-STATE: NodeStorageProvider is chrisConnection's persistence layer; callers pass engine-named config, token and cache files (chrisConnection.ts:581,689-717), never a session path. chrisIO.uploadLocalPath (chrisIO.ts:892-924) reads via this provider a local path from files_uploadPath; callers are chili upload (gated) and configWrite (own tmp file)."
     },
     "packages/fond/src/hostPlace.ts": {
-      "fs": "OWN-STATE: lstat/realpath probes only (no read of contents or write) beneath a folder the caller names (berth anchors, stratus script library root, chell's own download folder); used to contain names. Also privateTemp_write: a private temporary file (mkdtemp folder 0700, file created anew 0600) for edit and config write, under the system temp folder, its name a plain name."
+      "fs": "OWN-STATE: lstat/realpath probes only (no read of contents or write) beneath a folder the caller names (berth anchors, stratus script library root, chell's own download folder); used to contain names. Also privateTemp_write: a private temporary file (mkdtemp folder 0700, file created anew 0600) for edit and config write, under the system temp folder, its name a plain name. Also the owner-only helpers (ownFolder_settle, ownFile_read, ownFile_write, ownFile_take) for calypso's berth records, attach note and closing notes: a folder of this uid, 0700, through a trusted path; files regular 0600 of this uid, opened without following links, bounded, written by rename."
     },
     "packages/salsa/src/pipelines/packages.ts": {
       "fs": "OWN-STATE: Pipeline-package cache under $XDG_CACHE_HOME/chell/pipelines keyed by hashed CUBE url."

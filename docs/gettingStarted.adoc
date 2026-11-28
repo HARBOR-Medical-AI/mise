@@ -257,7 +257,7 @@ model.
 
 Either way, calypso writes an identity-keyed berth containing its URL and a
 fresh attach token, readable only by the current OS user, under
-`$XDG_RUNTIME_DIR/calypso/` (or the platform temporary directory as fallback).
+`$XDG_RUNTIME_DIR/calypso/` (or `<tmpdir>/calypso-<uid>/` when there is no runtime directory).
 This lets several daemons for different CUBE identities coexist on one machine.
 
 ==== Attaching to calypso
