@@ -342,6 +342,15 @@
       ],
       "why": "it writes a record into the folder its caller names; berth close names only the berth's own outgoing folder",
       "file": "packages/brasa/src/builtins/berth/berthRecord.ts"
+    },
+    {
+      "name": "pipeSegment_run",
+      "file": "packages/calypso/src/daemon/hostControl.ts",
+      "callers": [
+        "packages/calypso/src/daemon/hostControl.ts",
+        "packages/calypso/src/daemon/launch.ts"
+      ],
+      "why": "it runs a pipeline segment on this host when the policy it is given says pipes; only the daemon, with the policy its operator started it with, gives one"
     }
   ]
 }

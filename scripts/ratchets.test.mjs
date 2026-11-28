@@ -777,7 +777,17 @@ for (const lint of lints) {
   file_put(join(tree, 'packages/brasa/src/byString.ts'), "import { other } from '../../calypso/src/daemon/hostControl.js';\nconst picked = { other }['hostShell_run' as never];\nexport const m = picked;\n");
   file_put(join(tree, 'packages/brasa/src/byNamespace.ts'), "import * as hc from '../../calypso/src/daemon/hostControl.js';\nconst name = 'host' + 'Shell_run';\nexport const n = (hc as Record<string, unknown>)[name];\n");
   file_put(join(tree, 'packages/brasa/src/byOther.ts'), "import { other } from '../../calypso/src/daemon/hostControl.js';\nexport const o = other;\n");
+  file_put(join(tree, 'packages/brasa/src/byRequire.ts'), "const hc = require('../../calypso/src/daemon/hostControl.js');\nexport const p = hc;\n");
+  file_put(join(tree, 'packages/brasa/src/byImportEquals.ts'), "import hc = require('../../calypso/src/daemon/hostControl.js');\nexport const q = hc;\n");
+  file_put(join(tree, 'packages/brasa/src/byWrapper.ts'), "import { pipeSegment_run } from '../../calypso/src/daemon/hostControl.js';\nexport const w = pipeSegment_run;\n");
   const reached = [...identifierUses_find(tree, 'hostShell_run', 'packages/calypso/src/daemon/hostControl.ts').keys()].sort();
+  expect_that('a confined helper is reached through its module required whole, by require() or import = require()', reached.includes('packages/brasa/src/byRequire.ts') && reached.includes('packages/brasa/src/byImportEquals.ts'), JSON.stringify(reached));
+  const wrapped = gate_judge(found, { ...listed, confined: [{ name: 'pipeSegment_run', file: 'packages/calypso/src/daemon/hostControl.ts', callers: ['packages/calypso/src/daemon/hostControl.ts'], why: 'runs a segment on this host' }] }, null, read, (name, definedIn) => identifierUses_find(tree, name, definedIn));
+  expect_that('a named import of a confined wrapper from a third file fails', wrapped.some((one) => one.includes('packages/brasa/src/byWrapper.ts uses pipeSegment_run')), wrapped.join(' | '));
+  const nowhere = gate_judge(found, { ...listed, confined: [{ name: 'hostShell_run', file: 'packages/calypso/src/daemon/nowhere.ts', callers: [], why: 'x' }] }, null, read, () => new Map());
+  expect_that('a confinement to a file that is not there, or does not define the helper, fails', nowhere.some((one) => one.includes('which does not define it')), nowhere.join(' | '));
+  const moved = gate_judge(found, { ...listed, confined: [{ name: 'hostShell_run', file: 'packages/brasa/src/direct.ts', callers: [], why: 'x' }] }, { ...listed, confined: [{ name: 'hostShell_run', file: 'packages/calypso/src/daemon/hostControl.ts', callers: [], why: 'x' }] }, read, () => new Map());
+  expect_that('a confinement whose defining file moves against the base fails', moved.some((one) => one.includes('moves the confinement of hostShell_run')), moved.join(' | '));
   expect_that('a confined helper is reached by a string of its name and through its module imported whole; a named import of a sibling is not', reached.includes('packages/brasa/src/byString.ts') && reached.includes('packages/brasa/src/byNamespace.ts') && !reached.includes('packages/brasa/src/byOther.ts'), JSON.stringify(reached));
   // A pin is a node of the code: a string that holds the call is not one, the call is.
   expect_that('a pin matches the call, never a string that holds its text', !codeNodes_read('x.ts', "const doc = \"hostDisk_refusal('x')\";\n").has("hostDisk_refusal('x')") && codeNodes_read('x.ts', "const r = hostDisk_refusal('x');\n").has("hostDisk_refusal('x')"));
@@ -786,10 +796,11 @@ for (const lint of lints) {
   const commented = gate_judge(found, { ...listed, pins: [{ file: 'packages/brasa/src/comment.ts', text: "import fs from 'fs'", why: 'shown in a comment only' }] }, null, read);
   expect_that('a pin whose text stands only in a comment fails', commented.length === 1 && commented[0].includes('no longer holds its gate'), commented.join(' | '));
   // A confined host helper: a file not among its callers that names it fails; a caller the base did not have fails.
-  const confined = { ...listed, confined: [{ name: 'hostPipe_run', callers: ['packages/calypso/src/daemon/launch.ts'], why: 'runs a caller\'s pipeline' }] };
+  const confined = { ...listed, confined: [{ name: 'hostPipe_run', file: 'packages/brasa/src/direct.ts', callers: ['packages/calypso/src/daemon/launch.ts'], why: 'runs a caller\'s pipeline' }] };
   const uses = () => new Map([['packages/calypso/src/daemon/launch.ts', ''], ['packages/brasa/src/sneak.ts', '']]);
   const sneaked = gate_judge(found, confined, null, read, uses);
-  expect_that('a use of a confined helper from a file not among its callers fails', sneaked.length === 1 && sneaked[0].includes('packages/brasa/src/sneak.ts uses hostPipe_run'), sneaked.join(' | '));
+  const sneakedUses = sneaked.filter((one) => one.includes(' uses '));
+  expect_that('a use of a confined helper from a file not among its callers fails', sneakedUses.length === 1 && sneakedUses[0].includes('packages/brasa/src/sneak.ts uses hostPipe_run'), sneaked.join(' | '));
   const widened = gate_judge(found, { ...confined, confined: [{ ...confined.confined[0], callers: [...confined.confined[0].callers, 'packages/brasa/src/sneak.ts'] }] }, confined, read, uses);
   expect_that('a caller added to a confined helper that the base did not have fails', widened.some((one) => one.includes('lets packages/brasa/src/sneak.ts call hostPipe_run')), widened.join(' | '));
   const realGate = spawnSync('node', [join(here, 'host-gate.mjs')], { encoding: 'utf8' });

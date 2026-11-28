@@ -434,7 +434,8 @@ export function identifierUses_find(root, name, definedIn) {
           if ((ts.isIdentifier(node) || ts.isStringLiteralLike(node)) && node.text === name) named = true;
           else if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier) && node.importClause?.namedBindings !== undefined && ts.isNamespaceImport(node.importClause.namedBindings) && whole(file, node.moduleSpecifier.text)) named = true;
           else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined && ts.isStringLiteralLike(node.moduleSpecifier) && (node.exportClause === undefined || ts.isNamespaceExport(node.exportClause)) && whole(file, node.moduleSpecifier.text)) named = true;
-          else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments[0] !== undefined && ts.isStringLiteralLike(node.arguments[0]) && whole(file, node.arguments[0].text)) named = true;
+          else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === 'require')) && node.arguments[0] !== undefined && ts.isStringLiteralLike(node.arguments[0]) && whole(file, node.arguments[0].text)) named = true;
+          else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && ts.isStringLiteralLike(node.moduleReference.expression) && whole(file, node.moduleReference.expression.text)) named = true;
           if (!named) ts.forEachChild(node, visit);
         };
         visit(source);
@@ -491,6 +492,9 @@ export function gate_judge(found, list, atBase, file_read, uses_find = () => new
     if (text === null || !codeNodes_read(pin.file, text).has(pin.text.replace(/\s+/g, ' ').trim())) faults.push(`${pin.file} no longer holds its gate \`${pin.text}\` (${pin.why})`);
   }
   for (const helper of list.confined ?? []) {
+    // The file that defines it must be there, and define it: a confinement of a helper nowhere is no confinement.
+    const defining = file_read(helper.file);
+    if (defining === null || !codeNodes_read(helper.file, defining).has(helper.name)) faults.push(`${GATE_FILE} confines ${helper.name} to ${helper.file}, which does not define it`);
     for (const file of uses_find(helper.name, helper.file).keys()) if (!helper.callers.includes(file)) faults.push(`${file} uses ${helper.name}, which only ${helper.callers.join(', ')} may (${helper.why}): call it through them, or list the caller with its gate`);
   }
   if (atBase !== null) {
@@ -502,6 +506,7 @@ export function gate_judge(found, list, atBase, file_read, uses_find = () => new
     for (const helper of atBase.confined ?? []) {
       const now = (list.confined ?? []).find((one) => one.name === helper.name);
       if (now === undefined) faults.push(`${GATE_FILE} drops the confinement of ${helper.name} that the base had`);
+      else if (now.file !== helper.file) faults.push(`${GATE_FILE} moves the confinement of ${helper.name} from ${helper.file} to ${now.file}: a move is reviewed on its own`);
       else for (const caller of now.callers) if (!helper.callers.includes(caller)) faults.push(`${GATE_FILE} lets ${caller} call ${helper.name}, which the base did not: a new caller of a host helper is reviewed on its own`);
     }
   }
