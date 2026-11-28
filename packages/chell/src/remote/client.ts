@@ -19,6 +19,7 @@
 import { createInterface, type Interface } from 'node:readline/promises';
 import chalk from 'chalk';
 import type { CommandEnvelope } from '@fnndsc/cumin';
+import type { ConsentAsk } from './hostConsent.js';
 import { REPL } from '../core/repl.js';
 import { RemoteEngine, type DaemonStack } from './remoteEngine.js';
 import { buildMismatch_line, closingLine_render, staleLines_render, surfaceNews_read } from './buildMatch.js';
@@ -27,7 +28,7 @@ import { berthInstance_probe, LocalBerthResolver, type Berth } from '@fnndsc/cal
 import { berthIdentities_derive } from './berthTarget.js';
 import { splashLines_render } from './splash.js';
 import { sink_set, StdoutSink, surface_get, surface_set, welcomeLine_build, welcomeLine_compose, stackBanner_rows, stackBannerRow_paint, buildHash_get } from '@fnndsc/brasa';
-import { cliSurface_create } from '../core/cliSurface.js';
+import { CONSENT_PURPOSE, cliSurface_create } from '../core/cliSurface.js';
 import type { FileDeliverRequest, FileDeliverResult } from '@fnndsc/menu';
 import { TerminalProgressRenderer } from '../core/progressRenderer.js';
 import { greeting_print } from '../core/greeting.js';
@@ -238,6 +239,23 @@ async function segments_execute(engine: RemoteEngine, line: string): Promise<Lin
 }
 
 /**
+ * How a remote client runs.
+ *
+ * @example
+ * ```ts
+ * await remote_run(identity, undefined, undefined, { allowHostRequests: true });
+ * ```
+ */
+export interface RemoteRunOptions {
+  /** A one-shot line stops at its first failing step. */
+  stopOnError?: boolean;
+  /** Draws the session's art once the attach answer names its backend. */
+  splash?: { colorize: boolean };
+  /** `--allow-host-requests`: the session may run anything it asks on this machine until it disconnects. */
+  allowHostRequests?: boolean;
+}
+
+/**
  * Runs the remote client: resolves a daemon berth, attaches, and enters the
  * REPL.
  *
@@ -255,7 +273,7 @@ export async function remote_run(
   identity?: string,
   commandToExecute?: string,
   attach?: { address: string; token?: string; headers?: Record<string, string> },
-  options: { stopOnError?: boolean; splash?: { colorize: boolean } } = {},
+  options: RemoteRunOptions = {},
 ): Promise<void> {
   // Through a door there is no token to carry: the cookie in the headers is
   // the credential, and the door puts the token on the daemon's side.
@@ -275,6 +293,7 @@ export async function remote_run(
     process.exit(1);
   }
 
+  const consent_ask: ConsentAsk = (question: string, signal: AbortSignal): Promise<string> => surface_get().prompt({ message: question, purpose: CONSENT_PURPOSE, signal });
   let engine: RemoteEngine;
   let intentionalClose: boolean = false;
   // Why the daemon went, when it says before it goes.
@@ -311,6 +330,9 @@ export async function remote_run(
       onDeliver: (request: FileDeliverRequest): Promise<FileDeliverResult> =>
         // A downloaded file lands on this machine's disk, never the daemon's.
         surface_get().fileDeliver(request),
+      // What the session asks beyond what a line asked for is put to the person, on a terminal only.
+      ...(process.stdin.isTTY && process.stdout.isTTY ? { consentAsk: consent_ask } : {}),
+      ...(options.allowHostRequests === true ? { allowHostRequests: true } : {}),
       // A `!` the daemon runs under host control draws here, on a pty of its own.
       ...(process.stdin.isTTY === true && process.stdout.isTTY === true
         ? { terminal: { input: process.stdin, output: process.stdout, term: process.env['TERM'] ?? '' } }
@@ -333,6 +355,10 @@ export async function remote_run(
     console.error(chalk.red(`[!] Could not attach to the daemon: ${message}`));
     process.exit(1);
     return;
+  }
+  // Said once, plainly: nothing this session asks is checked against the line or put to the person.
+  if (options.allowHostRequests === true) {
+    console.error(chalk.yellow('[!] --allow-host-requests: this session may run anything it asks on this machine until it disconnects, without asking.'));
   }
 
   if (commandToExecute !== undefined) {

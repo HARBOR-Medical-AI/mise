@@ -54,6 +54,11 @@ export interface ChellCLIConfig {
    * terminal; the door's cookie does.
    */
   door?: string;
+  /**
+   * `--allow-host-requests`: the attached session may run anything it asks on this machine until it disconnects,
+   * without a grant from the line or a question. Never stored; a new connection starts without it.
+   */
+  allowHostRequests?: boolean;
   /** `--host-control [tiers]` as typed (true for bare). */
   hostControl?: string | boolean;
   /** `--expose-host-control`. */
@@ -100,6 +105,8 @@ export interface CliActionOptions {
   attach?: string;
   token?: string;
   door?: string;
+  /** `--allow-host-requests`. */
+  allowHostRequests?: boolean;
   authTokenStdin?: boolean;
   savedToken?: boolean;
   info?: boolean;
@@ -194,6 +201,7 @@ export function cliConfig_parse(
     if (options.command !== undefined) {
       config.commandToExecute = options.command;
     }
+    if (options.allowHostRequests === true) config.allowHostRequests = true;
     if (options.e) config.stopOnError = true;
   } else if (options.daemon) {
     config = {
@@ -359,6 +367,7 @@ ${chalk.bold.cyan('DESCRIPTION')}
     .option('--token <token>', 'Attach token, when the --attach URL does not carry one')
     .option('--door <url>', 'With --remote: come through a porter — log in there (a door token from chell auth login, -u/-p, or be asked), and attach to the session it mounts')
     .option('--no-door', 'The local chell, even when chell auth login has set a default door')
+    .option('--allow-host-requests', 'With --remote: let the session run anything it asks on this machine until it disconnects, without asking (otherwise only what each line asked for, and the rest is put to you)')
     .option('--auth-token-stdin', 'Log in with a CUBE auth token read from stdin (one line) instead of a password; needs <user>@<url>')
     .option('--saved-token', 'Log in with the token <user>@<url> saved last time, refusing if there is none or it is refused (no offline fallback)')
     .option('--info', 'Show a detailed table of the stack packages, roles, and versions, then exit')

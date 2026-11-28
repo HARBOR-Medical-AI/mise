@@ -117,6 +117,35 @@ export class HostGrantBook {
   }
 
   /**
+   * Whether a line of this chell is in flight on this connection.
+   *
+   * @param lineId - This chell's id for the line.
+   * @returns True while it is.
+   *
+   * @example
+   * ```ts
+   * book.line_has('3');
+   * ```
+   */
+  public line_has(lineId: string): boolean {
+    return this.lines.has(lineId);
+  }
+
+  /**
+   * How many lines of this chell are in flight on this connection.
+   *
+   * @returns The count.
+   *
+   * @example
+   * ```ts
+   * book.lines_count();
+   * ```
+   */
+  public lines_count(): number {
+    return this.lines.size;
+  }
+
+  /**
    * Retires every line's grants: the connection closed.
    *
    * @example

@@ -1,0 +1,384 @@
+/**
+ * @file The person's word for what a session asks this machine to run beyond what a line asked for.
+ *
+ * A request no grant covers (a script's `!`, a step after `&&`, a pipeline chell could not route) is not refused
+ * silently where the person could say yes, and never run silently: it is put to them on this chell's own terminal,
+ * with exactly what would run, quoted and with every control and direction character made visible. They answer
+ * once (`y`), for the rest of the line and that kind of request (`l`), refuse the rest of the line (`r`), or let the
+ * session run anything it asks on this machine until it disconnects (`allow all`, typed in full; or
+ * `--allow-host-requests` at the start). Anything else is No; three No answers on one line refuse its rest. Where
+ * no one can be asked (no terminal) the request is refused, as it was.
+ *
+ * Questions are asked one at a time, in the order they came (a bounded queue); a line's result, error or cancel,
+ * or the connection's close, answers its open and queued questions No and forgets its `l`.
+ *
+ * Key components:
+ * - HostConsent: the questions, the answers remembered, and their expiry.
+ * - consentText_escape, consentQuestion_render, consentAnswer_read: what is shown, and what an answer means.
+ *
+ * Typical usage:
+ * ```ts
+ * const consent: HostConsent = new HostConsent(ask, false);
+ * if (await consent.request_decide({ lineId, verified: true, kind: 'shell', action: 'run the host command "ls"' })) run();
+ * ```
+ *
+ * Dependencies: none.
+ *
+ * @module
+ */
+
+/** What kind of thing a request asks this machine to do. */
+export type ConsentKind = 'shell' | 'pipe' | 'edit' | 'deliver' | 'pty';
+
+/** How the person answered. */
+export type ConsentAnswer = 'once' | 'line' | 'all' | 'refuse-line' | 'no';
+
+/** Asks the person one question on this chell's terminal and returns the line they typed; aborted, it rejects. */
+export type ConsentAsk = (question: string, signal: AbortSignal) => Promise<string>;
+
+/**
+ * One request put to the person.
+ *
+ * @example
+ * ```ts
+ * const asked: ConsentRequest = { lineId: '3', verified: true, kind: 'shell', action: 'run the host command "ls"' };
+ * ```
+ */
+export interface ConsentRequest {
+  /** The line the session says asks, by this chell's id; absent from an older daemon. */
+  lineId: string | undefined;
+  /** Whether that id is a line of this chell pending on this connection (a legacy request is never verified). */
+  verified: boolean;
+  /** What kind of request. */
+  kind: ConsentKind;
+  /** What would happen, in words, every untrusted part already quoted with `consentText_escape`. */
+  action: string;
+}
+
+/** What is known of one line while it runs. */
+interface LineConsent {
+  /** The line as this chell sent it. */
+  text: string;
+  /** Kinds the person allowed for the rest of the line. */
+  kinds: Set<ConsentKind>;
+  /** Whether the person refused the rest of the line. */
+  refused: boolean;
+  /** How many times they said No on this line. */
+  noes: number;
+}
+
+/** A question waiting its turn, or open. */
+interface Pending {
+  /** The line it is for. */
+  lineId: string | undefined;
+  /** Stops it: answered No. */
+  abort: AbortController;
+}
+
+/** How many questions may wait behind the open one. */
+const QUEUE_MAX: number = 8;
+
+/** How many No answers on one line refuse its rest. */
+const NOES_MAX: number = 3;
+
+/**
+ * Text shown in a question with every character that could move the cursor, recolour, erase or reorder what the
+ * person reads made visible as `\uXXXX`: C0 controls, DEL, C1 controls and Unicode format characters (bidi
+ * overrides and isolates, zero-width joiners).
+ *
+ * @param text - Untrusted text.
+ * @returns The text, safe to show.
+ *
+ * @example
+ * ```ts
+ * consentText_escape('ls\u001b[2J'); // 'ls\\u001b[2J'
+ * ```
+ */
+export function consentText_escape(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]|\p{Cf}/gu, (one: string): string => `\\u${one.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/**
+ * The question shown: what would run, in full (never cut), the line it is for, and the answers offered.
+ *
+ * @param asked - The request.
+ * @param line - The line this chell sent, if the request names one of its lines.
+ * @returns The question.
+ *
+ * @example
+ * ```ts
+ * consentQuestion_render(asked, 'play build.sh');
+ * ```
+ */
+export function consentQuestion_render(asked: ConsentRequest, line: string | undefined): string {
+  const during: string = line !== undefined ? `while running ${JSON.stringify(consentText_escape(line))}` : 'for a request that names no line of this chell (the session is older than this chell)';
+  const offers: string[] = asked.verified
+    ? [
+        'y = yes, this once',
+        `l = yes, and any further ${asked.kind} request of this line, whatever it runs`,
+        'r = no, and refuse the rest of this line',
+        'allow all = let this session run anything it asks on this machine until it disconnects',
+        'anything else = no',
+      ]
+    : ['y = yes, this once', 'anything else = no'];
+  return `\nThe session asks this machine to ${asked.action}\n  ${during}.\n  ${offers.join('\n  ')}\nAllow? `;
+}
+
+/**
+ * What an answer means: only `y`, `l`, `r` and `allow all` (trimmed, lower case) mean anything, and `l` and
+ * `allow all` only for a verified request; anything else is No.
+ *
+ * @param typed - The line typed.
+ * @param verified - Whether the request names a pending line of this chell.
+ * @returns The answer.
+ *
+ * @example
+ * ```ts
+ * consentAnswer_read(' Y ', true); // 'once'
+ * ```
+ */
+export function consentAnswer_read(typed: string, verified: boolean): ConsentAnswer {
+  const said: string = typed.trim().toLowerCase();
+  if (said === 'y') return 'once';
+  if (!verified) return 'no';
+  if (said === 'l') return 'line';
+  if (said === 'r') return 'refuse-line';
+  if (said === 'allow all') return 'all';
+  return 'no';
+}
+
+/**
+ * The person's word on requests no grant covers, for one connection.
+ *
+ * @example
+ * ```ts
+ * const consent: HostConsent = new HostConsent(ask, false);
+ * ```
+ */
+export class HostConsent {
+  /** What is known of each line of this chell while it runs. */
+  private readonly lines: Map<string, LineConsent> = new Map();
+  /** The open question and those waiting, in order. */
+  private readonly pending: Pending[] = [];
+  /** The question being asked now, if any. */
+  private turn: Promise<void> = Promise.resolve();
+  /** Whether the session may run anything it asks until it disconnects. */
+  private allowedAll: boolean;
+  /** Called when the last question closes, so held output is shown. */
+  private onIdle: (() => void) | null = null;
+
+  /**
+   * @param ask - Asks on this chell's terminal; null where there is none (then nothing is asked).
+   * @param allowAll - `--allow-host-requests`: the session may run anything it asks until it disconnects.
+   */
+  constructor(private readonly ask: ConsentAsk | null, allowAll: boolean) {
+    this.allowedAll = allowAll;
+  }
+
+  /**
+   * Whether the session may run anything it asks on this machine until it disconnects.
+   *
+   * @returns True under `--allow-host-requests` or after `allow all`.
+   *
+   * @example
+   * ```ts
+   * if (consent.all_isAllowed()) say('this session may run anything it asks here');
+   * ```
+   */
+  public all_isAllowed(): boolean {
+    return this.allowedAll;
+  }
+
+  /**
+   * Whether a question is open or waiting: the terminal is the question's, and the session's output waits.
+   *
+   * @returns True while one is.
+   *
+   * @example
+   * ```ts
+   * if (consent.question_isOpen()) hold(message);
+   * ```
+   */
+  public question_isOpen(): boolean {
+    return this.pending.length > 0;
+  }
+
+  /**
+   * Sets what to call when the last question closes.
+   *
+   * @param onIdle - The call, or null.
+   *
+   * @example
+   * ```ts
+   * consent.idle_set((): void => { held_flush(); });
+   * ```
+   */
+  public idle_set(onIdle: (() => void) | null): void {
+    this.onIdle = onIdle;
+  }
+
+  /**
+   * Opens a line: its text is shown in its questions.
+   *
+   * @param lineId - This chell's id for the line.
+   * @param text - The line as sent.
+   *
+   * @example
+   * ```ts
+   * consent.line_open('3', 'play build.sh');
+   * ```
+   */
+  public line_open(lineId: string, text: string): void {
+    this.lines.set(lineId, { text, kinds: new Set(), refused: false, noes: 0 });
+  }
+
+  /**
+   * Closes a line: its open and waiting questions are answered No, and what was said for it is forgotten.
+   *
+   * @param lineId - This chell's id for the line.
+   *
+   * @example
+   * ```ts
+   * consent.line_close('3');
+   * ```
+   */
+  public line_close(lineId: string): void {
+    this.lines.delete(lineId);
+    for (const one of this.pending) if (one.lineId === lineId) one.abort.abort();
+  }
+
+  /**
+   * The connection closed: every question is answered No, and `allow all` is gone with it.
+   *
+   * @example
+   * ```ts
+   * consent.all_close();
+   * ```
+   */
+  public all_close(): void {
+    this.lines.clear();
+    for (const one of this.pending) one.abort.abort();
+    this.allowedAll = false;
+  }
+
+  /**
+   * Decides a request no grant covers: allowed when the person allowed it (now, for the line, or for the
+   * connection), else asked where they can be, one question at a time; refused otherwise.
+   *
+   * @param asked - The request.
+   * @returns True when it may run.
+   *
+   * @example
+   * ```ts
+   * if (!(await consent.request_decide(asked))) refuse();
+   * ```
+   */
+  public async request_decide(asked: ConsentRequest): Promise<boolean> {
+    const line: LineConsent | undefined = asked.lineId !== undefined ? this.lines.get(asked.lineId) : undefined;
+    if (asked.verified && line === undefined) return false;
+    if (asked.verified && this.allowedAll) return true;
+    if (line !== undefined && line.refused) return false;
+    if (line !== undefined && line.kinds.has(asked.kind)) return true;
+    if (this.ask === null || this.pending.length > QUEUE_MAX) return false;
+    const mine: Pending = { lineId: asked.lineId, abort: new AbortController() };
+    this.pending.push(mine);
+    const waited: Promise<void> = this.turn;
+    let turn_release: () => void = (): void => undefined;
+    this.turn = new Promise<void>((resolve: () => void): void => { turn_release = resolve; });
+    try {
+      await waited;
+      return await this.question_put(asked, mine);
+    } finally {
+      this.pending.splice(this.pending.indexOf(mine), 1);
+      turn_release();
+      if (this.pending.length === 0) this.onIdle?.();
+    }
+  }
+
+  /**
+   * Puts one request to the person, when it is still live, and applies the answer.
+   *
+   * @param asked - The request.
+   * @param mine - Its place in the queue.
+   * @returns True when it may run.
+   */
+  private async question_put(asked: ConsentRequest, mine: Pending): Promise<boolean> {
+    // Rechecked now it is this request's turn: the line may have ended, or an earlier answer decided it.
+    const settled: boolean | null = this.request_settled(asked, mine);
+    if (settled !== null) return settled;
+    const line: LineConsent | undefined = asked.lineId !== undefined ? this.lines.get(asked.lineId) : undefined;
+    let typed: string;
+    try {
+      typed = await (this.ask as ConsentAsk)(consentQuestion_render(asked, line?.text), mine.abort.signal);
+    } catch {
+      return false;
+    }
+    // An answer that arrives after the line ended answers nothing.
+    if (this.request_isOver(asked, mine)) return false;
+    return this.answer_apply(consentAnswer_read(typed, asked.verified), asked, line);
+  }
+
+  /**
+   * Whether a request is already decided without a question: over (withdrawn, or its line ended), or allowed or
+   * refused by an earlier answer.
+   *
+   * @param asked - The request.
+   * @param mine - Its place in the queue.
+   * @returns The decision, or null when it must be asked.
+   */
+  private request_settled(asked: ConsentRequest, mine: Pending): boolean | null {
+    if (this.request_isOver(asked, mine)) return false;
+    if (asked.verified && this.allowedAll) return true;
+    const line: LineConsent | undefined = asked.lineId !== undefined ? this.lines.get(asked.lineId) : undefined;
+    if (line === undefined) return null;
+    if (line.refused) return false;
+    return line.kinds.has(asked.kind) ? true : null;
+  }
+
+  /**
+   * Whether a request no longer wants an answer: it was withdrawn, or the line it names has ended.
+   *
+   * @param asked - The request.
+   * @param mine - Its place in the queue.
+   * @returns True when it is over.
+   */
+  private request_isOver(asked: ConsentRequest, mine: Pending): boolean {
+    return mine.abort.signal.aborted || (asked.verified && !this.lines.has(asked.lineId ?? ''));
+  }
+
+  /**
+   * Applies an answer to the line and the connection.
+   *
+   * @param answer - What was answered.
+   * @param asked - The request.
+   * @param line - Its line, when it names one.
+   * @returns True when the request may run.
+   */
+  private answer_apply(answer: ConsentAnswer, asked: ConsentRequest, line: LineConsent | undefined): boolean {
+    if (answer === 'once') return true;
+    if (answer === 'line' && line !== undefined) {
+      line.kinds.add(asked.kind);
+      return true;
+    }
+    if (answer === 'all') {
+      this.allowedAll = true;
+      return true;
+    }
+    if (line !== undefined) {
+      line.noes += 1;
+      if (answer === 'refuse-line' || line.noes >= NOES_MAX) this.line_refuse(line, asked.lineId);
+    }
+    return false;
+  }
+
+  /**
+   * Refuses the rest of a line: its waiting questions are answered No at once.
+   *
+   * @param line - The line.
+   * @param lineId - Its id.
+   */
+  private line_refuse(line: LineConsent, lineId: string | undefined): void {
+    line.refused = true;
+    for (const one of this.pending) if (one.lineId === lineId) one.abort.abort();
+  }
+}

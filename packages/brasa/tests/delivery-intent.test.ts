@@ -24,7 +24,7 @@ cuminMock_install(() => ({
   errorStack: { stack_pop: () => undefined, stack_getAll: () => [] },
 }));
 
-const { deliveryIntents_read, deliveryIntent_matches, deliverySource_matches } = await import('../src/builtins/fs/deliveryIntent.js');
+const { deliveryIntents_read, deliveryIntent_matches, deliverySource_matches, sourceIntents_settle } = await import('../src/builtins/fs/deliveryIntent.js');
 const { commandOperands_place } = await import('../src/core/commandParse.js');
 const { downloadCommand } = await import('../src/builtins/fs/download.js');
 const { shellWords_tokenize } = await import('../src/lib/parser.js');
@@ -117,32 +117,41 @@ describe('every command that asks a surface to write a file is one the reader kn
 
 describe('deliverySource_matches', () => {
   const file = (path: string, filename: string, source: string | undefined) => ({ path, filename, source });
+  /** The sources of a line as chell settles them, against a session folder it showed. */
+  const settled = (line: string, cwd: string | null = '/home/me') => sourceIntents_settle(deliveryIntents_read(line, 'chris'), cwd)[0]?.sources ?? [];
 
-  it('a file is the source the line typed: an absolute operand is its root exactly, a relative one its root\'s tail', () => {
-    expect(deliverySource_matches([{ operand: '/home/me/scan.dcm' }], file('/home/me/scan.dcm', 'scan.dcm', '/home/me/scan.dcm'))).toBe(true);
-    expect(deliverySource_matches([{ operand: 'scan.dcm' }], file('/home/me/scan.dcm', 'scan.dcm', '/home/me/scan.dcm'))).toBe(true);
-    // The same base name under another root is not the file the line named.
-    expect(deliverySource_matches([{ operand: '/home/me/scan.dcm' }], file('/home/eve/scan.dcm', 'scan.dcm', '/home/eve/scan.dcm'))).toBe(false);
-    expect(deliverySource_matches([{ operand: 'me/scan.dcm' }], file('/home/eve/scan.dcm', 'scan.dcm', '/home/eve/scan.dcm'))).toBe(false);
-    expect(deliverySource_matches([{ operand: 'can.dcm' }], file('/home/me/scan.dcm', 'scan.dcm', '/home/me/scan.dcm'))).toBe(false);
-    // Written by another name, or with no root said: refused.
-    expect(deliverySource_matches([{ operand: '/home/me/scan.dcm' }], file('/home/me/scan.dcm', 'renamed.dcm', '/home/me/scan.dcm'))).toBe(false);
-    expect(deliverySource_matches([{ operand: '/home/me/scan.dcm' }], file('/home/me/scan.dcm', 'scan.dcm', undefined))).toBe(false);
+  it('a file is the source the line typed: absolute exactly, relative under the session folder shown', () => {
+    expect(deliverySource_matches(settled('download /home/me/scan.dcm ./out'), file('/home/me/scan.dcm', 'scan.dcm', '/home/me/scan.dcm'))).toBe(true);
+    expect(deliverySource_matches(settled('download scan.dcm ./out'), file('/home/me/scan.dcm', 'scan.dcm', '/home/me/scan.dcm'))).toBe(true);
+    // The same name under another root, or a relative name whose tail a foreign root shares, is not it.
+    expect(deliverySource_matches(settled('download /home/me/scan.dcm ./out'), file('/home/eve/scan.dcm', 'scan.dcm', '/home/eve/scan.dcm'))).toBe(false);
+    expect(deliverySource_matches(settled('download scan.dcm ./out'), file('/home/eve/scan.dcm', 'scan.dcm', '/home/eve/scan.dcm'))).toBe(false);
+    expect(deliverySource_matches(settled('download /home/me/scan.dcm ./out'), file('/home/me/scan.dcm', 'renamed.dcm', '/home/me/scan.dcm'))).toBe(false);
+    expect(deliverySource_matches(settled('download /home/me/scan.dcm ./out'), file('/home/me/scan.dcm', 'scan.dcm', undefined))).toBe(false);
   });
 
-  it('a folder\'s file is under the root and written by its path inside it', () => {
-    expect(deliverySource_matches([{ operand: 'scans' }], file('/home/me/scans/a/1.dcm', 'a/1.dcm', '/home/me/scans'))).toBe(true);
-    expect(deliverySource_matches([{ operand: 'scans' }], file('/home/me/scans/a/1.dcm', '1.dcm', '/home/me/scans'))).toBe(false);
-    expect(deliverySource_matches([{ operand: 'scans' }], file('/home/me/other/a/1.dcm', 'a/1.dcm', '/home/me/scans'))).toBe(false);
-    expect(deliverySource_matches([{ operand: '/home/me/scans' }], file('/home/eve/scans/a/1.dcm', 'a/1.dcm', '/home/eve/scans'))).toBe(false);
+  it('a relative source with no session folder shown binds nothing; spellings of the same path bind alike', () => {
+    expect(sourceIntents_settle(deliveryIntents_read('download scan.dcm ./out', 'chris'), null)[0]?.unbound).toContain('no session folder has been shown here');
+    for (const line of ['download ././scan.dcm ./out', 'download scan.dcm/ ./out', 'download .//scan.dcm ./out']) {
+      expect([line, deliverySource_matches(settled(line), file('/home/me/scan.dcm', 'scan.dcm', '/home/me/scan.dcm'))]).toEqual([line, true]);
+    }
+    // `./` alone is the session folder, as `.` is: only the session knows it.
+    expect(deliveryIntents_read('download ./ ./out', 'chris')[0]?.unbound).toContain('names a place only the session knows');
   });
 
-  it('a pattern binds a root whose name matches it in the folder it names; a written name never climbs or is absolute', () => {
-    expect(deliverySource_matches([{ pattern: '/home/me/*.dcm' }], file('/home/me/x.dcm', 'x.dcm', '/home/me/x.dcm'))).toBe(true);
-    expect(deliverySource_matches([{ pattern: '/home/me/*.dcm' }], file('/home/eve/x.dcm', 'x.dcm', '/home/eve/x.dcm'))).toBe(false);
-    expect(deliverySource_matches([{ pattern: '*.dcm' }], file('/home/me/x.txt', 'x.txt', '/home/me/x.txt'))).toBe(false);
+  it('a folder\'s file is under the root and written by its path inside it; the store root binds its own files', () => {
+    expect(deliverySource_matches(settled('download scans ./out'), file('/home/me/scans/a/1.dcm', 'a/1.dcm', '/home/me/scans'))).toBe(true);
+    expect(deliverySource_matches(settled('download scans ./out'), file('/home/me/scans/a/1.dcm', '1.dcm', '/home/me/scans'))).toBe(false);
+    expect(deliverySource_matches(settled('download scans ./out'), file('/home/me/other/a/1.dcm', 'a/1.dcm', '/home/me/scans'))).toBe(false);
+    expect(deliverySource_matches(settled('download / ./out'), file('/scan.dcm', 'scan.dcm', '/'))).toBe(true);
+  });
+
+  it('a pattern binds a root whose name matches it in the folder it names, trailing slash or not; a written name never climbs', () => {
+    expect(deliverySource_matches(settled('download /home/me/*.dcm ./out'), file('/home/me/x.dcm', 'x.dcm', '/home/me/x.dcm'))).toBe(true);
+    expect(deliverySource_matches(settled('download /home/me/*.dcm ./out'), file('/home/eve/x.dcm', 'x.dcm', '/home/eve/x.dcm'))).toBe(false);
+    expect(deliverySource_matches(settled('download scans/*/ ./out'), file('/home/me/scans/s1/a.dcm', 'a.dcm', '/home/me/scans/s1'))).toBe(true);
     for (const filename of ['../x', '/etc/passwd', 'a/../../x', '', 'a//b', './x']) {
-      expect([filename, deliverySource_matches([{ operand: '/home/me' }], file(`/home/me/${filename}`, filename, '/home/me'))]).toEqual([filename, false]);
+      expect([filename, deliverySource_matches(settled('download /home/me ./out'), file(`/home/me/${filename}`, filename, '/home/me'))]).toEqual([filename, false]);
     }
   });
 });

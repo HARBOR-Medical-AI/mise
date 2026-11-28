@@ -16,9 +16,11 @@ import { serverMessage_parse, CONTRACT_VERSION, RequestBroker, type ServerMessag
 import type { CommandEnvelope } from '@fnndsc/cumin';
 import type { BrasaEngine, CompletionResult } from '@fnndsc/brasa';
 import { SERVER_MESSAGE_TYPES, type ClosingCause, type FileDeliverRequest, type FileDeliverResult } from '@fnndsc/menu';
-import { deliveryIntent_matches, deliveryIntents_read, deliverySource_matches, lineHostOperations_read, envelope_deliver, sink_get, sink_set, surface_set, type DeliveredFile, type DeliveryIntent, type EngineRuns, type LineHostOperations, type OutputSink, type Surface } from '@fnndsc/brasa';
+import { builtinCommand_has, deliveryIntents_read, lineHostOperations_read, sourceIntents_settle, envelope_deliver, sink_get, sink_set, surface_set, type EngineRuns, type LineHostOperations, type OutputSink, type Surface } from '@fnndsc/brasa';
+import type { LocalEditResult } from '@fnndsc/menu/surface';
+import { HostConsent, type ConsentAsk } from './hostConsent.js';
+import { HostDesk, type HostDeskOptions } from './hostDesk.js';
 import { promptFromContext_render } from '../core/prompt/session.js';
-import { HostGrantBook } from './hostGrants.js';
 import { output_above } from '../core/lineDiscipline.js';
 import { terminalId_parse } from '../core/terminalId.js';
 import { HostPtyRelay, hostPtyTerminal_describe, type HostPtyDeclared, type HostPtyOutgoing, type HostPtyTerminal } from './hostPty.js';
@@ -44,6 +46,13 @@ export interface RemoteEngineOptions {
   /** Opens content in this machine's editor and returns the edited result. */
   onEdit?: (content: string, extension: string | undefined) => Promise<{ content: string; changed: boolean }>;
   onDeliver?: (request: FileDeliverRequest) => Promise<FileDeliverResult>;
+  /**
+   * Puts a question to the person on this chell's terminal: what the session asks beyond what a line asked for.
+   * Absent where there is no terminal, and nothing is asked.
+   */
+  consentAsk?: ConsentAsk;
+  /** `--allow-host-requests`: the session may run anything it asks on this machine until it disconnects. */
+  allowHostRequests?: boolean;
   /**
    * This chell's terminal, when it has one: declared on attach, so a `!` the
    * daemon runs under host control gets a pty of its own drawn here.
@@ -91,12 +100,16 @@ export class RemoteEngine implements BrasaEngine {
   private readonly onShell: ((command: string) => Promise<number>) | undefined;
   private readonly onEdit: ((content: string, extension: string | undefined) => Promise<{ content: string; changed: boolean }>) | undefined;
   private readonly onDeliver: ((request: FileDeliverRequest) => Promise<FileDeliverResult>) | undefined;
-  /** What each line in flight asked to have delivered here, by its request id. */
-  private readonly deliveryIntents: Map<string, DeliveryIntent[]> = new Map<string, DeliveryIntent[]>();
-  /** The files each line in flight has had delivered here, by its request id: a file is delivered once. */
-  private readonly deliveredFiles: Map<string, Set<string>> = new Map<string, Set<string>>();
-  /** What each line in flight asked to have run here (host commands, pipeline segments, edits), by its request id. */
-  private readonly hostGrants: HostGrantBook = new HostGrantBook();
+  /** What the session asks this machine to run, checked against each line and the person's word (`hostDesk.ts`). */
+  private readonly desk: HostDesk;
+  /** The person's word for what no grant covers. */
+  private readonly consent: HostConsent;
+  /** The session's messages held while a question is put to the person, and how many bytes they hold. */
+  private readonly held: Buffer[] = [];
+  private heldBytes: number = 0;
+  private heldDropped: boolean = false;
+  /** How many of the session's own questions are open on this terminal. */
+  private promptsOpen: number = 0;
   private readonly onClosing: ((cause: ClosingCause) => void) | undefined;
   private readonly onStale: ((stale: boolean) => void) | undefined;
   /** Hands this terminal to a program on the daemon's pty, when this chell is in one. */
@@ -110,10 +123,15 @@ export class RemoteEngine implements BrasaEngine {
   public hostControl: string[] = [];
   /** Which words the session's engine runs itself, as it said at attach; null from a daemon that did not say. */
   private engineRuns: EngineRuns = null;
-  /** The program on the daemon's pty this chell's terminal is handed to, by the line that asked for it. */
-  private readonly ptyByLine: Map<string, string> = new Map<string, string>();
   /** Whether the connection has closed: a line read after it is not sent. */
   private closed: boolean = false;
+  /** The session folder this chell last showed (the pushed prompt context); a relative download source binds under it. */
+  private sessionCwd: string | null = null;
+  /** Lines being read before they are sent, and those cancelled meanwhile (never sent). */
+  private readonly preparing: Set<string> = new Set<string>();
+  private readonly cancelledUnsent: Set<string> = new Set<string>();
+  /** Lines are read and sent in the order they were asked for. */
+  private sendOrder: Promise<void> = Promise.resolve();
   private nextId: number = 0;
   private activeExecuteId: string | undefined;
   /** Exit statuses the daemon sent with results, by request id, until the request reads them. */
@@ -146,6 +164,60 @@ export class RemoteEngine implements BrasaEngine {
     this.hostPty = hostPtyTerminal_describe(options.terminal) !== undefined
       ? new HostPtyRelay(options.terminal as HostPtyTerminal, (message: HostPtyOutgoing): void => { this.ws.send(JSON.stringify(message)); })
       : null;
+    this.consent = new HostConsent(options.consentAsk ?? null, options.allowHostRequests ?? false);
+    // What the session said while a question was open is shown once it is answered, in order.
+    this.consent.idle_set((): void => { this.held_flush(); });
+    this.desk = new HostDesk({
+      message_send: (message: Record<string, unknown>): void => { this.ws.send(JSON.stringify(message)); },
+      consent: this.consent,
+      hostPty: this.hostPty,
+      terminal_isBusy: (): boolean => this.promptsOpen > 0,
+      ...handlers_compose(options),
+    });
+  }
+
+  /**
+   * Whether this session may run anything it asks on this machine until it disconnects (`--allow-host-requests`,
+   * or `allow all` answered).
+   *
+   * @returns True when it may.
+   *
+   * @example
+   * ```ts
+   * if (remote.hostRequests_allAllowed()) say('this session may run anything it asks here');
+   * ```
+   */
+  public hostRequests_allAllowed(): boolean {
+    return this.consent.all_isAllowed();
+  }
+
+  /**
+   * Holds a message of the session's while a question is open, within a bound; past it, the rest is dropped and
+   * said once after the answer, never covering the question.
+   *
+   * @param payload - The message.
+   * @returns True when it was held (or dropped), so it is not handled now.
+   */
+  private held_take(payload: Buffer): boolean {
+    if (!this.consent.question_isOpen()) return false;
+    if (this.heldBytes + payload.length > HELD_BYTES_MAX) {
+      this.heldDropped = true;
+      return true;
+    }
+    this.held.push(payload);
+    this.heldBytes += payload.length;
+    return true;
+  }
+
+  /** Handles, in order, what the session said while a question was open. */
+  private held_flush(): void {
+    const held: Buffer[] = this.held.splice(0);
+    this.heldBytes = 0;
+    for (const payload of held) this.message_handle(payload);
+    if (this.heldDropped) {
+      this.heldDropped = false;
+      console.error(chalk.yellow('[!] some of the session\'s output while the question was open was more than this chell holds, and was not shown'));
+    }
   }
 
   /**
@@ -208,8 +280,11 @@ export class RemoteEngine implements BrasaEngine {
           engine.hostControl = message.hostControl ?? [];
           engine.backendId = message.backend;
           if (message.engineCommands !== undefined) {
+            // A segment leaves the engine on its own only when both say so: this chell's own catalogue (the core
+            // and the backends it registers) and the session's list. A word either knows as the engine's is
+            // granted nothing automatically; a request for it is put to the person.
             const words: Set<string> = new Set<string>(message.engineCommands);
-            engine.engineRuns = (word: string): boolean => words.has(word);
+            engine.engineRuns = (word: string): boolean => builtinCommand_has(word) || words.has(word);
           }
           ws.on('message', (payload: Buffer) => engine.message_handle(payload));
           // A closed connection's lines ask for nothing more here, and the terminal is this chell's again.
@@ -226,16 +301,29 @@ export class RemoteEngine implements BrasaEngine {
   /** @inheritdoc */
   public async line_execute(line: string): Promise<CommandEnvelope[]> {
     const id: string = String(this.nextId++);
+    // The line is this chell's from now: a cancel while it is read stops it before it is sent.
+    this.activeExecuteId = id;
+    this.preparing.add(id);
     // What the line asks to have run here, read from the line itself (by the session's own words) before the
-    // daemon sees it: a request is run only against this, once. Read first, then registered with everything else
-    // the line may ask, immediately before the line is sent.
-    const operations: LineHostOperations = await lineHostOperations_read(line, this.engineRuns);
+    // daemon sees it: a request is run only against this, once. Lines are read and sent in order.
+    const reading: Promise<LineHostOperations> = this.sendOrder.then((): Promise<LineHostOperations> => lineHostOperations_read(line, this.engineRuns));
+    this.sendOrder = reading.then((): void => undefined, (): void => undefined);
+    let operations: LineHostOperations;
+    try {
+      operations = await reading;
+    } finally {
+      this.preparing.delete(id);
+    }
     if (this.closed) throw new Error('the session closed before the line was sent');
+    if (this.cancelledUnsent.delete(id)) {
+      if (this.activeExecuteId === id) this.activeExecuteId = undefined;
+      return [];
+    }
     this.activeExecuteId = id;
     this.requestSinks.set(id, sink_get());
-    // What this line asks to have written here: a delivery is honoured only against this.
-    this.deliveryIntents.set(id, deliveryIntents_read(line, this.backendId));
-    this.hostGrants.line_open(id, operations);
+    // What this line asks to have written here (its sources settled against the session folder shown now): a
+    // delivery is honoured only against this. Registered with its grants immediately before the line is sent.
+    this.desk.line_open(id, line, operations, sourceIntents_settle(deliveryIntents_read(line, this.backendId), this.sessionCwd));
     try {
       const envelopes: CommandEnvelope[] = await this.request<CommandEnvelope[]>('execute', { line }, id);
       // A daemon that names no status leaves the envelopes to say it.
@@ -276,6 +364,11 @@ export class RemoteEngine implements BrasaEngine {
   /** @inheritdoc */
   public line_cancel(): boolean {
     if (this.activeExecuteId === undefined) return false;
+    // Still being read: it is never sent.
+    if (this.preparing.has(this.activeExecuteId)) {
+      this.cancelledUnsent.add(this.activeExecuteId);
+      return true;
+    }
     // A cancelled line asks for nothing more here, whatever the daemon still sends.
     this.line_retire(this.activeExecuteId);
     this.ws.send(JSON.stringify({ type: 'cancel', id: this.activeExecuteId }));
@@ -289,42 +382,8 @@ export class RemoteEngine implements BrasaEngine {
    * @param lineId - The line, or none for all.
    */
   private line_retire(lineId?: string): void {
-    const lines: string[] = lineId !== undefined ? [lineId] : [...new Set([...this.deliveryIntents.keys(), ...this.ptyByLine.keys()])];
-    if (lineId === undefined) {
-      this.closed = true;
-      this.hostGrants.all_close();
-    }
-    for (const one of lines) {
-      this.deliveryIntents.delete(one);
-      this.deliveredFiles.delete(one);
-      this.hostGrants.line_close(one);
-      const ptyId: string | undefined = this.ptyByLine.get(one);
-      this.ptyByLine.delete(one);
-      // The terminal is this chell's again: raw mode off, keys its own.
-      if (ptyId !== undefined) this.hostPty?.exit(ptyId);
-    }
-  }
-
-  /**
-   * Hands this terminal to the program the daemon started on its pty, only for a `!` the line sent from here asked
-   * for (spending that grant); otherwise tells the daemon no, so it stops the program, and keeps the terminal.
-   *
-   * @param ptyId - The program's id.
-   * @param lineId - The line the daemon says is asking.
-   * @param command - The program's command.
-   */
-  private hostPty_start(ptyId: string, lineId: string | undefined, command: string | undefined): void {
-    const refusal: string | null = command === undefined
-      ? 'refused: the session asked to hand this terminal to a program it did not name; nothing was handed over'
-      : this.hostGrants.grant_take(lineId, { kind: 'shell', command });
-    if (refusal !== null || lineId === undefined) {
-      const reason: string = refusal ?? 'refused: no line';
-      console.error(chalk.red(`[!] ${reason}`));
-      this.ws.send(JSON.stringify({ type: 'hostPtyRefuse', ptyId, reason }));
-      return;
-    }
-    this.ptyByLine.set(lineId, ptyId);
-    this.hostPty?.start(ptyId);
+    if (lineId === undefined) this.closed = true;
+    this.desk.line_retire(lineId);
   }
 
   /**
@@ -375,6 +434,9 @@ export class RemoteEngine implements BrasaEngine {
    */
   private message_handle(payload: Buffer): void {
     const raw: unknown = safeJson_parse(payload.toString());
+    // While a question is put to the person, the terminal is the question's: what the session says waits, except
+    // a line's end (which answers its questions) and its requests (which wait their own turn).
+    if (!held_passes(raw) && this.held_take(payload)) return;
     const parsed = serverMessage_parse(raw);
     if (!parsed.ok || parsed.value === undefined) {
       // A well-formed message of a type this client does not know is a
@@ -426,6 +488,8 @@ export class RemoteEngine implements BrasaEngine {
         // Render the daemon's context with this surface's own theme, so a
         // remote prompt looks the way the local operator configured it.
         this.latestPrompt = promptFromContext_render(message.context);
+        // The folder the person sees the session in: a relative download source of their next line is under it.
+        this.sessionCwd = message.context.cwd.startsWith('/') ? message.context.cwd : null;
         break;
       case 'progress':
         {
@@ -445,16 +509,16 @@ export class RemoteEngine implements BrasaEngine {
         this.output_render(message.channel, message.chunk, message.id);
         break;
       case 'pipe':
-        void this.pipe_run(message.pipeId, message.command, message.input, message.lineId);
+        void this.desk.pipe_run(message.pipeId, message.command, message.input, message.lineId);
         break;
       case 'shell':
-        void this.shell_run(message.shellId, message.command, message.lineId);
+        void this.desk.shell_run(message.shellId, message.command, message.lineId);
         break;
       case 'edit':
-        void this.edit_run(message.editId, message.content, message.extension, message.lineId, message.named);
+        void this.desk.edit_run(message.editId, message.content, message.named, message.lineId);
         break;
       case 'deliver':
-        void this.deliver_run(message.deliverId, message.id, {
+        void this.desk.deliver_run(message.deliverId, message.id, {
           path: message.path,
           filename: message.filename,
           ...(message.destination !== undefined ? { destination: message.destination } : {}),
@@ -467,7 +531,7 @@ export class RemoteEngine implements BrasaEngine {
         this.onClosing?.(message.cause);
         break;
       case 'hostPtyStart':
-        this.hostPty_start(message.ptyId, message.lineId, message.command);
+        void this.desk.hostPty_start(message.ptyId, message.lineId, message.command);
         break;
       case 'hostPtyData':
         this.hostPty?.data(message.ptyId, message.data);
@@ -512,179 +576,18 @@ export class RemoteEngine implements BrasaEngine {
         // input; an inability to prompt is a failure and reports as one.
         throw new Error('this surface cannot prompt');
       }
-      const answer: string = await this.onPrompt(message, hidden);
+      // The session's own question holds the terminal: nothing of the person's word is asked over it.
+      this.promptsOpen += 1;
+      let answer: string;
+      try {
+        answer = await this.onPrompt(message, hidden);
+      } finally {
+        this.promptsOpen -= 1;
+      }
       this.ws.send(JSON.stringify({ type: 'promptAnswer', promptId, answer }));
     } catch (error: unknown) {
       const reason: string = error instanceof Error ? error.message : String(error);
       this.ws.send(JSON.stringify({ type: 'promptError', promptId, reason }));
-    }
-  }
-
-  /**
-   * Runs a pipeline segment the daemon asked for on this machine and returns
-   * its output. Data crosses the wire base64-encoded. With no pipe handler,
-   * returns the input unchanged so the pipeline does not hang.
-   *
-   * @param pipeId - The pipe correlation id.
-   * @param command - The segment command line.
-   * @param input - The base64-encoded input bytes.
-   * @param lineId - The line the daemon says is asking, by this chell's id.
-   */
-  private async pipe_run(pipeId: string, command: string, input: string, lineId: string | undefined): Promise<void> {
-    const inputBytes: Buffer = Buffer.from(input, 'base64');
-    try {
-      // Spent before anything runs: a segment the line sent from here did not ask for runs nothing.
-      const refusal: string | null = this.hostGrants.grant_take(lineId, { kind: 'pipe', command });
-      if (refusal !== null) throw new Error(refusal);
-      if (!this.onPipe) {
-        // Passing input through unchanged would silently turn the segment
-        // into a no-op; an inability to run it is a failure.
-        throw new Error('this surface cannot run pipeline segments');
-      }
-      const output: Buffer = await this.onPipe(command, inputBytes);
-      this.ws.send(JSON.stringify({ type: 'pipeResult', pipeId, output: output.toString('base64') }));
-    } catch (error: unknown) {
-      const reason: string = error instanceof Error ? error.message : String(error);
-      this.ws.send(JSON.stringify({ type: 'pipeError', pipeId, reason }));
-    }
-  }
-
-  /**
-   * Runs a host-shell command the daemon delegated to this surface and returns
-   * only its exit status; the process owns this surface's terminal directly.
-   *
-   * @param shellId - Correlation id for the shell request.
-   * @param command - The shell command without the leading `!`.
-   * @param lineId - The line the daemon says is asking, by this chell's id.
-   */
-  private async shell_run(shellId: string, command: string, lineId: string | undefined): Promise<void> {
-    try {
-      const refusal: string | null = this.hostGrants.grant_take(lineId, { kind: 'shell', command });
-      if (refusal !== null) throw new Error(refusal);
-      if (!this.onShell) {
-        throw new Error('this surface cannot run shell commands');
-      }
-      const exitCode: number = await this.onShell(command);
-      this.ws.send(JSON.stringify({ type: 'shellResult', shellId, exitCode }));
-    } catch (error: unknown) {
-      const reason: string = error instanceof Error ? error.message : String(error);
-      this.ws.send(JSON.stringify({ type: 'shellError', shellId, reason }));
-    }
-  }
-
-  /**
-   * Opens content in this machine's editor (the daemon asked for it) and
-   * returns the edited result. With no edit handler, returns the content
-   * unchanged so the command does not hang.
-   *
-   * @param editId - The edit correlation id.
-   * @param content - The content to edit.
-   * @param extension - An optional filename extension.
-   * @param lineId - The line the daemon says is asking, by this chell's id.
-   * @param named - The file as the line typed it, as the daemon says.
-   */
-  private async edit_run(editId: string, content: string, extension: string | undefined, lineId: string | undefined, named: string | undefined): Promise<void> {
-    try {
-      const refusal: string | null = this.hostGrants.grant_take(lineId, { kind: 'edit', named });
-      if (refusal !== null) throw new Error(refusal);
-      if (!this.onEdit) {
-        // Returning the content unchanged would report a successful edit that
-        // never happened; an inability to edit is a failure.
-        throw new Error('this surface cannot edit');
-      }
-      const result: { content: string; changed: boolean } = await this.onEdit(content, extension);
-      this.ws.send(JSON.stringify({ type: 'editResult', editId, content: result.content, changed: result.changed }));
-    } catch (error: unknown) {
-      const reason: string = error instanceof Error ? error.message : String(error);
-      this.ws.send(JSON.stringify({ type: 'editError', editId, reason }));
-    }
-  }
-
-  /**
-   * Refuses a delivery this client did not ask for.
-   *
-   * The daemon names where on this machine a file is to be written. That is
-   * honoured only against one line: the line the daemon says is asking, by
-   * the id this client gave it, while that line is still in flight here;
-   * and only when the place named is the destination that line's own
-   * delivering command gave (`deliveryIntents_read`). Another line running
-   * beside it lends it nothing. A source path, a word of another command, a
-   * delivery after its line has ended, a destination written as a
-   * reference, or one the daemon made up are all refused, by name.
-   *
-   * A daemon that does not say which line is asking is refused: without the
-   * line, a delivery that is late cannot be told from one that was asked for.
-   * The refusal says the daemon is the older of the two.
-   *
-   * @param executeId - This client's id for the asking line, as the daemon gave it.
-   * @param request - The delivery the daemon asked for.
-   * @throws {Error} When that line is not in flight, or did not ask for a delivery to that place.
-   */
-  private delivery_require(executeId: string | undefined, request: FileDeliverRequest): void {
-    const where: string = request.destination !== undefined && request.destination.length > 0 ? JSON.stringify(request.destination) : 'the working directory';
-    const asked: string = `the session asked to write ${JSON.stringify(request.filename)} to ${where}`;
-    if (executeId === undefined) {
-      throw new Error(`refused: ${asked} and did not say which line asked for it, so it cannot be told from a delivery that is late or was never asked for; nothing was written. The session's daemon is older than this chell: upgrade the daemon`);
-    }
-    const intents: DeliveryIntent[] | undefined = this.deliveryIntents.get(executeId);
-    if (intents === undefined) throw new Error(`refused: ${asked} for a line that is not running here; nothing was written`);
-    if (intents.length === 0) throw new Error(`refused: ${asked}, and the line sent from here asks for no file; nothing was written`);
-    if (deliveryIntent_matches(intents, request.destination)) {
-      this.deliverySource_require(executeId, intents, request, asked);
-      return;
-    }
-    const unbound: DeliveryIntent | undefined = intents.find((intent: DeliveryIntent): boolean => intent.unbound !== undefined);
-    if (unbound !== undefined) throw new Error(`refused: ${asked}, and the line sent from here cannot say where: ${unbound.unbound}; nothing was written`);
-    const named: string = intents.map((intent: DeliveryIntent): string => (intent.destination === null ? 'the working directory' : JSON.stringify(intent.destination))).join(', ');
-    throw new Error(`refused: ${asked}, and the line sent from here named ${named}; nothing was written`);
-  }
-
-  /**
-   * Refuses a delivered file no source the line named would send, and one already delivered for the line: a file
-   * of a folder the line named keeps its path inside it; any other file is the source itself, by name.
-   *
-   * @param executeId - This client's id for the asking line.
-   * @param intents - What the line asked for.
-   * @param request - The delivery.
-   * @param asked - What was asked, in words.
-   * @throws {Error} When no source sends it, or it was delivered already.
-   */
-  private deliverySource_require(executeId: string, intents: DeliveryIntent[], request: FileDeliverRequest, asked: string): void {
-    const bound: DeliveryIntent[] = intents.filter((intent: DeliveryIntent): boolean => deliveryIntent_matches([intent], request.destination));
-    const file: DeliveredFile = { path: request.path, filename: request.filename, source: request.source };
-    if (!bound.some((intent: DeliveryIntent): boolean => intent.sources === undefined || deliverySource_matches(intent.sources, file))) {
-      throw new Error(`refused: ${asked}, from ${JSON.stringify(request.path)}, which no source the line sent from here names; nothing was written`);
-    }
-    // Once per place it would be written: the destination and the name under it.
-    const key: string = `${request.destination ?? ''}\u0000${request.filename}`;
-    const delivered: Set<string> = this.deliveredFiles.get(executeId) ?? new Set<string>();
-    if (delivered.has(key)) throw new Error(`refused: ${asked} a second time for the same line; nothing was written`);
-    delivered.add(key);
-    this.deliveredFiles.set(executeId, delivered);
-  }
-
-  /**
-   * Places a file on this client's machine at the daemon's request.
-   *
-   * @param deliverId - The delivery correlation id.
-   * @param executeId - This client's id for the line the daemon says is asking; absent from an older daemon, whose delivery is refused.
-   * @param request - What to deliver and where the operator asked for it.
-   */
-  private async deliver_run(deliverId: string, executeId: string | undefined, request: FileDeliverRequest): Promise<void> {
-    try {
-      if (!this.onDeliver) {
-        // Reporting success for a file nobody received would be worse than
-        // failing: the operator would go looking for it.
-        throw new Error('this surface cannot receive a file');
-      }
-      this.delivery_require(executeId, request);
-      const result: FileDeliverResult = await this.onDeliver(request);
-      this.ws.send(JSON.stringify({
-        type: 'deliverResult', deliverId, location: result.location, bytes: result.bytes,
-      }));
-    } catch (error: unknown) {
-      const reason: string = error instanceof Error ? error.message : String(error);
-      this.ws.send(JSON.stringify({ type: 'deliverError', deliverId, reason }));
     }
   }
 
@@ -744,6 +647,8 @@ export class RemoteEngine implements BrasaEngine {
    * Closes the connection.
    */
   public close(): void {
+    // Everything the connection's lines may do here ends as the close begins, not when the socket says so.
+    this.line_retire();
     this.ws.close();
   }
 }
@@ -761,4 +666,43 @@ function safeJson_parse(text: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/** The most bytes of the session's messages held while a question is open. */
+const HELD_BYTES_MAX: number = 1024 * 1024;
+
+/** Messages that are never held while a question is open: a line's end, and requests (which queue their own). */
+const HELD_PASSES: ReadonlySet<string> = new Set(['result', 'error', 'complete', 'shell', 'pipe', 'edit', 'deliver']);
+
+/**
+ * Whether a message of the session's goes through while a question is open.
+ *
+ * @param raw - The parsed message.
+ * @returns True for a line's end and for requests.
+ */
+function held_passes(raw: unknown): boolean {
+  const type: unknown = typeof raw === 'object' && raw !== null ? (raw as { type?: unknown }).type : undefined;
+  return typeof type === 'string' && HELD_PASSES.has(type);
+}
+
+/** The runners a desk is given: this chell's own handlers, each only when it has one. */
+type DeskHandlers = Pick<HostDeskOptions, 'segment_run' | 'shellCommand_run' | 'editor_open' | 'file_deliver'>;
+
+/**
+ * The desk's runners from this chell's own handlers.
+ *
+ * @param options - The engine's options.
+ * @returns The runners it has.
+ */
+function handlers_compose(options: RemoteEngineOptions): DeskHandlers {
+  const pipe_run = options.onPipe;
+  const shell_run = options.onShell;
+  const edit_run = options.onEdit;
+  const file_put = options.onDeliver;
+  return {
+    ...(pipe_run !== undefined ? { segment_run: (command: string, input: Buffer): Promise<Buffer> => pipe_run(command, input) } : {}),
+    ...(shell_run !== undefined ? { shellCommand_run: (command: string): Promise<number> => shell_run(command) } : {}),
+    ...(edit_run !== undefined ? { editor_open: (content: string, extension: string | undefined): Promise<LocalEditResult> => edit_run(content, extension) } : {}),
+    ...(file_put !== undefined ? { file_deliver: (request: FileDeliverRequest): Promise<FileDeliverResult> => file_put(request) } : {}),
+  };
 }

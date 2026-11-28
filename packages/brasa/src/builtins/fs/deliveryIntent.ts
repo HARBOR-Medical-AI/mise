@@ -30,9 +30,9 @@ import { shellWords_tokenize, type ShellSegment, type ShellWord } from '../../li
 import { quoteOpen_find } from '../../lib/quoting.js';
 import { commandList_parse, type ListCommand } from '../../lib/semicolonParser.js';
 import { downloadCommand } from './download.js';
-import type { DeliveryIntent, SourceIntent } from './deliveryMatch.js';
+import { storePath_normalise, type DeliveryIntent, type SourceIntent } from './deliveryMatch.js';
 
-export { deliveryIntent_matches, deliverySource_matches, type DeliveredFile, type DeliveryIntent, type SourceIntent } from './deliveryMatch.js';
+export { deliveryIntent_matches, deliverySource_matches, sourceIntents_settle, storePath_normalise, type DeliveredFile, type DeliveryIntent, type SourceIntent } from './deliveryMatch.js';
 
 /** A command that delivers, and the operand that names where. */
 interface DeliveringCommand {
@@ -112,7 +112,8 @@ function word_isReferenced(word: ShellWord): boolean {
 function sourceIntent_read(word: ShellWord): SourceIntent {
   const spelled: string = word.pathnameExpansion ? word.globPattern : word.value;
   const parts: string[] = spelled.split('/');
-  if (spelled === '' || spelled === '.' || parts.includes('..') || parts[0] === '~') {
+  // `.`, `./` and `././` alike are the session folder itself: only the session knows it.
+  if (storePath_normalise(spelled) === '' || parts.includes('..') || parts[0] === '~') {
     return { unresolved: `its source ${JSON.stringify(word.value)} names a place only the session knows: type the folder's path` };
   }
   return word.pathnameExpansion ? { pattern: spelled } : { operand: spelled };

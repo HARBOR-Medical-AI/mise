@@ -51,6 +51,7 @@ export * from './lib/pipe.js';
 export * from './lib/semicolonParser.js';
 export * from './builtins/fs/deliveryIntent.js';
 export { lineHostOperations_read, type EngineRuns, type LineHostOperations, type PipeGrant } from './builtins/sys/hostGrants.js';
+export { builtinCommand_has } from './core/commandRegistry.js';
 export { commandOperands_place } from './core/commandParse.js';
 export { privateTemp_write, suffix_safe, wireName_place, type HostPlace, type PrivateTemp } from '@fnndsc/fond';
 export * from './lib/completer/index.js';

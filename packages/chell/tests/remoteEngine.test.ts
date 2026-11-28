@@ -89,12 +89,17 @@ let installedSurface: unknown = null;
 // not in the table fails the test that used it. The match is brasa's own.
 const DELIVERY_LINES: ReadonlyArray<{ line: string; intents: Array<{ verb: string; destination: string | null }> }> =
   (JSON.parse(readFileSync(new URL('../../brasa/tests/fixtures/deliveryLines.json', import.meta.url), 'utf8')) as { lines: Array<{ line: string; intents: Array<{ verb: string; destination: string | null }> }> }).lines;
-const { deliveryIntent_matches, deliverySource_matches } = await import('../../brasa/dist/builtins/fs/deliveryMatch.js');
+const { deliveryIntent_matches, deliverySource_matches, sourceIntents_settle } = await import('../../brasa/dist/builtins/fs/deliveryMatch.js');
+const { wireName_place } = await import('../../fond/dist/hostPlace.js');
+// The words this chell's own catalogue knows as the engine's (core and ChRIS), for these tests.
+const LOCAL_WORDS: ReadonlySet<string> = new Set(['cat', 'wc', 'grep', 'sort', 'ls', 'pwd', 'echo', 'command', 'edit', 'download', 'pipeline']);
 // What a line asks to have run here: the same, from the table brasa's host-grants test holds its reader to. A line
 // that looks like one (a `!`, a pipe, an `edit` or `command` head) but is not in the table fails the test that used it.
 interface HostLine { line: string; shells: string[]; pipes: Array<{ command: string; required: boolean }>; edits: string[] }
 // Each read: the line, and the session's words it was read by (null when the session said none).
 const hostReads: Array<{ line: string; engineRuns: ((word: string) => boolean) | null }> = [];
+// When set, a line's read waits on it (a line held while it is read).
+let readHold: Promise<void> | null = null;
 const HOST_LINES: ReadonlyArray<HostLine> = (JSON.parse(readFileSync(new URL('../../brasa/tests/fixtures/hostLines.json', import.meta.url), 'utf8')) as { lines: HostLine[] }).lines;
 jest.unstable_mockModule('@fnndsc/brasa', () => ({
   deliveryIntents_read: (line: string, backend: string | undefined): Array<{ verb: string; destination: string | null }> => {
@@ -107,8 +112,12 @@ jest.unstable_mockModule('@fnndsc/brasa', () => ({
   },
   deliveryIntent_matches,
   deliverySource_matches,
+  sourceIntents_settle,
+  wireName_place,
+  builtinCommand_has: (word: string): boolean => LOCAL_WORDS.has(word),
   lineHostOperations_read: async (line: string, engineRuns: ((word: string) => boolean) | null): Promise<{ shells: string[]; pipes: Array<{ command: string; required: boolean }>; edits: string[] }> => {
     hostReads.push({ line, engineRuns });
+    if (readHold !== null) await readHold;
     const row: HostLine | undefined = HOST_LINES.find((one: HostLine): boolean => one.line === line);
     if (row === undefined && /^\s*(!|edit |command )|\|/.test(line)) throw new Error(`not in the shared table: ${line}`);
     return { shells: row?.shells ?? [], pipes: row?.pipes ?? [], edits: row?.edits ?? [] };
@@ -652,6 +661,26 @@ describe('RemoteEngine live output', () => {
       expect(sent).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'deliverResult', deliverId: 'd1' })]));
     });
 
+    it('two files whose destination is one file (not a folder) are not both written: the place is reserved once', async () => {
+      const delivered: string[] = [];
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        const id = String(sent.id);
+        process.nextTick(() => {
+          for (const [deliverId, path, filename] of [['h1', '/home/me/scans/a.dcm', 'a.dcm'], ['h2', '/home/me/scans/b.dcm', 'b.dcm']]) {
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'deliver', deliverId, id, path, filename, destination: './out', source: '/home/me/scans' })));
+          }
+          setTimeout(() => { result_emit(ws, id); }, 10);
+        });
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onDeliver: async (request) => { delivered.push(request.filename); return { location: 'x', bytes: 1 }; } });
+      await remote.line_execute('download /home/me/scans ./out');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const sent = (FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket).sent as Array<Record<string, unknown>>;
+      expect(delivered).toEqual(['a.dcm']);
+      expect(refusal_of(sent, 'h2')).toContain('which this line has written already');
+      remote.close();
+    });
+
     it('a file of the same name under another root, and a second file for the same place, are refused', async () => {
       const delivered: string[] = [];
       scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
@@ -674,6 +703,12 @@ describe('RemoteEngine live output', () => {
       expect(refusal_of(sent, 'g1')).toContain('which no source the line sent from here names');
       expect(refusal_of(sent, 'g3')).toBeDefined();
       remote.close();
+    });
+
+    it('a relative source, with no session folder shown here, binds nothing', async () => {
+      const { sent, delivered } = await delivery_during('download scan.dcm ./out', './out', { path: '/home/me/scan.dcm' });
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toContain('no session folder has been shown here');
     });
 
     it('a file no source of the line names is refused, though the destination is right', async () => {
@@ -703,13 +738,25 @@ describe('RemoteEngine live output', () => {
         token: 'token',
         onDeliver: async (request) => { delivered.push(request.filename); return { location: `/written/${request.filename}`, bytes: 1 }; },
       });
-      await remote.line_execute('download /home/me/scans ./out');
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      // The destination is a folder that exists, so each file has a place of its own inside it.
+      const here: string = process.cwd();
+      const { mkdtempSync, mkdirSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const work: string = mkdtempSync(`${tmpdir()}/chell-deliver-`);
+      mkdirSync(`${work}/out`);
+      process.chdir(work);
+      try {
+        await remote.line_execute('download /home/me/scans ./out');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } finally {
+        process.chdir(here);
+      }
       const sent = (FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket).sent as Array<Record<string, unknown>>;
       expect(delivered).toEqual(['a/1.dcm', 'b.dcm']);
-      expect(refusal_of(sent, 'f3')).toContain('a second time for the same line');
+      expect(refusal_of(sent, 'f3')).toContain('which this line has written already');
       expect(refusal_of(sent, 'f4')).toContain('which no source the line sent from here names');
-      expect(refusal_of(sent, 'f5')).toContain('which no source the line sent from here names');
+      // A name that climbs has no place on this machine: refused before anything else is asked of it.
+      expect(refusal_of(sent, 'f5')).toContain("has a '..' part; nothing was written");
       remote.close();
     });
 
@@ -1084,6 +1131,38 @@ describe('RemoteEngine live output', () => {
       expect(delivered).toEqual([]);
     });
 
+    it('a line cancelled while it is still being read is never sent', async () => {
+      let release: () => void = (): void => undefined;
+      readHold = new Promise<void>((resolve) => { release = resolve; });
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token' });
+      const running: Promise<unknown> = remote.line_execute('cat x | tr a b');
+      await new Promise((r) => setTimeout(r, 5));
+      expect(remote.line_cancel()).toBe(true);
+      readHold = null;
+      release();
+      expect(await running).toEqual([]);
+      expect(FakeWebSocket.instances[0].sent.filter((one) => one.type === 'execute' || one.type === 'cancel')).toEqual([]);
+    });
+
+    it('a hand-over this chell has no terminal for is refused without spending the line\'s grant', async () => {
+      const shell = jest.fn(async (_command: string): Promise<number> => 0);
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p2', lineId: id, command: 'ls -la' })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: 's2', command: 'ls -la', lineId: id })));
+          setTimeout(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] }))); }, 5);
+        });
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell });
+      await remote.line_execute('!ls -la');
+      await new Promise((r) => setTimeout(r, 5));
+      const sent = FakeWebSocket.instances[0].sent;
+      expect(sent).toContainEqual(expect.objectContaining({ type: 'hostPtyRefuse', ptyId: 'p2', reason: expect.stringContaining('no terminal to hand over') }));
+      expect(shell).toHaveBeenCalledWith('ls -la');
+    });
+
     it('a line read after the connection closed is not sent', async () => {
       remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token' });
       remote.close();
@@ -1123,11 +1202,142 @@ describe('RemoteEngine live output', () => {
     const said = hostReads[0]?.engineRuns;
     expect(said?.('grep')).toBe(true);
     expect(said?.('tr')).toBe(false);
+    // A word this chell knows as the engine's, left off the session's list, is still the engine's: never granted.
+    expect(said?.('wc')).toBe(true);
     remote.close();
     attachResponse = { ...attachResponse, engineCommands: undefined };
     remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token' });
     await remote.line_execute('cat x | tr a b');
     expect(hostReads[1]?.engineRuns).toBeNull();
+  });
+
+  describe('what no grant covers is put to the person, and runs on their word', () => {
+    /** A question double: answers from a list; a question with no answer waits until withdrawn. */
+    const consent_make = (answers: string[]) => {
+      const questions: string[] = [];
+      const onConsent = async (question: string, signal: AbortSignal): Promise<string> => {
+        questions.push(question);
+        const answer: string | undefined = answers.shift();
+        if (answer !== undefined) return answer;
+        return new Promise<string>((_resolve, reject) => { signal.addEventListener('abort', () => { reject(new Error('withdrawn')); }); });
+      };
+      return { onConsent, questions };
+    };
+    /** A daemon that, per line, sends the shell requests `commands(line)` names, one after another, then the result. */
+    const shells_play = (commands: (line: string) => string[]): void => {
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          commands(String(sent.line)).forEach((command: string, at: number) => {
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: `${id}-${String(at)}`, command, lineId: id })));
+          });
+          setTimeout(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] }))); }, 30);
+        });
+      };
+    };
+
+    it('a host step after && runs on yes, once; the line\'s other requests are asked again, and none of the next line\'s are remembered', async () => {
+      const shell = jest.fn(async (_command: string): Promise<number> => 0);
+      const { onConsent, questions } = consent_make(['y', 'n']);
+      shells_play((line: string) => (line === 'ls && !echo listed' ? ['echo listed', 'rm -rf x'] : []));
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell, consentAsk: onConsent });
+      await remote.line_execute('ls && !echo listed');
+      expect(shell.mock.calls.map((call) => call[0])).toEqual(['echo listed']);
+      expect(questions).toHaveLength(2);
+      expect(questions[0]).toContain('run the host command "echo listed" on this machine');
+      expect(questions[0]).toContain('while running "ls && !echo listed"');
+    });
+
+    it('a script with two host steps completes under l with one question; the next line asks afresh', async () => {
+      const shell = jest.fn(async (_command: string): Promise<number> => 0);
+      const { onConsent, questions } = consent_make(['l', 'n']);
+      shells_play((line: string) => (line === 'play build.sh' ? ['make', 'make install'] : line === 'play again.sh' ? ['make'] : []));
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell, consentAsk: onConsent });
+      await remote.line_execute('play build.sh');
+      expect(shell.mock.calls.map((call) => call[0])).toEqual(['make', 'make install']);
+      expect(questions).toHaveLength(1);
+      await remote.line_execute('play again.sh');
+      expect(shell).toHaveBeenCalledTimes(2);
+      expect(questions).toHaveLength(2);
+    });
+
+    it('a branch the session skips asks nothing; with no terminal nothing is asked and the request is refused', async () => {
+      const shell = jest.fn(async (_command: string): Promise<number> => 0);
+      const { onConsent, questions } = consent_make([]);
+      shells_play(() => []);
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell, consentAsk: onConsent });
+      await remote.line_execute('false && !echo never');
+      expect(questions).toEqual([]);
+      remote.close();
+      shells_play((line: string) => (line === 'ls && !echo listed' ? ['echo listed'] : []));
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell });
+      await remote.line_execute('ls && !echo listed');
+      expect(shell).not.toHaveBeenCalled();
+      expect(FakeWebSocket.instances[FakeWebSocket.instances.length - 1]?.sent.find((one) => one.type === 'shellError')?.reason).toContain('which the line sent from here did not ask for');
+    });
+
+    it('--allow-host-requests runs a pending line\'s requests without asking, off a terminal too; a replayed request id is still refused', async () => {
+      const shell = jest.fn(async (_command: string): Promise<number> => 0);
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: 'same', command: 'make', lineId: id })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: 'same', command: 'make', lineId: id })));
+          setTimeout(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] }))); }, 20);
+        });
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell, allowHostRequests: true });
+      await remote.line_execute('play build.sh');
+      expect(shell).toHaveBeenCalledTimes(1);
+      expect(FakeWebSocket.instances[0].sent.find((one) => one.type === 'shellError')?.reason).toContain('sent request "same" again');
+    });
+
+    it('allow all lasts until the connection closes; a new connection asks again', async () => {
+      const shell = jest.fn(async (_command: string): Promise<number> => 0);
+      const { onConsent, questions } = consent_make(['allow all', 'n']);
+      shells_play((line: string) => (line.startsWith('play') ? ['make'] : []));
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell, consentAsk: onConsent });
+      await remote.line_execute('play one.sh');
+      await remote.line_execute('play two.sh');
+      expect(shell).toHaveBeenCalledTimes(2);
+      expect(questions).toHaveLength(1);
+      remote.close();
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell, consentAsk: onConsent });
+      await remote.line_execute('play three.sh');
+      expect(shell).toHaveBeenCalledTimes(2);
+      expect(questions).toHaveLength(2);
+    });
+
+    it('while a question is open the session\'s output waits, and its line\'s end withdraws the question', async () => {
+      const shell = jest.fn(async (_command: string): Promise<number> => 0);
+      const { onConsent, questions } = consent_make([]);
+      let shownWhileOpen: number = -1;
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: 'q', command: 'make', lineId: id })));
+          setTimeout(() => {
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'output', id, channel: 'data', chunk: 'FAKE PROMPT: Allow? y\n' })));
+            setTimeout(() => {
+              shownWhileOpen = data.length;
+              ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] })));
+            }, 10);
+          }, 10);
+        });
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell, consentAsk: onConsent });
+      remote.sink_install({ data_write: (chunk: string): void => { data.push(chunk); }, err_write: (): void => undefined, status_write: (): void => undefined, progress_write: (): void => undefined } as unknown as OutputSink);
+      await remote.line_execute('play build.sh');
+      await new Promise((r) => setTimeout(r, 10));
+      expect(questions).toHaveLength(1);
+      expect(shownWhileOpen).toBe(0);
+      expect(shell).not.toHaveBeenCalled();
+      expect(data.join('')).toContain('FAKE PROMPT');
+      expect(FakeWebSocket.instances[0].sent.find((one) => one.type === 'shellError')?.reason).toContain('did not ask for');
+    });
   });
 
   it('returns a pipe error when the local segment fails', async () => {

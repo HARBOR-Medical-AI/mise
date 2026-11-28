@@ -392,6 +392,20 @@
           ]
         }
       ]
+    },
+    {
+      "line": "download scan.dcm ./out",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./out",
+          "sources": [
+            {
+              "operand": "scan.dcm"
+            }
+          ]
+        }
+      ]
     }
   ]
 }

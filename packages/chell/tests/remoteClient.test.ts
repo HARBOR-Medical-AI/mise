@@ -107,6 +107,7 @@ jest.unstable_mockModule('../src/remote/remoteEngine.js', () => ({
 jest.unstable_mockModule('../src/core/repl.js', () => ({ REPL: MockRepl }));
 jest.unstable_mockModule('../src/core/cliSurface.js', () => ({
   cliSurface_create: jest.fn(() => ({ capabilities: {} })),
+  CONSENT_PURPOSE: 'chell.consent',
 }));
 jest.unstable_mockModule('../src/core/progressRenderer.js', () => ({
   TerminalProgressRenderer: class MockTerminalProgressRenderer {

@@ -550,7 +550,7 @@ export async function chell_start(argv: string[] = process.argv): Promise<void> 
       if (reach === null) {
         process.exit(1);
       }
-      await remote_run(reach.identity, config.commandToExecute, { address: reach.url, headers: reach.headers }, { stopOnError: config.stopOnError === true, ...(splash !== undefined ? { splash } : {}) });
+      await remote_run(reach.identity, config.commandToExecute, { address: reach.url, headers: reach.headers }, { stopOnError: config.stopOnError === true, allowHostRequests: config.allowHostRequests === true, ...(splash !== undefined ? { splash } : {}) });
       if (config.commandToExecute !== undefined) {
         process.exit(process.exitCode ?? 0);
       }
@@ -561,7 +561,7 @@ export async function chell_start(argv: string[] = process.argv): Promise<void> 
     const attach = config.attach !== undefined
       ? { address: config.attach, ...(config.attachToken !== undefined ? { token: config.attachToken } : {}) }
       : undefined;
-    await remote_run(identity, config.commandToExecute, attach, { stopOnError: config.stopOnError === true, ...(splash !== undefined ? { splash } : {}) });
+    await remote_run(identity, config.commandToExecute, attach, { stopOnError: config.stopOnError === true, allowHostRequests: config.allowHostRequests === true, ...(splash !== undefined ? { splash } : {}) });
     if (config.commandToExecute !== undefined) {
       process.exit(process.exitCode ?? 0);
     }

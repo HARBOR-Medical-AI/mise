@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { cuminMock_install } from './support/cuminMock.js';
 
 const mockVfsRead = jest.fn(async (_p: string): Promise<{ ok: boolean; value?: string; errno?: string }> => ({ ok: true, value: 'the note' }));
@@ -58,6 +58,11 @@ beforeEach(() => {
   surface_install({ hiddenInput: true, localEdit: true, tty: true, pipeSegments: true });
   logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
   errSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+});
+
+// A refused edit sets the process's exit status, as the shell would; the test run's own status is not the edit's.
+afterEach(() => {
+  process.exitCode = undefined;
 });
 
 describe('builtin_edit', () => {

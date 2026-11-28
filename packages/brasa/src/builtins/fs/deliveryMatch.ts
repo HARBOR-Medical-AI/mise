@@ -107,37 +107,82 @@ export function deliveryIntent_matches(intents: ReadonlyArray<DeliveryIntent>, d
 }
 
 /**
- * Whether a typed operand names a resolved root: an absolute operand is the root itself; a relative one is the
- * root's tail, whole segments (the session resolved it against its own folder).
+ * A store path in one spelling: no empty or `.` segments, no trailing slash, `/` for the root; relative stays
+ * relative.
  *
- * @param operand - The operand as typed (no `..`).
+ * @param spelled - The path.
+ * @returns The same path, normalised.
+ *
+ * @example
+ * ```ts
+ * storePath_normalise('././a//b/'); // 'a/b'
+ * ```
+ */
+export function storePath_normalise(spelled: string): string {
+  const parts: string[] = spelled.split('/').filter((part: string): boolean => part.length > 0 && part !== '.');
+  return spelled.startsWith('/') ? `/${parts.join('/')}` : parts.join('/');
+}
+
+/**
+ * Settles a line's download sources against the session folder this chell was last shown, taken when the line is
+ * sent: a relative operand or pattern becomes absolute under it. Without a folder shown, an intent with a relative
+ * source binds nothing (a delivery for it is put to the person).
+ *
+ * @param intents - The line's intents.
+ * @param cwd - The session folder this chell showed, absolute; null when none was shown.
+ * @returns The intents with every source absolute, or unbound.
+ *
+ * @example
+ * ```ts
+ * sourceIntents_settle(intents, '/home/me'); // { operand: 'scans' } becomes { operand: '/home/me/scans' }
+ * ```
+ */
+export function sourceIntents_settle(intents: ReadonlyArray<DeliveryIntent>, cwd: string | null): DeliveryIntent[] {
+  return intents.map((intent: DeliveryIntent): DeliveryIntent => {
+    if (intent.sources === undefined) return intent;
+    const settled: SourceIntent[] = [];
+    for (const source of intent.sources) {
+      if ('unresolved' in source) return { verb: intent.verb, destination: null, unbound: source.unresolved };
+      const spelled: string = 'operand' in source ? source.operand : source.pattern;
+      if (!spelled.startsWith('/') && cwd === null) {
+        return { verb: intent.verb, destination: null, unbound: `its source ${JSON.stringify(spelled)} is relative, and no session folder has been shown here: type its full path` };
+      }
+      const absolute: string = storePath_normalise(spelled.startsWith('/') ? spelled : `${cwd ?? ''}/${spelled}`);
+      settled.push('operand' in source ? { operand: absolute } : { pattern: absolute });
+    }
+    return { ...intent, sources: settled };
+  });
+}
+
+/**
+ * Whether an operand, settled absolute, names a resolved root: the same path, both normalised.
+ *
+ * @param operand - The operand, absolute.
  * @param root - The root the engine resolved.
  * @returns True when it names it.
  */
 function operand_names(operand: string, root: string): boolean {
-  const typed: string = operand.replace(/\/+$/, '').replace(/^\.\//, '');
-  const resolved: string = root.replace(/\/+$/, '');
-  if (typed.startsWith('/')) return resolved === typed || (typed === '' && resolved === '');
-  return resolved.endsWith(`/${typed}`);
+  return operand.startsWith('/') && storePath_normalise(operand) === storePath_normalise(root);
 }
 
 /**
- * Whether a resolved root is one a pattern names: its last segment matches the pattern's last segment and the rest
- * is the pattern's folder, by the operand rule.
+ * Whether a resolved root is one a pattern, settled absolute, names: its last segment matches the pattern's last
+ * segment and its folder is the pattern's folder.
  *
- * @param pattern - The pattern as typed.
+ * @param pattern - The pattern, absolute.
  * @param root - The root the engine resolved.
  * @returns True when it names it.
  */
 function pattern_names(pattern: string, root: string): boolean {
-  const cut: number = pattern.lastIndexOf('/');
-  const resolved: string = root.replace(/\/+$/, '');
+  if (!pattern.startsWith('/')) return false;
+  const wanted: string = storePath_normalise(pattern);
+  const resolved: string = storePath_normalise(root);
+  const cut: number = wanted.lastIndexOf('/');
   const name: string = resolved.slice(resolved.lastIndexOf('/') + 1);
-  if (!minimatch(name, cut < 0 ? pattern : pattern.slice(cut + 1))) return false;
-  if (cut < 0) return true;
-  const folder: string = pattern.slice(0, cut);
-  const parent: string = resolved.slice(0, resolved.lastIndexOf('/'));
-  return folder === '' ? parent === '' : operand_names(folder, parent);
+  if (!minimatch(name, wanted.slice(cut + 1))) return false;
+  const folder: string = wanted.slice(0, cut) || '/';
+  const parent: string = resolved.slice(0, resolved.lastIndexOf('/')) || '/';
+  return folder === parent;
 }
 
 /**
@@ -158,9 +203,10 @@ export function deliverySource_matches(sources: ReadonlyArray<SourceIntent>, fil
   const parts: string[] = file.filename.split('/');
   if (file.filename.length === 0 || file.filename.startsWith('/') || parts.some((part: string): boolean => part === '..' || part === '' || part === '.')) return false;
   if (file.source === undefined) return false;
-  const root: string = file.source.replace(/\/+$/, '');
+  const root: string = storePath_normalise(file.source);
   const base: string = root.slice(root.lastIndexOf('/') + 1);
-  const shaped: boolean = (file.path === root && file.filename === base) || file.path === `${root}/${file.filename}`;
+  const path: string = storePath_normalise(file.path);
+  const shaped: boolean = (path === root && file.filename === base) || path === `${root === '/' ? '' : root}/${file.filename}`;
   if (!shaped) return false;
   return sources.some((source: SourceIntent): boolean => {
     if ('operand' in source) return operand_names(source.operand, root);

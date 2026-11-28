@@ -182,6 +182,33 @@ describe('persistent prompting (REPL interface)', () => {
     typeahead_clear();
   });
 
+  it('the person\'s word on what a session may run is never answered by a line typed ahead: it is dropped, and only a line typed after counts', async () => {
+    typeahead_clear();
+    typeahead_push('y');
+    const rl = {
+      question: jest.fn((_p: string, _o: unknown, cb: (a: string) => void) => cb('n')),
+      once: jest.fn(), off: jest.fn(),
+    } as unknown as import('readline').Interface;
+    const { CONSENT_PURPOSE } = await import('../src/core/cliSurface.js');
+    expect(await cliSurface_create(rl).prompt({ message: 'Allow? ', purpose: CONSENT_PURPOSE })).toBe('n');
+    expect((rl.question as jest.Mock)).toHaveBeenCalled();
+    expect(typeahead_count()).toBe(0);
+  });
+
+  it('a question withdrawn by whoever asked closes, and its promise is refused', async () => {
+    typeahead_clear();
+    const { EventEmitter } = await import('events');
+    const rl = Object.assign(new EventEmitter(), {
+      question: jest.fn((_p: string, _o: { signal: AbortSignal }, _cb: (a: string) => void) => undefined),
+    }) as unknown as import('readline').Interface;
+    const withdraw: AbortController = new AbortController();
+    const asking: Promise<string> = cliSurface_create(rl).prompt({ message: 'Allow? ', purpose: 'chell.consent', signal: withdraw.signal });
+    expect(question_isOpen()).toBe(true);
+    withdraw.abort();
+    await expect(asking).rejects.toThrow('the question was withdrawn');
+    expect(question_isOpen()).toBe(false);
+  });
+
   it('Ctrl-C at an open question abandons it: the asking command is told, and the question closes', async () => {
     typeahead_clear();
     const { EventEmitter } = await import('events');

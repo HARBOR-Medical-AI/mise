@@ -17,13 +17,20 @@ import * as readline from 'readline';
 import chalk from 'chalk';
 import { Writable } from 'stream';
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from 'child_process';
-import { readFileSync, existsSync, statSync } from 'fs';
+import { readFileSync } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Surface, SurfaceCapabilities, PromptRequest, LocalEditRequest, LocalEditResult } from '@fnndsc/brasa';
-import { segment_pipeThrough, file_read, wireName_place, type HostPlace, privateTemp_write, suffix_safe, type PrivateTemp } from '@fnndsc/brasa';
+import { segment_pipeThrough, file_read, privateTemp_write, suffix_safe, type PrivateTemp } from '@fnndsc/brasa';
 import { promptKind_derive, type FileDeliverRequest, type FileDeliverResult, type PromptKind } from '@fnndsc/menu';
-import { interrupt_pending, question_openSet, terminalState_mark, typeahead_take } from './lineDiscipline.js';
+import { deliveryPlace_resolve, type PlacedDelivery } from './deliveryPlace.js';
+import { interrupt_pending, question_openSet, terminalState_mark, typeahead_clear, typeahead_take } from './lineDiscipline.js';
+
+/**
+ * The purpose a question carries when it asks the person whether a session may run something on this machine: it
+ * is answered only by a line typed after it is shown, never by typed-ahead input.
+ */
+export const CONSENT_PURPOSE: string = 'chell.consent';
 
 /**
  * What a typed line means, given what an empty one stands for.
@@ -90,11 +97,17 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
     const shown: { message: string; fallback: string } = promptLine_render(request);
     // A line typed while the command ran is this question's answer, as a
     // terminal hands typed-ahead input to whatever reads next. A secret is
-    // never answered that way: it is typed when it is asked for.
-    const ahead: string | undefined = typeahead_take();
-    if (ahead !== undefined) {
-      process.stdout.write(`${shown.message}${ahead}\n`);
-      return Promise.resolve(promptAnswer_take(ahead, shown.fallback));
+    // never answered that way: it is typed when it is asked for. Nor is the
+    // person's word for what a session may run here: only a line typed after
+    // the question is shown answers it, and what was typed ahead is dropped.
+    if (request.purpose === CONSENT_PURPOSE) {
+      typeahead_clear();
+    } else {
+      const ahead: string | undefined = typeahead_take();
+      if (ahead !== undefined) {
+        process.stdout.write(`${shown.message}${ahead}\n`);
+        return Promise.resolve(promptAnswer_take(ahead, shown.fallback));
+      }
     }
     question_openSet(true);
     terminalState_mark('asking');
@@ -111,7 +124,22 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
         reject(new Error('the operator abandoned the question'));
       };
       rl.once('SIGINT', onInterrupt);
+      // Withdrawn by whoever asked (its line ended): the question goes, and so does its answer.
+      const question_withdraw = (): void => {
+        rl.off('SIGINT', onInterrupt);
+        question_openSet(false);
+        terminalState_mark('busy');
+        process.stdout.write('\n');
+        abandon.abort();
+        reject(new Error('the question was withdrawn'));
+      };
+      if (request.signal?.aborted === true) {
+        question_withdraw();
+        return;
+      }
+      request.signal?.addEventListener('abort', question_withdraw, { once: true });
       rl.question(shown.message, { signal: abandon.signal }, (answer: string) => {
+        request.signal?.removeEventListener('abort', question_withdraw);
         rl.off('SIGINT', onInterrupt);
         question_openSet(false);
         terminalState_mark('busy');
@@ -205,6 +233,8 @@ export async function oneShotPrompt_ask(request: PromptRequest, input: NodeJS.Re
   if (!request.hidden) {
     const shown: { message: string; fallback: string } = promptLine_render(request);
     const rl: readline.Interface = readline.createInterface({ input, output: process.stdout });
+    // Withdrawn by whoever asked: the interface closes and the question fails.
+    request.signal?.addEventListener('abort', (): void => { rl.close(); }, { once: true });
     const answer: string = await oneShotLine_read(rl, shown.message, (): void => undefined);
     return promptAnswer_take(answer, shown.fallback);
   }
@@ -298,34 +328,6 @@ function shellCommand_run(command: string): Promise<number> {
  */
 export type BytesFetch = (path: string) => Promise<Buffer>;
 
-/**
- * Resolves where a delivered file should be written.
- *
- * A destination naming an existing directory receives the file under its
- * suggested name; anything else is taken as the filename itself. With no
- * destination the file lands in the working directory.
- *
- * The destination is the operator's own word and is taken as written. The
- * suggested name is not: it comes from the engine, which may be across a
- * wire, out of a listing a store made. It is placed inside the folder it
- * belongs in or refused (`wireName_place`): never absolute, never climbing
- * out with `..`, never through a link that leads elsewhere.
- *
- * @param destination - Where the operator asked for it, if they said.
- * @param filename - The suggested name.
- * @returns An absolute path to write.
- * @throws {Error} When the suggested name has no place inside the folder.
- */
-function destination_resolve(destination: string | undefined, filename: string): string {
-  const given: boolean = destination !== undefined && destination.length > 0;
-  const resolved: string = given ? path.resolve(destination as string) : process.cwd();
-  if (given && !(existsSync(resolved) && statSync(resolved).isDirectory())) {
-    return resolved;
-  }
-  const placed: HostPlace = wireName_place(resolved, filename);
-  if (!placed.ok) throw new Error(`refused: the name ${placed.reason}; nothing was written`);
-  return placed.place;
-}
 
 /**
  * Writes a delivered file to this machine's disk.
@@ -343,7 +345,8 @@ async function fileDeliver_run(
   request: FileDeliverRequest,
   bytes_fetch: BytesFetch,
 ): Promise<FileDeliverResult> {
-  const target: string = destination_resolve(request.destination, request.filename);
+  // The place a remote engine reserved for this file is the one written; otherwise resolved here, the same way.
+  const target: string = (request as PlacedDelivery).place ?? deliveryPlace_resolve(request.destination, request.filename);
   const bytes: Buffer = await bytes_fetch(request.path);
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, bytes);

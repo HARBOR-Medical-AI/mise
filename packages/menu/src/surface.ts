@@ -102,6 +102,8 @@ export interface PromptRequest {
   purpose?: string;
   /** What it is about, by name (`vm`, `account`). */
   subject?: Record<string, string>;
+  /** Abandons the question (its answer is no longer wanted): the surface stops asking and the promise rejects. */
+  signal?: AbortSignal;
 }
 
 /**
