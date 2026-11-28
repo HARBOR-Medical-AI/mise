@@ -552,6 +552,32 @@ export function frameHeader_read(header: Buffer): FrameSize | null {
   return { headerLength, payloadLength };
 }
 
+/** The most a close frame's reason may hold, in UTF-8 bytes: a control frame carries 125, two of them the code. */
+export const CLOSE_REASON_MAX_BYTES: number = 123;
+
+/**
+ * A close frame's reason as UTF-8, cut at a character's edge to fit the frame.
+ *
+ * @param text - The reason.
+ * @returns Its bytes, at most CLOSE_REASON_MAX_BYTES, never half a character.
+ *
+ * @example
+ * ```ts
+ * closeReason_bytes('signed out').length; // 10
+ * ```
+ */
+export function closeReason_bytes(text: string): Buffer {
+  const kept: Buffer[] = [];
+  let size: number = 0;
+  for (const character of text) {
+    const bytes: Buffer = Buffer.from(character, 'utf8');
+    if (size + bytes.length > CLOSE_REASON_MAX_BYTES) break;
+    kept.push(bytes);
+    size += bytes.length;
+  }
+  return Buffer.concat(kept, size);
+}
+
 /**
  * Closes a relayed WebSocket at a frame boundary: the daemon's frames pass
  * through it to the browser, and when the connection's grant ends, the
@@ -644,7 +670,7 @@ export class FrameCloser extends Transform {
       this.push(null);
       return;
     }
-    const words: Buffer = Buffer.from((this.closing ?? '').slice(0, 100), 'utf8');
+    const words: Buffer = closeReason_bytes(this.closing ?? '');
     const frame: Buffer = Buffer.alloc(4 + words.length);
     frame[0] = 0x88;
     frame[1] = 2 + words.length;

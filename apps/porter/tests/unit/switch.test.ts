@@ -6,6 +6,8 @@
 import { describe, it, expect, beforeEach } from '@jest/globals';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { get as httpGet, type IncomingMessage } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { type PorterApp } from '../../src/app.js';
 import { doorApp_build as porterApp_build } from './fromDoor.js';
@@ -66,6 +68,52 @@ function creds_file(): void {
 }
 
 describe('POST /switch', () => {
+  it('ends the boot stream of the browser that switched, its follow let go, and leaves another browser\'s on the same session', async () => {
+    creds_file();
+    await door.app.close();
+    const following: Set<BootListener> = new Set();
+    host.boot_follow = (_identity: string, listener: BootListener): { report: BootReport; release: () => void } => {
+      following.add(listener);
+      return { report: { lines: [], state: 'booting' }, release: (): void => { following.delete(listener); } };
+    };
+    door = await porterApp_build({ installed: {}, config, host, mint: async () => ({ token: 'T' }) });
+    const first = await door.app.inject({ method: 'POST', url: '/login', payload: { username: 'rudolph', password: 'p' }, headers: { accept: 'application/json' } });
+    const a: string = String(first.headers['set-cookie']).split(';')[0] ?? '';
+    const key: string = String(first.json().key);
+    const b: string = await login();
+    await door.app.listen({ host: '127.0.0.1', port: 0 });
+    const port: number = (door.app.server.address() as AddressInfo).port;
+    const open = (cookie: string): { body: () => string; ended: Promise<void> } => {
+      let body: string = '';
+      const ended: Promise<void> = new Promise((resolve, reject) => {
+        httpGet({ host: '127.0.0.1', port, path: `/boot/${key}`, headers: { cookie } }, (response: IncomingMessage) => {
+          response.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+          response.on('end', () => resolve());
+        }).on('error', reject);
+      });
+      return { body: (): string => body, ended };
+    };
+    const until = async (ok: () => boolean): Promise<void> => {
+      for (let i = 0; i < 100 && !ok(); i++) await new Promise((r) => setTimeout(r, 30));
+      expect(ok()).toBe(true);
+    };
+    const streamA = open(a);
+    await until((): boolean => following.size === 1);
+    const followA: BootListener = [...following][0] as BootListener;
+    const streamB = open(b);
+    await until((): boolean => following.size === 2);
+    const followB: BootListener = [...following].find((one: BootListener): boolean => one !== followA) as BootListener;
+    const moved = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie: a } });
+    expect(moved.json()).toMatchObject({ state: 'starting' });
+    await streamA.ended;
+    expect(following.has(followA)).toBe(false);
+    followB.line({ channel: 'out', text: 'still here' });
+    await until((): boolean => streamB.body().includes('still here'));
+    await door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: b } });
+    await streamB.ended;
+    await door.app.close();
+  });
+
   it('refuses a browser with no session, and a person with no filed credentials, by name', async () => {
     expect((await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' } })).statusCode).toBe(401);
     const cookie: string = await login();

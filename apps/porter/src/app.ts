@@ -267,6 +267,14 @@ export function cookie_carried(cookieHeader: string | undefined): boolean {
   return cookieHeader.split(';').some((part: string): boolean => part.slice(0, Math.max(0, part.indexOf('='))).trim() === DOOR_COOKIE);
 }
 
+/** A berth stop a logout owes: the session key, and the generation of the berth that stood when the logout came. */
+interface OwedStop {
+  /** The session key. */
+  key: string;
+  /** The key's generation then; an ending since raises it. */
+  generation: number;
+}
+
 /** What a logout's berth stop came to. */
 interface LogoutLeave {
   /** Whether the logout's grant was owed a stop (it stood when the logout came). */
@@ -379,7 +387,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   if (tokens.skipped.length > 0) options.log?.(`the door's token store holds ${String(tokens.skipped.length)} record(s) of the wrong shape, left out: ${tokens.skipped.join(', ')}`);
   const codes: DeviceCodes = options.codes ?? new DeviceCodes(options.now);
   // The berth stops owed by logouts of grants that stood, by grant: one each, kept across a logout whose write failed.
-  const stopsOwed: Map<string, string> = new Map();
+  const stopsOwed: Map<string, OwedStop> = new Map();
   // Renewals waiting to be dropped: those whose code lapsed untaken, and those a drop failed for, kept for the next tick.
   let dropsHeld: MintedToken[] = [];
   let dropping: boolean = false;
@@ -1104,11 +1112,14 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
    * @returns Whether a stop was owed, and why the berth was not stopped when it was owed and is not.
    */
   const logout_leave = async (held: GrantNamed | null): Promise<LogoutLeave> => {
-    const owed: string | undefined = held === null ? undefined : stopsOwed.get(held.id);
+    const owed: OwedStop | undefined = held === null ? undefined : stopsOwed.get(held.id);
     if (held === null || owed === undefined) return { owed: false, unstopped: null };
     stopsOwed.delete(held.id);
-    const identity: string | null = options.logoutEnds === true ? registry.identity_find(owed) : null;
-    return { owed: true, unstopped: identity === null ? null : await logout_stop(owed, identity) };
+    // The stop is owed to the berth that stood when the logout came: one ended since (and any started in its
+    // place under the same key) is not this logout's to stop.
+    if (registry.generation_get(owed.key) !== owed.generation) return { owed: true, unstopped: null };
+    const identity: string | null = options.logoutEnds === true ? registry.identity_find(owed.key) : null;
+    return { owed: true, unstopped: identity === null ? null : await logout_stop(owed.key, identity) };
   };
 
   app.post('/logout', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
@@ -1119,7 +1130,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // A logout of a grant that stands now owes one stop of the berth (on a door that stops berths): owed once, kept
     // across a write that fails, paid by whichever logout of that grant gets through, and never by one of a grant
     // that had already expired, ended or moved.
-    if (held !== null && grants.grant_admits(held.id, held.key)) stopsOwed.set(held.id, held.key);
+    if (held !== null && grants.grant_admits(held.id, held.key) && !stopsOwed.has(held.id)) stopsOwed.set(held.id, { key: held.key, generation: registry.generation_get(held.key) });
     // The grant ends first: this cookie lets nobody in from now on, and what was opened under it is closed.
     let ended: 'ended' | 'moved' | 'gone' = 'gone';
     if (held !== null) {

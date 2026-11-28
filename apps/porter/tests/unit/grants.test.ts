@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { FrameCloser, GRANT_CLOSE_CODE, GRANT_STEP_MS, GrantStore, grantCookie_read, grantCookie_value, frameHeader_read } from '../../src/grants.js';
+import { FrameCloser, GRANT_CLOSE_CODE, GRANT_STEP_MS, GrantStore, grantCookie_read, grantCookie_value, frameHeader_read, closeReason_bytes, CLOSE_REASON_MAX_BYTES } from '../../src/grants.js';
 
 const KEY: string = '0123456789abcdef';
 let dir: string;
@@ -240,3 +240,16 @@ describe('what Codex found in the first form (seq 419)', () => {
   });
 });
 
+describe('closeReason_bytes', () => {
+  it('fits a close frame by UTF-8 bytes and never cuts a character in half', () => {
+    expect(closeReason_bytes('signed out').toString('utf8')).toBe('signed out');
+    const euros: Buffer = closeReason_bytes('€'.repeat(50));
+    expect(euros.length).toBe(123);
+    expect(euros.toString('utf8')).toBe('€'.repeat(41));
+    const mixed: Buffer = closeReason_bytes(`${'a'.repeat(122)}€`);
+    expect(mixed.length).toBe(122);
+    expect(closeReason_bytes('😀'.repeat(40)).length).toBeLessThanOrEqual(CLOSE_REASON_MAX_BYTES);
+    // The frame's length byte stays a length: no mask bit.
+    expect(2 + closeReason_bytes('€'.repeat(50)).length).toBeLessThan(126);
+  });
+});

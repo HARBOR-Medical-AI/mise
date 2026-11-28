@@ -80,6 +80,45 @@ class FakeBerthHost extends FakeHost {
   async token_renew(identity: string, _user: string, _cubeUrl: string, token: string): Promise<void> { this.renewed.push({ identity, token }); }
 }
 
+/** A host whose boot several browsers follow at once. */
+class ManyFollowHost extends FakeHost {
+  public following: Set<BootListener> = new Set();
+  boot_follow(_identity: string, listener: BootListener): { report: BootReport; release: () => void } | null {
+    if (this.report === null) return null;
+    this.following.add(listener);
+    return { report: this.report, release: (): void => { this.following.delete(listener); } };
+  }
+}
+
+/**
+ * Waits for a condition, a few seconds at most.
+ *
+ * @param ok - The condition.
+ */
+async function until(ok: () => boolean): Promise<void> {
+  for (let i = 0; i < 100 && !ok(); i++) await new Promise((r) => setTimeout(r, 30));
+  expect(ok()).toBe(true);
+}
+
+/**
+ * Opens a boot stream as a browser does.
+ *
+ * @param port - The door's port.
+ * @param key - The session key.
+ * @param cookie - The browser's cookie.
+ * @returns What it has said so far, and when it ends.
+ */
+function bootStream_open(port: number, key: string, cookie: string): { body: () => string; ended: Promise<void> } {
+  let body: string = '';
+  const ended: Promise<void> = new Promise((resolve, reject) => {
+    httpGet({ host: '127.0.0.1', port, path: `/boot/${key}`, headers: { cookie } }, (response: IncomingMessage) => {
+      response.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      response.on('end', () => resolve());
+    }).on('error', reject);
+  });
+  return { body: (): string => body, ended };
+}
+
 let host: FakeHost;
 let built: PorterApp;
 let tokensDir: string;
@@ -419,6 +458,16 @@ describe('the door', () => {
     fail = false;
     await grants.grants_sweep();
     expect((await logout(cookie_of(failing))).statusCode).toBe(200);
+    expect(berths.evicted).toHaveLength(2);
+    // A logout whose write fails, the berth ends and another starts under the same key, then the retry: the replacement stays.
+    const replaced = await login();
+    const key: string = (replaced.json() as { key: string }).key;
+    fail = true;
+    expect((await logout(cookie_of(replaced))).statusCode).toBe(503);
+    fail = false;
+    door.registry.generation_raise(key);
+    await login();
+    expect((await logout(cookie_of(replaced))).statusCode).toBe(200);
     expect(berths.evicted).toHaveLength(2);
     await door.app.close();
   });
@@ -877,10 +926,12 @@ describe('the wire through the mount', () => {
 
   it('a wire whose daemon stalls mid-frame is torn down within its bound after the logout', async () => {
     // A daemon that answers the upgrade and then sends half a frame, and nothing more.
+    let stalledAt: () => void = (): void => undefined;
+    const halfSent: Promise<void> = new Promise<void>((resolve) => { stalledAt = resolve; });
     const stalled = createNetServer((socket: NetSocket): void => {
       socket.once('data', (): void => {
         socket.write('HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-accept: x\r\n\r\n');
-        socket.write(Buffer.from([0x81, 0x7e, 0x01]));
+        socket.write(Buffer.from([0x81, 0x7e, 0x01]), (): void => { stalledAt(); });
       });
     });
     await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', () => resolve()));
@@ -894,12 +945,13 @@ describe('the wire through the mount', () => {
     let closedAt: number | null = null;
     raw.on('close', () => { closedAt = Date.now(); });
     raw.on('error', () => undefined);
-    // Read what arrives, as a browser does, so the door's close is seen.
-    raw.resume();
+    // Read what arrives, as a browser does, so the door's close is seen; the upgrade's answer is waited for.
+    let heard: string = '';
+    const upgraded: Promise<void> = new Promise<void>((resolve) => { raw.on('data', (chunk: Buffer) => { heard += chunk.toString('latin1'); if (heard.includes('101')) resolve(); }); });
     await new Promise<void>((resolve) => raw.once('connect', () => resolve()));
     raw.write(`GET /s/${key}/?door HTTP/1.1\r\nhost: 127.0.0.1\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\norigin: ${DOOR_ORIGIN}\r\ncookie: ${cookie_of(session)}\r\n\r\n`);
-    await new Promise((r) => setTimeout(r, 200));
-    // The wire is open: nothing has closed it before the logout.
+    await Promise.all([halfSent, upgraded]);
+    // The wire is open, the daemon mid-frame: nothing has closed it before the logout.
     expect(closedAt).toBeNull();
     const asked: number = Date.now();
     await built.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(session) } });
@@ -910,7 +962,7 @@ describe('the wire through the mount', () => {
     stalled.close();
   });
 
-  it('a switch closes the wire and the boot stream opened under the grant it moved, and leaves another browser\'s', async () => {
+  it('a moved grant closes the wire opened under it, and leaves another browser\'s', async () => {
     const port: number = (daemon.address() as AddressInfo).port;
     host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: `ws://127.0.0.1:${port}`, token: 'ATTACH' };
     const login = async () => built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
@@ -936,24 +988,31 @@ describe('the wire through the mount', () => {
     b.close();
   });
 
-  it('ends a boot stream with nothing to say at its grant\'s hour, and leaves another browser\'s', async () => {
+  it('ends a boot stream with nothing to say at its grant\'s hour, and leaves another browser\'s, admitted later, live', async () => {
     await built.app.close();
-    host.found = null;
-    host.report = { lines: [], state: 'booting' };
-    let clock: number = Date.now();
-    built = await porterApp_build({ installed: {}, config: { ...config, cookieHours: 0.3 / 3600, tokensFile: join(tokensDir, 'tokens.json') }, host, now: (): number => clock, mint: async () => ({ token: 'T' }) });
-    const session = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
-    const key: string = (session.json() as { key: string }).key;
+    const streams = new ManyFollowHost();
+    streams.report = { lines: [], state: 'booting' };
+    built = await porterApp_build({ installed: {}, config: { ...config, cookieHours: 1.5 / 3600, tokensFile: join(tokensDir, 'tokens.json') }, host: streams, mint: async () => ({ token: 'T' }) });
+    const login = async () => built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
     await built.app.listen({ host: '127.0.0.1', port: 0 });
     const porterPort: number = (built.app.server.address() as AddressInfo).port;
-    const ended: Promise<void> = new Promise((resolve, reject) => {
-      httpGet({ host: '127.0.0.1', port: porterPort, path: `/boot/${key}`, headers: { cookie: cookie_of(session) } }, (response: IncomingMessage) => {
-        response.resume();
-        response.on('end', () => resolve());
-      }).on('error', reject);
-    });
-    await ended;
-    expect(host.listener).toBeNull();
+    const a = await login();
+    const key: string = (a.json() as { key: string }).key;
+    const streamA = bootStream_open(porterPort, key, cookie_of(a));
+    await until((): boolean => streams.following.size === 1);
+    const followA: BootListener = [...streams.following][0] as BootListener;
+    await new Promise((r) => setTimeout(r, 700));
+    const b = await login();
+    const streamB = bootStream_open(porterPort, key, cookie_of(b));
+    await until((): boolean => streams.following.size === 2);
+    const followB: BootListener = [...streams.following].find((one: BootListener): boolean => one !== followA) as BootListener;
+    // A's hour comes with nothing said: its stream ends and lets go of its follow; B's, admitted before then, stays.
+    await streamA.ended;
+    expect(streams.following.has(followA)).toBe(false);
+    expect(streams.following.has(followB)).toBe(true);
+    followB.line({ channel: 'out', text: 'still here' });
+    await until((): boolean => streamB.body().includes('still here'));
+    await streamB.ended;
   });
 
   it('closes an open wire at its grant\'s hour, with no traffic and no sweep between', async () => {
