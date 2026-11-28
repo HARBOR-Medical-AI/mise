@@ -13,7 +13,7 @@ import chalk from 'chalk';
 import { run_capture, commandNames_get } from '@fnndsc/chili/run.js';
 import { type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../core/handlerRun.js';
-import { hostDisk_refusal } from '../core/hostGate.js';
+import { hostDisk_refusal, hostProcess_refusal } from '../core/hostGate.js';
 
 /** chili's top-level command names, resolved once and memoized (see {@link chiliCommand_exists}). */
 let chiliCommandNames: Set<string> | null = null;
@@ -112,6 +112,8 @@ export interface HostSubcommand {
   readonly valued?: ReadonlyArray<string>;
   /** Whether an operand of it, given after the subcommand, makes it touch the host (a manual topic that climbs out of the manual). */
   readonly operand_touches?: (operand: string) => boolean;
+  /** The options (every spelling) that also start a program on the host (a renderer, a browser): they need the process grant as well as the disk's. */
+  readonly spawns?: ReadonlyArray<string>;
 }
 
 /**
@@ -132,7 +134,8 @@ export const CHILI_HOST_WORDS: Readonly<Record<string, Readonly<Record<string, H
     upload: { touches: 'always' },
     download: { touches: 'always' },
     // A plain scan lists CUBE. It maps onto the host with --hostpath, and writes the host with --mermaid (a page) and --save.
-    scan: { touches: ['--hostpath', '--mermaid', '--save'], valued: ['--hostpath', '--filter', '--endsWith', '--save'] },
+    // --mermaid renders with `npx mmdc` and --save opens what it wrote: programs on the host as well.
+    scan: { touches: ['--hostpath', '--mermaid', '--save'], valued: ['--hostpath', '--filter', '--endsWith', '--save'], spawns: ['--mermaid', '--save'] },
     help: { touches: 'never' },
   },
   chefs: {
@@ -142,7 +145,7 @@ export const CHILI_HOST_WORDS: Readonly<Record<string, Readonly<Record<string, H
   },
   man: {
     // The topic is joined to chili's own manual folder: one that holds a separator or `..` names a file elsewhere. --browser opens a browser on the host.
-    doc: { touches: ['--browser', '-b'], valued: ['--style', '--width'], operand_touches: (topic: string): boolean => /[\\/]/.test(topic) || topic.includes('..') },
+    doc: { touches: ['--browser', '-b'], spawns: ['--browser', '-b'], valued: ['--style', '--width'], operand_touches: (topic: string): boolean => /[\\/]/.test(topic) || topic.includes('..') },
     topics: { touches: 'never' },
     help: { touches: 'never' },
   },
@@ -241,7 +244,10 @@ export function chiliHostWord_refusal(command: string, args: ReadonlyArray<strin
   const sub: HostSubcommand | undefined = line.sub === undefined ? undefined : word[line.sub];
   if (sub === undefined || sub.touches === 'always') return hostDisk_refusal(what);
   const given: string | undefined = sub.touches === 'never' ? undefined : sub.touches.find((option: string): boolean => line.roles.options.has(option));
-  if (given !== undefined) return hostDisk_refusal(`${what} ${given}`);
+  if (given !== undefined) {
+    const spawned: string | undefined = sub.spawns?.find((option: string): boolean => line.roles.options.has(option));
+    return hostDisk_refusal(`${what} ${given}`) ?? (spawned === undefined ? null : hostProcess_refusal(`${what} ${spawned}`));
+  }
   if (sub.operand_touches !== undefined && line.roles.operands.slice(2).some(sub.operand_touches)) return hostDisk_refusal(what);
   return null;
 }

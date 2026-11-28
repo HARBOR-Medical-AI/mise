@@ -41,7 +41,8 @@
       "fs": "GATED: fs.readFile of a descriptor file is behind hostFile_refusal -> hostDisk_refusal (plugin add :137, plugin validate :268, fileText_read :478); host: index sources behind hostSource_refusal (plugin sync :186, validate :266) before salsa pluginIndex_load reads the disk."
     },
     "packages/brasa/src/builtins/sys/notes.ts": {
-      "fs": "OWN-STATE: Reads dist/notes.json shipped inside each installed @fnndsc package, found by node resolution; no session path."
+      "fs": "OWN-STATE: Reads dist/notes.json shipped inside each installed @fnndsc package, found by node resolution; no session path.",
+      "loader": "OWN-STATE: createRequire resolves `<name>/package.json` for the fixed NOTES_PACKAGES list (mise's own packages), to read their shipped notes; no session word names a module."
     },
     "packages/brasa/src/core/argumentKinds.ts": {
       "fs": "GATED: hostPaths_list (readdir for hostPath completion) is only called when surface_get().capabilities.engineFilesystem is true."
@@ -56,7 +57,8 @@
       "fs": "OWN-STATE: Job records and logs under $XDG_STATE_HOME/<backend>/jobs/<source>/ (jobsRoot_derive); source ids are engine-declared and job ids engine-validated, not host paths from a line."
     },
     "packages/brasa/src/core/version.ts": {
-      "fs": "OWN-STATE: Reads brasa's own package.json and buildinfo.json beside the module."
+      "fs": "OWN-STATE: Reads brasa's own package.json and buildinfo.json beside the module.",
+      "loader": "OWN-STATE: createRequire loads `<name>/package.json` for mise's own package names, to report versions; no session word names a module."
     },
     "packages/brasa/src/lib/pipe.ts": {
       "child_process": "LOCAL-ONLY: segment_pipeThrough is imported only by chell's local CLI surface (chell/src/core/cliSurface.ts:397, pipeSegment) and an exemplar; the engine reaches it only through surface.pipeSegment, which a daemon surface replaces (calypso launch.ts:133-134) and dispatch.ts:489 guards with capability_require('pipeSegments')."
@@ -71,11 +73,13 @@
       "fs": "OWN-STATE: Berth records under $XDG_RUNTIME_DIR(or tmpdir)/calypso and read-only listing of porter's state roots ($PORTER_STATE_DIR, $XDG_STATE_HOME/porter, /var/lib/porter/sessions); identities come from the daemon, not a path a line supplies."
     },
     "packages/calypso/src/daemon/codeIdentity.ts": {
-      "fs": "OWN-STATE: Reads package.json and dist/*.js of the daemon's own packages to fingerprint its code."
+      "fs": "OWN-STATE: Reads package.json and dist/*.js of the daemon's own packages to fingerprint its code.",
+      "loader": "OWN-STATE: createRequire resolves the stack's own packages' package.json (from this module and the entry script) to hash the code the daemon runs."
     },
     "packages/calypso/src/daemon/consoleSession.ts": {
       "child_process": "LOCAL-ONLY: surface_spawn starts `chell --remote ... --attach` on the daemon's own terminal when the person who launched calypso presses Enter in its console loop; argv is the daemon's identity/url, token via env, no session line involved.",
-      "fs": "OWN-STATE: existsSync of the chell dist/index.js resolved beside this calypso install (chellLaunch_find)."
+      "fs": "OWN-STATE: existsSync of the chell dist/index.js resolved beside this calypso install (chellLaunch_find).",
+      "loader": "OWN-STATE: createRequire resolves `@fnndsc/chell/package.json` to find chell's entry for the console the operator starts."
     },
     "packages/calypso/src/daemon/discovery.ts": {
       "fs": "OWN-STATE: Writes/reads tmpdir()/chell-calypso-<user>.json, a name the daemon derives itself."
@@ -85,7 +89,8 @@
       "fs": "GATED: accessSync/realpathSync in programName_resolve probe a word from the line, reached only via hostShellTerminal_refusal at launch.ts:145 after the shell-tier check at launch.ts:141."
     },
     "packages/calypso/src/daemon/static.ts": {
-      "fs": "OWN-STATE: HTTP static server of the daemon's own web bundle: request path is resolved and held inside webRoot (startsWith(root+sep) guard, NUL check) and the webRoot probes read the bundle's package.json/build.json; no session line."
+      "fs": "OWN-STATE: HTTP static server of the daemon's own web bundle: request path is resolved and held inside webRoot (startsWith(root+sep) guard, NUL check) and the webRoot probes read the bundle's package.json/build.json; no session line.",
+      "loader": "OWN-STATE: createRequire resolves a fixed package's package.json (the ARGUS bundle's) to find its built web root."
     },
     "packages/calypso/src/daemon/token.ts": {
       "fs": "OWN-STATE: Writes the attach token (mode 0600) to a path the daemon launcher names (discovery file); exported but no session verb calls it."
@@ -211,6 +216,12 @@
     "packages/stratus/src/vm/state.ts": {
       "child_process": "GATED: ssh-keygen on the VM's own store key path; key_ensure is reached from job runs (vm/build.ts:145, vm/remote.ts:163, behind runner.ts:314) and `vm shell`, which requires capabilities.shellCommands (commands/vm.ts:1068).",
       "fs": "OWN-STATE: VM key files under the stratus VM store folder (VM_NAME validated)."
+    },
+    "packages/chili/src/run.ts": {
+      "loader": "OWN-STATE: createRequire loads chili's own ../package.json for its version."
+    },
+    "packages/calypso/src/daemon/terminals.ts": {
+      "loader": "OWN-STATE: a dynamic import of the fixed name 'node-pty' (held in a constant so a missing optional build fails softly), never a session word."
     }
   },
   "pins": [
@@ -220,12 +231,12 @@
       "why": "the engine's disk is the files tier's and its programs the shell tier's, from the policy alone"
     },
     {
-      "file": "packages/calypso/src/daemon/launch.ts",
+      "file": "packages/calypso/src/daemon/hostControl.ts",
       "text": "engineFilesystem: engineHost_grants(policy).engineFilesystem,",
       "why": "the daemon's surface takes the disk grant from the policy, never the attached surface"
     },
     {
-      "file": "packages/calypso/src/daemon/launch.ts",
+      "file": "packages/calypso/src/daemon/hostControl.ts",
       "text": "engineProcesses: engineHost_grants(policy).engineProcesses,",
       "why": "the daemon's surface takes the program grant from the policy, never the attached surface"
     },
@@ -268,6 +279,62 @@
       "file": "packages/brasa/src/core/runner.ts",
       "text": "if (kind.ungated !== true && !this.allowed()) throw new JobRefusal(",
       "why": "a job (stratus's ssh, tofu, helm) starts only with the tasks tier"
+    },
+    {
+      "file": "packages/stratus/src/commands/vm.ts",
+      "text": "const refused: string | null = hostProcess_refusal('vm shell');",
+      "why": "vm shell makes a key and opens a session from this host"
+    },
+    {
+      "file": "packages/stratus/src/scripts/library.ts",
+      "text": "const refused: string | null = hostProcess_refusal('scripts add (git)');",
+      "why": "git is a program on this host"
+    },
+    {
+      "file": "packages/stratus/src/scripts/library.ts",
+      "text": "const refused: string | null = hostProcess_refusal(`scripts pull ${name} (git)`);",
+      "why": "a pull or re-clone runs git on this host"
+    },
+    {
+      "file": "packages/stratus/src/scripts/library.ts",
+      "text": "if (hostProcess_refusal('scripts') !== null) return 'its head is read with the shell tier';",
+      "why": "showing a source's head runs no git without the shell tier"
+    },
+    {
+      "file": "packages/brasa/src/chris/chiliDelegate.ts",
+      "text": "(spawned === undefined ? null : hostProcess_refusal(`${what} ${spawned}`))",
+      "why": "a chili line that starts a renderer or a browser needs the process grant too"
+    },
+    {
+      "file": "packages/calypso/src/daemon/launch.ts",
+      "text": "return daemonCapabilities_compose(daemon.capabilities_current(), policy);",
+      "why": "the daemon's surface is composed from the policy, the attached surface supplying only its own traits"
+    }
+  ],
+  "confined": [
+    {
+      "name": "hostPipe_run",
+      "callers": [
+        "packages/calypso/src/daemon/hostControl.ts",
+        "packages/calypso/src/daemon/launch.ts"
+      ],
+      "why": "it runs a caller's pipeline segment on this host; launch.ts calls it only under the pipes tier (pinned)"
+    },
+    {
+      "name": "hostShell_run",
+      "callers": [
+        "packages/calypso/src/daemon/hostControl.ts",
+        "packages/calypso/src/daemon/launch.ts"
+      ],
+      "why": "it runs a caller's ! command on this host; launch.ts calls it only under the shell tier (pinned)"
+    },
+    {
+      "name": "berthRecord_write",
+      "callers": [
+        "packages/brasa/src/builtins/berth/berthRecord.ts",
+        "packages/brasa/src/builtins/berth/berthClose.ts"
+      ],
+      "why": "it writes a record into the folder its caller names; berth close names only the berth's own outgoing folder"
     }
   ]
 }

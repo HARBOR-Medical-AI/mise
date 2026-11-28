@@ -466,12 +466,31 @@ describe('vm, over the fake cloud', () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
     surface.answers = ['y', 'y'];
     await vm_run(context, ['build', 'store']);
-    expect((await vm_run(context, ['shell', 'store'])).renderedErr).toContain('needs the shell tier');
+    // A surface that relays a shell is not the grant: the key is made and the session opened from this host, the
+    // shell tier's alone. Refused, no session is asked for.
     (surface.capabilities as { shellCommands: boolean }).shellCommands = true;
+    expect((await vm_run(context, ['shell', 'store'])).renderedErr).toBe('vm shell: this session may not start programs on its host; start the session with --host-control=shell\n');
+    expect(world.sessions).toEqual([]);
+    (surface.capabilities as { engineProcesses?: boolean }).engineProcesses = true;
     const shell = await vm_run(context, ['shell', 'store']);
     expect(plain(shell.rendered)).toContain("-W %h:%p -o Port=22 ocid1.bastionsession.oc1..fake-1@host.bastion.us-ashburn-1.fake.example' ubuntu@10.40.0.10");
     expect(world.sessions).toEqual([{ bastionId: 'ocid1.bastion.oc1..fake-scratch', privateIp: '10.40.0.10' }]);
     expect(sshLine_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5')).toBe("ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -o 'ProxyCommand=ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -o Port=22 s@h' ubuntu@10.0.0.5");
+  });
+
+  it('refuses --ssh-key-file without the files tier on both public paths, vm new and its line\'s status, before the file is touched', async () => {
+    const dir: string = mkdtempSync(join(tmpdir(), 'stratus-vmkey-'));
+    const real: string = join(dir, 'id.pub');
+    writeFileSync(real, 'ssh-ed25519 AAAA me@host\n');
+    const words: string = "--ssh-key-file: the session's host disk is nobody's; start the session with --host-control=files";
+    const lines = new Map(lineStatusProviders_make({ nets, vms: store }).map((provider) => [provider.verb, provider]));
+    for (const keyFile of [real, join(dir, 'missing.pub')]) {
+      const made: CommandEnvelope = await vm_run(context, ['new', 'keyed', ...STORE_LINE, '--ssh-key-file', keyFile]);
+      expect(made.renderedErr).toContain(words);
+      expect(store.record_read('keyed')).toBeNull();
+      const preview = await lines.get('vm')?.read(['vm', 'new', 'keyed', ...STORE_LINE, '--ssh-key-file', keyFile]);
+      expect(JSON.stringify(preview)).toContain(words);
+    }
   });
 
   it('tears down only when unprotected: the machine, keeping the data; --all takes the data on the name typed back', async () => {

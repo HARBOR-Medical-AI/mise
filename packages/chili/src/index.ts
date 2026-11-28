@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * @file Command-line entry point for the chili (ChILI) CLI.
  *
@@ -10,7 +9,6 @@
  * @module
  */
 
-import { hostDocker_trust } from "@fnndsc/salsa";
 import omelette from "omelette";
 
 import { run } from "./run.js";
@@ -68,19 +66,34 @@ function commandCompletion_setup(): void {
 }
 
 /**
- * Bin entry: register shell completion, then run the requested chili command.
+ * chili's command line: register shell completion, then run the requested chili command. Importing this module
+ * runs nothing; `bin.ts`, chili's command, calls it.
+ *
+ * @param argv - The words after `chili`.
+ *
+ * @example
+ * ```ts
+ * await chiliCli_main(process.argv.slice(2));
+ * ```
  */
-async function main(): Promise<void> {
-  // chili's own command line runs at a person's own terminal: the docker it starts is theirs. In an engine
-  // (brasa delegating a line to chili in its process) this never runs, and no docker is trusted.
-  hostDocker_trust();
+export async function chiliCli_main(argv: string[]): Promise<void> {
   commandCompletion_setup();
-  await run(process.argv.slice(2));
+  await run(argv);
 }
 
-main().catch((error) => {
+/**
+ * Says a command-line run's failure and ends the process with it.
+ *
+ * @param error - What the run threw.
+ *
+ * @example
+ * ```ts
+ * chiliCli_main(process.argv.slice(2)).catch(chiliCli_fail);
+ * ```
+ */
+export function chiliCli_fail(error: unknown): void {
   chiliErrLog("An error occurred:", error);
   process.exit(1);
-});
+}
 
 // Re-export library utilities for consumers that import the package root.

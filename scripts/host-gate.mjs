@@ -19,8 +19,12 @@
  * - a listed effect the file no longer imports (the list never rots);
  * - an entry the change's base did not have (the list may shrink, never grow
  *   unreviewed: `scripts/lib/ratchetBase.mjs`);
- * - a pin (a gate call a listed file must hold, by its exact text) that the
- *   file no longer holds, or that the base had and the change dropped.
+ * - a pin (a gate call a listed file must hold, by its exact text, in its
+ *   code and not a comment) that the file no longer holds, or that the base
+ *   had and the change dropped;
+ * - a use of a confined host helper (one that runs what its caller gives it:
+ *   `hostPipe_run`, `hostShell_run`, `berthRecord_write`) from a file not
+ *   among its callers, or a caller the base did not have.
  *
  * An effect is imported by a static import, an `export … from`, an
  * `import x = require()`, a literal `require()` or `import()`, and through a
@@ -50,10 +54,15 @@ const SOURCE_FILE = /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/;
 const EFFECT_MODULES = new Map([
   ['fs', 'fs'], ['node:fs', 'fs'], ['fs/promises', 'fs'], ['node:fs/promises', 'fs'],
   ['child_process', 'child_process'], ['node:child_process', 'child_process'],
+  // A loader reaches any module by a name it builds (createRequire): what it reaches cannot be read from here.
+  ['module', 'loader'], ['node:module', 'loader'],
 ]);
 
-/** The effects, in the order they are told. */
-export const EFFECTS = ['fs', 'child_process'];
+/** The properties of `process` that reach a module, or native code, by a name: loaders too. */
+const PROCESS_LOADERS = new Set(['getBuiltinModule', 'binding', '_linkedBinding', 'dlopen']);
+
+/** The effects, in the order they are told: the disk, programs, and a loader (a module reached by a built name). */
+export const EFFECTS = ['fs', 'child_process', 'loader'];
 
 /**
  * Lists the source files under a folder.
@@ -117,6 +126,26 @@ function source_find(base) {
 }
 
 /**
+ * The built file an exports map gives a subpath: an exact key, else the pattern (`./*`) that matches it.
+ *
+ * @param {Map<string, string>} exports - The package's exports, subpath to target.
+ * @param {string} sub - The subpath asked for (`.`, `./utils/cli.js`).
+ * @returns {string | null} The target, or null when no key or pattern gives it.
+ */
+function exportTarget_find(exports, sub) {
+  const exact = exports.get(sub);
+  if (exact !== undefined) return exact;
+  for (const [key, target] of exports) {
+    const star = key.indexOf('*');
+    if (star < 0) continue;
+    const head = key.slice(0, star);
+    const tail = key.slice(star + 1);
+    if (sub.startsWith(head) && sub.endsWith(tail) && sub.length >= head.length + tail.length) return target.replace('*', sub.slice(head.length, sub.length - tail.length));
+  }
+  return null;
+}
+
+/**
  * Resolves a module specifier to a workspace source file.
  *
  * @param {string} spec - The specifier.
@@ -131,8 +160,8 @@ function specifier_resolve(spec, from, packages) {
   const pkg = packages.get(match[1]);
   if (pkg === undefined) return null;
   const sub = match[2] === undefined ? '.' : `.${match[2]}`;
-  const built = pkg.exports.get(sub);
-  if (built === undefined) return null;
+  const built = exportTarget_find(pkg.exports, sub);
+  if (built === null) return null;
   // A built path (dist/x.js) is its source (src/x.ts).
   return source_find(join(pkg.dir, built.replace(/^\.?\/?dist\//, 'src/').replace(/\.d\.ts$/, '.ts')));
 }
@@ -153,6 +182,13 @@ export function moduleLinks_read(file) {
   const bound = new Map();
   const local = new Map();
   const literal = (node) => (node !== undefined && ts.isStringLiteralLike(node) ? node.text : null);
+  let loader = false;
+  // A value exported under a name that is an imported binding, or a property of one (`fs.readFileSync`).
+  const bindingOf = (expression) => {
+    let at = expression;
+    while (at !== undefined && (ts.isPropertyAccessExpression(at) || ts.isParenthesizedExpression(at) || ts.isAsExpression(at))) at = at.expression;
+    return at !== undefined && ts.isIdentifier(at) ? at.text : null;
+  };
   const visit = (node) => {
     if (ts.isImportDeclaration(node)) {
       const spec = literal(node.moduleSpecifier);
@@ -187,19 +223,31 @@ export function moduleLinks_read(file) {
       } else if (node.exportClause !== undefined && ts.isNamedExports(node.exportClause)) {
         for (const element of node.exportClause.elements) local.set(element.name.text, (element.propertyName ?? element.name).text);
       }
+    } else if (ts.isExportAssignment(node)) {
+      const name = bindingOf(node.expression);
+      if (name !== null) local.set('default', name);
+    } else if (ts.isVariableStatement(node) && node.modifiers?.some((one) => one.kind === ts.SyntaxKind.ExportKeyword)) {
+      for (const declaration of node.declarationList.declarations) {
+        const name = declaration.initializer === undefined ? null : bindingOf(declaration.initializer);
+        if (name !== null && ts.isIdentifier(declaration.name)) local.set(declaration.name.text, name);
+      }
+    } else if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'process' && PROCESS_LOADERS.has(node.name.text)) {
+      loader = true;
     } else if (ts.isCallExpression(node)) {
       const callee = node.expression;
       const isRequire = ts.isIdentifier(callee) && callee.text === 'require';
       const isImport = callee.kind === ts.SyntaxKind.ImportKeyword;
       const spec = (isRequire || isImport) ? literal(node.arguments[0]) : null;
       if (spec !== null) imports.push({ spec, names: '*' });
+      // A module named by what the code builds: a loader.
+      else if (isRequire || isImport) loader = true;
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
   const exportedBindings = new Map();
   for (const [exported, name] of local) { const from = bound.get(name); if (from !== undefined) exportedBindings.set(exported, from); }
-  return { imports, reexports, local: exportedBindings };
+  return { imports, reexports, local: exportedBindings, loader };
 }
 
 /**
@@ -216,8 +264,16 @@ export function effects_find(root, workspaces = ENGINE_WORKSPACES) {
     if (!links.has(file)) links.set(file, moduleLinks_read(file));
     return links.get(file);
   };
-  // What a module carries: exported name ('*' for every name) to the effect it gives.
+  // What a module carries: exported name ('*' for every name) to the effects it gives.
   const carried = new Map();
+  const effects_add = (out, name, given) => {
+    if (given === undefined || given.size === 0) return;
+    const held = out.get(name) ?? new Set();
+    for (const one of given) held.add(one);
+    out.set(name, held);
+  };
+  const all_of = (theirs) => new Set([...theirs.values()].flatMap((one) => [...one]));
+  const name_of = (theirs, name) => new Set([...(theirs.get(name) ?? []), ...(theirs.get('*') ?? [])]);
   const carries_get = (file, seen = new Set()) => {
     if (carried.has(file)) return carried.get(file);
     if (seen.has(file)) return new Map();
@@ -226,24 +282,20 @@ export function effects_find(root, workspaces = ENGINE_WORKSPACES) {
     const { reexports, local } = link_get(file);
     const target_carries = (spec) => {
       const effect = EFFECT_MODULES.get(spec);
-      if (effect !== undefined) return new Map([['*', effect]]);
+      if (effect !== undefined) return new Map([['*', new Set([effect])]]);
       const target = specifier_resolve(spec, file, packages);
       return target === null ? new Map() : carries_get(target, seen);
     };
     for (const { spec, names } of reexports) {
       const theirs = target_carries(spec);
       if (theirs.size === 0) continue;
-      if (names === '*') for (const [name, effect] of theirs) out.set(name, effect);
-      else for (const [exported, original] of names) {
-        const effect = original === '*' ? [...theirs.values()][0] : theirs.get(original) ?? theirs.get('*');
-        if (effect !== undefined) out.set(exported, effect);
-      }
+      if (names === '*') for (const [name, given] of theirs) effects_add(out, name, given);
+      else for (const [exported, original] of names) effects_add(out, exported, original === '*' ? all_of(theirs) : name_of(theirs, original));
     }
     for (const [exported, from] of local) {
       const [spec, original] = from.split('#');
       const theirs = target_carries(spec);
-      const effect = original === '*' ? [...theirs.values()][0] : theirs.get(original) ?? theirs.get('*');
-      if (effect !== undefined) out.set(exported, effect);
+      effects_add(out, exported, original === '*' ? all_of(theirs) : name_of(theirs, original));
     }
     carried.set(file, out);
     return out;
@@ -252,16 +304,66 @@ export function effects_find(root, workspaces = ENGINE_WORKSPACES) {
   for (const workspace of workspaces) {
     for (const file of sources_list(join(root, workspace, 'src'))) {
       const effects = new Set();
+      if (link_get(file).loader) effects.add('loader');
       for (const { spec, names } of link_get(file).imports) {
         const effect = EFFECT_MODULES.get(spec);
         if (effect !== undefined) { effects.add(effect); continue; }
         const target = specifier_resolve(spec, file, packages);
         if (target === null) continue;
         const theirs = carries_get(target);
-        if (names === '*') for (const given of theirs.values()) effects.add(given);
-        else for (const name of names) { const given = theirs.get(name) ?? theirs.get('*'); if (given !== undefined) effects.add(given); }
+        const given = names === '*' ? all_of(theirs) : new Set(names.flatMap((name) => [...name_of(theirs, name)]));
+        for (const one of given) effects.add(one);
       }
       if (effects.size > 0) found.set(relative(root, file), effects);
+    }
+  }
+  return found;
+}
+
+/**
+ * A source's code with its comments blanked out, so a gate shown in a comment is not taken for one called.
+ *
+ * @param {string} file - The file's name (for the parser).
+ * @param {string} text - Its text.
+ * @returns {string} The text, each comment replaced by spaces.
+ */
+export function code_read(file, text) {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const blank = new Array(text.length).fill(false);
+  const ranges_mark = (ranges) => { for (const range of ranges ?? []) for (let i = range.pos; i < range.end; i++) blank[i] = true; };
+  const visit = (node) => {
+    ranges_mark(ts.getLeadingCommentRanges(text, node.getFullStart()));
+    ranges_mark(ts.getTrailingCommentRanges(text, node.getEnd()));
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  ranges_mark(ts.getLeadingCommentRanges(text, source.endOfFileToken.getFullStart()));
+  return [...text].map((ch, i) => (blank[i] && ch !== '\n' ? ' ' : ch)).join('');
+}
+
+/**
+ * The source files of every workspace whose code names an identifier.
+ *
+ * @param {string} root - The repository.
+ * @param {string} name - The identifier.
+ * @returns {Map<string, string>} Their texts, by path from the root.
+ */
+export function identifierUses_find(root, name) {
+  const found = new Map();
+  for (const group of ['packages', 'apps']) {
+    const base = join(root, group);
+    if (!existsSync(base)) continue;
+    for (const entry of readdirSync(base, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      for (const file of sources_list(join(base, entry.name, 'src'))) {
+        const text = readFileSync(file, 'utf8');
+        if (!text.includes(name)) continue;
+        const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+        let named = false;
+        const visit = (node) => { if (!named && ts.isIdentifier(node) && node.text === name) named = true; if (!named) ts.forEachChild(node, visit); };
+        visit(source);
+        if (named) found.set(relative(root, file), text);
+      }
     }
   }
   return found;
@@ -285,6 +387,7 @@ export function gate_parse(text, where) {
     }
   }
   for (const pin of list.pins) if (typeof pin?.file !== 'string' || typeof pin?.text !== 'string' || typeof pin?.why !== 'string') throw new Error(`${where}: a pin needs a file, a text and a why`);
+  for (const helper of list.confined ?? []) if (typeof helper?.name !== 'string' || !Array.isArray(helper?.callers) || typeof helper?.why !== 'string') throw new Error(`${where}: a confined helper needs a name, its callers and a why`);
   return list;
 }
 
@@ -295,9 +398,10 @@ export function gate_parse(text, where) {
  * @param {ReturnType<typeof gate_parse>} list - The list.
  * @param {ReturnType<typeof gate_parse> | null} atBase - The list at the base; null when the base had none.
  * @param {(file: string) => string | null} file_read - Reads a file from the repository's root (null when it is not there).
+ * @param {(name: string) => Map<string, string>} [uses_find] - The files whose code names an identifier, by path.
  * @returns {string[]} The faults; none means it holds.
  */
-export function gate_judge(found, list, atBase, file_read) {
+export function gate_judge(found, list, atBase, file_read, uses_find = () => new Map()) {
   const faults = [];
   for (const [file, effects] of found) {
     for (const effect of effects) if (list.files[file]?.[effect] === undefined) faults.push(`${file} imports ${effect}, and ${GATE_FILE} does not list it for that: ask the host gate first (hostDisk_refusal, hostProcess_refusal) and list it with its reason, or reach the host through a module that does`);
@@ -307,7 +411,11 @@ export function gate_judge(found, list, atBase, file_read) {
   }
   for (const pin of list.pins) {
     const text = file_read(pin.file);
-    if (text === null || !text.replace(/\s+/g, ' ').includes(pin.text.replace(/\s+/g, ' '))) faults.push(`${pin.file} no longer holds its gate \`${pin.text}\` (${pin.why})`);
+    // In the code, not in a comment that shows it.
+    if (text === null || !code_read(pin.file, text).replace(/\s+/g, ' ').includes(pin.text.replace(/\s+/g, ' '))) faults.push(`${pin.file} no longer holds its gate \`${pin.text}\` (${pin.why})`);
+  }
+  for (const helper of list.confined ?? []) {
+    for (const file of uses_find(helper.name).keys()) if (!helper.callers.includes(file)) faults.push(`${file} uses ${helper.name}, which only ${helper.callers.join(', ')} may (${helper.why}): call it through them, or list the caller with its gate`);
   }
   if (atBase !== null) {
     for (const [file, effects] of Object.entries(list.files)) {
@@ -315,6 +423,11 @@ export function gate_judge(found, list, atBase, file_read) {
     }
     const kept = new Set(list.pins.map((pin) => `${pin.file}\u0000${pin.text}`));
     for (const pin of atBase.pins) if (!kept.has(`${pin.file}\u0000${pin.text}`)) faults.push(`${GATE_FILE} drops the pin on ${pin.file} (\`${pin.text}\`) that the base had`);
+    for (const helper of atBase.confined ?? []) {
+      const now = (list.confined ?? []).find((one) => one.name === helper.name);
+      if (now === undefined) faults.push(`${GATE_FILE} drops the confinement of ${helper.name} that the base had`);
+      else for (const caller of now.callers) if (!helper.callers.includes(caller)) faults.push(`${GATE_FILE} lets ${caller} call ${helper.name}, which the base did not: a new caller of a host helper is reviewed on its own`);
+    }
   }
   return faults;
 }
@@ -339,7 +452,7 @@ function main() {
     process.exit(2);
   }
   const found = effects_find(root);
-  const faults = gate_judge(found, list, atBase, (file) => (existsSync(join(root, file)) ? readFileSync(join(root, file), 'utf8') : null));
+  const faults = gate_judge(found, list, atBase, (file) => (existsSync(join(root, file)) ? readFileSync(join(root, file), 'utf8') : null), (name) => identifierUses_find(root, name));
   if (faults.length > 0) {
     console.error(`host-gate: ${faults.length} fault(s):`);
     for (const fault of faults) console.error(`  ${fault}`);

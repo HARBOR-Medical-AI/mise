@@ -125,11 +125,14 @@ describe('plugin_addInteractive', () => {
       const surface = new HeadlessSurface();
       Object.assign(surface.capabilities, capabilities);
       surface_set(surface);
-      mockAdd.mockClear();
-      await plugin_addInteractive({ _: ['add', 'fnndsc/pl-x:1'] } as never);
-      const run: unknown = mockAdd.mock.calls[0]?.[3];
-      if (gives === 'runner') expect(run).toBe(mockDockerRun);
-      else expect(run).toEqual({ refused: 'plugin add from an image (docker): this session may not start programs on its host; start the session with --host-control=shell' });
+      // Both ways in: plugin add, and store install, which adds through plugin_addInteractive (store-builtin.test).
+      for (const asked of [(): Promise<unknown> => plugin_addInteractive({ _: ['add', 'fnndsc/pl-x:1'] } as never), (): Promise<unknown> => plugin_addInteractive({ _: ['install', 'fnndsc/pl-x:1'] } as never)]) {
+        mockAdd.mockClear();
+        await asked();
+        const run: unknown = mockAdd.mock.calls[0]?.[3];
+        if (gives === 'runner') expect(run).toBe(mockDockerRun);
+        else expect(run).toEqual({ refused: 'plugin add from an image (docker): this session may not start programs on its host; start the session with --host-control=shell' });
+      }
     }
     surface_set(new HeadlessSurface());
     expect(mockDockerRun).not.toHaveBeenCalled();

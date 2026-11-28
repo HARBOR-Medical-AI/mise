@@ -30,7 +30,7 @@ import type { ClosingCause } from '@fnndsc/menu';
 import { attachFile_write, attachFile_remove } from './attachFile.js';
 import { CHELL_ON_PATH, chellLaunch_find, type SurfaceLaunch } from './consoleSession.js';
 import { Terminals, ptySpawn_load, type PtySpawn } from './terminals.js';
-import { HOST_CONTROL_OFF, engineHost_grants, hostControl_describe, hostControl_guard, hostControl_tiers, hostPipe_run, hostShell_run, hostShellTerminal_refusal, type HostControlPolicy } from './hostControl.js';
+import { HOST_CONTROL_OFF, daemonCapabilities_compose, hostControl_describe, hostControl_guard, hostControl_tiers, hostPipe_run, hostShell_run, hostShellTerminal_refusal, type HostControlPolicy } from './hostControl.js';
 
 /** What a launched daemon hands back to its host (the console face's feed). */
 export interface DaemonLaunchInfo {
@@ -92,32 +92,7 @@ export function daemonSurface_create(daemon: CalypsoDaemon, policy: HostControlP
     // would either archive a directory a shell wanted whole or hand a browser
     // a tree it cannot hold.
     get capabilities(): SurfaceCapabilities {
-      const attached = daemon.capabilities_current();
-      return {
-        hiddenInput: true,
-        localEdit: true,
-        tty: true,
-        // Colour follows the executing surface: a colour terminal or a browser
-        // console renders ANSI, a bare pipe does not.
-        color: attached?.color ?? false,
-        // A segment runs on this host under host control, else on the acting
-        // surface: a chell runs one, a browser none. Said truly, a builtin
-        // that would hand text to a system program answers in the kernel instead.
-        pipeSegments: engineHost_grants(policy).pipesHere || (attached?.pipeSegments ?? false),
-        shellCommands: true,
-        fileDelivery: attached?.fileDelivery ?? false,
-        // The daemon's disk belongs to nobody attending this session — unless
-        // the operator who started it declared otherwise with the `files`
-        // tier of --host-control, in which case it is theirs by declaration.
-        engineFilesystem: engineHost_grants(policy).engineFilesystem,
-        // Programs on this host (docker for a plugin, say) are the operator's to grant, by the shell tier, and
-        // never a surface's: what an attached surface declares does not reach this.
-        engineProcesses: engineHost_grants(policy).engineProcesses,
-        localFilesystem: attached?.localFilesystem ?? false,
-        // Long jobs that change things beyond this host, and bill: only the
-        // operator who started the daemon grants them, never a surface.
-        tasks: policy.tiers.has('tasks') || (attached?.tasks ?? false),
-      };
+      return daemonCapabilities_compose(daemon.capabilities_current(), policy);
     },
     peers: (): SurfacePeer[] => daemon.surfaces_list(),
     prompt: (request: PromptRequest): Promise<string> =>

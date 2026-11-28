@@ -727,6 +727,43 @@ for (const lint of lints) {
   let refused = '';
   try { gate_parse(JSON.stringify({ files: { 'a.ts': { fs: 'ok' } }, pins: [] }), 'the list'); } catch (error) { refused = error.message; }
   expect_that('an entry with no reason worth the name is refused', refused.includes('gives no reason'), refused);
+  // A package published by pattern (`./*`), as chili is: its subpaths are followed too, a namespace that carries both
+  // effects carries both, and a harmless sibling reached by the same pattern carries none.
+  const { code_read } = await import('./host-gate.mjs');
+  file_put(join(tree, 'packages/chili/package.json'), JSON.stringify({ name: '@fnndsc/chili', exports: { '.': './dist/index.js', './*': './dist/*' } }));
+  file_put(join(tree, 'packages/chili/src/index.ts'), "export const nothing = 0;\n");
+  file_put(join(tree, 'packages/chili/src/utils/both.ts'), "export * as host from './hostBoth.js';\n");
+  file_put(join(tree, 'packages/chili/src/utils/hostBoth.ts'), "export * from 'node:fs';\nexport * from 'node:child_process';\n");
+  file_put(join(tree, 'packages/chili/src/utils/calm.ts'), "export const calm = 1;\n");
+  file_put(join(tree, 'packages/brasa/src/byPattern.ts'), "import { host } from '@fnndsc/chili/utils/both.js';\nexport const k = host;\n");
+  file_put(join(tree, 'packages/brasa/src/byPatternCalm.ts'), "import { calm } from '@fnndsc/chili/utils/calm.js';\nexport const l = calm;\n");
+  const patterned = effects_find(tree, ['packages/brasa', 'packages/chili']);
+  const ofP = (file) => [...(patterned.get(`packages/brasa/src/${file}`) ?? [])].sort().join('+');
+  expect_that('a subpath published by pattern is followed: a namespace carrying both effects gives both, a harmless sibling none', ofP('byPattern.ts') === 'child_process+fs' && ofP('byPatternCalm.ts') === '', JSON.stringify([...patterned]));
+  // A module reached by a name the code builds is a loader: process.getBuiltinModule, createRequire, a non-literal
+  // import() or require(); and an effect binding re-exported as a value (export default, export const) is carried.
+  file_put(join(tree, 'packages/brasa/src/builtin.ts'), "export const g = process.getBuiltinModule('node:fs');\n");
+  file_put(join(tree, 'packages/brasa/src/created.ts'), "import { createRequire } from 'node:module';\nexport const r = createRequire(import.meta.url)('node:child_process');\n");
+  file_put(join(tree, 'packages/brasa/src/built.ts'), "export const m = async (n: string) => import('node:' + n);\nconst name = 'child_process';\nexport const q = () => require(name);\n");
+  file_put(join(tree, 'packages/brasa/src/defaulted.ts'), "import fs from 'node:fs';\nexport default fs;\n");
+  file_put(join(tree, 'packages/brasa/src/aliased.ts'), "import { execSync } from 'node:child_process';\nexport const run = execSync;\n");
+  file_put(join(tree, 'packages/brasa/src/viaDefault.ts'), "import fs from './defaulted.js';\nexport const s = fs;\n");
+  file_put(join(tree, 'packages/brasa/src/viaAlias.ts'), "import { run } from './aliased.js';\nexport const u = run;\n");
+  const escapes = effects_find(tree, ['packages/brasa']);
+  const ofE = (file) => [...(escapes.get(`packages/brasa/src/${file}`) ?? [])].sort().join('+');
+  expect_that('process.getBuiltinModule, createRequire and a non-literal import() or require() are each a loader', ofE('builtin.ts') === 'loader' && ofE('created.ts') === 'loader' && ofE('built.ts') === 'loader', JSON.stringify([...escapes]));
+  expect_that('an effect binding exported as a value (export default, export const) carries the effect to its importers', ofE('viaDefault.ts') === 'fs' && ofE('viaAlias.ts') === 'child_process', JSON.stringify([...escapes]));
+  // A pin is held in the code, not in a comment that shows it.
+  expect_that('a gate shown only in a comment is no gate', !code_read('x.ts', "// hostDisk_refusal('x')\nconst a = 1;\n").includes('hostDisk_refusal') && code_read('x.ts', "const r = hostDisk_refusal('x'); // why\n").includes("hostDisk_refusal('x')"));
+  const commented = gate_judge(found, { ...listed, pins: [{ file: 'packages/brasa/src/comment.ts', text: "import fs from 'fs'", why: 'shown in a comment only' }] }, null, read);
+  expect_that('a pin whose text stands only in a comment fails', commented.length === 1 && commented[0].includes('no longer holds its gate'), commented.join(' | '));
+  // A confined host helper: a file not among its callers that names it fails; a caller the base did not have fails.
+  const confined = { ...listed, confined: [{ name: 'hostPipe_run', callers: ['packages/calypso/src/daemon/launch.ts'], why: 'runs a caller\'s pipeline' }] };
+  const uses = () => new Map([['packages/calypso/src/daemon/launch.ts', ''], ['packages/brasa/src/sneak.ts', '']]);
+  const sneaked = gate_judge(found, confined, null, read, uses);
+  expect_that('a use of a confined helper from a file not among its callers fails', sneaked.length === 1 && sneaked[0].includes('packages/brasa/src/sneak.ts uses hostPipe_run'), sneaked.join(' | '));
+  const widened = gate_judge(found, { ...confined, confined: [{ ...confined.confined[0], callers: [...confined.confined[0].callers, 'packages/brasa/src/sneak.ts'] }] }, confined, read, uses);
+  expect_that('a caller added to a confined helper that the base did not have fails', widened.some((one) => one.includes('lets packages/brasa/src/sneak.ts call hostPipe_run')), widened.join(' | '));
   const realGate = spawnSync('node', [join(here, 'host-gate.mjs')], { encoding: 'utf8' });
   expect_that('the repository as it stands passes the host gate', realGate.status === 0, `${realGate.stdout}${realGate.stderr}`.slice(-400));
 }

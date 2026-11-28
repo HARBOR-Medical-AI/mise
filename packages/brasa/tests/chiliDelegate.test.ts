@@ -14,9 +14,9 @@ const { chiliCommand_run, chiliCommand_exists, chiliHostWord_refusal, chiliArgv_
 const { surface_set, HeadlessSurface } = await import('../src/core/surface.js');
 
 /** Installs a surface whose engine disk is, or is not, its operator's; answers how to put the old one back. */
-function hostDisk_set(operators: boolean): () => void {
+function hostDisk_set(operators: boolean, programs: boolean = operators): () => void {
   const surface = new HeadlessSurface();
-  Object.assign(surface.capabilities, { engineFilesystem: operators });
+  Object.assign(surface.capabilities, { engineFilesystem: operators, engineProcesses: programs });
   const previous = surface_set(surface);
   return (): void => { surface_set(previous); };
 }
@@ -201,6 +201,22 @@ describe('chili\'s words that touch the host\'s disk', () => {
     try {
       expect((await chiliCommand_run(command, args)).status).toBe('ok');
       expect(mockRunCapture).toHaveBeenCalledWith([command, ...args]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('a line that also starts a program on the host (a renderer, a browser) needs the process grant too: with the disk alone it is refused and chili is not run', async () => {
+    const restore = hostDisk_set(true, false);
+    try {
+      for (const [command, args, what] of [['path', ['scan', '--tree', '--mermaid'], 'path scan --mermaid'], ['path', ['scan', '--save', '/tmp/x.html'], 'path scan --save'], ['man', ['doc', 'chell', '--browser'], 'man doc --browser']] as const) {
+        expect(chiliHostWord_refusal(command, [...args])).toBe(`${what}: this session may not start programs on its host; start the session with --host-control=shell`);
+        mockRunCapture.mockClear();
+        expect((await chiliCommand_run(command, [...args])).status).not.toBe('ok');
+        expect(mockRunCapture).not.toHaveBeenCalled();
+      }
+      // A line that reads the disk and starts nothing still runs on the disk grant alone.
+      expect(chiliHostWord_refusal('path', ['upload', 'a', 'b'])).toBeNull();
     } finally {
       restore();
     }

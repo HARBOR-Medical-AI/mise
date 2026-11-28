@@ -58,6 +58,101 @@ export function engineHost_grants(policy: HostControlPolicy): EngineHostGrants {
   return { engineFilesystem: policy.tiers.has('files'), engineProcesses: policy.tiers.has('shell'), pipesHere: policy.tiers.has('pipes') };
 }
 
+/**
+ * What an attached surface declared of itself, as far as the daemon reads it.
+ *
+ * @example
+ * ```ts
+ * const attached: AttachedCapabilities = { color: true, pipeSegments: false };
+ * ```
+ */
+export interface AttachedCapabilities {
+  /** It renders colour. */
+  color?: boolean;
+  /** It runs pipeline segments. */
+  pipeSegments?: boolean;
+  /** It takes a file delivered. */
+  fileDelivery?: boolean;
+  /** It has a filesystem of its own to fill. */
+  localFilesystem?: boolean;
+  /** It holds the tasks tier (an elevation): B3 decides whether a surface may say so. */
+  tasks?: boolean;
+}
+
+/**
+ * The daemon's surface's capabilities, as the engine reads them.
+ *
+ * @example
+ * ```ts
+ * const capabilities: DaemonCapabilities = daemonCapabilities_compose(null, HOST_CONTROL_OFF);
+ * ```
+ */
+export interface DaemonCapabilities {
+  /** Hidden input. */
+  hiddenInput: boolean;
+  /** Local edit. */
+  localEdit: boolean;
+  /** A terminal. */
+  tty: boolean;
+  /** Colour. */
+  color: boolean;
+  /** Pipeline segments run somewhere. */
+  pipeSegments: boolean;
+  /** `!` lines are relayed. */
+  shellCommands: boolean;
+  /** Files are delivered. */
+  fileDelivery: boolean;
+  /** The engine's disk is the operator's. */
+  engineFilesystem: boolean;
+  /** The engine may start programs on this host. */
+  engineProcesses: boolean;
+  /** The surface has a filesystem of its own. */
+  localFilesystem: boolean;
+  /** Long tasks. */
+  tasks: boolean;
+}
+
+/**
+ * The daemon's surface's capabilities: those that vary by surface read from the one executing, as it declared
+ * them on attach; what the engine may do on this host from the operator's policy alone.
+ *
+ * @param attached - What the executing surface declared, if one is attached.
+ * @param policy - The host-control policy.
+ * @returns The capabilities.
+ *
+ * @example
+ * ```ts
+ * daemonCapabilities_compose({ pipeSegments: true }, HOST_CONTROL_OFF).engineProcesses; // false
+ * ```
+ */
+export function daemonCapabilities_compose(attached: AttachedCapabilities | null | undefined, policy: HostControlPolicy): DaemonCapabilities {
+  return {
+    hiddenInput: true,
+    localEdit: true,
+    tty: true,
+    // Colour follows the executing surface: a colour terminal or a browser
+    // console renders ANSI, a bare pipe does not.
+    color: attached?.color ?? false,
+    // A segment runs on this host under host control, else on the acting
+    // surface: a chell runs one, a browser none. Said truly, a builtin
+    // that would hand text to a system program answers in the kernel instead.
+    pipeSegments: engineHost_grants(policy).pipesHere || (attached?.pipeSegments ?? false),
+    shellCommands: true,
+    fileDelivery: attached?.fileDelivery ?? false,
+    // The daemon's disk belongs to nobody attending this session — unless
+    // the operator who started it declared otherwise with the `files`
+    // tier of --host-control, in which case it is theirs by declaration.
+    engineFilesystem: engineHost_grants(policy).engineFilesystem,
+    // Programs on this host (docker for a plugin, say) are the operator's to grant, by the shell tier, and
+    // never a surface's: what an attached surface declares does not reach this.
+    engineProcesses: engineHost_grants(policy).engineProcesses,
+    localFilesystem: attached?.localFilesystem ?? false,
+    // Long jobs that change things beyond this host, and bill: only the
+    // operator who started the daemon grants them, never a surface.
+    tasks: policy.tiers.has('tasks') || (attached?.tasks ?? false),
+  };
+}
+
 /** The tiers the policy can grant, in the order they are told. */
 export const HOST_CONTROL_TIERS: readonly HostControlTier[] = ['shell', 'files', 'pipes', 'tasks'];
 export type HostControlTier = 'shell' | 'files' | 'pipes' | 'tasks';

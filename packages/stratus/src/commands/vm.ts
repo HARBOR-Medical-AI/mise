@@ -24,7 +24,7 @@
  */
 import chalk from 'chalk';
 import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, taskState_isOver, STRATUS_VM_COST_MODEL_KIND, STRATUS_VM_LIMITS_MODEL_KIND, STRATUS_VM_STATE_EVENT, STRATUS_VM_STATUS_MODEL_KIND, type CommandEnvelope, type VmCostRow, type VmState, type VmStatusRow, STRATUS_PROMPT_PURPOSES, STRATUS_VM_STEP_EVENT, type VmStepEvent } from '@fnndsc/menu';
-import { command_declare, declaredCommand_run, repl_confirm, repl_question, runner_get, sink_dataLine, sink_get, surface_get, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
+import { command_declare, declaredCommand_run, hostProcess_refusal, repl_confirm, repl_question, runner_get, sink_dataLine, sink_get, type CommandArguments, type CommandDeclaration, type CommandGrammar } from '@fnndsc/brasa/core';
 import { plan_count, planCounts_words, type BuildCall, type CloudBuilder, type InfraPlan, type PlanCounts } from '../cloud/builder.js';
 import { keepFailure_describe } from '../cloud/keepFault.js';
 import type { VmRemote } from '../vm/remote.js';
@@ -1066,7 +1066,10 @@ async function vmShell_run(context: VmCommandContext, named: string | undefined)
   const need = await vm_needOrTake(context, named, 'shell');
   if ('error' in need) return envelope_error('', undefined, `${need.error}\n`);
   if (vmKeyless_is(context.store, need.record)) return envelope_error(need.said, undefined, `vm shell: ${need.name}: ${VM_KEYLESS}\n`);
-  if (surface_get().capabilities.shellCommands !== true) return envelope_error('', undefined, 'vm shell: needs the shell tier (stratus --host-control shell)\n');
+  // A key is made (ssh-keygen) and a session opened from this host: programs here are the shell tier's, granted by the
+  // operator, never by what an attached surface can relay.
+  const refused: string | null = hostProcess_refusal('vm shell');
+  if (refused !== null) return envelope_error('', undefined, `${refused}\n`);
   const { name, record, spec } = need;
   const privateIp: string | undefined = record.machineOutputs?.['private_ip'];
   if (record.built === undefined || privateIp === undefined) return envelope_error('', undefined, `vm shell: ${name}: not built (vm build ${name})\n`);

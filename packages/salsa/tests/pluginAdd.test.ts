@@ -224,6 +224,16 @@ describe('plugin_add', () => {
     }
   });
 
+  it('a store hit or a registration never asks docker: a recording runner given hears nothing', async () => {
+    const run = docker_fake([]);
+    mockCheckExists.mockResolvedValueOnce({ name: 'pl-x', version: '1' });
+    expect(await plugin_add('fnndsc/pl-x:1', {}, note, run)).toMatchObject({ outcome: 'already_exists' });
+    mockSearchPeers.mockResolvedValueOnce({ plugin: { name: 'pl-x' }, storeName: 'cube.chrisproject.org' });
+    mockImport.mockResolvedValueOnce({ success: true, plugin: { name: 'pl-x', version: '1' } });
+    expect(await plugin_add('pl-x', {}, note, run)).toMatchObject({ outcome: 'installed' });
+    expect(run.calls).toEqual([]);
+  });
+
   it('says why the image path failed', async () => {
     expect(await plugin_add('pl-x', {}, note, docker_fake([]))).toMatchObject({ outcome: 'failed', reason: expect.stringContaining('docker is not installed') });
     expect(await plugin_add('pl-x', {}, note, docker_fake([['info', { ok: true }], ['pull', { stderr: 'denied' }]])))

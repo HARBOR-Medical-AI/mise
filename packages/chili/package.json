@@ -21,7 +21,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "chili": "dist/index.js"
+    "chili": "dist/bin.js"
   },
   "scripts": {
     "build": "rm -fr dist && tsc && chmod +x ./dist/index.js",

@@ -5,6 +5,7 @@
 import { describe, it, expect } from '@jest/globals';
 import {
   HOST_CONTROL_OFF,
+  daemonCapabilities_compose,
   engineHost_grants,
   hostControl_build,
   hostControl_parseArgv,
@@ -146,6 +147,24 @@ describe('engineHost_grants', () => {
     // A host pipeline is the pipes tier's: it runs here, while programs of the engine's own stay refused.
     expect(grants('pipes')).toEqual({ engineFilesystem: false, engineProcesses: false, pipesHere: true });
     expect(grants('files')).toEqual({ engineFilesystem: true, engineProcesses: false, pipesHere: false });
+  });
+});
+
+describe('daemonCapabilities_compose', () => {
+  it('takes what the engine may do on this host from the policy alone: an attached surface claiming every capability, or elevated, raises neither the disk nor programs', () => {
+    const claiming = { color: true, pipeSegments: true, fileDelivery: true, localFilesystem: true, engineFilesystem: true, engineProcesses: true } as unknown as Parameters<typeof daemonCapabilities_compose>[0];
+    const elevated = { ...(claiming as object), tasks: true } as Parameters<typeof daemonCapabilities_compose>[0];
+    const policy = (...tiers: Array<'shell' | 'files' | 'pipes' | 'tasks'>) => ({ tiers: new Set(tiers), exposed: false });
+    for (const attached of [claiming, elevated]) {
+      expect(daemonCapabilities_compose(attached, HOST_CONTROL_OFF)).toMatchObject({ engineFilesystem: false, engineProcesses: false, color: true, localFilesystem: true });
+      expect(daemonCapabilities_compose(attached, policy('pipes'))).toMatchObject({ engineFilesystem: false, engineProcesses: false, pipeSegments: true });
+      expect(daemonCapabilities_compose(attached, policy('files'))).toMatchObject({ engineFilesystem: true, engineProcesses: false });
+      expect(daemonCapabilities_compose(attached, policy('shell'))).toMatchObject({ engineFilesystem: false, engineProcesses: true });
+    }
+    // Pipe segments: here under pipes, else only where the acting surface runs them (a browser runs none).
+    expect(daemonCapabilities_compose({ pipeSegments: false }, HOST_CONTROL_OFF).pipeSegments).toBe(false);
+    expect(daemonCapabilities_compose({ pipeSegments: false }, policy('pipes')).pipeSegments).toBe(true);
+    expect(daemonCapabilities_compose(null, HOST_CONTROL_OFF)).toMatchObject({ engineFilesystem: false, engineProcesses: false, pipeSegments: false, color: false });
   });
 });
 
