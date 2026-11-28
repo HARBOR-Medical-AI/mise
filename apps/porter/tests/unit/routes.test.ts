@@ -459,16 +459,29 @@ describe('the door', () => {
     await grants.grants_sweep();
     expect((await logout(cookie_of(failing))).statusCode).toBe(200);
     expect(berths.evicted).toHaveLength(2);
-    // A logout whose write fails, the berth ends and another starts under the same key, then the retry: the replacement stays.
+    // A logout whose write fails, then a login that finds another berth up under the same key, then the retry:
+    // the replacement stays.
     const replaced = await login();
-    const key: string = (replaced.json() as { key: string }).key;
     fail = true;
     expect((await logout(cookie_of(replaced))).statusCode).toBe(503);
     fail = false;
-    door.registry.generation_raise(key);
+    berths.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://127.0.0.1:5555', token: 'FRESH' };
     await login();
     expect((await logout(cookie_of(replaced))).statusCode).toBe(200);
     expect(berths.evicted).toHaveLength(2);
+    // A logout whose write fails, another browser's logout whose stop fails (the berth stays up), then the retry:
+    // the stop still owed to that same berth is paid.
+    const kept = await login();
+    const other = await login();
+    fail = true;
+    expect((await logout(cookie_of(kept))).statusCode).toBe(503);
+    fail = false;
+    const evict = berths.evict.bind(berths);
+    berths.evict = async (): Promise<boolean> => { throw new Error('docker could not stop the container'); };
+    expect((await logout(cookie_of(other))).json()).toMatchObject({ berth: 'not stopped' });
+    berths.evict = evict;
+    expect((await logout(cookie_of(kept))).statusCode).toBe(200);
+    expect(berths.evicted).toHaveLength(3);
     await door.app.close();
   });
 

@@ -267,12 +267,24 @@ export function cookie_carried(cookieHeader: string | undefined): boolean {
   return cookieHeader.split(';').some((part: string): boolean => part.slice(0, Math.max(0, part.indexOf('='))).trim() === DOOR_COOKIE);
 }
 
-/** A berth stop a logout owes: the session key, and the generation of the berth that stood when the logout came. */
+/** A berth stop a logout owes: the session key, and the berth that stood under it when the logout came. */
 interface OwedStop {
   /** The session key. */
   key: string;
-  /** The key's generation then; an ending since raises it. */
-  generation: number;
+  /** The berth then, or null when none was up. */
+  berth: Berth | null;
+}
+
+/**
+ * Whether two berths are one: the same address and the same attach token.
+ *
+ * @param a - A berth, or none.
+ * @param b - Another, or none.
+ * @returns True when both are none, or both are the same berth.
+ */
+function berth_isSame(a: Berth | null, b: Berth | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.url === b.url && a.token === b.token;
 }
 
 /** What a logout's berth stop came to. */
@@ -1115,9 +1127,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     const owed: OwedStop | undefined = held === null ? undefined : stopsOwed.get(held.id);
     if (held === null || owed === undefined) return { owed: false, unstopped: null };
     stopsOwed.delete(held.id);
-    // The stop is owed to the berth that stood when the logout came: one ended since (and any started in its
-    // place under the same key) is not this logout's to stop.
-    if (registry.generation_get(owed.key) !== owed.generation) return { owed: true, unstopped: null };
+    // The stop is owed to the berth that stood when the logout came, that very one (its address and its token):
+    // a berth found or started in its place under the same key since is not this logout's to stop.
+    if (!berth_isSame(registry.get(owed.key)?.berth ?? null, owed.berth)) return { owed: true, unstopped: null };
     const identity: string | null = options.logoutEnds === true ? registry.identity_find(owed.key) : null;
     return { owed: true, unstopped: identity === null ? null : await logout_stop(owed.key, identity) };
   };
@@ -1130,7 +1142,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // A logout of a grant that stands now owes one stop of the berth (on a door that stops berths): owed once, kept
     // across a write that fails, paid by whichever logout of that grant gets through, and never by one of a grant
     // that had already expired, ended or moved.
-    if (held !== null && grants.grant_admits(held.id, held.key) && !stopsOwed.has(held.id)) stopsOwed.set(held.id, { key: held.key, generation: registry.generation_get(held.key) });
+    if (held !== null && grants.grant_admits(held.id, held.key) && !stopsOwed.has(held.id)) stopsOwed.set(held.id, { key: held.key, berth: registry.get(held.key)?.berth ?? null });
     // The grant ends first: this cookie lets nobody in from now on, and what was opened under it is closed.
     let ended: 'ended' | 'moved' | 'gone' = 'gone';
     if (held !== null) {
