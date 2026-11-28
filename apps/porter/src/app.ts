@@ -1118,6 +1118,18 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   };
 
   /**
+   * Records the berth stop a logout owes: a logout of a grant that stands now owes one stop of the berth that
+   * stands under it now (on a door that stops berths), owed once, kept across a write that fails, paid by whichever
+   * logout of that grant gets through, and never by one of a grant that had already expired, ended or moved.
+   *
+   * @param held - The grant the logout's cookie named, if any.
+   */
+  const stop_owe = (held: GrantNamed | null): void => {
+    if (held === null || stopsOwed.has(held.id) || !grants.grant_admits(held.id, held.key)) return;
+    stopsOwed.set(held.id, { key: held.key, berth: registry.get(held.key)?.berth ?? null });
+  };
+
+  /**
    * Pays the berth stop a logout's grant was owed, if it was: once, by the first logout of that grant to get through.
    *
    * @param held - The grant the logout's cookie named, if any.
@@ -1139,10 +1151,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // The person is logged out of the door either way.
     // Any cookie this door signed may ask, admitted or not: a logout whose write failed is asked again by the same cookie.
     const held: GrantNamed | null = cookieGrant_read(request.headers.cookie, config.secret);
-    // A logout of a grant that stands now owes one stop of the berth (on a door that stops berths): owed once, kept
-    // across a write that fails, paid by whichever logout of that grant gets through, and never by one of a grant
-    // that had already expired, ended or moved.
-    if (held !== null && grants.grant_admits(held.id, held.key) && !stopsOwed.has(held.id)) stopsOwed.set(held.id, { key: held.key, berth: registry.get(held.key)?.berth ?? null });
+    stop_owe(held);
     // The grant ends first: this cookie lets nobody in from now on, and what was opened under it is closed.
     let ended: 'ended' | 'moved' | 'gone' = 'gone';
     if (held !== null) {
