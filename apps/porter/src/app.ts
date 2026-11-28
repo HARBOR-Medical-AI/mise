@@ -78,7 +78,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DOOR_COOKIE, doorCookie_options } from './door.js';
 import { loginPage_render, greetPage_render, authorisedPage_render } from './greeter.js';
-import { DeviceCodes, TokenStore, token_looksLike, type DeviceGrant, type DoorToken, type MintedToken, type TokenCheck } from './tokens.js';
+import { DeviceCodes, TokenStore, token_looksLike, type DeviceClaim, type DeviceGrant, type DoorToken, type MintedToken, type TokenCheck } from './tokens.js';
 import { idleSweep_run } from './sweep.js';
 import { AttemptLimit, HitLimit, VerdictCache, type Admission, type Attempt } from './limit.js';
 import { doorOrigins_resolve, method_isSafe, origin_isDoors, originRefusal_say, type DoorOrigins } from './origin.js';
@@ -617,20 +617,22 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // the browser is told it can go.
     if (wanted.code !== undefined) {
       // Claimed before anything is awaited: a second submission of the same code is refused while this one mints.
-      const forHost: string | null = codes.code_claim(wanted.code);
-      if (forHost === null) return refuse(410, `the code ${wanted.code} is not waiting (ten minutes, once); run chell auth login again`);
+      const claimed: DeviceClaim | null = codes.code_claim(wanted.code);
+      if (claimed === null) return refuse(410, `the code ${wanted.code} is not waiting (ten minutes, once); run chell auth login again`);
+      const forHost: string = claimed.host;
       const name: string = `${username}@${forHost}`;
       let made: MintedToken;
       try {
         made = await tokens.mint(identity, username, name);
       } catch (error: unknown) {
-        codes.claim_release(wanted.code);
+        codes.claim_release(wanted.code, claimed.claim);
         throw error;
       }
       const grant: DeviceGrant = { token: made.token, user: username, name, expires: made.record.expires };
-      // A code that died while the token was minted is not authorised: the token goes, and the login says so.
-      if (!codes.authorise(wanted.code, grant)) {
-        await tokens.revoke_presented(made.token);
+      // A code that died while the token was minted is not authorised: the mint is undone (the token it replaced,
+      // if any, comes back, unless revoked meanwhile), and the login says so.
+      if (!codes.authorise(wanted.code, claimed.claim, grant)) {
+        await tokens.mint_undo(made);
         return refuse(410, `the code ${wanted.code} ran out while the door minted its token; run chell auth login again`);
       }
       options.log?.(`minted a door token "${name}" for ${username} by device code (dies ${made.record.expires.slice(0, 10)})`);

@@ -111,6 +111,8 @@ export interface MintedToken {
   token: string;
   /** The record the store keeps. */
   record: DoorToken;
+  /** The token of the same name and identity it replaced, if any: what an undone mint puts back. */
+  replaced: DoorToken | null;
 }
 
 /** What the store answers for a presented token. */
@@ -238,6 +240,8 @@ export interface StoreHooks {
   legacy_before?: () => void | Promise<void>;
   /** While a read holds the store, for a test that holds it there. */
   read_during?: () => void | Promise<void>;
+  /** After a reader listed the versions, before it reads the mark. */
+  listed_after?: () => void | Promise<void>;
 }
 
 /**
@@ -262,8 +266,8 @@ function time_isIso(value: unknown): value is string {
 /** What a token's name may be: a short line with no control characters. */
 const TOKEN_TEXT: RegExp = /^[^\u0000-\u001f\u007f]{1,200}$/u;
 
-/** What an identity (`user@<CUBE url>`) and a username may be: one line with no control characters, as long as a URL gets. */
-const IDENTITY_TEXT: RegExp = /^[^\u0000-\u001f\u007f]{1,4096}$/u;
+/** What an identity (`user@<CUBE url>`) and a username may be: one line with no control characters, of any length the store's own bound allows. */
+const IDENTITY_TEXT: RegExp = /^[^\u0000-\u001f\u007f]+$/u;
 
 /**
  * Reads one record of the store as a token, or says it is not one. The one
@@ -345,8 +349,9 @@ export class TokenStore {
     await this.held_run(async (root: HeldFolder): Promise<void> => {
       await this.temps_sweep(root);
       const current: StoreVersion = await this.current_read(root);
-      // A store that has versions is marked so beside its file: should its versions ever vanish, it refuses rather than start again from the copy from before.
-      if (current.n > 0) await this.versioned_mark();
+      // The mark beside the store's file names the highest version published: should versions ever vanish, a reader
+      // finds less than it says and refuses. Opening the store brings it up to date, and refuses if it cannot.
+      if (current.n > 0) await this.mark_raise(current.n);
       // What was left out of the store as found, said once at start: a migrated version holds only what was kept.
       this.skipped = current.skipped;
       if (current.legacy) {
@@ -354,7 +359,7 @@ export class TokenStore {
         await this.hooks.read_after?.();
         const temp: string | false = await this.version_publish(root, 1, current.tokens, current.migratedFrom);
         if (temp !== false) await this.maintenance_run(root, 1, temp);
-        await this.versioned_mark();
+        await this.mark_raise(1);
       }
       const now: StoreVersion = current.legacy ? await this.current_read(root) : current;
       if (now.n > 0) await this.legacy_compare(now.migratedFrom);
@@ -369,7 +374,7 @@ export class TokenStore {
    * @param identity - The canonical identity.
    * @param user - The CUBE username.
    * @param name - The operator-readable name.
-   * @returns The plaintext, shown once, and the record kept.
+   * @returns The plaintext, shown once, the record kept, and the token it replaced.
    * @throws {Error} When the record would not read back (an empty name, a control character), before anything is published.
    */
   public async mint(identity: string, user: string, name: string): Promise<MintedToken> {
@@ -386,11 +391,35 @@ export class TokenStore {
     };
     // The rule a reader holds a record to, held before it is published: a mint never succeeds for a token the next read drops.
     if (tokenRecord_read(record) === null) throw new Error(`a door token needs a name of one short line, and a user and an identity of one line each; "${name.slice(0, 40)}" is not one`);
-    await this.change_apply((tokens: DoorToken[]) => ({
-      result: undefined,
+    const replaced: DoorToken | null = await this.change_apply<DoorToken | null>((tokens: DoorToken[]) => ({
+      result: tokens.find((held: DoorToken): boolean => held.identity === identity && held.name === name) ?? null,
       next: [...tokens.filter((held: DoorToken): boolean => !(held.identity === identity && held.name === name)), record],
     }));
-    return { token, record };
+    return { token, record, replaced };
+  }
+
+  /**
+   * Undoes a mint that was never delivered: the new token goes, and the one
+   * it replaced comes back, unless the new one is already gone (revoked
+   * meanwhile, which then stands) or another token of that name has taken
+   * its place since.
+   *
+   * @param made - The mint to undo.
+   * @returns True when the token it replaced was put back.
+   *
+   * @example
+   * ```ts
+   * await store.mint_undo(made);
+   * ```
+   */
+  public async mint_undo(made: MintedToken): Promise<boolean> {
+    return this.change_apply<boolean>((tokens: DoorToken[]) => {
+      if (!tokens.some((held: DoorToken): boolean => held.hash === made.record.hash)) return { result: false };
+      const without: DoorToken[] = tokens.filter((held: DoorToken): boolean => held.hash !== made.record.hash);
+      const taken: boolean = without.some((held: DoorToken): boolean => held.identity === made.record.identity && held.name === made.record.name);
+      if (made.replaced === null || taken) return { result: false, next: without };
+      return { result: true, next: [...without, made.replaced] };
+    });
   }
 
   /**
@@ -517,7 +546,8 @@ export class TokenStore {
           // Committed: whatever the upkeep after it does, the caller is given what the change did.
           await this.hooks.publish_after?.();
           await this.maintenance_run(root, current.n + 1, temp);
-          await this.versioned_mark().catch((): void => undefined);
+          // Upkeep: the next open raises it if this did not; it is a bound from below, never ahead of what is published.
+          await this.mark_raise(current.n + 1).catch((): void => undefined);
           return out.result;
         }
       }
@@ -526,17 +556,44 @@ export class TokenStore {
   }
 
   /**
-   * Marks the store as versioned, beside its file: made once, never removed.
+   * The mark beside the store's file: the highest version known published.
    *
-   * @throws {Error} When the mark cannot be made, other than by its being there already.
+   * @returns Its number; 0 when the store was never versioned.
+   * @throws {Error} When the mark is there but not a file of the store's own, or not a number.
    */
-  private async versioned_mark(): Promise<void> {
+  private async mark_read(): Promise<number> {
+    const bytes: Buffer | null = await ownFile_read(`${this.path}.versioned`, 64);
+    if (bytes === null) return 0;
+    const text: string = bytes.toString('utf8').trim();
+    if (!/^[1-9][0-9]{0,11}$/.test(text)) throw new Error(`the door's token store mark at ${this.path}.versioned does not name a version`);
+    return Number(text);
+  }
+
+  /**
+   * Raises the mark to a version just published, through a fresh file
+   * renamed over it; one written behind by a slower writer only leaves a
+   * lower bound, which a reader can never fall below without refusing.
+   *
+   * @param n - The version published.
+   * @throws {Error} When the mark cannot be read or written.
+   */
+  private async mark_raise(n: number): Promise<void> {
+    if ((await this.mark_read()) >= n) return;
+    const fresh: string = `${this.path}.versioned.${String(process.pid)}.${randomBytes(6).toString('hex')}`;
+    const file: FileHandle = await open(fresh, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {
-      await writeFile(`${this.path}.versioned`, `${this.versions}\n`, { mode: 0o600, flag: 'wx' });
+      await file.writeFile(`${String(n)}\n`, 'utf8');
+    } finally {
+      await handle_close(file);
+    }
+    try {
+      await rename(fresh, `${this.path}.versioned`);
     } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      await rm(fresh, { force: true });
+      throw error;
     }
   }
+
 
   /**
    * Runs a step with the store's root folder held open and shown to be this
@@ -689,6 +746,14 @@ export class TokenStore {
   private async current_read(root: HeldFolder): Promise<StoreVersion> {
     for (let attempt: number = 0; attempt < PUBLISH_TRIES; attempt++) {
       const highest: number = await this.highest_find(root);
+      await this.hooks.listed_after?.();
+      // Fewer versions than the mark says were published: either a newer one was published since this listing (look
+      // again), or versions were lost, and then the reader refuses rather than answer from an older life of the store.
+      const marked: number = await this.mark_read();
+      if (highest < marked) {
+        if ((await this.highest_find(root)) >= marked) continue;
+        throw new Error(`the door's token store at ${this.path} has lost versions (it holds up to ${String(highest)}, its mark says ${String(marked)} were published); it refuses rather than answer from an older store`);
+      }
       if (highest === 0) {
         const unversioned: StoreVersion | null = await this.unversioned_read(root);
         // The legacy file migrated by another opener between the look and the read: its version now holds the truth.
@@ -709,10 +774,6 @@ export class TokenStore {
    * @throws {Error} When the legacy file cannot be read, is larger than a store, or is not a token file.
    */
   private async unversioned_read(root: HeldFolder): Promise<StoreVersion | null> {
-    // A store marked as versioned that finds no version lost them: the copy from before is never the truth again.
-    if ((await lstat(`${this.path}.versioned`).catch((): null => null)) !== null) {
-      throw new Error(`the door's token store at ${this.path} has lost its versions (${this.versions}); it refuses rather than go back to the file from before`);
-    }
     await this.hooks.legacy_before?.();
     const bytes: Buffer | null = await ownFile_read(this.path, VERSION_MAX_BYTES);
     if (bytes !== null) return { n: 0, ...this.tokens_parse(bytes.toString('utf8'), 'the file'), migratedFrom: bytes_hash(bytes), legacy: true };
@@ -1004,6 +1065,21 @@ export interface DeviceGrant {
   expires: string;
 }
 
+/**
+ * A login's hold on a device code while it mints the code's token.
+ *
+ * @example
+ * ```ts
+ * const claimed: DeviceClaim | null = codes.code_claim(code);
+ * ```
+ */
+export interface DeviceClaim {
+  /** The host chell runs on. */
+  host: string;
+  /** What completes, or lets go of, this login's hold and no other's. */
+  claim: string;
+}
+
 /** One code waiting, being authorised, authorised, or spent. */
 interface DeviceCode {
   /** The host chell runs on, for the page ("authorise chell on titan") and the token's name. */
@@ -1012,8 +1088,8 @@ interface DeviceCode {
   issued: number;
   /** What chell gets, once a human authorised it. */
   grant: DeviceGrant | null;
-  /** Whether a login holds it while it mints a token for it: no second login may take it meanwhile. */
-  claimed: boolean;
+  /** The claim of the one login that holds it while it mints a token for it, or null: no second login may take it meanwhile. */
+  claim: string | null;
 }
 
 /** The letters a code is made of: no 0/O, 1/I/L, so it survives being read aloud. */
@@ -1056,7 +1132,7 @@ export class DeviceCodes {
     let code: string = deviceCode_make();
     while (this.codes.has(code)) code = deviceCode_make();
     const issued: number = this.now();
-    this.codes.set(code, { host, issued, grant: null, claimed: false });
+    this.codes.set(code, { host, issued, grant: null, claim: null });
     return { code, expires: new Date(issued + DEVICE_CODE_LIFE_MS).toISOString() };
   }
 
@@ -1069,7 +1145,7 @@ export class DeviceCodes {
   public host_find(code: string): string | null {
     this.sweep();
     const held: DeviceCode | undefined = this.codes.get(deviceCode_normalise(code));
-    return held === undefined || held.grant !== null || held.claimed ? null : held.host;
+    return held === undefined || held.grant !== null || held.claim !== null ? null : held.host;
   }
 
   /**
@@ -1077,48 +1153,50 @@ export class DeviceCodes {
    * with the same code is refused while this one holds it.
    *
    * @param code - As typed.
-   * @returns The host chell runs on, or null when the code is not waiting, or is already claimed.
+   * @returns The host chell runs on and the claim (what completes or lets go of this login's hold, and no other's), or null when the code is not waiting, or is already claimed.
    *
    * @example
    * ```ts
-   * const host = codes.code_claim('K7PD-3MXQ'); // 'titan'
+   * const claimed = codes.code_claim('K7PD-3MXQ'); // { host: 'titan', claim: '…' }
    * ```
    */
-  public code_claim(code: string): string | null {
+  public code_claim(code: string): DeviceClaim | null {
     this.sweep();
     const held: DeviceCode | undefined = this.codes.get(deviceCode_normalise(code));
-    if (held === undefined || held.grant !== null || held.claimed) return null;
-    held.claimed = true;
-    return held.host;
+    if (held === undefined || held.grant !== null || held.claim !== null) return null;
+    held.claim = randomBytes(16).toString('hex');
+    return { host: held.host, claim: held.claim };
   }
 
   /**
    * Lets go of a claim whose mint failed, so the code can be tried again.
    *
    * @param code - As typed.
+   * @param claim - The claim being let go of: another login's is left as it is.
    *
    * @example
    * ```ts
-   * codes.claim_release('K7PD-3MXQ');
+   * codes.claim_release('K7PD-3MXQ', claimed.claim);
    * ```
    */
-  public claim_release(code: string): void {
+  public claim_release(code: string, claim: string): void {
     const held: DeviceCode | undefined = this.codes.get(deviceCode_normalise(code));
-    if (held !== undefined && held.grant === null) held.claimed = false;
+    if (held !== undefined && held.grant === null && held.claim === claim) held.claim = null;
   }
 
   /**
    * Authorises a code: a human logged in with it.
    *
    * @param code - As typed.
+   * @param claim - The claim of the login that holds the code: only it completes it.
    * @param grant - What chell gets.
-   * @returns Whether the code was waiting.
+   * @returns Whether the code was waiting, claimed by that login, and still alive.
    */
-  public authorise(code: string, grant: DeviceGrant): boolean {
+  public authorise(code: string, claim: string, grant: DeviceGrant): boolean {
     this.sweep();
     const held: DeviceCode | undefined = this.codes.get(deviceCode_normalise(code));
-    // Only the login that claimed it, and only while it is still alive.
-    if (held === undefined || held.grant !== null || !held.claimed) return false;
+    // Only the login that claimed it, by its own claim, and only while it is still alive.
+    if (held === undefined || held.grant !== null || held.claim !== claim) return false;
     held.grant = grant;
     return true;
   }

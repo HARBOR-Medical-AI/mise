@@ -103,13 +103,18 @@ describe('DeviceCodes', () => {
     expect(codes.host_find(issued.code.toLowerCase().replace('-', ''))).toBe('titan');
     expect(codes.take(issued.code)).toEqual({ state: 'pending' });
     // Only a login that claimed the code may authorise it; a second claim is refused while the first holds it.
-    expect(codes.authorise(issued.code, { token: 'pdt_z', user: 'chris', name: 'chris@titan', expires: 'later' })).toBe(false);
-    expect(codes.code_claim(issued.code)).toBe('titan');
+    expect(codes.authorise(issued.code, 'no-claim', { token: 'pdt_z', user: 'chris', name: 'chris@titan', expires: 'later' })).toBe(false);
+    const claimed = codes.code_claim(issued.code);
+    expect(claimed?.host).toBe('titan');
     expect(codes.code_claim(issued.code)).toBeNull();
     expect(codes.host_find(issued.code)).toBeNull();
-    expect(codes.authorise(issued.code, { token: 'pdt_x', user: 'chris', name: 'chris@titan', expires: 'later' })).toBe(true);
+    // Another login's claim neither completes nor lets go of this one.
+    codes.claim_release(issued.code, 'another');
+    expect(codes.code_claim(issued.code)).toBeNull();
+    expect(codes.authorise(issued.code, 'another', { token: 'pdt_w', user: 'kim', name: 'kim@titan', expires: 'later' })).toBe(false);
+    expect(codes.authorise(issued.code, claimed?.claim ?? '', { token: 'pdt_x', user: 'chris', name: 'chris@titan', expires: 'later' })).toBe(true);
     expect(codes.host_find(issued.code)).toBeNull(); // a code authorised is no longer waiting on the page
-    expect(codes.authorise(issued.code, { token: 'pdt_y', user: 'kim', name: 'kim@titan', expires: 'later' })).toBe(false);
+    expect(codes.authorise(issued.code, claimed?.claim ?? '', { token: 'pdt_y', user: 'kim', name: 'kim@titan', expires: 'later' })).toBe(false);
     expect(codes.take(issued.code)).toEqual({ state: 'authorised', grant: { token: 'pdt_x', user: 'chris', name: 'chris@titan', expires: 'later' } });
     expect(codes.take(issued.code)).toEqual({ state: 'unknown' });
 

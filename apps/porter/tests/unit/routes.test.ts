@@ -1042,6 +1042,10 @@ describe('door tokens (chell auth)', () => {
     });
     let clock: number = Date.now();
     const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'codes.json') }, host, tokens: store, now: (): number => clock, mint: async (_c: string, username: string) => ({ token: `TOKEN-${username}` }) });
+    holding = false;
+    // A token this person already holds for that host: a renewal that fails must leave it standing.
+    const standing = await store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'chris@titan');
+    holding = true;
     const issued = await door.app.inject({ method: 'POST', url: '/auth/device', payload: { host: 'titan' } });
     const { code } = issued.json() as { code: string };
     const submit = () => door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json', origin: DOOR_ORIGIN }, payload: { username: 'chris', password: 'right', code } });
@@ -1056,7 +1060,9 @@ describe('door tokens (chell auth)', () => {
     const answer = await first;
     expect(answer.statusCode).toBe(410);
     expect((answer.json() as { error: string }).error).toContain('ran out');
-    expect(await store.list()).toEqual([]);
+    // The undelivered token is gone and the standing one is back: exactly one token, and it is the old one.
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    expect((await store.check(standing.token)).ok).toBe(true);
     const polled = await door.app.inject({ method: 'GET', url: `/auth/device/${code}` });
     expect(polled.json()).toEqual({ state: 'unknown' });
     await door.app.close();

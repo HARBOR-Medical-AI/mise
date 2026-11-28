@@ -469,22 +469,24 @@ describe('what Codex and agy found in the third form (seq 402, attack B1a-3)', (
     await store.revoke('kim');
     expect(existsSync(`${path}.versioned`)).toBe(true);
     rmSync(`${path}.d`, { recursive: true, force: true });
-    await expect(new TokenStore(path, 30).load()).rejects.toThrow('lost its versions');
+    await expect(new TokenStore(path, 30).load()).rejects.toThrow('lost versions');
   });
 
   it('closes every folder it opened when a publication is refused part way', async () => {
+    // A store at version 999, the last of its folder: the next is filed in s1, and a file stands where s1 would be.
+    mkdirSync(join(`${path}.d`, 's0'), { recursive: true, mode: 0o700 });
+    writeFileSync(versionFile(999), JSON.stringify({ schemaVersion: 1, tokens: [] }), { mode: 0o600 });
     const store: TokenStore = await writer();
-    await store.mint('kim@c/', 'kim', 'laptop');
-    const folder: string = join(`${path}.d`, 's0');
-    renameSync(folder, `${folder}.aside`);
-    writeFileSync(folder, 'x');
+    writeFileSync(join(`${path}.d`, 's1'), 'x');
     const open = (): number => readdirSync('/proc/self/fd').length;
     const before: number = open();
-    for (let i = 0; i < 10; i++) await expect(store.mint(`u${String(i)}@c/`, `u${String(i)}`, 'n')).rejects.toThrow();
+    for (let i = 0; i < 10; i++) await expect(store.mint(`u${String(i)}@c/`, `u${String(i)}`, 'n')).rejects.toThrow('not a folder of its own');
     expect(open()).toBe(before);
-    rmSync(folder);
-    renameSync(`${folder}.aside`, folder);
+    rmSync(join(`${path}.d`, 's1'));
+    await store.mint('kim@c/', 'kim', 'laptop');
+    expect(versions().at(-1)).toBe(1000);
   });
+
 
   it('keeps an identity as long as a CUBE url gets, from a one-file store and from a mint', async () => {
     const identity: string = `kim@https://${'h'.repeat(900)}.example.org/api/v1/`;
@@ -494,6 +496,70 @@ describe('what Codex and agy found in the third form (seq 402, attack B1a-3)', (
     expect((await store.list()).map((t) => t.identity)).toEqual([identity]);
     const made = await store.mint(identity, 'kim', 'cron');
     expect((await store.check(made.token)).ok).toBe(true);
+  });
+});
+
+describe('what Codex found in the fourth form (seq 404)', () => {
+  it('a revocation in the newest folder of versions, then that folder lost: the reader refuses, never answers from the folder before', async () => {
+    mkdirSync(join(`${path}.d`, 's0'), { recursive: true, mode: 0o700 });
+    const store0: TokenStore = await writer();
+    const held = await store0.mint('kim@c/', 'kim', 'laptop');
+    // Bring the store to the last version of s0, then revoke into s1.
+    const top: number = versions().at(-1) ?? 0;
+    const body: string = readFileSync(versionFile(top), 'utf8');
+    writeFileSync(versionFile(999), body, { mode: 0o600 });
+    const store: TokenStore = await writer();
+    expect(await store.revoke_presented(held.token)).not.toBeNull();
+    expect(versions().at(-1)).toBe(1000);
+    rmSync(join(`${path}.d`, 's1'), { recursive: true, force: true });
+    await expect(store.check(held.token)).rejects.toThrow('lost versions');
+  });
+
+  it('a first open that finds no version while another opener migrates and marks reads the version, not "lost"', async () => {
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, tokens: [{ name: 'laptop', identity: 'kim@c/', user: 'kim', hash: 'a'.repeat(64), created: '2026-11-01T00:00:00.000Z', expires: '2099-01-01T00:00:00.000Z', lastUsed: null }] }));
+    let raced: boolean = false;
+    const late: TokenStore = new TokenStore(path, 30, (): Date => new Date(), { listed_after: async (): Promise<void> => {
+      if (raced) return;
+      raced = true;
+      await writer();
+    } });
+    await late.load();
+    expect(raced).toBe(true);
+    expect((await late.list()).map((t) => t.name)).toEqual(['laptop']);
+  });
+
+  it('a mark that cannot be read refuses the store; one written behind only bounds it from below', async () => {
+    const store: TokenStore = await writer();
+    await store.mint('kim@c/', 'kim', 'laptop');
+    await store.mint('ann@c/', 'ann', 'cron');
+    writeFileSync(`${path}.versioned`, '1\n');
+    expect((await store.list()).map((t) => t.name).sort()).toEqual(['cron', 'laptop']);
+    rmSync(`${path}.versioned`);
+    mkdirSync(`${path}.versioned`);
+    await expect(new TokenStore(path, 30).load()).rejects.toThrow('not a file of its own');
+  });
+
+  it('keeps a one-file store identity longer than any fixed cap, within the store bound', async () => {
+    const identity: string = `kim@https://${'h'.repeat(6000)}.example.org/api/v1/`;
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, tokens: [{ name: 'laptop', identity, user: 'kim', hash: 'a'.repeat(64), created: '2026-11-01T00:00:00.000Z', expires: '2099-01-01T00:00:00.000Z', lastUsed: null }] }));
+    const store: TokenStore = await writer();
+    expect(store.skipped).toEqual([]);
+    expect((await store.list())[0]?.identity).toBe(identity);
+  });
+
+  it('an undone mint takes its token out and puts back the one it replaced, unless that name was taken since', async () => {
+    const store: TokenStore = await writer();
+    const standing = await store.mint('kim@c/', 'kim', 'kim@titan');
+    const renewal = await store.mint('kim@c/', 'kim', 'kim@titan');
+    expect(renewal.replaced?.hash).toBe(standing.record.hash);
+    expect(await store.mint_undo(renewal)).toBe(true);
+    expect((await store.check(standing.token)).ok).toBe(true);
+    expect(await store.check(renewal.token)).toEqual({ ok: false, why: 'unknown' });
+    // A renewal revoked before its undo: the revocation stands, nothing comes back.
+    const again = await store.mint('kim@c/', 'kim', 'kim@titan');
+    await store.revoke_presented(again.token);
+    expect(await store.mint_undo(again)).toBe(false);
+    expect(await store.list()).toEqual([]);
   });
 });
 
