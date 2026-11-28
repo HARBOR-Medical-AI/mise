@@ -1,5 +1,65 @@
 # @fnndsc/salsa
 
+## 4.6.0
+
+### Minor Changes
+
+- 616b812: A session no longer starts docker, or reads a key file or a checkout, on its host unless its operator granted that tier.
+
+  How: a new surface capability, `engineProcesses`, is true for a person's own local shell and, for a daemon, only with the `shell` tier of host control; an attached surface cannot raise it. `plugin add` of an image gives salsa a docker runner only then, and salsa starts none on its own (`plugin_add`'s runner is optional; chili's own command line trusts docker for its process with `hostDocker_trust`). `--ssh-key-file` and `cluster adopt --from` are refused without the `files` tier before the path is touched. `scripts add` and `scripts pull` (git), `vm shell` (ssh-keygen and its session) and chili's `path scan --mermaid`/`--save` and `man doc --browser` need the `shell` tier too; a session without it still lists, opens and plays scripts already there. chili's command is now `dist/bin.js`: importing chili runs nothing. The refusals (`hostDisk_refusal`, `hostProcess_refusal`, `hostTasks_refusal`) now live in `@fnndsc/brasa`'s `core/hostGate`; `lint:hostgate` lists every engine source that imports `fs` or `child_process` with its reason.
+
+### Patch Changes
+
+- 80811d8: A copy from one mount to another is now refused unless that pair is offered, instead of landing where nobody asked.
+
+  The dispatcher handed a copy to the mount that owns the source with both paths, and that mount treated the destination as its own: a copy out of a scripts folder into a CUBE folder was written into the scripts folder's own disk, and a copy onto a `/proc` or `/etc` name was sent to CUBE as a file path. Now who owns each path is settled before either mount is asked anything, and again once the paths are resolved. Within one mount a copy is as it was. Across mounts it is made only out of a mount that declares `copiesOut` into CUBE's own tree, which is the PACS pull into a feed's folder; every other pair, and a folder that only holds mounts on either side, answers `EXDEV`.
+
+- 1d13ae8: A save that fails part way no longer loses the file: the old content stays until the new content is seen in its place.
+
+  Rewriting a file removed it and then created it again, two requests, and a failure of the second left nothing at the name. Now the new content is stored beside the old under a staging name, the old file is moved aside, the new one is moved onto the name, and only then is the old one deleted. Each step acts on a file by its id; after a move that reports an error the file is looked up before anything is undone, since the move may have happened; nothing is moved onto a path that is not proved free; and where it is not known which file is where, nothing is removed and the error names the paths. cumin gains `file_uploadReceipted`, which answers the stored file's id and path, and `file_locate`, which answers where a file is by its id. Whether a write is a first write or a rewrite is decided on proof of what holds the path: a folder listing that failed or was cut short stops the write, and so does a folder, a link or more than one holder at the name. A file is moved or deleted by its id only once it has been seen at the path it was put at, so one that another writer has since moved is left alone. And cumin's `file_moveById` tries the older rename field only after CUBE refused the newer one outright (HTTP 400), never after a reply that was lost.
+
+- 139ec23: An answer from CUBE is checked before it is used: a missing or mistyped field fails by name, not later. A field a caller reads without looking must be there and be the kind that is read. Until now the adapter handed an answer back as whatever type its caller named, and a missing id or a string where a number is read went on to fail somewhere else, or not at all. A failure says which field of what was wrong (`CUBE answered a feed whose id is missing, where a number is read`) and never prints the value. A list fails whole on its first bad row and names the row: no listing is returned short by rows it does not mention. Data that is absent is still an empty list; data that is there and is not a list is now an error and no longer an empty list.
+
+  **Incompatible for callers of three exported functions.** `listData_get`, `itemData_get` and `items_get` each take a second argument, the shape, and take no type argument: `listData_get<Feed>(list)` becomes `listData_get(list, shape_build<Feed>('a feed')(['id', 'number'], ['name', 'string']))`, and `shape_object<T>('a thing')` asks only that each row be an object. `shape_build`, `shape_object`, `shape_nullable`, `ShapeError` and the `Shape` type are exported with them. The old one-argument form does not compile.
+
+  In menu, `progressKindSchema` and `progressUnitSchema` are typed as what they yield: the enum or `undefined`. They already parsed an unknown value to `undefined`, while their type claimed the enum.
+
+  Fields that CUBE may answer as null are typed so: the optional text and number fields of `PluginInstanceData`, `PluginData`, `ComputeResourceData`, `InstanceParameterData`, `PipelineRecord` and `PACSQueryRecord` are `string | null` or `number | null` where they were `string` or `number`, and each is held to its kind when it is there. A caller that passed one on as `string | undefined` now has to say what null becomes. `plugin info` no longer shows a null title, description, authors, documentation or category. `shape_build` takes only an object's type. A page whose `data` is there and is not a list, a served item with no data, and a list with a hole in it are each refused where they were read as empty or passed over.
+
+  A plugin instance, listed or read by itself, is held to its id, its feed's id, its plugin's name and its parent's id; a row without them was handed on as a job with no number. A pipeline is held to what one is before it is kept for a later read. Creating a PACS query fails when CUBE gives no receipt with a numeric id, where it answered a query with no id. A feed note with only a title is read as before. `shape_build` and `shape_object` do not take a list's or a function's type.
+
+- 15271c3: A long listing is walked by the server's own word on whether more follows, not guessed from a page's length.
+
+  cumin read the next-page flag under a name the ChRIS client does not have, so the answer was always "unknown" and a walk could only guess from the length of a page. It now reads the client's own `hasNextPage`, which comes from the collection's `next` link, and the strict walk refuses a page that carries no links. In salsa's proofs an id beyond the range a number holds exactly, or text that is not plain digits, is no longer taken for an id.
+
+- db918d9: A folder is removed only when proved empty: one whose files could not be read is no longer deleted with them.
+
+  A listing keeps the rows it has when part of it fails, which is right for showing a folder. `rmdir` took those rows as the whole answer, so a folder whose files CUBE refused to list, while its subfolders and links read as empty, was deleted with everything in it. Now every listing of the folder must answer in full and hold nothing, and the parent's listings must show that a folder, and only a folder, holds the path; a listing refused, cut short at its bound, or not made at all ends the removal with the reason. The proofs are `pathHolders_prove` and `folderEmptiness_prove`.
+
+- 90eab39: Sharing a file by its id now says that it cannot, instead of printing a line and reporting success with nothing shared.
+
+  salsa's `files_share` never shared anything: it printed "Sharing file ..." and answered true. It now answers false, leaves the reason on the error stack, and prints nothing; chili's file controller reports that reason. Permissions are set with `setfacl`.
+
+- 1a09210: A session reads or writes its host's disk only when started with the files tier of host control. Under a daemon without `--host-control=files`, these are refused by name where they used to act on the daemon's disk: `>` and `>>` (refused before the command runs), `play` of a manifest that is not one of the session's own files, `touch --withContentsFromFile`, `plugin sync`, `plugin validate` and `plugin add --json` on a host path, chili's `path upload`, `path download`, `chefs upload` and `files create --from-file`, and stratus's `--admin-password-file` and `--password-file`. A local shell is unchanged: its disk is its operator's. `play` now tells three things apart: a manifest that is not there, one the session's files refused or could not serve (said as that, with the disk not looked at behind it), and one beside the engine that the tier does not allow. In stratus, a script in the library (`/scripts/...`) plays with no tier; a path in a checkout on the daemon's host needs it.
+- d6e49b7: A folder is not taken for empty on a listing that came back malformed, short, or with rows that say too little.
+
+  Removing a folder asks first what holds its path and whether it holds anything, and a wrong "nothing" there deletes. cumin gains a strict walk of a collection, `resources_getWhole`, which follows the server's word on whether more follows and refuses a page that is not a list or carries no items; salsa's `files_listWhole` and the proofs in `files/proof` use it. A row with no name, or one of the name asked about with no usable id, now ends the proof with the reason. A folder or file whose own name ends in `.chrislink` is found under that name; only a link has the suffix read as CUBE's mark.
+
+- Updated dependencies [8d93d31]
+- Updated dependencies [80811d8]
+- Updated dependencies [1d13ae8]
+- Updated dependencies [d2e88bb]
+- Updated dependencies [10f9359]
+- Updated dependencies [93ad44c]
+- Updated dependencies [139ec23]
+- Updated dependencies [0771098]
+- Updated dependencies [15271c3]
+- Updated dependencies [1a09210]
+- Updated dependencies [0e565a4]
+- Updated dependencies [d6e49b7]
+  - @fnndsc/fond@0.7.0
+  - @fnndsc/cumin@3.31.0
+
 ## 4.5.7
 
 ### Patch Changes

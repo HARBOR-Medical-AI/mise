@@ -1,5 +1,83 @@
 # @fnndsc/chell
 
+## 5.20.14
+
+### Patch Changes
+
+- 8d93d31: A session's berth sits in a folder only its owner can use, and counts only when its daemon proves it wrote it. Without a runtime directory the folder is `<tmpdir>/calypso-<uid>`; folders and records are held to this account (no link, no other owner, nothing wider than 0700/0600) and written by rename, never through a planted link. Each launch writes a probe key into its record and answers `GET /instance?nonce=` with an HMAC proof over its identity, pid and boot time; the discovery request carries no token, and a client attaches only to a record whose daemon proved itself. A daemon of an earlier release cannot prove itself: it is listed as unverified, and neither chell, calypso nor porter starts or adopts beside it. Stop such a daemon once (Ctrl-C at its idle prompt, or its service manager) and start it again. No process removes a berth or the attach note; the next daemon replaces them. The attach note holds no token or attach command any more, only the identity and `calypso --berths`, which gives both for a daemon that proves it is running. Porter refuses to serve, adopt, list or end sessions when its state root's path passes through a folder another account can write (a lab home's `775` `~/.local/state`, say), naming the folder: take group and other write off it, or set `PORTER_STATE_DIR` to a folder on a trusted path (sessions under the old root are not moved). Check with the new porter's `--status` before switching a host over (`docs/porter.adoc`). The unused `discovery_*` exports are removed, along with `berth_remove`, `berthUrl_isAlive` and chell's `berth_probeLive`.
+- d2e88bb: A file name that arrives from the other side cannot leave its folder. A name delivered to a shell, or listed by ChRIS for a berth's anchor, is placed inside the folder it belongs in or refused by name: never absolute, never climbing out with `..`, never through a link that leads elsewhere. A shell attached to a session elsewhere writes a delivered file only where the `download` line it sent said to; a delivery to any other place, or after the line ended, is refused. A destination written as a variable is not known to the shell that typed it and is refused under a remote session: type the path. A refresh of an anchor whose listing holds a name that cannot be placed keeps the anchor that stands. A delivery says which of the shell's lines is asking, and is honoured against that line alone.
+- 1662780: A page somewhere else can no longer act on your session through your browser, and passwords can be tried only so often. A browser sends the door's cookie with any request to the door, whoever wrote the page that made it; porter acted on that cookie alone. It now takes a request that changes something on the cookie, a login by password, and the upgrade that opens a session's wire only when the request's `Origin` is the door's own, and answers 403 otherwise, saying what it answers as. A program with a door token and no cookie is not asked.
+
+  **A porter behind a reverse proxy must be told its public address**: set `PORTER_PUBLIC_ORIGIN` to what browsers type (`https://porter.example.org`; several are comma-separated). Unset, the door answers only as `http://127.0.0.1:<port>` and `http://localhost:<port>`, and every login made through the proxy is refused with a line that says so. porter prints the origins it answers as when it starts. Set `PORTER_TRUSTED_PROXIES` to that proxy as well (`loopback` when it runs on the same machine; an address or a CIDR range otherwise): the door no longer believes `X-Forwarded-For` or `X-Forwarded-Proto` from whoever connects, and without it every visitor is counted as the proxy. `chris deploy` with a porter writes both settings itself.
+
+  calypso asks the same of an attach: no `Origin` (a program), the daemon's own page, or an origin named in `CALYPSO_ORIGINS` (a development server on another port). A download is stopped by `POST`; a `GET` of the stop address is answered 405. ARGUS sends the `POST`.
+
+  chell says the door's origin on its password logins and on the wire, so an older chell is refused by a newer door at a password login and at attach: upgrade chell with the door. A login with a door token is not affected at the login, and is at the attach.
+
+  Failed password logins are counted: ten a minute from one address and five a minute against one name, taken up before CUBE is asked; past that the door answers 429 with `Retry-After`. Only a password CUBE refused counts: CUBE being down or unreachable holds nobody. Device codes: ten a minute per address.
+
+- cef6948: A daemon hands its attach token to the shells it starts in their environment, never on their command line. A command line is shown to every user of the host by `ps`; calypso's console and its browser terminals started chell with `--token <token>`. They now set `CHELL_ATTACH_TOKEN`, which chell reads when no `--token` is typed and removes from its environment at once, so nothing it starts inherits it. `--token` still works for a person attaching by hand.
+- 616b812: A session no longer starts docker, or reads a key file or a checkout, on its host unless its operator granted that tier.
+
+  How: a new surface capability, `engineProcesses`, is true for a person's own local shell and, for a daemon, only with the `shell` tier of host control; an attached surface cannot raise it. `plugin add` of an image gives salsa a docker runner only then, and salsa starts none on its own (`plugin_add`'s runner is optional; chili's own command line trusts docker for its process with `hostDocker_trust`). `--ssh-key-file` and `cluster adopt --from` are refused without the `files` tier before the path is touched. `scripts add` and `scripts pull` (git), `vm shell` (ssh-keygen and its session) and chili's `path scan --mermaid`/`--save` and `man doc --browser` need the `shell` tier too; a session without it still lists, opens and plays scripts already there. chili's command is now `dist/bin.js`: importing chili runs nothing. The refusals (`hostDisk_refusal`, `hostProcess_refusal`, `hostTasks_refusal`) now live in `@fnndsc/brasa`'s `core/hostGate`; `lint:hostgate` lists every engine source that imports `fs` or `child_process` with its reason.
+
+- 10f9359: A token is printed only to a terminal, a saved token is its owner's alone, and the shell's history holds no secret. A daemon whose output is not a terminal (a log, a journal) names the berth record that keeps its token, not the token. The saved CUBE token is written at 0600 in a 0700 folder, and one saved looser before is tightened when next read. The shell's history moves from `.chell_history` in whatever folder the shell was started in to `$XDG_STATE_HOME/chell/history` (else `~/.local/state/chell/history`), private from its first line; an old `.chell_history` in a checkout is left as it is and no longer read. A line is kept with the value of `--password`, `--adminPassword`, `--token`, `--auth-token`, `-p` on `connect`, a password inside an address and a `token=` replaced by `***`; a password typed at a hidden question is never recalled by the up arrow.
+- cb3de69: A file, folder or name with a quote, a dollar sign or a semicolon in it is acted on as itself by every button and form.
+
+  How: `@fnndsc/menu` gains the one way a surface writes a value into a line for the mise shell: `arg_quote` (single quotes, in which the shell takes every character literally), `word_write` and `path_write` (bare when the value is one plain word, quoted otherwise), `path_quote`, `home_path` (the tilde outside the quotes), and `line_split` and `script_lines` to read such lines back. ARGUS's buttons and forms wrote paths in bare double quotes, in which the shell still expands `$NAME`, or not quoted at all; all of them now go through these. A line shown in the console therefore reads `cd '/home/u/my folder'` where it read `cd "/home/u/my folder"`. ARGUS's own verbs (`file`, `pane`, `desktop`, a saved view) honour the same quotes, so a view can name a folder with a space in it, and a view from elsewhere is judged by the allow-list on the same words that would run. A run line's `;` and `--` inside a quoted value are no longer taken for the line's own.
+
+- 0771098: An edit, and a config document on its way to ChRIS, are written to a private copy nobody else on the machine can read.
+
+  How: `edit`, `config write` and chell's local editor wrote their temporary files at predictable names in the shared temporary folder, readable by other accounts and followed through a link planted there. Each is now a file created anew (0600) in a folder of its own (`mkdtemp`, 0700), through fond's `privateTemp_write`; a suffix a daemon asks for is kept only when it is a plain one (`suffix_safe`). A failed `edit` save still keeps its copy and says where; every other way out removes it.
+
+- e887420: Two modules nothing used are gone from the deprecated chili package, and nothing new may start to depend on it.
+
+  How: `@fnndsc/chili` is being retired (its logic to salsa, its verbs to brasa's builtins, its rendering to the surfaces). Removed, because nothing in the repository calls them: `lfs/lfs` and `commands/pipeline/run` (both reachable only as subpaths through the package's `./*` export: `@fnndsc/chili/lfs/lfs.js`, `@fnndsc/chili/commands/pipeline/run.js`), and the unused `chris_pull` inside the path command. The `chili` command and every other subpath stay. brasa no longer initialises the ChRIS connection a second time through chili: there is one connection, initialised once. chell no longer lists chili as a dependency it does not import, and its help no longer says unknown words go "to the chili CLI". Two checks keep it so: `lint:chili` counts brasa's imports of chili against a baseline that may only fall (36 files, 85 imports) and fails an import from any other workspace; `lint:pack` checks that every published package's `main`, `types`, `bin` and `exports` lead to files it would publish.
+
+- 1a09210: A session reads or writes its host's disk only when started with the files tier of host control. Under a daemon without `--host-control=files`, these are refused by name where they used to act on the daemon's disk: `>` and `>>` (refused before the command runs), `play` of a manifest that is not one of the session's own files, `touch --withContentsFromFile`, `plugin sync`, `plugin validate` and `plugin add --json` on a host path, chili's `path upload`, `path download`, `chefs upload` and `files create --from-file`, and stratus's `--admin-password-file` and `--password-file`. A local shell is unchanged: its disk is its operator's. `play` now tells three things apart: a manifest that is not there, one the session's files refused or could not serve (said as that, with the disk not looked at behind it), and one beside the engine that the tier does not allow. In stratus, a script in the library (`/scripts/...`) plays with no tier; a path in a checkout on the daemon's host needs it.
+- 0e565a4: Whoever is connected now is who every request is made as, and whose answers are kept. A transfer made under `sudo` no longer leaves later transfers running as the administrator, and after `connect` as another user, or to another CUBE, nothing is sent with the first user's token or answered from what the first user was shown (`/bin`, listings, the job tree, tags, PACS facts, the query index). Logging out drops the client as well as the token.
+
+  How: cumin's transfer, feed, plugin, resource and file-browser classes ask the connection for its client each time and keep none. A change of identity (a login, a context that names another user or CUBE, a logout) is numbered, in `@fnndsc/cumin/identity-epoch`: the caches empty themselves at each change, take a fill only from work begun under the identity now connected, and neither answer nor keep anything for work done as another user. A line of input is begun as one such piece of work through a new optional `Backend.work_run` in brasa, and the boot warm-up is another. Checkpoint watchers and the query index's flush at exit stop writing under an identity's name once another has connected.
+
+  Also: two downloads at once each report their own reason when CUBE refuses them; a folder's record is kept under one spelling of its path (`home/a`, `/home/a` and `/home/a/` are one), and deleting a folder by path no longer waits out its timeout on a remembered copy; two commands captured from chili at once no longer take each other's output; and a pause in a VM build no longer leaves a listener behind on the build's signal each time it ends.
+
+- Updated dependencies [8d93d31]
+- Updated dependencies [6cfbb47]
+- Updated dependencies [80811d8]
+- Updated dependencies [1d13ae8]
+- Updated dependencies [c7c235e]
+- Updated dependencies [8431c66]
+- Updated dependencies [d2e88bb]
+- Updated dependencies [4633486]
+- Updated dependencies [1662780]
+- Updated dependencies [db4b415]
+- Updated dependencies [cef6948]
+- Updated dependencies [616b812]
+- Updated dependencies [6401a32]
+- Updated dependencies [8eed0e8]
+- Updated dependencies [10f9359]
+- Updated dependencies [cb3de69]
+- Updated dependencies [93ad44c]
+- Updated dependencies [139ec23]
+- Updated dependencies [d14c047]
+- Updated dependencies [0771098]
+- Updated dependencies [5a9e6f3]
+- Updated dependencies [e887420]
+- Updated dependencies [15271c3]
+- Updated dependencies [db918d9]
+- Updated dependencies [90eab39]
+- Updated dependencies [1a09210]
+- Updated dependencies [dfac9b3]
+- Updated dependencies [6ccc4ab]
+- Updated dependencies [0e565a4]
+- Updated dependencies [d6e49b7]
+  - @fnndsc/calypso@0.30.0
+  - @fnndsc/argus@0.59.3
+  - @fnndsc/salsa@4.6.0
+  - @fnndsc/cumin@3.31.0
+  - @fnndsc/brasa@0.58.0
+  - @fnndsc/menu@0.42.0
+
 ## 5.20.13
 
 ### Patch Changes

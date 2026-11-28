@@ -1,5 +1,66 @@
 # @fnndsc/chili
 
+## 3.10.0
+
+### Minor Changes
+
+- e887420: Two modules nothing used are gone from the deprecated chili package, and nothing new may start to depend on it.
+
+  How: `@fnndsc/chili` is being retired (its logic to salsa, its verbs to brasa's builtins, its rendering to the surfaces). Removed, because nothing in the repository calls them: `lfs/lfs` and `commands/pipeline/run` (both reachable only as subpaths through the package's `./*` export: `@fnndsc/chili/lfs/lfs.js`, `@fnndsc/chili/commands/pipeline/run.js`), and the unused `chris_pull` inside the path command. The `chili` command and every other subpath stay. brasa no longer initialises the ChRIS connection a second time through chili: there is one connection, initialised once. chell no longer lists chili as a dependency it does not import, and its help no longer says unknown words go "to the chili CLI". Two checks keep it so: `lint:chili` counts brasa's imports of chili against a baseline that may only fall (36 files, 85 imports) and fails an import from any other workspace; `lint:pack` checks that every published package's `main`, `types`, `bin` and `exports` lead to files it would publish.
+
+### Patch Changes
+
+- 616b812: A session no longer starts docker, or reads a key file or a checkout, on its host unless its operator granted that tier.
+
+  How: a new surface capability, `engineProcesses`, is true for a person's own local shell and, for a daemon, only with the `shell` tier of host control; an attached surface cannot raise it. `plugin add` of an image gives salsa a docker runner only then, and salsa starts none on its own (`plugin_add`'s runner is optional; chili's own command line trusts docker for its process with `hostDocker_trust`). `--ssh-key-file` and `cluster adopt --from` are refused without the `files` tier before the path is touched. `scripts add` and `scripts pull` (git), `vm shell` (ssh-keygen and its session) and chili's `path scan --mermaid`/`--save` and `man doc --browser` need the `shell` tier too; a session without it still lists, opens and plays scripts already there. chili's command is now `dist/bin.js`: importing chili runs nothing. The refusals (`hostDisk_refusal`, `hostProcess_refusal`, `hostTasks_refusal`) now live in `@fnndsc/brasa`'s `core/hostGate`; `lint:hostgate` lists every engine source that imports `fs` or `child_process` with its reason.
+
+- 139ec23: An answer from CUBE is checked before it is used: a missing or mistyped field fails by name, not later. A field a caller reads without looking must be there and be the kind that is read. Until now the adapter handed an answer back as whatever type its caller named, and a missing id or a string where a number is read went on to fail somewhere else, or not at all. A failure says which field of what was wrong (`CUBE answered a feed whose id is missing, where a number is read`) and never prints the value. A list fails whole on its first bad row and names the row: no listing is returned short by rows it does not mention. Data that is absent is still an empty list; data that is there and is not a list is now an error and no longer an empty list.
+
+  **Incompatible for callers of three exported functions.** `listData_get`, `itemData_get` and `items_get` each take a second argument, the shape, and take no type argument: `listData_get<Feed>(list)` becomes `listData_get(list, shape_build<Feed>('a feed')(['id', 'number'], ['name', 'string']))`, and `shape_object<T>('a thing')` asks only that each row be an object. `shape_build`, `shape_object`, `shape_nullable`, `ShapeError` and the `Shape` type are exported with them. The old one-argument form does not compile.
+
+  In menu, `progressKindSchema` and `progressUnitSchema` are typed as what they yield: the enum or `undefined`. They already parsed an unknown value to `undefined`, while their type claimed the enum.
+
+  Fields that CUBE may answer as null are typed so: the optional text and number fields of `PluginInstanceData`, `PluginData`, `ComputeResourceData`, `InstanceParameterData`, `PipelineRecord` and `PACSQueryRecord` are `string | null` or `number | null` where they were `string` or `number`, and each is held to its kind when it is there. A caller that passed one on as `string | undefined` now has to say what null becomes. `plugin info` no longer shows a null title, description, authors, documentation or category. `shape_build` takes only an object's type. A page whose `data` is there and is not a list, a served item with no data, and a list with a hole in it are each refused where they were read as empty or passed over.
+
+  A plugin instance, listed or read by itself, is held to its id, its feed's id, its plugin's name and its parent's id; a row without them was handed on as a job with no number. A pipeline is held to what one is before it is kept for a later read. Creating a PACS query fails when CUBE gives no receipt with a numeric id, where it answered a query with no id. A feed note with only a title is read as before. `shape_build` and `shape_object` do not take a list's or a function's type.
+
+- 90eab39: Sharing a file by its id now says that it cannot, instead of printing a line and reporting success with nothing shared.
+
+  salsa's `files_share` never shared anything: it printed "Sharing file ..." and answered true. It now answers false, leaves the reason on the error stack, and prints nothing; chili's file controller reports that reason. Permissions are set with `setfacl`.
+
+- 4fd3c22: A folder upload that is declined, cannot ask, or cannot check its destination now sends nothing.
+
+  The question "merge into the folder already there?" was asked inside a block that treated any failure as "the listing failed, carry on", so a "no", and a prompt that could not be shown, were swallowed and the upload went ahead. The question is now asked before the first file is sent, for every folder among the sources and not only a lone one, and nothing catches the answer. A destination that cannot be checked stops the upload, and so does one where a file or a link holds the path the folder would take; only proved absence, or a yes, lets a folder through.
+
+- 0e565a4: Whoever is connected now is who every request is made as, and whose answers are kept. A transfer made under `sudo` no longer leaves later transfers running as the administrator, and after `connect` as another user, or to another CUBE, nothing is sent with the first user's token or answered from what the first user was shown (`/bin`, listings, the job tree, tags, PACS facts, the query index). Logging out drops the client as well as the token.
+
+  How: cumin's transfer, feed, plugin, resource and file-browser classes ask the connection for its client each time and keep none. A change of identity (a login, a context that names another user or CUBE, a logout) is numbered, in `@fnndsc/cumin/identity-epoch`: the caches empty themselves at each change, take a fill only from work begun under the identity now connected, and neither answer nor keep anything for work done as another user. A line of input is begun as one such piece of work through a new optional `Backend.work_run` in brasa, and the boot warm-up is another. Checkpoint watchers and the query index's flush at exit stop writing under an identity's name once another has connected.
+
+  Also: two downloads at once each report their own reason when CUBE refuses them; a folder's record is kept under one spelling of its path (`home/a`, `/home/a` and `/home/a/` are one), and deleting a folder by path no longer waits out its timeout on a remembered copy; two commands captured from chili at once no longer take each other's output; and a pause in a VM build no longer leaves a listener behind on the build's signal each time it ends.
+
+- Updated dependencies [8d93d31]
+- Updated dependencies [80811d8]
+- Updated dependencies [1d13ae8]
+- Updated dependencies [d2e88bb]
+- Updated dependencies [616b812]
+- Updated dependencies [6401a32]
+- Updated dependencies [8eed0e8]
+- Updated dependencies [10f9359]
+- Updated dependencies [cb3de69]
+- Updated dependencies [93ad44c]
+- Updated dependencies [139ec23]
+- Updated dependencies [0771098]
+- Updated dependencies [15271c3]
+- Updated dependencies [db918d9]
+- Updated dependencies [90eab39]
+- Updated dependencies [1a09210]
+- Updated dependencies [0e565a4]
+- Updated dependencies [d6e49b7]
+  - @fnndsc/fond@0.7.0
+  - @fnndsc/salsa@4.6.0
+  - @fnndsc/cumin@3.31.0
+  - @fnndsc/menu@0.42.0
+
 ## 3.9.5
 
 ### Patch Changes

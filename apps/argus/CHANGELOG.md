@@ -1,5 +1,55 @@
 # @fnndsc/argus
 
+## 0.59.3
+
+### Patch Changes
+
+- 6cfbb47: A closed pane lets go of everything it took. The image viewer no longer leaves volumes behind in memory, and a closed feed graph or machine screen stops working in the background.
+
+  How: the image engine keeps its metadata provider and its load-failure listener and removes them when it is let go; each volume it makes is released when the layout that used it is replaced (a slab build no longer adds one per build), and an engine let go, or a layout replaced, while a volume is being made installs nothing when the volume arrives. The feed graph pane disconnects its observers (two were on the document), removes its window listener and stops its timers. A listing can be let go: its listeners go through one signal, its observers are disconnected, and a column drag in hand ends. The machine screen stops its run tick, its lever wait and the script screen's standing poll, and starts none after it has been left.
+
+- 4633486: After a refused token, the next one is tried on the same page: the page no longer reloads to try again.
+
+  How: the page used to wire every listener and timer and only then attach, so a refused attach left it wired, and 0.59 answered that by reloading the page before the next attempt. It now attaches first (`ArgusClient.session_attachHeld`): the socket is opened and acknowledged before anything is wired, and whatever the session sends meanwhile is held with that socket. The page installs its handlers, binds its client and applies what the attach said; only then is what was held handed over, in order (`held_release`), so a later word of the session wins over the attach's; only then is READY said. A refused attach has wired nothing, so the form takes the next attempt in place. If the session goes away while the page is setting up (it is noticed at once), or anything fails after the attach was acknowledged, nothing is said ready, the client's handlers are taken away and its socket closed (`held_abandon`), and the page is left at once for a clean one that shows the form and why.
+
+- 1662780: A page somewhere else can no longer act on your session through your browser, and passwords can be tried only so often. A browser sends the door's cookie with any request to the door, whoever wrote the page that made it; porter acted on that cookie alone. It now takes a request that changes something on the cookie, a login by password, and the upgrade that opens a session's wire only when the request's `Origin` is the door's own, and answers 403 otherwise, saying what it answers as. A program with a door token and no cookie is not asked.
+
+  **A porter behind a reverse proxy must be told its public address**: set `PORTER_PUBLIC_ORIGIN` to what browsers type (`https://porter.example.org`; several are comma-separated). Unset, the door answers only as `http://127.0.0.1:<port>` and `http://localhost:<port>`, and every login made through the proxy is refused with a line that says so. porter prints the origins it answers as when it starts. Set `PORTER_TRUSTED_PROXIES` to that proxy as well (`loopback` when it runs on the same machine; an address or a CIDR range otherwise): the door no longer believes `X-Forwarded-For` or `X-Forwarded-Proto` from whoever connects, and without it every visitor is counted as the proxy. `chris deploy` with a porter writes both settings itself.
+
+  calypso asks the same of an attach: no `Origin` (a program), the daemon's own page, or an origin named in `CALYPSO_ORIGINS` (a development server on another port). A download is stopped by `POST`; a `GET` of the stop address is answered 405. ARGUS sends the `POST`.
+
+  chell says the door's origin on its password logins and on the wire, so an older chell is refused by a newer door at a password login and at attach: upgrade chell with the door. A login with a door token is not affected at the login, and is at the attach.
+
+  Failed password logins are counted: ten a minute from one address and five a minute against one name, taken up before CUBE is asked; past that the door answers 429 with `Retry-After`. Only a password CUBE refused counts: CUBE being down or unreachable holds nobody. Device codes: ten a minute per address.
+
+- db4b415: Leaving the VM controller or the script screen stops every clock it started, by one call.
+
+  How: the two screens are one class over another, and each kept its own timers as fields of its own (the header's tick, a price asked a moment after a lever moves, a standing read again, a run's one-second tick), so leaving had to remember each in both. They are now held by name in one place (`ScreenTimers`) and stopped together; nothing starts on a screen that was left. The script screen no longer draws while it is being constructed: it is made, then shown (`screen_show`, which opening a script or a machine does too), so the VM controller is whole before anything of it is drawn, and no longer needs fields set after the fact or a draw that returns early on its own unset state. Nothing an operator sees is laid out differently.
+
+- 6401a32: A machine's build, a password set from its row and a PACS export follow what the session says happened.
+
+  None of them reads the words a line prints any more.
+
+  How: four places in ARGUS decided from wording. A VM build now sends a step event as each of its tasks begins and ends (`stratus.vm.step`: the machine, the step, begun, done or failed, and a plan's counts), and the VM controller draws the run from those, taking only the events of the line it sent itself. A question carries the id of the line that raised it and, where its command names them, what it is for and about (`purpose`, `subject`; `repl_confirm` and `repl_questionHidden` take them): the controller answers a password question from its row only when the question is that row's own line's, for that machine and account, named for that purpose and of the kind expected, and offers YES and NO when a question wants a yes or a no. A line is read as declined from the `line.declined` model and as failed from the session's own error. `pacs query --csv-to` names the file it wrote in its answer's model (`written`), and the PACS pane shows WROTE from that. `desktop load` and `desktop save` act on whether the session did what was asked. A daemon or a surface from before this still works: the new fields are optional, and a question that names nothing is the operator's to answer.
+
+- 8eed0e8: Text written into a quoted attribute cannot end it: both quotes are escaped. `html_escape` now escapes `"` and `'` as well as `&`, `<` and `>`. ARGUS's prompt bar no longer writes markup at all: each segment is an element whose text and title are set as properties, so an identity or a path that reads as markup is shown as what it is. A quoted string in a `/bin` summary is now coloured as a string, which the highlighter always meant to do.
+- cb3de69: A file, folder or name with a quote, a dollar sign or a semicolon in it is acted on as itself by every button and form.
+
+  How: `@fnndsc/menu` gains the one way a surface writes a value into a line for the mise shell: `arg_quote` (single quotes, in which the shell takes every character literally), `word_write` and `path_write` (bare when the value is one plain word, quoted otherwise), `path_quote`, `home_path` (the tilde outside the quotes), and `line_split` and `script_lines` to read such lines back. ARGUS's buttons and forms wrote paths in bare double quotes, in which the shell still expands `$NAME`, or not quoted at all; all of them now go through these. A line shown in the console therefore reads `cd '/home/u/my folder'` where it read `cd "/home/u/my folder"`. ARGUS's own verbs (`file`, `pane`, `desktop`, a saved view) honour the same quotes, so a view can name a folder with a space in it, and a view from elsewhere is judged by the allow-list on the same words that would run. A run line's `;` and `--` inside a quoted value are no longer taken for the line's own.
+
+- d14c047: A token that is refused no longer leaves the page's buttons firing twice on the next try.
+
+  How: the page's start is in a module of its own and begins one attach at a time; pressing Enter twice wires the surface once. After an attach that failed, the next attempt reloads the page and the fresh page attaches with the new token, carried in the tab's session storage for that one load and never put in the address. An attach whose socket closes before the daemon answers is rejected instead of waiting for ever.
+
+- 5a9e6f3: An option typed on a script or VM seat stays under the hand: a space before the next word is kept. The whole seat was drawn again at each keystroke and the field rebuilt from the trimmed value, so a value with a space in it could not be typed, and whatever was being composed or undone in the field was lost. The line, its state, the column beside the form and SAVE are now brought up to date where they stand.
+- Updated dependencies [d2e88bb]
+- Updated dependencies [616b812]
+- Updated dependencies [6401a32]
+- Updated dependencies [8eed0e8]
+- Updated dependencies [cb3de69]
+- Updated dependencies [139ec23]
+  - @fnndsc/menu@0.42.0
+
 ## 0.59.2
 
 ### Patch Changes
