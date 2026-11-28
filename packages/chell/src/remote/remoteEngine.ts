@@ -18,7 +18,7 @@ import type { BrasaEngine, CompletionResult } from '@fnndsc/brasa';
 import { SERVER_MESSAGE_TYPES, type ClosingCause, type FileDeliverRequest, type FileDeliverResult } from '@fnndsc/menu';
 import { builtinCommand_has, coreCommand_has, deliveryIntents_read, lineHostOperations_read, sourceIntents_settle, envelope_deliver, sink_get, sink_set, surface_set, type EngineRuns, type WordRoute, type LineHostOperations, type OutputSink, type Surface } from '@fnndsc/brasa';
 import type { LocalEditResult } from '@fnndsc/menu/surface';
-import { HeldOutput, closedMessage_settles } from './heldOutput.js';
+import { HeldOutput, closedMessage_settles, closedRequest_refusal } from './heldOutput.js';
 import { HostConsent, type ConsentAsk } from './hostConsent.js';
 import { HostDesk, type HostDeskOptions } from './hostDesk.js';
 import { promptFromContext_render } from '../core/prompt/session.js';
@@ -305,9 +305,11 @@ export class RemoteEngine implements BrasaEngine {
     try {
       envelopes = await this.request<CommandEnvelope[]>('execute', { line }, id);
     } catch (error: unknown) {
-      // Retired at once; the failure is shown once no question is open, never over one.
+      // Retired at once; the failure is shown once no question is open, never over one, and never after the
+      // connection has closed (then the line ends with the disconnect, not the session's words).
       this.line_settle(id);
       await this.consent.idle_wait();
+      if (this.connection_isGone()) throw new Error(CLOSED_BEFORE_SHOWN);
       throw error;
     }
     // A daemon that names no status leaves the envelopes to say it.
@@ -315,8 +317,10 @@ export class RemoteEngine implements BrasaEngine {
     const liveChannels: Set<'data' | 'err'> | undefined = this.liveEnvelopeChannels.get(id);
     this.liveEnvelopeChannels.delete(id);
     this.line_settle(id);
-    // The line is retired at once; what it said is shown once no question is open, never over one.
+    // The line is retired at once; what it said is shown once no question is open, never over one, and never once
+    // the connection has closed.
     await this.consent.idle_wait();
+    if (this.connection_isGone()) throw new Error(CLOSED_BEFORE_SHOWN);
     // Deliver to the active sink exactly as the in-process engine delivers
     // live, so the REPL host renders remote output without any change.
     for (const envelope of envelopes) {
@@ -457,7 +461,7 @@ export class RemoteEngine implements BrasaEngine {
     // A hand-over is claimed once, when it is received, bound to its line (before it may be held), so the program's
     // end, which is never held, cancels it; a claim refused is answered at once, and a malformed one is not held.
     const start: boolean = typeof raw === 'object' && raw !== null && Reflect.get(raw, 'type') === 'hostPtyStart';
-    if (!fromHold && start && parsed.ok && parsed.value?.type === 'hostPtyStart' && !this.desk.pty_receive(parsed.value)) return;
+    if (!fromHold && start && !this.closed && parsed.ok && parsed.value?.type === 'hostPtyStart' && !this.desk.pty_receive(parsed.value)) return;
     // While a question is put to the person, the terminal is the question's: what the session says waits, except
     // a line's end (which answers its questions) and its requests (which wait their own turn).
     if (!(start && !parsed.ok) && this.hold.message_take(payload, raw)) return;
@@ -484,8 +488,13 @@ export class RemoteEngine implements BrasaEngine {
       return;
     }
     const message: ServerMessage = parsed.value;
-    // From the moment the connection closes, nothing more is shown: only what settles a call or answers a request.
-    if (this.closed && !closedMessage_settles(message.type)) return;
+    // From the moment the connection closes, nothing more is shown and nothing more is run here: a waiting call
+    // settles, and a new request is refused with a fixed answer before anything looks at it.
+    if (this.closed) {
+      const refusal: Record<string, unknown> | null = closedRequest_refusal(message);
+      if (refusal !== null) this.ws.send(JSON.stringify(refusal));
+      if (refusal !== null || !closedMessage_settles(message.type)) return;
+    }
     switch (message.type) {
       case 'result':
         if (message.exitCode !== undefined) this.resultExits.set(message.id, message.exitCode);
@@ -703,6 +712,9 @@ function safeJson_parse(text: string): unknown {
     return undefined;
   }
 }
+
+/** How a line ends when its connection closed before its answer could be shown. */
+const CLOSED_BEFORE_SHOWN: string = 'the session disconnected before the line\'s answer was shown';
 
 /** The runners a desk is given: this chell's own handlers, each only when it has one. */
 type DeskHandlers = Pick<HostDeskOptions, 'segment_run' | 'shellCommand_run' | 'editor_open' | 'file_deliver'>;

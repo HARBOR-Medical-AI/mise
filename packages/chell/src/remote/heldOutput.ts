@@ -175,8 +175,53 @@ const HELD_ITEMS_MAX: number = 4096;
 /** Messages that are never held while a question is open: a line's end, requests (which queue their own), a program's end. */
 const HELD_PASSES: ReadonlySet<string> = new Set(['result', 'error', 'complete', 'shell', 'pipe', 'edit', 'deliver', 'hostPtyExit']);
 
-/** What is still handled once the connection is closing: what settles a waiting call, or answers a request (no). */
-const CLOSED_SETTLES: ReadonlySet<string> = new Set(['result', 'error', 'complete', 'shell', 'pipe', 'edit', 'deliver', 'prompt', 'hostPtyStart', 'hostPtyExit']);
+/** What is still handled once the connection is closing: what settles a waiting call or ends a program. */
+const CLOSED_SETTLES: ReadonlySet<string> = new Set(['result', 'error', 'complete', 'prompt', 'hostPtyExit']);
+
+/** How a request is refused once its connection is closing. */
+interface ClosedRefusal {
+  /** The reply's type. */
+  reply: string;
+  /** The field that carries the request's id. */
+  id: string;
+}
+
+/** A message of the session's, by its type. */
+interface TypedMessage {
+  /** Its type. */
+  type: string;
+}
+
+/** The requests a closing connection is refused at once, by the reply type and the field that carries each id. */
+const CLOSED_REFUSALS: ReadonlyMap<string, ClosedRefusal> = new Map([
+  ['shell', { reply: 'shellError', id: 'shellId' }],
+  ['pipe', { reply: 'pipeError', id: 'pipeId' }],
+  ['edit', { reply: 'editError', id: 'editId' }],
+  ['deliver', { reply: 'deliverError', id: 'deliverId' }],
+  ['hostPtyStart', { reply: 'hostPtyRefuse', id: 'ptyId' }],
+]);
+
+/** Why a request is refused once its connection is closing. */
+const CLOSED_REASON: string = 'refused: the session has disconnected; nothing was run or written here';
+
+/**
+ * The fixed refusal of a request a closing connection still sends (a host command, a pipeline segment, an edit, a
+ * delivery, a hand-over): answered without looking at what it asks.
+ *
+ * @param message - The (valid) message.
+ * @returns The refusal to send, or null when it is not such a request.
+ *
+ * @example
+ * ```ts
+ * const refusal = closedRequest_refusal({ type: 'deliver', deliverId: 'd1' }); // { type: 'deliverError', ... }
+ * ```
+ */
+export function closedRequest_refusal(message: TypedMessage): Record<string, unknown> | null {
+  const refused: ClosedRefusal | undefined = CLOSED_REFUSALS.get(message.type);
+  if (refused === undefined) return null;
+  const id: unknown = Reflect.get(message, refused.id);
+  return { type: refused.reply, [refused.id]: id, reason: CLOSED_REASON };
+}
 
 /**
  * Whether a message of the session's is still handled once its connection is closing: one that settles a call or

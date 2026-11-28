@@ -1066,10 +1066,11 @@ describe('RemoteEngine live output', () => {
           ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] })));
         });
       };
-      await remote.line_execute('!ls -la');
+      // The line ends with the disconnect, and the late request is refused with the fixed answer.
+      await expect(remote.line_execute('!ls -la')).rejects.toThrow('disconnected before the line\'s answer was shown');
       await new Promise((r) => setTimeout(r, 5));
       expect(shell).not.toHaveBeenCalled();
-      expect(reasons('shellError')).toHaveLength(2);
+      expect(reasons('shellError')).toEqual([expect.stringContaining('for a line that is not running here'), expect.stringContaining('the session has disconnected')]);
     });
 
     it('two connections with the same numeric line id share no grants', async () => {
@@ -1430,6 +1431,30 @@ describe('RemoteEngine live output', () => {
       await Promise.all([first, second]);
       errors.mockRestore();
       expect(ws.sent.filter((one) => one.type === 'hostPtyRefuse')).toEqual([]);
+    });
+
+    it('a line waiting when the connection closes ends with the disconnect: its result or error is not shown, and a late delivery is refused unlooked-at', async () => {
+      const shown: string[] = [];
+      const recording = { data_write: (text: string): void => { shown.push(text); }, err_write: (text: string): void => { shown.push(text); }, status_write: (): void => undefined, progress_write: (): void => undefined };
+      const ids: string[] = [];
+      scenario = (_ws: FakeWebSocket, sent: Record<string, unknown>): void => { if (sent.type === 'execute') ids.push(String(sent.id)); };
+      const onDeliver = jest.fn(async () => ({ location: 'x', bytes: 1 }));
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onDeliver });
+      const { sink_set: sinkInstall } = await import('@fnndsc/brasa');
+      sinkInstall(recording as never);
+      const ws = FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket;
+      const answered: Promise<unknown> = remote.line_execute('pwd');
+      const failed: Promise<unknown> = remote.line_execute('ls');
+      await new Promise((r) => setTimeout(r, 10));
+      remote.close();
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id: ids[0], envelopes: [{ status: 'ok', rendered: 'REMOTE RESULT' }] })));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'error', id: ids[1], reason: 'REMOTE ERROR' })));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'deliver', deliverId: 'late', path: '/x/a.txt', filename: 'a.txt', destination: '/etc', lineId: ids[0] })));
+      await expect(answered).rejects.toThrow('disconnected');
+      await expect(failed).rejects.toThrow('disconnected');
+      expect(shown).toEqual([]);
+      expect(onDeliver).not.toHaveBeenCalled();
+      expect(ws.sent.find((one) => one.type === 'deliverError' && one.deliverId === 'late')?.reason).toBe('refused: the session has disconnected; nothing was run or written here');
     });
 
     it('from the moment it closes, a connection shows nothing more: no output, no session broadcast, no note', async () => {
