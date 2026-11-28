@@ -862,7 +862,8 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     await host.spawn(ANA, 'ana', CUBE, 'ana-token');
     expect((await host.berthUp_read(ANA))?.token).toBe(`attach-${berthNames_derive('mbw', ANA, 'ana').container}`);
     docker.silent = true;
-    await expect(host.berthUp_read(ANA)).rejects.toThrow('the launcher could not say which berth is up');
+    // Why is said on the wire: the berth file could not be read.
+    await expect(host.berthUp_read(ANA)).rejects.toThrow(/the launcher could not say which berth is up: (?!its address is unread)/);
     expect(await host.find(ANA)).toBeNull();
     docker.silent = false;
     docker.listStatus = 500;
