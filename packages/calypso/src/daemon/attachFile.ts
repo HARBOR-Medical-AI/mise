@@ -1,20 +1,18 @@
 /**
- * @file The attach note: a daemon's addresses, written where they can be read.
+ * @file The attach note: which daemon this account last started, and where to find how to reach it.
  *
- * A daemon prints its ARGUS link and attach command once, into a terminal it
- * then occupies with a live boot animation. Selecting text out from under a
- * repainting screen is awkward, and scrollback is lost the moment anyone
- * clears it — so the same lines are also written to a file.
+ * A daemon prints its ARGUS link and attach command once, into a terminal it then occupies with a live boot
+ * animation; scrollback is lost the moment anyone clears it. The note says, in a file, which daemon that was and
+ * that `calypso --berths` reprints its address and token while it proves it is running.
  *
- * The file carries the attach token, which is a credential. It is written as the berth record is, in the same
- * owner-only folder (`berthDir_path`, held to this account through a trusted path), by a fresh `0600` file renamed
- * over the name: never written through a link, never readable by another account.
+ * The note is written as the berth record is, in the same owner-only folder (`berthDir_path`, held to this account
+ * through a trusted path), by a fresh `0600` file renamed over the name: never written through a link.
  *
  * It stays when the daemon ends, as the record does: no process can unlink a published note without racing the next
- * daemon that replaces it, so the note is the last advertisement of a daemon, not proof one is running. A client
- * probes its address as it would a record's (`berthInstance_probe`, with the record), and the next daemon writes over it.
+ * daemon that replaces it. So it carries no credential (no token, no tokened link, no attach command): who the
+ * daemon was, when, and where to ask what is running now.
  *
- * `calypso --berths` reads the same facts from the berth and says whether each daemon proved it is running.
+ * `calypso --berths` reads the address and token from the berth, for each daemon that proves it is running.
  *
  * @module
  */
@@ -24,6 +22,28 @@ import { basename, dirname, join } from 'node:path';
 import { ownFile_write, ownFolder_settle, type OwnFolder, type OwnHeld, type OwnRefusal } from '@fnndsc/fond';
 
 import { berthDir_path } from './berth.js';
+
+/**
+ * What the attach note says: who the daemon was, when it was written, and where to ask for what is running now. It
+ * outlives the daemon, so it carries no token, no tokened link and no attach command: `calypso --berths` gives
+ * those for a daemon that proves it is running.
+ *
+ * @param identity - The daemon's identity.
+ * @param booted - When it booted, ISO.
+ * @returns The note's lines.
+ *
+ * @example
+ * ```ts
+ * attachFile_write(attachNote_lines(identity, booted));
+ * ```
+ */
+export function attachNote_lines(identity: string, booted: string): string[] {
+  return [
+    `# Written by the daemon at ${booted}; left when it ends.`,
+    `identity:  ${identity}`,
+    'attach:    calypso --berths   (on this machine: the address and token of each daemon that proves it is running)',
+  ];
+}
 
 /**
  * The path this daemon's attach note occupies.

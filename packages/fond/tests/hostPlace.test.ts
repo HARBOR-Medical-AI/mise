@@ -182,16 +182,37 @@ describe('owner-only places', () => {
     expect(ownFolder_settle(path.join(root, 'alias', 'calypso'), true)).toEqual({ ok: true, path: path.join(realpathSync(trusted), 'calypso') });
   });
 
-  it('says where a host\'s state root is not on a trusted path; a missing tail below trusted folders is a first start', async () => {
-    const { pathTrust_refusal } = await import('../src/hostPlace.js');
+  it('holds a host\'s state root: resolved, refused under an open folder, refused when itself open (sticky or not), a missing tail a first start', async () => {
+    const { trustedRoot_settle } = await import('../src/hostPlace.js');
     const root: string = base();
-    expect(pathTrust_refusal(path.join(root, 'not', 'yet'))).toBeNull();
+    const real: string = realpathSync(root);
+    expect(trustedRoot_settle(path.join(root, 'not', 'yet'))).toEqual({ ok: true, path: path.join(real, 'not', 'yet') });
     const shared: string = path.join(root, 'shared');
     mkdirSync(shared, { mode: 0o775 });
     chmodSync(shared, 0o775);
     mkdirSync(path.join(shared, 'porter'), { mode: 0o700 });
-    expect(pathTrust_refusal(path.join(shared, 'porter'))).toBe(`${path.join(realpathSync(root), 'shared')}: open to other accounts`);
-    expect(pathTrust_refusal(path.join(shared, 'porter', 'missing'))).toContain('open to other accounts');
+    expect(trustedRoot_settle(path.join(shared, 'porter'))).toEqual({ ok: false, reason: `${path.join(real, 'shared')}: open to other accounts` });
+    expect(trustedRoot_settle(path.join(shared, 'porter', 'missing'))).toMatchObject({ ok: false, reason: expect.stringContaining('open to other accounts') });
+    // The root itself open: refused, even root's and sticky (the shared temporary folder).
+    expect(trustedRoot_settle(shared)).toMatchObject({ ok: false, reason: expect.stringContaining('open to other accounts') });
+    expect(trustedRoot_settle('/tmp')).toMatchObject({ ok: false, reason: '/tmp: open to other accounts' });
+    // `..` as spelled is refused, never folded away.
+    expect(trustedRoot_settle(`${root}/a/../b`)).toMatchObject({ ok: false, reason: expect.stringContaining("names '..'") });
+    // A link through a trusted folder is resolved: the root used is the root checked.
+    mkdirSync(path.join(root, 'real-root'), { mode: 0o700 });
+    symlinkSync(path.join(root, 'real-root'), path.join(root, 'alias-root'));
+    expect(trustedRoot_settle(path.join(root, 'alias-root'))).toEqual({ ok: true, path: path.join(real, 'real-root') });
+  });
+
+  it('follows a link in a shared sticky folder only when it is root\'s or this account\'s', async () => {
+    const { trustedPath_resolve } = await import('../src/hostPlace.js');
+    const uid: number = process.getuid?.() ?? 0;
+    const root: string = base();
+    mkdirSync(path.join(root, 'target'), { mode: 0o700 });
+    symlinkSync(path.join(root, 'target'), path.join(root, 'link'));
+    // As this account the link is its own: followed. Seen as another account, the same link is not.
+    expect(trustedPath_resolve(path.join(root, 'link'), uid)).toEqual({ ok: true, path: path.join(realpathSync(root), 'target') });
+    expect(trustedPath_resolve(path.join(root, 'link'), uid + 1)).toMatchObject({ ok: false });
   });
 
   it('reads only a regular 0600 file of this account\'s, bounded; writes by rename; refuses a standing link or wider file and leaves it as it is', async () => {

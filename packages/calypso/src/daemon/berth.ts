@@ -34,7 +34,7 @@ import { ownFile_read, ownFile_take, ownFile_write, ownFolder_settle, type OwnFo
 import { CLOSING_CAUSES, type ClosingCause } from '@fnndsc/menu';
 
 // A host that keeps berth folders under a root of its own asks this before it starts (porter's state root).
-export { pathTrust_refusal } from '@fnndsc/fond';
+export { trustedRoot_settle, type OwnFolder, type OwnRefusal } from '@fnndsc/fond';
 
 /** The prefix of every berth filename, so a directory scan finds only berths. */
 const BERTH_FILE_PREFIX: string = 'berth-';

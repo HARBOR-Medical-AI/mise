@@ -353,12 +353,30 @@ function walkStep_take(place: WalkPlace, name: string, uid: number): WalkPlace |
   }
   if (stats.isSymbolicLink()) {
     if (place.hops >= LINK_HOPS_MAX) return { ok: false, reason: `${next}: too many links` };
-    const link: string = readlinkSync(next);
+    // In a shared sticky folder (`/tmp`) an entry is its owner's to replace: a link is followed only when it is
+    // root's or this account's.
+    if (stats.uid !== 0 && stats.uid !== uid) return { ok: false, reason: `${next}: a link of another account's` };
+    let link: string;
+    try {
+      link = readlinkSync(next);
+    } catch (error: unknown) {
+      return fsRefusal_make(next, error, 'readlink');
+    }
     const at: string = path.isAbsolute(link) ? path.parse(link).root : place.at;
     return { at, rest: [...link.split(path.sep), ...place.rest], hops: place.hops + 1 };
   }
   if (!ancestor_isTrusted(stats, uid)) return { ok: false, reason: `${next}: ${stats.isDirectory() ? 'open to other accounts' : 'not a folder'}` };
   return { ...place, at: next };
+}
+
+/**
+ * Whether a path as spelled names `..`.
+ *
+ * @param spelled - The path.
+ * @returns True when it does.
+ */
+function spelling_climbs(spelled: string): boolean {
+  return spelled.split(/[\\/]/).includes('..');
 }
 
 /**
@@ -376,6 +394,8 @@ function walkStep_take(place: WalkPlace, name: string, uid: number): WalkPlace |
  * ```
  */
 export function trustedPath_resolve(folder: string, uid: number | null = uid_get()): OwnFolder | OwnRefusal {
+  // `..` as spelled would be folded away before any link on the way is walked: refused, not guessed at.
+  if (spelling_climbs(folder)) return { ok: false, reason: `${folder}: names '..'` };
   const absolute: string = path.resolve(folder);
   if (uid === null) {
     try {
@@ -403,24 +423,41 @@ export function trustedPath_resolve(folder: string, uid: number | null = uid_get
 }
 
 /**
- * The first folder on a path that another account could change what is under it in, for a host that keeps
- * owner-only state there and must say so before it starts. A path whose tail is not there yet, below trusted
- * folders, is fine: a first start makes it.
+ * Holds a host's state root: its path resolved through trusted folders only, and the root itself, when it is there,
+ * root's or this account's and not writable by group or others, sticky or not (a shared `/tmp` is a fine place to
+ * pass through and no place to keep state in). A root not made yet, below trusted folders, is a first start: its
+ * path is the resolved folder that is there joined with the names still to make.
  *
- * @param folder - The path.
+ * @param folder - The state root.
  * @param uid - This account's uid (a test's seam).
- * @returns Why the path is not trusted, or null.
+ * @returns The root's resolved path, or the first thing on the way another account could change.
  *
  * @example
  * ```ts
- * const why: string | null = pathTrust_refusal(stateDir);
- * if (why !== null) refuse(why);
+ * const root: OwnFolder | OwnRefusal = trustedRoot_settle(stateDir);
+ * if (root.ok) host_start(root.path);
  * ```
  */
-export function pathTrust_refusal(folder: string, uid: number | null = uid_get()): string | null {
+export function trustedRoot_settle(folder: string, uid: number | null = uid_get()): OwnFolder | OwnRefusal {
   const walked: OwnFolder | OwnRefusal = trustedPath_resolve(folder, uid);
-  if (walked.ok || walked.missing === true) return null;
-  return walked.reason;
+  if (walked.ok) {
+    let stats: Stats;
+    try {
+      stats = lstatSync(walked.path);
+    } catch (error: unknown) {
+      return fsRefusal_make(walked.path, error, 'lstat');
+    }
+    if (uid !== null && stats.uid !== 0 && stats.uid !== uid) return { ok: false, reason: `${walked.path}: another account's` };
+    if ((stats.mode & 0o022) !== 0) return { ok: false, reason: `${walked.path}: open to other accounts` };
+    return walked;
+  }
+  if (walked.missing !== true) return walked;
+  // Not there yet: the nearest folder on the way that is, held the same way, and the names still to make.
+  const absolute: string = path.resolve(folder);
+  const parent: string = path.dirname(absolute);
+  if (parent === absolute) return walked;
+  const held: OwnFolder | OwnRefusal = trustedRoot_settle(parent, uid);
+  return held.ok ? { ok: true, path: path.join(held.path, path.basename(absolute)) } : held;
 }
 
 /**
@@ -440,6 +477,7 @@ export function pathTrust_refusal(folder: string, uid: number | null = uid_get()
  * ```
  */
 export function ownFolder_settle(folder: string, create: boolean, uid: number | null = uid_get()): OwnFolder | OwnRefusal {
+  if (spelling_climbs(folder)) return { ok: false, reason: `${folder}: names '..'` };
   const absolute: string = path.resolve(folder);
   const parent: OwnFolder | OwnRefusal = trustedPath_resolve(path.dirname(absolute), uid);
   if (!parent.ok) return { ...parent, reason: `${absolute}: ${parent.reason}` };

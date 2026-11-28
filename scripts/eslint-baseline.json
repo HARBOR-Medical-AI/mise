@@ -119,7 +119,7 @@
     "@typescript-eslint/no-unnecessary-type-assertion": 5,
     "@typescript-eslint/no-unused-expressions": 1,
     "@typescript-eslint/no-unused-vars": 1,
-    "@typescript-eslint/restrict-template-expressions": 16,
+    "@typescript-eslint/restrict-template-expressions": 15,
     "@typescript-eslint/unbound-method": 4,
     "complexity": 8,
     "import/first": 1,

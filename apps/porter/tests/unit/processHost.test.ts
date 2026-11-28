@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { chmodSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { berth_pathIn, berthKey_compute } from '@fnndsc/calypso/berth';
@@ -478,18 +478,38 @@ describe('a porter restarted', () => {
     expect((await host.sessions_adopt()).map((one) => one.identity)).toEqual([IDENTITY]);
   });
 
-  it('a state root under a folder open to other accounts is refused, naming the folder and both remedies; one not made yet below trusted folders is a first start', async () => {
-    const { stateRoot_refusal } = await import('../../src/host/processHost.js');
-    expect(stateRoot_refusal(join(stateDir, 'not', 'yet'))).toBeNull();
+  it('a state root under a folder open to other accounts is refused, naming the folder and both remedies; one not made yet below trusted folders is a first start; a link is resolved to the root the host is given', async () => {
+    const { stateRoot_settle } = await import('../../src/host/processHost.js');
+    const real: string = realpathSync(stateDir);
+    expect(stateRoot_settle(join(stateDir, 'not', 'yet'))).toEqual({ ok: true, path: join(real, 'not', 'yet') });
     const shared: string = join(stateDir, 'shared');
     mkdirSync(shared, { mode: 0o775 });
     chmodSync(shared, 0o775);
-    const said: string | null = stateRoot_refusal(join(shared, 'porter'));
-    expect(said).toContain(`${join(realpathSync(stateDir), 'shared')}: open to other accounts`);
-    expect(said).toContain(`chmod go-w ${join(realpathSync(stateDir), 'shared')}`);
+    const held = stateRoot_settle(join(shared, 'porter'));
+    expect(held.ok).toBe(false);
+    const said: string = held.ok ? '' : held.said;
+    expect(said).toContain(`${join(real, 'shared')}: open to other accounts`);
+    expect(said).toContain(`chmod go-w ${join(real, 'shared')}`);
     expect(said).toContain('PORTER_STATE_DIR');
     expect(said).toContain('they are not moved');
+    expect(stateRoot_settle('/tmp').ok).toBe(false);
+    mkdirSync(join(stateDir, 'kept'), { mode: 0o700 });
+    symlinkSync(join(stateDir, 'kept'), join(stateDir, 'alias'));
+    expect(stateRoot_settle(join(stateDir, 'alias'))).toEqual({ ok: true, path: join(real, 'kept') });
   });
+
+  it('a state root not there yet adopts nothing; one that is there and cannot be listed is said, not taken for empty', async () => {
+    expect(await new ProcessHost({ stateDir: join(stateDir, 'none'), chellEntry: '/opt/chell/dist/index.js' }).sessions_adopt()).toEqual([]);
+    const locked: string = join(stateDir, 'locked');
+    mkdirSync(locked, { mode: 0o700 });
+    chmodSync(locked, 0o000);
+    try {
+      await expect(new ProcessHost({ stateDir: locked, chellEntry: '/opt/chell/dist/index.js' }).sessions_adopt()).rejects.toThrow(`porter's state folder ${locked} could not be listed (EACCES)`);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+  });
+
 
   it('a berth record another account could have written is not read: a wider record, or one in a wider folder', async () => {
     const host: ProcessHost = host_make();

@@ -119,17 +119,16 @@ A door token is how a script comes through without a password: minted once by a 
 
 === The state root is on a trusted path
 
-Porter keeps each person's session records under its state root, and believes a record only when no other account could have changed what is on the way to it. Before it serves, adopts, lists (`--status`) or ends (`--end`) anything, porter walks the state root's path from `/`: every folder on it must be root's or porter's account's, and not writable by group or others unless it is root's and sticky (as `/tmp` is). With an open folder on the way, another account could put links in place of a session's folder and send one person's browser to another person's daemon, so porter refuses, names the first such folder, and offers the two remedies. A state root not made yet, below trusted folders, is a first start.
+Porter keeps each person's session records under its state root, and believes a record only when no other account could have changed what is on the way to it. Before it serves, adopts, lists (`--status`) or ends (`--end`) anything, porter walks the state root's path from `/` and then uses only the root as walked (every link on the way resolved): every folder on it must be root's or porter's account's, and not writable by group or others unless it is root's and sticky (as `/tmp` is). With an open folder on the way, another account could put links in place of a session's folder and send one person's browser to another person's daemon, so porter refuses, names the first such folder, and offers the two remedies. A state root not made yet, below trusted folders, is a first start.
 
-Before installing on a host, check the path (it reads only):
+Before switching a host to a new porter, run the new porter's own check, as the account porter runs as and with its environment (it reads only; it lists the sessions it would keep, or says what is in the way):
 
 [source,sh]
 ----
-p="${PORTER_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/porter}"
-while [ "$p" != / ]; do [ -e "$p" ] && stat -c '%U:%G %a %n' "$p"; p=$(dirname "$p"); done; stat -c '%U:%G %a %n' /
+PORTER_STATE_DIR=<as configured, or unset> node <new porter>/dist/porter.js --status
 ----
 
-A folder whose mode has a `2` or `3`, `6` or `7` in its group or other digit (`775`, `777`, `2775`) and is not `root` with the sticky bit is open. The remedies, either one, are the operator's to choose: take group and other write off that folder (`chmod go-w <folder>`), if nothing there needs it; or set `PORTER_STATE_DIR` to a folder on a trusted path. Sessions already kept under the old root stay there and are not moved: a new root starts with none.
+A folder whose mode has a `2`, `3`, `6` or `7` in its group or other digit (`775`, `777`, `2775`) is open; one on the way that is `root`'s with the sticky bit (`/tmp`) may be passed through, never be the root itself, and a link in it is followed only when it is root's or porter's account's. A root named with `..` is refused. The remedies, either one, are the operator's to choose: take group and other write off that folder (`chmod go-w <folder>`), if nothing there needs it; or set `PORTER_STATE_DIR` to a folder on a trusted path. Sessions already kept under the old root stay there and are not moved: a new root starts with none.
 
 == Deploying on titan
 

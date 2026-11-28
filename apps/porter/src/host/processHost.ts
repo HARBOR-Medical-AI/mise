@@ -20,7 +20,7 @@ import { spawn as childSpawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, writeSync, type Dirent, type Stats } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import { berthFolder_read, berthInstance_probe, berthKey_compute, closing_write, pathTrust_refusal, type BerthLiveness, type LocatedBerth } from '@fnndsc/calypso/berth';
+import { berthFolder_read, berthInstance_probe, berthKey_compute, closing_write, trustedRoot_settle, type BerthLiveness, type LocatedBerth, type OwnFolder, type OwnRefusal } from '@fnndsc/calypso/berth';
 import { sessionEnv_build } from './sessionEnv.js';
 import { restartLine_render, type Berth, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
 import { bootLine_note } from './bootLines.js';
@@ -472,31 +472,74 @@ export function sessionDir_settle(dir: string, within: string, fs: SettleFs = SE
 }
 
 /**
- * Why porter may not keep sessions under a state root: the first folder on its path another account could change
- * what is under, and the remedies. With such a folder on the way, another account could put links in place of a
- * session's folder and send one person's browser to another person's daemon. A root not made yet, below trusted
- * folders, is a first start.
- *
- * @param stateDir - The state root.
- * @param uid - This account's uid (a test's seam).
- * @returns What to say, or null when the root is on a trusted path.
+ * A state root held: the path every later use names.
  *
  * @example
  * ```ts
- * const refusal: string | null = stateRoot_refusal(config.stateDir);
- * if (refusal !== null) { console.error(refusal); process.exit(1); }
+ * const held: StateRootHeld = { ok: true, path: '/home/me/.local/state/porter' };
  * ```
  */
-export function stateRoot_refusal(stateDir: string, uid?: number | null): string | null {
-  const why: string | null = uid === undefined ? pathTrust_refusal(stateDir) : pathTrust_refusal(stateDir, uid);
-  if (why === null) return null;
-  const folder: string = why.slice(0, why.lastIndexOf(': '));
-  return [
-    `[!] porter's state folder ${stateDir} is not on a trusted path: ${why}.`,
-    '    Another account could put links in place of a session\'s folder there and send one person\'s browser to another person\'s daemon, so porter keeps no sessions under it.',
-    `    Either take group and other write off that folder (chmod go-w ${folder}), if nothing there needs it,`,
-    '    or set PORTER_STATE_DIR to a folder on a trusted path. Sessions already kept under the old folder stay there; they are not moved.',
-  ].join('\n');
+export interface StateRootHeld {
+  /** Held. */
+  ok: true;
+  /** The root, every link on the way resolved. */
+  path: string;
+}
+
+/**
+ * A state root refused: what to say to the operator.
+ *
+ * @example
+ * ```ts
+ * if (!root.ok) console.error(root.said);
+ * ```
+ */
+export interface StateRootRefused {
+  /** Refused. */
+  ok: false;
+  /** The refusal, the folder in the way and the remedies. */
+  said: string;
+}
+
+/**
+ * A state root held, or why not in words for the operator.
+ *
+ * @example
+ * ```ts
+ * const root: StateRoot = stateRoot_settle(config.stateDir);
+ * ```
+ */
+export type StateRoot = StateRootHeld | StateRootRefused;
+
+/**
+ * Holds porter's state root (`trustedRoot_settle`): the path every later use names, or why porter may not keep
+ * sessions under it, with the first folder on the way another account could change and the remedies. With such a
+ * folder on the way, another account could put links in place of a session's folder and send one person's browser
+ * to another person's daemon. A root not made yet, below trusted folders, is a first start.
+ *
+ * @param stateDir - The state root as configured.
+ * @param uid - This account's uid (a test's seam).
+ * @returns The resolved root, or what to say.
+ *
+ * @example
+ * ```ts
+ * const root: StateRoot = stateRoot_settle(config.stateDir);
+ * if (!root.ok) { console.error(root.said); process.exit(1); }
+ * ```
+ */
+export function stateRoot_settle(stateDir: string, uid?: number | null): StateRoot {
+  const held: OwnFolder | OwnRefusal = uid === undefined ? trustedRoot_settle(stateDir) : trustedRoot_settle(stateDir, uid);
+  if (held.ok) return held;
+  const folder: string = held.reason.slice(0, held.reason.lastIndexOf(': '));
+  return {
+    ok: false,
+    said: [
+      `[!] porter's state folder ${stateDir} is not on a trusted path: ${held.reason}.`,
+      '    Another account could put links in place of a session\'s folder there and send one person\'s browser to another person\'s daemon, so porter keeps no sessions under it.',
+      `    Either take group and other write off that folder (chmod go-w ${folder}), if nothing there needs it,`,
+      '    or set PORTER_STATE_DIR to a folder on a trusted path. Sessions already kept under the old folder stay there; they are not moved.',
+    ].join('\n'),
+  };
 }
 
 /** A record and what its probe said. */
@@ -629,9 +672,10 @@ export class ProcessHost implements SessionHost {
     let folders: string[];
     try {
       folders = readdirSync(this.stateDir, { withFileTypes: true }).filter((entry: Dirent): boolean => entry.isDirectory()).map((entry: Dirent): string => entry.name);
-    } catch {
-      // No state yet (a first start), or none this account can list: nothing to adopt.
-      return sightings;
+    } catch (error: unknown) {
+      // No state yet is a first start; a root that is there and cannot be listed is not an empty one.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return sightings;
+      throw new Error(`porter's state folder ${this.stateDir} could not be listed (${String((error as NodeJS.ErrnoException).code ?? error)})`);
     }
     for (const folder of folders) {
       // One session at a time: a folder that is refused or cannot be read is said by the reader and passed over,

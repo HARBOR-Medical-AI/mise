@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { chmodSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync, mkdirSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { attachFile_path, attachFile_write } from '../src/daemon/attachFile.js';
+import { attachFile_path, attachFile_write, attachNote_lines } from '../src/daemon/attachFile.js';
 
 let runtimeBefore: string | undefined;
 
@@ -55,6 +55,14 @@ describe('attachFile', () => {
     expect(attachFile_write(['token: secret'])).toBeNull();
     expect(readFileSync(decoy, 'utf8')).toBe('untouched');
     expect(lstatSync(attachFile_path()).isSymbolicLink()).toBe(true);
+  });
+
+  it('the retained note carries no credential: no token, no tokened link, no direct attach command', () => {
+    const lines: string[] = attachNote_lines('chris@http://cube/api/v1/', '2026-11-28T10:00:00.000Z');
+    const text: string = lines.join('\n');
+    expect(text).toContain('identity:  chris@http://cube/api/v1/');
+    expect(text).toContain('calypso --berths');
+    expect(text).not.toMatch(/token=|--token|--attach|wss?:\/\/|ARGUS/);
   });
 
   it('writes nothing into a berth folder another account could use', () => {

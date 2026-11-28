@@ -16,7 +16,7 @@ import { doorOrigins_resolve, type DoorOrigins } from './origin.js';
 import { porterConfig_resolve, porterStateDir_resolve, porterTokensFile_resolve, chellEntry_locate, stratusEntry_locate, PORTER_DEFAULT_TOKEN_DAYS, type PorterConfig } from './config.js';
 import { TokenStore, type DoorToken, type MintedToken, type StoreHooks } from './tokens.js';
 import { identity_normalise } from '@fnndsc/calypso/berth';
-import { ProcessHost, stateRoot_refusal } from './host/processHost.js';
+import { ProcessHost, stateRoot_settle, type StateRoot } from './host/processHost.js';
 import { LauncherHost } from './host/launcherHost.js';
 import { launcherSecret_read } from './launcher/secret.js';
 import { porterApp_build, type PorterApp } from './app.js';
@@ -26,14 +26,15 @@ import { entry_isMain } from './entry.js';
 import { versionReport_build } from './versions.js';
 
 /**
- * Ends porter, saying why, when its state root is not on a trusted path (`stateRoot_refusal`). Reads only.
+ * Holds the state root for a host, or ends porter saying why (`stateRoot_settle`). Reads only.
  *
- * @param stateDir - The state root.
+ * @param stateDir - The state root as configured.
+ * @returns The root as resolved: the one the host is given, so the root used is the root checked.
  */
-function stateRoot_hold(stateDir: string): void {
-  const refusal: string | null = stateRoot_refusal(stateDir);
-  if (refusal === null) return;
-  console.error(refusal);
+function stateRoot_hold(stateDir: string): string {
+  const root: StateRoot = stateRoot_settle(stateDir);
+  if (root.ok) return root.path;
+  console.error(root.said);
   process.exit(1);
 }
 
@@ -46,10 +47,16 @@ function stateRoot_hold(stateDir: string): void {
  * @param stateDir - Where the state directory is.
  */
 async function status_print(stateDir: string): Promise<void> {
-  stateRoot_hold(stateDir);
-  const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: process.env['PORTER_CHELL'] ?? chellEntry_locate() });
-  const sightings: SessionSighting[] = await host.sessions_adopt();
-  console.log(`state: ${stateDir}`);
+  const root: string = stateRoot_hold(stateDir);
+  const host: ProcessHost = new ProcessHost({ stateDir: root, chellEntry: process.env['PORTER_CHELL'] ?? chellEntry_locate() });
+  let sightings: SessionSighting[];
+  try {
+    sightings = await host.sessions_adopt();
+  } catch (error: unknown) {
+    console.error(`[!] ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+  console.log(`state: ${root}`);
   if (sightings.length === 0) {
     console.log('no sessions');
     return;
@@ -79,9 +86,14 @@ async function status_print(stateDir: string): Promise<void> {
  *   user alone when one session carries that user.
  */
 async function session_end(stateDir: string, who: string): Promise<void> {
-  stateRoot_hold(stateDir);
-  const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: process.env['PORTER_CHELL'] ?? chellEntry_locate() });
-  const sightings: SessionSighting[] = await host.sessions_adopt();
+  const host: ProcessHost = new ProcessHost({ stateDir: stateRoot_hold(stateDir), chellEntry: process.env['PORTER_CHELL'] ?? chellEntry_locate() });
+  let sightings: SessionSighting[];
+  try {
+    sightings = await host.sessions_adopt();
+  } catch (error: unknown) {
+    console.error(`[!] ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
   const matches: SessionSighting[] = sightings.filter((sighting: SessionSighting): boolean =>
     sighting.identity === who || berthKey_compute(sighting.identity) === who || sighting.identity.startsWith(`${who}@`));
   if (matches.length === 0) {
@@ -336,8 +348,7 @@ async function porter_start(): Promise<void> {
     host = new LauncherHost({ listen: config.berths.listen, secret });
   } else {
     // Before anything is served or adopted: the state root must be on a trusted path.
-    stateRoot_hold(config.stateDir);
-    host = new ProcessHost({ stateDir: config.stateDir, chellEntry: config.chellEntry, stratusEntry: stratusEntry_locate() });
+    host = new ProcessHost({ stateDir: stateRoot_hold(config.stateDir), chellEntry: config.chellEntry, stratusEntry: stratusEntry_locate() });
   }
   const sweepText: string | undefined = process.env['PORTER_SWEEP_SECONDS'];
   const built: PorterApp = await porterApp_build({

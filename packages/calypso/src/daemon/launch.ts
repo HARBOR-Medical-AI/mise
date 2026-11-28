@@ -27,7 +27,7 @@ import { backend_get, type Backend, type SessionIdentity } from '@fnndsc/brasa/c
 import { stackBanner_rows, stackBannerRow_paint, versions_get, versions_selectForBackend, buildHash_get } from '@fnndsc/brasa/core';
 import { identity_normalise, berth_write, berth_path, probeKey_generate, closing_take, type Berth } from './berth.js';
 import type { ClosingCause } from '@fnndsc/menu';
-import { attachFile_write } from './attachFile.js';
+import { attachFile_write, attachNote_lines } from './attachFile.js';
 import { CHELL_ON_PATH, chellLaunch_find, type SurfaceLaunch } from './consoleSession.js';
 import { Terminals, ptySpawn_load, type PtySpawn } from './terminals.js';
 import { HOST_CONTROL_OFF, daemonCapabilities_compose, pipeSegment_run, hostControl_describe, hostControl_guard, hostControl_tiers, hostShell_run, hostShellTerminal_refusal, type HostControlPolicy } from './hostControl.js';
@@ -328,23 +328,9 @@ export async function daemon_launch(
   // The boot animation keeps repainting this terminal, and scrollback dies with
   // the next clear. The same addresses go to a file so they can be read back
   // without fighting either.
-  const noteLines: string[] = [
-    // The note outlives the daemon: it says so, and where to ask what is running now.
-    `# Written by the daemon at ${booted}; left when it ends. What is running now: calypso --berths`,
-    `identity:  ${identity}`,
-    `wire:      ${url}`,
-    `token:     ${token}`,
-    ...(webRoot !== null
-      ? [`ARGUS:     http://${displayHost}:${port}/?token=${token}`]
-      : []),
-    `attach:    chell --remote --attach ${url} --token ${token}`,
-    ...(hostControl.tiers.size > 0
-      ? [`host control: ${hostControl_describe(hostControl)}${hostControl.exposed && bindHost !== '127.0.0.1' ? ` (EXPOSED on ${bindHost})` : ''}`]
-      : []),
-  ];
-  // The note stays when the daemon ends, as its record does: the last advertisement of this daemon, probed like
-  // any record, replaced by the next daemon's (no process unlinks either; see berth.ts).
-  const notePath: string | null = attachFile_write(noteLines);
+  // The note outlives the daemon, as its record does (no process unlinks either; see berth.ts), so it holds no
+  // credential: who the daemon was and where to ask what is running now.
+  const notePath: string | null = attachFile_write(attachNote_lines(identity, booted));
   if (notePath !== null) process.once('SIGINT', (): void => { process.exit(0); });
   // Ended from outside (a porter's restart or end, a plain kill): every
   // surface is told why before the process goes, from the reason the host
