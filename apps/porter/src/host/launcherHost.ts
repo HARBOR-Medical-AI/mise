@@ -27,6 +27,8 @@ interface LauncherBerth {
   state: 'running' | 'stopped';
   url: string | null;
   token: string | null;
+  /** Why a running berth's address could not be read, when it could not. */
+  unread?: string;
 }
 
 /** How porter reaches the launcher: its socket or loopback address, and the secret every call carries. */
@@ -230,6 +232,8 @@ export class LauncherHost implements SessionHost {
     // An answer that is not a list of berths says nothing about which is up: it is not "none is".
     if (answer.status !== 200 || !Array.isArray(answer.body['berths'])) throw new Error(`the launcher could not say which berth is up (it answered ${String(answer.status)})`);
     const own: LauncherBerth | undefined = (answer.body['berths'] as LauncherBerth[]).find((one: LauncherBerth): boolean => one.identity === identity);
+    // A berth up whose address the launcher could not read is up: where it answers, and so which it is, is not known.
+    if (own !== undefined && own.state === 'running' && (own.url === null || own.token === null)) throw new Error(`the launcher could not say which berth is up: ${typeof own.unread === 'string' ? own.unread : 'its address is unread'}`);
     return own === undefined ? null : LauncherHost.berth_take(own);
   }
 

@@ -88,6 +88,24 @@ export interface BerthState {
   readonly container: string;
   /** The cohort it holds, or `none`. */
   readonly cohort: string;
+  /** Why a running berth's address and token could not be read: it is up, and where it answers is not known. */
+  readonly unread?: string;
+}
+
+/** Where a running berth's calypso answers, and its attach token. */
+interface BerthAddress {
+  /** The address. */
+  url: string;
+  /** The attach token. */
+  token: string;
+}
+
+/** A running berth's file as read for its status: its address and token, or why they could not be read. */
+interface BerthRead {
+  /** The address and token. */
+  berth: BerthAddress | null;
+  /** Why they could not be read; null when they were, or the berth is not running. */
+  unread: string | null;
 }
 
 /** A refusal the launcher gives, with the HTTP status it answers. */
@@ -657,11 +675,13 @@ export class BerthLauncher {
    * A person's berth as it stands, or every berth of this spoke.
    *
    * @param who - The user and CUBE, or null for all.
-   * @returns The berths.
+   * @returns The berths; a running one whose berth file cannot be read is running, with why it is unread.
+   * @throws {BerthRefusal} When the engine does not list the containers: that is not "none are there".
    */
   public async status(who: { user: string; cubeUrl: string } | null): Promise<BerthState[]> {
     const listed: DockerAnswer = await this.options.docker.call('GET', `/containers/json?all=true&filters=${labelFilter_build(this.options.prefix)}`);
-    const rows: unknown[] = Array.isArray(listed.body) ? listed.body : [];
+    if (listed.status !== 200 || !Array.isArray(listed.body)) throw new BerthRefusal(502, `the engine did not list the berths (it answered ${String(listed.status)})`);
+    const rows: unknown[] = listed.body;
     const want: string | null = who === null ? null : identity_normalise(who.user, who.cubeUrl);
     const states: BerthState[] = [];
     for (const row of rows) {
@@ -674,8 +694,8 @@ export class BerthLauncher {
       const shown: string = containerName_read(row);
       const names: BerthNames = shown === '' ? derived : { ...derived, container: shown };
       const up: boolean = field_get(row, 'State') === 'running';
-      const berth = up ? await this.berth_read(names, identity).catch((): null => null) : null;
-      states.push({ identity, user, state: up && berth !== null ? 'running' : 'stopped', url: berth?.url ?? null, token: berth?.token ?? null, container: names.container, cohort: typeof cohort === 'string' ? cohort : NO_COHORT });
+      const read: BerthRead = up ? await this.berth_read(names, identity).then((berth): BerthRead => ({ berth, unread: null }), (error: unknown): BerthRead => ({ berth: null, unread: error instanceof Error ? error.message : String(error) })) : { berth: null, unread: null };
+      states.push({ identity, user, state: up ? 'running' : 'stopped', url: read.berth?.url ?? null, token: read.berth?.token ?? null, container: names.container, cohort: typeof cohort === 'string' ? cohort : NO_COHORT, ...(read.unread === null ? {} : { unread: read.unread }) });
     }
     return states;
   }

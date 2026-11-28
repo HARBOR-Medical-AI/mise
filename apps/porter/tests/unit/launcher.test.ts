@@ -37,6 +37,8 @@ class FakeDocker implements DockerApi {
   stopStatus: number = 204;
   /** A berth whose session never writes its berth file. */
   silent: boolean = false;
+  /** What the engine answers a container listing with; 200 unless a test has it fail. */
+  listStatus: number = 200;
   /** Each container's log, a line each; absent: nothing written. */
   logs: Map<string, string[]> = new Map();
   /** Who follows each container's log, and how each follow ends. */
@@ -139,6 +141,7 @@ class FakeDocker implements DockerApi {
     }
     if (method === 'GET' && parts[1] === 'volumes') return { status: this.volumes.has(name) ? 200 : 404, body: {} };
     if (route === '/containers/json') {
+      if (this.listStatus !== 200) return { status: this.listStatus, body: { message: 'the engine is busy' } };
       const filter = JSON.parse(decodeURIComponent(new URLSearchParams(query).get('filters') ?? '{}')) as { name?: string[] };
       return { status: 200, body: [...this.containers.entries()].filter(([one]) => filter.name === undefined || one.startsWith(filter.name[0] ?? '')).map(([one, each]) => ({ Names: [`/${one}`], Labels: each.spec['Labels'], State: each.running ? 'running' : 'exited' })) };
     }
@@ -850,6 +853,23 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     expect(refused.status).toBe(401);
     const unknown = await launcher_call({ listen: join(dir, 'launcher.sock'), secret: SECRET }, 'POST', '/berths/exec', {});
     expect(unknown.status).toBe(404);
+  });
+
+  it('which berth is up, for a decision: an engine that does not list, or a running berth whose file cannot be read, is not "none"; an empty engine is', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    expect(await host.berthUp_read(ANA)).toBeNull();
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    expect((await host.berthUp_read(ANA))?.token).toBe(`attach-${berthNames_derive('mbw', ANA, 'ana').container}`);
+    docker.silent = true;
+    await expect(host.berthUp_read(ANA)).rejects.toThrow('the launcher could not say which berth is up');
+    expect(await host.find(ANA)).toBeNull();
+    docker.silent = false;
+    docker.listStatus = 500;
+    await expect(host.berthUp_read(ANA)).rejects.toThrow('the launcher could not say which berth is up (it answered 502)');
+    // A start counts the berths up for the spoke's room: an engine that does not list refuses it rather than counting none.
+    await expect(host.spawn(identity_normalise('ben', CUBE), 'ben', CUBE, 'ben-token')).rejects.toThrow('the engine did not list the berths');
+    docker.listStatus = 200;
   });
 
   it('an engine that refuses the stop is a failed stop all the way up: the berth stays, the sweep keeps its session, a restart starts nothing', async () => {
