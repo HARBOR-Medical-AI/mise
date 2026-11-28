@@ -1,6 +1,6 @@
 {
   "name": "@fnndsc/orrery",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "The model of the heavens a surface draws: layouts, drawers and controls for a space of molecules, knowing nothing of what the molecules are",
   "repository": {
     "type": "git",

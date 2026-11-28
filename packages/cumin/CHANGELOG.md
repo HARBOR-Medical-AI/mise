@@ -1,5 +1,57 @@
 # @fnndsc/cumin
 
+## 3.31.0
+
+### Minor Changes
+
+- 139ec23: An answer from CUBE is checked before it is used: a missing or mistyped field fails by name, not later. A field a caller reads without looking must be there and be the kind that is read. Until now the adapter handed an answer back as whatever type its caller named, and a missing id or a string where a number is read went on to fail somewhere else, or not at all. A failure says which field of what was wrong (`CUBE answered a feed whose id is missing, where a number is read`) and never prints the value. A list fails whole on its first bad row and names the row: no listing is returned short by rows it does not mention. Data that is absent is still an empty list; data that is there and is not a list is now an error and no longer an empty list.
+
+  **Incompatible for callers of three exported functions.** `listData_get`, `itemData_get` and `items_get` each take a second argument, the shape, and take no type argument: `listData_get<Feed>(list)` becomes `listData_get(list, shape_build<Feed>('a feed')(['id', 'number'], ['name', 'string']))`, and `shape_object<T>('a thing')` asks only that each row be an object. `shape_build`, `shape_object`, `shape_nullable`, `ShapeError` and the `Shape` type are exported with them. The old one-argument form does not compile.
+
+  In menu, `progressKindSchema` and `progressUnitSchema` are typed as what they yield: the enum or `undefined`. They already parsed an unknown value to `undefined`, while their type claimed the enum.
+
+  Fields that CUBE may answer as null are typed so: the optional text and number fields of `PluginInstanceData`, `PluginData`, `ComputeResourceData`, `InstanceParameterData`, `PipelineRecord` and `PACSQueryRecord` are `string | null` or `number | null` where they were `string` or `number`, and each is held to its kind when it is there. A caller that passed one on as `string | undefined` now has to say what null becomes. `plugin info` no longer shows a null title, description, authors, documentation or category. `shape_build` takes only an object's type. A page whose `data` is there and is not a list, a served item with no data, and a list with a hole in it are each refused where they were read as empty or passed over.
+
+  A plugin instance, listed or read by itself, is held to its id, its feed's id, its plugin's name and its parent's id; a row without them was handed on as a job with no number. A pipeline is held to what one is before it is kept for a later read. Creating a PACS query fails when CUBE gives no receipt with a numeric id, where it answered a query with no id. A feed note with only a title is read as before. `shape_build` and `shape_object` do not take a list's or a function's type.
+
+- 0e565a4: Whoever is connected now is who every request is made as, and whose answers are kept. A transfer made under `sudo` no longer leaves later transfers running as the administrator, and after `connect` as another user, or to another CUBE, nothing is sent with the first user's token or answered from what the first user was shown (`/bin`, listings, the job tree, tags, PACS facts, the query index). Logging out drops the client as well as the token.
+
+  How: cumin's transfer, feed, plugin, resource and file-browser classes ask the connection for its client each time and keep none. A change of identity (a login, a context that names another user or CUBE, a logout) is numbered, in `@fnndsc/cumin/identity-epoch`: the caches empty themselves at each change, take a fill only from work begun under the identity now connected, and neither answer nor keep anything for work done as another user. A line of input is begun as one such piece of work through a new optional `Backend.work_run` in brasa, and the boot warm-up is another. Checkpoint watchers and the query index's flush at exit stop writing under an identity's name once another has connected.
+
+  Also: two downloads at once each report their own reason when CUBE refuses them; a folder's record is kept under one spelling of its path (`home/a`, `/home/a` and `/home/a/` are one), and deleting a folder by path no longer waits out its timeout on a remembered copy; two commands captured from chili at once no longer take each other's output; and a pause in a VM build no longer leaves a listener behind on the build's signal each time it ends.
+
+### Patch Changes
+
+- 1d13ae8: A save that fails part way no longer loses the file: the old content stays until the new content is seen in its place.
+
+  Rewriting a file removed it and then created it again, two requests, and a failure of the second left nothing at the name. Now the new content is stored beside the old under a staging name, the old file is moved aside, the new one is moved onto the name, and only then is the old one deleted. Each step acts on a file by its id; after a move that reports an error the file is looked up before anything is undone, since the move may have happened; nothing is moved onto a path that is not proved free; and where it is not known which file is where, nothing is removed and the error names the paths. cumin gains `file_uploadReceipted`, which answers the stored file's id and path, and `file_locate`, which answers where a file is by its id. Whether a write is a first write or a rewrite is decided on proof of what holds the path: a folder listing that failed or was cut short stops the write, and so does a folder, a link or more than one holder at the name. A file is moved or deleted by its id only once it has been seen at the path it was put at, so one that another writer has since moved is left alone. And cumin's `file_moveById` tries the older rename field only after CUBE refused the newer one outright (HTTP 400), never after a reply that was lost.
+
+- 10f9359: A token is printed only to a terminal, a saved token is its owner's alone, and the shell's history holds no secret. A daemon whose output is not a terminal (a log, a journal) names the berth record that keeps its token, not the token. The saved CUBE token is written at 0600 in a 0700 folder, and one saved looser before is tightened when next read. The shell's history moves from `.chell_history` in whatever folder the shell was started in to `$XDG_STATE_HOME/chell/history` (else `~/.local/state/chell/history`), private from its first line; an old `.chell_history` in a checkout is left as it is and no longer read. A line is kept with the value of `--password`, `--adminPassword`, `--token`, `--auth-token`, `-p` on `connect`, a password inside an address and a `token=` replaced by `***`; a password typed at a hidden question is never recalled by the up arrow.
+- 93ad44c: A listing filtered on this side no longer stops at the first page: a match further on is found.
+
+  When CUBE refuses a query, cumin fetches again without the filters and applies them itself, and the walk then judged "last page" by the rows it had kept. A full page of a hundred that kept three, or none, looked like a short page, and everything after it went unread. The walk is now steered by what the server sent: its own word on whether more follows, else the number of rows received, and it moves on by that number, so a server that sends fewer rows than were asked for has none skipped. A page with no rows that says more follow ends the walk and says so in the result (`incomplete`), or fails it when nothing was gathered. `resources_getItems` answers the items of the collection it just fetched; it read the one before.
+
+- 15271c3: A long listing is walked by the server's own word on whether more follows, not guessed from a page's length.
+
+  cumin read the next-page flag under a name the ChRIS client does not have, so the answer was always "unknown" and a walk could only guess from the length of a page. It now reads the client's own `hasNextPage`, which comes from the collection's `next` link, and the strict walk refuses a page that carries no links. In salsa's proofs an id beyond the range a number holds exactly, or text that is not plain digits, is no longer taken for an id.
+
+- d6e49b7: A folder is not taken for empty on a listing that came back malformed, short, or with rows that say too little.
+
+  Removing a folder asks first what holds its path and whether it holds anything, and a wrong "nothing" there deletes. cumin gains a strict walk of a collection, `resources_getWhole`, which follows the server's word on whether more follows and refuses a page that is not a list or carries no items; salsa's `files_listWhole` and the proofs in `files/proof` use it. A row with no name, or one of the name asked about with no usable id, now ends the proof with the reason. A folder or file whose own name ends in `.chrislink` is found under that name; only a link has the suffix read as CUBE's mark.
+
+- Updated dependencies [8d93d31]
+- Updated dependencies [80811d8]
+- Updated dependencies [d2e88bb]
+- Updated dependencies [616b812]
+- Updated dependencies [6401a32]
+- Updated dependencies [8eed0e8]
+- Updated dependencies [cb3de69]
+- Updated dependencies [139ec23]
+- Updated dependencies [0771098]
+- Updated dependencies [1a09210]
+  - @fnndsc/fond@0.7.0
+  - @fnndsc/menu@0.42.0
+
 ## 3.30.6
 
 ### Patch Changes

@@ -1,5 +1,77 @@
 # @fnndsc/stratus
 
+## 0.21.0
+
+### Minor Changes
+
+- 6401a32: A machine's build, a password set from its row and a PACS export follow what the session says happened.
+
+  None of them reads the words a line prints any more.
+
+  How: four places in ARGUS decided from wording. A VM build now sends a step event as each of its tasks begins and ends (`stratus.vm.step`: the machine, the step, begun, done or failed, and a plan's counts), and the VM controller draws the run from those, taking only the events of the line it sent itself. A question carries the id of the line that raised it and, where its command names them, what it is for and about (`purpose`, `subject`; `repl_confirm` and `repl_questionHidden` take them): the controller answers a password question from its row only when the question is that row's own line's, for that machine and account, named for that purpose and of the kind expected, and offers YES and NO when a question wants a yes or a no. A line is read as declined from the `line.declined` model and as failed from the session's own error. `pacs query --csv-to` names the file it wrote in its answer's model (`written`), and the PACS pane shows WROTE from that. `desktop load` and `desktop save` act on whether the session did what was asked. A daemon or a surface from before this still works: the new fields are optional, and a question that names nothing is the operator's to answer.
+
+- 1a09210: A session reads or writes its host's disk only when started with the files tier of host control. Under a daemon without `--host-control=files`, these are refused by name where they used to act on the daemon's disk: `>` and `>>` (refused before the command runs), `play` of a manifest that is not one of the session's own files, `touch --withContentsFromFile`, `plugin sync`, `plugin validate` and `plugin add --json` on a host path, chili's `path upload`, `path download`, `chefs upload` and `files create --from-file`, and stratus's `--admin-password-file` and `--password-file`. A local shell is unchanged: its disk is its operator's. `play` now tells three things apart: a manifest that is not there, one the session's files refused or could not serve (said as that, with the disk not looked at behind it), and one beside the engine that the tier does not allow. In stratus, a script in the library (`/scripts/...`) plays with no tier; a path in a checkout on the daemon's host needs it.
+
+### Patch Changes
+
+- 2017b1f: Keeping a VM's secrets in the tenancy no longer makes a new version of a secret whose content has not changed.
+
+  Every write of a kept secret made a new version, and the cloud holds thirty at a time: a secret reached that limit and could not be written again. A write now reads what the secret holds first and writes only a difference; a secret that cannot be read is left as it is and the keep fails, since writing it unread is how versions are spent. `vm build` still goes on when what is declared cannot be kept first, and now says so in its output with the cloud's reason, where it said nothing. The write is bound to the version it compared, so two writers of the same content, or a write whose reply was lost, make one version between them. What a failed keep says is composed from names and status numbers only, never from an error that may quote what was kept.
+
+- 8431c66: A machine whose key sits in a folder with a space, a quote or a percent sign in its name can be reached.
+
+  `vm shell` prints a line that works as printed.
+
+  How: the arguments stratus gives `ssh`, and the line `vm shell` prints, wrote the key and host-key paths bare, three readers deep: OpenSSH's own option words, its percent expansion, and the shell it hands `ProxyCommand` to. Each is now written for its reader (`packages/stratus/src/vm/quoting.ts`): an option value in OpenSSH's double quotes with its percents doubled, each word of the proxy command quoted for the shell and its percents doubled again, the tokens that are meant (`%h:%p`) left as they are. The key is named by `-o IdentityFile=` and the bastion's port by `-o Port=22`; `-i` cannot carry a path with a percent in it. A path holding `${` is refused by name: OpenSSH expands it from the environment and offers no way to write it literally. The printed line is the engine's own arguments, each written as a word of a shell. A plugin source or ref that holds shell grammar reaches `plugin sync` as one value. The two copies of the VM-shell quoting in stratus and the two of the host-shell quoting in brasa are one each.
+
+- 1662780: A page somewhere else can no longer act on your session through your browser, and passwords can be tried only so often. A browser sends the door's cookie with any request to the door, whoever wrote the page that made it; porter acted on that cookie alone. It now takes a request that changes something on the cookie, a login by password, and the upgrade that opens a session's wire only when the request's `Origin` is the door's own, and answers 403 otherwise, saying what it answers as. A program with a door token and no cookie is not asked.
+
+  **A porter behind a reverse proxy must be told its public address**: set `PORTER_PUBLIC_ORIGIN` to what browsers type (`https://porter.example.org`; several are comma-separated). Unset, the door answers only as `http://127.0.0.1:<port>` and `http://localhost:<port>`, and every login made through the proxy is refused with a line that says so. porter prints the origins it answers as when it starts. Set `PORTER_TRUSTED_PROXIES` to that proxy as well (`loopback` when it runs on the same machine; an address or a CIDR range otherwise): the door no longer believes `X-Forwarded-For` or `X-Forwarded-Proto` from whoever connects, and without it every visitor is counted as the proxy. `chris deploy` with a porter writes both settings itself.
+
+  calypso asks the same of an attach: no `Origin` (a program), the daemon's own page, or an origin named in `CALYPSO_ORIGINS` (a development server on another port). A download is stopped by `POST`; a `GET` of the stop address is answered 405. ARGUS sends the `POST`.
+
+  chell says the door's origin on its password logins and on the wire, so an older chell is refused by a newer door at a password login and at attach: upgrade chell with the door. A login with a door token is not affected at the login, and is at the attach.
+
+  Failed password logins are counted: ten a minute from one address and five a minute against one name, taken up before CUBE is asked; past that the door answers 429 with `Retry-After`. Only a password CUBE refused counts: CUBE being down or unreachable holds nobody. Device codes: ten a minute per address.
+
+- 616b812: A session no longer starts docker, or reads a key file or a checkout, on its host unless its operator granted that tier.
+
+  How: a new surface capability, `engineProcesses`, is true for a person's own local shell and, for a daemon, only with the `shell` tier of host control; an attached surface cannot raise it. `plugin add` of an image gives salsa a docker runner only then, and salsa starts none on its own (`plugin_add`'s runner is optional; chili's own command line trusts docker for its process with `hostDocker_trust`). `--ssh-key-file` and `cluster adopt --from` are refused without the `files` tier before the path is touched. `scripts add` and `scripts pull` (git), `vm shell` (ssh-keygen and its session) and chili's `path scan --mermaid`/`--save` and `man doc --browser` need the `shell` tier too; a session without it still lists, opens and plays scripts already there. chili's command is now `dist/bin.js`: importing chili runs nothing. The refusals (`hostDisk_refusal`, `hostProcess_refusal`, `hostTasks_refusal`) now live in `@fnndsc/brasa`'s `core/hostGate`; `lint:hostgate` lists every engine source that imports `fs` or `child_process` with its reason.
+
+- 2fec463: A zone, compartment, tag namespace, vault, key or secret on a later page of the cloud's answer is now found.
+
+  Ten OCI list calls in the build and the keep read only the first page of the answer, so a thing on the second was taken as not there: a compartment could be made twice, a vault or a key made beside the one already kept, and a bucket's links left behind so the bucket could not be removed. Each call now follows the next-page token to the end, through `pages_drain`, which moves to its own module.
+
+- 0e565a4: Whoever is connected now is who every request is made as, and whose answers are kept. A transfer made under `sudo` no longer leaves later transfers running as the administrator, and after `connect` as another user, or to another CUBE, nothing is sent with the first user's token or answered from what the first user was shown (`/bin`, listings, the job tree, tags, PACS facts, the query index). Logging out drops the client as well as the token.
+
+  How: cumin's transfer, feed, plugin, resource and file-browser classes ask the connection for its client each time and keep none. A change of identity (a login, a context that names another user or CUBE, a logout) is numbered, in `@fnndsc/cumin/identity-epoch`: the caches empty themselves at each change, take a fill only from work begun under the identity now connected, and neither answer nor keep anything for work done as another user. A line of input is begun as one such piece of work through a new optional `Backend.work_run` in brasa, and the boot warm-up is another. Checkpoint watchers and the query index's flush at exit stop writing under an identity's name once another has connected.
+
+  Also: two downloads at once each report their own reason when CUBE refuses them; a folder's record is kept under one spelling of its path (`home/a`, `/home/a` and `/home/a/` are one), and deleting a folder by path no longer waits out its timeout on a remembered copy; two commands captured from chili at once no longer take each other's output; and a pause in a VM build no longer leaves a listener behind on the build's signal each time it ends.
+
+- Updated dependencies [8d93d31]
+- Updated dependencies [80811d8]
+- Updated dependencies [c7c235e]
+- Updated dependencies [8431c66]
+- Updated dependencies [d2e88bb]
+- Updated dependencies [1662780]
+- Updated dependencies [cef6948]
+- Updated dependencies [616b812]
+- Updated dependencies [6401a32]
+- Updated dependencies [8eed0e8]
+- Updated dependencies [10f9359]
+- Updated dependencies [cb3de69]
+- Updated dependencies [139ec23]
+- Updated dependencies [0771098]
+- Updated dependencies [e887420]
+- Updated dependencies [1a09210]
+- Updated dependencies [dfac9b3]
+- Updated dependencies [6ccc4ab]
+- Updated dependencies [0e565a4]
+  - @fnndsc/fond@0.7.0
+  - @fnndsc/calypso@0.30.0
+  - @fnndsc/brasa@0.58.0
+  - @fnndsc/menu@0.42.0
+
 ## 0.20.0
 
 ### Minor Changes

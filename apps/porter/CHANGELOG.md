@@ -1,5 +1,67 @@
 # @fnndsc/porter
 
+## 0.14.0
+
+### Minor Changes
+
+- ba53bf1: A logout, a switch, or a cookie's hour now ends that browser's cookie for good, and closes what it had open.
+
+  How: a door cookie used to be the session key signed, with nothing the door kept, so a copied cookie worked after logout and across restarts. It now names a grant the door keeps (`door-grants.json`): made by a login or switch that succeeds, ended by the browser's logout, by a switch away, or at `PORTER_COOKIE_HOURS`. The connections opened under a grant are closed when it ends, at its hour even with no traffic: a relayed WebSocket gets close code 4401 at a frame boundary, a boot stream ends. A switch moves the grant in one step, so a logout meanwhile wins. A login whose grant cannot be kept answers 503 and sets no cookie, and a login that fails costs no standing named token. A logout refuses its cookie at once (input on its open wire stops then too); a logout that cannot be written answers 503 and may be asked again. In berth mode the one logout that ended the grant stops the berth in that request, its write or not, ordered against a restart by when it arrived. Every browser signs in once after the upgrade.
+
+- b511627: A door token works only at a door for its own CUBE, and no token change is lost between the door and the CLI.
+
+  How: a token login took the username from the token and rebuilt the identity from the door's current CUBE, so a token could open a same-named person's session on another CUBE; the identity is now the token's own, and a token minted for another CUBE is refused before any cookie or session. A logout by token revokes the token presented, by its hash, not every token of that name. The store is now a folder of versions (`<PORTER_TOKENS_FILE>.d/`): each change is read afresh and published whole as the next version by an exclusive link, so a revocation can never be undone by a concurrent login and no mint is lost to a concurrent one; a token login is one such change, so a token revoked meanwhile is refused. Records of the wrong shape are left out and counted at start. Every folder of the store is opened without following a link and checked as porter's own, every file is read the same way, and the store's I/O no longer runs on the door's event loop. A token's last use is written at most once an hour. The old one-file store is migrated at the first start and left in place, untouched; the store marks beside its file each version it publishes (never lowered) and refuses any read that finds fewer versions than its marks rather than answer from older state. A device code is claimed before its token is minted, so a code submitted twice mints once, and a code that runs out meanwhile authorises nothing; a renewal leaves the token already held standing until chell's poll takes the new one, and of two renewals for one host the newer stands; one that expired before it was collected is refused, and an uncollected one is dropped when its code lapses. Porter now needs Linux, and says so at start elsewhere.
+
+- 1662780: A page somewhere else can no longer act on your session through your browser, and passwords can be tried only so often. A browser sends the door's cookie with any request to the door, whoever wrote the page that made it; porter acted on that cookie alone. It now takes a request that changes something on the cookie, a login by password, and the upgrade that opens a session's wire only when the request's `Origin` is the door's own, and answers 403 otherwise, saying what it answers as. A program with a door token and no cookie is not asked.
+
+  **A porter behind a reverse proxy must be told its public address**: set `PORTER_PUBLIC_ORIGIN` to what browsers type (`https://porter.example.org`; several are comma-separated). Unset, the door answers only as `http://127.0.0.1:<port>` and `http://localhost:<port>`, and every login made through the proxy is refused with a line that says so. porter prints the origins it answers as when it starts. Set `PORTER_TRUSTED_PROXIES` to that proxy as well (`loopback` when it runs on the same machine; an address or a CIDR range otherwise): the door no longer believes `X-Forwarded-For` or `X-Forwarded-Proto` from whoever connects, and without it every visitor is counted as the proxy. `chris deploy` with a porter writes both settings itself.
+
+  calypso asks the same of an attach: no `Origin` (a program), the daemon's own page, or an origin named in `CALYPSO_ORIGINS` (a development server on another port). A download is stopped by `POST`; a `GET` of the stop address is answered 405. ARGUS sends the `POST`.
+
+  chell says the door's origin on its password logins and on the wire, so an older chell is refused by a newer door at a password login and at attach: upgrade chell with the door. A login with a door token is not affected at the login, and is at the attach.
+
+  Failed password logins are counted: ten a minute from one address and five a minute against one name, taken up before CUBE is asked; past that the door answers 429 with `Retry-After`. Only a password CUBE refused counts: CUBE being down or unreachable holds nobody. Device codes: ten a minute per address.
+
+- 3a9dcfa: A session the door starts is no longer given its cookie-signing key, the rest of its environment, or host control.
+
+  How: porter used to start each local session with the whole of its environment, which held `PORTER_SECRET`; a session's shell expands `${NAME}` from its environment, so anyone signed in could read the key and sign a cookie for another person. A session is now given only the names on a list (`src/host/sessionEnv.ts`): the path, account, locale, terminal, editor, certificate and proxy settings it needs, and three daemon settings. No `PORTER_` name reaches it, nor `NODE_OPTIONS`, nor a proxy or door address carrying a user, password, query or fragment (porter names those at start). `CALYPSO_HOST_CONTROL` is no longer passed on: a session beside the door has no host shell, disk or pipes, and only a stratus session armed for spending runs host tasks. Every session also has a home, state and data folder of its own, so chell's history is the person's, not shared; history kept in the shared folder before this does not carry over. Each folder a session is given is made, or found and checked, as a real folder of porter's account inside its state and left 0700; anything else refuses the start. After upgrading: restart every session started before it (each still holds the old environment); rotate `PORTER_SECRET`; and review for rotation every credential such a session could read, both what porter's environment held and, where `CALYPSO_HOST_CONTROL` granted host tiers, the files of porter's account (ssh and cloud keys, saved CUBE logins, porter's environment file).
+
+### Patch Changes
+
+- 8d93d31: A session's berth sits in a folder only its owner can use, and counts only when its daemon proves it wrote it. Without a runtime directory the folder is `<tmpdir>/calypso-<uid>`; folders and records are held to this account (no link, no other owner, nothing wider than 0700/0600) and written by rename, never through a planted link. Each launch writes a probe key into its record and answers `GET /instance?nonce=` with an HMAC proof over its identity, pid and boot time; the discovery request carries no token, and a client attaches only to a record whose daemon proved itself. A daemon of an earlier release cannot prove itself: it is listed as unverified, and neither chell, calypso nor porter starts or adopts beside it. Stop such a daemon once (Ctrl-C at its idle prompt, or its service manager) and start it again. No process removes a berth or the attach note; the next daemon replaces them. The attach note holds no token or attach command any more, only the identity and `calypso --berths`, which gives both for a daemon that proves it is running. Porter refuses to serve, adopt, list or end sessions when its state root's path passes through a folder another account can write (a lab home's `775` `~/.local/state`, say), naming the folder: take group and other write off it, or set `PORTER_STATE_DIR` to a folder on a trusted path (sessions under the old root are not moved). Check with the new porter's `--status` before switching a host over (`docs/porter.adoc`). The unused `discovery_*` exports are removed, along with `berth_remove`, `berthUrl_isAlive` and chell's `berth_probeLive`.
+- 9ceee34: A session the door ends is ended once, and nobody is handed it while it is being stopped. The idle sweep no longer forgets a session that was started again while the old one was stopping, a login that arrives during a stop waits for it and then looks afresh, and a daemon that ignores the request to stop is killed and confirmed gone.
+
+  How: the registry counts each ending of a key's session (a restart, a logout, the sweep) and a login reads that count before it looks for the berth and again before it acts, starting over if it moved. The sweep claims an entry on what is true at that moment, runs one at a time, and forgets only the entry it claimed. A stop that the launcher or Docker failed is an error, not "nothing was running": the sweep keeps the session and says so, and a restart ends its boot as failed without starting a second berth. A restart's boot record stands before the old berth is touched, and a login follows it. On a host that runs sessions as processes, `evict` waits for the daemon to go, sends `SIGKILL` after 15 s, and reports a daemon that survives that; a pid adopted from a berth is signalled only while `/proc` says it is still the process that was adopted.
+
+- Updated dependencies [8d93d31]
+- Updated dependencies [1d13ae8]
+- Updated dependencies [c7c235e]
+- Updated dependencies [2017b1f]
+- Updated dependencies [8431c66]
+- Updated dependencies [d2e88bb]
+- Updated dependencies [1662780]
+- Updated dependencies [cef6948]
+- Updated dependencies [616b812]
+- Updated dependencies [6401a32]
+- Updated dependencies [8eed0e8]
+- Updated dependencies [10f9359]
+- Updated dependencies [cb3de69]
+- Updated dependencies [93ad44c]
+- Updated dependencies [139ec23]
+- Updated dependencies [0771098]
+- Updated dependencies [e887420]
+- Updated dependencies [15271c3]
+- Updated dependencies [2fec463]
+- Updated dependencies [1a09210]
+- Updated dependencies [6ccc4ab]
+- Updated dependencies [0e565a4]
+- Updated dependencies [d6e49b7]
+  - @fnndsc/calypso@0.30.0
+  - @fnndsc/chell@5.20.14
+  - @fnndsc/cumin@3.31.0
+  - @fnndsc/stratus@0.21.0
+  - @fnndsc/menu@0.42.0
+
 ## 0.13.4
 
 ### Patch Changes

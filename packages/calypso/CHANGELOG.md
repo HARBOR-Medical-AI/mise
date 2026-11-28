@@ -1,5 +1,61 @@
 # @fnndsc/calypso
 
+## 0.30.0
+
+### Minor Changes
+
+- 8d93d31: A session's berth sits in a folder only its owner can use, and counts only when its daemon proves it wrote it. Without a runtime directory the folder is `<tmpdir>/calypso-<uid>`; folders and records are held to this account (no link, no other owner, nothing wider than 0700/0600) and written by rename, never through a planted link. Each launch writes a probe key into its record and answers `GET /instance?nonce=` with an HMAC proof over its identity, pid and boot time; the discovery request carries no token, and a client attaches only to a record whose daemon proved itself. A daemon of an earlier release cannot prove itself: it is listed as unverified, and neither chell, calypso nor porter starts or adopts beside it. Stop such a daemon once (Ctrl-C at its idle prompt, or its service manager) and start it again. No process removes a berth or the attach note; the next daemon replaces them. The attach note holds no token or attach command any more, only the identity and `calypso --berths`, which gives both for a daemon that proves it is running. Porter refuses to serve, adopt, list or end sessions when its state root's path passes through a folder another account can write (a lab home's `775` `~/.local/state`, say), naming the folder: take group and other write off it, or set `PORTER_STATE_DIR` to a folder on a trusted path (sessions under the old root are not moved). Check with the new porter's `--status` before switching a host over (`docs/porter.adoc`). The unused `discovery_*` exports are removed, along with `berth_remove`, `berthUrl_isAlive` and chell's `berth_probeLive`.
+- 1662780: A page somewhere else can no longer act on your session through your browser, and passwords can be tried only so often. A browser sends the door's cookie with any request to the door, whoever wrote the page that made it; porter acted on that cookie alone. It now takes a request that changes something on the cookie, a login by password, and the upgrade that opens a session's wire only when the request's `Origin` is the door's own, and answers 403 otherwise, saying what it answers as. A program with a door token and no cookie is not asked.
+
+  **A porter behind a reverse proxy must be told its public address**: set `PORTER_PUBLIC_ORIGIN` to what browsers type (`https://porter.example.org`; several are comma-separated). Unset, the door answers only as `http://127.0.0.1:<port>` and `http://localhost:<port>`, and every login made through the proxy is refused with a line that says so. porter prints the origins it answers as when it starts. Set `PORTER_TRUSTED_PROXIES` to that proxy as well (`loopback` when it runs on the same machine; an address or a CIDR range otherwise): the door no longer believes `X-Forwarded-For` or `X-Forwarded-Proto` from whoever connects, and without it every visitor is counted as the proxy. `chris deploy` with a porter writes both settings itself.
+
+  calypso asks the same of an attach: no `Origin` (a program), the daemon's own page, or an origin named in `CALYPSO_ORIGINS` (a development server on another port). A download is stopped by `POST`; a `GET` of the stop address is answered 405. ARGUS sends the `POST`.
+
+  chell says the door's origin on its password logins and on the wire, so an older chell is refused by a newer door at a password login and at attach: upgrade chell with the door. A login with a door token is not affected at the login, and is at the attach.
+
+  Failed password logins are counted: ten a minute from one address and five a minute against one name, taken up before CUBE is asked; past that the door answers 429 with `Retry-After`. Only a password CUBE refused counts: CUBE being down or unreachable holds nobody. Device codes: ten a minute per address.
+
+- 6401a32: A machine's build, a password set from its row and a PACS export follow what the session says happened.
+
+  None of them reads the words a line prints any more.
+
+  How: four places in ARGUS decided from wording. A VM build now sends a step event as each of its tasks begins and ends (`stratus.vm.step`: the machine, the step, begun, done or failed, and a plan's counts), and the VM controller draws the run from those, taking only the events of the line it sent itself. A question carries the id of the line that raised it and, where its command names them, what it is for and about (`purpose`, `subject`; `repl_confirm` and `repl_questionHidden` take them): the controller answers a password question from its row only when the question is that row's own line's, for that machine and account, named for that purpose and of the kind expected, and offers YES and NO when a question wants a yes or a no. A line is read as declined from the `line.declined` model and as failed from the session's own error. `pacs query --csv-to` names the file it wrote in its answer's model (`written`), and the PACS pane shows WROTE from that. `desktop load` and `desktop save` act on whether the session did what was asked. A daemon or a surface from before this still works: the new fields are optional, and a question that names nothing is the operator's to answer.
+
+### Patch Changes
+
+- c7c235e: A file read through `/vfs` is never served as something a browser runs. A page, a script, a stylesheet, WebAssembly or XML is sent as plain bytes to save; SVG and PDF keep their type and are attachments; every file carries `nosniff` and a policy that sandboxes it and loads nothing. An `img`, a `fetch` and a download are unchanged; only opening a file's address as a page is, which no surface does.
+- d2e88bb: A file name that arrives from the other side cannot leave its folder. A name delivered to a shell, or listed by ChRIS for a berth's anchor, is placed inside the folder it belongs in or refused by name: never absolute, never climbing out with `..`, never through a link that leads elsewhere. A shell attached to a session elsewhere writes a delivered file only where the `download` line it sent said to; a delivery to any other place, or after the line ended, is refused. A destination written as a variable is not known to the shell that typed it and is refused under a remote session: type the path. A refresh of an anchor whose listing holds a name that cannot be placed keeps the anchor that stands. A delivery says which of the shell's lines is asking, and is honoured against that line alone.
+- cef6948: A daemon hands its attach token to the shells it starts in their environment, never on their command line. A command line is shown to every user of the host by `ps`; calypso's console and its browser terminals started chell with `--token <token>`. They now set `CHELL_ATTACH_TOKEN`, which chell reads when no `--token` is typed and removes from its environment at once, so nothing it starts inherits it. `--token` still works for a person attaching by hand.
+- 616b812: A session no longer starts docker, or reads a key file or a checkout, on its host unless its operator granted that tier.
+
+  How: a new surface capability, `engineProcesses`, is true for a person's own local shell and, for a daemon, only with the `shell` tier of host control; an attached surface cannot raise it. `plugin add` of an image gives salsa a docker runner only then, and salsa starts none on its own (`plugin_add`'s runner is optional; chili's own command line trusts docker for its process with `hostDocker_trust`). `--ssh-key-file` and `cluster adopt --from` are refused without the `files` tier before the path is touched. `scripts add` and `scripts pull` (git), `vm shell` (ssh-keygen and its session) and chili's `path scan --mermaid`/`--save` and `man doc --browser` need the `shell` tier too; a session without it still lists, opens and plays scripts already there. chili's command is now `dist/bin.js`: importing chili runs nothing. The refusals (`hostDisk_refusal`, `hostProcess_refusal`, `hostTasks_refusal`) now live in `@fnndsc/brasa`'s `core/hostGate`; `lint:hostgate` lists every engine source that imports `fs` or `child_process` with its reason.
+
+- 10f9359: A token is printed only to a terminal, a saved token is its owner's alone, and the shell's history holds no secret. A daemon whose output is not a terminal (a log, a journal) names the berth record that keeps its token, not the token. The saved CUBE token is written at 0600 in a 0700 folder, and one saved looser before is tightened when next read. The shell's history moves from `.chell_history` in whatever folder the shell was started in to `$XDG_STATE_HOME/chell/history` (else `~/.local/state/chell/history`), private from its first line; an old `.chell_history` in a checkout is left as it is and no longer read. A line is kept with the value of `--password`, `--adminPassword`, `--token`, `--auth-token`, `-p` on `connect`, a password inside an address and a `token=` replaced by `***`; a password typed at a hidden question is never recalled by the up arrow.
+- 6ccc4ab: A session holds only so many uploaded bytes at once. An upload that would pass the ceiling (`CALYPSO_UPLOAD_HELD`, 512 MiB unless set) is answered 503 with `Retry-After` and is taken when one in flight has ended. A stated length is checked before anything is allocated and the body must match it exactly; a body with a stated length is held once, not twice.
+- Updated dependencies [8d93d31]
+- Updated dependencies [80811d8]
+- Updated dependencies [1d13ae8]
+- Updated dependencies [8431c66]
+- Updated dependencies [d2e88bb]
+- Updated dependencies [616b812]
+- Updated dependencies [6401a32]
+- Updated dependencies [8eed0e8]
+- Updated dependencies [10f9359]
+- Updated dependencies [cb3de69]
+- Updated dependencies [93ad44c]
+- Updated dependencies [139ec23]
+- Updated dependencies [0771098]
+- Updated dependencies [e887420]
+- Updated dependencies [15271c3]
+- Updated dependencies [1a09210]
+- Updated dependencies [dfac9b3]
+- Updated dependencies [0e565a4]
+- Updated dependencies [d6e49b7]
+  - @fnndsc/fond@0.7.0
+  - @fnndsc/cumin@3.31.0
+  - @fnndsc/brasa@0.58.0
+  - @fnndsc/menu@0.42.0
+
 ## 0.29.15
 
 ### Patch Changes
