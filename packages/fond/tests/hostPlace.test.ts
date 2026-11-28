@@ -217,7 +217,8 @@ describe('owner-only places', () => {
     symlinkSync('/usr', link);
     try {
       expect(trustedPath_resolve(link, uid)).toEqual({ ok: true, path: realpathSync('/usr') });
-      expect(trustedPath_resolve(link, uid + 1)).toEqual({ ok: false, reason: `${link}: a link of another account's` });
+      // As root the link is root's, which every account trusts: there is no foreign owner to show.
+      if (uid !== 0) expect(trustedPath_resolve(link, uid + 1)).toEqual({ ok: false, reason: `${link}: a link of another account's` });
     } finally {
       link_remove(link);
     }

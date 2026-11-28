@@ -86,6 +86,12 @@ describe('porterStateDir_resolve', () => {
     expect(porterStateDir_resolve({ XDG_STATE_HOME: '/state' })).toBe('/state/porter');
     expect(porterStateDir_resolve({}).endsWith('/.local/state/porter')).toBe(true);
   });
+  it('takes an empty XDG_STATE_HOME as unset, and PORTER_STATE_DIR before either', () => {
+    expect(porterStateDir_resolve({ XDG_STATE_HOME: '' })).toBe(porterStateDir_resolve({}));
+    expect(porterStateDir_resolve({ XDG_STATE_HOME: '' }).endsWith('/.local/state/porter')).toBe(true);
+    expect(porterStateDir_resolve({ XDG_STATE_HOME: '', PORTER_STATE_DIR: '/srv/porter' })).toBe('/srv/porter');
+    expect(porterStateDir_resolve({ XDG_STATE_HOME: '/state', PORTER_STATE_DIR: '/srv/porter' })).toBe('/srv/porter');
+  });
   it('is the directory the full configuration uses', () => {
     const env = { PORTER_CUBE_URL: 'https://c/api/v1/', PORTER_STATE_DIR: '/srv/porter' };
     expect(porterConfig_resolve(env, () => '/chell').stateDir).toBe(porterStateDir_resolve(env));

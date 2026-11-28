@@ -199,12 +199,31 @@ describe('berth file IO', () => {
     rmSync(open, { recursive: true, force: true });
   });
 
-  it('a runtime folder spelled with `..` is refused, never folded away', () => {
+  it('a runtime folder spelled with `..` is refused by every reader, writer and note, never folded into the folder it names', async () => {
+    const identity: string = 'u@http://h/api/v1/';
+    // A valid record, note and closing note where the folded spelling would land: a reader that folds finds them.
+    berth_write(berth_of(identity));
+    const { attachFile_write, attachFile_path } = await import('../src/daemon/attachFile.js');
+    attachFile_write(['the note as it was']);
+    closing_write(runtimeDir, identity, 'restart');
+    mkdirSync(join(runtimeDir, 'x'), { mode: 0o700 });
     process.env.XDG_RUNTIME_DIR = `${runtimeDir}/x/..`;
     expect(berthDir_path()).toBe(`${runtimeDir}/x/../calypso`);
-    expect(() => berth_write(berth_of('u@http://h/api/v1/'))).toThrow("names '..'");
-    expect(berth_read('u@http://h/api/v1/')).toBeNull();
+    expect(berth_path(identity)).toBe(`${runtimeDir}/x/../calypso/${berth_path(identity).split('/').pop() ?? ''}`);
+    expect(berth_read(identity)).toBeNull();
+    expect(berthOwn_read(identity)).toBeNull();
+    expect(berthAll_read()).toEqual([]);
+    expect(await new LocalBerthResolver().resolve(identity)).toBeNull();
+    expect(() => berth_write(berth_of(identity, 'ws://127.0.0.1:7777'))).toThrow("names '..'");
+    expect(attachFile_path()).toBe(`${runtimeDir}/x/../calypso/attach.txt`);
+    expect(attachFile_write(['a new note'])).toBeNull();
+    expect(closing_take(identity)).toBeNull();
+    expect(closing_take(identity, `${runtimeDir}/x/..`)).toBeNull();
     process.env.XDG_RUNTIME_DIR = runtimeDir;
+    // Left as they were: the record, the note, and the closing note, untouched by the refused calls.
+    expect(berth_read(identity)?.url).toBe('ws://127.0.0.1:4321');
+    expect(readFileSync(join(runtimeDir, 'calypso', 'attach.txt'), 'utf8')).toBe('the note as it was\n');
+    expect(closing_take(identity, runtimeDir)).toBe('restart');
   });
 
   it('a reader never makes the berth folder; a writer makes it 0700', () => {

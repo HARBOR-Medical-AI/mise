@@ -121,10 +121,27 @@ export function berthKey_compute(identity: string): string {
 export function berthDir_path(): string {
   const runtimeDir: string | undefined = process.env.XDG_RUNTIME_DIR;
   // Joined as spelled, not normalised: a `..` in it is refused by the folder check, never folded away first.
-  if (runtimeDir) return `${runtimeDir.replace(/\/+$/, '')}/${BERTH_SUBDIR}`;
+  if (runtimeDir) return spelled_join(runtimeDir, BERTH_SUBDIR);
   // No runtime directory: a folder of this account's own name under the shared temporary folder, so no other
   // account can hold the name for everyone (held to this account by ownFolder_settle before use).
   return join(tmpdir(), `${BERTH_SUBDIR}-${String(process.getuid?.() ?? 'user')}`);
+}
+
+/**
+ * Joins names onto a configured folder as spelled, never normalising it: a `..` the configuration holds reaches the
+ * owner-only check (`ownFolder_settle`), which refuses it, instead of being folded into another folder first.
+ *
+ * @param base - The folder as configured.
+ * @param names - Plain names to append.
+ * @returns The joined path.
+ *
+ * @example
+ * ```ts
+ * spelled_join('/run/user/1000/x/..', 'calypso'); // '/run/user/1000/x/../calypso'
+ * ```
+ */
+export function spelled_join(base: string, ...names: string[]): string {
+  return [base.replace(/\/+$/, ''), ...names].join('/');
 }
 
 /** The most a berth record may hold. */
@@ -151,7 +168,7 @@ function refusal_say(refused: OwnRefusal): void {
  * @returns The berth file path (may not exist).
  */
 export function berth_path(identity: string): string {
-  return join(berthDir_path(), `${BERTH_FILE_PREFIX}${berthKey_compute(identity)}.json`);
+  return spelled_join(berthDir_path(), `${BERTH_FILE_PREFIX}${berthKey_compute(identity)}.json`);
 }
 
 /**
@@ -166,7 +183,7 @@ export function berth_path(identity: string): string {
  * @returns The berth file path (may not exist).
  */
 export function berth_pathIn(runtimeDir: string, identity: string): string {
-  return join(runtimeDir, BERTH_SUBDIR, `${BERTH_FILE_PREFIX}${berthKey_compute(identity)}.json`);
+  return spelled_join(runtimeDir, BERTH_SUBDIR, `${BERTH_FILE_PREFIX}${berthKey_compute(identity)}.json`);
 }
 
 /**
@@ -256,7 +273,7 @@ export function berthOwn_read(identity: string): Berth | null {
 export function porterStateRoots_get(): string[] {
   const roots: string[] = [];
   if (process.env.PORTER_STATE_DIR) roots.push(process.env.PORTER_STATE_DIR);
-  roots.push(join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'porter'));
+  roots.push(spelled_join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'porter'));
   roots.push('/var/lib/porter/sessions');
   return [...new Set(roots)];
 }
@@ -271,7 +288,7 @@ export function porterStateRoots_get(): string[] {
 export function berthPaths_list(identity: string): string[] {
   return [
     berth_path(identity),
-    ...porterStateRoots_get().map((root: string): string => berth_pathIn(join(root, berthKey_compute(identity), 'run'), identity)),
+    ...porterStateRoots_get().map((root: string): string => berth_pathIn(spelled_join(root, berthKey_compute(identity), 'run'), identity)),
   ];
 }
 
@@ -381,7 +398,7 @@ function porterSessionDirs_get(): string[] {
   for (const root of porterStateRoots_get()) {
     try {
       for (const entry of readdirSync(root, { withFileTypes: true })) {
-        if (entry.isDirectory()) dirs.push(join(root, entry.name, 'run', BERTH_SUBDIR));
+        if (entry.isDirectory()) dirs.push(spelled_join(root, entry.name, 'run', BERTH_SUBDIR));
       }
     } catch {
       // No porter here, or not one this user may read.
@@ -838,7 +855,7 @@ const CLOSING_FILE_PREFIX: string = 'closing-';
  * @returns The path.
  */
 export function closing_pathIn(runtimeDir: string, identity: string): string {
-  return join(runtimeDir, BERTH_SUBDIR, `${CLOSING_FILE_PREFIX}${berthKey_compute(identity)}.json`);
+  return spelled_join(runtimeDir, BERTH_SUBDIR, `${CLOSING_FILE_PREFIX}${berthKey_compute(identity)}.json`);
 }
 
 /**
@@ -869,7 +886,7 @@ const CLOSING_FRESH_MS: number = 60_000;
  * @returns The cause, or null when none was left (or it is stale, or refused).
  */
 export function closing_take(identity: string, runtimeDir?: string): ClosingCause | null {
-  const path: string = runtimeDir !== undefined ? closing_pathIn(runtimeDir, identity) : join(berthDir_path(), basename(closing_pathIn('', identity)));
+  const path: string = runtimeDir !== undefined ? closing_pathIn(runtimeDir, identity) : spelled_join(berthDir_path(), basename(closing_pathIn('', identity)));
   const held: OwnFolder | OwnRefusal = ownFolder_settle(dirname(path), false);
   if (!held.ok) return null;
   const taken: OwnRead = ownFile_take(held.path, basename(path), 4096);

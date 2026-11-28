@@ -21,7 +21,7 @@ import { basename, dirname, join } from 'node:path';
 
 import { ownFile_write, ownFolder_settle, type OwnFolder, type OwnHeld, type OwnRefusal } from '@fnndsc/fond';
 
-import { berthDir_path } from './berth.js';
+import { berthDir_path, spelled_join } from './berth.js';
 
 /**
  * What the attach note says: who the daemon was, when it was written, and where to ask for what is running now. It
@@ -55,7 +55,7 @@ export function attachNote_lines(identity: string, booted: string): string[] {
  * @returns An absolute path in this account's berth folder.
  */
 export function attachFile_path(): string {
-  return join(berthDir_path(), 'attach.txt');
+  return spelled_join(berthDir_path(), 'attach.txt');
 }
 
 /**
