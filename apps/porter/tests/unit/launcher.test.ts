@@ -927,6 +927,11 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     docker.containers.set('other-spoke-berth', { spec: { Labels: { [BERTH_LABEL]: 'other', [`${BERTH_LABEL}.identity`]: identity_normalise('bob', CUBE), [`${BERTH_LABEL}.user`]: 'bob' } }, running: true, ip: '', token: null });
     expect(await runningOf()).toEqual([ANA]);
     expect((await host.berthUp_read(ANA))?.token).toBe(`attach-${container}`);
+    // A container that looks like a helper (its label, its name) but says whose it is: a berth, counted and read.
+    const bob: string = identity_normalise('bob', CUBE);
+    docker.containers.set('mbw-bob-x-own', { spec: { Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.helper`]: 'own', [`${BERTH_LABEL}.identity`]: bob, [`${BERTH_LABEL}.user`]: 'bob' } }, running: true, ip: '', token: null });
+    expect(await runningOf()).toEqual([ANA, bob].sort());
+    docker.containers.delete('mbw-bob-x-own');
     // A berth container with a blank identity label is as one without: up, and anyone's.
     for (const identity of ['', '   ', undefined]) {
       const labels: Record<string, string> = { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.user`]: 'cy' };

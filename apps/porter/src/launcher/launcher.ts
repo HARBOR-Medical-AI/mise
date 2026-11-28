@@ -109,12 +109,15 @@ function labelText_read(row: unknown, name: string): string {
 
 /**
  * Whether a listed container is the launcher's own helper (the one that gives a person their volumes), not a berth:
- * by its label, or by the name only a helper takes (a berth's name never ends in `-own`).
+ * by its label, or by the name only a helper takes (a berth's name never ends in `-own`), and only when it names no
+ * identity or user (a helper never does).
  *
  * @param row - A row of the engine's container listing.
  * @returns True for a helper.
  */
 function row_isHelper(row: unknown): boolean {
+  // A helper carries no person: a row that says whose it is is a berth, whatever else it says.
+  if (labelText_read(row, 'identity') !== '' || labelText_read(row, 'user') !== '') return false;
   return field_get(row, 'Labels', `${BERTH_LABEL}.helper`) === 'own' || containerName_read(row).endsWith('-own');
 }
 
