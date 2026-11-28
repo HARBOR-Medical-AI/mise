@@ -9,7 +9,7 @@ import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { AddressInfo } from 'node:net';
 import { createServer, get as httpGet, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { SessionRegistry } from '../../src/registry.js';
-import { upstreamPath_build, mountUrl_split, berthHttp_derive, type PorterApp } from '../../src/app.js';
+import { upstreamPath_build, mountUrl_split, berthHttp_derive, cookieGrant_read, type PorterApp } from '../../src/app.js';
 import { doorApp_build as porterApp_build, DOOR_ORIGIN } from './fromDoor.js';
 import type { Berth, BerthAccess, BootListener, BootReport, SessionHost } from '../../src/host/sessionHost.js';
 import type { PorterConfig } from '../../src/config.js';
@@ -797,6 +797,26 @@ describe('the wire through the mount', () => {
     expect(host.listener).toBeNull();
   });
 
+  it('a wire whose grant ended carries nothing more of the browser\'s to the berth', async () => {
+    const heard: string[] = [];
+    daemon.removeAllListeners('connection');
+    daemon.on('connection', (socket: WebSocket): void => { socket.on('message', (data: RawData): void => { heard.push(data.toString()); }); });
+    const port: number = (daemon.address() as AddressInfo).port;
+    host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: `ws://127.0.0.1:${port}`, token: 'ATTACH' };
+    const session = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (session.json() as { key: string }).key;
+    await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const porterPort: number = (built.app.server.address() as AddressInfo).port;
+    const client: WebSocket = new WebSocket(`ws://127.0.0.1:${porterPort}/s/${key}/?door`, { headers: { cookie: cookie_of(session), origin: DOOR_ORIGIN } });
+    await new Promise<void>((resolve, reject) => { client.once('open', () => resolve()); client.once('error', reject); });
+    client.send('before');
+    for (let i = 0; i < 50 && !heard.includes('before'); i++) await new Promise((r) => setTimeout(r, 10));
+    await built.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(session) } });
+    if (client.readyState === WebSocket.OPEN) client.send('after');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(heard).toEqual(['before']);
+  });
+
   it('closes an open wire at its grant\'s hour, with no traffic and no sweep between', async () => {
     await built.app.close();
     const port: number = (daemon.address() as AddressInfo).port;
@@ -1252,6 +1272,79 @@ describe('door tokens (chell auth)', () => {
     for (let i = 0; i < 100 && (await store.list()).length > 1; i++) await new Promise((resolve) => { setTimeout(resolve, 10); });
     expect(fail).toBe(0);
     expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    await door.app.close();
+  });
+
+  it('a logout whose write fails answers 503 and refuses the cookie meanwhile; asked again it logs out, and the other browser stays', async () => {
+    const fail: Set<number> = new Set();
+    let writes: number = 0;
+    const grantsFile: string = join(tokensDir, 'door-grants.json');
+    const store: GrantStore = new GrantStore(grantsFile, 8, undefined, async (path: string, body: string): Promise<void> => {
+      writes += 1;
+      if (fail.has(writes)) throw new Error('the disk is full');
+      await writeFile(path, body, { mode: 0o600 });
+    });
+    host.found = up;
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host, grants: store, mint: async () => ({ token: 'T' }) });
+    const login = async () => door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const a = await login();
+    const b = await login();
+    const key: string = (a.json() as { key: string }).key;
+    fail.add(writes + 1);
+    const failed = await door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(a) } });
+    expect(failed.statusCode).toBe(503);
+    expect(failed.headers['set-cookie']).toBeUndefined();
+    expect((await door.app.inject({ method: 'GET', url: `/s/${key}/`, headers: { cookie: cookie_of(a) } })).statusCode).toBe(302);
+    const retried = await door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(a) } });
+    expect(retried.statusCode).toBe(200);
+    const restarted: GrantStore = new GrantStore(grantsFile, 8);
+    await restarted.grants_load();
+    const named = (cookie: string) => cookieGrant_read(cookie, config.secret);
+    expect(restarted.grant_admits(named(cookie_of(a))?.id ?? '', key)).toBe(false);
+    expect(restarted.grant_admits(named(cookie_of(b))?.id ?? '', key)).toBe(true);
+    await door.app.close();
+  });
+
+  it('a logout on a cookie a switch has already moved answers 409 and leaves the switch\'s cookie standing', async () => {
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host, mint: async () => ({ token: 'T' }) });
+    host.found = up;
+    const session = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (session.json() as { key: string }).key;
+    const old = cookieGrant_read(cookie_of(session), config.secret);
+    const moved = await door.grants.grant_move(old?.id ?? '', 'fedcba9876543210');
+    const out = await door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(session) } });
+    expect(out.statusCode).toBe(409);
+    expect(out.headers['set-cookie']).toBeUndefined();
+    expect(door.grants.grant_admits(moved?.id ?? '', 'fedcba9876543210')).toBe(true);
+    expect(door.grants.grant_admits(old?.id ?? '', key)).toBe(false);
+    await door.app.close();
+  });
+
+  it('a login that fails after its checks sets no cookie, leaves no grant, and costs no standing token', async () => {
+    const store: TokenStore = new TokenStore(join(tokensDir, 'tokens.json'), 30);
+    await store.load();
+    const standing = await store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'cron@titan');
+    const grantsFile: string = join(tokensDir, 'door-grants.json');
+    let failGrant: boolean = false;
+    const grants: GrantStore = new GrantStore(grantsFile, 8, undefined, async (path: string, body: string): Promise<void> => {
+      if (failGrant) throw new Error('the disk is full');
+      await writeFile(path, body, { mode: 0o600 });
+    });
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host, tokens: store, grants, mint: async () => ({ token: 'T' }) });
+    // The host throws while the login looks for the session.
+    host.find = async (): Promise<Berth | null> => { throw new Error('the host is down'); };
+    const thrown = await door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json' }, payload: { username: 'chris', password: 'right', tokenName: 'cron@titan' } });
+    expect(thrown.statusCode).toBe(500);
+    expect(thrown.headers['set-cookie']).toBeUndefined();
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    // The grant cannot be kept: 503, no cookie, and the standing named token stands.
+    host.find = async (): Promise<Berth | null> => up;
+    failGrant = true;
+    const unkept = await door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json' }, payload: { username: 'chris', password: 'right', tokenName: 'cron@titan' } });
+    expect(unkept.statusCode).toBe(503);
+    expect(unkept.headers['set-cookie']).toBeUndefined();
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    expect((await store.check(standing.token)).ok).toBe(true);
     await door.app.close();
   });
 

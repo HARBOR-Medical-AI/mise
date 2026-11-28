@@ -55,6 +55,8 @@ export interface DoorGrant {
   key: string;
   /** ISO time it ends. */
   expires: string;
+  /** The grant a switch moved from, kept in memory only: a logout racing the switch learns it lost. */
+  movedFrom?: string;
 }
 
 /**
@@ -168,10 +170,10 @@ function grantRecord_read(value: unknown): DoorGrant | null {
  */
 export class GrantStore {
   private grants: Map<string, DoorGrant> = new Map();
-  /** Grants ended by a logout or a switch, so a failed move does not bring one back. */
-  private readonly ended: Set<string> = new Set();
-  /** The write under way, so writes are made one after another. */
-  private saving: Promise<void> = Promise.resolve();
+  /** Grants a logout or an hour ended that the file may still hold: let in by none, until the file says so too. */
+  private readonly denied: Set<string> = new Set();
+  /** The change under way: changes are made one after another, each on the grants as the last left them. */
+  private changing: Promise<unknown> = Promise.resolve();
   private readonly connections: Map<string, Set<GrantConnection>> = new Map();
   private readonly timers: Map<string, NodeJS.Timeout> = new Map();
 
@@ -179,11 +181,13 @@ export class GrantStore {
    * @param path - The grants file.
    * @param hours - How long a grant lives.
    * @param now - The clock.
+   * @param writer - How the file is written: a test's double makes one write fail; the door's own otherwise.
    */
   public constructor(
     private readonly path: string,
     private readonly hours: number,
     private readonly now: () => number = (): number => Date.now(),
+    private readonly writer: ((path: string, body: string) => Promise<void>) | null = null,
   ) {}
 
   /**
@@ -234,15 +238,11 @@ export class GrantStore {
    * ```
    */
   public async grant_make(key: string): Promise<DoorGrant> {
-    const grant: DoorGrant = { id: randomBytes(32).toString('hex'), key, expires: new Date(this.now() + this.hours * 3600 * 1000).toISOString() };
-    this.grants.set(grant.id, grant);
-    try {
-      await this.grants_save();
-    } catch (error: unknown) {
-      this.grants.delete(grant.id);
-      throw error;
-    }
-    return grant;
+    const grant: DoorGrant = this.grant_new(key);
+    return this.change_apply((next: Map<string, DoorGrant>): DoorGrant => {
+      next.set(grant.id, grant);
+      return grant;
+    });
   }
 
   /**
@@ -259,38 +259,41 @@ export class GrantStore {
    */
   public grant_admits(id: string, key: string): boolean {
     const grant: DoorGrant | undefined = this.grants.get(id);
-    return grant !== undefined && grant.key === key && Date.parse(grant.expires) > this.now();
+    return grant !== undefined && !this.denied.has(id) && grant.key === key && Date.parse(grant.expires) > this.now();
   }
 
   /**
-   * Ends a grant: forgotten on disk, and every connection it holds closed.
+   * Ends a grant. At once, before anything is written, it lets nobody in and
+   * every connection it holds is closed; then the file is written without
+   * it. A write that fails leaves it refused here and says so, so the same
+   * signed cookie can ask again; until a write succeeds a restarted door
+   * would read it from the file.
    *
    * @param id - The grant's id.
-   * @returns True when the grant stood.
+   * @returns `ended` when it stood, `moved` when a switch had already moved it to another grant, `gone` when the door held no such grant.
+   * @throws {Error} When the file cannot be written without it.
    *
    * @example
    * ```ts
    * await grants.grant_end(held.id);
    * ```
    */
-  public async grant_end(id: string): Promise<boolean> {
-    // Gone from memory first, and its connections closed: the door stands by it no more from this moment.
-    const stood: boolean = this.grants.delete(id);
-    this.ended.add(id);
+  public async grant_end(id: string): Promise<'ended' | 'moved' | 'gone'> {
+    const known: boolean = this.grants.has(id);
+    if (known) this.denied.add(id);
     this.connections_close(id);
-    if (stood) {
-      try {
-        await this.grants_save();
-      } catch {
-        // The file catches up at the next write; a grant it still holds is one the door no longer stands by after a restart only until then.
-      }
-    }
-    return stood;
+    return this.change_apply((next: Map<string, DoorGrant>): 'ended' | 'moved' | 'gone' => {
+      if (next.delete(id)) return 'ended';
+      if ([...next.values()].some((grant: DoorGrant): boolean => grant.movedFrom === id)) return 'moved';
+      // Refused at this logout's asking, and written away by a change that came between: this logout ended it.
+      return known ? 'ended' : 'gone';
+    });
   }
 
   /**
-   * Replaces one grant with a new one for another key, in one step: the old
-   * one must still stand, or nothing is made.
+   * Replaces one grant with a new one for another key, in one change: the
+   * old one must still stand when the change's turn comes (a logout that
+   * began first wins), or nothing is made.
    *
    * @param id - The grant being moved away from.
    * @param key - The key the new grant lets in.
@@ -303,21 +306,16 @@ export class GrantStore {
    * ```
    */
   public async grant_move(id: string, key: string): Promise<DoorGrant | null> {
-    // Checked and changed in one step, before anything is awaited: a logout that comes first wins, and one after finds the new grant.
-    const old: DoorGrant | undefined = this.grants.get(id);
-    if (old === undefined || Date.parse(old.expires) <= this.now()) return null;
-    const grant: DoorGrant = { id: randomBytes(32).toString('hex'), key, expires: new Date(this.now() + this.hours * 3600 * 1000).toISOString() };
-    this.grants.delete(id);
-    this.grants.set(grant.id, grant);
-    try {
-      await this.grants_save();
-    } catch (error: unknown) {
-      this.grants.delete(grant.id);
-      if (!this.ended.has(id)) this.grants.set(id, old);
-      throw error;
-    }
-    this.connections_close(id);
-    return grant;
+    const moved: DoorGrant | null = await this.change_apply((next: Map<string, DoorGrant>): DoorGrant | null => {
+      const old: DoorGrant | undefined = next.get(id);
+      if (old === undefined || this.denied.has(id) || Date.parse(old.expires) <= this.now()) return null;
+      const grant: DoorGrant = { ...this.grant_new(key), movedFrom: id };
+      next.delete(id);
+      next.set(grant.id, grant);
+      return grant;
+    });
+    if (moved !== null) this.connections_close(id);
+    return moved;
   }
 
   /**
@@ -357,20 +355,11 @@ export class GrantStore {
    * ```
    */
   public async grants_sweep(): Promise<void> {
-    let changed: boolean = false;
     for (const grant of [...this.grants.values()]) {
-      if (Date.parse(grant.expires) > this.now()) continue;
-      this.grants.delete(grant.id);
-      this.connections_close(grant.id);
-      changed = true;
+      if (Date.parse(grant.expires) <= this.now()) this.connections_close(grant.id);
     }
-    if (changed) {
-      try {
-        await this.grants_save();
-      } catch {
-        // Gone from memory already; the file catches up at the next write.
-      }
-    }
+    // Writing drops every grant past its hour; a write that fails is the next sweep's to do again.
+    await this.change_apply((): void => undefined).catch((): void => undefined);
   }
 
   /**
@@ -401,7 +390,8 @@ export class GrantStore {
     }
     const left: number = Date.parse(grant.expires) - this.now();
     if (left <= 0) {
-      void this.grant_end(id);
+      // Past its hour it lets nobody in already; its connections close now, and the sweep forgets it.
+      this.connections_close(id);
       return;
     }
     const timer: NodeJS.Timeout = setTimeout((): void => {
@@ -442,34 +432,72 @@ export class GrantStore {
   }
 
   /**
-   * Writes every grant, whole, through a fresh file renamed in the same
-   * folder; writes are made one after another, each holding every grant
-   * as it then stands.
+   * A new grant for a key, its hour from now.
    *
-   * @throws {Error} When it cannot be written.
+   * @param key - The key.
+   * @returns The grant, not yet kept.
    */
-  private async grants_save(): Promise<void> {
-    const file_write = async (): Promise<void> => {
-      const body: string = `${JSON.stringify({ schemaVersion: 1, grants: [...this.grants.values()] } satisfies GrantFile)}\n`;
-      await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-      const temp: string = join(dirname(this.path), `.door-grants.${String(process.pid)}.${randomBytes(6).toString('hex')}`);
-      const file: FileHandle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      try {
-        await file.writeFile(body, 'utf8');
-      } finally {
-        await file.close().catch((): void => undefined);
-      }
-      try {
-        await rename(temp, this.path);
-      } catch (error: unknown) {
-        await rm(temp, { force: true });
-        throw error;
-      }
-    };
-    const next: Promise<void> = this.saving.then(file_write, file_write);
-    this.saving = next.catch((): void => undefined);
-    return next;
+  private grant_new(key: string): DoorGrant {
+    return { id: randomBytes(32).toString('hex'), key, expires: new Date(this.now() + this.hours * 3600 * 1000).toISOString() };
   }
+
+  /**
+   * One change of the grants, in its turn: made on a copy of the grants
+   * as the last change left them (those past their hour dropped), written
+   * whole, and only then the grants the door goes by. A change whose write
+   * fails changes nothing, and no later write carries it. Denials the
+   * written file no longer needs are let go.
+   *
+   * @param change - What the change does with the copy; its answer is the change's.
+   * @returns The change's answer, once written.
+   * @throws {Error} When the file cannot be written, or would be larger than the door reads back.
+   */
+  private change_apply<T>(change: (next: Map<string, DoorGrant>) => T): Promise<T> {
+    const turn_run = async (): Promise<T> => {
+      const next: Map<string, DoorGrant> = new Map([...this.grants].filter(([, grant]: [string, DoorGrant]): boolean => Date.parse(grant.expires) > this.now()));
+      const answer: T = change(next);
+      // Whatever the change, a grant refused here is not written as standing.
+      for (const id of this.denied) next.delete(id);
+      await this.file_write(next);
+      this.grants = next;
+      for (const id of [...this.denied]) if (!next.has(id)) this.denied.delete(id);
+      return answer;
+    };
+    const run: Promise<T> = this.changing.then(turn_run, turn_run);
+    this.changing = run.catch((): void => undefined);
+    return run;
+  }
+
+  /**
+   * Writes the grants, whole, through a fresh file renamed in the same
+   * folder, held to the bound the door reads back.
+   *
+   * @param grants - The grants to write.
+   * @throws {Error} When it cannot be written, or would be larger than the door reads back.
+   */
+  private async file_write(grants: Map<string, DoorGrant>): Promise<void> {
+    const body: string = `${JSON.stringify({ schemaVersion: 1, grants: [...grants.values()].map(({ id, key, expires }: DoorGrant) => ({ id, key, expires })) } satisfies GrantFile)}\n`;
+    if (Buffer.byteLength(body, 'utf8') > GRANTS_MAX_BYTES) throw new Error(`the door's grants would grow past ${String(GRANTS_MAX_BYTES)} bytes; the change is refused`);
+    if (this.writer !== null) {
+      await this.writer(this.path, body);
+      return;
+    }
+    await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+    const temp: string = join(dirname(this.path), `.door-grants.${String(process.pid)}.${randomBytes(6).toString('hex')}`);
+    const file: FileHandle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      await file.writeFile(body, 'utf8');
+    } finally {
+      await file.close().catch((): void => undefined);
+    }
+    try {
+      await rename(temp, this.path);
+    } catch (error: unknown) {
+      await rm(temp, { force: true });
+      throw error;
+    }
+  }
+
 
 }
 

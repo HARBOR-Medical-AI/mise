@@ -70,7 +70,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex, Readable } from 'node:stream';
 import { identity_normalise } from '@fnndsc/calypso/berth';
 import type { PorterConfig } from './config.js';
-import { identity_isStratus, owner_extract, stratusIdentity_derive, user_extract, type SessionHost, type Berth, type BootLine, type RestartWhy } from './host/sessionHost.js';
+import { identity_isStratus, owner_extract, stratusIdentity_derive, user_extract, type SessionHost, type Berth, type BootLine, type BootReport, type RestartWhy } from './host/sessionHost.js';
 import { CredentialStore } from './creds.js';
 import { SessionRegistry, type SessionEntry } from './registry.js';
 import { cubeAdmin_check, cubeToken_mint, type AdminVerdict, type TokenMint } from './cube/auth.js';
@@ -314,6 +314,9 @@ function request_wantsJson(request: FastifyRequest): boolean {
   const accept: string = String(request.headers.accept ?? '');
   return contentType.includes('application/json') || (accept.includes('application/json') && !accept.includes('text/html'));
 }
+
+/** How long a wire whose grant ended may take to finish its frame and close, before both sockets are destroyed. */
+const WIRE_CLOSE_BOUND_MS: number = 2000;
 
 /** What the door says when a session's daemon is gone. */
 const SESSION_ENDED: string = 'your session ended; log in to start it again';
@@ -742,10 +745,13 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     }
     // A password login asking for a token beside its session.
     let granted: { token: string; name: string; expires: string } | null = null;
+    // Minted beside any token of that name, which stands until this login succeeds (the new one then
+    // retires it) or fails (the new one goes alone): a login that fails never costs a standing token.
+    let renewal: MintedToken | null = null;
     if (wanted.tokenName !== undefined) {
-      const made: MintedToken = await tokens.mint(identity, username, wanted.tokenName);
-      granted = { token: made.token, name: wanted.tokenName, expires: made.record.expires };
-      options.log?.(`minted a door token "${wanted.tokenName}" for ${username} (dies ${made.record.expires.slice(0, 10)})`);
+      renewal = await tokens.mint(identity, username, wanted.tokenName, true);
+      granted = { token: renewal.token, name: wanted.tokenName, expires: renewal.record.expires };
+      options.log?.(`minted a door token "${wanted.tokenName}" for ${username} (dies ${renewal.record.expires.slice(0, 10)})`);
     }
     // The answer carries the grant a password login asked for, or, on a
     // token login, whose token it was: a pasted token becomes a whole door file.
@@ -755,11 +761,51 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       return body;
     };
     const key: string = registry.key_derive(identity);
-    // A grant is made only for a login that succeeds: one that fails after this ends it before it answers.
-    const issued: DoorGrant | null = await grant_issue(request, reply, key);
-    if (issued === null) return reply.code(503).send({ error: 'the door could not keep your login; try again' });
     if (byToken !== null) options.log?.(`${username} came through by door token "${byToken.name}"`);
-    const starting_answer = (): unknown => (wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'starting' }) : reply.redirect(`/greet/${key}`, 303));
+    /**
+     * Whether a berth found up runs code older than this porter ships: a login never lands on such a kernel. One
+     * running joblets is kept on its older code (the RESTART pill, which lists them, asks, #1273); one without is
+     * restarted, the old daemon waited out before the new one boots, so the mount never reaches a port about to close.
+     *
+     * @param found - The berth found.
+     * @param moved - Whether the session was ended under this round meanwhile.
+     * @returns `moved` (look again), `restart` (begun), or `stay` (attach to it).
+     */
+    const staleBerth_decide = async (found: Berth, moved: () => boolean): Promise<'moved' | 'restart' | 'stay'> => {
+      const behind: string[] = berth_behind(found, installed);
+      const joblets: BerthJoblet[] = behind.length > 0 ? await berthJoblets_read(found) : [];
+      if (moved()) return 'moved';
+      if (joblets.length > 0) {
+        options.log?.(`kept ${username}'s session on its older release (${behind.join(', ')}): ${String(joblets.length)} joblet${joblets.length === 1 ? '' : 's'} running`);
+        return 'stay';
+      }
+      if (behind.length === 0) return 'stay';
+      options.log?.(`restarting ${username}'s session for the new release (${behind.join(', ')})`);
+      registry.pending_note(identity, username);
+      restart_run(key, identity, username, { kind: 'stale', behind });
+      return 'restart';
+    };
+    // What a login hands out is committed at its success and nowhere else: the grant made and its cookie set,
+    // and a named token settled (it retires the older of its name). Any other way out undoes the token.
+    let settled: boolean = false;
+    // Undoes the named token before a failure is answered, so whoever reads the answer finds the store as it was.
+    const renewal_undo = async (): Promise<void> => {
+      if (settled || renewal === null) return;
+      settled = true;
+      await tokens.renewal_settle(renewal, false).catch((error: unknown): void => { options.log?.(`a failed login's token could not be dropped: ${error instanceof Error ? error.message : String(error)}`); });
+    };
+    const login_succeed = async (answerMake: () => unknown): Promise<unknown> => {
+      const issued: DoorGrant | null = await grant_issue(request, reply, key);
+      if (issued === null) {
+        await renewal_undo();
+        return reply.code(503).send({ error: 'the door could not keep your login; try again' });
+      }
+      if (renewal !== null) await tokens.renewal_settle(renewal, true);
+      settled = true;
+      return answerMake();
+    };
+    const starting_answer = (): Promise<unknown> => login_succeed((): unknown => (wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'starting' }) : reply.redirect(`/greet/${key}`, 303)));
+    try {
     // What this login learns of the session's berth is good only while the session is not ended under it.
     // Each round reads the key's generation, which every ending raises and none lowers, before it looks,
     // and compares it again after every wait and before every act: if an ending has begun, or has come and
@@ -782,7 +828,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       if (boot_isUnderWay() && !registry.end_pending(key)) {
         registry.pending_note(identity, username);
         options.log?.(`${username} joins the boot already under way`);
-        return starting_answer();
+        return await starting_answer();
       }
       const began: number = registry.generation_get(key);
       const generation_moved = (): boolean => registry.generation_get(key) !== began;
@@ -799,38 +845,23 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       if (boot_isUnderWay()) {
         registry.pending_note(identity, username);
         options.log?.(`${username} joins the boot already under way`);
-        return starting_answer();
+        return await starting_answer();
       }
       // A login never lands on a kernel older than the door's: a session whose
       // daemon runs code this porter no longer ships is ended here and boots
       // afresh on the way in, its saved state kept.
-      if (found !== null) {
-        const behind: string[] = berth_behind(found, installed);
-        // A restart ends the session's joblets: one that runs them is kept on
-        // its older code, and the RESTART pill, which lists them, asks (#1273).
-        const joblets: BerthJoblet[] = behind.length > 0 ? await berthJoblets_read(found) : [];
-        if (generation_moved()) continue;
-        if (joblets.length > 0) {
-          options.log?.(`kept ${username}'s session on its older release (${behind.join(', ')}): ${String(joblets.length)} joblet${joblets.length === 1 ? '' : 's'} running`);
-        } else if (behind.length > 0) {
-          // The restart the RESTART pill takes: the old daemon is left the
-          // cause and waited out before the new one boots, so the mount never reaches a
-          // port that is about to close.
-          options.log?.(`restarting ${username}'s session for the new release (${behind.join(', ')})`);
-          registry.pending_note(identity, username);
-          restart_run(key, identity, username, { kind: 'stale', behind });
-          return starting_answer();
-        }
-      }
+      const stale: 'moved' | 'restart' | 'stay' = found === null ? 'stay' : await staleBerth_decide(found, generation_moved);
+      if (stale === 'moved') continue;
+      if (stale === 'restart') return await starting_answer();
       // A new login's token reaches a berth already up: the launcher rewrites its token file.
       if (found !== null && cubeToken !== null && host.token_renew !== undefined) {
         await host.token_renew(identity, username, config.cubeUrl, cubeToken).catch((error: unknown): void => { options.log?.(`${username}'s new token did not reach the berth: ${error instanceof Error ? error.message : String(error)}`); });
-        if (generation_moved()) continue;
       }
+      if (generation_moved()) continue;
       if (found !== null) {
         registry.note(identity, username, found);
         options.log?.(`attached ${username} to the session up at ${found.url}`);
-        return wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'attached' }) : reply.redirect(`/s/${key}/?door`, 303);
+        return await login_succeed((): unknown => (wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'attached' }) : reply.redirect(`/s/${key}/?door`, 303)));
       }
       // The boot is watched, not waited for: the door answers now, and the
       // greet follows the rows until the berth answers. The berth reaches the
@@ -848,13 +879,16 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
         host.spawn_begin(identity, username, config.cubeUrl, cubeToken);
         options.log?.(`starting a session for ${username}`);
       }
-      return starting_answer();
+      return await starting_answer();
     }
     // The session was ended under this login as often as it looked: something is ending it over and over.
     options.log?.(`${username}'s session kept being ended while they logged in; they were asked to try again`);
-    await grants.grant_end(issued.id);
-    void reply.clearCookie(DOOR_COOKIE, { path: '/' });
-    return reply.code(503).send({ error: 'the session was being ended while you logged in; try again' });
+    await renewal_undo();
+    return await reply.code(503).send({ error: 'the session was being ended while you logged in; try again' });
+    } finally {
+      // A login that did not succeed (a throw from any step) leaves the standing token as it was; a throw is answered after this.
+      await renewal_undo();
+    }
   });
 
   app.get('/greet/:key', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
@@ -1028,10 +1062,21 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   app.post('/logout', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
     // On a door that starts berths a logout stops the person's berth; its volumes, and so their home, stay.
     // The person is logged out of the door either way.
-    const held: GrantNamed | null = requestGrant_read(request.headers);
+    // Any cookie this door signed may ask, admitted or not: a logout whose write failed is asked again by the same cookie.
+    const held: GrantNamed | null = cookieGrant_read(request.headers.cookie, config.secret);
     // The grant ends first: this cookie lets nobody in from now on, and what was opened under it is closed.
-    if (held !== null) await grants.grant_end(held.id);
-    const leaving: string | null = options.logoutEnds === true ? held?.key ?? null : null;
+    let ended: 'ended' | 'moved' | 'gone' = 'gone';
+    if (held !== null) {
+      try {
+        ended = await grants.grant_end(held.id);
+      } catch (error: unknown) {
+        options.log?.(`a logout could not be written: ${error instanceof Error ? error.message : String(error)}; the cookie is refused here meanwhile`);
+        return reply.code(503).send({ error: 'the door could not record your logout; it refuses this browser meanwhile; log out again' });
+      }
+    }
+    // A switch moved this browser's grant while it logged out: the cookie it holds now is the switch's, and stays.
+    if (ended === 'moved') return reply.code(409).send({ error: 'this browser switched session while it logged out; log out again' });
+    const leaving: string | null = options.logoutEnds === true && ended === 'ended' ? held?.key ?? null : null;
     const identity: string | null = leaving === null ? null : registry.identity_find(leaving);
     const unstopped: string | null = leaving !== null && identity !== null ? await logout_stop(leaving, identity) : null;
     void reply.clearCookie(DOOR_COOKIE, { path: '/' });
@@ -1056,35 +1101,44 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
-    const event_send = (name: string, data: unknown): void => {
-      reply.raw.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+    // Held under its grant from the first byte to the last, the waits for the settled report included: when the
+    // grant ends the boot is let go of and the stream ends, and nothing is written for a grant that no longer stands.
+    let streaming: boolean = true;
+    let followed: ReturnType<SessionHost['boot_follow']> = null;
+    const stream_end = (): void => {
+      if (!streaming) return;
+      streaming = false;
+      followed?.release();
+      reply.raw.end();
     };
-    const followed = host.boot_follow(identity, {
+    const grant_letGo: () => void = grants.connection_hold(held.id, { connection_close: (): void => { stream_end(); } });
+    request.raw.once('close', (): void => { streaming = false; grant_letGo(); followed?.release(); });
+    const event_send = (name: string, data: unknown): void => {
+      if (streaming && grants.grant_admits(held.id, key)) reply.raw.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+    const stream_finish = (state: string, reason: string | null): void => {
+      event_send(state, { reason });
+      stream_end();
+      grant_letGo();
+    };
+    followed = host.boot_follow(identity, {
       line: (line: BootLine): void => event_send('line', line),
       done: (state: 'ready' | 'failed', reason?: string): void => {
-        void registry.settle(identity, host).then((): void => {
-          event_send(state, { reason: reason ?? null });
-          reply.raw.end();
-        });
+        void registry.settle(identity, host).then((): void => { stream_finish(state, reason ?? null); });
       },
     });
     if (followed === null) {
       // A session this porter found rather than started has no boot to
       // show: it is up, which is the only thing a greeter needs to hear.
-      event_send('ready', { reason: null });
-      reply.raw.end();
+      stream_finish('ready', null);
       return;
     }
     for (const line of followed.report.lines) event_send('line', line);
     if (followed.report.state !== 'booting') {
+      const report: BootReport = followed.report;
       await registry.settle(identity, host);
-      event_send(followed.report.state, { reason: followed.report.reason ?? null });
-      reply.raw.end();
-      return;
+      stream_finish(report.state, report.reason ?? null);
     }
-    // Held under the grant it was opened with: when that grant ends, the boot is let go of and the stream ends.
-    const grant_letGo: () => void = grants.connection_hold(held.id, { connection_close: (): void => { followed.release(); reply.raw.end(); } });
-    request.raw.once('close', (): void => { grant_letGo(); followed.release(); });
   });
 
   // The session itself, over HTTP: the page, its assets, and /vfs. Its own
@@ -1196,7 +1250,15 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
         registry.wire_count(entry.key, -1);
       };
       socket.once('close', wire_release);
+      // Set once the wire's grant ends: from then nothing more of the browser's reaches the berth.
+      let revoked: boolean = false;
       const upstream: Socket = net_connect(Number(target.port), target.hostname, (): void => {
+        // A grant that ended before the berth answered the connect opens nothing.
+        if (revoked) {
+          upstream.destroy();
+          socket.destroy();
+          return;
+        }
         const path: string = upstreamPath_build(split.rest, entry.berth.token);
         const lines: string[] = [`${request.method ?? 'GET'} ${path} HTTP/1.1`];
         for (const [name, value] of Object.entries(request.headers)) {
@@ -1214,7 +1276,18 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       });
       const closer: FrameCloser = new FrameCloser();
       closer.once('end', (): void => { upstream.destroy(); });
-      const grant_letGo: () => void = grants.connection_hold(held.id, { connection_close: (): void => { closer.close_request('signed out'); } });
+      // The grant ends: the browser's input stops at once, the daemon's frame under way may finish and a close
+      // frame (4401) follows, and whatever happens, both sockets are gone within a bound.
+      const wire_revoke = (): void => {
+        if (revoked) return;
+        revoked = true;
+        socket.unpipe(upstream);
+        socket.pause();
+        closer.close_request('signed out');
+        const bound: NodeJS.Timeout = setTimeout((): void => { upstream.destroy(); socket.destroy(); }, WIRE_CLOSE_BOUND_MS);
+        bound.unref();
+      };
+      const grant_letGo: () => void = grants.connection_hold(held.id, { connection_close: (): void => { wire_revoke(); } });
       socket.once('close', grant_letGo);
       upstream.on('error', (): void => {
         socket.destroy();

@@ -60,7 +60,7 @@
     "jsdoc/require-example": 146,
     "jsdoc/require-jsdoc": 242,
     "jsdoc/require-param": 42,
-    "jsdoc/require-returns": 23,
+    "jsdoc/require-returns": 22,
     "jsdoc/require-throws": 1,
     "local/file-overview-sections": 76
   },

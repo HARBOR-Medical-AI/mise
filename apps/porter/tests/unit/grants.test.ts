@@ -35,7 +35,7 @@ describe('GrantStore', () => {
     const b = await grants.grant_make(KEY);
     expect(grants.grant_admits(a.id, KEY)).toBe(true);
     expect(grants.grant_admits(a.id, 'fedcba9876543210')).toBe(false);
-    expect(await grants.grant_end(a.id)).toBe(true);
+    expect(await grants.grant_end(a.id)).toBe('ended');
     expect(grants.grant_admits(a.id, KEY)).toBe(false);
     // Two browsers of one person hold independent grants: one's logout leaves the other's.
     expect(grants.grant_admits(b.id, KEY)).toBe(true);
@@ -71,12 +71,19 @@ describe('GrantStore', () => {
     const grants: GrantStore = new GrantStore(join(dir, 'door-grants.json'), 8);
     const first = await grants.grant_make(KEY);
     const [ended, moved] = await Promise.all([grants.grant_end(first.id), grants.grant_move(first.id, 'fedcba9876543210')]);
-    expect(ended).toBe(true);
+    expect(ended).toBe('ended');
     expect(moved).toBeNull();
+    // A logout refuses its grant the moment it is asked: a switch still waiting its turn then finds nothing to move.
+    const racing = await grants.grant_make(KEY);
+    const [movedLate, endedEarly] = await Promise.all([grants.grant_move(racing.id, 'fedcba9876543210'), grants.grant_end(racing.id)]);
+    expect(movedLate).toBeNull();
+    expect(endedEarly).toBe('ended');
+    // A switch that has moved the grant before the logout is asked: the logout learns it lost, and the switch's grant stands.
     const second = await grants.grant_make(KEY);
-    const [movedFirst, endedAfter] = await Promise.all([grants.grant_move(second.id, 'fedcba9876543210'), grants.grant_end(second.id)]);
+    const movedFirst = await grants.grant_move(second.id, 'fedcba9876543210');
+    const endedAfter = await grants.grant_end(second.id);
     expect(movedFirst).not.toBeNull();
-    expect(endedAfter).toBe(false);
+    expect(endedAfter).toBe('moved');
     expect(grants.grant_admits(second.id, KEY)).toBe(false);
     expect(grants.grant_admits(movedFirst?.id ?? '', 'fedcba9876543210')).toBe(true);
   });
@@ -160,3 +167,76 @@ describe('FrameCloser', () => {
     expect(Buffer.concat(got).includes(Buffer.from([0x88]))).toBe(true);
   });
 });
+
+describe('what Codex found in the first form (seq 419)', () => {
+  /** A writer that writes as the door does, and fails the writes a test names. */
+  const writing = (fail: Set<number>) => {
+    let count: number = 0;
+    return async (path: string, body: string): Promise<void> => {
+      count += 1;
+      if (fail.has(count)) throw new Error('the disk is full');
+      writeFileSync(path, body, { mode: 0o600 });
+    };
+  };
+
+  it('a logout whose write fails refuses the cookie at once, and the same logout asked again writes it; a restart honours only the other browser', async () => {
+    const path: string = join(dir, 'door-grants.json');
+    const fail: Set<number> = new Set();
+    const grants: GrantStore = new GrantStore(path, 8, undefined, writing(fail));
+    const a = await grants.grant_make(KEY);
+    const b = await grants.grant_make(KEY);
+    fail.add(3);
+    await expect(grants.grant_end(a.id)).rejects.toThrow('the disk is full');
+    expect(grants.grant_admits(a.id, KEY)).toBe(false);
+    // The file still holds it: a restart now would let it in, so the logout is asked again.
+    expect(readFileSync(path, 'utf8')).toContain(a.id);
+    expect(await grants.grant_end(a.id)).toBe('ended');
+    const again: GrantStore = new GrantStore(path, 8);
+    await again.grants_load();
+    expect(again.grant_admits(a.id, KEY)).toBe(false);
+    expect(again.grant_admits(b.id, KEY)).toBe(true);
+  });
+
+  it('a change whose write fails is carried by no later write, whatever order they overlap in', async () => {
+    const path: string = join(dir, 'door-grants.json');
+    const fail: Set<number> = new Set([2]);
+    const grants: GrantStore = new GrantStore(path, 8, undefined, writing(fail));
+    const standing = await grants.grant_make(KEY);
+    // A switch whose write fails, and a login whose write succeeds after it.
+    const [moved, made] = await Promise.allSettled([grants.grant_move(standing.id, 'fedcba9876543210'), grants.grant_make(KEY)]);
+    expect(moved.status).toBe('rejected');
+    expect(made.status).toBe('fulfilled');
+    const reopened: GrantStore = new GrantStore(path, 8);
+    expect(await reopened.grants_load()).toBe(2);
+    expect(reopened.grant_admits(standing.id, KEY)).toBe(true);
+    expect(grants.grant_admits(standing.id, KEY)).toBe(true);
+  });
+
+  it('refuses a grant that would grow the file past what the door reads back, and a full store still reopens and revokes', async () => {
+    const path: string = join(dir, 'door-grants.json');
+    // A store at its bound: grants written straight to the file.
+    const one = { id: 'c'.repeat(64), key: KEY, expires: '2099-01-01T00:00:00.000Z' };
+    const each: number = Buffer.byteLength(JSON.stringify(one)) + 1;
+    const count: number = Math.floor((4 * 1024 * 1024 - 64) / each);
+    const records = Array.from({ length: count }, (_v: unknown, i: number) => ({ ...one, id: i.toString(16).padStart(64, '0') }));
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, grants: records }), { mode: 0o600 });
+    const grants: GrantStore = new GrantStore(path, 8);
+    expect(await grants.grants_load()).toBe(count);
+    await expect(grants.grant_make(KEY)).rejects.toThrow('would grow past');
+    expect(await grants.grant_end(records[0]?.id ?? '')).toBe('ended');
+    expect(grants.grant_admits(records[0]?.id ?? '', KEY)).toBe(false);
+  });
+
+  it('writes away grants past their hour, so the file holds only those that stand', async () => {
+    let now: number = Date.parse('2026-11-27T00:00:00Z');
+    const path: string = join(dir, 'door-grants.json');
+    const grants: GrantStore = new GrantStore(path, 1, (): number => now);
+    const old = await grants.grant_make(KEY);
+    now += 3_600_000 + 1;
+    const fresh = await grants.grant_make(KEY);
+    const kept: string = readFileSync(path, 'utf8');
+    expect(kept).not.toContain(old.id);
+    expect(kept).toContain(fresh.id);
+  });
+});
+
