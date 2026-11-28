@@ -334,7 +334,8 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   const creds: CredentialStore = new CredentialStore(config.stateDir);
   const tokens: TokenStore = options.tokens ?? new TokenStore(config.tokensFile, config.tokenDays);
   tokens.load();
-  if (tokens.skipped > 0) options.log?.(`the door's token store holds ${String(tokens.skipped)} record(s) of the wrong shape; they were left out`);
+  if (tokens.legacyNote !== null) options.log?.(tokens.legacyNote);
+  if (tokens.skipped.length > 0) options.log?.(`the door's token store holds ${String(tokens.skipped.length)} record(s) of the wrong shape, left out: ${tokens.skipped.join(', ')}`);
   const codes: DeviceCodes = options.codes ?? new DeviceCodes();
   // Who a request is from, and whether it came by https, is the socket's word unless the peer is a proxy
   // the operator named (`PORTER_TRUSTED_PROXIES`): only such a peer's forwarded headers are believed. A
@@ -539,7 +540,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     if (bearer !== null) {
       if (!token_looksLike(bearer)) return refuse(401, 'that is not a door token');
       // One change of the store, read afresh: found by its hash, alive, for the identity this door serves, its use noted.
-      const checked: TokenCheck = tokens.authorize(bearer, (user: string): string => identity_normalise(user, config.cubeUrl));
+      const checked: TokenCheck = tokens.login_authorize(bearer, (user: string): string => identity_normalise(user, config.cubeUrl));
       if (!checked.ok) {
         if (checked.why === 'expired') {
           options.log?.(`refused ${checked.record.user}'s door token "${checked.record.name}": it expired on ${checked.record.expires.slice(0, 10)}`);

@@ -22,7 +22,7 @@
  * @module
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, type Stats } from 'node:fs';
 import { join } from 'node:path';
 
 /** What the plaintext starts with, so a token is recognisable in a log or a leak. */
@@ -101,8 +101,12 @@ export type TokenCheck = TokenAdmitted | TokenRefused | TokenUnknown;
 
 /** The file's shape on disk. */
 interface TokenFile {
+  /** The shape's version. */
   schemaVersion: 1;
+  /** The records. */
   tokens: DoorToken[];
+  /** The SHA-256 of the one-file store this store was migrated from, carried by every version after. */
+  migratedFrom?: string;
 }
 
 /** Makes a fresh plaintext token: 32 random bytes, base64url, prefixed. */
@@ -123,6 +127,12 @@ export function token_looksLike(value: string): boolean {
 /** The most a version of the store holds: well beyond any door's tokens. */
 const VERSION_MAX_BYTES: number = 4 * 1024 * 1024;
 
+/** How many versions a folder of versions holds: the highest is found by listing at most one folder. */
+const VERSIONS_PER_FOLDER: number = 1000;
+
+/** The highest version number the store names: beyond it a name is not a version (a planted one, say). */
+const VERSION_LAST: number = 999_999_999_999;
+
 /** How many versions below the current one keep their records; older ones are emptied, never removed. */
 const VERSIONS_KEPT: number = 8;
 
@@ -135,14 +145,21 @@ const TEMP_LIFE_MS: number = 3_600_000;
 /** How seldom a token's last use is written down: at most once an hour. */
 export const LAST_USED_SAMPLE_MS: number = 3_600_000;
 
+/** A time as the store writes it: `toISOString()`'s form, and no other. */
+const ISO_TIME: RegExp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
 /** One version of the store as read: its number and its records. */
 interface StoreVersion {
   /** The version's number; 0 for a store that has none yet (the legacy file, or nothing). */
   n: number;
   /** Its records. */
   tokens: DoorToken[];
-  /** How many records it held of the wrong shape, left out. */
-  skipped: number;
+  /** The records it held of the wrong shape, left out: their positions and, where safe, their names. */
+  skipped: string[];
+  /** Whether it is the legacy one-file store, not a version. */
+  legacy: boolean;
+  /** The one-file store it was migrated from (its SHA-256), or, for the legacy store itself, its own. */
+  migratedFrom?: string;
 }
 
 /** What a change made of the records it read: its answer, and the records to publish, if any. */
@@ -160,8 +177,10 @@ type StoreChange<T> = (tokens: DoorToken[]) => ChangeOutcome<T>;
 interface RecordsRead {
   /** The records kept. */
   tokens: DoorToken[];
-  /** How many were left out. */
-  skipped: number;
+  /** Those left out: their positions and, where safe, their names. */
+  skipped: string[];
+  /** What the text said it was migrated from. */
+  migratedFrom?: string;
 }
 
 /**
@@ -177,6 +196,8 @@ export interface StoreHooks {
   read_after?: () => void;
   /** After the next version is published. */
   publish_after?: () => void;
+  /** After a reader found no version, before it reads the legacy file. */
+  legacy_before?: () => void;
 }
 
 /**
@@ -191,7 +212,7 @@ export interface StoreHooks {
  * ```
  */
 function time_isIso(value: unknown): value is string {
-  return typeof value === 'string' && !Number.isNaN(Date.parse(value));
+  return typeof value === 'string' && ISO_TIME.test(value) && !Number.isNaN(Date.parse(value));
 }
 
 /**
@@ -236,8 +257,10 @@ export function tokenRecord_read(value: unknown): DoorToken | null {
  * ```
  */
 export class TokenStore {
-  /** How many records the store held of the wrong shape when it was opened, left out. */
-  public skipped: number = 0;
+  /** The records the store held of the wrong shape when it was opened, left out: by position and, where safe, by name. */
+  public skipped: string[] = [];
+  /** Said once at start when the one-file store changed after it was migrated: it is left as it is, not archived. */
+  public legacyNote: string | null = null;
   private readonly versions: string;
   private readonly temps: string;
 
@@ -271,19 +294,36 @@ export class TokenStore {
     const current: StoreVersion = this.current_read();
     // What was left out of the store as found, said once at start: a migrated version holds only what was kept.
     this.skipped = current.skipped;
-    if (current.n === 0 && existsSync(this.path)) {
+    if (current.legacy) {
       // The legacy file is the truth until a whole version holds its records; another opener may publish it first.
       this.hooks.read_after?.();
-      this.version_publish(1, current.tokens);
+      const temp: string | false = this.version_publish(1, current.tokens, current.migratedFrom);
+      if (temp !== false) this.maintenance_run(1, temp);
     }
-    if (this.highest_find() > 0) {
-      try {
-        renameSync(this.path, `${this.path}.migrated`);
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
+    this.legacy_archive();
+  }
+
+  /**
+   * Archives the one-file store once a version holds it: only if it is
+   * still the file the store was migrated from. One changed since (an older
+   * porter wrote it) is left as it is, and said.
+   *
+   * @throws {Error} When the file cannot be read or renamed for another reason than its being gone.
+   */
+  private legacy_archive(): void {
+    if (this.highest_find() === 0) return;
+    const bytes: Buffer | null = ownFile_read(this.path, VERSION_MAX_BYTES);
+    if (bytes === null) return;
+    const from: string | undefined = this.current_read().migratedFrom;
+    if (from !== bytes_hash(bytes)) {
+      this.legacyNote = `the one-file token store at ${this.path} changed after it was migrated (an older porter wrote it); it is left as it is, and the versions in ${this.versions} are the store`;
+      return;
     }
-    this.current_read();
+    try {
+      renameSync(this.path, `${this.path}.migrated`);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
 
   /**
@@ -308,7 +348,7 @@ export class TokenStore {
       expires: new Date(created.getTime() + this.days * 24 * 3600 * 1000).toISOString(),
       lastUsed: null,
     };
-    this.transact((tokens: DoorToken[]) => ({
+    this.change_apply((tokens: DoorToken[]) => ({
       result: undefined,
       next: [...tokens.filter((held: DoorToken): boolean => !(held.identity === identity && held.name === name)), record],
     }));
@@ -338,11 +378,11 @@ export class TokenStore {
    *
    * @example
    * ```ts
-   * store.authorize(bearer, (user) => identity_normalise(user, cubeUrl));
+   * store.login_authorize(bearer, (user) => identity_normalise(user, cubeUrl));
    * ```
    */
-  public authorize(plain: string, identityAt: (user: string) => string): TokenCheck {
-    return this.transact<TokenCheck>((tokens: DoorToken[]) => {
+  public login_authorize(plain: string, identityAt: (user: string) => string): TokenCheck {
+    return this.change_apply<TokenCheck>((tokens: DoorToken[]) => {
       const found: TokenCheck = token_find(tokens, plain, this.now());
       if (!found.ok) return { result: found };
       if (identityAt(found.record.user) !== found.record.identity) return { result: { ok: false, why: 'foreign', record: found.record } };
@@ -362,7 +402,7 @@ export class TokenStore {
    * @returns How many went.
    */
   public revoke(user: string, name?: string): number {
-    return this.transact((tokens: DoorToken[]) => {
+    return this.change_apply((tokens: DoorToken[]) => {
       const next: DoorToken[] = tokens.filter((held: DoorToken): boolean => !(held.user === user && (name === undefined || held.name === name)));
       return next.length === tokens.length ? { result: 0 } : { result: tokens.length - next.length, next };
     });
@@ -383,9 +423,10 @@ export class TokenStore {
    */
   public revoke_presented(plain: string): DoorToken | null {
     const hash: string = token_hash(plain);
-    return this.transact<DoorToken | null>((tokens: DoorToken[]) => {
+    return this.change_apply<DoorToken | null>((tokens: DoorToken[]) => {
+      // Every record of that token goes, a copy left by a tampered store included.
       const gone: DoorToken | undefined = tokens.find((held: DoorToken): boolean => held.hash === hash);
-      return gone === undefined ? { result: null } : { result: gone, next: tokens.filter((held: DoorToken): boolean => held !== gone) };
+      return gone === undefined ? { result: null } : { result: gone, next: tokens.filter((held: DoorToken): boolean => held.hash !== hash) };
     });
   }
 
@@ -410,18 +451,20 @@ export class TokenStore {
    * fails the change.
    *
    * @param change - What the change does with the records it reads.
-   * @returns The change's answer, once its version is published (or when it changes nothing).
+   * @returns The change's answer, once its version is published (or when it changes nothing); upkeep after the publication never turns it into a failure.
    * @throws {Error} When publishing fails other than by a lost race, or the store keeps changing past the bound.
    */
-  private transact<T>(change: StoreChange<T>): T {
+  private change_apply<T>(change: StoreChange<T>): T {
     for (let attempt: number = 0; attempt < PUBLISH_TRIES; attempt++) {
       const current: StoreVersion = this.current_read();
       const out: ChangeOutcome<T> = change(current.tokens.map((held: DoorToken): DoorToken => ({ ...held })));
       if (out.next === undefined) return out.result;
       this.hooks.read_after?.();
-      if (this.version_publish(current.n + 1, out.next)) {
+      const temp: string | false = this.version_publish(current.n + 1, out.next, current.migratedFrom);
+      if (temp !== false) {
+        // Committed: whatever the upkeep after it does, the caller is given what the change did.
         this.hooks.publish_after?.();
-        this.versions_prune(current.n + 1);
+        this.maintenance_run(current.n + 1, temp);
         return out.result;
       }
     }
@@ -434,52 +477,92 @@ export class TokenStore {
    *
    * @param n - The version's number.
    * @param tokens - Its records.
-   * @returns True when published; false when another writer holds that version.
-   * @throws {Error} When the version cannot be written or linked other than by a taken name.
+   * @param migratedFrom - The one-file store the store was migrated from, carried on.
+   * @returns The temporary file it was published from, for the upkeep to remove; false when another writer holds that version.
+   * @throws {Error} When the version would be larger than a store, or cannot be written or linked other than by a taken name.
    */
-  private version_publish(n: number, tokens: DoorToken[]): boolean {
+  private version_publish(n: number, tokens: DoorToken[], migratedFrom: string | undefined): string | false {
+    if (n > VERSION_LAST) throw new Error(`the door's token store at ${this.path} has run out of version numbers`);
+    const body: TokenFile = { schemaVersion: 1, tokens, ...(migratedFrom === undefined ? {} : { migratedFrom }) };
+    const text: string = `${JSON.stringify(body, null, 2)}\n`;
+    // The rule the reader holds a version to, held before it is published: nothing is published that would be refused.
+    if (Buffer.byteLength(text, 'utf8') > VERSION_MAX_BYTES) throw new Error(`the door's token store at ${this.path} would grow past ${String(VERSION_MAX_BYTES)} bytes; the change is refused`);
     const temp: string = join(this.temps, `${String(n)}.${String(process.pid)}.${randomBytes(6).toString('hex')}`);
-    const body: TokenFile = { schemaVersion: 1, tokens };
-    writeFileSync(temp, `${JSON.stringify(body, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    writeFileSync(temp, text, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     try {
-      linkSync(temp, join(this.versions, `${String(n)}.json`));
-      return true;
+      mkdirSync(this.folder_path(n), { recursive: true, mode: 0o700 });
+      linkSync(temp, this.version_path(n));
+      return temp;
     } catch (error: unknown) {
+      rmSync(temp, { force: true });
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
       throw error;
-    } finally {
-      rmSync(temp, { force: true });
     }
   }
 
   /**
-   * The highest version's number, emptied or not.
+   * The upkeep after a publication: its temporary file removed, and the
+   * version that just fell out of the kept window emptied. Each step is its own: a failure is no failure
+   * of the change already committed, and leaves only something to do again.
+   *
+   * @param published - The version just published.
+   * @param temp - Its temporary file.
+   */
+  private maintenance_run(published: number, temp: string): void {
+    const steps: Array<() => void> = [
+      (): void => { rmSync(temp, { force: true }); },
+      (): void => { this.version_empty(published - VERSIONS_KEPT); },
+    ];
+    for (const step_run of steps) {
+      try {
+        step_run();
+      } catch {
+        // Upkeep only: the version is published whatever this step did.
+      }
+    }
+  }
+
+  /**
+   * The highest version's number, emptied or not, by listing the folders of
+   * versions and the highest of them: at most a thousand names, however
+   * long the store has lived. Only names a writer makes count: a number
+   * past the last, or one filed in the wrong folder, is not a version.
    *
    * @returns The number; 0 when there is none.
-   * @throws {Error} When the versions folder cannot be read.
+   * @throws {Error} When a folder cannot be read.
    */
   private highest_find(): number {
-    return this.versionNumbers_list()[0] ?? 0;
+    const folders: number[] = names_list(this.versions)
+      .map((name: string): number => (/^s(0|[1-9][0-9]{0,9})$/.test(name) ? Number(name.slice(1)) : -1))
+      .filter((k: number): boolean => k >= 0 && k * VERSIONS_PER_FOLDER <= VERSION_LAST)
+      .sort((a: number, b: number): number => b - a);
+    for (const k of folders) {
+      const found: number[] = names_list(join(this.versions, `s${String(k)}`))
+        .map((name: string): number => (/^[1-9][0-9]{0,11}\.json$/.test(name) ? Number(name.slice(0, -5)) : 0))
+        .filter((n: number): boolean => n > 0 && n <= VERSION_LAST && Math.floor(n / VERSIONS_PER_FOLDER) === k);
+      if (found.length > 0) return Math.max(...found);
+    }
+    return 0;
   }
 
   /**
-   * Every version's number, highest first.
+   * The folder a version is filed in.
    *
-   * @returns The numbers; none when there is no versions folder.
-   * @throws {Error} When the versions folder cannot be read.
+   * @param n - The version's number.
+   * @returns Its folder.
    */
-  private versionNumbers_list(): number[] {
-    let names: string[];
-    try {
-      names = readdirSync(this.versions);
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw error;
-    }
-    return names
-      .map((name: string): number => (/^[1-9][0-9]*\.json$/.test(name) ? Number(name.slice(0, -5)) : 0))
-      .filter((n: number): boolean => n > 0)
-      .sort((a: number, b: number): number => b - a);
+  private folder_path(n: number): string {
+    return join(this.versions, `s${String(Math.floor(n / VERSIONS_PER_FOLDER))}`);
+  }
+
+  /**
+   * A version's file.
+   *
+   * @param n - The version's number.
+   * @returns Its file.
+   */
+  private version_path(n: number): string {
+    return join(this.folder_path(n), `${String(n)}.json`);
   }
 
   /**
@@ -492,13 +575,30 @@ export class TokenStore {
    */
   private current_read(): StoreVersion {
     for (let attempt: number = 0; attempt < PUBLISH_TRIES; attempt++) {
-      const numbers: number[] = this.versionNumbers_list();
-      const highest: number | undefined = numbers[0];
-      if (highest === undefined) return { n: 0, ...this.legacy_read() };
-      const text: string | null = this.versionText_read(join(this.versions, `${String(highest)}.json`));
-      if (text !== null) return { n: highest, ...this.tokens_parse(text, `version ${String(highest)}`) };
+      const highest: number = this.highest_find();
+      if (highest === 0) {
+        const unversioned: StoreVersion | null = this.unversioned_read();
+        // The legacy file archived by another opener between the look and the read: its version now holds the truth.
+        if (unversioned === null) continue;
+        return unversioned;
+      }
+      const text: string | null = this.versionText_read(this.version_path(highest));
+      if (text !== null) return { n: highest, ...this.tokens_parse(text, `version ${String(highest)}`), legacy: false };
     }
     throw new Error(`the door's token store at ${this.path} has no version that holds its records`);
+  }
+
+  /**
+   * The store while it has no version: the legacy file, or nothing.
+   *
+   * @returns The legacy file's records, an empty store, or null when a version has appeared meanwhile (another opener migrated).
+   * @throws {Error} When the legacy file cannot be read, is larger than a store, or is not a token file.
+   */
+  private unversioned_read(): StoreVersion | null {
+    this.hooks.legacy_before?.();
+    const legacy: RecordsRead | null = this.legacy_read();
+    if (legacy !== null) return { n: 0, ...legacy, legacy: true };
+    return this.highest_find() > 0 ? null : { n: 0, tokens: [], skipped: [], legacy: false };
   }
 
   /**
@@ -509,20 +609,22 @@ export class TokenStore {
    * @throws {Error} When it cannot be read, or is larger than a store.
    */
   private versionText_read(path: string): string | null {
-    const text: string = readFileSync(path, 'utf8');
-    if (text.length > VERSION_MAX_BYTES) throw new Error(`the door's token store at ${path} is larger than a token store`);
-    return text.length === 0 ? null : text;
+    const bytes: Buffer | null = ownFile_read(path, VERSION_MAX_BYTES);
+    if (bytes === null) throw new Error(`the door's token store at ${path} is gone`);
+    return bytes.length === 0 ? null : bytes.toString('utf8');
   }
 
   /**
-   * The legacy file's records.
+   * The legacy file's records, read directly (no look first that another opener could outrun).
    *
-   * @returns Its records, or none when there is no file.
-   * @throws {Error} When it is not a token file.
+   * @returns Its records, or null when there is no file.
+   * @throws {Error} When it cannot be read, is larger than a store, or is not a token file.
    */
-  private legacy_read(): RecordsRead {
-    if (!existsSync(this.path)) return { tokens: [], skipped: 0 };
-    return this.tokens_parse(readFileSync(this.path, 'utf8'), 'the file');
+  private legacy_read(): RecordsRead | null {
+    // Held to the rule a version is held to, so it is never migrated into one the reader would refuse; refused, it stays as it is.
+    const bytes: Buffer | null = ownFile_read(this.path, VERSION_MAX_BYTES);
+    if (bytes === null) return null;
+    return { ...this.tokens_parse(bytes.toString('utf8'), 'the file'), migratedFrom: bytes_hash(bytes) };
   }
 
   /**
@@ -538,32 +640,39 @@ export class TokenStore {
    */
   private tokens_parse(text: string, which: string): RecordsRead {
     const parsed: unknown = JSON.parse(text);
-    const records: unknown = parsed !== null && typeof parsed === 'object' ? (parsed as { tokens?: unknown }).tokens : undefined;
+    const records: unknown = parsed !== null && typeof parsed === 'object' ? (parsed as Partial<Record<'tokens', unknown>>).tokens : undefined;
     if (!Array.isArray(records)) throw new Error(`the door's token store at ${this.path} (${which}) is not a token file`);
+    const from: unknown = (parsed as Partial<Record<'migratedFrom', unknown>>).migratedFrom;
     const tokens: DoorToken[] = [];
-    let skipped: number = 0;
-    for (const record of records) {
+    const skipped: string[] = [];
+    records.forEach((record: unknown, position: number): void => {
       const read: DoorToken | null = tokenRecord_read(record);
-      if (read === null) skipped++;
-      else tokens.push(read);
-    }
-    return { tokens, skipped };
+      if (read !== null) {
+        tokens.push(read);
+        return;
+      }
+      // Its position, and its name when that is a short plain word: never anything else of it.
+      const name: unknown = record !== null && typeof record === 'object' ? (record as Partial<Record<'name', unknown>>).name : undefined;
+      skipped.push(typeof name === 'string' && /^[\w@.:-]{1,80}$/.test(name) ? `#${String(position + 1)} ("${name}")` : `#${String(position + 1)}`);
+    });
+    return { tokens, skipped, ...(typeof from === 'string' && /^[0-9a-f]{64}$/.test(from) ? { migratedFrom: from } : {}) };
   }
 
   /**
-   * Empties versions well below the one just published; their names stay taken.
+   * Empties one version, the one that fell out of the kept window when a
+   * later one was published: one slot per publication, so the upkeep stays
+   * the same size however long the store has lived. Its name stays taken.
    *
-   * @param published - The version just published.
+   * @param n - The version to empty.
+   * @throws {Error} When it cannot be emptied.
    */
-  private versions_prune(published: number): void {
-    for (const n of this.versionNumbers_list()) {
-      if (n > published - VERSIONS_KEPT) continue;
-      const path: string = join(this.versions, `${String(n)}.json`);
-      if (statSync(path).size === 0) continue;
-      const empty: string = join(this.temps, `empty.${String(process.pid)}.${randomBytes(6).toString('hex')}`);
-      writeFileSync(empty, '', { mode: 0o600, flag: 'wx' });
-      renameSync(empty, path);
-    }
+  private version_empty(n: number): void {
+    if (n < 1) return;
+    const path: string = this.version_path(n);
+    if (!existsSync(path) || lstatSync(path).size === 0) return;
+    const empty: string = join(this.temps, `empty.${String(process.pid)}.${randomBytes(6).toString('hex')}`);
+    writeFileSync(empty, '', { mode: 0o600, flag: 'wx' });
+    renameSync(empty, path);
   }
 
   /** Sweeps temporary files a writer that died left behind. */
@@ -581,6 +690,78 @@ export class TokenStore {
 }
 
 /**
+ * The names in a folder.
+ *
+ * @param folder - The folder.
+ * @returns Its names; none when there is no folder.
+ * @throws {Error} When it cannot be read for another reason.
+ */
+function names_list(folder: string): string[] {
+  try {
+    return readdirSync(folder);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+/**
+ * Reads a file of the store: opened without following a link and without
+ * waiting (a pipe put in its place is found to be no file, not waited on),
+ * and read only when it is a regular file of this account's no larger than
+ * the store allows.
+ *
+ * @param path - The file.
+ * @param most - The most bytes it may hold.
+ * @returns Its bytes, or null when there is no file.
+ * @throws {Error} When something other than this account's own file of at most that size stands at the name.
+ *
+ * @example
+ * ```ts
+ * ownFile_read('/var/lib/porter/tokens.json', 4 * 1024 * 1024);
+ * ```
+ */
+export function ownFile_read(path: string, most: number): Buffer | null {
+  let handle: number;
+  try {
+    handle = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(`the door's token store at ${path} is not a file of its own`);
+  }
+  try {
+    const found: Stats = fstatSync(handle);
+    if (!found.isFile() || (typeof process.getuid === 'function' && found.uid !== process.getuid())) throw new Error(`the door's token store at ${path} is not a file of its own`);
+    if (found.size > most) throw new Error(`the door's token store at ${path} is larger than a token store; it is left as it is`);
+    const bytes: Buffer = Buffer.alloc(found.size);
+    let read: number = 0;
+    while (read < found.size) {
+      const got: number = readSync(handle, bytes, read, found.size - read, read);
+      if (got === 0) break;
+      read += got;
+    }
+    return bytes.subarray(0, read);
+  } finally {
+    closeSync(handle);
+  }
+}
+
+/**
+ * The SHA-256 of some bytes, hex.
+ *
+ * @param bytes - The bytes.
+ * @returns The hash.
+ *
+ * @example
+ * ```ts
+ * bytes_hash(Buffer.from('x'));
+ * ```
+ */
+function bytes_hash(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/**
  * Finds a presented token among records, in constant time per record.
  *
  * @param tokens - The records.
@@ -590,13 +771,15 @@ export class TokenStore {
  */
 function token_find(tokens: DoorToken[], plain: string, now: Date): TokenCheck {
   const presented: Buffer = Buffer.from(token_hash(plain), 'hex');
-  for (const record of tokens) {
+  const found: DoorToken[] = tokens.filter((record: DoorToken): boolean => {
     const kept: Buffer = Buffer.from(record.hash, 'hex');
-    if (kept.length !== presented.length || !timingSafeEqual(kept, presented)) continue;
-    if (Date.parse(record.expires) <= now.getTime()) return { ok: false, why: 'expired', record };
-    return { ok: true, record };
-  }
-  return { ok: false, why: 'unknown' };
+    return kept.length === presented.length && timingSafeEqual(kept, presented);
+  });
+  // Two records for one token cannot both be it: an ambiguous token lets nobody in.
+  const record: DoorToken | undefined = found.length === 1 ? found[0] : undefined;
+  if (record === undefined) return { ok: false, why: 'unknown' };
+  if (Date.parse(record.expires) <= now.getTime()) return { ok: false, why: 'expired', record };
+  return { ok: true, record };
 }
 
 /** What a device code hands chell once a human authorised it. */

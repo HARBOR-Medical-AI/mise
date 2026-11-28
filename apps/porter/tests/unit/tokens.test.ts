@@ -19,10 +19,10 @@ describe('TokenStore', () => {
     expect(token_looksLike(token)).toBe(true);
     expect(token.startsWith(DOOR_TOKEN_PREFIX)).toBe(true);
     expect(record.hash).not.toContain(token.slice(DOOR_TOKEN_PREFIX.length, DOOR_TOKEN_PREFIX.length + 8));
-    const kept: string = await readFile(join(dir, 'state', 'tokens.json.d', '1.json'), 'utf8');
+    const kept: string = await readFile(join(dir, 'state', 'tokens.json.d', 's0', '1.json'), 'utf8');
     expect(kept).not.toContain(token);
     expect(kept).toContain('cron@titan');
-    expect((await stat(join(dir, 'state', 'tokens.json.d', '1.json'))).mode & 0o777).toBe(0o600);
+    expect((await stat(join(dir, 'state', 'tokens.json.d', 's0', '1.json'))).mode & 0o777).toBe(0o600);
     expect((await stat(join(dir, 'state', 'tokens.json.d'))).mode & 0o777).toBe(0o700);
     expect(store.check(token)).toMatchObject({ ok: true, record: { user: 'chris', name: 'cron@titan' } });
     expect(store.check(`${DOOR_TOKEN_PREFIX}not-the-one-${'x'.repeat(30)}`)).toEqual({ ok: false, why: 'unknown' });
@@ -64,7 +64,7 @@ describe('TokenStore', () => {
     expect(checked.ok).toBe(true);
     if (checked.ok) {
       expect(checked.record.lastUsed).toBeNull();
-      expect(store.authorize(second.token, (user: string): string => `${user}@c/`).ok).toBe(true);
+      expect(store.login_authorize(second.token, (user: string): string => `${user}@c/`).ok).toBe(true);
       expect(store.list()[0]?.lastUsed).not.toBeNull();
     }
   });

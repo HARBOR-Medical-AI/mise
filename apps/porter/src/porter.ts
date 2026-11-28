@@ -184,7 +184,7 @@ export const PORTER_USAGE: string = [
   'porter --status             the sessions this porter carries (--sessions says the same)',
   'porter --end <who>          end one session: its berth key, user, or user@cube',
   'porter --tokens             the door tokens the store holds: user, name, minted, dies, last used',
-  'porter --revoke <user> [<name>]   revoke one door token by name, or every one of the user\'s',
+  'porter --revoke <user> [<name>]   revoke the user\'s door tokens at every CUBE in this store: those of one name, or all',
   'porter --mint <user> --name <name>   mint a door token by hand (PORTER_CUBE_URL names the CUBE); shown once',
   'porter --creds <user> --oci <config> [--profile <name>]   file a user\'s OCI key under their ChRIS identity, for :stratus oci',
   'porter --version            the door\'s version and the session code it serves (-V)',

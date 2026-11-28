@@ -1003,7 +1003,7 @@ describe('door tokens (chell auth)', () => {
     expect(body.token?.token.startsWith('pdt_')).toBe(true);
     expect(said.some((line) => line.includes('minted a door token "cron@titan" for chris'))).toBe(true);
     // The store on disk holds the hash, never the plaintext.
-    const kept: string = await (await import('node:fs/promises')).readFile(join(tokensDir, 'tokens.json.d', '1.json'), 'utf8');
+    const kept: string = await (await import('node:fs/promises')).readFile(join(tokensDir, 'tokens.json.d', 's0', '1.json'), 'utf8');
     expect(kept).not.toContain(body.token?.token as string);
 
     const byToken = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${body.token?.token}` } });
@@ -1012,6 +1012,42 @@ describe('door tokens (chell auth)', () => {
     expect(cookie_of(byToken)).toMatch(/^porter_session=/);
     expect(said.some((line) => line.includes('chris came through by door token "cron@titan"'))).toBe(true);
     expect(built.tokens.list()[0]?.lastUsed).not.toBeNull();
+  });
+
+  it('a token of the same username minted for another CUBE is refused at the door: no cookie, no look for a session, no start', async () => {
+    const local = built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'laptop');
+    const foreign = built.tokens.mint('chris@https://other.example.org/api/v1/', 'chris', 'laptop');
+    let looked: number = 0;
+    const find = host.find.bind(host);
+    host.find = async (): Promise<Berth | null> => { looked += 1; return find(); };
+    host.found = up;
+    const refused = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${foreign.token}` } });
+    expect(refused.statusCode).toBe(401);
+    expect(refused.headers['set-cookie']).toBeUndefined();
+    expect((refused.json() as { error: string }).error).toContain('another CUBE');
+    expect(looked).toBe(0);
+    expect(host.spawned).toEqual([]);
+    expect(said.some((line) => line.includes('minted for chris@https://other.example.org/api/v1/'))).toBe(true);
+    // The local one is let in.
+    const admitted = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${local.token}` } });
+    expect(admitted.statusCode).toBe(200);
+    expect(cookie_of(admitted)).toMatch(/^porter_session=/);
+  });
+
+  it('a foreign token can neither list nor revoke at this door, and the local token stays', async () => {
+    const local = built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'laptop');
+    const foreign = built.tokens.mint('chris@https://other.example.org/api/v1/', 'chris', 'laptop');
+    const listed = await built.app.inject({ method: 'GET', url: '/auth/tokens', headers: { authorization: `Bearer ${foreign.token}` } });
+    expect(listed.statusCode).toBe(401);
+    const revoked = await built.app.inject({ method: 'DELETE', url: '/auth/token', headers: { authorization: `Bearer ${foreign.token}` } });
+    expect(revoked.statusCode).toBe(401);
+    expect(built.tokens.check(local.token).ok).toBe(true);
+    expect(built.tokens.check(foreign.token).ok).toBe(true);
+    // The local token's logout ends it alone.
+    const out = await built.app.inject({ method: 'DELETE', url: '/auth/token', headers: { authorization: `Bearer ${local.token}` } });
+    expect(out.json()).toMatchObject({ revoked: true, name: 'laptop' });
+    expect(built.tokens.check(local.token)).toEqual({ ok: false, why: 'unknown' });
+    expect(built.tokens.check(foreign.token).ok).toBe(true);
   });
 
   it('a password login held while a door-token login begins a restart on the saved login looks again, and does not note the berth it had found', async () => {
