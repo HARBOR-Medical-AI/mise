@@ -784,6 +784,10 @@ for (const lint of lints) {
   expect_that('a confined helper is reached through its module required whole, by require() or import = require()', reached.includes('packages/brasa/src/byRequire.ts') && reached.includes('packages/brasa/src/byImportEquals.ts'), JSON.stringify(reached));
   const wrapped = gate_judge(found, { ...listed, confined: [{ name: 'pipeSegment_run', file: 'packages/calypso/src/daemon/hostControl.ts', callers: ['packages/calypso/src/daemon/hostControl.ts'], why: 'runs a segment on this host' }] }, null, read, (name, definedIn) => identifierUses_find(tree, name, definedIn));
   expect_that('a named import of a confined wrapper from a third file fails', wrapped.some((one) => one.includes('packages/brasa/src/byWrapper.ts uses pipeSegment_run')), wrapped.join(' | '));
+  const { exportedFunction_declares } = await import('./host-gate.mjs');
+  expect_that('a confined helper is defined by its exported function declaration; an import of it, or a read of a property of that name, is not one', exportedFunction_declares('x.ts', "export function label_read(): number { return 42; }\n", 'label_read')
+    && !exportedFunction_declares('x.ts', "import { label_read } from './labels.js';\nexport const v = label_read;\n", 'label_read')
+    && !exportedFunction_declares('x.ts', "const o = { label_read: 1 };\nexport const v = o.label_read;\n", 'label_read'));
   const nowhere = gate_judge(found, { ...listed, confined: [{ name: 'hostShell_run', file: 'packages/calypso/src/daemon/nowhere.ts', callers: [], why: 'x' }] }, null, read, () => new Map());
   expect_that('a confinement to a file that is not there, or does not define the helper, fails', nowhere.some((one) => one.includes('which does not define it')), nowhere.join(' | '));
   const moved = gate_judge(found, { ...listed, confined: [{ name: 'hostShell_run', file: 'packages/brasa/src/direct.ts', callers: [], why: 'x' }] }, { ...listed, confined: [{ name: 'hostShell_run', file: 'packages/calypso/src/daemon/hostControl.ts', callers: [], why: 'x' }] }, read, () => new Map());

@@ -384,6 +384,21 @@ export function code_read(file, text) {
   return [...text].map((ch, i) => (blank[i] && ch !== '\n' ? ' ' : ch)).join('');
 }
 
+/**
+ * Whether a source declares a function of a name at its top level, exported: a confined helper is one, and a file
+ * that only imports or reads it does not define it.
+ *
+ * @param {string} file - The file's name (for the parser).
+ * @param {string} text - Its text.
+ * @param {string} name - The helper.
+ * @returns {boolean} True when it declares `export function <name>` (or `export async function`).
+ */
+export function exportedFunction_declares(file, text, name) {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  return source.statements.some((statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === name && statement.body !== undefined
+    && (statement.modifiers ?? []).some((one) => one.kind === ts.SyntaxKind.ExportKeyword));
+}
+
 /** The kinds of node a pin is never matched against: text, not code. */
 const TEXT_KINDS = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
 
@@ -494,7 +509,7 @@ export function gate_judge(found, list, atBase, file_read, uses_find = () => new
   for (const helper of list.confined ?? []) {
     // The file that defines it must be there, and define it: a confinement of a helper nowhere is no confinement.
     const defining = file_read(helper.file);
-    if (defining === null || !codeNodes_read(helper.file, defining).has(helper.name)) faults.push(`${GATE_FILE} confines ${helper.name} to ${helper.file}, which does not define it`);
+    if (defining === null || !exportedFunction_declares(helper.file, defining, helper.name)) faults.push(`${GATE_FILE} confines ${helper.name} to ${helper.file}, which does not define it`);
     for (const file of uses_find(helper.name, helper.file).keys()) if (!helper.callers.includes(file)) faults.push(`${file} uses ${helper.name}, which only ${helper.callers.join(', ')} may (${helper.why}): call it through them, or list the caller with its gate`);
   }
   if (atBase !== null) {
