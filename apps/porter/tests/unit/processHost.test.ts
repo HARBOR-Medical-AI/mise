@@ -492,7 +492,19 @@ describe('a porter restarted', () => {
     expect(said).toContain(`chmod go-w ${join(real, 'shared')}`);
     expect(said).toContain('PORTER_STATE_DIR');
     expect(said).toContain('they are not moved');
-    expect(stateRoot_settle('/tmp').ok).toBe(false);
+    // A shared sticky root: a folder of porter's own is the remedy, never a mode change on /tmp.
+    const sticky = stateRoot_settle('/tmp');
+    expect(sticky.ok).toBe(false);
+    const stickySaid: string = sticky.ok ? '' : sticky.said;
+    expect(stickySaid).not.toContain('chmod');
+    expect(stickySaid).toContain("Set PORTER_STATE_DIR to a folder of porter's own on a trusted path");
+    // A state home spelled with `..` keeps it, and the check refuses it.
+    const { porterStateDir_resolve } = await import('../../src/config.js');
+    const spelled: string = porterStateDir_resolve({ XDG_STATE_HOME: `${stateDir}/x/..` });
+    expect(spelled).toBe(`${stateDir}/x/../porter`);
+    const climbed = stateRoot_settle(spelled);
+    expect(climbed.ok ? '' : climbed.said).toContain("names '..'");
+    expect(climbed.ok ? '' : climbed.said).not.toContain('chmod');
     mkdirSync(join(stateDir, 'kept'), { mode: 0o700 });
     symlinkSync(join(stateDir, 'kept'), join(stateDir, 'alias'));
     expect(stateRoot_settle(join(stateDir, 'alias'))).toEqual({ ok: true, path: join(real, 'kept') });

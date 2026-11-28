@@ -239,6 +239,10 @@ export interface OwnRefusal {
   reason: string;
   /** Set when the place is simply not there (ENOENT): absence, not a fault. */
   missing?: true;
+  /** For a trusted walk that met a missing name: the trusted folder it stood in, links before it resolved. */
+  stoppedAt?: string;
+  /** For a trusted walk that met a missing name: that name and the ones after it, as the walk would have taken them. */
+  stillToGo?: string[];
 }
 
 /**
@@ -349,7 +353,9 @@ function walkStep_take(place: WalkPlace, name: string, uid: number): WalkPlace |
   try {
     stats = lstatSync(next);
   } catch (error: unknown) {
-    return fsRefusal_make(next, error, 'lstat');
+    const refused: OwnRefusal = fsRefusal_make(next, error, 'lstat');
+    // Not there: where the walk stood (a trusted folder, every link before resolved) and the names still to go.
+    return refused.missing === true ? { ...refused, stoppedAt: place.at, stillToGo: [name, ...place.rest] } : refused;
   }
   if (stats.isSymbolicLink()) {
     if (place.hops >= LINK_HOPS_MAX) return { ok: false, reason: `${next}: too many links` };
@@ -451,13 +457,13 @@ export function trustedRoot_settle(folder: string, uid: number | null = uid_get(
     if ((stats.mode & 0o022) !== 0) return { ok: false, reason: `${walked.path}: open to other accounts` };
     return walked;
   }
-  if (walked.missing !== true) return walked;
-  // Not there yet: the nearest folder on the way that is, held the same way, and the names still to make.
-  const absolute: string = path.resolve(folder);
-  const parent: string = path.dirname(absolute);
-  if (parent === absolute) return walked;
-  const held: OwnFolder | OwnRefusal = trustedRoot_settle(parent, uid);
-  return held.ok ? { ok: true, path: path.join(held.path, path.basename(absolute)) } : held;
+  if (walked.missing !== true || walked.stoppedAt === undefined || walked.stillToGo === undefined) return walked;
+  // Not there yet: the folder the walk stood in (every link before it resolved, so a link to nothing is never taken
+  // for the place it names), held as a root is, and the names still to make. Those are plain names, made below it.
+  const toMake: string[] = walked.stillToGo.filter((name: string): boolean => name.length > 0 && name !== '.');
+  if (toMake.includes('..')) return { ok: false, reason: `${folder}: names '..' past ${walked.stoppedAt}` };
+  const stood: OwnFolder | OwnRefusal = trustedRoot_settle(walked.stoppedAt, uid);
+  return stood.ok ? { ok: true, path: path.join(stood.path, ...toMake) } : stood;
 }
 
 /**

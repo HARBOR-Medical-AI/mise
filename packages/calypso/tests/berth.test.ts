@@ -199,6 +199,14 @@ describe('berth file IO', () => {
     rmSync(open, { recursive: true, force: true });
   });
 
+  it('a runtime folder spelled with `..` is refused, never folded away', () => {
+    process.env.XDG_RUNTIME_DIR = `${runtimeDir}/x/..`;
+    expect(berthDir_path()).toBe(`${runtimeDir}/x/../calypso`);
+    expect(() => berth_write(berth_of('u@http://h/api/v1/'))).toThrow("names '..'");
+    expect(berth_read('u@http://h/api/v1/')).toBeNull();
+    process.env.XDG_RUNTIME_DIR = runtimeDir;
+  });
+
   it('a reader never makes the berth folder; a writer makes it 0700', () => {
     rmSync(berthDir_path(), { recursive: true, force: true });
     expect(berth_read('u@http://h/api/v1/')).toBeNull();

@@ -531,15 +531,40 @@ export function stateRoot_settle(stateDir: string, uid?: number | null): StateRo
   const held: OwnFolder | OwnRefusal = uid === undefined ? trustedRoot_settle(stateDir) : trustedRoot_settle(stateDir, uid);
   if (held.ok) return held;
   const folder: string = held.reason.slice(0, held.reason.lastIndexOf(': '));
+  const remedy: string[] = folderMode_isFault(held.reason, folder, uid === undefined ? process.getuid?.() ?? null : uid)
+    ? [
+        `    Either take group and other write off that folder (chmod go-w ${folder}), if nothing there needs it,`,
+        '    or set PORTER_STATE_DIR to a folder on a trusted path. Sessions already kept under the old folder stay there; they are not moved.',
+      ]
+    : ['    Set PORTER_STATE_DIR to a folder of porter\'s own on a trusted path. Sessions already kept under the old folder stay there; they are not moved.'];
   return {
     ok: false,
     said: [
       `[!] porter's state folder ${stateDir} is not on a trusted path: ${held.reason}.`,
       '    Another account could put links in place of a session\'s folder there and send one person\'s browser to another person\'s daemon, so porter keeps no sessions under it.',
-      `    Either take group and other write off that folder (chmod go-w ${folder}), if nothing there needs it,`,
-      '    or set PORTER_STATE_DIR to a folder on a trusted path. Sessions already kept under the old folder stay there; they are not moved.',
+      ...remedy,
     ].join('\n'),
   };
+}
+
+/**
+ * Whether a refusal's fault is a folder's write bits that its owner may take off: the folder is open to other
+ * accounts, is this account's own, and is not sticky (a shared sticky folder such as `/tmp` is meant to be open;
+ * the remedy there is a folder of porter's own, never a mode change).
+ *
+ * @param reason - The refusal.
+ * @param folder - The folder it names.
+ * @param uid - This account's uid.
+ * @returns True when `chmod go-w` is the remedy.
+ */
+function folderMode_isFault(reason: string, folder: string, uid: number | null): boolean {
+  if (!reason.endsWith(': open to other accounts')) return false;
+  try {
+    const stats: Stats = lstatSync(folder);
+    return stats.isDirectory() && (uid === null || stats.uid === uid) && (stats.mode & 0o1000) === 0;
+  } catch {
+    return false;
+  }
 }
 
 /** A record and what its probe said. */

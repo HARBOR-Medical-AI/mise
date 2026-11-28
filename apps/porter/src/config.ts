@@ -162,8 +162,10 @@ export function stratusEntry_locate(): string | null {
  * @returns The state directory.
  */
 export function porterStateDir_resolve(env: PorterEnv): string {
+  // Joined as spelled, not normalised: a `..` in XDG_STATE_HOME is refused by the state root's check
+  // (`stateRoot_settle`), never folded away first.
   const stateBase: string = env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state');
-  return env.PORTER_STATE_DIR ?? join(stateBase, 'porter');
+  return env.PORTER_STATE_DIR ?? `${stateBase.replace(/\/+$/, '')}/porter`;
 }
 
 /** The ranges a proxy may be named by, besides an address or a CIDR range. */

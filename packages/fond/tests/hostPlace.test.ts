@@ -206,13 +206,41 @@ describe('owner-only places', () => {
 
   it('follows a link in a shared sticky folder only when it is root\'s or this account\'s', async () => {
     const { trustedPath_resolve } = await import('../src/hostPlace.js');
+    const { lstatSync: stat_l, unlinkSync: link_remove } = await import('node:fs');
     const uid: number = process.getuid?.() ?? 0;
+    // A link this account puts straight in /tmp (root's, sticky), to /usr (root's): every folder on the way is
+    // trusted for any account, so only the link's owner decides. As this account it is followed; seen as another
+    // account, the link is that one's to replace and is refused for exactly that.
+    const tmp = stat_l('/tmp');
+    if (!(tmp.uid === 0 && (tmp.mode & 0o1000) !== 0)) return;
+    const link: string = `/tmp/fond-link-${String(process.pid)}-${String(Date.now())}`;
+    symlinkSync('/usr', link);
+    try {
+      expect(trustedPath_resolve(link, uid)).toEqual({ ok: true, path: realpathSync('/usr') });
+      expect(trustedPath_resolve(link, uid + 1)).toEqual({ ok: false, reason: `${link}: a link of another account's` });
+    } finally {
+      link_remove(link);
+    }
+  });
+
+  it('a link to a folder that is not there is resolved to where it points, never taken for its own name', async () => {
+    const { trustedRoot_settle } = await import('../src/hostPlace.js');
     const root: string = base();
-    mkdirSync(path.join(root, 'target'), { mode: 0o700 });
-    symlinkSync(path.join(root, 'target'), path.join(root, 'link'));
-    // As this account the link is its own: followed. Seen as another account, the same link is not.
-    expect(trustedPath_resolve(path.join(root, 'link'), uid)).toEqual({ ok: true, path: path.join(realpathSync(root), 'target') });
-    expect(trustedPath_resolve(path.join(root, 'link'), uid + 1)).toMatchObject({ ok: false });
+    const real: string = realpathSync(root);
+    // A dangling root, and a dangling link on the way to one: the root is the folder the links name.
+    symlinkSync(path.join(root, 'elsewhere'), path.join(root, 'alias'));
+    expect(trustedRoot_settle(path.join(root, 'alias'))).toEqual({ ok: true, path: path.join(real, 'elsewhere') });
+    symlinkSync(path.join(root, 'gone'), path.join(root, 'mid'));
+    expect(trustedRoot_settle(path.join(root, 'mid', 'porter'))).toEqual({ ok: true, path: path.join(real, 'gone', 'porter') });
+    // A dangling link into a folder open to other accounts: refused, as that folder would be.
+    const open: string = path.join(root, 'open');
+    mkdirSync(open, { mode: 0o777 });
+    chmodSync(open, 0o777);
+    symlinkSync(path.join(open, 'nothing'), path.join(root, 'into-open'));
+    expect(trustedRoot_settle(path.join(root, 'into-open'))).toMatchObject({ ok: false, reason: expect.stringContaining('open to other accounts') });
+    // A link whose text climbs past a missing name: refused.
+    symlinkSync('missing/../../x', path.join(root, 'climb'));
+    expect(trustedRoot_settle(path.join(root, 'climb'))).toMatchObject({ ok: false, reason: expect.stringContaining("names '..'") });
   });
 
   it('reads only a regular 0600 file of this account\'s, bounded; writes by rename; refuses a standing link or wider file and leaves it as it is', async () => {

@@ -120,7 +120,8 @@ export function berthKey_compute(identity: string): string {
  */
 export function berthDir_path(): string {
   const runtimeDir: string | undefined = process.env.XDG_RUNTIME_DIR;
-  if (runtimeDir) return join(runtimeDir, BERTH_SUBDIR);
+  // Joined as spelled, not normalised: a `..` in it is refused by the folder check, never folded away first.
+  if (runtimeDir) return `${runtimeDir.replace(/\/+$/, '')}/${BERTH_SUBDIR}`;
   // No runtime directory: a folder of this account's own name under the shared temporary folder, so no other
   // account can hold the name for everyone (held to this account by ownFolder_settle before use).
   return join(tmpdir(), `${BERTH_SUBDIR}-${String(process.getuid?.() ?? 'user')}`);
