@@ -25,12 +25,13 @@ import type { OutputSink, Surface, SurfaceCapabilities, SurfacePeer, PromptReque
 import type { FileDeliverRequest, FileDeliverResult } from '@fnndsc/menu';
 import { backend_get, type Backend, type SessionIdentity } from '@fnndsc/brasa/core';
 import { stackBanner_rows, stackBannerRow_paint, versions_get, versions_selectForBackend, buildHash_get } from '@fnndsc/brasa/core';
-import { identity_normalise, berth_write, berthOwn_read, berth_path, berthUrl_isAlive, closing_take, type Berth } from './berth.js';
+import { identity_normalise, berth_write, berth_path, probeKey_generate, closing_take, type Berth } from './berth.js';
 import type { ClosingCause } from '@fnndsc/menu';
-import { attachFile_write, attachFile_remove } from './attachFile.js';
+import { attachFile_write } from './attachFile.js';
 import { CHELL_ON_PATH, chellLaunch_find, type SurfaceLaunch } from './consoleSession.js';
 import { Terminals, ptySpawn_load, type PtySpawn } from './terminals.js';
 import { HOST_CONTROL_OFF, daemonCapabilities_compose, pipeSegment_run, hostControl_describe, hostControl_guard, hostControl_tiers, hostShell_run, hostShellTerminal_refusal, type HostControlPolicy } from './hostControl.js';
+import { rival_read, rivalRefusal_lines, type RivalStanding } from './rival.js';
 
 /** What a launched daemon hands back to its host (the console face's feed). */
 export interface DaemonLaunchInfo {
@@ -210,11 +211,11 @@ export async function daemon_launch(
   // already live, point the operator at it and refuse rather than host a rival
   // and orphan the running one's berth. This covers both launch paths (chell
   // --daemon and the standalone calypso binary), since both land here.
-  const existing: Berth | null = berthOwn_read(identity);
-  if (existing && (await berthUrl_isAlive(existing.url))) {
-    const attachHint: string = sessionIdentity.connected ? ` ${identity}` : '';
-    console.error(chalk.red(`[!] Calypso is already running for ${identity} at ${existing.url}`));
-    console.error(chalk.gray(`    attach with:  chell --remote${attachHint}`));
+  const rival: RivalStanding | null = await rival_read(identity);
+  if (rival !== null) {
+    const [refusal, hint] = rivalRefusal_lines(rival, sessionIdentity.connected ? ` ${identity}` : '');
+    console.error(chalk.red(refusal));
+    console.error(chalk.gray(hint));
     process.exit(1);
   }
 
@@ -299,7 +300,11 @@ export async function daemon_launch(
   const url: string = `ws://${displayHost}:${port}`;
   // The berth says what code this daemon runs: a door that ships newer code
   // restarts the session at the next login rather than mount an older kernel.
-  const berth: Berth = { identity, url, token, pid: process.pid, versions: { ...versions_get() } as Record<string, string>, booted: new Date().toISOString() };
+  // And how it proves it is this instance (`/instance`): a key of this launch's, over its identity, pid and boot.
+  const booted: string = new Date().toISOString();
+  const probeKey: string = probeKey_generate();
+  daemon.instance_set({ probeKey, identity, pid: process.pid, booted });
+  const berth: Berth = { identity, url, token, pid: process.pid, versions: { ...versions_get() } as Record<string, string>, booted, probeKey };
   berth_write(berth);
 
   // Terminals: a browser's console as a chell under a pty, attached back
@@ -335,18 +340,16 @@ export async function daemon_launch(
       ? [`host control: ${hostControl_describe(hostControl)}${hostControl.exposed && bindHost !== '127.0.0.1' ? ` (EXPOSED on ${bindHost})` : ''}`]
       : []),
   ];
+  // The note stays when the daemon ends, as its record does: the last advertisement of this daemon, probed like
+  // any record, replaced by the next daemon's (no process unlinks either; see berth.ts).
   const notePath: string | null = attachFile_write(noteLines);
-  const cleanup = (): void => { if (notePath !== null) attachFile_remove(); };
-  if (notePath !== null) {
-    process.once('exit', cleanup);
-    process.once('SIGINT', (): void => { cleanup(); process.exit(0); });
-  }
+  if (notePath !== null) process.once('SIGINT', (): void => { process.exit(0); });
   // Ended from outside (a porter's restart or end, a plain kill): every
   // surface is told why before the process goes, from the reason the host
   // left beside the berth, so a dropped wire is never mistaken for a crash.
   process.once('SIGTERM', (): void => {
     const cause: ClosingCause = closing_take(identity) ?? 'stop';
-    void daemon.closing_announce(cause).finally((): void => { cleanup(); process.exit(0); });
+    void daemon.closing_announce(cause).finally((): void => { process.exit(0); });
   });
 
   // The stack, every package written out once, versions in a clean column:

@@ -45,7 +45,14 @@ const berth: TestBerth = {
   token: 'token',
 };
 
+const instanceProbe_mock = jest.fn();
+let resolverProbe: unknown;
+
 class MockLocalBerthResolver {
+  constructor(probe?: unknown) {
+    resolverProbe = probe;
+  }
+
   public async resolve(_identity: string): Promise<TestBerth | null> {
     return resolverResolve_mock(_identity);
   }
@@ -65,6 +72,7 @@ class MockRepl {
 
 jest.unstable_mockModule('@fnndsc/calypso', () => ({
   LocalBerthResolver: MockLocalBerthResolver,
+  berthInstance_probe: instanceProbe_mock,
   identity_normalise: (user: string, url: string): string => `${user}@${url}`,
 }));
 jest.unstable_mockModule('@fnndsc/brasa', () => ({
@@ -110,26 +118,7 @@ jest.unstable_mockModule('../src/core/surfaceDispatch.js', () => ({
   surfaceLine_execute: surfaceLineExecute_mock,
 }));
 
-const { berth_probeLive, remote_run, berth_parse, commands_split } = await import('../src/remote/client.js');
-
-describe('berth_probeLive', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
-  it('closes a successful probe connection', async () => {
-    remoteConnect_mock.mockResolvedValue({ close: remoteClose_mock });
-
-    await expect(berth_probeLive(berth)).resolves.toBe(true);
-    expect(remoteClose_mock).toHaveBeenCalledTimes(1);
-  });
-
-  it('reports a rejected probe as not live', async () => {
-    remoteConnect_mock.mockRejectedValue(new Error('connection refused'));
-
-    await expect(berth_probeLive(berth)).resolves.toBe(false);
-  });
-});
+const { remote_run, berth_parse, commands_split } = await import('../src/remote/client.js');
 
 describe('remote_run', () => {
   const previousExitCode: number | string | undefined = process.exitCode;
@@ -229,13 +218,15 @@ describe('remote_run', () => {
     expect(logged.join('\n')).not.toMatch(/\+\+\+|xxxx/);
   });
 
-  it('uses the sole live berth when no identity is specified', async () => {
+  it('uses the sole live berth when no identity is specified, judged live by calypso\'s instance probe', async () => {
     await remote_run(undefined, 'pwd');
 
     expect(resolverList_mock).toHaveBeenCalledTimes(1);
     expect(remoteConnect_mock).toHaveBeenCalledWith(expect.objectContaining({ url: berth.url }));
     expect(remoteClose_mock).toHaveBeenCalledTimes(1);
+    expect(resolverProbe).toBe(instanceProbe_mock);
   });
+
 
   it('attaches by address without consulting this host\'s berths', async () => {
     await remote_run(undefined, 'pwd', { address: 'http://pangea:41234/?token=abc123' });

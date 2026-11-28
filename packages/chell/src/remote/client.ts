@@ -23,7 +23,7 @@ import { REPL } from '../core/repl.js';
 import { RemoteEngine, type DaemonStack } from './remoteEngine.js';
 import { buildMismatch_line, closingLine_render, staleLines_render, surfaceNews_read } from './buildMatch.js';
 import type { ClosingCause } from '@fnndsc/menu';
-import { LocalBerthResolver, type Berth } from '@fnndsc/calypso';
+import { berthInstance_probe, LocalBerthResolver, type Berth } from '@fnndsc/calypso';
 import { berthIdentities_derive } from './berthTarget.js';
 import { splashLines_render } from './splash.js';
 import { sink_set, StdoutSink, surface_get, surface_set, welcomeLine_build, welcomeLine_compose, stackBanner_rows, stackBannerRow_paint, buildHash_get } from '@fnndsc/brasa';
@@ -105,24 +105,6 @@ function berthBytes_fetch(berth: Berth, headers: Record<string, string> = {}): (
 }
 
 /**
- * Probes whether a berth's daemon is reachable, by performing the real attach
- * handshake and immediately closing. A rejected connect means the daemon is
- * gone, so the local resolver reaps the stale berth.
- *
- * @param berth - The berth to test.
- * @returns True when the daemon answered the attach handshake.
- */
-export async function berth_probeLive(berth: Berth): Promise<boolean> {
-  try {
-    const probe: RemoteEngine = await RemoteEngine.connect({ url: berth.url, token: berth.token });
-    probe.close();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Prompts the operator to choose one berth from several, over the terminal.
  *
  * @param berths - The live berths to choose among.
@@ -158,7 +140,9 @@ async function berth_pick(berths: Berth[]): Promise<Berth | null> {
  *   printed).
  */
 async function berth_select(target: string | undefined): Promise<Berth | null> {
-  const resolver: LocalBerthResolver = new LocalBerthResolver(berth_probeLive);
+  // Only a record whose daemon proves it is the instance that wrote it is attached to (calypso's instance probe):
+  // the attach token is never sent to an address that merely accepts a connection.
+  const resolver: LocalBerthResolver = new LocalBerthResolver(berthInstance_probe);
 
   if (target) {
     for (const identity of berthIdentities_derive(target)) {

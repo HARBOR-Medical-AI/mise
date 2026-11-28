@@ -20,7 +20,7 @@ import { spawn as childSpawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, existsSync, realpathSync, renameSync, rmSync, writeSync, type Stats } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import { berthKey_compute, berth_pathIn, berthUrl_isAlive, closing_write } from '@fnndsc/calypso/berth';
+import { berthInstance_probe, berthKey_compute, berthRecord_read, berth_pathIn, closing_write, type BerthLiveness } from '@fnndsc/calypso/berth';
 import { sessionEnv_build } from './sessionEnv.js';
 import { restartLine_render, type Berth, type BootLine, type BootListener, type BootReport, type RestartWhy, type SessionHost, type SessionSighting } from './sessionHost.js';
 import { bootLine_note } from './bootLines.js';
@@ -94,7 +94,7 @@ export interface SpawnedSession {
 export type SessionSpawn = (command: string, args: string[], options: { env: NodeJS.ProcessEnv; stdio: ['pipe', 'pipe', 'pipe'] }) => SpawnedSession;
 
 /** Whether a berth's daemon answers on the wire. */
-export type LivenessProbe = (url: string) => Promise<boolean>;
+export type LivenessProbe = (berth: Berth) => Promise<BerthLiveness>;
 
 /** What the process host is built from. */
 export interface ProcessHostOptions {
@@ -106,7 +106,7 @@ export interface ProcessHostOptions {
   stratusEntry?: string | null;
   /** The spawner; `child_process.spawn` by default. */
   spawn?: SessionSpawn;
-  /** The liveness probe; a TCP connect to the berth by default. */
+  /** The liveness probe; the berth's instance proof by default (`berthInstance_probe`). */
   alive?: LivenessProbe;
   /** How long a boot may take before it is called failed, in ms. */
   bootTimeoutMs?: number;
@@ -494,7 +494,7 @@ export class ProcessHost implements SessionHost {
     this.chellEntry = options.chellEntry;
     this.stratusEntry = options.stratusEntry ?? null;
     this.spawner = options.spawn ?? spawn_real;
-    this.alive = options.alive ?? ((url: string): Promise<boolean> => berthUrl_isAlive(url));
+    this.alive = options.alive ?? berthInstance_probe;
     this.bootTimeoutMs = options.bootTimeoutMs ?? 120_000;
     this.pollMs = options.pollMs ?? 250;
     this.kill = options.kill ?? ((pid: number, signal: NodeJS.Signals): void => { process.kill(pid, signal); });
@@ -520,26 +520,12 @@ export class ProcessHost implements SessionHost {
     };
   }
 
-  /** Reads a berth file, if well formed. */
+  /**
+   * Reads a berth record, held to this account (its folder owner-only through a trusted path, the record a regular
+   * 0600 file of this account's, bounded), if well formed: calypso's own reader.
+   */
   private berthFile_read(path: string): Berth | null {
-    if (!existsSync(path)) return null;
-    try {
-      const parsed: Partial<Berth> = JSON.parse(readFileSync(path, 'utf-8')) as Partial<Berth>;
-      if (typeof parsed.url === 'string' && typeof parsed.token === 'string' && typeof parsed.identity === 'string') {
-        return {
-          identity: parsed.identity,
-          url: parsed.url,
-          token: parsed.token,
-          ...(typeof parsed.pid === 'number' ? { pid: parsed.pid } : {}),
-          // What the daemon runs and when it booted: the door compares these with its own tree.
-          ...(typeof parsed.versions === 'object' && parsed.versions !== null ? { versions: parsed.versions } : {}),
-          ...(typeof parsed.booted === 'string' ? { booted: parsed.booted } : {}),
-        };
-      }
-    } catch {
-      // A half-written berth reads as none; the next poll reads it whole.
-    }
-    return null;
+    return berthRecord_read(path);
   }
 
   /**
@@ -594,32 +580,71 @@ export class ProcessHost implements SessionHost {
         // Whose it is, before anything is asked of it: a sighting not believed is not probed either.
         const identity: string | null = this.sightingIdentity_read(entry.name, berth);
         if (identity === null) continue;
-        const alive: boolean = await this.alive(berth.url);
-        sightings.push({ identity, berth, alive });
-        if (alive && !this.sessions.has(identity)) {
-          this.sessions.set(identity, {
-            identity,
-            child: null,
-            adoptedPid: berth.pid ?? null,
-            adoptedStart: berth.pid !== undefined ? this.startReader(berth.pid) : undefined,
-            lines: [],
-            serial: 0,
-            open: new Map(),
-            state: 'ready',
-            listeners: new Set(),
-            starting: null,
-          });
-        }
+        sightings.push(await this.sighting_take(identity, berth));
       }
     }
     return sightings;
+  }
+
+  /**
+   * Probes one sighted berth and adopts its session when it proves itself live. An earlier release's daemon cannot
+   * prove it is the one its record names: it is said, never adopted, and never started beside.
+   *
+   * @param identity - The session.
+   * @param berth - Its record.
+   * @returns The sighting.
+   */
+  private async sighting_take(identity: string, berth: Berth): Promise<SessionSighting> {
+    const liveness: BerthLiveness = await this.alive(berth);
+    const alive: boolean = liveness === 'live';
+    if (liveness === 'unverified') this.unverified_say(identity, berth);
+    if (alive && !this.sessions.has(identity)) {
+      this.sessions.set(identity, {
+        identity,
+        child: null,
+        adoptedPid: berth.pid ?? null,
+        adoptedStart: berth.pid !== undefined ? this.startReader(berth.pid) : undefined,
+        lines: [],
+        serial: 0,
+        open: new Map(),
+        state: 'ready',
+        listeners: new Set(),
+        starting: null,
+      });
+    }
+    return { identity, berth, alive, ...(liveness === 'unverified' ? { unverified: true } : {}) };
+  }
+
+  /**
+   * Whether an identity's record is an earlier release's daemon that may still run, said when it is.
+   *
+   * @param identity - The session.
+   * @returns What was said, or null when nothing stands in the way.
+   */
+  private async unverified_read(identity: string): Promise<string | null> {
+    const standing: Berth | null = this.berth_read(identity);
+    if (standing === null || (await this.alive(standing)) !== 'unverified') return null;
+    return this.unverified_say(identity, standing);
+  }
+
+  /**
+   * Says, in porter's log, that a session's record is an earlier release's daemon that may still run.
+   *
+   * @param identity - The session.
+   * @param berth - Its record.
+   * @returns What was said.
+   */
+  private unverified_say(identity: string, berth: Berth): string {
+    const said: string = `a daemon of an earlier release may still be running for ${identity} at ${berth.url}: it is neither adopted nor started beside. Stop the old daemon from its original terminal (Ctrl-C at the idle daemon prompt) or through its service manager, then retry.`;
+    console.error(`[porter] ${said}`);
+    return said;
   }
 
   /** @inheritdoc */
   public async find(identity: string): Promise<Berth | null> {
     const berth: Berth | null = this.berth_read(identity);
     if (berth === null) return null;
-    return (await this.alive(berth.url)) ? berth : null;
+    return (await this.alive(berth)) === 'live' ? berth : null;
   }
 
   /** @inheritdoc */
@@ -723,6 +748,21 @@ export class ProcessHost implements SessionHost {
 
 
   /**
+   * Settles a session's folders for a boot, or ends the boot as failed with why.
+   *
+   * @param record - The session.
+   * @param launch - What it runs.
+   * @returns The folders and the session's own environment.
+   */
+  private folders_take(record: SessionRecord, launch: SessionLaunch): SettledFolders {
+    try {
+      return this.folders_settle(record.identity, launch.kind === 'stratus');
+    } catch (error: unknown) {
+      return this.boot_end(record, 'failed', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
    * Starts the child and waits for its berth to answer.
    *
    * @param token - The CUBE token the door minted, handed on stdin; null
@@ -730,13 +770,10 @@ export class ProcessHost implements SessionHost {
    *   rather than come up offline.
    */
   private async boot_run(record: SessionRecord, launch: SessionLaunch): Promise<Berth> {
-    let settled: SettledFolders;
-    try {
-      settled = this.folders_settle(record.identity, launch.kind === 'stratus');
-    } catch (error: unknown) {
-      return this.boot_end(record, 'failed', error instanceof Error ? error.message : String(error));
-    }
-    const { dirs, own } = settled;
+    // Never beside a daemon of an earlier release that may still be running: it cannot prove it is gone.
+    const unverified: string | null = await this.unverified_read(record.identity);
+    if (unverified !== null) return this.boot_end(record, 'failed', unverified);
+    const { dirs, own }: SettledFolders = this.folders_take(record, launch);
     if (launch.kind === 'stratus') {
       // The door the session can be raised at: a READ session asks the person's password once and is MANAGE after (D14).
       if (launch.door !== undefined) {
@@ -784,7 +821,7 @@ export class ProcessHost implements SessionHost {
         return this.boot_end(record, 'failed', `the session exited during boot (code ${exited})`);
       }
       const berth: Berth | null = this.berth_read(record.identity);
-      if (berth !== null && (await this.alive(berth.url))) {
+      if (berth !== null && (await this.alive(berth)) === 'live') {
         this.boot_end(record, 'ready');
         return berth;
       }
@@ -955,7 +992,7 @@ export class ProcessHost implements SessionHost {
     // Nothing says whether the process is there. Its berth still answering says it is; its berth silent
     // says only that: a process can stop answering and live on.
     const berth: Berth | null = this.berth_read(identity);
-    return berth !== null && (await this.alive(berth.url)) ? 'there' : 'silent';
+    return berth !== null && (await this.alive(berth)) === 'live' ? 'there' : 'silent';
   }
 
   /**
@@ -988,7 +1025,7 @@ export class ProcessHost implements SessionHost {
       return record.child;
     }
     const berth: Berth | null = this.berth_read(identity);
-    return this.pid_signal(identity, record, berth, berth !== null && (await this.alive(berth.url)), cause);
+    return this.pid_signal(identity, record, berth, berth !== null && (await this.alive(berth)) === 'live', cause);
   }
 
   /**

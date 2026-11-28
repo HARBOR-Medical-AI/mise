@@ -196,13 +196,15 @@ secrets_remove() { # the run's folder
   # the one that knows it to be the folder it made; nothing here goes into a folder inside this one.
   for root in "$dir"; do
     # Every folder that is looked into must be one this user can look into, or what is in it goes unseen.
-    for place in "$root" "$root"/state "$root"/state/* "$root"/run "$root"/run/calypso "$root"/state/*/run "$root"/state/*/run/calypso "$root"/tmp "$root"/state/*/tmp; do
+    for place in "$root" "$root"/state "$root"/state/* "$root"/run "$root"/run/calypso "$root"/state/*/run "$root"/state/*/run/calypso "$root"/tmp "$root"/tmp/calypso-* "$root"/state/*/tmp; do
       [ -d "$place" ] || continue
       [ -r "$place" ] && [ -x "$place" ] || left=1
     done
     for path in "$root"/token "$root"/login.* "$root"/cj \
                 "$root"/config "$root"/state/creds "$root"/state/*/config \
                 "$root"/run/calypso/berth-*.json "$root"/state/*/run/calypso/berth-*.json \
+                "$root"/run/calypso/attach.txt "$root"/state/*/run/calypso/attach.txt \
+                "$root"/tmp/calypso-*/berth-*.json "$root"/tmp/calypso-*/attach.txt \
                 "$root"/tmp/calypso-*.attach "$root"/state/*/tmp/calypso-*.attach; do
       [ -e "$path" ] || [ -L "$path" ] || continue
       parent=$(dirname -- "$path")

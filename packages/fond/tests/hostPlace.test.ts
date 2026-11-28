@@ -150,3 +150,61 @@ describe('privateTemp_write', () => {
   });
 });
 
+describe('owner-only places', () => {
+  const uid: number = process.getuid?.() ?? 0;
+  const base = (): string => mkdtempSync(path.join(tmpdir(), 'fond-own-'));
+
+  it('holds a folder of this account\'s, 0700, through a trusted path; refuses another\'s, a wider one, a link, and a missing one to a reader', async () => {
+    const { ownFolder_settle } = await import('../src/hostPlace.js');
+    const root: string = base();
+    const folder: string = path.join(root, 'calypso');
+    expect(ownFolder_settle(folder, false)).toMatchObject({ ok: false, reason: expect.stringContaining('not there') });
+    expect(ownFolder_settle(folder, true)).toEqual({ ok: true });
+    expect(ownFolder_settle(folder, false, uid + 1)).toMatchObject({ ok: false });
+    chmodSync(folder, 0o755);
+    expect(ownFolder_settle(folder, false)).toMatchObject({ ok: false, reason: expect.stringContaining('wider than 0700') });
+    chmodSync(folder, 0o700);
+    const link: string = path.join(root, 'linked');
+    symlinkSync(folder, link);
+    expect(ownFolder_settle(link, false)).toMatchObject({ ok: false, reason: expect.stringContaining('a link') });
+    // A parent open to others (not root's and sticky) is no trusted path.
+    const open: string = path.join(root, 'open');
+    mkdirSync(open, { mode: 0o777 });
+    chmodSync(open, 0o777);
+    expect(ownFolder_settle(path.join(open, 'calypso'), true)).toMatchObject({ ok: false, reason: expect.stringContaining('open to other accounts') });
+  });
+
+  it('reads only a regular 0600 file of this account\'s, bounded; writes by rename; refuses a standing link or wider file and leaves it as it is', async () => {
+    const { ownFolder_settle, ownFile_read, ownFile_write, ownFile_take } = await import('../src/hostPlace.js');
+    const { readFileSync, lstatSync, readdirSync } = await import('node:fs');
+    const folder: string = path.join(base(), 'calypso');
+    ownFolder_settle(folder, true);
+    expect(ownFile_write(folder, 'berth-1.json', '{"a":1}')).toEqual({ ok: true });
+    expect(lstatSync(path.join(folder, 'berth-1.json')).mode & 0o777).toBe(0o600);
+    expect(ownFile_read(path.join(folder, 'berth-1.json'), 64)).toEqual({ ok: true, text: '{"a":1}' });
+    expect(ownFile_read(path.join(folder, 'berth-1.json'), 3)).toMatchObject({ ok: false, reason: expect.stringContaining('larger than 3 bytes') });
+    expect(ownFile_read(path.join(folder, 'berth-1.json'), 64, uid + 1)).toMatchObject({ ok: false, reason: expect.stringContaining("another account's") });
+    // A valid standing record is replaced; no temporary is left beside it.
+    expect(ownFile_write(folder, 'berth-1.json', '{"a":2}')).toEqual({ ok: true });
+    expect(readFileSync(path.join(folder, 'berth-1.json'), 'utf8')).toBe('{"a":2}');
+    expect(readdirSync(folder)).toEqual(['berth-1.json']);
+    // A link planted at a record's name: refused, the link and its target untouched; a reader refuses it too.
+    const target: string = path.join(base(), 'target.txt');
+    writeFileSync(target, 'theirs');
+    symlinkSync(target, path.join(folder, 'berth-2.json'));
+    expect(ownFile_write(folder, 'berth-2.json', '{"stolen":true}')).toMatchObject({ ok: false, reason: expect.stringContaining('a link, left as it is') });
+    expect(readFileSync(target, 'utf8')).toBe('theirs');
+    expect(lstatSync(path.join(folder, 'berth-2.json')).isSymbolicLink()).toBe(true);
+    expect(ownFile_read(path.join(folder, 'berth-2.json'), 64)).toMatchObject({ ok: false, reason: expect.stringContaining('a link') });
+    // A wider standing record: refused, left; a reader refuses it.
+    writeFileSync(path.join(folder, 'berth-3.json'), '{}', { mode: 0o644 });
+    chmodSync(path.join(folder, 'berth-3.json'), 0o644);
+    expect(ownFile_write(folder, 'berth-3.json', '{}')).toMatchObject({ ok: false, reason: expect.stringContaining('wider than 0600') });
+    expect(ownFile_read(path.join(folder, 'berth-3.json'), 64)).toMatchObject({ ok: false, reason: expect.stringContaining('wider than 0600') });
+    // A note taken is had once.
+    ownFile_write(folder, 'closing-1.json', '{"cause":"stop"}');
+    expect(ownFile_take(folder, 'closing-1.json', 64)).toEqual({ ok: true, text: '{"cause":"stop"}' });
+    expect(ownFile_take(folder, 'closing-1.json', 64)).toMatchObject({ ok: false, reason: expect.stringContaining('not there') });
+  });
+});
+

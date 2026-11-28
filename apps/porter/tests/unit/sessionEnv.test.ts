@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hostControl_parseArgv } from '@fnndsc/calypso';
 import { berthKey_compute } from '@fnndsc/calypso/berth';
+import type { Berth, BerthLiveness } from '@fnndsc/calypso/berth';
 import * as nodeFs from 'node:fs';
 import { identityFile_read, identityFile_write, ProcessHost, sessionDir_settle, type SettleFs, type SpawnedSession, type SessionSpawn } from '../../src/host/processHost.js';
 import { address_isPlain, sessionEnv_build, sessionEnv_withheld } from '../../src/host/sessionEnv.js';
@@ -73,7 +74,7 @@ const spawn: SessionSpawn = (_command, args, options): SpawnedSession => {
 
 /** A host whose sessions never answer: only what it was started with matters here. */
 function host_make(): ProcessHost {
-  return new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn, alive: async (): Promise<boolean> => false, bootTimeoutMs: 60, pollMs: 10 });
+  return new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn, alive: async (): Promise<BerthLiveness> => 'dead', bootTimeoutMs: 60, pollMs: 10 });
 }
 
 /** Waits for the n-th spawn. */
@@ -276,7 +277,7 @@ describe('a folder swapped while it is checked', () => {
   it('refuses the start of a session, and starts nothing', async () => {
     process.env = { PATH: '/usr/bin' };
     const seen = swapping();
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => false, bootTimeoutMs: 60, pollMs: 10, settleFs: seen.fs });
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<BerthLiveness> => 'dead', bootTimeoutMs: 60, pollMs: 10, settleFs: seen.fs });
     await expect(host.spawn(IDENTITY, 'chris', 'https://cube.example.org/api/v1/', 'MINTED')).rejects.toThrow('changed while it was checked');
     expect(spawnCalls).toEqual([]);
     expect(seen.closed).toEqual(seen.opened);
@@ -352,7 +353,7 @@ describe('what agy broke, held', () => {
 describe('the identity marker at adoption and at setup', () => {
   it('adopts by a marker only from a file of this account\'s own that names the folder\'s own identity', async () => {
     const probed: string[] = [];
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (url: string): Promise<boolean> => { probed.push(url); return true; } });
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', alive: async (berth: Berth): Promise<BerthLiveness> => { probed.push(berth.url); return 'live'; } });
     const GOOD: string = 'stratus:oci@good@https://cube.example.org/api/v1/';
     const LINKED: string = 'stratus:oci@linked@https://cube.example.org/api/v1/';
     const MISPLACED: string = 'stratus:oci@misplaced@https://cube.example.org/api/v1/';
@@ -360,8 +361,8 @@ describe('the identity marker at adoption and at setup', () => {
     const PLAIN: string = 'chris@https://cube.example.org/api/v1/';
     const plant = (identity: string, berthIdentity: string): string => {
       const dir: string = join(stateDir, berthKey_compute(identity));
-      mkdirSync(join(dir, 'run', 'calypso'), { recursive: true });
-      writeFileSync(join(dir, 'run', 'calypso', 'berth-x.json'), JSON.stringify({ identity: berthIdentity, url: `ws://127.0.0.1:1/${berthKey_compute(identity)}`, token: 'T' }));
+      mkdirSync(join(dir, 'run', 'calypso'), { recursive: true, mode: 0o700 });
+      writeFileSync(join(dir, 'run', 'calypso', 'berth-x.json'), JSON.stringify({ identity: berthIdentity, url: `ws://127.0.0.1:1/${berthKey_compute(identity)}`, token: 'T' }), { mode: 0o600 });
       return dir;
     };
     identityFile_write(join(plant(GOOD, 'me@cloud'), 'identity'), GOOD);
@@ -426,7 +427,7 @@ describe('the identity marker at adoption and at setup', () => {
       path_real: (path) => nodeFs.realpathSync(path),
       open_close: (fd) => nodeFs.closeSync(fd),
     };
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<boolean> => false, bootTimeoutMs: 60, pollMs: 10, settleFs: fs });
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', spawn, alive: async (): Promise<BerthLiveness> => 'dead', bootTimeoutMs: 60, pollMs: 10, settleFs: fs });
     const root: string = join(host.dirs_build(IDENTITY).config, '..');
     mkdirSync(join(root, 'config'), { recursive: true, mode: 0o755 });
     chmodSync(join(root, 'config'), 0o755);
@@ -459,7 +460,7 @@ describe('the identity marker at adoption and at setup', () => {
       path_real: (path) => nodeFs.realpathSync(path),
       open_close: (fd) => { nodeFs.closeSync(fd); },
     };
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn, alive: async (): Promise<boolean> => false, bootTimeoutMs: 60, pollMs: 10, settleFs: fs });
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn, alive: async (): Promise<BerthLiveness> => 'dead', bootTimeoutMs: 60, pollMs: 10, settleFs: fs });
     host.stratus_begin(STRATUS, '/creds/oci/config', false, false);
     let report: { state: string; reason?: string } | undefined;
     for (let i = 0; i < 50; i++) {
@@ -521,7 +522,7 @@ describe('the identity marker at adoption and at setup', () => {
       path_real: (path) => nodeFs.realpathSync(path),
       open_close: (fd) => { nodeFs.closeSync(fd); },
     };
-    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn, alive: async (): Promise<boolean> => false, bootTimeoutMs: 60, pollMs: 10, settleFs: fs });
+    const host: ProcessHost = new ProcessHost({ stateDir, chellEntry: '/opt/chell/dist/index.js', stratusEntry: '/opt/stratus/dist/stratus.js', spawn, alive: async (): Promise<BerthLiveness> => 'dead', bootTimeoutMs: 60, pollMs: 10, settleFs: fs });
     const root: string = join(host.dirs_build(STRATUS).config, '..');
     host.stratus_begin(STRATUS, '/creds/oci/config', false, false);
     let report: { state: string; reason?: string } | undefined;

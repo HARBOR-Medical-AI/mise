@@ -177,22 +177,22 @@ function berthKey_compute(identity: string): string;                // sha256(id
 
 === Where berths live
 
-A berth is runtime state holding a secret, so it belongs in the runtime directory,
-not `/tmp`, and in an owned subdirectory:
+A berth is runtime state holding a secret, so it belongs in the runtime directory, not a shared folder, and in a folder only its owner can use:
 
 [source,text]
 ----
-${XDG_RUNTIME_DIR:-<tmpdir>}/calypso/berth-<berthKey>.json    # dir 0700, files 0600
+$XDG_RUNTIME_DIR/calypso/berth-<berthKey>.json     # dir 0700, files 0600
+<tmpdir>/calypso-<uid>/berth-<berthKey>.json        # no runtime directory: this account's own name
 ----
 
-* `$XDG_RUNTIME_DIR` (Linux `/run/user/UID`, `0700` tmpfs) is used when set — it is
-  per-user and auto-cleared on logout.
-* Fallback is `tmpdir()` (macOS `TMPDIR` is already per-user-private; Linux `/tmp`).
-* `list()` globs `${runtimeDir}/calypso/berth-*.json`.
+* `$XDG_RUNTIME_DIR` (Linux `/run/user/UID`, `0700` tmpfs) is used when set: it is per-user and cleared at logout.
+* Without it the folder is `tmpdir()/calypso-<uid>`, so no other account can hold the name for everyone.
+* The folder is held before every use (fond `ownFolder_settle`): a real directory of this uid with no group or other bits, reached through a trusted path (every folder from `/` to its parent is root's or this uid's, and not open to others unless root's and sticky, as `/tmp` is). A reader never makes it; a writer makes it `0700`.
+* A record is read only as a regular `0600` file of this uid, opened without following a link and bounded in size (`ownFile_read`); it is written as a fresh `0600` file renamed over its name (`ownFile_write`), so a link planted at the name is refused and left as it is, never written through. A refused folder or record is skipped with one line naming its path and why.
+* `list()` reads `berth-*.json` in that folder and in each porter session's runtime folder.
+* The attach note (`attach.txt`) and a host's closing note sit in the same folder under the same rules.
 
-A berth's lifetime should match its daemon's; both die around reboot/logout, and any
-straggler self-heals on next access (see liveness). No migration from the old
-single-file discovery is needed — a stale old file is simply ignored and reaped.
+No process removes a berth record or the attach note. Node has no lock a crash releases, so no remover can be sure the file it checked is still the one it would unlink: a daemon's next launch for the same identity replaces the record by rename, and a reader treats a record whose daemon does not prove itself as absent (see liveness). One record per identity, so they do not accumulate. A daemon of an earlier release, which wrote into a shared `tmpdir()/calypso`, is not found there: restart it once.
 
 === The resolver seam
 
@@ -221,17 +221,12 @@ additive, no surface rework.
 
 === Liveness: a berth file is a claim, not a guarantee
 
-A berth file can outlive its daemon (crash, reboot). Every read verifies before
-trusting:
+A berth file can outlive its daemon (crash, reboot), and its port can since be another program's, another account's among them. A record is believed only when the instance that wrote it answers:
 
-. *Fast pre-filter (optional).* If the berth records a pid, `kill(pid, 0)` rejects
-  the obviously-dead without a network round-trip.
-. *Authoritative probe.* Attempt the WebSocket handshake against the berth `url`
-  with its token. Success = live (use it); failure = stale.
-. *Passive reap.* On a failed probe, `unlink` the berth file inline. There is no
-  reaper process and no timer; every path that reads a berth cleans the dead one it
-  finds. Worst case is a dead file sitting untouched until the next `--remote`,
-  which is harmless.
+. *A key per launch.* Each launch writes a fresh random `probeKey` (32 bytes) into its private record beside `identity`, `pid` and `booted`.
+. *A challenge with no secret.* A probe is `GET /instance?nonce=<64 lowercase hex>` (anything else is 400). The daemon answers `{ proof }`, HMAC-SHA256 under the key over `calypso-instance-v1`, the nonce, the identity, the pid and the boot time, one per line. The verifier, holding the record, computes the proof itself and compares in constant time. Neither the attach token, the key nor the identity travels, and a proof for another nonce or from another instance (another key, pid or boot) fails.
+. *An earlier release's record* carries no key and cannot prove itself. Only a refused connection means it is gone; an address that accepts, a timeout or a name that does not resolve leaves it *unverified*: never grounds to start beside it, adopt it or attach to it. `calypso --berths` lists it as `unverified (earlier release)`, a start for its identity refuses with "Stop the old daemon from its original terminal (Ctrl-C at the idle daemon prompt) or through its service manager, then retry.", and porter neither adopts it nor starts beside it, and says so in its log.
+. *Every candidate probed.* The resolver walks an identity's records in order (this runtime's, then each porter session's) and probes each before one is chosen, so a dead record never hides a live one behind it. Nothing is removed.
 
 === `--daemon`: find-or-host (foreground) with a duplicate guard
 
@@ -239,7 +234,7 @@ trusting:
 terminal becomes calypso). The only new behaviour is a guard: before hosting, it
 resolves the identity's berth and probes it. If a *live* daemon already exists for
 that identity, it prints where to find it and exits rather than starting a
-split-brain second daemon:
+split-brain second daemon (an *unverified* one, of an earlier release, is refused the same way, with how to stop it):
 
 [source,text]
 ----
@@ -384,7 +379,7 @@ not be inferred from durable `/proc` cache storage.
 |Stage |Content
 
 |*Tier 1 (shipped)* |Identity-keyed `Berth` + lexical normalisation; `BerthResolver` +
- `LocalBerthResolver` (XDG runtime dir, WS-probe liveness, passive reap);
+ `LocalBerthResolver` (owner-only berth folder, instance-proof liveness, nothing removed);
  `--daemon` foreground duplicate-guard; `--remote <id>@<url>` resolution with
  picker/non-TTY fallback; standalone `calypso` writes an identity-keyed berth. No
  new package — edits to calypso discovery + chell remote client.

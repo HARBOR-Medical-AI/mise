@@ -1,9 +1,9 @@
 /**
  * @file Tests for identity-keyed berths: normalisation, keying, file IO, and
- * the local resolver's liveness reaping.
+ * owner-only records, and the local resolver's walk past dead records.
  */
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, symlinkSync, readFileSync, lstatSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -22,8 +22,7 @@ import {
   berthPaths_list,
   berth_pathIn,
   berthAll_read,
-  berth_remove,
-  berthUrl_isAlive,
+  berthUrl_connect,
   LocalBerthResolver,
   type Berth,
 } from '../src/daemon/berth.js';
@@ -44,8 +43,20 @@ beforeEach(() => {
   delete process.env.PORTER_STATE_DIR;
   // Some tests write a berth file directly (bypassing berth_write, which would
   // otherwise create the directory) to exercise malformed/mismatched reads.
-  mkdirSync(join(runtimeDir, 'calypso'), { recursive: true });
+  mkdirSync(join(runtimeDir, 'calypso'), { recursive: true, mode: 0o700 });
 });
+
+/** Writes a file as a berth record is held: this account's, 0600 (umask aside). */
+const record_put = (path: string, content: string): void => {
+  writeFileSync(path, content, { mode: 0o600 });
+  chmodSync(path, 0o600);
+};
+
+/** Makes a folder as a berth folder is held: this account's, 0700. */
+const folder_put = (path: string): void => {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  chmodSync(path, 0o700);
+};
 
 afterEach(() => {
   rmSync(runtimeDir, { recursive: true, force: true });
@@ -124,13 +135,13 @@ describe('berth file IO', () => {
   it('rejects a berth whose stored identity does not match the requested one', () => {
     // Write a berth whose file lands at one identity's path but records another.
     const path: string = berth_path('u@http://h/api/v1/');
-    writeFileSync(path, JSON.stringify({ identity: 'other@http://h/api/v1/', url: 'ws://x', token: 't' }));
+    record_put(path, JSON.stringify({ identity: 'other@http://h/api/v1/', url: 'ws://x', token: 't' }));
     expect(berth_read('u@http://h/api/v1/')).toBeNull();
   });
 
   it('returns null for a malformed berth file', () => {
     const path: string = berth_path('u@http://h/api/v1/');
-    writeFileSync(path, 'not json');
+    record_put(path, 'not json');
     expect(berth_read('u@http://h/api/v1/')).toBeNull();
   });
 
@@ -147,35 +158,84 @@ describe('berth file IO', () => {
     expect(berthAll_read()).toEqual([]);
   });
 
-  it('removes a berth file', () => {
-    const berth: Berth = berth_of('u@http://h/api/v1/');
-    berth_write(berth);
-    expect(existsSync(berth_path(berth.identity))).toBe(true);
-    berth_remove(berth.identity);
-    expect(existsSync(berth_path(berth.identity))).toBe(false);
+  it('refuses a record that is a link, wider than 0600, or in a folder wider than 0700; the writer leaves a planted link and its target as they are', () => {
+    const identity: string = 'u@http://h/api/v1/';
+    const elsewhere: string = mkdtempSync(join(tmpdir(), 'berth-elsewhere-'));
+    const target: string = join(elsewhere, 'theirs.json');
+    record_put(target, JSON.stringify(berth_of(identity, 'ws://127.0.0.1:6666')));
+    symlinkSync(target, berth_path(identity));
+    expect(berth_read(identity)).toBeNull();
+    expect(() => berth_write(berth_of(identity))).toThrow('a link, left as it is');
+    expect(readFileSync(target, 'utf8')).toContain('6666');
+    expect(lstatSync(berth_path(identity)).isSymbolicLink()).toBe(true);
+    rmSync(berth_path(identity));
+    record_put(berth_path(identity), JSON.stringify(berth_of(identity)));
+    chmodSync(berth_path(identity), 0o644);
+    expect(berth_read(identity)).toBeNull();
+    expect(() => berth_write(berth_of(identity))).toThrow('wider than 0600');
+    chmodSync(berth_path(identity), 0o600);
+    expect(berth_read(identity)).not.toBeNull();
+    chmodSync(berthDir_path(), 0o755);
+    expect(berth_read(identity)).toBeNull();
+    expect(berthAll_read()).toEqual([]);
+    expect(() => berth_write(berth_of(identity))).toThrow('wider than 0700');
+    chmodSync(berthDir_path(), 0o700);
+    rmSync(elsewhere, { recursive: true, force: true });
+  });
+
+  it('a reader never makes the berth folder; a writer makes it 0700', () => {
+    rmSync(berthDir_path(), { recursive: true, force: true });
+    expect(berth_read('u@http://h/api/v1/')).toBeNull();
+    expect(existsSync(berthDir_path())).toBe(false);
+    berth_write(berth_of('u@http://h/api/v1/'));
+    expect(lstatSync(berthDir_path()).mode & 0o777).toBe(0o700);
+    expect(lstatSync(berth_path('u@http://h/api/v1/')).mode & 0o777).toBe(0o600);
+  });
+
+  it('without a runtime folder the berth folder is this account\'s own name under the temporary folder', () => {
+    delete process.env.XDG_RUNTIME_DIR;
+    expect(berthDir_path()).toBe(join(tmpdir(), `calypso-${String(process.getuid?.())}`));
+    process.env.XDG_RUNTIME_DIR = runtimeDir;
+  });
+
+  it('a record with a probe key holds every fact a proof is made over, or is no record', () => {
+    const identity: string = 'u@http://h/api/v1/';
+    const key: string = 'a'.repeat(64);
+    record_put(berth_path(identity), JSON.stringify({ ...berth_of(identity), probeKey: key }));
+    expect(berth_read(identity)).toBeNull();
+    record_put(berth_path(identity), JSON.stringify({ ...berth_of(identity), probeKey: 'short', pid: 1, booted: 'b' }));
+    expect(berth_read(identity)).toBeNull();
+    record_put(berth_path(identity), JSON.stringify({ ...berth_of(identity), probeKey: key, pid: 1, booted: 'b' }));
+    expect(berth_read(identity)?.probeKey).toBe(key);
   });
 });
 
-describe('berthUrl_isAlive', () => {
-  it('is true when a TCP listener accepts on the berth port', async () => {
+describe('berthUrl_connect', () => {
+  it('is accepted when a TCP listener accepts on the berth port', async () => {
     const server: Server = createServer();
-    await new Promise<void>((resolve: () => void): void => { server.listen(0, '127.0.0.1', resolve); });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port: number = (server.address() as AddressInfo).port;
     try {
-      expect(await berthUrl_isAlive(`ws://127.0.0.1:${port}`)).toBe(true);
+      expect(await berthUrl_connect(`ws://127.0.0.1:${port}`)).toBe('accepted');
     } finally {
-      await new Promise<void>((resolve: () => void): void => { server.close(() => resolve()); });
+      server.close();
     }
   });
 
-  it('is false for a port with no listener', async () => {
-    // Port 1 is privileged and unbound in test environments.
-    expect(await berthUrl_isAlive('ws://127.0.0.1:1', 200)).toBe(false);
+  it('is refused only for a refused connection, or a url that names no address', async () => {
+    const server: Server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port: number = (server.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    expect(await berthUrl_connect(`ws://127.0.0.1:${port}`, 200)).toBe('refused');
+    expect(await berthUrl_connect('not a url')).toBe('refused');
+    expect(await berthUrl_connect('ws://127.0.0.1')).toBe('refused');
   });
 
-  it('is false for a malformed url or a url with no port', async () => {
-    expect(await berthUrl_isAlive('not a url')).toBe(false);
-    expect(await berthUrl_isAlive('ws://127.0.0.1')).toBe(false);
+  it('is inconclusive for a timeout or a name that does not resolve: neither means nothing is there', async () => {
+    // TEST-NET-1 is never routed: the connect times out or the network says it cannot reach it.
+    expect(await berthUrl_connect('ws://192.0.2.1:9', 150)).toBe('inconclusive');
+    expect(await berthUrl_connect('ws://no-such-host.invalid:9', 2000)).toBe('inconclusive');
   });
 });
 
@@ -187,32 +247,47 @@ describe('LocalBerthResolver', () => {
     expect(await resolver.resolve(berth.identity)).toEqual(berth);
   });
 
-  it('reaps a dead berth on resolve and returns null', async () => {
+  it('passes over a dead berth on resolve and leaves its record', async () => {
     const berth: Berth = berth_of('u@http://h/api/v1/');
     berth_write(berth);
-    const resolver: LocalBerthResolver = new LocalBerthResolver(async () => false);
+    const resolver: LocalBerthResolver = new LocalBerthResolver(async () => 'dead');
     expect(await resolver.resolve(berth.identity)).toBeNull();
-    expect(existsSync(berth_path(berth.identity))).toBe(false);
-  });
-
-  it('keeps a live berth on resolve', async () => {
-    const berth: Berth = berth_of('u@http://h/api/v1/');
-    berth_write(berth);
-    const resolver: LocalBerthResolver = new LocalBerthResolver(async () => true);
-    expect(await resolver.resolve(berth.identity)).toEqual(berth);
     expect(existsSync(berth_path(berth.identity))).toBe(true);
   });
 
-  it('lists only live berths and reaps the dead', async () => {
+  it('an unverified berth is not resolved to (nothing proves who answers), and is listed as unverified', async () => {
+    const berth: Berth = berth_of('u@http://h/api/v1/');
+    berth_write(berth);
+    const resolver: LocalBerthResolver = new LocalBerthResolver(async () => 'unverified');
+    expect(await resolver.resolve(berth.identity)).toBeNull();
+    expect(await resolver.list()).toEqual([]);
+    expect((await resolver.probed_list()).map((one) => one.liveness)).toEqual(['unverified']);
+  });
+
+  it('lists only live berths and removes nothing', async () => {
     const live: Berth = berth_of('live@http://h/api/v1/', 'ws://127.0.0.1:1111');
     const dead: Berth = berth_of('dead@http://h/api/v1/', 'ws://127.0.0.1:2222');
     berth_write(live);
     berth_write(dead);
-    const resolver: LocalBerthResolver = new LocalBerthResolver(async (b: Berth) => b.identity === live.identity);
-    const listed: Berth[] = await resolver.list();
-    expect(listed).toEqual([live]);
-    expect(existsSync(berth_path(dead.identity))).toBe(false);
+    const resolver: LocalBerthResolver = new LocalBerthResolver(async (b: Berth) => (b.identity === live.identity ? 'live' : 'dead'));
+    expect(await resolver.list()).toEqual([live]);
+    expect(existsSync(berth_path(dead.identity))).toBe(true);
     expect(existsSync(berth_path(live.identity))).toBe(true);
+  });
+
+  it('a dead record of this runtime never hides a live porter record of the same identity behind it', async () => {
+    const identity: string = identity_normalise('chris', 'http://cube/api/v1/');
+    berth_write(berth_of(identity, 'ws://127.0.0.1:1111'));
+    const porterPath: string = berth_pathIn(join(runtimeDir, 'state', 'porter', berthKey_compute(identity), 'run'), identity);
+    folder_put(join(porterPath, '..'));
+    record_put(porterPath, JSON.stringify(berth_of(identity, 'ws://127.0.0.1:9999')));
+    const resolver: LocalBerthResolver = new LocalBerthResolver(async (b: Berth) => (b.url.endsWith('9999') ? 'live' : 'dead'));
+    for (let round = 0; round < 2; round++) {
+      expect((await resolver.resolve(identity))?.url).toBe('ws://127.0.0.1:9999');
+      expect(await resolver.listLocated()).toEqual([{ berth: expect.objectContaining({ url: 'ws://127.0.0.1:9999' }), path: porterPath }]);
+    }
+    expect(existsSync(berth_path(identity))).toBe(true);
+    expect(existsSync(porterPath)).toBe(true);
   });
 });
 
@@ -227,7 +302,11 @@ describe('closing reasons', () => {
       expect(closing_take(IDENTITY, runtime)).toBe('restart');
       expect(existsSync(closing_pathIn(runtime, IDENTITY))).toBe(false);
       expect(closing_take(IDENTITY, runtime)).toBeNull();
-      writeFileSync(closing_pathIn(runtime, IDENTITY), JSON.stringify({ cause: 'end', at: Date.now() - 3_600_000 }));
+      record_put(closing_pathIn(runtime, IDENTITY), JSON.stringify({ cause: 'end', at: Date.now() - 3_600_000 }));
+      expect(closing_take(IDENTITY, runtime)).toBeNull();
+      // A note another account could have put there is not taken.
+      record_put(closing_pathIn(runtime, IDENTITY), JSON.stringify({ cause: 'end', at: Date.now() }));
+      chmodSync(closing_pathIn(runtime, IDENTITY), 0o644);
       expect(closing_take(IDENTITY, runtime)).toBeNull();
     } finally {
       rmSync(runtime, { recursive: true, force: true });
@@ -241,8 +320,8 @@ describe('a porter\'s sessions', () => {
     const root: string = join(runtimeDir, 'state', 'porter');
     const path: string = berth_pathIn(join(root, berthKey_compute(identity), 'run'), identity);
     expect(berthPaths_list(identity)).toContain(path);
-    mkdirSync(join(path, '..'), { recursive: true });
-    writeFileSync(path, JSON.stringify(berth_of(identity, 'ws://127.0.0.1:9999')));
+    folder_put(join(path, '..'));
+    record_put(path, JSON.stringify(berth_of(identity, 'ws://127.0.0.1:9999')));
     expect(berth_read(identity)?.url).toBe('ws://127.0.0.1:9999');
     expect(berthAll_read().map((one) => one.identity)).toContain(identity);
     // The start-up guard is this runtime's own: a porter session is not a rival.
@@ -257,9 +336,9 @@ describe('a porter\'s sessions', () => {
     const identity: string = identity_normalise('chris', 'http://cube/api/v1/');
     const root: string = join(runtimeDir, 'state', 'porter');
     const path: string = berth_pathIn(join(root, berthKey_compute(identity), 'run'), identity);
-    mkdirSync(join(path, '..'), { recursive: true });
+    folder_put(join(path, '..'));
     const berth = berth_of(identity, 'ws://127.0.0.1:9999');
-    writeFileSync(path, JSON.stringify(berth));
+    record_put(path, JSON.stringify(berth));
     const located = await new LocalBerthResolver().listLocated();
     expect(located).toEqual([{ berth: expect.objectContaining({ identity, token: berth.token }), path }]);
     // Not the path an identity alone would give in this runtime, where no such file is.

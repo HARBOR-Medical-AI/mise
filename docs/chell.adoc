@@ -62,6 +62,10 @@ $ calypso --version                                    # the stack this calypso 
 
 A *berth* is the record of a running session, keyed by identity, so `--remote you@url` finds the right daemon without being told a port. Berths are per-identity: several daemons for several CUBE logins coexist on one machine without colliding.
 
+A berth lives in a folder only its owner can use: `$XDG_RUNTIME_DIR/calypso`, or `<tmpdir>/calypso-<uid>` where there is no runtime directory. A folder or record another account could have made or changed (a link, another owner's, wider than `0700` or `0600`) is refused and named, never read. A berth is believed only when its daemon proves it is the instance that wrote it (`GET /instance`, a challenge that carries no secret; see link:session-supervisor.adoc[the session supervisor]). No process removes a berth: a dead one is passed over and the next daemon of its identity replaces it.
+
+*Upgrading:* a daemon of an earlier release wrote its berth in the shared `tmpdir()/calypso` (where there was no runtime directory) and cannot prove itself, so current clients do not find it there, and where they do find one it is listed as `unverified (earlier release)` and no daemon is started beside it. Stop it once from its original terminal (Ctrl-C at the idle daemon prompt) or through its service manager, then start it again.
+
 The *attach token* gates every session. Anyone holding it can drive the session as the identity that started it, so the URL the daemon prints is a credential in full.
 
 == Host control

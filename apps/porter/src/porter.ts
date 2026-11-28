@@ -42,7 +42,7 @@ async function status_print(stateDir: string): Promise<void> {
     return;
   }
   for (const sighting of sightings) {
-    const state: string = sighting.alive ? 'answering' : 'gone';
+    const state: string = sighting.alive ? 'answering' : sighting.unverified === true ? 'unverified (earlier release)' : 'gone';
     // The pid is what the daemon wrote when it started. On a gone row it
     // names a process that is not there — a berth outlives a daemon killed
     // with -9 — and printed bare it read as one the listing had just made.
@@ -80,6 +80,10 @@ async function session_end(stateDir: string, who: string): Promise<void> {
     process.exit(1);
   }
   const target: SessionSighting = matches[0] as SessionSighting;
+  if (target.unverified === true) {
+    console.error(`${berthKey_compute(target.identity)}  unverified (earlier release): stop the old daemon from its original terminal (Ctrl-C at the idle daemon prompt) or through its service manager  ${target.identity}`);
+    process.exit(1);
+  }
   if (!target.alive) {
     console.log(`${berthKey_compute(target.identity)}  gone already  ${target.identity}`);
     return;

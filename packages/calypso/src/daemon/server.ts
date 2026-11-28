@@ -25,6 +25,7 @@
  * @module
  */
 import type { ElevationDoor } from './elevation.js';
+import { instanceRequest_serve, type InstanceFacts } from './instance.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -329,6 +330,8 @@ export class CalypsoDaemon {
   private terminals: Terminals | null = null;
   /** Starts host ptys for a terminal surface's `!` under host control; null when node-pty is not built here. */
   private ptySpawn: PtySpawn | null = null;
+  /** The facts this daemon proves itself by at `/instance`; null until its record is written. */
+  private instance: InstanceFacts | null = null;
   /** The `!` commands running on host ptys, by id, with the surface they draw on. */
   private readonly hostPtys: Map<string, { surface: Surface; run: HostPtyRun }> = new Map();
   private readonly codeCheck: (() => void) | undefined;
@@ -460,6 +463,17 @@ export class CalypsoDaemon {
   }
 
   /**
+   * Sets the facts this daemon proves itself by at `/instance`, the ones its berth record holds.
+   *
+   * @param facts - The launch's probe key, identity, pid and boot time.
+   * @example
+   * daemon.instance_set({ probeKey, identity, pid: process.pid, booted });
+   */
+  public instance_set(facts: InstanceFacts): void {
+    this.instance = facts;
+  }
+
+  /**
    * Records whether the daemon's own code still matches its disk, and tells
    * every attached surface when that changes.
    *
@@ -562,6 +576,10 @@ export class CalypsoDaemon {
                 response.destroy();
               }
             });
+            return;
+          }
+          if (requestPath === '/instance') {
+            instanceRequest_serve(request, response, this.instance);
             return;
           }
           if (requestPath === '/backend') {

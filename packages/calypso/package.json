@@ -57,6 +57,7 @@
   "dependencies": {
     "@fnndsc/brasa": "^0.57.0",
     "@fnndsc/cumin": "^3.30.5",
+    "@fnndsc/fond": "^0.6.2",
     "chalk": "^4.1.2",
     "ws": "^8.18.0",
     "zod": "^4.6.7",

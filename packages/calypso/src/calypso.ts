@@ -20,7 +20,7 @@ import { daemon_launch, type DaemonLaunchInfo } from './daemon/launch.js';
 import { packageWebRoot_find } from './daemon/static.js';
 import { daemonConsole_run } from './daemon/consoleSession.js';
 import { hostControl_parseArgv, type HostControlPolicy } from './daemon/hostControl.js';
-import { LocalBerthResolver, berthUrl_isAlive, type Berth, type LocatedBerth } from './daemon/berth.js';
+import { LocalBerthResolver, berthInstance_probe, type ProbedBerth } from './daemon/berth.js';
 import { berthLines_say } from './daemon/token.js';
 
 /** The backends a test may ask the calypso command to host instead of ChRIS. */
@@ -113,20 +113,19 @@ async function calypso_start(): Promise<void> {
  * convenient; it is also world-readable, and the token is a credential.
  */
 async function berths_print(): Promise<void> {
-  const resolver: LocalBerthResolver = new LocalBerthResolver(
-    (berth: Berth): Promise<boolean> => berthUrl_isAlive(berth.url),
-  );
-  // Each berth with the record it was read from: this runtime's, or a porter session's.
-  const berths: LocatedBerth[] = await resolver.listLocated();
+  const resolver: LocalBerthResolver = new LocalBerthResolver(berthInstance_probe);
+  // Each berth with the record it was read from (this runtime's, or a porter session's), and whether its daemon
+  // proved it is running: an earlier release's cannot, and is shown as such rather than hidden or believed.
+  const berths: ProbedBerth[] = await resolver.probed_list();
   if (berths.length === 0) {
     console.error(chalk.yellow('No calypso is running.'));
     console.error(chalk.gray("Start one with:  calypso <user>@<url>"));
     return;
   }
-  for (const { berth, path } of berths) {
+  for (const { berth, path, liveness } of berths) {
     // Each berth's token is printed to a terminal and, anywhere else, named by the record it was actually read from.
     const [identity, argus, attach] = berthLines_say(berth.identity, berth.url, berth.token, process.stdout.isTTY === true, path);
-    console.log(chalk.bold.cyan(identity));
+    console.log(chalk.bold.cyan(identity) + (liveness === 'unverified' ? chalk.yellow('  unverified (earlier release)') : ''));
     console.log(chalk.green(argus));
     console.log(chalk.gray(attach));
   }
