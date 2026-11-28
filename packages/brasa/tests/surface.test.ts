@@ -82,6 +82,7 @@ describe('HeadlessSurface', () => {
       shellCommands: false,
       fileDelivery: false,
       engineFilesystem: false,
+      engineProcesses: false,
       localFilesystem: false,
     });
     expect(() => surface.prompt({ message: 'x' })).toThrow(CapabilityError);

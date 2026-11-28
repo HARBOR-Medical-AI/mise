@@ -48,7 +48,8 @@ import {
   type ReferenceExpansion,
   type ShellWord,
 } from '../lib/parser.js';
-import { surface_get, capability_require, hostDisk_refusal } from './surface.js';
+import { surface_get, capability_require } from './surface.js';
+import { hostDisk_refusal } from './hostGate.js';
 import { sudoCommand_run } from './elevation.js';
 import {
   pipeSegment_word,

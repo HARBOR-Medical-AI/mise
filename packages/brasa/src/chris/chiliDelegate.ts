@@ -13,7 +13,7 @@ import chalk from 'chalk';
 import { run_capture, commandNames_get } from '@fnndsc/chili/run.js';
 import { type CommandEnvelope, envelope_ok, envelope_error } from '@fnndsc/menu';
 import { exitCode_set } from '../core/handlerRun.js';
-import { hostDisk_refusal } from '../core/surface.js';
+import { hostDisk_refusal } from '../core/hostGate.js';
 
 /** chili's top-level command names, resolved once and memoized (see {@link chiliCommand_exists}). */
 let chiliCommandNames: Set<string> | null = null;

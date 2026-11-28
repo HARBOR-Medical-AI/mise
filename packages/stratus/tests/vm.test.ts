@@ -7,7 +7,7 @@
  * teardown keeping the data or, with --all, taking it.
  */
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BufferSink, HeadlessSurface, JobRunner, runner_install, sink_set, surface_set, type PromptRequest } from '@fnndsc/brasa/core';
@@ -16,7 +16,7 @@ import type { CommandEnvelope } from '@fnndsc/menu';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
 import { vmCloudInit_render, vmMachineVariables_build, vmModule_zip, vmOs_lower } from '../src/cloud/oci/modules/vm.js';
-import { ports_read, vmPorts_open, vmLimits_derive, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, vmStands_diff, type VmSpec } from '../src/vm/spec.js';
+import { ports_read, vmPorts_open, vmLimits_derive, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, vmStands_diff, type VmSpec , sshKeyFile_resolve } from '../src/vm/spec.js';
 import { VmStore, type VmRecord } from '../src/vm/state.js';
 import { vmCost_estimate } from '../src/vm/build.js';
 import { vmKept_merge, vmKept_write } from '../src/vm/keep.js';
@@ -680,3 +680,36 @@ describe('vm, over the fake cloud', () => {
     expect((await vm_run(context, ['restart', 'store'])).renderedErr).toContain("vm: unexpected operand 'store'");
   });
 });
+
+describe('--ssh-key-file', () => {
+  afterEach(() => { surface_set(new HeadlessSurface()); });
+
+  it('is read only when the session\'s host disk is the operator\'s: refused alike, with no read, for a missing, an unreadable and a real key', () => {
+    const dir: string = mkdtempSync(join(tmpdir(), 'stratus-sshkey-'));
+    const real: string = join(dir, 'id.pub');
+    writeFileSync(real, 'ssh-ed25519 AAAA me@host\n');
+    const locked: string = join(dir, 'locked.pub');
+    writeFileSync(locked, 'ssh-ed25519 BBBB me@host\n');
+    chmodSync(locked, 0o000);
+    const reads: string[] = [];
+    const reader = (path: string): string => { reads.push(path); return readFileSync(path, 'utf-8'); };
+    surface_set(new HeadlessSurface());
+    const said: Array<string | null> = [join(dir, 'missing.pub'), locked, real].map((path: string): string | null => sshKeyFile_resolve(new Map([['--ssh-key-file', path]]), reader));
+    expect(new Set(said)).toEqual(new Set(["--ssh-key-file: the session's host disk is nobody's; start the session with --host-control=files"]));
+    expect(reads).toEqual([]);
+    // With the files tier: a key, a key reached through a link, and a key readable by all are read.
+    const surface: HeadlessSurface = new HeadlessSurface();
+    Object.assign(surface.capabilities, { engineFilesystem: true });
+    surface_set(surface);
+    const linked: string = join(dir, 'linked.pub');
+    symlinkSync(real, linked);
+    chmodSync(real, 0o644);
+    for (const path of [real, linked]) {
+      const options: Map<string, string> = new Map([['--ssh-key-file', path]]);
+      expect(sshKeyFile_resolve(options, reader)).toBeNull();
+      expect(options.get('--ssh-key')).toBe('ssh-ed25519 AAAA me@host');
+    }
+    chmodSync(locked, 0o600);
+  });
+});
+

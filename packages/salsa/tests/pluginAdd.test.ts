@@ -46,7 +46,7 @@ import {
   pluginInput_detect,
   type PluginAddResult,
 } from '../src/plugins/plugin_add';
-import { descriptorFromImage_extract, dockerImage_ensure, docker_isAvailable, type DockerAnswer, type DockerRun } from '../src/plugins/plugin_docker';
+import { descriptorFromImage_extract, dockerImage_ensure, docker_isAvailable, hostDocker_trust, type DockerAnswer, type DockerRun } from '../src/plugins/plugin_docker';
 import { items_mapPooled } from '../src/plugins/pool';
 
 const notes: string[] = [];
@@ -205,6 +205,23 @@ describe('plugin_add', () => {
     const uploaded: Record<string, unknown> = JSON.parse(String((mockUpload.mock.calls[0]?.[0] as { descriptor: string }).descriptor)) as Record<string, unknown>;
     expect(uploaded).toMatchObject({ name: 'pl-x', dock_image: 'fnndsc/pl-x:1', public_repo: 'https://github.com/FNNDSC/pl-x' });
     expect(run.calls[2]).toBe('run --rm fnndsc/pl-x:1 chris_plugin_info --dock-image fnndsc/pl-x:1 --public-repo https://github.com/FNNDSC/pl-x');
+  });
+
+  it('starts no docker on its own: no runner given and none trusted, the image path refuses; a refusal given is said; a trusted one runs', async () => {
+    const trusted = docker_fake([['info', { ok: true }], ['image inspect --format {{.Id}}', { ok: true }], ['run --rm pl-x:latest chris_plugin_info', { ok: true, stdout: '{"version":"1"}' }]]);
+    hostDocker_trust(null);
+    expect(await plugin_add('pl-x', {}, note)).toMatchObject({ outcome: 'failed', reason: 'plugin add from an image (pl-x:latest): this process may not start docker on its host' });
+    expect(await plugin_add('pl-x', {}, note, { refused: 'plugin add from an image (docker): this session may not start programs on its host; start the session with --host-control=shell' }))
+      .toMatchObject({ outcome: 'failed', reason: expect.stringContaining('--host-control=shell') });
+    expect(trusted.calls).toEqual([]);
+    // A person's own command line trusts docker for the process: then the image path runs it.
+    hostDocker_trust(trusted);
+    try {
+      expect((await plugin_add('pl-x', {}, note)).outcome).toBe('installed');
+      expect(trusted.calls.length).toBeGreaterThan(0);
+    } finally {
+      hostDocker_trust(null);
+    }
   });
 
   it('says why the image path failed', async () => {

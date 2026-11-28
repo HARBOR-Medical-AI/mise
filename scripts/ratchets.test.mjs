@@ -682,5 +682,54 @@ for (const lint of lints) {
   expect_that('a README that says to install globally a package with no bin fails', binless.length === 1 && binless[0].includes('no bin to run'), binless.join(' | '));
 }
 
-console.log(failed === 0 ? `ratchets: the cast ratchet, the coverage ratchet, the base it is compared with, the line-builder lint, the chili ratchet, the packed entry points, and the reach of the test and seam lints all hold (made in ${run})` : `ratchets test: ${failed} failed (made in ${run})`);
+// --- the host gate ---
+{
+  const { effects_find, gate_judge, gate_parse } = await import('./host-gate.mjs');
+  const tree = join(run, 'host-gate');
+  file_put(join(tree, 'packages/brasa/package.json'), JSON.stringify({ name: '@fnndsc/brasa', exports: { '.': './dist/index.js' } }));
+  file_put(join(tree, 'packages/brasa/src/direct.ts'), "import { readFileSync } from 'node:fs';\nexport const a = readFileSync;\n");
+  file_put(join(tree, 'packages/brasa/src/spawn.ts'), "const { spawn } = require('child_process');\nexport const b = spawn;\n");
+  file_put(join(tree, 'packages/brasa/src/lazy.ts'), "export const c = async () => (await import('fs/promises')).readFile;\n");
+  file_put(join(tree, 'packages/brasa/src/adapter.ts'), "export { readFile } from 'node:fs';\nexport const harmless = 1;\n");
+  file_put(join(tree, 'packages/brasa/src/viaAdapter.ts'), "import { readFile } from './adapter.js';\nexport const d = readFile;\n");
+  file_put(join(tree, 'packages/brasa/src/harmless.ts'), "import { harmless } from './adapter.js';\nexport const e = harmless;\n");
+  file_put(join(tree, 'packages/brasa/src/rebind.ts'), "import * as cp from 'node:child_process';\nexport { cp };\n");
+  file_put(join(tree, 'packages/brasa/src/viaRebind.ts'), "import { cp } from './rebind.js';\nexport const f = cp;\n");
+  file_put(join(tree, 'packages/brasa/src/comment.ts'), "// import fs from 'fs';\nconst words = \"require('child_process')\";\nexport const g = words;\n");
+  file_put(join(tree, 'packages/fond/package.json'), JSON.stringify({ name: '@fnndsc/fond', exports: { '.': './dist/index.js', './sub': './dist/sub.js' } }));
+  file_put(join(tree, 'packages/fond/src/index.ts'), "export * from './sub.js';\nexport const safe = 1;\n");
+  file_put(join(tree, 'packages/fond/src/sub.ts'), "export { writeFile } from 'fs';\n");
+  file_put(join(tree, 'packages/brasa/src/byName.ts'), "import { writeFile } from '@fnndsc/fond';\nexport const h = writeFile;\n");
+  file_put(join(tree, 'packages/brasa/src/bySubpath.ts'), "import { writeFile } from '@fnndsc/fond/sub';\nexport const i = writeFile;\n");
+  file_put(join(tree, 'packages/brasa/src/byNameSafe.ts'), "import { safe } from '@fnndsc/fond';\nexport const j = safe;\n");
+  const found = effects_find(tree, ['packages/brasa', 'packages/fond']);
+  const of = (file) => [...(found.get(`packages/brasa/src/${file}`) ?? [])].sort().join('+');
+  expect_that('an effect is found by a static import, a require and a dynamic import, by node\'s prefixed and bare names alike', of('direct.ts') === 'fs' && of('spawn.ts') === 'child_process' && of('lazy.ts') === 'fs', JSON.stringify([...found]));
+  expect_that('a consumer of a module that re-exports an effect\'s binding has the effect; one taking only a harmless sibling export has none', of('viaAdapter.ts') === 'fs' && of('harmless.ts') === '', JSON.stringify([...found]));
+  expect_that('a module that exports an imported effect binding of its own carries it to its consumers', of('viaRebind.ts') === 'child_process' && of('rebind.ts') === 'child_process', JSON.stringify([...found]));
+  expect_that('a re-export followed through a workspace package name and its exported subpath carries the effect; a harmless export of the same package does not', of('byName.ts') === 'fs' && of('bySubpath.ts') === 'fs' && of('byNameSafe.ts') === '', JSON.stringify([...found]));
+  expect_that('a comment or a string that shows an import is none', of('comment.ts') === '', JSON.stringify([...found]));
+  const reason = 'asks hostDisk_refusal before any read';
+  const listed = { files: Object.fromEntries([...found].map(([file, effects]) => [file, Object.fromEntries([...effects].map((effect) => [effect, reason]))])), pins: [{ file: 'packages/brasa/src/direct.ts', text: 'readFileSync', why: 'the gate' }] };
+  const read = (file) => { try { return readFileSync(join(tree, file), 'utf8'); } catch { return null; } };
+  expect_that('every effect listed with its reason, and its pins held: the gate passes', gate_judge(found, listed, listed, read).length === 0, gate_judge(found, listed, listed, read).join(' | '));
+  const gained = gate_judge(new Map([...found, ['packages/brasa/src/direct.ts', new Set(['fs', 'child_process'])]]), listed, listed, read);
+  expect_that('a file listed for the disk that gains programs fails, though it is on the list', gained.length === 1 && gained[0].includes('direct.ts imports child_process'), gained.join(' | '));
+  const stale = gate_judge(new Map([...found].filter(([file]) => !file.endsWith('lazy.ts'))), listed, listed, read);
+  expect_that('an entry for an effect the file no longer imports fails: the list does not rot', stale.length === 1 && stale[0].includes('lazy.ts for fs, which it no longer imports'), stale.join(' | '));
+  const unpinned = gate_judge(found, { ...listed, pins: [{ file: 'packages/brasa/src/direct.ts', text: "hostDisk_refusal('x')", why: 'the gate' }] }, null, read);
+  expect_that('a pin whose gate call a file no longer holds fails', unpinned.length === 1 && unpinned[0].includes("no longer holds its gate `hostDisk_refusal('x')`"), unpinned.join(' | '));
+  const smaller = { files: Object.fromEntries(Object.entries(listed.files).filter(([file]) => !file.endsWith('spawn.ts'))), pins: listed.pins };
+  const grown = gate_judge(found, listed, smaller, read);
+  expect_that('an entry the base did not have fails: the list grows only by its own review', grown.length === 1 && grown[0].includes('gains packages/brasa/src/spawn.ts for child_process'), grown.join(' | '));
+  const dropped = gate_judge(found, { ...listed, pins: [] }, listed, read);
+  expect_that('a pin the base had and the change dropped fails', dropped.length === 1 && dropped[0].includes('drops the pin on packages/brasa/src/direct.ts'), dropped.join(' | '));
+  let refused = '';
+  try { gate_parse(JSON.stringify({ files: { 'a.ts': { fs: 'ok' } }, pins: [] }), 'the list'); } catch (error) { refused = error.message; }
+  expect_that('an entry with no reason worth the name is refused', refused.includes('gives no reason'), refused);
+  const realGate = spawnSync('node', [join(here, 'host-gate.mjs')], { encoding: 'utf8' });
+  expect_that('the repository as it stands passes the host gate', realGate.status === 0, `${realGate.stdout}${realGate.stderr}`.slice(-400));
+}
+
+console.log(failed === 0 ? `ratchets: the cast ratchet, the coverage ratchet, the base it is compared with, the line-builder lint, the chili ratchet, the host gate, the packed entry points, and the reach of the test and seam lints all hold (made in ${run})` : `ratchets test: ${failed} failed (made in ${run})`);
 process.exit(failed === 0 ? 0 : 1);

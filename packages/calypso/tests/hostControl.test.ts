@@ -5,6 +5,7 @@
 import { describe, it, expect } from '@jest/globals';
 import {
   HOST_CONTROL_OFF,
+  engineHost_grants,
   hostControl_build,
   hostControl_parseArgv,
   hostControl_guard,
@@ -136,3 +137,15 @@ describe('a program that waits forever without a terminal', () => {
     expect(hostShellTerminal_refusal('nvim x', {})).toMatch(/needs a terminal/);
   });
 });
+
+describe('engineHost_grants', () => {
+  it('lets the engine start programs on this host only with the shell tier: pipes, files or tasks alone do not', () => {
+    const grants = (...tiers: Array<'shell' | 'files' | 'pipes' | 'tasks'>) => engineHost_grants({ tiers: new Set(tiers), exposed: false });
+    expect([grants(), grants('pipes'), grants('files'), grants('tasks')].map((one) => one.engineProcesses)).toEqual([false, false, false, false]);
+    expect(grants('shell').engineProcesses).toBe(true);
+    // A host pipeline is the pipes tier's: it runs here, while programs of the engine's own stay refused.
+    expect(grants('pipes')).toEqual({ engineFilesystem: false, engineProcesses: false, pipesHere: true });
+    expect(grants('files')).toEqual({ engineFilesystem: true, engineProcesses: false, pipesHere: false });
+  });
+});
+

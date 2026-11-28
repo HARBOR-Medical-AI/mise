@@ -12,6 +12,7 @@
 
 import omelette from "omelette";
 
+import { hostDocker_trust } from "@fnndsc/salsa";
 import { run } from "./run.js";
 import { chiliErrLog, chiliLog } from "./screen/output.js";
 
@@ -70,6 +71,9 @@ function commandCompletion_setup(): void {
  * Bin entry: register shell completion, then run the requested chili command.
  */
 async function main(): Promise<void> {
+  // chili's own command line runs at a person's own terminal: the docker it starts is theirs. In an engine
+  // (brasa delegating a line to chili in its process) this never runs, and no docker is trusted.
+  hostDocker_trust();
   commandCompletion_setup();
   await run(process.argv.slice(2));
 }

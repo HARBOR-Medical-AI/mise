@@ -53,7 +53,7 @@ import {
   type Result,
 } from '@fnndsc/cumin';
 
-import { descriptorFromImage_extract, docker_isAvailable, dockerImage_ensure, type DockerRun, docker_run } from './plugin_docker.js';
+import { descriptorFromImage_extract, docker_isAvailable, dockerImage_ensure, hostDocker_get, type DockerRun } from './plugin_docker.js';
 import { plugins_searchPeers, type PeerStorePlugin } from './peer_search.js';
 import { plugin_checkExists, type PluginRegistrationResponse } from './plugin_register.js';
 import { plugin_importFromStore, type AdminCredentials, type PluginImportResult } from './store_import.js';
@@ -246,7 +246,7 @@ export async function plugin_addJson(text: string, options: PluginAddOptions, no
  * @param input - The URL, image reference or plugin name.
  * @param options - Compute resources, peer store and credentials.
  * @param note - Where progress lines go.
- * @param run - The docker seam, for the image path.
+ * @param run - The docker runner for the image path, or why there is none; omitted, the one this process trusts, if any.
  * @returns What the add did.
  *
  * @example
@@ -258,7 +258,7 @@ export async function plugin_add(
   input: string,
   options: PluginAddOptions,
   note: PluginAddNote,
-  run: DockerRun = docker_run,
+  run?: DockerRun | DockerRefusal,
 ): Promise<PluginAddResult> {
   const detected: PluginInput = pluginInput_detect(input);
   const computes: Result<string[]> = await computeNames_resolve(options.compute);
@@ -288,8 +288,25 @@ export async function plugin_add(
   }
 
   const image: string = detected.kind === 'image' ? detected.value : `${detected.name}:latest`;
+  // Only the image path starts a program on this host, and only with a runner its caller may give: none
+  // given, the one this process trusts (a person's own command line), else none, and the add says why.
+  const docker: DockerRun | DockerRefusal = run ?? hostDocker_get() ?? { refused: `plugin add from an image (${image}): this process may not start docker on its host` };
+  if ('refused' in docker) return addFailure_record(docker.refused, detected);
   note(`Not in the peer store; reading the descriptor out of ${image}.`);
-  return pluginFromImage_add(image, computes.value, options, run);
+  return pluginFromImage_add(image, computes.value, options, docker);
+}
+
+/**
+ * Why the image path may not start docker: the caller's words, shown as the add's failure.
+ *
+ * @example
+ * ```ts
+ * const refused: DockerRefusal = { refused: 'plugin add from an image (docker): …' };
+ * ```
+ */
+export interface DockerRefusal {
+  /** Why not. */
+  refused: string;
 }
 
 /**

@@ -24,6 +24,40 @@ import { spawn, type ChildProcess } from 'child_process';
 import { accessSync, constants as fsConstants, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 
+/**
+ * What the engine may do on this host, by the operator's grant alone: its disk (the `files` tier), programs of its
+ * own (the `shell` tier: docker for a plugin, say), and pipeline segments run here (the `pipes` tier). Nothing an
+ * attached surface declares raises any of them.
+ *
+ * @example
+ * ```ts
+ * const grants: EngineHostGrants = engineHost_grants(policy);
+ * ```
+ */
+export interface EngineHostGrants {
+  /** The engine's disk is the operator's. */
+  engineFilesystem: boolean;
+  /** The engine may start programs on this host. */
+  engineProcesses: boolean;
+  /** Pipeline segments run on this host. */
+  pipesHere: boolean;
+}
+
+/**
+ * What the engine may do on this host, from the policy alone.
+ *
+ * @param policy - The host-control policy the operator started the daemon with.
+ * @returns The grants.
+ *
+ * @example
+ * ```ts
+ * engineHost_grants({ tiers: new Set(['pipes']), exposed: false }).engineProcesses; // false
+ * ```
+ */
+export function engineHost_grants(policy: HostControlPolicy): EngineHostGrants {
+  return { engineFilesystem: policy.tiers.has('files'), engineProcesses: policy.tiers.has('shell'), pipesHere: policy.tiers.has('pipes') };
+}
+
 /** The tiers the policy can grant, in the order they are told. */
 export const HOST_CONTROL_TIERS: readonly HostControlTier[] = ['shell', 'files', 'pipes', 'tasks'];
 export type HostControlTier = 'shell' | 'files' | 'pipes' | 'tasks';

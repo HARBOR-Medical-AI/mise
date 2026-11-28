@@ -3,7 +3,9 @@ import { cuminMock_install } from './support/cuminMock.js';
 
 // Real commandArgs_process runs; stub its load-time boundary.
 const mockAdd = jest.fn();
+const mockDockerRun = jest.fn();
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
+  docker_run: mockDockerRun,
   // The wait for a run to settle asks for statuses in one batch.
   jobs_statusBatch: async (ids: number[]): Promise<Map<number, string>> =>
     new Map(ids.map((id: number): [number, string] => [id, 'finishedSuccessfully'])), context_getSingle: jest.fn(),
@@ -51,6 +53,7 @@ jest.unstable_mockModule('../src/core/elevation.js', () => ({
 }));
 
 const { builtin_plugin, plugin_addInteractive } = await import('../src/builtins/res/plugin.js');
+const { HeadlessSurface, surface_set } = await import('../src/core/surface.js');
 
 let logSpy: jest.SpiedFunction<typeof console.log>;
 let errSpy: jest.SpiedFunction<typeof console.error>;
@@ -116,6 +119,22 @@ describe('builtin_plugin', () => {
 });
 
 describe('plugin_addInteractive', () => {
+  it('gives salsa the docker runner only when the session may start programs on its host; otherwise why not', async () => {
+    mockAdd.mockResolvedValue({ outcome: 'failed' });
+    for (const [capabilities, gives] of [[{}, 'refusal'], [{ tasks: true }, 'refusal'], [{ engineFilesystem: true }, 'refusal'], [{ engineProcesses: true }, 'runner']] as const) {
+      const surface = new HeadlessSurface();
+      Object.assign(surface.capabilities, capabilities);
+      surface_set(surface);
+      mockAdd.mockClear();
+      await plugin_addInteractive({ _: ['add', 'fnndsc/pl-x:1'] } as never);
+      const run: unknown = mockAdd.mock.calls[0]?.[3];
+      if (gives === 'runner') expect(run).toBe(mockDockerRun);
+      else expect(run).toEqual({ refused: 'plugin add from an image (docker): this session may not start programs on its host; start the session with --host-control=shell' });
+    }
+    surface_set(new HeadlessSurface());
+    expect(mockDockerRun).not.toHaveBeenCalled();
+  });
+
   it('requires a plugin name', async () => {
     const env = await plugin_addInteractive({ _: ['add'] } as never);
     expect(env.rendered).toContain('Usage: plugin add');
@@ -172,7 +191,7 @@ describe('the plugin declaration', () => {
     mockAdd.mockResolvedValue({ outcome: 'failed' });
     mockAllOfType.mockImplementation((type: string) => type === 'error' ? ['Request failed with status code 403'] : []);
     const env = await builtin_plugin(['add', 'pl-x', '--store', 'https://peer/api/v1/', '--publicRepo', 'https://github.com/o/pl-x']);
-    expect(mockAdd).toHaveBeenCalledWith('pl-x', expect.objectContaining({ store: 'https://peer/api/v1/', publicRepo: 'https://github.com/o/pl-x' }), expect.any(Function));
+    expect(mockAdd).toHaveBeenCalledWith('pl-x', expect.objectContaining({ store: 'https://peer/api/v1/', publicRepo: 'https://github.com/o/pl-x' }), expect.any(Function), expect.objectContaining({ refused: expect.any(String) }));
     expect(env.renderedErr).toContain('Try: sudo plugin add pl-x --store https://peer/api/v1/ --publicRepo https://github.com/o/pl-x');
   });
 

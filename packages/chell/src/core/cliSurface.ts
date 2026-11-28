@@ -382,6 +382,8 @@ export function cliSurface_create(
     // resolves is a path the operator can open. A remote client supplies a
     // byte fetch precisely because that is not true for it.
     engineFilesystem: bytes_fetch === undefined || bytes_fetch === file_read,
+    // The same holds for programs: a local shell starts them on its operator's own machine.
+    engineProcesses: bytes_fetch === undefined || bytes_fetch === file_read,
     // Remote or not, a shell has a disk and directories. Asked for a folder it
     // should get a folder, not an archive of one.
     localFilesystem: true,
