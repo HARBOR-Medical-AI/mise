@@ -3,13 +3,18 @@ import { cuminMock_install } from './support/cuminMock.js';
 
 // Real commandArgs_process runs; stub its load-time boundary.
 const mockAdd = jest.fn();
+const mockDockerRun = jest.fn();
 jest.unstable_mockModule('@fnndsc/salsa', () => ({
+  docker_run: mockDockerRun,
   // The wait for a run to settle asks for statuses in one batch.
   jobs_statusBatch: async (ids: number[]): Promise<Map<number, string>> =>
     new Map(ids.map((id: number): [number, string] => [id, 'finishedSuccessfully'])), context_getSingle: jest.fn(),
   plugin_add: mockAdd,
 }));
 jest.unstable_mockModule('@fnndsc/chili/models/listing.js', () => ({}));
+// store's listing views, for the public store command (install goes through plugin add).
+jest.unstable_mockModule('@fnndsc/chili/commands/store/list.js', () => ({ store_listPlugins: jest.fn(), store_searchPlugins: jest.fn() }));
+jest.unstable_mockModule('@fnndsc/chili/views/ls.js', () => ({ grid_render: jest.fn(), long_render: jest.fn() }));
 jest.unstable_mockModule('@fnndsc/chili/models/plugin.js', () => ({}));
 jest.unstable_mockModule('@fnndsc/chili/utils/cli.js', () => ({}));
 jest.unstable_mockModule('../src/session/index.js', () => ({ session: {} }));
@@ -51,6 +56,8 @@ jest.unstable_mockModule('../src/core/elevation.js', () => ({
 }));
 
 const { builtin_plugin, plugin_addInteractive } = await import('../src/builtins/res/plugin.js');
+const { HeadlessSurface, surface_set } = await import('../src/core/surface.js');
+const { builtin_store } = await import('../src/builtins/store.js');
 
 let logSpy: jest.SpiedFunction<typeof console.log>;
 let errSpy: jest.SpiedFunction<typeof console.error>;
@@ -116,6 +123,30 @@ describe('builtin_plugin', () => {
 });
 
 describe('plugin_addInteractive', () => {
+  it('gives salsa the docker runner only when the session may start programs on its host; otherwise why not', async () => {
+    // As salsa does on an image miss: run docker with the runner it was given, if it was given one.
+    mockAdd.mockImplementation(async (_input: unknown, _options: unknown, _note: unknown, run: unknown) => {
+      if (typeof run === 'function') await (run as (args: string[]) => Promise<unknown>)(['info']);
+      return { outcome: 'failed' };
+    });
+    mockDockerRun.mockResolvedValue({ ok: false, stdout: '', stderr: '' });
+    for (const [capabilities, gives] of [[{}, 'refusal'], [{ tasks: true }, 'refusal'], [{ engineFilesystem: true }, 'refusal'], [{ engineProcesses: true }, 'runner']] as const) {
+      const surface = new HeadlessSurface();
+      Object.assign(surface.capabilities, capabilities);
+      surface_set(surface);
+      // Both public ways in: the plugin command's add, and the store command's install.
+      for (const asked of [(): Promise<unknown> => builtin_plugin(['add', 'fnndsc/pl-x:1']), (): Promise<unknown> => builtin_store(['install', 'fnndsc/pl-x:1'])]) {
+        mockAdd.mockClear();
+        mockDockerRun.mockClear();
+        await asked();
+        const run: unknown = mockAdd.mock.calls.at(-1)?.[3];
+        if (gives === 'runner') expect([run, mockDockerRun.mock.calls.length]).toEqual([mockDockerRun, 1]);
+        else expect([run, mockDockerRun.mock.calls.length]).toEqual([{ refused: 'plugin add from an image (docker): this session may not start programs on its host; start the session with --host-control=shell' }, 0]);
+      }
+    }
+    surface_set(new HeadlessSurface());
+  });
+
   it('requires a plugin name', async () => {
     const env = await plugin_addInteractive({ _: ['add'] } as never);
     expect(env.rendered).toContain('Usage: plugin add');
@@ -172,7 +203,7 @@ describe('the plugin declaration', () => {
     mockAdd.mockResolvedValue({ outcome: 'failed' });
     mockAllOfType.mockImplementation((type: string) => type === 'error' ? ['Request failed with status code 403'] : []);
     const env = await builtin_plugin(['add', 'pl-x', '--store', 'https://peer/api/v1/', '--publicRepo', 'https://github.com/o/pl-x']);
-    expect(mockAdd).toHaveBeenCalledWith('pl-x', expect.objectContaining({ store: 'https://peer/api/v1/', publicRepo: 'https://github.com/o/pl-x' }), expect.any(Function));
+    expect(mockAdd).toHaveBeenCalledWith('pl-x', expect.objectContaining({ store: 'https://peer/api/v1/', publicRepo: 'https://github.com/o/pl-x' }), expect.any(Function), expect.objectContaining({ refused: expect.any(String) }));
     expect(env.renderedErr).toContain('Try: sudo plugin add pl-x --store https://peer/api/v1/ --publicRepo https://github.com/o/pl-x');
   });
 

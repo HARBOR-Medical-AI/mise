@@ -451,6 +451,8 @@ describe('transfers through the pool', () => {
     const hold = opens_hold();
     const events: DownloadProgressEvent[] = [];
     const running = files_downloadWithProgress('/remote/study', tmpDir, { jobs: 3, onProgress: (event: DownloadProgressEvent) => { events.push(event); } });
+    // Waited for until the pool is full (a loaded machine is slow to start it), then held: never more than jobs at once.
+    for (let i = 0; i < 250 && hold.most() < 3; i++) await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 20); });
     await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 20); });
     expect(hold.most()).toBe(3);
     hold.release();

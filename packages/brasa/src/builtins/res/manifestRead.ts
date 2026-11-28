@@ -10,7 +10,7 @@
  */
 import { errorStack, type PathStanding } from '@fnndsc/fond';
 import { backendInstalled_get } from '../../core/backend.js';
-import { hostDisk_refusal } from '../../core/surface.js';
+import { hostDisk_refusal } from '../../core/hostGate.js';
 import { path_resolve } from '../utils.js';
 
 /** Reads a file of the engine's disk as text. */

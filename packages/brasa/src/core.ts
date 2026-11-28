@@ -13,6 +13,7 @@ export * from './core/dispatch.js';
 export * from './core/backend.js';
 export * from './core/sink.js';
 export * from './core/surface.js';
+export * from './core/hostGate.js';
 export { manifestText_read, type DiskRead, type ManifestRead } from './builtins/res/manifestRead.js';
 export * from './core/question.js';
 export * from './core/progress.js';

@@ -156,6 +156,8 @@ jobs:
       - run: npm run lint:lines
       # chili is being retired: brasa's imports of it may only fall, and no other workspace may import it.
       - run: npm run lint:chili
+      # An engine source that reaches its host (fs, child_process) is listed with its reason, and the gate calls are pinned.
+      - run: npm run lint:hostgate
       # Every published package's main, types, bin and exports lead to files it would publish (run after the build).
       - run: npm run lint:pack
       - run: npm run lint:changesets

@@ -30,6 +30,7 @@ export * from './core/preprocess.js';
 export * from './core/sink.js';
 export * from './core/progress.js';
 export * from './core/surface.js';
+export * from './core/hostGate.js';
 export * from './chris/promptContext.js';
 export * from './core/warmupFailures.js';
 export * from './chris/connect.js';

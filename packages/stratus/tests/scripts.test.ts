@@ -17,10 +17,10 @@ import { scripts_run } from '../src/commands/scripts.js';
 import { ScriptsProvider } from '../src/vfs/scripts.js';
 import { backend_install, HeadlessSurface, manifestText_read, surface_set } from '@fnndsc/brasa/core';
 
-/** Says whose the session's host disk is: its operator's (the files tier), or nobody's. */
-function hostDisk_set(operators: boolean): void {
+/** Says whose the session's host disk is (the files tier), and whether it may run git there (the shell tier: by default, as the disk). */
+function hostDisk_set(operators: boolean, programs: boolean = true): void {
   const surface: HeadlessSurface = new HeadlessSurface();
-  Object.assign(surface.capabilities, { engineFilesystem: operators });
+  Object.assign(surface.capabilities, { engineFilesystem: operators, engineProcesses: programs });
   surface_set(surface);
 }
 
@@ -140,6 +140,27 @@ describe('the library of scripts', () => {
     expect(existsSync(library.clone_derive('chrisproject'))).toBe(false);
     expect((await scripts_run(context, ['remove', 'chrisproject'])).renderedErr).toContain('not a source');
     expect((await scripts_run(context, ['fetch'])).renderedErr).toContain("scripts: unknown subcommand 'fetch' (add, pull, remove)");
+  });
+
+  it('without the shell tier (host control off, or files alone) runs no git: scripts already there are listed and read, add and pull refuse with zero calls', async () => {
+    library.source_add({ name: 'chrisproject', repo, folder: 'chrisproject' });
+    const calls: string[][] = [];
+    const recording = new ScriptLibrary(join(root, 'config'), join(root, 'state', 'scripts'), (args: ReadonlyArray<string>) => { calls.push([...args]); return { ok: true, text: '' }; });
+    for (const files of [false, true]) {
+      hostDisk_set(files, false);
+      calls.length = 0;
+      expect(recording.sources_list().map((source) => source.name)).toEqual(['chrisproject']);
+      expect(recording.head_read('chrisproject')).toBe('its head is read with the shell tier');
+      const made = stratusBackend_make({ driver: new FakeDriver(fakeCloud_sample()), configDir: join(root, 'config'), store: new ClusterStore(join(root, 'config', 'clusters')), library: recording });
+      const vfs = made.backend.vfs!.dispatcher;
+      const top = await vfs.list('/scripts');
+      expect(top.ok && top.value.map((item) => `${item.name} ${item.status ?? ''}`.trim())).toEqual(['chrisproject cloned · at its head is read with the shell tier', 'mine']);
+      const text = await vfs.read('/scripts/chrisproject/store.mise');
+      expect(text.ok).toBe(true);
+      expect(recording.source_add({ name: 'other', repo: 'https://example.org/other.git' })).toEqual({ ok: false, text: 'scripts add (git): this session may not start programs on its host; start the session with --host-control=shell' });
+      expect(recording.source_pull('chrisproject')).toEqual({ ok: false, text: 'scripts pull chrisproject (git): this session may not start programs on its host; start the session with --host-control=shell' });
+      expect(calls).toEqual([]);
+    }
   });
 
   it('is mounted at /scripts: a source read-only without its .git, mine written to, and play reading through it', async () => {

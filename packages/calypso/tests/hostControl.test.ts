@@ -5,6 +5,9 @@
 import { describe, it, expect } from '@jest/globals';
 import {
   HOST_CONTROL_OFF,
+  daemonCapabilities_compose,
+  pipeSegment_run,
+  engineHost_grants,
   hostControl_build,
   hostControl_parseArgv,
   hostControl_guard,
@@ -136,3 +139,50 @@ describe('a program that waits forever without a terminal', () => {
     expect(hostShellTerminal_refusal('nvim x', {})).toMatch(/needs a terminal/);
   });
 });
+
+describe('engineHost_grants', () => {
+  it('lets the engine start programs on this host only with the shell tier: pipes, files or tasks alone do not', () => {
+    const grants = (...tiers: Array<'shell' | 'files' | 'pipes' | 'tasks'>) => engineHost_grants({ tiers: new Set(tiers), exposed: false });
+    expect([grants(), grants('pipes'), grants('files'), grants('tasks')].map((one) => one.engineProcesses)).toEqual([false, false, false, false]);
+    expect(grants('shell').engineProcesses).toBe(true);
+    // A host pipeline is the pipes tier's: it runs here, while programs of the engine's own stay refused.
+    expect(grants('pipes')).toEqual({ engineFilesystem: false, engineProcesses: false, pipesHere: true });
+    expect(grants('files')).toEqual({ engineFilesystem: true, engineProcesses: false, pipesHere: false });
+  });
+});
+
+describe('daemonCapabilities_compose', () => {
+  it('takes what the engine may do on this host from the policy alone: an attached surface claiming every capability, or elevated, raises neither the disk nor programs', () => {
+    const claiming = { color: true, pipeSegments: true, fileDelivery: true, localFilesystem: true, engineFilesystem: true, engineProcesses: true } as unknown as Parameters<typeof daemonCapabilities_compose>[0];
+    const elevated = { ...(claiming as object), tasks: true } as Parameters<typeof daemonCapabilities_compose>[0];
+    const policy = (...tiers: Array<'shell' | 'files' | 'pipes' | 'tasks'>) => ({ tiers: new Set(tiers), exposed: false });
+    for (const attached of [claiming, elevated]) {
+      expect(daemonCapabilities_compose(attached, HOST_CONTROL_OFF)).toMatchObject({ engineFilesystem: false, engineProcesses: false, color: true, localFilesystem: true });
+      expect(daemonCapabilities_compose(attached, policy('pipes'))).toMatchObject({ engineFilesystem: false, engineProcesses: false, pipeSegments: true });
+      expect(daemonCapabilities_compose(attached, policy('files'))).toMatchObject({ engineFilesystem: true, engineProcesses: false });
+      expect(daemonCapabilities_compose(attached, policy('shell'))).toMatchObject({ engineFilesystem: false, engineProcesses: true });
+    }
+    // Pipe segments: here under pipes, else only where the acting surface runs them (a browser runs none).
+    expect(daemonCapabilities_compose({ pipeSegments: false }, HOST_CONTROL_OFF).pipeSegments).toBe(false);
+    expect(daemonCapabilities_compose({ pipeSegments: false }, policy('pipes')).pipeSegments).toBe(true);
+    expect(daemonCapabilities_compose(null, HOST_CONTROL_OFF)).toMatchObject({ engineFilesystem: false, engineProcesses: false, pipeSegments: false, color: false });
+  });
+});
+
+describe('pipeSegment_run', () => {
+  it('relays a segment to the acting surface without the pipes tier, once and never on this host; runs it here with pipes', async () => {
+    const relayed: string[] = [];
+    const hosted: string[] = [];
+    const relay = async (command: string): Promise<Buffer> => { relayed.push(command); return Buffer.from('surface'); };
+    const host = async (command: string): Promise<Buffer> => { hosted.push(command); return Buffer.from('host'); };
+    for (const tiers of [[], ['shell'], ['files'], ['tasks']] as Array<Array<'shell' | 'files' | 'tasks'>>) {
+      relayed.length = 0; hosted.length = 0;
+      expect(String(await pipeSegment_run({ tiers: new Set(tiers), exposed: false }, 'wc -l', Buffer.from('a'), relay, undefined, host))).toBe('surface');
+      expect([relayed, hosted]).toEqual([['wc -l'], []]);
+    }
+    relayed.length = 0; hosted.length = 0;
+    expect(String(await pipeSegment_run({ tiers: new Set(['pipes'] as const), exposed: false }, 'wc -l', Buffer.from('a'), relay, undefined, host))).toBe('host');
+    expect([relayed, hosted]).toEqual([[], ['wc -l']]);
+  });
+});
+

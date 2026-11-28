@@ -69,9 +69,9 @@ import { storeUrl_get } from '../../config/storeConfig.js';
 import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
 import { authorizationFailure_is, sudoHint_build } from '../../core/elevation.js';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { hostDisk_refusal, hostProcess_refusal } from '../../core/hostGate.js';
 import { repl_confirm } from '../../core/question.js';
 import { sink_dataLine } from '../../core/sink.js';
-import { hostDisk_refusal } from '../../core/surface.js';
 import { path_resolve, type ParsedArgs } from '../utils.js';
 import { storePath_resolve } from '../../core/paths.js';
 
@@ -140,7 +140,9 @@ export async function pluginAdd_run(parsed: ParsedArgs, words: readonly string[]
     if (text === null) return verb_fail(`plugin add: could not read ${jsonFile}: ${errorStack.stack_pop()?.message ?? 'no such file'}`);
     result = await salsa.plugin_addJson(text, options, note);
   } else {
-    result = await salsa.plugin_add(input ?? '', options, note);
+    // The image path starts docker on this host: given a runner only when this session may start programs there.
+    const dockerRefused: string | null = hostProcess_refusal('plugin add from an image (docker)');
+    result = await salsa.plugin_add(input ?? '', options, note, dockerRefused === null ? salsa.docker_run : { refused: dockerRefused });
   }
   return addResult_render(result, input ?? jsonFile ?? '', lines, words);
 }

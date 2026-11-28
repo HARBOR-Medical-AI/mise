@@ -7,7 +7,7 @@
  * teardown keeping the data or, with --all, taking it.
  */
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BufferSink, HeadlessSurface, JobRunner, runner_install, sink_set, surface_set, type PromptRequest } from '@fnndsc/brasa/core';
@@ -16,7 +16,7 @@ import type { CommandEnvelope } from '@fnndsc/menu';
 import { FakeDriver, fakeCloud_sample } from '../src/cloud/fake/driver.js';
 import { FakeBuildWorld, FakeCloudBuilder } from '../src/cloud/fake/builder.js';
 import { vmCloudInit_render, vmMachineVariables_build, vmModule_zip, vmOs_lower } from '../src/cloud/oci/modules/vm.js';
-import { ports_read, vmPorts_open, vmLimits_derive, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, vmStands_diff, type VmSpec } from '../src/vm/spec.js';
+import { ports_read, vmPorts_open, vmLimits_derive, vmSpec_dataLoss, vmSpec_diff, vmSpec_read, vmSpecYaml_parse, vmSpecYaml_render, vmStands_diff, type VmSpec , sshKeyFile_resolve } from '../src/vm/spec.js';
 import { VmStore, type VmRecord } from '../src/vm/state.js';
 import { vmCost_estimate } from '../src/vm/build.js';
 import { vmKept_merge, vmKept_write } from '../src/vm/keep.js';
@@ -466,12 +466,38 @@ describe('vm, over the fake cloud', () => {
     await vm_run(context, ['new', 'store', ...STORE_LINE]);
     surface.answers = ['y', 'y'];
     await vm_run(context, ['build', 'store']);
-    expect((await vm_run(context, ['shell', 'store'])).renderedErr).toContain('needs the shell tier');
+    // A surface that relays a shell is not the grant: the key is made and the session opened from this host, the
+    // shell tier's alone. Refused, no session is asked for.
     (surface.capabilities as { shellCommands: boolean }).shellCommands = true;
+    expect((await vm_run(context, ['shell', 'store'])).renderedErr).toBe('vm shell: this session may not start programs on its host; start the session with --host-control=shell\n');
+    expect(world.sessions).toEqual([]);
+    // A host that keeps nothing of it: refused before the tenancy is asked, a record made or a key restored.
+    let lookups: number = 0;
+    const cold: VmStore = new VmStore(join(root, 'vms-cold'));
+    const coldNets: NetStore = new NetStore(join(root, 'nets-cold'));
+    const counted = { ...context.driver, instances_find: async (...args: Parameters<CloudDriver['instances_find']>) => { lookups += 1; return context.driver.instances_find(...args); }, clusters_find: async (...args: Parameters<CloudDriver['clusters_find']>) => { lookups += 1; return context.driver.clusters_find(...args); } } as CloudDriver;
+    expect((await vm_run({ ...context, store: cold, nets: coldNets, driver: counted }, ['shell', 'store'])).renderedErr).toBe('vm shell: this session may not start programs on its host; start the session with --host-control=shell\n');
+    expect([lookups, cold.record_read('store'), existsSync(join(root, 'vms-cold'))]).toEqual([0, null, false]);
+    (surface.capabilities as { engineProcesses?: boolean }).engineProcesses = true;
     const shell = await vm_run(context, ['shell', 'store']);
     expect(plain(shell.rendered)).toContain("-W %h:%p -o Port=22 ocid1.bastionsession.oc1..fake-1@host.bastion.us-ashburn-1.fake.example' ubuntu@10.40.0.10");
     expect(world.sessions).toEqual([{ bastionId: 'ocid1.bastion.oc1..fake-scratch', privateIp: '10.40.0.10' }]);
     expect(sshLine_build({ sessionId: 's', host: 'h' }, '/k/ssh/id_ed25519', '10.0.0.5')).toBe("ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -o 'ProxyCommand=ssh -o IdentityFile=/k/ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/k/ssh/known_hosts -W %h:%p -o Port=22 s@h' ubuntu@10.0.0.5");
+  });
+
+  it('refuses --ssh-key-file without the files tier on both public paths, vm new and its line\'s status, before the file is touched', async () => {
+    const dir: string = mkdtempSync(join(tmpdir(), 'stratus-vmkey-'));
+    const real: string = join(dir, 'id.pub');
+    writeFileSync(real, 'ssh-ed25519 AAAA me@host\n');
+    const words: string = "--ssh-key-file: the session's host disk is nobody's; start the session with --host-control=files";
+    const lines = new Map(lineStatusProviders_make({ nets, vms: store }).map((provider) => [provider.verb, provider]));
+    for (const keyFile of [real, join(dir, 'missing.pub')]) {
+      const made: CommandEnvelope = await vm_run(context, ['new', 'keyed', ...STORE_LINE, '--ssh-key-file', keyFile]);
+      expect(made.renderedErr).toContain(words);
+      expect(store.record_read('keyed')).toBeNull();
+      const preview = await lines.get('vm')?.read(['vm', 'new', 'keyed', ...STORE_LINE, '--ssh-key-file', keyFile]);
+      expect(JSON.stringify(preview)).toContain(words);
+    }
   });
 
   it('tears down only when unprotected: the machine, keeping the data; --all takes the data on the name typed back', async () => {
@@ -680,3 +706,36 @@ describe('vm, over the fake cloud', () => {
     expect((await vm_run(context, ['restart', 'store'])).renderedErr).toContain("vm: unexpected operand 'store'");
   });
 });
+
+describe('--ssh-key-file', () => {
+  afterEach(() => { surface_set(new HeadlessSurface()); });
+
+  it('is read only when the session\'s host disk is the operator\'s: refused alike, with no read, for a missing, an unreadable and a real key', () => {
+    const dir: string = mkdtempSync(join(tmpdir(), 'stratus-sshkey-'));
+    const real: string = join(dir, 'id.pub');
+    writeFileSync(real, 'ssh-ed25519 AAAA me@host\n');
+    const locked: string = join(dir, 'locked.pub');
+    writeFileSync(locked, 'ssh-ed25519 BBBB me@host\n');
+    chmodSync(locked, 0o000);
+    const reads: string[] = [];
+    const reader = (path: string): string => { reads.push(path); return readFileSync(path, 'utf-8'); };
+    surface_set(new HeadlessSurface());
+    const said: Array<string | null> = [join(dir, 'missing.pub'), locked, real].map((path: string): string | null => sshKeyFile_resolve(new Map([['--ssh-key-file', path]]), reader));
+    expect(new Set(said)).toEqual(new Set(["--ssh-key-file: the session's host disk is nobody's; start the session with --host-control=files"]));
+    expect(reads).toEqual([]);
+    // With the files tier: a key, a key reached through a link, and a key readable by all are read.
+    const surface: HeadlessSurface = new HeadlessSurface();
+    Object.assign(surface.capabilities, { engineFilesystem: true });
+    surface_set(surface);
+    const linked: string = join(dir, 'linked.pub');
+    symlinkSync(real, linked);
+    chmodSync(real, 0o644);
+    for (const path of [real, linked]) {
+      const options: Map<string, string> = new Map([['--ssh-key-file', path]]);
+      expect(sshKeyFile_resolve(options, reader)).toBeNull();
+      expect(options.get('--ssh-key')).toBe('ssh-ed25519 AAAA me@host');
+    }
+    chmodSync(locked, 0o600);
+  });
+});
+

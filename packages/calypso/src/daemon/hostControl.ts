@@ -24,6 +24,162 @@ import { spawn, type ChildProcess } from 'child_process';
 import { accessSync, constants as fsConstants, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 
+/**
+ * What the engine may do on this host, by the operator's grant alone: its disk (the `files` tier), programs of its
+ * own (the `shell` tier: docker for a plugin, say), and pipeline segments run here (the `pipes` tier). Nothing an
+ * attached surface declares raises any of them.
+ *
+ * @example
+ * ```ts
+ * const grants: EngineHostGrants = engineHost_grants(policy);
+ * ```
+ */
+export interface EngineHostGrants {
+  /** The engine's disk is the operator's. */
+  engineFilesystem: boolean;
+  /** The engine may start programs on this host. */
+  engineProcesses: boolean;
+  /** Pipeline segments run on this host. */
+  pipesHere: boolean;
+}
+
+/**
+ * What the engine may do on this host, from the policy alone.
+ *
+ * @param policy - The host-control policy the operator started the daemon with.
+ * @returns The grants.
+ *
+ * @example
+ * ```ts
+ * engineHost_grants({ tiers: new Set(['pipes']), exposed: false }).engineProcesses; // false
+ * ```
+ */
+export function engineHost_grants(policy: HostControlPolicy): EngineHostGrants {
+  return { engineFilesystem: policy.tiers.has('files'), engineProcesses: policy.tiers.has('shell'), pipesHere: policy.tiers.has('pipes') };
+}
+
+/**
+ * What an attached surface declared of itself, as far as the daemon reads it.
+ *
+ * @example
+ * ```ts
+ * const attached: AttachedCapabilities = { color: true, pipeSegments: false };
+ * ```
+ */
+export interface AttachedCapabilities {
+  /** It renders colour. */
+  color?: boolean;
+  /** It runs pipeline segments. */
+  pipeSegments?: boolean;
+  /** It takes a file delivered. */
+  fileDelivery?: boolean;
+  /** It has a filesystem of its own to fill. */
+  localFilesystem?: boolean;
+  /** It holds the tasks tier (an elevation): B3 decides whether a surface may say so. */
+  tasks?: boolean;
+}
+
+/**
+ * The daemon's surface's capabilities, as the engine reads them.
+ *
+ * @example
+ * ```ts
+ * const capabilities: DaemonCapabilities = daemonCapabilities_compose(null, HOST_CONTROL_OFF);
+ * ```
+ */
+export interface DaemonCapabilities {
+  /** Hidden input. */
+  hiddenInput: boolean;
+  /** Local edit. */
+  localEdit: boolean;
+  /** A terminal. */
+  tty: boolean;
+  /** Colour. */
+  color: boolean;
+  /** Pipeline segments run somewhere. */
+  pipeSegments: boolean;
+  /** `!` lines are relayed. */
+  shellCommands: boolean;
+  /** Files are delivered. */
+  fileDelivery: boolean;
+  /** The engine's disk is the operator's. */
+  engineFilesystem: boolean;
+  /** The engine may start programs on this host. */
+  engineProcesses: boolean;
+  /** The surface has a filesystem of its own. */
+  localFilesystem: boolean;
+  /** Long tasks. */
+  tasks: boolean;
+}
+
+/**
+ * The daemon's surface's capabilities: those that vary by surface read from the one executing, as it declared
+ * them on attach; what the engine may do on this host from the operator's policy alone.
+ *
+ * @param attached - What the executing surface declared, if one is attached.
+ * @param policy - The host-control policy.
+ * @returns The capabilities.
+ *
+ * @example
+ * ```ts
+ * daemonCapabilities_compose({ pipeSegments: true }, HOST_CONTROL_OFF).engineProcesses; // false
+ * ```
+ */
+export function daemonCapabilities_compose(attached: AttachedCapabilities | null | undefined, policy: HostControlPolicy): DaemonCapabilities {
+  return {
+    hiddenInput: true,
+    localEdit: true,
+    tty: true,
+    // Colour follows the executing surface: a colour terminal or a browser
+    // console renders ANSI, a bare pipe does not.
+    color: attached?.color ?? false,
+    // A segment runs on this host under host control, else on the acting
+    // surface: a chell runs one, a browser none. Said truly, a builtin
+    // that would hand text to a system program answers in the kernel instead.
+    pipeSegments: engineHost_grants(policy).pipesHere || (attached?.pipeSegments ?? false),
+    shellCommands: true,
+    fileDelivery: attached?.fileDelivery ?? false,
+    // The daemon's disk belongs to nobody attending this session — unless
+    // the operator who started it declared otherwise with the `files`
+    // tier of --host-control, in which case it is theirs by declaration.
+    engineFilesystem: engineHost_grants(policy).engineFilesystem,
+    // Programs on this host (docker for a plugin, say) are the operator's to grant, by the shell tier, and
+    // never a surface's: what an attached surface declares does not reach this.
+    engineProcesses: engineHost_grants(policy).engineProcesses,
+    localFilesystem: attached?.localFilesystem ?? false,
+    // Long jobs that change things beyond this host, and bill: only the
+    // operator who started the daemon grants them, never a surface.
+    tasks: policy.tiers.has('tasks') || (attached?.tasks ?? false),
+  };
+}
+
+/**
+ * Where a pipeline segment runs: on this host under the `pipes` tier, else relayed to the surface that typed it.
+ *
+ * @param policy - The host-control policy.
+ * @param command - The segment.
+ * @param input - What flows into it.
+ * @param relay - Runs it on the acting surface.
+ * @param signal - Cancels it.
+ * @param host - Runs it on this host (`hostPipe_run`; a test's double).
+ * @returns Its output.
+ *
+ * @example
+ * ```ts
+ * await pipeSegment_run(policy, 'wc -l', input, (command, bytes) => daemon.pipe_current(command, bytes));
+ * ```
+ */
+export function pipeSegment_run(
+  policy: HostControlPolicy,
+  command: string,
+  input: Buffer,
+  relay: (command: string, input: Buffer) => Promise<Buffer>,
+  signal?: AbortSignal,
+  host: (command: string, input: Buffer, signal?: AbortSignal) => Promise<Buffer> = hostPipe_run,
+): Promise<Buffer> {
+  return engineHost_grants(policy).pipesHere ? host(command, input, signal) : relay(command, input);
+}
+
 /** The tiers the policy can grant, in the order they are told. */
 export const HOST_CONTROL_TIERS: readonly HostControlTier[] = ['shell', 'files', 'pipes', 'tasks'];
 export type HostControlTier = 'shell' | 'files' | 'pipes' | 'tasks';

@@ -67,6 +67,40 @@ export const docker_run: DockerRun = (args: readonly string[]): Promise<DockerAn
       });
   });
 
+/** The docker a caller in this process trusts: a person's own command line sets it; an engine never does. */
+let hostDocker_held: DockerRun | null = null;
+
+/**
+ * Trusts this process to start docker on its host, for the image path of
+ * `plugin add` when its caller passes no runner: chili's own command line
+ * does, at a person's own terminal. A session's engine never calls it; it
+ * passes a runner per call, when the session may.
+ *
+ * @param run - The runner trusted; null trusts none again.
+ *
+ * @example
+ * ```ts
+ * hostDocker_trust();
+ * ```
+ */
+export function hostDocker_trust(run: DockerRun | null = docker_run): void {
+  hostDocker_held = run;
+}
+
+/**
+ * The docker this process trusts, if any.
+ *
+ * @returns The runner, or null.
+ *
+ * @example
+ * ```ts
+ * const run: DockerRun | null = hostDocker_get();
+ * ```
+ */
+export function hostDocker_get(): DockerRun | null {
+  return hostDocker_held;
+}
+
 /**
  * Reports whether a docker daemon answers.
  *

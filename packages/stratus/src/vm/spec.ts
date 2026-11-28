@@ -8,6 +8,7 @@
  * @module
  */
 import * as fs from 'fs';
+import { hostDisk_refusal } from '@fnndsc/brasa/core';
 import * as yaml from 'js-yaml';
 
 /** What a VM is declared with. */
@@ -381,14 +382,19 @@ export function vmSpec_dataLoss(before: VmSpec, after: VmSpec): string[] {
  * declaration keeps the key itself and a rebuild needs no file.
  *
  * @param options - The options; changed in place.
+ * @param read - How the file is read (a test's double counts the reads).
  * @returns Why the file did not read, or null.
  */
-export function sshKeyFile_resolve(options: Map<string, string>): string | null {
+export function sshKeyFile_resolve(options: Map<string, string>, read: (path: string) => string = (path: string): string => fs.readFileSync(path, 'utf-8')): string | null {
   const keyFile: string | undefined = options.get('--ssh-key-file');
   if (keyFile === undefined) return null;
   if (options.has('--ssh-key')) return '--ssh-key and --ssh-key-file: one of them';
+  // The file is on the engine's host: read only when its disk is the operator's, and asked before the path is
+  // touched, so a refusal says the same whether the file is there, unreadable, or a key.
+  const refused: string | null = hostDisk_refusal('--ssh-key-file');
+  if (refused !== null) return refused;
   try {
-    options.set('--ssh-key', fs.readFileSync(keyFile.replace(/^~(?=\/)/, process.env['HOME'] ?? '~'), 'utf-8').trim().split('\n')[0] ?? '');
+    options.set('--ssh-key', read(keyFile.replace(/^~(?=\/)/, process.env['HOME'] ?? '~')).trim().split('\n')[0] ?? '');
   } catch (error: unknown) {
     return `--ssh-key-file ${keyFile}: ${error instanceof Error ? error.message : String(error)}`;
   }

@@ -80,6 +80,8 @@ $ stratus --host-control=tasks               # jobs that change the cloud; never
 
 `CALYPSO_HOST_CONTROL` sets the same thing from the environment.
 
+The `shell` tier is also what lets the engine start a program of its own on that machine: docker for `plugin add` of an image, git for `scripts add` and `scripts pull` (scripts already there are still listed, opened and played without it), ssh for `vm shell`, a renderer or a browser for chili's `path scan --mermaid` and `man doc --browser`; `pipes` alone runs pipeline segments there and nothing else. With `files` off, a command that would read a file there (`--ssh-key-file`, `cluster adopt --from`, a redirect) refuses by name before touching the path.
+
 === Binding beyond loopback
 
 The daemon binds to `127.0.0.1`. `CALYPSO_BIND=0.0.0.0` opens it to the network, which is what a demo on a trusted network needs. Combining a non-loopback bind

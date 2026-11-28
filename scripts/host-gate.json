@@ -1,0 +1,356 @@
+{
+  "files": {
+    "packages/brasa/src/builtins/berth/berth.ts": {
+      "fs": "OWN-STATE: Reads/writes only the berth's own /anchors folder named by MISE_BERTH_ANCHORS (berthPlaces_read, berthState.ts:136-142; null on a host so the verb refuses); file names under it go through fond wireName_place (berth.ts:235) and the anchor name through anchorName_check (:139)."
+    },
+    "packages/brasa/src/builtins/berth/berthClose.ts": {
+      "fs": "OWN-STATE: Read-only readdir/stat of the berth's own outgoing folder (places.outgoing from MISE_BERTH_OUTGOING) and the record it just wrote there."
+    },
+    "packages/brasa/src/builtins/berth/berthCube.ts": {
+      "fs": "OWN-STATE: readdirSync of the berth's own outgoing folder (places.outgoing passed by close_run), then chili files_uploadWithProgress reads those entries; no session-supplied path."
+    },
+    "packages/brasa/src/builtins/berth/berthDisk.ts": {
+      "fs": "OWN-STATE: statfs of the berth's anchors folder to say free bytes; read-only."
+    },
+    "packages/brasa/src/builtins/berth/berthProcesses.ts": {
+      "fs": "OWN-STATE: Read-only walk of /proc (and /proc/<pid>/fd links) of the berth container the engine runs in, to find processes holding files under the berth's outgoing folder; only reached when berthPlaces_read finds the berth env."
+    },
+    "packages/brasa/src/builtins/berth/berthRecord.ts": {
+      "child_process": "OWN-STATE: Runs fixed program `git -C <outgoing folder>` (read-only status/rev queries, 5s timeout) in the berth's own outgoing folder; the program and folder are engine-named, no session word reaches argv.",
+      "fs": "OWN-STATE: Writes berth.json into the berth's own outgoing folder."
+    },
+    "packages/brasa/src/builtins/berth/berthState.ts": {
+      "fs": "OWN-STATE: Reads/atomically writes the berth state file inside the berth's own anchors folder (BERTH_STATE_FILE)."
+    },
+    "packages/brasa/src/builtins/fs/configWrite.ts": {
+      "fs": "OWN-STATE: Writes the config document the session supplied (base64 content, 256KB cap) to an engine-named os.tmpdir() scratch file (chell-config-<ts>.tmp), uploads it to CUBE and unlinks it; the session supplies the CUBE path, never the host path."
+    },
+    "packages/brasa/src/builtins/fs/edit.ts": {
+      "fs": "OWN-STATE: Writes the edited text to an engine-named os.tmpdir() scratch file (chell-edit-<ts><ext>), hands it to chili file_replaceContent, unlinks it (kept and named on failure); the session supplies only a CUBE path."
+    },
+    "packages/brasa/src/builtins/fs/touch.ts": {
+      "fs": "GATED: --withContentsFromFile reads a host path only after hostDisk_refusal('touch --withContentsFromFile ...') (surface.ts:194, checks capabilities.engineFilesystem)."
+    },
+    "packages/brasa/src/builtins/net/query.ignored.ts": {
+      "fs": "OWN-STATE: Reads $XDG_CONFIG_HOME/mise/pacs.json (engine config) or its default."
+    },
+    "packages/brasa/src/builtins/res/manifestRead.ts": {
+      "fs": "GATED: The engine-disk read (disk_readText) runs only after hostDisk_refusal('play') returns null; the session-filesystem read comes first."
+    },
+    "packages/brasa/src/builtins/res/plugin.sync.ts": {
+      "fs": "GATED: fs.readFile of a descriptor file is behind hostFile_refusal -> hostDisk_refusal (plugin add :137, plugin validate :268, fileText_read :478); host: index sources behind hostSource_refusal (plugin sync :186, validate :266) before salsa pluginIndex_load reads the disk."
+    },
+    "packages/brasa/src/builtins/sys/notes.ts": {
+      "fs": "OWN-STATE: Reads dist/notes.json shipped inside each installed @fnndsc package, found by node resolution; no session path.",
+      "loader": "OWN-STATE: createRequire resolves `<name>/package.json` for the fixed NOTES_PACKAGES list (mise's own packages), to read their shipped notes; no session word names a module."
+    },
+    "packages/brasa/src/core/argumentKinds.ts": {
+      "fs": "GATED: hostPaths_list (readdir for hostPath completion) is only called when surface_get().capabilities.engineFilesystem is true."
+    },
+    "packages/brasa/src/core/dispatch.ts": {
+      "fs": "GATED: redirect `>`/`>>` writes the host disk only after hostDisk_refusal('redirect ...') passes, before the command even runs."
+    },
+    "packages/brasa/src/core/preprocess.ts": {
+      "fs": "GATED: statSync in redirectTarget_resolve; its only caller is redirect_execute (dispatch.ts:256), after the hostDisk_refusal at dispatch.ts:244."
+    },
+    "packages/brasa/src/core/runner.ts": {
+      "fs": "OWN-STATE: Job records and logs under $XDG_STATE_HOME/<backend>/jobs/<source>/ (jobsRoot_derive); source ids are engine-declared and job ids engine-validated, not host paths from a line."
+    },
+    "packages/brasa/src/core/version.ts": {
+      "fs": "OWN-STATE: Reads brasa's own package.json and buildinfo.json beside the module.",
+      "loader": "OWN-STATE: createRequire loads `<name>/package.json` for mise's own package names, to report versions; no session word names a module."
+    },
+    "packages/brasa/src/lib/pipe.ts": {
+      "child_process": "LOCAL-ONLY: segment_pipeThrough is imported only by chell's local CLI surface (chell/src/core/cliSurface.ts:397, pipeSegment) and an exemplar; the engine reaches it only through surface.pipeSegment, which a daemon surface replaces (calypso launch.ts:133-134) and dispatch.ts:489 guards with capability_require('pipeSegments')."
+    },
+    "packages/calypso/src/calypso.ts": {
+      "fs": "LOCAL-ONLY: realpathSync of process.argv[1] and this module to detect being run as the entry script; the operator's own launch."
+    },
+    "packages/calypso/src/daemon/attachFile.ts": {
+      "fs": "OWN-STATE: Writes/removes the attach note at tmpdir()/calypso-<user>.attach, a name the daemon derives itself."
+    },
+    "packages/calypso/src/daemon/berth.ts": {
+      "fs": "OWN-STATE: Berth records under $XDG_RUNTIME_DIR(or tmpdir)/calypso and read-only listing of porter's state roots ($PORTER_STATE_DIR, $XDG_STATE_HOME/porter, /var/lib/porter/sessions); identities come from the daemon, not a path a line supplies."
+    },
+    "packages/calypso/src/daemon/codeIdentity.ts": {
+      "fs": "OWN-STATE: Reads package.json and dist/*.js of the daemon's own packages to fingerprint its code.",
+      "loader": "OWN-STATE: createRequire resolves the stack's own packages' package.json (from this module and the entry script) to hash the code the daemon runs."
+    },
+    "packages/calypso/src/daemon/consoleSession.ts": {
+      "child_process": "LOCAL-ONLY: surface_spawn starts `chell --remote ... --attach` on the daemon's own terminal when the person who launched calypso presses Enter in its console loop; argv is the daemon's identity/url, token via env, no session line involved.",
+      "fs": "OWN-STATE: existsSync of the chell dist/index.js resolved beside this calypso install (chellLaunch_find).",
+      "loader": "OWN-STATE: createRequire resolves `@fnndsc/chell/package.json` to find chell's entry for the console the operator starts."
+    },
+    "packages/calypso/src/daemon/discovery.ts": {
+      "fs": "OWN-STATE: Writes/reads tmpdir()/chell-calypso-<user>.json, a name the daemon derives itself."
+    },
+    "packages/calypso/src/daemon/hostControl.ts": {
+      "child_process": "GATED: hostShell_run and hostPipe_run are reached only through launch.ts surface hooks: shellCommand runs hostShell_run only when policy.tiers.has('shell') (launch.ts:141-147) and pipeSegment runs hostPipe_run only when policy.tiers.has('pipes') (launch.ts:134); capabilities pipeSegments/engineFilesystem/tasks set at launch.ts:106,112,116.",
+      "fs": "GATED: accessSync/realpathSync in programName_resolve probe a word from the line, reached only via hostShellTerminal_refusal at launch.ts:145 after the shell-tier check at launch.ts:141."
+    },
+    "packages/calypso/src/daemon/static.ts": {
+      "fs": "OWN-STATE: HTTP static server of the daemon's own web bundle: request path is resolved and held inside webRoot (startsWith(root+sep) guard, NUL check) and the webRoot probes read the bundle's package.json/build.json; no session line.",
+      "loader": "OWN-STATE: createRequire resolves a fixed package's package.json (the ARGUS bundle's) to find its built web root."
+    },
+    "packages/calypso/src/daemon/token.ts": {
+      "fs": "OWN-STATE: Writes the attach token (mode 0600) to a path the daemon launcher names (discovery file); exported but no session verb calls it."
+    },
+    "packages/chili/src/commands/fs/create.ts": {
+      "fs": "GATED: --from-file reads a host path only under `inode <path> file create --from-file`, refused by chiliHostWord_refusal via hostDisk_refusal('inode file create --from-file')."
+    },
+    "packages/chili/src/commands/fs/download.ts": {
+      "fs": "GATED: Writes the host disk only from brasa `download` after capabilities.engineFilesystem check (brasa builtins/fs/download.ts:259; a non-engine-disk surface takes surfaceDownload_run which does no chili fs) or chili `path download`, which CHILI_HOST_WORDS marks touches:'always'."
+    },
+    "packages/chili/src/commands/fs/touch.ts": {
+      "fs": "OWN-STATE: files_touch reads a host file only for withContentsFromFile, which no caller passes (chefs touch takes only a path; brasa passes withContents); a caller that starts passing it is a new reach, reviewed as one."
+    },
+    "packages/chili/src/commands/fs/upload.ts": {
+      "fs": "GATED: Reads host files only from brasa `upload` after the engineFilesystem check (builtins/fs/upload.ts:119) or chili `path upload`/`chefs upload` (touches:'always'); berthCube.ts:401 also calls it on the berth's own outgoing folder (OWN-STATE)."
+    },
+    "packages/chili/src/commands/man/doc.ts": {
+      "fs": "GATED: Reads <doc dir>/<topic>.adoc where the doc dir is chili's own (projectDir_get/doc); a topic holding a separator or `..` and --browser are refused by CHILI_HOST_WORDS man doc (operand_touches/touches)."
+    },
+    "packages/chili/src/commands/man/topics.ts": {
+      "fs": "OWN-STATE: Lists chili's own doc folder (projectDir_get()/doc); no session path."
+    },
+    "packages/chili/src/config/colorConfigLoad.ts": {
+      "fs": "OWN-STATE: Reads chili's own shipped config/colors.yml (path fixed in colorConfig.ts:22)."
+    },
+    "packages/chili/src/man/renderer.ts": {
+      "fs": "OWN-STATE: projectDir_get walks up from process.cwd() probing package.json to find the doc root (probe only, no session path).",
+      "child_process": "GATED: browser_open reads the .adoc, writes tmpdir()/<topic>.html and execs xdg-open/open; reached only by `man doc --browser/-b`, which CHILI_HOST_WORDS touches."
+    },
+    "packages/chili/src/path/pathCommand.ts": {
+      "fs": "GATED: Host reads/writes (--hostpath scan, upload/download, --mermaid page, --save) are all behind CHILI_HOST_WORDS path.{upload,download,scan[--hostpath,--mermaid,--save]}; brasa tree/du call scan_do with a CUBE folder only.",
+      "child_process": "GATED: execFile('npx', ['mmdc',...]) and open(file) run only for `path scan --mermaid/--save`, refused by CHILI_HOST_WORDS."
+    },
+    "packages/cumin/src/cache/listCheckpoint.ts": {
+      "fs": "OWN-STATE: Checkpoint under $XDG_CACHE_HOME/chell/vfs/listings-<hash of identity>.json (engine cache)."
+    },
+    "packages/cumin/src/cache/procCheckpoint.ts": {
+      "fs": "OWN-STATE: Checkpoint and layout shards under $XDG_CACHE_HOME (procCheckpointRoot_get), keyed by hashed identity; layout names validated by procLayoutName_check."
+    },
+    "packages/cumin/src/cache/queryIndexCheckpoint.ts": {
+      "fs": "OWN-STATE: Checkpoint under $XDG_CACHE_HOME keyed by hashed identity."
+    },
+    "packages/cumin/src/cli.ts": {
+      "fs": "LOCAL-ONLY: Reads cumin's own package.json for the CLI version; cumin cli is a local command-line entry."
+    },
+    "packages/cumin/src/io/node_io.ts": {
+      "fs": "OWN-STATE: NodeStorageProvider is chrisConnection's persistence layer; callers pass engine-named config, token and cache files (chrisConnection.ts:581,689-717), never a session path. chrisIO.uploadLocalPath (chrisIO.ts:892-924) reads via this provider a local path from files_uploadPath; callers are chili upload (gated) and configWrite (own tmp file)."
+    },
+    "packages/fond/src/hostPlace.ts": {
+      "fs": "OWN-STATE: lstat/realpath probes only (no read of contents or write) beneath a folder the caller names (berth anchors, stratus script library root, chell's own download folder); used to contain names."
+    },
+    "packages/salsa/src/pipelines/packages.ts": {
+      "fs": "OWN-STATE: Pipeline-package cache under $XDG_CACHE_HOME/chell/pipelines keyed by hashed CUBE url."
+    },
+    "packages/salsa/src/plugins/plugin_docker.ts": {
+      "child_process": "GATED: docker runs only with a runner its caller passes: brasa's plugin add passes one only when hostProcess_refusal is null; chili's own command line trusts it at a person's own terminal (hostDocker_trust); salsa has no default that spawns."
+    },
+    "packages/salsa/src/plugins/plugin_index.ts": {
+      "fs": "GATED: pluginIndexHost_read reads a host index only for a `host:` source, and its two callers (plugin sync, plugin validate) refuse it first with hostSource_refusal -> hostDisk_refusal."
+    },
+    "packages/stratus/src/checkout/harborOci.ts": {
+      "fs": "GATED: harborCluster_read reads a checkout root reached only through checkout_read, behind cluster adopt --from's hostDisk_refusal."
+    },
+    "packages/stratus/src/chris/registrar.ts": {
+      "fs": "OWN-STATE: Reads the GoDaddy token at $XDG_CONFIG_HOME/stratus/godaddy."
+    },
+    "packages/stratus/src/chris/secrets.ts": {
+      "fs": "OWN-STATE: A VM's chris.json under the stratus VM store folder (VM name regex-validated)."
+    },
+    "packages/stratus/src/cluster/adopt.ts": {
+      "fs": "GATED: checkout_read reads a harbor-oci checkout only from cluster adopt --from, which asks hostDisk_refusal('cluster adopt --from') first (commands/build.ts clusterAdopt_run); its own writes are the cluster's folder in stratus's state."
+    },
+    "packages/stratus/src/cluster/manifests.ts": {
+      "fs": "OWN-STATE: Reads the package's own manifests/ folder."
+    },
+    "packages/stratus/src/cluster/readout.ts": {
+      "fs": "OWN-STATE: statSync mtime of files in the cluster store folder (store.folder_derive(name), CLUSTER_NAME validated)."
+    },
+    "packages/stratus/src/cluster/state.ts": {
+      "fs": "OWN-STATE: Cluster store under $XDG_STATE_HOME/stratus/clusters/<name>/ (names match CLUSTER_NAME); includes the one-time domains->clusters rename."
+    },
+    "packages/stratus/src/commands/chris.ts": {
+      "fs": "GATED: --admin-password-file and --password-file reads sit behind hostDisk_refusal."
+    },
+    "packages/stratus/src/commands/teardown.ts": {
+      "fs": "OWN-STATE: Reads the kubeconfig kept in the cluster's own store folder (secret hostPath for a 'built' cluster; checkout-origin clusters are refused at :63)."
+    },
+    "packages/stratus/src/commands/verify.ts": {
+      "fs": "OWN-STATE: Reads the kubeconfig kept in the cluster's own store folder (checkout-origin clusters refused at :77)."
+    },
+    "packages/stratus/src/installer/account.ts": {
+      "fs": "OWN-STATE: Writes the Red Hat service-account env file at the path the daemon launch names (--redhat-account, default ~/.config/ocm/service-account.env); a session answers a question for its contents, never names the path, and an existing file is never replaced."
+    },
+    "packages/stratus/src/kept/specStore.ts": {
+      "fs": "OWN-STATE: Spec/state store under the stratus state dir, per validated name."
+    },
+    "packages/stratus/src/kube/chris.ts": {
+      "child_process": "GATED: hostRun_spawn (uv, helm/kubectl steps, chris_smoke) runs inside runner jobs, and JobRunner.job_start refuses without the tasks tier (brasa core/runner.ts:314); `chris deploy` also checks tasks_granted (commands/chris.ts:552). Program names and the smoke source are constants.",
+      "fs": "OWN-STATE: smoke-venv stamp under the cluster's own store folder."
+    },
+    "packages/stratus/src/scripts/library.ts": {
+      "child_process": "GATED: git clone/pull/config in the library's own clone folders; a repository on the host's disk is refused by hostDisk_refusal and any other is run with git held to network transports (network_only = hostDisk_refusal('scripts') !== null).",
+      "fs": "OWN-STATE: Library root $XDG_STATE_HOME/stratus/scripts and scripts.json; clone names match SOURCE_NAME and are placed with wireName_place (clone_place :263-267)."
+    },
+    "packages/stratus/src/session.ts": {
+      "fs": "OWN-STATE: Working-directory file under $XDG_CONFIG_HOME/mise/stratus/<user@tenancy sanitized>/cwd."
+    },
+    "packages/stratus/src/stratus.ts": {
+      "fs": "OWN-STATE: Reads the SSH public key and Red Hat account file named by the daemon's launch arguments (--ssh-key / --redhat-account, defaults ~/.ssh/id_ed25519.pub, ~/.config/ocm/service-account.env), plus realpath of argv for entry detection; no session line names them."
+    },
+    "packages/stratus/src/vfs/scripts.ts": {
+      "fs": "OWN-STATE: The /scripts mount reads/writes only inside the script library root: path segments are held with wireName_place (within_place :95-100), `..` and `.git` refused (:68-69), writes only under the writable `mine` folder."
+    },
+    "packages/stratus/src/vm/keep.ts": {
+      "fs": "OWN-STATE: A VM's ssh/id_ed25519(.pub) under the stratus VM store folder (VM_NAME validated)."
+    },
+    "packages/stratus/src/vm/remote.ts": {
+      "child_process": "GATED: spawn('ssh', ...) to a VM runs inside runner jobs (job_start refused without tasks, runner.ts:314) or tasks-gated verbs (chris user/passwd/plugin sync/deploy: commands/chris.ts:243,327,385,432,552); key and host come from the VM store."
+    },
+    "packages/stratus/src/vm/spec.ts": {
+      "fs": "GATED: sshKeyFile_resolve asks hostDisk_refusal('--ssh-key-file') before the path is touched, for vm new and the line-status preview alike."
+    },
+    "packages/stratus/src/vm/state.ts": {
+      "child_process": "GATED: ssh-keygen on the VM's own store key path; key_ensure is reached from job runs (vm/build.ts:145, vm/remote.ts:163, behind runner.ts:314) and `vm shell`, which requires capabilities.shellCommands (commands/vm.ts:1068).",
+      "fs": "OWN-STATE: VM key files under the stratus VM store folder (VM_NAME validated)."
+    },
+    "packages/chili/src/run.ts": {
+      "loader": "OWN-STATE: createRequire loads chili's own ../package.json for its version."
+    },
+    "packages/calypso/src/daemon/terminals.ts": {
+      "loader": "OWN-STATE: a dynamic import of the fixed name 'node-pty' (held in a constant so a missing optional build fails softly), never a session word."
+    }
+  },
+  "pins": [
+    {
+      "file": "packages/calypso/src/daemon/hostControl.ts",
+      "text": "return { engineFilesystem: policy.tiers.has('files'), engineProcesses: policy.tiers.has('shell'), pipesHere: policy.tiers.has('pipes') };",
+      "why": "the engine's disk is the files tier's and its programs the shell tier's, from the policy alone"
+    },
+    {
+      "file": "packages/calypso/src/daemon/hostControl.ts",
+      "text": "engineFilesystem: engineHost_grants(policy).engineFilesystem",
+      "why": "the daemon's surface takes the disk grant from the policy, never the attached surface"
+    },
+    {
+      "file": "packages/calypso/src/daemon/hostControl.ts",
+      "text": "engineProcesses: engineHost_grants(policy).engineProcesses",
+      "why": "the daemon's surface takes the program grant from the policy, never the attached surface"
+    },
+    {
+      "file": "packages/calypso/src/daemon/hostControl.ts",
+      "text": "engineHost_grants(policy).pipesHere ? host(command, input, signal) : relay(command, input)",
+      "why": "a host pipeline runs here only with the pipes tier"
+    },
+    {
+      "file": "packages/calypso/src/daemon/launch.ts",
+      "text": "if (!policy.tiers.has('shell')) return daemon.shell_current(command);",
+      "why": "a ! command runs here only with the shell tier"
+    },
+    {
+      "file": "packages/brasa/src/builtins/res/plugin.sync.ts",
+      "text": "hostProcess_refusal('plugin add from an image (docker)')",
+      "why": "plugin add starts docker only when the session may start programs"
+    },
+    {
+      "file": "packages/salsa/src/plugins/plugin_add.ts",
+      "text": "if ('refused' in docker) return addFailure_record(docker.refused, detected);",
+      "why": "no runner given, the image path refuses"
+    },
+    {
+      "file": "packages/stratus/src/vm/spec.ts",
+      "text": "hostDisk_refusal('--ssh-key-file')",
+      "why": "the key file is on the engine's host"
+    },
+    {
+      "file": "packages/stratus/src/commands/build.ts",
+      "text": "hostDisk_refusal('cluster adopt --from')",
+      "why": "a checkout is a folder on the engine's host"
+    },
+    {
+      "file": "packages/brasa/src/core/dispatch.ts",
+      "text": "hostDisk_refusal(`redirect (${redirectInfo.operator} ${redirectInfo.filePath})`)",
+      "why": "a redirect writes the engine's host disk"
+    },
+    {
+      "file": "packages/brasa/src/core/runner.ts",
+      "text": "kind.ungated !== true && !this.allowed()",
+      "why": "a job (stratus's ssh, tofu, helm) starts only with the tasks tier"
+    },
+    {
+      "file": "packages/stratus/src/commands/vm.ts",
+      "text": "const refused: string | null = hostProcess_refusal('vm shell');",
+      "why": "vm shell makes a key and opens a session from this host"
+    },
+    {
+      "file": "packages/stratus/src/scripts/library.ts",
+      "text": "const refused: string | null = hostProcess_refusal('scripts add (git)');",
+      "why": "git is a program on this host"
+    },
+    {
+      "file": "packages/stratus/src/scripts/library.ts",
+      "text": "const refused: string | null = hostProcess_refusal(`scripts pull ${name} (git)`);",
+      "why": "a pull or re-clone runs git on this host"
+    },
+    {
+      "file": "packages/stratus/src/scripts/library.ts",
+      "text": "if (hostProcess_refusal('scripts') !== null) return 'its head is read with the shell tier';",
+      "why": "showing a source's head runs no git without the shell tier"
+    },
+    {
+      "file": "packages/brasa/src/chris/chiliDelegate.ts",
+      "text": "(spawned === undefined ? null : hostProcess_refusal(`${what} ${spawned}`))",
+      "why": "a chili line that starts a renderer or a browser needs the process grant too"
+    },
+    {
+      "file": "packages/calypso/src/daemon/launch.ts",
+      "text": "return daemonCapabilities_compose(daemon.capabilities_current(), policy);",
+      "why": "the daemon's surface is composed from the policy, the attached surface supplying only its own traits"
+    },
+    {
+      "file": "packages/calypso/src/daemon/launch.ts",
+      "text": "pipeSegment_run(policy, command, input, (segment: string, bytes: Buffer): Promise<Buffer> => daemon.pipe_current(segment, bytes), signal)",
+      "why": "the daemon routes a segment by the policy, the pipes tier alone running it here"
+    }
+  ],
+  "confined": [
+    {
+      "name": "hostPipe_run",
+      "callers": [
+        "packages/calypso/src/daemon/hostControl.ts"
+      ],
+      "why": "it runs a caller's pipeline segment on this host; launch.ts calls it only under the pipes tier (pinned)",
+      "file": "packages/calypso/src/daemon/hostControl.ts"
+    },
+    {
+      "name": "hostShell_run",
+      "callers": [
+        "packages/calypso/src/daemon/hostControl.ts",
+        "packages/calypso/src/daemon/launch.ts"
+      ],
+      "why": "it runs a caller's ! command on this host; launch.ts calls it only under the shell tier (pinned)",
+      "file": "packages/calypso/src/daemon/hostControl.ts"
+    },
+    {
+      "name": "berthRecord_write",
+      "callers": [
+        "packages/brasa/src/builtins/berth/berthRecord.ts",
+        "packages/brasa/src/builtins/berth/berthClose.ts"
+      ],
+      "why": "it writes a record into the folder its caller names; berth close names only the berth's own outgoing folder",
+      "file": "packages/brasa/src/builtins/berth/berthRecord.ts"
+    },
+    {
+      "name": "pipeSegment_run",
+      "file": "packages/calypso/src/daemon/hostControl.ts",
+      "callers": [
+        "packages/calypso/src/daemon/hostControl.ts",
+        "packages/calypso/src/daemon/launch.ts"
+      ],
+      "why": "it runs a pipeline segment on this host when the policy it is given says pipes; only the daemon, with the policy its operator started it with, gives one"
+    }
+  ]
+}

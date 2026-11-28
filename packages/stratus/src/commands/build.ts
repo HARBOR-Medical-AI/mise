@@ -14,6 +14,7 @@
  * @module
  */
 import chalk from 'chalk';
+import { hostDisk_refusal } from '@fnndsc/brasa/core';
 import { clusterLock_write } from '../cluster/keep.js';
 import { envelope_error, envelope_ok, LINE_DECLINED_MODEL_KIND, STRATUS_CLUSTER_STATE_EVENT, taskState_isOver, type CommandEnvelope } from '@fnndsc/menu';
 import {
@@ -568,6 +569,9 @@ async function tenancyAdopt_run(context: BuildCommandContext, name: string): Pro
 export async function clusterAdopt_run(context: BuildCommandContext, name: string, from: string | undefined, stackCompartment: string | undefined): Promise<CommandEnvelope> {
   if (!CLUSTER_NAME.test(name)) return envelope_error('', undefined, `cluster adopt: ${name}: a cluster's name is a DNS label\n`);
   if (from === undefined) return tenancyAdopt_run(context, name);
+  // A checkout is a folder on the engine's host: read only when that disk is the operator's, asked before the path is touched.
+  const refused: string | null = hostDisk_refusal('cluster adopt --from');
+  if (refused !== null) return envelope_error('', undefined, `cluster adopt: ${refused}\n`);
   const checkout: CheckoutRead | { error: string } = checkout_read(name, from, new Date());
   if ('error' in checkout) return envelope_error('', undefined, `cluster adopt: ${checkout.error}\n`);
   const kept: ClusterRecord | null = context.store.record_read(name);

@@ -25,10 +25,11 @@ import { harborCheckout_make } from './support/harborCheckout.js';
 
 const plain = (text: string | undefined): string => (text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 
-/** A surface with the tier set as told. */
-function surface_with(tasks: boolean): HeadlessSurface {
+/** A surface with the tier set as told; its host disk is the operator's unless said otherwise (a checkout is read there). */
+function surface_with(tasks: boolean, files: boolean = true): HeadlessSurface {
   const surface: HeadlessSurface = new HeadlessSurface();
   (surface.capabilities as { tasks?: boolean }).tasks = tasks;
+  (surface.capabilities as { engineFilesystem: boolean }).engineFilesystem = files;
   return surface;
 }
 
@@ -178,6 +179,8 @@ describe('adopting a cluster', () => {
     runner = new JobRunner(join(root, 'jobs'), [{ id: STEPS_SOURCE, label: 'build steps' }]);
     runner_install(runner);
     sink_set(new BufferSink());
+    // A checkout is a folder on this host: these sessions may read it.
+    surface_set(surface_with(false));
   });
   afterEach(() => { runner_install(null); surface_set(new HeadlessSurface()); rmSync(root, { recursive: true, force: true }); rmSync(checkout, { recursive: true, force: true }); });
 
@@ -229,6 +232,15 @@ describe('adopting a cluster', () => {
     expect(plan).toContain('planned against, never built on');
     expect((await cluster_run(context, ['build', 'harbor'])).renderedErr).toContain('adopted from');
     expect((store.record_read('harbor') as ClusterRecord).ids['stackRef']).toMatch(/^fake-stack-/);
+  });
+
+  it('reads a checkout only when the session\'s host disk is the operator\'s: refused alike for a real checkout and a missing one, nothing kept', async () => {
+    for (const from of [checkout, join(root, 'no-such-checkout')]) {
+      surface_set(surface_with(true, false));
+      const refused: CommandEnvelope = await cluster_run(context, ['adopt', 'harbor', '--from', from]);
+      expect(refused.renderedErr).toBe("cluster adopt: cluster adopt --from: the session's host disk is nobody's; start the session with --host-control=files\n");
+      expect(store.record_read('harbor')).toBeNull();
+    }
   });
 
   it('refuses what it cannot adopt', async () => {

@@ -12,6 +12,7 @@ import { spawnSync, type SpawnSyncReturns } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { hostProcess_refusal } from '@fnndsc/brasa/core';
 import { wireName_place, type HostPlace } from '@fnndsc/fond';
 
 /** One source: a repository, and the folder in it the library shows (its root when absent). */
@@ -346,6 +347,9 @@ export class ScriptLibrary {
    * @returns What git said, or why not.
    */
   source_add(source: ScriptSource, network: boolean = false): GitAnswer {
+    // git is a program on this host: the shell tier's, asked before anything is written or run.
+    const refused: string | null = hostProcess_refusal('scripts add (git)');
+    if (refused !== null) return { ok: false, text: refused };
     if (!SOURCE_NAME.test(source.name)) return { ok: false, text: `${source.name}: a source's name is lower-case letters, digits and hyphens, starting with a letter, at most 32` };
     if (source.name === MINE) return { ok: false, text: `${MINE} is this host's own folder, not a source` };
     if (this.source_read(source.name) !== null) return { ok: false, text: `${source.name}: already a source (scripts remove ${source.name} first)` };
@@ -403,6 +407,8 @@ export class ScriptLibrary {
    * @returns What git said.
    */
   source_pull(name: string, network: boolean = false): GitAnswer {
+    const refused: string | null = hostProcess_refusal(`scripts pull ${name} (git)`);
+    if (refused !== null) return { ok: false, text: refused };
     const source: ScriptSource | null = this.source_read(name);
     if (source === null) return { ok: false, text: `${name}: not a source` };
     const clone: HostPlace = this.clone_place(name);
@@ -419,10 +425,17 @@ export class ScriptLibrary {
     return { ok: true, text: `${name}: at ${head.text}` };
   }
 
-  /** A source's head, in a line, or why it has none. */
+  /**
+   * A source's head, in a line, or why it has none. Read with git, so only where the session may run programs on
+   * its host; elsewhere the scripts are still listed and read, and the head is not shown.
+   *
+   * @param name - The source.
+   * @returns Its head, or why it is not shown.
+   */
   head_read(name: string): string {
     const clone: HostPlace = this.clone_place(name);
     if (!clone.ok || !this.cloned(name)) return 'not cloned (scripts pull)';
+    if (hostProcess_refusal('scripts') !== null) return 'its head is read with the shell tier';
     const head: GitAnswer = this.git(['log', '-1', '--format=%h %cs %s'], clone.place);
     return head.ok ? head.text : head.text;
   }

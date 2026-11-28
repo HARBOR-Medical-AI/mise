@@ -66,6 +66,12 @@ export interface SurfaceCapabilities {
   fileDelivery: boolean;
   engineFilesystem: boolean;
   localFilesystem: boolean;
+  /**
+   * The engine may start programs on its own host (docker, a host shell's program) for this surface: true for an
+   * in-process local shell, and for a daemon only when its operator granted the `shell` tier. Computed by the host
+   * from its own policy; nothing a surface declares on attach raises it. Absent means no.
+   */
+  engineProcesses?: boolean;
   tasks?: boolean;
 }
 
