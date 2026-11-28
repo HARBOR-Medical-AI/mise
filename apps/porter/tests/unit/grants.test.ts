@@ -30,7 +30,7 @@ describe('GrantStore', () => {
   it('admits a grant for its key until it is ended, and a restarted door honours the grants it kept and no other', async () => {
     const path: string = join(dir, 'door-grants.json');
     const grants: GrantStore = new GrantStore(path, 8);
-    await grants.load();
+    await grants.grants_load();
     const a = await grants.grant_make(KEY);
     const b = await grants.grant_make(KEY);
     expect(grants.grant_admits(a.id, KEY)).toBe(true);
@@ -40,7 +40,7 @@ describe('GrantStore', () => {
     // Two browsers of one person hold independent grants: one's logout leaves the other's.
     expect(grants.grant_admits(b.id, KEY)).toBe(true);
     const again: GrantStore = new GrantStore(path, 8);
-    expect(await again.load()).toBe(1);
+    expect(await again.grants_load()).toBe(1);
     expect(again.grant_admits(b.id, KEY)).toBe(true);
     expect(again.grant_admits(a.id, KEY)).toBe(false);
   });
@@ -52,7 +52,7 @@ describe('GrantStore', () => {
     const made = await grants.grant_make(KEY);
     now += 3_600_000 + 1;
     expect(grants.grant_admits(made.id, KEY)).toBe(false);
-    expect(await new GrantStore(path, 1, (): number => now).load()).toBe(0);
+    expect(await new GrantStore(path, 1, (): number => now).grants_load()).toBe(0);
   });
 
   it('grants nothing when it cannot keep the grant', async () => {
@@ -64,7 +64,7 @@ describe('GrantStore', () => {
   it('reads its file only as a file of its own: a link at its name is refused', async () => {
     writeFileSync(join(dir, 'elsewhere.json'), JSON.stringify({ schemaVersion: 1, grants: [{ id: 'b'.repeat(64), key: KEY, expires: '2099-01-01T00:00:00.000Z' }] }));
     symlinkSync(join(dir, 'elsewhere.json'), join(dir, 'door-grants.json'));
-    await expect(new GrantStore(join(dir, 'door-grants.json'), 8).load()).rejects.toThrow('not a file of its own');
+    await expect(new GrantStore(join(dir, 'door-grants.json'), 8).grants_load()).rejects.toThrow('not a file of its own');
   });
 
   it('moves a grant only while it stands: a logout first wins, and a move first leaves the logout nothing to end', async () => {
@@ -87,9 +87,9 @@ describe('GrantStore', () => {
     const a = await grants.grant_make(KEY);
     const b = await grants.grant_make(KEY);
     const closed: string[] = [];
-    grants.connection_hold(a.id, { close: (): void => { closed.push('a-ws'); } });
-    grants.connection_hold(a.id, { close: (): void => { closed.push('a-boot'); } });
-    grants.connection_hold(b.id, { close: (): void => { closed.push('b-ws'); } });
+    grants.connection_hold(a.id, { connection_close: (): void => { closed.push('a-ws'); } });
+    grants.connection_hold(a.id, { connection_close: (): void => { closed.push('a-boot'); } });
+    grants.connection_hold(b.id, { connection_close: (): void => { closed.push('b-ws'); } });
     await grants.grant_end(a.id);
     expect(closed.sort()).toEqual(['a-boot', 'a-ws']);
     jest.advanceTimersByTime(3_600_000 + 5);
@@ -102,7 +102,7 @@ describe('GrantStore', () => {
     const grants: GrantStore = new GrantStore(join(dir, 'door-grants.json'), 30 * 24);
     const made = await grants.grant_make(KEY);
     let closed: boolean = false;
-    grants.connection_hold(made.id, { close: (): void => { closed = true; } });
+    grants.connection_hold(made.id, { connection_close: (): void => { closed = true; } });
     jest.advanceTimersByTime(25 * GRANT_STEP_MS);
     expect(closed).toBe(false);
     jest.advanceTimersByTime(5 * GRANT_STEP_MS + 5);

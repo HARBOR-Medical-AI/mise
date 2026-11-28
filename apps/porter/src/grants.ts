@@ -21,15 +21,17 @@
  * reply.setCookie(DOOR_COOKIE, grantCookie_value(key, made.id), options);
  * ```
  *
- * Dependencies: node:crypto, node:fs, node:stream.
+ * Dependencies: node:crypto, node:fs, node:stream, the token store's safe read.
  *
  * @module
  */
+
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { Transform, type TransformCallback } from 'node:stream';
+
 import { ownFile_read } from './tokens.js';
 
 /** The WebSocket close code a connection is closed with when its grant ends. */
@@ -60,12 +62,12 @@ export interface DoorGrant {
  *
  * @example
  * ```ts
- * grants.connection_hold(grantId, { close: () => stream.end() });
+ * grants.connection_hold(grantId, { connection_close: () => stream.end() });
  * ```
  */
 export interface GrantConnection {
   /** Closes it: a WebSocket with GRANT_CLOSE_CODE, an event stream by ending it. */
-  close: () => void;
+  connection_close: () => void;
 }
 
 /** The file's shape on disk. */
@@ -84,6 +86,21 @@ const GRANTS_MAX_BYTES: number = 4 * 1024 * 1024;
 
 /** What a session key looks like. */
 const SESSION_KEY: RegExp = /^[0-9a-f]{16}$/;
+
+/**
+ * A key and the grant a cookie names for it.
+ *
+ * @example
+ * ```ts
+ * const named: GrantNamed = { key: '0123456789abcdef', id: 'ab…' };
+ * ```
+ */
+export interface GrantNamed {
+  /** The session key. */
+  key: string;
+  /** The grant's id. */
+  id: string;
+}
 
 /**
  * The cookie's value before it is signed: the key and the grant.
@@ -112,7 +129,7 @@ export function grantCookie_value(key: string, id: string): string {
  * grantCookie_read('0123456789abcdef.ab…'); // { key: '0123456789abcdef', id: 'ab…' }
  * ```
  */
-export function grantCookie_read(value: string): { key: string; id: string } | null {
+export function grantCookie_read(value: string): GrantNamed | null {
   const cut: number = value.indexOf('.');
   if (cut === -1) return null;
   const key: string = value.slice(0, cut);
@@ -146,7 +163,7 @@ function grantRecord_read(value: unknown): DoorGrant | null {
  * @example
  * ```ts
  * const grants = new GrantStore(join(stateDir, 'door-grants.json'), 8);
- * grants.load();
+ * await grants.grants_load();
  * ```
  */
 export class GrantStore {
@@ -178,8 +195,13 @@ export class GrantStore {
    *
    * @returns How many grants were read.
    * @throws {Error} When something other than this account's own file stands at the name.
+   *
+   * @example
+   * ```ts
+   * const kept: number = await grants.grants_load();
+   * ```
    */
-  public async load(): Promise<number> {
+  public async grants_load(): Promise<number> {
     this.grants = new Map();
     const bytes: Buffer | null = await ownFile_read(this.path, GRANTS_MAX_BYTES);
     if (bytes === null) return 0;
@@ -205,12 +227,17 @@ export class GrantStore {
    * @param key - The session key.
    * @returns The grant.
    * @throws {Error} When the grants file cannot be written; nothing is granted.
+   *
+   * @example
+   * ```ts
+   * const made: DoorGrant = await grants.grant_make(key);
+   * ```
    */
   public async grant_make(key: string): Promise<DoorGrant> {
     const grant: DoorGrant = { id: randomBytes(32).toString('hex'), key, expires: new Date(this.now() + this.hours * 3600 * 1000).toISOString() };
     this.grants.set(grant.id, grant);
     try {
-      await this.save();
+      await this.grants_save();
     } catch (error: unknown) {
       this.grants.delete(grant.id);
       throw error;
@@ -224,6 +251,11 @@ export class GrantStore {
    * @param id - The grant's id.
    * @param key - The key the cookie names.
    * @returns True while the grant stands for that key.
+   *
+   * @example
+   * ```ts
+   * grants.grant_admits(named.id, named.key);
+   * ```
    */
   public grant_admits(id: string, key: string): boolean {
     const grant: DoorGrant | undefined = this.grants.get(id);
@@ -235,6 +267,11 @@ export class GrantStore {
    *
    * @param id - The grant's id.
    * @returns True when the grant stood.
+   *
+   * @example
+   * ```ts
+   * await grants.grant_end(held.id);
+   * ```
    */
   public async grant_end(id: string): Promise<boolean> {
     // Gone from memory first, and its connections closed: the door stands by it no more from this moment.
@@ -243,7 +280,7 @@ export class GrantStore {
     this.connections_close(id);
     if (stood) {
       try {
-        await this.save();
+        await this.grants_save();
       } catch {
         // The file catches up at the next write; a grant it still holds is one the door no longer stands by after a restart only until then.
       }
@@ -259,6 +296,11 @@ export class GrantStore {
    * @param key - The key the new grant lets in.
    * @returns The new grant, or null when the old one no longer stands.
    * @throws {Error} When the grants file cannot be written; the old grant stands and nothing is made.
+   *
+   * @example
+   * ```ts
+   * const moved: DoorGrant | null = await grants.grant_move(held.id, stratusKey);
+   * ```
    */
   public async grant_move(id: string, key: string): Promise<DoorGrant | null> {
     // Checked and changed in one step, before anything is awaited: a logout that comes first wins, and one after finds the new grant.
@@ -268,7 +310,7 @@ export class GrantStore {
     this.grants.delete(id);
     this.grants.set(grant.id, grant);
     try {
-      await this.save();
+      await this.grants_save();
     } catch (error: unknown) {
       this.grants.delete(grant.id);
       if (!this.ended.has(id)) this.grants.set(id, old);
@@ -285,6 +327,11 @@ export class GrantStore {
    * @param id - The grant's id.
    * @param connection - How to close it.
    * @returns How to let it go when it closes on its own.
+   *
+   * @example
+   * ```ts
+   * const letGo = grants.connection_hold(held.id, { connection_close: () => socket.end() });
+   * ```
    */
   public connection_hold(id: string, connection: GrantConnection): () => void {
     let held: Set<GrantConnection> | undefined = this.connections.get(id);
@@ -301,8 +348,15 @@ export class GrantStore {
     };
   }
 
-  /** Forgets grants past their hour, closing what they held; for the minute sweep. */
-  public async sweep(): Promise<void> {
+  /**
+   * Forgets grants past their hour, closing what they held; for the minute sweep.
+   *
+   * @example
+   * ```ts
+   * await grants.grants_sweep();
+   * ```
+   */
+  public async grants_sweep(): Promise<void> {
     let changed: boolean = false;
     for (const grant of [...this.grants.values()]) {
       if (Date.parse(grant.expires) > this.now()) continue;
@@ -312,14 +366,21 @@ export class GrantStore {
     }
     if (changed) {
       try {
-        await this.save();
+        await this.grants_save();
       } catch {
         // Gone from memory already; the file catches up at the next write.
       }
     }
   }
 
-  /** Stops every timer: the door is closing. */
+  /**
+   * Stops every timer: the door is closing.
+   *
+   * @example
+   * ```ts
+   * grants.timers_stop();
+   * ```
+   */
   public timers_stop(): void {
     for (const timer of this.timers.values()) clearTimeout(timer);
     this.timers.clear();
@@ -340,7 +401,7 @@ export class GrantStore {
     }
     const left: number = Date.parse(grant.expires) - this.now();
     if (left <= 0) {
-      this.grant_end(id);
+      void this.grant_end(id);
       return;
     }
     const timer: NodeJS.Timeout = setTimeout((): void => {
@@ -361,7 +422,7 @@ export class GrantStore {
     this.connections_forget(id);
     for (const connection of held ?? []) {
       try {
-        connection.close();
+        connection.connection_close();
       } catch {
         // A connection already gone has nothing to close.
       }
@@ -387,8 +448,8 @@ export class GrantStore {
    *
    * @throws {Error} When it cannot be written.
    */
-  private async save(): Promise<void> {
-    const write = async (): Promise<void> => {
+  private async grants_save(): Promise<void> {
+    const file_write = async (): Promise<void> => {
       const body: string = `${JSON.stringify({ schemaVersion: 1, grants: [...this.grants.values()] } satisfies GrantFile)}\n`;
       await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
       const temp: string = join(dirname(this.path), `.door-grants.${String(process.pid)}.${randomBytes(6).toString('hex')}`);
@@ -405,7 +466,7 @@ export class GrantStore {
         throw error;
       }
     };
-    const next: Promise<void> = this.saving.then(write, write);
+    const next: Promise<void> = this.saving.then(file_write, file_write);
     this.saving = next.catch((): void => undefined);
     return next;
   }
@@ -424,6 +485,21 @@ interface FrameCursor {
 }
 
 /**
+ * A frame's size, as its header says it.
+ *
+ * @example
+ * ```ts
+ * const size: FrameSize | null = frameHeader_read(header);
+ * ```
+ */
+export interface FrameSize {
+  /** The header's own length, in bytes. */
+  headerLength: number;
+  /** The payload's length, in bytes. */
+  payloadLength: number;
+}
+
+/**
  * The length of a frame header, once enough of it has arrived to say.
  *
  * @param header - The header bytes so far.
@@ -434,7 +510,7 @@ interface FrameCursor {
  * frameHeader_read(Buffer.from([0x81, 0x05])); // { headerLength: 2, payloadLength: 5 }
  * ```
  */
-export function frameHeader_read(header: Buffer): { headerLength: number; payloadLength: number } | null {
+export function frameHeader_read(header: Buffer): FrameSize | null {
   if (header.length < 2) return null;
   const second: number = header[1] ?? 0;
   const masked: boolean = (second & 0x80) !== 0;
@@ -472,6 +548,11 @@ export class FrameCloser extends Transform {
    * Asks for the close: at once when between frames, else when the frame under way ends.
    *
    * @param reason - The words the close frame carries.
+   *
+   * @example
+   * ```ts
+   * closer.close_request('signed out');
+   * ```
    */
   public close_request(reason: string): void {
     if (this.frameClosed) return;
@@ -516,7 +597,7 @@ export class FrameCloser extends Transform {
       }
       this.cursor.header = Buffer.concat([this.cursor.header, chunk.subarray(at, at + 1)]);
       at += 1;
-      const read: { headerLength: number; payloadLength: number } | null = frameHeader_read(this.cursor.header);
+      const read: FrameSize | null = frameHeader_read(this.cursor.header);
       if (read !== null && this.cursor.header.length === read.headerLength) {
         this.push(this.cursor.header);
         this.cursor.header = Buffer.alloc(0);

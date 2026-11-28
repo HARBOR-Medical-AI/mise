@@ -42,8 +42,8 @@
     "max-depth": 12
   },
   "apps/porter": {
-    "@typescript-eslint/naming-convention": 170,
-    "@typescript-eslint/no-confusing-void-expression": 4,
+    "@typescript-eslint/naming-convention": 168,
+    "@typescript-eslint/no-confusing-void-expression": 3,
     "@typescript-eslint/no-deprecated": 2,
     "@typescript-eslint/no-unnecessary-condition": 4,
     "@typescript-eslint/no-unnecessary-type-assertion": 2,
@@ -58,8 +58,8 @@
     "jsdoc/check-tag-names": 22,
     "jsdoc/escape-inline-tags": 1,
     "jsdoc/require-example": 146,
-    "jsdoc/require-jsdoc": 243,
-    "jsdoc/require-param": 43,
+    "jsdoc/require-jsdoc": 242,
+    "jsdoc/require-param": 42,
     "jsdoc/require-returns": 23,
     "jsdoc/require-throws": 1,
     "local/file-overview-sections": 76

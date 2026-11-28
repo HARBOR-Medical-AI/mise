@@ -447,8 +447,8 @@ export class TokenStore {
       // Expired before it was collected (a token life shorter than the wait): it goes, and nothing older is retired for it.
       if (Date.parse(made.record.expires) <= this.now().getTime()) return { result: { state: 'expired', retired: 1 }, next: tokens.filter((_held: DoorToken, i: number): boolean => i !== at) };
       // The store keeps tokens in the order they were minted: those of the name before this one are older.
-      const older = (held: DoorToken, i: number): boolean => i < at && held.identity === made.record.identity && held.name === made.record.name;
-      const next: DoorToken[] = tokens.filter((held: DoorToken, i: number): boolean => !older(held, i));
+      const token_isOlder = (held: DoorToken, i: number): boolean => i < at && held.identity === made.record.identity && held.name === made.record.name;
+      const next: DoorToken[] = tokens.filter((held: DoorToken, i: number): boolean => !token_isOlder(held, i));
       return next.length === tokens.length ? { result: { state: 'current', retired: 0 } } : { result: { state: 'current', retired: tokens.length - next.length }, next };
     });
   }
