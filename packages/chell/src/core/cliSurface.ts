@@ -303,6 +303,10 @@ function input_drain(input: NodeJS.ReadableStream): void {
 const SETTLE_QUIET_MS: number = 40;
 /** The longest a consent question waits for a terminal to go quiet. */
 const SETTLE_MAX_MS: number = 1000;
+/** How often the quiet is looked at. */
+const SETTLE_TICK_MS: number = 10;
+/** A look later than this means the loop was busy, and nothing could be heard meanwhile. */
+const SETTLE_GAP_MS: number = 25;
 
 /**
  * Drops what a terminal still holds for its reader: switched to raw mode, its line buffer (a whole line or half of
@@ -343,11 +347,17 @@ async function terminalInput_settle(input: NodeJS.ReadableStream, signal?: Abort
 async function inputQuiet_wait(input: NodeJS.ReadableStream, signal?: AbortSignal): Promise<void> {
   const started: number = Date.now();
   let last: number = started;
+  let tick: number = started;
   const chunk_hear = (): void => { last = Date.now(); };
   input.on('data', chunk_hear);
   try {
     while (Date.now() - last < SETTLE_QUIET_MS && Date.now() - started < SETTLE_MAX_MS && signal?.aborted !== true) {
-      await new Promise<void>((done: () => void): void => { setTimeout(done, 10); });
+      await new Promise<void>((done: () => void): void => { setTimeout(done, SETTLE_TICK_MS); });
+      // Time the loop was busy elsewhere is not quiet observed: what arrived meanwhile is read only now, so the
+      // quiet interval starts again from here.
+      const now: number = Date.now();
+      if (now - tick > SETTLE_GAP_MS) last = now;
+      tick = now;
     }
   } finally {
     input.off('data', chunk_hear);

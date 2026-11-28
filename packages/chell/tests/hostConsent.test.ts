@@ -3,7 +3,7 @@
  * means, one question at a time, and what ends with the line or the connection.
  */
 import { describe, it, expect } from '@jest/globals';
-import { HostConsent, consentAnswer_read, consentQuestion_render, consentText_quote, type ConsentAsk, type ConsentRequest } from '../src/remote/hostConsent.js';
+import { HostConsent, TERMINAL_PLAIN, consentAnswer_read, consentQuestion_render, consentText_quote, type ConsentAsk, type ConsentRequest } from '../src/remote/hostConsent.js';
 import { TerminalOwner } from '../src/remote/terminalOwner.js';
 
 const asked = (over: Partial<ConsentRequest> = {}): ConsentRequest => ({ lineId: '1', verified: true, kind: 'shell', action: 'run the host command "ls" on this machine', ...over });
@@ -31,8 +31,24 @@ describe('what a question shows', () => {
     expect(consentQuestion_render(asked({ action: `run the host command "${long}" on this machine` }), 'play a')).toContain(long);
   });
 
-  it('is drawn plain, whatever the session\'s output left the terminal in (attributes off, ASCII character set)', () => {
-    expect(consentQuestion_render(asked(), 'play a').startsWith('\u001b[0m\u001b(B\u000f\n')).toBe(true);
+  it('is drawn plain, whatever the session\'s output left the terminal in: each state a session can leave is reset first', () => {
+    const shown: string = consentQuestion_render(asked(), 'play a');
+    const start: string = shown.slice(0, shown.indexOf('The session asks'));
+    // What a session's output can leave behind, each with what puts it back; the question resets every one first.
+    const left: Array<[string, string]> = [
+      ['\u001b]11;#ffffff\u0007 (default background made the text colour)', '\u001b]111\u0007'],
+      ['\u001b]10;#000000\u0007 (default foreground changed)', '\u001b]110\u0007'],
+      ['\u001b]4;0;#ffffff\u0007 (a palette colour changed)', '\u001b]104\u0007'],
+      ['\u001b[?5h (reverse video)', '\u001b[?5l'],
+      ['\u001b[8m / \u001b[30;40m (concealed, colour on itself)', '\u001b[0m'],
+      ['\u001b(0 (line-drawing set designated)', '\u001b(B'],
+      ['\u000e (shifted out to G1)', '\u000f'],
+    ];
+    for (const [, reset] of left) expect(start).toContain(reset);
+    // SGR 0 draws in the defaults, so the defaults are reset before it.
+    expect(start.indexOf('\u001b[0m')).toBeGreaterThan(start.indexOf('\u001b]111\u0007'));
+    expect(start.indexOf('\u001b[0m')).toBeGreaterThan(start.indexOf('\u001b]110\u0007'));
+    expect(start).toBe(TERMINAL_PLAIN + '\n');
   });
 
   it('offers every answer for a request of a pending line, and only yes-once for a request that names no line', () => {

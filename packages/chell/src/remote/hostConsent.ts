@@ -141,8 +141,13 @@ export function consentQuestion_render(asked: ConsentRequest, line: string | und
   return `${TERMINAL_PLAIN}\nThe session asks this machine to ${asked.action}\n  ${during}.\n  ${offers.join('\n  ')}\nAllow? `;
 }
 
-/** Puts the terminal's text back to plain: attributes off (SGR 0), the ASCII character set designated and shifted in. */
-const TERMINAL_PLAIN: string = '\u001b[0m\u001b(B\u000f';
+/**
+ * Puts the terminal's text back to plain, whatever the session's output left it in: the colour palette and the
+ * default foreground and background colours reset (OSC 104, 110, 111: a session could have made them one colour),
+ * reverse video off (DECSCNM), attributes off (SGR 0, which then draws in those defaults), and the ASCII character
+ * set designated and shifted in.
+ */
+export const TERMINAL_PLAIN: string = '\u001b]104\u0007\u001b]110\u0007\u001b]111\u0007\u001b[?5l\u001b[0m\u001b(B\u000f';
 
 /**
  * What an answer means: only `y`, `l`, `r` and `allow all` (trimmed, lower case) mean anything, and `l` and

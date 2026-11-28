@@ -51,8 +51,8 @@ describe('a one-shot consent question on a terminal', () => {
 const replScript: string = fileURLToPath(new URL('./support/consentReplTty.mjs', import.meta.url));
 
 /** Types `ahead` during a stall of the REPL's loop, before its consent question is drawn; returns what it read. */
-function replAnswer_read(ahead: string): string | null | undefined {
-  const run = spawnSync(process.execPath, [replScript, JSON.stringify(ahead), '550', '800'], { encoding: 'utf8', timeout: 20_000 });
+function replAnswer_read(ahead: string, when: string = 'before'): string | null | undefined {
+  const run = spawnSync(process.execPath, [replScript, JSON.stringify(ahead), '550', '800', when], { encoding: 'utf8', timeout: 20_000 });
   return (JSON.parse(run.stdout.trim().split('\n').pop() ?? '{}') as TtyReport).answer;
 }
 
@@ -63,5 +63,9 @@ describe('a consent question in the REPL, on a terminal, after the loop stalled'
 
   it('"allow all" typed during the stall does not answer it', () => {
     expect(replAnswer_read('allow all\r')).toBe('n');
+  }, 30_000);
+
+  it('a "y" typed while the loop stalls during the wait for quiet (not before it) does not answer it', () => {
+    expect(replAnswer_read('y\r', 'during')).toBe('n');
   }, 30_000);
 });

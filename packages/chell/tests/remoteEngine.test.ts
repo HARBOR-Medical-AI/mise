@@ -1484,6 +1484,33 @@ describe('RemoteEngine live output', () => {
       expect(notes.join('')).not.toContain('from-the-future');
     });
 
+    it('a line that streams and then fails leaves nothing remembered; an overlong unknown type is kept and shown cut and quoted', async () => {
+      const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'output', channel: 'data', chunk: 'partial', id })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'error', id, reason: 'the line failed' })));
+        });
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token' });
+      await expect(remote.line_execute('ls')).rejects.toThrow('the line failed');
+      expect((Reflect.get(remote, 'liveEnvelopeChannels') as Map<string, unknown>).size).toBe(0);
+      const ws = FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket;
+      // (This file's stand-in parser rejects what is marked malformed, as the real one rejects an unknown type.)
+      ws.emit('message', Buffer.from(JSON.stringify({ type: `future\u001b[2J${'x'.repeat(100_000)}`, __malformed: true })));
+      await new Promise((r) => setTimeout(r, 0));
+      const seen = Reflect.get(remote, 'unknownTypesSeen') as Set<string>;
+      expect(seen.size).toBe(1);
+      expect([...seen].every((one: string) => one.length <= 65)).toBe(true);
+      const note: string = String(errors.mock.calls.at(-1)?.[0]);
+      errors.mockRestore();
+      expect(note.length).toBeLessThan(300);
+      expect(note).toContain('\\u{1b}[2J');
+      expect(note).not.toContain('\u001b[2J');
+    });
+
     it('a failed line is shown only once an open question closes', async () => {
       let answer_give: ((typed: string) => void) | null = null;
       const onConsent = (_question: string): Promise<string> => new Promise<string>((resolve) => { answer_give = resolve; });

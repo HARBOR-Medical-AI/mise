@@ -19,7 +19,7 @@ import { SERVER_MESSAGE_TYPES, type ClosingCause, type FileDeliverRequest, type 
 import { builtinCommand_has, coreCommand_has, deliveryIntents_read, lineHostOperations_read, sourceIntents_settle, envelope_deliver, sink_get, sink_set, surface_set, type EngineRuns, type WordRoute, type LineHostOperations, type OutputSink, type Surface } from '@fnndsc/brasa';
 import type { LocalEditResult } from '@fnndsc/menu/surface';
 import { HeldOutput, closedMessage_settles, closedRequest_refusal } from './heldOutput.js';
-import { HostConsent, type ConsentAsk } from './hostConsent.js';
+import { HostConsent, consentText_quote, type ConsentAsk } from './hostConsent.js';
 import { HostDesk, type HostDeskOptions } from './hostDesk.js';
 import { promptFromContext_render } from '../core/prompt/session.js';
 import { output_above } from '../core/lineDiscipline.js';
@@ -339,6 +339,7 @@ export class RemoteEngine implements BrasaEngine {
    * @param id - The line.
    */
   private line_settle(id: string): void {
+    this.liveEnvelopeChannels.delete(id);
     if (this.activeExecuteId === id) this.activeExecuteId = undefined;
     this.requestSinks.delete(id);
     this.line_retire(id);
@@ -476,11 +477,13 @@ export class RemoteEngine implements BrasaEngine {
       const unknownType: string | undefined =
         rawType !== undefined && !SERVER_MESSAGE_TYPES.has(rawType) ? rawType : undefined;
       if (unknownType !== undefined) {
-        // Each noted once, up to a bound: past it, further types are ignored without a note (and not remembered).
-        if (!this.unknownTypesSeen.has(unknownType) && this.unknownTypesSeen.size < UNKNOWN_TYPES_MAX) {
-          this.unknownTypesSeen.add(unknownType);
+        // Each noted once, up to a bound, by at most its first characters, quoted: past the bound, further types
+        // are ignored without a note (and not remembered).
+        const named: string = unknownType.length > UNKNOWN_TYPE_CHARS ? `${unknownType.slice(0, UNKNOWN_TYPE_CHARS)}…` : unknownType;
+        if (!this.unknownTypesSeen.has(named) && this.unknownTypesSeen.size < UNKNOWN_TYPES_MAX) {
+          this.unknownTypesSeen.add(named);
           this.notice_show(chalk.dim(this.unknownTypesSeen.size < UNKNOWN_TYPES_MAX
-            ? `[i] The daemon sends '${unknownType}' messages this chell predates; ignoring them.`
+            ? `[i] The daemon sends ${consentText_quote(named)} messages this chell predates; ignoring them.`
             : '[i] The daemon sends more kinds of message this chell predates; ignoring them, and noting no more.'));
         }
         return;
@@ -720,6 +723,8 @@ function safeJson_parse(text: string): unknown {
 
 /** The most kinds of unknown message noted on one connection. */
 const UNKNOWN_TYPES_MAX: number = 32;
+/** The most of an unknown message's type that is kept and shown. */
+const UNKNOWN_TYPE_CHARS: number = 64;
 
 /** How a line ends when its connection closed before its answer could be shown. */
 const CLOSED_BEFORE_SHOWN: string = 'the session disconnected before the line\'s answer was shown';

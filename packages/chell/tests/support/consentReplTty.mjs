@@ -1,6 +1,6 @@
 // Runs consentReplAsk.mjs on a pseudo-terminal: types `ahead` <aheadAtMs> after READY (during the stall, before the
 // question is drawn), then `n` and Enter 300 ms after the question shows. Prints the answer as JSON.
-// Usage: node consentReplTty.mjs '<ahead JSON>' <aheadAtMs> <stallMs>
+// Usage: node consentReplTty.mjs '<ahead JSON>' <aheadAtMs> <stallMs> [before|during]
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
@@ -9,7 +9,8 @@ const ahead = JSON.parse(process.argv[2] ?? '""');
 const aheadAt = Number(process.argv[3] ?? '400');
 const stall = process.argv[4] ?? '0';
 const child = fileURLToPath(new URL('./consentReplAsk.mjs', import.meta.url));
-const term = pty.spawn(process.execPath, [child, stall], { cols: 200, rows: 30, env: { PATH: process.env.PATH ?? '', TERM: 'xterm' } });
+const when = process.argv[5] ?? 'before';
+const term = pty.spawn(process.execPath, [child, stall, when], { cols: 200, rows: 30, env: { PATH: process.env.PATH ?? '', TERM: 'xterm' } });
 let seen = '';
 let ready = false;
 let asked = false;
