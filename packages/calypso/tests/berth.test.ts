@@ -454,16 +454,19 @@ describe('a porter\'s sessions', () => {
     if (!(tmpStats.uid === 0 && (tmpStats.mode & 0o1000) !== 0)) return;
     const refusedId: string = identity_normalise(`berth-test-${String(process.pid)}-${String(Date.now())}`, 'http://cube/api/v1/');
     const keptId: string = identity_normalise('kept', 'http://cube/api/v1/');
-    // A session folder of this account's straight under /tmp, its record valid: only the root is wrong.
+    // A session folder of this account's straight under /tmp, its record valid: only the root is wrong. The folder
+    // is claimed first (no recursive make, so one already there is someone else's and is never touched), and only
+    // a folder this run made is removed.
     const underTmp: string = join('/tmp', berthKey_compute(refusedId));
-    const refusedPath: string = berth_pathIn(join(underTmp, 'run'), refusedId);
-    folder_put(join(refusedPath, '..'));
-    record_put(refusedPath, JSON.stringify(berth_of(refusedId, 'ws://127.0.0.1:6001')));
-    const keptPath: string = berth_pathIn(join(runtimeDir, 'state', 'porter', berthKey_compute(keptId), 'run'), keptId);
-    folder_put(join(keptPath, '..'));
-    record_put(keptPath, JSON.stringify(berth_of(keptId, 'ws://127.0.0.1:6002')));
-    process.env.PORTER_STATE_DIR = '/tmp';
+    mkdirSync(underTmp, { mode: 0o700 });
     try {
+      const refusedPath: string = berth_pathIn(join(underTmp, 'run'), refusedId);
+      folder_put(join(refusedPath, '..'));
+      record_put(refusedPath, JSON.stringify(berth_of(refusedId, 'ws://127.0.0.1:6001')));
+      const keptPath: string = berth_pathIn(join(runtimeDir, 'state', 'porter', berthKey_compute(keptId), 'run'), keptId);
+      folder_put(join(keptPath, '..'));
+      record_put(keptPath, JSON.stringify(berth_of(keptId, 'ws://127.0.0.1:6002')));
+      process.env.PORTER_STATE_DIR = '/tmp';
       expect(berth_read(refusedId)).toBeNull();
       expect(await new LocalBerthResolver().resolve(refusedId)).toBeNull();
       const listed: string[] = (await new LocalBerthResolver().listLocated()).map((one) => one.berth.identity);
