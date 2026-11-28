@@ -702,7 +702,7 @@ describe('the launcher over an engine', () => {
     // The helper her start made was run, waited for and removed by the id the engine gave it, not by its name.
     expect(docker.calls.filter((one: string): boolean => one.includes(owner))).toEqual(expect.arrayContaining([`POST /containers/cid-${owner}/start`, `POST /containers/cid-${owner}/wait`, `DELETE /containers/cid-${owner}`]));
     expect(docker.calls.filter((one: string): boolean => one === `POST /containers/${owner}/start`)).toEqual([]);
-    for (const [wire, body] of [['mbw-net-nomap', { Name: 'mbw-net-nomap' }], ['mbw-net-list', { Name: 'mbw-net-list', Containers: [] }], ['mbw-net-noname', { Name: 'mbw-net-noname', Containers: { abc: { IPv4Address: '10.0.0.9/24' } } }]] as const) {
+    for (const [wire, body] of [['mbw-net-nomap', { Name: 'mbw-net-nomap' }], ['mbw-net-list', { Name: 'mbw-net-list', Containers: [] }], ['mbw-net-noname', { Name: 'mbw-net-noname', Containers: { abc: { IPv4Address: '10.0.0.9/24' } } }], ['mbw-net-blank', { Name: 'mbw-net-blank', Containers: { abc: { Name: '   ' } } }], ['mbw-net-padded', { Name: 'mbw-net-padded', Containers: { abc: { Name: ' mbw-bob-x-own ' } } }]] as const) {
       docker.networks.set(wire, { options: {}, members: new Set(['porter']) });
       docker.wireBodies.set(wire, body);
     }
@@ -710,7 +710,7 @@ describe('the launcher over an engine', () => {
     docker.wireBodies.set('mbw-net-empty', { Name: 'mbw-net-empty', Containers: {} });
     docker.destroys = [];
     expect(await launcher.orphans_clear()).toEqual(['mbw-net-empty']);
-    expect(docker.destroys.filter((one: string): boolean => /nomap|list|noname/.test(one))).toEqual([]);
+    expect(docker.destroys.filter((one: string): boolean => /nomap|list|noname|blank|padded/.test(one))).toEqual([]);
     // A removal the engine refuses is not said to have happened.
     docker.wireBodies.clear();
     docker.networks.set('mbw-net-stuck', { options: {}, members: new Set(['porter']) });

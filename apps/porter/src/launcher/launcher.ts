@@ -722,7 +722,8 @@ export class BerthLauncher {
     // Membership the engine did not give whole (no map of members, or a member without a name) may hide a berth.
     if (inspected.status !== 200 || typeof members !== 'object' || members === null || Array.isArray(members)) return true;
     const named: unknown[] = Object.values(members as Record<string, unknown>).map((member: unknown): unknown => field_get(member, 'Name'));
-    if (named.some((memberName: unknown): boolean => typeof memberName !== 'string' || memberName === '')) return true;
+    // A name that is blank, or padded, is not one the engine gives: unreadable.
+    if (named.some((memberName: unknown): boolean => typeof memberName !== 'string' || memberName === '' || memberName.trim() !== memberName)) return true;
     // Only a berth keeps its wire, under its name or its legacy one, or by its labels; porter or a helper on the wire does not.
     return (named as string[]).some((memberName: string): boolean => berthName_matches(this.options.prefix, memberName) || people.has(memberName));
   }
