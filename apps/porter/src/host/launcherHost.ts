@@ -223,6 +223,17 @@ export class LauncherHost implements SessionHost {
   }
 
   /** @inheritdoc */
+  public async berthUp_read(identity: string): Promise<Berth | null> {
+    const who = identity_split(identity);
+    if (who === null) return null;
+    const answer = await launcher_call(this.reach, 'GET', `/berths/status?user=${encodeURIComponent(who.user)}&cubeUrl=${encodeURIComponent(who.cubeUrl)}`);
+    // An answer that is not a list of berths says nothing about which is up: it is not "none is".
+    if (answer.status !== 200 || !Array.isArray(answer.body['berths'])) throw new Error(`the launcher could not say which berth is up (it answered ${String(answer.status)})`);
+    const own: LauncherBerth | undefined = (answer.body['berths'] as LauncherBerth[]).find((one: LauncherBerth): boolean => one.identity === identity);
+    return own === undefined ? null : LauncherHost.berth_take(own);
+  }
+
+  /** @inheritdoc */
   public async spawn(identity: string, user: string, cubeUrl: string, token: string): Promise<Berth> {
     return this.boot_run(identity, user, cubeUrl, token, null);
   }

@@ -139,6 +139,16 @@ export interface SessionHost {
   find(identity: string): Promise<Berth | null>;
 
   /**
+   * As `find`, for an answer something is decided on: null only when the host says no session of theirs is up,
+   * and an error when it cannot say (a host without the distinction answers as `find`).
+   *
+   * @param identity - The normalised `<user>@<url>`.
+   * @returns Its berth, or null when the host says none is up.
+   * @throws {Error} When the host could not say.
+   */
+  berthUp_read?(identity: string): Promise<Berth | null>;
+
+  /**
    * Starts an identity's session with a CUBE token, or joins one already
    * starting; resolves once its berth answers.
    *

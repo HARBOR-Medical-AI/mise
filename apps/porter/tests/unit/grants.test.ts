@@ -277,6 +277,11 @@ describe('grant_revoke', () => {
     expect([first.decided, second.decided]).toEqual([true, false]);
     expect(first.unwritten?.message).toBe('the disk is full');
     expect(second.unwritten).toBeNull();
+    // Two logouts at once whose writes both succeed: still one is told it ended the grant.
+    const c = await grants.grant_make(KEY);
+    const [one, other] = await Promise.all([grants.grant_revoke(c.id), grants.grant_revoke(c.id)]);
+    expect([one.decided, other.decided]).toEqual([true, false]);
+    expect([one.unwritten, other.unwritten]).toEqual([null, null]);
     // A switch whose write is in its turn first, then a logout whose write fails: the logout is told the grant moved.
     const b = await grants.grant_make(KEY);
     let release: () => void = (): void => undefined;

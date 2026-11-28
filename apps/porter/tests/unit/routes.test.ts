@@ -805,6 +805,105 @@ describe('the door', () => {
     await door.app.close();
   });
 
+  it('a stop of what a failed restart left, the original found again while the stop runs, retires it: two queued logouts, one stop, nothing left', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const berths = new FakeBerthHost();
+    let fail: boolean = false;
+    let hold: Promise<void> | null = null;
+    const grants: GrantStore = new GrantStore(join(tokensDir, `grants-${String(Math.random()).slice(2)}.json`), 1, undefined, async (path: string, body: string): Promise<void> => {
+      const failing: boolean = fail;
+      // One write is held at a time: the next one after the hold is set.
+      const held: Promise<void> | null = hold;
+      hold = null;
+      if (held !== null) await held;
+      if (failing) throw new Error('the disk is full');
+      await writeFile(path, body, { mode: 0o600 });
+    });
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, grants, mint: async () => ({ token: 'T' }) });
+    const login = async () => door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const logout = async (cookie: string) => door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie } });
+    void fail; void hold;
+    const original: Berth = { identity, url: 'ws://127.0.0.1:4444', token: 'ORIGINAL' };
+    berths.found = original;
+    const a = await login();
+    const b = await login();
+    const c = await login();
+    const key: string = (a.json() as { key: string }).key;
+    let restarted: () => void = (): void => undefined;
+    berths.restartStop = new Promise<void>((resolve: () => void): void => { restarted = resolve; });
+    await door.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(b) } });
+    // A and C arrive during the restart; the restart's stop fails, the original still up.
+    let release: (stopped: boolean) => void = (): void => undefined;
+    let evicts: number = 0;
+    berths.evict = async (): Promise<boolean> => {
+      evicts += 1;
+      return evicts === 1 ? new Promise<boolean>((resolve: (stopped: boolean) => void): void => { release = resolve; }) : true;
+    };
+    const outA = logout(cookie_of(a));
+    const outC = logout(cookie_of(c));
+    await new Promise((r) => setTimeout(r, 30));
+    berths.report = { lines: [], state: 'failed', reason: 'the berth was not stopped' };
+    restarted();
+    await until((): boolean => evicts === 1);
+    // While A's stop is under way, B's boot stream settles the original again, its own life back.
+    await door.app.listen({ host: '127.0.0.1', port: 0 });
+    const port: number = (door.app.server.address() as AddressInfo).port;
+    await bootStream_open(port, key, cookie_of(b)).ended;
+    expect(door.registry.get(key)?.berth.token).toBe('ORIGINAL');
+    release(true);
+    expect((await outA).statusCode).toBe(200);
+    expect((await outC).statusCode).toBe(200);
+    expect(evicts).toBe(1);
+    expect(door.registry.identity_find(key)).toBeNull();
+    await door.app.close();
+  });
+
+  it('a logout that arrived before a restart whose outcome the host cannot say reports the berth not stopped; one the host says is gone stops nothing', async () => {
+    for (const answer of ['cannot say', 'none up'] as const) {
+      const identity: string = 'chris@https://cube.example.org/api/v1/';
+      const berths = new FakeBerthHost();
+      let fail: boolean = false;
+      let hold: Promise<void> | null = null;
+      const grants: GrantStore = new GrantStore(join(tokensDir, `grants-${String(Math.random()).slice(2)}.json`), 1, undefined, async (path: string, body: string): Promise<void> => {
+        const failing: boolean = fail;
+        // One write is held at a time: the next one after the hold is set.
+        const held: Promise<void> | null = hold;
+        hold = null;
+        if (held !== null) await held;
+        if (failing) throw new Error('the disk is full');
+        await writeFile(path, body, { mode: 0o600 });
+      });
+      const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, grants, mint: async () => ({ token: 'T' }) });
+      const login = async () => door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+      const logout = async (cookie: string) => door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie } });
+      void fail;
+      const original: Berth = { identity, url: 'ws://127.0.0.1:4444', token: 'ORIGINAL' };
+      berths.found = original;
+      const a = await login();
+      const b = await login();
+      let restarted: () => void = (): void => undefined;
+      berths.restartStop = new Promise<void>((resolve: () => void): void => { restarted = resolve; });
+      let written: () => void = (): void => undefined;
+      hold = new Promise<void>((resolve: () => void): void => { written = resolve; });
+      const outA = logout(cookie_of(a));
+      await new Promise((r) => setTimeout(r, 30));
+      await door.app.inject({ method: 'POST', url: '/restart', headers: { accept: 'application/json', cookie: cookie_of(b) } });
+      written();
+      await new Promise((r) => setTimeout(r, 30));
+      (berths as FakeBerthHost & { berthUp_read?: (identity: string) => Promise<Berth | null> }).berthUp_read = async (): Promise<Berth | null> => {
+        if (answer === 'cannot say') throw new Error('the launcher could not say which berth is up (it answered 500)');
+        return null;
+      };
+      restarted();
+      const said = await outA;
+      expect(said.statusCode).toBe(200);
+      if (answer === 'cannot say') expect(said.json()).toMatchObject({ berth: 'not stopped', reason: 'the launcher could not say which berth is up (it answered 500)' });
+      else expect(said.json()).toEqual({ ok: true });
+      expect(berths.evicted).toEqual([]);
+      await door.app.close();
+    }
+  });
+
   it('a login that joins a boot keeps its row: a settlement begun before the join still settles that boot', async () => {
     const identity: string = 'chris@https://cube.example.org/api/v1/';
     const registry: SessionRegistry = new SessionRegistry();

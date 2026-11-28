@@ -209,8 +209,6 @@ export class GrantStore {
   private grants: Map<string, DoorGrant> = new Map();
   /** Grants a logout or an hour ended that the file may still hold: let in by none, until the file says so too. */
   private readonly denied: Set<string> = new Set();
-  /** Grants whose end a request has been told it decided; kept until a write carries the end. */
-  private readonly endsDecided: Set<string> = new Set();
   /** The change under way: changes are made one after another, each on the grants as the last left them. */
   private changing: Promise<unknown> = Promise.resolve();
   private readonly connections: Map<string, Set<GrantConnection>> = new Map();
@@ -340,20 +338,16 @@ export class GrantStore {
    */
   public async grant_revoke(id: string): Promise<GrantRevocation> {
     const known: boolean = this.grants.has(id);
+    // The first request to refuse a standing grant is the one that ends it: decided as it arrives, before any
+    // turn or write, so neither a write that fails nor one that succeeds between hands it to another.
+    const first: boolean = known && !this.denied.has(id);
     if (known) this.denied.add(id);
     this.connections_close(id);
     const tried: ChangeTried<RevokeDecision> = await this.change_try((next: Map<string, DoorGrant>): RevokeDecision => {
-      // An end already decided by an earlier request (whose write may have failed): ended, and not by this one.
-      if (this.endsDecided.has(id)) {
-        next.delete(id);
-        return { outcome: 'ended', decided: false };
-      }
+      // A switch that moved it first wins over every logout.
       if ([...next.values()].some((grant: DoorGrant): boolean => grant.movedFrom === id)) return { outcome: 'moved', decided: false };
-      // Standing, or refused at this logout's asking and written away by a change that came between: this one ends it.
-      if (next.delete(id) || known) {
-        this.endsDecided.add(id);
-        return { outcome: 'ended', decided: true };
-      }
+      // Standing, or refused here and written away by a change that came between: ended.
+      if (next.delete(id) || known) return { outcome: 'ended', decided: first };
       return { outcome: 'gone', decided: false };
     });
     return { ...tried.answer, unwritten: tried.unwritten };
@@ -547,7 +541,6 @@ export class GrantStore {
       }
       this.grants = next;
       for (const id of [...this.denied]) if (!next.has(id)) this.denied.delete(id);
-      for (const id of [...this.endsDecided]) if (!next.has(id)) this.endsDecided.delete(id);
       return { answer, unwritten: null };
     };
     const run: Promise<ChangeTried<T>> = this.changing.then(turn_run, turn_run);

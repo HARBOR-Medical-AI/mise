@@ -1091,10 +1091,13 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       const ended: boolean = await registry.ending_run(key, async (): Promise<boolean> => {
         if (!(await arrival_stands(arrival, identity))) return false;
         const was: number | null = registry.life_get(key);
+        const displaced: DisplacedLife | null = registry.displaced_get(key);
         const stopped: boolean = await host.evict(identity, 'end');
         // The life that was ended is retired, a boot as much as a berth, and only that one: a restart or a login
         // waiting on this stop then finds no session to act on, and a session begun since is another's to keep.
-        if (was !== null && registry.life_get(key) === was) registry.forget(key);
+        // A failed restart's original, found again while the stop ran, is the berth just stopped: retired too.
+        const now: number | null = registry.life_get(key);
+        if (now !== null && (now === was || now === displaced?.life)) registry.forget(key);
         return stopped;
       });
       options.log?.(`${user_extract(identity)} logged out${ended ? '; their berth stopped, its volumes kept' : ''}`);
@@ -1128,7 +1131,8 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     if (arrival.displaced !== null && now === arrival.displaced.life) return true;
     const displaced: DisplacedLife | null = registry.displaced_get(arrival.key);
     if (displaced === null || displaced.life !== arrival.life) return false;
-    const up: Berth | null = await host.find(identity);
+    // The host must say: a launcher that cannot is a stop not made, said as one, not a berth found gone.
+    const up: Berth | null = host.berthUp_read !== undefined ? await host.berthUp_read(identity) : await host.find(identity);
     return up !== null && up.url === displaced.berth.url && up.token === displaced.berth.token;
   };
 
